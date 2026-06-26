@@ -24,7 +24,7 @@ class _FakeEndpoint:
 
 
 def test_run_perception_disabled_returns_none(monkeypatch):
-    monkeypatch.delenv("UMRS_DATA_CATALOG_ENABLE_PERCEPTION", raising=False)
+    monkeypatch.setenv("UMRS_DATA_CATALOG_ENABLE_PERCEPTION", "false")
     result = perception.run_perception(
         project_id="proj-1",
         filename="a.txt",
@@ -36,6 +36,7 @@ def test_run_perception_disabled_returns_none(monkeypatch):
 
 def test_caption_image_layers_into_result(monkeypatch):
     monkeypatch.setenv("UMRS_DATA_CATALOG_ENABLE_PERCEPTION", "true")
+    monkeypatch.setenv("UMRS_DATA_CATALOG_ENABLE_IMAGE_PERCEPTION", "true")
     monkeypatch.setattr(perception, "_find_vision_endpoint", lambda _pid: _FakeEndpoint())
     monkeypatch.setattr(
         perception, "_chat_completion", lambda _ep, _payload, **_kwargs: "A bar chart of yields."
@@ -51,6 +52,23 @@ def test_caption_image_layers_into_result(monkeypatch):
     assert result is not None
     assert result.kind == "vision_caption"
     assert result.text == "A bar chart of yields."
+
+
+def test_image_perception_off_by_default(monkeypatch):
+    monkeypatch.delenv("UMRS_DATA_CATALOG_ENABLE_IMAGE_PERCEPTION", raising=False)
+    monkeypatch.setattr(perception, "_find_vision_endpoint", lambda _pid: _FakeEndpoint())
+    monkeypatch.setattr(
+        perception, "_chat_completion", lambda _ep, _payload, **_kwargs: "should not be called"
+    )
+
+    result = perception.run_perception(
+        project_id="proj-1",
+        filename="plot.png",
+        modality="image",
+        extracted_text="",
+        image_bytes=b"\x89PNG\r\n\x1a\n fake",
+    )
+    assert result is None
 
 
 def test_image_perception_can_be_disabled_independently(monkeypatch):
@@ -69,6 +87,23 @@ def test_image_perception_can_be_disabled_independently(monkeypatch):
         image_bytes=b"\x89PNG\r\n\x1a\n fake",
     )
     assert result is None
+
+
+def test_summarize_text_on_by_default(monkeypatch):
+    monkeypatch.delenv("UMRS_DATA_CATALOG_ENABLE_PERCEPTION", raising=False)
+    monkeypatch.setattr(perception, "_find_text_endpoint", lambda _pid: _FakeEndpoint())
+    monkeypatch.setattr(
+        perception, "_chat_completion", lambda _ep, _payload, **_kwargs: "Run notes for batch 3."
+    )
+
+    result = perception.run_perception(
+        project_id="proj-1",
+        filename="notes.txt",
+        modality="text",
+        extracted_text="batch 3 yield 42%",
+    )
+    assert result is not None
+    assert result.kind == "llm_summary"
 
 
 def test_summarize_text_uses_text_endpoint(monkeypatch):
@@ -130,6 +165,7 @@ def test_ingest_tags_perception_skipped_when_unavailable(monkeypatch):
 
 def test_ingest_applies_vision_caption(monkeypatch):
     monkeypatch.setenv("UMRS_DATA_CATALOG_ENABLE_PERCEPTION", "true")
+    monkeypatch.setenv("UMRS_DATA_CATALOG_ENABLE_IMAGE_PERCEPTION", "true")
     monkeypatch.setattr(perception, "_find_vision_endpoint", lambda _pid: _FakeEndpoint())
     monkeypatch.setattr(
         perception,
