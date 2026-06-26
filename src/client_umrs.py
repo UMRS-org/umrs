@@ -2757,7 +2757,7 @@ def configure_buckets(user_cfg, buckets_cfg):
     for xp in user_cfg["experiences"]:
         sql_username = xp["sql_username"]
         xp_name = xp["xp_name"]
-        db_name = create_db_name(sql_username, xp_name)
+        db_name = create_db_name(sql_username, xp_name, username)
         for modality in xp["modalities"]:
             # Support both old (modality_name) and new (modality + task) config
             raw_modality_name = modality.get("modality_name") or modality.get(

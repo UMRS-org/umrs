@@ -366,8 +366,9 @@ def create_db_user(username):
     conn.close()
 
 
-def create_db(sql_username, xp_name):
-    db_name = create_db_name(sql_username, xp_name)
+def create_db(sql_username, xp_name, username=None):
+    db_name = create_db_name(sql_username, xp_name, username)
+    legacy_db_name = create_db_name(sql_username, xp_name)
     logger.info(f"\t\t-->  Configuring database '{db_name}'...")
     # Database credentials
     DB_HOST = os.environ.get("DB_HOST", "localhost")
@@ -385,6 +386,34 @@ def create_db(sql_username, xp_name):
     # Check if the database exists
     cur.execute("SELECT 1 FROM pg_database WHERE datname = %s;", (DB_NAME,))
     exists = cur.fetchone()
+
+    # One-time migration to per-user namespaced databases: if the new
+    # (username-namespaced) database does not yet exist but a legacy
+    # un-namespaced database does, adopt it by renaming. Best-effort — on any
+    # failure we fall through and create a fresh database, leaving the legacy
+    # one untouched for manual migration.
+    if not exists and username and legacy_db_name != db_name:
+        cur.execute(
+            "SELECT 1 FROM pg_database WHERE datname = %s;", (legacy_db_name,)
+        )
+        if cur.fetchone():
+            try:
+                cur.execute(
+                    sql.SQL("ALTER DATABASE {} RENAME TO {};").format(
+                        sql.Identifier(legacy_db_name), sql.Identifier(db_name)
+                    )
+                )
+                logger.info(
+                    f"\t\t-->  Migrated legacy database '{legacy_db_name}' "
+                    f"-> '{db_name}'."
+                )
+                exists = True
+            except Exception as e:
+                logger.warning(
+                    f"\t\t-->  Could not migrate legacy database "
+                    f"'{legacy_db_name}' -> '{db_name}': {e}. Creating a fresh "
+                    f"database; legacy data left in place for manual migration."
+                )
 
     if exists:
         logger.info(f"\t\t-->  Database '{db_name}' already exists.")
