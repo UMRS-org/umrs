@@ -441,6 +441,13 @@ fi
 # (VLLM_MOE_BACKEND) and apply it after VLLM_ARGS=(...) is initialized.
 VLLM_MOE_BACKEND=""
 case "$(printf '%s' "${MODEL_NAME}" | tr '[:upper:]' '[:lower:]')" in
+    *nvfp4*)
+        # NVFP4 quantization (modelopt_fp4) requires cutlass/flashinfer MoE.
+        # vLLM's NVFP4 oracle rejects triton with:
+        #   ValueError: moe_backend='triton' is not supported for NvFP4 MoE.
+        # Expected: cutlass, flashinfer_trtllm, flashinfer_cutlass, etc.
+        echo "[serve] NVFP4: skipping triton MoE — NVFP4 requires cutlass/flashinfer"
+        ;;
     *glm*)
         if [[ "${VLLM_FORCE_FLASHINFER_MOE:-0}" == "1" ]]; then
             # Canary override: FP8/FP4 FlashInfer MoE on Blackwell (upstream GB200 recipe).
