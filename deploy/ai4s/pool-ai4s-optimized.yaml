@@ -78,7 +78,7 @@ endpoints:
     tier: system
     gpu_count: 4
     node_count: 2
-    partition: 2n4gpu
+    partition: 4n4gpu-p
     max_model_len: 262144
     parallel_strategy: tep
     env_vars:
@@ -92,7 +92,7 @@ endpoints:
     tier: system
     gpu_count: 4
     node_count: 2
-    partition: 2n4gpu
+    partition: 4n4gpu-p
     max_model_len: 131072
     parallel_strategy: tep
     env_vars:
@@ -122,7 +122,7 @@ endpoints:
     tier: system
     gpu_count: 4
     node_count: 2
-    partition: 2n4gpu
+    partition: 4n4gpu-p
     max_model_len: 1048576
     env_vars:
       RIVAULT_SIF: /work/hps0/home/ea0022/images/mini-rivault-aarch64-v6.sif
@@ -155,7 +155,7 @@ endpoints:
     tier: system
     gpu_count: 4
     node_count: 2
-    partition: 2n4gpu
+    partition: 4n4gpu-p
     max_model_len: 262144
     env_vars:
       VLLM_MAX_NUM_SEQS: "32"
@@ -169,7 +169,7 @@ endpoints:
     tier: system
     gpu_count: 4
     node_count: 2
-    partition: 2n4gpu
+    partition: 4n4gpu-p
     max_model_len: 262144
     env_vars:
       VLLM_GPU_MEMORY_UTILIZATION: "0.90"
@@ -204,7 +204,7 @@ endpoints:
     tier: system
     gpu_count: 4
     node_count: 2
-    partition: 2n4gpu
+    partition: 4n4gpu-p
     max_model_len: 262144
     env_vars:
       RIVAULT_SIF: /work/hps0/home/ea0022/images/mini-rivault-aarch64-v6.sif
