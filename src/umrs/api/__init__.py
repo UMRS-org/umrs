@@ -8,6 +8,7 @@ the existing ZeroMQ-based messaging.
 Note: Context/memory routers excluded from selective merge.
 """
 
+from .catalog import router as catalog_router
 from .egress_audit import router as egress_audit_router
 from .endpoints import router as endpoints_router
 from .files import router as files_router
@@ -30,6 +31,7 @@ from .workflows import router as workflows_router
 from .zmq_sessions import router as zmq_sessions_router
 
 __all__ = [
+    "catalog_router",
     "egress_audit_router",
     "endpoints_router",
     "files_router",
