@@ -27,7 +27,9 @@ class DataPortRange:
         if self.start < 1 or self.end < 1:
             raise ValueError("Data ports must be positive integers")
         if self.end < self.start:
-            raise ValueError("Data port range end must be greater than or equal to start")
+            raise ValueError(
+                "Data port range end must be greater than or equal to start"
+            )
 
     @classmethod
     def single(cls, port: int) -> DataPortRange:
@@ -187,9 +189,17 @@ profile_schema: dict[str, Any] = {
                         "type": "object",
                         "required": ["local_port", "remote_host", "remote_port"],
                         "properties": {
-                            "local_port": {"type": "integer", "minimum": 1, "maximum": 65535},
+                            "local_port": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 65535,
+                            },
                             "remote_host": {"type": "string", "minLength": 1},
-                            "remote_port": {"type": "integer", "minimum": 1, "maximum": 65535},
+                            "remote_port": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 65535,
+                            },
                         },
                         "additionalProperties": False,
                     },
@@ -208,7 +218,9 @@ class ConnectionProfile:
     mode: str
     server_host: str
     control_port: int = 5555
-    data_port_range: DataPortRange = field(default_factory=lambda: DataPortRange.single(DEFAULT_DATA_PORT))
+    data_port_range: DataPortRange = field(
+        default_factory=lambda: DataPortRange.single(DEFAULT_DATA_PORT)
+    )
     tunnel_mode: bool = False
     health_check_timeout_ms: int = 5000
     minio_url: str | None = None
@@ -278,8 +290,10 @@ class ResolvedConnection:
 
 
 def get_connections_dir() -> Path:
-    return Path(get_resolved_umrs_cfg_dir()).expanduser() / get_connections_default_cfg_subdir()
-
+    return (
+        Path(get_resolved_umrs_cfg_dir()).expanduser()
+        / get_connections_default_cfg_subdir()
+    )
 
 
 def get_current_profile_path() -> Path | None:
@@ -295,7 +309,7 @@ def get_current_profile_path() -> Path | None:
     """
     profile_file = get_current_connection_profile_file()
     if profile_file is None:
-        return Path() # not ans is_file!
+        return None
     if isinstance(profile_file, str):
         return Path(get_resolved_umrs_cfg_dir()).expanduser() / profile_file
     raise TypeError(
@@ -315,7 +329,9 @@ def _load_profile_content(path: Path) -> dict[str, Any]:
     except FileNotFoundError as exc:
         raise FileNotFoundError(f"Connection profile not found: {path}") from exc
     except json.decoder.JSONDecodeError as exc:
-        raise ValueError(f"Failed to parse connection profile {path}: {exc.msg} (char {exc.pos})") from exc
+        raise ValueError(
+            f"Failed to parse connection profile {path}: {exc.msg} (char {exc.pos})"
+        ) from exc
 
     try:
         validate(instance=content, schema=profile_schema)
@@ -336,7 +352,10 @@ def _profile_from_content(content: dict[str, Any], path: Path) -> ConnectionProf
     ssh_cfg = content.get("ssh") or {}
     data_port_range = parse_data_port_range(
         zmq_cfg.get("data_port_range"),
-        default=parse_data_port_range(zmq_cfg.get("data_base_port"), default=DataPortRange.single(DEFAULT_DATA_PORT)),
+        default=parse_data_port_range(
+            zmq_cfg.get("data_base_port"),
+            default=DataPortRange.single(DEFAULT_DATA_PORT),
+        ),
     )
 
     profile = ConnectionProfile(
@@ -357,9 +376,13 @@ def _profile_from_content(content: dict[str, Any], path: Path) -> ConnectionProf
         zmq_auth_type=(zmq_cfg.get("auth_type") or "none").lower(),
     )
     if not profile.minio_url:
-        profile.minio_url = _default_service_url(profile.server_host, 9000, profile.tunnel_mode)
+        profile.minio_url = _default_service_url(
+            profile.server_host, 9000, profile.tunnel_mode
+        )
     if not profile.rag_url:
-        profile.rag_url = _default_service_url(profile.server_host, 8081, profile.tunnel_mode)
+        profile.rag_url = _default_service_url(
+            profile.server_host, 8081, profile.tunnel_mode
+        )
     return profile
 
 
@@ -369,13 +392,17 @@ def load_connection_profile(name: str) -> ConnectionProfile:
     return _profile_from_content(content, path)
 
 
-def load_connection_profile_file(path_like: str | os.PathLike[str]) -> ConnectionProfile:
+def load_connection_profile_file(
+    path_like: str | os.PathLike[str],
+) -> ConnectionProfile:
     path = Path(path_like).expanduser()
     content = _load_profile_content(path)
     return _profile_from_content(content, path)
 
 
-def import_connection_profile(path_like: str | os.PathLike[str], overwrite: bool = False) -> ConnectionProfile:
+def import_connection_profile(
+    path_like: str | os.PathLike[str], overwrite: bool = False
+) -> ConnectionProfile:
     source_path = Path(path_like).expanduser()
     content = _load_profile_content(source_path)
     profile = _profile_from_content(content, source_path)
@@ -395,7 +422,9 @@ def import_connection_profile(path_like: str | os.PathLike[str], overwrite: bool
     return _profile_from_content(content, destination_path)
 
 
-def discover_connection_profiles() -> tuple[list[ConnectionProfile], list[dict[str, str]]]:
+def discover_connection_profiles() -> tuple[
+    list[ConnectionProfile], list[dict[str, str]]
+]:
     profiles: list[ConnectionProfile] = []
     errors: list[dict[str, str]] = []
     directory = get_connections_dir()
@@ -413,7 +442,7 @@ def discover_connection_profiles() -> tuple[list[ConnectionProfile], list[dict[s
 
 def get_current_profile_name() -> str | None:
     path = get_current_profile_path()
-    if not path.is_file():
+    if path is None or not path.is_file():
         return None
     value = path.read_text(encoding="utf-8").strip()
     return value or None
@@ -422,12 +451,19 @@ def get_current_profile_name() -> str | None:
 def set_current_profile_name(name: str) -> Path:
     profile = load_connection_profile(name)
     path = get_current_profile_path()
+    if path is None:
+        raise RuntimeError(
+            "Cannot set current profile: get_current_connection_profile_file() "
+            "returned None."
+        )
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(profile.name + "\n", encoding="utf-8")
     return path
 
 
-def resolve_profile_name(explicit_name: str | None = None) -> tuple[str | None, str | None]:
+def resolve_profile_name(
+    explicit_name: str | None = None,
+) -> tuple[str | None, str | None]:
     if explicit_name:
         return explicit_name, "flag:--profile"
 
@@ -437,7 +473,11 @@ def resolve_profile_name(explicit_name: str | None = None) -> tuple[str | None, 
 
     current_name = get_current_profile_name()
     if current_name:
-        return current_name, f"current:{get_current_profile_path()}"
+        current_path = get_current_profile_path()
+        return (
+            current_name,
+            f"current:{current_path}" if current_path else "current:unknown",
+        )
 
     return None, None
 
