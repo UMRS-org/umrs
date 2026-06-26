@@ -71,6 +71,13 @@ register_model "GLM-5.2-FP8" \
     "1048576" \
     "8"
 
+# GLM-5.2-NVFP4 (NVIDIA NVFP4 quantization, 4-bit MoE experts)
+register_model "GLM-5.2-NVFP4" \
+    "${MODEL_DIR}/GLM-5.2-NVFP4" \
+    "nvidia/GLM-5.2-NVFP4" \
+    "1048576" \
+    "8"
+
 # Kimi-K2.6 (1T MoE, INT4)
 register_model "Kimi-K2.6" \
     "${MODEL_DIR}/Kimi-K2.6" \
