@@ -57,7 +57,7 @@ def create_sql_users(user_cfg, sql_admin):
         xp_name = xp["xp_name"]
         print(f"\t==> Experience: {xp_name}")
         sql_username = xp["sql_username"]
-        create_db(sql_username, xp_name)
+        create_db(sql_username, xp_name, username)
 
 
 def build_parser():
