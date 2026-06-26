@@ -2,6 +2,7 @@
 
 import logging
 import time
+from typing import Any
 
 from umrs.core.TaskCmdStatus import TaskCmd, TaskStatus
 from umrs.server.provisioning import ServerCfg, configure_user
@@ -397,10 +398,42 @@ def check_duplicated_database(users):
             databases_name_dict[db_name] = username
 
 
+def _close_buckets_connections(buckets_cfg):
+    """Close all active S3 connections in the current bucket config."""
+    for entry in buckets_cfg.values():
+        try:
+            conn = entry.s3_connection
+            if conn:
+                conn.close()
+        except Exception as e:
+            logger.info(f"Warning: failed to close S3 connection during reload: {e}")
+
+
+def _provision_all_users(
+    new_users, new_admin_s3_cfg
+) -> tuple[ServerCfg, list[dict[str, Any]]]:
+    """Provision every user and return the new server config plus errors."""
+    from umrs.server.provisioning import create_s3_sql_users
+
+    new_server_cfg = ServerCfg()
+    modality_errors: list[dict[str, Any]] = []
+    for u in new_users:
+        create_s3_sql_users(u, new_admin_s3_cfg)
+        configure_user(u, new_server_cfg, modality_errors=modality_errors)
+    return new_server_cfg, modality_errors
+
+
+def _format_modality_errors(modality_errors: list[dict[str, Any]]) -> str:
+    """Format per-modality provisioning errors for display."""
+    return "\n".join(
+        f"- {e['username']}/{e['xp_name']}/{e['modality']}: {e['error']}"
+        for e in modality_errors
+    )
+
+
 def reload_configuration(configure_file, buckets_cfg, user_config_map, log_output=True):
     """Hot-reload server configuration from disk."""
     from umrs.server.json_config import load_server_cfg_file
-    from umrs.server.provisioning import create_s3_sql_users
 
     if log_output:
         logger.info(
@@ -411,27 +444,29 @@ def reload_configuration(configure_file, buckets_cfg, user_config_map, log_outpu
     try:
         new_admin_s3_cfg, new_users, _ = load_server_cfg_file(configure_file)
         check_duplicated_database(new_users)
-        for entry in buckets_cfg.values():
-            try:
-                conn = entry.s3_connection
-                if conn:
-                    conn.close()
-            except Exception as e:
-                logger.info(
-                    f"Warning: failed to close S3 connection during reload: {e}"
-                )
+        _close_buckets_connections(buckets_cfg)
 
-        for u in new_users:
-            create_s3_sql_users(u, new_admin_s3_cfg)
-
-        new_server_cfg = ServerCfg()
-        for u in new_users:
-            configure_user(u, new_server_cfg)
+        new_server_cfg, modality_errors = _provision_all_users(
+            new_users, new_admin_s3_cfg
+        )
 
         buckets_cfg.replace_cfg(new_server_cfg.buckets_cfg)
         user_config_map.clear()
         user_config_map.update(new_server_cfg.user_config_map)
         summary = pretty_print_cfg(new_server_cfg, print_output=False)
+        if modality_errors:
+            error_lines = _format_modality_errors(modality_errors)
+            summary += (
+                f"\n\n❌ {len(modality_errors)} modality(s) failed to provision:\n"
+                f"{error_lines}"
+            )
+            if log_output:
+                logger.info(summary)
+            return {
+                "summary": summary,
+                "error": error_lines,
+                "modality_errors": modality_errors,
+            }
         if log_output:
             logger.info(summary)
             logger.info("\n✅ Reload complete.")
