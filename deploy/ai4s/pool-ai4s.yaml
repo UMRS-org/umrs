@@ -142,10 +142,12 @@ endpoints:
       # RIVAULT_SIF from the job shell (--export=ALL). v4/v5 stay default for
       # all other models. See ai4s-endpoint-restore-glm52-2026-06-17 memory.
       RIVAULT_SIF: /work/hps0/home/ea0022/images/mini-rivault-aarch64-v6.sif
+      VLLM_MAX_NUM_SEQS: "32"                # align with v2; KV headroom available
 
   # ── GLM-5.2 V2 (optimized baseline, 2026-06-22) ───────────────────────────
   # Same 4n4gpu layout, with explicit throughput tuning.
-  #   max_num_seqs=16: explicit concurrency cap (was unset → vLLM default 256).
+  #   max_num_seqs=32: explicit concurrency cap (raised from 16 after live KV
+  #     headroom observed; 51 % peak usage with 8 concurrent sequences).
   #   max_num_batched_tokens=32768: faster prefill (was auto-derived 16384).
   #   Keeps eager mode (conservative — CUDA graphs not yet validated clean for
   #     GLM-5.2 on this vLLM build; see v2-graphs canary below).
@@ -159,7 +161,7 @@ endpoints:
     max_model_len: 1048576 # 1M context
     env_vars:
       RIVAULT_SIF: /work/hps0/home/ea0022/images/mini-rivault-aarch64-v6.sif
-      VLLM_MAX_NUM_SEQS: "16"                # explicit concurrency cap
+      VLLM_MAX_NUM_SEQS: "32"                # explicit concurrency cap
       VLLM_MAX_NUM_BATCHED_TOKENS: "32768"   # faster prefill (was 16384)
 
   # ── GLM-5.2 V2 CUDA-graphs canary (2026-06-22) ────────────────────────────
@@ -258,6 +260,8 @@ endpoints:
     node_count: 1          # vLLM GB200 recipe: INT4 ~714 GiB fits ONE tray (4 GPUs); single-node TP=4 over NVLink avoids cross-node pipeline bubbles + Ray overhead
     partition: 4n4gpu-p    # unlimited walltime; node_count=1 → single-node allocation on this partition
     max_model_len: 245760  # 240K. Canary 10064 showed INT4 weights leave only 16.68 GiB/GPU KV at gpu_mem_util=0.9 → hard ceiling 254816 tokens for native 262144. Trimmed to 245760 for fragmentation margin. (orchestrator does not thread per-model gpu_memory_utilization, so raising util is not available via pool.)
+    env_vars:
+      VLLM_MAX_NUM_SEQS: "16"              # cap concurrency to the realistic KV budget
     # 1T MoE (32B active, 384 experts), native INT4; TP=4 × PP=1 (single node)
 
   # ── Kimi-K2.7-Code (coding-focused agentic variant of K2.6) ───────────────
@@ -277,6 +281,7 @@ endpoints:
     env_vars:
       VLLM_GPU_MEMORY_UTILIZATION: "0.90"
       VLLM_MM_ENCODER_TP_MODE: "data"    # vision encoder data-parallel per recipe
+      VLLM_MAX_NUM_SEQS: "16"            # cap concurrency to the realistic KV budget
     # Tool-call-parser + reasoning-parser = kimi_k2 (auto-derived by serve.slurm *kimi* match)
     # thinking-only mode (preserve_thinking forced on); reasoning parser enabled.
 
@@ -355,6 +360,109 @@ endpoints:
     # Needs: --trust-remote-code --reasoning-parser llmjp4
     # Japanese-first MoE thinking model, Harmony response format.
     # reasoning_effort: low|medium|high supported.
+
+  # ── Throughput / memory canaries (2026-06) ────────────────────────────────
+  # Experimental variants for the AI4S pool. Validate memory fit and output
+  # quality before promoting to the default entries above.
+
+  # Kimi K2.6 on 2 nodes (TP=8). Doubles aggregate GPU memory → native 262K
+  # context with KV headroom and a higher concurrency ceiling.
+  - name: kimi-k2.6-2n
+    model: Kimi-K2.6
+    tier: system
+    gpu_count: 4
+    node_count: 2
+    partition: 2n4gpu
+    max_model_len: 262144
+    env_vars:
+      VLLM_MAX_NUM_SEQS: "32"
+      VLLM_MAX_NUM_BATCHED_TOKENS: "32768"
+      VLLM_MM_ENCODER_TP_MODE: "data"
+
+  # Kimi K2.7 Code on 2 nodes (TP=8). Same rationale as K2.6.
+  - name: kimi-k2.7-code-2n
+    model: Kimi-K2.7-Code
+    tier: system
+    gpu_count: 4
+    node_count: 2
+    partition: 2n4gpu
+    max_model_len: 262144
+    env_vars:
+      VLLM_GPU_MEMORY_UTILIZATION: "0.90"
+      VLLM_MM_ENCODER_TP_MODE: "data"
+      VLLM_MAX_NUM_SEQS: "32"
+      VLLM_MAX_NUM_BATCHED_TOKENS: "32768"
+
+  # Kimi K2.7 Code with FP8 KV cache (single-node canary). Halves KV memory,
+  # giving large headroom on the TP=4 recipe. Validate output quality before
+  # making this the production default.
+  - name: kimi-k2.7-code-fp8
+    model: Kimi-K2.7-Code
+    tier: system
+    gpu_count: 4
+    node_count: 1
+    partition: 4n4gpu-p
+    max_model_len: 262144
+    env_vars:
+      VLLM_GPU_MEMORY_UTILIZATION: "0.90"
+      VLLM_MM_ENCODER_TP_MODE: "data"
+      VLLM_KV_CACHE_DTYPE: "fp8"
+      VLLM_MAX_NUM_SEQS: "32"
+      VLLM_MAX_NUM_BATCHED_TOKENS: "32768"
+
+  # GLM-5.2 FP8 2-node recipe. Promoted from pool-glm52-fp8.yaml; same topology
+  # as glm-5.2-tep but listed in the main AI4S pool for discoverability.
+  - name: glm-5.2-fp8
+    model: GLM-5.2-FP8
+    tier: system
+    gpu_count: 4
+    node_count: 2
+    partition: 2n4gpu
+    max_model_len: 1048576
+    env_vars:
+      RIVAULT_SIF: /work/hps0/home/ea0022/images/mini-rivault-aarch64-v6.sif
+      VLLM_KV_CACHE_DTYPE: "fp8"
+      VLLM_MAX_NUM_SEQS: "32"
+      VLLM_MAX_NUM_BATCHED_TOKENS: "32768"
+
+  # GLM-5.2 FP8 Prefill/Decode disaggregated. 4 nodes total (2 prefill + 2
+  # decode) via serve-pd.slurm. Use when glm-5.2-fp8 shows queueing or decode
+  # latency under high concurrency.
+  - name: glm-5.2-fp8-pd
+    model: GLM-5.2-FP8
+    tier: system
+    gpu_count: 4
+    node_count: 4
+    partition: 4n4gpu-p
+    max_model_len: 1048576
+    env_vars:
+      RIVAULT_SIF: /work/hps0/home/ea0022/images/mini-rivault-aarch64-v6.sif
+      VLLM_KV_CACHE_DTYPE: "fp8"
+      VLLM_MAX_NUM_SEQS: "32"
+      VLLM_MAX_NUM_BATCHED_TOKENS: "32768"
+      NIXL_PACKAGES_HOST: /work/hps0/home/ea0022/images/nixl_packages
+      SLURM_WRAPPER_SCRIPT: /work/hps0/home/ea0022/ai4s-platform/umrs/deploy/ai4s/serve-pd.slurm
+
+  # ── Ornith-1.0-397B (DeepReinforce, 397B MoE agentic coding) ──────────────
+  # HF: deepreinforce-ai/Ornith-1.0-397B
+  # 397B total params, MoE, post-trained on Gemma 4 + Qwen 3.5.
+  # vLLM recipe: TP=8, max_model_len 262K, prefix caching, auto tool choice,
+  # tool-call-parser qwen3_xml, reasoning-parser qwen3, trust-remote-code.
+  # Fits 8×80GB; on GB200 B200 use 2 nodes (8× B200) for KV headroom.
+  - name: ornith-1.0-397b
+    model: Ornith-1.0-397B
+    tier: system
+    gpu_count: 4
+    node_count: 2
+    partition: 2n4gpu
+    max_model_len: 262144
+    env_vars:
+      RIVAULT_SIF: /work/hps0/home/ea0022/images/mini-rivault-aarch64-v6.sif
+      VLLM_TOOL_CALL_PARSER: "qwen3_xml"
+      VLLM_REASONING_PARSER: "qwen3"
+      VLLM_MAX_NUM_SEQS: "16"
+      VLLM_MAX_NUM_BATCHED_TOKENS: "32768"
+      VLLM_GPU_MEMORY_UTILIZATION: "0.90"
 
   # ── MCP-enabled example ───────────────────────────────────────────────────
   # Users can mount custom MCP servers into mini-RiVaults via the Gateway.

@@ -1,0 +1,215 @@
+# Pool roster: AI4S Supercomputer — optimized variants only
+# Usage: R4_GATEWAY_URL=http://localhost:8002 r4 pool up pool-ai4s-optimized.yaml
+#
+# Target: ai4s-front → SSH → AI4S login (GB200 NVL4, 173.2 GiB/GPU × 4)
+#
+# This file contains only the optimized / canary variants recommended from the
+# 2026-06 KV-cache and throughput tuning exercise. Default (non-tuned) entries
+# are intentionally omitted; use pool-ai4s.yaml for the full roster.
+#
+# Model sizing notes (GB200 B200 @ 173.2 GiB/GPU, 4/node = 692.8 GiB):
+#
+#   DeepSeek-V4-Pro (deepseek-ai/DeepSeek-V4-Pro):
+#     - 1.6T total params, 49B activated (MoE)
+#     - Stored in FP4+FP8 mixed (~862B stored params)
+#     - 1M context, Hybrid Attention (CSA+HCA)
+#     - Needs 2n4gpu (8× B200 = 1385.6 GiB) for safe loading
+#     - vLLM/SGLang supported
+#
+#   GLM-5.2 (zai-org/GLM-5.2):
+#     - 753B stored params (MoE, glm_moe_dsa architecture)
+#     - BF16 weights → ~1.5 TB; FP8 → ~753 GiB
+#     - 1M native context (solid, per upstream)
+#     - Needs 4n4gpu (16× B200) for native 1M context
+#     - vLLM v0.23.0+, SGLang v0.5.13.post1+ required
+#
+#   Kimi K2.6 (moonshotai/Kimi-K2.6):
+#     - 1T total params, 32B activated (MoE, 384 experts, 8 active)
+#     - Native INT4 quantization → ~500 GiB
+#     - 256K context, multimodal (MoonViT vision encoder)
+#     - Fits in 1n4gpu (4× B200 = 692.8 GiB) with INT4
+#     - vLLM/SGLang/KTransformers supported
+#
+#   Kimi K2.7 Code (moonshotai/Kimi-K2.7-Code):
+#     - Coding-focused agentic MoE built on K2.6 (1T total, 32B activated)
+#     - INT4 quantization → ~714 GiB (same as K2.6)
+#     - 256K context, thinking-only mode, multimodal (MoonViT)
+#     - Fits in 1n4gpu (4× B200 = 692.8 GiB) with INT4, TP=4
+#     - Uses same kimi_k2 tool-call-parser + reasoning-parser as K2.6
+#     - vLLM 0.19.1+ required, --mm-encoder-tp-mode data recommended
+#
+#   Ornith-1.0-397B (deepreinforce-ai/Ornith-1.0-397B):
+#     - 397B total params, MoE, post-trained on Gemma 4 + Qwen 3.5
+#     - vLLM recipe: TP=8, max_model_len 262K, prefix caching,
+#       tool-call-parser qwen3_xml, reasoning-parser qwen3, trust-remote-code
+#     - Fits 8×80GB; on GB200 B200 use 2 nodes (8× B200) for KV headroom
+
+pool: ai4s-research-optimized
+defaults:
+  tier: system            # system tier → shared, visible to all users
+  ttl_sec: 0              # 0 = never expires. 4n4gpu-p has unlimited walltime;
+                          # system-tier pool models must persist until explicitly torn down.
+  timeout: 86400          # HTTP request timeout (seconds) for `pool up`, NOT endpoint TTL.
+                          # Endpoint lifetime is controlled by ttl_sec above.
+
+endpoints:
+  # ── DeepSeek-V4-Pro V2 (optimized baseline, 2026-06-22) ───────────────────
+  # Same 4n4gpu layout as baseline, with explicit throughput tuning.
+  #   max_num_seqs=16: explicit concurrency cap (was unset → vLLM default 256,
+  #     effectively limited by 1M KV memory).
+  #   max_num_batched_tokens=32768: faster prefill (was auto-derived 16384).
+  # Keeps eager mode (CUDA graphs still unsafe for DeepSeek-V4 on this build).
+  - name: deepseek-v4-pro-v2
+    model: DeepSeek-V4-Pro
+    tier: system
+    gpu_count: 4
+    node_count: 4
+    partition: 4n4gpu-p
+    max_model_len: 1048576 # 1M context
+    env_vars:
+      VLLM_MAX_NUM_SEQS: "16"                # explicit concurrency cap
+      VLLM_MAX_NUM_BATCHED_TOKENS: "32768"   # faster prefill (was 16384)
+
+  # ── DeepSeek-V4-Pro TEP (256K) ────────────────────────────────────────────
+  # TP=8 PP=1 + expert-parallel on 2 nodes. Eliminates pipeline bubbles.
+  # 256K context is validated to fit; raise to 1M only after KV fit check.
+  - name: deepseek-v4-pro-tep
+    model: DeepSeek-V4-Pro
+    tier: system
+    gpu_count: 4
+    node_count: 2
+    partition: 2n4gpu
+    max_model_len: 262144
+    parallel_strategy: tep
+    env_vars:
+      VLLM_MAX_NUM_SEQS: "32"
+      VLLM_MAX_NUM_BATCHED_TOKENS: "32768"
+
+  # ── DeepSeek-V4-Pro TEP (128K) ────────────────────────────────────────────
+  # Maximum KV headroom in the 2-node TEP layout for high-concurrency workloads.
+  - name: deepseek-v4-pro-tep-128k
+    model: DeepSeek-V4-Pro
+    tier: system
+    gpu_count: 4
+    node_count: 2
+    partition: 2n4gpu
+    max_model_len: 131072
+    parallel_strategy: tep
+    env_vars:
+      VLLM_MAX_NUM_SEQS: "32"
+      VLLM_MAX_NUM_BATCHED_TOKENS: "32768"
+
+  # ── GLM-5.2 V2 (optimized baseline, 2026-06-22) ───────────────────────────
+  # 4n4gpu BF16, eager, explicit concurrency cap and larger batched-token budget.
+  # max_num_seqs=32 chosen after live KV headroom observation.
+  - name: glm-5.2-v2
+    model: GLM-5.2
+    tier: system
+    gpu_count: 4
+    node_count: 4
+    partition: 4n4gpu-p
+    max_model_len: 1048576 # 1M context
+    env_vars:
+      RIVAULT_SIF: /work/hps0/home/ea0022/images/mini-rivault-aarch64-v6.sif
+      VLLM_MAX_NUM_SEQS: "32"
+      VLLM_MAX_NUM_BATCHED_TOKENS: "32768"
+
+  # ── GLM-5.2 FP8 2-node recipe ─────────────────────────────────────────────
+  # Promoted canary: FP8 weights + FP8 KV cache, 2n4gpu, native 1M context.
+  # Half the GPU count of the BF16 baseline with no pipeline bubbles.
+  - name: glm-5.2-fp8
+    model: GLM-5.2-FP8
+    tier: system
+    gpu_count: 4
+    node_count: 2
+    partition: 2n4gpu
+    max_model_len: 1048576
+    env_vars:
+      RIVAULT_SIF: /work/hps0/home/ea0022/images/mini-rivault-aarch64-v6.sif
+      VLLM_KV_CACHE_DTYPE: "fp8"
+      VLLM_MAX_NUM_SEQS: "32"
+      VLLM_MAX_NUM_BATCHED_TOKENS: "32768"
+
+  # ── GLM-5.2 FP8 Prefill/Decode disaggregated ──────────────────────────────
+  # 4 nodes total (2 prefill + 2 decode) via serve-pd.slurm.
+  # Use when glm-5.2-fp8 shows queueing or decode latency under high concurrency.
+  - name: glm-5.2-fp8-pd
+    model: GLM-5.2-FP8
+    tier: system
+    gpu_count: 4
+    node_count: 4
+    partition: 4n4gpu-p
+    max_model_len: 1048576
+    env_vars:
+      RIVAULT_SIF: /work/hps0/home/ea0022/images/mini-rivault-aarch64-v6.sif
+      VLLM_KV_CACHE_DTYPE: "fp8"
+      VLLM_MAX_NUM_SEQS: "32"
+      VLLM_MAX_NUM_BATCHED_TOKENS: "32768"
+      NIXL_PACKAGES_HOST: /work/hps0/home/ea0022/images/nixl_packages
+      SLURM_WRAPPER_SCRIPT: /work/hps0/home/ea0022/ai4s-platform/umrs/deploy/ai4s/serve-pd.slurm
+
+  # ── Kimi-K2.6 2-node (native 262K) ────────────────────────────────────────
+  # TP=8 doubles aggregate memory → native 262K context with KV headroom.
+  - name: kimi-k2.6-2n
+    model: Kimi-K2.6
+    tier: system
+    gpu_count: 4
+    node_count: 2
+    partition: 2n4gpu
+    max_model_len: 262144
+    env_vars:
+      VLLM_MAX_NUM_SEQS: "32"
+      VLLM_MAX_NUM_BATCHED_TOKENS: "32768"
+      VLLM_MM_ENCODER_TP_MODE: "data"
+
+  # ── Kimi-K2.7-Code 2-node (native 262K) ───────────────────────────────────
+  # Same rationale as K2.6; coding-focused agentic variant.
+  - name: kimi-k2.7-code-2n
+    model: Kimi-K2.7-Code
+    tier: system
+    gpu_count: 4
+    node_count: 2
+    partition: 2n4gpu
+    max_model_len: 262144
+    env_vars:
+      VLLM_GPU_MEMORY_UTILIZATION: "0.90"
+      VLLM_MM_ENCODER_TP_MODE: "data"
+      VLLM_MAX_NUM_SEQS: "32"
+      VLLM_MAX_NUM_BATCHED_TOKENS: "32768"
+
+  # ── Kimi-K2.7-Code FP8 KV (single-node canary) ────────────────────────────
+  # Halves KV memory on the 1n4gpu recipe; validate output quality before promotion.
+  - name: kimi-k2.7-code-fp8
+    model: Kimi-K2.7-Code
+    tier: system
+    gpu_count: 4
+    node_count: 1
+    partition: 4n4gpu-p
+    max_model_len: 262144
+    env_vars:
+      VLLM_GPU_MEMORY_UTILIZATION: "0.90"
+      VLLM_MM_ENCODER_TP_MODE: "data"
+      VLLM_KV_CACHE_DTYPE: "fp8"
+      VLLM_MAX_NUM_SEQS: "32"
+      VLLM_MAX_NUM_BATCHED_TOKENS: "32768"
+
+  # ── Ornith-1.0-397B (DeepReinforce, 397B MoE agentic coding) ──────────────
+  # HF: deepreinforce-ai/Ornith-1.0-397B
+  # 397B total params, MoE, post-trained on Gemma 4 + Qwen 3.5.
+  # vLLM recipe: TP=8, max_model_len 262K, prefix caching, auto tool choice,
+  # tool-call-parser qwen3_xml, reasoning-parser qwen3, trust-remote-code.
+  # Fits 8×80GB; on GB200 B200 use 2 nodes (8× B200) for KV headroom.
+  - name: ornith-1.0-397b
+    model: Ornith-1.0-397B
+    tier: system
+    gpu_count: 4
+    node_count: 2
+    partition: 2n4gpu
+    max_model_len: 262144
+    env_vars:
+      RIVAULT_SIF: /work/hps0/home/ea0022/images/mini-rivault-aarch64-v6.sif
+      VLLM_TOOL_CALL_PARSER: "qwen3_xml"
+      VLLM_REASONING_PARSER: "qwen3"
+      VLLM_MAX_NUM_SEQS: "16"
+      VLLM_MAX_NUM_BATCHED_TOKENS: "32768"
+      VLLM_GPU_MEMORY_UTILIZATION: "0.90"
