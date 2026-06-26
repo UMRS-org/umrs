@@ -1306,6 +1306,9 @@ def create_backend_factory(
         user_store=user_store,
     )
     index_backend = IndexBuildBackend()
+    from .data_ingestion import DataIngestionBackend
+
+    data_ingestion_backend = DataIngestionBackend()
     cleanup_backend = CleanupBackend(
         orchestrator=orchestrator,
         registry=registry,
@@ -1329,6 +1332,8 @@ def create_backend_factory(
             return endpoint_backend
         elif job_type == JobType.INDEX_BUILD:
             return index_backend
+        elif job_type == JobType.DATA_INGESTION:
+            return data_ingestion_backend
         elif job_type == JobType.CLEANUP:
             return cleanup_backend
         elif job_type == JobType.WORKFLOW_RUN:
@@ -1381,6 +1386,9 @@ def create_status_checker(
 
     checker.register(JobType.WORKFLOW_RUN, WorkflowRunStatusChecker())
     checker.register(JobType.INDEX_BUILD, IndexBuildStatusChecker())
+    from .data_ingestion import DataIngestionStatusChecker
+
+    checker.register(JobType.DATA_INGESTION, DataIngestionStatusChecker())
     checker.register(JobType.CLEANUP, CleanupStatusChecker(registry=registry))
 
     if include_model_download:
