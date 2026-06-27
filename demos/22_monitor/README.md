@@ -1,8 +1,9 @@
 # Demo 22: UMRS Monitor (Multi-Tab TUI Dashboard)
 
 Multi-tab **live-refreshing terminal dashboard** for monitoring the
-entire UMRS system. Uses the `rich` library to render tabbed views
-for jobs, server status, models, workflows, and connection health.
+entire UMRS system. Uses the **Textual** widget framework (built on Rich)
+to render tabbed views for jobs, server status, models, workflows, and
+connection health.
 
 ## Prerequisites
 

@@ -25,6 +25,7 @@ client = [
     "httpx",
     "pyyaml",
     "rich>=13.0",
+    "textual>=0.47",
     "boto3",
     "psycopg2-binary",
 ]

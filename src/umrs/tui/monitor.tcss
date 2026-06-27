@@ -1,0 +1,87 @@
+/* UMRS Monitor Textual CSS */
+
+MonitorApp {
+    background: $surface;
+    layout: vertical;
+}
+
+/* Logo at top */
+LogoWidget {
+    dock: top;
+    height: 7;
+    padding: 0 2;
+    background: $boost;
+    color: $primary;
+    text-align: center;
+    border-bottom: solid $primary;
+}
+
+/* Stats bar below logo */
+StatsBar {
+    dock: top;
+    height: 1;
+    background: $boost;
+    color: $text;
+    padding: 0 2;
+}
+
+/* Footer at bottom */
+FooterBar {
+    dock: bottom;
+    height: 1;
+    background: $boost;
+    color: $text-muted;
+    padding: 0 2;
+}
+
+/* Tabbed content fills remaining space */
+TabbedContent {
+    height: 1fr;
+}
+
+TabPane {
+    padding: 0 1;
+    height: 1fr;
+}
+
+/* Pane layout */
+JobsPane,
+EndpointsPane,
+StatusPane,
+ModelsPane,
+WorkflowsPane,
+ConnectionPane,
+LogsPane {
+    layout: vertical;
+    padding: 0 1;
+    height: 1fr;
+}
+
+JobsPane > .summary,
+EndpointsPane > .summary,
+StatusPane > .summary,
+ModelsPane > .summary,
+WorkflowsPane > .summary,
+ConnectionPane > .summary,
+LogsPane > .summary {
+    height: 1;
+    color: $text;
+}
+
+JobsPane DataTable,
+EndpointsPane DataTable,
+StatusPane DataTable,
+ModelsPane DataTable,
+WorkflowsPane DataTable {
+    height: 1fr;
+}
+
+JobsPane > .detail,
+EndpointsPane > .detail,
+ModelsPane > .detail,
+WorkflowsPane > .detail,
+ConnectionPane > .detail {
+    height: 1fr;
+    border: round $primary;
+    padding: 0 1;
+}
