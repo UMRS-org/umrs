@@ -46,6 +46,7 @@ class WorkflowsPane(Static):
         self._render_detail()
 
     def _render_table(self) -> None:
+        saved_cursor = self._table.cursor_row
         self._table.clear(columns=True)
         self._table.add_column("#", width=3)
         self._table.add_column("Name", width=24)
@@ -66,6 +67,8 @@ class WorkflowsPane(Static):
                 str(wf.get("registered_at", "?"))[:19],
                 key=str(wf.get("name", idx)),
             )
+        if saved_cursor is not None and self._workflows:
+            self._table.move_cursor(row=min(saved_cursor, len(self._workflows) - 1))
 
     def _render_summary(self) -> None:
         total = len(self._workflows)
