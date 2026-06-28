@@ -172,6 +172,10 @@ class MonitorApp(App):
         self._refresh_active_tab()
         self.set_interval(self._interval, self._refresh_active_tab)
 
+    def on_tabbed_content_tab_activated(self, event: TabbedContent.TabActivated) -> None:
+        """Refresh the newly-activated tab immediately on switch."""
+        self._refresh_active_tab()
+
     # ------------------------------------------------------------------
     # Refresh logic
     # ------------------------------------------------------------------
