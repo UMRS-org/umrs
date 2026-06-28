@@ -55,6 +55,8 @@ class JobsPane(Static):
         self._render_detail()
 
     def _render_table(self) -> None:
+        # Preserve cursor position across the clear + repopulate below.
+        saved_cursor = self._table.cursor_row
         self._table.clear(columns=True)
         self._table.add_column("#", width=3)
         self._table.add_column("Job ID", width=12)
@@ -76,6 +78,9 @@ class JobsPane(Static):
                 str(job.get("updated_at", "?"))[:19],
             )
             self._table.add_row(*row, key=str(job.get("job_id", idx)))
+        # Restore cursor to the same row index (clamped to new row count).
+        if saved_cursor is not None and self._jobs:
+            self._table.move_cursor(row=min(saved_cursor, len(self._jobs) - 1))
 
     def _render_summary(self) -> None:
         total = len(self._jobs)
@@ -109,14 +114,21 @@ class JobsPane(Static):
         attempts = job.get("attempts", [])
         if attempts:
             lines.append("\nAttempts:")
-            for att in attempts:
-                lines.append(
-                    f"  #{att.get('attempt_no', '?')} "
-                    f"{att.get('status', '?')} "
-                    f"{att.get('started_at', '?')[:19]} → "
-                    f"{att.get('ended_at', '?')[:19]}"
-                )
+            lines.extend(self._format_attempt_lines(attempts))
         self._detail.update("\n".join(lines))
+
+    @staticmethod
+    def _format_attempt_lines(attempts: list[dict[str, Any]]) -> list[str]:
+        out: list[str] = []
+        for att in attempts:
+            started = att.get("started_at") or "?"
+            ended = att.get("ended_at") or "?"
+            out.append(
+                f"  #{att.get('attempt_no', '?')} "
+                f"{att.get('status', '?')} "
+                f"{str(started)[:19]} → {str(ended)[:19]}"
+            )
+        return out
 
     @on(DataTable.RowSelected)
     def _on_row_selected(self, event: DataTable.RowSelected) -> None:

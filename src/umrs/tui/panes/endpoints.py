@@ -49,6 +49,7 @@ class EndpointsPane(Static):
         self._render_detail()
 
     def _render_table(self) -> None:
+        saved_cursor = self._table.cursor_row
         self._table.clear(columns=True)
         self._table.add_column("#", width=3)
         self._table.add_column("Job ID", width=12)
@@ -74,6 +75,8 @@ class EndpointsPane(Static):
                 str(ep.get("created_at", "?"))[:19],
                 key=str(ep.get("job_id", idx)),
             )
+        if saved_cursor is not None and self._endpoints:
+            self._table.move_cursor(row=min(saved_cursor, len(self._endpoints) - 1))
 
     def _render_summary(self) -> None:
         total = len(self._endpoints)
