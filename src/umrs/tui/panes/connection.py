@@ -29,6 +29,7 @@ class ConnectionPane(Static):
 
     def compose(self):
         yield self._summary_widget
+        yield self._sparkline
         yield self._detail
 
     def update_data(self, data: Any) -> None:

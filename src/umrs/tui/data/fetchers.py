@@ -1,8 +1,13 @@
 """Async fetchers wrapping :class:`UMRSControlAPI` and the ZMQ ``MessageQueue``.
 
 Each fetcher is a thin coroutine that calls the blocking control API via
-:func:`asyncio.to_thread` and updates the :class:`MonitorStore`.  Timeouts
-are enforced per call so a slow or dead server cannot stall the UI.
+a **dedicated single-thread executor** and updates the :class:`MonitorStore`.
+Timeouts are enforced per call so a slow or dead server cannot stall the UI.
+
+ZMQ sockets are NOT thread-safe — all ZMQ access must be serialised onto a
+single thread.  We use ``ThreadPoolExecutor(max_workers=1)`` instead of
+``asyncio.to_thread()`` (which uses the default pool and can run concurrent
+calls, triggering ZMQ assertions like ``check() (src/msg.coo:387)``).
 
 Filter state (status/project/job-type filters, scope filters, etc.) is held
 on the :class:`Fetchers` instance.  The app updates these attributes when the
@@ -13,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable
 
 from umrs.client.control_api import UMRSControlAPI
@@ -39,6 +45,10 @@ class Fetchers:
         self._client_id = client_id
         self._fetch_timeout = fetch_timeout
         self._ping_timeout_ms = ping_timeout_ms
+
+        # Single-thread executor: serialises all ZMQ access to avoid
+        # "Assertion failed: check() (src/msg.coo:387)" crashes.
+        self._executor = ThreadPoolExecutor(max_workers=1)
 
         # Mutable filter state — updated by the app when filters change.
         self.status_filter: str | None = None
@@ -73,9 +83,10 @@ class Fetchers:
     # Internal: timeout + error capture around a blocking sync call
     # ------------------------------------------------------------------
     async def _fetch_tab(self, tab: str, sync_fn: Callable[[], Any]) -> None:
+        loop = asyncio.get_event_loop()
         try:
             data = await asyncio.wait_for(
-                asyncio.to_thread(sync_fn),
+                loop.run_in_executor(self._executor, sync_fn),
                 timeout=self._fetch_timeout,
             )
             self._store.update(tab, data)
