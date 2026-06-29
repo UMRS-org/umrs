@@ -146,7 +146,15 @@ def detect_capabilities(
         arch_lower = {a.lower() for a in architectures}
         supports_vision = bool(arch_lower & _VISION_ARCHITECTURES)
     if not supports_vision:
-        vision_keys = {"vision_config", "visual", "image_size", "vision_tower"}
+        vision_keys = {
+            "vision_config",
+            "visual",
+            "image_size",
+            "vision_tower",
+            "media_placeholder_token_id",
+            "mm_hidden_size",
+            "mm_projector_type",
+        }
         if vision_keys & set(config.keys()):
             supports_vision = True
 
@@ -206,4 +214,32 @@ def detect_capabilities(
         from umrs.model_registry.capabilities import resolve_capabilities
 
         return resolve_capabilities(model_name, caps)
+    return caps
+
+
+def merge_detected_capabilities(
+    caps: ModelCapabilities,
+    model_path: str,
+    model_name: str | None = None,
+) -> ModelCapabilities:
+    """Merge filesystem-detected capabilities into ``caps`` without overwriting explicit flags."""
+    detected = detect_capabilities(model_path, model_name=model_name)
+    if detected is None:
+        return caps
+
+    if detected.supports_vision:
+        caps.supports_vision = True
+    if detected.supports_tool_calling:
+        caps.supports_tool_calling = True
+    if detected.supports_structured_output:
+        caps.supports_structured_output = True
+    if detected.max_output_tokens is not None and caps.max_output_tokens is None:
+        caps.max_output_tokens = detected.max_output_tokens
+    if (
+        detected.max_position_embeddings is not None
+        and caps.max_position_embeddings is None
+    ):
+        caps.max_position_embeddings = detected.max_position_embeddings
+    if detected.model_family and not caps.model_family:
+        caps.model_family = detected.model_family
     return caps
