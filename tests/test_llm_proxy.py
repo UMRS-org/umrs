@@ -461,8 +461,10 @@ def test_list_models_variant_disambiguation():
 
     assert response.status_code == 200
     ids = sorted(m["id"] for m in response.json()["data"])
-    # The variant endpoint gets "-pd" suffix, the non-variant stays as-is
-    assert ids == ["GLM-5.2-FP8", "GLM-5.2-FP8-pd"]
+    # Catalog names are used for picker ids; variants suffix the catalog model.
+    assert ids == ["glm-5.2-fp8", "glm-5.2-fp8-pd"]
+    catalog_models = {m["id"]: m.get("catalog_model") for m in response.json()["data"]}
+    assert catalog_models["glm-5.2-fp8-pd"] == "glm-5.2-fp8"
 
 
 def test_discovery_by_variant_suffixed_name():
@@ -511,12 +513,50 @@ def test_discovery_by_variant_suffixed_name():
     with patch.object(httpx.AsyncClient, "request", fake_request):
         response = client.post(
             "/umrs/llm/v1/chat/completions",
-            json={"model": "GLM-5.2-FP8-pd", "messages": [{"role": "user", "content": "Hi"}]},
+            json={"model": "glm-5.2-fp8-pd", "messages": [{"role": "user", "content": "Hi"}]},
             headers={"x-user-id": "user-1", "x-project-id": "test-project"},
         )
 
     assert response.status_code == 200
     # The model name should be rewritten to the upstream served name
+    assert captured_body["content"]["model"] == "GLM-5.2-FP8"
+
+
+def test_discovery_by_legacy_served_variant_name():
+    """Legacy served-name variant ids still route after catalog normalization."""
+    registry = EndpointRegistry()
+    registry.register(
+        project_id="test-project",
+        model="glm-5.2-fp8",
+        job_id="job-pd",
+        host="compute-01",
+        port=11434,
+        backend="slurm",
+        variant="pd",
+        metadata={"served_model_name": "GLM-5.2-FP8"},
+    )
+    registry.mark_ready("job-pd")
+    client = _create_client(registry)
+
+    captured_body = {}
+
+    async def fake_request(self, method, url, **kwargs):
+        content = kwargs.get("content", b"")
+        if isinstance(content, bytes):
+            captured_body["content"] = json.loads(content)
+        assert "compute-01" in str(url)
+        return _mock_litellm_response({"id": "chat-x", "choices": []})
+
+    import httpx
+
+    with patch.object(httpx.AsyncClient, "request", fake_request):
+        response = client.post(
+            "/umrs/llm/v1/chat/completions",
+            json={"model": "GLM-5.2-FP8-pd", "messages": [{"role": "user", "content": "Hi"}]},
+            headers={"x-user-id": "user-1", "x-project-id": "test-project"},
+        )
+
+    assert response.status_code == 200
     assert captured_body["content"]["model"] == "GLM-5.2-FP8"
 
 

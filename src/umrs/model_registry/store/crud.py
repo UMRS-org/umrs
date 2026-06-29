@@ -93,7 +93,14 @@ class ModelStore:
 
         model_id = generate_model_id()
         serving_profile = serving_profile or ServingProfile()
+        explicit_capabilities = capabilities is not None
         capabilities = resolve_capabilities(name, capabilities or ModelCapabilities())
+        if storage_ref and not explicit_capabilities:
+            from ..detect import merge_detected_capabilities
+
+            capabilities = merge_detected_capabilities(
+                capabilities, storage_ref, model_name=name
+            )
         runtime_config = runtime_config or RuntimeConfig()
 
         model = ModelEntry(
@@ -900,7 +907,12 @@ class ModelStore:
         policy_id = generate_policy_id()
 
         profile = serving_profile or ServingProfile()
+        explicit_capabilities = capabilities is not None
         caps = resolve_capabilities(name, capabilities or ModelCapabilities())
+        if storage_ref and not explicit_capabilities:
+            from ..detect import merge_detected_capabilities
+
+            caps = merge_detected_capabilities(caps, storage_ref, model_name=name)
 
         try:
             with self.conn.cursor() as cur:
