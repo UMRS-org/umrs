@@ -167,7 +167,18 @@ class MonitorApp(App):
 
     def on_mount(self) -> None:
         # Wire up connection info to the connection pane.
-        self._update_pane("connection", self._connection_info)
+        try:
+            pane = self.query_one(ConnectionPane)
+            pane.set_connection_info(self._connection_info)
+        except Exception:
+            pass
+        # Restore filters from saved prefs.
+        self._status_filter = self._prefs.status_filter
+        self._project_filter = self._prefs.project_filter
+        self._job_type_filter = self._prefs.job_type_filter
+        self._fetchers.status_filter = self._status_filter
+        self._fetchers.project_filter = self._project_filter
+        self._fetchers.job_type_filter = self._job_type_filter
         # Start the refresh loop.
         self._refresh_active_tab()
         self.set_interval(self._interval, self._refresh_active_tab)
@@ -181,6 +192,8 @@ class MonitorApp(App):
     # ------------------------------------------------------------------
     def _refresh_active_tab(self) -> None:
         tab = self._active_tab_name()
+        # Always poll connection status so the stats bar stays current.
+        self._refresh_connection()
         if tab == "jobs":
             self._refresh_jobs()
         elif tab == "endpoints":
@@ -234,7 +247,10 @@ class MonitorApp(App):
     async def _refresh_connection(self) -> None:
         await self._fetchers.fetch_connection()
         data = self._store.tab("connection").data
+        if isinstance(data, dict):
+            self._connected = bool(data.get("ping_ok"))
         self._update_pane("connection", data)
+        self._render_stats()
 
     def _update_pane(self, tab: str, data: Any) -> None:
         """Update the pane for ``tab`` with ``data``.
@@ -333,13 +349,36 @@ class MonitorApp(App):
             "[cyan]1-7[/cyan]       Switch tab\n"
             "[cyan]r[/cyan]          Force refresh\n"
             "[cyan]q / Ctrl+C[/cyan] Quit\n"
-            "[cyan]Ctrl+E[/cyan]    Export\n"
-            "[cyan]Ctrl+S[/cyan]    Save prefs\n"
+            "[cyan]Ctrl+E[/cyan]    Export current tab\n"
+            "[cyan]Ctrl+S[/cyan]    Save preferences\n"
             "[cyan]Ctrl+P[/cyan]    Command palette\n"
             "[cyan]?[/cyan]          Toggle this help\n"
-            "\n[dim]DataTable: click header to sort, scroll with mouse[/dim]"
+            "\n[bold]DataTable[/bold]\n"
+            "  Click or arrow keys to highlight a row\n"
+            "  [cyan]Enter[/cyan]     Show detail for highlighted row\n"
+            "  Click column header to sort\n"
+            "  Scroll with mouse wheel\n"
+            "\n[dim]Preferences are saved to ~/.umrs/monitor.json[/dim]"
         )
         self.notify(help_text, title="Help", timeout=10)
 
     def action_focus_filter(self) -> None:
-        self.notify("Filtering not yet implemented in this rewrite")
+        """Open a filter input dialog for the current tab."""
+        from .forms.screens import FilterScreen
+
+        tab = self._active_tab_name()
+        current = ""
+        if tab == "jobs":
+            current = self._status_filter or ""
+        screen = FilterScreen(tab, current)
+        self.push_screen(screen, self._on_filter_result)
+
+    def _on_filter_result(self, result: str | None) -> None:
+        """Apply the filter string returned by FilterScreen."""
+        if result is None:
+            return  # user cancelled
+        tab = self._active_tab_name()
+        if tab == "jobs":
+            self._status_filter = result or None
+            self._fetchers.status_filter = self._status_filter
+        self._refresh_active_tab()

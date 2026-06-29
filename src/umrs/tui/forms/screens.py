@@ -118,34 +118,40 @@ class FormScreen(ModalScreen[dict[str, Any]]):
 
     @on(Button.Pressed, "#submit")
     def _on_submit(self) -> None:
-        # Gather current values from widgets
+        self._gather_values()
+        if not self._validate_required():
+            return
+        if not self._validate_schema():
+            return
+        self.dismiss(self._values)
+
+    def _gather_values(self) -> None:
+        """Collect current widget values into ``self._values``."""
         for field in self._schema.fields:
             widget = self.query_one(f"#field-{field.name}")
-            if isinstance(widget, Input):
-                self._values[field.name] = widget.value
-            elif isinstance(widget, Select):
-                self._values[field.name] = widget.value
-            elif isinstance(widget, Switch):
-                self._values[field.name] = widget.value
+            self._values[field.name] = widget.value
 
-        # Validate required fields
+    def _validate_required(self) -> bool:
+        """Ensure all required fields have values."""
         for field in self._schema.fields:
             if field.required and not self._values.get(field.name):
                 self._error = f"{field.label} is required"
                 self._refresh_error()
-                return
+                return False
+        return True
 
-        # Validate against jsonschema if provided
-        if self._schema.json_schema:
-            import jsonschema
-            try:
-                jsonschema.validate(self._values, self._schema.json_schema)
-            except jsonschema.ValidationError as e:
-                self._error = f"Validation error: {e.message}"
-                self._refresh_error()
-                return
-
-        self.dismiss(self._values)
+    def _validate_schema(self) -> bool:
+        """Validate against jsonschema if provided."""
+        if not self._schema.json_schema:
+            return True
+        import jsonschema
+        try:
+            jsonschema.validate(self._values, self._schema.json_schema)
+        except jsonschema.ValidationError as e:
+            self._error = f"Validation error: {e.message}"
+            self._refresh_error()
+            return False
+        return True
 
     @on(Button.Pressed, "#cancel")
     def _on_cancel(self) -> None:
@@ -157,3 +163,51 @@ class FormScreen(ModalScreen[dict[str, Any]]):
             error_label.update(self._error)
         except Exception:
             pass
+
+
+class FilterScreen(ModalScreen[str | None]):
+    """A simple filter input modal screen."""
+
+    DEFAULT_CSS = """
+    FilterScreen {
+        align: center middle;
+    }
+    FilterScreen > Vertical {
+        width: 60;
+        height: auto;
+        border: round $primary;
+        padding: 1 2;
+        background: $surface;
+    }
+    FilterScreen Label.title {
+        text-style: bold;
+        margin-bottom: 1;
+    }
+    FilterScreen .hint {
+        color: $text-disabled;
+        margin-top: 1;
+    }
+    """
+
+    def __init__(self, tab: str, current_filter: str = "") -> None:
+        super().__init__()
+        self._tab = tab
+        self._current = current_filter
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Label(f"Filter {self._tab}", classes="title")
+            yield Input(
+                value=self._current,
+                placeholder="Type to filter…",
+                id="filter-input",
+            )
+            yield Label("Enter to apply · Esc to cancel", classes="hint")
+
+    @on(Input.Submitted, "#filter-input")
+    def _on_submit(self, event: Input.Submitted) -> None:
+        self.dismiss(event.value)
+
+    def on_key(self, event) -> None:
+        if event.key == "escape":
+            self.dismiss(None)
