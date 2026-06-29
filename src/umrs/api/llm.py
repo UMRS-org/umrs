@@ -105,6 +105,7 @@ def _recognized_model_names(endpoint: RegisteredEndpoint) -> set[str]:
     if endpoint.variant:
         for base in list(names):
             names.add(f"{base}-{endpoint.variant}")
+        names.add(f"{endpoint.model}-{endpoint.variant}")
     return names
 
 
@@ -194,10 +195,15 @@ def _discover_endpoint(
                 ep.model
             )
             if ep.variant:
-                variant_id = f"{served}-{ep.variant}"
-                if variant_id == model:
-                    endpoint = ep
-                    break
+                for candidate in (
+                    f"{served}-{ep.variant}",
+                    f"{ep.model}-{ep.variant}",
+                ):
+                    if candidate == model:
+                        endpoint = ep
+                        break
+            if endpoint:
+                break
 
     if not endpoint:
         # Last resort: scan by served_model_name (R-15 fallback)
@@ -610,13 +616,38 @@ def _synth_model_entry(endpoint: RegisteredEndpoint) -> dict:
     Used as a fallback when the endpoint's own ``/v1/models`` listing
     cannot be fetched, so the model still appears in the aggregate list.
     """
-    model_id = _upstream_model_name(endpoint)
+    base_id = endpoint.model or _upstream_model_name(endpoint)
     return {
-        "id": model_id,
+        "id": base_id,
         "object": "model",
         "created": 0,
         "owned_by": str(endpoint.metadata.get("tier") or "rivault"),
+        "catalog_model": endpoint.model,
     }
+
+
+def _normalize_model_list_entry(
+    entry: dict,
+    endpoint: RegisteredEndpoint,
+) -> tuple[dict, str]:
+    """Rewrite picker ids to catalog names and tag the base catalog model."""
+    catalog_model = endpoint.model
+    upstream_id = entry.get("id")
+    base_id = catalog_model or upstream_id
+    if not base_id:
+        return entry, ""
+
+    normalized = {
+        **entry,
+        "catalog_model": catalog_model,
+    }
+    if endpoint.variant:
+        public_id = f"{base_id}-{endpoint.variant}"
+        normalized["id"] = public_id
+        return normalized, public_id
+
+    normalized["id"] = base_id
+    return normalized, str(base_id)
 
 
 async def _fetch_endpoint_models(endpoint: RegisteredEndpoint) -> list[dict]:
@@ -681,15 +712,12 @@ async def list_models(
     merged: dict[str, dict] = {}
     for ep, entries in zip(endpoints, results):
         for entry in entries:
-            model_id = entry.get("id")
-            if not model_id:
+            if not entry.get("id") and not ep.model:
                 continue
-            if ep.variant:
-                variant_id = f"{model_id}-{ep.variant}"
-                entry = {**entry, "id": variant_id}
-                merged.setdefault(variant_id, entry)
-            else:
-                merged.setdefault(model_id, entry)
+            normalized, dedup_key = _normalize_model_list_entry(entry, ep)
+            if not dedup_key:
+                continue
+            merged.setdefault(dedup_key, normalized)
 
     # Apply deployment-scoped visibility (e.g. frontier-only on AI4S).
     from .model_visibility import is_model_visible
