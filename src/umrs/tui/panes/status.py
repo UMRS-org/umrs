@@ -20,7 +20,7 @@ class StatusPane(Static):
         super().__init__("")
         self._status_data: dict[str, Any] = {}
         self._summary_widget = Static("", classes="summary")
-        self._table = DataTable(id="status-table")
+        self._table = DataTable(id="status-table", cursor_type="row")
 
     def compose(self):
         yield self._summary_widget
@@ -35,13 +35,14 @@ class StatusPane(Static):
         self._render_summary()
 
     def _render_table(self) -> None:
+        saved_cursor = self._table.cursor_row
         self._table.clear(columns=True)
         self._table.add_column("#", width=3)
         self._table.add_column("Task", width=16)
         self._table.add_column("State", width=10)
         self._table.add_column("Last Update", width=20)
         self._table.add_column("Preview", width=40)
-        tasks = self._status_data.get("tasks", [])
+        tasks = self._status_data.get("tasks") or []
         for idx, task in enumerate(tasks):
             state = task.get("state", "unknown")
             preview = str(task.get("preview", ""))[:40]
@@ -53,10 +54,12 @@ class StatusPane(Static):
                 preview,
                 key=str(task.get("name", idx)),
             )
+        if saved_cursor is not None and tasks:
+            self._table.move_cursor(row=min(saved_cursor, len(tasks) - 1))
 
     def _render_summary(self) -> None:
         client = self._status_data.get("client", "")
-        pending = len(self._status_data.get("uncompleted_key_list", []))
+        pending = len(self._status_data.get("uncompleted_key_list") or [])
         parts = []
         if client:
             parts.append(f"client={client}")

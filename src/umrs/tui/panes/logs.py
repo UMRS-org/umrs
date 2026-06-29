@@ -20,7 +20,7 @@ class LogsPane(Static):
         super().__init__("")
         self._entries: list[dict[str, str]] = []
         self._summary_widget = Static("", classes="summary")
-        self._table = DataTable(id="logs-table")
+        self._table = DataTable(id="logs-table", cursor_type="row")
 
     def compose(self):
         yield self._summary_widget
