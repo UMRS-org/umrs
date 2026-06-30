@@ -35,11 +35,9 @@ def test_knowledge_object_type_enum():
     assert KnowledgeObjectType.FINDING == "finding"
     assert KnowledgeObjectType.EVIDENCE == "evidence"
     assert KnowledgeObjectType.REFERENCE == "reference"
-    assert KnowledgeObjectType.RESEARCH_PLAN == "research_plan"
-    assert KnowledgeObjectType.RESEARCH_LOOP == "research_loop"
     assert KnowledgeObjectType.EXPERIMENT == "experiment"
-    assert KnowledgeObjectType.VERIFICATION_ANSWER == "verification_answer"
-    assert KnowledgeObjectType.WORKFLOW == "workflow"
+    assert KnowledgeObjectType.FIGURE == "figure"
+    assert KnowledgeObjectType.EQUATION == "equation"
 
 
 def test_knowledge_object_status_enum():
