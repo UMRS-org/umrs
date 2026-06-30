@@ -49,7 +49,7 @@ endpoints:
   #    --reasoning-parser qwen3 --trust-remote-code
 
   - name: ornith-1.0-397b-w4a16
-    model: ornith-1.0-397b-w4a16
+    model: Ornith-1.0-397B
     tier: user
     node_count: 1
     partition: ng-dgx-m0
@@ -76,7 +76,7 @@ endpoints:
   #    2,000 tok/s on DGX Station.
 
   - name: diffusiongemma-26b-a4b-it
-    model: diffusiongemma-26b-a4b-it
+    model: diffusiongemma-26B-A4B-it
     tier: user
     node_count: 1
     partition: ng-dgx-m0
