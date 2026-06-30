@@ -33,6 +33,14 @@ __all__ = [
     "IngestionResult",
     "IngestionError",
     "ingest_object",
+    # UMRS API adapters (Phase 3)
+    "UMRSScientificMemoryAdapter",
+    "UMRSKnowledgeModelAdapter",
+    "UMRSKnowledgeGraphAdapter",
+    "UMRSScientificExperimentRegistryAdapter",
+    "UMRSEvidenceAdapter",
+    "UMRSSearchAdapter",
+    "UMRSEmbeddingsAdapter",
 ]
 
 
@@ -44,6 +52,25 @@ def __getattr__(name: str):
             IngestionResult,
             KnowledgeIngester,
             ingest_object,
+        )
+        return locals()[name]
+    if name in {
+        "UMRSScientificMemoryAdapter",
+        "UMRSKnowledgeModelAdapter",
+        "UMRSKnowledgeGraphAdapter",
+        "UMRSScientificExperimentRegistryAdapter",
+        "UMRSEvidenceAdapter",
+        "UMRSSearchAdapter",
+        "UMRSEmbeddingsAdapter",
+    }:
+        from .adapters import (
+            UMRSEmbeddingsAdapter,
+            UMRSEvidenceAdapter,
+            UMRSKnowledgeGraphAdapter,
+            UMRSKnowledgeModelAdapter,
+            UMRSScientificExperimentRegistryAdapter,
+            UMRSScientificMemoryAdapter,
+            UMRSSearchAdapter,
         )
         return locals()[name]
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
