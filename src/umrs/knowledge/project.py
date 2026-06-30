@@ -55,6 +55,17 @@ from .verify import (
     VerificationAnswer,
 )
 
+# ── UMRS API Adapters (Phase 3) ──────────────────────────────────────────
+from .adapters import (
+    UMRSEmbeddingsAdapter,
+    UMRSEvidenceAdapter,
+    UMRSKnowledgeGraphAdapter,
+    UMRSKnowledgeModelAdapter,
+    UMRSScientificExperimentRegistryAdapter,
+    UMRSScientificMemoryAdapter,
+    UMRSSearchAdapter,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -152,13 +163,13 @@ class ResearchProject:
         # Knowledge store (papers, code, notebooks, datasets) — in-memory
         self._knowledge_store: KnowledgeStore = InMemoryKnowledgeStore()
 
-        # Knowledge graph (typed relationships)
+        # Knowledge graph (typed relationships) — UMRS API adapter
         self._knowledge_graph: KnowledgeGraph = KnowledgeGraph()
 
         # Extracted knowledge per artifact_id
         self._extracted_knowledge: dict[str, ExtractedKnowledge] = {}
 
-        # Scientific memory (auto-registered artifacts)
+        # Scientific memory (auto-registered artifacts) — UMRS API adapter
         memory_storage = (
             Path(storage_path) / "memory.json" if storage_path else None
         )
@@ -186,6 +197,18 @@ class ResearchProject:
         self._readiness_gate = ResearchReadinessGate()
         self._planner = AutonomousResearchPlanner()
         self._loop_engine = AutonomousResearchLoop()
+
+        # ── UMRS API Adapters (Phase 3) ─────────────────────────────────
+        # These adapters wrap the UMRS subsystems and provide the same
+        # interface as the existing in-memory implementations.
+        # UMRS owns scientific knowledge. R4 orchestrates scientific research.
+        self._umrs_scientific_memory = UMRSScientificMemoryAdapter()
+        self._umrs_knowledge_model = UMRSKnowledgeModelAdapter()
+        self._umrs_knowledge_graph = UMRSKnowledgeGraphAdapter()
+        self._umrs_experiment_registry = UMRSScientificExperimentRegistryAdapter()
+        self._umrs_evidence = UMRSEvidenceAdapter()
+        self._umrs_search = UMRSSearchAdapter()
+        self._umrs_embeddings = UMRSEmbeddingsAdapter()
 
         # ── Workflow audit trail ─────────────────────────────────────────
         self._transitions: list[WorkflowTransition] = []
@@ -556,6 +579,43 @@ class ResearchProject:
     @property
     def external_refs(self) -> list[Any]:
         return self._external_refs
+
+    # ── UMRS API Adapter Accessors ───────────────────────────────────────
+
+    @property
+    def umrs_scientific_memory(self) -> UMRSScientificMemoryAdapter:
+        """UMRS scientific memory adapter."""
+        return self._umrs_scientific_memory
+
+    @property
+    def umrs_knowledge_model(self) -> UMRSKnowledgeModelAdapter:
+        """UMRS knowledge model adapter."""
+        return self._umrs_knowledge_model
+
+    @property
+    def umrs_knowledge_graph(self) -> UMRSKnowledgeGraphAdapter:
+        """UMRS knowledge graph adapter."""
+        return self._umrs_knowledge_graph
+
+    @property
+    def umrs_experiment_registry(self) -> UMRSScientificExperimentRegistryAdapter:
+        """UMRS experiment registry adapter."""
+        return self._umrs_experiment_registry
+
+    @property
+    def umrs_evidence(self) -> UMRSEvidenceAdapter:
+        """UMRS evidence adapter."""
+        return self._umrs_evidence
+
+    @property
+    def umrs_search(self) -> UMRSSearchAdapter:
+        """UMRS search adapter."""
+        return self._umrs_search
+
+    @property
+    def umrs_embeddings(self) -> UMRSEmbeddingsAdapter:
+        """UMRS embeddings adapter."""
+        return self._umrs_embeddings
 
     @property
     def transitions(self) -> list[WorkflowTransition]:
