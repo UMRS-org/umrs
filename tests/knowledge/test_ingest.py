@@ -1,0 +1,436 @@
+"""Tests for the unified knowledge ingestion pipeline."""
+
+from __future__ import annotations
+
+import json
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from umrs.knowledge.ingest import (
+    BatchIngestionResult,
+    IngestionError,
+    IngestionResult,
+    IngesterConfig,
+    KnowledgeIngester,
+    ingest_object,
+)
+
+
+# ── Test Fixtures ────────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def mock_s3_client():
+    """Create a mock S3 client."""
+    client = MagicMock()
+    # Mock list_objects_v2 paginator
+    paginator = MagicMock()
+    paginator.paginate.return_value = [
+        {
+            "Contents": [
+                {"Key": "test/example.py", "ETag": '"abc123"', "Size": 100},
+                {"Key": "test/example.ipynb", "ETag": '"def456"', "Size": 200},
+            ]
+        }
+    ]
+    client.get_paginator.return_value = paginator
+    return client
+
+
+@pytest.fixture
+def mock_s3_client_with_content():
+    """Create a mock S3 client that returns content for get_object_range."""
+    client = MagicMock()
+
+    # Mock list_objects_v2 paginator
+    paginator = MagicMock()
+    paginator.paginate.return_value = [
+        {
+            "Contents": [
+                {"Key": "test/example.py", "ETag": '"abc123"', "Size": 100},
+            ]
+        }
+    ]
+    client.get_paginator.return_value = paginator
+
+    return client
+
+
+# ── Configuration Tests ─────────────────────────────────────────────────────
+
+
+def test_ingester_config_defaults():
+    """Test that IngesterConfig has sensible defaults."""
+    config = IngesterConfig()
+
+    assert config.max_workers == 4
+    assert config.batch_size == 10
+    assert config.max_extract_bytes == 10 * 1024 * 1024
+    assert config.skip_if_unchanged is True
+    assert config.incremental is True
+    assert config.enable_perception is True
+    assert config.enable_rag_indexing is True
+
+
+def test_ingester_config_custom():
+    """Test that IngesterConfig can be customized."""
+    config = IngesterConfig(
+        max_workers=8,
+        batch_size=20,
+        max_extract_bytes=5 * 1024 * 1024,
+        skip_if_unchanged=False,
+        incremental=False,
+        enable_perception=False,
+        enable_rag_indexing=False,
+    )
+
+    assert config.max_workers == 8
+    assert config.batch_size == 20
+    assert config.max_extract_bytes == 5 * 1024 * 1024
+    assert config.skip_if_unchanged is False
+    assert config.incremental is False
+    assert config.enable_perception is False
+    assert config.enable_rag_indexing is False
+
+
+# ── KnowledgeIngester Tests ──────────────────────────────────────────────────
+
+
+def test_knowledge_ingester_init_defaults():
+    """Test KnowledgeIngester initialization with default config."""
+    s3_client = MagicMock()
+    ingester = KnowledgeIngester(s3_client, "test-bucket")
+
+    assert ingester.s3_client is s3_client
+    assert ingester.bucket == "test-bucket"
+    assert isinstance(ingester.config, IngesterConfig)
+    assert ingester.config.max_workers == 4
+
+
+def test_knowledge_ingester_init_custom_config():
+    """Test KnowledgeIngester initialization with custom config."""
+    s3_client = MagicMock()
+    config = IngesterConfig(max_workers=8)
+    ingester = KnowledgeIngester(s3_client, "test-bucket", config)
+
+    assert ingester.config.max_workers == 8
+
+
+def test_knowledge_ingester_discover_objects(mock_s3_client):
+    """Test that _discover_objects correctly lists objects."""
+    ingester = KnowledgeIngester(mock_s3_client, "test-bucket")
+    objects = ingester._discover_objects(prefix="")
+
+    assert len(objects) == 2
+    assert objects[0]["key"] == "test/example.py"
+    assert objects[0]["etag"] == "abc123"
+    assert objects[1]["key"] == "test/example.ipynb"
+
+
+def test_knowledge_ingester_filter_unchanged(mock_s3_client):
+    """Test that _filter_unchanged correctly filters unchanged objects."""
+    from umrs.data_catalog.schema import CatalogObjectMeta, CatalogState
+
+    ingester = KnowledgeIngester(mock_s3_client, "test-bucket")
+
+    objects = [
+        {"key": "test/example.py", "etag": "abc123", "size": 100},
+        {"key": "test/example2.py", "etag": "xyz789", "size": 200},
+    ]
+
+    with patch("umrs.knowledge.ingest.read_meta") as mock_read_meta:
+        # First object: unchanged and ready -> skip
+        # Second object: changed or not ready -> ingest
+        ready_meta = CatalogObjectMeta(
+            s3_key="test/example.py",
+            object_etag="abc123",
+            state=CatalogState.READY,
+            owner="test-user",
+            acl_scope="test-project",
+            updated_at="2026-01-01T00:00:00",
+        )
+
+        def side_effect(s3_client, bucket, key):
+            if key == "test/example.py":
+                return ready_meta
+            return None
+
+        mock_read_meta.side_effect = side_effect
+        filtered = ingester._filter_unchanged(objects)
+
+    assert len(filtered) == 1
+    assert filtered[0]["key"] == "test/example2.py"
+
+
+def test_knowledge_ingester_ingest_object_skipped(mock_s3_client_with_content):
+    """Test that ingest_object skips unchanged objects."""
+    from umrs.data_catalog.schema import CatalogObjectMeta, CatalogState
+
+    ingester = KnowledgeIngester(mock_s3_client_with_content, "test-bucket")
+
+    ready_meta = CatalogObjectMeta(
+        s3_key="test/example.py",
+        object_etag="abc123",
+        state=CatalogState.READY,
+        owner="test-user",
+        acl_scope="test-project",
+        updated_at="2026-01-01T00:00:00",
+        detected_modality="code",
+        summary="Test summary",
+        tags=["python"],
+    )
+
+    with patch("umrs.knowledge.ingest.read_meta", return_value=ready_meta):
+        result = ingester.ingest_object(
+            project_id="test-project",
+            owner="test-user",
+            s3_key="test/example.py",
+            object_etag="abc123",
+        )
+
+    assert result.status == "skipped"
+    assert result.s3_key == "test/example.py"
+
+
+def test_knowledge_ingester_ingest_object_code(mock_s3_client_with_content):
+    """Test that ingest_object correctly ingests a Python code file."""
+    ingester = KnowledgeIngester(mock_s3_client_with_content, "test-bucket")
+
+    # Mock the store functions
+    with (
+        patch("umrs.knowledge.ingest.read_meta", return_value=None),
+        patch("umrs.knowledge.ingest.get_object_etag", return_value="abc123"),
+        patch("umrs.knowledge.ingest.get_object_range") as mock_get_range,
+        patch("umrs.knowledge.ingest.write_extracted_text", return_value="extracted_ref"),
+        patch("umrs.knowledge.ingest.write_meta") as mock_write_meta,
+    ):
+        # Mock get_object_range to return Python source
+        python_source = b"def hello():\n    return 'world'\n"
+        mock_get_range.return_value = (python_source, len(python_source))
+
+        result = ingester.ingest_object(
+            project_id="test-project",
+            owner="test-user",
+            s3_key="test/example.py",
+            object_etag="abc123",
+        )
+
+    assert result.status == "ingested"
+    assert result.modality == "code"
+    assert result.has_extracted_text is True
+    mock_write_meta.assert_called_once()
+
+
+def test_knowledge_ingester_ingest_object_notebook(mock_s3_client_with_content):
+    """Test that ingest_object correctly ingests a Jupyter notebook."""
+    ingester = KnowledgeIngester(mock_s3_client_with_content, "test-bucket")
+
+    # Create a minimal notebook
+    nb_content = json.dumps({
+        "nbformat": 4,
+        "nbformat_minor": 0,
+        "metadata": {
+            "kernelspec": {
+                "name": "python3",
+                "language": "python",
+            },
+        },
+        "cells": [
+            {
+                "cell_type": "markdown",
+                "source": "# Test Notebook",
+                "metadata": {},
+            },
+        ],
+    }).encode("utf-8")
+
+    # Mock the store functions
+    with (
+        patch("umrs.knowledge.ingest.read_meta", return_value=None),
+        patch("umrs.knowledge.ingest.get_object_etag", return_value="def456"),
+        patch("umrs.knowledge.ingest.get_object_range") as mock_get_range,
+        patch("umrs.knowledge.ingest.write_extracted_text", return_value="extracted_ref"),
+        patch("umrs.knowledge.ingest.write_meta") as mock_write_meta,
+    ):
+        mock_get_range.return_value = (nb_content, len(nb_content))
+
+        result = ingester.ingest_object(
+            project_id="test-project",
+            owner="test-user",
+            s3_key="test/example.ipynb",
+            object_etag="def456",
+        )
+
+    assert result.status == "ingested"
+    assert result.modality == "notebook"
+    assert "Test Notebook" in result.summary
+    mock_write_meta.assert_called_once()
+
+
+# ── Batch Ingestion Tests ──────────────────────────────────────────────────
+
+
+def test_ingest_project_empty(mock_s3_client):
+    """Test ingest_project with no objects."""
+    # Mock empty paginator
+    paginator = MagicMock()
+    paginator.paginate.return_value = [{}]
+    mock_s3_client.get_paginator.return_value = paginator
+
+    ingester = KnowledgeIngester(mock_s3_client, "test-bucket")
+    result = ingester.ingest_project("test-project", "test-user")
+
+    assert isinstance(result, BatchIngestionResult)
+    assert result.total == 0
+    assert result.ingested == 0
+    assert result.skipped == 0
+    assert result.errors == 0
+
+
+def test_ingest_project_with_objects(mock_s3_client_with_content):
+    """Test ingest_project with multiple objects."""
+    ingester = KnowledgeIngester(mock_s3_client_with_content, "test-bucket")
+
+    # Mock the store functions
+    with (
+        patch("umrs.knowledge.ingest.read_meta", return_value=None),
+        patch("umrs.knowledge.ingest.get_object_etag", return_value="abc123"),
+        patch("umrs.knowledge.ingest.get_object_range") as mock_get_range,
+        patch("umrs.knowledge.ingest.write_extracted_text", return_value="extracted_ref"),
+        patch("umrs.knowledge.ingest.write_meta"),
+    ):
+        # Mock get_object_range to return Python source
+        python_source = b"def hello():\n    return 'world'\n"
+        mock_get_range.return_value = (python_source, len(python_source))
+
+        result = ingester.ingest_project("test-project", "test-user")
+
+    assert result.total == 1
+    assert result.ingested == 1
+    assert result.errors == 0
+
+
+# ── Progress Callback Tests ────────────────────────────────────────────────
+
+
+def test_progress_callback_called(mock_s3_client_with_content):
+    """Test that the progress callback is called."""
+    ingester = KnowledgeIngester(mock_s3_client_with_content, "test-bucket")
+
+    progress_calls = []
+
+    def callback(current, total, s3_key, status):
+        progress_calls.append((current, total, s3_key, status))
+
+    # Mock the store functions
+    with (
+        patch("umrs.knowledge.ingest.read_meta", return_value=None),
+        patch("umrs.knowledge.ingest.get_object_etag", return_value="abc123"),
+        patch("umrs.knowledge.ingest.get_object_range") as mock_get_range,
+        patch("umrs.knowledge.ingest.write_extracted_text", return_value="extracted_ref"),
+        patch("umrs.knowledge.ingest.write_meta"),
+    ):
+        python_source = b"def hello():\n    return 'world'\n"
+        mock_get_range.return_value = (python_source, len(python_source))
+
+        result = ingester.ingest_project(
+            "test-project",
+            "test-user",
+            progress_callback=callback,
+        )
+
+    assert len(progress_calls) == 1
+    assert progress_calls[0][0] == 1  # current
+    assert progress_calls[0][1] == 1  # total
+    assert progress_calls[0][3] == "ingested"  # status
+
+
+# ── Convenience Function Tests ────────────────────────────────────────────
+
+
+def test_ingest_object_convenience_function():
+    """Test the ingest_object convenience function."""
+    s3_client = MagicMock()
+
+    # Mock the store functions
+    with (
+        patch("umrs.knowledge.ingest.read_meta", return_value=None),
+        patch("umrs.knowledge.ingest.get_object_etag", return_value="abc123"),
+        patch("umrs.knowledge.ingest.get_object_range") as mock_get_range,
+        patch("umrs.knowledge.ingest.write_extracted_text", return_value="extracted_ref"),
+        patch("umrs.knowledge.ingest.write_meta"),
+    ):
+        python_source = b"def hello():\n    return 'world'\n"
+        mock_get_range.return_value = (python_source, len(python_source))
+
+        result = ingest_object(
+            s3_client,
+            "test-bucket",
+            s3_key="test/example.py",
+            object_etag="abc123",
+            project_id="test-project",
+            owner="test-user",
+        )
+
+    assert result["action"] == "ingested"
+    assert result["modality"] == "code"
+    assert result["has_extracted_text"] is True
+
+
+# ── Result Type Tests ────────────────────────────────────────────────────
+
+
+def test_ingestion_result_defaults():
+    """Test IngestionResult defaults."""
+    result = IngestionResult(
+        s3_key="test/example.py",
+        modality="code",
+        status="ingested",
+    )
+
+    assert result.s3_key == "test/example.py"
+    assert result.modality == "code"
+    assert result.status == "ingested"
+    assert result.summary == ""
+    assert result.tags == []
+    assert result.extracted_text == ""
+    assert result.has_extracted_text is False
+    assert result.sampled_bytes == 0
+    assert result.total_size == 0
+    assert result.error is None
+
+
+def test_batch_ingestion_result_defaults():
+    """Test BatchIngestionResult defaults."""
+    result = BatchIngestionResult()
+
+    assert result.total == 0
+    assert result.ingested == 0
+    assert result.skipped == 0
+    assert result.errors == 0
+    assert result.results == []
+    assert result.duration_seconds == 0.0
+
+
+# ── Error Handling Tests ──────────────────────────────────────────────────
+
+
+def test_ingest_object_error_handling(mock_s3_client_with_content):
+    """Test that ingest_object handles errors gracefully."""
+    ingester = KnowledgeIngester(mock_s3_client_with_content, "test-bucket")
+
+    # Mock get_object_etag to raise an exception
+    with (
+        patch("umrs.knowledge.ingest.read_meta", return_value=None),
+        patch("umrs.knowledge.ingest.get_object_etag", side_effect=Exception("S3 error")),
+    ):
+        result = ingester.ingest_object(
+            project_id="test-project",
+            owner="test-user",
+            s3_key="test/example.py",
+            object_etag="abc123",
+        )
+
+    assert result.status == "error"
+    assert "S3 error" in result.error
