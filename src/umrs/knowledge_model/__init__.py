@@ -4,25 +4,36 @@ Phase 1, Step 2.2 of the RC1 migration plan.
 
 UMRS owns the knowledge model. R4 consumes this API.
 
-Scientific object types:
-  - PAPER        — Input paper (PDF, arXiv, etc.)
-  - NOTEBOOK     — Jupyter notebook
-  - CODE         — Source code (Python, C++, CUDA)
-  - DATASET      — Input dataset (CSV, JSON, etc.)
-  - ALGORITHM    — Algorithm description
-  - HYPOTHESIS   — Testable hypothesis
-  - OBSERVATION  — Experimental observation
-  - CONCLUSION   — Drawn conclusion
-  - QUESTION     — Open scientific question
-  - ASSUMPTION   — Working assumption
-  - FINDING      — Research finding
-  - EVIDENCE     — Evidence item
-  - REFERENCE    — Reference to external work
-  - RESEARCH_PLAN — Research plan
-  - RESEARCH_LOOP — Research loop
-  - EXPERIMENT   — Experiment definition
-  - VERIFICATION_ANSWER — Verification answer
-  - WORKFLOW     — Workflow definition
+Scientific object types (M3):
+  Input artifacts:
+    - PAPER        — Input paper (PDF, arXiv, etc.)
+    - NOTEBOOK     — Jupyter notebook
+    - CODE         — Source code (Python, C++, CUDA)
+    - DATASET      — Input dataset (CSV, JSON, etc.)
+
+  Research outputs:
+    - HYPOTHESIS   — Testable hypothesis
+    - OBSERVATION  — Experimental observation
+    - CONCLUSION   — Drawn conclusion
+    - FINDING      — Research finding
+    - EXPERIMENT   — Experiment definition + results
+
+  Derived artifacts:
+    - FIGURE       — Generated figure/plot
+    - EQUATION     — Mathematical equation
+    - ALGORITHM    — Algorithm description
+
+  Supporting objects:
+    - EVIDENCE     — Evidence item
+    - REFERENCE    — Reference to external work
+    - ASSUMPTION   — Working assumption
+    - QUESTION     — Open scientific question
+
+  NOT KnowledgeObjects (R4 orchestration state):
+    - ResearchPlan  — Mutable, versioned, regenerated frequently
+    - ResearchLoop  — Orchestration artifact
+    - VerificationAnswer — Ephemeral LLM output, can be regenerated
+    - Workflow      — Orchestration artifact
 
 Objects are versioned. Mutable objects can be updated, creating a new version.
 Immutable objects (e.g., content-addressed artifacts) cannot be updated.
@@ -54,26 +65,41 @@ __all__ = [
 
 
 class KnowledgeObjectType(str, Enum):
-    """Types of scientific knowledge objects."""
+    """Types of scientific knowledge objects.
 
+    M3 Decision: ResearchPlan, ResearchLoop, VerificationAnswer, and
+    Workflow are NOT KnowledgeObjects. They are R4 orchestration state.
+
+    Scientific knowledge objects represent facts about science:
+      - Papers, datasets, code, notebooks are input artifacts
+      - Hypotheses, observations, conclusions, findings are research outputs
+      - Equations, figures are derived artifacts
+      - Evidence, references, assumptions are supporting objects
+    """
+
+    # Input artifacts
     PAPER = "paper"
     NOTEBOOK = "notebook"
     CODE = "code"
     DATASET = "dataset"
-    ALGORITHM = "algorithm"
+
+    # Research outputs
     HYPOTHESIS = "hypothesis"
     OBSERVATION = "observation"
     CONCLUSION = "conclusion"
-    QUESTION = "question"
-    ASSUMPTION = "assumption"
     FINDING = "finding"
+    EXPERIMENT = "experiment"
+
+    # Derived artifacts
+    FIGURE = "figure"
+    EQUATION = "equation"
+    ALGORITHM = "algorithm"
+
+    # Supporting objects
     EVIDENCE = "evidence"
     REFERENCE = "reference"
-    RESEARCH_PLAN = "research_plan"
-    RESEARCH_LOOP = "research_loop"
-    EXPERIMENT = "experiment"
-    VERIFICATION_ANSWER = "verification_answer"
-    WORKFLOW = "workflow"
+    ASSUMPTION = "assumption"
+    QUESTION = "question"
 
 
 class KnowledgeObjectStatus(str, Enum):
