@@ -330,7 +330,11 @@ class KnowledgeLinker:
         for field_name in name_fields:
             values = get_field(field_name, [])
             if values:
-                all_names.extend(values)
+                for v in values:
+                    if isinstance(v, str):
+                        all_names.append(v)
+                    elif isinstance(v, list):
+                        all_names.extend(x for x in v if isinstance(x, str))
 
         # Link to any other artifact whose filename matches one of our names
         for other in all_artifacts:
