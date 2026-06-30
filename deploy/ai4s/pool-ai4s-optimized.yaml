@@ -172,7 +172,7 @@ endpoints:
     tier: system
     gpu_count: 4
     node_count: 2          # 2 nodes × 4 GPU = 8× B200 (TP=4, PP=2)
-    partition: 2n4gpu      # NVLink within tray, IB between
+    partition: 4n4gpu-p    # NVLink within tray, IB between
     max_model_len: 1048576 # 1M context (NVFP4 weights + FP8 KV fit easily)
     env_vars:
       RIVAULT_SIF: /work/hps0/home/ea0022/images/mini-rivault-aarch64-v6.sif
