@@ -38,3 +38,53 @@ endpoints:
       VLLM_GPU_MEM_UTIL: "0.90"
       VLLM_MAX_NUM_SEQS: "4"
       RCCS_SKIP_CDI: "1"
+
+  # ── Ornith-1.0-397B-W4A16 (CosmicRaisins) ─────────────────────────────
+  #  397B reasoning model, W4A16 quantization (compressed-tensors).
+  #  qwen3_5_moe architecture, tool calling + reasoning parser.
+  #  HF: CosmicRaisins/Ornith-1.0-397B-W4A16
+  #  Requires: vLLM >= 0.19.1, transformers >= 5.8.1
+  #  vLLM serve: --tensor-parallel-size 8 --max-model-len 262144
+  #    --enable-auto-tool-choice --tool-call-parser qwen3_xml
+  #    --reasoning-parser qwen3 --trust-remote-code
+
+  - name: ornith-1.0-397b-w4a16
+    model: ornith-1.0-397b-w4a16
+    tier: user
+    node_count: 1
+    partition: ng-dgx-m0
+    max_model_len: 262144
+    env_vars:
+      VLLM_PATH_TO_HUGGINGFACE: "/lvs0/rccs-dmp/masaru.nagaso/umrs_models"
+      VLLM_MODEL: "Ornith-1.0-397B-W4A16"
+      VLLM_TOKENIZER: "CosmicRaisins/Ornith-1.0-397B-W4A16"
+      VLLM_GPU_MEM_UTIL: "0.90"
+      VLLM_MAX_NUM_SEQS: "4"
+      VLLM_TOOL_CALL_PARSER: "qwen3_xml"
+      VLLM_REASONING_PARSER: "qwen3"
+      VLLM_TRUST_REMOTE_CODE: "1"
+      RCCS_SKIP_CDI: "1"
+
+  # ── DiffusionGemma-26B-A4B-it (Google DeepMind / NVIDIA) ─────────────
+  #  Diffusion-based text generation, 256 tokens/step in parallel.
+  #  25.2B total params, 3.8B active, up to 256K context.
+  #  Based on Gemma 4 26B A4B MoE architecture.
+  #  HF: google/diffusiongemma-26B-A4B-it (BF16)
+  #  NVFP4: nvidia/diffusiongemma-26B-A4B-it-NVFP4
+  #  NVIDIA blog: run-diffusiongemma-on-nvidia-for-developer-ready-high-throughput-text-generation
+  #  Throughput: up to 1,000 tok/s on H100, 150 tok/s on DGX Spark,
+  #    2,000 tok/s on DGX Station.
+
+  - name: diffusiongemma-26b-a4b-it
+    model: diffusiongemma-26b-a4b-it
+    tier: user
+    node_count: 1
+    partition: ng-dgx-m0
+    max_model_len: 256000
+    env_vars:
+      VLLM_PATH_TO_HUGGINGFACE: "/lvs0/rccs-dmp/masaru.nagaso/umrs_models"
+      VLLM_MODEL: "diffusiongemma-26B-A4B-it"
+      VLLM_TOKENIZER: "google/diffusiongemma-26B-A4B-it"
+      VLLM_GPU_MEM_UTIL: "0.90"
+      VLLM_MAX_NUM_SEQS: "4"
+      RCCS_SKIP_CDI: "1"

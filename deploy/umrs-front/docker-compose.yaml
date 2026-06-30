@@ -86,6 +86,8 @@ services:
       # provisioning a model by name is unaffected.
       UMRS_MODEL_DENYLIST: ${UMRS_RCCS_MODEL_DENYLIST:-GLM-5.1,Kimi-K2.6,DeepSeek-V4-Pro,DeepSeek-V4-Pro-128K,DeepSeek-V4-Pro-TEP}
       UMRS_CONFIG: /etc/umrs
+      UMRS_CERTIFICATION_MODE: ${UMRS_CERTIFICATION_MODE:-warn}
+      UMRS_PREFLIGHT_MODE: ${UMRS_PREFLIGHT_MODE:-warn}
       UMRS_CONTROL_PORT: ${UMRS_RCCS_ZMQ_PORT:-50090}
       UMRS_DATA_PORT_RANGE: ${UMRS_RCCS_DATA_PORT_RANGE:-50091-50098}
       UMRS_HTTP_PORT: ${UMRS_RCCS_PORT:-8000}
@@ -177,6 +179,8 @@ services:
       # discoverable via /v1/models. Operators can reinstate a curated list
       # by setting UMRS_AI4S_MODEL_ALLOWLIST in .env.
       UMRS_CONFIG: /etc/umrs
+      UMRS_CERTIFICATION_MODE: ${UMRS_CERTIFICATION_MODE:-warn}
+      UMRS_PREFLIGHT_MODE: ${UMRS_PREFLIGHT_MODE:-warn}
       UMRS_CONTROL_PORT: ${UMRS_AI4S_ZMQ_PORT:-50100}
       UMRS_DATA_PORT_RANGE: ${UMRS_AI4S_DATA_PORT_RANGE:-50101-50108}
       UMRS_HTTP_PORT: ${UMRS_AI4S_PORT:-8002}
