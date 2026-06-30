@@ -34,6 +34,16 @@ def extract_content(
         text = _extract_image_metadata(content)
         summary = text or f"Image file {filename}"
         return summary[:500], text, []
+    if modality == "notebook":
+        from ..knowledge.parse_notebook import parse_notebook
+
+        result = parse_notebook(filename, content)
+        return result.summary, result.extracted_text, result.tags
+    if modality == "code":
+        from ..knowledge.parse_code import parse_code
+
+        result = parse_code(filename, content)
+        return result.summary, result.extracted_text, result.tags
     return f"{modality} file {filename}", "", []
 
 

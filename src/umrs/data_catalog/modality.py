@@ -17,11 +17,24 @@ _DOC_EXTENSIONS = {".pdf", ".pptx", ".ppt"}
 _IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".tif", ".tiff", ".webp"}
 _VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".webm"}
 _AUDIO_EXTENSIONS = {".wav", ".mp3", ".flac", ".ogg", ".m4a"}
+_NOTEBOOK_EXTENSIONS = {".ipynb"}
+_CODE_EXTENSIONS = {
+    ".py", ".pyw", ".pyx", ".pxd",  # Python
+    ".cpp", ".cc", ".cxx", ".c++", ".hpp", ".hh", ".hxx", ".h", ".c",  # C/C++
+    ".cu", ".cuh",  # CUDA
+    ".rs", ".go", ".rb", ".js", ".ts", ".tsx", ".jsx", ".java", ".kt", ".swift",  # Other
+    ".sh", ".bash", ".zsh",  # Shell
+    ".f90", ".f95", ".f03", ".f", ".for",  # Fortran
+}
 
 
 def detect_modality(filename: str, content: bytes) -> str:
     """Return a coarse modality label for catalog metadata."""
     suffix = PurePosixPath(filename).suffix.lower()
+    if suffix in _NOTEBOOK_EXTENSIONS:
+        return "notebook"
+    if suffix in _CODE_EXTENSIONS:
+        return "code"
     if suffix in _TEXT_EXTENSIONS and suffix not in {".csv", ".tsv", ".json"}:
         return "text"
     if suffix in _STRUCTURED_EXTENSIONS:
