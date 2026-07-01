@@ -38,6 +38,9 @@ endpoints:
       VLLM_GPU_MEM_UTIL: "0.90"
       VLLM_MAX_NUM_SEQS: "4"
       RCCS_SKIP_CDI: "1"
+      VLLM_TOKENIZER_ARGS: "--tokenizer /tokenizer"
+      VLLM_TOKENIZER_HOST_PATH: "/lvs0/rccs-dmp/masaru.nagaso/umrs_models/glm-5.2-iq2m-model"
+      VLLM_TOKENIZER_CONTAINER_PATH: "/tokenizer"
 
   # ── Ornith-1.0-397B-W4A16 (CosmicRaisins) ─────────────────────────────
   #  397B reasoning model, W4A16 quantization (compressed-tensors).
