@@ -437,6 +437,11 @@ services:
       - vllm:${PRIV_IP1TO3:-10.0.0}.${VLLM_IP4:-22}
       - ${UMRS_S3_BUCKET_HOST:?}:${PRIV_IP1TO3:-10.0.0}.${NGINX_OUT_IP4:-252}
     volumes:
+      # Tokenizer directory (if separate from model, e.g. GGUF models)
+      - type: bind
+        source: ${VLLM_TOKENIZER_HOST_PATH:-/dev/null}
+        target: ${VLLM_TOKENIZER_CONTAINER_PATH:-/tokenizer}
+        read_only: true
       # Project data directory (read-only)
       - type: bind
         source: ${PROJECT_DATA_PATH:-/tmp/project-data}
