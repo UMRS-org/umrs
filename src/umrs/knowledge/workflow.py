@@ -31,6 +31,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .ingest import IngesterConfig
 from .project import (
     ProjectPhase,
     ResearchProject,
@@ -109,6 +110,10 @@ class WorkflowOptions:
             (for testing; real usage requires manual user approval)
         storage_path: Optional path for persistent storage
         user_id: User ID for approval
+        s3_client: Optional boto3 S3 client for catalog-backed ingestion
+        s3_bucket: S3 bucket name (required with s3_client for catalog ingest)
+        owner_id: Owner user ID for catalog ACL (defaults to user_id)
+        ingester_config: Optional KnowledgeIngester configuration
     """
 
     research_goal: str = "What research should we perform next?"
@@ -117,6 +122,35 @@ class WorkflowOptions:
     auto_approve: bool = False
     storage_path: str | Path | None = None
     user_id: str = "user"
+    s3_client: Any | None = None
+    s3_bucket: str | None = None
+    owner_id: str | None = None
+    ingester_config: IngesterConfig | None = None
+
+
+def _research_project_kwargs(
+    *,
+    project_id: str,
+    name: str,
+    description: str,
+    storage_path: str | Path | None,
+    user_id: str,
+    s3_client: Any | None,
+    s3_bucket: str | None,
+    owner_id: str | None,
+    ingester_config: IngesterConfig | None,
+) -> dict[str, Any]:
+    """Build ``ResearchProject`` constructor kwargs from workflow options."""
+    return {
+        "project_id": project_id,
+        "name": name,
+        "description": description,
+        "storage_path": storage_path,
+        "s3_client": s3_client,
+        "s3_bucket": s3_bucket,
+        "owner_id": owner_id or user_id,
+        "ingester_config": ingester_config,
+    }
 
 
 # ── Main Workflow Function ─────────────────────────────────────────────────
@@ -133,6 +167,10 @@ def run_project_workflow(
     auto_approve: bool = False,
     storage_path: str | Path | None = None,
     user_id: str = "user",
+    s3_client: Any | None = None,
+    s3_bucket: str | None = None,
+    owner_id: str | None = None,
+    ingester_config: IngesterConfig | None = None,
 ) -> WorkflowResult:
     """Run the full scientific workflow end-to-end.
 
@@ -152,6 +190,10 @@ def run_project_workflow(
         auto_approve: If True, auto-approve readiness (testing only)
         storage_path: Optional path for persistent storage
         user_id: User ID for approval
+        s3_client: Optional boto3 S3 client for catalog-backed ingestion
+        s3_bucket: S3 bucket name (required with s3_client for catalog ingest)
+        owner_id: Owner user ID for catalog ACL (defaults to user_id)
+        ingester_config: Optional KnowledgeIngester configuration
 
     Returns:
         A WorkflowResult containing the completed project and execution
@@ -174,10 +216,17 @@ def run_project_workflow(
     start_time = datetime.now(timezone.utc)
     result = WorkflowResult(
         project=ResearchProject(
-            project_id=project_id,
-            name=name,
-            description=description,
-            storage_path=storage_path,
+            **_research_project_kwargs(
+                project_id=project_id,
+                name=name,
+                description=description,
+                storage_path=storage_path,
+                user_id=user_id,
+                s3_client=s3_client,
+                s3_bucket=s3_bucket,
+                owner_id=owner_id,
+                ingester_config=ingester_config,
+            ),
         ),
     )
 
@@ -326,6 +375,11 @@ def create_and_ingest(
     name: str = "",
     description: str = "",
     storage_path: str | Path | None = None,
+    s3_client: Any | None = None,
+    s3_bucket: str | None = None,
+    owner_id: str | None = None,
+    ingester_config: IngesterConfig | None = None,
+    user_id: str = "user",
 ) -> ResearchProject:
     """Create a project and ingest files (convenience function).
 
@@ -345,10 +399,17 @@ def create_and_ingest(
         A ResearchProject with files ingested, ready for `understand()`.
     """
     project = ResearchProject(
-        project_id=project_id,
-        name=name,
-        description=description,
-        storage_path=storage_path,
+        **_research_project_kwargs(
+            project_id=project_id,
+            name=name,
+            description=description,
+            storage_path=storage_path,
+            user_id=user_id,
+            s3_client=s3_client,
+            s3_bucket=s3_bucket,
+            owner_id=owner_id,
+            ingester_config=ingester_config,
+        ),
     )
     project.ingest_directory(*directories)
     return project
@@ -393,6 +454,11 @@ def full_research_cycle(
     max_iterations: int = 3,
     auto_approve: bool = True,
     storage_path: str | Path | None = None,
+    s3_client: Any | None = None,
+    s3_bucket: str | None = None,
+    owner_id: str | None = None,
+    ingester_config: IngesterConfig | None = None,
+    user_id: str = "user",
 ) -> WorkflowResult:
     """Run the full research cycle (convenience function).
 
@@ -418,4 +484,9 @@ def full_research_cycle(
         max_iterations=max_iterations,
         auto_approve=auto_approve,
         storage_path=storage_path,
+        s3_client=s3_client,
+        s3_bucket=s3_bucket,
+        owner_id=owner_id,
+        ingester_config=ingester_config,
+        user_id=user_id,
     )
