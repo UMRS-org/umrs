@@ -1,10 +1,12 @@
-"""Local directory upload and catalog → knowledge-store bridge.
+"""Local directory helpers for ``ResearchProject.ingest_directory()``.
 
-Used by ``ResearchProject.ingest_directory()`` when S3 is configured:
+Without S3: classify and walk local files for direct in-memory ingest.
+
+With S3 configured (Phase B):
   1. Upload recognized files under ``{project_id}/uploads/``
-  2. Run ``KnowledgeIngester.ingest_project()`` (catalog enrichment)
-  3. Sync READY catalog entries into the in-memory knowledge store for
-     ``understand()`` (Phase A bridge until understand reads catalog directly).
+  2. ``ResearchProject`` runs ``KnowledgeIngester.ingest_project()`` (catalog enrichment)
+  3. ``CatalogKnowledgeStore.refresh()`` exposes READY catalog objects to
+     ``understand()`` / ``verify()`` on demand — no in-memory artifact copy.
 """
 
 from __future__ import annotations
@@ -14,13 +16,6 @@ import mimetypes
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-
-from ..data_catalog.artifacts import (
-    load_artifact_content,
-    meta_to_artifact,
-)
-from ..data_catalog.schema import CatalogState
-from ..data_catalog.store import read_meta
 
 logger = logging.getLogger(__name__)
 
@@ -36,8 +31,6 @@ _SKIP_DIR_NAMES = frozenset({
     ".tox",
     ".ruff_cache",
 })
-
-_DEFAULT_MAX_CONTENT_BYTES = 10 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -151,43 +144,3 @@ def upload_local_files(
             )
         )
     return uploaded
-
-
-def sync_catalog_artifacts(
-    s3_client: Any,
-    bucket: str,
-    project_id: str,
-    *,
-    uploads: list[UploadedObject] | None = None,
-    max_content_bytes: int = _DEFAULT_MAX_CONTENT_BYTES,
-) -> list[dict[str, Any]]:
-    """List READY catalog objects under project uploads and build artifact dicts."""
-    prefix = f"{uploads_prefix(project_id)}/"
-    local_by_key = {item.s3_key: item.local_path for item in (uploads or [])}
-    artifacts: list[dict[str, Any]] = []
-
-    paginator = s3_client.get_paginator("list_objects_v2")
-    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
-        for obj in page.get("Contents", []):
-            s3_key = obj["Key"]
-            if s3_key.startswith("_data_catalog/"):
-                continue
-            meta = read_meta(s3_client, bucket, s3_key)
-            if meta is None or meta.state != CatalogState.READY:
-                continue
-            content = load_artifact_content(
-                s3_client,
-                bucket,
-                s3_key,
-                meta,
-                max_bytes=max_content_bytes,
-            )
-            local_path = local_by_key.get(s3_key)
-            artifacts.append(
-                meta_to_artifact(
-                    meta,
-                    content,
-                    local_path=str(local_path) if local_path else None,
-                )
-            )
-    return artifacts

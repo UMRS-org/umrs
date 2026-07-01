@@ -178,7 +178,7 @@ class ResearchProject:
         self._ingester_config = ingester_config
 
         # Knowledge store — catalog-backed when S3 is configured, else in-memory
-        self._local_knowledge_store: InMemoryKnowledgeStore = InMemoryKnowledgeStore()
+        self._local_knowledge_store: InMemoryKnowledgeStore | None = None
         self._knowledge_store: KnowledgeStore = self._build_knowledge_store()
 
         # Knowledge graph (typed relationships) — UMRS API adapter
@@ -324,6 +324,7 @@ class ResearchProject:
         # Build knowledge graph from artifacts + extracted knowledge
         artifact_dicts = [dict(a, extracted_knowledge=self._extracted_knowledge.get(a.get("artifact_id", ""))) for a in artifacts]
         self._knowledge_graph = self._linker.link(artifact_dicts)
+        self._sync_graph_to_store()
 
         # Calculate coverage dashboard
         coverage_artifacts = []
@@ -376,12 +377,6 @@ class ResearchProject:
           - "What assumptions are unsupported?"
         """
         verifier = KnowledgeVerifier(store=self._knowledge_store)
-        if self._knowledge_graph.nodes or self._knowledge_graph.edges:
-            graph = self._knowledge_graph.to_dict()
-            if hasattr(self._knowledge_store, "set_knowledge_graph"):
-                self._knowledge_store.set_knowledge_graph(graph)
-            elif hasattr(self._knowledge_store, "knowledge_graph"):
-                self._knowledge_store.knowledge_graph = graph
         return verifier.verify(question)
 
     def check_readiness(self) -> ResearchReadinessReport:
@@ -727,7 +722,7 @@ class ResearchProject:
         artifact_id = f"{artifact_type}-{file_path.stem}-{hash(str(file_path)) & 0xFFFFFF:X}"
 
         # Add to knowledge store
-        self._local_knowledge_store.add_artifact({
+        self._ensure_local_knowledge_store().add_artifact({
             "artifact_id": artifact_id,
             "artifact_type": artifact_type,
             "filename": filename,
@@ -739,6 +734,12 @@ class ResearchProject:
         })
         return True
 
+    def _ensure_local_knowledge_store(self) -> InMemoryKnowledgeStore:
+        """Create the in-memory store on first use (local / no-S3 mode only)."""
+        if self._local_knowledge_store is None:
+            self._local_knowledge_store = InMemoryKnowledgeStore()
+        return self._local_knowledge_store
+
     def _build_knowledge_store(self) -> KnowledgeStore:
         """Return catalog-backed store when S3 is configured."""
         if self._s3_client is not None and self._s3_bucket:
@@ -749,7 +750,17 @@ class ResearchProject:
                 prefix=f"{self.project_id}/",
             )
             return CatalogKnowledgeStore(adapter)
-        return self._local_knowledge_store
+        return self._ensure_local_knowledge_store()
+
+    def _sync_graph_to_store(self) -> None:
+        """Push the in-memory knowledge graph to the knowledge store."""
+        if not self._knowledge_graph.nodes and not self._knowledge_graph.edges:
+            return
+        graph = self._knowledge_graph.to_dict()
+        if hasattr(self._knowledge_store, "set_knowledge_graph"):
+            self._knowledge_store.set_knowledge_graph(graph)
+        elif hasattr(self._knowledge_store, "knowledge_graph"):
+            self._knowledge_store.knowledge_graph = graph
 
     # ── Internal: Phase Transitions ──────────────────────────────────────────
 
