@@ -99,6 +99,46 @@ def test_get_artifact_uses_index_not_repeated_list():
     assert client.list_calls == 1
 
 
+def test_search_uses_warm_cache_without_extra_list():
+    csv_key = "proj-1/uploads/data/batch-3-yields.csv"
+    py_key = "proj-1/uploads/code/model.py"
+    client = _AdapterS3(
+        {csv_key: b"a\n", py_key: b"import torch\n"},
+        {
+            csv_key: _ready_meta(csv_key, "proj-1", "structured", summary="batch-3 yields"),
+            py_key: _ready_meta(py_key, "proj-1", "code", summary="torch model"),
+        },
+    )
+    adapter = CatalogArtifactAdapter(client, "bucket", "proj-1")
+    adapter.list_metas()
+    adapter.search("batch-3")
+    adapter.search("torch")
+
+    assert client.list_calls == 1
+
+
+def test_refresh_reloads_new_catalog_objects():
+    csv_key = "proj-1/uploads/data/run.csv"
+    py_key = "proj-1/uploads/code/model.py"
+    client = _AdapterS3(
+        {csv_key: b"a\n"},
+        {csv_key: _ready_meta(csv_key, "proj-1", "structured", summary="csv")},
+    )
+    adapter = CatalogArtifactAdapter(client, "bucket", "proj-1")
+    assert len(adapter.list_metas()) == 1
+
+    client.objects[py_key] = b"import torch\n"
+    client.metas[py_key] = _ready_meta(py_key, "proj-1", "code", summary="torch")
+    client.objects[meta_object_key(py_key)] = json.dumps(
+        client.metas[py_key].to_dict(),
+        indent=2,
+    ).encode("utf-8")
+
+    assert len(adapter.list_metas()) == 1
+    adapter.refresh()
+    assert len(adapter.list_metas()) == 2
+
+
 def test_knowledge_store_protocol_and_verifier():
     py_key = "proj-1/uploads/code/model.py"
     client = _AdapterS3(
