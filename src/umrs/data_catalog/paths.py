@@ -22,6 +22,18 @@ def meta_object_key(s3_key: str) -> str:
     return f"{OBJECTS_PREFIX}{encode_s3_key(s3_key)}.meta.json"
 
 
+def meta_objects_list_prefix_for_s3_key_prefix(s3_key_prefix: str) -> str:
+    """S3 LIST prefix for all meta sidecars under an object-key prefix.
+
+    Object keys are stored as ``{project_id}/uploads/...``. Meta sidecars live at
+    ``_data_catalog/objects/{url-encoded-object-key}.meta.json``, so a prefix on
+    the object key maps to a prefix on encoded meta keys (e.g. ``proj-1/`` →
+    ``_data_catalog/objects/proj-1%2F``).
+    """
+    normalized = s3_key_prefix if s3_key_prefix.endswith("/") else f"{s3_key_prefix}/"
+    return f"{OBJECTS_PREFIX}{encode_s3_key(normalized)}"
+
+
 def encode_path_component(component: str) -> str:
     """Encode one logical path component (project/experiment/modality)."""
     return quote(component, safe="")
