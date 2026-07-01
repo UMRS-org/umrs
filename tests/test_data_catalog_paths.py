@@ -6,6 +6,7 @@ from umrs.data_catalog.paths import (
     encode_s3_key,
     logical_path_for_object,
     meta_object_key,
+    meta_objects_list_prefix_for_s3_key_prefix,
 )
 
 
@@ -29,3 +30,10 @@ def test_logical_path_for_object():
 
 def test_encode_path_component_special_chars():
     assert encode_path_component("a/b") == "a%2Fb"
+
+
+def test_meta_objects_list_prefix_for_s3_key_prefix():
+    prefix = meta_objects_list_prefix_for_s3_key_prefix("proj-1/")
+    assert prefix == "_data_catalog/objects/proj-1%2F"
+    assert meta_object_key("proj-1/uploads/foo.csv").startswith(prefix)
+    assert not meta_object_key("proj-2/uploads/foo.csv").startswith(prefix)

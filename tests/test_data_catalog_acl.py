@@ -7,6 +7,7 @@ import json
 
 import pytest
 
+from umrs.data_catalog.constants import OBJECTS_PREFIX
 from umrs.data_catalog.paths import meta_object_key
 from umrs.data_catalog.query import read_catalog_object, search_catalog
 from umrs.data_catalog.schema import CatalogObjectMeta, CatalogState
@@ -43,15 +44,16 @@ class _AclS3Client:
             key: b"payload-bytes" for key in self._metas
         }
         meta_keys = [meta_object_key(key) for key in self._metas]
-        self._list_pages = [{"Contents": [{"Key": key} for key in meta_keys]}]
+        self._meta_keys = meta_keys
 
     def get_paginator(self, operation_name: str):
         assert operation_name == "list_objects_v2"
         return self
 
     def paginate(self, *, Bucket: str, Prefix: str):  # noqa: N803
-        assert Prefix.endswith("objects/")
-        return iter(self._list_pages)
+        assert Prefix.startswith(OBJECTS_PREFIX)
+        keys = [key for key in self._meta_keys if key.startswith(Prefix)]
+        return iter([{"Contents": [{"Key": key} for key in keys]}])
 
     def get_object(self, *, Bucket: str, Key: str, Range: str | None = None):  # noqa: N803
         from botocore.exceptions import ClientError

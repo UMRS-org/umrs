@@ -11,7 +11,7 @@ from urllib.parse import unquote
 from botocore.exceptions import ClientError
 
 from .constants import CATALOG_PREFIX, MANIFEST_KEY, OBJECTS_PREFIX, SCHEMA_VERSION
-from .paths import dir_summary_key
+from .paths import dir_summary_key, meta_objects_list_prefix_for_s3_key_prefix
 from .schema import CatalogObjectMeta, CatalogState
 
 logger = logging.getLogger(__name__)
@@ -90,10 +90,21 @@ def _write_manifest(s3_client: Any, bucket: str, metas: list[CatalogObjectMeta])
     )
 
 
-def _list_object_metas(s3_client: Any, bucket: str) -> list[CatalogObjectMeta]:
+def _list_object_metas(
+    s3_client: Any,
+    bucket: str,
+    *,
+    s3_key_prefix: str | None = None,
+) -> list[CatalogObjectMeta]:
+    """List catalog metas, optionally scoped to an object-key prefix."""
+    list_prefix = (
+        meta_objects_list_prefix_for_s3_key_prefix(s3_key_prefix)
+        if s3_key_prefix
+        else OBJECTS_PREFIX
+    )
     metas: list[CatalogObjectMeta] = []
     paginator = s3_client.get_paginator("list_objects_v2")
-    for page in paginator.paginate(Bucket=bucket, Prefix=OBJECTS_PREFIX):
+    for page in paginator.paginate(Bucket=bucket, Prefix=list_prefix):
         for item in page.get("Contents", []):
             key = item.get("Key")
             if not key or not key.endswith(".meta.json"):

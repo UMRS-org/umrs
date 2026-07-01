@@ -21,6 +21,7 @@ from umrs.knowledge.local_ingest import (
     upload_local_files,
 )
 from umrs.knowledge.project import ProjectPhase, ResearchProject
+from umrs.knowledge.workflow import run_project_workflow
 
 
 class _FakeProjectS3:
@@ -196,3 +197,24 @@ def test_understand_after_catalog_ingest(project_dir: Path):
     assert project.phase == ProjectPhase.READY
     assert len(project.knowledge_graph.nodes) > 0
     assert project.coverage_dashboard is not None
+
+
+def test_run_project_workflow_uses_catalog_when_s3_configured(project_dir: Path):
+    """run_project_workflow passes S3 config through to catalog ingest."""
+    client = _FakeProjectS3()
+    result = run_project_workflow(
+        "proj-1",
+        project_dir,
+        auto_approve=True,
+        max_iterations=1,
+        s3_client=client,
+        s3_bucket="bucket",
+        user_id="user-1",
+    )
+
+    assert result.success
+    assert result.artifacts_ingested > 0
+    for artifact in result.project.knowledge_store.list_artifacts():
+        assert artifact["metadata"]["s3_key"].startswith("proj-1/uploads/")
+    meta_keys = [k for k in client.objects if k.endswith(".meta.json")]
+    assert len(meta_keys) == result.artifacts_ingested
