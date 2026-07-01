@@ -51,10 +51,11 @@ from .readiness import (
 from .ingest import IngesterConfig, KnowledgeIngester
 from .local_ingest import (
     classify_local_file,
-    sync_catalog_artifacts,
     upload_local_files,
     uploads_prefix,
 )
+from ..data_catalog.adapter import CatalogArtifactAdapter
+from .catalog_store import CatalogKnowledgeStore
 from .verify import (
     InMemoryKnowledgeStore,
     KnowledgeStore,
@@ -176,9 +177,9 @@ class ResearchProject:
         self._owner_id = owner_id
         self._ingester_config = ingester_config
 
-        # ── Components ──────────────────────────────────────────────────
-        # Knowledge store (papers, code, notebooks, datasets) — in-memory
-        self._knowledge_store: KnowledgeStore = InMemoryKnowledgeStore()
+        # Knowledge store — catalog-backed when S3 is configured, else in-memory
+        self._local_knowledge_store: InMemoryKnowledgeStore = InMemoryKnowledgeStore()
+        self._knowledge_store: KnowledgeStore = self._build_knowledge_store()
 
         # Knowledge graph (typed relationships) — UMRS API adapter
         self._knowledge_graph: KnowledgeGraph = KnowledgeGraph()
@@ -294,6 +295,10 @@ class ResearchProject:
         for artifact in artifacts:
             artifact_id = artifact.get("artifact_id", "")
             content = artifact.get("content", b"")
+            if not content:
+                loaded = self._knowledge_store.get_artifact(artifact_id)
+                if loaded is not None:
+                    content = loaded.get("content", b"")
             if isinstance(content, str):
                 content = content.encode("utf-8")
             filename = artifact.get("filename", "")
@@ -371,6 +376,12 @@ class ResearchProject:
           - "What assumptions are unsupported?"
         """
         verifier = KnowledgeVerifier(store=self._knowledge_store)
+        if self._knowledge_graph.nodes or self._knowledge_graph.edges:
+            graph = self._knowledge_graph.to_dict()
+            if hasattr(self._knowledge_store, "set_knowledge_graph"):
+                self._knowledge_store.set_knowledge_graph(graph)
+            elif hasattr(self._knowledge_store, "knowledge_graph"):
+                self._knowledge_store.knowledge_graph = graph
         return verifier.verify(question)
 
     def check_readiness(self) -> ResearchReadinessReport:
@@ -694,17 +705,11 @@ class ResearchProject:
             prefix=f"{uploads_prefix(self.project_id)}/",
         )
 
-        max_bytes = (self._ingester_config or IngesterConfig()).max_extract_bytes
-        artifacts = sync_catalog_artifacts(
-            self._s3_client,
-            self._s3_bucket,
-            self.project_id,
-            uploads=uploads,
-            max_content_bytes=max_bytes,
-        )
-        for artifact in artifacts:
-            self._knowledge_store.add_artifact(artifact)
-        return len(artifacts)
+        if isinstance(self._knowledge_store, CatalogKnowledgeStore):
+            self._knowledge_store.refresh()
+            return len(self._knowledge_store.list_artifacts())
+
+        raise RuntimeError("S3 ingest requires CatalogKnowledgeStore")
 
     def _ingest_file(self, file_path: Path) -> bool:
         """Ingest a single local file into the in-memory store."""
@@ -722,7 +727,7 @@ class ResearchProject:
         artifact_id = f"{artifact_type}-{file_path.stem}-{hash(str(file_path)) & 0xFFFFFF:X}"
 
         # Add to knowledge store
-        self._knowledge_store.add_artifact({
+        self._local_knowledge_store.add_artifact({
             "artifact_id": artifact_id,
             "artifact_type": artifact_type,
             "filename": filename,
@@ -733,6 +738,18 @@ class ResearchProject:
             },
         })
         return True
+
+    def _build_knowledge_store(self) -> KnowledgeStore:
+        """Return catalog-backed store when S3 is configured."""
+        if self._s3_client is not None and self._s3_bucket:
+            adapter = CatalogArtifactAdapter(
+                self._s3_client,
+                self._s3_bucket,
+                self.project_id,
+                prefix=f"{self.project_id}/",
+            )
+            return CatalogKnowledgeStore(adapter)
+        return self._local_knowledge_store
 
     # ── Internal: Phase Transitions ──────────────────────────────────────────
 
