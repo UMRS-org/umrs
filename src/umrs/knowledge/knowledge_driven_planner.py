@@ -1,20 +1,23 @@
-"""Knowledge-driven planner — planner reasons from UMRS Knowledge Graph.
+"""Knowledge-driven planner — planner reasons via ScientificReasoningEngine.
 
 M3 Phase 3: Knowledge-Driven Planning.
 
-The planner uses GraphNavigator to reason from the knowledge graph.
-The planner priority order (M3 Decision 4) is:
+Architecture (single reasoning path):
 
-  1. Knowledge Graph    — what is related?
-  2. Evidence           — what supports this?
-  3. Scientific Memory  — what has been done?
-  4. Experiments        — what has been tested?
-  5. Catalog           — what artifacts exist?
-  6. RAG               — what is in the literature?
-  7. LLM               — generate plan/answer
+  Planner (decides WHAT)
+    ↓
+  ScientificReasoningEngine (determines WHY and HOW)
+    ↓
+  GraphNavigator (traverses Knowledge Graph)
+    ↓
+  Knowledge Graph → Evidence → Memory → Experiments → Catalog → RAG
+    ↓
+  LLM (generate plan/answer)
+
+The planner calls ScientificReasoningEngine.reason() to get a
+ReasoningResult, then generates a ResearchPlan from that result.
 
 ResearchPlan is R4 orchestration state (NOT a KnowledgeObject).
-The plan is mutable, versioned, and regenerated frequently.
 """
 
 from __future__ import annotations
@@ -22,7 +25,11 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from umrs.graph_reasoning import GraphNavigator, GraphReasoningContext
+from umrs.graph_reasoning import GraphReasoningContext
+from umrs.scientific_reasoning_engine import (
+    ReasoningResult,
+    ScientificReasoningEngine,
+)
 
 from .planner import (
     AutonomousResearchPlanner,
@@ -41,25 +48,23 @@ __all__ = [
 
 
 class KnowledgeDrivenPlanner:
-    """Planner that reasons from the UMRS Knowledge Graph.
+    """Planner that reasons via the Scientific Reasoning Engine.
 
-    This planner uses GraphNavigator to:
-      1. Find related objects through the knowledge graph
-      2. Build evidence chains for claims
-      3. Build experiment chains for hypotheses
-      4. Generate a research plan grounded in the knowledge graph
+    Single reasoning path:
+      Planner → ScientificReasoningEngine → GraphNavigator → Knowledge Graph
 
-    The planner follows the M3 Decision 4 priority order:
-      Graph → Evidence → Memory → Experiments → Catalog → RAG → LLM
+    The planner does NOT call GraphNavigator directly.
+    The planner calls ScientificReasoningEngine.reason() and generates
+    a ResearchPlan from the ReasoningResult.
 
     ResearchPlan is R4 orchestration state (NOT a KnowledgeObject).
     """
 
     def __init__(
         self,
-        navigator: GraphNavigator | None = None,
+        reasoning_engine: ScientificReasoningEngine | None = None,
     ) -> None:
-        self._navigator = navigator or GraphNavigator()
+        self._reasoning_engine = reasoning_engine or ScientificReasoningEngine()
         self._fallback_planner = AutonomousResearchPlanner()
 
     def plan_research(
@@ -71,21 +76,16 @@ class KnowledgeDrivenPlanner:
     ) -> ResearchPlan:
         """Generate a research plan grounded in the knowledge graph.
 
+        The planner calls ScientificReasoningEngine.reason() to get
+        a ReasoningResult, then generates a ResearchPlan from that result.
+
         Args:
             project_id: The project ID
             research_goal: The high-level research goal
             anchor_object_id: The anchor object to start reasoning from
-                (if None, uses the first paper in the graph)
 
         Returns:
-            A ResearchPlan with objectives, hypotheses, and experiments,
-            grounded in the knowledge graph.
-
-        The plan generation follows the priority order:
-          1. Knowledge Graph — find related objects
-          2. Evidence — find evidence chains
-          3. Experiments — find experiment chains
-          4. Generate plan from reasoning context
+            A ResearchPlan with objectives, hypotheses, and experiments
         """
         now = datetime.now(timezone.utc).isoformat()
 
@@ -99,10 +99,9 @@ class KnowledgeDrivenPlanner:
             updated_at=now,
         )
 
-        # If no anchor specified, try to find one
+        # If no anchor specified, try to find one from the graph
         if anchor_object_id is None:
-            # Use the first paper node as anchor
-            all_nodes = self._navigator.graph.query()
+            all_nodes = self._reasoning_engine.navigator.graph.query()
             for node in all_nodes:
                 if node.node_type == "paper":
                     anchor_object_id = node.node_id
@@ -115,97 +114,73 @@ class KnowledgeDrivenPlanner:
                 research_goal=research_goal,
             )
 
-        # 1. Knowledge Graph — find related objects through the graph
-        reasoning_context = self._navigator.reason(
+        # SINGLE REASONING PATH: Planner → ScientificReasoningEngine → Graph
+        reasoning_result = self._reasoning_engine.reason(
             query=research_goal,
-            anchor_id=anchor_object_id,
+            anchor_object_id=anchor_object_id,
         )
 
-        # 2. Generate objectives from reasoning context
-        self._generate_objectives_from_context(
-            plan, research_goal, reasoning_context
-        )
-
-        # 3. Generate hypotheses from reasoning context
-        self._generate_hypotheses_from_context(
-            plan, reasoning_context
-        )
-
-        # 4. Generate experiments from reasoning context
-        self._generate_experiments_from_context(
-            plan, reasoning_context
-        )
-
-        # 5. Generate expected outcomes
+        # Generate plan components from the reasoning result
+        self._generate_objectives(plan, research_goal)
+        self._generate_hypotheses(plan, reasoning_result)
+        self._generate_experiments(plan, reasoning_result)
         self._generate_expected_outcomes(plan)
-
-        # 6. Calculate success probability
         plan.success_probability = self._calculate_success_probability(plan)
 
-        # 7. Record source knowledge from the graph
-        plan.source_knowledge_ids = (
-            reasoning_context.related.papers
-            + reasoning_context.related.code
-            + reasoning_context.related.notebooks
-            + reasoning_context.related.datasets
-        )
+        # Record source knowledge from the reasoning context
+        if reasoning_result.reasoning_context:
+            ctx = reasoning_result.reasoning_context
+            plan.source_knowledge_ids = (
+                ctx.related.papers
+                + ctx.related.code
+                + ctx.related.notebooks
+                + ctx.related.datasets
+            )
 
         return plan
 
-    def _generate_objectives_from_context(
+    def _generate_objectives(
         self,
         plan: ResearchPlan,
         research_goal: str,
-        context: GraphReasoningContext,
     ) -> None:
-        """Generate research objectives from the reasoning context."""
-        # Understanding objective
-        obj1 = ResearchObjective(
+        """Generate research objectives."""
+        plan.objectives.append(ResearchObjective(
             objective_id=f"obj-{_generate_id()}",
             title=f"Understand: {research_goal[:60]}",
             description=f"Develop a thorough understanding of: {research_goal}",
             objective_type=ResearchObjectiveType.UNDERSTANDING,
             success_criteria="Comprehensive understanding documented with evidence",
             priority=2,
-            related_hypotheses=[],
-        )
-        plan.objectives.append(obj1)
-
-        # Verification objective
-        obj2 = ResearchObjective(
+        ))
+        plan.objectives.append(ResearchObjective(
             objective_id=f"obj-{_generate_id()}",
             title=f"Verify: {research_goal[:60]}",
             description=f"Design and execute experiments to verify hypotheses about: {research_goal}",
             objective_type=ResearchObjectiveType.VERIFICATION,
             success_criteria="Hypotheses tested with statistical significance",
             priority=2,
-        )
-        plan.objectives.append(obj2)
-
-        # Optimization objective
-        obj3 = ResearchObjective(
+        ))
+        plan.objectives.append(ResearchObjective(
             objective_id=f"obj-{_generate_id()}",
             title=f"Optimize: {research_goal[:60]}",
             description=f"Identify optimal parameters for: {research_goal}",
             objective_type=ResearchObjectiveType.OPTIMIZATION,
             success_criteria="Optimal parameters identified with confidence intervals",
             priority=1,
-        )
-        plan.objectives.append(obj3)
+        ))
 
-    def _generate_hypotheses_from_context(
+    def _generate_hypotheses(
         self,
         plan: ResearchPlan,
-        context: GraphReasoningContext,
+        reasoning_result: ReasoningResult,
     ) -> None:
-        """Generate hypotheses from the reasoning context."""
+        """Generate hypotheses from the reasoning result."""
         for obj in plan.objectives:
             if obj.objective_type == ResearchObjectiveType.VERIFICATION:
-                # Generate hypothesis grounded in evidence chains
-                evidence_count = sum(
-                    len(chain.supporting) for chain in context.evidence_chains
-                )
-                confidence = min(0.9, 0.3 + evidence_count * 0.1)
+                # Use the reasoning engine's confidence (single confidence model)
+                confidence = reasoning_result.confidence
+                evidence_for = reasoning_result.evidence_ids
 
                 hyp = ResearchHypothesis(
                     hypothesis_id=f"hyp-{_generate_id()}",
@@ -214,16 +189,7 @@ class KnowledgeDrivenPlanner:
                     rationale="Based on evidence from the knowledge graph",
                     expected_outcome="Statistically significant relationship found",
                     confidence=confidence,
-                    evidence_for=[
-                        eid
-                        for chain in context.evidence_chains
-                        for eid in chain.supporting
-                    ],
-                    evidence_against=[
-                        eid
-                        for chain in context.evidence_chains
-                        for eid in chain.contradicting
-                    ],
+                    evidence_for=evidence_for,
                 )
                 plan.hypotheses.append(hyp)
                 obj.related_hypotheses.append(hyp.hypothesis_id)
@@ -240,17 +206,13 @@ class KnowledgeDrivenPlanner:
                 plan.hypotheses.append(hyp)
                 obj.related_hypotheses.append(hyp.hypothesis_id)
 
-    def _generate_experiments_from_context(
+    def _generate_experiments(
         self,
         plan: ResearchPlan,
-        context: GraphReasoningContext,
+        reasoning_result: ReasoningResult,
     ) -> None:
-        """Generate experiments from the reasoning context."""
+        """Generate experiments from the reasoning result."""
         for hyp in plan.hypotheses:
-            # Generate experiment for each hypothesis
-            # Use existing experiments as reference
-            existing_experiments = context.related.experiments
-
             exp = ResearchExperiment(
                 experiment_id=f"exp-{_generate_id()}",
                 hypothesis_id=hyp.hypothesis_id,
@@ -263,7 +225,7 @@ class KnowledgeDrivenPlanner:
             plan.experiments.append(exp)
 
     def _generate_expected_outcomes(self, plan: ResearchPlan) -> None:
-        """Generate expected outcomes for the plan."""
+        """Generate expected outcomes."""
         plan.expected_outcomes = [
             "Comprehensive understanding of the research topic",
             "Statistically significant results supporting or refuting hypotheses",
@@ -272,20 +234,10 @@ class KnowledgeDrivenPlanner:
         ]
 
     def _calculate_success_probability(self, plan: ResearchPlan) -> float:
-        """Calculate the success probability of the plan."""
+        """Calculate success probability from plan hypotheses."""
         if not plan.hypotheses:
             return 0.0
-
-        # Average confidence of hypotheses
-        avg_confidence = sum(h.confidence for h in plan.hypotheses) / len(
-            plan.hypotheses
-        )
-
-        # Factor in evidence
-        total_evidence = sum(
-            len(h.evidence_for) for h in plan.hypotheses
-        )
+        avg_confidence = sum(h.confidence for h in plan.hypotheses) / len(plan.hypotheses)
+        total_evidence = sum(len(h.evidence_for) for h in plan.hypotheses)
         evidence_factor = min(1.0, total_evidence / 10.0)
-
-        # Weighted combination
         return avg_confidence * 0.6 + evidence_factor * 0.4
