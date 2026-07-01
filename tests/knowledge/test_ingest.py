@@ -294,16 +294,55 @@ def test_ingest_project_with_objects(mock_s3_client_with_content, ready_meta):
                 "action": "ingested",
                 "s3_key": "test/example.py",
                 "modality": "code",
+                "logical_path": "test-project/default/code/",
                 "has_extracted_text": True,
             },
-        ),
+        ) as mock_catalog_ingest,
         patch("umrs.knowledge.ingest.read_meta", return_value=ready_meta),
+        patch("umrs.knowledge.ingest.regenerate_rollups_for_paths") as mock_rollups,
     ):
         result = ingester.ingest_project("test-project", "test-user")
 
     assert result.total == 1
     assert result.ingested == 1
     assert result.errors == 0
+    mock_catalog_ingest.assert_called_once()
+    assert mock_catalog_ingest.call_args.kwargs["regenerate_rollups"] is False
+    mock_rollups.assert_called_once_with(
+        mock_s3_client_with_content,
+        "test-bucket",
+        {"test-project/default/code/"},
+    )
+
+
+def test_ingest_object_refreshes_rollups_per_object(mock_s3_client_with_content, ready_meta):
+    """Single-object ingest keeps per-object rollup refresh."""
+    ingester = KnowledgeIngester(mock_s3_client_with_content, "test-bucket")
+
+    with (
+        patch(
+            "umrs.knowledge.ingest.catalog_ingest_object",
+            return_value={
+                "action": "ingested",
+                "s3_key": "test/example.py",
+                "modality": "code",
+                "logical_path": "test-project/default/code/",
+                "has_extracted_text": True,
+            },
+        ) as mock_catalog_ingest,
+        patch("umrs.knowledge.ingest.read_meta", return_value=ready_meta),
+        patch("umrs.knowledge.ingest.regenerate_rollups_for_paths") as mock_rollups,
+    ):
+        result = ingester.ingest_object(
+            "test-project",
+            "test-user",
+            s3_key="test/example.py",
+            object_etag="abc123",
+        )
+
+    assert result.status == "ingested"
+    assert mock_catalog_ingest.call_args.kwargs["regenerate_rollups"] is True
+    mock_rollups.assert_not_called()
 
 
 # ── Progress Callback Tests ────────────────────────────────────────────────

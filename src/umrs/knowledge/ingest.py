@@ -18,6 +18,7 @@ from typing import Any, Protocol
 
 from ..data_catalog.ingest import IngestionError
 from ..data_catalog.ingest import ingest_object as catalog_ingest_object
+from ..data_catalog.rollup import regenerate_rollups_for_paths
 from ..data_catalog.schema import CatalogState
 from ..data_catalog.store import read_meta
 
@@ -43,6 +44,7 @@ class IngestionResult:
     sampled_bytes: int = 0
     total_size: int = 0
     error: str | None = None
+    logical_path: str | None = None
 
 
 @dataclass
@@ -163,6 +165,9 @@ class KnowledgeIngester:
             ).total_seconds()
             return result
 
+        touched_paths: set[str] = set()
+        paths_lock = threading.Lock()
+
         with ThreadPoolExecutor(max_workers=self.config.max_workers) as executor:
             futures = {}
             for idx, obj in enumerate(objects):
@@ -175,6 +180,7 @@ class KnowledgeIngester:
                     progress_callback=progress_callback,
                     current=idx + 1,
                     total=len(objects),
+                    regenerate_rollups=False,
                 )
                 futures[future] = obj
 
@@ -184,6 +190,9 @@ class KnowledgeIngester:
                     result.results.append(res)
                     if res.status == "ingested":
                         result.ingested += 1
+                        if res.logical_path:
+                            with paths_lock:
+                                touched_paths.add(res.logical_path)
                     elif res.status == "skipped":
                         result.skipped += 1
                     elif res.status == "error":
@@ -199,6 +208,8 @@ class KnowledgeIngester:
                             error=str(exc),
                         )
                     )
+
+        regenerate_rollups_for_paths(self.s3_client, self.bucket, touched_paths)
 
         result.duration_seconds = (
             datetime.now(timezone.utc) - start_time
@@ -278,6 +289,7 @@ class KnowledgeIngester:
         progress_callback: ProgressCallback | None,
         current: int,
         total: int,
+        regenerate_rollups: bool = True,
     ) -> IngestionResult:
         """Ingest a single object via the data-catalog pipeline."""
         try:
@@ -291,6 +303,7 @@ class KnowledgeIngester:
                 acl_scope=project_id,
                 max_extract_bytes=self.config.max_extract_bytes,
                 force=not self.config.skip_if_unchanged,
+                regenerate_rollups=regenerate_rollups,
             )
         except IngestionError as exc:
             logger.error("Catalog ingestion failed for %s: %s", s3_key, exc)
@@ -377,6 +390,7 @@ def _result_from_metrics(
         has_extracted_text=bool(metrics.get("has_extracted_text")),
         sampled_bytes=int(metrics.get("sampled_bytes") or 0),
         total_size=int(metrics.get("total_size") or 0),
+        logical_path=metrics.get("logical_path"),
     )
 
 

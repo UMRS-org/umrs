@@ -48,6 +48,13 @@ from .readiness import (
     ResearchReadinessGate,
     ResearchReadinessReport,
 )
+from .ingest import IngesterConfig, KnowledgeIngester
+from .local_ingest import (
+    classify_local_file,
+    sync_catalog_artifacts,
+    upload_local_files,
+    uploads_prefix,
+)
 from .verify import (
     InMemoryKnowledgeStore,
     KnowledgeStore,
@@ -151,6 +158,10 @@ class ResearchProject:
         description: str = "",
         *,
         storage_path: str | Path | None = None,
+        s3_client: Any | None = None,
+        s3_bucket: str | None = None,
+        owner_id: str | None = None,
+        ingester_config: IngesterConfig | None = None,
     ) -> None:
         self.project_id = project_id
         self.name = name or project_id
@@ -158,6 +169,12 @@ class ResearchProject:
         self.created_at = datetime.now(timezone.utc).isoformat()
         self.updated_at = self.created_at
         self.phase: ProjectPhase = ProjectPhase.CREATED
+
+        # S3-backed ingestion (upload → catalog → knowledge store bridge)
+        self._s3_client = s3_client
+        self._s3_bucket = s3_bucket
+        self._owner_id = owner_id
+        self._ingester_config = ingester_config
 
         # ── Components ──────────────────────────────────────────────────
         # Knowledge store (papers, code, notebooks, datasets) — in-memory
@@ -221,26 +238,22 @@ class ResearchProject:
     def ingest_directory(self, *directories: str | Path) -> int:
         """Ingest all supported files from one or more directories.
 
-        Walks each directory recursively and registers every recognized
-        file (PDF, notebook, code, dataset, README) as an artifact in the
-        knowledge store. Returns the number of artifacts ingested.
+        When ``s3_client`` and ``s3_bucket`` are configured, uploads files to
+        project-scoped S3, runs catalog enrichment via ``KnowledgeIngester``,
+        and bridges READY catalog metadata into the knowledge store.
+
+        Without S3 configuration, falls back to reading files directly into
+        the in-memory knowledge store (local tests and offline use).
 
         Phase transition: CREATED → INGESTING → UNDERSTANDING (via understand())
         """
         self._transition(ProjectPhase.CREATED, ProjectPhase.INGESTING)
         start = datetime.now(timezone.utc)
 
-        count = 0
-        for directory in directories:
-            dir_path = Path(directory)
-            if not dir_path.exists():
-                logger.warning("Directory does not exist: %s", dir_path)
-                continue
-            for file_path in sorted(dir_path.rglob("*")):
-                if not file_path.is_file():
-                    continue
-                if self._ingest_file(file_path):
-                    count += 1
+        if self._s3_client is not None and self._s3_bucket:
+            count = self._ingest_directory_via_catalog(*directories)
+        else:
+            count = self._ingest_directory_local(*directories)
 
         self.updated_at = datetime.now(timezone.utc).isoformat()
         self._log_transition(
@@ -645,38 +658,67 @@ class ResearchProject:
 
     # ── Internal: File Ingestion ─────────────────────────────────────────────
 
+    def _ingest_directory_local(self, *directories: str | Path) -> int:
+        """Ingest files directly into the in-memory knowledge store."""
+        from .local_ingest import iter_ingestible_files
+
+        count = 0
+        for _base_dir, file_path in iter_ingestible_files(*directories):
+            if self._ingest_file(file_path):
+                count += 1
+        return count
+
+    def _ingest_directory_via_catalog(self, *directories: str | Path) -> int:
+        """Upload local files to S3, enrich via catalog, bridge to knowledge store."""
+        assert self._s3_client is not None
+        assert self._s3_bucket
+
+        uploads = upload_local_files(
+            self._s3_client,
+            self._s3_bucket,
+            self.project_id,
+            *directories,
+        )
+        if not uploads:
+            return 0
+
+        ingester = KnowledgeIngester(
+            self._s3_client,
+            self._s3_bucket,
+            self._ingester_config or IngesterConfig(),
+        )
+        owner = self._owner_id or self.project_id
+        ingester.ingest_project(
+            self.project_id,
+            owner,
+            prefix=f"{uploads_prefix(self.project_id)}/",
+        )
+
+        max_bytes = (self._ingester_config or IngesterConfig()).max_extract_bytes
+        artifacts = sync_catalog_artifacts(
+            self._s3_client,
+            self._s3_bucket,
+            self.project_id,
+            uploads=uploads,
+            max_content_bytes=max_bytes,
+        )
+        for artifact in artifacts:
+            self._knowledge_store.add_artifact(artifact)
+        return len(artifacts)
+
     def _ingest_file(self, file_path: Path) -> bool:
-        """Ingest a single file. Returns True if recognized and ingested."""
+        """Ingest a single local file into the in-memory store."""
+        artifact_type = classify_local_file(file_path)
+        if artifact_type is None:
+            return False
+
         try:
             content = file_path.read_bytes()
         except OSError as exc:
             logger.warning("Failed to read %s: %s", file_path, exc)
             return False
 
-        # Determine artifact_type from filename
-        suffix = file_path.suffix.lower()
         filename = file_path.name
-
-        if suffix == ".ipynb":
-            artifact_type = "notebook"
-        elif suffix in {".py", ".pyx", ".cpp", ".cc", ".cu", ".cuh", ".rs", ".go", ".rb", ".js", ".ts"}:
-            artifact_type = "code"
-        elif suffix in {".pdf", ".pptx", ".ppt"}:
-            artifact_type = "paper"
-        elif suffix in {".md", ".txt", ".rst"}:
-            # README.md and other text files
-            if filename.lower().startswith("readme"):
-                artifact_type = "text"
-            else:
-                artifact_type = "text"
-        elif suffix in {".csv", ".tsv", ".json", ".yaml", ".yml"}:
-            artifact_type = "dataset"
-        elif suffix in {".png", ".jpg", ".jpeg", ".gif", ".bmp"}:
-            artifact_type = "image"
-        else:
-            # Unknown type — skip for now
-            return False
-
         artifact_id = f"{artifact_type}-{file_path.stem}-{hash(str(file_path)) & 0xFFFFFF:X}"
 
         # Add to knowledge store

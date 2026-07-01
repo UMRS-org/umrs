@@ -12,7 +12,7 @@ from botocore.exceptions import ClientError
 from .extract import extract_content
 from .modality import detect_modality, filename_signals
 from .paths import logical_path_for_object
-from .rollup import regenerate_rollups
+from .rollup import regenerate_rollups as refresh_catalog_rollups
 from .schema import CatalogObjectMeta, CatalogState
 from .store import (
     get_object_etag,
@@ -62,6 +62,7 @@ def ingest_object(
     acl_scope: str | None = None,
     max_extract_bytes: int | None = None,
     force: bool = False,
+    regenerate_rollups: bool = True,
 ) -> dict[str, Any]:
     """
     Enrich one object: extract text/metadata and flip catalog entry to ``ready``.
@@ -69,6 +70,8 @@ def ingest_object(
     Idempotent when ``object_etag`` matches the stored meta. Returns metrics dict.
 
     Set ``force=True`` to re-run extraction even when the object is already ready.
+    Set ``regenerate_rollups=False`` during batch ingestion; call
+    ``regenerate_rollups_for_paths`` once after the batch completes.
     """
     scope = acl_scope or project_id
     existing = read_meta(s3_client, bucket, s3_key)
@@ -177,12 +180,14 @@ def ingest_object(
     write_meta(s3_client, bucket, meta)
 
     logical_path = logical_path_for_object(project_id, s3_key, modality)
-    regenerate_rollups(s3_client, bucket, logical_path=logical_path)
+    if regenerate_rollups:
+        refresh_catalog_rollups(s3_client, bucket, logical_path=logical_path)
 
     return {
         "action": "ingested",
         "s3_key": s3_key,
         "modality": modality,
+        "logical_path": logical_path,
         "has_extracted_text": bool(extracted_ref),
         "sampled_bytes": len(content),
         "total_size": total_size,
