@@ -25,6 +25,36 @@ def regenerate_rollups(
 ) -> None:
     """Rebuild ``summary.json`` for one logical path and refresh ``manifest.json``."""
     metas = _list_object_metas(s3_client, bucket)
+    _write_path_summary(s3_client, bucket, logical_path, metas)
+    _write_manifest(s3_client, bucket, metas)
+
+
+def regenerate_rollups_for_paths(
+    s3_client: Any,
+    bucket: str,
+    logical_paths: set[str] | list[str],
+) -> None:
+    """Rebuild rollups for multiple paths with a single meta LIST pass.
+
+    Use after batch ingestion when per-object ``regenerate_rollups=False`` was
+    passed to ``ingest_object`` — avoids O(N × M) S3 operations.
+    """
+    paths = sorted(set(logical_paths))
+    if not paths:
+        return
+    metas = _list_object_metas(s3_client, bucket)
+    for logical_path in paths:
+        _write_path_summary(s3_client, bucket, logical_path, metas)
+    _write_manifest(s3_client, bucket, metas)
+
+
+def _write_path_summary(
+    s3_client: Any,
+    bucket: str,
+    logical_path: str,
+    metas: list[CatalogObjectMeta],
+) -> None:
+    """Write directory rollup for one logical path from a pre-loaded meta list."""
     path_metas = [m for m in metas if _belongs_to_logical_path(m, logical_path)]
 
     by_modality = Counter(m.detected_modality for m in path_metas)
@@ -42,7 +72,6 @@ def regenerate_rollups(
         Body=json.dumps(summary, indent=2).encode("utf-8"),
         ContentType="application/json",
     )
-    _write_manifest(s3_client, bucket, metas)
 
 
 def _write_manifest(s3_client: Any, bucket: str, metas: list[CatalogObjectMeta]) -> None:
