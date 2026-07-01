@@ -15,8 +15,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from ..data_catalog.schema import CatalogObjectMeta, CatalogState
-from ..data_catalog.store import get_object_range, read_meta
+from ..data_catalog.artifacts import (
+    load_artifact_content,
+    meta_to_artifact,
+)
+from ..data_catalog.schema import CatalogState
+from ..data_catalog.store import read_meta
 
 logger = logging.getLogger(__name__)
 
@@ -32,15 +36,6 @@ _SKIP_DIR_NAMES = frozenset({
     ".tox",
     ".ruff_cache",
 })
-
-_MODALITY_TO_ARTIFACT_TYPE: dict[str, str] = {
-    "notebook": "notebook",
-    "code": "code",
-    "document": "paper",
-    "structured": "dataset",
-    "text": "text",
-    "image": "image",
-}
 
 _DEFAULT_MAX_CONTENT_BYTES = 10 * 1024 * 1024
 
@@ -88,11 +83,6 @@ def classify_local_file(file_path: Path) -> str | None:
     if suffix in {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"}:
         return "image"
     return None
-
-
-def modality_to_artifact_type(modality: str) -> str:
-    """Map catalog modality to knowledge-store artifact type."""
-    return _MODALITY_TO_ARTIFACT_TYPE.get(modality, "text")
 
 
 def build_s3_key(project_id: str, base_dir: Path, file_path: Path) -> str:
@@ -163,66 +153,6 @@ def upload_local_files(
     return uploaded
 
 
-def load_artifact_content(
-    s3_client: Any,
-    bucket: str,
-    s3_key: str,
-    meta: CatalogObjectMeta,
-    *,
-    max_bytes: int = _DEFAULT_MAX_CONTENT_BYTES,
-) -> bytes:
-    """Load bytes for an artifact, preferring catalog extracted text."""
-    if meta.extracted_text_ref:
-        try:
-            response = s3_client.get_object(Bucket=bucket, Key=meta.extracted_text_ref)
-            return response["Body"].read()
-        except Exception as exc:
-            logger.warning(
-                "Failed to read extracted text for %s: %s",
-                s3_key,
-                exc,
-            )
-    content, _ = get_object_range(
-        s3_client,
-        bucket,
-        s3_key,
-        offset=0,
-        length=max_bytes,
-    )
-    return content
-
-
-def artifact_from_catalog_meta(
-    meta: CatalogObjectMeta,
-    content: bytes,
-    *,
-    local_path: str | None = None,
-) -> dict[str, Any]:
-    """Build a knowledge-store artifact dict from catalog metadata."""
-    artifact_type = modality_to_artifact_type(meta.detected_modality)
-    filename = meta.s3_key.rsplit("/", 1)[-1]
-    artifact_id = (
-        f"{artifact_type}-{Path(filename).stem}-"
-        f"{hash(meta.s3_key) & 0xFFFFFF:X}"
-    )
-    return {
-        "artifact_id": artifact_id,
-        "artifact_type": artifact_type,
-        "filename": filename,
-        "content": content,
-        "summary": meta.summary,
-        "tags": list(meta.tags),
-        "metadata": {
-            "path": local_path or meta.s3_key,
-            "s3_key": meta.s3_key,
-            "catalog_ref": meta.s3_key,
-            "object_etag": meta.object_etag,
-            "detected_modality": meta.detected_modality,
-            "extracted_text_ref": meta.extracted_text_ref,
-        },
-    }
-
-
 def sync_catalog_artifacts(
     s3_client: Any,
     bucket: str,
@@ -254,7 +184,7 @@ def sync_catalog_artifacts(
             )
             local_path = local_by_key.get(s3_key)
             artifacts.append(
-                artifact_from_catalog_meta(
+                meta_to_artifact(
                     meta,
                     content,
                     local_path=str(local_path) if local_path else None,

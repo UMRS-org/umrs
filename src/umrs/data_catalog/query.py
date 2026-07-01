@@ -37,7 +37,7 @@ def search_catalog(
         return []
 
     hits: list[CatalogHit] = []
-    for meta in _list_object_metas(s3_client, bucket):
+    for meta in _list_object_metas(s3_client, bucket, s3_key_prefix=f"{project_id}/"):
         if not _allowed(meta, project_id):
             continue
         if meta.state == CatalogState.ERROR:

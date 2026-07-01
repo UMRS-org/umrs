@@ -313,6 +313,10 @@ def test_workflow_options_defaults():
     assert opts.verify_questions == []
     assert opts.auto_approve is False
     assert opts.user_id == "user"
+    assert opts.s3_client is None
+    assert opts.s3_bucket is None
+    assert opts.owner_id is None
+    assert opts.ingester_config is None
 
 
 def test_workflow_options_custom():
