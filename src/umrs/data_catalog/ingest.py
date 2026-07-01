@@ -61,15 +61,23 @@ def ingest_object(
     owner: str,
     acl_scope: str | None = None,
     max_extract_bytes: int | None = None,
+    force: bool = False,
 ) -> dict[str, Any]:
     """
     Enrich one object: extract text/metadata and flip catalog entry to ``ready``.
 
     Idempotent when ``object_etag`` matches the stored meta. Returns metrics dict.
+
+    Set ``force=True`` to re-run extraction even when the object is already ready.
     """
     scope = acl_scope or project_id
     existing = read_meta(s3_client, bucket, s3_key)
-    if existing and existing.object_etag == object_etag and existing.state == CatalogState.READY:
+    if (
+        not force
+        and existing
+        and existing.object_etag == object_etag
+        and existing.state == CatalogState.READY
+    ):
         return {"action": "skipped", "reason": "already_ready", "s3_key": s3_key}
 
     try:

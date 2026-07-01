@@ -1,54 +1,29 @@
-"""Unified knowledge ingestion pipeline.
+"""Batch knowledge ingestion orchestration.
 
-This module implements the unified ingestion pipeline that:
-  1. Discovers all files in a project
-  2. Parses each file according to its modality
-  3. Extracts metadata
-  4. Summarizes
-  5. Generates embeddings
-  6. Registers into UMRS
-  7. Updates catalog
-  8. Indexes for RAG
-
-Requirements:
-  - Incremental indexing (only ingest changed files)
-  - Parallel processing (ingest multiple files concurrently)
-  - Progress reporting (callback for progress updates)
-  - Resume capability (state persisted, can resume after interruption)
-  - Duplicate detection (content-hash based)
+``KnowledgeIngester`` discovers project objects in S3, filters unchanged entries,
+runs ingestion in parallel, and reports progress. Per-object enrichment (parse,
+perception, catalog metadata, rollups) is delegated to
+``umrs.data_catalog.ingest.ingest_object`` — the same path used by upload jobs.
+Perception is controlled by ``UMRS_DATA_CATALOG_ENABLE_PERCEPTION`` (same as upload).
 """
 
 from __future__ import annotations
 
 import logging
-import os
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Callable, Protocol
+from typing import Any, Protocol
 
-from ..data_catalog.extract import extract_content
-from ..data_catalog.modality import detect_modality, filename_signals
-from ..data_catalog.schema import CatalogObjectMeta, CatalogState
-from ..data_catalog.store import (
-    get_object_etag,
-    get_object_range,
-    read_meta,
-    write_extracted_text,
-    write_meta,
-)
-from .parse_code import parse_code
-from .parse_notebook import parse_notebook
+from ..data_catalog.ingest import IngestionError
+from ..data_catalog.ingest import ingest_object as catalog_ingest_object
+from ..data_catalog.schema import CatalogState
+from ..data_catalog.store import read_meta
 
 logger = logging.getLogger(__name__)
 
-
-# ── Exceptions ──────────────────────────────────────────────────────────────
-
-
-class IngestionError(Exception):
-    """Permanent ingestion failure for one object."""
+_DEFAULT_MAX_EXTRACT_BYTES = 10 * 1024 * 1024  # 10 MB
 
 
 # ── Result Types ─────────────────────────────────────────────────────────────
@@ -117,8 +92,8 @@ class IngesterConfig:
     max_workers: int = 4
     batch_size: int = 10
 
-    # Extraction limits
-    max_extract_bytes: int = 10 * 1024 * 1024  # 10 MB
+    # Extraction limits (batch path default; upload jobs use env unless overridden)
+    max_extract_bytes: int = _DEFAULT_MAX_EXTRACT_BYTES
 
     # Duplicate detection
     skip_if_unchanged: bool = True
@@ -129,10 +104,7 @@ class IngesterConfig:
     # Resume capability
     resume_state_key: str = "_data_catalog/ingestion_state.json"
 
-    # Perception (LLM summaries, image captions)
-    enable_perception: bool = True
-
-    # RAG indexing
+    # RAG indexing (reserved; not wired yet)
     enable_rag_indexing: bool = True
 
 
@@ -140,10 +112,7 @@ class IngesterConfig:
 
 
 class KnowledgeIngester:
-    """Unified knowledge ingestion pipeline.
-
-    Discovers, parses, extracts metadata, summarizes, generates embeddings,
-    registers into UMRS, updates catalog, and indexes for RAG.
+    """Batch orchestrator over the data-catalog ingestion pipeline.
 
     Usage:
         ingester = KnowledgeIngester(s3_client, bucket, config)
@@ -170,20 +139,9 @@ class KnowledgeIngester:
         prefix: str = "",
         progress_callback: ProgressCallback | None = None,
     ) -> BatchIngestionResult:
-        """Ingest all objects in a project.
-
-        Args:
-            project_id: The project ID
-            owner: The owner user ID
-            prefix: Optional S3 prefix to limit the scan
-            progress_callback: Optional callback for progress updates
-
-        Returns:
-            A ``BatchIngestionResult`` with ingestion statistics.
-        """
+        """Ingest all objects in a project."""
         start_time = datetime.now(timezone.utc)
 
-        # Discover all objects
         objects = self._discover_objects(prefix)
         logger.info(
             "Discovered %d objects in project %s",
@@ -191,7 +149,6 @@ class KnowledgeIngester:
             project_id,
         )
 
-        # Filter out already-ingested objects (incremental)
         if self.config.incremental:
             objects = self._filter_unchanged(objects)
             logger.info(
@@ -199,7 +156,6 @@ class KnowledgeIngester:
                 len(objects),
             )
 
-        # Ingest objects in parallel
         result = BatchIngestionResult(total=len(objects))
         if not objects:
             result.duration_seconds = (
@@ -265,17 +221,7 @@ class KnowledgeIngester:
         s3_key: str,
         object_etag: str,
     ) -> IngestionResult:
-        """Ingest a single object.
-
-        Args:
-            project_id: The project ID
-            owner: The owner user ID
-            s3_key: The S3 key of the object
-            object_etag: The ETag of the object
-
-        Returns:
-            An ``IngestionResult`` with ingestion statistics.
-        """
+        """Ingest a single object."""
         return self._ingest_one(
             project_id=project_id,
             owner=owner,
@@ -294,7 +240,6 @@ class KnowledgeIngester:
         paginator = self.s3_client.get_paginator("list_objects_v2")
         for page in paginator.paginate(Bucket=self.bucket, Prefix=prefix):
             for obj in page.get("Contents", []):
-                # Skip catalog metadata files
                 if obj["Key"].startswith("_data_catalog/"):
                     continue
                 objects.append(
@@ -319,7 +264,6 @@ class KnowledgeIngester:
                 and existing.object_etag == obj["etag"]
                 and existing.state == CatalogState.READY
             ):
-                # Object unchanged and already ingested
                 continue
             filtered.append(obj)
         return filtered
@@ -335,149 +279,40 @@ class KnowledgeIngester:
         current: int,
         total: int,
     ) -> IngestionResult:
-        """Ingest a single object."""
-        # Check if already ingested (idempotent)
-        if self.config.skip_if_unchanged:
-            existing = read_meta(self.s3_client, self.bucket, s3_key)
-            if (
-                existing
-                and existing.object_etag == object_etag
-                and existing.state == CatalogState.READY
-            ):
-                if progress_callback:
-                    progress_callback(current, total, s3_key, "skipped")
-                return IngestionResult(
-                    s3_key=s3_key,
-                    modality=existing.detected_modality,
-                    status="skipped",
-                    summary=existing.summary,
-                    tags=existing.tags,
-                )
-
-        # Get live ETag (in case object was updated)
+        """Ingest a single object via the data-catalog pipeline."""
         try:
-            live_etag = get_object_etag(self.s3_client, self.bucket, s3_key)
-        except Exception as exc:
-            logger.error("Failed to get ETag for %s: %s", s3_key, exc)
-            return IngestionResult(
+            metrics = catalog_ingest_object(
+                self.s3_client,
+                self.bucket,
                 s3_key=s3_key,
-                modality="unknown",
-                status="error",
-                error=str(exc),
+                object_etag=object_etag,
+                project_id=project_id,
+                owner=owner,
+                acl_scope=project_id,
+                max_extract_bytes=self.config.max_extract_bytes,
+                force=not self.config.skip_if_unchanged,
             )
-
-        if live_etag != object_etag:
-            object_etag = live_etag
-
-        # Download content (bounded)
-        filename = s3_key.rsplit("/", 1)[-1]
-        try:
-            content, total_size = get_object_range(
+        except IngestionError as exc:
+            logger.error("Catalog ingestion failed for %s: %s", s3_key, exc)
+            result = _result_from_catalog_failure(
                 self.s3_client,
                 self.bucket,
                 s3_key,
-                offset=0,
-                length=self.config.max_extract_bytes,
-            )
-        except Exception as exc:
-            logger.error("Failed to download %s: %s", s3_key, exc)
-            return IngestionResult(
-                s3_key=s3_key,
-                modality="unknown",
-                status="error",
                 error=str(exc),
             )
+            if progress_callback:
+                progress_callback(current, total, s3_key, "error")
+            return result
 
-        # Detect modality
-        modality = detect_modality(filename, content)
-        signals = filename_signals(filename)
-
-        # Parse content based on modality
-        extracted_text = ""
-        tags: list[str] = []
-        summary = ""
-        try:
-            if modality == "notebook":
-                # Parse Jupyter notebook
-                result = parse_notebook(filename, content)
-                extracted_text = result.extracted_text
-                tags = result.tags
-                summary = result.summary
-            elif modality == "code":
-                # Parse Python/C++/CUDA code
-                result = parse_code(filename, content)
-                extracted_text = result.extracted_text
-                tags = result.tags
-                summary = result.summary
-            else:
-                # Use existing extract_content for text, structured, document, image
-                summary, extracted_text, extra_tags = extract_content(
-                    filename, content
-                )
-                tags = list(extra_tags)
-        except Exception as exc:
-            logger.error("Failed to parse %s: %s", s3_key, exc)
-            return IngestionResult(
-                s3_key=s3_key,
-                modality=modality,
-                status="error",
-                error=str(exc),
-            )
-
-        # Write extracted text sidecar
-        extracted_ref = None
-        if extracted_text.strip():
-            try:
-                extracted_ref = write_extracted_text(
-                    self.s3_client, self.bucket, s3_key, extracted_text
-                )
-            except Exception as exc:
-                logger.warning(
-                    "Failed to write extracted text for %s: %s",
-                    s3_key,
-                    exc,
-                )
-
-        # Write catalog metadata
-        meta = CatalogObjectMeta(
-            s3_key=s3_key,
-            object_etag=object_etag,
-            state=CatalogState.READY,
-            owner=owner,
-            acl_scope=project_id,
-            updated_at=datetime.now(timezone.utc).isoformat(),
-            summary=summary or f"{modality} object {filename}",
-            deterministic_summary=summary,
-            tags=tags,
-            filename_signals=signals,
-            detected_modality=modality,
-            extracted_text_ref=extracted_ref,
+        result = _result_from_metrics(
+            self.s3_client,
+            self.bucket,
+            s3_key,
+            metrics,
         )
-        try:
-            write_meta(self.s3_client, self.bucket, meta)
-        except Exception as exc:
-            logger.error("Failed to write metadata for %s: %s", s3_key, exc)
-            return IngestionResult(
-                s3_key=s3_key,
-                modality=modality,
-                status="error",
-                error=str(exc),
-            )
-
         if progress_callback:
-            progress_callback(current, total, s3_key, "ingested")
-
-        return IngestionResult(
-            s3_key=s3_key,
-            modality=modality,
-            status="ingested",
-            summary=summary,
-            tags=tags,
-            extracted_text=extracted_text,
-            has_extracted_text=bool(extracted_ref),
-            sampled_bytes=len(content),
-            total_size=total_size,
-        )
+            progress_callback(current, total, s3_key, result.status)
+        return result
 
 
 # ── Convenience Function ────────────────────────────────────────────────────
@@ -493,12 +328,9 @@ def ingest_object(
     owner: str,
     max_extract_bytes: int | None = None,
 ) -> dict[str, Any]:
-    """Ingest a single object (convenience function).
-
-    Returns a metrics dict.
-    """
+    """Ingest a single object (convenience function). Returns a metrics dict."""
     config = IngesterConfig()
-    if max_extract_bytes:
+    if max_extract_bytes is not None:
         config.max_extract_bytes = max_extract_bytes
 
     ingester = KnowledgeIngester(s3_client, bucket, config)
@@ -520,3 +352,52 @@ def ingest_object(
         "total_size": result.total_size,
         "error": result.error,
     }
+
+
+# ── Helpers ─────────────────────────────────────────────────────────────────
+
+
+def _result_from_metrics(
+    s3_client: Any,
+    bucket: str,
+    s3_key: str,
+    metrics: dict[str, Any],
+) -> IngestionResult:
+    """Map catalog metrics to a batch ``IngestionResult`` (reads meta for summary)."""
+    action = metrics.get("action", "error")
+    status = action if action in {"ingested", "skipped", "error"} else "error"
+    meta = read_meta(s3_client, bucket, s3_key)
+    modality = metrics.get("modality") or (meta.detected_modality if meta else "unknown")
+    return IngestionResult(
+        s3_key=s3_key,
+        modality=modality,
+        status=status,
+        summary=meta.summary if meta else "",
+        tags=list(meta.tags) if meta else [],
+        has_extracted_text=bool(metrics.get("has_extracted_text")),
+        sampled_bytes=int(metrics.get("sampled_bytes") or 0),
+        total_size=int(metrics.get("total_size") or 0),
+    )
+
+
+def _result_from_catalog_failure(
+    s3_client: Any,
+    bucket: str,
+    s3_key: str,
+    *,
+    error: str,
+) -> IngestionResult:
+    """Build an error result after catalog ingestion raised ``IngestionError``.
+
+    The catalog pipeline writes ERROR metadata before raising, so we read it
+    back for modality/summary instead of duplicating error-state logic here.
+    """
+    meta = read_meta(s3_client, bucket, s3_key)
+    return IngestionResult(
+        s3_key=s3_key,
+        modality=meta.detected_modality if meta else "unknown",
+        status="error",
+        summary=meta.summary if meta else "",
+        tags=list(meta.tags) if meta else [],
+        error=error,
+    )
