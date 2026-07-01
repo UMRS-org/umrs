@@ -83,10 +83,12 @@ class _FakePaginator:
         self.etags = etags
 
     def paginate(self, *, Bucket: str, Prefix: str):  # noqa: N803
+        catalog_list = Prefix.startswith("_data_catalog/")
         contents = [
             {"Key": key, "ETag": f'"{self.etags[key]}"', "Size": len(data)}
             for key, data in sorted(self.objects.items())
-            if key.startswith(Prefix) and not key.startswith("_data_catalog/")
+            if key.startswith(Prefix)
+            and (catalog_list or not key.startswith("_data_catalog/"))
         ]
         return [{"Contents": contents}]
 
@@ -162,7 +164,9 @@ def test_ingest_directory_via_catalog(project_dir: Path):
     for artifact in artifacts:
         assert artifact["metadata"]["s3_key"].startswith("proj-1/uploads/")
         assert artifact["metadata"]["catalog_ref"] == artifact["metadata"]["s3_key"]
-        assert artifact["content"]
+        loaded = project.knowledge_store.get_artifact(artifact["artifact_id"])
+        assert loaded is not None
+        assert loaded["content"]
 
     meta_keys = [key for key in client.objects if key.endswith(".meta.json")]
     assert len(meta_keys) == count
@@ -197,6 +201,22 @@ def test_understand_after_catalog_ingest(project_dir: Path):
     assert project.phase == ProjectPhase.READY
     assert len(project.knowledge_graph.nodes) > 0
     assert project.coverage_dashboard is not None
+
+
+def test_verify_after_catalog_ingest(project_dir: Path):
+    client = _FakeProjectS3()
+    project = ResearchProject(
+        project_id="proj-1",
+        s3_client=client,
+        s3_bucket="bucket",
+        owner_id="user-1",
+    )
+    project.ingest_directory(project_dir)
+    project.understand()
+
+    answer = project.verify("What code files do we have?")
+    assert answer.answered
+    assert answer.confidence > 0
 
 
 def test_run_project_workflow_uses_catalog_when_s3_configured(project_dir: Path):
