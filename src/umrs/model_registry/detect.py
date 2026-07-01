@@ -44,6 +44,13 @@ _VISION_ARCHITECTURES = {
     "idefics3forconditionalgeneration",
     # Kimi K2.x multimodal LLMs (MoonViT; K2.6 / K2.7-Code)
     "kimik25forconditionalgeneration",
+    # Kimi vision-language models (MoonViT vision encoder)
+    "kimi_vlforconditionalgeneration",
+    "kimi_vl_moe_forconditionalgeneration",
+    "kimi_vl_moe",
+    # Gemma multimodal (text+image)
+    "gemma4forconditionalgeneration",
+    "gemma4_moe_forconditionalgeneration",
 }
 
 # Patterns in chat_template that indicate tool calling support
@@ -77,6 +84,9 @@ _FAMILY_MAP = {
     "chatglm": "glm",
     "glm": "glm",
     "glm4": "glm",
+    "kimi_vl_moe": "kimi",
+    "kimi_vl": "kimi",
+    "kimi": "kimi",
     "starcoder2": "starcoder",
     "starcoder": "starcoder",
     "codellama": "codellama",
