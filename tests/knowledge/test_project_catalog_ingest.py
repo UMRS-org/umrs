@@ -201,6 +201,18 @@ def test_understand_after_catalog_ingest(project_dir: Path):
     assert project.phase == ProjectPhase.READY
     assert len(project.knowledge_graph.nodes) > 0
     assert project.coverage_dashboard is not None
+    graph = project.knowledge_store.get_knowledge_graph()
+    assert graph.get("nodes") or graph.get("edges")
+
+
+def test_s3_project_skips_local_knowledge_store_allocation(project_dir: Path):
+    client = _FakeProjectS3()
+    project = ResearchProject(
+        project_id="proj-1",
+        s3_client=client,
+        s3_bucket="bucket",
+    )
+    assert project._local_knowledge_store is None
 
 
 def test_verify_after_catalog_ingest(project_dir: Path):
