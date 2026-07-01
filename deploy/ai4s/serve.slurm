@@ -572,6 +572,75 @@ case "$(printf '%s' "${VLLM_MAX_MODEL_LEN}" | tr '[:upper:]' '[:lower:]')" in
     *) VLLM_ARGS+=( --max-model-len "${VLLM_MAX_MODEL_LEN}" ) ;;
 esac
 
+# ── Automatic multimodal/vision capability detection ─────────────────────────
+# Reads config.json from the model path and checks for vision/multimodal keys.
+# If detected, automatically adds --mm-encoder-tp-mode data and
+# --limit-mm-per-prompt '{"image": 4}' flags (unless explicitly overridden via
+# VLLM_MM_ENCODER_TP_MODE / VLLM_LIMIT_MM_PER_PROMPT env vars).
+#
+# This eliminates the need for per-model hardcoded case statements for
+# multimodal flags, and ensures vision capability is preserved automatically
+# regardless of the launch path (r4 endpoint up, r4 pool up, VS Code extension).
+_detect_multimodal() {
+    local cfg="${HOST_MODEL_PATH}/config.json"
+    if [[ ! -f "${cfg}" ]]; then
+        echo "false"
+        return
+    fi
+    # Check for vision/multimodal keys in config.json using python for robust JSON parsing.
+    # Keys: vision_config, visual, image_size, vision_tower, vision_config.image_size
+    # Also check architectures for known VLM architecture classes.
+    "${CONTAINER_CMD}" "${SING_COMMON[@]}" "${SIF_IMAGE}" \
+        /opt/venv/bin/python -c '
+import json, sys
+try:
+    cfg = json.load(open(sys.argv[1]))
+except Exception:
+    print("false"); sys.exit(0)
+# Architecture-based detection (known VLM architectures)
+arch_keys = {
+    "qwen2vlforconditionalgeneration",
+    "qwen2_5_vlforconditionalgeneration",
+    "qwenvlforconditionalgeneration",
+    "llavaforconditionalgeneration",
+    "llavanextforconditionalgeneration",
+    "llavanextvideo",
+    "internvlchatmodel",
+    "phi3vforconditionalgeneration",
+    "minicpmv",
+    "cogvlmforcausallm",
+    "deepseekvisuallanguagemodel",
+    "mantaforconditionalgeneration",
+    "pixtralforconditionalgeneration",
+    "molmoforconditionalgeneration",
+    "chameleonforconditionalgeneration",
+    "fuyu",
+    "paligemmaforconditionalgeneration",
+    "glm4vforcausallm",
+    "idefics2forconditionalgeneration",
+    "idefics3forconditionalgeneration",
+    "kimi_vlforconditionalgeneration",
+    "kimi_vl_moe_forconditionalgeneration",
+}
+archs = {str(a).lower() for a in cfg.get("architectures", [])}
+if archs & arch_keys:
+    print("true"); sys.exit(0)
+# Config-key-based detection
+vision_keys = {"vision_config", "visual", "image_size", "vision_tower"}
+if vision_keys & set(cfg.keys()):
+    print("true"); sys.exit(0)
+print("false")
+' "${cfg}" 2>/dev/null | tail -1
+}
+
+_IS_MULTIMODAL="false"
+if [[ "${VLLM_AUTO_DETECT_MULTIMODAL:-1}" == "1" ]]; then
+    _IS_MULTIMODAL="$(_detect_multimodal)"
+    if [[ "${_IS_MULTIMODAL}" == "true" ]]; then
+        echo "[serve] multimodal model detected — adding --mm-encoder-tp-mode data + --limit-mm-per-prompt"
+    fi
+fi
+
 # Multimodal encoder TP mode (e.g. Kimi-K2.7-Code MoonViT).
 # The vLLM recipe for Kimi-K2.7-Code (recipes.vllm.ai/moonshotai/Kimi-K2.7-Code)
 # requires --mm-encoder-tp-mode data to run the small MoonViT vision encoder
@@ -579,9 +648,26 @@ esac
 # defaults to tensor-parallel mode, which can cause model initialization failures
 # or 400 errors from the API. The pool config sets VLLM_MM_ENCODER_TP_MODE=data
 # for Kimi-K2.7-Code; this block forwards it to vLLM as --mm-encoder-tp-mode.
+#
+# Auto-detection: if the model is detected as multimodal and VLLM_MM_ENCODER_TP_MODE
+# is not explicitly set, default to "data" (the vLLM recipe for vision encoders).
 VLLM_MM_ENCODER_TP_MODE="${VLLM_MM_ENCODER_TP_MODE:-}"
+if [[ -z "${VLLM_MM_ENCODER_TP_MODE}" && "${_IS_MULTIMODAL}" == "true" ]]; then
+    VLLM_MM_ENCODER_TP_MODE="data"
+fi
 if [[ -n "${VLLM_MM_ENCODER_TP_MODE}" ]]; then
     VLLM_ARGS+=( --mm-encoder-tp-mode "${VLLM_MM_ENCODER_TP_MODE}" )
+fi
+
+# Limit multimodal inputs per prompt for vision-capable models.
+# Default: {"image": 4} (4 images per prompt, per vLLM recipe).
+# Override via VLLM_LIMIT_MM_PER_PROMPT env var.
+VLLM_LIMIT_MM_PER_PROMPT="${VLLM_LIMIT_MM_PER_PROMPT:-}"
+if [[ -z "${VLLM_LIMIT_MM_PER_PROMPT}" && "${_IS_MULTIMODAL}" == "true" ]]; then
+    VLLM_LIMIT_MM_PER_PROMPT='{"image": 4}'
+fi
+if [[ -n "${VLLM_LIMIT_MM_PER_PROMPT}" ]]; then
+    VLLM_ARGS+=( --limit-mm-per-prompt "${VLLM_LIMIT_MM_PER_PROMPT}" )
 fi
 
 # Concurrency cap. More concurrent sequences raise aggregate throughput under
