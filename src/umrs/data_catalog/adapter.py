@@ -15,7 +15,7 @@ from .artifacts import (
     meta_to_artifact,
     read_artifact_text,
 )
-from .query import _allowed, search_catalog
+from .query import _allowed, _score_meta, _tokenize, search_catalog
 from .rollup import _list_object_metas
 from .schema import CatalogObjectMeta, CatalogState
 from .store import read_meta
@@ -62,6 +62,12 @@ class CatalogArtifactAdapter:
         """List catalog metadata for objects in this project."""
         return list(self._load_metas())
 
+    def refresh(self) -> None:
+        """Drop cached metas so the next read sees newly ingested catalog objects."""
+        self._cached_metas = None
+        self._meta_by_s3_key = None
+        self._meta_by_artifact_id = None
+
     def get_meta(self, s3_key: str) -> CatalogObjectMeta | None:
         """Return catalog metadata for an object after ACL check."""
         meta = read_meta(self.s3_client, self.bucket, s3_key)
@@ -71,6 +77,19 @@ class CatalogArtifactAdapter:
 
     def search(self, query: str, *, limit: int = 20) -> list[CatalogObjectMeta]:
         """Lexical search over catalog metadata."""
+        tokens = _tokenize(query)
+        if not tokens:
+            return []
+
+        if self._cached_metas is not None:
+            scored: list[tuple[float, CatalogObjectMeta]] = []
+            for meta in self._cached_metas:
+                score = _score_meta(meta, tokens)
+                if score > 0:
+                    scored.append((score, meta))
+            scored.sort(key=lambda item: item[0], reverse=True)
+            return [meta for _, meta in scored[:limit]]
+
         return [
             hit.meta
             for hit in search_catalog(
@@ -118,6 +137,11 @@ class CatalogArtifactAdapter:
             meta = self._meta_by_s3_key.get(artifact_id)
         if meta is None:
             meta = self.get_meta(artifact_id)
+            if meta is not None:
+                logger.debug(
+                    "get_artifact cache miss resolved via s3_key lookup: %s",
+                    artifact_id,
+                )
         if meta is None:
             return None
         return self._meta_to_artifact_with_content(meta)
