@@ -29,7 +29,7 @@ endpoints:
     model: glm-5.2-iq2m
     tier: user
     node_count: 2
-    partition: ng-dgx-m0
+    partition: ng-dgx-m3
     max_model_len: 1048576
     env_vars:
       VLLM_PATH_TO_HUGGINGFACE: "/lvs0/rccs-dmp/masaru.nagaso/umrs_models"
@@ -90,4 +90,30 @@ endpoints:
       VLLM_TOKENIZER: "google/diffusiongemma-26B-A4B-it"
       VLLM_GPU_MEM_UTIL: "0.90"
       VLLM_MAX_NUM_SEQS: "4"
+      RCCS_SKIP_CDI: "1"
+
+  # ── Agents-A1 (InternScience) ────────────────────────────────────────
+  #  35B MoE agentic model, qwen3_5_moe architecture.
+  #  Long-horizon search, engineering, scientific research, tool calling.
+  #  HF: InternScience/Agents-A1
+  #  GitHub: https://github.com/InternScience/Agents-A1
+  #  vLLM: --tensor-parallel-size 1 --max-model-len 262144
+  #    --reasoning-parser qwen3 --tool-call-parser qwen3_coder
+  #  Recommended: temperature=0.85, top_p=0.95, top_k=20
+
+  - name: agents-a1
+    model: Agents-A1
+    tier: user
+    node_count: 1
+    partition: ng-dgx-m0
+    max_model_len: 262144
+    env_vars:
+      VLLM_PATH_TO_HUGGINGFACE: "/lvs0/rccs-dmp/masaru.nagaso/umrs_models"
+      VLLM_MODEL: "InternScience/Agents-A1"
+      VLLM_TOKENIZER: "InternScience/Agents-A1"
+      VLLM_GPU_MEM_UTIL: "0.90"
+      VLLM_MAX_NUM_SEQS: "4"
+      VLLM_TOOL_CALL_PARSER: "qwen3_coder"
+      VLLM_REASONING_PARSER: "qwen3"
+      VLLM_TRUST_REMOTE_CODE: "1"
       RCCS_SKIP_CDI: "1"
