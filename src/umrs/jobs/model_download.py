@@ -291,28 +291,28 @@ class ModelDownloadBackend(OrchestratorBackend):
             return None
 
     def _detect_and_update_capabilities(self, model_id: str, model_path: str) -> None:
-        """Detect capabilities and update existing model entry."""
-        caps = self._detect_capabilities(model_path)
-        if caps is None:
-            return
+        """Detect capabilities and merge into the existing model entry."""
         try:
+            from umrs.model_registry.detect import merge_detected_capabilities
+
             model = self.model_store.get_model(model_id)
-            if model and not any(
-                [
-                    model.capabilities.supports_tool_calling,
-                    model.capabilities.supports_vision,
-                    model.capabilities.model_family,
-                ]
-            ):
-                # Only update if capabilities are empty
-                self.model_store.update_capabilities(model_id, caps)
-                logger.info(
-                    "Auto-detected capabilities for model %s: family=%s, tools=%s, vision=%s",
-                    model_id,
-                    caps.model_family,
-                    caps.supports_tool_calling,
-                    caps.supports_vision,
-                )
+            if not model:
+                return
+            merged = merge_detected_capabilities(
+                model.capabilities,
+                model_path,
+                model_name=model.name,
+            )
+            if merged.to_dict() == model.capabilities.to_dict():
+                return
+            self.model_store.update_capabilities(model_id, merged)
+            logger.info(
+                "Auto-detected capabilities for model %s: family=%s, tools=%s, vision=%s",
+                model_id,
+                merged.model_family,
+                merged.supports_tool_calling,
+                merged.supports_vision,
+            )
         except Exception as e:
             logger.debug("Failed to update capabilities for %s: %s", model_id, e)
 

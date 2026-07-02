@@ -42,6 +42,8 @@ _VISION_ARCHITECTURES = {
     "glm4vforcausallm",
     "idefics2forconditionalgeneration",
     "idefics3forconditionalgeneration",
+    # Kimi K2.x multimodal LLMs (MoonViT; K2.6 / K2.7-Code)
+    "kimik25forconditionalgeneration",
 }
 
 # Patterns in chat_template that indicate tool calling support
