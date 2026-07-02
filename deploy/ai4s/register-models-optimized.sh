@@ -27,6 +27,7 @@ register_model() {
 
     if is_registered "$name"; then
         echo "  ✓ ${name} already registered"
+        backfill_capabilities "$name"
         return 0
     fi
 
@@ -42,9 +43,16 @@ register_model() {
         --scope system --type llm --backend vllm \
         --service-kind openai \
         --hf-id "$hf_id" \
-        --max-model-len "$max_len" --gpu-mem-util 0.90 --tp "$tp" \
-        --no-detect
+        --max-model-len "$max_len" --gpu-mem-util 0.90 --tp "$tp"
     echo "  ✓ ${name} registered"
+    backfill_capabilities "$name"
+}
+
+# Backfill vision/tool capabilities from config.json (also fixes already-registered models).
+backfill_capabilities() {
+    local name="$1"
+    echo "  Detecting capabilities for ${name}..."
+    r4 model detect "$name" || true
 }
 
 echo "=== Registering models for pool-ai4s-optimized.yaml ==="
