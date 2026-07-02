@@ -72,6 +72,14 @@ server = [
 all = [
     "umrs[server]",
 ]
+# Minimal deps for HTTP route tests (no torch/ML stack).
+api-test = [
+    "fastapi",
+    "httpx",
+    "python-multipart",
+    "boto3",
+    "pytest>=7.0",
+]
 
 [project.scripts]
 umrs-client = "umrs.client.cli:main"

@@ -63,6 +63,8 @@ def _create_app():
         endpoints_router,
         files_router,
         jobs_router,
+        knowledge_graph_router,
+        knowledge_router,
         llm_router,
         mcp_router,
         models_router,
@@ -108,6 +110,8 @@ def _create_app():
     app.include_router(endpoints_router)
     app.include_router(files_router)
     app.include_router(jobs_router)
+    app.include_router(knowledge_router)
+    app.include_router(knowledge_graph_router)
     app.include_router(llm_router)
     app.include_router(mcp_router)
     app.include_router(models_router)

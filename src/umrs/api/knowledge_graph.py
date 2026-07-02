@@ -19,9 +19,10 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from umrs.api.files import get_project_id
 from umrs.knowledge_graph_api import (
     InMemoryKnowledgeGraph,
     KnowledgeEdge,
@@ -33,8 +34,9 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/umrs/knowledge-graph", tags=["knowledge-graph"])
 
-# Graph instance — injected at startup
+# Graph instances — injected at startup or populated by POST /umrs/knowledge/understand
 _graph: InMemoryKnowledgeGraph | None = None
+_project_graphs: dict[str, InMemoryKnowledgeGraph] = {}
 
 
 def set_graph(graph: InMemoryKnowledgeGraph) -> None:
@@ -42,13 +44,20 @@ def set_graph(graph: InMemoryKnowledgeGraph) -> None:
     _graph = graph
 
 
-def _get_graph() -> InMemoryKnowledgeGraph:
-    if _graph is None:
-        raise HTTPException(
-            status_code=503,
-            detail="Knowledge graph not initialized",
-        )
-    return _graph
+def register_project_graph(project_id: str, graph: InMemoryKnowledgeGraph) -> None:
+    """Store a project-scoped graph for HTTP traversal endpoints."""
+    _project_graphs[project_id] = graph
+
+
+def _get_graph(project_id: str | None = None) -> InMemoryKnowledgeGraph:
+    if project_id and project_id in _project_graphs:
+        return _project_graphs[project_id]
+    if _graph is not None:
+        return _graph
+    raise HTTPException(
+        status_code=503,
+        detail="Knowledge graph not initialized. Run POST /umrs/knowledge/understand first.",
+    )
 
 
 # ── Request/Response Models ──────────────────────────────────────────────
@@ -100,13 +109,19 @@ class QueryResponse(BaseModel):
     total: int
 
 
+def _resolve_graph(project_id: str = Depends(get_project_id)) -> InMemoryKnowledgeGraph:
+    return _get_graph(project_id)
+
+
 # ── Routes ────────────────────────────────────────────────────────────────
 
 
 @router.post("/nodes", response_model=NodeResponse)
-async def add_node(req: AddNodeRequest) -> NodeResponse:
+async def add_node(
+    req: AddNodeRequest,
+    graph: InMemoryKnowledgeGraph = Depends(_resolve_graph),
+) -> NodeResponse:
     """Add a node to the knowledge graph."""
-    graph = _get_graph()
     graph.add_node(
         node_id=req.node_id,
         node_type=req.node_type,
@@ -118,9 +133,11 @@ async def add_node(req: AddNodeRequest) -> NodeResponse:
 
 
 @router.post("/edges")
-async def add_edge(req: AddEdgeRequest) -> dict[str, Any]:
+async def add_edge(
+    req: AddEdgeRequest,
+    graph: InMemoryKnowledgeGraph = Depends(_resolve_graph),
+) -> dict[str, Any]:
     """Add an edge to the knowledge graph."""
-    graph = _get_graph()
     try:
         relation_type = RelationType(req.relation_type)
     except ValueError:
@@ -140,9 +157,11 @@ async def add_edge(req: AddEdgeRequest) -> dict[str, Any]:
 
 
 @router.get("/nodes/{node_id}", response_model=NodeResponse)
-async def get_node(node_id: str) -> NodeResponse:
+async def get_node(
+    node_id: str,
+    graph: InMemoryKnowledgeGraph = Depends(_resolve_graph),
+) -> NodeResponse:
     """Get a node by ID."""
-    graph = _get_graph()
     node = graph.get_node(node_id)
     if node is None:
         raise HTTPException(
@@ -153,25 +172,31 @@ async def get_node(node_id: str) -> NodeResponse:
 
 
 @router.get("/nodes/{node_id}/outgoing", response_model=list[EdgeResponse])
-async def get_outgoing(node_id: str) -> list[EdgeResponse]:
+async def get_outgoing(
+    node_id: str,
+    graph: InMemoryKnowledgeGraph = Depends(_resolve_graph),
+) -> list[EdgeResponse]:
     """Get all outgoing edges from a node."""
-    graph = _get_graph()
     edges = graph.get_outgoing(node_id)
     return [EdgeResponse(**edge.to_dict()) for edge in edges]
 
 
 @router.get("/nodes/{node_id}/incoming", response_model=list[EdgeResponse])
-async def get_incoming(node_id: str) -> list[EdgeResponse]:
+async def get_incoming(
+    node_id: str,
+    graph: InMemoryKnowledgeGraph = Depends(_resolve_graph),
+) -> list[EdgeResponse]:
     """Get all incoming edges to a node."""
-    graph = _get_graph()
     edges = graph.get_incoming(node_id)
     return [EdgeResponse(**edge.to_dict()) for edge in edges]
 
 
 @router.get("/nodes/{node_id}/neighbors")
-async def get_neighbors(node_id: str) -> dict[str, Any]:
+async def get_neighbors(
+    node_id: str,
+    graph: InMemoryKnowledgeGraph = Depends(_resolve_graph),
+) -> dict[str, Any]:
     """Get all neighbor node IDs."""
-    graph = _get_graph()
     neighbors = graph.get_neighbors(node_id)
     return {"node_id": node_id, "neighbors": neighbors}
 
@@ -180,9 +205,9 @@ async def get_neighbors(node_id: str) -> dict[str, Any]:
 async def get_related(
     node_id: str,
     relation_type: str = Query(..., description="Relation type"),
+    graph: InMemoryKnowledgeGraph = Depends(_resolve_graph),
 ) -> dict[str, Any]:
     """Get all node IDs related to the given node with the given relation type."""
-    graph = _get_graph()
     try:
         rel_type = RelationType(relation_type)
     except ValueError:
@@ -199,9 +224,9 @@ async def find_path(
     source_id: str = Query(..., description="Source node ID"),
     target_id: str = Query(..., description="Target node ID"),
     max_depth: int = Query(5, ge=1, le=20, description="Maximum search depth"),
+    graph: InMemoryKnowledgeGraph = Depends(_resolve_graph),
 ) -> PathResponse:
     """Find a path between two nodes using BFS."""
-    graph = _get_graph()
     path = graph.find_path(source_id, target_id, max_depth=max_depth)
     return PathResponse(
         source_id=source_id,
@@ -215,9 +240,9 @@ async def find_path(
 async def query_graph(
     node_type: str | None = Query(None, description="Filter by node type"),
     relation_type: str | None = Query(None, description="Filter by relation type"),
+    graph: InMemoryKnowledgeGraph = Depends(_resolve_graph),
 ) -> QueryResponse:
     """Query the graph for nodes matching the given criteria."""
-    graph = _get_graph()
     rel_type: RelationType | None = None
     if relation_type:
         try:

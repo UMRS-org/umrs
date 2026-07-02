@@ -276,6 +276,41 @@ class UMRSKnowledgeGraphAdapter:
     def __init__(self, graph: InMemoryKnowledgeGraph | None = None) -> None:
         self._graph = graph or InMemoryKnowledgeGraph()
 
+    @property
+    def graph(self) -> InMemoryKnowledgeGraph:
+        """Underlying UMRS knowledge graph store."""
+        return self._graph
+
+    def load_from_linker_graph(self, linker_graph: Any) -> None:
+        """Replace adapter contents with linker output from ``understand()``."""
+        fresh = InMemoryKnowledgeGraph()
+        for node in linker_graph.nodes.values():
+            fresh.add_node(
+                node_id=node.node_id,
+                node_type=node.node_type,
+                title=node.title,
+                metadata=dict(node.metadata),
+            )
+        for edge in linker_graph.edges:
+            relation_value = (
+                edge.relation_type.value
+                if hasattr(edge.relation_type, "value")
+                else str(edge.relation_type)
+            )
+            try:
+                relation_type = RelationType(relation_value)
+            except ValueError:
+                relation_type = RelationType.RELATED_TO
+            fresh.add_edge(
+                source_id=edge.source_id,
+                target_id=edge.target_id,
+                relation_type=relation_type,
+                weight=edge.weight,
+                confidence=edge.confidence,
+                metadata=dict(edge.metadata),
+            )
+        self._graph = fresh
+
     def add_node(
         self,
         *,
