@@ -13,6 +13,8 @@ from .egress_audit import router as egress_audit_router
 from .endpoints import router as endpoints_router
 from .files import router as files_router
 from .jobs import router as jobs_router
+from .knowledge import router as knowledge_router
+from .knowledge_graph import router as knowledge_graph_router
 from .llm import router as llm_router
 from .mcp import router as mcp_router
 from .models import policy_router
@@ -36,6 +38,8 @@ __all__ = [
     "endpoints_router",
     "files_router",
     "jobs_router",
+    "knowledge_router",
+    "knowledge_graph_router",
     "llm_router",
     "mcp_router",
     "models_router",
