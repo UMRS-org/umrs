@@ -24,7 +24,13 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 from typing import Any, Protocol
+
+from .persistence import (
+    read_local_extracted_knowledge,
+    write_local_extracted_knowledge,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -129,6 +135,7 @@ class InMemoryKnowledgeStore:
     artifacts: dict[str, dict[str, Any]] = field(default_factory=dict)
     extracted_knowledge: dict[str, dict[str, Any]] = field(default_factory=dict)
     knowledge_graph: dict[str, Any] = field(default_factory=dict)
+    persistence_dir: Path | None = None
 
     def add_artifact(self, artifact: dict[str, Any]) -> None:
         artifact_id = artifact["artifact_id"]
@@ -140,6 +147,12 @@ class InMemoryKnowledgeStore:
         knowledge: dict[str, Any],
     ) -> None:
         self.extracted_knowledge[artifact_id] = knowledge
+        if self.persistence_dir is not None:
+            write_local_extracted_knowledge(
+                self.persistence_dir,
+                artifact_id,
+                knowledge,
+            )
 
     def list_artifacts(self, artifact_type: str | None = None) -> list[dict[str, Any]]:
         artifacts = list(self.artifacts.values())
@@ -151,7 +164,15 @@ class InMemoryKnowledgeStore:
         return self.artifacts.get(artifact_id)
 
     def get_extracted_knowledge(self, artifact_id: str) -> dict[str, Any] | None:
-        return self.extracted_knowledge.get(artifact_id)
+        cached = self.extracted_knowledge.get(artifact_id)
+        if cached is not None:
+            return cached
+        if self.persistence_dir is None:
+            return None
+        loaded = read_local_extracted_knowledge(self.persistence_dir, artifact_id)
+        if loaded is not None:
+            self.extracted_knowledge[artifact_id] = loaded
+        return loaded
 
     def search_artifacts(
         self,

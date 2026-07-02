@@ -180,6 +180,51 @@ def test_understand_builds_knowledge_graph(project_dir: Path):
     assert len(project.extracted_knowledge) > 0
 
 
+def test_local_extracted_knowledge_persists_on_disk(project_dir: Path, tmp_path: Path):
+    """Structured knowledge should reload from disk after the in-memory cache clears."""
+    storage = tmp_path / "project-data"
+    project = ResearchProject(project_id="proj-001", storage_path=storage)
+    project.ingest_directory(project_dir)
+    project.understand()
+
+    saved = dict(project.knowledge_store.extracted_knowledge)
+    assert saved
+
+    project.knowledge_store.extracted_knowledge.clear()
+    for artifact_id, expected in saved.items():
+        reloaded = project.knowledge_store.get_extracted_knowledge(artifact_id)
+        assert reloaded is not None
+        assert reloaded.get("artifact_type") == expected.get("artifact_type")
+
+
+def test_understand_bridges_local_pdf_via_catalog(tmp_path: Path, monkeypatch):
+    """Local PDF ingest should use Phase 3 text extraction before regex parsing."""
+    papers_dir = tmp_path / "papers"
+    papers_dir.mkdir()
+    pdf_bytes = b"%PDF-1.4\n% not a valid pdf object stream"
+    (papers_dir / "realistic.pdf").write_bytes(pdf_bytes)
+
+    scientific_text = (
+        "The goal of this paper is to test local PDF bridging in understand().\n"
+        "Keywords: integration, pdf, understand\n"
+    )
+
+    monkeypatch.setattr(
+        "umrs.data_catalog.extract.extract_content",
+        lambda _filename, _content: ("summary", scientific_text, []),
+    )
+
+    project = ResearchProject(project_id="proj-pdf-bridge")
+    project.ingest_directory(papers_dir)
+    project.understand()
+
+    paper_knowledge = next(
+        k for k in project.extracted_knowledge.values() if k.filename == "realistic.pdf"
+    )
+    assert "local PDF bridging" in paper_knowledge.objective
+    assert "pdf" in paper_knowledge.keywords
+
+
 def test_verify_returns_evidence_backed_answer(project_dir: Path):
     """M2: verify() returns a VerificationAnswer with evidence."""
     project = ResearchProject(project_id="proj-001")

@@ -350,3 +350,47 @@ def test_calculate_coverage_convenience_function():
 
     assert isinstance(dashboard, CoverageDashboard)
     assert dashboard.total_artifacts == 1
+
+
+def test_determine_status_low_completeness_is_missing():
+    """Artifacts with very low completeness should be MISSING, not PARTIAL."""
+    calculator = CoverageCalculator()
+    artifacts = [
+        {
+            "artifact_id": "paper-001",
+            "artifact_type": "paper",
+            "filename": "paper.pdf",
+            "extracted_knowledge": {},
+            "metadata": {},
+        },
+    ]
+    dashboard = calculator.calculate(artifacts)
+
+    assert dashboard.artifacts[0].status == CoverageStatus.MISSING
+    assert dashboard.type_missing.get("paper", 0) == 1
+
+
+def test_code_missing_fields_are_type_aware():
+    """Code coverage should not require paper-only fields like objective."""
+    calculator = CoverageCalculator()
+    artifacts = [
+        {
+            "artifact_id": "code-001",
+            "artifact_type": "code",
+            "filename": "model.py",
+            "extracted_knowledge": {
+                "modules": ["model"],
+                "apis": ["TransformerModel"],
+                "algorithms": ["train"],
+                "dependencies": ["torch"],
+                "parameters": ["input_dim"],
+                "kernels": [],
+                "execution_flow": "has_main_block",
+            },
+        },
+    ]
+    dashboard = calculator.calculate(artifacts)
+
+    missing = dashboard.artifacts[0].missing_fields
+    assert "objective" not in missing
+    assert "kernels" in missing
