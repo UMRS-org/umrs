@@ -25,7 +25,7 @@ Run from the repository root unless noted.
 
    ```bash
    cd umrs/demos_private/10_hmae_full_pipeline
-   PATH="/Users/mnagaso/workspace/RCCS/ai4s-platform/.venv/bin:$PATH" \
+   PATH="$PWD/.venv/bin:$PATH" \
      UMRS_PROFILE=umrs-front \
      MAX_IMAGES=1 \
      RESULT_DOWNLOAD_TIMEOUT=2400 \
