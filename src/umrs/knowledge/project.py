@@ -40,6 +40,7 @@ from .coverage import (
 )
 from .external import ExternalKnowledgeSearcher
 from .extract import ExtractedKnowledge, KnowledgeExtractor
+from .knowledge_driven_planner import KnowledgeDrivenPlanner
 from .link import KnowledgeGraph, KnowledgeLinker
 from .loop import AutonomousResearchLoop, ResearchLoop
 from .memory import ScientificMemoryManager, ScientificMemoryStore
@@ -454,30 +455,16 @@ class ResearchProject:
     def plan_research(self, research_goal: str) -> ResearchPlan:
         """Generate a research plan for the project.
 
-        Uses:
-          - Project knowledge (papers, code, notebooks, datasets)
-          - External knowledge (arXiv, Semantic Scholar, CrossRef)
-          - Scientific memory (auto-registered artifacts)
-
-        Generates:
-          - Research objectives (Understanding, Verification, Optimization)
-          - Hypotheses with confidence and expected outcomes
-          - Experiments with parameters, resources, and validation methods
-          - Expected outcomes
-          - Success probability
+        Uses the UMRS knowledge graph (when populated) via
+        ``KnowledgeDrivenPlanner`` and falls back to template planning
+        when the graph has no anchor nodes.
 
         Phase transition: READY → PLANNING → RESEARCHING (via run_research())
         """
         self._transition(ProjectPhase.READY, ProjectPhase.PLANNING)
         start = datetime.now(timezone.utc)
 
-        self._research_plan = self._planner.generate_plan(
-            project_id=self.project_id,
-            research_goal=research_goal,
-            knowledge_base=self._knowledge_store.list_artifacts(),
-            external_refs=self._external_refs,
-            memory_store=self._memory_store,
-        )
+        self._research_plan = self._plan_with_knowledge_graph(research_goal)
 
         self._log_transition(
             ProjectPhase.PLANNING,
@@ -489,9 +476,26 @@ class ResearchProject:
                 "hypotheses": len(self._research_plan.hypotheses),
                 "experiments": len(self._research_plan.experiments),
                 "success_probability": self._research_plan.success_probability,
+                "source_knowledge_ids": len(self._research_plan.source_knowledge_ids),
             },
         )
         return self._research_plan
+
+    def _plan_with_knowledge_graph(self, research_goal: str) -> ResearchPlan:
+        """Plan via graph-centric reasoning when ``understand()`` populated the graph."""
+        from umrs.graph_reasoning import GraphNavigator
+        from umrs.scientific_reasoning_engine import ScientificReasoningEngine
+
+        navigator = GraphNavigator(graph=self._umrs_knowledge_graph.graph)
+        engine = ScientificReasoningEngine(navigator=navigator)
+        planner = KnowledgeDrivenPlanner(reasoning_engine=engine)
+        plan = planner.plan_research(
+            project_id=self.project_id,
+            research_goal=research_goal,
+        )
+        if not plan.source_knowledge_ids and self._knowledge_graph.nodes:
+            plan.source_knowledge_ids = list(self._knowledge_graph.nodes.keys())
+        return plan
 
     def run_research(self, max_iterations: int = 10) -> ResearchLoop:
         """Execute the autonomous research loop.
