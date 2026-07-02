@@ -165,7 +165,7 @@ def test_knowledge_store_protocol_and_verifier():
     assert loaded is not None
     assert b"import torch" in loaded["content"]
 
-    knowledge = adapter.get_extracted_knowledge(artifact_id)
+    knowledge = adapter.get_catalog_text(artifact_id)
     assert knowledge is not None
     assert "import torch" in knowledge["extracted_text"]
 
@@ -230,6 +230,18 @@ class _AdapterS3:
                 continue
             contents.append({"Key": key})
         return [{"Contents": contents}]
+
+    def put_object(
+        self,
+        *,
+        Bucket: str,  # noqa: N803
+        Key: str,  # noqa: N803
+        Body: bytes | str,
+        ContentType: str | None = None,
+        Metadata: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        self.objects[Key] = Body.encode("utf-8") if isinstance(Body, str) else Body
+        return {"ETag": '"new"'}
 
 
 def _ready_meta(
