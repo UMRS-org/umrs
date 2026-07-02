@@ -201,6 +201,34 @@ def test_knowledge_graph_adapter_find_path():
     assert path[-1] == "c"
 
 
+def test_knowledge_graph_adapter_load_from_linker_graph():
+    """Adapter should mirror linker graph nodes and edges."""
+    from umrs.knowledge.link import (
+        KnowledgeEdge as LinkerEdge,
+        KnowledgeGraph as LinkerGraph,
+        KnowledgeNode as LinkerNode,
+        RelationType as LinkerRelationType,
+    )
+
+    linker_graph = LinkerGraph()
+    linker_graph.add_node(LinkerNode(node_id="paper-1", node_type="paper", title="Paper"))
+    linker_graph.add_node(LinkerNode(node_id="code-1", node_type="code", title="Code"))
+    linker_graph.add_edge(
+        LinkerEdge(
+            source_id="code-1",
+            target_id="paper-1",
+            relation_type=LinkerRelationType.IMPLEMENTS,
+        )
+    )
+
+    adapter = UMRSKnowledgeGraphAdapter()
+    adapter.load_from_linker_graph(linker_graph)
+
+    assert adapter.get_node("paper-1") is not None
+    assert adapter.get_node("code-1") is not None
+    assert adapter.get_related("code-1", RelationType.IMPLEMENTS) == ["paper-1"]
+
+
 # ── Experiment Registry Adapter Tests ────────────────────────────────────
 
 
