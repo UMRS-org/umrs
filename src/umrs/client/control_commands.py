@@ -222,6 +222,12 @@ def configure_endpoint_up_parser(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument("--gpu-count", type=int, default=1, help="GPU count")
     parser.add_argument(
+        "--node-count",
+        type=int,
+        default=1,
+        help="Number of Slurm nodes for multi-node pipeline parallelism (default: 1)",
+    )
+    parser.add_argument(
         "--max-model-len", type=int, default=4096, help="vLLM max model length"
     )
     parser.add_argument(

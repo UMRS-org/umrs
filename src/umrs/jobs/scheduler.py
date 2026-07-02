@@ -315,6 +315,10 @@ class SimpleBackendAdapter:
                 extra_kwargs["partition_override"] = job.spec["partition_override"]
             if job.spec.get("nodelist_hint"):
                 extra_kwargs["nodelist_hint"] = job.spec["nodelist_hint"]
+            if job.spec.get("node_count") and int(job.spec["node_count"]) > 1:
+                extra_kwargs["node_count"] = int(job.spec["node_count"])
+            if job.spec.get("gpu_count"):
+                extra_kwargs["gpu_count"] = int(job.spec["gpu_count"])
 
             job_info = await asyncio.get_event_loop().run_in_executor(
                 None,
