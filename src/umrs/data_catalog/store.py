@@ -8,7 +8,7 @@ from typing import Any
 
 from botocore.exceptions import ClientError
 
-from .constants import EXTRACTED_TEXT_PREFIX
+from .constants import EXTRACTED_KNOWLEDGE_PREFIX, EXTRACTED_TEXT_PREFIX
 from .paths import encode_s3_key, meta_object_key
 from .schema import CatalogObjectMeta
 
@@ -54,6 +54,43 @@ def write_extracted_text(
         ContentType="text/plain; charset=utf-8",
     )
     return ref
+
+
+def write_structured_knowledge(
+    s3_client: Any,
+    bucket: str,
+    s3_key: str,
+    knowledge: dict[str, Any],
+) -> str:
+    """Store Phase 4 ``ExtractedKnowledge`` JSON; return its S3 key ref."""
+    ref = f"{EXTRACTED_KNOWLEDGE_PREFIX}{encode_s3_key(s3_key)}.json"
+    body = json.dumps(knowledge, indent=2, sort_keys=True).encode("utf-8")
+    s3_client.put_object(
+        Bucket=bucket,
+        Key=ref,
+        Body=body,
+        ContentType="application/json",
+    )
+    return ref
+
+
+def read_structured_knowledge(
+    s3_client: Any,
+    bucket: str,
+    ref: str,
+) -> dict[str, Any] | None:
+    """Load persisted Phase 4 structured knowledge from S3."""
+    try:
+        response = s3_client.get_object(Bucket=bucket, Key=ref)
+        payload = json.loads(response["Body"].read().decode("utf-8"))
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") in {"NoSuchKey", "404"}:
+            return None
+        raise
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        logger.warning("Failed to decode structured knowledge at %s: %s", ref, exc)
+        return None
+    return payload if isinstance(payload, dict) else None
 
 
 def get_object_size(s3_client: Any, bucket: str, s3_key: str) -> int:

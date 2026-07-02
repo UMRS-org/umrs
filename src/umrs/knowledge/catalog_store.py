@@ -10,9 +10,9 @@ from ..data_catalog.adapter import CatalogArtifactAdapter
 class CatalogKnowledgeStore:
     """``KnowledgeStore`` that reads artifacts from ``CatalogArtifactAdapter``.
 
-    Extracted knowledge and knowledge-graph attachments are held in a small
-    in-memory overlay populated by ``ResearchProject.understand()`` and
-    ``verify()``. Artifact bytes are loaded from catalog on demand.
+    Structured ``ExtractedKnowledge`` is persisted to S3 via the catalog
+    adapter and reloaded on ``get_extracted_knowledge()``. A small in-memory
+    overlay caches the current process session.
     """
 
     def __init__(self, adapter: CatalogArtifactAdapter) -> None:
@@ -30,6 +30,7 @@ class CatalogKnowledgeStore:
         knowledge: dict[str, Any],
     ) -> None:
         self._extracted_knowledge[artifact_id] = knowledge
+        self._adapter.persist_structured_knowledge(artifact_id, knowledge)
 
     def list_artifacts(self, artifact_type: str | None = None) -> list[dict[str, Any]]:
         return self._adapter.list_artifacts(artifact_type)
@@ -41,7 +42,7 @@ class CatalogKnowledgeStore:
         overlay = self._extracted_knowledge.get(artifact_id)
         if overlay is not None:
             return overlay
-        return self._adapter.get_extracted_knowledge(artifact_id)
+        return self._adapter.load_structured_knowledge(artifact_id)
 
     def search_artifacts(
         self,
