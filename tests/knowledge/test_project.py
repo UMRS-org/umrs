@@ -180,6 +180,21 @@ def test_understand_builds_knowledge_graph(project_dir: Path):
     assert len(project.extracted_knowledge) > 0
 
 
+def test_understand_syncs_umrs_knowledge_graph(project_dir: Path):
+    """Linker output should populate the UMRS knowledge graph adapter."""
+    project = ResearchProject(project_id="proj-001")
+    project.ingest_directory(project_dir)
+    project.understand()
+
+    linker_nodes = len(project.knowledge_graph.nodes)
+    linker_edges = len(project.knowledge_graph.edges)
+    umrs_nodes = project.umrs_knowledge_graph.query()
+
+    assert linker_nodes > 0
+    assert len(umrs_nodes) == linker_nodes
+    assert len(project.umrs_knowledge_graph.graph._edges) == linker_edges
+
+
 def test_local_extracted_knowledge_persists_on_disk(project_dir: Path, tmp_path: Path):
     """Structured knowledge should reload from disk after the in-memory cache clears."""
     storage = tmp_path / "project-data"

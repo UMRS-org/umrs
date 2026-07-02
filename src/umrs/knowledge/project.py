@@ -326,6 +326,7 @@ class ResearchProject:
         artifact_dicts = [dict(a, extracted_knowledge=self._extracted_knowledge.get(a.get("artifact_id", ""))) for a in artifacts]
         self._knowledge_graph = self._linker.link(artifact_dicts)
         self._sync_graph_to_store()
+        self._sync_graph_to_umrs_adapter()
 
         # Calculate coverage dashboard
         coverage_artifacts = []
@@ -769,6 +770,12 @@ class ResearchProject:
             self._knowledge_store.set_knowledge_graph(graph)
         elif hasattr(self._knowledge_store, "knowledge_graph"):
             self._knowledge_store.knowledge_graph = graph
+
+    def _sync_graph_to_umrs_adapter(self) -> None:
+        """Mirror linker output into the UMRS knowledge graph adapter."""
+        if not self._knowledge_graph.nodes and not self._knowledge_graph.edges:
+            return
+        self._umrs_knowledge_graph.load_from_linker_graph(self._knowledge_graph)
 
     # ── Internal: Phase Transitions ──────────────────────────────────────────
 
