@@ -8,8 +8,9 @@ from typing import Any
 
 from umrs.data_catalog.paths import meta_object_key
 from umrs.data_catalog.schema import CatalogObjectMeta, CatalogState
-from umrs.knowledge.catalog_store import CatalogKnowledgeStore
 from umrs.data_catalog.adapter import CatalogArtifactAdapter
+from umrs.data_catalog.artifacts import artifact_id_for_meta
+from umrs.knowledge.catalog_store import CatalogKnowledgeStore
 from botocore.exceptions import ClientError
 
 
@@ -23,6 +24,36 @@ def test_extracted_knowledge_overlay():
 
     store.add_extracted_knowledge("art-1", {"summary": "overlay summary"})
     assert store.get_extracted_knowledge("art-1") == {"summary": "overlay summary"}
+
+
+def test_extracted_knowledge_persisted_to_catalog():
+    py_key = "proj-1/uploads/code/model.py"
+    meta = _ready_meta(py_key, "proj-1", "code", summary="torch model")
+    client = _StoreS3({py_key: b"import torch\n"}, {py_key: meta})
+    adapter = CatalogArtifactAdapter(client, "bucket", "proj-1")
+    store = CatalogKnowledgeStore(adapter)
+    artifact_id = artifact_id_for_meta(meta)
+    knowledge = {
+        "artifact_id": artifact_id,
+        "artifact_type": "code",
+        "filename": "model.py",
+        "objective": "",
+        "algorithms": ["train"],
+        "extraction_confidence": 0.8,
+        "coverage_score": 0.5,
+    }
+
+    store.add_extracted_knowledge(artifact_id, knowledge)
+    store._extracted_knowledge.clear()
+
+    loaded = store.get_extracted_knowledge(artifact_id)
+    assert loaded is not None
+    assert loaded["algorithms"] == ["train"]
+
+    updated_meta = json.loads(
+        client.objects[meta_object_key(py_key)].decode("utf-8")
+    )
+    assert updated_meta["extracted_knowledge_ref"]
 
 
 def test_refresh_picks_up_new_catalog_object():
@@ -94,6 +125,18 @@ class _StoreS3:
                 continue
             contents.append({"Key": key})
         return [{"Contents": contents}]
+
+    def put_object(
+        self,
+        *,
+        Bucket: str,  # noqa: N803
+        Key: str,  # noqa: N803
+        Body: bytes | str,
+        ContentType: str | None = None,
+        Metadata: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        self.objects[Key] = Body.encode("utf-8") if isinstance(Body, str) else Body
+        return {"ETag": '"new"'}
 
 
 def _ready_meta(
