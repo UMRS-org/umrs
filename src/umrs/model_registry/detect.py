@@ -137,6 +137,33 @@ def detect_capabilities(
         logger.debug("No config.json in %s", model_path)
         return None
 
+    tok_config = _read_json(base / "tokenizer_config.json")
+    gen_config = _read_json(base / "generation_config.json")
+
+    return detect_capabilities_from_files(
+        config, tok_config, gen_config, model_name=model_name
+    )
+
+
+def detect_capabilities_from_files(
+    config: dict[str, Any] | None,
+    tok_config: dict[str, Any] | None,
+    gen_config: dict[str, Any] | None,
+    model_name: str | None = None,
+) -> ModelCapabilities | None:
+    """
+    Detect capabilities from pre-loaded config dicts.
+
+    Each argument is the parsed JSON contents of the corresponding model
+    file (``config.json``, ``tokenizer_config.json``,
+    ``generation_config.json``). ``None`` means the file was missing or
+    unreadable.
+
+    Returns ModelCapabilities if anything was detected, None otherwise.
+    """
+    if config is None:
+        return None
+
     # --- Model family ---
     model_type = config.get("model_type")
     model_family = _normalize_family(model_type) if model_type else None
@@ -173,7 +200,6 @@ def detect_capabilities(
 
     # --- Tool calling ---
     supports_tool_calling = False
-    tok_config = _read_json(base / "tokenizer_config.json")
     if tok_config:
         chat_template = tok_config.get("chat_template", "")
         if isinstance(chat_template, list):
@@ -189,15 +215,13 @@ def detect_capabilities(
 
     # --- Max output tokens ---
     max_output_tokens = None
-    gen_config = _read_json(base / "generation_config.json")
     if gen_config:
         max_new = gen_config.get("max_new_tokens")
         if isinstance(max_new, int) and max_new > 0:
             max_output_tokens = max_new
 
     logger.info(
-        "Detected capabilities for %s: family=%s tools=%s vision=%s ctx=%s",
-        model_path,
+        "Detected capabilities: family=%s tools=%s vision=%s ctx=%s",
         model_family,
         supports_tool_calling,
         supports_vision,

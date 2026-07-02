@@ -187,6 +187,32 @@ _vllm_container_model_path="${VLLM_CONTAINER_MODEL_PATH:-/models/${_vllm_mount_n
 # VLLM_MODEL_REF is what vLLM --model receives (may include subdirectory)
 _vllm_model_ref="${VLLM_MODEL_REF:-${_vllm_container_model_path}${_vllm_container_model_subdir}}"
 _vllm_served_model_name="${VLLM_SERVED_MODEL_NAME:-${VLLM_MODEL:-Qwen/Qwen3-0.6B}}"
+
+# ─── Resolve tokenizer path for GGUF / separate-tokenizer models ─────────────
+# vLLM needs a real tokenizer directory when the model path is a GGUF file.
+# If VLLM_TOKENIZER_HOST_PATH is provided, bind-mount it into the container.
+# If VLLM_TOKENIZER_ARGS is not set but VLLM_TOKENIZER is, build the CLI arg.
+_vllm_tokenizer_host_path="${VLLM_TOKENIZER_HOST_PATH:-}"
+_vllm_tokenizer_container_path="${VLLM_TOKENIZER_CONTAINER_PATH:-/tokenizer}"
+if [[ -z "$_vllm_tokenizer_host_path" && -n "${VLLM_TOKENIZER:-}" ]]; then
+    if [[ "${VLLM_TOKENIZER}" == /* ]]; then
+        _vllm_tokenizer_host_path="${VLLM_TOKENIZER}"
+    else
+        # Treat as a directory under the HF cache root
+        _vllm_tokenizer_host_path="${VLLM_PATH_TO_HUGGINGFACE:-./models/vllm/huggingface}/hub/models--$(echo "$VLLM_TOKENIZER" | sed 's|/|--|g')/snapshots"
+        if [[ -d "$_vllm_tokenizer_host_path" ]]; then
+            _vllm_tokenizer_host_path="$(_resolve_model_dir "$_vllm_tokenizer_host_path")"
+        fi
+    fi
+fi
+_vllm_tokenizer_args="${VLLM_TOKENIZER_ARGS:-}"
+if [[ -z "$_vllm_tokenizer_args" && -n "${VLLM_TOKENIZER:-}" ]]; then
+    _vllm_tokenizer_args=" --tokenizer=${_vllm_tokenizer_container_path}"
+fi
+if [[ -n "${VLLM_TRUST_REMOTE_CODE:-}" ]]; then
+    _vllm_tokenizer_args="${_vllm_tokenizer_args} --trust-remote-code"
+fi
+
 NGINX_LITELLM_DOCKER_PORT="${LITELLM_PORT:-${NGINX_LITELLM_DOCKER_PORT:-$(shuf -i 1025-65535 -n 1)}}"
 export NGINX_LITELLM_DOCKER_PORT
 
@@ -253,6 +279,14 @@ VLLM_CONTAINER_MODEL_PATH=${_vllm_container_model_path}
 VLLM_MODEL_REF=${_vllm_model_ref}
 # Name exposed via /v1/models endpoint (what clients see)
 VLLM_SERVED_MODEL_NAME=${_vllm_served_model_name}
+# Extra vLLM CLI arguments (e.g. " --tokenizer=/tokenizer" for GGUF). Emitted
+# only when non-empty and appended to VLLM_MODEL_REF so no empty token is left
+# in the podman-compose command string.
+${_vllm_tokenizer_args:+VLLM_EXTRA_ARGS=${_vllm_tokenizer_args}}
+# Host path bind-mounted as the tokenizer directory
+VLLM_TOKENIZER_HOST_PATH=${_vllm_tokenizer_host_path:-/dev/null}
+# Container path where the tokenizer directory is mounted
+VLLM_TOKENIZER_CONTAINER_PATH=${_vllm_tokenizer_container_path:-/tokenizer}
 
 # ─── 2. vLLM: Parallelism & Performance ──────────────────────────────────────
 # Tensor parallelism degree (split layers across GPUs horizontally)
@@ -262,12 +296,20 @@ VLLM_TP=${VLLM_TP:-1}
 VLLM_PP=${VLLM_PP:-1}
 # Number of Slurm nodes requested (>1 enables multi-node PP)
 SLURM_NODES=${SLURM_NODES:-1}
+# Distributed executor backend (set to 'ray' for multi-node PP)
+VLLM_DISTRIBUTED_EXECUTOR_BACKEND=${VLLM_DISTRIBUTED_EXECUTOR_BACKEND:-}
+# Ray cluster address (head_ip:port; set by multi-node bootstrap)
+RAY_ADDRESS=${RAY_ADDRESS:-}
 # Container image tag for the vLLM service
 VLLM_DOCKER_TAG=${VLLM_DOCKER_TAG:-v0.20.0}
 # Fraction of GPU memory vLLM is allowed to use for KV-cache
 VLLM_GPU_MEM_UTIL=${VLLM_GPU_MEM_UTIL:-0.95}
 # Tool-call parsing strategy (hermes = Hermes-style function call format)
 VLLM_TOOL_CALL_PARSER=${VLLM_TOOL_CALL_PARSER:-hermes}
+# Reasoning parser for models that emit thinking/reasoning content
+VLLM_REASONING_PARSER=${VLLM_REASONING_PARSER:-}
+# Trust remote code from the model repository
+VLLM_TRUST_REMOTE_CODE=${VLLM_TRUST_REMOTE_CODE:-}
 # NCCL/RCCL shared-memory limits for multi-GPU collective comms
 VLLM_NCCL_MEM_LIMIT=8G
 VLLM_RCCL_MEM_LIMIT=8G
@@ -707,6 +749,8 @@ done
 _cleanup_started=0
 RIVAULT_CONTROL_DIR="${RIVAULT_CONTROL_DIR:-}"
 RIVAULT_STOP_REQUEST_FILE=""
+RAY_HEAD_PID=""
+WORKER_PIDS=()
 if [[ -n "${RIVAULT_CONTROL_DIR}" && -n "${SLURM_JOB_ID:-}" ]]; then
     mkdir -p "${RIVAULT_CONTROL_DIR}" 2>/dev/null || true
     RIVAULT_STOP_REQUEST_FILE="${RIVAULT_CONTROL_DIR%/}/stop-${SLURM_JOB_ID}.request"
@@ -723,6 +767,13 @@ cleanup_stack() {
     trap - EXIT TERM INT
 
     echo "[rivault] Cleaning up stack (${reason})..."
+    # Stop Ray workers and head (multi-node only)
+    if [[ ${#WORKER_PIDS[@]} -gt 0 ]]; then
+        kill "${WORKER_PIDS[@]}" 2>/dev/null || true
+    fi
+    if [[ -n "${RAY_HEAD_PID}" ]]; then
+        kill "${RAY_HEAD_PID}" 2>/dev/null || true
+    fi
     cleanup_ssh_tunnels
     podman-compose --project-name "exit" --in-pod false \
                --env-file "./env.${uuid}" \
@@ -847,6 +898,109 @@ printf "%s" "$count"'
     fi
     echo "[rivault] LiteLLM DB schema initialized (${applied_count} SQL migrations)."
 }
+
+# ─── Multi-node Ray cluster bootstrap ────────────────────────────────────────
+# When Slurm allocates more than one node, bootstrap a Ray cluster across the
+# allocation before starting the compose stack.  The vLLM container (in compose)
+# then connects to the Ray cluster via --distributed-executor-backend ray and
+# RAY_ADDRESS, allowing pipeline-parallel serving of models that exceed one
+# node's GPU memory (e.g. GLM-5.2 223 GB across 2 × 128 GB GB10 nodes).
+#
+# Ray head runs in a --network host container on the head node; Ray workers run
+# in --network host containers on the remaining nodes via srun.  The vLLM
+# container (on the genai-private-net bridge) reaches the Ray head through the
+# bridge gateway, which routes to the host's external IP.
+_MULTI_NODE=0
+if [[ "${SLURM_JOB_NUM_NODES:-${SLURM_NNODES:-1}}" -gt 1 ]]; then
+    _MULTI_NODE=1
+    echo "[rivault] Multi-node allocation: ${SLURM_JOB_NUM_NODES:-${SLURM_NNODES}} nodes"
+
+    mapfile -t RAY_NODES < <(scontrol show hostnames "${SLURM_JOB_NODELIST:-}")
+    HEAD_NODE="${RAY_NODES[0]:-$(hostname)}"
+    HEAD_IP="$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -E '^[0-9]+\.' | head -1)"
+    if [[ -z "${HEAD_IP}" ]]; then
+        HEAD_IP="$(getent hosts "${HEAD_NODE}" | awk '{print $1; exit}')"
+    fi
+    if [[ -z "${HEAD_IP}" ]]; then
+        echo "[rivault] FATAL: cannot determine head node IP for Ray bootstrap" >&2
+        exit 1
+    fi
+
+    RAY_PORT=6379
+    RAY_ADDRESS="${HEAD_IP}:${RAY_PORT}"
+    VLLM_IMAGE="docker.io/vllm/vllm-openai:${VLLM_DOCKER_TAG:-v0.20.0}"
+
+    # If VLLM_PP is still 1, derive it from the node count (PP = nodes).
+    if [[ "${VLLM_PP:-1}" -le 1 ]]; then
+        VLLM_PP="${SLURM_JOB_NUM_NODES:-${SLURM_NNODES:-2}}"
+        echo "[rivault] Derived VLLM_PP=${VLLM_PP} from node count"
+    fi
+
+    # Start Ray head on this (head) node.
+    echo "[rivault] Starting Ray head on ${HEAD_NODE} (${HEAD_IP})..."
+    podman run --rm --network host \
+        -v "${VLLM_HOST_MODEL_PATH}:/models:ro" \
+        "${VLLM_IMAGE}" \
+        /bin/sh -c "exec /opt/venv/bin/ray start --head --node-ip-address='\$1' --port='\$2' --num-gpus='\$3' --include-dashboard=false --block" \
+        _ "${HEAD_IP}" "${RAY_PORT}" "${VLLM_TP}" &
+    RAY_HEAD_PID=$!
+
+    # Wait for the Ray head GCS to accept connections.
+    _ray_ready=0
+    for _ in $(seq 1 30); do
+        if podman run --rm --network host "${VLLM_IMAGE}" \
+                /opt/venv/bin/ray status --address="${RAY_ADDRESS}" >/dev/null 2>&1; then
+            _ray_ready=1
+            break
+        fi
+        sleep 2
+    done
+    if [[ "${_ray_ready}" -ne 1 ]]; then
+        echo "[rivault] FATAL: Ray head did not become ready at ${RAY_ADDRESS}" >&2
+        exit 1
+    fi
+
+    # Start Ray workers on the remaining nodes (one task per node).
+    for ((i=1; i<${#RAY_NODES[@]}; i++)); do
+        wnode="${RAY_NODES[$i]}"
+        echo "[rivault] Starting Ray worker on ${wnode}..."
+        srun --nodes=1 --ntasks=1 --nodelist="${wnode}" \
+            podman run --rm --network host \
+                -v "${VLLM_HOST_MODEL_PATH}:/models:ro" \
+                "${VLLM_IMAGE}" \
+                /bin/sh -c "exec /opt/venv/bin/ray start --address='\$1' --num-gpus='\$2' --block" \
+                _ "${RAY_ADDRESS}" "${VLLM_TP}" &
+        WORKER_PIDS+=($!)
+    done
+
+    # Wait until Ray reports every GPU across the cluster (TP × nodes).
+    _want_gpus=$(( VLLM_TP * ${SLURM_JOB_NUM_NODES:-${SLURM_NNODES:-1}} ))
+    _have_gpus=0
+    for _ in $(seq 1 60); do
+        _have_gpus="$(podman run --rm --network host "${VLLM_IMAGE}" \
+            /opt/venv/bin/python -c "import ray; ray.init(address='${RAY_ADDRESS}'); print(int(ray.cluster_resources().get('GPU',0)))" \
+            2>/dev/null | tail -1)"
+        if [[ "${_have_gpus}" == "${_want_gpus}" ]]; then
+            break
+        fi
+        sleep 5
+    done
+    echo "[rivault] Ray cluster ready: ${_have_gpus:-0}/${_want_gpus} GPUs"
+
+    # Export for the env file and compose.
+    export VLLM_DISTRIBUTED_EXECUTOR_BACKEND=ray
+    export RAY_ADDRESS="${RAY_ADDRESS}"
+    export VLLM_PP
+
+    # Update env file with Ray variables (env file was generated earlier).
+    cat >> "./env.${uuid}" <<RAYEOF
+
+# ─── Multi-node Ray (auto-generated) ─────────────────────────────────────────
+VLLM_DISTRIBUTED_EXECUTOR_BACKEND=${VLLM_DISTRIBUTED_EXECUTOR_BACKEND}
+RAY_ADDRESS=${RAY_ADDRESS}
+VLLM_PP=${VLLM_PP}
+RAYEOF
+fi
 
 if ! run_litellm_db_sql_migrations; then
     exit 1

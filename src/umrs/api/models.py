@@ -1072,8 +1072,12 @@ async def detect_model_capabilities(
 
     Reads config.json, tokenizer_config.json, and generation_config.json
     from the model's storage_path to infer capabilities.
+
+    When the UMRS server cannot access the model files locally (e.g. files
+    are on a remote HPC cluster), detection falls back to reading the files
+    via the SSH ControlMaster connection used for remote Slurm operations.
     """
-    from ..model_registry.detect import detect_capabilities, merge_detected_capabilities
+    from ..model_registry.detect import detect_capabilities
 
     try:
         model = store.get_model(model_id)
@@ -1092,17 +1096,34 @@ async def detect_model_capabilities(
 
     detected = detect_capabilities(model.storage_ref, model_name=model.name)
     if detected is None:
+        # Fall back to SSH-based detection when model files are only reachable
+        # from remote execution hosts.
+        detected = await _detect_via_ssh(model)
+
+    if detected is None:
         return ModelDetectResponse(
             model_id=model.model_id,
             name=model.name,
             message=f"No config files found at {model.storage_ref}",
         )
 
-    merged = merge_detected_capabilities(
-        model.capabilities,
-        model.storage_ref,
-        model_name=model.name,
-    )
+    merged = model.capabilities
+    if detected.supports_vision:
+        merged.supports_vision = True
+    if detected.supports_tool_calling:
+        merged.supports_tool_calling = True
+    if detected.supports_structured_output:
+        merged.supports_structured_output = True
+    if detected.max_output_tokens is not None and merged.max_output_tokens is None:
+        merged.max_output_tokens = detected.max_output_tokens
+    if (
+        detected.max_position_embeddings is not None
+        and merged.max_position_embeddings is None
+    ):
+        merged.max_position_embeddings = detected.max_position_embeddings
+    if detected.model_family and not merged.model_family:
+        merged.model_family = detected.model_family
+
     detected_dict = merged.to_dict()
 
     if dry_run:
@@ -1129,6 +1150,98 @@ async def detect_model_capabilities(
         updated=True,
         message="Capabilities updated",
     )
+
+
+async def _detect_via_ssh(model) -> Any:
+    """Read model config files via SSH ControlMaster and detect capabilities.
+
+    This is used when the model files are on a remote host that the UMRS
+    server cannot access directly via the local filesystem.
+
+    Returns ModelCapabilities if detection succeeded, None otherwise.
+    """
+    import json
+
+    from ..model_registry.detect import detect_capabilities_from_files
+
+    ssh = await _get_ssh_control_manager()
+    if ssh is None:
+        return None
+
+    storage_path = model.storage_ref
+    if not storage_path:
+        return None
+
+    # Read all three config files in a single SSH call
+    cmd = (
+        'for f in config.json tokenizer_config.json generation_config.json; do '
+        'printf "\\x1e%s\\x1e\\n" "$f"; '
+        f'cat "{storage_path}/$f" 2>/dev/null; '
+        'printf "\\x1f"; done'
+    )
+
+    try:
+        result = await ssh.run_remote(cmd, timeout=30)
+    except Exception as exc:
+        logger.debug("SSH detection failed for %s: %s", model.name, exc)
+        return None
+
+    if not result.ok:
+        logger.debug("SSH detection failed for %s: %s", model.name, result.stderr)
+        return None
+
+    # Parse record-separated output: \x1e<filename>\x1e\n<content>\x1f
+    config: dict[str, Any] | None = None
+    tok_config: dict[str, Any] | None = None
+    gen_config: dict[str, Any] | None = None
+
+    files = {"config.json", "tokenizer_config.json", "generation_config.json"}
+    parsed: dict[str, dict] = {}
+    records = result.stdout.split("\x1f")
+    for record in records:
+        record = record.strip("\n")
+        if not record or not record.startswith("\x1e"):
+            continue
+        rest = record[1:]
+        sep_idx = rest.find("\x1e")
+        if sep_idx == -1:
+            continue
+        fname = rest[:sep_idx].strip()
+        content = rest[sep_idx + 1:].lstrip("\n")
+        if fname in files and content:
+            try:
+                parsed[fname] = json.loads(content)
+            except json.JSONDecodeError:
+                pass
+
+    config = parsed.get("config.json")
+    tok_config = parsed.get("tokenizer_config.json")
+    gen_config = parsed.get("generation_config.json")
+
+    if config is None and tok_config is None and gen_config is None:
+        return None
+
+    return detect_capabilities_from_files(
+        config, tok_config, gen_config, model_name=model.name
+    )
+
+
+async def _get_ssh_control_manager():
+    """Get the SSHControlManager from the orchestrator, if available.
+
+    Returns None if no SSH control manager is available (e.g. when running
+    in local Slurm mode without remote SSH delegation).
+    """
+    try:
+        from ..orchestrator.factory import get_orchestrator
+
+        orchestrator = get_orchestrator()
+        backend = orchestrator.backend if orchestrator else None
+        if backend and hasattr(backend, "_get_ssh"):
+            return await backend._get_ssh()
+    except Exception as exc:
+        logger.debug("Failed to get SSH control manager: %s", exc)
+    return None
 
 
 class ModelPublishRequest(BaseModel):
