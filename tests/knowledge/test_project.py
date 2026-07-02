@@ -341,6 +341,19 @@ def test_plan_research_generates_plan(project_dir: Path):
     assert plan.success_probability >= 0.0
 
 
+def test_plan_research_uses_knowledge_graph(project_dir: Path):
+    """plan_research() should ground the plan in graph nodes after understand()."""
+    project = ResearchProject(project_id="proj-001")
+    project.ingest_directory(project_dir)
+    project.understand()
+
+    assert len(project.umrs_knowledge_graph.query(node_type="paper")) > 0
+
+    plan = project.plan_research("What algorithms implement the papers?")
+
+    assert len(plan.source_knowledge_ids) > 0
+
+
 def test_run_research_executes_loop(project_dir: Path):
     """M4: run_research() executes the ResearchLoop and updates scientific memory."""
     project = ResearchProject(project_id="proj-001")
