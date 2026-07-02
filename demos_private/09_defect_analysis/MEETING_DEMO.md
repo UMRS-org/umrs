@@ -26,10 +26,10 @@ Run from the repository root unless noted.
 
    ```bash
    cd umrs/demos_private/09_defect_analysis
-   PATH="/Users/mnagaso/workspace/RCCS/ai4s-platform/.venv/bin:$PATH" \
+   PATH="$PWD/.venv/bin:$PATH" \
      UMRS_PROFILE=umrs-front \
      DEFECT_BUCKET=demo-sam3 \
-     IMAGE_DIR="/Users/mnagaso/workspace/RCCS/ai4s-platform/umrs/demos/sample_data/images" \
+     IMAGE_DIR="$PWD/umrs/demos/sample_data/images" \
      MAX_IMAGES=1 \
      RESULT_DOWNLOAD_TIMEOUT=1800 \
      SAM3_REQUIRE_RESULTS=1 \

@@ -44,7 +44,7 @@ Run from the repository root unless noted.
 
    ```bash
    cd umrs/demos_private/04_hmae_inference
-   PATH="/Users/mnagaso/workspace/RCCS/ai4s-platform/.venv/bin:$PATH" \
+   PATH="$PWD/.venv/bin:$PATH" \
      UMRS_PROFILE=umrs-front \
      MAX_IMAGES=1 \
    RESULT_DOWNLOAD_TIMEOUT=1800 \
@@ -69,7 +69,7 @@ Run from the repository root unless noted.
 5. If results are still pending because the Slurm job is starting, show server progress:
 
    ```bash
-   ssh umrs-front 'tail -f /home/mnagaso/deploy/ai4s-platform/umrs/deploy/umrs-front/logs/server-rccs.log'
+   ssh umrs-front 'tail -f ~/deploy/ai4s-platform/umrs/deploy/umrs-front/logs/server-rccs.log'
    ```
 
 ## Useful Overrides

@@ -204,6 +204,14 @@ Low-level REST APIs that power the platform internals.
 | 29 | [LLM Completions](29_llm_completions/) | OpenAI-compatible chat/text completions and embeddings |
 | 30 | [File Management](30_file_management/) | Upload, download (presigned URLs), bulk upload, delete |
 
+## Client Management & Utilities
+
+Management, lifecycle, and utility commands not covered by workload demos.
+
+| # | Demo | What you'll learn |
+|---|------|-------------------|
+| 31 | [Client Management](31_client_management/) | `info`, `completion`, `profile list/show`, `config list/show`, `experience add/list`, `job list`, `endpoint up/list/status/stop`, `workflow list/run`, `model delete`, `purge_remote_buckets` |
+
 ## Quick Reference
 
 ### Which demo should I start with?
@@ -271,34 +279,61 @@ Want to call the OpenAI-compatible LLM API directly?
 
 Need to manage files with presigned URLs?
   → Demo 30 (file management)
+
+Need to see connection info, list profiles, or manage endpoints?
+  → Demo 31 (client management & utility commands)
 ```
 
 ### CLI Commands × Demo Coverage
 
 | Command | Demo | Description |
 |---------|------|-------------|
-| `config add-experience` | 00, workload demos | Merge an experience JSON fragment into the active user config |
-| `experience remove` | 00, 99 | Remove an experience from the user JSON while retaining MinIO/Postgres data |
-| `experience recover` | 00, 99 | Reconstruct an experience JSON fragment from MinIO/S3 and optional pgvector status |
-| `ping` | 00, 01 | Check server connectivity |
+| `ping` | 00, 01, 31 | Check server connectivity |
+| `info` | 31 | Show connection setup, transport modes, auth, S3 status |
+| `status` | 00, 02, 06, 20, 24 | Query task or pool status |
 | `reload` | 00, 06, 23 | Push config/workflow changes to the server |
 | `upload_file` | 17, 18, 24 | Upload a single file |
 | `upload_dir` | 02, 03, 04, 09, 10, 14 | Upload a directory |
 | `download_results` | 03, 04, 09, 10, 14 | Download computed outputs |
 | `export_embeddings` | 02 | Export embeddings to CSV/JSONL |
 | `list_buckets` | 00, 01, 06, 17 | Show configured S3 buckets |
-| `status` | 00, 02, 06, 20, 24 | Query task or pool status |
-| `check` | 06 | Verify S3 ↔ DB consistency |
-| `update` | 06 | Fix missing/mismatched embeddings |
+| `purge_remote_buckets` | 31 | Delete extra remote S3 buckets not in user config |
 | `recompute` | 06 | Force full re-processing |
+| `update` | 06 | Fix missing/mismatched embeddings |
+| `check` | 06 | Verify S3 ↔ DB consistency |
 | `model register` | 07 | Register a local model |
 | `model list` | 07 | List registered models |
 | `model upload` | 07 | Upload model to staging root |
 | `model download` | 02, 03, 07, 18 | Stage a model from HuggingFace |
+| `model delete` | 31 | Remove a registered model from the catalog |
 | `job submit` | 11, 20, 22 | Submit endpoint/index/cleanup jobs |
 | `job cancel` | 11, 20 | Cancel a running job |
-| `monitor` | 22 | Live-refreshing jobs dashboard (TUI) |
+| `job status` | 20 | Show a specific durable job |
+| `job list` | 31 | List durable jobs with optional filters |
+| `endpoint up` | 25, 31 | Provision a reusable endpoint |
+| `endpoint list` | 25, 31 | List endpoint provision jobs |
+| `endpoint status` | 25, 31 | Show endpoint provision job details |
+| `endpoint stop` | 25, 31 | Stop an endpoint provision job |
+| `workflow list` | 31 | List registered workflows |
+| `workflow run` | 16, 31 | Trigger execution of a registered workflow |
 | `upload-workflow` | 09, 10, 14, 16 | Upload a workflow bundle to the server |
+| `monitor` | 22 | Live-refreshing jobs dashboard (TUI) |
+| `config add-experience` | 00, workload demos | Merge an experience JSON fragment into the active user config |
+| `config init` | 00, 31 | Create a new user config JSON |
+| `config list` | 31 | List discovered config candidates |
+| `config show` | 31 | Show resolved config stack for server, user, and S3 |
+| `config use` | 06, 07, 17 | Persist the current server/user/s3 config selections |
+| `experience add` | 31 | Merge experience fragment(s) from a JSON file (alias for `config add-experience`) |
+| `experience list` | 31 | List experiences in the current user config |
+| `experience remove` | 00, 99 | Remove an experience from the user JSON while retaining MinIO/Postgres data |
+| `experience recover` | 00, 99 | Reconstruct an experience JSON fragment from MinIO/S3 and optional pgvector status |
+| `profile init` | 00, 31 | Create a new connection profile |
+| `profile list` | 31 | List available connection profiles |
+| `profile show` | 31 | Show effective connection resolved from profile/env/flags |
+| `profile use` | 31 | Set the current default connection profile |
+| `profile import` | 00, 31 | Import a connection profile JSON file |
+| `login` | 00, 31 | Authenticate and configure connection in one step |
+| `completion` | 31 | Generate shell completion scripts |
 | `admin token` | 23 | Generate, list, and revoke admin tokens |
 
 ### Environment Variables
