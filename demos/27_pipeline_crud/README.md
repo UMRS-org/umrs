@@ -21,8 +21,99 @@ updating, and deleting pipelines, plus RAG profile composition
 | GET    | `/umrs/pipelines/components/embedders`    | List embedders           |
 | GET    | `/umrs/pipelines/components/rerankers`    | List rerankers           |
 
-## Run
+## Prerequisites
+
+- UMRS HTTP sidecar running (`UMRS_HTTP_URL` or default `http://localhost:8001`)
+- `curl` and `jq` installed
+- A valid project ID (default: `default-project`)
+
+## Step-by-Step Commands
+
+### Step 1: List available pipeline components
 
 ```bash
-# Follow the step-by-step commands in README.md
+UMRS_URL="${UMRS_HTTP_URL:-http://localhost:8001}"
+
+# List available chunkers
+curl -sf "${UMRS_URL}/umrs/components/chunkers" \
+  -H "X-Project-ID: default-project" | jq .
+
+# List available embedders
+curl -sf "${UMRS_URL}/umrs/components/embedders" \
+  -H "X-Project-ID: default-project" | jq .
+
+# List available rerankers
+curl -sf "${UMRS_URL}/umrs/components/rerankers" \
+  -H "X-Project-ID: default-project" | jq .
+```
+
+### Step 2: List existing pipelines
+
+```bash
+curl -sf "${UMRS_URL}/umrs/pipelines" \
+  -H "X-Project-ID: default-project" | jq .
+```
+
+**Expected output:**
+```json
+[]
+```
+
+### Step 3: Create a new pipeline
+
+```bash
+PIPELINE_ID=$(curl -sf -X POST "${UMRS_URL}/umrs/pipelines" \
+  -H "Content-Type: application/json" \
+  -H "X-Project-ID: default-project" \
+  -d '{
+    "name": "demo-text-pipeline",
+    "description": "Demo text embedding pipeline",
+    "steps": [
+      {
+        "name": "chunk",
+        "type": "chunker",
+        "config": {"chunk_size": 512, "overlap": 50}
+      },
+      {
+        "name": "embed",
+        "type": "embedder",
+        "config": {"model": "text-embedding-3-small"}
+      }
+    ]
+  }' | jq -r '.pipeline_id // .id // empty')
+
+echo "[demo27] Created pipeline ID: ${PIPELINE_ID}"
+```
+
+### Step 4: Get pipeline details
+
+```bash
+curl -sf "${UMRS_URL}/umrs/pipelines/${PIPELINE_ID}" \
+  -H "X-Project-ID: default-project" | jq .
+```
+
+### Step 5: Update the pipeline
+
+```bash
+curl -sf -X PATCH "${UMRS_URL}/umrs/pipelines/${PIPELINE_ID}" \
+  -H "Content-Type: application/json" \
+  -H "X-Project-ID: default-project" \
+  -d '{
+    "description": "Updated demo text embedding pipeline"
+  }' | jq .
+```
+
+### Step 6: List RAG profiles
+
+```bash
+curl -sf "${UMRS_URL}/umrs/rag-profiles" \
+  -H "X-Project-ID: default-project" | jq .
+```
+
+## Cleanup
+
+```bash
+curl -sf -X DELETE "${UMRS_URL}/umrs/pipelines/${PIPELINE_ID}" \
+  -H "X-Project-ID: default-project"
+echo "[demo27] Deleted pipeline: ${PIPELINE_ID}"
 ```
