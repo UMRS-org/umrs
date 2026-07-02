@@ -1073,7 +1073,7 @@ async def detect_model_capabilities(
     Reads config.json, tokenizer_config.json, and generation_config.json
     from the model's storage_path to infer capabilities.
     """
-    from ..model_registry.detect import detect_capabilities
+    from ..model_registry.detect import detect_capabilities, merge_detected_capabilities
 
     try:
         model = store.get_model(model_id)
@@ -1090,27 +1090,32 @@ async def detect_model_capabilities(
             message="No storage path configured",
         )
 
-    caps = detect_capabilities(model.storage_ref, model_name=model.name)
-    if caps is None:
+    detected = detect_capabilities(model.storage_ref, model_name=model.name)
+    if detected is None:
         return ModelDetectResponse(
             model_id=model.model_id,
             name=model.name,
             message=f"No config files found at {model.storage_ref}",
         )
 
-    detected = caps.to_dict()
+    merged = merge_detected_capabilities(
+        model.capabilities,
+        model.storage_ref,
+        model_name=model.name,
+    )
+    detected_dict = merged.to_dict()
 
     if dry_run:
         return ModelDetectResponse(
             model_id=model.model_id,
             name=model.name,
-            detected=detected,
+            detected=detected_dict,
             updated=False,
             message="Dry run — capabilities not saved",
         )
 
     try:
-        store.update_capabilities(model.model_id, caps)
+        store.update_capabilities(model.model_id, merged)
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -1120,7 +1125,7 @@ async def detect_model_capabilities(
     return ModelDetectResponse(
         model_id=model.model_id,
         name=model.name,
-        detected=detected,
+        detected=detected_dict,
         updated=True,
         message="Capabilities updated",
     )
