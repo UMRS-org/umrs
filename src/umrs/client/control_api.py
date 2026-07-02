@@ -189,6 +189,7 @@ class UMRSControlAPI:
         idle_ttl_sec: int = 1800,
         tier: str = "user",
         gpu_count: int = 1,
+        node_count: int = 1,
         max_model_len: int = 4096,
         max_attempts: int = 3,
         spec: dict[str, Any] | None = None,
@@ -203,6 +204,7 @@ class UMRSControlAPI:
                 "idle_ttl_sec": idle_ttl_sec,
                 "tier": tier,
                 "gpu_count": gpu_count,
+                "node_count": node_count,
                 "max_model_len": max_model_len,
             }
         )
@@ -435,6 +437,7 @@ class UMRSControlAPI:
                     idle_ttl_sec=idle_ttl_sec,
                     tier=args.tier,
                     gpu_count=args.gpu_count,
+                    node_count=getattr(args, "node_count", 1),
                     max_model_len=args.max_model_len,
                     max_attempts=args.max_attempts,
                     spec=spec,

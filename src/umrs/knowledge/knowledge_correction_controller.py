@@ -184,6 +184,57 @@ class KnowledgeCorrectionController:
         self._corrections.append(record)
         return record
 
+    def correct(
+        self,
+        correction_type: str,
+        corrected_by: str,
+        reason: str,
+        affected_object_ids: list[str],
+        details: dict[str, Any] | None = None,
+    ) -> CorrectionRecord:
+        """Record a generic human knowledge correction.
+
+        For known correction types the controller also applies the
+        corresponding graph mutation. Unknown types are still recorded
+        so the correction becomes provenance.
+        """
+        record = CorrectionRecord(
+            correction_type=correction_type,
+            corrected_by=corrected_by,
+            corrected_at=datetime.now(timezone.utc).isoformat(),
+            reason=reason,
+            affected_object_ids=list(affected_object_ids),
+            details=details or {},
+        )
+
+        if (
+            correction_type == CorrectionType.UNRELATED
+            and len(affected_object_ids) >= 2
+        ):
+            self.mark_unrelated(
+                affected_object_ids[0],
+                affected_object_ids[1],
+                corrected_by,
+                reason,
+            )
+        elif correction_type == CorrectionType.RELATES and details:
+            source_id = details.get("source_id")
+            target_id = details.get("target_id")
+            relation_type = details.get("relation_type", "related_to")
+            confidence = details.get("confidence", 0.9)
+            if source_id and target_id:
+                self.add_relationship(
+                    str(source_id),
+                    str(target_id),
+                    str(relation_type),
+                    corrected_by,
+                    reason,
+                    float(confidence),
+                )
+
+        self._corrections.append(record)
+        return record
+
     def get_correction_history(self) -> list[CorrectionRecord]:
         """Get the history of all corrections.
 

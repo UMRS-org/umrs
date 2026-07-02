@@ -261,15 +261,22 @@ class SlurmPodmanBackend(OrchestratorBackend):
             sbatch_args.append(f"--time={site.scheduler.time_limit}")
         # Per-request gpu_count overrides site.scheduler.gpus;
         # partition profile gpus may further override both.
-        effective_gpus = gpu_count if gpu_count is not None else site.scheduler.gpus
-        pp = (
-            site.get_partition_profile(selected_partition)
-            if selected_partition
-            else None
-        )
-        if pp is not None and gpu_count is None:
-            # Partition profile is authoritative when no explicit request override
-            effective_gpus = pp.gpus
+        # When the site scheduler explicitly disables GPU requests
+        # (gpus == 0), never emit --gres even if the caller asked for
+        # multiple GPUs; the site allocates whole nodes or passes all GPUs
+        # through the runtime wrapper.
+        if site.scheduler.gpus == 0:
+            effective_gpus = 0
+        else:
+            effective_gpus = gpu_count if gpu_count is not None else site.scheduler.gpus
+            pp = (
+                site.get_partition_profile(selected_partition)
+                if selected_partition
+                else None
+            )
+            if pp is not None and gpu_count is None:
+                # Partition profile is authoritative when no explicit request override
+                effective_gpus = pp.gpus
         if effective_gpus:
             sbatch_args.append(f"--gres=gpu:{effective_gpus}")
         if site.scheduler.cpus:

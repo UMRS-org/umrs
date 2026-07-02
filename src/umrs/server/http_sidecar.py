@@ -16,6 +16,8 @@ import logging
 import os
 import threading
 
+from fastapi import Request
+
 logger = logging.getLogger(__name__)
 
 _DEFAULT_PORT = 8082
@@ -49,6 +51,358 @@ def _resolve_bind_host(host: str | None) -> str:
     return "127.0.0.1"
 
 
+def _build_db_pool(app):
+    """Create the shared Postgres pool and attach it to app.state."""
+    try:
+        from umrs.server.job_tracking_handler import (
+            build_durable_job_db_pool_from_env,
+        )
+
+        db_pool = build_durable_job_db_pool_from_env()
+        app.state.umrs_db_pool = db_pool
+        return db_pool
+    except Exception:
+        logger.warning("Shared DB pool unavailable in HTTP sidecar")
+        return None
+
+
+def _init_job_store(db_pool):
+    """Initialize the UMRS job store."""
+    try:
+        from umrs.api.jobs import set_job_store
+        from umrs.jobs.store import JobStore
+
+        set_job_store(JobStore(db_pool))
+        logger.info("Job store initialized for HTTP sidecar")
+    except Exception:
+        logger.warning(
+            "Job store unavailable in HTTP sidecar — /umrs/jobs/* will return 503"
+        )
+
+
+def _init_model_store(app, db_pool):
+    """Initialize the model registry store."""
+    try:
+        from umrs.api.models import set_model_store
+        from umrs.model_registry import (
+            ensure_schema as ensure_model_registry_schema,
+        )
+        from umrs.model_registry.store import ModelStore, PathValidator
+
+        model_conn = db_pool.getconn()
+        ensure_model_registry_schema(model_conn)
+        model_conn.commit()
+        app.state.umrs_model_store_conn = model_conn
+        set_model_store(ModelStore(model_conn, path_validator=PathValidator()))
+        logger.info("Model store initialized for HTTP sidecar")
+    except Exception:
+        logger.warning(
+            "Model store unavailable in HTTP sidecar — /umrs/models/* will return 503"
+        )
+
+
+def _init_mcp_store(app, db_pool):
+    """Initialize the MCP server store."""
+    try:
+        from umrs.api.mcp import set_mcp_store
+        from umrs.mcp import ensure_schema as ensure_mcp_schema
+        from umrs.mcp.store import MCPServerStore
+
+        mcp_conn = db_pool.getconn()
+        ensure_mcp_schema(mcp_conn)
+        mcp_conn.commit()
+        app.state.umrs_mcp_store_conn = mcp_conn
+        set_mcp_store(MCPServerStore(mcp_conn))
+        logger.info("MCP server store initialized for HTTP sidecar")
+    except Exception:
+        logger.warning(
+            "MCP store unavailable in HTTP sidecar — /umrs/mcp/* will return 503"
+        )
+
+
+def _init_audit_store(app, db_pool):
+    """Initialize the audit store."""
+    try:
+        from umrs.api.audit_events import set_audit_store
+        from umrs.api.audit_store import AuditStore, ensure_audit_schema
+
+        audit_conn = db_pool.getconn()
+        ensure_audit_schema(audit_conn)
+        audit_conn.commit()
+        app.state.umrs_audit_store_conn = audit_conn
+        set_audit_store(AuditStore(audit_conn))
+        logger.info("Audit store initialized for HTTP sidecar")
+    except Exception:
+        logger.warning("Audit store unavailable — using in-memory buffer only")
+
+
+def _init_governance_store(app, db_pool):
+    """Initialize the governance store."""
+    try:
+        from umrs.api.governance import (
+            GovernanceStore,
+            ensure_governance_schema,
+            set_governance_store,
+        )
+
+        gov_conn = db_pool.getconn()
+        ensure_governance_schema(gov_conn)
+        gov_conn.commit()
+        app.state.umrs_governance_store_conn = gov_conn
+        gov_store = GovernanceStore(gov_conn)
+        app.state.umrs_governance_store = gov_store
+        set_governance_store(gov_store)
+        logger.info("Governance store initialized for HTTP sidecar")
+    except Exception:
+        logger.warning("Governance store unavailable — quota enforcement disabled")
+
+
+def _init_usage_pool(db_pool):
+    """Wire the LLM usage recording pool."""
+    try:
+        from umrs.api.llm import set_usage_db_pool
+
+        set_usage_db_pool(db_pool)
+        logger.info("LLM usage recording pool initialized")
+    except Exception:
+        logger.warning("LLM usage recording unavailable — usage will not be tracked")
+
+
+def _site_capabilities() -> dict[str, str | int]:
+    """Collect non-secret site capabilities for client discovery."""
+    caps: dict[str, str | int] = {}
+    try:
+        from umrs.orchestrator.site_config import load_site_config
+
+        site = load_site_config()
+        caps["scheduler_kind"] = site.scheduler.kind
+        caps["slurm_delegation"] = site.scheduler.slurm_delegation
+        caps["site_name"] = site.name
+        if site.scheduler.slurm_delegation == "per_user_ssh":
+            caps["service_pubkey_path"] = site.scheduler.service_pubkey_path
+            caps["slurm_proxy_path"] = site.scheduler.slurm_proxy_path
+    except Exception:
+        pass
+    zmq_port = os.environ.get("UMRS_CONTROL_PORT")
+    if zmq_port:
+        try:
+            caps["zmq_control_port"] = int(zmq_port)
+        except ValueError:
+            pass
+    return caps
+
+
+def _check_database(app):
+    """Return the database component status for /health."""
+    db_pool = getattr(app.state, "umrs_db_pool", None)
+    if db_pool is None:
+        return {"status": "not_configured"}
+    try:
+        conn = db_pool.getconn()
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT 1")
+            cur.close()
+        finally:
+            db_pool.putconn(conn)
+        return {"status": "ok"}
+    except Exception:
+        return {"status": "unavailable"}
+
+
+def _check_registry_health():
+    """Return endpoint registry status for /health."""
+    try:
+        from umrs.orchestrator.endpoint_registry import get_registry
+
+        reg = get_registry()
+        all_eps = reg.list_all()
+        by_status: dict[str, int] = {}
+        for ep in all_eps:
+            by_status[ep.status.value] = by_status.get(ep.status.value, 0) + 1
+        return {"status": "ok", "total": len(all_eps), **by_status}
+    except Exception:
+        return {"status": "unavailable"}
+
+
+def _check_models(app):
+    """Return the model store component status."""
+    try:
+        from umrs.api.models import get_optional_model_store
+
+        store = get_optional_model_store()
+        if store is not None:
+            return {"status": "ok"}
+        return {"status": "not_configured"}
+    except Exception:
+        return {"status": "unavailable"}
+
+
+def _check_durable_jobs_health():
+    """Return durable jobs component status for /health."""
+    try:
+        from umrs.jobs.service import get_job_service
+
+        svc = get_job_service()
+        if svc is not None and svc._started:
+            return {"status": "ok"}
+        return {"status": "not_started"}
+    except Exception:
+        return {"status": "unavailable"}
+
+
+async def _health(request: Request):
+    """Liveness + component summary probe."""
+    import time
+
+    app = request.app
+    start_time = getattr(app.state, "start_time", None) or 0
+    uptime = time.time() - float(start_time) if start_time else 0
+    components = {
+        "database": _check_database(app),
+        "registry": _check_registry_health(),
+        "models": _check_models(app),
+        "durable_jobs": _check_durable_jobs_health(),
+    }
+    return {
+        "status": "ok",
+        "uptime_seconds": round(uptime, 1),
+        "site_capabilities": _site_capabilities(),
+        "components": components,
+    }
+
+
+async def _metrics():
+    """Prometheus metrics endpoint."""
+    from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+    from fastapi.responses import Response
+
+    return Response(
+        content=generate_latest(),
+        media_type=CONTENT_TYPE_LATEST,
+    )
+
+
+def _check_postgres(app):
+    """Return Postgres status and whether it is a critical failure."""
+    db_pool = getattr(app.state, "umrs_db_pool", None)
+    if db_pool is None:
+        return {"status": "not_configured"}, True
+    try:
+        conn = db_pool.getconn()
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT 1")
+            cur.close()
+        finally:
+            db_pool.putconn(conn)
+        return {"status": "ok"}, False
+    except Exception as exc:
+        return {"status": "unavailable", "error": str(exc)[:120]}, True
+
+
+def _check_job_store(app):
+    """Return job store status and whether it is a critical failure."""
+    from umrs.api.jobs import get_optional_job_store
+
+    job_store = get_optional_job_store()
+    if job_store is None:
+        return {"status": "unavailable"}, True
+    try:
+        pending = (
+            job_store.count_by_status("queued")
+            if hasattr(job_store, "count_by_status")
+            else None
+        )
+        return {
+            "status": "ok",
+            "pending_jobs": str(pending) if pending is not None else "unknown",
+        }, False
+    except Exception as exc:
+        return {"status": "error", "error": str(exc)[:120]}, True
+
+
+def _check_durable_jobs_readiness():
+    """Return durable jobs status and whether it is a critical failure."""
+    try:
+        from umrs.jobs.service import get_job_service
+
+        svc = get_job_service()
+        if svc is not None and svc._started:
+            return {"status": "ok"}, False
+        return {"status": "not_started"}, True
+    except Exception as exc:
+        return {"status": "error", "error": str(exc)[:120]}, True
+
+
+def _check_registry_readiness():
+    """Return endpoint registry status for /readiness."""
+    try:
+        from umrs.orchestrator.endpoint_registry import get_registry
+
+        reg = get_registry()
+        all_eps = reg.list_all()
+        ready_count = sum(1 for ep in all_eps if ep.status.value == "ready")
+        return {
+            "status": "ok",
+            "total_endpoints": str(len(all_eps)),
+            "ready_endpoints": str(ready_count),
+        }
+    except Exception as exc:
+        return {"status": "error", "error": str(exc)[:120]}
+
+
+def _check_backend():
+    """Return backend/site-config status for /readiness."""
+    try:
+        from umrs.orchestrator.site_config import load_site_config
+
+        site = load_site_config()
+        return {"status": "ok", "type": site.scheduler.kind}
+    except Exception as exc:
+        return {"status": "unknown", "error": str(exc)[:120]}
+
+
+async def _readiness(request: Request):
+    """Readiness probe — checks subsystem availability."""
+    app = request.app
+    components: dict[str, dict[str, str]] = {}
+    critical_failures: list[str] = []
+
+    postgres, failed = _check_postgres(app)
+    components["postgres"] = postgres
+    if failed:
+        critical_failures.append("postgres")
+
+    job_store, failed = _check_job_store(app)
+    components["job_store"] = job_store
+    if failed:
+        critical_failures.append("job_store")
+
+    components["model_store"] = _check_models(app)
+
+    durable_jobs, failed = _check_durable_jobs_readiness()
+    components["durable_jobs"] = durable_jobs
+    if failed:
+        critical_failures.append("durable_jobs")
+
+    components["registry"] = _check_registry_readiness()
+    components["backend"] = _check_backend()
+
+    status = "degraded" if critical_failures else "ready"
+    result = {
+        "ready": status == "ready",
+        "status": status,
+        "components": components,
+    }
+    if critical_failures:
+        result["unavailable_required"] = critical_failures
+        from fastapi.responses import JSONResponse
+
+        return JSONResponse(content=result, status_code=503)
+    return result
+
+
 def _create_app():
     """Create a minimal FastAPI app mounting the Gateway-facing UMRS routers."""
     from fastapi import FastAPI
@@ -76,6 +430,7 @@ def _create_app():
         skills_router,
         traces_router,
         usage_router,
+        verification_router,
         vision_router,
         workflows_router,
         zmq_sessions_router,
@@ -120,6 +475,7 @@ def _create_app():
     app.include_router(policy_router)
     app.include_router(rag_router)
     app.include_router(skills_router)
+    app.include_router(verification_router)
     app.include_router(vision_router)
     app.include_router(provenance_router)
     app.include_router(traces_router)
@@ -127,342 +483,18 @@ def _create_app():
     app.include_router(workflows_router)
     app.include_router(zmq_sessions_router)
 
-    db_pool = None
-
-    try:
-        from umrs.server.job_tracking_handler import build_durable_job_db_pool_from_env
-
-        db_pool = build_durable_job_db_pool_from_env()
-        app.state.umrs_db_pool = db_pool
-    except Exception:
-        logger.warning("Shared DB pool unavailable in HTTP sidecar")
-
-    # Initialize the job store so the jobs router can serve requests.
+    db_pool = _build_db_pool(app)
     if db_pool is not None:
-        try:
-            from umrs.api.jobs import set_job_store
-            from umrs.jobs.store import JobStore
+        _init_job_store(db_pool)
+        _init_model_store(app, db_pool)
+        _init_mcp_store(app, db_pool)
+        _init_audit_store(app, db_pool)
+        _init_governance_store(app, db_pool)
+        _init_usage_pool(db_pool)
 
-            set_job_store(JobStore(db_pool))
-            logger.info("Job store initialized for HTTP sidecar")
-        except Exception:
-            logger.warning(
-                "Job store unavailable in HTTP sidecar — /umrs/jobs/* will return 503"
-            )
-
-        try:
-            from umrs.api.models import set_model_store
-            from umrs.model_registry import (
-                ensure_schema as ensure_model_registry_schema,
-            )
-            from umrs.model_registry.store import ModelStore, PathValidator
-
-            model_conn = db_pool.getconn()
-            ensure_model_registry_schema(model_conn)
-            model_conn.commit()
-            app.state.umrs_model_store_conn = model_conn
-            set_model_store(ModelStore(model_conn, path_validator=PathValidator()))
-            logger.info("Model store initialized for HTTP sidecar")
-        except Exception:
-            logger.warning(
-                "Model store unavailable in HTTP sidecar — /umrs/models/* will return 503"
-            )
-
-        try:
-            from umrs.api.mcp import set_mcp_store
-            from umrs.mcp import ensure_schema as ensure_mcp_schema
-            from umrs.mcp.store import MCPServerStore
-
-            mcp_conn = db_pool.getconn()
-            ensure_mcp_schema(mcp_conn)
-            mcp_conn.commit()
-            app.state.umrs_mcp_store_conn = mcp_conn
-            set_mcp_store(MCPServerStore(mcp_conn))
-            logger.info("MCP server store initialized for HTTP sidecar")
-        except Exception:
-            logger.warning(
-                "MCP store unavailable in HTTP sidecar — /umrs/mcp/* will return 503"
-            )
-
-        try:
-            from umrs.api.audit_events import set_audit_store
-            from umrs.api.audit_store import AuditStore, ensure_audit_schema
-
-            audit_conn = db_pool.getconn()
-            ensure_audit_schema(audit_conn)
-            audit_conn.commit()
-            app.state.umrs_audit_store_conn = audit_conn
-            set_audit_store(AuditStore(audit_conn))
-            logger.info("Audit store initialized for HTTP sidecar")
-        except Exception:
-            logger.warning("Audit store unavailable — using in-memory buffer only")
-
-        try:
-            from umrs.api.governance import (
-                GovernanceStore,
-                ensure_governance_schema,
-                set_governance_store,
-            )
-
-            gov_conn = db_pool.getconn()
-            ensure_governance_schema(gov_conn)
-            gov_conn.commit()
-            app.state.umrs_governance_store_conn = gov_conn
-            gov_store = GovernanceStore(gov_conn)
-            app.state.umrs_governance_store = gov_store
-            set_governance_store(gov_store)
-            logger.info("Governance store initialized for HTTP sidecar")
-        except Exception:
-            logger.warning("Governance store unavailable — quota enforcement disabled")
-
-        # Usage recording pool — shares the main DB pool with llm proxy
-        try:
-            from umrs.api.llm import set_usage_db_pool
-
-            set_usage_db_pool(db_pool)
-            logger.info("LLM usage recording pool initialized")
-        except Exception:
-            logger.warning(
-                "LLM usage recording unavailable — usage will not be tracked"
-            )
-
-    @app.get("/health")
-    async def health():
-        """Liveness + component summary probe.
-
-        Always returns 200 while the process is alive (liveness guarantee).
-        Includes component status for operational visibility — degraded
-        components are reported but do not change the HTTP status code.
-
-        Also includes non-secret site capabilities for client discovery
-        (scheduler kind, delegation mode, site name, ZMQ port).
-        """
-        import time
-
-        _start_time = getattr(app.state, "start_time", None) or 0
-        uptime = time.time() - float(_start_time) if _start_time else 0
-
-        caps: dict[str, str | int] = {}
-        try:
-            from umrs.orchestrator.site_config import load_site_config
-
-            site = load_site_config()
-            caps["scheduler_kind"] = site.scheduler.kind
-            caps["slurm_delegation"] = site.scheduler.slurm_delegation
-            caps["site_name"] = site.name
-            if site.scheduler.slurm_delegation == "per_user_ssh":
-                caps["service_pubkey_path"] = site.scheduler.service_pubkey_path
-                caps["slurm_proxy_path"] = site.scheduler.slurm_proxy_path
-        except Exception:
-            pass
-        zmq_port = os.environ.get("UMRS_CONTROL_PORT")
-        if zmq_port:
-            try:
-                caps["zmq_control_port"] = int(zmq_port)
-            except ValueError:
-                pass
-
-        # ── Component summary (best-effort, always 200) ──
-        components: dict[str, dict] = {}
-
-        # Database
-        if hasattr(app.state, "umrs_db_pool") and app.state.umrs_db_pool is not None:
-            try:
-                conn = app.state.umrs_db_pool.getconn()
-                try:
-                    cur = conn.cursor()
-                    cur.execute("SELECT 1")
-                    cur.close()
-                finally:
-                    app.state.umrs_db_pool.putconn(conn)
-                components["database"] = {"status": "ok"}
-            except Exception:
-                components["database"] = {"status": "unavailable"}
-        else:
-            components["database"] = {"status": "not_configured"}
-
-        # Registry counts
-        try:
-            from umrs.orchestrator.endpoint_registry import get_registry
-
-            reg = get_registry()
-            all_eps = reg.list_all()
-            by_status: dict[str, int] = {}
-            for ep in all_eps:
-                by_status[ep.status.value] = by_status.get(ep.status.value, 0) + 1
-            components["registry"] = {"status": "ok", "total": len(all_eps), **by_status}
-        except Exception:
-            components["registry"] = {"status": "unavailable"}
-
-        # Model counts
-        try:
-            from umrs.api.models import get_optional_model_store
-
-            store = get_optional_model_store()
-            if store is not None:
-                models = store.list_models(
-                    type(store).__module__ + ".AccessContext"  # dummy — will use admin
-                ) if False else []  # skip heavy query, just confirm store is available
-                components["models"] = {"status": "ok"}
-            else:
-                components["models"] = {"status": "not_configured"}
-        except Exception:
-            components["models"] = {"status": "unavailable"}
-
-        # Durable jobs
-        try:
-            from umrs.jobs.service import get_job_service
-
-            svc = get_job_service()
-            if svc is not None and svc._started:
-                components["durable_jobs"] = {"status": "ok"}
-            else:
-                components["durable_jobs"] = {"status": "not_started"}
-        except Exception:
-            components["durable_jobs"] = {"status": "unavailable"}
-
-        result = {
-            "status": "ok",
-            "uptime_seconds": round(uptime, 1),
-            "site_capabilities": caps,
-            "components": components,
-        }
-        return result
-
-    @app.get("/metrics")
-    async def metrics():
-        """Prometheus metrics endpoint.
-
-        Exposes the UMRS ``METRICS`` registry (umrs.metrics.METRICS)
-        so Prometheus can scrape per-job, per-transport, and
-        per-LLM-request telemetry.
-
-        The endpoint is intentionally unauthenticated: it is bound to
-        the sidecar's resolved host (127.0.0.1 in tunnel mode) and
-        exposes only operational counters — no user data, no secrets.
-        """
-        from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
-        from fastapi.responses import Response
-
-        return Response(
-            content=generate_latest(),
-            media_type=CONTENT_TYPE_LATEST,
-        )
-
-    @app.get("/readiness")
-    async def readiness():
-        """Readiness probe — checks subsystem availability.
-
-        Returns 200 with component statuses when the system can accept work.
-        Returns 503 if critical subsystems are unavailable.
-
-        Component classification:
-        - REQUIRED (503 if unavailable): database, job_store, durable_jobs
-        - DEGRADED (200 with warning): backend, registry
-        - INFORMATIONAL (always 200): model_store
-        """
-        components: dict[str, dict[str, str]] = {}
-        critical_failures: list[str] = []
-
-        # ── Postgres (REQUIRED) ──────────────────────────
-        if hasattr(app.state, "umrs_db_pool") and app.state.umrs_db_pool is not None:
-            try:
-                conn = app.state.umrs_db_pool.getconn()
-                try:
-                    cur = conn.cursor()
-                    cur.execute("SELECT 1")
-                    cur.close()
-                finally:
-                    app.state.umrs_db_pool.putconn(conn)
-                components["postgres"] = {"status": "ok"}
-            except Exception as exc:
-                components["postgres"] = {"status": "unavailable", "error": str(exc)[:120]}
-                critical_failures.append("postgres")
-        else:
-            components["postgres"] = {"status": "not_configured"}
-            critical_failures.append("postgres")
-
-        # ── Job Store (REQUIRED) ─────────────────────────
-        from umrs.api.jobs import get_optional_job_store
-
-        job_store = get_optional_job_store()
-        if job_store is not None:
-            try:
-                # Lightweight liveness: count pending jobs
-                pending = job_store.count_by_status("queued") if hasattr(job_store, "count_by_status") else None
-                components["job_store"] = {
-                    "status": "ok",
-                    "pending_jobs": str(pending) if pending is not None else "unknown",
-                }
-            except Exception as exc:
-                components["job_store"] = {"status": "error", "error": str(exc)[:120]}
-                critical_failures.append("job_store")
-        else:
-            components["job_store"] = {"status": "unavailable"}
-            critical_failures.append("job_store")
-
-        # ── Model Store (INFORMATIONAL) ──────────────────
-        from umrs.api.models import get_optional_model_store
-
-        model_store = get_optional_model_store()
-        if model_store is not None:
-            components["model_store"] = {"status": "ok"}
-        else:
-            components["model_store"] = {"status": "not_configured"}
-
-        # ── Durable Orchestrator (REQUIRED) ──────────────
-        try:
-            from umrs.jobs.service import get_job_service
-
-            svc = get_job_service()
-            if svc is not None and svc._started:
-                components["durable_jobs"] = {"status": "ok"}
-            else:
-                components["durable_jobs"] = {"status": "not_started"}
-                critical_failures.append("durable_jobs")
-        except Exception as exc:
-            components["durable_jobs"] = {"status": "error", "error": str(exc)[:120]}
-            critical_failures.append("durable_jobs")
-
-        # ── Registry (DEGRADED if unavailable) ───────────
-        try:
-            from umrs.orchestrator.endpoint_registry import get_registry
-
-            reg = get_registry()
-            all_eps = reg.list_all()
-            total = len(all_eps)
-            ready_count = sum(1 for ep in all_eps if ep.status.value == "ready")
-            components["registry"] = {
-                "status": "ok",
-                "total_endpoints": str(total),
-                "ready_endpoints": str(ready_count),
-            }
-        except Exception as exc:
-            components["registry"] = {"status": "error", "error": str(exc)[:120]}
-
-        # ── Backend (DEGRADED if unavailable) ────────────
-        try:
-            from umrs.orchestrator.site_config import load_site_config
-
-            site = load_site_config()
-            backend_kind = site.scheduler.kind
-            components["backend"] = {"status": "ok", "type": backend_kind}
-        except Exception as exc:
-            components["backend"] = {"status": "unknown", "error": str(exc)[:120]}
-
-        # ── Assemble response ────────────────────────────
-        status = "degraded" if critical_failures else "ready"
-        result = {
-            "ready": status == "ready",
-            "status": status,
-            "components": components,
-        }
-        if critical_failures:
-            result["unavailable_required"] = critical_failures
-            from fastapi.responses import JSONResponse
-
-            return JSONResponse(content=result, status_code=503)
-        return result
+    app.get("/health")(_health)
+    app.get("/metrics")(_metrics)
+    app.get("/readiness")(_readiness)
 
     return app
 

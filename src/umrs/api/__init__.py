@@ -29,6 +29,7 @@ from .rag import router as rag_router
 from .skills import router as skills_router
 from .traces import router as traces_router
 from .usage import router as usage_router
+from .verification import router as verification_router
 from .workflows import router as workflows_router
 from .zmq_sessions import router as zmq_sessions_router
 
@@ -51,6 +52,7 @@ __all__ = [
     "skills_router",
     "traces_router",
     "usage_router",
+    "verification_router",
     "vision_router",
     "workflows_router",
     "zmq_sessions_router",
