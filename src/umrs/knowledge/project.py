@@ -323,6 +323,8 @@ class ResearchProject:
                 summary=f"Knowledge extracted from {filename}",
             )
 
+        self._persist_extracted_knowledge_to_umrs()
+
         # Build knowledge graph from artifacts + extracted knowledge
         artifact_dicts = [dict(a, extracted_knowledge=self._extracted_knowledge.get(a.get("artifact_id", ""))) for a in artifacts]
         self._knowledge_graph = self._linker.link(artifact_dicts)
@@ -780,6 +782,34 @@ class ResearchProject:
         if not self._knowledge_graph.nodes and not self._knowledge_graph.edges:
             return
         self._umrs_knowledge_graph.load_from_linker_graph(self._knowledge_graph)
+
+    def _persist_extracted_knowledge_to_umrs(self) -> None:
+        """Write structured extraction output to the UMRS knowledge model store."""
+        from umrs.knowledge_model import KnowledgeObjectType
+
+        type_map = {
+            "paper": KnowledgeObjectType.PAPER,
+            "notebook": KnowledgeObjectType.NOTEBOOK,
+            "code": KnowledgeObjectType.CODE,
+            "dataset": KnowledgeObjectType.DATASET,
+            "text": KnowledgeObjectType.REFERENCE,
+        }
+
+        for artifact_id, knowledge in self._extracted_knowledge.items():
+            object_type = type_map.get(
+                knowledge.artifact_type,
+                KnowledgeObjectType.REFERENCE,
+            )
+            self._umrs_knowledge_model.create_object(
+                project_id=self.project_id,
+                object_type=object_type,
+                content=knowledge.to_dict(),
+                metadata={
+                    "artifact_id": artifact_id,
+                    "filename": knowledge.filename,
+                    "artifact_type": knowledge.artifact_type,
+                },
+            )
 
     # ── Internal: Phase Transitions ──────────────────────────────────────────
 
