@@ -49,6 +49,106 @@ from .parse_notebook import NotebookParseResult, parse_notebook
 logger = logging.getLogger(__name__)
 
 
+# Type-aware field sets for quality metrics (see knowledge_extraction_audit2.md PR1).
+_PAPER_TEXT_TYPES = frozenset({"paper", "text", "document", "structured"})
+
+_TYPE_COVERAGE_FIELDS: dict[str, list[str]] = {
+    "paper": [
+        "objective", "methodology", "conclusions", "limitations",
+        "assumptions", "equations", "datasets", "experiments",
+    ],
+    "code": [
+        "modules", "apis", "algorithms", "dependencies",
+        "parameters", "kernels", "execution_flow",
+    ],
+    "notebook": [
+        "markdown_explanations", "figures", "generated_outputs",
+        "execution_order", "experimental_settings",
+    ],
+}
+
+_TYPE_CONFIDENCE_STRING_FIELDS: dict[str, list[str]] = {
+    "paper": ["objective", "methodology", "summary"],
+    "code": ["execution_flow", "summary"],
+    "notebook": ["summary"],
+}
+
+_TYPE_CONFIDENCE_LIST_FIELDS: dict[str, list[str]] = {
+    "paper": [
+        "assumptions", "equations", "datasets", "experiments",
+        "conclusions", "limitations", "keywords", "tags",
+    ],
+    "code": [
+        "modules", "apis", "algorithms", "dependencies", "parameters",
+        "kernels", "experimental_settings", "tags",
+    ],
+    "notebook": [
+        "markdown_explanations", "figures", "generated_outputs",
+        "execution_order", "experimental_settings", "tags",
+    ],
+}
+
+
+def coverage_fields_for_type(artifact_type: str) -> list[str]:
+    """Return coverage key fields relevant to *artifact_type*."""
+    if artifact_type in _TYPE_COVERAGE_FIELDS:
+        return _TYPE_COVERAGE_FIELDS[artifact_type]
+    if artifact_type in _PAPER_TEXT_TYPES:
+        return _TYPE_COVERAGE_FIELDS["paper"]
+    return _TYPE_COVERAGE_FIELDS["paper"]
+
+
+def confidence_fields_for_type(
+    artifact_type: str,
+) -> tuple[list[str], list[str]]:
+    """Return (string_fields, list_fields) for confidence scoring."""
+    if artifact_type in _TYPE_CONFIDENCE_STRING_FIELDS:
+        return (
+            _TYPE_CONFIDENCE_STRING_FIELDS[artifact_type],
+            _TYPE_CONFIDENCE_LIST_FIELDS[artifact_type],
+        )
+    if artifact_type in _PAPER_TEXT_TYPES:
+        return (
+            _TYPE_CONFIDENCE_STRING_FIELDS["paper"],
+            _TYPE_CONFIDENCE_LIST_FIELDS["paper"],
+        )
+    return (
+        _TYPE_CONFIDENCE_STRING_FIELDS["paper"],
+        _TYPE_CONFIDENCE_LIST_FIELDS["paper"],
+    )
+
+
+def _is_binary_document_bytes(filename: str, content: bytes) -> bool:
+    """Return True when *content* is a binary document needing Phase 3 text extraction."""
+    if content.startswith(b"%PDF"):
+        return True
+    lower = filename.lower()
+    return lower.endswith((".pptx", ".ppt")) and content.startswith(b"PK\x03\x04")
+
+
+def resolve_extraction_content(filename: str, content: bytes) -> bytes:
+    """Normalize binary document bytes to UTF-8 text for regex extraction.
+
+    Reuses ``data_catalog.extract.extract_content`` (pypdf / python-pptx) so
+    Phase 4 does not duplicate document parsers. Plain UTF-8 payloads — including
+    catalog ``extracted_text_ref`` text — pass through unchanged.
+    """
+    if not content or not _is_binary_document_bytes(filename, content):
+        return content
+
+    from ..data_catalog.extract import extract_content
+
+    _summary, extracted_text, _tags = extract_content(filename, content)
+    if extracted_text.strip():
+        return extracted_text.encode("utf-8")
+
+    logger.debug(
+        "No catalog text extracted for %s; falling back to raw bytes",
+        filename,
+    )
+    return content
+
+
 # ── Extracted Knowledge Models ──────────────────────────────────────────────
 
 
@@ -210,6 +310,8 @@ class KnowledgeExtractor:
             filename=filename,
         )
 
+        content = resolve_extraction_content(filename, content)
+
         if artifact_type == "paper":
             self._extract_from_paper(content, knowledge)
         elif artifact_type == "code":
@@ -244,30 +346,7 @@ class KnowledgeExtractor:
             except UnicodeDecodeError:
                 return
 
-        # Extract objective
-        knowledge.objective = self._extract_pattern(text, self._objective_patterns)
-        # Extract methodology
-        knowledge.methodology = self._extract_pattern(text, self._methodology_patterns)
-        # Extract conclusions
-        conclusions = self._extract_all_patterns(text, self._conclusion_patterns)
-        knowledge.conclusions = conclusions
-        # Extract limitations
-        limitations = self._extract_all_patterns(text, self._limitation_patterns)
-        knowledge.limitations = limitations
-        # Extract assumptions
-        assumptions = self._extract_all_patterns(text, self._assumption_patterns)
-        knowledge.assumptions = assumptions
-        # Extract equations
-        equations = self._extract_all_patterns(text, self._equation_patterns)
-        knowledge.equations = equations
-        # Extract datasets
-        datasets = self._extract_all_patterns(text, self._dataset_patterns)
-        knowledge.datasets = datasets
-        # Extract experiments
-        experiments = self._extract_all_patterns(text, self._experiment_patterns)
-        knowledge.experiments = experiments
-        # Extract keywords
-        knowledge.keywords = self._extract_keywords(text)
+        self._extract_scientific_fields_from_text(text, knowledge)
         # Summary
         knowledge.summary = text[:500] + "..." if len(text) > 500 else text
         # Tags
@@ -380,20 +459,29 @@ class KnowledgeExtractor:
             except UnicodeDecodeError:
                 return
 
-        # Extract objective
-        knowledge.objective = self._extract_pattern(text, self._objective_patterns)
-        # Extract methodology
-        knowledge.methodology = self._extract_pattern(text, self._methodology_patterns)
-        # Extract conclusions
-        knowledge.conclusions = self._extract_all_patterns(text, self._conclusion_patterns)
-        # Extract keywords
-        knowledge.keywords = self._extract_keywords(text)
+        self._extract_scientific_fields_from_text(text, knowledge)
         # Summary
         knowledge.summary = text[:500] + "..." if len(text) > 500 else text
         # Tags
         knowledge.tags = ["text"] + knowledge.keywords[:10]
 
     # ── Helper Methods ──────────────────────────────────────────────────────
+
+    def _extract_scientific_fields_from_text(
+        self,
+        text: str,
+        knowledge: ExtractedKnowledge,
+    ) -> None:
+        """Extract paper-like scientific fields from plain text."""
+        knowledge.objective = self._extract_pattern(text, self._objective_patterns)
+        knowledge.methodology = self._extract_pattern(text, self._methodology_patterns)
+        knowledge.conclusions = self._extract_all_patterns(text, self._conclusion_patterns)
+        knowledge.limitations = self._extract_all_patterns(text, self._limitation_patterns)
+        knowledge.assumptions = self._extract_all_patterns(text, self._assumption_patterns)
+        knowledge.equations = self._extract_all_patterns(text, self._equation_patterns)
+        knowledge.datasets = self._extract_all_patterns(text, self._dataset_patterns)
+        knowledge.experiments = self._extract_all_patterns(text, self._experiment_patterns)
+        knowledge.keywords = self._extract_keywords(text)
 
     def _extract_pattern(self, text: str, patterns: list[str]) -> str:
         """Extract the first match from a list of patterns."""
@@ -456,44 +544,34 @@ class KnowledgeExtractor:
     def _calculate_confidence(self, knowledge: ExtractedKnowledge) -> float:
         """Calculate extraction confidence (0.0–1.0).
 
-        Confidence is based on how many fields were successfully extracted.
+        Confidence is based on how many type-relevant fields were extracted.
         """
-        total_fields = 0
-        filled_fields = 0
+        string_fields, list_fields = confidence_fields_for_type(
+            knowledge.artifact_type,
+        )
+        total_fields = len(string_fields) + len(list_fields)
+        if total_fields == 0:
+            return 0.0
 
-        # Check all string fields
-        string_fields = [
-            "objective", "methodology", "execution_flow", "summary",
-        ]
+        filled_fields = 0
         for field_name in string_fields:
-            total_fields += 1
             if getattr(knowledge, field_name, "").strip():
                 filled_fields += 1
-
-        # Check all list fields
-        list_fields = [
-            "assumptions", "equations", "datasets", "experiments",
-            "conclusions", "limitations", "modules", "apis", "algorithms",
-            "dependencies", "parameters", "kernels", "markdown_explanations",
-            "figures", "generated_outputs", "execution_order",
-            "experimental_settings", "keywords", "tags",
-        ]
         for field_name in list_fields:
-            total_fields += 1
             if getattr(knowledge, field_name, []):
                 filled_fields += 1
 
-        return filled_fields / total_fields if total_fields > 0 else 0.0
+        return filled_fields / total_fields
 
     def _calculate_coverage(self, knowledge: ExtractedKnowledge) -> float:
         """Calculate coverage score (0.0–1.0).
 
-        Coverage is based on how many key scientific fields were extracted.
+        Coverage is based on how many type-relevant key fields were extracted.
         """
-        key_fields = [
-            "objective", "methodology", "conclusions", "limitations",
-            "assumptions", "equations", "datasets", "experiments",
-        ]
+        key_fields = coverage_fields_for_type(knowledge.artifact_type)
+        if not key_fields:
+            return 0.0
+
         filled = 0
         for field_name in key_fields:
             value = getattr(knowledge, field_name, "")
@@ -501,7 +579,7 @@ class KnowledgeExtractor:
                 filled += 1
             elif isinstance(value, str) and value.strip():
                 filled += 1
-        return filled / len(key_fields) if key_fields else 0.0
+        return filled / len(key_fields)
 
 
 # ── Convenience Function ────────────────────────────────────────────────────
