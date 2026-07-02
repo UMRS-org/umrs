@@ -34,6 +34,7 @@ class CatalogObjectMeta:
     filename_signals: list[str] = field(default_factory=list)
     detected_modality: str = "unknown"
     extracted_text_ref: str | None = None
+    extracted_knowledge_ref: str | None = None
     error_note: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -62,6 +63,7 @@ class CatalogObjectMeta:
             filename_signals=list(data.get("filename_signals") or []),
             detected_modality=str(data.get("detected_modality", "unknown")),
             extracted_text_ref=data.get("extracted_text_ref"),
+            extracted_knowledge_ref=data.get("extracted_knowledge_ref"),
             error_note=data.get("error_note"),
         )
 

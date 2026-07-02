@@ -21,6 +21,8 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
+from .extract import coverage_fields_for_type
+
 logger = logging.getLogger(__name__)
 
 
@@ -253,12 +255,18 @@ class CoverageCalculator:
             coverage.extraction_confidence = knowledge.get(
                 "extraction_confidence", 0.0
             )
-            coverage.missing_fields = self._find_missing_fields(knowledge)
+            coverage.missing_fields = self._find_missing_fields(
+                knowledge,
+                artifact_type_str,
+            )
         elif knowledge is not None:
             coverage.extraction_confidence = getattr(
                 knowledge, "extraction_confidence", 0.0
             )
-            coverage.missing_fields = self._find_missing_fields(knowledge)
+            coverage.missing_fields = self._find_missing_fields(
+                knowledge,
+                artifact_type_str,
+            )
 
         # Check metadata
         metadata = artifact.get("metadata", {})
@@ -295,38 +303,21 @@ class CoverageCalculator:
 
         return coverage
 
-    def _find_missing_fields(self, knowledge: Any) -> list[str]:
-        """Find missing fields in extracted knowledge."""
+    def _find_missing_fields(
+        self,
+        knowledge: Any,
+        artifact_type: str = "paper",
+    ) -> list[str]:
+        """Find missing type-relevant fields in extracted knowledge."""
         missing: list[str] = []
+        key_fields = coverage_fields_for_type(artifact_type)
 
         if isinstance(knowledge, dict):
-            # Check for key scientific fields
-            key_fields = [
-                "objective",
-                "methodology",
-                "conclusions",
-                "limitations",
-                "assumptions",
-                "equations",
-                "datasets",
-                "experiments",
-            ]
             for field_name in key_fields:
                 value = knowledge.get(field_name)
                 if not value:
                     missing.append(field_name)
         elif knowledge is not None:
-            # Object with attributes
-            key_fields = [
-                "objective",
-                "methodology",
-                "conclusions",
-                "limitations",
-                "assumptions",
-                "equations",
-                "datasets",
-                "experiments",
-            ]
             for field_name in key_fields:
                 value = getattr(knowledge, field_name, None)
                 if not value:
@@ -390,7 +381,7 @@ class CoverageCalculator:
         elif coverage.metadata_completeness >= 0.4:
             return CoverageStatus.PARTIAL
         else:
-            return CoverageStatus.PARTIAL
+            return CoverageStatus.MISSING
 
     def _update_totals(
         self,

@@ -176,6 +176,7 @@ class ResearchProject:
         self._s3_bucket = s3_bucket
         self._owner_id = owner_id
         self._ingester_config = ingester_config
+        self._storage_path = Path(storage_path) if storage_path else None
 
         # Knowledge store — catalog-backed when S3 is configured, else in-memory
         self._local_knowledge_store: InMemoryKnowledgeStore | None = None
@@ -737,7 +738,14 @@ class ResearchProject:
     def _ensure_local_knowledge_store(self) -> InMemoryKnowledgeStore:
         """Create the in-memory store on first use (local / no-S3 mode only)."""
         if self._local_knowledge_store is None:
-            self._local_knowledge_store = InMemoryKnowledgeStore()
+            persistence_dir = (
+                self._storage_path / "extracted_knowledge"
+                if self._storage_path is not None
+                else None
+            )
+            self._local_knowledge_store = InMemoryKnowledgeStore(
+                persistence_dir=persistence_dir,
+            )
         return self._local_knowledge_store
 
     def _build_knowledge_store(self) -> KnowledgeStore:

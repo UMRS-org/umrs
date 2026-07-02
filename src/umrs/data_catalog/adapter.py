@@ -18,7 +18,7 @@ from .artifacts import (
 from .query import _allowed, _score_meta, _tokenize, search_catalog
 from .rollup import _list_object_metas
 from .schema import CatalogObjectMeta, CatalogState
-from .store import read_meta
+from .store import read_meta, read_structured_knowledge, write_meta, write_structured_knowledge
 
 logger = logging.getLogger(__name__)
 
@@ -159,8 +159,8 @@ class CatalogArtifactAdapter:
             ]
         return artifacts
 
-    def get_extracted_knowledge(self, artifact_id: str) -> dict[str, Any] | None:
-        """Return extracted text/summary for an artifact if available."""
+    def get_catalog_text(self, artifact_id: str) -> dict[str, Any] | None:
+        """Return catalog flat text/summary for an artifact (Phase 3 output)."""
         artifact = self.get_artifact(artifact_id)
         if artifact is None:
             return None
@@ -177,6 +177,50 @@ class CatalogArtifactAdapter:
             "tags": artifact.get("tags", []),
             "metadata": artifact.get("metadata", {}),
         }
+
+    def get_extracted_knowledge(self, artifact_id: str) -> dict[str, Any] | None:
+        """Return persisted Phase 4 structured knowledge for an artifact."""
+        return self.load_structured_knowledge(artifact_id)
+
+    def persist_structured_knowledge(
+        self,
+        artifact_id: str,
+        knowledge: dict[str, Any],
+    ) -> None:
+        """Write Phase 4 structured knowledge to S3 and update catalog meta."""
+        self._load_metas()
+        assert self._meta_by_artifact_id is not None
+
+        meta = self._meta_by_artifact_id.get(artifact_id)
+        if meta is None:
+            logger.warning(
+                "Cannot persist structured knowledge for unknown artifact %s",
+                artifact_id,
+            )
+            return
+
+        ref = write_structured_knowledge(
+            self.s3_client,
+            self.bucket,
+            meta.s3_key,
+            knowledge,
+        )
+        meta.extracted_knowledge_ref = ref
+        write_meta(self.s3_client, self.bucket, meta)
+
+    def load_structured_knowledge(self, artifact_id: str) -> dict[str, Any] | None:
+        """Load persisted Phase 4 structured knowledge from catalog refs."""
+        self._load_metas()
+        assert self._meta_by_artifact_id is not None
+
+        meta = self._meta_by_artifact_id.get(artifact_id)
+        if meta is None or not meta.extracted_knowledge_ref:
+            return None
+        return read_structured_knowledge(
+            self.s3_client,
+            self.bucket,
+            meta.extracted_knowledge_ref,
+        )
 
     def set_knowledge_graph(self, graph: dict[str, Any]) -> None:
         """Attach an in-memory knowledge graph for verifier queries."""

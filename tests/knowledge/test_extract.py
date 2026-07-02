@@ -10,6 +10,7 @@ from umrs.knowledge.extract import (
     ExtractedKnowledge,
     KnowledgeExtractor,
     extract_knowledge,
+    resolve_extraction_content,
 )
 
 
@@ -366,6 +367,62 @@ def test_coverage_score(paper_content):
     assert knowledge.coverage_score > 0.0
 
 
+def test_paper_confidence_not_capped_at_52_percent(paper_content):
+    """Well-structured papers should score high on type-aware confidence."""
+    extractor = KnowledgeExtractor()
+    knowledge = extractor.extract(
+        artifact_id="paper-001",
+        artifact_type="paper",
+        filename="paper.pdf",
+        content=paper_content,
+    )
+
+    assert knowledge.extraction_confidence > 0.52
+
+
+def test_code_coverage_score_positive(code_content):
+    """Code artifacts should have non-zero type-aware coverage."""
+    extractor = KnowledgeExtractor()
+    knowledge = extractor.extract(
+        artifact_id="code-001",
+        artifact_type="code",
+        filename="model.py",
+        content=code_content,
+    )
+
+    assert knowledge.coverage_score > 0.0
+
+
+def test_text_extracts_all_scientific_fields():
+    """Text extraction should populate the same scientific fields as papers."""
+    text_content = b"""
+The goal of this paper is to test the extraction pipeline.
+We propose a new method for knowledge extraction.
+We assume that the data is clean.
+Equation: E = mc^2
+We use the MNIST dataset for evaluation.
+We evaluate on three benchmark datasets.
+We conclude that the extraction works correctly.
+However, a limitation is that regex patterns are brittle.
+
+Keywords: test, extraction, pipeline
+"""
+
+    extractor = KnowledgeExtractor()
+    knowledge = extractor.extract(
+        artifact_id="text-001",
+        artifact_type="text",
+        filename="document.txt",
+        content=text_content,
+    )
+
+    assert knowledge.limitations
+    assert knowledge.assumptions
+    assert knowledge.datasets
+    assert knowledge.experiments
+    assert knowledge.equations
+
+
 # ── Convenience Function Tests ─────────────────────────────────────────────
 
 
@@ -460,3 +517,61 @@ def quicksort_algorithm(arr):
 
     assert len(knowledge.algorithms) > 0
     assert "quicksort_algorithm" in knowledge.algorithms
+
+
+# ── PDF text bridge (PR2) ───────────────────────────────────────────────────
+
+
+def test_resolve_extraction_content_passthrough_plain_text():
+    """Plain UTF-8 text should not be routed through document extraction."""
+    content = b"The goal of this paper is to test passthrough."
+    assert resolve_extraction_content("notes.txt", content) == content
+
+
+def test_resolve_extraction_content_bridges_binary_pdf(monkeypatch):
+    """Binary PDF bytes should be replaced with catalog-extracted text."""
+    pdf_bytes = b"%PDF-1.4\n% binary junk that is not valid pdf structure"
+    scientific_text = (
+        "The goal of this paper is to demonstrate PDF bridging.\n"
+        "Keywords: pdf, bridge, extraction\n"
+    )
+
+    def fake_extract_content(filename, content):
+        assert filename == "paper.pdf"
+        assert content == pdf_bytes
+        return "summary", scientific_text, []
+
+    monkeypatch.setattr(
+        "umrs.data_catalog.extract.extract_content",
+        fake_extract_content,
+    )
+
+    resolved = resolve_extraction_content("paper.pdf", pdf_bytes)
+    assert resolved == scientific_text.encode("utf-8")
+
+
+def test_extract_from_binary_pdf_extracts_objective(monkeypatch):
+    """KnowledgeExtractor should extract fields from bridged PDF text."""
+    pdf_bytes = b"%PDF-1.4\n% invalid structure"
+    scientific_text = (
+        "The goal of this paper is to demonstrate PDF bridging in Phase 4.\n"
+        "We propose a new method for knowledge extraction from documents.\n"
+        "Keywords: pdf, bridge, extraction\n"
+    )
+
+    monkeypatch.setattr(
+        "umrs.data_catalog.extract.extract_content",
+        lambda _filename, _content: ("summary", scientific_text, []),
+    )
+
+    extractor = KnowledgeExtractor()
+    knowledge = extractor.extract(
+        artifact_id="paper-pdf-001",
+        artifact_type="paper",
+        filename="paper.pdf",
+        content=pdf_bytes,
+    )
+
+    assert "demonstrate PDF bridging" in knowledge.objective
+    assert "pdf" in knowledge.keywords
+    assert knowledge.coverage_score > 0.0
