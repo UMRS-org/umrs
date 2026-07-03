@@ -163,6 +163,9 @@ class MessageQueue:
                 server_ip=self.server_ip,
                 port=selected_port,
                 tunnel_mode=self.tunnel_mode,
+                # Share the control queue's ZMQ context so the ZAP
+                # authenticator covers data-queue sockets too (#64).
+                context=self.context,
             )
 
         entry["port"] = selected_port
@@ -170,7 +173,7 @@ class MessageQueue:
 
     def __init__(self, role='server', queue_type='control', server_ip="127.0.0.1", port=BASE_PORT,
                  max_nb_messages=DEFAULT_NB_MSG, timeout_ms=8000, tmp_dir = None, task_manager = None,
-                 status_store=None, tunnel_mode=None, prefer_env_server_host=True):
+                 status_store=None, tunnel_mode=None, prefer_env_server_host=True, context=None):
         """
         Initializes the MessageQueue.
 
@@ -184,6 +187,10 @@ class MessageQueue:
             tunnel_mode (bool | None): When true, bind/connect to localhost so the
                         transport can run through SSH tunnels. When None, read
                         UMRS_TUNNEL_MODE from the environment.
+            context (zmq.Context | None): Shared ZMQ context. When provided, the
+                        data queue reuses the control queue's context so that a
+                        single ZAP authenticator can cover both control and data
+                        sockets (see GitHub issue #64).
             target_nb_messages (int): Max number of messages in queue (for POSIX/SYSV).
             target_message_size (int): Max size per message (for POSIX/SYSV).
             status_store: a dictionnary to store event related to task in server.
@@ -196,7 +203,7 @@ class MessageQueue:
         env_server_host = os.environ.get("UMRS_SERVER_HOST") if prefer_env_server_host else None
         remote_server_ip = env_server_host if env_server_host else server_ip
         self.server_ip = "127.0.0.1" if self.tunnel_mode else remote_server_ip
-        self.context = zmq.Context()
+        self.context = context if context is not None else zmq.Context()
         self.client_dictionary={}
         self.timeout = timeout_ms
         self.max_msg = max_nb_messages if max_nb_messages > 0 else DEFAULT_NB_MSG
@@ -706,6 +713,10 @@ class MessageQueue:
         TaskCmd.MODEL_DOWNLOAD:    "_parse_json_payload",
         TaskCmd.LIST_WORKFLOWS:    "_parse_json_payload",
         TaskCmd.RUN_WORKFLOW:      "_parse_json_payload",
+        TaskCmd.WORKFLOW_STATUS:   "_parse_json_payload",
+        TaskCmd.WORKFLOW_RESULTS:  "_parse_json_payload",
+        TaskCmd.WORKFLOW_CANCEL:   "_parse_json_payload",
+        TaskCmd.WORKFLOW_ERRORS:   "_parse_json_payload",
         TaskCmd.JOB_SUBMIT:        "_parse_json_payload",
         TaskCmd.JOB_CANCEL:        "_parse_json_payload",
         TaskCmd.JOB_LIST:          "_parse_json_payload",
@@ -945,6 +956,9 @@ class MessageQueue:
                 server_ip=server_ip,
                 port=port,
                 tunnel_mode=effective_tunnel_mode,
+                # Share the control queue's ZMQ context so the ZAP
+                # authenticator covers data-queue sockets too (#64).
+                context=self.context,
             )
             return data_mq
         if reply.startswith("NO_DATA_PORT_AVAILABLE"):
@@ -954,12 +968,13 @@ class MessageQueue:
         else:
             raise RuntimeError(f"Unexpected reply from server: {reply}")
 
-    def notify_server(self, client_id, notification_type, nb_objects, verbose=False, admin_token=None, s3_keys=None):
+    def notify_server(self, client_id, notification_type, nb_objects, verbose=False, admin_token=None):
         """Notify the server that objects have been uploaded to S3.
 
-        ``s3_keys`` is accepted for forward compatibility with the planned
-        CURVE-authenticated data-queue fix (see GitHub issue #64) but is
-        currently ignored — the control channel carries the notification.
+        The data queue (PUSH/PULL) carries the actual S3 object URIs; this
+        control-channel notification only signals how many objects to expect.
+        CURVE authentication is applied to the data queue sockets when
+        ``UMRS_ZMQ_AUTH_TYPE`` is set to ``curve`` or ``session`` (see #64).
         """
         if self.role != "client":
             raise PermissionError("Only client can call 'notify_server'")
