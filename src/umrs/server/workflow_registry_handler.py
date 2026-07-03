@@ -437,6 +437,8 @@ def handle_workflow_command(
             return _handle_workflow_cancel(client_id, payload_str)
         elif cmd == TaskCmd.WORKFLOW_ERRORS:
             return _handle_workflow_errors(client_id, payload_str)
+        elif cmd == TaskCmd.WORKFLOW_LOGS:
+            return _handle_workflow_logs(client_id, payload_str)
         else:
             return json.dumps(
                 {
@@ -476,7 +478,9 @@ def _handle_workflow_status(client_id: str, payload_str: str) -> str:
         return json.dumps(
             {
                 "status": "error",
-                "message": f"Execution '{execution_id}' not found",
+                "message": (
+                    f"No workflow execution exists with ID '{execution_id}'."
+                ),
             }
         )
 
@@ -505,7 +509,9 @@ def _handle_workflow_results(client_id: str, payload_str: str) -> str:
         return json.dumps(
             {
                 "status": "error",
-                "message": f"Execution '{execution_id}' not found",
+                "message": (
+                    f"No workflow execution exists with ID '{execution_id}'."
+                ),
             }
         )
 
@@ -536,7 +542,9 @@ def _handle_workflow_cancel(client_id: str, payload_str: str) -> str:
         return json.dumps(
             {
                 "status": "error",
-                "message": f"Execution '{execution_id}' not found",
+                "message": (
+                    f"No workflow execution exists with ID '{execution_id}'."
+                ),
             }
         )
 
@@ -578,7 +586,9 @@ def _handle_workflow_errors(client_id: str, payload_str: str) -> str:
         return json.dumps(
             {
                 "status": "error",
-                "message": f"Execution '{execution_id}' not found",
+                "message": (
+                    f"No workflow execution exists with ID '{execution_id}'."
+                ),
             }
         )
 
@@ -621,6 +631,129 @@ def _handle_workflow_errors(client_id: str, payload_str: str) -> str:
             "execution": record.to_dict(),
             "error_logs": error_logs,
             "count": len(error_logs),
+        },
+        default=str,
+    )
+
+
+def _handle_workflow_logs(
+    client_id: str, payload_str: str
+) -> str:
+    """Handle WORKFLOW_LOGS — stream execution logs for a workflow run.
+
+    Returns a structured log timeline including:
+    - Workflow lifecycle events (submitted, started, finished)
+    - Per-step events (started, routing, succeeded/failed)
+    - Workflow-level error
+    - Per-step errors
+
+    The CLI can poll this endpoint with ``--follow`` to stream updates
+    until the workflow reaches a terminal state.
+    """
+    from umrs.server.workflow_execution_registry import get_execution_registry
+
+    execution_id, payload = _parse_execution_id(payload_str)
+    if not execution_id:
+        return json.dumps(
+            {"status": "error", "message": "execution_id is required"}
+        )
+
+    tail = 200
+    if isinstance(payload, dict):
+        tail_val = payload.get("tail")
+        if isinstance(tail_val, int) and tail_val > 0:
+            tail = tail_val
+
+    registry = get_execution_registry()
+    record = registry.get(execution_id)
+    if record is None:
+        return json.dumps(
+            {
+                "status": "error",
+                "message": (
+                    f"No workflow execution exists with ID '{execution_id}'."
+                ),
+            }
+        )
+
+    # Build log timeline
+    log_entries: list[dict[str, Any]] = []
+
+    # Workflow lifecycle
+    log_entries.append(
+        {
+            "timestamp": datetime.fromtimestamp(
+                record.submitted_at
+            ).isoformat(),
+            "level": "INFO",
+            "source": "workflow",
+            "message": f"Workflow '{record.workflow_name}' submitted",
+        }
+    )
+    if record.started_at:
+        log_entries.append(
+            {
+                "timestamp": datetime.fromtimestamp(
+                    record.started_at
+                ).isoformat(),
+                "level": "INFO",
+                "source": "workflow",
+                "message": "Workflow execution started",
+            }
+        )
+    if record.finished_at:
+        log_entries.append(
+            {
+                "timestamp": datetime.fromtimestamp(
+                    record.finished_at
+                ).isoformat(),
+                "level": "INFO" if record.status == "succeeded" else "ERROR",
+                "source": "workflow",
+                "message": f"Workflow finished with status '{record.status}'",
+            }
+        )
+
+    # Per-step events
+    for step_name, step in record.steps.items():
+        if step.started_at:
+            log_entries.append(
+                {
+                    "timestamp": datetime.fromtimestamp(
+                        step.started_at
+                    ).isoformat(),
+                    "level": "INFO",
+                    "source": f"step:{step_name}",
+                    "message": f"Step '{step_name}' started",
+                }
+            )
+        if step.finished_at:
+            level = "ERROR" if step.status == "failed" else "INFO"
+            log_entries.append(
+                {
+                    "timestamp": datetime.fromtimestamp(
+                        step.finished_at
+                    ).isoformat(),
+                    "level": level,
+                    "source": f"step:{step_name}",
+                    "message": (
+                        f"Step '{step_name}' {step.status}"
+                        + (f": {step.error}" if step.error else "")
+                    ),
+                }
+            )
+
+    # Sort by timestamp
+    log_entries.sort(key=lambda e: e.get("timestamp", ""))
+
+    # Limit to tail
+    log_entries = log_entries[-tail:]
+
+    return json.dumps(
+        {
+            "status": "ok",
+            "execution": record.to_dict(),
+            "logs": log_entries,
+            "count": len(log_entries),
         },
         default=str,
     )

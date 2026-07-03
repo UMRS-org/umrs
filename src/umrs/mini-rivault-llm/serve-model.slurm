@@ -954,8 +954,9 @@ if [[ "${SLURM_JOB_NUM_NODES:-${SLURM_NNODES:-1}}" -gt 1 ]]; then
     # Wait for the Ray head GCS to accept connections.
     _ray_ready=0
     for _ in $(seq 1 30); do
-        if podman run --rm --network host "${VLLM_IMAGE}" \
-                /opt/venv/bin/ray status --address="${RAY_ADDRESS}" >/dev/null 2>&1; then
+        if podman run --rm --network host --entrypoint /bin/sh \
+                "${VLLM_IMAGE}" -c "/opt/venv/bin/ray status --address='${RAY_ADDRESS}'" \
+                >/dev/null 2>&1; then
             _ray_ready=1
             break
         fi
@@ -987,8 +988,8 @@ if [[ "${SLURM_JOB_NUM_NODES:-${SLURM_NNODES:-1}}" -gt 1 ]]; then
     _want_gpus=$(( VLLM_TP * ${SLURM_JOB_NUM_NODES:-${SLURM_NNODES:-1}} ))
     _have_gpus=0
     for _ in $(seq 1 60); do
-        _have_gpus="$(podman run --rm --network host "${VLLM_IMAGE}" \
-            /opt/venv/bin/python -c "import ray; ray.init(address='${RAY_ADDRESS}'); print(int(ray.cluster_resources().get('GPU',0)))" \
+        _have_gpus="$(podman run --rm --network host --entrypoint /bin/sh \
+            "${VLLM_IMAGE}" -c "/opt/venv/bin/python -c 'import ray; ray.init(address=\"${RAY_ADDRESS}\"); print(int(ray.cluster_resources().get(\"GPU\",0)))'" \
             2>/dev/null | tail -1)"
         if [[ "${_have_gpus}" == "${_want_gpus}" ]]; then
             break

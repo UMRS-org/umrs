@@ -1803,6 +1803,50 @@ def _cmd_endpoint_stats(args: argparse.Namespace, _store: UserStore) -> int:
     return 0
 
 
+def _umrs_api_post(url: str, data: dict | None = None) -> dict:
+    """POST to UMRS API. Returns parsed JSON."""
+    import json
+    import urllib.request
+    import urllib.error
+
+    payload = json.dumps(data or {}).encode()
+    req = urllib.request.Request(url, data=payload, method="POST")
+    req.add_header("Content-Type", "application/json")
+    req.add_header("Accept", "application/json")
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read().decode())
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode() if exc.fp else ""
+        print(f"error: UMRS API returned {exc.code}: {body}", file=sys.stderr)
+        raise SystemExit(2) from exc
+    except urllib.error.URLError as exc:
+        print(
+            f"error: cannot reach UMRS at {url}: {exc.reason}",
+            file=sys.stderr,
+        )
+        raise SystemExit(2) from exc
+
+
+def _cmd_endpoint_refresh(args: argparse.Namespace, _store: UserStore) -> int:
+    """Refresh a stuck endpoint (re-resolve host + re-probe readiness)."""
+    base = _umrs_base_url(args)
+    job_id = args.job_id
+
+    result = _umrs_api_post(f"{base}/umrs/endpoints/{job_id}/refresh")
+    if getattr(args, "json", False):
+        _print_json(result)
+    else:
+        status = result.get("status", "unknown")
+        host = result.get("host", "?")
+        port = result.get("port", "?")
+        print(f"✓ Refreshed endpoint {job_id}")
+        print(f"  Status: {status}")
+        print(f"  Host: {host}")
+        print(f"  Port: {port}")
+    return 0
+
+
 def _add_endpoint_parsers(endpoint_sub: argparse._SubParsersAction) -> None:
     list_p = endpoint_sub.add_parser(
         "list",
@@ -1868,6 +1912,26 @@ def _add_endpoint_parsers(endpoint_sub: argparse._SubParsersAction) -> None:
     )
     stats_p.add_argument("--json", action="store_true")
     stats_p.set_defaults(func=_cmd_endpoint_stats)
+
+    refresh_p = endpoint_sub.add_parser(
+        "refresh",
+        help="Refresh a stuck endpoint (re-resolve host + re-probe readiness)",
+        description=(
+            "Re-resolve host/port from the backend and re-probe readiness. "
+            "Use this to recover endpoints stuck in PROVISIONING/STARTING "
+            "with host=\"pending\" after a _finalize_provision task died "
+            "(e.g. UMRS restart)."
+        ),
+        epilog=(
+            "Examples:\n"
+            "  umrs-server admin endpoint refresh 42315\n"
+            "  umrs-server admin endpoint refresh 42315 --json"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    refresh_p.add_argument("job_id", help="Endpoint job ID to refresh")
+    refresh_p.add_argument("--json", action="store_true")
+    refresh_p.set_defaults(func=_cmd_endpoint_refresh)
 
 
 def _cmd_reload(args: argparse.Namespace, _store: UserStore) -> int:
