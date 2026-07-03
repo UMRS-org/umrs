@@ -315,37 +315,63 @@ def _make_candidate(
     )
 
 
-def discover_loaded_config_profiles() -> dict[str, list[ConfigFileCandidate]]:
+def discover_loaded_config_profiles(
+    *,
+    skip_server: bool = False,
+    skip_user: bool = False,
+    skip_s3: bool = False,
+) -> dict[str, list[ConfigFileCandidate]]:
+    """Discover config file candidates on disk.
+
+    When ``skip_server`` / ``skip_user`` / ``skip_s3`` is True, the
+    corresponding scan is skipped and an empty candidate list is returned
+    for that kind.  This avoids wasted work — and avoids touching broken
+    files on the search path — when the caller already has an explicit
+    path (e.g. via ``-c`` / ``-s`` CLI flags).  See GitHub issue #63.
+    """
     current_server = _read_pointer(get_current_server_config_path())
     current_user = _read_pointer(get_current_user_config_path())
     current_s3 = _read_pointer(get_current_s3_config_path())
 
-    server_paths = _unique_paths([*_candidate_paths_for_server(), current_server])
-    server_candidates = [
-        _make_candidate("server", path, current_server) for path in server_paths
-    ]
+    if skip_server:
+        server_candidates: list[ConfigFileCandidate] = []
+    else:
+        server_paths = _unique_paths(
+            [*_candidate_paths_for_server(), current_server]
+        )
+        server_candidates = [
+            _make_candidate("server", path, current_server) for path in server_paths
+        ]
 
-    referenced_user_paths: list[str] = []
-    for candidate in server_candidates:
-        referenced_user_paths.extend(candidate.details.get("user_config_paths") or [])
+    if skip_user:
+        user_candidates: list[ConfigFileCandidate] = []
+    else:
+        referenced_user_paths: list[str] = []
+        for candidate in server_candidates:
+            referenced_user_paths.extend(
+                candidate.details.get("user_config_paths") or []
+            )
 
-    user_paths = _unique_paths(
-        [*_candidate_paths_for_user(), *referenced_user_paths, current_user]
-    )
-    user_candidates = [
-        _make_candidate("user", path, current_user) for path in user_paths
-    ]
+        user_paths = _unique_paths(
+            [*_candidate_paths_for_user(), *referenced_user_paths, current_user]
+        )
+        user_candidates = [
+            _make_candidate("user", path, current_user) for path in user_paths
+        ]
 
-    referenced_s3_paths: list[str] = []
-    for candidate in user_candidates:
-        s3_path = candidate.details.get("s3_configuration_file")
-        if s3_path:
-            referenced_s3_paths.append(s3_path)
+    if skip_s3:
+        s3_candidates: list[ConfigFileCandidate] = []
+    else:
+        referenced_s3_paths: list[str] = []
+        for candidate in user_candidates:
+            s3_path = candidate.details.get("s3_configuration_file")
+            if s3_path:
+                referenced_s3_paths.append(s3_path)
 
-    s3_paths = _unique_paths(
-        [*_candidate_paths_for_s3(), *referenced_s3_paths, current_s3]
-    )
-    s3_candidates = [_make_candidate("s3", path, current_s3) for path in s3_paths]
+        s3_paths = _unique_paths(
+            [*_candidate_paths_for_s3(), *referenced_s3_paths, current_s3]
+        )
+        s3_candidates = [_make_candidate("s3", path, current_s3) for path in s3_paths]
 
     return {
         "server": server_candidates,
@@ -401,7 +427,15 @@ def resolve_loaded_config(
     explicit_user_config_path: str | None = None,
     explicit_s3_config_path: str | None = None,
 ) -> ResolvedLoadedConfig:
-    discovered = discover_loaded_config_profiles()
+    # Skip auto-discovery for config types whose path was explicitly
+    # provided (e.g. via -c / -s CLI flags).  This avoids scanning and
+    # validating every candidate file on disk when the caller already
+    # knows which file to use.  See GitHub issue #63.
+    discovered = discover_loaded_config_profiles(
+        skip_server=bool(explicit_server_config_path),
+        skip_user=bool(explicit_user_config_path),
+        skip_s3=bool(explicit_s3_config_path),
+    )
     current_server = _read_pointer(get_current_server_config_path())
     current_user = _read_pointer(get_current_user_config_path())
     current_s3 = _read_pointer(get_current_s3_config_path())
