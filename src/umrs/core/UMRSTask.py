@@ -54,6 +54,17 @@ class UMRSTask:
                             updated_at   TIMESTAMPTZ DEFAULT now()
                         )
                     """)
+                    # Migrate pre-existing tables (created before payload_hash
+                    # was introduced): add the generated column if missing.
+                    # CREATE TABLE IF NOT EXISTS above is a no-op on an existing
+                    # table, so without this the dedup index below would fail
+                    # with 'column "payload_hash" does not exist'. Idempotent:
+                    # a no-op once the column exists.
+                    cur.execute("""
+                        ALTER TABLE tasks
+                        ADD COLUMN IF NOT EXISTS payload_hash TEXT
+                        GENERATED ALWAYS AS (md5(coalesce(payload, ''))) STORED
+                    """)
                     # Partial unique index on payload_hash (md5 of payload) rather
                     # than payload itself: PostgreSQL limits index row size to 8191
                     # bytes, which large payloads exceed. payload_hash is a
