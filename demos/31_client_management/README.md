@@ -25,7 +25,10 @@ utility commands that every UMRS user should know.
 | `endpoint stop` | Stop an endpoint provision job | None |
 | `workflow list` | List registered workflows | None |
 | `workflow run` | Trigger execution of a registered workflow | Demo 16 |
-| `run-workflow` | Alias for `workflow run` — trigger workflow execution | Demo 16 |
+| `workflow upload` | Upload a workflow bundle to the server | Demo 16 |
+| `workflow status` | Show execution status for a workflow run | Demo 14 |
+| `workflow errors` | Show error logs for a failed workflow execution | Demo 14 |
+| `workflow visualize` | Render the workflow DAG as ASCII art | Demo 15 |
 | `model delete` | Remove a registered model from the catalog | Demo 07 |
 | `purge_remote_buckets` | Delete extra remote S3 buckets not in user config | Demo 06 |
 
@@ -529,7 +532,13 @@ umrs-client endpoint stop <id>            # Stop an endpoint
 # Workflow management
 umrs-client workflow list                 # List registered workflows
 umrs-client workflow run <name>           # Run a registered workflow
-umrs-client upload-workflow <dir>         # Upload a workflow bundle
+umrs-client workflow upload <dir>         # Upload a workflow bundle
+umrs-client workflow status <exec-id>     # Show execution status
+umrs-client workflow results <exec-id>    # Fetch results for a completed run
+umrs-client workflow cancel <exec-id>     # Cancel a running execution
+umrs-client workflow errors <exec-id>     # Show error logs for failed Attempts
+umrs-client workflow visualize <name>     # Render the workflow DAG as ASCII art
+umrs-client workflow validate-sandbox <dir>  # Validate Dockerfile sandbox
 
 # Model management
 umrs-client model list                    # List registered models
