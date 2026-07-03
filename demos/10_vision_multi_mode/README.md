@@ -66,7 +66,7 @@ umrs-client ping
 #    The upload-ready bundle lives under workflow/. Its workflow.json defines
 #    3 parallel branches (segment, features,
 #    thumbnails). Each branch processes the same input images independently.
-umrs-client upload-workflow workflow/ --name "vision-multi-mode"
+umrs-client workflow upload workflow/ --name "vision-multi-mode"
 
 # 3. Upload images to the multi-mode bucket
 #    All 3 branches receive the same images simultaneously:

@@ -87,8 +87,16 @@ umrs-client list_buckets
 cp -r ../../tmp/opossum-video-analysis/src/opossum workflow/opossum
 
 # 6. Upload workflow (includes bundled engine)
-umrs-client upload-workflow workflow/ --name opossum-analysis
+umrs-client workflow upload workflow/ --name opossum-analysis
 # Expected: workflow upload success message
+
+# 6a. (Optional) Validate the sandbox Dockerfile before running
+umrs-client workflow validate-sandbox workflow/ --dry-run
+# Expected: ✓ Validation passed
+
+# 6b. (Optional) Visualize the workflow DAG
+umrs-client workflow visualize opossum-analysis
+# Expected: ASCII art showing the workflow DAG structure
 
 # 7. Upload videos (preserves camera/Schedule date hierarchy)
 umrs-client upload_dir ../../tmp/opossum-video-analysis/data demo-opossum
@@ -100,12 +108,20 @@ umrs-client upload_dir ../../tmp/opossum-video-analysis/data demo-opossum
 #                 steps 2-3 to register and reload the experience.
 
 # 8. Run the workflow on the uploaded videos
-umrs-client run-workflow opossum-analysis --bucket demo-opossum
+umrs-client workflow run opossum-analysis --bucket demo-opossum
 # Expected: "✓ Workflow 'opossum-analysis' execution queued as durable job
 #           job-XXXXX (1 steps)"
 # The workflow runs server-side: it downloads the videos, runs the
 # frame-difference motion detection pipeline, and uploads per-pair TSVs
 # and an aggregated motion_events.tsv back to the bucket.
+
+# 8a. (Optional) Check workflow execution status
+umrs-client workflow status <execution-id>
+# Expected: execution status with progress and step details
+
+# 8b. (Optional) Show error logs if the workflow fails
+umrs-client workflow errors <execution-id>
+# Expected: error logs for failed Attempts, including per-step errors
 
 # 9. Check job status (optional)
 umrs-client job status <job-id-from-step-8>
@@ -128,7 +144,7 @@ When `auto_trigger` is `true`:
 
 When `auto_trigger` is `false` (or omitted):
 1. Upload data: `umrs-client upload_dir <data-dir> demo-opossum`
-2. Manually trigger: `umrs-client run-workflow opossum-analysis --bucket demo-opossum`
+2. Manually trigger: `umrs-client workflow run opossum-analysis --bucket demo-opossum`
 3. Download results: `umrs-client download_results demo-opossum results/`
 
 ## Dependencies

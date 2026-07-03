@@ -21,7 +21,7 @@ cd demos/16_custom_workflow
 2. **Prepare workflow files** — creates `workflow.json` (pipeline definition)
    and `counter.py` (custom word-counting step)
 3. **Upload workflow** — sends the workflow package to the server via
-   `umrs-client upload-workflow`
+   `umrs-client workflow upload`
 4. **Upload sample data** — sends text files to the workflow's bucket
 5. **Download results** — retrieves the processed output
    (`word_count_results.json`)
@@ -107,7 +107,7 @@ PYEOF
 #    This registers the workflow under the name "custom-text-counter".
 #    The server stores the workflow definition and step scripts so it can
 #    execute them when data arrives.
-umrs-client upload-workflow ./workflow --name "custom-text-counter"
+umrs-client workflow upload ./workflow --name "custom-text-counter"
 
 # 4. Upload text data to the workflow's bucket
 #    Files uploaded to this bucket will be processed by the custom workflow.

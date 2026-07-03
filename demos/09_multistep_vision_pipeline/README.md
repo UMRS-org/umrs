@@ -49,7 +49,11 @@ umrs-client ping
 #    workflow.json plus the referenced step modules.
 #    to the server. The server stores the pipeline definition and
 #    will execute it when data arrives in the associated bucket.
-umrs-client upload-workflow workflow/ --name "vision-pipeline-demo"
+umrs-client workflow upload workflow/ --name "vision-pipeline-demo"
+
+# 2a. (Optional) Visualize the workflow DAG before running
+umrs-client workflow visualize vision-pipeline-demo
+# Expected: ASCII art showing the 3-step pipeline DAG
 
 # 3. Upload images to the pipeline's bucket
 #    Images uploaded here will trigger the 3-step pipeline:
@@ -91,7 +95,8 @@ Edit `workflow.json` → `steps[0].config`:
 
 1. Create `steps/my_step.py` implementing `Step`
 2. Add an entry to `workflow/workflow.json → steps[]`
-3. Re-upload the workflow: `umrs-client upload-workflow workflow/`
+3. Re-upload the workflow: `umrs-client workflow upload workflow/`
+4. Visualize the updated DAG: `umrs-client workflow visualize vision-pipeline-demo`
 
 This demo shows the normal user path: upload the workflow bundle, upload data,
 and collect outputs. If your site requires extra server-side activation, that is

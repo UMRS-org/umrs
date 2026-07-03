@@ -65,7 +65,7 @@ python3 generate_test_videos.py -o sample_videos/ --count 4 --fps 15
 #    The workflow contains a MotionDetectStep that analyzes
 #    consecutive frames for pixel intensity changes and reports
 #    motion events with timestamps.
-umrs-client upload-workflow workflow/ --name "video-motion-analysis"
+umrs-client workflow upload workflow/ --name "video-motion-analysis"
 
 # 4. Upload videos to the analysis bucket
 #    Each video will be processed by the MotionDetectStep,
@@ -142,7 +142,7 @@ To add a second analysis pass (e.g. optical flow, object tracking):
 
 1. Create `workflow/optical_flow_step.py`
 2. Add a second entry to `workflow/workflow.json → steps[]`
-3. Re-upload: `umrs-client upload-workflow workflow/`
+3. Re-upload: `umrs-client workflow upload workflow/`
 
 ## See Also
 
