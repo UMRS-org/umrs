@@ -2,18 +2,32 @@ services:
   vllm:
     shm_size: ${VLLM_NCCL_MEM_LIMIT:?error}
     devices:
-      # CDI (Container Device Interface) — requires:
-      #   nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml
-      # This is the recommended approach for native host execution with
-      # nvidia-container-toolkit.  No manual driver-lib bind mounts needed.
-      - nvidia.com/gpu=all
+      # Direct device mapping — Podman 4.9.3 on RCCS cannot resolve CDI
+      # devices via podman-compose (nvidia.com/gpu=all is unresolvable).
+      - /dev/nvidia0
+      - /dev/nvidiactl
+      - /dev/nvidia-uvm
+      - /dev/nvidia-uvm-tools
+      - /dev/nvidia-caps/nvidia-cap1
+      - /dev/nvidia-caps/nvidia-cap2
+    volumes:
+      # Mount NVIDIA driver libraries so vLLM can detect the GPU.
+      # Without these, vLLM fails with "Failed to infer device type".
+      - /usr/lib/aarch64-linux-gnu:/usr/lib/aarch64-linux-gnu:ro
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
 
   bentoml-vision:
     devices:
-      - nvidia.com/gpu=all
+      - /dev/nvidia0
+      - /dev/nvidiactl
+      - /dev/nvidia-uvm
+      - /dev/nvidia-uvm-tools
+      - /dev/nvidia-caps/nvidia-cap1
+      - /dev/nvidia-caps/nvidia-cap2
+    volumes:
+      - /usr/lib/aarch64-linux-gnu:/usr/lib/aarch64-linux-gnu:ro
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
