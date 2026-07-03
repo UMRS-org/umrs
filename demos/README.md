@@ -316,7 +316,13 @@ Need to see connection info, list profiles, or manage endpoints?
 | `endpoint stop` | 25, 31 | Stop an endpoint provision job |
 | `workflow list` | 31 | List registered workflows |
 | `workflow run` | 16, 31 | Trigger execution of a registered workflow |
-| `upload-workflow` | 09, 10, 14, 16 | Upload a workflow bundle to the server |
+| `workflow upload` | 09, 10, 14, 16 | Upload a workflow bundle to the server |
+| `workflow status` | 14, 31 | Show execution status for a workflow run |
+| `workflow results` | 14, 31 | Fetch results for a completed workflow run |
+| `workflow cancel` | 14, 31 | Cancel a running workflow execution |
+| `workflow errors` | 14, 31 | Show error logs for a failed workflow execution |
+| `workflow visualize` | 09, 14, 15 | Render the workflow DAG as ASCII art |
+| `workflow validate-sandbox` | 14 | Validate a workflow sandbox (Dockerfile + workflow.json) |
 | `monitor` | 22 | Live-refreshing jobs dashboard (TUI) |
 | `config add-experience` | 00, workload demos | Merge an experience JSON fragment into the active user config |
 | `config init` | 00, 31 | Create a new user config JSON |
