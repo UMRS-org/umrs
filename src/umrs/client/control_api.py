@@ -289,6 +289,30 @@ class UMRSControlAPI:
         )
         return self._request_json(TaskCmd.RUN_WORKFLOW, payload)
 
+    def workflow_status(self, execution_id: str) -> dict[str, Any]:
+        """Show execution status for a workflow run."""
+        payload = json.dumps({"execution_id": execution_id})
+        return self._request_json(TaskCmd.WORKFLOW_STATUS, payload)
+
+    def workflow_results(self, execution_id: str) -> dict[str, Any]:
+        """Fetch results for a completed workflow run."""
+        payload = json.dumps({"execution_id": execution_id})
+        return self._request_json(TaskCmd.WORKFLOW_RESULTS, payload)
+
+    def workflow_cancel(self, execution_id: str) -> dict[str, Any]:
+        """Cancel a running workflow execution."""
+        payload = json.dumps({"execution_id": execution_id})
+        return self._request_json(TaskCmd.WORKFLOW_CANCEL, payload)
+
+    def workflow_errors(
+        self, execution_id: str, *, tail: int = 50
+    ) -> dict[str, Any]:
+        """Show error logs for a failed workflow execution (Attempts)."""
+        payload = json.dumps(
+            {"execution_id": execution_id, "tail": tail}
+        )
+        return self._request_json(TaskCmd.WORKFLOW_ERRORS, payload)
+
     def maintenance(
         self, action: str, config_path: str | None = None
     ) -> dict[str, Any]:

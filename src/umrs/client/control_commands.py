@@ -336,6 +336,78 @@ def configure_workflow_list_parser(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def configure_workflow_upload_parser(parser: argparse.ArgumentParser) -> None:
+    """Parser for ``workflow upload`` — upload a workflow directory."""
+    parser.add_argument(
+        "path", help="Local directory containing workflow.json and step scripts"
+    )
+    parser.add_argument(
+        "--name", default=None, help="Workflow name (defaults to directory basename)"
+    )
+    parser.add_argument(
+        "--scope",
+        default="user",
+        choices=WORKFLOW_SCOPE_CHOICES,
+        help="Workflow visibility scope (default: user)",
+    )
+
+
+def configure_workflow_status_parser(parser: argparse.ArgumentParser) -> None:
+    """Parser for ``workflow status`` — show execution status."""
+    parser.add_argument("execution_id", help="Execution ID to inspect")
+
+
+def configure_workflow_results_parser(parser: argparse.ArgumentParser) -> None:
+    """Parser for ``workflow results`` — fetch results."""
+    parser.add_argument("execution_id", help="Execution ID to fetch results for")
+
+
+def configure_workflow_cancel_parser(parser: argparse.ArgumentParser) -> None:
+    """Parser for ``workflow cancel`` — cancel execution."""
+    parser.add_argument("execution_id", help="Execution ID to cancel")
+
+
+def configure_workflow_errors_parser(parser: argparse.ArgumentParser) -> None:
+    """Parser for ``workflow errors`` — show error logs for failed Attempts."""
+    parser.add_argument("execution_id", help="Execution ID to fetch error logs for")
+    parser.add_argument(
+        "--tail",
+        type=int,
+        default=50,
+        help="Maximum number of error log lines to show (default: 50)",
+    )
+
+
+def configure_workflow_visualize_parser(parser: argparse.ArgumentParser) -> None:
+    """Parser for ``workflow visualize`` — render the workflow DAG."""
+    parser.add_argument("name", help="Registered workflow name to visualize")
+    parser.add_argument(
+        "--format",
+        default="ascii",
+        choices=["ascii", "dot"],
+        help="Output format: ascii (default) or dot (Graphviz)",
+    )
+
+
+def configure_workflow_validate_sandbox_parser(parser: argparse.ArgumentParser) -> None:
+    """Parser for ``workflow validate-sandbox`` — validate Dockerfile sandbox."""
+    parser.add_argument(
+        "path", help="Local directory containing Dockerfile + workflow.json"
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=False,
+        help="Validate syntax without building the image",
+    )
+    parser.add_argument(
+        "--build",
+        action="store_true",
+        default=False,
+        help="Attempt a real container build (podman/docker) to verify the Dockerfile",
+    )
+
+
 def build_control_command_parser(
     *,
     prog: str = "umrs-control",
@@ -386,10 +458,44 @@ def build_control_command_parser(
 
     workflow = subparsers.add_parser("workflow", add_help=add_help)
     workflow_subparsers = workflow.add_subparsers(dest="workflow_action", required=True)
+
+    # workflow upload
+    workflow_upload = workflow_subparsers.add_parser("upload", add_help=add_help)
+    configure_workflow_upload_parser(workflow_upload)
+
+    # workflow list
     workflow_list = workflow_subparsers.add_parser("list", add_help=add_help)
     configure_workflow_list_parser(workflow_list)
+
+    # workflow run
     workflow_run = workflow_subparsers.add_parser("run", add_help=add_help)
     configure_workflow_run_parser(workflow_run)
+
+    # workflow status
+    workflow_status = workflow_subparsers.add_parser("status", add_help=add_help)
+    configure_workflow_status_parser(workflow_status)
+
+    # workflow results
+    workflow_results = workflow_subparsers.add_parser("results", add_help=add_help)
+    configure_workflow_results_parser(workflow_results)
+
+    # workflow cancel
+    workflow_cancel = workflow_subparsers.add_parser("cancel", add_help=add_help)
+    configure_workflow_cancel_parser(workflow_cancel)
+
+    # workflow errors
+    workflow_errors = workflow_subparsers.add_parser("errors", add_help=add_help)
+    configure_workflow_errors_parser(workflow_errors)
+
+    # workflow visualize
+    workflow_visualize = workflow_subparsers.add_parser("visualize", add_help=add_help)
+    configure_workflow_visualize_parser(workflow_visualize)
+
+    # workflow validate-sandbox
+    workflow_validate = workflow_subparsers.add_parser(
+        "validate-sandbox", add_help=add_help
+    )
+    configure_workflow_validate_sandbox_parser(workflow_validate)
 
     return parser
 
@@ -531,6 +637,13 @@ __all__ = [
     "configure_status_parser",
     "configure_workflow_list_parser",
     "configure_workflow_run_parser",
+    "configure_workflow_upload_parser",
+    "configure_workflow_status_parser",
+    "configure_workflow_results_parser",
+    "configure_workflow_cancel_parser",
+    "configure_workflow_errors_parser",
+    "configure_workflow_visualize_parser",
+    "configure_workflow_validate_sandbox_parser",
     "parse_duration_seconds",
     "parse_json_object_arg",
     "prepare_control_command_line",
