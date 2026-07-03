@@ -497,11 +497,12 @@ def create_umrs_server_db_user():
       DB_SUPERUSER_PASSWORD / POSTGRES_PASSWORD
       DB_UMRS_SERVER_PASSWORD        (password for umrs_server_db_user)
     """
-    DB_HOST = os.environ.get("DB_HOST", "localhost")
-    DB_PORT = os.environ.get("DB_PORT", "5432")
-    DB_SUPERUSER = os.environ.get("DB_SUPERUSER", os.environ.get("POSTGRES_USER", "postgres"))
-    DB_SUPERUSER_PASSWORD = os.environ.get("DB_SUPERUSER_PASSWORD", os.environ.get("POSTGRES_PASSWORD", "postgres"))
-    DB_UMRS_SERVER_PASSWORD = os.environ.get("DB_UMRS_SERVER_PASSWORD", "umrs_server")
+    cfg = get_db_config()
+    DB_HOST = cfg["host"]
+    DB_PORT = cfg["port"]
+    DB_SUPERUSER = cfg["superuser"]
+    DB_SUPERUSER_PASSWORD = cfg["superuser_password"]
+    DB_UMRS_SERVER_PASSWORD = cfg["umrs_server_password"]
 
     DB_NAME = get_umrs_server_db_name()
     DB_USER = get_umrs_server_db_user()
@@ -566,11 +567,12 @@ def create_server_db_pool(pool_size: int = 10) -> pg_pool.ThreadedConnectionPool
       DB_UMRS_NAME              (default: "umrs")
       DB_UMRS_SERVER_PASSWORD   (password for umrs_server_db_user)
     """
-    DB_HOST = os.environ.get("DB_HOST", "localhost")
-    DB_PORT = os.environ.get("DB_PORT", "5432")
+    cfg = get_db_config()
+    DB_HOST = cfg["host"]
+    DB_PORT = cfg["port"]
     DB_NAME = get_umrs_server_db_name()
     DB_USER = get_umrs_server_db_user()
-    DB_UMRS_SERVER_PASSWORD = os.environ.get("DB_UMRS_SERVER_PASSWORD", "umrs_server")
+    DB_UMRS_SERVER_PASSWORD = cfg["umrs_server_password"]
 
     # ThreadedConnectionPool (not SimpleConnectionPool): SimpleConnectionPool
     # is NOT thread-safe — concurrent getconn()/putconn() calls from different
@@ -647,14 +649,7 @@ def maintain_pgvector_index(
     Returns:
         Metrics describing the operation performed.
     """
-    db_host = os.environ.get("DB_HOST", "localhost")
-    db_port = os.environ.get("DB_PORT", os.environ.get("POSTGRES_PORT", "5432"))
-    db_superuser = os.environ.get("DB_SUPERUSER", os.environ.get("POSTGRES_USER", "postgres"))
-    db_superuser_password = os.environ.get(
-        "DB_SUPERUSER_PASSWORD",
-        os.environ.get("POSTGRES_PASSWORD", "postgres"),
-    )
-
+    cfg = get_db_config()
     target_index = index_name or f"idx_{table_name}_embedding_hnsw"
     metrics = {
         "database": db_name,
@@ -665,10 +660,10 @@ def maintain_pgvector_index(
 
     conn = psycopg2.connect(
         dbname=db_name,
-        user=db_superuser,
-        password=db_superuser_password,
-        host=db_host,
-        port=db_port,
+        user=cfg["superuser"],
+        password=cfg["superuser_password"],
+        host=cfg["host"],
+        port=cfg["port"],
     )
     try:
         ensure_pgvector_enabled(conn)
