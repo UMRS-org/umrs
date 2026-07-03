@@ -378,6 +378,29 @@ def configure_workflow_errors_parser(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def configure_workflow_logs_parser(parser: argparse.ArgumentParser) -> None:
+    """Parser for ``workflow logs`` — stream execution logs for a workflow run."""
+    parser.add_argument("execution_id", help="Execution ID to stream logs for")
+    parser.add_argument(
+        "--tail",
+        type=int,
+        default=200,
+        help="Maximum number of log lines to show (default: 200)",
+    )
+    parser.add_argument(
+        "--follow",
+        action="store_true",
+        default=False,
+        help="Follow log output until workflow reaches a terminal state",
+    )
+    parser.add_argument(
+        "--interval",
+        type=float,
+        default=2.0,
+        help="Polling interval in seconds for --follow (default: 2.0)",
+    )
+
+
 def configure_workflow_visualize_parser(parser: argparse.ArgumentParser) -> None:
     """Parser for ``workflow visualize`` — render the workflow DAG."""
     parser.add_argument("name", help="Registered workflow name to visualize")
@@ -486,6 +509,10 @@ def build_control_command_parser(
     # workflow errors
     workflow_errors = workflow_subparsers.add_parser("errors", add_help=add_help)
     configure_workflow_errors_parser(workflow_errors)
+
+    # workflow logs
+    workflow_logs = workflow_subparsers.add_parser("logs", add_help=add_help)
+    configure_workflow_logs_parser(workflow_logs)
 
     # workflow visualize
     workflow_visualize = workflow_subparsers.add_parser("visualize", add_help=add_help)
@@ -642,6 +669,7 @@ __all__ = [
     "configure_workflow_results_parser",
     "configure_workflow_cancel_parser",
     "configure_workflow_errors_parser",
+    "configure_workflow_logs_parser",
     "configure_workflow_visualize_parser",
     "configure_workflow_validate_sandbox_parser",
     "parse_duration_seconds",
