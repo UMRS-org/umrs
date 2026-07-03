@@ -44,6 +44,8 @@ class MonitorStore:
     workflows: TabSnapshot = field(default_factory=TabSnapshot)
     connection: TabSnapshot = field(default_factory=TabSnapshot)
     logs: TabSnapshot = field(default_factory=TabSnapshot)
+    errors: TabSnapshot = field(default_factory=TabSnapshot)
+    workflow_logs: TabSnapshot = field(default_factory=TabSnapshot)
 
     def tab(self, name: str) -> TabSnapshot:
         return getattr(self, name)

@@ -98,6 +98,17 @@ class Fetchers:
     async def fetch_connection(self) -> None:
         await self._fetch_tab("connection", self._fetch_connection_sync)
 
+    async def fetch_workflow_logs(self, execution_id: str) -> None:
+        """Fetch execution logs for a workflow run.
+
+        Streams the log timeline from the server via the
+        ``WORKFLOW_LOGS`` command.
+        """
+        await self._fetch_tab(
+            "workflow_logs",
+            lambda: self._api.workflow_logs(execution_id),
+        )
+
     # ------------------------------------------------------------------
     # Internal: timeout + error capture around a blocking sync call
     # ------------------------------------------------------------------
