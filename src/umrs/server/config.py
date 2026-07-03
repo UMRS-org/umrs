@@ -13,6 +13,7 @@ _DB_PORT = "5432"
 _DB_SUPERUSER = "postgres"
 _DB_CREDENTIALS_FILENAME = os.path.join("credentials", "db_credentials.ini")
 
+
 def get_default_db_subdir():
     return get_resolved_umrs_subdir("tasks_database")
 
@@ -50,8 +51,6 @@ def get_rivault_remote_port():
         return port
 
 
-
-
 def get_umrs_server_db_user() -> str:
     return _UMRS_SERVER_DB_USER
 
@@ -61,9 +60,10 @@ def get_umrs_server_db_name() -> str:
 
 
 def get_db_config() -> dict:
-    """Read DB connection config from credentials file, with env var overrides.
+    """Read DB connection config from env vars, with an optional creds file.
 
-    Credentials file: ~/.config/umrs/credentials/db_credentials.ini
+    Credentials file (OPTIONAL override layer):
+    ~/.config/umrs/credentials/db_credentials.ini
     Format::
 
         [postgres]
@@ -74,30 +74,23 @@ def get_db_config() -> dict:
         # port = 5432
         # superuser = postgres
 
-    Env vars override file values:
+    Env vars take priority over file values:
         DB_SUPERUSER_PASSWORD, DB_UMRS_SERVER_PASSWORD, DB_USER_PASSWORD,
         DB_HOST, DB_PORT, DB_SUPERUSER / POSTGRES_USER, DB_UMRS_NAME.
 
-    Raises FileNotFoundError if the credentials file does not exist.
-    Raises ValueError if a required password is missing.
+    Env-only deploys (e.g. the umrs-front compose stack) do not mount a creds
+    file, so a missing file is NOT an error. The umrs_server / per-experiment
+    user passwords fall back to the superuser password when not explicitly
+    provided, keeping a single deploy-provided secret instead of a hardcoded
+    literal.
+
+    Raises ValueError if no superuser password can be resolved.
     """
     creds_file = get_resolved_umrs_subdir(_DB_CREDENTIALS_FILENAME)
 
-    if not os.path.isfile(creds_file):
-        raise FileNotFoundError(
-            f"DB credentials file not found: {creds_file}\n"
-            f"Create it with the following content:\n"
-            f"  [postgres]\n"
-            f"  superuser_password = <postgres superuser password>\n"
-            f"  umrs_server_password = <umrs_server_db_user password>\n"
-            f"  user_password = <per-experiment user password>\n"
-            f"  # host = localhost\n"
-            f"  # port = 5432\n"
-            f"  # superuser = postgres\n"
-        )
-
     config = configparser.ConfigParser(inline_comment_prefixes=("#", ";"))
-    config.read(creds_file)
+    if os.path.isfile(creds_file):
+        config.read(creds_file)
 
     def _get(env_key: str, ini_key: str, default: str | None = None) -> str | None:
         # Env var takes priority over credentials file
@@ -113,28 +106,23 @@ def get_db_config() -> dict:
     )
     if not superuser_password:
         raise ValueError(
-            "superuser_password is required in [postgres] section of the credentials file"
+            "superuser_password is required: set DB_SUPERUSER_PASSWORD / "
+            "POSTGRES_PASSWORD or the [postgres] section of the credentials file"
         )
 
+    # umrs_server / per-experiment user passwords fall back to the superuser
+    # password when not explicitly provided (env-only deploys).
     umrs_server_password = _get(
         "DB_UMRS_SERVER_PASSWORD",
         "umrs_server_password",
-        os.environ.get("DB_UMRS_SERVER_PASSWORD"),
+        superuser_password,
     )
-    if not umrs_server_password:
-        raise ValueError(
-            "umrs_server_password is required in [postgres] section of the credentials file"
-        )
 
     user_password = _get(
         "DB_USER_PASSWORD",
         "user_password",
-        os.environ.get("DB_USER_PASSWORD"),
+        superuser_password,
     )
-    if not user_password:
-        raise ValueError(
-            "user_password is required in [postgres] section of the credentials file"
-        )
 
     return {
         "host": _get("DB_HOST", "host", _DB_HOST),
@@ -146,7 +134,9 @@ def get_db_config() -> dict:
         "umrs_server_password": umrs_server_password,
         "user_password": user_password,
         "db_name": _get(
-            "DB_UMRS_NAME", "db_name", os.environ.get("DB_UMRS_NAME", _UMRS_SERVER_DB_NAME)
+            "DB_UMRS_NAME",
+            "db_name",
+            os.environ.get("DB_UMRS_NAME", _UMRS_SERVER_DB_NAME),
         ),
     }
 
