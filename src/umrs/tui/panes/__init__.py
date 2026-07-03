@@ -8,6 +8,7 @@ from .workflows import WorkflowsPane
 from .connection import ConnectionPane
 from .logs import LogsPane
 from .errors import ErrorsPane
+from .workflow_logs import WorkflowLogsPane
 
 __all__ = [
     "JobsPane",
@@ -18,4 +19,5 @@ __all__ = [
     "ConnectionPane",
     "LogsPane",
     "ErrorsPane",
+    "WorkflowLogsPane",
 ]

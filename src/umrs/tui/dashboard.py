@@ -38,6 +38,7 @@ class Dashboard:
         user_cfg: dict[str, Any] | None = None,
         connection_info: dict[str, Any] | None = None,
         capabilities: dict[str, Any] | None = None,
+        workflow_id: str | None = None,
     ) -> None:
         self._mq = control_mq
         self._client_id = client_id
@@ -51,6 +52,7 @@ class Dashboard:
         self._user_cfg = user_cfg or {}
         self._connection_info = connection_info or {}
         self._capabilities = capabilities or {}
+        self._workflow_id = workflow_id
 
     # ------------------------------------------------------------------
     # Interactive live mode — delegates to MonitorApp
@@ -71,6 +73,7 @@ class Dashboard:
             user_cfg=self._user_cfg,
             connection_info=self._connection_info,
             capabilities=self._capabilities,
+            workflow_id=self._workflow_id,
         )
         app.run()
 

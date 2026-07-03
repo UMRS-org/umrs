@@ -25,6 +25,7 @@ from .panes import (
     LogsPane,
     ModelsPane,
     StatusPane,
+    WorkflowLogsPane,
     WorkflowsPane,
 )
 from .prefs import MonitorPrefs
@@ -39,6 +40,7 @@ _PANE_TYPES: dict[str, type] = {
     "connection": ConnectionPane,
     "logs": LogsPane,
     "errors": ErrorsPane,
+    "workflow_logs": WorkflowLogsPane,
 }
 
 # ── ASCII art logo ──────────────────────────────────────────────────
@@ -95,6 +97,7 @@ class MonitorApp(App):
         Binding("6", "switch_tab('connection')", "Connection"),
         Binding("7", "switch_tab('logs')", "Logs"),
         Binding("8", "switch_tab('errors')", "Errors"),
+        Binding("9", "switch_tab('workflow_logs')", "WF Logs"),
         Binding("slash", "focus_filter", "Filter", show=False),
         Binding("question", "toggle_help", "Help", show=False),
     ]
@@ -113,6 +116,7 @@ class MonitorApp(App):
         user_cfg: dict[str, Any] | None = None,
         connection_info: dict[str, Any] | None = None,
         capabilities: dict[str, Any] | None = None,
+        workflow_id: str | None = None,
     ) -> None:
         super().__init__()
         self._mq = control_mq
@@ -126,6 +130,7 @@ class MonitorApp(App):
         self._connection_info = connection_info or {}
         self._capabilities = capabilities or {}
         self._initial_tab = initial_tab
+        self._workflow_id = workflow_id
 
         # Data layer
         self._store = MonitorStore()
@@ -168,6 +173,8 @@ class MonitorApp(App):
                 yield LogsPane()
             with TabPane("Errors", id="errors"):
                 yield ErrorsPane()
+            with TabPane("Workflow Logs", id="workflow_logs"):
+                yield WorkflowLogsPane()
         yield Static(_FOOTER_INIT, id="footer")
 
     def on_mount(self) -> None:
@@ -215,6 +222,8 @@ class MonitorApp(App):
             pass  # logs are client-side
         elif tab == "errors":
             self._refresh_errors()
+        elif tab == "workflow_logs":
+            self._refresh_workflow_logs()
 
     @work
     async def _refresh_jobs(self) -> None:
@@ -255,6 +264,25 @@ class MonitorApp(App):
         await self._fetchers.fetch_errors()
         data = self._store.tab("errors").data
         self._update_pane("errors", data)
+
+    @work
+    async def _refresh_workflow_logs(self) -> None:
+        """Refresh the Workflow Logs tab.
+
+        If no execution ID is set, the pane shows a placeholder.
+        The execution ID is provided via the ``--workflow-id`` CLI flag.
+        """
+        exec_id = self._workflow_id
+        if not exec_id:
+            pane = self.query_one(WorkflowLogsPane)
+            pane.set_execution_id(None)
+            return
+        await self._fetchers.fetch_workflow_logs(exec_id)
+        data = self._store.tab("workflow_logs").data
+        if data is not None:
+            pane = self.query_one(WorkflowLogsPane)
+            pane.set_execution_id(exec_id)
+            pane.update_data(data)
 
     @work
     async def _refresh_connection(self) -> None:
