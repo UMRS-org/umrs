@@ -31,6 +31,11 @@ class TaskCmd:
     # Workflow registry commands
     LIST_WORKFLOWS = "LIST_WORKFLOWS"  # list registered workflows
     RUN_WORKFLOW = "RUN_WORKFLOW"  # trigger execution of a registered workflow
+    # Workflow execution commands (unified under `workflow` subcommand)
+    WORKFLOW_STATUS = "WORKFLOW_STATUS"  # show execution status for a workflow run
+    WORKFLOW_RESULTS = "WORKFLOW_RESULTS"  # fetch results for a completed workflow run
+    WORKFLOW_CANCEL = "WORKFLOW_CANCEL"  # cancel a running workflow execution
+    WORKFLOW_ERRORS = "WORKFLOW_ERRORS"  # show error logs for a failed workflow execution
     # Admin enrollment
     ENROLL_USER = "ENROLL_USER"  # admin-only: register a new user
     # Bootstrap context
