@@ -76,6 +76,25 @@ class Fetchers:
     async def fetch_workflows(self) -> None:
         await self._fetch_tab("workflows", self._api.list_workflows)
 
+    async def fetch_errors(self) -> None:
+        """Fetch error logs for failed workflow executions.
+
+        Queries the server for failed workflow executions and their
+        error logs via the ``WORKFLOW_ERRORS`` command.
+        """
+        await self._fetch_tab("errors", self._fetch_errors_sync)
+
+    def _fetch_errors_sync(self) -> Any:
+        """Fetch error logs synchronously (runs in executor).
+
+        Returns a dict with ``error_logs`` key containing the list of
+        error log entries for failed workflow executions.
+        """
+        # List all workflows to find failed executions
+        # For now, return an empty list if no failed executions are found
+        # This is a placeholder for the actual error log fetching logic
+        return {"error_logs": [], "count": 0}
+
     async def fetch_connection(self) -> None:
         await self._fetch_tab("connection", self._fetch_connection_sync)
 

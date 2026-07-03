@@ -22,7 +22,14 @@ from .purge_buckets import PurgeBucketsHandler
 from .registry import CommandRegistry
 from .upload_workflow import UploadWorkflowHandler
 from .wait_output import WaitOutputHandler
-from .workflow_commands import ListWorkflowsHandler, RunWorkflowHandler
+from .workflow_commands import (
+    ListWorkflowsHandler,
+    RunWorkflowHandler,
+    WorkflowCancelHandler,
+    WorkflowErrorsHandler,
+    WorkflowResultsHandler,
+    WorkflowStatusHandler,
+)
 
 
 def build_registry() -> CommandRegistry:
@@ -67,5 +74,9 @@ def build_registry() -> CommandRegistry:
     r.register(TaskCmd.UPLOAD_WORKFLOW, UploadWorkflowHandler())
     r.register(TaskCmd.LIST_WORKFLOWS, ListWorkflowsHandler())
     r.register(TaskCmd.RUN_WORKFLOW, RunWorkflowHandler())
+    r.register(TaskCmd.WORKFLOW_STATUS, WorkflowStatusHandler())
+    r.register(TaskCmd.WORKFLOW_RESULTS, WorkflowResultsHandler())
+    r.register(TaskCmd.WORKFLOW_CANCEL, WorkflowCancelHandler())
+    r.register(TaskCmd.WORKFLOW_ERRORS, WorkflowErrorsHandler())
 
     return r

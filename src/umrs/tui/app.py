@@ -20,6 +20,7 @@ from .export import export_tab
 from .panes import (
     ConnectionPane,
     EndpointsPane,
+    ErrorsPane,
     JobsPane,
     LogsPane,
     ModelsPane,
@@ -37,6 +38,7 @@ _PANE_TYPES: dict[str, type] = {
     "workflows": WorkflowsPane,
     "connection": ConnectionPane,
     "logs": LogsPane,
+    "errors": ErrorsPane,
 }
 
 # ── ASCII art logo ──────────────────────────────────────────────────
@@ -92,6 +94,7 @@ class MonitorApp(App):
         Binding("5", "switch_tab('workflows')", "Workflows"),
         Binding("6", "switch_tab('connection')", "Connection"),
         Binding("7", "switch_tab('logs')", "Logs"),
+        Binding("8", "switch_tab('errors')", "Errors"),
         Binding("slash", "focus_filter", "Filter", show=False),
         Binding("question", "toggle_help", "Help", show=False),
     ]
@@ -163,6 +166,8 @@ class MonitorApp(App):
                 yield ConnectionPane()
             with TabPane("Logs", id="logs"):
                 yield LogsPane()
+            with TabPane("Errors", id="errors"):
+                yield ErrorsPane()
         yield Static(_FOOTER_INIT, id="footer")
 
     def on_mount(self) -> None:
@@ -208,6 +213,8 @@ class MonitorApp(App):
             self._refresh_connection()
         elif tab == "logs":
             pass  # logs are client-side
+        elif tab == "errors":
+            self._refresh_errors()
 
     @work
     async def _refresh_jobs(self) -> None:
@@ -242,6 +249,12 @@ class MonitorApp(App):
         data = self._store.tab("workflows").data
         self._update_pane("workflows", data)
         self._update_counts(data, "workflows")
+
+    @work
+    async def _refresh_errors(self) -> None:
+        await self._fetchers.fetch_errors()
+        data = self._store.tab("errors").data
+        self._update_pane("errors", data)
 
     @work
     async def _refresh_connection(self) -> None:
