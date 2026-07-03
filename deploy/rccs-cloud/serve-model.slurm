@@ -449,6 +449,9 @@ services:
     shm_size: \${VLLM_NCCL_MEM_LIMIT:?error}
     devices:
 $(echo -e "$_GPU_DEVS")
+    volumes:
+      - /usr/lib/aarch64-linux-gnu/libcuda.so.1:/usr/lib/aarch64-linux-gnu/libcuda.so.1:ro
+      - /usr/lib/aarch64-linux-gnu/libnvidia-ml.so.1:/usr/lib/aarch64-linux-gnu/libnvidia-ml.so.1:ro
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
@@ -456,6 +459,9 @@ $(echo -e "$_GPU_DEVS")
   bentoml-vision:
     devices:
 $(echo -e "$_GPU_DEVS")
+    volumes:
+      - /usr/lib/aarch64-linux-gnu/libcuda.so.1:/usr/lib/aarch64-linux-gnu/libcuda.so.1:ro
+      - /usr/lib/aarch64-linux-gnu/libnvidia-ml.so.1:/usr/lib/aarch64-linux-gnu/libnvidia-ml.so.1:ro
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility

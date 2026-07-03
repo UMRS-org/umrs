@@ -185,6 +185,13 @@ services:
         ipv4_address: ${PRIV_IP1TO3:-10.0.0}.${VLLM_IP4:-22}
     extra_hosts:
       - ${UMRS_S3_BUCKET_HOST:?}:${PRIV_IP1TO3:-10.0.0}.${NGINX_OUT_IP4:-252}
+    devices:
+      - /dev/nvidia0
+      - /dev/nvidiactl
+      - /dev/nvidia-uvm
+      - /dev/nvidia-uvm-tools
+      - /dev/nvidia-caps/nvidia-cap1
+      - /dev/nvidia-caps/nvidia-cap2
     volumes:
       - type: bind
         source: ${VLLM_PATH_TO_HUGGINGFACE:?}/
@@ -204,10 +211,21 @@ services:
         source: ${VLLM_TOKENIZER_HOST_PATH:-/dev/null}
         target: ${VLLM_TOKENIZER_CONTAINER_PATH:-/tokenizer}
         read_only: true
+      # Mount NVIDIA driver libraries so vLLM can detect the GPU.
+      # Mount ONLY the nvidia libs, not the whole /usr/lib/aarch64-linux-gnu,
+      # to avoid clobbering the container's own system libraries.
+      - type: bind
+        source: /usr/lib/aarch64-linux-gnu/libcuda.so.1
+        target: /usr/lib/aarch64-linux-gnu/libcuda.so.1
+        read_only: true
+      - type: bind
+        source: /usr/lib/aarch64-linux-gnu/libnvidia-ml.so.1
+        target: /usr/lib/aarch64-linux-gnu/libnvidia-ml.so.1
+        read_only: true
     entrypoint: ["/bin/sh"]
     command:
       - "-c"
-      - 'exec vllm serve "$$VLLM_MODEL_REF" $$VLLM_EXTRA_ARGS --served-model-name "$$VLLM_SERVED_MODEL_NAME" --api-key "$$VLLM_API_KEY" -tp "$$VLLM_TP" -pp "$$VLLM_PP" $${VLLM_DISTRIBUTED_EXECUTOR_BACKEND:+--distributed-executor-backend $$VLLM_DISTRIBUTED_EXECUTOR_BACKEND} --max-model-len "$${VLLM_MAX_MODEL_LEN:-4096}" --gpu-memory-utilization "$${VLLM_GPU_MEM_UTIL:-0.95}" --enforce-eager --enable-auto-tool-choice --tool-call-parser "$${VLLM_TOOL_CALL_PARSER:-hermes}"'
+      - 'pip install -q ray 2>/dev/null; exec vllm serve "$$VLLM_MODEL_REF" $$VLLM_EXTRA_ARGS --served-model-name "$$VLLM_SERVED_MODEL_NAME" --api-key "$$VLLM_API_KEY" -tp "$$VLLM_TP" -pp "$$VLLM_PP" $${VLLM_DISTRIBUTED_EXECUTOR_BACKEND:+--distributed-executor-backend $$VLLM_DISTRIBUTED_EXECUTOR_BACKEND} --max-model-len "$${VLLM_MAX_MODEL_LEN:-4096}" --gpu-memory-utilization "$${VLLM_GPU_MEM_UTIL:-0.95}" --enforce-eager --enable-auto-tool-choice --tool-call-parser "$${VLLM_TOOL_CALL_PARSER:-hermes}"'
     environment:
       <<: *rivault-egress-env
       ##TORCH_USE_RTLD_GLOBAL: 1
