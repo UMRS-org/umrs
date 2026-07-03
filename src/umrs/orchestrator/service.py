@@ -851,6 +851,88 @@ class OrchestrationService:
 
         return True
 
+    async def refresh_endpoint(
+        self,
+        job_id: str,
+        timeout_sec: int = 300,
+    ) -> RegisteredEndpoint | None:
+        """Re-resolve host/port from the backend and re-probe readiness.
+
+        Recovers endpoints stuck in PROVISIONING/STARTING with host="pending"
+        after a ``_finalize_provision`` task died (e.g. UMRS restart).  The
+        method mirrors the finalization flow but is invoked on demand.
+
+        Args:
+            job_id: The job ID of the endpoint to refresh.
+            timeout_sec: Maximum time to wait for readiness.
+
+        Returns:
+            The refreshed endpoint, or ``None`` if the endpoint was not
+            found in the registry.
+        """
+        endpoint = self.registry.get_by_job_id(job_id)
+        if not endpoint:
+            return None
+
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout_sec
+
+        # 1. If host is "pending", re-resolve from backend.
+        if endpoint.host == "pending":
+            try:
+                actual_host, actual_port = await self._resolve_endpoint_location(
+                    job_id,
+                    endpoint.host,
+                    endpoint.port,
+                    deadline,
+                )
+            except (TimeoutError, RuntimeError):
+                # Backend never published a concrete host, or job failed.
+                return self.registry.get_by_job_id(job_id)
+
+            self.registry.update_location(
+                job_id,
+                host=actual_host,
+                port=actual_port,
+                metadata={
+                    "detail": f"container starting on {actual_host}:{actual_port}",
+                    "service_url": f"http://{actual_host}:{actual_port}",
+                },
+            )
+            endpoint = self.registry.get_by_job_id(job_id)
+            if not endpoint:
+                return None
+
+        # 2. Re-probe readiness using the endpoint's configured probe.
+        readiness_probe_kind = str(
+            endpoint.metadata.get("readiness_probe") or "chat"
+        )
+        readiness_path = endpoint.metadata.get("readiness_path")
+
+        try:
+            readiness_result = await self._wait_for_ready_with_budget(
+                job_id=job_id,
+                host=endpoint.host,
+                port=endpoint.port,
+                deadline=deadline,
+                readiness_probe={
+                    "model": endpoint.model,
+                    "kind": readiness_probe_kind,
+                    "path": str(readiness_path) if readiness_path else None,
+                },
+            )
+        except TimeoutError:
+            return self.registry.get_by_job_id(job_id)
+
+        if readiness_result.is_ready:
+            self.registry.mark_ready(job_id)
+        else:
+            # If not ready, mark as degraded (if endpoint is reachable)
+            # or leave as-is (if endpoint is unreachable).
+            pass
+
+        return self.registry.get_by_job_id(job_id)
+
     async def get_or_provision(
         self,
         request: ProvisionRequest,
