@@ -436,32 +436,14 @@ if ls /dev/nvidia[0-9]* >/dev/null 2>&1; then
     _OVERRIDE="${RIVAULT_GPU_OVERRIDE_FILE:-${_OVERRIDE_DIR%/}/umrs-x_nvidia-override-${SLURM_JOB_ID:-$$}.yaml}"
     export RIVAULT_GPU_OVERRIDE_FILE="${_OVERRIDE}"
     export RIVAULT_GPU_OVERRIDE_GENERATED=1
-    if nvidia-ctk cdi list 2>/dev/null | grep -q 'nvidia.com/gpu=all'; then
-        echo "[wrapper] CDI available — generating CDI-based GPU override: ${_OVERRIDE}"
-        cat > "${_OVERRIDE}" <<GPUEOF
-services:
-  vllm:
-    shm_size: \${VLLM_NCCL_MEM_LIMIT:?error}
-    devices:
-      - nvidia.com/gpu=all
-    environment:
-      - NVIDIA_VISIBLE_DEVICES=all
-      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
-
-  bentoml-vision:
-    devices:
-      - nvidia.com/gpu=all
-    environment:
-      - NVIDIA_VISIBLE_DEVICES=all
-      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
-GPUEOF
-    else
-        echo "[wrapper] CDI not available — generating device-based GPU override: ${_OVERRIDE}"
-        _GPU_DEVS=""
-        for _dev in /dev/nvidia[0-9]* /dev/nvidiactl /dev/nvidia-uvm /dev/nvidia-uvm-tools /dev/nvidia-caps/nvidia-cap1 /dev/nvidia-caps/nvidia-cap2; do
-            [[ -e "$_dev" ]] && _GPU_DEVS="${_GPU_DEVS}      - ${_dev}:${_dev}:rwm\n"
-        done
-        cat > "${_OVERRIDE}" <<GPUEOF
+    # Always use direct device mapping — Podman 4.9.3 on RCCS cannot resolve
+    # CDI devices via podman-compose (nvidia.com/gpu=all is unresolvable).
+    echo "[wrapper] Generating device-based GPU override: ${_OVERRIDE}"
+    _GPU_DEVS=""
+    for _dev in /dev/nvidia[0-9]* /dev/nvidiactl /dev/nvidia-uvm /dev/nvidia-uvm-tools /dev/nvidia-caps/nvidia-cap1 /dev/nvidia-caps/nvidia-cap2; do
+        [[ -e "$_dev" ]] && _GPU_DEVS="${_GPU_DEVS}      - ${_dev}:${_dev}:rwm\n"
+    done
+    cat > "${_OVERRIDE}" <<GPUEOF
 services:
   vllm:
     shm_size: \${VLLM_NCCL_MEM_LIMIT:?error}
@@ -478,7 +460,6 @@ $(echo -e "$_GPU_DEVS")
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
 GPUEOF
-    fi
     echo "[wrapper] GPU override written."
 else
     unset RIVAULT_GPU_OVERRIDE_FILE || true
