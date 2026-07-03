@@ -4251,6 +4251,7 @@ def _action_monitor(ctx):
             user_cfg=ctx.user if isinstance(ctx.user, dict) else None,
             connection_info=conn_info,
             capabilities=capabilities,
+            workflow_id=getattr(args, 'workflow_id', None),
         )
         if args.once:
             dash.render_once()
@@ -4482,6 +4483,149 @@ def _print_workflow_errors(parsed: dict) -> None:
             print(f"  [{timestamp}] {level}: {message}")
     else:
         print(f"\n  {_dim('No error logs available.')}")
+
+
+def _print_workflow_run(parsed: dict) -> None:
+    """Pretty-print the ``workflow run`` response with execution ID."""
+    execution_id = parsed.get("execution_id", "?")
+    message = parsed.get("message", "OK")
+    workflow_name = parsed.get("workflow_name", "?")
+    steps = parsed.get("steps", 0)
+    durable_job_id = parsed.get("durable_job_id")
+
+    print(f"{_green('✓')} {message}")
+    print(f"  {_bold('Workflow')}: {workflow_name}")
+    print(f"  {_bold('Steps')}: {steps}")
+    print(f"  {_bold('Execution ID')}: {_cyan(execution_id)}")
+    if durable_job_id:
+        print(f"  {_bold('Job ID')}: {durable_job_id}")
+    print(
+        f"  {_dim('Track with:')} umrs-client workflow status {execution_id}"
+    )
+    print(
+        f"  {_dim('Stream logs:')} umrs-client workflow logs {execution_id} --follow"
+    )
+
+
+def _print_workflow_logs(parsed: dict) -> None:
+    """Pretty-print the ``workflow logs`` response."""
+    execution = parsed.get("execution", parsed)
+    logs = parsed.get("logs", [])
+    status = execution.get("status", "?")
+    exec_id = execution.get("execution_id", "?")
+
+    print(f"{_bold('Execution ID')}: {exec_id}")
+    print(f"{_bold('Status')}: {status}")
+    if logs:
+        print(f"\n{_bold('Logs')}:")
+        for log_entry in logs:
+            timestamp = log_entry.get("timestamp", "")
+            level = log_entry.get("level", "INFO")
+            source = log_entry.get("source", "")
+            message = log_entry.get("message", "")
+            if level == "ERROR":
+                level_str = _red(level)
+            elif level == "WARN":
+                level_str = _yellow(level)
+            else:
+                level_str = _dim(level)
+            source_str = _dim(f"[{source}]") if source else ""
+            print(f"  [{timestamp}] {level_str} {source_str} {message}")
+    else:
+        print(f"\n  {_dim('No logs available.')}")
+
+
+def _action_workflow_logs(ctx):
+    """Handle ``workflow logs`` — stream or fetch execution logs."""
+    args = ctx.args
+    client_id = _resolve_control_client_id(ctx.user)
+    api = UMRSControlAPI(ctx.control_mq, client_id)
+
+    execution_id = args.execution_id
+    follow = getattr(args, "follow", False)
+    interval = getattr(args, "interval", 2.0)
+    tail = getattr(args, "tail", 200)
+
+    if not follow:
+        try:
+            parsed = api.workflow_logs(execution_id, tail=tail)
+            if args.output == "json":
+                print(_json.dumps(parsed, ensure_ascii=False))
+                if parsed.get("status") != "ok":
+                    return 1
+            else:
+                if parsed.get("status") == "ok":
+                    _print_workflow_logs(parsed)
+                else:
+                    print(
+                        f"{_red('✗')} {parsed.get('message', 'unknown error')}"
+                    )
+                    return 1
+            return 0
+        except Exception as e:
+            print(
+                api_json(
+                    status="error",
+                    action="workflow_logs",
+                    message=str(e),
+                    output_format=args.output,
+                )
+            )
+            if args.verbose:
+                traceback.print_exc()
+            return 1
+
+    # --follow mode: poll until terminal state
+    import time as _time
+
+    seen_logs = 0
+    try:
+        while True:
+            try:
+                parsed = api.workflow_logs(execution_id, tail=tail)
+            except Exception as e:
+                print(f"{_red('✗')} Polling error: {e}")
+                _time.sleep(interval)
+                continue
+
+            if parsed.get("status") != "ok":
+                print(
+                    f"{_red('✗')} {parsed.get('message', 'unknown error')}"
+                )
+                return 1
+
+            logs = parsed.get("logs", [])
+            new_logs = logs[seen_logs:]
+            seen_logs = len(logs)
+
+            for log_entry in new_logs:
+                timestamp = log_entry.get("timestamp", "")
+                level = log_entry.get("level", "INFO")
+                source = log_entry.get("source", "")
+                message = log_entry.get("message", "")
+                if level == "ERROR":
+                    level_str = _red(level)
+                elif level == "WARN":
+                    level_str = _yellow(level)
+                else:
+                    level_str = _dim(level)
+                source_str = _dim(f"[{source}]") if source else ""
+                print(f"  [{timestamp}] {level_str} {source_str} {message}")
+
+            execution = parsed.get("execution", {})
+            status = execution.get("status", "")
+            if status in ("succeeded", "failed", "cancelled"):
+                if execution.get("error"):
+                    print(f"\n{_red('Error')}: {execution['error']}")
+                print(
+                    f"\n{_dim('Workflow reached terminal state:')} {status}"
+                )
+                break
+
+            _time.sleep(interval)
+    except KeyboardInterrupt:
+        print(f"\n{_dim('Stopped following logs.')}")
+    return 0
 
 
 def _action_visualize_workflow(ctx):
@@ -6862,8 +7006,15 @@ def main():
             "workflows",
             "connection",
             "logs",
+            "errors",
+            "workflow_logs",
         ],
         help="Tab to display on startup (default: jobs)",
+    )
+    mon_p.add_argument(
+        "--workflow-id",
+        default=None,
+        help="Workflow execution ID to stream logs for (Workflow Logs tab)",
     )
 
     # --- Disabled admin command ---
