@@ -334,7 +334,7 @@ def db_user_exists(conn, username):
         return exists
 
 
-def create_db_user(username, password=None):
+def create_db_user(username):
     cfg = get_db_config()
     conn = psycopg2.connect(
         dbname="postgres",
@@ -345,14 +345,11 @@ def create_db_user(username, password=None):
     )
     conn.autocommit = True
 
-    if password is None:
-        password = cfg["user_password"]
-        if not password:
-            raise ValueError("DB_USER_PASSWORD is required in the credentials file or environment")
+    DB_USER_PASSWORD = cfg["user_password"]
     cur = conn.cursor()
     if db_user_exists(conn, username):
         logger.info(f"==> User '{username}' exist in DB")
-        cur.execute(sql.SQL("ALTER USER {} WITH PASSWORD %s;").format(sql.Identifier(username)), (password,))
+        cur.execute(sql.SQL("ALTER USER {} WITH PASSWORD %s;").format(sql.Identifier(username)), (DB_USER_PASSWORD,))
         conn.commit()
         cur.close()
         conn.close()
@@ -360,7 +357,7 @@ def create_db_user(username, password=None):
 
     cur.execute(
         sql.SQL("CREATE USER {} WITH PASSWORD %s;").format(sql.Identifier(username)),
-        (password,)
+        (DB_USER_PASSWORD,)
     )
     logger.info(f"==> User '{username}' created in DB")
     cur.close()
@@ -372,7 +369,10 @@ def create_db(sql_username, xp_name, username=None):
     legacy_db_name = create_db_name(sql_username, xp_name)
     logger.info(f"\t\t-->  Configuring database '{db_name}'...")
     cfg = get_db_config()
+    DB_NAME = db_name  # Replace with the target database
+    DB_USER = sql_username  # Replace with the target user
 
+    # Connect to PostgreSQL default database (`postgres`)
     conn = psycopg2.connect(
         dbname="postgres",
         user=cfg["superuser"],
@@ -380,10 +380,11 @@ def create_db(sql_username, xp_name, username=None):
         host=cfg["host"],
         port=cfg["port"],
     )
-    conn.autocommit = True
+    conn.autocommit = True  # Enable auto-commit mode
     cur = conn.cursor()
 
-    cur.execute("SELECT 1 FROM pg_database WHERE datname = %s;", (db_name,))
+    # Check if the database exists
+    cur.execute("SELECT 1 FROM pg_database WHERE datname = %s;", (DB_NAME,))
     exists = cur.fetchone()
 
     # One-time migration to per-user namespaced databases: if the new
@@ -417,16 +418,21 @@ def create_db(sql_username, xp_name, username=None):
     if exists:
         logger.info(f"\t\t-->  Database '{db_name}' already exists.")
     else:
+        # Create the database if it does not exist.
+        # In concurrent startup/reload flows another process can create it
+        # between the SELECT above and CREATE DATABASE below.
         try:
             cur.execute(sql.SQL("CREATE DATABASE {} OWNER {};").format(
-                sql.Identifier(db_name), sql.Identifier(sql_username)
+                sql.Identifier(DB_NAME), sql.Identifier(DB_USER)
             ))
             logger.info(f"\t\t-->  Database '{db_name}' created successfully.")
         except (psycopg2.errors.DuplicateDatabase, psycopg2.errors.UniqueViolation):
+            # Treat as success: DB was created by another concurrent path.
             logger.info(f"\t\t-->  Database '{db_name}' already exists (race detected).")
 
+    # Always ensure pgvector extension exists in target DB.
     conn_new = psycopg2.connect(
-        dbname=db_name,
+        dbname=DB_NAME,
         user=cfg["superuser"],
         password=cfg["superuser_password"],
         host=cfg["host"],
@@ -442,17 +448,16 @@ def create_db(sql_username, xp_name, username=None):
     finally:
         cur_new.close()
         conn_new.close()
+    # Clean up and then create a pool to the target DB as the application user
     cur.close()
     conn.close()
 
-    user_password = cfg["user_password"]
-    if not user_password:
-        raise ValueError("DB_USER_PASSWORD is required in the credentials file or environment")
+    DB_USER_PASSWORD = cfg["user_password"]
     db_pool = pg_pool.SimpleConnectionPool(
-        minconn=1, maxconn=50,
+        minconn=1, maxconn=50,  # Adjust based on your needs
         dbname=db_name,
         user=sql_username,
-        password=user_password,
+        password=DB_USER_PASSWORD,
         host=cfg["host"],
         port=cfg["port"],
     )
@@ -484,34 +489,61 @@ def _ensure_umrs_db(superuser_conn, db_name: str) -> None:
 
 
 def create_umrs_server_db_user():
-    """Create the umrs_server_db_user PostgreSQL role and grant rights (idempotent).
+    """Create the umrs_server_db_user PostgreSQL role (idempotent).
 
-    Reads credentials from ~/.config/umrs/credentials/db_credentials.env
-    (or env vars). See get_db_config() for details.
+    Reads credentials from env vars:
+      DB_HOST, DB_PORT
+      DB_SUPERUSER / POSTGRES_USER   (superuser to run CREATE USER)
+      DB_SUPERUSER_PASSWORD / POSTGRES_PASSWORD
+      DB_UMRS_SERVER_PASSWORD        (password for umrs_server_db_user)
     """
-    cfg = get_db_config()
+    DB_HOST = os.environ.get("DB_HOST", "localhost")
+    DB_PORT = os.environ.get("DB_PORT", "5432")
+    DB_SUPERUSER = os.environ.get("DB_SUPERUSER", os.environ.get("POSTGRES_USER", "postgres"))
+    DB_SUPERUSER_PASSWORD = os.environ.get("DB_SUPERUSER_PASSWORD", os.environ.get("POSTGRES_PASSWORD", "postgres"))
+    DB_UMRS_SERVER_PASSWORD = os.environ.get("DB_UMRS_SERVER_PASSWORD", "umrs_server")
+
     DB_NAME = get_umrs_server_db_name()
     DB_USER = get_umrs_server_db_user()
 
-    create_db_user(DB_USER, password=cfg["umrs_server_password"])
-
     conn = psycopg2.connect(
         dbname="postgres",
-        user=cfg["superuser"],
-        password=cfg["superuser_password"],
-        host=cfg["host"],
-        port=cfg["port"],
+        user=DB_SUPERUSER,
+        password=DB_SUPERUSER_PASSWORD,
+        host=DB_HOST,
+        port=DB_PORT,
     )
     conn.autocommit = True
     try:
+        # Create the umrs database before any GRANT (connection to it would fail otherwise)
         _ensure_umrs_db(conn, DB_NAME)
 
+        if db_user_exists(conn, DB_USER):
+            logger.info(f"==> DB user '{DB_USER}' already exists — updating password.")
+            with conn.cursor() as cur:
+                cur.execute(
+                    sql.SQL("ALTER USER {} WITH PASSWORD %s;").format(
+                        sql.Identifier(DB_USER)
+                    ),
+                    (DB_UMRS_SERVER_PASSWORD,),
+                )
+        else:
+            with conn.cursor() as cur:
+                cur.execute(
+                    sql.SQL("CREATE USER {} WITH PASSWORD %s;").format(
+                        sql.Identifier(DB_USER)
+                    ),
+                    (DB_UMRS_SERVER_PASSWORD,),
+                )
+            logger.info(f"==> DB user '{DB_USER}' created.")
+
+        # Grant permission to create tables in the umrs database
         with psycopg2.connect(
             dbname=DB_NAME,
-            user=cfg["superuser"],
-            password=cfg["superuser_password"],
-            host=cfg["host"],
-            port=cfg["port"],
+            user=DB_SUPERUSER,
+            password=DB_SUPERUSER_PASSWORD,
+            host=DB_HOST,
+            port=DB_PORT,
         ) as conn_umrs:
             conn_umrs.autocommit = True
             with conn_umrs.cursor() as cur:
@@ -528,24 +560,31 @@ def create_umrs_server_db_user():
 def create_server_db_pool(pool_size: int = 10) -> pg_pool.ThreadedConnectionPool:
     """Create a connection pool for umrs_server_db_user on the umrs database.
 
-    Reads credentials from ~/.config/umrs/credentials/db_credentials.env.
-    See get_db_config() for details.
-
-    ThreadedConnectionPool (not SimpleConnectionPool): SimpleConnectionPool
-    is NOT thread-safe — concurrent getconn()/putconn() calls from different
-    threads can corrupt its internal free-list. ThreadedConnectionPool wraps
-    the same logic with a threading.Lock(), making it safe for multi-threaded
-    servers where UMRSTask is called from multiple futures/threads in parallel.
+    The pool is used for server-level tables (e.g. tasks).
+    Reads credentials from env vars:
+      DB_HOST, DB_PORT
+      DB_UMRS_NAME              (default: "umrs")
+      DB_UMRS_SERVER_PASSWORD   (password for umrs_server_db_user)
     """
-    cfg = get_db_config()
+    DB_HOST = os.environ.get("DB_HOST", "localhost")
+    DB_PORT = os.environ.get("DB_PORT", "5432")
+    DB_NAME = get_umrs_server_db_name()
+    DB_USER = get_umrs_server_db_user()
+    DB_UMRS_SERVER_PASSWORD = os.environ.get("DB_UMRS_SERVER_PASSWORD", "umrs_server")
+
+    # ThreadedConnectionPool (not SimpleConnectionPool): SimpleConnectionPool
+    # is NOT thread-safe — concurrent getconn()/putconn() calls from different
+    # threads can corrupt its internal free-list. ThreadedConnectionPool wraps
+    # the same logic with a threading.Lock(), making it safe for multi-threaded
+    # servers where UMRSTask is called from multiple futures/threads in parallel.
     return pg_pool.ThreadedConnectionPool(
         minconn=1,
         maxconn=pool_size,
-        dbname=get_umrs_server_db_name(),
-        user=get_umrs_server_db_user(),
-        password=cfg["umrs_server_password"],
-        host=cfg["host"],
-        port=cfg["port"],
+        dbname=DB_NAME,
+        user=DB_USER,
+        password=DB_UMRS_SERVER_PASSWORD,
+        host=DB_HOST,
+        port=DB_PORT,
     )
 
 
@@ -608,7 +647,13 @@ def maintain_pgvector_index(
     Returns:
         Metrics describing the operation performed.
     """
-    cfg = get_db_config()
+    db_host = os.environ.get("DB_HOST", "localhost")
+    db_port = os.environ.get("DB_PORT", os.environ.get("POSTGRES_PORT", "5432"))
+    db_superuser = os.environ.get("DB_SUPERUSER", os.environ.get("POSTGRES_USER", "postgres"))
+    db_superuser_password = os.environ.get(
+        "DB_SUPERUSER_PASSWORD",
+        os.environ.get("POSTGRES_PASSWORD", "postgres"),
+    )
 
     target_index = index_name or f"idx_{table_name}_embedding_hnsw"
     metrics = {
@@ -620,10 +665,10 @@ def maintain_pgvector_index(
 
     conn = psycopg2.connect(
         dbname=db_name,
-        user=cfg["superuser"],
-        password=cfg["superuser_password"],
-        host=cfg["host"],
-        port=cfg["port"],
+        user=db_superuser,
+        password=db_superuser_password,
+        host=db_host,
+        port=db_port,
     )
     try:
         ensure_pgvector_enabled(conn)
@@ -791,7 +836,7 @@ def configure_table(data_base, sql_cfg,  modality_name, model):
     conn = data_base.get_conn()
 
     table_name = sql_cfg['table_name'].lower()
-    logger.info(f"\t\t\t--> Configuring table '{table_name}'...")
+    (f"\t\t\t--> Configuring table '{table_name}'...")
     table_columns = []
     column = {"name": "id", "type": "SERIAL PRIMARY KEY"}
     table_columns.append(column)

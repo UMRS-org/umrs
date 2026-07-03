@@ -5282,10 +5282,11 @@ def _action_s3_transfer(ctx):
     # Use the profile's minio_url to override the s3cfg host_base when the
     # client is connecting remotely (the server-generated s3cfg may contain a
     # localhost address that is unreachable from the client machine).
-    # Only apply when a profile file was explicitly given (-c flag).
+    # Only apply when a profile file was explicitly given (-c flag), so we
+    # don't override use_https=True in .s3cfg with http:// from the profile.
     endpoint_override = None
     if hasattr(ctx, "connection") and ctx.connection is not None:
-        if ctx.connection.profile_name is not None:
+        if getattr(ctx.connection, "profile_name", None) is not None:
             profile_minio = getattr(ctx.connection, "minio_url", None)
             if profile_minio:
                 endpoint_override = profile_minio

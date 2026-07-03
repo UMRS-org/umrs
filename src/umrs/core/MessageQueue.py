@@ -288,17 +288,7 @@ class MessageQueue:
             self.socket = self.context.socket(zmq.ROUTER)
             self._apply_socket_security(self.socket, server=True)
             bind_host = "127.0.0.1" if self.tunnel_mode else "*"
-            try:
-                self.socket.bind(f"tcp://{bind_host}:{self.port}")
-            except zmq.error.ZMQError as e:
-                if "Address already in use" in str(e):
-                    raise zmq.error.ZMQError(
-                        e.errno,
-                        f"Port {self.port} is already in use — "
-                        "is another UMRS server already running? "
-                        f"(addr='tcp://{bind_host}:{self.port}')"
-                    ) from None
-                raise
+            self.socket.bind(f"tcp://{bind_host}:{self.port}")
             self.set_timeouts(-1, self.timeout)
         else:  # client
             self.socket = self.context.socket(zmq.DEALER)
@@ -688,6 +678,7 @@ class MessageQueue:
         # r4 SDK transport. Both aliases are kept so either client can probe the
         # server regardless of which package version is deployed.
         TaskCmd.HANDSHAKE:         "_parse_handshake",
+        TaskCmd.HAND_CHECK:        "_parse_handshake",
         TaskCmd.CREATE_DATA_QUEUE: "_parse_create_data_queue",
         TaskCmd.STATUS:            "_parse_status",
         TaskCmd.PROCESS_OBJECTS:   "_parse_count_cmd",
@@ -954,6 +945,12 @@ class MessageQueue:
             raise RuntimeError(f"Unexpected reply from server: {reply}")
 
     def notify_server(self, client_id, notification_type, nb_objects, verbose=False, admin_token=None, s3_keys=None):
+        """Notify the server that objects have been uploaded to S3.
+
+        ``s3_keys`` is accepted for forward compatibility with the planned
+        CURVE-authenticated data-queue fix (see GitHub issue #64) but is
+        currently ignored — the control channel carries the notification.
+        """
         if self.role != "client":
             raise PermissionError("Only client can call 'notify_server'")
 
