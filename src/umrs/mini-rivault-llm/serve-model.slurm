@@ -938,13 +938,11 @@ if [[ "${SLURM_JOB_NUM_NODES:-${SLURM_NNODES:-1}}" -gt 1 ]]; then
 
     # Start Ray head on this (head) node.
     echo "[rivault] Starting Ray head on ${HEAD_NODE} (${HEAD_IP})..."
-    _libcuda=$(readlink -f /usr/lib/aarch64-linux-gnu/libcuda.so.1 2>/dev/null || echo /usr/lib/aarch64-linux-gnu/libcuda.so.1)
-    _libnvidia_ml=$(readlink -f /usr/lib/aarch64-linux-gnu/libnvidia-ml.so.1 2>/dev/null || echo /usr/lib/aarch64-linux-gnu/libnvidia-ml.so.1)
     podman run --rm --network host \
         --entrypoint /bin/sh \
         --device /dev/nvidia0 --device /dev/nvidiactl --device /dev/nvidia-uvm --device /dev/nvidia-uvm-tools \
-        -v "${_libcuda}:${_libcuda}:ro" \
-        -v "${_libnvidia_ml}:${_libnvidia_ml}:ro" \
+        -v /usr/lib/aarch64-linux-gnu/libcuda.so.1:/usr/lib/aarch64-linux-gnu/libcuda.so.1:ro \
+        -v /usr/lib/aarch64-linux-gnu/libnvidia-ml.so.1:/usr/lib/aarch64-linux-gnu/libnvidia-ml.so.1:ro \
         -v "${VLLM_HOST_MODEL_PATH}:/models:ro" \
         "${VLLM_IMAGE}" \
         -c "exec /opt/venv/bin/ray start --head --node-ip-address='\$1' --port='\$2' --num-gpus='\$3' --include-dashboard=false --block" \

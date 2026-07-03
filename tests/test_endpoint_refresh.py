@@ -17,11 +17,12 @@ from umrs.orchestrator.service import OrchestrationService
 class _FakeBackend:
     """Fake backend that returns a real host from get_job_status."""
 
-    def __init__(self, host: str = "compute-01", status: JobStatus = JobStatus.RUNNING):
+    def __init__(self, host="compute-01", status=JobStatus.RUNNING):
         self._host = host
         self._status = status
+        self.config = SimpleNamespace(readiness_poll_interval_sec=1)
 
-    async def get_job_status(self, job_id: str):
+    async def get_job_status(self, job_id):
         return SimpleNamespace(
             job_id=job_id,
             status=self._status,
@@ -29,11 +30,11 @@ class _FakeBackend:
         )
 
 
-class _FakeReadinessPoller:
-    """Fake readiness poller that returns READY after one call."""
+class _FakePoller:
+    """Fake readiness poller that returns READY immediately."""
 
-    def __init__(self):
-        self.config = ReadinessConfig(timeout_sec=300)
+    def __init__(self, config):
+        self.config = config
 
     async def wait_for_ready(self, **kwargs):
         return ReadinessResult(
@@ -44,10 +45,15 @@ class _FakeReadinessPoller:
             models=["test-model"],
         )
 
+    async def close(self):
+        pass
+
 
 @pytest.mark.asyncio
 async def test_refresh_resolves_pending_host(monkeypatch):
     """Refresh should re-resolve host from backend when host is 'pending'."""
+    monkeypatch.setattr("umrs.orchestrator.service.ReadinessPoller", _FakePoller)
+
     registry = EndpointRegistry()
     registry.register(
         project_id="test-project",
@@ -59,9 +65,10 @@ async def test_refresh_resolves_pending_host(monkeypatch):
         metadata={"readiness_probe": "chat"},
     )
 
+    base_poller = SimpleNamespace(config=ReadinessConfig(timeout_sec=300))
     service = OrchestrationService(
         registry=registry,
-        readiness_poller=_FakeReadinessPoller(),
+        readiness_poller=base_poller,
     )
     service._backend = _FakeBackend(host="compute-01")
     service._backend_type = SimpleNamespace(value="slurm")
@@ -76,6 +83,8 @@ async def test_refresh_resolves_pending_host(monkeypatch):
 @pytest.mark.asyncio
 async def test_refresh_handles_already_resolved_host(monkeypatch):
     """Refresh should work when host is already resolved (not 'pending')."""
+    monkeypatch.setattr("umrs.orchestrator.service.ReadinessPoller", _FakePoller)
+
     registry = EndpointRegistry()
     registry.register(
         project_id="test-project",
@@ -87,9 +96,10 @@ async def test_refresh_handles_already_resolved_host(monkeypatch):
         metadata={"readiness_probe": "chat"},
     )
 
+    base_poller = SimpleNamespace(config=ReadinessConfig(timeout_sec=300))
     service = OrchestrationService(
         registry=registry,
-        readiness_poller=_FakeReadinessPoller(),
+        readiness_poller=base_poller,
     )
     service._backend = _FakeBackend(host="compute-02")
     service._backend_type = SimpleNamespace(value="slurm")
@@ -106,9 +116,10 @@ async def test_refresh_returns_none_for_nonexistent_endpoint():
     """Refresh should return None if the endpoint doesn't exist in the registry."""
     registry = EndpointRegistry()
 
+    base_poller = SimpleNamespace(config=ReadinessConfig(timeout_sec=300))
     service = OrchestrationService(
         registry=registry,
-        readiness_poller=_FakeReadinessPoller(),
+        readiness_poller=base_poller,
     )
 
     endpoint = await service.refresh_endpoint("nonexistent-job")
