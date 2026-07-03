@@ -838,21 +838,15 @@ class MessageQueue:
 
     def _process_object_cmd(self, client_id, nb_objects, zmq_sender_id):
         if client_id in self.client_dictionary and "data_queue" in self.client_dictionary[client_id]:
-            data_queue = self.client_dictionary[client_id]["data_queue"]
             # ACK immediately so the client doesn't timeout while we collect S3 events
             try:
                 self.send_string("ACKNOWLEDGE", zmq_sender_id)
             except RuntimeError as e:
                 logger.error("Error acknowledging object client: %s", e)
-            objects = data_queue.wait_for_s3_events(nb_objects, timeout_s=60)
-            if len(objects) < nb_objects:
-                logger.warning(
-                    "Received %s/%s S3 events for client=%s (timeout)",
-                    len(objects),
-                    nb_objects,
-                    client_id,
-                )
-            return TaskCmd.PROCESS_OBJECTS, (client_id, objects)
+            # Return immediately with the count of expected objects.
+            # The ProcessObjectsHandler collects S3 events asynchronously
+            # so the control queue loop is not blocked.
+            return TaskCmd.PROCESS_OBJECTS, (client_id, nb_objects)
         else:
             logger.warning("No data queue for client=%s", client_id)
             try:
