@@ -10,6 +10,7 @@ import traceback
 from dataclasses import dataclass
 from glob import glob
 from pathlib import Path
+from typing import Any
 
 from umrs.client.control_api import UMRSControlAPI
 from umrs.client.control_commands import (
@@ -5699,9 +5700,19 @@ def _action_s3_transfer(ctx):
         selected_fields.append("path_to_bucket")
     _bucket_result = ctx.buckets_cfg.get(bucket_alias, filter=selected_fields)
     if _bucket_result is None:
+        available = []
+        if ctx.buckets_cfg:
+            for alias, _entry in ctx.buckets_cfg.items():
+                available.append(alias)
+        if available:
+            raise ValueError(
+                f"Bucket alias '{bucket_alias}' not found in configuration. "
+                f"Available aliases: {', '.join(sorted(available))}"
+            )
         raise ValueError(
             f"Bucket alias '{bucket_alias}' not found in configuration. "
-            f"Check your config file or use one of the configured aliases."
+            f"No bucket aliases are configured. Check your config file or "
+            f"add an experience with `umrs-client experience add <file>`."
         )
     username, xp_name, modality, s3_configuration_file, metadata, path_to_bucket = (
         _bucket_result
