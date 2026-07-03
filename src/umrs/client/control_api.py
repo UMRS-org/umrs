@@ -313,6 +313,15 @@ class UMRSControlAPI:
         )
         return self._request_json(TaskCmd.WORKFLOW_ERRORS, payload)
 
+    def workflow_logs(
+        self, execution_id: str, *, tail: int = 200
+    ) -> dict[str, Any]:
+        """Stream execution logs for a workflow run."""
+        payload = json.dumps(
+            {"execution_id": execution_id, "tail": tail}
+        )
+        return self._request_json(TaskCmd.WORKFLOW_LOGS, payload)
+
     def maintenance(
         self, action: str, config_path: str | None = None
     ) -> dict[str, Any]:

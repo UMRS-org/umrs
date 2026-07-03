@@ -4323,6 +4323,8 @@ def _action_workflow(ctx):
             parsed = api.workflow_errors(
                 args.execution_id, tail=args.tail
             )
+        elif wf_action == "logs":
+            return _action_workflow_logs(ctx)
         else:
             print(
                 api_json(
@@ -4340,7 +4342,7 @@ def _action_workflow(ctx):
         else:
             if parsed.get("status") == "ok":
                 if wf_action == "run":
-                    print(f"{_green('✓')} {parsed.get('message', 'OK')}")
+                    _print_workflow_run(parsed)
                 elif wf_action == "list":
                     _print_workflow_list(parsed)
                 elif wf_action == "status":

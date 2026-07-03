@@ -1595,6 +1595,44 @@ async def update_endpoint_status(
     return EndpointResponse(**endpoint.to_dict())
 
 
+@router.post(
+    "/{job_id}/refresh",
+    response_model=EndpointResponse,
+    summary="Refresh a stuck endpoint",
+    description="""
+    Re-resolve host/port from the backend and re-probe readiness.
+
+    Used to recover endpoints stuck in PROVISIONING/STARTING with
+    host="pending" after a _finalize_provision task died (e.g. UMRS restart).
+    """,
+)
+async def refresh_endpoint(
+    job_id: str,
+    project_id: str = Depends(get_project_id),
+    registry: EndpointRegistry = Depends(get_registry),
+) -> EndpointResponse:
+    """Refresh a stuck endpoint."""
+    endpoint = registry.get_by_job_id(job_id)
+    if not endpoint:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Endpoint not found: {job_id}",
+        )
+    _forbid_if_project_mismatch(endpoint, project_id)
+
+    from ..orchestrator.service import get_orchestration_service
+
+    service = get_orchestration_service()
+    refreshed = await service.refresh_endpoint(job_id)
+    if not refreshed:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Endpoint not found after refresh: {job_id}",
+        )
+
+    return EndpointResponse(**refreshed.to_dict())
+
+
 @router.put(
     "/{job_id}/used",
     response_model=EndpointResponse,
