@@ -4263,11 +4263,38 @@ def _action_monitor(ctx):
 
 
 def _action_workflow(ctx):
+    """Unified dispatch for ``umrs-client workflow <action>``.
+
+    Supported actions:
+        upload          — Upload a workflow directory to the server
+        list            — List registered workflows
+        run             — Trigger execution of a registered workflow
+        status          — Show execution status for a workflow run
+        results         — Fetch results for a completed workflow run
+        cancel          — Cancel a running workflow execution
+        errors          — Show error logs for a failed workflow execution
+        visualize       — Render the workflow DAG as ASCII art or Graphviz dot
+        validate-sandbox — Validate a workflow sandbox (Dockerfile + workflow.json)
+    """
     args = ctx.args
     client_id = _resolve_control_client_id(ctx.user)
     api = UMRSControlAPI(ctx.control_mq, client_id)
     wf_action = args.workflow_action
     exit_code = 0
+
+    # ---- upload ----------------------------------------------------------
+    if wf_action == "upload":
+        return _action_upload_workflow(ctx)
+
+    # ---- validate-sandbox ------------------------------------------------
+    if wf_action == "validate-sandbox":
+        return _action_validate_sandbox(ctx)
+
+    # ---- visualize -------------------------------------------------------
+    if wf_action == "visualize":
+        return _action_visualize_workflow(ctx)
+
+    # ---- list / run / status / results / cancel / errors -----------------
     try:
         if wf_action == "list":
             parsed = api.list_workflows(
@@ -4279,8 +4306,21 @@ def _action_workflow(ctx):
                 if args.params
                 else {}
             )
+            resolved_bucket = _resolve_workflow_bucket(ctx, args.bucket)
             parsed = api.run_workflow(
-                workflow_name=args.workflow_name, params=params, bucket=args.bucket
+                workflow_name=args.workflow_name,
+                params=params,
+                bucket=resolved_bucket,
+            )
+        elif wf_action == "status":
+            parsed = api.workflow_status(args.execution_id)
+        elif wf_action == "results":
+            parsed = api.workflow_results(args.execution_id)
+        elif wf_action == "cancel":
+            parsed = api.workflow_cancel(args.execution_id)
+        elif wf_action == "errors":
+            parsed = api.workflow_errors(
+                args.execution_id, tail=args.tail
             )
         else:
             print(
@@ -4300,31 +4340,16 @@ def _action_workflow(ctx):
             if parsed.get("status") == "ok":
                 if wf_action == "run":
                     print(f"{_green('✓')} {parsed.get('message', 'OK')}")
-                else:
-                    workflows = parsed.get("workflows", [])
-                    if not workflows:
-                        print(f"  {_dim('No workflows registered.')}")
-                    else:
-                        print(_section("Workflows"))
-                        print(
-                            "  "
-                            + "  ".join(
-                                [
-                                    _fmt_cell("Name", 30, style=_bold),
-                                    _fmt_cell("Version", 8, style=_bold),
-                                    _fmt_cell("Scope", 6, style=_bold),
-                                    _fmt_cell("User", 12, style=_bold),
-                                    _fmt_cell("Steps", 8, style=_bold),
-                                    _bold("Description"),
-                                ]
-                            )
-                        )
-                        print(f"  {_dim('-' * 100)}")
-                        for w in workflows:
-                            n_steps = len(w.get("steps", []))
-                            print(
-                                f"  {w['name']:30s}  v{w.get('version', '?'):8s}  {w.get('scope', ''):6s}  {w.get('user_id', ''):12s}  {n_steps:5d}     {_dim(w.get('description', ''))}"
-                            )
+                elif wf_action == "list":
+                    _print_workflow_list(parsed)
+                elif wf_action == "status":
+                    _print_workflow_status(parsed)
+                elif wf_action == "results":
+                    _print_workflow_results(parsed)
+                elif wf_action == "cancel":
+                    print(f"{_green('✓')} {parsed.get('message', 'Cancelled')}")
+                elif wf_action == "errors":
+                    _print_workflow_errors(parsed)
             else:
                 print(f"{_red('✗')} {parsed.get('message', 'unknown error')}")
                 exit_code = 1
@@ -4343,6 +4368,426 @@ def _action_workflow(ctx):
     finally:
         ctx.control_mq.close()
     return exit_code
+
+
+def _print_workflow_list(parsed: dict) -> None:
+    """Pretty-print the ``workflow list`` response."""
+    workflows = parsed.get("workflows", [])
+    if not workflows:
+        print(f"  {_dim('No workflows registered.')}")
+        return
+    print(_section("Workflows"))
+    print(
+        "  "
+        + "  ".join(
+            [
+                _fmt_cell("Name", 30, style=_bold),
+                _fmt_cell("Version", 8, style=_bold),
+                _fmt_cell("Scope", 6, style=_bold),
+                _fmt_cell("User", 12, style=_bold),
+                _fmt_cell("Steps", 8, style=_bold),
+                _bold("Description"),
+            ]
+        )
+    )
+    print(f"  {_dim('-' * 100)}")
+    for w in workflows:
+        n_steps = len(w.get("steps", []))
+        print(
+            f"  {w['name']:30s}  v{w.get('version', '?'):8s}  {w.get('scope', ''):6s}  "
+            f"{w.get('user_id', ''):12s}  {n_steps:5d}     "
+            f"{_dim(w.get('description', ''))}"
+        )
+
+
+def _print_workflow_status(parsed: dict) -> None:
+    """Pretty-print the ``workflow status`` response."""
+    execution = parsed.get("execution", parsed)
+    print(f"{_bold('Execution ID')}: {execution.get('execution_id', '?')}")
+    print(f"{_bold('Workflow')}: {execution.get('workflow_name', '?')}")
+    print(f"{_bold('Status')}: {execution.get('status', '?')}")
+    print(f"{_bold('Progress')}: {execution.get('progress', 0.0):.0%}")
+    if execution.get("submitted_at"):
+        print(f"{_bold('Submitted')}: {execution['submitted_at']}")
+    if execution.get("started_at"):
+        print(f"{_bold('Started')}: {execution['started_at']}")
+    if execution.get("finished_at"):
+        print(f"{_bold('Finished')}: {execution['finished_at']}")
+    if execution.get("error"):
+        print(f"{_red('Error')}: {execution['error']}")
+    steps = execution.get("steps", [])
+    if steps:
+        print(f"\n{_bold('Steps')}:")
+        for s in steps:
+            status = s.get("status", "?")
+            marker = (
+                _green("✓") if status == "succeeded"
+                else _red("✗") if status == "failed"
+                else _dim("•") if status == "skipped"
+                else _dim("→")
+            )
+            print(
+                f"  {marker} {s.get('name', '?'):30s}  {status:10s}  "
+                f"{s.get('progress', 0.0):.0%}"
+            )
+            if s.get("error"):
+                print(f"      {_red(s['error'])}")
+
+
+def _print_workflow_results(parsed: dict) -> None:
+    """Pretty-print the ``workflow results`` response."""
+    execution = parsed.get("execution", parsed)
+    results = execution.get("results", {})
+    print(f"{_bold('Execution ID')}: {execution.get('execution_id', '?')}")
+    print(f"{_bold('Status')}: {execution.get('status', '?')}")
+    if results:
+        print(f"\n{_bold('Results')}:")
+        for key, value in results.items():
+            if key == "blobs":
+                continue
+            print(f"  {_bold(key)}: {value}")
+    artifacts = execution.get("artifacts", [])
+    if artifacts:
+        print(f"\n{_bold('Artifacts')}:")
+        for a in artifacts:
+            print(f"  • {a}")
+
+
+def _print_workflow_errors(parsed: dict) -> None:
+    """Pretty-print the ``workflow errors`` response (failed Attempts)."""
+    execution = parsed.get("execution", parsed)
+    error_logs = parsed.get("error_logs", [])
+    print(f"{_bold('Execution ID')}: {execution.get('execution_id', '?')}")
+    print(f"{_bold('Status')}: {execution.get('status', '?')}")
+    if execution.get("error"):
+        print(f"\n{_bold('Workflow Error')}:")
+        print(f"  {_red(execution['error'])}")
+    steps = execution.get("steps", [])
+    failed_steps = [s for s in steps if s.get("status") == "failed"]
+    if failed_steps:
+        print(f"\n{_bold('Failed Steps')}:")
+        for s in failed_steps:
+            print(f"  {_red('✗')} {s.get('name', '?')}")
+            if s.get("error"):
+                print(f"      {_red(s['error'])}")
+    if error_logs:
+        print(f"\n{_bold('Error Logs')}:")
+        for log_entry in error_logs:
+            timestamp = log_entry.get("timestamp", "")
+            level = log_entry.get("level", "ERROR")
+            message = log_entry.get("message", "")
+            print(f"  [{timestamp}] {level}: {message}")
+    else:
+        print(f"\n  {_dim('No error logs available.')}")
+
+
+def _action_visualize_workflow(ctx):
+    """Render the workflow DAG as ASCII art or Graphviz dot.
+
+    Reads the workflow definition from the server (via ``workflow list``
+    with a name filter) and uses :class:`DAGScheduler` to compute
+    execution levels.  The resulting graph is printed to stdout.
+    """
+    args = ctx.args
+    client_id = _resolve_control_client_id(ctx.user)
+    api = UMRSControlAPI(ctx.control_mq, client_id)
+    wf_name = args.name
+    fmt = args.format
+    exit_code = 0
+    try:
+        parsed = api.list_workflows(name=wf_name)
+        if parsed.get("status") != "ok":
+            print(f"{_red('✗')} {parsed.get('message', 'unknown error')}")
+            return 1
+        workflows = parsed.get("workflows", [])
+        if not workflows:
+            print(f"{_red('✗')} Workflow '{wf_name}' not found")
+            return 1
+        wf = workflows[0]
+        steps = wf.get("steps", [])
+        if not steps:
+            print(f"{_red('✗')} Workflow '{wf_name}' has no steps")
+            return 1
+
+        from umrs.pipeline_sdk.dag import DAGScheduler
+        from umrs.pipeline_sdk.workflow import StepSpec
+
+        step_specs: list[StepSpec] = []
+        for s in steps:
+            spec = StepSpec(
+                name=s.get("name", "?"),
+                entrypoint=s.get("entrypoint", ""),
+                config=s.get("config", {}),
+                depends_on=s.get("depends_on"),
+                requires=s.get("requires", []),
+                model=s.get("model"),
+                model_type=s.get("model_type", "llm"),
+            )
+            step_specs.append(spec)
+
+        scheduler = DAGScheduler(step_specs)
+        levels = scheduler.execution_levels()
+
+        if fmt == "dot":
+            _print_dag_dot(step_specs, scheduler, wf_name)
+        else:
+            _print_dag_ascii(step_specs, levels, wf_name)
+
+    except Exception as e:
+        exit_code = 1
+        print(
+            api_json(
+                status="error",
+                action="workflow visualize",
+                message=str(e),
+                output_format=args.output,
+            )
+        )
+        if args.verbose:
+            traceback.print_exc()
+    finally:
+        ctx.control_mq.close()
+    return exit_code
+
+
+def _print_dag_ascii(
+    step_specs: list, levels: list[list[int]], wf_name: str
+) -> None:
+    """Print the DAG as ASCII art with execution levels."""
+    print(f"\n{_bold('Workflow DAG')}: {wf_name}")
+    print(f"{_dim('─' * 60)}")
+    for level_idx, level in enumerate(levels):
+        level_steps = [step_specs[i] for i in level]
+        level_label = f"Level {level_idx}"
+        if len(level_steps) == 1:
+            step = level_steps[0]
+            deps = step.depends_on or []
+            dep_str = f" ← {', '.join(deps)}" if deps else ""
+            print(f"  {level_label:12s} │ {step.name}{dep_str}")
+        else:
+            print(f"  {level_label:12s} │ (parallel)")
+            for step in level_steps:
+                deps = step.depends_on or []
+                dep_str = f" ← {', '.join(deps)}" if deps else ""
+                print(f"  {' ':12s} │ ├─ {step.name}{dep_str}")
+        if level_idx < len(levels) - 1:
+            print(f"  {' ':12s} │")
+    print(f"{_dim('─' * 60)}")
+    print(f"  {_dim(f'Total steps: {len(step_specs)}, Levels: {len(levels)}')}")
+
+
+def _print_dag_dot(
+    step_specs: list,
+    scheduler: Any,
+    wf_name: str,
+) -> None:
+    """Print the DAG in Graphviz dot format."""
+    print(f"digraph {wf_name.replace('-', '_')} {{")
+    print("  rankdir=TB;")
+    print("  node [shape=box, style=filled, fillcolor=lightblue];")
+    for spec in step_specs:
+        print(f'  "{spec.name}";')
+    for spec in step_specs:
+        deps = spec.depends_on or []
+        for dep in deps:
+            print(f'  "{dep}" -> "{spec.name}";')
+    print("}")
+
+
+def _action_validate_sandbox(ctx):
+    """Validate a workflow sandbox (Dockerfile + workflow.json) before running.
+
+    Checks:
+    1. workflow.json exists and is valid
+    2. Dockerfile exists (if sandbox mode is desired)
+    3. Dockerfile syntax is valid (basic checks)
+    4. If --build is specified, attempt a real container build
+    """
+    args = ctx.args
+    src_path = os.path.abspath(args.path)
+    dry_run = args.dry_run
+    build = args.build
+    exit_code = 0
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    print(f"\n{_bold('Validating sandbox')}: {src_path}")
+    print(f"{_dim('─' * 60)}")
+
+    # 1. Check workflow.json
+    wf_path = os.path.join(src_path, "workflow.json")
+    if not os.path.isfile(wf_path):
+        errors.append(f"workflow.json not found in {src_path}")
+    else:
+        try:
+            with open(wf_path, encoding="utf-8") as fh:
+                wf_data = json.load(fh)
+            from umrs.pipeline_sdk.workflow import WorkflowDefinition
+            WorkflowDefinition.from_dict(wf_data)
+            print(f"  {_green('✓')} workflow.json is valid")
+        except Exception as e:
+            errors.append(f"Invalid workflow.json: {e}")
+
+    # 2. Check Dockerfile
+    dockerfile_path = os.path.join(src_path, "Dockerfile")
+    has_dockerfile = os.path.isfile(dockerfile_path)
+    if has_dockerfile:
+        print(f"  {_green('✓')} Dockerfile found")
+        # 3. Validate Dockerfile syntax
+        dockerfile_errors = _validate_dockerfile_syntax(dockerfile_path)
+        if dockerfile_errors:
+            for err in dockerfile_errors:
+                errors.append(f"Dockerfile: {err}")
+        else:
+            print(f"  {_green('✓')} Dockerfile syntax is valid")
+    else:
+        warnings.append("No Dockerfile found — workflow will run in-process")
+
+    # 4. Build test (optional)
+    if build and has_dockerfile:
+        print(f"  {_dim('Building container image...')}")
+        build_ok, build_err = _build_sandbox_image(src_path, "sandbox-validate")
+        if build_ok:
+            print(f"  {_green('✓')} Container image built successfully")
+        else:
+            errors.append(f"Container build failed: {build_err}")
+
+    # 5. Check step scripts
+    step_script_errors = _validate_step_scripts(src_path, wf_path)
+    if step_script_errors:
+        for err in step_script_errors:
+            warnings.append(f"Step script: {err}")
+
+    print(f"{_dim('─' * 60)}")
+    if errors:
+        print(f"  {_red('✗')} Validation failed with {len(errors)} error(s):")
+        for err in errors:
+            print(f"    {_red('•')} {err}")
+        exit_code = 1
+    else:
+        print(f"  {_green('✓')} Validation passed")
+    if warnings:
+        print(f"\n  {_dim('Warnings:')}")
+        for w in warnings:
+            print(f"    {_dim('•')} {w}")
+
+    _close_control_mq(ctx)
+    return exit_code
+
+
+def _validate_dockerfile_syntax(dockerfile_path: str) -> list[str]:
+    """Perform basic Dockerfile syntax validation.
+
+    Returns a list of error messages (empty if valid).
+    """
+    errors: list[str] = []
+    try:
+        with open(dockerfile_path, encoding="utf-8") as fh:
+            lines = fh.readlines()
+    except Exception as e:
+        return [f"Cannot read Dockerfile: {e}"]
+
+    if not lines:
+        return ["Dockerfile is empty"]
+
+    # Check for FROM instruction
+    has_from = False
+    valid_instructions = {
+        "FROM", "RUN", "CMD", "LABEL", "MAINTAINER", "EXPOSE", "ENV",
+        "ADD", "COPY", "ENTRYPOINT", "VOLUME", "USER", "WORKDIR",
+        "ARG", "ONBUILD", "STOPSIGNAL", "HEALTHCHECK", "SHELL",
+    }
+    for line_num, line in enumerate(lines, 1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        parts = stripped.split()
+        instruction = parts[0].upper() if parts else ""
+        if instruction not in valid_instructions:
+            errors.append(
+                f"Line {line_num}: Unknown instruction '{parts[0] if parts else ''}'"
+            )
+        if instruction == "FROM":
+            has_from = True
+            if len(parts) < 2:
+                errors.append(f"Line {line_num}: FROM requires an image reference")
+
+    if not has_from:
+        errors.append("Dockerfile must contain at least one FROM instruction")
+
+    return errors
+
+
+def _build_sandbox_image(
+    src_path: str, workflow_name: str
+) -> tuple[bool, str | None]:
+    """Build a container image from a Dockerfile.
+
+    Returns (success, error_message).
+    """
+    import subprocess
+    dockerfile_path = os.path.join(src_path, "Dockerfile")
+    image_tag = f"{workflow_name}:latest"
+    cmd = [
+        "podman", "build",
+        "--userns=host",
+        "-t", image_tag,
+        "-f", dockerfile_path,
+        src_path,
+    ]
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+        if result.returncode != 0:
+            return False, result.stderr[-500:] if result.stderr else "Unknown error"
+        return True, None
+    except FileNotFoundError:
+        return False, "podman not found — install podman or use --dry-run"
+    except subprocess.TimeoutExpired:
+        return False, "Container build timed out (600s)"
+    except Exception as e:
+        return False, str(e)
+
+
+def _validate_step_scripts(
+    src_path: str, wf_path: str
+) -> list[str]:
+    """Validate that step scripts referenced in workflow.json exist.
+
+    Returns a list of warning messages (empty if all scripts found).
+    """
+    warnings: list[str] = []
+    if not os.path.isfile(wf_path):
+        return warnings
+    try:
+        with open(wf_path, encoding="utf-8") as fh:
+            wf_data = json.load(fh)
+    except Exception:
+        return warnings
+
+    steps = wf_data.get("steps", [])
+    for step in steps:
+        entrypoint = step.get("entrypoint", "")
+        if not entrypoint or ":" not in entrypoint:
+            continue
+        module_name = entrypoint.split(":")[0]
+        # Try common Python file extensions
+        found = False
+        for ext in (".py",):
+            script_path = os.path.join(src_path, f"{module_name}{ext}")
+            if os.path.isfile(script_path):
+                found = True
+                break
+        if not found:
+            warnings.append(
+                f"Step '{step.get('name', '?')}': module '{module_name}' "
+                f"not found in {src_path}"
+            )
+    return warnings
 
 
 def _upload_workflow_via_zmq(ctx, tmp_zip_path, client_id, workflow_name):
@@ -5673,8 +6118,6 @@ _ACTION_HANDLERS = {
     "endpoint": _action_endpoint,
     "monitor": _action_monitor,
     "workflow": _action_workflow,
-    "upload-workflow": _action_upload_workflow,
-    "run-workflow": _action_run_workflow,
     "list_buckets": _action_list_buckets,
     "purge_remote_buckets": _action_purge_remote_buckets,
     "status": _action_status,
@@ -6266,35 +6709,39 @@ def main():
     esp_p = endpoint_sub.add_parser("stop", help="Stop an endpoint provision job")
     configure_endpoint_stop_parser(esp_p)
 
-    # --- Workflow upload command ---
-    uw_p = subparsers.add_parser(
-        "upload-workflow",
+    # --- Workflow commands (unified) ---
+    # All workflow operations are consolidated under the `workflow` subcommand:
+    #   workflow upload <path> [--name N] [--scope user|project|system]
+    #   workflow list [--scope S] [--user U] [--name N]
+    #   workflow run <name> [--bucket B] [--params '{}']
+    #   workflow status <execution_id>
+    #   workflow results <execution_id>
+    #   workflow cancel <execution_id>
+    #   workflow errors <execution_id>   -- error logs for failed Attempts
+    #   workflow visualize <name>       -- render the workflow DAG
+    #   workflow validate-sandbox <path> -- validate Dockerfile sandbox
+    wf_p = subparsers.add_parser(
+        "workflow", help="Workflow commands (upload, list, run, status, results, cancel, errors, visualize, validate-sandbox)"
+    )
+    wf_sub = wf_p.add_subparsers(dest="workflow_action", required=True)
+
+    # workflow upload
+    wu_p = wf_sub.add_parser(
+        "upload",
         help="Upload a workflow directory (with workflow.json + step scripts) to the server",
     )
-    uw_p.add_argument(
+    wu_p.add_argument(
         "path", help="Local directory containing workflow.json and step scripts"
     )
-    uw_p.add_argument(
+    wu_p.add_argument(
         "--name", default=None, help="Workflow name (defaults to directory basename)"
     )
-    uw_p.add_argument(
+    wu_p.add_argument(
         "--scope",
         default="user",
         choices=["user", "project", "system"],
         help="Workflow visibility scope (default: user). Used for HTTP gateway uploads.",
     )
-
-    # --- Run workflow command ---
-    rw_p = subparsers.add_parser(
-        "run-workflow", help="Trigger execution of a registered workflow on the server"
-    )
-    configure_workflow_run_parser(rw_p)
-
-    # --- Workflow registry commands ---
-    wf_p = subparsers.add_parser(
-        "workflow", help="Workflow registry commands (list, run)"
-    )
-    wf_sub = wf_p.add_subparsers(dest="workflow_action", required=True)
 
     # workflow list
     wl_p = wf_sub.add_parser("list", help="List registered workflows")
@@ -6305,6 +6752,69 @@ def main():
         "run", help="Trigger execution of a registered workflow on the server"
     )
     configure_workflow_run_parser(wr_p)
+
+    # workflow status
+    wst_p = wf_sub.add_parser(
+        "status", help="Show execution status for a workflow run"
+    )
+    wst_p.add_argument("execution_id", help="Execution ID to inspect")
+
+    # workflow results
+    wres_p = wf_sub.add_parser(
+        "results", help="Fetch results for a completed workflow run"
+    )
+    wres_p.add_argument("execution_id", help="Execution ID to fetch results for")
+
+    # workflow cancel
+    wcan_p = wf_sub.add_parser(
+        "cancel", help="Cancel a running workflow execution"
+    )
+    wcan_p.add_argument("execution_id", help="Execution ID to cancel")
+
+    # workflow errors -- error logs for failed Attempts
+    werr_p = wf_sub.add_parser(
+        "errors",
+        help="Show error logs for a failed workflow execution (Attempts)",
+    )
+    werr_p.add_argument("execution_id", help="Execution ID to fetch error logs for")
+    werr_p.add_argument(
+        "--tail",
+        type=int,
+        default=50,
+        help="Maximum number of error log lines to show (default: 50)",
+    )
+
+    # workflow visualize -- render the workflow DAG
+    wvis_p = wf_sub.add_parser(
+        "visualize",
+        help="Render the workflow DAG (directed acyclic graph) as ASCII art",
+    )
+    wvis_p.add_argument("name", help="Registered workflow name to visualize")
+    wvis_p.add_argument(
+        "--format",
+        default="ascii",
+        choices=["ascii", "dot"],
+        help="Output format: ascii (default) or dot (Graphviz)",
+    )
+
+    # workflow validate-sandbox -- validate Dockerfile sandbox
+    wvs_p = wf_sub.add_parser(
+        "validate-sandbox",
+        help="Validate a workflow sandbox (Dockerfile + workflow.json) before running",
+    )
+    wvs_p.add_argument("path", help="Local directory containing Dockerfile + workflow.json")
+    wvs_p.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=False,
+        help="Validate syntax without building the image",
+    )
+    wvs_p.add_argument(
+        "--build",
+        action="store_true",
+        default=False,
+        help="Attempt a real container build (podman/docker) to verify the Dockerfile",
+    )
 
     # --- Monitor (TUI dashboard) ---
     mon_p = subparsers.add_parser(

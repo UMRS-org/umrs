@@ -429,6 +429,14 @@ def handle_workflow_command(
             return _handle_list_workflows(client_id, payload_str)
         elif cmd == TaskCmd.RUN_WORKFLOW:
             return _handle_run_workflow(client_id, payload_str, job_backend=job_backend)
+        elif cmd == TaskCmd.WORKFLOW_STATUS:
+            return _handle_workflow_status(client_id, payload_str)
+        elif cmd == TaskCmd.WORKFLOW_RESULTS:
+            return _handle_workflow_results(client_id, payload_str)
+        elif cmd == TaskCmd.WORKFLOW_CANCEL:
+            return _handle_workflow_cancel(client_id, payload_str)
+        elif cmd == TaskCmd.WORKFLOW_ERRORS:
+            return _handle_workflow_errors(client_id, payload_str)
         else:
             return json.dumps(
                 {
@@ -439,3 +447,180 @@ def handle_workflow_command(
     except Exception as e:
         logger.exception("Workflow command '%s' failed", cmd)
         return json.dumps({"status": "error", "message": str(e)})
+
+
+def _parse_execution_id(payload_str: str) -> tuple[str | None, dict[str, Any]]:
+    """Parse execution_id from payload. Returns (execution_id, payload)."""
+    try:
+        payload = json.loads(payload_str) if payload_str else {}
+    except json.JSONDecodeError:
+        return None, {}
+    if not isinstance(payload, dict):
+        return None, {}
+    return payload.get("execution_id"), payload
+
+
+def _handle_workflow_status(client_id: str, payload_str: str) -> str:
+    """Handle WORKFLOW_STATUS — show execution status for a workflow run."""
+    from umrs.server.workflow_execution_registry import get_execution_registry
+
+    execution_id, _payload = _parse_execution_id(payload_str)
+    if not execution_id:
+        return json.dumps(
+            {"status": "error", "message": "execution_id is required"}
+        )
+
+    registry = get_execution_registry()
+    record = registry.get(execution_id)
+    if record is None:
+        return json.dumps(
+            {
+                "status": "error",
+                "message": f"Execution '{execution_id}' not found",
+            }
+        )
+
+    return json.dumps(
+        {
+            "status": "ok",
+            "execution": record.to_dict(),
+        },
+        default=str,
+    )
+
+
+def _handle_workflow_results(client_id: str, payload_str: str) -> str:
+    """Handle WORKFLOW_RESULTS — fetch results for a completed workflow run."""
+    from umrs.server.workflow_execution_registry import get_execution_registry
+
+    execution_id, _payload = _parse_execution_id(payload_str)
+    if not execution_id:
+        return json.dumps(
+            {"status": "error", "message": "execution_id is required"}
+        )
+
+    registry = get_execution_registry()
+    record = registry.get(execution_id)
+    if record is None:
+        return json.dumps(
+            {
+                "status": "error",
+                "message": f"Execution '{execution_id}' not found",
+            }
+        )
+
+    return json.dumps(
+        {
+            "status": "ok",
+            "execution": record.to_dict(),
+            "results": record.results,
+            "artifacts": record.artifacts,
+        },
+        default=str,
+    )
+
+
+def _handle_workflow_cancel(client_id: str, payload_str: str) -> str:
+    """Handle WORKFLOW_CANCEL — cancel a running workflow execution."""
+    from umrs.server.workflow_execution_registry import get_execution_registry
+
+    execution_id, _payload = _parse_execution_id(payload_str)
+    if not execution_id:
+        return json.dumps(
+            {"status": "error", "message": "execution_id is required"}
+        )
+
+    registry = get_execution_registry()
+    record = registry.cancel(execution_id)
+    if record is None:
+        return json.dumps(
+            {
+                "status": "error",
+                "message": f"Execution '{execution_id}' not found",
+            }
+        )
+
+    return json.dumps(
+        {
+            "status": "ok",
+            "message": f"Execution '{execution_id}' cancelled",
+            "execution": record.to_dict(),
+        },
+        default=str,
+    )
+
+
+def _handle_workflow_errors(client_id: str, payload_str: str) -> str:
+    """Handle WORKFLOW_ERRORS — show error logs for a failed workflow execution.
+
+    This command surfaces error logs for failed Attempts, including:
+    - Workflow-level error message
+    - Per-step error details for failed steps
+    - Error log entries (if available)
+    """
+    from umrs.server.workflow_execution_registry import get_execution_registry
+
+    execution_id, payload = _parse_execution_id(payload_str)
+    if not execution_id:
+        return json.dumps(
+            {"status": "error", "message": "execution_id is required"}
+        )
+
+    tail = 50
+    if isinstance(payload, dict):
+        tail_val = payload.get("tail")
+        if isinstance(tail_val, int) and tail_val > 0:
+            tail = tail_val
+
+    registry = get_execution_registry()
+    record = registry.get(execution_id)
+    if record is None:
+        return json.dumps(
+            {
+                "status": "error",
+                "message": f"Execution '{execution_id}' not found",
+            }
+        )
+
+    # Collect error logs from the execution record
+    error_logs: list[dict[str, Any]] = []
+
+    # Workflow-level error
+    if record.error:
+        error_logs.append(
+            {
+                "timestamp": datetime.fromtimestamp(
+                    record.finished_at or record.submitted_at
+                ).isoformat(),
+                "level": "ERROR",
+                "source": "workflow",
+                "message": record.error,
+            }
+        )
+
+    # Per-step errors
+    for step_name, step in record.steps.items():
+        if step.status == "failed" and step.error:
+            error_logs.append(
+                {
+                    "timestamp": datetime.fromtimestamp(
+                        step.finished_at or step.started_at or record.submitted_at
+                    ).isoformat(),
+                    "level": "ERROR",
+                    "source": f"step:{step_name}",
+                    "message": step.error,
+                }
+            )
+
+    # Limit to tail
+    error_logs = error_logs[-tail:]
+
+    return json.dumps(
+        {
+            "status": "ok",
+            "execution": record.to_dict(),
+            "error_logs": error_logs,
+            "count": len(error_logs),
+        },
+        default=str,
+    )

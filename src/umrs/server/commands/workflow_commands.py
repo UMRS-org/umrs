@@ -52,3 +52,59 @@ class RunWorkflowHandler(CommandHandler):
         )
         _send_reply(ctx, zmq_sender_id, response_json, "RUN_WORKFLOW")
         update_status(TaskStatus.COMPLETED)
+
+
+class WorkflowStatusHandler(CommandHandler):
+    """Handle WORKFLOW_STATUS — show execution status for a workflow run."""
+
+    def execute(self, payload: Any, update_status: StatusCallback, ctx: HandlerContext, task_id: int) -> None:
+        client_id, payload_str, zmq_sender_id = payload
+        response_json = handle_workflow_command(
+            "WORKFLOW_STATUS",
+            client_id,
+            payload_str,
+        )
+        _send_reply(ctx, zmq_sender_id, response_json, "WORKFLOW_STATUS")
+        update_status(TaskStatus.COMPLETED)
+
+
+class WorkflowResultsHandler(CommandHandler):
+    """Handle WORKFLOW_RESULTS — fetch results for a completed workflow run."""
+
+    def execute(self, payload: Any, update_status: StatusCallback, ctx: HandlerContext, task_id: int) -> None:
+        client_id, payload_str, zmq_sender_id = payload
+        response_json = handle_workflow_command(
+            "WORKFLOW_RESULTS",
+            client_id,
+            payload_str,
+        )
+        _send_reply(ctx, zmq_sender_id, response_json, "WORKFLOW_RESULTS")
+        update_status(TaskStatus.COMPLETED)
+
+
+class WorkflowCancelHandler(CommandHandler):
+    """Handle WORKFLOW_CANCEL — cancel a running workflow execution."""
+
+    def execute(self, payload: Any, update_status: StatusCallback, ctx: HandlerContext, task_id: int) -> None:
+        client_id, payload_str, zmq_sender_id = payload
+        response_json = handle_workflow_command(
+            "WORKFLOW_CANCEL",
+            client_id,
+            payload_str,
+        )
+        _send_reply(ctx, zmq_sender_id, response_json, "WORKFLOW_CANCEL")
+        update_status(TaskStatus.COMPLETED)
+
+
+class WorkflowErrorsHandler(CommandHandler):
+    """Handle WORKFLOW_ERRORS — show error logs for a failed workflow execution."""
+
+    def execute(self, payload: Any, update_status: StatusCallback, ctx: HandlerContext, task_id: int) -> None:
+        client_id, payload_str, zmq_sender_id = payload
+        response_json = handle_workflow_command(
+            "WORKFLOW_ERRORS",
+            client_id,
+            payload_str,
+        )
+        _send_reply(ctx, zmq_sender_id, response_json, "WORKFLOW_ERRORS")
+        update_status(TaskStatus.COMPLETED)
