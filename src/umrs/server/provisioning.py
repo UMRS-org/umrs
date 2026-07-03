@@ -196,7 +196,7 @@ def create_s3_sql_users(user_cfg, admin_s3_configuration_file):
     fullname = user_cfg["fullname"]
     username = user_cfg["username"]
     logger.info(
-        f"######################\nCreating {fullname} ({username})\n######################"
+        f"###################### Creating {fullname} ({username}) ######################"
     )
 
     bucket_list = []

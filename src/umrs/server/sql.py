@@ -14,7 +14,7 @@ from psycopg2 import pool as pg_pool
 from psycopg2 import sql
 
 from umrs.core.TaskCmdStatus import TaskStatus
-from umrs.server.config import get_umrs_server_db_name, get_umrs_server_db_user
+from umrs.server.config import get_db_config, get_umrs_server_db_name, get_umrs_server_db_user
 from umrs.shared.buckets import BucketsCfg
 from umrs.shared.sql_helpers import create_db_name, metadata_dict
 
@@ -335,22 +335,20 @@ def db_user_exists(conn, username):
 
 
 def create_db_user(username):
-    # Database credentials
-    DB_HOST = os.environ.get("DB_HOST", "localhost")
-    DB_PORT = os.environ.get("DB_PORT", "5432")
-    # Allow overriding superuser via env (`DB_SUPERUSER`) or fall back to
-    # the postgres service user (`POSTGRES_USER`) and finally `postgres`.
-    DB_SUPERUSER = os.environ.get("DB_SUPERUSER", os.environ.get("POSTGRES_USER", "postgres"))
-    DB_SUPERUSER_PASSWORD = os.environ.get("DB_SUPERUSER_PASSWORD", os.environ.get("POSTGRES_PASSWORD", "postgres"))
+    cfg = get_db_config()
+    conn = psycopg2.connect(
+        dbname="postgres",
+        user=cfg["superuser"],
+        password=cfg["superuser_password"],
+        host=cfg["host"],
+        port=cfg["port"],
+    )
+    conn.autocommit = True
 
-    conn = psycopg2.connect(dbname="postgres", user=DB_SUPERUSER, password=DB_SUPERUSER_PASSWORD, host=DB_HOST, port=DB_PORT)
-    conn.autocommit = True  # Enable auto-commit mode
-
-    DB_USER_PASSWORD = os.environ.get("DB_USER_PASSWORD", "ejeannot")
+    DB_USER_PASSWORD = cfg["user_password"]
     cur = conn.cursor()
     if db_user_exists(conn, username):
         logger.info(f"==> User '{username}' exist in DB")
-        # Ensure password matches the configured one
         cur.execute(sql.SQL("ALTER USER {} WITH PASSWORD %s;").format(sql.Identifier(username)), (DB_USER_PASSWORD,))
         conn.commit()
         cur.close()
@@ -370,16 +368,18 @@ def create_db(sql_username, xp_name, username=None):
     db_name = create_db_name(sql_username, xp_name, username)
     legacy_db_name = create_db_name(sql_username, xp_name)
     logger.info(f"\t\t-->  Configuring database '{db_name}'...")
-    # Database credentials
-    DB_HOST = os.environ.get("DB_HOST", "localhost")
-    DB_PORT = os.environ.get("DB_PORT", "5432")
-    DB_SUPERUSER = os.environ.get("DB_SUPERUSER", os.environ.get("POSTGRES_USER", "postgres"))
-    DB_SUPERUSER_PASSWORD = os.environ.get("DB_SUPERUSER_PASSWORD", os.environ.get("POSTGRES_PASSWORD", "postgres"))
+    cfg = get_db_config()
     DB_NAME = db_name  # Replace with the target database
     DB_USER = sql_username  # Replace with the target user
 
     # Connect to PostgreSQL default database (`postgres`)
-    conn = psycopg2.connect(dbname="postgres", user=DB_SUPERUSER, password=DB_SUPERUSER_PASSWORD, host=DB_HOST, port=DB_PORT)
+    conn = psycopg2.connect(
+        dbname="postgres",
+        user=cfg["superuser"],
+        password=cfg["superuser_password"],
+        host=cfg["host"],
+        port=cfg["port"],
+    )
     conn.autocommit = True  # Enable auto-commit mode
     cur = conn.cursor()
 
@@ -431,7 +431,13 @@ def create_db(sql_username, xp_name, username=None):
             logger.info(f"\t\t-->  Database '{db_name}' already exists (race detected).")
 
     # Always ensure pgvector extension exists in target DB.
-    conn_new = psycopg2.connect(dbname=DB_NAME, user=DB_SUPERUSER, password=DB_SUPERUSER_PASSWORD, host=DB_HOST, port=DB_PORT)
+    conn_new = psycopg2.connect(
+        dbname=DB_NAME,
+        user=cfg["superuser"],
+        password=cfg["superuser_password"],
+        host=cfg["host"],
+        port=cfg["port"],
+    )
     conn_new.autocommit = True
     cur_new = conn_new.cursor()
     try:
@@ -446,14 +452,14 @@ def create_db(sql_username, xp_name, username=None):
     cur.close()
     conn.close()
 
-    DB_USER_PASSWORD = os.environ.get("DB_USER_PASSWORD", "ejeannot")
+    DB_USER_PASSWORD = cfg["user_password"]
     db_pool = pg_pool.SimpleConnectionPool(
         minconn=1, maxconn=50,  # Adjust based on your needs
         dbname=db_name,
         user=sql_username,
         password=DB_USER_PASSWORD,
-        host=DB_HOST,
-        port=DB_PORT
+        host=cfg["host"],
+        port=cfg["port"],
     )
     return DataBase(db_pool, db_name, sql_username), db_name
 

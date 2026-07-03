@@ -944,7 +944,13 @@ class MessageQueue:
         else:
             raise RuntimeError(f"Unexpected reply from server: {reply}")
 
-    def notify_server(self, client_id, notification_type, nb_objects, verbose=False, admin_token=None):
+    def notify_server(self, client_id, notification_type, nb_objects, verbose=False, admin_token=None, s3_keys=None):
+        """Notify the server that objects have been uploaded to S3.
+
+        ``s3_keys`` is accepted for forward compatibility with the planned
+        CURVE-authenticated data-queue fix (see GitHub issue #64) but is
+        currently ignored — the control channel carries the notification.
+        """
         if self.role != "client":
             raise PermissionError("Only client can call 'notify_server'")
 
