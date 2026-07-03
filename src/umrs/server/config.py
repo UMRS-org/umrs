@@ -64,7 +64,8 @@ def get_db_config() -> dict:
     """Read DB connection config from credentials file, with env var overrides.
 
     Credentials file: ~/.config/umrs/credentials/db_credentials.ini
-    Format:
+    Format::
+
         [postgres]
         superuser_password = <postgres superuser password>
         umrs_server_password = <umrs_server_db_user password>
@@ -105,28 +106,48 @@ def get_db_config() -> dict:
             return env_val
         return config.get("postgres", ini_key, fallback=default)
 
-    superuser_password = _get("DB_SUPERUSER_PASSWORD", "superuser_password",
-                               os.environ.get("POSTGRES_PASSWORD"))
+    superuser_password = _get(
+        "DB_SUPERUSER_PASSWORD",
+        "superuser_password",
+        os.environ.get("POSTGRES_PASSWORD"),
+    )
     if not superuser_password:
         raise ValueError(
             "superuser_password is required in [postgres] section of the credentials file"
         )
 
-    umrs_server_password = _get("DB_UMRS_SERVER_PASSWORD", "umrs_server_password")
+    umrs_server_password = _get(
+        "DB_UMRS_SERVER_PASSWORD",
+        "umrs_server_password",
+        os.environ.get("DB_UMRS_SERVER_PASSWORD"),
+    )
     if not umrs_server_password:
         raise ValueError(
             "umrs_server_password is required in [postgres] section of the credentials file"
         )
 
+    user_password = _get(
+        "DB_USER_PASSWORD",
+        "user_password",
+        os.environ.get("DB_USER_PASSWORD"),
+    )
+    if not user_password:
+        raise ValueError(
+            "user_password is required in [postgres] section of the credentials file"
+        )
+
     return {
-        "host":                 _get("DB_HOST", "host", _DB_HOST),
-        "port":                 _get("DB_PORT", "port", _DB_PORT),
-        "superuser":            _get("DB_SUPERUSER", "superuser",
-                                     os.environ.get("POSTGRES_USER", _DB_SUPERUSER)),
-        "superuser_password":   superuser_password,
+        "host": _get("DB_HOST", "host", _DB_HOST),
+        "port": _get("DB_PORT", "port", _DB_PORT),
+        "superuser": _get(
+            "DB_SUPERUSER", "superuser", os.environ.get("POSTGRES_USER", _DB_SUPERUSER)
+        ),
+        "superuser_password": superuser_password,
         "umrs_server_password": umrs_server_password,
-        "user_password":        _get("DB_USER_PASSWORD", "user_password"),
-        "db_name":              _get("DB_UMRS_NAME", "db_name", _UMRS_SERVER_DB_NAME),
+        "user_password": user_password,
+        "db_name": _get(
+            "DB_UMRS_NAME", "db_name", os.environ.get("DB_UMRS_NAME", _UMRS_SERVER_DB_NAME)
+        ),
     }
 
 

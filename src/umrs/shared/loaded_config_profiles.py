@@ -190,7 +190,7 @@ def _validate_server(path: Path) -> ConfigLayer:
         return layer
     try:
         _, users, _ = load_server_cfg_file(str(path))
-    except (SystemExit, FileNotFoundError, ValueError) as exc:
+    except (SystemExit, ValueError, Exception) as exc:
         # A discovered conf_umrs.json may reference user files that don't
         # exist on this host (e.g. docker/conf_umrs.json → /root/user_files/…)
         # or be empty/malformed. Treat the server config as invalid but
@@ -214,7 +214,7 @@ def _validate_user(path: Path) -> ConfigLayer:
         return layer
     try:
         user_cfg = load_client_cfg_file(str(path))
-    except (SystemExit, ValueError, FileNotFoundError) as exc:
+    except (SystemExit, ValueError, Exception) as exc:
         # Discovered user configs may be invalid (missing required fields),
         # malformed, or reference files that don't exist on this host.
         layer.error = str(exc)

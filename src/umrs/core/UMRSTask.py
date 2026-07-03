@@ -37,24 +37,28 @@ class UMRSTask:
         try:
             with conn:
                 with conn.cursor() as cur:
-                    # The table uses UTC internally thanks to TIMESTAMPTZ
+                    # The table uses UTC internally thanks to TIMESTAMPTZ.
+                    # payload_hash is a GENERATED ALWAYS column (md5 of payload)
+                    # so the unique index can use a fixed-size key instead of
+                    # the raw payload, which may exceed PostgreSQL's 8191-byte
+                    # index row limit for large payloads (e.g. spacy text chunks).
                     cur.execute("""
                         CREATE TABLE IF NOT EXISTS tasks (
-                            id          SERIAL PRIMARY KEY,
-                            client_id   TEXT,
-                            cmd         TEXT,
-                            payload     TEXT,
+                            id           SERIAL PRIMARY KEY,
+                            client_id    TEXT,
+                            cmd          TEXT,
+                            payload      TEXT,
                             payload_hash TEXT GENERATED ALWAYS AS (md5(coalesce(payload, ''))) STORED,
-                            status      TEXT,
+                            status       TEXT,
                             submitted_at TIMESTAMPTZ DEFAULT now(),
                             updated_at   TIMESTAMPTZ DEFAULT now()
                         )
                     """)
                     # Partial unique index on payload_hash (md5 of payload) rather
                     # than payload itself: PostgreSQL limits index row size to 8191
-                    # bytes, which large payloads (e.g. spacy text chunks) exceed.
-                    # payload_hash is a generated column so the index is still
-                    # race-free and atomic via ON CONFLICT in add_task().
+                    # bytes, which large payloads exceed. payload_hash is a
+                    # generated column so the index is still race-free and atomic
+                    # via ON CONFLICT in add_task().
                     cur.execute("""
                         CREATE UNIQUE INDEX IF NOT EXISTS tasks_active_dedup
                         ON tasks (client_id, cmd, payload_hash)
@@ -209,7 +213,8 @@ class UMRSTask:
                         cur.execute(
                             "INSERT INTO tasks (client_id, cmd, payload, status) "
                             "VALUES (%s, %s, %s, %s) "
-                            "ON CONFLICT (client_id, cmd, payload_hash) WHERE status IN ('Submitted', 'Running') DO NOTHING "
+                            "ON CONFLICT (client_id, cmd, payload_hash) "
+                            "WHERE status IN ('Submitted', 'Running') DO NOTHING "
                             "RETURNING id",
                             (client_id, cmd, payload, status),
                         )
@@ -221,7 +226,8 @@ class UMRSTask:
                         # for this (client_id, cmd, payload) — reuse it.
                         cur.execute(
                             "SELECT id FROM tasks "
-                            "WHERE client_id = %s AND cmd = %s AND payload_hash = md5(%s) "
+                            "WHERE client_id = %s AND cmd = %s "
+                            "AND payload_hash = md5(%s) "
                             "AND status IN (%s, %s)",
                             (
                                 client_id,
