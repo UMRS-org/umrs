@@ -288,7 +288,17 @@ class MessageQueue:
             self.socket = self.context.socket(zmq.ROUTER)
             self._apply_socket_security(self.socket, server=True)
             bind_host = "127.0.0.1" if self.tunnel_mode else "*"
-            self.socket.bind(f"tcp://{bind_host}:{self.port}")
+            try:
+                self.socket.bind(f"tcp://{bind_host}:{self.port}")
+            except zmq.error.ZMQError as e:
+                if "Address already in use" in str(e):
+                    raise zmq.error.ZMQError(
+                        e.errno,
+                        f"Port {self.port} is already in use — "
+                        f"is another UMRS server already running? "
+                        f"(addr='tcp://{bind_host}:{self.port}')",
+                    ) from None
+                raise
             self.set_timeouts(-1, self.timeout)
         else:  # client
             self.socket = self.context.socket(zmq.DEALER)
