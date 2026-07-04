@@ -82,6 +82,7 @@ endpoints:
     env_vars:
       VLLM_MAX_NUM_SEQS: "16"                # explicit concurrency cap
       VLLM_MAX_NUM_BATCHED_TOKENS: "32768"   # faster prefill (was 16384)
+      RIVAULT_EXTRA_PROFILES: "assistant"    # ADR-012: co-locate Assistant Service
 
   # ── DeepSeek-V4-Pro TEP (256K) ────────────────────────────────────────────
   # TP=8 PP=1 + expert-parallel on 2 nodes. Eliminates pipeline bubbles.
@@ -97,6 +98,7 @@ endpoints:
     env_vars:
       VLLM_MAX_NUM_SEQS: "32"
       VLLM_MAX_NUM_BATCHED_TOKENS: "32768"
+      RIVAULT_EXTRA_PROFILES: "assistant"    # ADR-012: co-locate Assistant Service
 
   # ── DeepSeek-V4-Pro TEP (128K) ────────────────────────────────────────────
   # Maximum KV headroom in the 2-node TEP layout for high-concurrency workloads.
@@ -111,6 +113,7 @@ endpoints:
     env_vars:
       VLLM_MAX_NUM_SEQS: "32"
       VLLM_MAX_NUM_BATCHED_TOKENS: "32768"
+      RIVAULT_EXTRA_PROFILES: "assistant"    # ADR-012: co-locate Assistant Service
 
   # ── GLM-5.2 V2 (optimized baseline, 2026-06-22) ───────────────────────────
   # 4n4gpu BF16, eager, explicit concurrency cap and larger batched-token budget.
@@ -126,6 +129,7 @@ endpoints:
       RIVAULT_SIF: /work/hps0/home/ea0022/images/mini-rivault-aarch64-v6.sif
       VLLM_MAX_NUM_SEQS: "32"
       VLLM_MAX_NUM_BATCHED_TOKENS: "32768"
+      RIVAULT_EXTRA_PROFILES: "assistant"    # ADR-012: co-locate Assistant Service
 
   # ── GLM-5.2 FP8 2-node recipe ─────────────────────────────────────────────
   # Promoted canary: FP8 weights + FP8 KV cache, 2n4gpu, native 1M context.
@@ -142,6 +146,7 @@ endpoints:
       VLLM_KV_CACHE_DTYPE: "fp8"
       VLLM_MAX_NUM_SEQS: "32"
       VLLM_MAX_NUM_BATCHED_TOKENS: "32768"
+      RIVAULT_EXTRA_PROFILES: "assistant"    # ADR-012: co-locate Assistant Service
 
   # ── GLM-5.2 FP8 Prefill/Decode disaggregated ──────────────────────────────
   # 4 nodes total (2 prefill + 2 decode) via serve-pd.slurm.
@@ -158,6 +163,7 @@ endpoints:
       VLLM_KV_CACHE_DTYPE: "fp8"
       VLLM_MAX_NUM_SEQS: "32"
       VLLM_MAX_NUM_BATCHED_TOKENS: "32768"
+      RIVAULT_EXTRA_PROFILES: "assistant"    # ADR-012: co-locate Assistant Service
       NIXL_PACKAGES_HOST: /work/hps0/home/ea0022/images/nixl_packages
       SLURM_WRAPPER_SCRIPT: /work/hps0/home/ea0022/ai4s-platform/umrs/deploy/ai4s/serve-pd.slurm
 
@@ -180,6 +186,7 @@ endpoints:
       VLLM_KV_CACHE_DTYPE: fp8           # FP8 KV cache (halves KV memory)
       VLLM_MAX_NUM_SEQS: "32"
       VLLM_MAX_NUM_BATCHED_TOKENS: "32768"
+      RIVAULT_EXTRA_PROFILES: "assistant"    # ADR-012: co-locate Assistant Service
 
   # ── Kimi-K2.6 2-node (native 262K) ────────────────────────────────────────
   # TP=8 doubles aggregate memory → native 262K context with KV headroom.
@@ -194,6 +201,7 @@ endpoints:
       VLLM_MAX_NUM_SEQS: "32"
       VLLM_MAX_NUM_BATCHED_TOKENS: "32768"
       VLLM_MM_ENCODER_TP_MODE: "data"
+      RIVAULT_EXTRA_PROFILES: "assistant"    # ADR-012: co-locate Assistant Service
 
   # ── Kimi-K2.7-Code 2-node (native 262K) ───────────────────────────────────
   # Same rationale as K2.6; coding-focused agentic variant.
@@ -209,6 +217,7 @@ endpoints:
       VLLM_MM_ENCODER_TP_MODE: "data"
       VLLM_MAX_NUM_SEQS: "32"
       VLLM_MAX_NUM_BATCHED_TOKENS: "32768"
+      RIVAULT_EXTRA_PROFILES: "assistant"    # ADR-012: co-locate Assistant Service
 
   # ── Kimi-K2.7-Code FP8 KV (single-node canary) ────────────────────────────
   # Halves KV memory on the 1n4gpu recipe; validate output quality before promotion.
@@ -228,6 +237,7 @@ endpoints:
       VLLM_KV_CACHE_DTYPE: "fp8"
       VLLM_MAX_NUM_SEQS: "32"
       VLLM_MAX_NUM_BATCHED_TOKENS: "32768"
+      RIVAULT_EXTRA_PROFILES: "assistant"    # ADR-012: co-locate Assistant Service
 
   # ── Ornith-1.0-397B (DeepReinforce, 397B MoE agentic coding) ──────────────
   # HF: deepreinforce-ai/Ornith-1.0-397B
@@ -249,3 +259,4 @@ endpoints:
       VLLM_MAX_NUM_SEQS: "16"
       VLLM_MAX_NUM_BATCHED_TOKENS: "32768"
       VLLM_GPU_MEMORY_UTILIZATION: "0.90"
+      RIVAULT_EXTRA_PROFILES: "assistant"    # ADR-012: co-locate Assistant Service
