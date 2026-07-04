@@ -285,10 +285,28 @@ async def _proxy_streaming(
     headers: dict[str, str],
     body: bytes,
 ):
-    """Proxy a streaming (SSE) request to the Assistant Service."""
-    async with httpx.AsyncClient(timeout=None) as client:
-        async with client.stream("POST", url, content=body, headers=headers) as resp:
-            yield resp.status_code, resp.headers
-            async for chunk in resp.aiter_raw():
-                if chunk:
-                    yield chunk
+    """Proxy a streaming (SSE) request to the Assistant Service.
+
+    Yields raw response bytes for the ``StreamingResponse`` body.  Only
+    byte chunks are yielded — status/headers are handled by the enclosing
+    ``StreamingResponse`` — so the SSE stream is not corrupted.
+
+    On upstream connection failure, emits a single OpenAI-style SSE error
+    event followed by ``[DONE]`` rather than raising mid-stream (the HTTP
+    status is already committed once streaming begins).
+    """
+    try:
+        async with httpx.AsyncClient(timeout=None) as client:
+            async with client.stream(
+                "POST", url, content=body, headers=headers
+            ) as resp:
+                async for chunk in resp.aiter_raw():
+                    if chunk:
+                        yield chunk
+    except httpx.RequestError as exc:
+        logger.error("Streaming proxy error for %s: %s", url, exc)
+        err = json.dumps(
+            {"error": {"message": f"Assistant Service unavailable: {exc}"}}
+        )
+        yield f"data: {err}\n\n".encode()
+        yield b"data: [DONE]\n\n"
