@@ -86,6 +86,23 @@ def test_execute_command_supports_workflow_run():
     assert parsed_payload["params"] == {"alpha": 1, "bucket": "outbox"}
 
 
+def test_list_workflows_uses_fast_fail_timeout():
+    """Control-plane queries must fail fast, not block for the model-download
+    window, when the server is unresponsive or too old to know the command."""
+    mq = MagicMock()
+    mq.request_model_command.return_value = json.dumps(
+        {"status": "ok", "count": 0, "workflows": []}
+    )
+
+    api = UMRSControlAPI(mq, "tester")
+    result = api.list_workflows()
+
+    assert result["status"] == "ok"
+    _, task_cmd, _payload = mq.request_model_command.call_args.args
+    assert task_cmd == "LIST_WORKFLOWS"
+    assert mq.request_model_command.call_args.kwargs.get("timeout_ms") == 60_000
+
+
 def test_maintenance_reload_notifies_server():
     mq = MagicMock()
     mq.notify_server.return_value = True
