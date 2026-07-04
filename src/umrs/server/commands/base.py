@@ -33,6 +33,11 @@ class HandlerContext:
     configure_file: str
     job_command_backend: Any = field(default=None)
     model_command_backend: Any = field(default=None)
+    # True only when a durable job *scheduler* is actively running to execute
+    # queued jobs. When False (e.g. front-end deployments with no in-container
+    # orchestrator backend), workflow runs must execute in-process instead of
+    # being queued as durable jobs that nothing would ever pick up.
+    workflow_scheduler_active: bool = field(default=False)
 
     # Convenience accessors ------------------------------------------------
     @property

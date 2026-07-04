@@ -44,11 +44,16 @@ class RunWorkflowHandler(CommandHandler):
 
     def execute(self, payload: Any, update_status: StatusCallback, ctx: HandlerContext, task_id: int) -> None:
         client_id, payload_str, zmq_sender_id = payload
+        # Only route through the durable job queue when a scheduler is actually
+        # running to execute it. Otherwise (e.g. front-end deployments with no
+        # in-container orchestrator backend) run the workflow in-process so it
+        # is not left queued forever.
+        job_backend = ctx.job_command_backend if ctx.workflow_scheduler_active else None
         response_json = handle_workflow_command(
             "RUN_WORKFLOW",
             client_id,
             payload_str,
-            job_backend=ctx.job_command_backend,
+            job_backend=job_backend,
         )
         _send_reply(ctx, zmq_sender_id, response_json, "RUN_WORKFLOW")
         update_status(TaskStatus.COMPLETED)
