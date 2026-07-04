@@ -72,6 +72,11 @@ USER_ALLOWED_COMMANDS: set[str] = frozenset(
         "UPLOAD_WORKFLOW",
         "LIST_WORKFLOWS",
         "RUN_WORKFLOW",
+        "WORKFLOW_STATUS",
+        "WORKFLOW_RESULTS",
+        "WORKFLOW_CANCEL",
+        "WORKFLOW_ERRORS",
+        "WORKFLOW_LOGS",
         "UPDATE",  # Update embeddings across configured buckets (only client files)
         "CHECK",  # Global consistency check across all users' buckets (only client files)
         "GET_BOOTSTRAP_CONTEXT",

@@ -170,6 +170,31 @@ def make_update_status_callback(task_manager, task_id):
         task_manager.tasks_status.update_status(task_id, status)
     return callback
 
+
+def _reply_command_error(control_mq, payload, cmd, exc):
+    """Best-effort JSON error reply after a per-command dispatch failure.
+
+    Request/reply commands carry the ZMQ sender id as the last element of a
+    3+ element payload tuple. Sending an error reply lets the client fail fast
+    instead of blocking until its receive timeout. No-op (and never raises)
+    for fire-and-forget commands that carry no sender id.
+    """
+    sender_id = (
+        payload[-1] if isinstance(payload, tuple) and len(payload) >= 3 else None
+    )
+    if sender_id is None:
+        return
+    body = json.dumps(
+        {
+            "status": "error",
+            "code": "SERVER_ERROR",
+            "message": f"Server error handling '{cmd}': {exc}",
+        }
+    )
+    with contextlib.suppress(Exception):
+        control_mq.send_string(body, sender_id)
+
+
 def server_event_loop(
     task_manager,
     control_mq,
@@ -239,10 +264,21 @@ def server_event_loop(
                 continue
             cmd, payload = result
 
-            task_id = task_manager.tasks_status.create_task(cmd, payload)
-            update_status_func = make_update_status_callback(task_manager, task_id)
-
-            registry.dispatch(cmd, payload, update_status_func, ctx, task_id)
+            # A single failing command (e.g. a database error while recording
+            # the task) must NEVER crash the whole event loop — doing so would
+            # drop every other user's session and force a full server restart.
+            # Isolate create_task + dispatch: on failure, log it, reply to the
+            # caller so it fails fast instead of blocking until its receive
+            # timeout, and continue serving.
+            try:
+                task_id = task_manager.tasks_status.create_task(cmd, payload)
+                update_status_func = make_update_status_callback(task_manager, task_id)
+                registry.dispatch(cmd, payload, update_status_func, ctx, task_id)
+            except Exception as cmd_exc:  # noqa: BLE001 - loop must survive
+                print(f"ERROR handling command {cmd}: {cmd_exc}", flush=True)
+                traceback.print_exc()
+                _reply_command_error(control_mq, payload, cmd, cmd_exc)
+                continue
 
             finished_threads_ident_list = task_manager.active_threads.clean_finished_threads()
             logger.debug("finished_threads=%s", finished_threads_ident_list)
