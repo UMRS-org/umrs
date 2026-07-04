@@ -467,7 +467,7 @@ services:
   # Mount point: /project/ for data, /rag-index/ for pre-built index
   rag:
     profiles: [ rag ]
-    image: ghcr.io/riken-rccs/umrs-rag:${RAG_DOCKER_TAG:-latest}
+    image: ${RAG_IMAGE:-localhost/umrs-rag:${RAG_DOCKER_TAG:-latest}}
     command: python -m umrs.api.rag_service --port 8100
     networks:
       genai-private-net:
@@ -533,7 +533,7 @@ services:
   # ---------------------------------------------------------------------------
   assistant:
     profiles: [ assistant ]
-    image: ghcr.io/riken-rccs/umrs-assistant:${ASSISTANT_DOCKER_TAG:-latest}
+    image: ${ASSISTANT_IMAGE:-localhost/umrs-assistant:${ASSISTANT_DOCKER_TAG:-latest}}
     command: >
       python -m uvicorn umrs.api.assistant_service:app
       --host 0.0.0.0 --port ${ASSISTANT_PORT:-8090}
