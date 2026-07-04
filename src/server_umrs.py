@@ -204,6 +204,7 @@ def server_event_loop(
     configure_file,
     job_command_backend=None,
     model_command_backend=None,
+    workflow_scheduler_active=False,
 ):
     buckets_cfg = server_cfg.buckets_cfg
     user_config_map = server_cfg.user_config_map
@@ -220,6 +221,7 @@ def server_event_loop(
         configure_file=configure_file,
         job_command_backend=job_command_backend,
         model_command_backend=model_command_backend,
+        workflow_scheduler_active=workflow_scheduler_active,
     )
     registry = build_registry()
 
@@ -533,6 +535,7 @@ def main():
             configure_file,
             job_command_backend=job_command_backend,
             model_command_backend=model_command_backend,
+            workflow_scheduler_active=durable_job_runtime is not None,
         )
     finally:
         if pid_file_path is not None:
