@@ -413,6 +413,7 @@ def _create_app():
 
     from umrs.api import (
         catalog_router,
+        chat_router,
         egress_audit_router,
         endpoints_router,
         files_router,
@@ -461,6 +462,7 @@ def _create_app():
     app.add_exception_handler(_HTTPException, structured_http_exception_handler)
 
     app.include_router(catalog_router)
+    app.include_router(chat_router)
     app.include_router(egress_audit_router)
     app.include_router(endpoints_router)
     app.include_router(files_router)
