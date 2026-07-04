@@ -1,0 +1,42 @@
+# Dockerfile for UMRS Assistant Service (ADR-012)
+#
+# Pre-built, offline-ready image for the Assistant Service that runs
+# inside mini-RiVault alongside LiteLLM/vLLM and the RAG service.
+#
+# The Assistant Service is a self-contained OpenAI-compatible proxy:
+#   - It augments requests with RAG context (per-request project_id)
+#   - It forwards to LiteLLM (the upstream OpenAI-compatible endpoint)
+#   - It holds no durable state (UMRS owns persistence)
+#
+# No runtime pip install — all dependencies are pre-installed to satisfy
+# the offline production constraint (TRANSFORMERS_OFFLINE=1).
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# Pre-install minimal runtime dependencies.
+# Pinned to match the development .venv for reproducibility.
+RUN pip install --no-cache-dir \
+    "fastapi==0.138.0" \
+    "uvicorn[standard]==0.49.0" \
+    "httpx==0.28.1" \
+    "pydantic==2.13.4" \
+    && rm -rf /root/.cache
+
+# Copy the UMRS source tree so `umrs.api.assistant_service` is importable.
+COPY ./src /app/src
+
+ENV PYTHONPATH=/app/src
+ENV TRANSFORMERS_OFFLINE=1
+ENV HF_HUB_OFFLINE=1
+ENV ASSISTANT_BIND_HOST=0.0.0.0
+ENV ASSISTANT_PORT=8090
+
+# Non-root user for security (matches umrs-rag pattern)
+RUN groupadd -r umrs && useradd -r -g umrs -s /sbin/nologin umrs \
+    && chown -R umrs:umrs /app
+USER umrs
+
+EXPOSE 8090
+
+CMD ["python", "-m", "uvicorn", "umrs.api.assistant_service:app", "--host", "0.0.0.0", "--port", "8090"]
