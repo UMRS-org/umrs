@@ -267,7 +267,10 @@ services:
     ports:
       - ${OPENWEBUI_PORT:-13000}:8080
     environment:
-      OPENAI_API_BASE_URL: http://assistant:${ASSISTANT_PORT:-8090}/v1
+      # Default to the Assistant Service (ADR-012).  Set
+      # OPENWEBUI_API_BASE_URL=http://litellm:4000/v1 to bypass the
+      # Assistant Service and talk to raw LiteLLM instead.
+      OPENAI_API_BASE_URL: ${OPENWEBUI_API_BASE_URL:-http://assistant:${ASSISTANT_PORT:-8090}/v1}
       OPENAI_API_KEY: ${LITELLM_MASTER_KEY}
       WEBUI_AUTH: "False"
       TZ: ${GENAI_TZ:-Asia/Tokyo}
