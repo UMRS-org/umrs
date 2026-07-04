@@ -506,7 +506,13 @@ class UMRSControlAPI:
         raise ValueError(f"Unsupported command: {command_line}")
 
     def _request_json(self, task_cmd: str, payload: str) -> dict[str, Any]:
-        raw = self._mq.request_model_command(self._client_id, task_cmd, payload)
+        # Control-plane queries (workflow list/status/results/...) are quick
+        # registry lookups.  Fail fast instead of blocking for the full
+        # model-download window when the server is unresponsive or too old to
+        # know the command.
+        raw = self._mq.request_model_command(
+            self._client_id, task_cmd, payload, timeout_ms=60_000
+        )
         if raw.startswith("UNAUTHORIZED:"):
             return {
                 "status": "error",

@@ -13,6 +13,7 @@ handlers never need to repeat that check.
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
 from typing import Any
 
@@ -81,13 +82,26 @@ class CommandRegistry:
         3. Call handler.execute(), forwarding task_id.
         """
         handler = self._handlers.get(cmd)
+        zmq_sender_id = _extract_zmq_sender_id(payload)
         if handler is None:
             logger.error("Unknown command '%s' — no handler registered", cmd)
+            # Reply so request/reply clients fail fast with a clear message
+            # instead of blocking until their receive timeout expires (which
+            # is what happens on a client/server version mismatch).
+            self._reply_error(
+                ctx,
+                zmq_sender_id,
+                code="UNKNOWN_COMMAND",
+                message=(
+                    f"Server does not support command '{cmd}'. The server may "
+                    f"be running an older version — upgrade it to use this "
+                    f"feature."
+                ),
+            )
             update_status(TaskStatus.UNKNOWN)
             return
 
         client_id = _extract_client_id(payload)
-        zmq_sender_id = _extract_zmq_sender_id(payload)
 
         if not self._authorize(cmd, client_id, zmq_sender_id, ctx):
             update_status(TaskStatus.ERROR)
@@ -97,7 +111,37 @@ class CommandRegistry:
             handler.execute(payload, update_status, ctx, task_id)
         except Exception:  # noqa: BLE001 - handlers must not crash the loop
             logger.exception("Handler for '%s' raised an unhandled exception", cmd)
+            # If the handler failed before replying, the request/reply client
+            # would otherwise hang until its receive timeout.  Send an error
+            # reply as a safety net (a no-op for fire-and-forget commands that
+            # carry no sender id).
+            self._reply_error(
+                ctx,
+                zmq_sender_id,
+                code="HANDLER_ERROR",
+                message=f"Server error while handling '{cmd}'.",
+            )
             update_status(TaskStatus.ERROR)
+
+    def _reply_error(
+        self,
+        ctx: HandlerContext,
+        zmq_sender_id: Any | None,
+        *,
+        code: str,
+        message: str,
+    ) -> None:
+        """Send a JSON error reply to a request/reply client.
+
+        No-op when ``zmq_sender_id`` is absent (fire-and-forget commands do
+        not expect a reply).  Never raises — a failed send must not crash the
+        event loop.
+        """
+        if zmq_sender_id is None:
+            return
+        response = json.dumps({"status": "error", "code": code, "message": message})
+        with contextlib.suppress(RuntimeError):
+            ctx.control_mq.send_string(response, zmq_sender_id)
 
     # ------------------------------------------------------------------
     # Internal helpers
