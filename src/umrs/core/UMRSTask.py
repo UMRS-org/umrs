@@ -70,6 +70,27 @@ class UMRSTask:
                     # bytes, which large payloads exceed. payload_hash is a
                     # generated column so the index is still race-free and atomic
                     # via ON CONFLICT in add_task().
+                    #
+                    # Migrate a stale index from older server versions that
+                    # indexed the raw `payload` column. CREATE UNIQUE INDEX
+                    # IF NOT EXISTS is a no-op when an index of the same *name*
+                    # already exists — so a pre-existing index with the wrong
+                    # definition would silently persist and break add_task's
+                    # ON CONFLICT (…payload_hash…), raising
+                    # "no unique or exclusion constraint matching the ON CONFLICT
+                    # specification" and crashing every task-creating command.
+                    # Detect the mismatch by its definition and drop it so the
+                    # correct index below is (re)created.
+                    cur.execute(
+                        """
+                        SELECT indexdef FROM pg_indexes
+                        WHERE tablename = 'tasks'
+                          AND indexname = 'tasks_active_dedup'
+                        """
+                    )
+                    existing_index = cur.fetchone()
+                    if existing_index is not None and "payload_hash" not in existing_index[0]:
+                        cur.execute("DROP INDEX IF EXISTS tasks_active_dedup")
                     cur.execute("""
                         CREATE UNIQUE INDEX IF NOT EXISTS tasks_active_dedup
                         ON tasks (client_id, cmd, payload_hash)
@@ -355,6 +376,11 @@ class UMRSTask:
             TaskCmd.CREATE_DATA_QUEUE,
             TaskCmd.STATUS,
             TaskCmd.JOB_LIST,
+            TaskCmd.WORKFLOW_STATUS,
+            TaskCmd.WORKFLOW_RESULTS,
+            TaskCmd.WORKFLOW_CANCEL,
+            TaskCmd.WORKFLOW_ERRORS,
+            TaskCmd.WORKFLOW_LOGS,
         ):
             logger.info(f"We do not create task_id for {cmd=}")
             return None
