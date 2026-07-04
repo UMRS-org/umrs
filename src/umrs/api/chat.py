@@ -54,14 +54,13 @@ _READ_TIMEOUT = float(os.environ.get("CHAT_PROXY_READ_TIMEOUT", "120"))
 
 
 def _assistant_url(endpoint: RegisteredEndpoint) -> str:
-    """Build the base URL for the Assistant Service inside mini-RiVault.
+    """Return the Assistant Service base URL for this endpoint.
 
-    The Assistant Service runs on a fixed port (default 8090) inside the
-    mini-RiVault container.  This can be overridden per-endpoint via
-    ``metadata['assistant_port']``.
+    Delegates to the first-class ``RegisteredEndpoint.assistant_url``
+    property so that service discovery is explicit — callers do not
+    need to infer the Assistant port from the LiteLLM port.
     """
-    port = int(endpoint.metadata.get("assistant_port", _DEFAULT_ASSISTANT_PORT))
-    return f"http://{endpoint.host}:{port}"
+    return endpoint.assistant_url
 
 
 def _discover_endpoint(
@@ -211,6 +210,12 @@ async def chat_completions(
             status_code=resp.status_code,
             media_type=resp.headers.get("content-type", "application/json"),
         )
+    except httpx.RequestError as exc:
+        logger.error("Error proxying POST %s: %s", upstream_url, exc)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Failed to connect to Assistant Service",
+        ) from exc
     finally:
         if registry:
             registry.decrement_requests(endpoint.job_id)
