@@ -287,7 +287,12 @@ def health() -> dict[str, str]:
 
 @app.get("/manifest")
 def manifest() -> dict[str, Any]:
-    """Advertise this endpoint's conversational capabilities (ADR-012)."""
+    """Advertise this endpoint's conversational capabilities (ADR-012).
+
+    The manifest exposes *capabilities* (boolean flags) rather than
+    implementation details.  Clients discover what the Assistant Service
+    can do without needing to know about LiteLLM, vLLM, or RAG internals.
+    """
     config = _resolve_config()
     return {
         "service": "assistant",
@@ -295,10 +300,11 @@ def manifest() -> dict[str, Any]:
         "surfaces": {
             "chat": "/v1/chat/completions",
             "models": "/v1/models",
+            "manifest": "/manifest",
             "health": "/health",
-            "openai_upstream": config.upstream_base_url,
         },
         "capabilities": {
+            "assistant": True,
             "rag": True,
             "project_aware": True,
             "streaming": True,

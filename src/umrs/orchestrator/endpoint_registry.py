@@ -112,6 +112,21 @@ class RegisteredEndpoint:
         return f"http://{self.host}:{self.port}/v1/models"
 
     @property
+    def assistant_url(self) -> str:
+        """Base URL for the Assistant Service inside mini-RiVault.
+
+        The Assistant Service runs on a fixed port (default 8090) inside the
+        mini-RiVault container.  The port can be overridden per-endpoint via
+        ``metadata['assistant_port']``.
+
+        This is a first-class property so that service discovery is explicit
+        — callers do not need to infer the Assistant port from the LiteLLM
+        port by string manipulation.
+        """
+        port = int(self.metadata.get("assistant_port", 8090))
+        return f"http://{self.host}:{port}"
+
+    @property
     def is_usable(self) -> bool:
         """Check if endpoint can serve requests."""
         return self.status in (EndpointStatus.READY, EndpointStatus.DEGRADED)
@@ -149,6 +164,7 @@ class RegisteredEndpoint:
             "backend": self.backend,
             "error_message": self.error_message,
             "litellm_url": self.litellm_url,
+            "assistant_url": self.assistant_url,
             "owner_type": str(owner_type),
             "tier": str(tier),
             "active_requests": self.active_requests,
@@ -482,9 +498,7 @@ class EndpointRegistry:
                 )
             return endpoint
 
-    def _find_candidate(
-        self, project_id: str, model: str
-    ) -> RegisteredEndpoint | None:
+    def _find_candidate(self, project_id: str, model: str) -> RegisteredEndpoint | None:
         """Find an endpoint by (project_id, model) or served_model_name fallback."""
         for candidate in self._endpoints.values():
             if candidate.project_id != project_id:
@@ -557,9 +571,7 @@ class EndpointRegistry:
         with self._lock:
             if variant is not None:
                 # Variant-aware: search candidates directly
-                candidates = self._find_candidates(
-                    project_id, model, variant=variant
-                )
+                candidates = self._find_candidates(project_id, model, variant=variant)
                 for ep in candidates:
                     if prefer_warm and not ep.is_usable:
                         continue

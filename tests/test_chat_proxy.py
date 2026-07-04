@@ -4,6 +4,9 @@ Network is never touched: the upstream forward is exercised through
 monkeypatched httpx clients.
 """
 
+# NOTE: ruff may complain about unsorted imports in this block.
+# The import order is intentional for readability.
+import httpx  # noqa: E402
 import pytest
 from umrs.api import chat as chat_mod
 from umrs.api.chat import (
@@ -16,10 +19,6 @@ from umrs.orchestrator.endpoint_registry import (
     EndpointStatus,
     RegisteredEndpoint,
 )
-
-# NOTE: ruff may complain about unsorted imports in this block.
-# The import order is intentional for readability.
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -80,6 +79,13 @@ def test_assistant_url_custom_port(registered_endpoint):
     registered_endpoint.metadata["assistant_port"] = 9090
     url = _assistant_url(registered_endpoint)
     assert url == "http://10.0.0.1:9090"
+
+
+def test_assistant_url_is_first_class_property(registered_endpoint):
+    """Verify assistant_url is a first-class property on RegisteredEndpoint."""
+    assert registered_endpoint.assistant_url == "http://10.0.0.1:8090"
+    registered_endpoint.metadata["assistant_port"] = 7080
+    assert registered_endpoint.assistant_url == "http://10.0.0.1:7080"
 
 
 def test_build_upstream_headers_includes_identity():
@@ -285,3 +291,50 @@ def test_chat_completions_no_project_id_returns_401(registered_endpoint):
     with pytest.raises(Exception) as exc_info:
         asyncio.get_event_loop().run_until_complete(chat_completions(request, registry))
     assert exc_info.value.status_code == 401
+
+
+def test_chat_completions_upstream_unavailable_returns_502(monkeypatch, registered_endpoint):
+    """If the Assistant Service is unreachable, the proxy returns 502.
+
+    This documents the fail-open boundary: the *Assistant Service* itself
+    fails open to plain LiteLLM passthrough when RAG/MCP are unavailable.
+    But if the Assistant Service process is down, the proxy cannot
+    transparently fall back — it returns a clear 502.
+    """
+    registry = FakeRegistry(endpoints=[registered_endpoint])
+
+    class FailingClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def post(self, *_args, **_kwargs):
+            raise httpx.ConnectError("Assistant Service down")
+
+    monkeypatch.setattr(chat_mod.httpx, "AsyncClient", FailingClient)
+
+    class FakeRequest:
+        headers = {
+            "content-type": "application/json",
+            "x-user-id": "user-1",
+            "x-project-id": "proj-1",
+            "x-request-id": "req-1",
+            "authorization": "Bearer token",
+        }
+
+        async def body(self):
+            return b'{"model": "test", "messages": [{"role": "user", "content": "hi"}]}'
+
+    from umrs.api.chat import chat_completions
+
+    request = FakeRequest()
+    import asyncio
+
+    with pytest.raises(Exception) as exc_info:
+        asyncio.get_event_loop().run_until_complete(chat_completions(request, registry))
+    assert exc_info.value.status_code == 502
