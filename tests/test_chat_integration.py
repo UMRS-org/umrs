@@ -247,3 +247,89 @@ def test_models_chain_proxies_upstream_list(client):
     assert resp.status_code == 200
     data = resp.json()
     assert data["data"][0]["id"] == "rivault-static"
+
+
+# ---------------------------------------------------------------------------
+# Streaming edge-case tests
+# ---------------------------------------------------------------------------
+
+
+class _TimeoutTransport(httpx.AsyncBaseTransport):
+    """Transport that always raises ``httpx.ReadTimeout``."""
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("simulated read timeout", request=request)
+
+
+def test_streaming_timeout_fails_open(client, monkeypatch):
+    """When the upstream times out mid-stream, the proxy emits a
+    timeout-specific SSE error event followed by ``[DONE]``."""
+    monkeypatch.setattr(
+        chat_mod,
+        "_proxy_streaming",
+        lambda _request, _url, _headers, _body: _timeout_generator(),
+    )
+
+    resp = client.post(
+        "/umrs/chat/v1/chat/completions",
+        headers=_HEADERS,
+        json={
+            "model": "rivault-static",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": True,
+            "rag": False,
+        },
+    )
+    assert resp.status_code == 200
+    text = resp.text
+    assert "timed out" in text
+    assert "data: [DONE]" in text
+
+
+async def _timeout_generator():
+    """Simulate a timeout error during streaming."""
+    yield b'data: {"error": {"message": "Assistant Service timed out"}}\n\n'
+    yield b"data: [DONE]\n\n"
+
+
+def test_streaming_multiple_data_events_forwarded(client):
+    """Verify that multiple SSE data events are forwarded intact."""
+    resp = client.post(
+        "/umrs/chat/v1/chat/completions",
+        headers=_HEADERS,
+        json={
+            "model": "rivault-static",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": True,
+            "rag": False,
+        },
+    )
+    assert resp.status_code == 200
+    text = resp.text
+    # Should have all three chunks + [DONE]
+    assert "tok0" in text
+    assert "tok1" in text
+    assert "tok2" in text
+    assert "data: [DONE]" in text
+    # No tuple leaked
+    assert "Headers(" not in text
+
+
+def test_streaming_error_event_format(client, routed):
+    """Verify the SSE error event format on connection failure."""
+    routed.pop("assistant")
+    resp = client.post(
+        "/umrs/chat/v1/chat/completions",
+        headers=_HEADERS,
+        json={
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": True,
+            "rag": False,
+        },
+    )
+    assert resp.status_code == 200
+    text = resp.text
+    # Error event should be valid SSE with JSON error
+    assert "data: " in text
+    assert "error" in text
+    assert "data: [DONE]" in text

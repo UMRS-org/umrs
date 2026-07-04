@@ -186,7 +186,7 @@ async def chat_completions(
 
     if is_streaming:
         return StreamingResponse(
-            _proxy_streaming(upstream_url, headers, body),
+            _proxy_streaming(request, upstream_url, headers, body),
             media_type="text/event-stream",
         )
 
@@ -281,6 +281,7 @@ async def get_manifest(
 
 
 async def _proxy_streaming(
+    request: Request,
     url: str,
     headers: dict[str, str],
     body: bytes,
@@ -291,18 +292,46 @@ async def _proxy_streaming(
     byte chunks are yielded — status/headers are handled by the enclosing
     ``StreamingResponse`` — so the SSE stream is not corrupted.
 
-    On upstream connection failure, emits a single OpenAI-style SSE error
-    event followed by ``[DONE]`` rather than raising mid-stream (the HTTP
-    status is already committed once streaming begins).
+    Three failure modes are handled:
+
+    * **Upstream connection failure** (``httpx.RequestError``): emit an
+      OpenAI-style SSE error event followed by ``[DONE]``.
+    * **Upstream timeout** (``httpx.TimeoutException``): same fail-open
+      behaviour with a timeout-specific message.
+    * **Client disconnect**: periodically check
+      ``request.is_disconnected()`` and break out of the upstream loop so
+      that the httpx connection is closed promptly.
     """
+    # Connect timeout prevents hanging on dead upstreams; read timeout is
+    # generous because SSE streams are long-lived and may have quiet gaps.
+    timeout = httpx.Timeout(
+        connect=_CONNECT_TIMEOUT,
+        read=_READ_TIMEOUT,
+        write=_CONNECT_TIMEOUT,
+        pool=5.0,
+    )
+    chunk_count = 0
     try:
-        async with httpx.AsyncClient(timeout=None) as client:
+        async with httpx.AsyncClient(timeout=timeout) as client:
             async with client.stream(
                 "POST", url, content=body, headers=headers
             ) as resp:
                 async for chunk in resp.aiter_raw():
-                    if chunk:
-                        yield chunk
+                    if not chunk:
+                        continue
+                    chunk_count += 1
+                    # Check for client disconnect every 16 chunks (~ once
+                    # per second for typical SSE cadence) to amortise the
+                    # cost of ``is_disconnected()``.
+                    if chunk_count % 16 == 0 and await request.is_disconnected():
+                        logger.info("Client disconnected mid-stream from %s", url)
+                        return
+                    yield chunk
+    except httpx.TimeoutException as exc:
+        logger.error("Streaming proxy timeout for %s: %s", url, exc)
+        err = json.dumps({"error": {"message": f"Assistant Service timed out: {exc}"}})
+        yield f"data: {err}\n\n".encode()
+        yield b"data: [DONE]\n\n"
     except httpx.RequestError as exc:
         logger.error("Streaming proxy error for %s: %s", url, exc)
         err = json.dumps(
