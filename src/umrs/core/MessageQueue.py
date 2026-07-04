@@ -1132,15 +1132,24 @@ class MessageQueue:
         # print(f"sending data to port: {self.port}")
         self.send_string(s3_object)
 
-    def request_model_command(self, client_id, model_cmd, payload_json=""):
+    def request_model_command(
+        self, client_id, model_cmd, payload_json="", timeout_ms=300_000
+    ):
         """Send a model registry command and receive a JSON response.
 
         Args:
             client_id: Username or client identifier
             model_cmd: TaskCmd constant (e.g. MODEL_REGISTER, MODEL_LIST, JOB_SUBMIT, JOB_CANCEL)
             payload_json: JSON-encoded payload string
+            timeout_ms: Receive timeout in milliseconds. Defaults to 300s to
+                accommodate slow model downloads; control-plane queries should
+                pass a shorter value so they fail fast when the server is
+                unresponsive or does not support the command.
         Returns:
             JSON string response from server
+
+        Raises:
+            TimeoutError: if the server does not respond within ``timeout_ms``.
         """
         if self.role != "client":
             raise PermissionError("Only client can call 'request_model_command'")
@@ -1148,17 +1157,25 @@ class MessageQueue:
         safe_client_id = (client_id or "").replace(":", "_")
         request_str = f"{model_cmd}:{safe_client_id}:{payload_json}"
 
-        # Allow generous timeout for model downloads
         old_rcv = self.socket.getsockopt(zmq.RCVTIMEO)
-        self.socket.setsockopt(zmq.RCVTIMEO, 300_000)
+        self.socket.setsockopt(zmq.RCVTIMEO, int(timeout_ms))
 
         self.send_string(request_str)
         try:
             _, reply = self.recv_string()
-        except zmq.Again:
-            raise RuntimeError("Timeout waiting for server response in request_model_command") from None
         finally:
             self.socket.setsockopt(zmq.RCVTIMEO, old_rcv)
+
+        # recv_string() swallows zmq.Again and returns (None, None) on timeout,
+        # so a ``None`` reply means the server never answered within the window.
+        # Surface a clear error instead of letting callers crash on ``None``.
+        if reply is None:
+            raise TimeoutError(
+                f"No response from server for '{model_cmd}' within "
+                f"{timeout_ms / 1000:.0f}s. The server may be unreachable, "
+                f"overloaded, or running a version that does not support this "
+                f"command."
+            )
 
         return reply
 
