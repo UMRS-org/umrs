@@ -639,6 +639,24 @@ def run_workflow_record(
     bucket = record.params.get("bucket", "wf-runner")
 
     if bucket != "wf-runner":
+        # Resolve the user-facing bucket *alias* to the physical S3 bucket
+        # name using the platform convention ({user}.{project}.{alias}) — the
+        # same scheme upload_dir / download_results use. Without this the
+        # runner would target a literal '<alias>' / '<alias>-output' bucket
+        # that does not exist, and the step's PutObject fails with
+        # NoSuchBucket. The output bucket is derived by the step context as
+        # ``<bucket>-output``, which matches make_path_to_bucket_string(
+        # ..., output=True).
+        from umrs.shared.storage.s3 import make_path_to_bucket_string
+
+        bucket_alias = bucket
+        resolved_user = user_id or record.user_id
+        resolved_project = (
+            project_id or record.params.get("project_id") or "default"
+        )
+        bucket = make_path_to_bucket_string(
+            resolved_project, bucket_alias, resolved_user
+        )
         try:
             import boto3
             import configparser
@@ -672,7 +690,12 @@ def run_workflow_record(
                     aws_secret_access_key=secret_key,
                     verify=verify_ssl,
                 )
-                logger.info("Using real S3 client (endpoint=%s, bucket=%s)", endpoint_url, bucket)
+                logger.info(
+                    "Using real S3 client (endpoint=%s, bucket=%s alias=%s)",
+                    endpoint_url,
+                    bucket,
+                    bucket_alias,
+                )
             else:
                 logger.warning("S3 config not found. Falling back to in-memory S3.")
                 s3_client = _InMemoryS3Client(record, state_lock=state_lock)
