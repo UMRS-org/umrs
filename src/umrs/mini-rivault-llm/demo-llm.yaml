@@ -215,6 +215,47 @@ services:
   # ---------------------------------------------------------------------------
 
   # ---------------------------------------------------------------------------
+  # Assistant Service (ADR-012)
+  #
+  # OpenAI-compatible, project-aware conversational surface that runs
+  # inside mini-RiVault, co-located with LiteLLM/vLLM and the RAG service.
+  # OpenWebUI and other platform-native clients point here instead of
+  # raw LiteLLM to get RAG context injection, tool routing, and MCP.
+  # ---------------------------------------------------------------------------
+  assistant:
+    image: ${ASSISTANT_DOCKER_IMAGE:-python:3.12-slim}
+    command: >
+      sh -c "pip install --no-cache-dir fastapi uvicorn httpx &&
+             python -m uvicorn umrs.api.assistant_service:app
+             --host 0.0.0.0 --port ${ASSISTANT_PORT:-8090}"
+    networks:
+      demo-llm-net:
+        ipv4_address: ${PRIV_IP1TO3:-192.168.5}.${ASSISTANT_IP4:-25}
+    extra_hosts:
+      - litellm:${PRIV_IP1TO3:-192.168.5}.${LITELLM_IP4:-20}
+    ports:
+      - ${ASSISTANT_PORT:-8090}:${ASSISTANT_PORT:-8090}
+    environment:
+      ASSISTANT_UPSTREAM_BASE_URL: http://litellm:4000/v1
+      ASSISTANT_UPSTREAM_API_KEY: ${LITELLM_MASTER_KEY}
+      ASSISTANT_RAG_URL: ${ASSISTANT_RAG_URL:-http://localhost:8081}
+      ASSISTANT_DEFAULT_MODEL: ${ASSISTANT_DEFAULT_MODEL:-rivault-gpt-oss-static}
+      ASSISTANT_BIND_HOST: "0.0.0.0"
+      ASSISTANT_PORT: ${ASSISTANT_PORT:-8090}
+      PYTHONPATH: /opt/umrs/src
+      TZ: ${GENAI_TZ:-Asia/Tokyo}
+      CUDA_VISIBLE_DEVICES: ""
+      HIP_VISIBLE_DEVICES: ""
+    volumes:
+      - type: bind
+        source: ../../src
+        target: /opt/umrs/src
+        read_only: true
+    depends_on:
+      - litellm
+    cap_drop: [ ALL ]
+
+  # ---------------------------------------------------------------------------
   # OpenWebUI (chat interface)
   # ---------------------------------------------------------------------------
   open-webui:
@@ -226,7 +267,7 @@ services:
     ports:
       - ${OPENWEBUI_PORT:-13000}:8080
     environment:
-      OPENAI_API_BASE_URL: http://litellm:4000/v1
+      OPENAI_API_BASE_URL: http://assistant:${ASSISTANT_PORT:-8090}/v1
       OPENAI_API_KEY: ${LITELLM_MASTER_KEY}
       WEBUI_AUTH: "False"
       TZ: ${GENAI_TZ:-Asia/Tokyo}
