@@ -189,9 +189,20 @@ class SlurmBackend(OrchestratorBackend):
         return state_map.get(state, JobStatus.UNKNOWN)
 
     def _status_from_accounting_state(self, state: str) -> JobStatus:
+        if "RUNNING" in state:
+            return JobStatus.RUNNING
+        if "PENDING" in state:
+            return JobStatus.PENDING
         if "COMPLETED" in state:
             return JobStatus.STOPPED
-        if "FAILED" in state or "CANCELLED" in state:
+        if (
+            "FAILED" in state
+            or "CANCELLED" in state
+            or "TIMEOUT" in state
+            or "NODE_FAIL" in state
+            or "OUT_OF_MEMORY" in state
+            or "PREEMPTED" in state
+        ):
             return JobStatus.FAILED
         return JobStatus.UNKNOWN
 

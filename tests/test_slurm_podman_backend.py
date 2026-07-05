@@ -7,13 +7,12 @@ import os
 from unittest.mock import AsyncMock, patch
 
 import pytest
-
 from umrs.orchestrator.base import JobStatus
 from umrs.orchestrator.site_config import (
-    SiteConfig,
-    SchedulerConfig,
-    RuntimeConfig,
     NetworkConfig,
+    RuntimeConfig,
+    SchedulerConfig,
+    SiteConfig,
     reset_site_config,
 )
 from umrs.orchestrator.slurm_podman_backend import SlurmPodmanBackend
@@ -463,6 +462,42 @@ class TestMapSlurmState:
         assert SlurmPodmanBackend._map_slurm_state(slurm_state) == expected
 
 
+class TestAccountingStateMapping:
+    """`_status_from_accounting_state` must not report a live job as UNKNOWN.
+
+    Regression: a still-RUNNING job queried via ``sacct`` (squeue miss under
+    load) previously mapped to ``JobStatus.UNKNOWN``, which the active-endpoint
+    liveness sweep treated as dead and removed the healthy endpoint.
+    """
+
+    @pytest.mark.parametrize(
+        "state,expected",
+        [
+            ("RUNNING", JobStatus.RUNNING),
+            ("PENDING", JobStatus.PENDING),
+            ("COMPLETED", JobStatus.STOPPED),
+            ("FAILED", JobStatus.FAILED),
+            ("CANCELLED", JobStatus.FAILED),
+            ("CANCELLED by 1000", JobStatus.FAILED),
+            ("TIMEOUT", JobStatus.FAILED),
+            ("NODE_FAIL", JobStatus.FAILED),
+            ("OUT_OF_MEMORY", JobStatus.FAILED),
+            ("PREEMPTED", JobStatus.FAILED),
+            ("", JobStatus.UNKNOWN),
+        ],
+    )
+    def test_accounting_state_mapping(self, backend, state, expected):
+        from umrs.orchestrator.slurm_backend import SlurmBackend
+
+        # ``_status_from_accounting_state`` is a pure mapper (ignores ``self``)
+        # defined on ``SlurmBackend`` and inherited by ``RemoteSlurmBackend``
+        # (the AI4S remote-Slurm path).
+        result = SlurmBackend._status_from_accounting_state(
+            SlurmBackend.__new__(SlurmBackend), state
+        )
+        assert result == expected
+
+
 # =============================================================================
 # Tests — _node_from_output
 # =============================================================================
@@ -493,7 +528,7 @@ class TestNodeFromOutput:
 
 class TestFactoryRegistration:
     def test_slurm_podman_registered(self):
-        from umrs.orchestrator.factory import _lazy_register_builtins, _BACKEND_REGISTRY
+        from umrs.orchestrator.factory import _BACKEND_REGISTRY, _lazy_register_builtins
 
         _lazy_register_builtins()
         assert "slurm-podman" in _BACKEND_REGISTRY
