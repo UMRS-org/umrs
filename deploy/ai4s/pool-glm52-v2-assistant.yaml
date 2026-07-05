@@ -1,6 +1,7 @@
-# GLM-5.2-v2 with Assistant Service (ADR-012)
+# GLM-5.2-v2 Assistant pool (ADR-012)
 # BF16 + Triton MoE + eager + prefix cache ON (2026-06-24 fix)
-# Assistant Service co-located on port 8090
+# NOTE: The Assistant Service has been moved to the frontend server.
+# This pool file now only configures the vLLM endpoint.
 pool: glm52-v2-assistant
 defaults:
   tier: system
@@ -19,4 +20,3 @@ endpoints:
       RIVAULT_SIF: /work/hps0/home/ea0022/images/mini-rivault-aarch64-v6.sif
       VLLM_MAX_NUM_SEQS: "16"
       VLLM_MAX_NUM_BATCHED_TOKENS: "32768"
-      RIVAULT_EXTRA_PROFILES: "assistant"
