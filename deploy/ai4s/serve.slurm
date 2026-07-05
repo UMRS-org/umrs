@@ -258,7 +258,6 @@ RIVAULT_MODEL_PATH=${HOST_MODEL_PATH}
 RIVAULT_MODEL_NAME=${MODEL_NAME}
 RIVAULT_SIF=${SIF_IMAGE}
 RIVAULT_TOOL_PARSER=${VLLM_TOOL_CALL_PARSER}
-RIVAULT_ASSISTANT_PORT=${ASSISTANT_PORT:-}
 RIVAULT_START_TIME=$(date -Iseconds)
 EOF
 }
@@ -272,10 +271,6 @@ cleanup() {
     fi
     # Tear down the Ray cluster (multi-node only). Best-effort: stop the head
     # and any worker srun steps so the allocation releases cleanly.
-    if [[ -n "${ASSISTANT_PID:-}" ]]; then
-        kill "${ASSISTANT_PID}" >/dev/null 2>&1 || true
-        wait "${ASSISTANT_PID}" >/dev/null 2>&1 || true
-    fi
     if [[ -n "${RAY_HEAD_PID}" ]]; then
         kill "${RAY_HEAD_PID}" >/dev/null 2>&1 || true
     fi
@@ -828,30 +823,6 @@ else
     CONTAINER_PID=$!
 fi
 
-# ── Launch Assistant Service (ADR-012) ───────────────────────────────────────
-# If RIVAULT_EXTRA_PROFILES contains "assistant", launch the Assistant Service
-# as a background process alongside vLLM. The Assistant Service is a thin
-# OpenAI-compatible proxy that augments requests with RAG context.
-ASSISTANT_PID=""
-if [[ " ${RIVAULT_EXTRA_PROFILES:-} " == *" assistant "* ]]; then
-    ASSISTANT_PORT="${ASSISTANT_PORT:-8090}"
-    echo "[serve] launching Assistant Service on port ${ASSISTANT_PORT}"
-    # Bind-mount UMRS source so umrs.api.assistant_service is importable.
-    UMRS_SRC="${RIVAULT_DIR:-$(dirname "$(readlink -f "$0")")/../..}/src"
-    "${CONTAINER_CMD}" "${SING_COMMON[@]}" \
-        --bind "${UMRS_SRC}:/opt/umrs-src:ro" \
-        --env PYTHONPATH="/opt/umrs-src" \
-        --env ASSISTANT_UPSTREAM_BASE_URL="http://127.0.0.1:${EXTERNAL_PORT}/v1" \
-        --env ASSISTANT_PORT="${ASSISTANT_PORT}" \
-        --env ASSISTANT_BIND_HOST="0.0.0.0" \
-        --env ASSISTANT_DEFAULT_MODEL="${MODEL_NAME}" \
-        "${SIF_IMAGE}" /opt/venv/bin/python -m uvicorn \
-            umrs.api.assistant_service:app \
-            --host 0.0.0.0 --port "${ASSISTANT_PORT}" &
-    ASSISTANT_PID=$!
-    echo "[serve] Assistant Service PID: ${ASSISTANT_PID}"
-fi
-
 # ── Supervise: exit on container death or graceful stop request ──────────────
 while kill -0 "${CONTAINER_PID}" >/dev/null 2>&1; do
     if [[ -f "${STOP_REQUEST_FILE}" ]]; then
@@ -862,3 +833,8 @@ while kill -0 "${CONTAINER_PID}" >/dev/null 2>&1; do
 done
 
 wait "${CONTAINER_PID}"
+
+# NOTE: The Assistant Service (ADR-012) is no longer co-launched on the
+# compute node. It runs as a persistent CPU-only service on the frontend
+# server (umrs-front), where the RAG service is also co-located. See
+# deploy/ansible/roles/front_end/templates/frontend-assistant-service.yaml.j2.
