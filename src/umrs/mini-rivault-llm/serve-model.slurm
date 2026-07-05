@@ -774,6 +774,16 @@ cleanup_stack() {
     if [[ -n "${RAY_HEAD_PID}" ]]; then
         kill "${RAY_HEAD_PID}" 2>/dev/null || true
     fi
+    # Stop standalone multi-node vLLM (host-network container, not on the bridge)
+    podman rm -f rivault-vllm-mn >/dev/null 2>&1 || true
+    podman rm -f rivault-ray-head >/dev/null 2>&1 || true
+    # Stop Ray worker containers on the remaining nodes (multi-node only)
+    if [[ ${#RAY_NODES[@]} -gt 1 ]]; then
+        for ((i=1; i<${#RAY_NODES[@]}; i++)); do
+            srun --nodes=1 --ntasks=1 --nodelist="${RAY_NODES[$i]}" --overlap \
+                podman rm -f rivault-ray-worker >/dev/null 2>&1 || true
+        done
+    fi
     cleanup_ssh_tunnels
     podman-compose --project-name "exit" --in-pod false \
                --env-file "./env.${uuid}" \
@@ -936,25 +946,85 @@ if [[ "${SLURM_JOB_NUM_NODES:-${SLURM_NNODES:-1}}" -gt 1 ]]; then
         echo "[rivault] Derived VLLM_PP=${VLLM_PP} from node count"
     fi
 
-    # Start Ray head on this (head) node.
-    echo "[rivault] Starting Ray head on ${HEAD_NODE} (${HEAD_IP})..."
-    podman run --rm --network host \
-        --entrypoint /bin/sh \
-        --device /dev/nvidia0 --device /dev/nvidiactl --device /dev/nvidia-uvm --device /dev/nvidia-uvm-tools \
-        -v /usr/lib/aarch64-linux-gnu/libcuda.so.1:/usr/lib/aarch64-linux-gnu/libcuda.so.1:ro \
-        -v /usr/lib/aarch64-linux-gnu/libnvidia-ml.so.1:/usr/lib/aarch64-linux-gnu/libnvidia-ml.so.1:ro \
-        -v "${VLLM_HOST_MODEL_PATH}:/models:ro" \
-        "${VLLM_IMAGE}" \
-        -c "exec /opt/venv/bin/ray start --head --node-ip-address='\$1' --port='\$2' --num-gpus='\$3' --include-dashboard=false --block" \
-        _ "${HEAD_IP}" "${RAY_PORT}" "${VLLM_TP}" &
-    RAY_HEAD_PID=$!
+    # Total GPUs the Ray cluster must expose before vLLM can place its workers.
+    _want_gpus=$(( VLLM_TP * ${SLURM_JOB_NUM_NODES:-${SLURM_NNODES:-1}} ))
 
-    # Wait for the Ray head GCS to accept connections.
+    # Export Ray vars and persist them to the env file BEFORE launching the
+    # head container (the co-located vLLM driver reads VLLM_PP / RAY_ADDRESS
+    # from the env file).
+    export VLLM_DISTRIBUTED_EXECUTOR_BACKEND=ray
+    export RAY_ADDRESS="${RAY_ADDRESS}"
+    export VLLM_PP
+    cat >> "./env.${uuid}" <<RAYEOF
+
+# ─── Multi-node Ray (auto-generated) ─────────────────────────────────────────
+VLLM_DISTRIBUTED_EXECUTOR_BACKEND=${VLLM_DISTRIBUTED_EXECUTOR_BACKEND}
+RAY_ADDRESS=${RAY_ADDRESS}
+VLLM_PP=${VLLM_PP}
+RAYEOF
+
+    # Resolve vLLM host mounts / paths from the env file for the head container.
+    # The vLLM driver MUST run in the SAME container as the Ray head: a driver
+    # in a separate container cannot resolve its local Ray node (the Ray session
+    # dir /tmp/ray is per-container), which fails with
+    #   "No node info found matching attributes: ''".
+    # Co-locating the driver with `ray start --head` shares the session, node
+    # identity and Ray install, so ray.init() resolves the local node cleanly.
+    _envval() { /bin/grep "^$1=" "./env.${uuid}" | head -1 | awk -F'=' '{print $2}'; }
+    _mn_hf="$(_envval VLLM_PATH_TO_HUGGINGFACE)"
+    _mn_model_host="$(_envval VLLM_HOST_MODEL_PATH)"
+    _mn_model_ctr="$(_envval VLLM_CONTAINER_MODEL_PATH)"
+    _mn_tok_host="$(_envval VLLM_TOKENIZER_HOST_PATH)"; _mn_tok_host="${_mn_tok_host:-/dev/null}"
+    _mn_tok_ctr="$(_envval VLLM_TOKENIZER_CONTAINER_PATH)"; _mn_tok_ctr="${_mn_tok_ctr:-/tokenizer}"
+    _mn_s3host="$(_envval UMRS_S3_BUCKET_HOST)"
+    _mn_priv="$(_envval PRIV_IP1TO3)"; _mn_priv="${_mn_priv:-10.0.0}"
+    _mn_nginxout="$(_envval NGINX_OUT_IP4)"; _mn_nginxout="${_mn_nginxout:-252}"
+
+    _mn_vllm_args=(
+        --device /dev/nvidia0 --device /dev/nvidiactl
+        --device /dev/nvidia-uvm --device /dev/nvidia-uvm-tools
+        --device /dev/nvidia-caps/nvidia-cap1 --device /dev/nvidia-caps/nvidia-cap2
+        -v "${_mn_hf}/:/root/.cache/huggingface:ro"
+        -v "${_mn_hf}/modules/:/root/.cache/huggingface/modules/"
+        -v "${_mn_model_host}:${_mn_model_ctr}:ro"
+        -v /usr/lib/aarch64-linux-gnu/libcuda.so.1:/usr/lib/aarch64-linux-gnu/libcuda.so.1:ro
+        -v /usr/lib/aarch64-linux-gnu/libnvidia-ml.so.1:/usr/lib/aarch64-linux-gnu/libnvidia-ml.so.1:ro
+        -e TRANSFORMERS_OFFLINE=1 -e HF_HUB_OFFLINE=1 -e VLLM_NO_USAGE_STATS=1
+        -e PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+        -e RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES=1
+        -e CUDA_VISIBLE_DEVICES=0
+        -e VLLM_LOGGING_LEVEL=DEBUG
+    )
+    if [[ "${_mn_tok_host}" != "/dev/null" ]]; then
+        _mn_vllm_args+=( -v "${_mn_tok_host}:${_mn_tok_ctr}:ro" )
+    fi
+    if [[ -n "${_mn_s3host}" ]]; then
+        _mn_vllm_args+=( --add-host "${_mn_s3host}:${_mn_priv}.${_mn_nginxout}" )
+    fi
+
+    # Start the Ray head AND the co-located vLLM driver in one container.
+    # Sequence inside the container: install Ray → start Ray head (daemonized,
+    # no --block) → wait for every GPU (head + workers) to register → exec
+    # `vllm serve` as a Ray driver on the local node.
+    echo "[rivault] Starting Ray head + co-located vLLM on ${HEAD_NODE} (${HEAD_IP})..."
+    podman rm -f rivault-vllm-mn >/dev/null 2>&1 || true
+    podman run -d --name rivault-vllm-mn --network host --shm-size=16g \
+        --entrypoint /bin/sh \
+        --env-file "./env.${uuid}" \
+        "${_mn_vllm_args[@]}" \
+        "${VLLM_IMAGE}" \
+        -c 'pip install -q ray >/dev/null 2>&1; ray start --head --node-ip-address="'"${HEAD_IP}"'" --port="'"${RAY_PORT}"'" --num-gpus="'"${VLLM_TP}"'" --include-dashboard=false; echo "[vllm-head] Ray head started; waiting for '"${_want_gpus}"' GPUs..."; i=0; while [ $i -lt 120 ]; do g=$(ray status 2>/dev/null | grep -oE "[0-9.]+/[0-9.]+ GPU" | head -1 | sed "s@.*/@@; s@ GPU@@; s@[.].*@@"); [ "${g:-0}" = "'"${_want_gpus}"'" ] && break; sleep 5; i=$((i+1)); done; echo "[vllm-head] GPUs=${g:-0}; launching vLLM"; exec vllm serve "$VLLM_MODEL_REF" $VLLM_EXTRA_ARGS --served-model-name "$VLLM_SERVED_MODEL_NAME" --api-key "$VLLM_API_KEY" -tp "$VLLM_TP" -pp "$VLLM_PP" --distributed-executor-backend ray --host 0.0.0.0 --port 8000 --max-model-len "${VLLM_MAX_MODEL_LEN:-4096}" --gpu-memory-utilization "${VLLM_GPU_MEM_UTIL:-0.95}" --enforce-eager --enable-auto-tool-choice --tool-call-parser "${VLLM_TOOL_CALL_PARSER:-hermes}"' \
+        || { echo "[rivault] FATAL: failed to launch Ray head + vLLM container"; exit 1; }
+    RAY_HEAD_PID=""
+
+    # Wait for the Ray head GCS to accept connections. Use a host-side TCP probe
+    # (Ray is not baked into the image, so spinning an ephemeral container per
+    # poll would reinstall Ray each time). The head container runs
+    # `pip install ray` before `ray start`, so allow ample time for GCS bind.
     _ray_ready=0
-    for _ in $(seq 1 30); do
-        if podman run --rm --network host --entrypoint /bin/sh \
-                "${VLLM_IMAGE}" -c "/opt/venv/bin/ray status --address='${RAY_ADDRESS}'" \
-                >/dev/null 2>&1; then
+    for _ in $(seq 1 60); do
+        if (exec 3<>"/dev/tcp/${HEAD_IP}/${RAY_PORT}") 2>/dev/null; then
+            exec 3>&- 3<&- 2>/dev/null || true
             _ray_ready=1
             break
         fi
@@ -969,46 +1039,94 @@ if [[ "${SLURM_JOB_NUM_NODES:-${SLURM_NNODES:-1}}" -gt 1 ]]; then
     for ((i=1; i<${#RAY_NODES[@]}; i++)); do
         wnode="${RAY_NODES[$i]}"
         echo "[rivault] Starting Ray worker on ${wnode}..."
-        srun --nodes=1 --ntasks=1 --nodelist="${wnode}" \
-            podman run --rm --network host \
-                --entrypoint /bin/sh \
-                --device /dev/nvidia0 --device /dev/nvidiactl --device /dev/nvidia-uvm --device /dev/nvidia-uvm-tools \
-                -v /usr/lib/aarch64-linux-gnu/libcuda.so.1:/usr/lib/aarch64-linux-gnu/libcuda.so.1:ro \
-                -v /usr/lib/aarch64-linux-gnu/libnvidia-ml.so.1:/usr/lib/aarch64-linux-gnu/libnvidia-ml.so.1:ro \
-                -v "${VLLM_HOST_MODEL_PATH}:/models:ro" \
-                "${VLLM_IMAGE}" \
-                -c "exec /opt/venv/bin/ray start --address='\$1' --num-gpus='\$2' --block" \
-                _ "${RAY_ADDRESS}" "${VLLM_TP}" &
+        # Launch each worker inside a backgrounded retry subshell. `ray start
+        # --block` runs for the life of the job; if the worker container exits
+        # (e.g. a transient rootless-podman / GPU-access glitch on the node),
+        # the loop relaunches it. This makes the cluster resilient to an
+        # intermittent failure where a freshly-started worker container came up
+        # WITHOUT working GPU access, so its RayWorkerWrapper actor saw
+        # nvmlDeviceGetCount()==0 and raised
+        #   "current platform  does not support ray".
+        (
+            for _wattempt in 1 2 3 4 5; do
+                # Reset any stale rootless-podman pause process on the worker
+                # node. A leftover pause process from a previous job makes every
+                # podman invocation fail with: "invalid internal status, try
+                # resetting the pause process with podman system migrate".
+                srun --nodes=1 --ntasks=1 --nodelist="${wnode}" --overlap \
+                    podman system migrate >/dev/null 2>&1 || true
+                # Give the worker container the SAME GPU/CUDA/model access as the
+                # head (`_mn_vllm_args`): vLLM's RayWorkerWrapper actors spawn
+                # inside this container and need the nvidia-caps devices + CUDA
+                # libs + the model mounted at the SAME container path as the head
+                # for pipeline-stage weight loading. The NVML self-check before
+                # `ray start` asserts the container can actually see the GPU:
+                # `ray start --num-gpus` otherwise advertises a phantom GPU to
+                # the head even when the container has no device access, which
+                # passes the head GPU gate but crashes the vLLM worker later.
+                srun --nodes=1 --ntasks=1 --nodelist="${wnode}" \
+                    podman run --name rivault-ray-worker --replace --network host --shm-size=16g \
+                        --entrypoint /bin/sh \
+                        "${_mn_vllm_args[@]}" \
+                        "${VLLM_IMAGE}" \
+                        -c "pip install -q ray >/dev/null 2>&1 && python3 -c 'import pynvml; pynvml.nvmlInit(); assert pynvml.nvmlDeviceGetCount() > 0' && exec ray start --address='${RAY_ADDRESS}' --num-gpus='${VLLM_TP}' --block"
+                echo "[rivault] Ray worker on ${wnode} exited (attempt ${_wattempt}/5); relaunching in 5s..." >&2
+                sleep 5
+            done
+            echo "[rivault] FATAL: Ray worker on ${wnode} failed to stay up after 5 attempts" >&2
+        ) &
         WORKER_PIDS+=($!)
     done
 
     # Wait until Ray reports every GPU across the cluster (TP × nodes).
-    _want_gpus=$(( VLLM_TP * ${SLURM_JOB_NUM_NODES:-${SLURM_NNODES:-1}} ))
-    _have_gpus=0
-    for _ in $(seq 1 60); do
-        _have_gpus="$(podman run --rm --network host --entrypoint /bin/sh \
-            "${VLLM_IMAGE}" -c "/opt/venv/bin/python -c 'import ray; ray.init(address=\"${RAY_ADDRESS}\"); print(int(ray.cluster_resources().get(\"GPU\",0)))'" \
-            2>/dev/null | tail -1)"
-        if [[ "${_have_gpus}" == "${_want_gpus}" ]]; then
-            break
-        fi
-        sleep 5
+    # Use `ray status` (a lightweight GCS query) rather than ray.init(), which
+    # spins a full Ray driver + plasma store and can hang when /dev/shm is
+    # small. The whole probe container is wrapped in a hard `timeout` so the
+    # gate can never block the job indefinitely; if the count can't be
+    # confirmed we warn and proceed (the co-located vLLM driver waits for the
+    # GPUs itself and re-validates on ray.init).
+    _have_gpus="$(timeout 200 podman run --rm --network host --shm-size=16g --entrypoint /bin/sh \
+        "${VLLM_IMAGE}" -c "pip install -q ray >/dev/null 2>&1; i=0; while [ \$i -lt 30 ]; do g=\$(ray status --address='${RAY_ADDRESS}' 2>/dev/null | grep -oE '[0-9.]+/[0-9.]+ GPU' | head -1 | sed 's@.*/@@; s@ GPU@@; s@[.].*@@'); if [ \"\${g:-0}\" = \"${_want_gpus}\" ]; then echo \$g; break; fi; sleep 5; i=\$((i+1)); done; echo \${g:-0}" \
+        2>/dev/null | tail -1)"
+    _have_gpus="${_have_gpus:-0}"
+    echo "[rivault] Ray cluster ready: ${_have_gpus}/${_want_gpus} GPUs"
+    if [[ "${_have_gpus}" != "${_want_gpus}" ]]; then
+        echo "[rivault] WARNING: Ray reported ${_have_gpus}/${_want_gpus} GPUs; gathering Ray cluster diagnostics before proceeding..."
+        echo "[rivault] --- ray status (full) ---"
+        timeout 60 podman exec rivault-vllm-mn ray status 2>&1 | sed 's@^@[rivault][ray-status] @' || true
+        echo "[rivault] --- worker Ray container logs ---"
+        for ((i=1; i<${#RAY_NODES[@]}; i++)); do
+            wnode="${RAY_NODES[$i]}"
+            echo "[rivault] worker ${wnode} rivault-ray-worker logs:"
+            timeout 60 srun --nodes=1 --ntasks=1 --nodelist="${wnode}" --overlap \
+                podman logs --tail 40 rivault-ray-worker 2>&1 | sed "s@^@[rivault][worker:${wnode}] @" || true
+        done
+        echo "[rivault] --- end diagnostics; proceeding — the co-located vLLM driver waits for GPUs itself. ---"
+    fi
+
+    # Confirm the head + vLLM container is still alive (it should be either
+    # waiting for GPUs or already loading the model).
+    sleep 3
+    if ! podman ps --filter name=rivault-vllm-mn --format '{{.Names}}' 2>/dev/null | grep -q rivault-vllm-mn; then
+        echo "[rivault] FATAL: Ray head + vLLM container exited immediately"
+        podman logs --tail 60 rivault-vllm-mn 2>&1 | sed 's/^/[rivault]   /' || true
+        exit 1
+    fi
+    echo "[rivault] Ray head + co-located vLLM container is running (model loading in background)."
+
+    # Drop the bridged 'vllm' compose profile and repoint LiteLLM at the head IP.
+    # Also drop 'vision-bentoml': a multi-node pipeline-parallel LLM consumes
+    # every GPU across all allocated nodes (TP×PP == total GPUs), leaving none
+    # for the BentoML vision service, so it cannot run in this topology.
+    RIVAULT_PROFILES="$(echo "${RIVAULT_PROFILES}" | tr ' ' '\n' | grep -vxE 'vllm|vision-bentoml' | tr '\n' ' ')"
+    echo "[rivault] Multi-node: dropped 'vllm' and 'vision-bentoml' profiles (GPUs fully used by PP LLM)."
+    _profile_flags=""
+    for _p in ${RIVAULT_PROFILES}; do
+        _profile_flags="${_profile_flags} --profile ${_p}"
     done
-    echo "[rivault] Ray cluster ready: ${_have_gpus:-0}/${_want_gpus} GPUs"
-
-    # Export for the env file and compose.
-    export VLLM_DISTRIBUTED_EXECUTOR_BACKEND=ray
-    export RAY_ADDRESS="${RAY_ADDRESS}"
-    export VLLM_PP
-
-    # Update env file with Ray variables (env file was generated earlier).
-    cat >> "./env.${uuid}" <<RAYEOF
-
-# ─── Multi-node Ray (auto-generated) ─────────────────────────────────────────
-VLLM_DISTRIBUTED_EXECUTOR_BACKEND=${VLLM_DISTRIBUTED_EXECUTOR_BACKEND}
-RAY_ADDRESS=${RAY_ADDRESS}
-VLLM_PP=${VLLM_PP}
-RAYEOF
+    sed -i "s@http://vllm:8000/v1@http://${HEAD_IP}:8000/v1@g" "./litellm_fs/config.yaml.${uuid}" \
+        || echo "[rivault] WARNING: failed to repoint LiteLLM api_base to head IP"
+    echo "[rivault] LiteLLM repointed to co-located vLLM at http://${HEAD_IP}:8000/v1"
 fi
 
 if ! run_litellm_db_sql_migrations; then
