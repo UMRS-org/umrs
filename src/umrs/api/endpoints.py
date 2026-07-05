@@ -1168,6 +1168,15 @@ def _profile_list(value: Any) -> list[str]:
     return []
 
 
+def _dedupe_profiles(existing: str, new_profiles: list[str]) -> list[str]:
+    """Merge *existing* extra profiles with *new_profiles*, de-duplicating."""
+    result: list[str] = []
+    for p in _profile_list(existing) + new_profiles:
+        if p and p not in result:
+            result.append(p)
+    return result
+
+
 def _active_site_profiles() -> list[str]:
     profiles: list[str] = []
     try:
@@ -2247,7 +2256,14 @@ async def provision_endpoint(
     }
     if launch_profiles:
         request_metadata["launch_profiles"] = launch_profiles
-        env_vars["RIVAULT_PROFILES"] = " ".join(launch_profiles)
+        # Use RIVAULT_EXTRA_PROFILES so the Slurm wrapper appends these
+        # profiles to its default set ("harness vllm").  Setting
+        # RIVAULT_PROFILES directly would override the defaults and
+        # prevent vLLM from launching.
+        existing_extra = env_vars.get("RIVAULT_EXTRA_PROFILES", "")
+        all_extras = _dedupe_profiles(existing_extra, launch_profiles)
+        if all_extras:
+            env_vars["RIVAULT_EXTRA_PROFILES"] = " ".join(all_extras)
     if readiness_path:
         request_metadata["readiness_path"] = readiness_path
     if service_port:
