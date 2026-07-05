@@ -316,9 +316,11 @@ async def _backend_job_liveness(service: Any, job_id: str) -> bool | None:
     """Return backend liveness as alive / dead / unknown.
 
     ``True`` means the backend positively reports a non-terminal job.
-    ``False`` means the backend positively reports a terminal or unknown job.
-    ``None`` means we could not verify backend state and should preserve the
-    registry row rather than deleting a potentially valid endpoint.
+    ``False`` means the backend positively reports a terminal job
+    (``STOPPED`` or ``FAILED``).
+    ``None`` means we could not verify backend state (including
+    ``JobStatus.UNKNOWN``) and should preserve the registry row rather than
+    deleting a potentially valid endpoint.
     """
     from ..orchestrator.base import JobStatus
 
@@ -337,12 +339,21 @@ async def _backend_job_liveness(service: Any, job_id: str) -> bool | None:
         return None
 
     status_value = getattr(info, "status", None)
-    return status_value in (
+    if status_value in (
         JobStatus.PENDING,
         JobStatus.STARTING,
         JobStatus.READY,
         JobStatus.RUNNING,
-    )
+    ):
+        return True
+    # Only treat *positively* terminal states as dead. A ``JobStatus.UNKNOWN``
+    # (info file momentarily absent, squeue miss under SSH load during a
+    # concurrent provision, or an unrecognized transient Slurm state) must NOT
+    # delete a healthy endpoint — return ``None`` so the caller preserves the
+    # registry row rather than removing a live sibling by mistake.
+    if status_value in (JobStatus.FAILED, JobStatus.STOPPED):
+        return False
+    return None
 
 
 async def _filter_live_ready_endpoints(
