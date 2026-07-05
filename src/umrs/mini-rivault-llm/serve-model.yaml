@@ -514,63 +514,10 @@ services:
       replicas: 1
       endpoint_mode: vip
 
-  # ---------------------------------------------------------------------------
-  # Assistant Service (ADR-012)
-  #
-  # OpenAI-compatible, project-aware conversational surface that runs
-  # inside mini-RiVault, co-located with LiteLLM/vLLM and the RAG service.
-  #
-  # Unlike the demo-llm.yaml version (which uses runtime pip install), this
-  # production service uses a pre-built image (ghcr.io/riken-rccs/umrs-assistant)
-  # with all dependencies baked in — satisfying the offline production constraint
-  # (TRANSFORMERS_OFFLINE=1, no runtime pip).
-  #
-  # The Assistant Service:
-  #   - Accepts OpenAI-compatible requests with Assistant-API extensions
-  #   - Augments messages with RAG context (per-request project_id)
-  #   - Forwards to LiteLLM (the upstream OpenAI-compatible endpoint)
-  #   - Holds no durable state (UMRS owns persistence)
-  # ---------------------------------------------------------------------------
-  assistant:
-    profiles: [ assistant ]
-    image: ${ASSISTANT_IMAGE:-localhost/umrs-assistant:${ASSISTANT_DOCKER_TAG:-latest}}
-    command: >
-      python -m uvicorn umrs.api.assistant_service:app
-      --host 0.0.0.0 --port ${ASSISTANT_PORT:-8090}
-    networks:
-      genai-private-net:
-        ipv4_address: ${PRIV_IP1TO3:-10.0.0}.${ASSISTANT_IP4:-26}
-    extra_hosts:
-      - litellm:${PRIV_IP1TO3:-10.0.0}.${LITELLM_IP4:-20}
-      - rag:${PRIV_IP1TO3:-10.0.0}.${RAG_IP4:-32}
-    environment:
-      <<: *rivault-egress-env
-      ASSISTANT_UPSTREAM_BASE_URL: http://litellm:4000/v1
-      ASSISTANT_UPSTREAM_API_KEY: ${LITELLM_MASTER_KEY:-}
-      ASSISTANT_RAG_URL: ${ASSISTANT_RAG_URL:-http://rag:8100}
-      ASSISTANT_DEFAULT_MODEL: ${ASSISTANT_DEFAULT_MODEL:-rivault-gpt-oss-static}
-      ASSISTANT_BIND_HOST: "0.0.0.0"
-      ASSISTANT_PORT: ${ASSISTANT_PORT:-8090}
-      TRANSFORMERS_OFFLINE: "1"
-      HF_HUB_OFFLINE: "1"
-      TZ: ${GENAI_TZ:-Asia/Tokyo}
-      CUDA_VISIBLE_DEVICES: ""
-      HIP_VISIBLE_DEVICES: ""
-    depends_on:
-      - litellm
-    healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8090/health', timeout=5)\" || exit 1"]
-      start_period: 10s
-      interval: 15s
-      timeout: 5s
-      retries: 3
-    cap_drop: [ ALL ]
-    cap_add: [ sys_nice ]
-    userns_mode: "${RIVAULT_USERNS_MODE:-keep-id:uid=0,gid=0}"
-    deploy:
-      mode: replicated
-      replicas: 1
-      endpoint_mode: vip
+  # NOTE: The Assistant Service (ADR-012) has been moved to the frontend
+  # server. It is no longer co-located inside mini-RiVault on the compute
+  # node. See deploy/ansible/roles/front_end/templates/frontend-assistant-service.yaml.j2
+  # for the frontend deployment manifest.
 
   # BentoML Vision Service (generic adapter-based inference)
   # Provides async task queue API: POST /infer/submit, GET /infer/status, GET /infer/get
