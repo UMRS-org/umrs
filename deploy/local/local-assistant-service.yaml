@@ -1,0 +1,37 @@
+# =============================================================================
+# Local Assistant Service (ADR-012)
+# =============================================================================
+# Runs the Assistant Service as a CPU-only service on a local machine
+# (developer laptop, workstation). No GPU needed. Proxies to a local
+# Ollama, vLLM, or external OpenAI-compatible API.
+#
+# Usage:
+#   podman-compose -f local-assistant-service.yaml up -d
+#   podman-compose -f local-assistant-service.yaml down
+# =============================================================================
+
+services:
+  assistant-local:
+    image: ${ASSISTANT_LOCAL_IMAGE:-localhost/umrs-assistant-frontend:latest}
+    command: >
+      python -m uvicorn umrs.api.assistant_service:app
+      --host 0.0.0.0 --port ${ASSISTANT_LOCAL_PORT:-8090}
+    ports:
+      - "${ASSISTANT_LOCAL_PORT:-8090}:${ASSISTANT_LOCAL_PORT:-8090}"
+    environment:
+      # Upstream OpenAI-compatible endpoint (local Ollama, vLLM, or external API)
+      ASSISTANT_UPSTREAM_BASE_URL: ${ASSISTANT_UPSTREAM_BASE_URL:-http://host.docker.internal:11434/v1}
+      ASSISTANT_UPSTREAM_API_KEY: ${ASSISTANT_UPSTREAM_API_KEY:-ollama}
+      ASSISTANT_DEFAULT_MODEL: ${ASSISTANT_DEFAULT_MODEL:-llama3}
+      ASSISTANT_REQUEST_TIMEOUT: ${ASSISTANT_REQUEST_TIMEOUT:-120}
+      # RAG service URL (co-located on the same host)
+      ASSISTANT_RAG_URL: ${ASSISTANT_RAG_URL:-http://host.docker.internal:8003}
+      # Offline mode (same as inference containers)
+      TRANSFORMERS_OFFLINE: "1"
+      HF_HUB_OFFLINE: "1"
+      TZ: ${TZ:-Asia/Tokyo}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    cap_drop: [ALL]
+    cap_add: [sys_nice]
+    restart: unless-stopped
