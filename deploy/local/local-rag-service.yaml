@@ -1,0 +1,41 @@
+# Local RAG Service (ADR-013)
+# =============================================================================
+# Runs the RAG query engine as a CPU-only service on a local machine.
+# No GPU needed. Reads from a local knowledge bundle (.kb file).
+#
+# Usage:
+#   podman-compose -f local-rag-service.yaml up -d
+#   podman-compose -f local-rag-service.yaml down
+# =============================================================================
+
+services:
+  rag-local:
+    image: ${RAG_LOCAL_IMAGE:-localhost/umrs-rag-frontend:latest}
+    command: >
+      python -m uvicorn umrs.api.rag_service:app
+      --host 0.0.0.0 --port ${RAG_LOCAL_PORT:-8003}
+    ports:
+      - "${RAG_LOCAL_PORT:-8003}:${RAG_LOCAL_PORT:-8003}"
+    environment:
+      # RAG service configuration
+      RAG_PORT: ${RAG_LOCAL_PORT:-8003}
+      RAG_EMBEDDING_MODEL: ${RAG_EMBEDDING_MODEL:-intfloat/e5-base-v2}
+      RAG_EMBEDDING_DIMENSION: ${RAG_EMBEDDING_DIMENSION:-768}
+      # Offline mode (same as inference containers)
+      TRANSFORMERS_OFFLINE: "1"
+      HF_HUB_OFFLINE: "1"
+      TZ: ${TZ:-Asia/Tokyo}
+    volumes:
+      # Pre-staged embedding model (read-only)
+      - type: bind
+        source: ${RAG_MODEL_PATH:-./models}
+        target: /models
+        read_only: true
+      # Knowledge bundle directory (read-only)
+      - type: bind
+        source: ${KNOWLEDGE_BUNDLE_PATH:-./knowledge}
+        target: /knowledge
+        read_only: true
+    cap_drop: [ALL]
+    cap_add: [sys_nice]
+    restart: unless-stopped
