@@ -178,6 +178,9 @@ def start_durable_job_runtime_from_env(
 
     try:
         db_pool = build_durable_job_db_pool_from_env()
+        from umrs.api.catalog_store import init_catalog_meta_store
+
+        init_catalog_meta_store(db_pool)
         runtime = DurableJobRuntime(db_pool=db_pool)
         runtime.start(timeout=timeout)
         logger.info("Durable job runtime started")

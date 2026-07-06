@@ -569,6 +569,15 @@ async def delete_file(
         s3_client = config.get_client()
         s3_client.delete_object(Bucket=bucket_name, Key=key)
 
+        try:
+            from umrs.api.catalog_store import get_optional_catalog_meta_store
+
+            catalog_store = get_optional_catalog_meta_store()
+            if catalog_store is not None:
+                catalog_store.delete(project_id, key)
+        except Exception:
+            logger.exception("Failed to delete catalog metadata for %s", key)
+
         logger.info(
             "Deleted file",
             extra={
