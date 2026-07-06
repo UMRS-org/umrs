@@ -16,14 +16,41 @@ These dataclasses mirror the database schema and provide type safety.
 
 from __future__ import annotations
 
+import logging
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
+from typing import Any
 from umrs.model_registry.runtime_config import RuntimeConfig
 
 # Re-export capabilities from the dedicated module (Phase 5)
 from umrs.model_registry.capabilities import ModelCapabilities  # noqa: F811
+
+logger = logging.getLogger(__name__)
+
+
+def model_ref_from_json(data: Any) -> ModelRef | None:
+    """Parse model_ref_json, returning None when the payload is invalid."""
+    if not data:
+        return None
+    try:
+        return ModelRef.from_dict(data)
+    except (ValueError, KeyError, TypeError) as exc:
+        logger.warning("Ignoring invalid model_ref_json: %s", exc)
+        return None
+
+
+def execution_authority_from_row(value: str | None) -> ExecutionAuthority:
+    """Parse execution_authority_default with a safe fallback."""
+    raw = (value or "compose").strip()
+    try:
+        return ExecutionAuthority(raw)
+    except ValueError:
+        logger.warning(
+            "Invalid execution_authority_default %r; defaulting to compose", raw
+        )
+        return ExecutionAuthority.COMPOSE
 
 
 class ModelScope(Enum):
@@ -528,8 +555,8 @@ class ModelEntry:
             description=row[8],
             serving_profile=ServingProfile.from_dict(row[9] or {}),
             status=ModelStatus(row[10]),
-            model_ref=ModelRef.from_dict(model_ref_data) if model_ref_data else None,
-            execution_authority_default=ExecutionAuthority(row[12] or "compose"),
+            model_ref=model_ref_from_json(model_ref_data),
+            execution_authority_default=execution_authority_from_row(row[12]),
             created_at=row[13],
             updated_at=row[14],
             capabilities=ModelCapabilities.from_dict(capabilities_data or {}),

@@ -116,6 +116,7 @@ class ModelStore:
             description=description,
             serving_profile=serving_profile,
             capabilities=capabilities,
+            runtime_config=runtime_config,
             execution_authority_default=execution_authority_default,
             status=status,
         )
@@ -327,7 +328,16 @@ class ModelStore:
             cur.execute(query, params)
             rows = cur.fetchall()
 
-        return [ModelEntry.from_row(row) for row in rows]
+        entries: list[ModelEntry] = []
+        for row in rows:
+            try:
+                entries.append(ModelEntry.from_row(row))
+            except (ValueError, KeyError, TypeError) as exc:
+                name = row[1] if len(row) > 1 else "?"
+                logger.warning(
+                    "Skipping corrupt model_catalog_entries row %s: %s", name, exc
+                )
+        return entries
 
     # -------------------------------------------------------------------------
     # Update
