@@ -93,7 +93,7 @@ def _init_model_store(app, db_pool):
         ensure_model_registry_schema(model_conn)
         model_conn.commit()
         app.state.umrs_model_store_conn = model_conn
-        set_model_store(ModelStore(model_conn, path_validator=PathValidator()))
+        set_model_store(ModelStore(model_conn, path_validator=PathValidator(), pool=db_pool))
         logger.info("Model store initialized for HTTP sidecar")
     except Exception:
         logger.warning(
