@@ -1,11 +1,11 @@
 """Tests for catalog query scoring, ACL helpers, and bounded reads."""
 
 import io
-import json
 
-from umrs.data_catalog.paths import meta_object_key
 from umrs.data_catalog.query import _allowed, _score_meta, read_catalog_object
 from umrs.data_catalog.schema import CatalogObjectMeta, CatalogState
+
+from catalog_store_fake import FakeCatalogMetaStore
 
 
 def test_allowed_by_acl_scope():
@@ -45,11 +45,14 @@ def test_read_catalog_object_uses_s3_range_request():
         acl_scope="proj-1",
         updated_at="now",
     )
-    client = _RangeS3Client(s3_key, b"abcdef", meta)
+    store = FakeCatalogMetaStore()
+    store.upsert(meta, "proj-1")
+    client = _RangeS3Client(s3_key, b"abcdef")
 
     payload = read_catalog_object(
         client,
         "bucket",
+        store,
         s3_key=s3_key,
         project_id="proj-1",
         offset=2,
@@ -64,10 +67,9 @@ def test_read_catalog_object_uses_s3_range_request():
 
 
 class _RangeS3Client:
-    def __init__(self, s3_key: str, content: bytes, meta: CatalogObjectMeta):
+    def __init__(self, s3_key: str, content: bytes):
         self.s3_key = s3_key
         self.content = content
-        self.meta = meta
         self.object_range: str | None = None
 
     def head_object(self, *, Bucket: str, Key: str):  # noqa: N803 - boto3 shape
@@ -75,10 +77,6 @@ class _RangeS3Client:
         return {"ContentLength": len(self.content), "ETag": '"abc"'}
 
     def get_object(self, *, Bucket: str, Key: str, Range: str | None = None):  # noqa: N803
-        if Key == meta_object_key(self.s3_key):
-            body = json.dumps(self.meta.to_dict()).encode("utf-8")
-            return {"Body": io.BytesIO(body)}
-
         assert Key == self.s3_key
         assert Range is not None
         self.object_range = Range

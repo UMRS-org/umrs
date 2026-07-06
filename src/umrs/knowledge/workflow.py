@@ -126,6 +126,7 @@ class WorkflowOptions:
     s3_bucket: str | None = None
     owner_id: str | None = None
     ingester_config: IngesterConfig | None = None
+    meta_store: Any | None = None
 
 
 def _research_project_kwargs(
@@ -139,6 +140,7 @@ def _research_project_kwargs(
     s3_bucket: str | None,
     owner_id: str | None,
     ingester_config: IngesterConfig | None,
+    meta_store: Any | None = None,
 ) -> dict[str, Any]:
     """Build ``ResearchProject`` constructor kwargs from workflow options."""
     return {
@@ -150,6 +152,7 @@ def _research_project_kwargs(
         "s3_bucket": s3_bucket,
         "owner_id": owner_id or user_id,
         "ingester_config": ingester_config,
+        "meta_store": meta_store,
     }
 
 
@@ -171,6 +174,7 @@ def run_project_workflow(
     s3_bucket: str | None = None,
     owner_id: str | None = None,
     ingester_config: IngesterConfig | None = None,
+    meta_store: Any | None = None,
 ) -> WorkflowResult:
     """Run the full scientific workflow end-to-end.
 
@@ -226,6 +230,7 @@ def run_project_workflow(
                 s3_bucket=s3_bucket,
                 owner_id=owner_id,
                 ingester_config=ingester_config,
+                meta_store=meta_store,
             ),
         ),
     )
@@ -380,6 +385,7 @@ def create_and_ingest(
     owner_id: str | None = None,
     ingester_config: IngesterConfig | None = None,
     user_id: str = "user",
+    meta_store: Any | None = None,
 ) -> ResearchProject:
     """Create a project and ingest files (convenience function).
 
@@ -409,6 +415,7 @@ def create_and_ingest(
             s3_bucket=s3_bucket,
             owner_id=owner_id,
             ingester_config=ingester_config,
+            meta_store=meta_store,
         ),
     )
     project.ingest_directory(*directories)

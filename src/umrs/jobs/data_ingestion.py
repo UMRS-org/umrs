@@ -49,6 +49,13 @@ class DataIngestionBackend(OrchestratorBackend):
         if not bucket or not s3_key:
             raise ValueError("data_ingestion requires spec.bucket and spec.s3_key")
 
+        from umrs.api.catalog_store import CatalogStoreUnavailable, get_catalog_meta_store
+
+        try:
+            meta_store = get_catalog_meta_store()
+        except CatalogStoreUnavailable as exc:
+            raise RuntimeError(str(exc)) from exc
+
         s3_client = _build_s3_client()
         try:
             metrics = ingest_object(
@@ -59,6 +66,7 @@ class DataIngestionBackend(OrchestratorBackend):
                 project_id=project_id,
                 owner=job.user_id,
                 acl_scope=project_id,
+                meta_store=meta_store,
             )
         except IngestionError as exc:
             raise RuntimeError(str(exc)) from exc

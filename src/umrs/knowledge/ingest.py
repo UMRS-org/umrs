@@ -2,7 +2,7 @@
 
 ``KnowledgeIngester`` discovers project objects in S3, filters unchanged entries,
 runs ingestion in parallel, and reports progress. Per-object enrichment (parse,
-perception, catalog metadata, rollups) is delegated to
+perception, catalog metadata) is delegated to
 ``umrs.data_catalog.ingest.ingest_object`` — the same path used by upload jobs.
 Perception is controlled by ``UMRS_DATA_CATALOG_ENABLE_PERCEPTION`` (same as upload).
 """
@@ -18,9 +18,8 @@ from typing import Any, Protocol
 
 from ..data_catalog.ingest import IngestionError
 from ..data_catalog.ingest import ingest_object as catalog_ingest_object
-from ..data_catalog.rollup import regenerate_rollups_for_paths
+from ..data_catalog.pg_store import CatalogMetaStore
 from ..data_catalog.schema import CatalogState
-from ..data_catalog.store import read_meta
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +112,14 @@ class IngesterConfig:
 # ── Knowledge Ingester ─────────────────────────────────────────────────────
 
 
+def _resolve_meta_store(meta_store: CatalogMetaStore | None) -> CatalogMetaStore:
+    if meta_store is not None:
+        return meta_store
+    from umrs.api.catalog_store import get_catalog_meta_store
+
+    return get_catalog_meta_store()
+
+
 class KnowledgeIngester:
     """Batch orchestrator over the data-catalog ingestion pipeline.
 
@@ -126,12 +133,21 @@ class KnowledgeIngester:
         s3_client: Any,
         bucket: str,
         config: IngesterConfig | None = None,
+        *,
+        meta_store: CatalogMetaStore | None = None,
     ) -> None:
         self.s3_client = s3_client
         self.bucket = bucket
         self.config = config or IngesterConfig()
+        self._meta_store = meta_store
         self._lock = threading.Lock()
         self._state: dict[str, Any] = {}
+
+    @property
+    def meta_store(self) -> CatalogMetaStore:
+        if self._meta_store is None:
+            self._meta_store = _resolve_meta_store(None)
+        return self._meta_store
 
     def ingest_project(
         self,
@@ -152,7 +168,7 @@ class KnowledgeIngester:
         )
 
         if self.config.incremental:
-            objects = self._filter_unchanged(objects)
+            objects = self._filter_unchanged(project_id, objects)
             logger.info(
                 "After incremental filter: %d objects to ingest",
                 len(objects),
@@ -164,9 +180,6 @@ class KnowledgeIngester:
                 datetime.now(timezone.utc) - start_time
             ).total_seconds()
             return result
-
-        touched_paths: set[str] = set()
-        paths_lock = threading.Lock()
 
         with ThreadPoolExecutor(max_workers=self.config.max_workers) as executor:
             futures = {}
@@ -180,7 +193,6 @@ class KnowledgeIngester:
                     progress_callback=progress_callback,
                     current=idx + 1,
                     total=len(objects),
-                    regenerate_rollups=False,
                 )
                 futures[future] = obj
 
@@ -190,9 +202,6 @@ class KnowledgeIngester:
                     result.results.append(res)
                     if res.status == "ingested":
                         result.ingested += 1
-                        if res.logical_path:
-                            with paths_lock:
-                                touched_paths.add(res.logical_path)
                     elif res.status == "skipped":
                         result.skipped += 1
                     elif res.status == "error":
@@ -208,8 +217,6 @@ class KnowledgeIngester:
                             error=str(exc),
                         )
                     )
-
-        regenerate_rollups_for_paths(self.s3_client, self.bucket, touched_paths)
 
         result.duration_seconds = (
             datetime.now(timezone.utc) - start_time
@@ -264,12 +271,13 @@ class KnowledgeIngester:
 
     def _filter_unchanged(
         self,
+        project_id: str,
         objects: list[dict[str, str]],
     ) -> list[dict[str, str]]:
         """Filter out objects that haven't changed since last ingestion."""
         filtered = []
         for obj in objects:
-            existing = read_meta(self.s3_client, self.bucket, obj["key"])
+            existing = self.meta_store.get(project_id, obj["key"])
             if (
                 existing
                 and existing.object_etag == obj["etag"]
@@ -289,7 +297,6 @@ class KnowledgeIngester:
         progress_callback: ProgressCallback | None,
         current: int,
         total: int,
-        regenerate_rollups: bool = True,
     ) -> IngestionResult:
         """Ingest a single object via the data-catalog pipeline."""
         try:
@@ -303,13 +310,13 @@ class KnowledgeIngester:
                 acl_scope=project_id,
                 max_extract_bytes=self.config.max_extract_bytes,
                 force=not self.config.skip_if_unchanged,
-                regenerate_rollups=regenerate_rollups,
+                meta_store=self.meta_store,
             )
         except IngestionError as exc:
             logger.error("Catalog ingestion failed for %s: %s", s3_key, exc)
             result = _result_from_catalog_failure(
-                self.s3_client,
-                self.bucket,
+                self.meta_store,
+                project_id,
                 s3_key,
                 error=str(exc),
             )
@@ -318,8 +325,8 @@ class KnowledgeIngester:
             return result
 
         result = _result_from_metrics(
-            self.s3_client,
-            self.bucket,
+            self.meta_store,
+            project_id,
             s3_key,
             metrics,
         )
@@ -340,13 +347,14 @@ def ingest_object(
     project_id: str,
     owner: str,
     max_extract_bytes: int | None = None,
+    meta_store: CatalogMetaStore | None = None,
 ) -> dict[str, Any]:
     """Ingest a single object (convenience function). Returns a metrics dict."""
     config = IngesterConfig()
     if max_extract_bytes is not None:
         config.max_extract_bytes = max_extract_bytes
 
-    ingester = KnowledgeIngester(s3_client, bucket, config)
+    ingester = KnowledgeIngester(s3_client, bucket, config, meta_store=meta_store)
     result = ingester.ingest_object(
         project_id=project_id,
         owner=owner,
@@ -371,15 +379,15 @@ def ingest_object(
 
 
 def _result_from_metrics(
-    s3_client: Any,
-    bucket: str,
+    meta_store: CatalogMetaStore,
+    project_id: str,
     s3_key: str,
     metrics: dict[str, Any],
 ) -> IngestionResult:
     """Map catalog metrics to a batch ``IngestionResult`` (reads meta for summary)."""
     action = metrics.get("action", "error")
     status = action if action in {"ingested", "skipped", "error"} else "error"
-    meta = read_meta(s3_client, bucket, s3_key)
+    meta = meta_store.get(project_id, s3_key)
     modality = metrics.get("modality") or (meta.detected_modality if meta else "unknown")
     return IngestionResult(
         s3_key=s3_key,
@@ -395,8 +403,8 @@ def _result_from_metrics(
 
 
 def _result_from_catalog_failure(
-    s3_client: Any,
-    bucket: str,
+    meta_store: CatalogMetaStore,
+    project_id: str,
     s3_key: str,
     *,
     error: str,
@@ -406,7 +414,7 @@ def _result_from_catalog_failure(
     The catalog pipeline writes ERROR metadata before raising, so we read it
     back for modality/summary instead of duplicating error-state logic here.
     """
-    meta = read_meta(s3_client, bucket, s3_key)
+    meta = meta_store.get(project_id, s3_key)
     return IngestionResult(
         s3_key=s3_key,
         modality=meta.detected_modality if meta else "unknown",

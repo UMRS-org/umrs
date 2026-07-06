@@ -164,6 +164,7 @@ class ResearchProject:
         s3_bucket: str | None = None,
         owner_id: str | None = None,
         ingester_config: IngesterConfig | None = None,
+        meta_store: Any | None = None,
     ) -> None:
         self.project_id = project_id
         self.name = name or project_id
@@ -177,6 +178,7 @@ class ResearchProject:
         self._s3_bucket = s3_bucket
         self._owner_id = owner_id
         self._ingester_config = ingester_config
+        self._meta_store = meta_store
         self._storage_path = Path(storage_path) if storage_path else None
 
         # Knowledge store — catalog-backed when S3 is configured, else in-memory
@@ -700,6 +702,7 @@ class ResearchProject:
             self._s3_client,
             self._s3_bucket,
             self._ingester_config or IngesterConfig(),
+            meta_store=self._meta_store,
         )
         owner = self._owner_id or self.project_id
         ingester.ingest_project(
@@ -763,6 +766,7 @@ class ResearchProject:
                 self._s3_bucket,
                 self.project_id,
                 prefix=f"{self.project_id}/",
+                meta_store=self._meta_store,
             )
             return CatalogKnowledgeStore(adapter)
         return self._ensure_local_knowledge_store()

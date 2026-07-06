@@ -1,4 +1,4 @@
-"""S3 read/write helpers for catalog metadata."""
+"""S3 read/write helpers for catalog blobs (extracted text, knowledge, raw bytes)."""
 
 from __future__ import annotations
 
@@ -9,35 +9,9 @@ from typing import Any
 from botocore.exceptions import ClientError
 
 from .constants import EXTRACTED_KNOWLEDGE_PREFIX, EXTRACTED_TEXT_PREFIX
-from .paths import encode_s3_key, meta_object_key
-from .schema import CatalogObjectMeta
+from .paths import encode_s3_key
 
 logger = logging.getLogger(__name__)
-
-
-def read_meta(s3_client: Any, bucket: str, s3_key: str) -> CatalogObjectMeta | None:
-    """Load catalog metadata for an object, or None if missing."""
-    key = meta_object_key(s3_key)
-    try:
-        response = s3_client.get_object(Bucket=bucket, Key=key)
-        payload = json.loads(response["Body"].read().decode("utf-8"))
-        return CatalogObjectMeta.from_dict(payload)
-    except ClientError as exc:
-        if exc.response.get("Error", {}).get("Code") in {"NoSuchKey", "404"}:
-            return None
-        raise
-
-
-def write_meta(s3_client: Any, bucket: str, meta: CatalogObjectMeta) -> None:
-    """Persist catalog metadata sidecar."""
-    body = json.dumps(meta.to_dict(), indent=2, sort_keys=True).encode("utf-8")
-    s3_client.put_object(
-        Bucket=bucket,
-        Key=meta_object_key(meta.s3_key),
-        Body=body,
-        ContentType="application/json",
-    )
-
 
 def write_extracted_text(
     s3_client: Any,

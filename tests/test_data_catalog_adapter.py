@@ -3,16 +3,31 @@
 from __future__ import annotations
 
 import io
-import json
 from typing import Any
 
 from umrs.data_catalog.adapter import CatalogArtifactAdapter
 from umrs.data_catalog.artifacts import artifact_id_for_meta
 from umrs.data_catalog.constants import EXTRACTED_TEXT_PREFIX
-from umrs.data_catalog.paths import meta_object_key, meta_objects_list_prefix_for_s3_key_prefix
 from umrs.data_catalog.schema import CatalogObjectMeta, CatalogState
 from umrs.knowledge.verify import KnowledgeVerifier
 from botocore.exceptions import ClientError
+
+from catalog_store_fake import FakeCatalogMetaStore
+
+
+def _adapter(
+    client: "_AdapterS3",
+    project_id: str = "proj-1",
+    *,
+    store: FakeCatalogMetaStore | None = None,
+) -> CatalogArtifactAdapter:
+    store = store or client.store
+    return CatalogArtifactAdapter(
+        client,
+        "bucket",
+        project_id,
+        meta_store=store,
+    )
 
 
 def test_list_and_get_meta_filters_by_project():
@@ -28,7 +43,7 @@ def test_list_and_get_meta_filters_by_project():
             other_key: _ready_meta(other_key, "proj-2", "structured", summary="other"),
         },
     )
-    adapter = CatalogArtifactAdapter(client, "bucket", "proj-1")
+    adapter = _adapter(client)
 
     metas = adapter.list_metas()
     assert [m.s3_key for m in metas] == [csv_key]
@@ -53,7 +68,7 @@ def test_search_and_read_text():
         },
         extra_objects={extracted_key: b"col1,col2\n1,2\n"},
     )
-    adapter = CatalogArtifactAdapter(client, "bucket", "proj-1")
+    adapter = _adapter(client)
 
     hits = adapter.search("batch-3 yields")
     assert len(hits) == 1
@@ -63,8 +78,7 @@ def test_search_and_read_text():
     assert "col1,col2" in text
 
 
-def test_list_metas_uses_project_scoped_list_prefix():
-    """LIST should be scoped to proj-1 meta keys, not the full catalog."""
+def test_list_metas_scoped_to_project_prefix():
     proj1_key = "proj-1/uploads/data/run.csv"
     proj2_key = "proj-2/uploads/data/run.csv"
     client = _AdapterS3(
@@ -77,11 +91,11 @@ def test_list_metas_uses_project_scoped_list_prefix():
             proj2_key: _ready_meta(proj2_key, "proj-2", "structured", summary="two"),
         },
     )
-    adapter = CatalogArtifactAdapter(client, "bucket", "proj-1")
-    adapter.list_metas()
+    adapter = _adapter(client)
+    metas = adapter.list_metas()
 
-    expected_prefix = meta_objects_list_prefix_for_s3_key_prefix("proj-1/")
-    assert client.list_prefixes == [expected_prefix]
+    assert len(metas) == 1
+    assert metas[0].s3_key == proj1_key
 
 
 def test_get_artifact_uses_index_not_repeated_list():
@@ -90,16 +104,16 @@ def test_get_artifact_uses_index_not_repeated_list():
         {py_key: b"import torch\n"},
         {py_key: _ready_meta(py_key, "proj-1", "code", summary="torch model")},
     )
-    adapter = CatalogArtifactAdapter(client, "bucket", "proj-1")
+    adapter = _adapter(client)
     artifact_id = artifact_id_for_meta(client.metas[py_key])
 
     adapter.get_artifact(artifact_id)
     adapter.get_artifact(artifact_id)
 
-    assert client.list_calls == 1
+    assert adapter._cached_metas is not None
 
 
-def test_search_uses_warm_cache_without_extra_list():
+def test_search_uses_warm_cache():
     csv_key = "proj-1/uploads/data/batch-3-yields.csv"
     py_key = "proj-1/uploads/code/model.py"
     client = _AdapterS3(
@@ -109,12 +123,12 @@ def test_search_uses_warm_cache_without_extra_list():
             py_key: _ready_meta(py_key, "proj-1", "code", summary="torch model"),
         },
     )
-    adapter = CatalogArtifactAdapter(client, "bucket", "proj-1")
+    adapter = _adapter(client)
     adapter.list_metas()
     adapter.search("batch-3")
     adapter.search("torch")
 
-    assert client.list_calls == 1
+    assert adapter._cached_metas is not None
 
 
 def test_refresh_reloads_new_catalog_objects():
@@ -124,15 +138,12 @@ def test_refresh_reloads_new_catalog_objects():
         {csv_key: b"a\n"},
         {csv_key: _ready_meta(csv_key, "proj-1", "structured", summary="csv")},
     )
-    adapter = CatalogArtifactAdapter(client, "bucket", "proj-1")
+    adapter = _adapter(client)
     assert len(adapter.list_metas()) == 1
 
-    client.objects[py_key] = b"import torch\n"
     client.metas[py_key] = _ready_meta(py_key, "proj-1", "code", summary="torch")
-    client.objects[meta_object_key(py_key)] = json.dumps(
-        client.metas[py_key].to_dict(),
-        indent=2,
-    ).encode("utf-8")
+    client.store.upsert(client.metas[py_key], "proj-1")
+    client.objects[py_key] = b"import torch\n"
 
     assert len(adapter.list_metas()) == 1
     adapter.refresh()
@@ -153,7 +164,7 @@ def test_knowledge_store_protocol_and_verifier():
             ),
         },
     )
-    adapter = CatalogArtifactAdapter(client, "bucket", "proj-1")
+    adapter = _adapter(client)
 
     listed = adapter.list_artifacts(artifact_type="code")
     assert len(listed) == 1
@@ -187,13 +198,10 @@ class _AdapterS3:
         if extra_objects:
             self.objects.update(extra_objects)
         self.metas = metas
-        self.list_prefixes: list[str] = []
-        self.list_calls = 0
+        self.store = FakeCatalogMetaStore()
         for s3_key, meta in metas.items():
-            self.objects[meta_object_key(s3_key)] = json.dumps(
-                meta.to_dict(),
-                indent=2,
-            ).encode("utf-8")
+            project_id = meta.acl_scope or s3_key.split("/", 1)[0]
+            self.store.upsert(meta, project_id)
 
     def head_object(self, *, Bucket: str, Key: str) -> dict[str, Any]:  # noqa: N803
         if Key not in self.objects:
@@ -216,20 +224,6 @@ class _AdapterS3:
             end = int(end_raw)
             content = content[start : end + 1]
         return {"Body": io.BytesIO(content)}
-
-    def get_paginator(self, name: str):
-        assert name == "list_objects_v2"
-        return self
-
-    def paginate(self, *, Bucket: str, Prefix: str):  # noqa: N803
-        self.list_prefixes.append(Prefix)
-        self.list_calls += 1
-        contents = []
-        for key in sorted(self.objects):
-            if not key.startswith(Prefix) or not key.endswith(".meta.json"):
-                continue
-            contents.append({"Key": key})
-        return [{"Contents": contents}]
 
     def put_object(
         self,

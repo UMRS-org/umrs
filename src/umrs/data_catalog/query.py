@@ -1,59 +1,34 @@
-"""Catalog search and read (MVP: grep over ``.meta.json`` files)."""
+"""Catalog search and read (Postgres metadata + S3 bytes)."""
 
 from __future__ import annotations
 
-import json
-import re
-from dataclasses import dataclass
 from typing import Any
 
-from botocore.exceptions import ClientError
+from .pg_store import CatalogMetaStore
+from .scoring import CatalogHit, allowed, score_meta, tokenize
+from .store import get_object_range
 
-from .constants import OBJECTS_PREFIX
-from .rollup import _list_object_metas
-from .schema import CatalogObjectMeta, CatalogState
-from .store import get_object_range, read_meta
-
-
-@dataclass
-class CatalogHit:
-    """One catalog search result."""
-
-    meta: CatalogObjectMeta
-    score: float
+# Backward-compatible aliases for tests
+_allowed = allowed
+_score_meta = score_meta
+_tokenize = tokenize
 
 
 def search_catalog(
-    s3_client: Any,
-    bucket: str,
+    meta_store: CatalogMetaStore,
     *,
     query: str,
     project_id: str,
     limit: int = 20,
 ) -> list[CatalogHit]:
-    """Lexical grep over catalog metadata with project ACL filtering."""
-    tokens = _tokenize(query)
-    if not tokens:
-        return []
-
-    hits: list[CatalogHit] = []
-    for meta in _list_object_metas(s3_client, bucket, s3_key_prefix=f"{project_id}/"):
-        if not _allowed(meta, project_id):
-            continue
-        if meta.state == CatalogState.ERROR:
-            continue
-        score = _score_meta(meta, tokens)
-        if score <= 0:
-            continue
-        hits.append(CatalogHit(meta=meta, score=score))
-
-    hits.sort(key=lambda h: h.score, reverse=True)
-    return hits[:limit]
+    """Lexical search over catalog metadata with project ACL filtering."""
+    return meta_store.search(project_id, query, limit=limit)
 
 
 def read_catalog_object(
     s3_client: Any,
     bucket: str,
+    meta_store: CatalogMetaStore,
     *,
     s3_key: str,
     project_id: str,
@@ -65,8 +40,8 @@ def read_catalog_object(
 
     Returns dict with content metadata; text decoded when possible.
     """
-    meta = read_meta(s3_client, bucket, s3_key)
-    if meta is None or not _allowed(meta, project_id):
+    meta = meta_store.get(project_id, s3_key)
+    if meta is None or not allowed(meta, project_id):
         raise PermissionError("access denied for object")
 
     if not s3_key.startswith(f"{project_id}/"):
@@ -96,39 +71,3 @@ def read_catalog_object(
         "text": text,
         "meta": meta.to_dict(),
     }
-
-
-def _allowed(meta: CatalogObjectMeta, project_id: str) -> bool:
-    if meta.acl_scope == project_id:
-        return True
-    return meta.s3_key.startswith(f"{project_id}/")
-
-
-def _tokenize(query: str) -> list[str]:
-    return [t for t in re.split(r"\W+", query.lower()) if t]
-
-
-def _score_meta(meta: CatalogObjectMeta, tokens: list[str]) -> float:
-    haystack = " ".join(
-        [
-            meta.summary,
-            meta.deterministic_summary,
-            meta.perception_summary or "",
-            meta.detected_modality,
-            meta.s3_key,
-            " ".join(meta.tags),
-            " ".join(meta.filename_signals),
-        ]
-    ).lower()
-    if not haystack:
-        return 0.0
-    score = 0.0
-    for token in tokens:
-        if token in haystack:
-            score += 1.0
-        for signal in meta.filename_signals:
-            if token in signal.lower():
-                score += 0.5
-    if meta.state == CatalogState.PENDING:
-        score *= 0.5
-    return score
