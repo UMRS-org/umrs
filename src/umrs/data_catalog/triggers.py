@@ -30,15 +30,21 @@ def trigger_post_upload_ingestion(
     """
     acl_scope = project_id
     try:
-        write_pending_stub(
-            s3_client,
-            bucket,
-            s3_key=s3_key,
-            object_etag=object_etag,
-            owner=owner,
-            acl_scope=acl_scope,
-            filename=filename,
-        )
+        from umrs.api.catalog_store import get_optional_catalog_meta_store
+
+        meta_store = get_optional_catalog_meta_store()
+        if meta_store is None:
+            logger.warning("Catalog store unavailable — skipping pending stub for %s", s3_key)
+        else:
+            write_pending_stub(
+                s3_key=s3_key,
+                object_etag=object_etag,
+                owner=owner,
+                acl_scope=acl_scope,
+                project_id=project_id,
+                filename=filename,
+                meta_store=meta_store,
+            )
     except Exception:
         logger.exception("Failed to write pending catalog stub for %s", s3_key)
 

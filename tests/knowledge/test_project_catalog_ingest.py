@@ -11,8 +11,7 @@ import pytest
 from botocore.exceptions import ClientError
 
 from umrs.data_catalog.constants import EXTRACTED_TEXT_PREFIX
-from umrs.data_catalog.paths import meta_object_key
-from umrs.data_catalog.schema import CatalogObjectMeta
+from umrs.data_catalog.schema import CatalogObjectMeta, CatalogState
 from umrs.knowledge.ingest import IngesterConfig
 from umrs.knowledge.local_ingest import (
     build_s3_key,
@@ -22,6 +21,8 @@ from umrs.knowledge.local_ingest import (
 )
 from umrs.knowledge.project import ProjectPhase, ResearchProject
 from umrs.knowledge.workflow import run_project_workflow
+
+from catalog_store_fake import FakeCatalogMetaStore
 
 
 class _FakeProjectS3:
@@ -101,6 +102,11 @@ def _no_such_key(key: str) -> ClientError:
 
 
 @pytest.fixture
+def catalog_meta_store():
+    return FakeCatalogMetaStore()
+
+
+@pytest.fixture
 def project_dir(tmp_path: Path) -> Path:
   (tmp_path / "README.md").write_text("# Demo\n")
   papers = tmp_path / "papers"
@@ -145,7 +151,7 @@ def test_upload_local_files_skips_git(project_dir: Path):
     assert not any(".git" in key for key in keys)
 
 
-def test_ingest_directory_via_catalog(project_dir: Path):
+def test_ingest_directory_via_catalog(project_dir: Path, catalog_meta_store):
     client = _FakeProjectS3()
     project = ResearchProject(
         project_id="proj-1",
@@ -153,6 +159,7 @@ def test_ingest_directory_via_catalog(project_dir: Path):
         s3_bucket="bucket",
         owner_id="user-1",
         ingester_config=IngesterConfig(max_extract_bytes=1024 * 1024),
+        meta_store=catalog_meta_store,
     )
 
     count = project.ingest_directory(project_dir)
@@ -169,12 +176,14 @@ def test_ingest_directory_via_catalog(project_dir: Path):
         assert loaded["content"]
 
     meta_keys = [key for key in client.objects if key.endswith(".meta.json")]
-    assert len(meta_keys) == count
-    for meta_key in meta_keys:
-        meta = CatalogObjectMeta.from_dict(
-            json.loads(client.objects[meta_key].decode("utf-8"))
-        )
-        assert meta.state.value == "ready"
+    assert meta_keys == []
+    stats = catalog_meta_store.project_stats("proj-1")
+    assert stats["object_count"] == count
+    for artifact in artifacts:
+        s3_key = artifact["metadata"]["s3_key"]
+        meta = catalog_meta_store.get("proj-1", s3_key)
+        assert meta is not None
+        assert meta.state == CatalogState.READY
 
 
 def test_ingest_directory_local_fallback_without_s3(project_dir: Path):
@@ -187,13 +196,14 @@ def test_ingest_directory_local_fallback_without_s3(project_dir: Path):
     )
 
 
-def test_understand_after_catalog_ingest(project_dir: Path):
+def test_understand_after_catalog_ingest(project_dir: Path, catalog_meta_store):
     client = _FakeProjectS3()
     project = ResearchProject(
         project_id="proj-1",
         s3_client=client,
         s3_bucket="bucket",
         owner_id="user-1",
+        meta_store=catalog_meta_store,
     )
     project.ingest_directory(project_dir)
     project.understand()
@@ -215,13 +225,14 @@ def test_s3_project_skips_local_knowledge_store_allocation(project_dir: Path):
     assert project._local_knowledge_store is None
 
 
-def test_verify_after_catalog_ingest(project_dir: Path):
+def test_verify_after_catalog_ingest(project_dir: Path, catalog_meta_store):
     client = _FakeProjectS3()
     project = ResearchProject(
         project_id="proj-1",
         s3_client=client,
         s3_bucket="bucket",
         owner_id="user-1",
+        meta_store=catalog_meta_store,
     )
     project.ingest_directory(project_dir)
     project.understand()
@@ -231,7 +242,10 @@ def test_verify_after_catalog_ingest(project_dir: Path):
     assert answer.confidence > 0
 
 
-def test_run_project_workflow_uses_catalog_when_s3_configured(project_dir: Path):
+def test_run_project_workflow_uses_catalog_when_s3_configured(
+    project_dir: Path,
+    catalog_meta_store,
+):
     """run_project_workflow passes S3 config through to catalog ingest."""
     client = _FakeProjectS3()
     result = run_project_workflow(
@@ -242,11 +256,11 @@ def test_run_project_workflow_uses_catalog_when_s3_configured(project_dir: Path)
         s3_client=client,
         s3_bucket="bucket",
         user_id="user-1",
+        meta_store=catalog_meta_store,
     )
 
     assert result.success
     assert result.artifacts_ingested > 0
     for artifact in result.project.knowledge_store.list_artifacts():
         assert artifact["metadata"]["s3_key"].startswith("proj-1/uploads/")
-    meta_keys = [k for k in client.objects if k.endswith(".meta.json")]
-    assert len(meta_keys) == result.artifacts_ingested
+    assert catalog_meta_store.project_stats("proj-1")["object_count"] == result.artifacts_ingested

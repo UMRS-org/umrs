@@ -12,14 +12,12 @@ from botocore.exceptions import ClientError
 from .extract import extract_content
 from .modality import detect_modality, filename_signals
 from .paths import logical_path_for_object
-from .rollup import regenerate_rollups as refresh_catalog_rollups
+from .pg_store import CatalogMetaStore
 from .schema import CatalogObjectMeta, CatalogState
 from .store import (
     get_object_etag,
     get_object_range,
-    read_meta,
     write_extracted_text,
-    write_meta,
 )
 
 logger = logging.getLogger(__name__)
@@ -29,17 +27,26 @@ class IngestionError(Exception):
     """Permanent ingestion failure for one object."""
 
 
+def _resolve_meta_store(meta_store: CatalogMetaStore | None) -> CatalogMetaStore:
+    if meta_store is not None:
+        return meta_store
+    from umrs.api.catalog_store import get_catalog_meta_store
+
+    return get_catalog_meta_store()
+
+
 def write_pending_stub(
-    s3_client: Any,
-    bucket: str,
     *,
     s3_key: str,
     object_etag: str,
     owner: str,
     acl_scope: str,
+    project_id: str,
     filename: str | None = None,
+    meta_store: CatalogMetaStore | None = None,
 ) -> CatalogObjectMeta:
     """Write minimal pending metadata so the object is catalog-listable immediately."""
+    store = _resolve_meta_store(meta_store)
     meta = CatalogObjectMeta.pending(
         s3_key=s3_key,
         object_etag=object_etag,
@@ -47,7 +54,7 @@ def write_pending_stub(
         acl_scope=acl_scope,
         filename=filename,
     )
-    write_meta(s3_client, bucket, meta)
+    store.upsert(meta, project_id)
     return meta
 
 
@@ -62,7 +69,7 @@ def ingest_object(
     acl_scope: str | None = None,
     max_extract_bytes: int | None = None,
     force: bool = False,
-    regenerate_rollups: bool = True,
+    meta_store: CatalogMetaStore | None = None,
 ) -> dict[str, Any]:
     """
     Enrich one object: extract text/metadata and flip catalog entry to ``ready``.
@@ -70,11 +77,10 @@ def ingest_object(
     Idempotent when ``object_etag`` matches the stored meta. Returns metrics dict.
 
     Set ``force=True`` to re-run extraction even when the object is already ready.
-    Set ``regenerate_rollups=False`` during batch ingestion; call
-    ``regenerate_rollups_for_paths`` once after the batch completes.
     """
+    store = _resolve_meta_store(meta_store)
     scope = acl_scope or project_id
-    existing = read_meta(s3_client, bucket, s3_key)
+    existing = store.get(project_id, s3_key)
     if (
         not force
         and existing
@@ -102,8 +108,8 @@ def ingest_object(
         )
     except ClientError as exc:
         _write_error(
-            s3_client,
-            bucket,
+            store,
+            project_id=project_id,
             s3_key=s3_key,
             object_etag=object_etag,
             owner=owner,
@@ -120,8 +126,8 @@ def ingest_object(
         summary, extracted_text, extra_tags = extract_content(filename, content)
     except Exception as exc:
         _write_error(
-            s3_client,
-            bucket,
+            store,
+            project_id=project_id,
             s3_key=s3_key,
             object_etag=object_etag,
             owner=owner,
@@ -177,11 +183,9 @@ def ingest_object(
         detected_modality=modality,
         extracted_text_ref=extracted_ref,
     )
-    write_meta(s3_client, bucket, meta)
+    store.upsert(meta, project_id)
 
     logical_path = logical_path_for_object(project_id, s3_key, modality)
-    if regenerate_rollups:
-        refresh_catalog_rollups(s3_client, bucket, logical_path=logical_path)
 
     return {
         "action": "ingested",
@@ -295,9 +299,9 @@ def _max_image_bytes() -> int:
 
 
 def _write_error(
-    s3_client: Any,
-    bucket: str,
+    store: CatalogMetaStore,
     *,
+    project_id: str,
     s3_key: str,
     object_etag: str,
     owner: str,
@@ -317,7 +321,7 @@ def _write_error(
         filename_signals=filename_signals or [],
         error_note=note[:2000],
     )
-    write_meta(s3_client, bucket, meta)
+    store.upsert(meta, project_id)
 
 
 def _utc_now() -> str:

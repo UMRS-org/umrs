@@ -15,6 +15,8 @@ from umrs.knowledge.ingest import (
     ingest_object,
 )
 
+from catalog_store_fake import FakeCatalogMetaStore
+
 
 # ── Test Fixtures ────────────────────────────────────────────────────────────
 
@@ -69,10 +71,13 @@ def ready_meta():
     )
 
 
-# ── Configuration Tests ─────────────────────────────────────────────────────
+@pytest.fixture
+def fake_meta_store(ready_meta):
+    store = FakeCatalogMetaStore()
+    store.upsert(ready_meta, "test-project")
+    return store
 
 
-def test_ingester_config_defaults():
     """Test that IngesterConfig has sensible defaults."""
     config = IngesterConfig()
 
@@ -137,34 +142,18 @@ def test_knowledge_ingester_discover_objects(mock_s3_client):
     assert objects[1]["key"] == "test/example.ipynb"
 
 
-def test_knowledge_ingester_filter_unchanged(mock_s3_client):
+def test_knowledge_ingester_filter_unchanged(mock_s3_client, ready_meta):
     """Test that _filter_unchanged correctly filters unchanged objects."""
-    from umrs.data_catalog.schema import CatalogObjectMeta, CatalogState
-
-    ingester = KnowledgeIngester(mock_s3_client, "test-bucket")
+    store = FakeCatalogMetaStore()
+    store.upsert(ready_meta, "test-project")
+    ingester = KnowledgeIngester(mock_s3_client, "test-bucket", meta_store=store)
 
     objects = [
         {"key": "test/example.py", "etag": "abc123", "size": 100},
         {"key": "test/example2.py", "etag": "xyz789", "size": 200},
     ]
 
-    with patch("umrs.knowledge.ingest.read_meta") as mock_read_meta:
-        ready_meta = CatalogObjectMeta(
-            s3_key="test/example.py",
-            object_etag="abc123",
-            state=CatalogState.READY,
-            owner="test-user",
-            acl_scope="test-project",
-            updated_at="2026-01-01T00:00:00",
-        )
-
-        def side_effect(s3_client, bucket, key):
-            if key == "test/example.py":
-                return ready_meta
-            return None
-
-        mock_read_meta.side_effect = side_effect
-        filtered = ingester._filter_unchanged(objects)
+    filtered = ingester._filter_unchanged("test-project", objects)
 
     assert len(filtered) == 1
     assert filtered[0]["key"] == "test/example2.py"
@@ -173,16 +162,18 @@ def test_knowledge_ingester_filter_unchanged(mock_s3_client):
 def test_knowledge_ingester_ingest_object_skipped(
     mock_s3_client_with_content,
     ready_meta,
+    fake_meta_store,
 ):
     """Test that ingest_object skips unchanged objects via catalog."""
-    ingester = KnowledgeIngester(mock_s3_client_with_content, "test-bucket")
+    ingester = KnowledgeIngester(
+        mock_s3_client_with_content,
+        "test-bucket",
+        meta_store=fake_meta_store,
+    )
 
-    with (
-        patch(
-            "umrs.knowledge.ingest.catalog_ingest_object",
-            return_value={"action": "skipped", "s3_key": "test/example.py"},
-        ),
-        patch("umrs.knowledge.ingest.read_meta", return_value=ready_meta),
+    with patch(
+        "umrs.knowledge.ingest.catalog_ingest_object",
+        return_value={"action": "skipped", "s3_key": "test/example.py"},
     ):
         result = ingester.ingest_object(
             project_id="test-project",
@@ -199,9 +190,14 @@ def test_knowledge_ingester_ingest_object_skipped(
 def test_knowledge_ingester_delegates_to_catalog_with_10mb_limit(
     mock_s3_client_with_content,
     ready_meta,
+    fake_meta_store,
 ):
     """Batch ingest delegates enrichment to data_catalog with 10 MB sample limit."""
-    ingester = KnowledgeIngester(mock_s3_client_with_content, "test-bucket")
+    ingester = KnowledgeIngester(
+        mock_s3_client_with_content,
+        "test-bucket",
+        meta_store=fake_meta_store,
+    )
 
     with (
         patch(
@@ -215,7 +211,6 @@ def test_knowledge_ingester_delegates_to_catalog_with_10mb_limit(
                 "total_size": 35,
             },
         ) as mock_catalog,
-        patch("umrs.knowledge.ingest.read_meta", return_value=ready_meta),
     ):
         result = ingester.ingest_object(
             project_id="test-project",
@@ -236,23 +231,26 @@ def test_knowledge_ingester_delegates_to_catalog_with_10mb_limit(
 def test_knowledge_ingester_force_reingest_when_skip_disabled(
     mock_s3_client_with_content,
     ready_meta,
+    fake_meta_store,
 ):
     """When skip_if_unchanged is False, catalog ingest is called with force=True."""
     config = IngesterConfig(skip_if_unchanged=False)
-    ingester = KnowledgeIngester(mock_s3_client_with_content, "test-bucket", config)
+    ingester = KnowledgeIngester(
+        mock_s3_client_with_content,
+        "test-bucket",
+        config,
+        meta_store=fake_meta_store,
+    )
 
-    with (
-        patch(
-            "umrs.knowledge.ingest.catalog_ingest_object",
-            return_value={
-                "action": "ingested",
-                "s3_key": "test/example.py",
-                "modality": "code",
-                "has_extracted_text": True,
-            },
-        ) as mock_catalog,
-        patch("umrs.knowledge.ingest.read_meta", return_value=ready_meta),
-    ):
+    with patch(
+        "umrs.knowledge.ingest.catalog_ingest_object",
+        return_value={
+            "action": "ingested",
+            "s3_key": "test/example.py",
+            "modality": "code",
+            "has_extracted_text": True,
+        },
+    ) as mock_catalog:
         ingester.ingest_object(
             project_id="test-project",
             owner="test-user",
@@ -282,57 +280,56 @@ def test_ingest_project_empty(mock_s3_client):
     assert result.errors == 0
 
 
-def test_ingest_project_with_objects(mock_s3_client_with_content, ready_meta):
+def test_ingest_project_with_objects(
+    mock_s3_client_with_content,
+    ready_meta,
+    fake_meta_store,
+):
     """Test ingest_project with multiple objects."""
     config = IngesterConfig(incremental=False)
-    ingester = KnowledgeIngester(mock_s3_client_with_content, "test-bucket", config)
+    ingester = KnowledgeIngester(
+        mock_s3_client_with_content,
+        "test-bucket",
+        config,
+        meta_store=fake_meta_store,
+    )
 
-    with (
-        patch(
-            "umrs.knowledge.ingest.catalog_ingest_object",
-            return_value={
-                "action": "ingested",
-                "s3_key": "test/example.py",
-                "modality": "code",
-                "logical_path": "test-project/default/code/",
-                "has_extracted_text": True,
-            },
-        ) as mock_catalog_ingest,
-        patch("umrs.knowledge.ingest.read_meta", return_value=ready_meta),
-        patch("umrs.knowledge.ingest.regenerate_rollups_for_paths") as mock_rollups,
-    ):
+    with patch(
+        "umrs.knowledge.ingest.catalog_ingest_object",
+        return_value={
+            "action": "ingested",
+            "s3_key": "test/example.py",
+            "modality": "code",
+            "logical_path": "test-project/default/code/",
+            "has_extracted_text": True,
+        },
+    ) as mock_catalog_ingest:
         result = ingester.ingest_project("test-project", "test-user")
 
     assert result.total == 1
     assert result.ingested == 1
     assert result.errors == 0
     mock_catalog_ingest.assert_called_once()
-    assert mock_catalog_ingest.call_args.kwargs["regenerate_rollups"] is False
-    mock_rollups.assert_called_once_with(
+
+
+def test_ingest_object_single_path(mock_s3_client_with_content, ready_meta, fake_meta_store):
+    """Single-object ingest completes without S3 rollups."""
+    ingester = KnowledgeIngester(
         mock_s3_client_with_content,
         "test-bucket",
-        {"test-project/default/code/"},
+        meta_store=fake_meta_store,
     )
 
-
-def test_ingest_object_refreshes_rollups_per_object(mock_s3_client_with_content, ready_meta):
-    """Single-object ingest keeps per-object rollup refresh."""
-    ingester = KnowledgeIngester(mock_s3_client_with_content, "test-bucket")
-
-    with (
-        patch(
-            "umrs.knowledge.ingest.catalog_ingest_object",
-            return_value={
-                "action": "ingested",
-                "s3_key": "test/example.py",
-                "modality": "code",
-                "logical_path": "test-project/default/code/",
-                "has_extracted_text": True,
-            },
-        ) as mock_catalog_ingest,
-        patch("umrs.knowledge.ingest.read_meta", return_value=ready_meta),
-        patch("umrs.knowledge.ingest.regenerate_rollups_for_paths") as mock_rollups,
-    ):
+    with patch(
+        "umrs.knowledge.ingest.catalog_ingest_object",
+        return_value={
+            "action": "ingested",
+            "s3_key": "test/example.py",
+            "modality": "code",
+            "logical_path": "test-project/default/code/",
+            "has_extracted_text": True,
+        },
+    ) as mock_catalog_ingest:
         result = ingester.ingest_object(
             "test-project",
             "test-user",
@@ -341,34 +338,39 @@ def test_ingest_object_refreshes_rollups_per_object(mock_s3_client_with_content,
         )
 
     assert result.status == "ingested"
-    assert mock_catalog_ingest.call_args.kwargs["regenerate_rollups"] is True
-    mock_rollups.assert_not_called()
+    mock_catalog_ingest.assert_called_once()
 
 
 # ── Progress Callback Tests ────────────────────────────────────────────────
 
 
-def test_progress_callback_called(mock_s3_client_with_content, ready_meta):
+def test_progress_callback_called(
+    mock_s3_client_with_content,
+    ready_meta,
+    fake_meta_store,
+):
     """Test that the progress callback is called."""
     config = IngesterConfig(incremental=False)
-    ingester = KnowledgeIngester(mock_s3_client_with_content, "test-bucket", config)
+    ingester = KnowledgeIngester(
+        mock_s3_client_with_content,
+        "test-bucket",
+        config,
+        meta_store=fake_meta_store,
+    )
 
     progress_calls = []
 
     def callback(current, total, s3_key, status):
         progress_calls.append((current, total, s3_key, status))
 
-    with (
-        patch(
-            "umrs.knowledge.ingest.catalog_ingest_object",
-            return_value={
-                "action": "ingested",
-                "s3_key": "test/example.py",
-                "modality": "code",
-                "has_extracted_text": True,
-            },
-        ),
-        patch("umrs.knowledge.ingest.read_meta", return_value=ready_meta),
+    with patch(
+        "umrs.knowledge.ingest.catalog_ingest_object",
+        return_value={
+            "action": "ingested",
+            "s3_key": "test/example.py",
+            "modality": "code",
+            "has_extracted_text": True,
+        },
     ):
         ingester.ingest_project(
             "test-project",
@@ -385,21 +387,18 @@ def test_progress_callback_called(mock_s3_client_with_content, ready_meta):
 # ── Convenience Function Tests ────────────────────────────────────────────
 
 
-def test_ingest_object_convenience_function(ready_meta):
+def test_ingest_object_convenience_function(ready_meta, fake_meta_store):
     """Test the ingest_object convenience function."""
     s3_client = MagicMock()
 
-    with (
-        patch(
-            "umrs.knowledge.ingest.catalog_ingest_object",
-            return_value={
-                "action": "ingested",
-                "s3_key": "test/example.py",
-                "modality": "code",
-                "has_extracted_text": True,
-            },
-        ),
-        patch("umrs.knowledge.ingest.read_meta", return_value=ready_meta),
+    with patch(
+        "umrs.knowledge.ingest.catalog_ingest_object",
+        return_value={
+            "action": "ingested",
+            "s3_key": "test/example.py",
+            "modality": "code",
+            "has_extracted_text": True,
+        },
     ):
         result = ingest_object(
             s3_client,
@@ -408,6 +407,7 @@ def test_ingest_object_convenience_function(ready_meta):
             object_etag="abc123",
             project_id="test-project",
             owner="test-user",
+            meta_store=fake_meta_store,
         )
 
     assert result["action"] == "ingested"
@@ -455,8 +455,6 @@ def test_batch_ingestion_result_defaults():
 
 def test_ingest_object_error_handling(mock_s3_client_with_content):
     """Catalog failures become error results; catalog already wrote ERROR meta."""
-    ingester = KnowledgeIngester(mock_s3_client_with_content, "test-bucket")
-
     from umrs.data_catalog.schema import CatalogObjectMeta, CatalogState
 
     error_meta = CatalogObjectMeta(
@@ -469,13 +467,17 @@ def test_ingest_object_error_handling(mock_s3_client_with_content):
         detected_modality="code",
         error_note="object missing: test/example.py",
     )
+    store = FakeCatalogMetaStore()
+    store.upsert(error_meta, "test-project")
+    ingester = KnowledgeIngester(
+        mock_s3_client_with_content,
+        "test-bucket",
+        meta_store=store,
+    )
 
-    with (
-        patch(
-            "umrs.knowledge.ingest.catalog_ingest_object",
-            side_effect=IngestionError("object missing: test/example.py"),
-        ),
-        patch("umrs.knowledge.ingest.read_meta", return_value=error_meta),
+    with patch(
+        "umrs.knowledge.ingest.catalog_ingest_object",
+        side_effect=IngestionError("object missing: test/example.py"),
     ):
         result = ingester.ingest_object(
             project_id="test-project",

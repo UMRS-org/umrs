@@ -3,20 +3,21 @@
 from __future__ import annotations
 
 import io
-import json
 from typing import Any
 
 from botocore.exceptions import ClientError
 
 from umrs.data_catalog.constants import EXTRACTED_TEXT_PREFIX
 from umrs.data_catalog.ingest import ingest_object
-from umrs.data_catalog.paths import meta_object_key
-from umrs.data_catalog.schema import CatalogObjectMeta
+from umrs.data_catalog.schema import CatalogObjectMeta, CatalogState
+
+from catalog_store_fake import FakeCatalogMetaStore
 
 
 def test_ingest_object_reads_only_configured_sample():
     s3_key = "proj-1/uploads/big.txt"
     client = _CatalogS3Client({s3_key: b"abcdefghijklmnopqrstuvwxyz"})
+    store = FakeCatalogMetaStore()
 
     metrics = ingest_object(
         client,
@@ -26,16 +27,16 @@ def test_ingest_object_reads_only_configured_sample():
         project_id="proj-1",
         owner="user-1",
         max_extract_bytes=4,
+        meta_store=store,
     )
 
     assert client.object_ranges[s3_key] == ["bytes=0-3"]
     assert metrics["sampled_bytes"] == 4
     assert metrics["total_size"] == 26
 
-    meta = CatalogObjectMeta.from_dict(
-        json.loads(client.objects[meta_object_key(s3_key)].decode("utf-8"))
-    )
-    assert meta.state.value == "ready"
+    meta = store.get("proj-1", s3_key)
+    assert meta is not None
+    assert meta.state == CatalogState.READY
     assert meta.tags == ["perception_skipped", "catalog_sample_truncated"]
 
     extracted_keys = [

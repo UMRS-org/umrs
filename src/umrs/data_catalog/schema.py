@@ -18,7 +18,7 @@ class CatalogState(str, Enum):
 
 @dataclass
 class CatalogObjectMeta:
-    """Per-object metadata written to ``_data_catalog/objects/<key>.meta.json``."""
+    """Per-object metadata stored in Postgres ``catalog_objects``."""
 
     s3_key: str
     object_etag: str

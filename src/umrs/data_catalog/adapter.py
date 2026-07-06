@@ -15,14 +15,22 @@ from .artifacts import (
     meta_to_artifact,
     read_artifact_text,
 )
-from .query import _allowed, _score_meta, _tokenize, search_catalog
-from .rollup import _list_object_metas
+from .pg_store import CatalogMetaStore
 from .schema import CatalogObjectMeta, CatalogState
-from .store import read_meta, read_structured_knowledge, write_meta, write_structured_knowledge
+from .scoring import allowed
+from .store import read_structured_knowledge, write_structured_knowledge
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_MAX_CONTENT_BYTES = 10 * 1024 * 1024
+
+
+def _resolve_meta_store(meta_store: CatalogMetaStore | None) -> CatalogMetaStore:
+    if meta_store is not None:
+        return meta_store
+    from umrs.api.catalog_store import get_catalog_meta_store
+
+    return get_catalog_meta_store()
 
 
 class CatalogArtifactAdapter:
@@ -44,6 +52,7 @@ class CatalogArtifactAdapter:
         prefix: str | None = None,
         include_pending: bool = True,
         max_content_bytes: int = _DEFAULT_MAX_CONTENT_BYTES,
+        meta_store: CatalogMetaStore | None = None,
     ) -> None:
         self.s3_client = s3_client
         self.bucket = bucket
@@ -51,10 +60,17 @@ class CatalogArtifactAdapter:
         self.prefix = prefix or f"{project_id}/"
         self.include_pending = include_pending
         self.max_content_bytes = max_content_bytes
+        self._meta_store = meta_store
         self._knowledge_graph: dict[str, Any] = {}
         self._cached_metas: list[CatalogObjectMeta] | None = None
         self._meta_by_s3_key: dict[str, CatalogObjectMeta] | None = None
         self._meta_by_artifact_id: dict[str, CatalogObjectMeta] | None = None
+
+    @property
+    def meta_store(self) -> CatalogMetaStore:
+        if self._meta_store is None:
+            self._meta_store = _resolve_meta_store(None)
+        return self._meta_store
 
     # ── Catalog-native API ───────────────────────────────────────────────
 
@@ -70,35 +86,17 @@ class CatalogArtifactAdapter:
 
     def get_meta(self, s3_key: str) -> CatalogObjectMeta | None:
         """Return catalog metadata for an object after ACL check."""
-        meta = read_meta(self.s3_client, self.bucket, s3_key)
-        if meta is None or not _allowed(meta, self.project_id):
+        meta = self.meta_store.get(self.project_id, s3_key)
+        if meta is None or not allowed(meta, self.project_id):
             return None
         return meta
 
     def search(self, query: str, *, limit: int = 20) -> list[CatalogObjectMeta]:
         """Lexical search over catalog metadata."""
-        tokens = _tokenize(query)
-        if not tokens:
-            return []
-
-        if self._cached_metas is not None:
-            scored: list[tuple[float, CatalogObjectMeta]] = []
-            for meta in self._cached_metas:
-                score = _score_meta(meta, tokens)
-                if score > 0:
-                    scored.append((score, meta))
-            scored.sort(key=lambda item: item[0], reverse=True)
-            return [meta for _, meta in scored[:limit]]
-
+        hits = self.meta_store.search(self.project_id, query, limit=limit)
         return [
             hit.meta
-            for hit in search_catalog(
-                self.s3_client,
-                self.bucket,
-                query=query,
-                project_id=self.project_id,
-                limit=limit,
-            )
+            for hit in hits
             if hit.meta.s3_key.startswith(self.prefix)
         ]
 
@@ -206,7 +204,7 @@ class CatalogArtifactAdapter:
             knowledge,
         )
         meta.extracted_knowledge_ref = ref
-        write_meta(self.s3_client, self.bucket, meta)
+        self.meta_store.upsert(meta, self.project_id)
 
     def load_structured_knowledge(self, artifact_id: str) -> dict[str, Any] | None:
         """Load persisted Phase 4 structured knowledge from catalog refs."""
@@ -233,25 +231,21 @@ class CatalogArtifactAdapter:
     # ── Internal ───────────────────────────────────────────────────────
 
     def _load_metas(self) -> list[CatalogObjectMeta]:
-        """Load and cache project-scoped metas (O(P) LIST, not O(M))."""
+        """Load and cache project-scoped metas from Postgres."""
         if self._cached_metas is not None:
             return self._cached_metas
 
-        metas: list[CatalogObjectMeta] = []
-        for meta in _list_object_metas(
-            self.s3_client,
-            self.bucket,
-            s3_key_prefix=self.prefix,
-        ):
-            if not _allowed(meta, self.project_id):
-                continue
-            if not meta.s3_key.startswith(self.prefix):
-                continue
-            if meta.state == CatalogState.ERROR:
-                continue
-            if not self.include_pending and meta.state == CatalogState.PENDING:
-                continue
-            metas.append(meta)
+        metas = self.meta_store.list_by_project(
+            self.project_id,
+            prefix=self.prefix,
+            include_pending=self.include_pending,
+            include_error=False,
+        )
+        metas = [
+            meta
+            for meta in metas
+            if meta.s3_key.startswith(self.prefix)
+        ]
 
         self._cached_metas = metas
         self._meta_by_s3_key = {meta.s3_key: meta for meta in metas}
