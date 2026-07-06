@@ -49,10 +49,43 @@ class ModelStore:
         conn: psycopg2.extensions.connection,
         path_validator: PathValidator | None = None,
         acl_enforcer: ACLEnforcer | None = None,
+        pool: "psycopg2.pool.AbstractConnectionPool | None" = None,
     ):
-        self.conn = conn
+        self._conn = conn
+        self._pool = pool
         self.path_validator = path_validator or PathValidator()
         self.acl = acl_enforcer or ACLEnforcer()
+
+    @property
+    def conn(self) -> psycopg2.extensions.connection:
+        """Return a live connection, reconnecting if stale.
+
+        psycopg2 connections held for long periods (e.g. the model store's
+        persistent connection) can go stale when Postgres drops idle
+        sessions or the network interrupts.  Before every cursor() call
+        we check ``conn.closed`` and, if the connection is dead, borrow a
+        fresh one from the pool (if available) or reconnect directly.
+        """
+        if self._conn is None or self._conn.closed:
+            if self._pool is not None:
+                # Return the dead connection to the pool (closed) and get a new one
+                if self._conn is not None:
+                    try:
+                        self._pool.putconn(self._conn, close=True)
+                    except Exception:
+                        pass
+                self._conn = self._pool.getconn()
+            else:
+                # No pool — reconnect with the same DSN
+                if self._conn is not None:
+                    try:
+                        self._conn.close()
+                    except Exception:
+                        pass
+                self._conn = psycopg2.connect(
+                    dbname=self._conn.info.dbname if self._conn else None,
+                )
+        return self._conn
 
     # -------------------------------------------------------------------------
     # Create
