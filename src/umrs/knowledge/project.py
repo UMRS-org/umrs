@@ -27,7 +27,6 @@ Usage:
 from __future__ import annotations
 
 import logging
-import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -40,10 +39,12 @@ from .coverage import (
 )
 from .external import ExternalKnowledgeSearcher
 from .extract import ExtractedKnowledge, KnowledgeExtractor
+from .ir import EXTRACTOR_VERSION, KnowledgeIR, build_knowledge_ir
 from .knowledge_driven_planner import KnowledgeDrivenPlanner
 from .link import KnowledgeGraph, KnowledgeLinker
 from .loop import AutonomousResearchLoop, ResearchLoop
 from .memory import ScientificMemoryManager, ScientificMemoryStore
+from .ocr import get_ocr_backend, resolve_content_with_ocr
 from .planner import AutonomousResearchPlanner, ResearchPlan
 from .readiness import (
     ResearchReadinessGate,
@@ -55,8 +56,24 @@ from .local_ingest import (
     upload_local_files,
     uploads_prefix,
 )
+from .persistence import (
+    knowledge_ir_dir,
+    read_all_local_compiled_skills,
+    read_local_skill_reviews,
+    write_local_compiled_skill,
+    write_local_knowledge_ir,
+    write_local_skill_reviews,
+)
+from .router import default_local_router
 from ..data_catalog.adapter import CatalogArtifactAdapter
 from .catalog_store import CatalogKnowledgeStore
+from .compiled_skill import (
+    CompiledSkill,
+    SkillReview,
+    compile_skills_from_irs,
+    effective_status,
+    review_decision,
+)
 from .verify import (
     InMemoryKnowledgeStore,
     KnowledgeStore,
@@ -189,6 +206,9 @@ class ResearchProject:
         # Extracted knowledge per artifact_id
         self._extracted_knowledge: dict[str, ExtractedKnowledge] = {}
 
+        # Canonical KnowledgeIR per artifact_id (immutable persistence record)
+        self._knowledge_ir: dict[str, KnowledgeIR] = {}
+
         # Scientific memory (auto-registered artifacts) — UMRS API adapter
         memory_storage = (
             Path(storage_path) / "memory.json" if storage_path else None
@@ -211,6 +231,7 @@ class ResearchProject:
 
         # ── Engine instances (created on demand) ─────────────────────────
         self._extractor = KnowledgeExtractor()
+        self._ocr_backend = get_ocr_backend()
         self._linker = KnowledgeLinker()
         self._coverage_calculator = CoverageCalculator()
         self._external_searcher = ExternalKnowledgeSearcher()
@@ -295,33 +316,7 @@ class ResearchProject:
         last_knowledge: ExtractedKnowledge | None = None
 
         for artifact in artifacts:
-            artifact_id = artifact.get("artifact_id", "")
-            content = artifact.get("content", b"")
-            if not content:
-                loaded = self._knowledge_store.get_artifact(artifact_id)
-                if loaded is not None:
-                    content = loaded.get("content", b"")
-            if isinstance(content, str):
-                content = content.encode("utf-8")
-            filename = artifact.get("filename", "")
-            artifact_type = artifact.get("artifact_type", "text")
-
-            knowledge = self._extractor.extract(
-                artifact_id=artifact_id,
-                artifact_type=artifact_type,
-                filename=filename,
-                content=content,
-            )
-            self._extracted_knowledge[artifact_id] = knowledge
-            self._knowledge_store.add_extracted_knowledge(artifact_id, knowledge.to_dict())
-            last_knowledge = knowledge
-
-            # Register extracted knowledge in scientific memory
-            self._memory_manager.register_analysis_result(
-                project_id=self.project_id,
-                analysis=knowledge.summary or f"Extracted knowledge for {filename}",
-                summary=f"Knowledge extracted from {filename}",
-            )
+            last_knowledge = self._understand_artifact(artifact)
 
         self._persist_extracted_knowledge_to_umrs()
 
@@ -330,19 +325,10 @@ class ResearchProject:
         self._knowledge_graph = self._linker.link(artifact_dicts)
         self._sync_graph_to_store()
         self._sync_graph_to_umrs_adapter()
+        self._compile_derived_indexes()
 
         # Calculate coverage dashboard
-        coverage_artifacts = []
-        for artifact in artifacts:
-            artifact_id = artifact.get("artifact_id", "")
-            knowledge = self._extracted_knowledge.get(artifact_id)
-            coverage_artifacts.append({
-                "artifact_id": artifact_id,
-                "artifact_type": artifact.get("artifact_type", "text"),
-                "filename": artifact.get("filename", ""),
-                "metadata": artifact.get("metadata", {}),
-                "extracted_knowledge": knowledge,
-            })
+        coverage_artifacts = self._build_coverage_artifacts(artifacts)
         self._coverage_dashboard = self._coverage_calculator.calculate(coverage_artifacts)
 
         self.updated_at = datetime.now(timezone.utc).isoformat()
@@ -365,6 +351,57 @@ class ResearchProject:
             artifact_type="text",
             filename="",
         )
+
+    def _understand_artifact(self, artifact: dict[str, Any]) -> ExtractedKnowledge:
+        """Extract, store, and persist knowledge for a single artifact."""
+        artifact_id = artifact.get("artifact_id", "")
+        content = artifact.get("content", b"")
+        if not content:
+            loaded = self._knowledge_store.get_artifact(artifact_id)
+            if loaded is not None:
+                content = loaded.get("content", b"")
+        if isinstance(content, str):
+            content = content.encode("utf-8")
+        filename = artifact.get("filename", "")
+        artifact_type = artifact.get("artifact_type", "text")
+
+        resolved_content, ocr_engine = resolve_content_with_ocr(
+            filename, content, self._ocr_backend
+        )
+
+        knowledge = self._extractor.extract(
+            artifact_id=artifact_id,
+            artifact_type=artifact_type,
+            filename=filename,
+            content=resolved_content,
+        )
+        self._extracted_knowledge[artifact_id] = knowledge
+        self._knowledge_store.add_extracted_knowledge(artifact_id, knowledge.to_dict())
+        self._persist_knowledge_ir(
+            artifact_id, artifact_type, content, knowledge, ocr_engine=ocr_engine
+        )
+
+        # Register extracted knowledge in scientific memory
+        self._memory_manager.register_analysis_result(
+            project_id=self.project_id,
+            analysis=knowledge.summary or f"Extracted knowledge for {filename}",
+            summary=f"Knowledge extracted from {filename}",
+        )
+        return knowledge
+
+    def _build_coverage_artifacts(self, artifacts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Assemble the artifact records used by the coverage calculator."""
+        coverage_artifacts = []
+        for artifact in artifacts:
+            artifact_id = artifact.get("artifact_id", "")
+            coverage_artifacts.append({
+                "artifact_id": artifact_id,
+                "artifact_type": artifact.get("artifact_type", "text"),
+                "filename": artifact.get("filename", ""),
+                "metadata": artifact.get("metadata", {}),
+                "extracted_knowledge": self._extracted_knowledge.get(artifact_id),
+            })
+        return coverage_artifacts
 
     def verify(self, question: str) -> VerificationAnswer:
         """Answer a knowledge verification question with evidence.
@@ -783,6 +820,102 @@ class ResearchProject:
             return
         self._umrs_knowledge_graph.load_from_linker_graph(self._knowledge_graph)
 
+    def _persist_knowledge_ir(
+        self,
+        artifact_id: str,
+        artifact_type: str,
+        content: bytes,
+        knowledge: ExtractedKnowledge,
+        *,
+        ocr_engine: str | None = None,
+    ) -> None:
+        """Build the canonical KnowledgeIR and persist it write-once (local mode)."""
+        ir = build_knowledge_ir(
+            project_id=self.project_id,
+            artifact_id=artifact_id,
+            artifact_type=artifact_type,
+            content=content,
+            extracted=knowledge.to_dict(),
+            extractor_version=EXTRACTOR_VERSION,
+            ocr_engine=ocr_engine,
+        )
+        self._knowledge_ir[artifact_id] = ir
+        if self._storage_path is None:
+            return
+        try:
+            write_local_knowledge_ir(knowledge_ir_dir(self._storage_path), ir)
+        except OSError as exc:
+            logger.warning("Failed to persist KnowledgeIR for %s: %s", artifact_id, exc)
+
+    def _compile_derived_indexes(self) -> None:
+        """Compile derived indexes (knowledge graph) from the canonical IRs.
+
+        Phase 1: the knowledge graph is a *derived* index, regenerable from the
+        canonical ``KnowledgeIR`` records via the ``KnowledgeRouter``. Local mode
+        only; the in-memory graph and UMRS adapter are synced separately.
+        """
+        if self._storage_path is None or not self._knowledge_ir:
+            return
+        try:
+            router = default_local_router(self._storage_path)
+            router.regenerate(list(self._knowledge_ir.values()))
+        except OSError as exc:
+            logger.warning("Failed to compile derived indexes: %s", exc)
+
+    # ── Continuous Learning: Skill Compilation (Phase 3) ─────────────────────
+
+    def compile_knowledge_skills(self) -> list[CompiledSkill]:
+        """Compile human-reviewable procedural skills from canonical IRs.
+
+        Skills are always produced in the ``pending_review`` state — the
+        platform never auto-approves learned knowledge. Compiled skills are
+        persisted write-once (local mode); recompiling the same understanding is
+        idempotent because ``skill_id`` hashes the source IR lineage.
+        """
+        skills = compile_skills_from_irs(list(self._knowledge_ir.values()))
+        if self._storage_path is not None:
+            for skill in skills:
+                try:
+                    write_local_compiled_skill(self._storage_path, skill)
+                except OSError as exc:
+                    logger.warning(
+                        "Failed to persist compiled skill %s: %s", skill.skill_id, exc
+                    )
+        return skills
+
+    def list_compiled_skills(self) -> list[dict[str, Any]]:
+        """List compiled skills with their effective (post-review) status."""
+        if self._storage_path is None:
+            return []
+        skills = read_all_local_compiled_skills(self._storage_path)
+        reviews = read_local_skill_reviews(self._storage_path)
+        result: list[dict[str, Any]] = []
+        for skill in skills:
+            payload = skill.to_dict()
+            payload["status"] = effective_status(skill, reviews)
+            result.append(payload)
+        return result
+
+    def review_compiled_skill(
+        self,
+        skill_id: str,
+        status: str,
+        *,
+        reviewer: str = "",
+        note: str = "",
+    ) -> SkillReview:
+        """Record a human review decision (approve/reject) for a compiled skill.
+
+        Review decisions are stored separately from the immutable compiled
+        skills, as mutable latest-wins state.
+        """
+        review = review_decision(skill_id, status, reviewer=reviewer, note=note)
+        if self._storage_path is not None:
+            reviews = read_local_skill_reviews(self._storage_path)
+            reviews[skill_id] = review
+            write_local_skill_reviews(self._storage_path, reviews)
+        return review
+
     def _persist_extracted_knowledge_to_umrs(self) -> None:
         """Write structured extraction output to the UMRS knowledge model store."""
         from umrs.knowledge_model import KnowledgeObjectType
@@ -800,15 +933,23 @@ class ResearchProject:
                 knowledge.artifact_type,
                 KnowledgeObjectType.REFERENCE,
             )
+            metadata = {
+                "artifact_id": artifact_id,
+                "filename": knowledge.filename,
+                "artifact_type": knowledge.artifact_type,
+            }
+            # Lineage: link the derived knowledge_model row back to the
+            # canonical KnowledgeIR record it was compiled from.
+            ir = self._knowledge_ir.get(artifact_id)
+            if ir is not None:
+                metadata["ir_id"] = ir.ir_id
+                metadata["content_hash"] = ir.content_hash
+                metadata["extractor_version"] = ir.extractor_version
             self._umrs_knowledge_model.create_object(
                 project_id=self.project_id,
                 object_type=object_type,
                 content=knowledge.to_dict(),
-                metadata={
-                    "artifact_id": artifact_id,
-                    "filename": knowledge.filename,
-                    "artifact_type": knowledge.artifact_type,
-                },
+                metadata=metadata,
             )
 
     # ── Internal: Phase Transitions ──────────────────────────────────────────
