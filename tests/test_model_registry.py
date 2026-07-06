@@ -13,12 +13,15 @@ from datetime import datetime
 from unittest.mock import MagicMock
 
 from umrs.model_registry.models import (
+    ExecutionAuthority,
     ModelEntry,
     ModelScope,
     ModelStatus,
     ModelType,
     ServingProfile,
+    execution_authority_from_row,
     generate_model_id,
+    model_ref_from_json,
 )
 from umrs.model_registry.store import (
     AccessContext,
@@ -644,6 +647,96 @@ class TestModelStore:
 
         with pytest.raises(PermissionDeniedError, match="staging"):
             self.store.resolve_model_path("mdl-123", self.admin_ctx)
+
+    def test_list_models_skips_corrupt_row(self):
+        """One bad catalog row must not break the entire model list."""
+        good_row = (
+            "mdl-good",
+            "good-model",
+            "system",
+            None,
+            None,
+            "/models/good",
+            "llm",
+            None,
+            None,
+            {},
+            "available",
+            None,
+            "compose",
+            datetime.now(),
+            datetime.now(),
+            {},
+            {},
+        )
+        bad_row = (
+            "mdl-bad",
+            "bad-model",
+            "system",
+            None,
+            None,
+            "/models/bad",
+            "not-a-type",
+            None,
+            None,
+            {},
+            "available",
+            None,
+            "compose",
+            datetime.now(),
+            datetime.now(),
+            {},
+            {},
+        )
+        self.mock_cursor.fetchall.return_value = [good_row, bad_row]
+
+        models = self.store.list_models(self.admin_ctx)
+
+        assert len(models) == 1
+        assert models[0].name == "good-model"
+
+
+# =============================================================================
+# ModelEntry row parsing
+# =============================================================================
+
+
+class TestModelEntryFromRow:
+    def test_model_ref_from_json_ignores_invalid_payload(self):
+        assert model_ref_from_json({}) is None
+        assert model_ref_from_json({"path": "/x"}) is None
+        assert model_ref_from_json(
+            {"type": "filesystem_path", "path": "/models/x"}
+        ) is not None
+
+    def test_execution_authority_from_row_defaults_on_invalid(self):
+        assert execution_authority_from_row("slurm") == ExecutionAuthority.SLURM
+        assert execution_authority_from_row("podman") == ExecutionAuthority.COMPOSE
+
+    def test_from_row_tolerates_invalid_model_ref(self):
+        row = (
+            "mdl-1",
+            "Kimi-K2.7-Code",
+            "system",
+            None,
+            None,
+            "/models/kimi",
+            "llm",
+            None,
+            None,
+            {},
+            "available",
+            {"path": "/models/kimi"},
+            "compose",
+            datetime.now(),
+            datetime.now(),
+            {"supports_vision": True},
+            {},
+        )
+        entry = ModelEntry.from_row(row)
+        assert entry.name == "Kimi-K2.7-Code"
+        assert entry.model_ref is None
+        assert entry.capabilities.supports_vision is True
 
 
 # =============================================================================
