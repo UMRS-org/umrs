@@ -1,0 +1,247 @@
+# yaml-language-server: $schema=../../src/umrs/orchestrator/site-config.schema.json
+# ─────────────────────────────────────────────────────────────
+# UMRS Site Configuration — bdrt (NVIDIA GB10 DGX-Spark cluster)
+# ─────────────────────────────────────────────────────────────
+# Login node:  nimbus-0 (nimbus-0.r-ccs10.riken.jp)
+# Compute:     Slurm partitions `spark` and `spark-double`
+#              (dgx-spark-[0-1]; NVIDIA GB10 Grace-Blackwell, aarch64).
+#
+# This file replaces the hardcoded paths scattered across
+# serve-model.slurm, env.example, and environment variables.
+#
+# Loading priority:
+#   1. UMRS_SITE_CONFIG=/path/to/this/file
+#   2. ./site.yaml  (in CWD when starting UMRS)
+#   3. ~/.config/umrs/site.yaml
+# ─────────────────────────────────────────────────────────────
+
+name: bdrt
+description: >-
+  RIKEN bdrt — NVIDIA GB10 DGX-Spark aarch64 nodes (dgx-spark-[0-1]),
+  Slurm scheduler on login node nimbus-0, rootless Podman shared filesystem.
+
+scheduler:
+  kind: slurm-podman
+  partition: spark,spark-double  # dgx-spark-[0-1] (GB10 Grace-Blackwell)
+  account: ""                   # no Slurm account required on the DGX-Spark cluster
+  qos: ""
+  time_limit: "04:00:00"
+  gpus: 0  # single GB10 per node; allocate the node implicitly (partition may reject --gres/--gpus)
+  cpus: 8
+  memory: ""  # omit --mem; let the scheduler assign node defaults
+  require_user_slurm_account: false
+
+runtime:
+  kind: podman-compose
+  rivault_dir: /home/mnagaso/ai4s-platform/umrs/src/umrs/mini-rivault-llm
+  repo_dir: /home/mnagaso/ai4s-platform/umrs
+  vision_image: umrs-vision:latest
+  compose_file: ""                       # defaults to serve-model.yaml inside rivault_dir
+  profiles:
+    - harness
+    - vllm
+    - vision-bentoml
+    - litellm-db
+  gpu_passthrough: auto                  # try CDI first, fall back to device mapping
+  cdi_spec: /var/run/cdi/nvidia.yaml
+  cgroup_manager: cgroupfs
+  storage_root: ""                       # auto-set to /var/tmp/podman_$USER/storage
+  # vision_stack: jens                   # uncomment to use Jens's VisionFrontend stack (tmp/jens_stack/internal_genAI/)
+
+storage:
+  model_cache_dir: /home/${USER}/umrs_models/hf
+  sam3_model_path: /home/${USER}/umrs_models/sam3.1
+  # HMAE is a user-specific private model.
+  # Configure per-user via env overrides (HMAE_MODEL_PATH, HMAE_CONFIG_PATH, HMAE_CHECKPOINT).
+  hmae_model_path: ""
+  hmae_config_path: ""
+  hmae_checkpoint: ""
+  vision_tarball: /home/${USER}/umrs_models/umrs-vision.tar  # base path; wrapper appends -arm64.tar or -amd64.tar
+  user_model_path: /home/${USER}/umrs_models
+  s3_tunnel_host: ""                     # auto-set to $SLURM_SUBMIT_HOST
+  s3_tunnel_port: 9000
+
+network:
+  litellm_port: 8001
+  litellm_master_key: ""  # Set LITELLM_MASTER_KEY in .env or operator environment.
+  port_range_min: 11434
+  port_range_max: 11534
+  port_strategy: static_range
+
+vllm:
+  model: intfloat/e5-base-v2
+  docker_tag: cu130-nightly-aarch64
+  # GB10 nodes have 121.63 GiB VRAM; ~97 GiB free after harness services and
+  # vision sidecar initialise CUDA.  0.78 keeps us just under the free ceiling.
+  gpu_mem_util: 0.78
+  max_model_len: 512
+  max_num_seqs: 4
+  tensor_parallel_size: 1
+
+# Workflow step execution backend.
+# When kind="slurm" each workflow step is submitted as a Slurm job
+# to a GPU compute node (SlurmStepExecutor). This is the correct
+# mode for RCCS / AI4S deployments where UMRS runs on a login node
+# and steps must execute on compute nodes with GPUs.
+step_executor:
+  kind: slurm                                 # Submit steps as Slurm jobs to GPU compute nodes
+  partition: spark,spark-double               # GB10 DGX-Spark partitions
+  gpus: 0                                     # single GB10 per node; allocate implicitly
+  cpus: 8                                     # 8 CPUs per step
+  memory: ""                                  # omit --mem; let the scheduler assign node defaults
+  time_limit: "01:00:00"                      # 1 hour per step
+  account: ""                                 # no Slurm account required
+  image: ""                                   # No default image; use routing_hints.image
+  gpu: true                                   # Attach GPU by default
+
+database:
+  host: localhost
+  port: 5432
+  superuser: umrs
+  superuser_password: ""  # Set POSTGRES_PASSWORD or DB_SUPERUSER_PASSWORD in .env.
+  user_password: ""
+  registry_dsn: ""  # start.sh derives UMRS_REGISTRY_POSTGRES_DSN from runtime env.
+
+# ─────────────────────────────────────────────────────────────
+# Per-partition profiles — eliminates fragile runtime detection
+# of OCI runtime, userns_mode, network backend, and GPU vendor.
+#
+# The wrapper looks up the profile for the assigned Slurm
+# partition and applies the values directly instead of probing
+# podman info / nvidia-smi / rocm-smi on every job startup.
+# ─────────────────────────────────────────────────────────────
+partition_profiles:
+  # ── aarch64 NVIDIA (GB10 DGX-Spark) ──
+  spark:
+    arch: aarch64
+    gpu_vendor: nvidia
+    gpu_memory_gb: 128          # GB10 Grace-Blackwell unified 128 GiB
+    oci_runtime: runc
+    userns_mode: host
+    network_backend: netavark
+    vllm_docker_tag: cu130-nightly-aarch64
+    gpus: 0                    # single GB10 per node; allocate implicitly
+    needs_netavark_switch: false
+  spark-double:
+    arch: aarch64
+    gpu_vendor: nvidia
+    gpu_memory_gb: 128
+    oci_runtime: runc
+    userns_mode: host
+    network_backend: netavark
+    vllm_docker_tag: cu130-nightly-aarch64
+    gpus: 0
+    needs_netavark_switch: false
+
+  # ── x86_64 NVIDIA ──
+  a100:
+    arch: x86_64
+    gpu_vendor: nvidia
+    gpu_memory_gb: 80            # A100 80 GiB
+    oci_runtime: crun
+    userns_mode: "keep-id:uid=0,gid=0"
+    network_backend: netavark
+    vllm_docker_tag: cu130-nightly-x86_64
+    gpus: 1
+    needs_netavark_switch: true
+  ai-h100l:
+    arch: x86_64
+    gpu_vendor: nvidia
+    gpu_memory_gb: 80            # H100 80 GiB
+    oci_runtime: crun
+    userns_mode: "keep-id:uid=0,gid=0"
+    network_backend: netavark
+    vllm_docker_tag: cu130-nightly-x86_64
+    gpus: 1
+    needs_netavark_switch: true
+  ai-h100l-pu:
+    arch: x86_64
+    gpu_vendor: nvidia
+    gpu_memory_gb: 80            # H100 80 GiB
+    oci_runtime: crun
+    userns_mode: "keep-id:uid=0,gid=0"
+    network_backend: netavark
+    vllm_docker_tag: cu130-nightly-x86_64
+    gpus: 1
+    needs_netavark_switch: true
+  ai-h200-brc:
+    arch: x86_64
+    gpu_vendor: nvidia
+    gpu_memory_gb: 141           # H200 141 GiB HBM3e
+    oci_runtime: crun
+    userns_mode: "keep-id:uid=0,gid=0"
+    network_backend: netavark
+    vllm_docker_tag: cu130-nightly-x86_64
+    gpus: 1
+    needs_netavark_switch: true
+  ai-l40s:
+    arch: x86_64
+    gpu_vendor: nvidia
+    gpu_memory_gb: 48            # L40S 48 GiB
+    oci_runtime: crun
+    userns_mode: "keep-id:uid=0,gid=0"
+    network_backend: netavark
+    vllm_docker_tag: cu130-nightly-x86_64
+    gpus: 1
+    needs_netavark_switch: true
+  qc-a100:
+    arch: x86_64
+    gpu_vendor: nvidia
+    gpu_memory_gb: 80            # A100 80 GiB
+    oci_runtime: crun
+    userns_mode: "keep-id:uid=0,gid=0"
+    network_backend: netavark
+    vllm_docker_tag: cu130-nightly-x86_64
+    gpus: 1
+    needs_netavark_switch: true
+  qc-gh200:
+    arch: x86_64
+    gpu_vendor: nvidia
+    gpu_memory_gb: 96            # GH200 96 GiB HBM3
+    oci_runtime: crun
+    userns_mode: "keep-id:uid=0,gid=0"
+    network_backend: netavark
+    vllm_docker_tag: cu130-nightly-x86_64
+    gpus: 1
+    needs_netavark_switch: true
+
+  # ── x86_64 AMD (ROCm) ──
+  qc-mi250:
+    arch: x86_64
+    gpu_vendor: amd
+    gpu_memory_gb: 128           # MI250X 128 GiB HBM2e
+    oci_runtime: crun
+    userns_mode: "keep-id:uid=0,gid=0"
+    network_backend: netavark
+    vllm_docker_tag: ""        # ROCm vLLM images TBD
+    gpus: 1
+    needs_netavark_switch: true
+  mi100:
+    arch: x86_64
+    gpu_vendor: amd
+    gpu_memory_gb: 32            # MI100 32 GiB HBM2
+    oci_runtime: crun
+    userns_mode: "keep-id:uid=0,gid=0"
+    network_backend: netavark
+    vllm_docker_tag: ""
+    gpus: 1
+    needs_netavark_switch: true
+  fs-mi300a:
+    arch: x86_64
+    gpu_vendor: amd
+    gpu_memory_gb: 128           # MI300A 128 GiB unified HBM3
+    oci_runtime: crun
+    userns_mode: "keep-id:uid=0,gid=0"
+    network_backend: netavark
+    vllm_docker_tag: ""
+    gpus: 1
+    needs_netavark_switch: true
+  fs-mi300x:
+    arch: x86_64
+    gpu_vendor: amd
+    oci_runtime: crun
+    userns_mode: "keep-id:uid=0,gid=0"
+    network_backend: netavark
+    vllm_docker_tag: ""
+    gpus: 1
+    needs_netavark_switch: true
