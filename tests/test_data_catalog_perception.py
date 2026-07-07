@@ -9,8 +9,9 @@ from typing import Any
 
 from umrs.data_catalog import perception
 from umrs.data_catalog.ingest import ingest_object
-from umrs.data_catalog.paths import meta_object_key
 from umrs.data_catalog.schema import CatalogObjectMeta
+
+from catalog_store_fake import FakeCatalogMetaStore
 
 
 @dataclass
@@ -148,6 +149,7 @@ def test_ingest_tags_perception_skipped_when_unavailable(monkeypatch):
 
     s3_key = "proj-1/uploads/notes.txt"
     client = _CatalogS3Client({s3_key: b"batch 3 yield 42%"})
+    store = FakeCatalogMetaStore()
 
     ingest_object(
         client,
@@ -156,9 +158,10 @@ def test_ingest_tags_perception_skipped_when_unavailable(monkeypatch):
         object_etag="abc",
         project_id="proj-1",
         owner="user-1",
+        meta_store=store,
     )
 
-    meta = _read_meta(client, s3_key)
+    meta = store.get("proj-1", s3_key)
     assert meta.state.value == "ready"
     assert "perception_skipped" in meta.tags
 
@@ -175,6 +178,7 @@ def test_ingest_applies_vision_caption(monkeypatch):
 
     s3_key = "proj-1/uploads/cells.png"
     client = _CatalogS3Client({s3_key: b"\x89PNG\r\n\x1a\n fake-image-bytes"})
+    store = FakeCatalogMetaStore()
 
     ingest_object(
         client,
@@ -183,9 +187,10 @@ def test_ingest_applies_vision_caption(monkeypatch):
         object_etag="abc",
         project_id="proj-1",
         owner="user-1",
+        meta_store=store,
     )
 
-    meta = _read_meta(client, s3_key)
+    meta = store.get("proj-1", s3_key)
     assert meta.state.value == "ready"
     assert meta.detected_modality == "image"
     assert "vision_captioned" in meta.tags
@@ -205,6 +210,7 @@ def test_ingest_structured_keeps_deterministic_summary_when_llm_runs(monkeypatch
     csv_body = b"col_a,col_b\n1,2\n"
     s3_key = "proj-1/uploads/batch.csv"
     client = _CatalogS3Client({s3_key: csv_body})
+    store = FakeCatalogMetaStore()
 
     ingest_object(
         client,
@@ -213,20 +219,15 @@ def test_ingest_structured_keeps_deterministic_summary_when_llm_runs(monkeypatch
         object_etag="abc",
         project_id="proj-1",
         owner="user-1",
+        meta_store=store,
     )
 
-    meta = _read_meta(client, s3_key)
+    meta = store.get("proj-1", s3_key)
     assert meta.detected_modality == "structured"
     assert "llm_summarized" in meta.tags
     assert meta.perception_summary == "Narrative about batch yields."
     assert meta.summary == meta.deterministic_summary
     assert "col_a" in meta.deterministic_summary or "col_a" in meta.tags
-
-
-def _read_meta(client: "_CatalogS3Client", s3_key: str) -> CatalogObjectMeta:
-    return CatalogObjectMeta.from_dict(
-        json.loads(client.objects[meta_object_key(s3_key)].decode("utf-8"))
-    )
 
 
 class _CatalogS3Client:

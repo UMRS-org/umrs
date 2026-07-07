@@ -57,9 +57,3 @@ def logical_path_for_object(
         f"{encode_path_component(experiment)}/"
         f"{encode_path_component(modality)}/"
     )
-
-
-def dir_summary_key(logical_path: str) -> str:
-    """S3 key for a directory rollup ``summary.json``."""
-    normalized = logical_path if logical_path.endswith("/") else f"{logical_path}/"
-    return f"_data_catalog/dirs/{normalized}summary.json"

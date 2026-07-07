@@ -4,6 +4,7 @@ Data catalog API — agent-facing search and raw read.
 Endpoints:
 - GET /umrs/catalog/search
 - GET /umrs/catalog/read
+- GET /umrs/catalog/stats
 """
 
 from __future__ import annotations
@@ -14,12 +15,23 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
+from umrs.api.catalog_store import CatalogStoreUnavailable, get_catalog_meta_store
 from umrs.api.files import S3Config, get_project_id, get_s3_config
 from umrs.data_catalog.query import read_catalog_object, search_catalog
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/umrs/catalog", tags=["catalog"])
+
+
+def _require_catalog_meta_store():
+    try:
+        return get_catalog_meta_store()
+    except CatalogStoreUnavailable as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
 
 
 class CatalogEntryResponse(BaseModel):
@@ -52,6 +64,13 @@ class CatalogReadResponse(BaseModel):
     meta: dict[str, Any] = Field(default_factory=dict)
 
 
+class CatalogStatsResponse(BaseModel):
+    project_id: str
+    object_count: int
+    states: dict[str, int] = Field(default_factory=dict)
+    modalities: dict[str, int] = Field(default_factory=dict)
+
+
 @router.get(
     "/search",
     response_model=CatalogSearchResponse,
@@ -61,13 +80,11 @@ async def catalog_search(
     q: str = Query(..., min_length=1, description="Search query"),
     limit: int = Query(20, ge=1, le=100),
     project_id: str = Depends(get_project_id),
-    config: S3Config = Depends(get_s3_config),
 ) -> CatalogSearchResponse:
     """Grep catalog metadata scoped to the caller's project."""
-    s3_client = config.get_client()
+    meta_store = _require_catalog_meta_store()
     hits = search_catalog(
-        s3_client,
-        config.bucket,
+        meta_store,
         query=q,
         project_id=project_id,
         limit=limit,
@@ -107,11 +124,13 @@ async def catalog_read(
     config: S3Config = Depends(get_s3_config),
 ) -> CatalogReadResponse:
     """Read raw object bytes with JWT/project ACL enforcement."""
+    meta_store = _require_catalog_meta_store()
     s3_client = config.get_client()
     try:
         payload = read_catalog_object(
             s3_client,
             config.bucket,
+            meta_store,
             s3_key=s3_key,
             project_id=project_id,
             offset=offset,
@@ -130,3 +149,22 @@ async def catalog_read(
         ) from exc
 
     return CatalogReadResponse(**payload)
+
+
+@router.get(
+    "/stats",
+    response_model=CatalogStatsResponse,
+    summary="Catalog object counts by state and modality",
+)
+async def catalog_stats(
+    project_id: str = Depends(get_project_id),
+) -> CatalogStatsResponse:
+    """Return aggregate catalog stats for a project (replaces S3 manifest)."""
+    meta_store = _require_catalog_meta_store()
+    stats = meta_store.project_stats(project_id)
+    return CatalogStatsResponse(
+        project_id=stats["project_id"],
+        object_count=stats["object_count"],
+        states=stats["states"],
+        modalities=stats["modalities"],
+    )

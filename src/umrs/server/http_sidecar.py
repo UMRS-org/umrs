@@ -66,6 +66,16 @@ def _build_db_pool(app):
         return None
 
 
+def _init_catalog_meta_store(db_pool):
+    """Initialize the catalog metadata store."""
+    from umrs.api.catalog_store import init_catalog_meta_store
+
+    if init_catalog_meta_store(db_pool) is None:
+        logger.warning(
+            "Catalog store unavailable in HTTP sidecar — /umrs/catalog/* will return 503"
+        )
+
+
 def _init_job_store(db_pool):
     """Initialize the UMRS job store."""
     try:
@@ -488,6 +498,7 @@ def _create_app():
     db_pool = _build_db_pool(app)
     if db_pool is not None:
         _init_job_store(db_pool)
+        _init_catalog_meta_store(db_pool)
         _init_model_store(app, db_pool)
         _init_mcp_store(app, db_pool)
         _init_audit_store(app, db_pool)

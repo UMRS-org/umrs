@@ -478,6 +478,9 @@ def build_durable_job_backend_from_env() -> DurableJobCommandBackend | None:
     """Best-effort bootstrap of the durable job backend from process env."""
     try:
         db_pool = build_durable_job_db_pool_from_env()
+        from umrs.api.catalog_store import init_catalog_meta_store
+
+        init_catalog_meta_store(db_pool)
         job_store = JobStore(db_pool)
         logger.info("Durable ZMQ job backend enabled")
         return DurableJobCommandBackend(job_store, db_pool=db_pool)

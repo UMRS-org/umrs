@@ -6,12 +6,21 @@ import io
 import json
 from typing import Any
 
-from umrs.data_catalog.paths import meta_object_key
-from umrs.data_catalog.schema import CatalogObjectMeta, CatalogState
+from botocore.exceptions import ClientError
+from catalog_store_fake import FakeCatalogMetaStore
 from umrs.data_catalog.adapter import CatalogArtifactAdapter
 from umrs.data_catalog.artifacts import artifact_id_for_meta
+from umrs.data_catalog.paths import meta_object_key
+from umrs.data_catalog.schema import CatalogObjectMeta, CatalogState
 from umrs.knowledge.catalog_store import CatalogKnowledgeStore
-from botocore.exceptions import ClientError
+
+
+def _adapter(client: Any, project_id: str) -> CatalogArtifactAdapter:
+    """Build an adapter with a fake Postgres-SoT meta store seeded from S3 metas."""
+    store = FakeCatalogMetaStore()
+    for meta in client.metas.values():
+        store.upsert(meta, project_id)
+    return CatalogArtifactAdapter(client, "bucket", project_id, meta_store=store)
 
 
 def test_extracted_knowledge_overlay():
@@ -20,7 +29,7 @@ def test_extracted_knowledge_overlay():
         {py_key: b"import torch\n"},
         {py_key: _ready_meta(py_key, "proj-1", "code", summary="torch model")},
     )
-    store = CatalogKnowledgeStore(CatalogArtifactAdapter(client, "bucket", "proj-1"))
+    store = CatalogKnowledgeStore(_adapter(client, "proj-1"))
 
     store.add_extracted_knowledge("art-1", {"summary": "overlay summary"})
     assert store.get_extracted_knowledge("art-1") == {"summary": "overlay summary"}
@@ -30,7 +39,9 @@ def test_extracted_knowledge_persisted_to_catalog():
     py_key = "proj-1/uploads/code/model.py"
     meta = _ready_meta(py_key, "proj-1", "code", summary="torch model")
     client = _StoreS3({py_key: b"import torch\n"}, {py_key: meta})
-    adapter = CatalogArtifactAdapter(client, "bucket", "proj-1")
+    meta_store = FakeCatalogMetaStore()
+    meta_store.upsert(meta, "proj-1")
+    adapter = CatalogArtifactAdapter(client, "bucket", "proj-1", meta_store=meta_store)
     store = CatalogKnowledgeStore(adapter)
     artifact_id = artifact_id_for_meta(meta)
     knowledge = {
@@ -50,10 +61,11 @@ def test_extracted_knowledge_persisted_to_catalog():
     assert loaded is not None
     assert loaded["algorithms"] == ["train"]
 
-    updated_meta = json.loads(
-        client.objects[meta_object_key(py_key)].decode("utf-8")
-    )
-    assert updated_meta["extracted_knowledge_ref"]
+    # Under the Postgres SoT, the knowledge ref is recorded on the catalog
+    # meta store row, not the legacy S3 .meta.json sidecar.
+    persisted = meta_store.get("proj-1", py_key)
+    assert persisted is not None
+    assert persisted.extracted_knowledge_ref
 
 
 def test_refresh_picks_up_new_catalog_object():
@@ -62,16 +74,23 @@ def test_refresh_picks_up_new_catalog_object():
         {csv_key: b"x,y\n1,2\n"},
         {csv_key: _ready_meta(csv_key, "proj-1", "structured", summary="csv")},
     )
-    store = CatalogKnowledgeStore(CatalogArtifactAdapter(client, "bucket", "proj-1"))
+    meta_store = FakeCatalogMetaStore()
+    for meta in client.metas.values():
+        meta_store.upsert(meta, "proj-1")
+    adapter = CatalogArtifactAdapter(client, "bucket", "proj-1", meta_store=meta_store)
+    store = CatalogKnowledgeStore(adapter)
     assert len(store.list_artifacts()) == 1
 
     py_key = "proj-1/uploads/code/model.py"
+    new_meta = _ready_meta(py_key, "proj-1", "code", summary="torch")
     client.objects[py_key] = b"import torch\n"
-    client.metas[py_key] = _ready_meta(py_key, "proj-1", "code", summary="torch")
+    client.metas[py_key] = new_meta
     client.objects[meta_object_key(py_key)] = json.dumps(
-        client.metas[py_key].to_dict(),
+        new_meta.to_dict(),
         indent=2,
     ).encode("utf-8")
+    # Postgres SoT is now authoritative for the catalog listing.
+    meta_store.upsert(new_meta, "proj-1")
 
     assert len(store.list_artifacts()) == 1
     store.refresh()
