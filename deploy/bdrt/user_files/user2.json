@@ -1,0 +1,75 @@
+{
+  "username": "user2",
+  "fullname": "Test User 2",
+  "s3_configuration_file": "~/.config/umrs/s3cfg_user2",
+  "experiences": [
+    {
+      "xp_name": "Text Embedding",
+      "sql_username": "usr2_text",
+      "modalities": [
+        {
+          "modality_name": "text",
+          "s3": {
+            "bucket_alias": "user2-texts",
+            "data": { "type": "inline", "mime_type": "text/plain" }
+          },
+          "model": {
+            "model_name": "intfloat/e5-base-v2",
+            "vector_size": "768",
+            "model_type": "rivault://openai://http://localhost:{LOCAL_PORT}/v1",
+            "return_type": null,
+            "spacy_model": "en_core_web_sm"
+          },
+          "sql": {
+            "store_embeddings": "yes",
+            "table_name": "text",
+            "meta_data": [
+              { "name": "keywords", "type": "TEXT" }
+            ]
+          }
+        },
+        {
+          "modality_name": "text file",
+          "s3": {
+            "bucket_alias": "user2-textfiles",
+            "data": { "type": "file", "mime_type": "text/plain" }
+          },
+          "model": {
+            "model_name": "intfloat/e5-base-v2",
+            "vector_size": "768",
+            "model_type": "rivault://openai://http://localhost:{LOCAL_PORT}/v1",
+            "return_type": null,
+            "spacy_model": "en_core_web_sm"
+          },
+          "sql": {
+            "store_embeddings": "yes",
+            "table_name": "text_file",
+            "meta_data": [
+              { "name": "keywords", "type": "TEXT" }
+            ]
+          }
+        },
+        {
+          "modality_name": "image",
+          "s3": {
+            "bucket_alias": "user2-images",
+            "data": { "type": "file", "mime_type": "image/jpeg" }
+          },
+          "model": {
+            "model_name": "openai/clip-vit-base-patch32",
+            "vector_size": "512",
+            "model_type": "rivault://openai://http://localhost:{LOCAL_PORT}/v1",
+            "return_type": null
+          },
+          "sql": {
+            "store_embeddings": "yes",
+            "table_name": "image",
+            "meta_data": [
+              { "name": "keywords", "type": "TEXT" }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}
