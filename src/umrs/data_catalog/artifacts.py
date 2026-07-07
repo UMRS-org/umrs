@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .schema import CatalogObjectMeta
-from .store import get_object_range, read_meta
+
+if TYPE_CHECKING:
+    from .pg_store import CatalogMetaStore
+from .store import get_object_range
 
 logger = logging.getLogger(__name__)
 
@@ -98,9 +101,17 @@ def read_artifact_text(
     meta: CatalogObjectMeta | None = None,
     *,
     max_bytes: int = _DEFAULT_MAX_CONTENT_BYTES,
+    meta_store: "CatalogMetaStore | None" = None,
 ) -> str:
     """Read searchable text for a catalog object."""
-    catalog_meta = meta or read_meta(s3_client, bucket, s3_key)
+    catalog_meta = meta
+    if catalog_meta is None:
+        if meta_store is None:
+            from umrs.api.catalog_store import get_catalog_meta_store
+
+            meta_store = get_catalog_meta_store()
+        project_id = s3_key.split("/", 1)[0] if "/" in s3_key else ""
+        catalog_meta = meta_store.get(project_id, s3_key)
     if catalog_meta is None:
         raise KeyError(f"catalog metadata missing for {s3_key}")
     raw = load_artifact_content(
