@@ -1,0 +1,25 @@
+# ─────────────────────────────────────────────────────────────
+# Provision roster (TEMPLATE) — default endpoint sizing per model.
+# ─────────────────────────────────────────────────────────────
+# Point UMRS at this file with UMRS_PROVISION_ROSTER=/path/to/pool.yaml so that
+# `provision <model>` picks sensible node/GPU/context/TTL defaults instead of
+# falling back to 1 node / 1 GPU.
+#
+# Register a model first, e.g.:
+#   umrs-client --profile <profile> model register \
+#     --name <served-name> --path <shared-fs>/models/<model>
+# ─────────────────────────────────────────────────────────────
+
+defaults:
+  tier: system        # system | project | user
+  ttl_sec: 0          # 0 = no auto-expiry
+  timeout: 86400      # provisioning readiness budget (seconds)
+
+models:
+  - name: <served-model-name>          # must match the registered model name
+    path: <shared-fs>/models/<model>   # pre-staged weights, readable by compute
+    partition: <partition-name>
+    nodes: 1
+    gpus_per_node: 1
+    max_model_len: 4096
+    tensor_parallel_size: 1

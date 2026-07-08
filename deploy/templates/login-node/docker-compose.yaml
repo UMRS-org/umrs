@@ -1,0 +1,48 @@
+# =============================================================================
+# docker-compose.yaml — login-node infra (Postgres + MinIO)
+# =============================================================================
+# The UMRS server itself runs NATIVELY on the login node (see start.sh) so it
+# can call the Slurm CLI and open SSH tunnels to compute nodes. Only the
+# stateful infra runs in containers.
+#
+#   podman compose up -d      # infra only
+#   ./start.sh                # infra + native UMRS server (preferred)
+# =============================================================================
+
+services:
+  postgres:
+    image: docker.io/pgvector/pgvector:pg15
+    container_name: umrs-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-umrs}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-umrs_db}
+    # Rootless Podman cannot chmod the Unix socket → TCP only.
+    command: ["postgres", "-c", "unix_socket_directories="]
+    ports:
+      - "127.0.0.1:${DB_PORT:-5432}:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  minio:
+    image: docker.io/minio/minio:latest
+    container_name: umrs-minio
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?Set MINIO_ROOT_USER in .env}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD in .env}
+    # Bind to loopback by default; compute nodes reach MinIO via SSH tunnel.
+    ports:
+      - "${MINIO_BIND:-127.0.0.1}:9000:9000"
+      - "127.0.0.1:9001:9001"
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio_data:/data
+    restart: unless-stopped
+
+  # NOTE: the umrs-server runs NATIVELY on the login node, launched by
+  # ./start.sh — it is intentionally NOT a service here.
+
+volumes:
+  pg_data:
+  minio_data:

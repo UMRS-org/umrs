@@ -1,0 +1,98 @@
+# yaml-language-server: $schema=../../../src/umrs/orchestrator/site-config.schema.json
+# ─────────────────────────────────────────────────────────────
+# UMRS Site Configuration — FRONTEND → HPC "cluster-a" (TEMPLATE)
+# ─────────────────────────────────────────────────────────────
+# The UMRS server runs on the frontend host and submits Slurm jobs to the
+# cluster's login node OVER SSH (scheduler.kind: slurm-remote). Copy this file
+# per cluster (site.cluster-b.yaml, …) and change name / partition / ssh_target.
+# ─────────────────────────────────────────────────────────────
+
+name: cluster-a
+description: >-
+  Frontend-hosted UMRS for HPC cluster A. Slurm commands routed via SSH to the
+  cluster login node. No local model filesystem on the frontend.
+
+scheduler:
+  kind: slurm-remote            # Slurm CLI invoked over SSH on the login node
+  partition: <partition-name>
+  account: <slurm-account>
+  qos: ""
+  time_limit: "04:00:00"
+  gpus: 1
+  cpus: 8
+  memory: ""
+  # per_user_ssh delegates sbatch to each user's own SSH identity; omit to use
+  # the single service SSH connection below.
+  #slurm_delegation: per_user_ssh
+  require_user_slurm_account: false
+
+runtime:
+  kind: podman-compose
+  rivault_dir: ""               # not applicable — mini-rivault runs on compute
+  repo_dir: ""
+  compose_file: docker-compose.yaml
+  profiles:
+    - services
+  gpu_passthrough: auto
+  cgroup_manager: cgroupfs
+
+storage:
+  model_cache_dir: ""           # frontend has no local model FS; weights on cluster
+  s3_tunnel_host: ""
+  s3_tunnel_port: 9000
+
+network:
+  litellm_port: 8001
+  litellm_master_key: ""        # set LITELLM_MASTER_KEY in .env
+  port_range_min: 12000         # local forward-tunnel ports to compute LLM proxies
+  port_range_max: 12999
+  port_strategy: static_range
+
+vllm:
+  model: <default-embedding-or-llm-model>
+  docker_tag: <vllm-image-tag>
+  gpu_mem_util: 0.80
+  max_model_len: 4096
+  max_num_seqs: 4
+  tensor_parallel_size: 1
+
+database:
+  host: localhost
+  port: 5432
+  superuser: umrs
+  superuser_password: ""        # set POSTGRES_PASSWORD in .env
+  user_password: ""
+  registry_dsn: ""
+
+# ─────────────────────────────────────────────────────────────
+# SSH remote-Slurm configuration (read when scheduler.kind = slurm-remote)
+# ─────────────────────────────────────────────────────────────
+extra:
+  ssh_target: <cluster-a-login-host>   # e.g. an ssh_config Host alias
+  ssh_user: <ssh-user>
+  ssh_port: 22
+  ssh_connect_timeout: 15
+  ssh_command_timeout: 30
+  ssh_server_alive_interval: 30
+  ssh_server_alive_count_max: 3
+  ssh_control_path: "/run/umrs-ssh/cluster-a-%p"   # tmpfs inside container
+  # Expose the frontend MinIO (9000) on the login node so compute nodes reach it
+  # through their existing tunnel to login:9000.
+  ssh_reverse_tunnels:
+    - "127.0.0.1:9000:127.0.0.1:9000"
+  # Remote paths on the cluster filesystem (accessed via SSH).
+  slurm_job_info_dir: <remote-path>/umrs/jobs
+  slurm_wrapper_script: <remote-path>/umrs/serve-model.slurm
+
+# One block per partition on cluster A (GPU hardware description).
+partition_profiles:
+  <partition-name>:
+    arch: x86_64
+    gpu_vendor: nvidia
+    gpu_memory_gb: 80
+    oci_runtime: crun
+    userns_mode: "keep-id:uid=0,gid=0"
+    network_backend: netavark
+    vllm_docker_tag: <vllm-image-tag>
+    gpus: 1
+    needs_netavark_switch: true
