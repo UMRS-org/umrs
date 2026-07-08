@@ -22,6 +22,12 @@ def _dict_cursor(conn):
     return conn.cursor(cursor_factory=RealDictCursor)
 
 
+# Upper bound on rows pulled from Postgres before Python-side scoring. Without
+# this, a broad WHERE match (or the no-FTS-hit fallback) loads every row for
+# a project into process memory before `limit` is applied in Python.
+_MAX_SEARCH_CANDIDATES = 500
+
+
 def derive_project_id(meta: CatalogObjectMeta, *, fallback: str | None = None) -> str:
     """Derive canonical project id from acl_scope or s3_key prefix."""
     scope = (meta.acl_scope or "").strip()
@@ -187,8 +193,14 @@ class CatalogMetaStore:
         prefix: str | None = None,
         include_pending: bool = True,
         include_error: bool = False,
+        limit: int | None = None,
     ) -> list[CatalogObjectMeta]:
-        """List catalog metadata visible to a project."""
+        """List catalog metadata visible to a project.
+
+        ``limit`` is a SQL-level cap applied before Python filtering — pass it
+        for recency-biased sampling (e.g. search fallback); leave it ``None``
+        for callers that need the full authoritative artifact set.
+        """
         normalized_prefix = prefix or f"{project_id}/"
         if not normalized_prefix.endswith("/"):
             normalized_prefix = f"{normalized_prefix}/"
@@ -207,6 +219,11 @@ class CatalogMetaStore:
         if not include_error:
             clauses.append("state != 'error'")
 
+        limit_sql = ""
+        if limit is not None:
+            limit_sql = "LIMIT %s"
+            params.append(limit)
+
         where_sql = " AND ".join(clauses)
         with self._get_conn() as conn, _dict_cursor(conn) as cur:
             cur.execute(
@@ -214,6 +231,7 @@ class CatalogMetaStore:
                 SELECT * FROM catalog_objects
                 WHERE {where_sql}
                 ORDER BY updated_at DESC
+                {limit_sql}
                 """,
                 tuple(params),
             )
@@ -269,16 +287,29 @@ class CatalogMetaStore:
             fts_clause = "AND search_vector @@ to_tsquery('simple', %s)"
             params.append(ts_query)
 
+        # Rank by FTS relevance (when a query is present) before truncating to
+        # the candidate cap, so the bounded window keeps the best textual
+        # matches rather than merely the most recently updated rows.
+        order_sql = "updated_at DESC"
+        order_params: list[Any] = []
+        if ts_query:
+            order_sql = (
+                "ts_rank_cd(search_vector, to_tsquery('simple', %s)) DESC, updated_at DESC"
+            )
+            order_params.append(ts_query)
+
         where_sql = " AND ".join(clauses)
+        exec_params = [*params, *order_params, _MAX_SEARCH_CANDIDATES]
         with self._get_conn() as conn, _dict_cursor(conn) as cur:
             cur.execute(
                 f"""
                 SELECT * FROM catalog_objects
                 WHERE {where_sql}
                   {fts_clause}
-                ORDER BY updated_at DESC
+                ORDER BY {order_sql}
+                LIMIT %s
                 """,
-                tuple(params),
+                tuple(exec_params),
             )
             rows = cur.fetchall()
 
@@ -322,8 +353,21 @@ class CatalogMetaStore:
         tag: str | None = None,
         prefix: str | None = None,
     ) -> list[CatalogHit]:
-        """Score all project rows when FTS pre-filter returns no hits."""
-        metas = self.list_by_project(project_id, include_pending=True, include_error=False)
+        """Score a bounded, recency-ordered window when strict FTS AND-match misses.
+
+        Strict AND semantics (all tokens present) miss legitimate multi-word
+        queries where tokens land in different fields (e.g. one word in
+        ``summary``, another only in ``tags``). This recency-biased fallback
+        trades completeness for a bounded, predictable cost — it will not
+        surface an old, exact match buried past ``_MAX_SEARCH_CANDIDATES``
+        recently-updated rows.
+        """
+        metas = self.list_by_project(
+            project_id,
+            include_pending=True,
+            include_error=False,
+            limit=_MAX_SEARCH_CANDIDATES,
+        )
         hits: list[CatalogHit] = []
         for meta in metas:
             if modality and meta.detected_modality != modality:
