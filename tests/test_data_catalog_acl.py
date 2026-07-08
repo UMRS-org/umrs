@@ -274,6 +274,40 @@ def test_api_catalog_read_returns_200_for_own_project_key():
     assert response.json()["text"] == "ok-data"
 
 
+def test_api_catalog_stats_returns_counts_by_state_and_modality():
+    _, TestClient, _catalog_test_app = _catalog_api_deps()
+    proj1_csv = _meta(
+        "proj-1/uploads/a.csv",
+        acl_scope="proj-1",
+        summary="alpha dataset",
+    )
+    proj1_csv.detected_modality = "structured"
+    proj1_png = _meta(
+        "proj-1/uploads/b.png",
+        acl_scope="proj-1",
+        summary="microscopy",
+    )
+    proj1_png.detected_modality = "image"
+    proj1_png.state = CatalogState.PENDING
+    store = _store_with(proj1_csv, proj1_png)
+    app = _catalog_test_app(_AclS3Client(), store)
+
+    with TestClient(app) as client:
+        response = client.get(
+            "/umrs/catalog/stats",
+            headers={"X-Project-ID": "proj-1"},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["project_id"] == "proj-1"
+    assert body["object_count"] == 2
+    assert body["states"]["ready"] == 1
+    assert body["states"]["pending"] == 1
+    assert body["modalities"]["structured"] == 1
+    assert body["modalities"]["image"] == 1
+
+
 def test_api_catalog_search_returns_503_when_store_uninitialized():
     pytest.importorskip("fastapi")
     import importlib.util
