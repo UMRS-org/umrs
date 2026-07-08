@@ -19,6 +19,7 @@ from .base import (
     JobStatus,
     OrchestratorBackend,
 )
+from .nodelist import first_node_hostname
 from .slurm_script import render_sbatch_script
 
 
@@ -134,7 +135,7 @@ class SlurmBackend(OrchestratorBackend):
         if status not in (JobStatus.READY, JobStatus.RUNNING):
             return None
         return EndpointInfo(
-            node=info.get("RIVAULT_NODE", "unknown"),
+            node=first_node_hostname(info.get("RIVAULT_NODE", "unknown")),
             litellm_port=int(info.get("RIVAULT_LITELLM_PORT", "11434")),
             vllm_port=int(info.get("RIVAULT_VLLM_PORT", "8000")),
         )

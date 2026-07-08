@@ -26,6 +26,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+from ..nodelist import first_node_hostname
+
 logger = logging.getLogger(__name__)
 
 
@@ -388,7 +390,7 @@ class SlurmTarget(ExecutionTarget):
                     jobs.append(
                         AllocationInfo(
                             job_id=job_id,
-                            node=node,
+                            node=first_node_hostname(node),
                             status=self._parse_slurm_state(state),
                         )
                     )
@@ -526,7 +528,7 @@ class SlurmTarget(ExecutionTarget):
                 _, state, node = parts[:3]
                 return AllocationInfo(
                     job_id=job_id,
-                    node=node,
+                    node=first_node_hostname(node),
                     status=self._parse_slurm_state(state),
                 )
             return None
@@ -555,7 +557,7 @@ class SlurmTarget(ExecutionTarget):
                     _, state, node = parts[:3]
                     return AllocationInfo(
                         job_id=job_id,
-                        node=node,
+                        node=first_node_hostname(node),
                         status=self._parse_slurm_state(state),
                     )
             return None
