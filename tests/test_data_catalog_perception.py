@@ -280,3 +280,10 @@ def _missing_key(key: str):
         {"Error": {"Code": "NoSuchKey", "Message": f"missing {key}"}},
         "GetObject",
     )
+
+
+def test_parse_tag_array_accepts_json_list():
+    from umrs.data_catalog.perception import _parse_tag_array
+
+    tags = _parse_tag_array('["batch-3", "gcmc", "mof"]')
+    assert tags == ["batch-3", "gcmc", "mof"]

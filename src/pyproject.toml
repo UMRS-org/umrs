@@ -64,6 +64,8 @@ server = [
     "opencv-python-headless",
     "posix_ipc",
     "sysv_ipc",
+    "pypdf>=4.0",
+    "python-pptx>=1.0",
 ]
 all = [
     "umrs[server]",

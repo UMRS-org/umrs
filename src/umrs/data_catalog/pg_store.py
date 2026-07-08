@@ -235,25 +235,46 @@ class CatalogMetaStore:
         query: str,
         *,
         limit: int = 20,
+        modality: str | None = None,
+        state: str | None = None,
+        tag: str | None = None,
+        prefix: str | None = None,
     ) -> list[CatalogHit]:
-        """Lexical search over catalog metadata with project ACL filtering."""
-        tokens = tokenize(query)
-        if not tokens:
-            return []
+        """Lexical search over catalog metadata with optional structured filters."""
+        tokens = tokenize(query) if query.strip() else []
+
+        clauses = [
+            "(project_id = %s OR s3_key LIKE %s)",
+            "state != 'error'",
+        ]
+        params: list[Any] = [project_id, f"{project_id}/%"]
+
+        if modality:
+            clauses.append("detected_modality = %s")
+            params.append(modality)
+        if state:
+            clauses.append("state = %s")
+            params.append(state)
+        if tag:
+            clauses.append("tags @> %s::jsonb")
+            params.append(json.dumps([tag]))
+        if prefix:
+            normalized = prefix if prefix.endswith("/") else f"{prefix}/"
+            clauses.append("s3_key LIKE %s")
+            params.append(f"{normalized}%")
 
         ts_query = " & ".join(_escape_ts_token(t) for t in tokens if t)
-        params: list[Any] = [project_id, f"{project_id}/%"]
         fts_clause = ""
         if ts_query:
             fts_clause = "AND search_vector @@ to_tsquery('simple', %s)"
             params.append(ts_query)
 
+        where_sql = " AND ".join(clauses)
         with self._get_conn() as conn, _dict_cursor(conn) as cur:
             cur.execute(
                 f"""
                 SELECT * FROM catalog_objects
-                WHERE (project_id = %s OR s3_key LIKE %s)
-                  AND state != 'error'
+                WHERE {where_sql}
                   {fts_clause}
                 ORDER BY updated_at DESC
                 """,
@@ -266,13 +287,25 @@ class CatalogMetaStore:
             meta = _row_to_meta(row)
             if not allowed(meta, project_id):
                 continue
-            score = score_meta(meta, tokens)
-            if score <= 0:
-                continue
+            if tokens:
+                score = score_meta(meta, tokens, query=query)
+                if score <= 0:
+                    continue
+            else:
+                score = 1.0
             hits.append(CatalogHit(meta=meta, score=score))
 
         if not hits and ts_query:
-            return self._search_fallback(project_id, tokens, limit=limit)
+            return self._search_fallback(
+                project_id,
+                tokens,
+                limit=limit,
+                query=query,
+                modality=modality,
+                state=state,
+                tag=tag,
+                prefix=prefix,
+            )
 
         hits.sort(key=lambda h: h.score, reverse=True)
         return hits[:limit]
@@ -283,12 +316,27 @@ class CatalogMetaStore:
         tokens: list[str],
         *,
         limit: int,
+        query: str = "",
+        modality: str | None = None,
+        state: str | None = None,
+        tag: str | None = None,
+        prefix: str | None = None,
     ) -> list[CatalogHit]:
         """Score all project rows when FTS pre-filter returns no hits."""
         metas = self.list_by_project(project_id, include_pending=True, include_error=False)
         hits: list[CatalogHit] = []
         for meta in metas:
-            score = score_meta(meta, tokens)
+            if modality and meta.detected_modality != modality:
+                continue
+            if state and meta.state.value != state:
+                continue
+            if tag and tag not in meta.tags:
+                continue
+            if prefix:
+                normalized = prefix if prefix.endswith("/") else f"{prefix}/"
+                if not meta.s3_key.startswith(normalized):
+                    continue
+            score = score_meta(meta, tokens, query=query)
             if score <= 0:
                 continue
             hits.append(CatalogHit(meta=meta, score=score))
