@@ -18,7 +18,7 @@
   },
   "ssh": {
     "host": "rccs-cloud",
-    "command_hint": "cd deploy/rccs-cloud && ./ssh_tunnel.sh",
+    "command_hint": "cd deploy/rccs && ./ssh_tunnel.sh",
     "local_forwards": [
       {
         "local_port": 5555,

@@ -8,7 +8,7 @@
 # See start.sh for how the native server is launched alongside these containers.
 #
 # Usage:
-#   cd deploy/rccs-cloud
+#   cd deploy/rccs
 #   ./start.sh          # starts containers + native server
 #   podman compose up -d # containers only (if managing server separately)
 #

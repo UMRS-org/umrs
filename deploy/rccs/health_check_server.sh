@@ -7,7 +7,7 @@
 #
 # Usage:
 #   ./health_check_server.sh
-#   ssh rccs-cloud 'cd /path/to/umrs/deploy/rccs-cloud && bash health_check_server.sh'
+#   ssh rccs-cloud 'cd /path/to/umrs/deploy/rccs && bash health_check_server.sh'
 # =============================================================================
 set -euo pipefail
 
