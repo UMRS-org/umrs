@@ -156,10 +156,12 @@
       "properties": {
         "arch": { "type": "string", "enum": ["x86_64", "aarch64"] },
         "gpu_vendor": { "type": "string", "enum": ["nvidia", "amd", "none"] },
+        "gpu_memory_gb": { "type": "number", "minimum": 0 },
         "oci_runtime": { "type": "string", "enum": ["crun", "runc"] },
         "userns_mode": { "type": "string" },
         "network_backend": { "type": "string", "enum": ["netavark", "cni"] },
         "vllm_docker_tag": { "type": "string" },
+        "vllm_docker_image": { "type": "string" },
         "gpus": { "type": "integer", "minimum": 0 },
         "needs_netavark_switch": { "type": "boolean" }
       }
