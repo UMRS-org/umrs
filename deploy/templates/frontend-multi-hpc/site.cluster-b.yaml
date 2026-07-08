@@ -1,0 +1,87 @@
+# yaml-language-server: $schema=../../../src/umrs/orchestrator/site-config.schema.json
+# ─────────────────────────────────────────────────────────────
+# UMRS Site Configuration — FRONTEND → HPC "cluster-b" (TEMPLATE)
+# ─────────────────────────────────────────────────────────────
+# Second cluster example. Identical structure to site.cluster-a.yaml with a
+# different name / partition / ssh_target. See that file for field docs.
+# ─────────────────────────────────────────────────────────────
+
+name: cluster-b
+description: >-
+  Frontend-hosted UMRS for HPC cluster B. Slurm commands routed via SSH to the
+  cluster login node.
+
+scheduler:
+  kind: slurm-remote
+  partition: <partition-name>
+  account: <slurm-account>
+  qos: ""
+  time_limit: "04:00:00"
+  gpus: 1
+  cpus: 8
+  memory: ""
+  require_user_slurm_account: false
+
+runtime:
+  kind: podman-compose
+  rivault_dir: ""
+  repo_dir: ""
+  compose_file: docker-compose.yaml
+  profiles:
+    - services
+  gpu_passthrough: auto
+  cgroup_manager: cgroupfs
+
+storage:
+  model_cache_dir: ""
+  s3_tunnel_host: ""
+  s3_tunnel_port: 9000
+
+network:
+  litellm_port: 8001
+  litellm_master_key: ""
+  port_range_min: 12000
+  port_range_max: 12999
+  port_strategy: static_range
+
+vllm:
+  model: <default-embedding-or-llm-model>
+  docker_tag: <vllm-image-tag>
+  gpu_mem_util: 0.80
+  max_model_len: 4096
+  max_num_seqs: 4
+  tensor_parallel_size: 1
+
+database:
+  host: localhost
+  port: 5432
+  superuser: umrs
+  superuser_password: ""
+  user_password: ""
+  registry_dsn: ""
+
+extra:
+  ssh_target: <cluster-b-login-host>
+  ssh_user: <ssh-user>
+  ssh_port: 22
+  ssh_connect_timeout: 15
+  ssh_command_timeout: 30
+  ssh_server_alive_interval: 30
+  ssh_server_alive_count_max: 3
+  ssh_control_path: "/run/umrs-ssh/cluster-b-%p"
+  ssh_reverse_tunnels:
+    - "127.0.0.1:9000:127.0.0.1:9000"
+  slurm_job_info_dir: <remote-path>/umrs/jobs
+  slurm_wrapper_script: <remote-path>/umrs/serve-model.slurm
+
+partition_profiles:
+  <partition-name>:
+    arch: x86_64
+    gpu_vendor: nvidia
+    gpu_memory_gb: 80
+    oci_runtime: crun
+    userns_mode: "keep-id:uid=0,gid=0"
+    network_backend: netavark
+    vllm_docker_tag: <vllm-image-tag>
+    gpus: 1
+    needs_netavark_switch: true
