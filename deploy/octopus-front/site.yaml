@@ -1,0 +1,124 @@
+# yaml-language-server: $schema=../../src/umrs/orchestrator/site-config.schema.json
+# ─────────────────────────────────────────────────────────────
+# UMRS Site Configuration — octopus Front-End (octopus cluster via umrs-front)
+# ─────────────────────────────────────────────────────────────
+# Front-end server deployment: persistent services (UMRS, Gateway,
+# Postgres, MinIO) run on umrs-front (data0.ai.r-ccs.riken.jp).
+# Slurm jobs are submitted remotely via SSH to the octopus login
+# node (mng02, octopus.riken.jp).
+#
+# This is the front-oriented sibling of umrs/deploy/octopus/site.yaml:
+#   - octopus/site.yaml       → runs ON mng02 (scheduler.kind=slurm-podman)
+#   - octopus-front/site.yaml → runs on data0, submits to mng02 over SSH
+#                               (scheduler.kind=slurm-remote)
+#
+# Topology:
+#   client --HTTP--> umrs-front (data0) --SSH--> octopus (mng02) --sbatch--> MI300X/H200
+# ─────────────────────────────────────────────────────────────
+
+name: octopus-front
+description: >-
+  RIKEN octopus front-end view — AMD MI300X and NVIDIA H200 nodes (mng02)
+  reached from umrs-front over SSH. Slurm commands routed via SSH to
+  octopus (mng02 / octopus.riken.jp). Persistent services run on data0.
+
+scheduler:
+  kind: slurm-remote
+  partition: "mi300x,h200"     # MI300X (AMD/ROCm) primary; H200 (NVIDIA/CUDA) secondary
+  account: ""                  # set if octopus requires a Slurm account
+  qos: ""
+  time_limit: "04:00:00"
+  gpus: 1                      # one MI300X per mini-rivault (192 GiB HBM3)
+  cpus: 8
+  memory: ""                   # omit --mem; scheduler assigns node defaults
+  slurm_delegation: per_user_ssh
+  service_pubkey_path: /home/mnagaso/ai4s-platform/keys/umrs-service.pub
+  slurm_proxy_path: /home/mnagaso/ai4s-platform/bin/umrs-slurm-proxy
+  require_user_slurm_account: false
+
+runtime:
+  kind: podman-compose
+  rivault_dir: ""  # Not applicable — mini-rivault runs on compute nodes
+  repo_dir: ""
+  vision_image: ""
+  compose_file: docker-compose.yml
+  profiles:
+    - services
+  gpu_passthrough: auto
+  cdi_spec: ""
+  cgroup_manager: cgroupfs
+  storage_root: ""
+
+storage:
+  model_cache_dir: ""  # No local model cache — models on octopus FS
+  sam3_model_path: /home/mnagaso/umrs_models/sam3.1
+  hmae_model_path: ""
+  hmae_config_path: ""
+  hmae_checkpoint: ""
+  vision_tarball: ""
+  user_model_path: ""
+  s3_tunnel_host: ""
+  s3_tunnel_port: 9000
+
+network:
+  litellm_port: 8001
+  litellm_master_key: ""  # Set LITELLM_MASTER_KEY in .env
+  port_range_min: 14000   # Local tunnel port range (forward tunnels to compute)
+  port_range_max: 14999
+  port_strategy: static_range
+
+vllm:
+  model: intfloat/e5-base-v2
+  docker_tag: ""  # Per-partition profiles override (MI300X=ROCm, H200=CUDA)
+  gpu_mem_util: 0.85
+  max_model_len: 512
+  max_num_seqs: 4
+  tensor_parallel_size: 1
+
+database:
+  host: localhost
+  port: 5432
+  superuser: umrs
+  superuser_password: ""  # Set POSTGRES_PASSWORD in .env
+  user_password: ""
+  registry_dsn: ""
+
+# ─────────────────────────────────────────────────────────────
+# SSH Remote Slurm Configuration
+# ─────────────────────────────────────────────────────────────
+extra:
+  ssh_target: octopus
+  ssh_user: "mnagaso"
+  ssh_port: 22
+  ssh_connect_timeout: 15
+  ssh_command_timeout: 30
+  ssh_server_alive_interval: 30
+  ssh_server_alive_count_max: 3
+  ssh_control_path: "/run/umrs-ssh/octopus-%p"  # tmpfs inside container
+  ssh_reverse_tunnels:
+    - "127.0.0.1:9000:127.0.0.1:9000"
+  slurm_job_info_dir: /home/mnagaso/ai4s-platform/umrs/deploy/octopus/jobs
+  slurm_wrapper_script: /home/mnagaso/ai4s-platform/umrs/deploy/octopus/serve-model.slurm
+
+partition_profiles:
+  mi300x:
+    arch: x86_64
+    gpu_vendor: amd
+    gpu_memory_gb: 192          # AMD MI300X 192 GiB HBM3
+    oci_runtime: crun
+    userns_mode: "keep-id:uid=0,gid=0"
+    network_backend: netavark
+    vllm_docker_tag: ""         # ROCm image uses vllm_docker_image instead
+    vllm_docker_image: docker.io/vllm/vllm-openai-rocm:latest
+    gpus: 1
+    needs_netavark_switch: true
+  h200:
+    arch: x86_64
+    gpu_vendor: nvidia
+    gpu_memory_gb: 141          # NVIDIA H200 141 GiB HBM3e
+    oci_runtime: crun
+    userns_mode: "keep-id:uid=0,gid=0"
+    network_backend: netavark
+    vllm_docker_tag: cu130-nightly-x86_64
+    gpus: 1
+    needs_netavark_switch: true

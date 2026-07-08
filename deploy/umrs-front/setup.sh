@@ -2,8 +2,8 @@
 # =============================================================================
 # One-time setup for UMRS on umrs-front (data0.ai.r-ccs.riken.jp)
 # =============================================================================
-# Creates Python 3.11 venv, installs deps, and prepares for dual-cluster
-# deployment (rccs-cloud + AI4S).
+# Creates Python 3.11 venv, installs deps, and prepares for multi-cluster
+# deployment (rccs-cloud + AI4S + bdrt + octopus).
 # =============================================================================
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -62,6 +62,8 @@ POSTGRES_USER=umrs
 POSTGRES_PASSWORD=CHANGEME_POSTGRES_PASSWORD
 POSTGRES_DB_RCCS=front_rccs
 POSTGRES_DB_AI4S=front_ai4s
+POSTGRES_DB_BDRT=front_bdrt
+POSTGRES_DB_OCTOPUS=front_octopus
 
 # MinIO (shared instance, buckets per cluster)
 MINIO_ROOT_USER=CHANGEME_MINIO_USER
@@ -83,6 +85,12 @@ UMRS_RCCS_ZMQ_PORT=50090
 UMRS_RCCS_DATA_PORT_RANGE=50091-50098
 UMRS_AI4S_ZMQ_PORT=50100
 UMRS_AI4S_DATA_PORT_RANGE=50101-50108
+UMRS_BDRT_PORT=8004
+UMRS_BDRT_ZMQ_PORT=50110
+UMRS_BDRT_DATA_PORT_RANGE=50111-50118
+UMRS_OCTOPUS_PORT=8006
+UMRS_OCTOPUS_ZMQ_PORT=50120
+UMRS_OCTOPUS_DATA_PORT_RANGE=50121-50128
 MINIO_PORT=50009
 MINIO_CONSOLE_PORT=50011
 POSTGRES_PORT=5432
@@ -100,6 +108,8 @@ UMRS_ADVERTISE_HOST=data0.ai.r-ccs.riken.jp
 # Cluster master SSH targets used for bootstrap checks and reverse tunnels.
 RCCS_SSH_TARGET=masaru.nagaso@rccs-cloud
 AI4S_SSH_TARGET=ea0022@AI4S
+BDRT_SSH_TARGET=mnagaso@nimbus-0
+OCTOPUS_SSH_TARGET=mnagaso@octopus
 
 # ZeroMQ security. Production OIDC/JWT deployments should use session mode:
 # server-side CURVE plus ZAP-backed ephemeral client sessions.

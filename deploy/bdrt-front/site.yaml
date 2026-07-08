@@ -1,0 +1,137 @@
+# yaml-language-server: $schema=../../src/umrs/orchestrator/site-config.schema.json
+# ─────────────────────────────────────────────────────────────
+# UMRS Site Configuration — bdrt Front-End (DGX-Spark via umrs-front)
+# ─────────────────────────────────────────────────────────────
+# Front-end server deployment: persistent services (UMRS, Gateway,
+# Postgres, MinIO) run on umrs-front (data0.ai.r-ccs.riken.jp).
+# Slurm jobs are submitted remotely via SSH to the DGX-Spark login
+# node (nimbus-0).
+#
+# This is the front-oriented sibling of umrs/deploy/bdrt/site.yaml:
+#   - bdrt/site.yaml       → runs ON nimbus-0 (scheduler.kind=slurm-podman)
+#   - bdrt-front/site.yaml → runs on data0, submits to nimbus-0 over SSH
+#                            (scheduler.kind=slurm-remote)
+#
+# Topology (no-tunnel production):
+#   client --HTTP--> umrs-front (data0) --SSH--> nimbus-0 --sbatch--> dgx-spark-[0-1]
+#
+# Key differences from bdrt/site.yaml:
+#   - scheduler.kind = slurm-remote (SSH-based Slurm access)
+#   - No local model cache (models live on the DGX-Spark shared FS)
+#   - Reverse tunnel for MinIO: compute→login:9000→front-end:9000
+#   - Per-user SSH delegation keys live on the DGX-Spark shared FS
+# ─────────────────────────────────────────────────────────────
+
+name: bdrt-front
+description: >-
+  RIKEN bdrt front-end view — DGX-Spark (NVIDIA GB10 Grace-Blackwell,
+  aarch64) reached from umrs-front over SSH. Slurm commands routed via
+  SSH to nimbus-0. Persistent services run on data0.
+
+scheduler:
+  kind: slurm-remote
+  partition: spark,spark-double   # dgx-spark-[0-1] (GB10 Grace-Blackwell)
+  account: ""                     # no Slurm account required on DGX-Spark
+  qos: ""
+  time_limit: "04:00:00"
+  gpus: 0                         # single GB10 per node; allocate implicitly
+  cpus: 8
+  memory: ""                      # omit --mem; scheduler assigns node defaults
+  slurm_delegation: per_user_ssh
+  service_pubkey_path: /home/mnagaso/ai4s-platform/keys/umrs-service.pub
+  slurm_proxy_path: /home/mnagaso/ai4s-platform/bin/umrs-slurm-proxy
+  require_user_slurm_account: false
+
+runtime:
+  kind: podman-compose
+  rivault_dir: ""  # Not applicable — mini-rivault runs on compute nodes
+  repo_dir: ""
+  vision_image: ""
+  compose_file: docker-compose.yml  # Local services only (Gateway, UMRS, Postgres, MinIO)
+  profiles:
+    - services
+  gpu_passthrough: auto
+  cdi_spec: ""
+  cgroup_manager: cgroupfs
+  storage_root: ""
+
+storage:
+  model_cache_dir: ""  # No local model cache — models on the DGX-Spark FS
+  sam3_model_path: /home/mnagaso/umrs_models/sam3.1
+  hmae_model_path: ""
+  hmae_config_path: ""
+  hmae_checkpoint: ""
+  vision_tarball: ""
+  user_model_path: ""
+  s3_tunnel_host: ""
+  s3_tunnel_port: 9000
+
+network:
+  litellm_port: 8001
+  litellm_master_key: ""  # Set LITELLM_MASTER_KEY in .env
+  port_range_min: 13000   # Local tunnel port range (forward tunnels to compute)
+  port_range_max: 13999
+  port_strategy: static_range
+
+vllm:
+  model: intfloat/e5-base-v2
+  docker_tag: cu130-nightly-aarch64
+  # GB10 nodes have ~121.63 GiB VRAM; 0.78 keeps us under the free ceiling.
+  gpu_mem_util: 0.78
+  max_model_len: 512
+  max_num_seqs: 4
+  tensor_parallel_size: 1
+
+database:
+  host: localhost
+  port: 5432
+  superuser: umrs
+  superuser_password: ""  # Set POSTGRES_PASSWORD in .env
+  user_password: ""
+  registry_dsn: ""
+
+# ─────────────────────────────────────────────────────────────
+# SSH Remote Slurm Configuration
+# ─────────────────────────────────────────────────────────────
+# These values are read by SSHControlConfig.from_site_config()
+# when scheduler.kind = slurm-remote.
+extra:
+  ssh_target: nimbus-0
+  ssh_user: "mnagaso"
+  ssh_port: 22
+  ssh_connect_timeout: 15
+  ssh_command_timeout: 30
+  ssh_server_alive_interval: 30
+  ssh_server_alive_count_max: 3
+  ssh_control_path: "/run/umrs-ssh/nimbus-0-%p"  # tmpfs inside container
+  # Reverse tunnel: expose front-end MinIO (9000) on the login node so
+  # compute nodes' existing tunnel to login:9000 reaches front-end's MinIO.
+  ssh_reverse_tunnels:
+    - "127.0.0.1:9000:127.0.0.1:9000"
+  # Remote path for job info files (on the DGX-Spark FS, accessed via SSH cat)
+  slurm_job_info_dir: /home/mnagaso/ai4s-platform/umrs/deploy/bdrt/jobs
+  # Wrapper script for Podman-based serve on compute nodes
+  slurm_wrapper_script: /home/mnagaso/ai4s-platform/umrs/deploy/bdrt/serve-model.slurm
+
+# Partition profiles — identical hardware to bdrt/site.yaml (GB10 DGX-Spark)
+partition_profiles:
+  spark:
+    arch: aarch64
+    gpu_vendor: nvidia
+    gpu_memory_gb: 128          # GB10 Grace-Blackwell unified 128 GiB
+    oci_runtime: runc
+    userns_mode: host
+    network_backend: netavark
+    vllm_docker_tag: cu130-nightly-aarch64
+    gpus: 0                    # single GB10 per node; allocate implicitly
+    needs_netavark_switch: false
+  spark-double:
+    arch: aarch64
+    gpu_vendor: nvidia
+    gpu_memory_gb: 128
+    oci_runtime: runc
+    userns_mode: host
+    network_backend: netavark
+    vllm_docker_tag: cu130-nightly-aarch64
+    gpus: 0
+    needs_netavark_switch: false

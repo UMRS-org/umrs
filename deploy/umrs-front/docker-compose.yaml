@@ -6,7 +6,7 @@
 #   - minio
 #   - umrs-server-rccs (RCCS Cloud UMRS server)
 #   - umrs-server-ai4s (AI4S UMRS server)
-#
+#   - umrs-server-bdrt (bdrt / DGX-Spark UMRS server)#   - umrs-server-octopus (octopus / MI300X+H200 UMRS server)#
 # Usage:
 #   podman compose up -d              # Start all services
 #   podman compose down               # Stop all (data preserved in volumes)
@@ -243,6 +243,148 @@ services:
       umrs-server-rccs:
         condition: service_healthy
 
+  # ─── UMRS Server — bdrt (DGX-Spark, remote Slurm via SSH to nimbus-0) ──────
+  umrs-server-bdrt:
+    build:
+      context: ../../../
+      dockerfile: umrs/docker/Dockerfile.server
+    image: localhost/umrs-server:latest
+    container_name: umrs-server-bdrt
+    restart: unless-stopped
+    network_mode: host
+    env_file: .env
+    environment:
+      # Cluster-specific overrides
+      UMRS_SITE_CONFIG: /etc/umrs/site.yaml
+      UMRS_CONFIG: /etc/umrs
+      UMRS_CERTIFICATION_MODE: ${UMRS_CERTIFICATION_MODE:-warn}
+      UMRS_PREFLIGHT_MODE: ${UMRS_PREFLIGHT_MODE:-warn}
+      UMRS_CONTROL_PORT: ${UMRS_BDRT_ZMQ_PORT:-50110}
+      UMRS_DATA_PORT_RANGE: ${UMRS_BDRT_DATA_PORT_RANGE:-50111-50118}
+      UMRS_HTTP_PORT: ${UMRS_BDRT_PORT:-8004}
+      UMRS_HTTP_HOST: ${UMRS_HTTP_HOST:-0.0.0.0}
+      DB_HOST: "127.0.0.1"
+      DB_PORT: ${POSTGRES_PORT:-5432}
+      DB_SUPERUSER: ${POSTGRES_USER:-umrs}
+      DB_SUPERUSER_PASSWORD: ${POSTGRES_PASSWORD}
+      UMRS_REGISTRY_POSTGRES_DSN: "postgres://${POSTGRES_USER:-umrs}:${POSTGRES_PASSWORD}@127.0.0.1:${POSTGRES_PORT:-5432}/${POSTGRES_DB_BDRT:-front_bdrt}"
+      S3_ENDPOINT_URL: "http://127.0.0.1:${MINIO_PORT:-9000}"
+      S3_ACCESS_KEY: ${MINIO_ROOT_USER}
+      S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      S3_REGION: ${S3_REGION:-us-east-1}
+      S3_BUCKET: ${S3_BUCKET:-r4-data}
+      S3_USE_SSL: ${S3_USE_SSL:-false}
+      S3_PRESIGN_ENDPOINT: ${S3_PRESIGN_ENDPOINT:-http://127.0.0.1:${MINIO_PORT:-9000}}
+      VISION_S3_PRESIGN_ENDPOINT: ${VISION_S3_PRESIGN_ENDPOINT:-http://minio-host:19000}
+      UMRS_RAG_DIRECT_URL: "http://127.0.0.1:${UMRS_RAG_PORT:-8081}"
+      UMRS_ADMIN_S3_CONFIGURATION_FILE: /etc/umrs/s3cfg
+      UMRS_AUTH_MODE: ${UMRS_AUTH_MODE:-strict}
+      UMRS_ADVERTISE_HOST: ${UMRS_ADVERTISE_HOST:-}
+      UMRS_ZMQ_CURVE_SERVER_PUBLIC_KEY_FILE: /root/.config/umrs/curve-keys/server/server.key
+      UMRS_ZMQ_CURVE_SERVER_SECRET_KEY_FILE: /root/.config/umrs/curve-keys/server/server.key_secret
+      RIVAULT_STARTUP_TIMEOUT_SEC: ${RIVAULT_STARTUP_TIMEOUT_SEC:-2400}
+      RIVAULT_READINESS_TIMEOUT_SEC: ${RIVAULT_READINESS_TIMEOUT_SEC:-2400}
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ../bdrt-front/site.yaml:/etc/umrs/site.yaml:ro,z
+      - ./conf_umrs_bdrt.json:/etc/umrs/conf_umrs.json:z
+      - ./user_files_bdrt:/etc/umrs/user_files:z
+      - ./s3cfg:/etc/umrs/s3cfg:ro,z
+      # SSH keys for RemoteSlurmBackend
+      - ${HOME}/.ssh:/root/.ssh-host:ro,z
+      # CURVE session keys (when ZMQ auth enabled)
+      - ${HOME}/.config/umrs/curve-keys:/root/.config/umrs/curve-keys:ro,z
+      # Shared config volume (same MinIO → same credentials)
+      - umrs_config:/root/.config/umrs
+      - type: tmpfs
+        target: /run/umrs-ssh
+        tmpfs:
+          size: 10485760
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        cp -a /root/.ssh-host/* /root/.ssh/ 2>/dev/null || true
+        chmod 700 /root/.ssh
+        chmod 600 /root/.ssh/* 2>/dev/null || true
+        cp -f /etc/umrs/s3cfg /root/.config/umrs/s3cfg 2>/dev/null || true
+        exec python /app/umrs-src/server_umrs.py -c /etc/umrs/conf_umrs.json
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      umrs-server-rccs:
+        condition: service_healthy
+
+  # ─── UMRS Server — octopus (MI300X + H200, remote Slurm via SSH to mng02) ──
+  umrs-server-octopus:
+    build:
+      context: ../../../
+      dockerfile: umrs/docker/Dockerfile.server
+    image: localhost/umrs-server:latest
+    container_name: umrs-server-octopus
+    restart: unless-stopped
+    network_mode: host
+    env_file: .env
+    environment:
+      UMRS_SITE_CONFIG: /etc/umrs/site.yaml
+      UMRS_CONFIG: /etc/umrs
+      UMRS_CERTIFICATION_MODE: ${UMRS_CERTIFICATION_MODE:-warn}
+      UMRS_PREFLIGHT_MODE: ${UMRS_PREFLIGHT_MODE:-warn}
+      UMRS_CONTROL_PORT: ${UMRS_OCTOPUS_ZMQ_PORT:-50120}
+      UMRS_DATA_PORT_RANGE: ${UMRS_OCTOPUS_DATA_PORT_RANGE:-50121-50128}
+      UMRS_HTTP_PORT: ${UMRS_OCTOPUS_PORT:-8006}
+      UMRS_HTTP_HOST: ${UMRS_HTTP_HOST:-0.0.0.0}
+      DB_HOST: "127.0.0.1"
+      DB_PORT: ${POSTGRES_PORT:-5432}
+      DB_SUPERUSER: ${POSTGRES_USER:-umrs}
+      DB_SUPERUSER_PASSWORD: ${POSTGRES_PASSWORD}
+      UMRS_REGISTRY_POSTGRES_DSN: "postgres://${POSTGRES_USER:-umrs}:${POSTGRES_PASSWORD}@127.0.0.1:${POSTGRES_PORT:-5432}/${POSTGRES_DB_OCTOPUS:-front_octopus}"
+      S3_ENDPOINT_URL: "http://127.0.0.1:${MINIO_PORT:-9000}"
+      S3_ACCESS_KEY: ${MINIO_ROOT_USER}
+      S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      S3_REGION: ${S3_REGION:-us-east-1}
+      S3_BUCKET: ${S3_BUCKET:-r4-data}
+      S3_USE_SSL: ${S3_USE_SSL:-false}
+      S3_PRESIGN_ENDPOINT: ${S3_PRESIGN_ENDPOINT:-http://127.0.0.1:${MINIO_PORT:-9000}}
+      VISION_S3_PRESIGN_ENDPOINT: ${VISION_S3_PRESIGN_ENDPOINT:-http://minio-host:19000}
+      UMRS_RAG_DIRECT_URL: "http://127.0.0.1:${UMRS_RAG_PORT:-8081}"
+      UMRS_ADMIN_S3_CONFIGURATION_FILE: /etc/umrs/s3cfg
+      UMRS_AUTH_MODE: ${UMRS_AUTH_MODE:-strict}
+      UMRS_ADVERTISE_HOST: ${UMRS_ADVERTISE_HOST:-}
+      UMRS_ZMQ_CURVE_SERVER_PUBLIC_KEY_FILE: /root/.config/umrs/curve-keys/server/server.key
+      UMRS_ZMQ_CURVE_SERVER_SECRET_KEY_FILE: /root/.config/umrs/curve-keys/server/server.key_secret
+      RIVAULT_STARTUP_TIMEOUT_SEC: ${RIVAULT_STARTUP_TIMEOUT_SEC:-2400}
+      RIVAULT_READINESS_TIMEOUT_SEC: ${RIVAULT_READINESS_TIMEOUT_SEC:-2400}
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ../octopus-front/site.yaml:/etc/umrs/site.yaml:ro,z
+      - ./conf_umrs_octopus.json:/etc/umrs/conf_umrs.json:z
+      - ./user_files_octopus:/etc/umrs/user_files:z
+      - ./s3cfg:/etc/umrs/s3cfg:ro,z
+      - ${HOME}/.ssh:/root/.ssh-host:ro,z
+      - ${HOME}/.config/umrs/curve-keys:/root/.config/umrs/curve-keys:ro,z
+      - umrs_config:/root/.config/umrs
+      - type: tmpfs
+        target: /run/umrs-ssh
+        tmpfs:
+          size: 10485760
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        cp -a /root/.ssh-host/* /root/.ssh/ 2>/dev/null || true
+        chmod 700 /root/.ssh
+        chmod 600 /root/.ssh/* 2>/dev/null || true
+        cp -f /etc/umrs/s3cfg /root/.config/umrs/s3cfg 2>/dev/null || true
+        exec python /app/umrs-src/server_umrs.py -c /etc/umrs/conf_umrs.json
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      umrs-server-rccs:
+        condition: service_healthy
+
   # ─── MCP Apps — Interactive UI server ────────────────────────────────────
   mcp-apps:
     build:
@@ -269,6 +411,7 @@ services:
     depends_on:
       - umrs-server-rccs
       - umrs-server-ai4s
+      - umrs-server-bdrt
 
 volumes:
   umrs_pg_data:
