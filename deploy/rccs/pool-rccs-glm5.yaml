@@ -1,0 +1,116 @@
+# Pool roster: RCCS Cloud — GLM-5.2 UD-IQ2_M 2-bit GGUF
+# Usage: R4_GATEWAY_URL=https://data0.ai.r-ccs.riken.jp/rccs r4 admin pool up pool-rccs-glm5.yaml
+#
+# Deploys GLM-5.2 2-bit quantized GGUF on 2 x ng-dgx-m0 nodes (DGX Spark x2 = 256 GB unified each).
+# The merged GGUF (223 GB) fits comfortably within 512 GB aggregate memory.
+# Pipeline parallelism (PP=2) splits the 744B MoE layers across 2 nodes via 200Gb/s QSFP.
+#
+# Model file: /lvs0/rccs-dmp/masaru.nagaso/umrs_models/GLM-5.2-UD-IQ2_merged.gguf (symlink)
+# Source directory: /lvs0/rccs-dmp/masaru.nagaso/umrs_models/glm-5.2-iq2m/UD-IQ2_M/
+#
+# GGUF notes:
+#   The model is a single-file GGUF (merged from 6 split files).
+#   vLLM loads it via --model flag pointing to the .gguf file.
+#   Tokenizer is loaded separately via --tokenizer zai-org/GLM-5.2.
+#   The serve script must bind-mount the directory containing the .gguf symlink.
+
+pool: rccs-glm5-iq2m
+defaults:
+  tier: user
+  ttl_sec: 0              # never expires
+  timeout: 86400
+
+endpoints:
+  # ── GLM-5.2 UD-IQ2_M (2-bit GGUF) on 2 x ng-dgx-m0 ──────────────────────
+  #   223 GB merged GGUF, 1M native context.
+  #   Pipeline parallel (PP=2) across 2 nodes.
+
+  - name: glm-5.2-iq2m
+    model: glm-5.2-iq2m
+    tier: user
+    node_count: 2
+    partition: ng-dgx-m3
+    max_model_len: 1048576
+    env_vars:
+      VLLM_PATH_TO_HUGGINGFACE: "/lvs0/rccs-dmp/masaru.nagaso/umrs_models"
+      # vLLM GGUF layout: directory with config.json + model.gguf symlink + tokenizer files
+      VLLM_MODEL: "glm-5.2-iq2m-vllm"
+      VLLM_GPU_MEM_UTIL: "0.90"
+      VLLM_MAX_NUM_SEQS: "4"
+      RCCS_SKIP_CDI: "1"
+
+  # ── Ornith-1.0-397B-W4A16 (CosmicRaisins) ─────────────────────────────
+  #  397B reasoning model, W4A16 quantization (compressed-tensors).
+  #  qwen3_5_moe architecture, tool calling + reasoning parser.
+  #  HF: CosmicRaisins/Ornith-1.0-397B-W4A16
+  #  Requires: vLLM >= 0.19.1, transformers >= 5.8.1
+  #  vLLM serve: --tensor-parallel-size 8 --max-model-len 262144
+  #    --enable-auto-tool-choice --tool-call-parser qwen3_xml
+  #    --reasoning-parser qwen3 --trust-remote-code
+
+  - name: ornith-1.0-397b-w4a16
+    model: Ornith-1.0-397B
+    tier: user
+    node_count: 1
+    partition: ng-dgx-m0
+    max_model_len: 262144
+    env_vars:
+      VLLM_PATH_TO_HUGGINGFACE: "/lvs0/rccs-dmp/masaru.nagaso/umrs_models"
+      VLLM_MODEL: "Ornith-1.0-397B-W4A16"
+      VLLM_TOKENIZER: "CosmicRaisins/Ornith-1.0-397B-W4A16"
+      VLLM_GPU_MEM_UTIL: "0.90"
+      VLLM_MAX_NUM_SEQS: "4"
+      VLLM_TOOL_CALL_PARSER: "qwen3_xml"
+      VLLM_REASONING_PARSER: "qwen3"
+      VLLM_TRUST_REMOTE_CODE: "1"
+      RCCS_SKIP_CDI: "1"
+
+  # ── DiffusionGemma-26B-A4B-it (Google DeepMind / NVIDIA) ─────────────
+  #  Diffusion-based text generation, 256 tokens/step in parallel.
+  #  25.2B total params, 3.8B active, up to 256K context.
+  #  Based on Gemma 4 26B A4B MoE architecture.
+  #  HF: google/diffusiongemma-26B-A4B-it (BF16)
+  #  NVFP4: nvidia/diffusiongemma-26B-A4B-it-NVFP4
+  #  NVIDIA blog: run-diffusiongemma-on-nvidia-for-developer-ready-high-throughput-text-generation
+  #  Throughput: up to 1,000 tok/s on H100, 150 tok/s on DGX Spark,
+  #    2,000 tok/s on DGX Station.
+
+  - name: diffusiongemma-26b-a4b-it
+    model: diffusiongemma-26B-A4B-it
+    tier: user
+    node_count: 1
+    partition: ng-dgx-m0
+    max_model_len: 256000
+    env_vars:
+      VLLM_PATH_TO_HUGGINGFACE: "/lvs0/rccs-dmp/masaru.nagaso/umrs_models"
+      VLLM_MODEL: "diffusiongemma-26B-A4B-it"
+      VLLM_TOKENIZER: "google/diffusiongemma-26B-A4B-it"
+      VLLM_GPU_MEM_UTIL: "0.90"
+      VLLM_MAX_NUM_SEQS: "4"
+      RCCS_SKIP_CDI: "1"
+
+  # ── Agents-A1 (InternScience) ────────────────────────────────────────
+  #  35B MoE agentic model, qwen3_5_moe architecture.
+  #  Long-horizon search, engineering, scientific research, tool calling.
+  #  HF: InternScience/Agents-A1
+  #  GitHub: https://github.com/InternScience/Agents-A1
+  #  vLLM: --tensor-parallel-size 1 --max-model-len 262144
+  #    --reasoning-parser qwen3 --tool-call-parser qwen3_coder
+  #  Recommended: temperature=0.85, top_p=0.95, top_k=20
+
+  - name: agents-a1
+    model: Agents-A1
+    tier: user
+    node_count: 1
+    partition: ng-dgx-m0
+    max_model_len: 262144
+    env_vars:
+      VLLM_PATH_TO_HUGGINGFACE: "/lvs0/rccs-dmp/masaru.nagaso/umrs_models"
+      VLLM_MODEL: "InternScience/Agents-A1"
+      VLLM_TOKENIZER: "InternScience/Agents-A1"
+      VLLM_GPU_MEM_UTIL: "0.90"
+      VLLM_MAX_NUM_SEQS: "4"
+      VLLM_TOOL_CALL_PARSER: "qwen3_coder"
+      VLLM_REASONING_PARSER: "qwen3"
+      VLLM_TRUST_REMOTE_CODE: "1"
+      RCCS_SKIP_CDI: "1"

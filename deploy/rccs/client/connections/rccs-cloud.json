@@ -1,0 +1,80 @@
+{
+  "name": "rccs-cloud",
+  "mode": "ssh_tunnel",
+  "zmq": {
+    "host": "127.0.0.1",
+    "control_port": 5555,
+    "data_base_port": 5556,
+    "data_port_range": {
+      "start": 5556,
+      "end": 5563
+    },
+    "tunnel_mode": true,
+    "health_check_timeout_ms": 15000
+  },
+  "services": {
+    "minio_url": "http://127.0.0.1:9000",
+    "rag_url": "http://127.0.0.1:8081"
+  },
+  "ssh": {
+    "host": "rccs-cloud",
+    "command_hint": "cd deploy/rccs && ./ssh_tunnel.sh",
+    "local_forwards": [
+      {
+        "local_port": 5555,
+        "remote_host": "localhost",
+        "remote_port": 5555
+      },
+      {
+        "local_port": 5556,
+        "remote_host": "localhost",
+        "remote_port": 5556
+      },
+      {
+        "local_port": 5557,
+        "remote_host": "localhost",
+        "remote_port": 5557
+      },
+      {
+        "local_port": 5558,
+        "remote_host": "localhost",
+        "remote_port": 5558
+      },
+      {
+        "local_port": 5559,
+        "remote_host": "localhost",
+        "remote_port": 5559
+      },
+      {
+        "local_port": 5560,
+        "remote_host": "localhost",
+        "remote_port": 5560
+      },
+      {
+        "local_port": 5561,
+        "remote_host": "localhost",
+        "remote_port": 5561
+      },
+      {
+        "local_port": 5562,
+        "remote_host": "localhost",
+        "remote_port": 5562
+      },
+      {
+        "local_port": 5563,
+        "remote_host": "localhost",
+        "remote_port": 5563
+      },
+      {
+        "local_port": 9000,
+        "remote_host": "localhost",
+        "remote_port": 9000
+      },
+      {
+        "local_port": 8081,
+        "remote_host": "localhost",
+        "remote_port": 8081
+      }
+    ]
+  }
+}
