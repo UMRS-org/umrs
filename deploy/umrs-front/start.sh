@@ -7,6 +7,8 @@
 #   - MinIO (podman container, port 9000)
 #   - UMRS server for RCCS Cloud (ZMQ:50090, HTTP:8000)
 #   - UMRS server for AI4S (ZMQ:50100, HTTP:8002)
+#   - UMRS server for bdrt (ZMQ:50110, HTTP:8004)
+#   - UMRS server for octopus (ZMQ:50120, HTTP:8006)
 #
 # Prerequisites:
 #   - Podman (rootless) with compose support
@@ -75,6 +77,10 @@ UMRS_RCCS_ZMQ_PORT="${UMRS_RCCS_ZMQ_PORT:-50090}"
 UMRS_RCCS_DATA_PORT_RANGE="${UMRS_RCCS_DATA_PORT_RANGE:-50091-50098}"
 UMRS_AI4S_ZMQ_PORT="${UMRS_AI4S_ZMQ_PORT:-50100}"
 UMRS_AI4S_DATA_PORT_RANGE="${UMRS_AI4S_DATA_PORT_RANGE:-50101-50108}"
+UMRS_BDRT_ZMQ_PORT="${UMRS_BDRT_ZMQ_PORT:-50110}"
+UMRS_BDRT_DATA_PORT_RANGE="${UMRS_BDRT_DATA_PORT_RANGE:-50111-50118}"
+UMRS_OCTOPUS_ZMQ_PORT="${UMRS_OCTOPUS_ZMQ_PORT:-50120}"
+UMRS_OCTOPUS_DATA_PORT_RANGE="${UMRS_OCTOPUS_DATA_PORT_RANGE:-50121-50128}"
 UMRS_ZMQ_AUTH_TYPE="${UMRS_ZMQ_AUTH_TYPE:-none}"
 
 # ─── Start infrastructure containers ─────────────────────────────────────────
@@ -128,8 +134,18 @@ if [[ "$START_MODE" != "--server" ]]; then
         | grep -q 1 || \
     _pg_cmd -d postgres -c "CREATE DATABASE ${POSTGRES_DB_AI4S:-umrs_ai4s};" || true
 
-    # Ensure pgvector extension in both databases
-    for db in "${POSTGRES_DB_RCCS:-front_rccs}" "${POSTGRES_DB_AI4S:-front_ai4s}"; do
+    # Create bdrt database if it doesn't exist (container-first)
+    _pg_cmd -d postgres -tc "SELECT 1 FROM pg_database WHERE datname='${POSTGRES_DB_BDRT:-front_bdrt}'" \
+        | grep -q 1 || \
+    _pg_cmd -d postgres -c "CREATE DATABASE ${POSTGRES_DB_BDRT:-front_bdrt};" || true
+
+    # Create octopus database if it doesn't exist (container-first)
+    _pg_cmd -d postgres -tc "SELECT 1 FROM pg_database WHERE datname='${POSTGRES_DB_OCTOPUS:-front_octopus}'" \
+        | grep -q 1 || \
+    _pg_cmd -d postgres -c "CREATE DATABASE ${POSTGRES_DB_OCTOPUS:-front_octopus};" || true
+
+    # Ensure pgvector extension in all databases
+    for db in "${POSTGRES_DB_RCCS:-front_rccs}" "${POSTGRES_DB_AI4S:-front_ai4s}" "${POSTGRES_DB_BDRT:-front_bdrt}" "${POSTGRES_DB_OCTOPUS:-front_octopus}"; do
         _pg_cmd -d "$db" -c "CREATE EXTENSION IF NOT EXISTS vector;" || true
     done
 
@@ -165,7 +181,7 @@ _run_util() {
         -e S3_REGION -e S3_BUCKET -e S3_USE_SSL \
         -e MINIO_ROOT_USER -e MINIO_ROOT_PASSWORD \
         -e MINIO_PORT -e POSTGRES_USER -e POSTGRES_PASSWORD \
-        -e POSTGRES_PORT -e POSTGRES_DB_RCCS -e POSTGRES_DB_AI4S \
+        -e POSTGRES_PORT -e POSTGRES_DB_RCCS -e POSTGRES_DB_AI4S -e POSTGRES_DB_BDRT -e POSTGRES_DB_OCTOPUS \
         "$UMRS_IMAGE" python -c "$1"
 }
 
@@ -337,6 +353,8 @@ CONFJSON
 
 _init_cluster_conf rccs
 _init_cluster_conf ai4s
+_init_cluster_conf bdrt
+_init_cluster_conf octopus
 
 _run_util "
 import json
@@ -434,14 +452,14 @@ def _migrate_conf(cluster):
     if changed or conf.get('users') != existing_users:
         conf_path.write_text(json.dumps(conf, indent=2) + '\n')
 
-for cluster in ['rccs', 'ai4s']:
+for cluster in ['rccs', 'ai4s', 'bdrt', 'octopus']:
     _migrate_conf(cluster)
 "
 
 # ─── Stop existing UMRS server containers (or legacy native processes) ────────
 # Stop compose-managed UMRS containers (idempotent if not running)
 echo "Stopping existing UMRS server containers..."
-podman compose -f "${SCRIPT_DIR}/docker-compose.yaml" stop umrs-server-rccs umrs-server-ai4s 2>/dev/null || true
+podman compose -f "${SCRIPT_DIR}/docker-compose.yaml" stop umrs-server-rccs umrs-server-ai4s umrs-server-bdrt umrs-server-octopus 2>/dev/null || true
 
 # Also clean up any legacy native PID-managed servers from before containerization
 for pidfile in "${SCRIPT_DIR}"/server-*.pid; do
@@ -534,8 +552,12 @@ _verify_tunnel() {
 
 RCCS_SSH_TARGET="${RCCS_SSH_TARGET:-masaru.nagaso@rccs-cloud}"
 AI4S_SSH_TARGET="${AI4S_SSH_TARGET:-ea0022@AI4S}"
+BDRT_SSH_TARGET="${BDRT_SSH_TARGET:-mnagaso@nimbus-0}"
+OCTOPUS_SSH_TARGET="${OCTOPUS_SSH_TARGET:-mnagaso@octopus}"
 RCCS_MINIO_REVERSE_SPEC="${RCCS_MINIO_REVERSE_SPEC:-127.0.0.1:9000:127.0.0.1:${MINIO_PORT:-9000}}"
 AI4S_MINIO_REVERSE_SPEC="${AI4S_MINIO_REVERSE_SPEC:-127.0.0.1:9000:127.0.0.1:${MINIO_PORT:-9000}}"
+BDRT_MINIO_REVERSE_SPEC="${BDRT_MINIO_REVERSE_SPEC:-127.0.0.1:9000:127.0.0.1:${MINIO_PORT:-9000}}"
+OCTOPUS_MINIO_REVERSE_SPEC="${OCTOPUS_MINIO_REVERSE_SPEC:-127.0.0.1:9000:127.0.0.1:${MINIO_PORT:-9000}}"
 
 # Per-cluster tunnel toggles. When a cluster's login node is unreachable
 # (e.g. AI4S offline / "No route to host"), set the corresponding flag to
@@ -543,6 +565,8 @@ AI4S_MINIO_REVERSE_SPEC="${AI4S_MINIO_REVERSE_SPEC:-127.0.0.1:9000:127.0.0.1:${M
 # aborted by one missing tunnel.
 RCCS_MINIO_TUNNEL_ENABLED="${RCCS_MINIO_TUNNEL_ENABLED:-true}"
 AI4S_MINIO_TUNNEL_ENABLED="${AI4S_MINIO_TUNNEL_ENABLED:-true}"
+BDRT_MINIO_TUNNEL_ENABLED="${BDRT_MINIO_TUNNEL_ENABLED:-true}"
+OCTOPUS_MINIO_TUNNEL_ENABLED="${OCTOPUS_MINIO_TUNNEL_ENABLED:-true}"
 # When strict, a tunnel that fails to establish aborts start.sh. Default is
 # non-strict: log a warning and continue (compute jobs on that cluster cannot
 # reach MinIO until the tunnel is restored).
@@ -551,6 +575,8 @@ MINIO_TUNNEL_STRICT="${MINIO_TUNNEL_STRICT:-false}"
 # Stop existing tunnels
 _stop_existing_tunnel "${SCRIPT_DIR}/rccs-minio-reverse-tunnel.pid" "RCCS"
 _stop_existing_tunnel "${SCRIPT_DIR}/ai4s-minio-reverse-tunnel.pid" "AI4S"
+_stop_existing_tunnel "${SCRIPT_DIR}/bdrt-minio-reverse-tunnel.pid" "BDRT"
+_stop_existing_tunnel "${SCRIPT_DIR}/octopus-minio-reverse-tunnel.pid" "OCTOPUS"
 
 # Launch enabled tunnels in parallel
 if [[ "$RCCS_MINIO_TUNNEL_ENABLED" == "true" ]]; then
@@ -565,6 +591,18 @@ if [[ "$AI4S_MINIO_TUNNEL_ENABLED" == "true" ]]; then
 else
     echo "Skipping AI4S MinIO reverse tunnel (AI4S_MINIO_TUNNEL_ENABLED=false)."
 fi
+if [[ "$BDRT_MINIO_TUNNEL_ENABLED" == "true" ]]; then
+    _launch_tunnel "BDRT" "$BDRT_SSH_TARGET" "$BDRT_MINIO_REVERSE_SPEC" \
+        "${SCRIPT_DIR}/bdrt-minio-reverse-tunnel.pid" "${LOG_DIR}/bdrt-minio-reverse-tunnel.log"
+else
+    echo "Skipping BDRT MinIO reverse tunnel (BDRT_MINIO_TUNNEL_ENABLED=false)."
+fi
+if [[ "$OCTOPUS_MINIO_TUNNEL_ENABLED" == "true" ]]; then
+    _launch_tunnel "OCTOPUS" "$OCTOPUS_SSH_TARGET" "$OCTOPUS_MINIO_REVERSE_SPEC" \
+        "${SCRIPT_DIR}/octopus-minio-reverse-tunnel.pid" "${LOG_DIR}/octopus-minio-reverse-tunnel.log"
+else
+    echo "Skipping OCTOPUS MinIO reverse tunnel (OCTOPUS_MINIO_TUNNEL_ENABLED=false)."
+fi
 
 # Wait once for both SSH processes to establish
 sleep 3
@@ -577,6 +615,14 @@ fi
 if [[ "$AI4S_MINIO_TUNNEL_ENABLED" == "true" ]]; then
     _verify_tunnel "AI4S" "$AI4S_SSH_TARGET" \
         "${SCRIPT_DIR}/ai4s-minio-reverse-tunnel.pid" "${LOG_DIR}/ai4s-minio-reverse-tunnel.log"
+fi
+if [[ "$BDRT_MINIO_TUNNEL_ENABLED" == "true" ]]; then
+    _verify_tunnel "BDRT" "$BDRT_SSH_TARGET" \
+        "${SCRIPT_DIR}/bdrt-minio-reverse-tunnel.pid" "${LOG_DIR}/bdrt-minio-reverse-tunnel.log"
+fi
+if [[ "$OCTOPUS_MINIO_TUNNEL_ENABLED" == "true" ]]; then
+    _verify_tunnel "OCTOPUS" "$OCTOPUS_SSH_TARGET" \
+        "${SCRIPT_DIR}/octopus-minio-reverse-tunnel.pid" "${LOG_DIR}/octopus-minio-reverse-tunnel.log"
 fi
 
 _stop_port_listener() {
@@ -602,6 +648,10 @@ _stop_port_listener "${UMRS_RCCS_ZMQ_PORT}" "RCCS ZMQ"
 _stop_port_listener "${UMRS_AI4S_PORT:-8002}" "AI4S HTTP"
 _stop_port_listener "${UMRS_AI4S_ZMQ_PORT}" "AI4S ZMQ"
 [[ "${UMRS_AI4S_ZMQ_PORT}" == "5557" ]] || _stop_port_listener "5557" "legacy AI4S ZMQ"
+_stop_port_listener "${UMRS_BDRT_PORT:-8004}" "BDRT HTTP"
+_stop_port_listener "${UMRS_BDRT_ZMQ_PORT}" "BDRT ZMQ"
+_stop_port_listener "${UMRS_OCTOPUS_PORT:-8006}" "OCTOPUS HTTP"
+_stop_port_listener "${UMRS_OCTOPUS_ZMQ_PORT}" "OCTOPUS ZMQ"
 sleep 2
 _stop_port_listener "${UMRS_RCCS_PORT:-8000}" "RCCS HTTP"
 _stop_port_listener "${UMRS_RCCS_ZMQ_PORT}" "RCCS ZMQ"
@@ -609,6 +659,10 @@ _stop_port_listener "${UMRS_RCCS_ZMQ_PORT}" "RCCS ZMQ"
 _stop_port_listener "${UMRS_AI4S_PORT:-8002}" "AI4S HTTP"
 _stop_port_listener "${UMRS_AI4S_ZMQ_PORT}" "AI4S ZMQ"
 [[ "${UMRS_AI4S_ZMQ_PORT}" == "5557" ]] || _stop_port_listener "5557" "legacy AI4S ZMQ"
+_stop_port_listener "${UMRS_BDRT_PORT:-8004}" "BDRT HTTP"
+_stop_port_listener "${UMRS_BDRT_ZMQ_PORT}" "BDRT ZMQ"
+_stop_port_listener "${UMRS_OCTOPUS_PORT:-8006}" "OCTOPUS HTTP"
+_stop_port_listener "${UMRS_OCTOPUS_ZMQ_PORT}" "OCTOPUS ZMQ"
 
 # ─── Build and start UMRS server containers ──────────────────────────────────
 # Force-remove existing UMRS server containers before recreate.
@@ -625,7 +679,7 @@ _stop_port_listener "${UMRS_AI4S_ZMQ_PORT}" "AI4S ZMQ"
 # Removing them unconditionally up front makes the subsequent `up -d`
 # deterministic. The names are owned exclusively by this compose stack, so a
 # force removal here is always safe.
-for _ctr in umrs-server umrs-server-rccs umrs-server-ai4s; do
+for _ctr in umrs-server umrs-server-rccs umrs-server-ai4s umrs-server-bdrt umrs-server-octopus; do
     if podman inspect "$_ctr" >/dev/null 2>&1; then
         echo "  Removing existing container $_ctr (will be recreated)..."
         podman stop "$_ctr" 2>/dev/null || true
@@ -637,8 +691,12 @@ echo ""
 echo "Starting UMRS server containers via podman compose..."
 echo "  RCCS site config: ../rccs-front/site.yaml"
 echo "  AI4S site config: ../ai4s/site.yaml"
+echo "  bdrt site config: ../bdrt-front/site.yaml"
+echo "  octopus site config: ../octopus-front/site.yaml"
 echo "  RCCS ZMQ port: ${UMRS_RCCS_ZMQ_PORT}, HTTP port: ${UMRS_RCCS_PORT:-8000}"
 echo "  AI4S ZMQ port: ${UMRS_AI4S_ZMQ_PORT}, HTTP port: ${UMRS_AI4S_PORT:-8002}"
+echo "  bdrt ZMQ port: ${UMRS_BDRT_ZMQ_PORT}, HTTP port: ${UMRS_BDRT_PORT:-8004}"
+echo "  octopus ZMQ port: ${UMRS_OCTOPUS_ZMQ_PORT}, HTTP port: ${UMRS_OCTOPUS_PORT:-8006}"
 echo "  Tunnel mode: ${UMRS_TUNNEL_MODE}"
 echo "  Server host: ${UMRS_SERVER_HOST}"
 echo "  Advertise host: ${UMRS_ADVERTISE_HOST:-<not set, will use SERVER_HOST>}"
@@ -653,7 +711,7 @@ export UMRS_ADMIN_S3_CONFIGURATION_FILE="${UMRS_ADMIN_S3_CONFIGURATION_FILE:-/et
 
 # Start UMRS server containers (image already built earlier)
 podman compose -f "${SCRIPT_DIR}/docker-compose.yaml" up -d \
-    umrs-server-rccs umrs-server-ai4s
+    umrs-server-rccs umrs-server-ai4s umrs-server-bdrt umrs-server-octopus
 
 # Start optional MCP Apps (when enabled)
 if [[ "${UMRS_FRONT_ENABLE_MCP:-false}" == "true" ]]; then
@@ -697,6 +755,44 @@ for i in $(seq 1 90); do
     echo -n "."
     sleep 1
     [[ "$i" -eq 90 ]] && echo " WARNING: AI4S HTTP not ready after 90s"
+done
+
+# Wait for bdrt server readiness
+echo -n "  Waiting for bdrt HTTP bootstrap..."
+for i in $(seq 1 90); do
+    if curl -sf "http://127.0.0.1:${UMRS_BDRT_PORT:-8004}/health" >/dev/null 2>&1; then
+        echo " ready."
+        break
+    fi
+    if [[ "$(podman inspect -f '{{.State.Status}}' umrs-server-bdrt 2>/dev/null)" == "exited" ]]; then
+        echo " failed (container exited)."
+        echo "ERROR: bdrt server container exited. Check logs:"
+        echo "  podman compose -f docker-compose.yaml logs umrs-server-bdrt"
+        podman compose -f "${SCRIPT_DIR}/docker-compose.yaml" logs --tail=20 umrs-server-bdrt 2>/dev/null || true
+        exit 1
+    fi
+    echo -n "."
+    sleep 1
+    [[ "$i" -eq 90 ]] && echo " WARNING: bdrt HTTP not ready after 90s"
+done
+
+# Wait for octopus server readiness
+echo -n "  Waiting for octopus HTTP bootstrap..."
+for i in $(seq 1 90); do
+    if curl -sf "http://127.0.0.1:${UMRS_OCTOPUS_PORT:-8006}/health" >/dev/null 2>&1; then
+        echo " ready."
+        break
+    fi
+    if [[ "$(podman inspect -f '{{.State.Status}}' umrs-server-octopus 2>/dev/null)" == "exited" ]]; then
+        echo " failed (container exited)."
+        echo "ERROR: octopus server container exited. Check logs:"
+        echo "  podman compose -f docker-compose.yaml logs umrs-server-octopus"
+        podman compose -f "${SCRIPT_DIR}/docker-compose.yaml" logs --tail=20 umrs-server-octopus 2>/dev/null || true
+        exit 1
+    fi
+    echo -n "."
+    sleep 1
+    [[ "$i" -eq 90 ]] && echo " WARNING: octopus HTTP not ready after 90s"
 done
 
 # ─── Start RAG Service (containerized) ───────────────────────────────────────

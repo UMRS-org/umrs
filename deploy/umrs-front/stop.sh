@@ -21,12 +21,12 @@ COMPOSE_FILE="$(pwd)/docker-compose.yaml"
 # ─── Stop UMRS server containers ────────────────────────────────────────────
 echo "Stopping UMRS server containers..."
 if [[ -f "$COMPOSE_FILE" ]]; then
-    podman compose -f "$COMPOSE_FILE" stop umrs-server-rccs umrs-server-ai4s 2>/dev/null || true
-    podman compose -f "$COMPOSE_FILE" rm -f umrs-server-rccs umrs-server-ai4s 2>/dev/null || true
+    podman compose -f "$COMPOSE_FILE" stop umrs-server-rccs umrs-server-ai4s umrs-server-bdrt umrs-server-octopus 2>/dev/null || true
+    podman compose -f "$COMPOSE_FILE" rm -f umrs-server-rccs umrs-server-ai4s umrs-server-bdrt umrs-server-octopus 2>/dev/null || true
 else
     # Fallback: direct container stop (compose file missing)
-    podman stop umrs-server-rccs umrs-server-ai4s 2>/dev/null || true
-    podman rm -f umrs-server-rccs umrs-server-ai4s 2>/dev/null || true
+    podman stop umrs-server-rccs umrs-server-ai4s umrs-server-bdrt umrs-server-octopus 2>/dev/null || true
+    podman rm -f umrs-server-rccs umrs-server-ai4s umrs-server-bdrt umrs-server-octopus 2>/dev/null || true
 fi
 
 # Also clean up any legacy native PID-managed servers from before containerization
