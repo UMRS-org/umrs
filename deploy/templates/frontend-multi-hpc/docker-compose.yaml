@@ -1,0 +1,168 @@
+# =============================================================================
+# docker-compose.yaml — frontend → multi-HPC stack (TEMPLATE)
+# =============================================================================
+# One frontend host runs:
+#   - postgres (one DB per cluster)
+#   - minio    (shared object store)
+#   - umrs-server-cluster-a  (reaches HPC cluster A over SSH)
+#   - umrs-server-cluster-b  (reaches HPC cluster B over SSH)
+#
+# Copy the umrs-server-cluster-* block for each additional cluster and give it a
+# unique HTTP/ZMQ/data port set and its own Postgres DB.
+#
+#   podman compose build umrs-server-cluster-a   # build the shared image once
+#   ./start.sh                                    # bring everything up
+# =============================================================================
+
+x-umrs-common: &umrs-common
+  build:
+    context: ../../../../
+    dockerfile: umrs/docker/Dockerfile.server
+  image: localhost/umrs-server:latest
+  restart: unless-stopped
+  network_mode: host
+  env_file: .env
+
+services:
+  # ─── PostgreSQL (one DB per cluster) ───────────────────────────────────────
+  postgres:
+    image: docker.io/pgvector/pgvector:pg15
+    container_name: umrs-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-umrs}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB_CLUSTER_A:-front_cluster_a}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - umrs_pg_data:/var/lib/postgresql/data
+    command: postgres -c "listen_addresses=*" -c "unix_socket_directories="
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-umrs} -h 127.0.0.1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    # NOTE: additional per-cluster DBs (front_cluster_b, …) are created by
+    # start.sh after postgres is healthy.
+
+  # ─── MinIO (shared object store) ───────────────────────────────────────────
+  minio:
+    image: docker.io/minio/minio:latest
+    container_name: umrs-minio
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?Set MINIO_ROOT_USER in .env}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD in .env}
+    ports:
+      - "${MINIO_BIND:-0.0.0.0}:${MINIO_PORT:-9000}:9000"
+      - "127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - umrs_minio_data:/data
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ─── UMRS server — cluster A ───────────────────────────────────────────────
+  umrs-server-cluster-a:
+    <<: *umrs-common
+    container_name: umrs-server-cluster-a
+    environment:
+      UMRS_SITE_CONFIG: /etc/umrs/site.yaml
+      UMRS_CONFIG: /etc/umrs
+      UMRS_CONTROL_PORT: ${UMRS_A_ZMQ_PORT:-50090}
+      UMRS_DATA_PORT_RANGE: ${UMRS_A_DATA_PORT_RANGE:-50091-50098}
+      UMRS_HTTP_PORT: ${UMRS_A_PORT:-8000}
+      UMRS_HTTP_HOST: ${UMRS_HTTP_HOST:-0.0.0.0}
+      DB_HOST: "127.0.0.1"
+      DB_PORT: ${POSTGRES_PORT:-5432}
+      DB_SUPERUSER: ${POSTGRES_USER:-umrs}
+      DB_SUPERUSER_PASSWORD: ${POSTGRES_PASSWORD}
+      UMRS_REGISTRY_POSTGRES_DSN: "postgres://${POSTGRES_USER:-umrs}:${POSTGRES_PASSWORD}@127.0.0.1:${POSTGRES_PORT:-5432}/${POSTGRES_DB_CLUSTER_A:-front_cluster_a}"
+      S3_ENDPOINT_URL: "http://127.0.0.1:${MINIO_PORT:-9000}"
+      S3_ACCESS_KEY: ${MINIO_ROOT_USER}
+      S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      S3_BUCKET: ${S3_BUCKET:-r4-data}
+      S3_USE_SSL: ${S3_USE_SSL:-false}
+      S3_PRESIGN_ENDPOINT: ${S3_PRESIGN_ENDPOINT:-http://127.0.0.1:${MINIO_PORT:-9000}}
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ./site.cluster-a.yaml:/etc/umrs/site.yaml:ro,z
+      # SSH keys so the remote-slurm backend can reach cluster A's login node.
+      - ${HOME}/.ssh:/root/.ssh-host:ro,z
+      - type: tmpfs
+        target: /run/umrs-ssh
+        tmpfs:
+          size: 10485760
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        cp -a /root/.ssh-host/* /root/.ssh/ 2>/dev/null || true
+        chmod 700 /root/.ssh; chmod 600 /root/.ssh/* 2>/dev/null || true
+        exec python -m umrs.server
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:${UMRS_A_PORT:-8000}/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 60
+      start_period: 30s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+  # ─── UMRS server — cluster B ───────────────────────────────────────────────
+  umrs-server-cluster-b:
+    <<: *umrs-common
+    container_name: umrs-server-cluster-b
+    environment:
+      UMRS_SITE_CONFIG: /etc/umrs/site.yaml
+      UMRS_CONFIG: /etc/umrs
+      UMRS_CONTROL_PORT: ${UMRS_B_ZMQ_PORT:-50100}
+      UMRS_DATA_PORT_RANGE: ${UMRS_B_DATA_PORT_RANGE:-50101-50108}
+      UMRS_HTTP_PORT: ${UMRS_B_PORT:-8002}
+      UMRS_HTTP_HOST: ${UMRS_HTTP_HOST:-0.0.0.0}
+      DB_HOST: "127.0.0.1"
+      DB_PORT: ${POSTGRES_PORT:-5432}
+      DB_SUPERUSER: ${POSTGRES_USER:-umrs}
+      DB_SUPERUSER_PASSWORD: ${POSTGRES_PASSWORD}
+      UMRS_REGISTRY_POSTGRES_DSN: "postgres://${POSTGRES_USER:-umrs}:${POSTGRES_PASSWORD}@127.0.0.1:${POSTGRES_PORT:-5432}/${POSTGRES_DB_CLUSTER_B:-front_cluster_b}"
+      S3_ENDPOINT_URL: "http://127.0.0.1:${MINIO_PORT:-9000}"
+      S3_ACCESS_KEY: ${MINIO_ROOT_USER}
+      S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      S3_BUCKET: ${S3_BUCKET:-r4-data}
+      S3_USE_SSL: ${S3_USE_SSL:-false}
+      S3_PRESIGN_ENDPOINT: ${S3_PRESIGN_ENDPOINT:-http://127.0.0.1:${MINIO_PORT:-9000}}
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ./site.cluster-b.yaml:/etc/umrs/site.yaml:ro,z
+      - ${HOME}/.ssh:/root/.ssh-host:ro,z
+      - type: tmpfs
+        target: /run/umrs-ssh
+        tmpfs:
+          size: 10485760
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        cp -a /root/.ssh-host/* /root/.ssh/ 2>/dev/null || true
+        chmod 700 /root/.ssh; chmod 600 /root/.ssh/* 2>/dev/null || true
+        exec python -m umrs.server
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:${UMRS_B_PORT:-8002}/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 60
+      start_period: 30s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+volumes:
+  umrs_pg_data:
+  umrs_minio_data:

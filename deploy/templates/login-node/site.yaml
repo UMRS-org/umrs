@@ -1,0 +1,96 @@
+# yaml-language-server: $schema=../../../src/umrs/orchestrator/site-config.schema.json
+# ─────────────────────────────────────────────────────────────
+# UMRS Site Configuration — LOGIN-NODE TEMPLATE
+# ─────────────────────────────────────────────────────────────
+# Copy this file, then replace every <...> placeholder with values for your
+# cluster. Loading priority:
+#   1. UMRS_SITE_CONFIG=/path/to/this/file
+#   2. ./site.yaml (CWD when starting UMRS)
+#   3. ~/.config/umrs/site.yaml
+# ─────────────────────────────────────────────────────────────
+
+name: <cluster-name>
+description: >-
+  <One-line description: hardware, scheduler, container runtime, filesystem.>
+
+scheduler:
+  kind: slurm-podman            # UMRS on the login node submits local sbatch jobs
+  partition: <partition-name>   # e.g. "gpu" or a comma-separated list
+  account: <slurm-account>      # charge account for sbatch --account
+  qos: ""
+  time_limit: "04:00:00"
+  gpus: 1                       # per-job GPU count (0 if the partition rejects --gpus)
+  cpus: 8
+  memory: ""                    # "" omits --mem when the partition rejects it
+  require_user_slurm_account: false
+
+runtime:
+  kind: podman-compose
+  rivault_dir: <abs-path>/umrs/src/umrs/mini-rivault-llm   # mini-rivault compose dir
+  repo_dir: <abs-path>/umrs                                # UMRS repo checkout
+  vision_image: ""
+  compose_file: ""             # defaults to serve-model.yaml inside rivault_dir
+  profiles:
+    - harness
+    - vllm
+    - litellm-db
+  gpu_passthrough: auto
+  cgroup_manager: cgroupfs
+  storage_root: ""             # auto → /var/tmp/podman_$USER/storage
+
+storage:
+  # Shared filesystem path visible to BOTH login and compute nodes.
+  model_cache_dir: <shared-fs>/umrs_models/hf
+  user_model_path: <shared-fs>/umrs_models
+  s3_tunnel_host: ""           # auto → $SLURM_SUBMIT_HOST
+  s3_tunnel_port: 9000
+
+network:
+  litellm_port: 8001
+  litellm_master_key: ""       # set LITELLM_MASTER_KEY in .env instead
+  port_range_min: 11434
+  port_range_max: 11534
+  port_strategy: static_range
+
+vllm:
+  model: <default-embedding-or-llm-model>   # e.g. intfloat/e5-base-v2
+  docker_tag: <vllm-image-tag>
+  gpu_mem_util: 0.80
+  max_model_len: 4096
+  max_num_seqs: 4
+  tensor_parallel_size: 1
+
+# Workflow steps execute as Slurm jobs on GPU compute nodes.
+step_executor:
+  kind: slurm
+  partition: <partition-name>
+  gpus: 1
+  cpus: 8
+  memory: ""
+  time_limit: "01:00:00"
+  account: <slurm-account>
+  gpu: true
+
+database:
+  host: localhost
+  port: 5432
+  superuser: umrs
+  superuser_password: ""       # set POSTGRES_PASSWORD in .env
+  user_password: ""
+  registry_dsn: ""             # start.sh derives the DSN from runtime env
+
+# ─────────────────────────────────────────────────────────────
+# Per-partition profiles — one block per partition. The launcher uses these
+# instead of probing `podman info` / `nvidia-smi` at every job start.
+# ─────────────────────────────────────────────────────────────
+partition_profiles:
+  <partition-name>:
+    arch: x86_64               # or aarch64
+    gpu_vendor: nvidia         # or amd
+    gpu_memory_gb: 80          # GPU VRAM in GiB
+    oci_runtime: crun          # crun (x86) / runc (some aarch64 stacks)
+    userns_mode: "keep-id:uid=0,gid=0"   # "host" on some aarch64 stacks
+    network_backend: netavark
+    vllm_docker_tag: <vllm-image-tag>
+    gpus: 1
+    needs_netavark_switch: true
