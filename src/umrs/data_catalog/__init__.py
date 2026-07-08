@@ -1,4 +1,4 @@
-"""Agent-navigable data catalog stored under ``_data_catalog/`` in S3."""
+"""Agent-navigable data catalog: Postgres ``catalog_objects`` metadata + S3 blobs."""
 
 from .adapter import CatalogArtifactAdapter
 from .artifacts import (

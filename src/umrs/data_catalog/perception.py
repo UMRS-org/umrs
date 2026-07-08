@@ -41,6 +41,13 @@ _SUMMARY_PROMPT = (
     "researcher can decide whether to open it. Be concise and factual; do not "
     "invent details not present in the text."
 )
+_TAG_PROMPT = (
+    "Extract up to 8 short factual tags for a scientific data catalog entry. "
+    "Tags must appear in or be directly implied by the text (topics, entities, "
+    "methods, instruments). Use lowercase with hyphens for multi-word tags. "
+    "Respond with a JSON array of strings only, no markdown."
+)
+_LLM_TAG_KIND = "llm_tags"
 
 
 @dataclass
@@ -70,6 +77,13 @@ def image_perception_enabled() -> bool:
     via ``UMRS_DATA_CATALOG_ENABLE_IMAGE_PERCEPTION=true``.
     """
     return os.getenv("UMRS_DATA_CATALOG_ENABLE_IMAGE_PERCEPTION", "false").lower() == "true"
+
+
+def llm_tags_enabled() -> bool:
+    """True when optional LLM tag extraction is enabled (default on with perception)."""
+    if not perception_enabled():
+        return False
+    return os.getenv("UMRS_DATA_CATALOG_ENABLE_LLM_TAGS", "true").lower() == "true"
 
 
 def run_perception(
@@ -191,6 +205,68 @@ def summarize_text(
     if not text:
         return None
     return PerceptionResult(text=text.strip(), model=model, kind=_LLM_SUMMARY)
+
+
+def extract_llm_tags(
+    project_id: str,
+    *,
+    filename: str,
+    source_text: str,
+    user_id: str,
+) -> list[str]:
+    """Best-effort factual tag extraction; returns [] on failure."""
+    if not llm_tags_enabled() or not source_text.strip():
+        return []
+
+    max_chars = _int_env("UMRS_DATA_CATALOG_SUMMARY_MAX_CHARS", _DEFAULT_SUMMARY_MAX_CHARS)
+    snippet = source_text[:max_chars]
+    endpoint = _find_text_endpoint(project_id)
+    if endpoint is None:
+        return []
+
+    model = _served_model_name(endpoint)
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": _TAG_PROMPT},
+            {"role": "user", "content": f"Filename: {filename}\n\n{snippet}"},
+        ],
+        "max_tokens": 200,
+        "temperature": 0.1,
+    }
+    raw = _chat_completion(
+        endpoint,
+        payload,
+        project_id=project_id,
+        user_id=user_id,
+        perception_kind=_LLM_TAG_KIND,
+    )
+    return _parse_tag_array(raw)
+
+
+def _parse_tag_array(raw: str | None) -> list[str]:
+    if not raw:
+        return []
+    text = raw.strip()
+    if text.startswith("```"):
+        text = text.strip("`")
+        if text.lower().startswith("json"):
+            text = text[4:].strip()
+    try:
+        import json
+
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    tags: list[str] = []
+    for item in parsed:
+        if isinstance(item, str) and item.strip():
+            tags.append(item.strip()[:64])
+        if len(tags) >= 8:
+            break
+    return tags
 
 
 # ---------------------------------------------------------------------------

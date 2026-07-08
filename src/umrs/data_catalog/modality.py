@@ -74,3 +74,8 @@ def filename_signals(filename: str) -> list[str]:
     stem = PurePosixPath(name).stem
     parts = [p for p in stem.replace("-", "_").split("_") if p]
     return [name, *parts]
+
+
+def is_document_filename(filename: str) -> bool:
+    """True when the filename extension is a document type needing full-file parse."""
+    return PurePosixPath(filename).suffix.lower() in _DOC_EXTENSIONS
