@@ -41,6 +41,8 @@ _src_root = _script_dir.parent / "src"
 if _src_root.is_dir():
     sys.path.insert(0, str(_src_root))
 
+from umrs.orchestrator.nodelist import first_node_hostname  # noqa: E402
+
 logger = logging.getLogger("reconcile_orphans")
 
 # ── Slurm interaction ──────────────────────────────────────────────
@@ -402,6 +404,10 @@ async def _reconcile(
 
         # Extract endpoint information
         host = info.get("host") or info.get("RIVAULT_NODE", job.get("node", "unknown"))
+        # Slurm reports multinode allocations as a compressed nodelist
+        # (e.g. ``ng-dgx-m3-[14-15]``) which is not a resolvable hostname; reduce
+        # it to the head node so tunneling/readiness probes can connect.
+        host = first_node_hostname(host)
         port_str = info.get("port") or info.get("RIVAULT_LITELLM_PORT", "11434")
         try:
             port = int(port_str)
