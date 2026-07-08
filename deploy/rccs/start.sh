@@ -7,7 +7,7 @@
 # (sbatch, squeue, scancel) and create SSH tunnels to compute nodes.
 #
 # Usage (on rccs-cloud):
-#   cd deploy/rccs-cloud
+#   cd deploy/rccs
 #   ./start.sh              # start everything
 #   ./start.sh --server     # restart only the native server (containers stay)
 #
@@ -330,7 +330,7 @@ PY
 # ─── Guard: must run on a Linux host where podman is available ───────────────
 if [[ "$(uname -s)" != "Linux" ]]; then
     echo "ERROR: start.sh must be run on rccs-cloud (Linux), not on $(uname -s)."
-    echo "  Run:  ssh rccs-cloud 'cd /path/to/umrs/deploy/rccs-cloud && ./start.sh'"
+    echo "  Run:  ssh rccs-cloud 'cd /path/to/umrs/deploy/rccs && ./start.sh'"
     exit 1
 fi
 

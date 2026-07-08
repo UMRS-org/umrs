@@ -8,7 +8,7 @@
 # Run this ONCE after cloning the repo or after major dependency changes.
 #
 # Usage (on rccs-cloud):
-#   cd deploy/rccs-cloud
+#   cd deploy/rccs
 #   ./setup_server.sh
 #
 # After setup, use ./start.sh to launch the server.

@@ -105,9 +105,9 @@ extra:
   ssh_reverse_tunnels:
     - "127.0.0.1:9000:127.0.0.1:9000"
   # Remote path for job info files (on Lustre, accessed via SSH cat)
-  slurm_job_info_dir: /lvs0/rccs-dmp/masaru.nagaso/ai4s-platform/umrs/deploy/rccs-cloud/jobs
+  slurm_job_info_dir: /lvs0/rccs-dmp/masaru.nagaso/ai4s-platform/umrs/deploy/rccs/jobs
   # Wrapper script for Podman-based serve on compute nodes
-  slurm_wrapper_script: /lvs0/rccs-dmp/masaru.nagaso/ai4s-platform/umrs/deploy/rccs-cloud/serve-model.slurm
+  slurm_wrapper_script: /lvs0/rccs-dmp/masaru.nagaso/ai4s-platform/umrs/deploy/rccs/serve-model.slurm
 
 # Partition profiles are identical to rccs-cloud — same compute hardware
 partition_profiles:
