@@ -938,7 +938,7 @@ if [[ "${SLURM_JOB_NUM_NODES:-${SLURM_NNODES:-1}}" -gt 1 ]]; then
 
     RAY_PORT=6379
     RAY_ADDRESS="${HEAD_IP}:${RAY_PORT}"
-    VLLM_IMAGE="docker.io/vllm/vllm-openai:${VLLM_DOCKER_TAG:-v0.20.0}"
+    VLLM_IMAGE="${VLLM_DOCKER_IMAGE:-docker.io/vllm/vllm-openai:${VLLM_DOCKER_TAG:-v0.20.0}}"
 
     # If VLLM_PP is still 1, derive it from the node count (PP = nodes).
     if [[ "${VLLM_PP:-1}" -le 1 ]]; then
