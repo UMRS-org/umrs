@@ -166,6 +166,7 @@ class PartitionProfile:
     userns_mode: str = "keep-id:uid=0,gid=0"  # keep-id:uid=0,gid=0 | host
     network_backend: str = "netavark"  # netavark | cni
     vllm_docker_tag: str = ""  # override per partition (empty → use site default)
+    vllm_docker_image: str = ""  # full image override (repo+tag); wins over tag
     gpus: int = 1  # Slurm --gpus count
     needs_netavark_switch: bool = True  # force netavark backend file on startup
 
@@ -259,6 +260,8 @@ class SiteConfig:
         }
         if pp.vllm_docker_tag:
             env["VLLM_DOCKER_TAG"] = pp.vllm_docker_tag
+        if pp.vllm_docker_image:
+            env["VLLM_DOCKER_IMAGE"] = pp.vllm_docker_image
         return env
 
     def to_env(self) -> dict[str, str]:

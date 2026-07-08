@@ -124,7 +124,7 @@ services:
   # vLLM inference engine
   # ---------------------------------------------------------------------------
   vllm:
-    image: docker.io/vllm/vllm-openai:${VLLM_DOCKER_TAG:-v0.20.0}
+    image: ${VLLM_DOCKER_IMAGE:-docker.io/vllm/vllm-openai:${VLLM_DOCKER_TAG:-v0.20.0}}
     networks:
       demo-llm-net:
         ipv4_address: ${PRIV_IP1TO3:-192.168.5}.${VLLM_IP4:-22}
