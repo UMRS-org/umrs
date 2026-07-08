@@ -61,6 +61,8 @@ class CatalogReadResponse(BaseModel):
     total_size: int
     truncated: bool
     text: str | None = None
+    read_source: str = "raw"
+    extracted_text_ref: str | None = None
     meta: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -77,17 +79,30 @@ class CatalogStatsResponse(BaseModel):
     summary="Search the data catalog",
 )
 async def catalog_search(
-    q: str = Query(..., min_length=1, description="Search query"),
+    q: str = Query("", description="Search query (optional when filters are set)"),
     limit: int = Query(20, ge=1, le=100),
+    modality: str | None = Query(None, description="Filter by detected_modality"),
+    state: str | None = Query(None, description="Filter by catalog state"),
+    tag: str | None = Query(None, description="Filter rows containing this tag"),
+    prefix: str | None = Query(None, description="Filter s3_key prefix within project"),
     project_id: str = Depends(get_project_id),
 ) -> CatalogSearchResponse:
     """Grep catalog metadata scoped to the caller's project."""
+    if not q.strip() and not any([modality, state, tag, prefix]):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Provide q and/or at least one filter (modality, state, tag, prefix)",
+        )
     meta_store = _require_catalog_meta_store()
     hits = search_catalog(
         meta_store,
         query=q,
         project_id=project_id,
         limit=limit,
+        modality=modality,
+        state=state,
+        tag=tag,
+        prefix=prefix,
     )
     return CatalogSearchResponse(
         query=q,
@@ -120,10 +135,19 @@ async def catalog_read(
     s3_key: str = Query(..., description="S3 object key"),
     offset: int = Query(0, ge=0),
     length: int = Query(1_048_576, ge=1, le=10_485_760),
+    source: str = Query(
+        "auto",
+        description="auto | raw | extracted — auto uses extracted text for documents",
+    ),
     project_id: str = Depends(get_project_id),
     config: S3Config = Depends(get_s3_config),
 ) -> CatalogReadResponse:
-    """Read raw object bytes with JWT/project ACL enforcement."""
+    """Read catalog object bytes or extracted document text with project ACL."""
+    if source not in {"auto", "raw", "extracted"}:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="source must be auto, raw, or extracted",
+        )
     meta_store = _require_catalog_meta_store()
     s3_client = config.get_client()
     try:
@@ -135,10 +159,16 @@ async def catalog_read(
             project_id=project_id,
             offset=offset,
             length=length,
+            source=source,  # type: ignore[arg-type]
         )
     except PermissionError as exc:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(exc),
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
             detail=str(exc),
         ) from exc
     except Exception as exc:

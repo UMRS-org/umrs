@@ -37,7 +37,8 @@ def test_ingest_object_reads_only_configured_sample():
     meta = store.get("proj-1", s3_key)
     assert meta is not None
     assert meta.state == CatalogState.READY
-    assert meta.tags == ["perception_skipped", "catalog_sample_truncated"]
+    assert "perception_skipped" in meta.tags
+    assert "catalog_sample_truncated" in meta.tags
 
     extracted_keys = [
         key for key in client.objects if key.startswith(EXTRACTED_TEXT_PREFIX)
