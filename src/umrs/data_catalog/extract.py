@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import os
 from typing import Any
 
 from .modality import detect_modality
@@ -28,8 +29,8 @@ def extract_content(
         text, tags = _extract_structured(filename, content)
         return _summarize(text), text, tags
     if modality == "document":
-        text = _extract_document(filename, content)
-        return _summarize(text), text, []
+        text, tags = _extract_document_detailed(filename, content)
+        return _summarize(text), text, tags
     if modality == "image":
         text = _extract_image_metadata(content)
         summary = text or f"Image file {filename}"
@@ -73,11 +74,24 @@ def _extract_structured(filename: str, content: bytes) -> tuple[str, list[str]]:
             reader = csv.reader(io.StringIO(text), delimiter=delimiter)
             rows = list(reader)
             if rows:
-                tags.extend(rows[0][:12])
+                header = rows[0][:12]
+                tags.extend(header)
+                for col_idx in range(min(3, len(header))):
+                    seen: set[str] = set()
+                    for row in rows[1:201]:
+                        if col_idx >= len(row):
+                            continue
+                        value = row[col_idx].strip()
+                        if not value or value in seen:
+                            continue
+                        seen.add(value)
+                        tags.append(value)
+                        if len(seen) >= 5:
+                            break
                 text = "\n".join(",".join(row) for row in rows[:200])
         except csv.Error:
             pass
-    return text, [t for t in tags if t][:12]
+    return text, [t for t in tags if t][:24]
 
 
 def _json_keys(payload: Any, *, max_keys: int, prefix: str = "") -> list[str]:
@@ -93,46 +107,58 @@ def _json_keys(payload: Any, *, max_keys: int, prefix: str = "") -> list[str]:
     return keys[:max_keys]
 
 
-def _extract_document(filename: str, content: bytes) -> str:
+def _extract_document_detailed(filename: str, content: bytes) -> tuple[str, list[str]]:
     lower = filename.lower()
     if lower.endswith(".pdf"):
-        return _extract_pdf(content)
+        return _extract_pdf_detailed(content)
     if lower.endswith((".pptx", ".ppt")):
-        return _extract_pptx(content)
-    return ""
+        return _extract_pptx_detailed(content)
+    return "", ["extract_unsupported"]
 
 
-def _extract_pdf(content: bytes) -> str:
+def _extract_pdf_detailed(content: bytes) -> tuple[str, list[str]]:
     try:
         from pypdf import PdfReader  # type: ignore[import-untyped]
     except ImportError:
-        return ""
+        return "", ["extract_dependency_missing"]
+
     try:
         reader = PdfReader(io.BytesIO(content))
         parts = []
-        for page in reader.pages[:50]:
+        max_pages = _max_document_pages()
+        for page in reader.pages[:max_pages]:
             parts.append(page.extract_text() or "")
-        return "\n".join(parts)[:50_000]
+        text = "\n".join(parts)[: _max_document_text_chars()]
     except Exception:
-        return ""
+        return "", ["extract_failed"]
+
+    if not text.strip():
+        return "", ["extract_empty"]
+    return text, []
 
 
-def _extract_pptx(content: bytes) -> str:
+def _extract_pptx_detailed(content: bytes) -> tuple[str, list[str]]:
     try:
         from pptx import Presentation  # type: ignore[import-untyped]
     except ImportError:
-        return ""
+        return "", ["extract_dependency_missing"]
+
     try:
         presentation = Presentation(io.BytesIO(content))
         parts = []
-        for slide in presentation.slides[:50]:
+        max_slides = _max_document_pages()
+        for slide in presentation.slides[:max_slides]:
             for shape in slide.shapes:
                 text = getattr(shape, "text", None)
                 if text:
                     parts.append(text)
-        return "\n".join(parts)[:50_000]
+        text = "\n".join(parts)[: _max_document_text_chars()]
     except Exception:
-        return ""
+        return "", ["extract_failed"]
+
+    if not text.strip():
+        return "", ["extract_empty"]
+    return text, []
 
 
 def _extract_image_metadata(content: bytes) -> str:
@@ -159,3 +185,19 @@ def _summarize(text: str, limit: int = 500) -> str:
     if len(cleaned) <= limit:
         return cleaned
     return cleaned[: limit - 3] + "..."
+
+
+def _max_document_pages() -> int:
+    raw = os.getenv("UMRS_DATA_CATALOG_MAX_DOCUMENT_PAGES", "200")
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return 200
+
+
+def _max_document_text_chars() -> int:
+    raw = os.getenv("UMRS_DATA_CATALOG_MAX_DOCUMENT_TEXT_CHARS", "500000")
+    try:
+        return max(1_000, int(raw))
+    except ValueError:
+        return 500_000
