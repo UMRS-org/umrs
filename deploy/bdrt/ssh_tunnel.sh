@@ -6,7 +6,7 @@
 #   ./ssh_tunnel.sh &        # background
 #
 # Tunneled ports:
-#   8080        Platform Gateway  (r4 CLI / SDK)
+#   18080       Platform Gateway  (r4 CLI / SDK)  [8080 taken by system PKI on nimbus-0]
 #   5555        ZMQ control plane (server ↔ client)
 #   5556-5563   ZMQ data plane    (1 user = 1 data port)
 #   9000        MinIO S3 API      (client uploads/downloads)
@@ -21,7 +21,7 @@ REMOTE_HOST="${1:-nimbus-0}"
 CONTROL_PORT="${UMRS_CONTROL_PORT:-5555}"
 DATA_BASE_PORT="${UMRS_DATA_BASE_PORT:-5556}"
 DATA_PORT_COUNT="${UMRS_DATA_PORT_COUNT:-8}"
-GATEWAY_PORT="${GATEWAY_PORT:-8080}"
+GATEWAY_PORT="${GATEWAY_PORT:-18080}"
 S3_PORT="${UMRS_S3_PORT:-9000}"
 RAG_PORT="${UMRS_RAG_PORT:-8081}"
 SSH_CONNECT_TIMEOUT="${UMRS_SSH_CONNECT_TIMEOUT:-15}"
