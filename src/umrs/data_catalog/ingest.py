@@ -10,7 +10,7 @@ from typing import Any
 from botocore.exceptions import ClientError
 
 from .extract import extract_content
-from .modality import detect_modality, filename_signals
+from .modality import detect_modality, filename_signals, is_document_filename
 from .paths import logical_path_for_object
 from .pg_store import CatalogMetaStore
 from .schema import CatalogObjectMeta, CatalogState
@@ -98,13 +98,14 @@ def ingest_object(
         object_etag = live_etag
 
     filename = s3_key.rsplit("/", 1)[-1]
+    extract_cap = max_extract_bytes or _max_extract_bytes()
     try:
-        content, total_size = get_object_range(
+        content, total_size, truncated_sample = _load_extraction_bytes(
             s3_client,
             bucket,
             s3_key,
-            offset=0,
-            length=max_extract_bytes or _max_extract_bytes(),
+            filename=filename,
+            sample_cap=extract_cap,
         )
     except ClientError as exc:
         _write_error(
@@ -120,7 +121,6 @@ def ingest_object(
 
     modality = detect_modality(filename, content)
     signals = filename_signals(filename)
-    truncated_sample = len(content) < total_size
 
     try:
         summary, extracted_text, extra_tags = extract_content(filename, content)
@@ -139,7 +139,7 @@ def ingest_object(
         raise IngestionError(str(exc)) from exc
 
     deterministic_summary = summary
-    extracted_text, perception_tags, perception_summary, perception_model = (
+    extracted_text, perception_tags, perception_summary, perception_model, llm_tags = (
         _apply_perception(
             s3_client,
             bucket,
@@ -163,8 +163,8 @@ def ingest_object(
     if extracted_text.strip():
         extracted_ref = write_extracted_text(s3_client, bucket, s3_key, extracted_text)
 
-    tags = list(extra_tags) + perception_tags
-    if truncated_sample:
+    tags = _merge_tags(extra_tags, signals, perception_tags, llm_tags)
+    if truncated_sample and modality != "document":
         tags.append("catalog_sample_truncated")
 
     meta = CatalogObjectMeta(
@@ -213,17 +213,17 @@ def _apply_perception(
     extracted_text: str,
     sampled_content: bytes,
     total_size: int,
-) -> tuple[str, list[str], str | None, str | None]:
+) -> tuple[str, list[str], str | None, str | None, list[str]]:
     """
     Best-effort generative perception layered on deterministic extraction.
 
-    Returns ``(extracted_text, extra_tags, perception_summary, perception_model)``.
+    Returns ``(extracted_text, extra_tags, perception_summary, perception_model, llm_tags)``.
     Never raises; on failure returns inputs unchanged plus ``perception_skipped``.
     """
-    from .perception import perception_enabled, run_perception
+    from .perception import extract_llm_tags, perception_enabled, run_perception
 
     if not perception_enabled():
-        return extracted_text, [], None, None
+        return extracted_text, [], None, None, []
 
     image_bytes: bytes | None = None
     if modality == "image":
@@ -239,18 +239,69 @@ def _apply_perception(
         image_bytes=image_bytes,
         user_id=owner,
     )
+    tag_source = extracted_text
     if result is None:
-        return extracted_text, ["perception_skipped"], None, None
+        llm_tags = extract_llm_tags(
+            project_id,
+            filename=filename,
+            source_text=tag_source,
+            user_id=owner,
+        )
+        extra = ["perception_skipped"]
+        if llm_tags:
+            extra.append("llm_tagged")
+        return extracted_text, extra, None, None, llm_tags
 
     perception_summary = result.text[:_SUMMARY_LIMIT] or None
+    tag_source = result.text if result.text else extracted_text
+    llm_tags = extract_llm_tags(
+        project_id,
+        filename=filename,
+        source_text=tag_source,
+        user_id=owner,
+    )
+    perception_tags = list(result.tags)
+    if llm_tags:
+        perception_tags.append("llm_tagged")
     if result.kind == "vision_caption":
         merged = (
             result.text
             if not extracted_text.strip()
             else f"{result.text}\n\n{extracted_text}"
         )
-        return merged, ["vision_captioned", *result.tags], perception_summary, result.model
-    return extracted_text, ["llm_summarized", *result.tags], perception_summary, result.model
+        return (
+            merged,
+            ["vision_captioned", *perception_tags],
+            perception_summary,
+            result.model,
+            llm_tags,
+        )
+    return (
+        extracted_text,
+        ["llm_summarized", *perception_tags],
+        perception_summary,
+        result.model,
+        llm_tags,
+    )
+
+
+def _merge_tags(
+    extra_tags: list[str],
+    filename_signals: list[str],
+    perception_tags: list[str],
+    llm_tags: list[str],
+) -> list[str]:
+    """Merge deterministic, filename, perception provenance, and LLM tags."""
+    merged: list[str] = []
+    seen: set[str] = set()
+    filename_parts = [part for part in filename_signals if part and "." not in part]
+    for tag in [*extra_tags, *filename_parts, *perception_tags, *llm_tags]:
+        key = tag.strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        merged.append(key)
+    return merged[:32]
 
 
 def _display_summary(
@@ -326,6 +377,46 @@ def _write_error(
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _load_extraction_bytes(
+    s3_client: Any,
+    bucket: str,
+    s3_key: str,
+    *,
+    filename: str,
+    sample_cap: int,
+) -> tuple[bytes, int, bool]:
+    """Load bytes for extraction; documents use a higher full-file cap."""
+    content, total_size = get_object_range(
+        s3_client,
+        bucket,
+        s3_key,
+        offset=0,
+        length=sample_cap,
+    )
+    if is_document_filename(filename) or detect_modality(filename, content) == "document":
+        doc_cap = _max_document_bytes()
+        read_len = min(total_size, doc_cap)
+        if read_len > len(content):
+            content, total_size = get_object_range(
+                s3_client,
+                bucket,
+                s3_key,
+                offset=0,
+                length=read_len,
+            )
+        truncated = len(content) < total_size
+        return content, total_size, truncated
+    return content, total_size, len(content) < total_size
+
+
+def _max_document_bytes() -> int:
+    raw = os.getenv("UMRS_DATA_CATALOG_MAX_DOCUMENT_BYTES", str(50 * 1024 * 1024))
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return 50 * 1024 * 1024
 
 
 def _max_extract_bytes() -> int:

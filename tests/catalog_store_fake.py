@@ -65,15 +65,34 @@ class FakeCatalogMetaStore:
         query: str,
         *,
         limit: int = 20,
+        modality: str | None = None,
+        state: str | None = None,
+        tag: str | None = None,
+        prefix: str | None = None,
     ) -> list[CatalogHit]:
-        tokens = tokenize(query)
-        if not tokens:
-            return []
+        tokens = tokenize(query) if query.strip() else []
         hits: list[CatalogHit] = []
-        for meta in self.list_by_project(project_id, include_pending=True, include_error=False):
-            score = score_meta(meta, tokens)
-            if score <= 0:
+        browse_prefix = prefix
+        if browse_prefix and not browse_prefix.endswith("/"):
+            browse_prefix = f"{browse_prefix}/"
+        for meta in self.list_by_project(
+            project_id,
+            prefix=browse_prefix,
+            include_pending=True,
+            include_error=False,
+        ):
+            if modality and meta.detected_modality != modality:
                 continue
+            if state and meta.state.value != state:
+                continue
+            if tag and tag not in meta.tags:
+                continue
+            if tokens:
+                score = score_meta(meta, tokens, query=query)
+                if score <= 0:
+                    continue
+            else:
+                score = 1.0
             hits.append(CatalogHit(meta=meta, score=score))
         hits.sort(key=lambda h: h.score, reverse=True)
         return hits[:limit]
