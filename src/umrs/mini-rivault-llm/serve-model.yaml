@@ -179,7 +179,10 @@ services:
 
   vllm:
     profiles: [ vllm ]
-    image: docker.io/vllm/vllm-openai:${VLLM_DOCKER_TAG:-v0.20.0}
+    # VLLM_DOCKER_IMAGE lets a partition profile override the full image
+    # (repo + tag), e.g. ROCm nodes set docker.io/vllm/vllm-openai-rocm:latest.
+    # When unset, fall back to the CUDA image parameterised by VLLM_DOCKER_TAG.
+    image: ${VLLM_DOCKER_IMAGE:-docker.io/vllm/vllm-openai:${VLLM_DOCKER_TAG:-v0.20.0}}
     networks:
       genai-private-net:
         ipv4_address: ${PRIV_IP1TO3:-10.0.0}.${VLLM_IP4:-22}

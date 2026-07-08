@@ -1,0 +1,198 @@
+{
+  "username": "user1",
+  "fullname": "Masaru Nagaso",
+  "s3_configuration_file": "~/.config/umrs/s3cfg_user1",
+  "experiences": [
+    {
+      "xp_name": "Text Embedding",
+      "sql_username": "usr1_text",
+      "modalities": [
+        {
+          "modality_name": "text",
+          "s3": {
+            "bucket_alias": "user1-texts",
+            "data": { "type": "inline", "mime_type": "text/plain" }
+          },
+          "model": {
+            "model_name": "intfloat/e5-base-v2",
+            "vector_size": "768",
+            "model_type": "rivault://openai://http://localhost:{LOCAL_PORT}/v1",
+            "return_type": null,
+            "spacy_model": "en_core_web_sm"
+          },
+          "sql": {
+            "store_embeddings": "yes",
+            "table_name": "text",
+            "meta_data": [
+              { "name": "keywords", "type": "TEXT" }
+            ]
+          }
+        },
+        {
+          "modality_name": "text file",
+          "s3": {
+            "bucket_alias": "user1-textfiles",
+            "data": { "type": "file", "mime_type": "text/plain" }
+          },
+          "model": {
+            "model_name": "intfloat/e5-base-v2",
+            "vector_size": "768",
+            "model_type": "rivault://openai://http://localhost:{LOCAL_PORT}/v1",
+            "return_type": null,
+            "spacy_model": "en_core_web_sm"
+          },
+          "sql": {
+            "store_embeddings": "yes",
+            "table_name": "text_file",
+            "meta_data": [
+              { "name": "keywords", "type": "TEXT" }
+            ]
+          }
+        },
+        {
+          "modality_name": "image",
+          "s3": {
+            "bucket_alias": "user1-images",
+            "data": { "type": "file", "mime_type": "image/jpeg" }
+          },
+          "model": {
+            "model_name": "openai/clip-vit-base-patch32",
+            "vector_size": "512",
+            "model_type": "rivault://openai://http://localhost:{LOCAL_PORT}/v1",
+            "return_type": null
+          },
+          "sql": {
+            "store_embeddings": "yes",
+            "table_name": "image",
+            "meta_data": [
+              { "name": "keywords", "type": "TEXT" }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "xp_name": "SAM3 Segmentation",
+      "sql_username": "usr1_sam3",
+      "modalities": [
+        {
+          "modality_name": "segmentation",
+          "s3": {
+            "bucket_alias": "user1-sam3",
+            "need_output_bucket": true,
+            "data": { "type": "file", "mime_type": "image/png" }
+          },
+          "model": {
+            "model_name": "facebook/sam2-hiera-small",
+            "vector_size": "256",
+            "model_type": "rivault://bentoml://http://localhost:{LOCAL_PORT}/vision/infer/submit",
+            "vision_model_type": "sam3",
+            "return_type": "file"
+          },
+          "sql": {
+            "store_embeddings": "no",
+            "table_name": "sam3_seg",
+            "meta_data": []
+          }
+        }
+      ]
+    },
+    {
+      "xp_name": "HMAE Inference",
+      "sql_username": "usr1_hmae",
+      "modalities": [
+        {
+          "modality": "image",
+          "task": "reconstruction",
+          "s3": {
+            "bucket_alias": "user1-hmae",
+            "need_output_bucket": true,
+            "data": { "type": "file", "mime_type": "image/png" }
+          },
+          "model": {
+            "model_name": "HMAE ViT-B",
+            "vector_size": "768",
+            "model_type": "rivault://bentoml://http://localhost:{LOCAL_PORT}/vision/infer/submit",
+            "vision_model_type": "hmae",
+            "vision_model_config": { "task": "reconstruction" },
+            "return_type": "file"
+          },
+          "sql": {
+            "store_embeddings": "no",
+            "table_name": "hmae_infer",
+            "meta_data": []
+          }
+        },
+        {
+          "modality": "image",
+          "task": "mae_reconstruction",
+          "s3": {
+            "bucket_alias": "user1-hmae-mae",
+            "need_output_bucket": true,
+            "data": { "type": "file", "mime_type": "image/png" }
+          },
+          "model": {
+            "model_name": "HMAE ViT-B",
+            "vector_size": "768",
+            "model_type": "rivault://bentoml://http://localhost:{LOCAL_PORT}/vision/infer/submit",
+            "vision_model_type": "hmae",
+            "vision_model_config": { "task": "mae_reconstruction" },
+            "return_type": "file"
+          },
+          "sql": {
+            "store_embeddings": "no",
+            "table_name": "hmae_mae",
+            "meta_data": []
+          }
+        },
+        {
+          "modality": "image",
+          "task": "feature_extraction",
+          "s3": {
+            "bucket_alias": "user1-hmae-features",
+            "need_output_bucket": true,
+            "data": { "type": "file", "mime_type": "image/png" }
+          },
+          "model": {
+            "model_name": "HMAE ViT-B",
+            "vector_size": "768",
+            "model_type": "rivault://bentoml://http://localhost:{LOCAL_PORT}/vision/infer/submit",
+            "vision_model_type": "hmae",
+            "vision_model_config": { "task": "feature_extraction" },
+            "return_type": "file"
+          },
+          "sql": {
+            "store_embeddings": "no",
+            "table_name": "hmae_features",
+            "meta_data": []
+          }
+        }
+      ]
+    },
+    {
+      "xp_name": "Opossum Analysis",
+      "sql_username": "usr1_opossum",
+      "modalities": [
+        {
+          "modality_name": "movie",
+          "s3": {
+            "bucket_alias": "user1-opossum",
+            "need_output_bucket": true,
+            "data": { "type": "file", "mime_type": "video/mp4" }
+          },
+          "model": {
+            "model_name": "opossum-motion-analysis",
+            "vector_size": "0",
+            "model_type": "pipeline://opossum_analyze:OpossumAnalyzeStep",
+            "return_type": "file"
+          },
+          "sql": {
+            "store_embeddings": "no",
+            "table_name": "opossum_events",
+            "meta_data": []
+          }
+        }
+      ]
+    }
+  ]
+}
