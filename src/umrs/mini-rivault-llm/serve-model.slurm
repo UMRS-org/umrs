@@ -948,6 +948,16 @@ if [[ "${SLURM_JOB_NUM_NODES:-${SLURM_NNODES:-1}}" -gt 1 ]]; then
     RAY_ADDRESS="${HEAD_IP}:${RAY_PORT}"
     VLLM_IMAGE="${VLLM_DOCKER_IMAGE:-docker.io/vllm/vllm-openai:${VLLM_DOCKER_TAG:-v0.20.0}}"
 
+    # Default the tensor-parallel degree in the SCRIPT's shell scope. The env
+    # file heredoc's `VLLM_TP=${VLLM_TP:-1}` only substitutes into the file
+    # text — it does NOT assign this shell variable. The multi-node head/worker
+    # podman commands below interpolate `${VLLM_TP}` directly (outer-shell
+    # expansion for `ray start --num-gpus` and `vllm serve -tp`), so an unset
+    # VLLM_TP (roster does not export one) produced `--num-gpus=''`, which makes
+    # `ray start --head` fail, so the GCS never binds and the whole stack times
+    # out. One GPU per GB10 node => TP=1.
+    VLLM_TP="${VLLM_TP:-1}"
+
     # If VLLM_PP is still 1, derive it from the node count (PP = nodes).
     if [[ "${VLLM_PP:-1}" -le 1 ]]; then
         VLLM_PP="${SLURM_JOB_NUM_NODES:-${SLURM_NNODES:-2}}"
@@ -1029,11 +1039,12 @@ RAYEOF
     # (Ray is not baked into the image, so spinning an ephemeral container per
     # poll would reinstall Ray each time). The head container runs
     # `pip install ray` before `ray start`; installing ray + its deps (grpcio,
-    # etc.) inside the egress-restricted container can take several minutes on a
-    # cold cache, so the GCS port may not bind for well over two minutes. Allow
-    # up to 600s (300 x 2s) — the previous 120s window raced pip and tore the
-    # stack down mid-load ("Ray head did not become ready") even though vLLM
-    # went on to load the model.
+    # etc.) inside the egress-restricted container can take a couple of minutes
+    # on a cold cache before the GCS port binds. Allow up to 600s (300 x 2s) so
+    # a slow cold install cannot race the probe. NOTE: if `ray start --head`
+    # itself fails (e.g. a bad `--num-gpus` value), GCS never binds and this
+    # probe will exhaust the full window before FATAL — check the head
+    # container's own logs for the `ray start` error in that case.
     _ray_ready=0
     for _ in $(seq 1 300); do
         if (exec 3<>"/dev/tcp/${HEAD_IP}/${RAY_PORT}") 2>/dev/null; then
