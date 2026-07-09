@@ -21,7 +21,7 @@ scheduler:
   partition: ng-dgx-m0,ng-dgx-m1,ng-dgx-m2,ng-dgx-m3  # ng-dgx-m0-[08-09], ng-dgx-m1-[10-11], ng-dgx-m2-[12-13], ng-dgx-m3-[14-15] (GB10)
   account: cloud-users
   qos: ""
-  time_limit: "04:00:00"
+  time_limit: "2-00:00:00"   # 2 days; allows queued jobs to run uninterrupted once started
   gpus: 0  # omit explicit GPU requests; ng-dgx-m* partitions reject --gres/--gpus today
   cpus: 8
   memory: ""  # omit --mem; ng-dgx-m* partitions currently reject explicit memory requests

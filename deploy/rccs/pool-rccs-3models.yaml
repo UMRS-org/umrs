@@ -16,7 +16,7 @@ pool: rccs-3models
 defaults:
   tier: system
   ttl_sec: 0              # never expires
-  timeout: 86400
+  timeout: 172800         # 2 days — HTTP submit timeout (wait=False: only bounds the sbatch call)
 
 endpoints:
   # ── Qwen3.6-35B-A3B-NVFP4 ────────────────────────────────────────────
@@ -54,7 +54,7 @@ endpoints:
     model: DeepSeek-V4-Flash
     tier: system
     node_count: 1
-    partition: ng-dgx-m0
+    partition: ng-dgx-m1
     max_model_len: 262144
     env_vars:
       VLLM_PATH_TO_HUGGINGFACE: "/lvs0/rccs-dmp/masaru.nagaso/umrs_models"
@@ -78,7 +78,7 @@ endpoints:
     model: glm-5.2-iq1s
     tier: system
     node_count: 2
-    partition: ng-dgx-m3
+    partition: ng-dgx-m2
     max_model_len: 1048576
     env_vars:
       VLLM_PATH_TO_HUGGINGFACE: "/lvs0/rccs-dmp/masaru.nagaso/umrs_models"
