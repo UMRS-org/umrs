@@ -39,7 +39,7 @@ scheduler:
   partition: "mi300x,h200"      # MI300X (AMD/ROCm) primary; H200 (NVIDIA/CUDA) secondary
   account: ""                   # set if octopus requires a Slurm account for job accounting
   qos: ""
-  time_limit: "04:00:00"
+  time_limit: "2-00:00:00"   # 2 days; allows queued jobs to run uninterrupted once started
   gpus: 1                       # one MI300X per mini-rivault (192 GiB HBM3)
   cpus: 8
   memory: ""                    # omit --mem; let the scheduler assign node defaults
