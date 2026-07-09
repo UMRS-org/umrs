@@ -1031,7 +1031,10 @@ RAYEOF
         -v "${_mn_model_host}:${_mn_model_ctr}:ro"
         -v /usr/lib/aarch64-linux-gnu/libcuda.so.1:/usr/lib/aarch64-linux-gnu/libcuda.so.1:ro
         -v /usr/lib/aarch64-linux-gnu/libnvidia-ml.so.1:/usr/lib/aarch64-linux-gnu/libnvidia-ml.so.1:ro
+        -v /usr/lib/aarch64-linux-gnu/libnvidia-ptxjitcompiler.so.1:/usr/lib/aarch64-linux-gnu/libnvidia-ptxjitcompiler.so.1:ro
         -e TRANSFORMERS_OFFLINE=1 -e HF_HUB_OFFLINE=1 -e VLLM_NO_USAGE_STATS=1
+        # Match the single-node GPU override env exactly.
+        -e NVIDIA_VISIBLE_DEVICES=all -e NVIDIA_DRIVER_CAPABILITIES=compute,utility
         # Match single-node: point Triton straight at the bind-mounted driver
         # dir so it never needs the (unrefreshed) ldconfig cache to find libcuda.
         -e TRITON_LIBCUDA_PATH=/usr/lib/aarch64-linux-gnu
@@ -1042,6 +1045,12 @@ RAYEOF
         # Grace-Blackwell) and surface init/transport diagnostics on next run.
         -e NCCL_CUMEM_ENABLE=0
         -e NCCL_DEBUG=INFO
+        # DIAGNOSTIC: force synchronous CUDA kernel launches so the true failing
+        # op is reported at its real call site (the worker rank crashes with a
+        # generic `cudaErrorUnknown` at torch.zeros in PyNcclCommunicator, but
+        # the message warns the error is async and the stacktrace is likely
+        # wrong). Remove once the real culprit is identified.
+        -e CUDA_LAUNCH_BLOCKING=1
         -e VLLM_LOGGING_LEVEL=DEBUG
     )
     if [[ "${_mn_tok_host}" != "/dev/null" ]]; then
