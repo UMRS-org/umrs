@@ -443,6 +443,21 @@ if ls /dev/nvidia[0-9]* >/dev/null 2>&1; then
     for _dev in /dev/nvidia[0-9]* /dev/nvidiactl /dev/nvidia-uvm /dev/nvidia-uvm-tools /dev/nvidia-caps/nvidia-cap1 /dev/nvidia-caps/nvidia-cap2; do
         [[ -e "$_dev" ]] && _GPU_DEVS="${_GPU_DEVS}      - ${_dev}:${_dev}:rwm\n"
     done
+    # Host driver userspace libraries to bind into the container. libcuda and
+    # libnvidia-ml are always required. libnvidia-ptxjitcompiler is required by
+    # vLLM images that ship no precompiled SASS for the local GPU arch (e.g. the
+    # 0.23.0 aarch64 image on GB10 Blackwell / sm_121): the Marlin / NVFP4 MoE
+    # kernels JIT-compile from PTX at launch and abort with
+    #   "CUDA error: PTX JIT compiler library not found" (cudaErrorJitCompilerNotFound)
+    # when the lib is absent. Mounting it is harmless for images that bake their
+    # own copy, so include every lib the host actually provides.
+    _GPU_LIB_VOLS=""
+    for _lib in \
+        /usr/lib/aarch64-linux-gnu/libcuda.so.1 \
+        /usr/lib/aarch64-linux-gnu/libnvidia-ml.so.1 \
+        /usr/lib/aarch64-linux-gnu/libnvidia-ptxjitcompiler.so.1; do
+        [[ -e "$_lib" ]] && _GPU_LIB_VOLS="${_GPU_LIB_VOLS}      - ${_lib}:${_lib}:ro\n"
+    done
     cat > "${_OVERRIDE}" <<GPUEOF
 services:
   vllm:
@@ -450,8 +465,7 @@ services:
     devices:
 $(echo -e "$_GPU_DEVS")
     volumes:
-      - /usr/lib/aarch64-linux-gnu/libcuda.so.1:/usr/lib/aarch64-linux-gnu/libcuda.so.1:ro
-      - /usr/lib/aarch64-linux-gnu/libnvidia-ml.so.1:/usr/lib/aarch64-linux-gnu/libnvidia-ml.so.1:ro
+$(echo -e "$_GPU_LIB_VOLS")
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
@@ -460,8 +474,7 @@ $(echo -e "$_GPU_DEVS")
     devices:
 $(echo -e "$_GPU_DEVS")
     volumes:
-      - /usr/lib/aarch64-linux-gnu/libcuda.so.1:/usr/lib/aarch64-linux-gnu/libcuda.so.1:ro
-      - /usr/lib/aarch64-linux-gnu/libnvidia-ml.so.1:/usr/lib/aarch64-linux-gnu/libnvidia-ml.so.1:ro
+$(echo -e "$_GPU_LIB_VOLS")
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
