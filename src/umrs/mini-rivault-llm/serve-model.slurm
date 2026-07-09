@@ -1045,12 +1045,6 @@ RAYEOF
         # Grace-Blackwell) and surface init/transport diagnostics on next run.
         -e NCCL_CUMEM_ENABLE=0
         -e NCCL_DEBUG=INFO
-        # DIAGNOSTIC: force synchronous CUDA kernel launches so the true failing
-        # op is reported at its real call site (the worker rank crashes with a
-        # generic `cudaErrorUnknown` at torch.zeros in PyNcclCommunicator, but
-        # the message warns the error is async and the stacktrace is likely
-        # wrong). Remove once the real culprit is identified.
-        -e CUDA_LAUNCH_BLOCKING=1
         -e VLLM_LOGGING_LEVEL=DEBUG
     )
     if [[ "${_mn_tok_host}" != "/dev/null" ]]; then
