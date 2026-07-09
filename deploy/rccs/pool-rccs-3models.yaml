@@ -32,8 +32,18 @@ endpoints:
     env_vars:
       VLLM_PATH_TO_HUGGINGFACE: "/lvs0/rccs-dmp/masaru.nagaso/umrs_models"
       VLLM_MODEL: "Qwen3.6-35B-A3B-NVFP4"
-      VLLM_TOKENIZER: "Qwen3.6-35B-A3B-NVFP4"
-      VLLM_GPU_MEM_UTIL: "0.90"
+      # Tokenizer is co-located with the weights (flat-staged dir). Do NOT set
+      # VLLM_TOKENIZER — it injects `--tokenizer=/tokenizer`, but the wrapper
+      # can only resolve a real /tokenizer mount from an HF-cache layout
+      # (hub/models--<name>/snapshots) or an absolute path. Flat-staged weights
+      # have neither, so /tokenizer stays empty (/dev/null) → vLLM fails with
+      # "Unrecognized model in /tokenizer". Leaving it unset makes vLLM load the
+      # tokenizer directly from the model dir.
+      # GB10 has 128 GiB *unified* memory shared with the co-located litellm/
+      # postgres/nginx/coredns containers (~24 GiB baseline), so only ~98 GiB is
+      # free to CUDA at startup. 0.90 (≈109 GiB) overshoots → vLLM aborts with
+      # "Free memory ... less than desired GPU memory utilization". 0.75 fits.
+      VLLM_GPU_MEM_UTIL: "0.75"
       VLLM_MAX_NUM_SEQS: "4"
       VLLM_TOOL_CALL_PARSER: "qwen3_xml"
       VLLM_REASONING_PARSER: "qwen3"
@@ -59,8 +69,10 @@ endpoints:
     env_vars:
       VLLM_PATH_TO_HUGGINGFACE: "/lvs0/rccs-dmp/masaru.nagaso/umrs_models"
       VLLM_MODEL: "DeepSeek-V4-Flash"
-      VLLM_TOKENIZER: "DeepSeek-V4-Flash"
-      VLLM_GPU_MEM_UTIL: "0.90"
+      # Tokenizer co-located with the weights — do NOT set VLLM_TOKENIZER (see
+      # the Qwen entry above for why the /tokenizer mount would be empty).
+      # GB10 unified-memory headroom (see Qwen entry): 0.90 overshoots free RAM.
+      VLLM_GPU_MEM_UTIL: "0.75"
       VLLM_MAX_NUM_SEQS: "4"
       VLLM_ENFORCE_EAGER: "1"        # DeepSeek-V4 NaN guard (cudagraph capture unsafe)
       VLLM_REASONING_PARSER: "deepseek_r1"
@@ -84,7 +96,9 @@ endpoints:
       VLLM_PATH_TO_HUGGINGFACE: "/lvs0/rccs-dmp/masaru.nagaso/umrs_models"
       # vLLM GGUF layout: directory with config.json + model.gguf symlink + tokenizer files
       VLLM_MODEL: "glm-5.2-iq1s-vllm"
-      VLLM_GPU_MEM_UTIL: "0.90"
+      # GB10 unified-memory headroom (see Qwen entry). GLM is 2-node PP=2 but
+      # each node's local free RAM still caps util the same way.
+      VLLM_GPU_MEM_UTIL: "0.75"
       VLLM_MAX_NUM_SEQS: "4"
       VLLM_ENFORCE_EAGER: "1"        # GLM-5.2 requires eager mode
       RCCS_SKIP_CDI: "1"
