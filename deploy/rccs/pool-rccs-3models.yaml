@@ -3,8 +3,11 @@
 #
 # Target: rccs-front → SSH → rccs-cloud (DGX Spark / GB10 Blackwell, 128 GiB unified).
 #
-# STATUS (2026-07-08):
-#   - Qwen3.6-35B-A3B-NVFP4 : weights staged; endpoint previously provisioned (Slurm 197795).
+# STATUS (2026-07-09):
+#   - Qwen3.6-35B-A3B-NVFP4 : weights staged. vLLM was crashing at weight-load
+#       (KeyError experts.w2_input_scale) because the NVFP4 MoE experts fell back
+#       to the Unquantized MoE backend. Fixed by pinning VLLM_MOE_BACKEND=marlin
+#       (DGX Spark GB10 NVFP4 backend). Keeping NVFP4 — ideal for GB10 Blackwell.
 #   - DeepSeek-V4-Flash     : weights downloaded; needs 3-gate registration + chat-template fix.
 #   - GLM-5.2 IQ1_S (GGUF)  : STILL DOWNLOADING — do not `pool up` this entry until staged.
 #
@@ -48,6 +51,14 @@ endpoints:
       VLLM_TOOL_CALL_PARSER: "qwen3_xml"
       VLLM_REASONING_PARSER: "qwen3"
       VLLM_TRUST_REMOTE_CODE: "1"
+      # NVFP4 mixed-precision MoE checkpoint: pin the quant-aware fused-MoE
+      # backend. Without this vLLM detects quantization=modelopt_mixed for the
+      # linear/attn layers but falls back to the "Unquantized MoE backend" for
+      # the experts, which has no per-expert input_scale param → vLLM aborts
+      # weight-load with KeyError: 'layers.0.mlp.experts.w2_input_scale'.
+      # `marlin` is the DGX Spark (GB10) NVFP4 MoE backend from the vLLM recipe
+      # (recipes.vllm.ai/Qwen/Qwen3.6-35B-A3B?hardware=dgx_spark_gb10).
+      VLLM_MOE_BACKEND: "marlin"
       RCCS_SKIP_CDI: "1"
 
   # ── DeepSeek-V4-Flash ────────────────────────────────────────────────
@@ -90,7 +101,7 @@ endpoints:
     model: glm-5.2-iq1s
     tier: system
     node_count: 2
-    partition: ng-dgx-m2
+    partition: ng-dgx-m3
     max_model_len: 1048576
     env_vars:
       VLLM_PATH_TO_HUGGINGFACE: "/lvs0/rccs-dmp/masaru.nagaso/umrs_models"
