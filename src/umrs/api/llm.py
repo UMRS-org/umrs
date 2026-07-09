@@ -580,7 +580,11 @@ async def chat_completions(
 
     endpoint = _discover_endpoint(registry, project_id, model)
     response = await _proxy_to_litellm(
-        request, endpoint, "v1/chat/completions", user_id, project_id,
+        request,
+        endpoint,
+        "v1/chat/completions",
+        user_id,
+        project_id,
         registry=registry,
     )
 
@@ -602,7 +606,11 @@ async def completions(
 
     endpoint = _discover_endpoint(registry, project_id, model)
     response = await _proxy_to_litellm(
-        request, endpoint, "v1/completions", user_id, project_id,
+        request,
+        endpoint,
+        "v1/completions",
+        user_id,
+        project_id,
         registry=registry,
     )
     registry.mark_used(endpoint.job_id)
@@ -626,6 +634,23 @@ def _synth_model_entry(endpoint: RegisteredEndpoint) -> dict:
     }
 
 
+def _variant_is_redundant(variant: str, base_id: str) -> bool:
+    """True when the variant duplicates the base model id.
+
+    A variant that is equal (case-insensitively, separators normalized) to the
+    base model name adds no disambiguation and only produces a confusing
+    ``<Model>-<model>`` compound id (e.g. base ``Qwen3.6-35B-A3B-NVFP4`` with
+    variant ``qwen3.6-35b-a3b-nvfp4``). Advertising that compound breaks model
+    selection in clients, which resolve the clean served/catalog name via
+    ``list_endpoints`` and provisioning checks.
+    """
+
+    def _norm(value: str) -> str:
+        return value.strip().lower().replace("_", "-")
+
+    return _norm(variant) == _norm(str(base_id))
+
+
 def _normalize_model_list_entry(
     entry: dict,
     endpoint: RegisteredEndpoint,
@@ -641,7 +666,9 @@ def _normalize_model_list_entry(
         **entry,
         "catalog_model": catalog_model,
     }
-    if endpoint.variant:
+    if endpoint.variant and not _variant_is_redundant(
+        str(endpoint.variant), str(base_id)
+    ):
         public_id = f"{base_id}-{endpoint.variant}"
         normalized["id"] = public_id
         return normalized, public_id
@@ -739,7 +766,11 @@ async def embeddings(
 
     endpoint = _discover_endpoint(registry, project_id, model)
     response = await _proxy_to_litellm(
-        request, endpoint, "v1/embeddings", user_id, project_id,
+        request,
+        endpoint,
+        "v1/embeddings",
+        user_id,
+        project_id,
         registry=registry,
     )
     registry.mark_used(endpoint.job_id)
