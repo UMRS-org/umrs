@@ -1023,9 +1023,9 @@ RAYEOF
         # creation succeed in the Ray worker subprocess.
         --userns "${_mn_userns}"
         --cap-add SYS_NICE
-        # Cross-process CUDA/NCCL IPC for multi-node (vLLM run_cluster.sh uses
-        # --ipc=host so the pipeline-parallel ranks can share CUDA IPC handles).
-        --ipc host
+        # NOTE: do NOT add `--ipc host` here — podman rejects combining a host
+        # IPC namespace with `--shm-size` (see the `--shm-size=16g` on the head
+        # and worker `podman run` below), which the Ray object store relies on.
         -v "${_mn_hf}/:/root/.cache/huggingface:ro"
         -v "${_mn_hf}/modules/:/root/.cache/huggingface/modules/"
         -v "${_mn_model_host}:${_mn_model_ctr}:ro"
