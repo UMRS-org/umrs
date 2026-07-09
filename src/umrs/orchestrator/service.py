@@ -263,6 +263,9 @@ class OrchestrationService:
             int(getattr(self.backend.config, "readiness_poll_interval_sec", 5)),
         )
 
+        consecutive_errors = 0
+        _max_consecutive_errors = 5
+
         while True:
             remaining = deadline - loop.time()
             if remaining <= 0:
@@ -270,7 +273,26 @@ class OrchestrationService:
                     f"Timed out waiting for backend endpoint location for {job_id}"
                 )
 
-            job = await self.backend.get_job_status(job_id)
+            try:
+                job = await self.backend.get_job_status(job_id)
+                consecutive_errors = 0  # reset on success
+            except Exception as exc:  # noqa: BLE001
+                consecutive_errors += 1
+                logger.warning(
+                    "Transient backend error polling location for %s (%d/%d): %s",
+                    job_id,
+                    consecutive_errors,
+                    _max_consecutive_errors,
+                    exc,
+                )
+                if consecutive_errors >= _max_consecutive_errors:
+                    raise RuntimeError(
+                        f"Backend status check for {job_id} failed "
+                        f"{consecutive_errors} consecutive times: {exc}"
+                    ) from exc
+                await asyncio.sleep(min(float(poll_interval), remaining))
+                continue
+
             if job.status == JobStatus.FAILED:
                 raise RuntimeError(
                     f"Backend job {job_id} failed before publishing an endpoint: "
