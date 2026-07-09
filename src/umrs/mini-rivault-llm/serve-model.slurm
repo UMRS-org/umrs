@@ -212,6 +212,14 @@ fi
 if [[ -n "${VLLM_TRUST_REMOTE_CODE:-}" ]]; then
     _vllm_tokenizer_args="${_vllm_tokenizer_args} --trust-remote-code"
 fi
+# NVFP4/quantized-MoE checkpoints (e.g. Qwen3.6-35B-A3B-NVFP4 on GB10) must pin a
+# quant-aware fused-MoE backend. Otherwise vLLM auto-selects the "Unquantized MoE
+# backend" for the experts, which registers no per-expert input_scale param and
+# aborts weight-load with KeyError: '...experts.w2_input_scale'. `marlin` is the
+# DGX Spark (GB10) NVFP4 MoE backend from the vLLM recipe.
+if [[ -n "${VLLM_MOE_BACKEND:-}" ]]; then
+    _vllm_tokenizer_args="${_vllm_tokenizer_args} --moe-backend ${VLLM_MOE_BACKEND}"
+fi
 
 NGINX_LITELLM_DOCKER_PORT="${LITELLM_PORT:-${NGINX_LITELLM_DOCKER_PORT:-$(shuf -i 1025-65535 -n 1)}}"
 export NGINX_LITELLM_DOCKER_PORT
