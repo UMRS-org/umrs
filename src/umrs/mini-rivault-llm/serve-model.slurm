@@ -1020,9 +1020,14 @@ RAYEOF
     # Wait for the Ray head GCS to accept connections. Use a host-side TCP probe
     # (Ray is not baked into the image, so spinning an ephemeral container per
     # poll would reinstall Ray each time). The head container runs
-    # `pip install ray` before `ray start`, so allow ample time for GCS bind.
+    # `pip install ray` before `ray start`; installing ray + its deps (grpcio,
+    # etc.) inside the egress-restricted container can take several minutes on a
+    # cold cache, so the GCS port may not bind for well over two minutes. Allow
+    # up to 600s (300 x 2s) — the previous 120s window raced pip and tore the
+    # stack down mid-load ("Ray head did not become ready") even though vLLM
+    # went on to load the model.
     _ray_ready=0
-    for _ in $(seq 1 60); do
+    for _ in $(seq 1 300); do
         if (exec 3<>"/dev/tcp/${HEAD_IP}/${RAY_PORT}") 2>/dev/null; then
             exec 3>&- 3<&- 2>/dev/null || true
             _ray_ready=1
