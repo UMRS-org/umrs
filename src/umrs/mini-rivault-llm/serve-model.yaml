@@ -238,6 +238,13 @@ services:
       #VLLM_USE_FLASHINFER_MXFP4_MOE: 1
       ##VLLM_ATTENTION_BACKEND: "TRITON_ATTN_VLLM_V1"
       TIKTOKEN_RS_CACHE_DIR: ${VLLM_MODEL_TIKTOKEN:-""}
+      # Triton locates libcuda.so.1 via `ldconfig -p`. On nodes that skip the
+      # nvidia CDI hook (RCCS_SKIP_CDI=1 on GB10 DGX-Spark) the driver libs are
+      # bind-mounted (see volumes above) but the container ld.so.cache is never
+      # refreshed, so ldconfig can't see libcuda → "libcuda.so cannot found!" →
+      # model-arch inspection crashes and vLLM exits(1). Point Triton straight
+      # at the bind-mounted lib dir so it skips the ldconfig lookup entirely.
+      TRITON_LIBCUDA_PATH: ${VLLM_TRITON_LIBCUDA_PATH:-/usr/lib/aarch64-linux-gnu}
       TRANSFORMERS_OFFLINE: 1
       HF_HUB_OFFLINE: 1
       VLLM_NO_USAGE_STATS: 1
