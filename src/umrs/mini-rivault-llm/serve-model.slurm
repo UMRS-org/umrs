@@ -997,6 +997,13 @@ RAYEOF
     _mn_s3host="$(_envval UMRS_S3_BUCKET_HOST)"
     _mn_priv="$(_envval PRIV_IP1TO3)"; _mn_priv="${_mn_priv:-10.0.0}"
     _mn_nginxout="$(_envval NGINX_OUT_IP4)"; _mn_nginxout="${_mn_nginxout:-252}"
+    # User-namespace mode MUST mirror the single-node compose (serve-model.yaml:
+    # `userns_mode: ${RIVAULT_USERNS_MODE:-keep-id:uid=0,gid=0}`). The value is
+    # RUNTIME-DEPENDENT: crun sites use keep-id (needed for Lustre), runc sites
+    # (rccs-cloud GB10 DGX-Spark) use `host`. Injected from site.yaml as
+    # RIVAULT_USERNS_MODE. Using the wrong mode is why the Ray worker actors
+    # could NVML-detect the GPU yet fail to create a CUDA context.
+    _mn_userns="$(_envval RIVAULT_USERNS_MODE)"; _mn_userns="${_mn_userns:-keep-id:uid=0,gid=0}"
 
     _mn_vllm_args=(
         # --- GPU device passthrough (identical to the single-node compose) ---
@@ -1004,16 +1011,17 @@ RAYEOF
         --device /dev/nvidia-uvm --device /dev/nvidia-uvm-tools
         --device /dev/nvidia-caps/nvidia-cap1 --device /dev/nvidia-caps/nvidia-cap2
         # --- Container namespace/cap config (MUST match serve-model.yaml) ---
-        # The proven single-node compose sets `userns_mode: keep-id:uid=0,gid=0`
-        # + `cap_add: sys_nice`. Without keep-id, the rootless-podman DEFAULT
-        # userns maps container-root to a subuid that can QUERY the GPU via NVML
-        # (nvmlDeviceGetCount()>0) but CANNOT create a CUDA *context*: the vLLM
-        # RayWorkerWrapper actors then crash on their first device op
-        # (`torch.zeros(1, device=cuda)` in cuda_communicator.py:75) with
-        # `CUDA error: unknown error` (cudaErrorUnknown) on BOTH nodes — before
-        # any NCCL traffic. Matching the single-node namespace/cap config is
-        # what makes CUDA-context creation succeed in the Ray worker subprocess.
-        --userns keep-id:uid=0,gid=0
+        # The single-node compose sets `userns_mode: ${RIVAULT_USERNS_MODE:-...}`
+        # + `cap_add: sys_nice`. The userns value is RUNTIME-DEPENDENT (crun →
+        # keep-id, runc/rccs-cloud → host). With the WRONG mode the rootless
+        # container can QUERY the GPU via NVML (nvmlDeviceGetCount()>0) but
+        # CANNOT create a CUDA *context*: the vLLM RayWorkerWrapper actors then
+        # crash on their first device op (`torch.zeros(1, device=cuda)` in
+        # cuda_communicator.py:75) with `CUDA error: unknown error`
+        # (cudaErrorUnknown) on BOTH nodes — before any NCCL traffic. Mirroring
+        # the single-node namespace/cap config is what lets CUDA-context
+        # creation succeed in the Ray worker subprocess.
+        --userns "${_mn_userns}"
         --cap-add SYS_NICE
         # Cross-process CUDA/NCCL IPC for multi-node (vLLM run_cluster.sh uses
         # --ipc=host so the pipeline-parallel ranks can share CUDA IPC handles).
