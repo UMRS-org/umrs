@@ -999,18 +999,41 @@ RAYEOF
     _mn_nginxout="$(_envval NGINX_OUT_IP4)"; _mn_nginxout="${_mn_nginxout:-252}"
 
     _mn_vllm_args=(
+        # --- GPU device passthrough (identical to the single-node compose) ---
         --device /dev/nvidia0 --device /dev/nvidiactl
         --device /dev/nvidia-uvm --device /dev/nvidia-uvm-tools
         --device /dev/nvidia-caps/nvidia-cap1 --device /dev/nvidia-caps/nvidia-cap2
+        # --- Container namespace/cap config (MUST match serve-model.yaml) ---
+        # The proven single-node compose sets `userns_mode: keep-id:uid=0,gid=0`
+        # + `cap_add: sys_nice`. Without keep-id, the rootless-podman DEFAULT
+        # userns maps container-root to a subuid that can QUERY the GPU via NVML
+        # (nvmlDeviceGetCount()>0) but CANNOT create a CUDA *context*: the vLLM
+        # RayWorkerWrapper actors then crash on their first device op
+        # (`torch.zeros(1, device=cuda)` in cuda_communicator.py:75) with
+        # `CUDA error: unknown error` (cudaErrorUnknown) on BOTH nodes — before
+        # any NCCL traffic. Matching the single-node namespace/cap config is
+        # what makes CUDA-context creation succeed in the Ray worker subprocess.
+        --userns keep-id:uid=0,gid=0
+        --cap-add SYS_NICE
+        # Cross-process CUDA/NCCL IPC for multi-node (vLLM run_cluster.sh uses
+        # --ipc=host so the pipeline-parallel ranks can share CUDA IPC handles).
+        --ipc host
         -v "${_mn_hf}/:/root/.cache/huggingface:ro"
         -v "${_mn_hf}/modules/:/root/.cache/huggingface/modules/"
         -v "${_mn_model_host}:${_mn_model_ctr}:ro"
         -v /usr/lib/aarch64-linux-gnu/libcuda.so.1:/usr/lib/aarch64-linux-gnu/libcuda.so.1:ro
         -v /usr/lib/aarch64-linux-gnu/libnvidia-ml.so.1:/usr/lib/aarch64-linux-gnu/libnvidia-ml.so.1:ro
         -e TRANSFORMERS_OFFLINE=1 -e HF_HUB_OFFLINE=1 -e VLLM_NO_USAGE_STATS=1
+        # Match single-node: point Triton straight at the bind-mounted driver
+        # dir so it never needs the (unrefreshed) ldconfig cache to find libcuda.
+        -e TRITON_LIBCUDA_PATH=/usr/lib/aarch64-linux-gnu
         -e PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
         -e RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES=1
         -e CUDA_VISIBLE_DEVICES=0
+        # Multi-node NCCL: disable the cuMem/VMM allocator (unstable on GB10
+        # Grace-Blackwell) and surface init/transport diagnostics on next run.
+        -e NCCL_CUMEM_ENABLE=0
+        -e NCCL_DEBUG=INFO
         -e VLLM_LOGGING_LEVEL=DEBUG
     )
     if [[ "${_mn_tok_host}" != "/dev/null" ]]; then
