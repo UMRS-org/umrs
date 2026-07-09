@@ -4,16 +4,26 @@
 # Target: rccs-front → SSH → rccs-cloud (DGX Spark / GB10 Blackwell, 128 GiB unified).
 #
 # STATUS (2026-07-09):
-#   - Qwen3.6-35B-A3B-NVFP4 : weights staged. vLLM was crashing at weight-load
+#   - Qwen3.6-35B-A3B-NVFP4 : SERVING (ready). vLLM was crashing at weight-load
 #       (KeyError experts.w2_input_scale) because the NVFP4 MoE experts fell back
-#       to the Unquantized MoE backend. TWO fixes required:
+#       to the Unquantized MoE backend. THREE fixes required:
 #         1. Pin VLLM_MOE_BACKEND=marlin (DGX Spark GB10 NVFP4 MoE backend).
 #         2. Override the image to vLLM 0.23.0 — the partition-default
 #            cu130-nightly-aarch64 tag is a FROZEN 0.19.2 nightly with NO
 #            ModelOpt NVFP4 MoE quant method, so the marlin flag was rejected
 #            by the unquantized-MoE oracle. 0.23.0 (CUDA 13.0, Blackwell) ships
 #            the NVFP4 MoE method; log confirms "Using 'MARLIN' NvFp4 MoE backend".
-#       Keeping NVFP4 — ideal for GB10 Blackwell. Verified: job 206933.
+#         3. Inject libnvidia-ptxjitcompiler.so.1 into the container (see
+#            deploy/rccs/serve-model.slurm _GPU_LIB_VOLS). vLLM 0.23.0 aarch64
+#            has an EMPTY torch.cuda.get_arch_list() (no precompiled Blackwell
+#            SASS), so the Marlin kernels JIT-compile from PTX at first launch
+#            and need the driver's PTX JIT compiler lib — without it the KV-cache
+#            profiling forward pass died with "PTX JIT compiler library not found"
+#            (cudaErrorJitCompilerNotFound). The device-based GPU override only
+#            mounted libcuda + libnvidia-ml before this.
+#       Keeping NVFP4 — ideal for GB10 Blackwell. Verified end-to-end: job 206940
+#       — "Application startup complete", KV cache 65.63 GiB, LiteLLM 200 OK,
+#       gateway reports endpoint `ready`.
 #   - DeepSeek-V4-Flash     : weights downloaded; needs 3-gate registration + chat-template fix.
 #   - GLM-5.2 IQ1_S (GGUF)  : STILL DOWNLOADING — do not `pool up` this entry until staged.
 #
