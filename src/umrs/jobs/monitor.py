@@ -89,8 +89,9 @@ class AttemptMonitor:
     and updates their state based on backend feedback.
     """
 
-    # Maximum time to wait for a single status check before treating it as
-    # a timeout.  Prevents one hanging backend from blocking all monitoring.
+    # Default maximum time to wait for a single status check before treating
+    # it as a timeout.  Prevents one hanging backend from blocking all
+    # monitoring.  May be overridden via UMRS_STATUS_CHECK_TIMEOUT env var.
     STATUS_CHECK_TIMEOUT: float = 60.0
 
     def __init__(
@@ -110,6 +111,10 @@ class AttemptMonitor:
         self.job_store = job_store
         self.status_checker = status_checker
         self.poll_interval = poll_interval
+        # Env-overridable timeout (default 60s)
+        self.status_check_timeout = float(
+            os.environ.get("UMRS_STATUS_CHECK_TIMEOUT", str(self.STATUS_CHECK_TIMEOUT))
+        )
 
         self._running = False
         self._task: asyncio.Task | None = None
@@ -120,6 +125,9 @@ class AttemptMonitor:
             "attempts_failed": 0,
             "last_cycle_at": None,
         }
+        # Track consecutive timeout streaks per attempt.
+        # Cleared on any successful check or terminal state.
+        self._timeout_streaks: dict[str, int] = {}
 
     async def start(self) -> None:
         """Start the monitor loop."""
@@ -200,18 +208,28 @@ class AttemptMonitor:
             try:
                 result = await asyncio.wait_for(
                     self.status_checker.check_status(attempt, job),
-                    timeout=self.STATUS_CHECK_TIMEOUT,
+                    timeout=self.status_check_timeout,
                 )
             except asyncio.TimeoutError:
                 logger.warning(
                     f"Status check timed out for attempt {attempt.attempt_id} "
-                    f"after {self.STATUS_CHECK_TIMEOUT}s"
+                    f"after {self.status_check_timeout}s"
                 )
                 METRICS.monitor_check("timeout")
+                # Track consecutive-timeout streaks for escalation (≥10 → degradation)
+                streak = self._timeout_streaks.get(attempt.attempt_id, 0) + 1
+                self._timeout_streaks[attempt.attempt_id] = streak
+                if streak >= 10:
+                    METRICS.degradation("monitor", 1)
+                    logger.error(
+                        f"Attempt {attempt.attempt_id}: {streak} consecutive "
+                        f"status-check timeouts — monitor degradation"
+                    )
                 return  # Skip this attempt; retry next cycle
 
             # Update based on result
             if result.status == "succeeded":
+                self._timeout_streaks.pop(attempt.attempt_id, None)
                 self.job_store.mark_attempt_succeeded(
                     attempt.attempt_id,
                     commit=result.should_commit,
@@ -222,6 +240,7 @@ class AttemptMonitor:
                 logger.info(f"Attempt {attempt.attempt_id} succeeded")
 
             elif result.status == "failed":
+                self._timeout_streaks.pop(attempt.attempt_id, None)
                 requeued = self.job_store.mark_attempt_failed(
                     attempt.attempt_id,
                     exit_reason=result.exit_reason or "unknown failure",
@@ -234,6 +253,7 @@ class AttemptMonitor:
                 )
 
             elif result.status == "running":
+                self._timeout_streaks.pop(attempt.attempt_id, None)
                 # Update status detail if changed
                 if result.status_detail and attempt.status == AttemptStatus.SUBMITTED:
                     self.job_store.mark_attempt_running(
