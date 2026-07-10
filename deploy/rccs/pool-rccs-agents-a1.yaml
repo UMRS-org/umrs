@@ -67,3 +67,9 @@ endpoints:
       # KV-cache memory for the 65536 context on a single GB10.
       VLLM_EXTRA_ARGS: "--language-model-only"
       RCCS_SKIP_CDI: "1"
+      # Monitoring loop timeout (seconds). Must be < Slurm walltime (04:00:00 =
+      # 14400s). Default is 7200 (2h) — raises monitoring timeout to 3h50m so
+      # the job exits cleanly just before Slurm's 4h limit rather than after 2h.
+      # After rccs-front/site.yaml time_limit is bumped to 23:00:00 and Ansible
+      # is redeployed, raise this to "82800" (23h).
+      RIVAULT_JOB_TIMEOUT: "13800"
