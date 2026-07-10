@@ -1098,16 +1098,17 @@ RAYEOF
         -e NCCL_CUMEM_ENABLE=0
         -e NCCL_DEBUG=INFO
         # GB10 has UNIFIED memory (GPU allocations + kernel page cache share the
-        # same pool as host RAM). Loading the ~94 GiB/node GGUF shard from Lustre
-        # fills the page cache, which Ray's memory monitor counts as "used" and
-        # then OOM-kills the RayWorkerWrapper actor mid-load (observed at 95-97%
-        # while the actor's actual RSS was ~1.4 GB). That page cache is fully
-        # reclaimable, so it is a FALSE OOM. Disable Ray's worker-killing monitor
-        # entirely; vLLM's own --gpu-memory-utilization cap bounds the real GPU
-        # allocation, so there is no true kernel-OOM risk. We also shrink /dev/shm
-        # (below) to cut the Ray object store reservation (unused in the PP path,
-        # since weights load from disk and pipeline tensors go over NCCL/GPU).
-        -e RAY_memory_monitor_refresh_ms=0
+        # same pool as host RAM). Two levers keep the ~94 GiB/node weight load
+        # within the 121.63 GiB pool: (1) --object-store-memory=1g on `ray start`
+        # (below) caps the otherwise ~10 GB Ray plasma reservation, which is
+        # unused in the PP path (weights load from disk, pipeline tensors go over
+        # NCCL/GPU) and was the bulk of the head's non-torch overhead; (2) a small
+        # /dev/shm (below). With those, steady + load-time usage stays well under
+        # Ray's memory-monitor kill threshold, so we leave the monitor ENABLED
+        # (fully disabling it let a node thrash into unresponsiveness under load).
+        # 0.95 protects the node from a true runaway while tolerating the
+        # reclaimable page-cache spike during the GGUF read.
+        -e RAY_memory_usage_threshold=0.95
         -e VLLM_LOGGING_LEVEL=DEBUG
     )
     if [[ "${_mn_tok_host}" != "/dev/null" ]]; then
