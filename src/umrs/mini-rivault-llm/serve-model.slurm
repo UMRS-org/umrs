@@ -221,6 +221,22 @@ if [[ -n "${VLLM_MOE_BACKEND:-}" ]]; then
     _vllm_tokenizer_args="${_vllm_tokenizer_args} --moe-backend ${VLLM_MOE_BACKEND}"
 fi
 
+# Merge the roster/pool-supplied VLLM_EXTRA_ARGS (arbitrary vLLM flags declared
+# in an endpoint's env_vars, e.g. DSpark's --kv-cache-dtype / --speculative-config)
+# with the tokenizer/trust/moe flags derived above into ONE value that reaches
+# BOTH launch paths:
+#   • single-node: podman-compose interpolates ${VLLM_EXTRA_ARGS}; the process
+#     env takes precedence over --env-file, so we export the merged value to
+#     keep the compose interpolation and the env file in agreement.
+#   • multi-node: `podman run --env-file env.<uuid>` does NOT inherit the job
+#     shell env, so the merged value MUST be written into env.<uuid> (see the
+#     VLLM_EXTRA_ARGS line in the heredoc below). Without this merge every
+#     roster flag is silently dropped on the multi-node head/worker containers.
+_roster_extra_args="${VLLM_EXTRA_ARGS:-}"
+_vllm_extra_args="${_vllm_tokenizer_args}${_roster_extra_args:+ ${_roster_extra_args}}"
+_vllm_extra_args="${_vllm_extra_args# }"   # strip a single leading space
+export VLLM_EXTRA_ARGS="${_vllm_extra_args}"
+
 NGINX_LITELLM_DOCKER_PORT="${LITELLM_PORT:-${NGINX_LITELLM_DOCKER_PORT:-$(shuf -i 1025-65535 -n 1)}}"
 export NGINX_LITELLM_DOCKER_PORT
 
@@ -289,8 +305,10 @@ VLLM_MODEL_REF=${_vllm_model_ref}
 VLLM_SERVED_MODEL_NAME=${_vllm_served_model_name}
 # Extra vLLM CLI arguments (e.g. " --tokenizer=/tokenizer" for GGUF). Emitted
 # only when non-empty and appended to VLLM_MODEL_REF so no empty token is left
-# in the podman-compose command string.
-${_vllm_tokenizer_args:+VLLM_EXTRA_ARGS=${_vllm_tokenizer_args}}
+# in the podman-compose command string. Includes the merged roster
+# VLLM_EXTRA_ARGS (see the merge block above) so multi-node podman-run
+# containers — which read ONLY this file — receive the roster flags.
+${_vllm_extra_args:+VLLM_EXTRA_ARGS=${_vllm_extra_args}}
 # Host path bind-mounted as the tokenizer directory
 VLLM_TOKENIZER_HOST_PATH=${_vllm_tokenizer_host_path:-/dev/null}
 # Container path where the tokenizer directory is mounted
@@ -318,6 +336,12 @@ VLLM_TOOL_CALL_PARSER=${VLLM_TOOL_CALL_PARSER:-hermes}
 VLLM_REASONING_PARSER=${VLLM_REASONING_PARSER:-}
 # Trust remote code from the model repository
 VLLM_TRUST_REMOTE_CODE=${VLLM_TRUST_REMOTE_CODE:-}
+# Opt-in eager mode (empty = run WITH CUDA graphs, higher decode throughput).
+# Consumed by the single-node compose command AND the multi-node head exec line.
+# Models needing eager (DeepSeek-V4 NaN guard, GLM-5.2) set VLLM_ENFORCE_EAGER=1
+# in their pool env_vars. Written here so the multi-node podman-run container —
+# which does NOT inherit the job shell env — can see it.
+VLLM_ENFORCE_EAGER=${VLLM_ENFORCE_EAGER:-}
 # NCCL/RCCL shared-memory limits for multi-GPU collective comms
 VLLM_NCCL_MEM_LIMIT=8G
 VLLM_RCCL_MEM_LIMIT=8G
@@ -951,21 +975,49 @@ if [[ "${SLURM_JOB_NUM_NODES:-${SLURM_NNODES:-1}}" -gt 1 ]]; then
     # Default the tensor-parallel degree in the SCRIPT's shell scope. The env
     # file heredoc's `VLLM_TP=${VLLM_TP:-1}` only substitutes into the file
     # text — it does NOT assign this shell variable. The multi-node head/worker
-    # podman commands below interpolate `${VLLM_TP}` directly (outer-shell
-    # expansion for `ray start --num-gpus` and `vllm serve -tp`), so an unset
-    # VLLM_TP (roster does not export one) produced `--num-gpus=''`, which makes
-    # `ray start --head` fail, so the GCS never binds and the whole stack times
-    # out. One GPU per GB10 node => TP=1.
+    # podman commands below interpolate `${VLLM_TP}` (vllm serve -tp) and
+    # `${_gpus_per_node}` (ray start --num-gpus) directly via outer-shell
+    # expansion, so an unset VLLM_TP produced empty flags and `ray start`
+    # failed, so the GCS never bound and the whole stack timed out. Roster may
+    # pin VLLM_TP (e.g. DSpark TP=2); default is TP=1 (across-node PP).
     VLLM_TP="${VLLM_TP:-1}"
 
-    # If VLLM_PP is still 1, derive it from the node count (PP = nodes).
+    # Physical GPUs per node. GB10 DGX-Spark nodes have exactly 1; other sites
+    # override via VLLM_GPUS_PER_NODE. This is the actual device count each Ray
+    # node advertises to the cluster (`ray start --num-gpus`) and is DISTINCT
+    # from VLLM_TP. The previous code conflated the two (num-gpus=VLLM_TP,
+    # want_gpus=VLLM_TP*nodes), which only holds when tensor-parallel stays
+    # within a single node. A cross-node TP group (e.g. DSpark DeepSeek-V4:
+    # TP=2 spanning 2 × 1-GPU nodes) needs num-gpus = real per-node count = 1,
+    # and a total GPU target of gpus_per_node × nodes, NOT VLLM_TP × nodes.
+    _gpus_per_node="${VLLM_GPUS_PER_NODE:-1}"
+    _nodes="${SLURM_JOB_NUM_NODES:-${SLURM_NNODES:-1}}"
+
+    # Total real GPUs in the Ray cluster. vLLM places exactly TP × PP workers
+    # onto them, so TP × PP MUST equal this count.
+    _want_gpus=$(( _gpus_per_node * _nodes ))
+
+    # Derive PP from the cluster size and the requested TP when the roster did
+    # not pin it (PP = total_gpus / TP). One formula covers both topologies:
+    #   • GLM-5.2 (TP unset → 1): PP = _want_gpus / 1 = nodes → across-node PP.
+    #   • DSpark  (TP = 2):       PP = _want_gpus / 2 = 1     → cross-node TP group.
+    # An explicit roster VLLM_PP > 1 is respected verbatim.
     if [[ "${VLLM_PP:-1}" -le 1 ]]; then
-        VLLM_PP="${SLURM_JOB_NUM_NODES:-${SLURM_NNODES:-2}}"
-        echo "[rivault] Derived VLLM_PP=${VLLM_PP} from node count"
+        if (( VLLM_TP <= 0 || _want_gpus % VLLM_TP != 0 )); then
+            echo "[rivault] FATAL: cluster GPUs (${_want_gpus}) not divisible by VLLM_TP (${VLLM_TP})" >&2
+            exit 1
+        fi
+        VLLM_PP=$(( _want_gpus / VLLM_TP ))
+        echo "[rivault] Derived VLLM_PP=${VLLM_PP} (=${_want_gpus} GPUs / TP ${VLLM_TP})"
     fi
 
-    # Total GPUs the Ray cluster must expose before vLLM can place its workers.
-    _want_gpus=$(( VLLM_TP * ${SLURM_JOB_NUM_NODES:-${SLURM_NNODES:-1}} ))
+    # Invariant: TP × PP must exactly consume the cluster GPUs, else vLLM's
+    # worker placement will hang waiting for GPUs that do not exist (or leave
+    # GPUs idle).
+    if (( VLLM_TP * VLLM_PP != _want_gpus )); then
+        echo "[rivault] FATAL: TP×PP (${VLLM_TP}×${VLLM_PP}) != cluster GPUs (${_gpus_per_node}×${_nodes}=${_want_gpus})" >&2
+        exit 1
+    fi
 
     # Export Ray vars and persist them to the env file BEFORE launching the
     # head container (the co-located vLLM driver reads VLLM_PP / RAY_ADDRESS
@@ -1024,7 +1076,7 @@ RAYEOF
         --userns "${_mn_userns}"
         --cap-add SYS_NICE
         # NOTE: do NOT add `--ipc host` here — podman rejects combining a host
-        # IPC namespace with `--shm-size` (see the `--shm-size=16g` on the head
+        # IPC namespace with `--shm-size` (see the `--shm-size` on the head
         # and worker `podman run` below), which the Ray object store relies on.
         -v "${_mn_hf}/:/root/.cache/huggingface:ro"
         -v "${_mn_hf}/modules/:/root/.cache/huggingface/modules/"
@@ -1045,6 +1097,17 @@ RAYEOF
         # Grace-Blackwell) and surface init/transport diagnostics on next run.
         -e NCCL_CUMEM_ENABLE=0
         -e NCCL_DEBUG=INFO
+        # GB10 has UNIFIED memory (GPU allocations + kernel page cache share the
+        # same pool as host RAM). Loading the ~94 GiB/node GGUF shard from Lustre
+        # fills the page cache, which Ray's memory monitor counts as "used" and
+        # then OOM-kills the RayWorkerWrapper actor mid-load (observed at 95-97%
+        # while the actor's actual RSS was ~1.4 GB). That page cache is fully
+        # reclaimable, so it is a FALSE OOM. Disable Ray's worker-killing monitor
+        # entirely; vLLM's own --gpu-memory-utilization cap bounds the real GPU
+        # allocation, so there is no true kernel-OOM risk. We also shrink /dev/shm
+        # (below) to cut the Ray object store reservation (unused in the PP path,
+        # since weights load from disk and pipeline tensors go over NCCL/GPU).
+        -e RAY_memory_monitor_refresh_ms=0
         -e VLLM_LOGGING_LEVEL=DEBUG
     )
     if [[ "${_mn_tok_host}" != "/dev/null" ]]; then
@@ -1060,12 +1123,12 @@ RAYEOF
     # `vllm serve` as a Ray driver on the local node.
     echo "[rivault] Starting Ray head + co-located vLLM on ${HEAD_NODE} (${HEAD_IP})..."
     podman rm -f rivault-vllm-mn >/dev/null 2>&1 || true
-    podman run -d --name rivault-vllm-mn --network host --shm-size=16g \
+    podman run -d --name rivault-vllm-mn --network host --shm-size=4g \
         --entrypoint /bin/sh \
         --env-file "./env.${uuid}" \
         "${_mn_vllm_args[@]}" \
         "${VLLM_IMAGE}" \
-        -c 'pip install -q ray >/dev/null 2>&1; ray start --head --node-ip-address="'"${HEAD_IP}"'" --port="'"${RAY_PORT}"'" --num-gpus="'"${VLLM_TP}"'" --include-dashboard=false; echo "[vllm-head] Ray head started; waiting for '"${_want_gpus}"' GPUs..."; i=0; while [ $i -lt 120 ]; do g=$(ray status 2>/dev/null | grep -oE "[0-9.]+/[0-9.]+ GPU" | head -1 | sed "s@.*/@@; s@ GPU@@; s@[.].*@@"); [ "${g:-0}" = "'"${_want_gpus}"'" ] && break; sleep 5; i=$((i+1)); done; echo "[vllm-head] GPUs=${g:-0}; launching vLLM"; exec vllm serve "$VLLM_MODEL_REF" $VLLM_EXTRA_ARGS --served-model-name "$VLLM_SERVED_MODEL_NAME" --api-key "$VLLM_API_KEY" -tp "$VLLM_TP" -pp "$VLLM_PP" --distributed-executor-backend ray --host 0.0.0.0 --port 8000 --max-model-len "${VLLM_MAX_MODEL_LEN:-4096}" --gpu-memory-utilization "${VLLM_GPU_MEM_UTIL:-0.95}" --enforce-eager --enable-auto-tool-choice --tool-call-parser "${VLLM_TOOL_CALL_PARSER:-hermes}"' \
+        -c 'pip install -q ray >/dev/null 2>&1; ray start --head --node-ip-address="'"${HEAD_IP}"'" --port="'"${RAY_PORT}"'" --num-gpus="'"${_gpus_per_node}"'" --object-store-memory=1073741824 --include-dashboard=false; echo "[vllm-head] Ray head started; waiting for '"${_want_gpus}"' GPUs..."; i=0; while [ $i -lt 120 ]; do g=$(ray status 2>/dev/null | grep -oE "[0-9.]+/[0-9.]+ GPU" | head -1 | sed "s@.*/@@; s@ GPU@@; s@[.].*@@"); [ "${g:-0}" = "'"${_want_gpus}"'" ] && break; sleep 5; i=$((i+1)); done; echo "[vllm-head] GPUs=${g:-0}; launching vLLM"; exec vllm serve "$VLLM_MODEL_REF" $VLLM_EXTRA_ARGS --served-model-name "$VLLM_SERVED_MODEL_NAME" --api-key "$VLLM_API_KEY" -tp "$VLLM_TP" -pp "$VLLM_PP" --distributed-executor-backend ray --host 0.0.0.0 --port 8000 --max-model-len "${VLLM_MAX_MODEL_LEN:-4096}" --gpu-memory-utilization "${VLLM_GPU_MEM_UTIL:-0.95}" ${VLLM_ENFORCE_EAGER:+--enforce-eager} --enable-auto-tool-choice --tool-call-parser "${VLLM_TOOL_CALL_PARSER:-hermes}"' \
         || { echo "[rivault] FATAL: failed to launch Ray head + vLLM container"; exit 1; }
     RAY_HEAD_PID=""
 
@@ -1123,11 +1186,11 @@ RAYEOF
                 # the head even when the container has no device access, which
                 # passes the head GPU gate but crashes the vLLM worker later.
                 srun --nodes=1 --ntasks=1 --nodelist="${wnode}" \
-                    podman run --name rivault-ray-worker --replace --network host --shm-size=16g \
+                    podman run --name rivault-ray-worker --replace --network host --shm-size=4g \
                         --entrypoint /bin/sh \
                         "${_mn_vllm_args[@]}" \
                         "${VLLM_IMAGE}" \
-                        -c "pip install -q ray >/dev/null 2>&1 && python3 -c 'import pynvml; pynvml.nvmlInit(); assert pynvml.nvmlDeviceGetCount() > 0' && exec ray start --address='${RAY_ADDRESS}' --num-gpus='${VLLM_TP}' --block"
+                        -c "pip install -q ray >/dev/null 2>&1 && python3 -c 'import pynvml; pynvml.nvmlInit(); assert pynvml.nvmlDeviceGetCount() > 0' && exec ray start --address='${RAY_ADDRESS}' --num-gpus='${_gpus_per_node}' --object-store-memory=1073741824 --block"
                 echo "[rivault] Ray worker on ${wnode} exited (attempt ${_wattempt}/5); relaunching in 5s..." >&2
                 sleep 5
             done
@@ -1136,14 +1199,14 @@ RAYEOF
         WORKER_PIDS+=($!)
     done
 
-    # Wait until Ray reports every GPU across the cluster (TP × nodes).
+    # Wait until Ray reports every GPU across the cluster (gpus_per_node × nodes).
     # Use `ray status` (a lightweight GCS query) rather than ray.init(), which
     # spins a full Ray driver + plasma store and can hang when /dev/shm is
     # small. The whole probe container is wrapped in a hard `timeout` so the
     # gate can never block the job indefinitely; if the count can't be
     # confirmed we warn and proceed (the co-located vLLM driver waits for the
     # GPUs itself and re-validates on ray.init).
-    _have_gpus="$(timeout 200 podman run --rm --network host --shm-size=16g --entrypoint /bin/sh \
+    _have_gpus="$(timeout 200 podman run --rm --network host --shm-size=4g --entrypoint /bin/sh \
         "${VLLM_IMAGE}" -c "pip install -q ray >/dev/null 2>&1; i=0; while [ \$i -lt 30 ]; do g=\$(ray status --address='${RAY_ADDRESS}' 2>/dev/null | grep -oE '[0-9.]+/[0-9.]+ GPU' | head -1 | sed 's@.*/@@; s@ GPU@@; s@[.].*@@'); if [ \"\${g:-0}\" = \"${_want_gpus}\" ]; then echo \$g; break; fi; sleep 5; i=\$((i+1)); done; echo \${g:-0}" \
         2>/dev/null | tail -1)"
     _have_gpus="${_have_gpus:-0}"
