@@ -7,6 +7,7 @@ Manages LLM inference endpoints via Slurm job scheduling and Singularity contain
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import re
 from datetime import datetime
@@ -21,6 +22,8 @@ from .base import (
 )
 from .nodelist import first_node_hostname
 from .slurm_script import render_sbatch_script
+
+logger = logging.getLogger(__name__)
 
 
 class SlurmBackend(OrchestratorBackend):
@@ -109,23 +112,44 @@ class SlurmBackend(OrchestratorBackend):
         """Get status of a Slurm job."""
         info_path = self._job_info_path(job_id)
         if info_path.exists():
-            return self._status_from_job_info(job_id, info_path)
+            info = self._parse_job_info_file(info_path)
+            status = self._status_from_info(info)
+
+            # The info file is a startup artifact; it is only deleted by
+            # ``cleanup()``. A job that died by walltime, preemption, node
+            # failure, or an external ``scancel`` leaves an orphaned file that
+            # still reports ``RIVAULT_STATUS=running``, producing a ghost
+            # endpoint. Cross-check live states against Slurm and only override
+            # on a positively terminal state (never on an ``UNKNOWN`` miss).
+            if status in (JobStatus.READY, JobStatus.RUNNING):
+                slurm_status = await self._query_slurm_job_status(job_id)
+                if slurm_status in (JobStatus.FAILED, JobStatus.STOPPED):
+                    logger.warning(
+                        "Job %s info file reports %s but Slurm reports %s; "
+                        "treating as terminal and removing stale info file",
+                        job_id,
+                        status.value,
+                        slurm_status.value,
+                    )
+                    info_path.unlink(missing_ok=True)
+                    return JobInfo(
+                        job_id=job_id,
+                        status=slurm_status,
+                        backend=self.backend_name,
+                    )
+
+            endpoint = self._endpoint_from_info(status, info)
+            return JobInfo(
+                job_id=job_id,
+                status=status,
+                endpoint=endpoint,
+                model_path=info.get("RIVAULT_MODEL_PATH", ""),
+                backend=self.backend_name,
+                metadata=info,
+            )
 
         status = await self._query_slurm_job_status(job_id)
         return JobInfo(job_id=job_id, status=status, backend=self.backend_name)
-
-    def _status_from_job_info(self, job_id: str, info_path: Path) -> JobInfo:
-        info = self._parse_job_info_file(info_path)
-        status = self._status_from_info(info)
-        endpoint = self._endpoint_from_info(status, info)
-        return JobInfo(
-            job_id=job_id,
-            status=status,
-            endpoint=endpoint,
-            model_path=info.get("RIVAULT_MODEL_PATH", ""),
-            backend=self.backend_name,
-            metadata=info,
-        )
 
     def _endpoint_from_info(
         self,

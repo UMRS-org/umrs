@@ -512,7 +512,6 @@ class RemoteSlurmBackend(SlurmBackend):
         args.append(shlex.quote(f"--export={','.join(export_parts)}"))
         return args
 
-
     async def get_job_status(self, job_id: str) -> JobInfo:
         """Get status of a Slurm job via SSH."""
         # Try job info file first (read remotely).
@@ -520,6 +519,33 @@ class RemoteSlurmBackend(SlurmBackend):
         if info_content is not None:
             info = self._parse_info_content(info_content)
             status = self._status_from_info(info)
+
+            # The info file is a startup artifact written to the shared
+            # filesystem; it is only deleted by ``cleanup()``. If the job died
+            # by walltime, preemption, node failure, or an external ``scancel``,
+            # the file is orphaned and still reports ``RIVAULT_STATUS=running``.
+            # Trusting it verbatim produces a ghost endpoint that appears
+            # ``ready`` in ``r4 endpoint list`` long after the job is gone.
+            # Cross-check live states against Slurm so a dead job is reported as
+            # terminal. Only override on a *positively* terminal Slurm state —
+            # a squeue miss / ``UNKNOWN`` must not delete a healthy endpoint.
+            if status in (JobStatus.READY, JobStatus.RUNNING):
+                slurm_status, _reason = await self._query_slurm_job_status(job_id)
+                if slurm_status in (JobStatus.FAILED, JobStatus.STOPPED):
+                    logger.warning(
+                        "Job %s info file reports %s but Slurm reports %s; "
+                        "treating as terminal and removing stale info file",
+                        job_id,
+                        status.value,
+                        slurm_status.value,
+                    )
+                    await self._remove_stale_info_file(job_id)
+                    return JobInfo(
+                        job_id=job_id,
+                        status=slurm_status,
+                        backend=self.backend_name,
+                    )
+
             endpoint = self._endpoint_from_info(status, info)
             if endpoint is not None:
                 endpoint = await self._endpoint_via_tunnel(endpoint)
@@ -540,6 +566,17 @@ class RemoteSlurmBackend(SlurmBackend):
             backend=self.backend_name,
             state_reason=reason,
         )
+
+    async def _remove_stale_info_file(self, job_id: str) -> None:
+        """Best-effort removal of an orphaned job info file via SSH."""
+        try:
+            ssh = await self._get_ssh()
+            info_path = f"{self._job_info_dir()}/rivault-job-{job_id}.info"
+            await ssh.run_remote(f"rm -f {shlex.quote(info_path)}")
+        except Exception as exc:  # noqa: BLE001 - cleanup is best-effort
+            logger.warning(
+                "Failed to remove stale info file for job %s: %s", job_id, exc
+            )
 
     async def _endpoint_via_tunnel(self, endpoint: EndpointInfo) -> EndpointInfo:
         """Return a front-end local endpoint backed by an SSH forward tunnel."""
