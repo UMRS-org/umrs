@@ -30,7 +30,7 @@ scheduler:
   partition: ng-dgx-m0,ng-dgx-m1,ng-dgx-m2,ng-dgx-m3
   account: cloud-users
   qos: ""
-  time_limit: "04:00:00"
+  time_limit: "23:00:00"  # ng-dgx-m* max is 1-00:00:00; 23h gives clean RIVAULT_JOB_TIMEOUT exit headroom
   gpus: 0
   cpus: 8
   memory: ""
