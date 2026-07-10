@@ -180,11 +180,22 @@ build_image() {
 
     local n
     for n in ${peers}; do
+        # Skip peers that are not schedulable (down/drained) so a dead node can
+        # never hang the distribution. The image tar stays on shared storage, so
+        # load it later once the node is back:
+        #   srun --nodelist=<n> --nodes=1 --ntasks=1 podman load -i "${IMAGE_TAR}"
+        local _st
+        _st="$(sinfo -h -n "${n}" -o '%t' 2>/dev/null | head -1)"
+        if [[ "${DRY_RUN}" != true && -n "${_st}" \
+              && "${_st}" != idle && "${_st}" != alloc && "${_st}" != mix ]]; then
+            warn "peer ${n} state='${_st}' (not schedulable); skipping load. Tar is at ${IMAGE_TAR} — load it when the node recovers."
+            continue
+        fi
         log "Loading image on ${n}"
         run srun --partition="${PARTITION}" --nodelist="${n}" --nodes=1 --ntasks=1 \
             podman load -i "${IMAGE_TAR}"
     done
-    log "Image present on all target nodes."
+    log "Image distribution complete (any down peers were skipped)."
 }
 
 # ─── Step 2: download the weights ────────────────────────────────────────────
