@@ -35,7 +35,7 @@
 #   MODEL_ROOT     shared Lustre model root (default matches the roster)
 #   DSPARK_NODES   space-separated GB10 nodes to hold the image
 #   PARTITION      Slurm partition for the (srun) build/load steps
-#   UMRS_PROFILE   umrs-client profile name for registration
+#   MODEL_SCOPE    r4 model scope for registration (default: user)
 #   HF_TOKEN       HuggingFace token (only if the repo is gated)
 # =============================================================================
 set -euo pipefail
@@ -55,9 +55,12 @@ DSPARK_REPO_DIR="${DSPARK_REPO_DIR:-${MODEL_ROOT}/_src/dspark-recipe}"
 # ng-dgx-m3-[14-15]). Both must hold the image for the 2-node TP=2 launch.
 DSPARK_NODES="${DSPARK_NODES:-ng-dgx-m3-14 ng-dgx-m3-15}"
 PARTITION="${PARTITION:-ng-dgx-m3}"
-BUILD_TIME="${BUILD_TIME:-2:00:00}"
+BUILD_TIME="${BUILD_TIME:-4:00:00}"
 IMAGE_TAR="${IMAGE_TAR:-${MODEL_ROOT}/_images/dspark-stagec.tar}"
-UMRS_PROFILE="${UMRS_PROFILE:-rccs-cloud}"
+# Registration goes through the r4 gateway client (the same tool `r4 pool up`
+# uses); the active r4 source must point at the rccs gateway. scope=user matches
+# the other rccs models (e.g. Qwen3.6-35B-A3B-NVFP4).
+MODEL_SCOPE="${MODEL_SCOPE:-user}"
 
 DRY_RUN=false
 DO_IMAGE=false
@@ -143,9 +146,13 @@ build_image() {
     fi
 
     log "Building on ${first_node} (this compiles the NVFP4/DSpark overlay — expect a long run)."
+    # WORKER_BUILD=0: the recipe's own build script would otherwise ssh+rsync to
+    # a second WORKER_HOST and build there too (needs .env.dspark + inter-node
+    # ssh we do not configure). We build once here and distribute the image to
+    # peers via podman save/load (below), so disable the recipe's worker build.
     run srun --partition="${PARTITION}" --nodelist="${first_node}" --nodes=1 \
         --ntasks=1 --time="${BUILD_TIME}" \
-        env PATH="${shim_dir}:${PATH}" DOCKER=podman CONTAINER_ENGINE=podman \
+        env PATH="${shim_dir}:${PATH}" DOCKER=podman CONTAINER_ENGINE=podman WORKER_BUILD=0 \
         bash -c "cd '${DSPARK_REPO_DIR}' && ./build-dspark-vllm-runtime.sh"
 
     # 1c. Verify the tag exists on the first node, then distribute to the rest
@@ -224,13 +231,17 @@ stage_weights() {
 
 # ─── Step 3: register in the UMRS catalog ────────────────────────────────────
 register_model() {
-    log "STEP register: '${CATALOG_NAME}' -> ${MODEL_DIR} (profile ${UMRS_PROFILE})"
-    need umrs-client
+    log "STEP register: '${CATALOG_NAME}' -> ${MODEL_DIR} (scope ${MODEL_SCOPE})"
+    need r4
     if [[ "${DRY_RUN}" != true && ! -d "${MODEL_DIR}" ]]; then
         die "model dir ${MODEL_DIR} missing — run --weights first"
     fi
-    run umrs-client --profile "${UMRS_PROFILE}" model register \
-        "${CATALOG_NAME}" "${MODEL_DIR}" --type llm --scope user
+    # Registration is a gateway operation via r4 (the active r4 source must
+    # point at the rccs gateway; the same source `r4 pool up` uses). The
+    # --path is resolved on the UMRS server, so it must be the server-visible
+    # Lustre path.
+    run r4 model register "${CATALOG_NAME}" --path "${MODEL_DIR}" \
+        --type llm --scope "${MODEL_SCOPE}"
     log "Registered. The roster 'model: ${CATALOG_NAME}' will now resolve."
 }
 
@@ -247,15 +258,14 @@ verify() {
     fi
 
     # Catalog
-    if command -v umrs-client >/dev/null 2>&1; then
-        if umrs-client --profile "${UMRS_PROFILE}" model list 2>/dev/null \
-             | grep -q "${CATALOG_NAME}"; then
+    if command -v r4 >/dev/null 2>&1; then
+        if r4 model info "${CATALOG_NAME}" >/dev/null 2>&1; then
             log "  [ok] catalog: ${CATALOG_NAME} registered"
         else
-            warn "  [MISS] catalog: ${CATALOG_NAME} not in 'model list'"; ok=false
+            warn "  [MISS] catalog: ${CATALOG_NAME} not found via 'r4 model info'"; ok=false
         fi
     else
-        warn "  [skip] catalog: umrs-client not on PATH"
+        warn "  [skip] catalog: r4 not on PATH"
     fi
 
     # Image on each node
