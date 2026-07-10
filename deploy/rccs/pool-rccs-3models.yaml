@@ -113,10 +113,10 @@ endpoints:
   #       baked into the image at build time (add the overlay COPY to the
   #       Dockerfile) since serve-model.yaml mounts only the standard volumes.
   #    3. WEIGHTS. Stage fraserprice/DeepSeek-V4-Flash-DSpark under
-  #       VLLM_PATH_TO_HUGGINGFACE (below) and register it in the rccs catalog:
-  #         umrs-client --profile rccs-cloud model register \
-  #           deepseek-v4-flash-dspark \
-  #           /lvs0/rccs-dmp/masaru.nagaso/umrs_models/DeepSeek-V4-Flash-DSpark \
+  #       VLLM_PATH_TO_HUGGINGFACE (below) and register it in the rccs catalog
+  #       via the r4 gateway client (active source must point at rccs):
+  #         r4 model register deepseek-v4-flash-dspark \
+  #           --path /lvs0/rccs-dmp/masaru.nagaso/umrs_models/DeepSeek-V4-Flash-DSpark \
   #           --type llm --scope user
   #    4. LAUNCH PATH (now supported). The upstream recipe runs TP=2 across 2
   #       nodes via vLLM's `mp` backend. This platform serves it via its Ray
