@@ -228,7 +228,22 @@ services:
     entrypoint: ["/bin/sh"]
     command:
       - "-c"
-      - 'pip install -q ray 2>/dev/null; exec vllm serve "$$VLLM_MODEL_REF" $$VLLM_EXTRA_ARGS --served-model-name "$$VLLM_SERVED_MODEL_NAME" --api-key "$$VLLM_API_KEY" -tp "$$VLLM_TP" -pp "$$VLLM_PP" $${VLLM_DISTRIBUTED_EXECUTOR_BACKEND:+--distributed-executor-backend $$VLLM_DISTRIBUTED_EXECUTOR_BACKEND} --max-model-len "$${VLLM_MAX_MODEL_LEN:-4096}" --gpu-memory-utilization "$${VLLM_GPU_MEM_UTIL:-0.95}" $${VLLM_ENFORCE_EAGER:+--enforce-eager} --enable-auto-tool-choice --tool-call-parser "$${VLLM_TOOL_CALL_PARSER:-hermes}"'
+      - |
+        set -euo pipefail
+        # Task 4: assert-offline.sh — fail fast if offline invariants violated
+        for _var in TRANSFORMERS_OFFLINE HF_HUB_OFFLINE; do
+          if [ "${${_var}:-0}" != "1" ]; then
+            echo "FAIL: ${_var}=${${_var}:-not set} (expected 1)"; exit 1
+          fi
+        done
+        for _var in http_proxy HTTP_PROXY https_proxy HTTPS_PROXY; do
+          if [ -n "${${_var}:-}" ]; then
+            echo "FAIL: ${_var} set — proxy forbidden in offline mode"; exit 1
+          fi
+        done
+        echo "OK: offline invariants satisfied"
+        pip install -q ray 2>/dev/null
+        exec vllm serve "$$VLLM_MODEL_REF" $$VLLM_EXTRA_ARGS --served-model-name "$$VLLM_SERVED_MODEL_NAME" --api-key "$$VLLM_API_KEY" -tp "$$VLLM_TP" -pp "$$VLLM_PP" $${VLLM_DISTRIBUTED_EXECUTOR_BACKEND:+--distributed-executor-backend $$VLLM_DISTRIBUTED_EXECUTOR_BACKEND} --max-model-len "$${VLLM_MAX_MODEL_LEN:-4096}" --gpu-memory-utilization "$${VLLM_GPU_MEM_UTIL:-0.95}" $${VLLM_ENFORCE_EAGER:+--enforce-eager} --enable-auto-tool-choice --tool-call-parser "$${VLLM_TOOL_CALL_PARSER:-hermes}"
     environment:
       <<: *rivault-egress-env
       ##TORCH_USE_RTLD_GLOBAL: 1

@@ -58,6 +58,31 @@ mask_secret_state() {
     fi
 }
 
+# ─── Task 4: assert-offline — fail fast if offline invariants violated ──────
+_assert_offline_invariants() {
+    local failed=0
+    for _var in TRANSFORMERS_OFFLINE HF_HUB_OFFLINE; do
+        if [ "${!_var:-0}" != "1" ]; then
+            echo "FAIL: ${_var}=${_var:-not set} (expected 1)"
+            failed=1
+        fi
+    done
+    for _var in http_proxy HTTP_PROXY https_proxy HTTPS_PROXY; do
+        if [ -n "${!_var:-}" ]; then
+            echo "FAIL: ${_var} is set — proxy forbidden in offline mode"
+            failed=1
+        fi
+    done
+    if [ "$failed" -ne 0 ]; then
+        echo "FAIL: offline invariants violated. Refusing to start inference."
+        exit 1
+    fi
+    echo "OK: offline invariants satisfied."
+}
+_assert_offline_invariants
+
+mkdir -p "${HOME}/.config/containers/"
+
 mkdir -p "${HOME}/.config/containers/"
 
 cat <<EOF > "${HOME}/.config/containers/storage.conf"
