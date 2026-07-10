@@ -1,4 +1,4 @@
-# Pool roster: RCCS Cloud — Qwen3.6-35B-A3B-NVFP4 · DeepSeek-V4-Flash · GLM-5.2 IQ1_S
+# Pool roster: RCCS Cloud — Qwen3.6-35B-A3B-NVFP4 · DeepSeek-V4-Flash-DSpark · GLM-5.2 IQ1_S
 # Usage: R4_GATEWAY_URL=https://data0.ai.r-ccs.riken.jp/rccs r4 pool up pool-rccs-3models.yaml
 #
 # Target: rccs-front → SSH → rccs-cloud (DGX Spark / GB10 Blackwell, 128 GiB unified).
@@ -24,7 +24,12 @@
 #       Keeping NVFP4 — ideal for GB10 Blackwell. Verified end-to-end: job 206940
 #       — "Application startup complete", KV cache 65.63 GiB, LiteLLM 200 OK,
 #       gateway reports endpoint `ready`.
-#   - DeepSeek-V4-Flash     : weights downloaded; needs 3-gate registration + chat-template fix.
+#   - DeepSeek-V4-Flash-DSpark : launch path SUPPORTED (serve-model.slurm now
+#       does cross-node TP=2 via Ray + opt-in eager). Still needs out-of-band
+#       setup before `pool up`: a locally-built DSpark NVFP4 image, the proposer
+#       source patch baked into that image, and staged+registered
+#       fraserprice/DeepSeek-V4-Flash-DSpark weights. See the full PREREQUISITES
+#       block on the endpoint entry below.
 #   - GLM-5.2 IQ1_S (GGUF)  : STILL DOWNLOADING — do not `pool up` this entry until staged.
 #
 # Each model must be registered in the rccs catalog before `pool up`:
@@ -85,34 +90,95 @@ endpoints:
       VLLM_DOCKER_IMAGE: "docker.io/vllm/vllm-openai:latest"
       RCCS_SKIP_CDI: "1"
 
-  # ── DeepSeek-V4-Flash ────────────────────────────────────────────────
-  #  DeepSeek-V4 family MoE (lightweight "Flash" variant).
-  #  NOTE: DeepSeek-V4 produces NaN/garbage logits under CUDA-graph capture —
-  #    enforce-eager is REQUIRED regardless of context length (model property,
-  #    see deepseek-v4-eager-graphs-garbage note).
-  #  TODO(chat-template): this checkpoint ships NO Jinja chat template. Provide
-  #    one via VLLM_CHAT_TEMPLATE=<path-to-template.jinja> (uncomment below and
-  #    point to the staged template) before the endpoint will serve /chat.
-  #  TODO(sizing): confirm node_count/quant. If the checkpoint does not fit a
-  #    single 128 GiB GB10, switch to node_count: 2 / partition: ng-dgx-m3 (PP=2).
-  - name: deepseek-v4-flash
-    model: DeepSeek-V4-Flash
+  # ── DeepSeek-V4-Flash-DSpark (1M NVFP4-KV, 2× DGX Spark, TP=2) ────────
+  #  Recipe: github.com/tonyd2wild/DeepSeek-v4-Flash-DSpark-1M-NVFP4-KV-2x-DGX-Spark
+  #  Weights: hf.co/fraserprice/DeepSeek-V4-Flash-DSpark
+  #  DSpark speculative-decode + nvfp4_ds_mla 4-bit KV cache, 1M YaRN ceiling.
+  #  Recommended default = the repo's "1M Keys-Concurrency Profile".
+  #
+  #  ⚠ PREREQUISITES — this entry CANNOT be brought up by `pool up` alone. The
+  #  DSpark recipe needs out-of-band setup that a roster env-var edit cannot do.
+  #  Run the helper on rccs-cloud to satisfy prereqs 1-3 in one shot:
+  #      ./setup_deepseek_dspark.sh --all      # then --verify
+  #  (preview first with: ./setup_deepseek_dspark.sh --all --dry-run)
+  #  The individual prerequisites, for reference:
+  #    1. CUSTOM IMAGE. There is NO public DSpark image. Build
+  #       `vllm-dspark-runtime:dspark-nvfp4-stage-c` on BOTH GB10 nodes with the
+  #       repo's ./build-dspark-vllm-runtime.sh, then set VLLM_DOCKER_IMAGE to it
+  #       (docker.io/vllm/vllm-openai does NOT ship the DSpark spec-decode /
+  #       nvfp4_ds_mla / B12X MoE kernels — vLLM will reject these flags).
+  #    2. SOURCE PATCH. The concurrency garble fix is a bind-mount of a patched
+  #       recipe/overlay/vllm/v1/spec_decode/dspark_proposer.py into the image.
+  #       The pool roster has no per-model volume-mount field — this must be
+  #       baked into the image at build time (add the overlay COPY to the
+  #       Dockerfile) since serve-model.yaml mounts only the standard volumes.
+  #    3. WEIGHTS. Stage fraserprice/DeepSeek-V4-Flash-DSpark under
+  #       VLLM_PATH_TO_HUGGINGFACE (below) and register it in the rccs catalog:
+  #         umrs-client --profile rccs-cloud model register \
+  #           deepseek-v4-flash-dspark \
+  #           /lvs0/rccs-dmp/masaru.nagaso/umrs_models/DeepSeek-V4-Flash-DSpark \
+  #           --type llm --scope user
+  #    4. LAUNCH PATH (now supported). The upstream recipe runs TP=2 across 2
+  #       nodes via vLLM's `mp` backend. This platform serves it via its Ray
+  #       multi-node path instead: setting VLLM_TP=2 / VLLM_PP=1 (below) forms a
+  #       single 2-GPU tensor-parallel group across the 2×1-GPU GB10 nodes over
+  #       NCCL — functionally equivalent to the recipe's `mp` TP=2 for
+  #       correctness. serve-model.slurm now (a) advertises the real per-node
+  #       GPU count to Ray (num-gpus=1, not =TP) and derives PP=cluster_gpus/TP,
+  #       and (b) makes --enforce-eager opt-in, so this entry (no
+  #       VLLM_ENFORCE_EAGER) runs WITH CUDA graphs — required by the DSpark
+  #       garble fix (--max-cudagraph-capture-size == --max-num-seqs). Still
+  #       gated on prereqs 1-3 (image, patch, weights) before it can serve.
+  - name: deepseek-v4-flash-dspark
+    model: deepseek-v4-flash-dspark
     tier: system
-    node_count: 1
-    partition: ng-dgx-m1
-    max_model_len: 262144
+    node_count: 2
+    partition: ng-dgx-m3
+    max_model_len: 1048576          # 1M — model's true YaRN ceiling (not 1.5M)
     env_vars:
       VLLM_PATH_TO_HUGGINGFACE: "/lvs0/rccs-dmp/masaru.nagaso/umrs_models"
-      VLLM_MODEL: "DeepSeek-V4-Flash"
-      # Tokenizer co-located with the weights — do NOT set VLLM_TOKENIZER (see
-      # the Qwen entry above for why the /tokenizer mount would be empty).
-      # GB10 unified-memory headroom (see Qwen entry): 0.90 overshoots free RAM.
-      VLLM_GPU_MEM_UTIL: "0.75"
-      VLLM_MAX_NUM_SEQS: "4"
-      VLLM_ENFORCE_EAGER: "1"        # DeepSeek-V4 NaN guard (cudagraph capture unsafe)
-      VLLM_REASONING_PARSER: "deepseek_r1"
+      VLLM_MODEL: "DeepSeek-V4-Flash-DSpark"
+      # MUST be the locally-built DSpark Stage-C NVFP4 image (see prereq #1).
+      VLLM_DOCKER_IMAGE: "vllm-dspark-runtime:dspark-nvfp4-stage-c"
+      # GB10 unified-memory headroom (see Qwen entry). Repo's 1M profile = 0.80.
+      VLLM_GPU_MEM_UTIL: "0.80"
+      VLLM_MAX_NUM_SEQS: "6"         # 1M ceiling pairs with 6 seqs (KV-pool sized)
+      # Cross-node TP=2 group over the 2×1-GPU GB10 nodes (see prereq #4). The
+      # launcher advertises 1 GPU/node to Ray and derives PP = 2 GPUs / TP 2 = 1.
+      VLLM_TP: "2"
+      VLLM_PP: "1"
       VLLM_TRUST_REMOTE_CODE: "1"
-      # VLLM_CHAT_TEMPLATE: "/lvs0/rccs-dmp/masaru.nagaso/umrs_models/DeepSeek-V4-Flash/chat_template.jinja"
+      # DSpark 1M Keys-Concurrency runtime env (from the recipe's Runtime Profile).
+      VLLM_USE_FLASHINFER_SAMPLER: "1"
+      VLLM_USE_B12X_MOE: "1"         # THE speed switch — 0 tanks decode to ~29 tok/s
+      VLLM_USE_B12X_WO_PROJECTION: "1"
+      VLLM_DSPARK_GPU_REJECTED_CONTEXT_MASK: "1"
+      VLLM_DSPARK_CONFIDENCE_SCHEDULER: "off"
+      VLLM_DSPARK_LOCAL_ARGMAX: "1"
+      VLLM_DSPARK_REPLICATE_MARKOV_W1: "1"
+      VLLM_DSPARK_FUSED_MARKOV_ARGMAX: "0"
+      VLLM_DSPARK_REFERENCE_KV_QUANT_DEQUANT: "0"
+      VLLM_DSV4_B12X_COMPRESSED_MLA: "0"
+      VLLM_DSV4_DSPARK_DEFER_TARGET_CAPTURE: "0"
+      B12X_W4A16_TC_DECODE: "0"
+      VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS: "0"
+      MTP_NUM_TOKENS: "3"            # with probabilistic draft (2026-07-03 garble fix)
+      # Core DSpark vLLM flags not covered by the launcher's own args. The
+      # multi-node serve line interpolates $VLLM_EXTRA_ARGS right after the model
+      # ref, so these are appended verbatim. --max-cudagraph-capture-size MUST
+      # equal --max-num-seqs (6); num_speculative_tokens 3 keeps the cudagraph
+      # ladder valid at seqs 6. NOTE: only effective once the launcher stops
+      # forcing --enforce-eager for this model (see prereq #4).
+      VLLM_EXTRA_ARGS: >-
+        --kv-cache-dtype nvfp4_ds_mla
+        --block-size 256
+        --max-num-batched-tokens 8192
+        --max-cudagraph-capture-size 6
+        --enable-prefix-caching
+        --async-scheduling
+        --enable-chunked-prefill
+        --generation-config vllm
+        --speculative-config {"method":"dspark","num_speculative_tokens":3,"draft_sample_method":"probabilistic"}
       RCCS_SKIP_CDI: "1"
 
   # ── GLM-5.2 IQ1_S (1-bit GGUF) — STILL DOWNLOADING ───────────────────
