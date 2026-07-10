@@ -89,6 +89,10 @@ endpoints:
       # the compose image expr is ${VLLM_DOCKER_IMAGE:-.../:${VLLM_DOCKER_TAG}}.
       VLLM_DOCKER_IMAGE: "docker.io/vllm/vllm-openai:latest"
       RCCS_SKIP_CDI: "1"
+      # Monitoring loop timeout. Default 7200s (2h) exits the job early; set to
+      # 3h50m (just under the 4h Slurm walltime) for a clean exit. Raise to
+      # "82800" after Ansible redeploys rccs-front/site.yaml with time_limit 23h.
+      RIVAULT_JOB_TIMEOUT: "13800"
 
   # ── DeepSeek-V4-Flash-DSpark (1M NVFP4-KV, 2× DGX Spark, TP=2) ────────
   #  Recipe: github.com/tonyd2wild/DeepSeek-v4-Flash-DSpark-1M-NVFP4-KV-2x-DGX-Spark
