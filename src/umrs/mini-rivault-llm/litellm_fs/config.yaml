@@ -22,6 +22,7 @@ model_list:
 
 litellm_settings:
   request_timeout: 3600    # raise Timeout error if call takes longer than 600 seconds. Default value is 6000seconds if not set
+  drop_params: true       # Drop provider-unsupported params (e.g. reasoning_effort) instead of returning 400
   set_verbose: False      # Switch off Debug Logging, ensure your logs do not have any debugging on
   json_logs: true         # Get debug logs in json format
   cache: False #True
