@@ -28,7 +28,7 @@ from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from ..rag.models import (
     ChunkerSpec,
@@ -275,23 +275,22 @@ class PipelineCreateRequest(BaseModel):
         None, description="Metadata fields to extract"
     )
 
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "name": "my-custom-pipeline",
-                "description": "Custom pipeline for scientific papers",
-                "chunker": {
-                    "chunker_type": "sentence",
-                    "chunk_size": 5,
-                    "chunk_overlap": 1,
-                },
-                "embedder": {
-                    "model_name": "BAAI/bge-base-en-v1.5",
-                    "dimension": 768,
-                },
-                "supported_extensions": [".pdf", ".txt", ".md"],
-            }
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "name": "my-custom-pipeline",
+            "description": "Custom pipeline for scientific papers",
+            "chunker": {
+                "chunker_type": "sentence",
+                "chunk_size": 5,
+                "chunk_overlap": 1,
+            },
+            "embedder": {
+                "model_name": "BAAI/bge-base-en-v1.5",
+                "dimension": 768,
+            },
+            "supported_extensions": [".pdf", ".txt", ".md"],
         }
+    })
 
 
 class PipelineUpdateRequest(BaseModel):
@@ -371,22 +370,21 @@ class RAGProfileCreateRequest(BaseModel):
     description: str | None = Field(None, max_length=1000, description="Description")
     is_default: bool = Field(False, description="Set as default for project")
 
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "name": "scientific-qa",
-                "description": "RAG profile for scientific Q&A",
-                "search_type": "hybrid",
-                "vector_weight": 0.8,
-                "keyword_weight": 0.2,
-                "top_k_retrieval": 30,
-                "reranker": {
-                    "model_name": "BAAI/bge-reranker-base",
-                    "top_k": 10,
-                },
-                "max_context_tokens": 8192,
-            }
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "name": "scientific-qa",
+            "description": "RAG profile for scientific Q&A",
+            "search_type": "hybrid",
+            "vector_weight": 0.8,
+            "keyword_weight": 0.2,
+            "top_k_retrieval": 30,
+            "reranker": {
+                "model_name": "BAAI/bge-reranker-base",
+                "top_k": 10,
+            },
+            "max_context_tokens": 8192,
         }
+    })
 
 
 class RAGProfileUpdateRequest(BaseModel):

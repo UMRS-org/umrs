@@ -17,7 +17,7 @@ from langchain_core.documents import Document
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.retrievers import BaseRetriever
 from langchain_openai import ChatOpenAI
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from umrs.orchestrator.endpoint_registry import (
     EndpointStatus,
@@ -221,8 +221,7 @@ class UMRSPgVectorRetriever(BaseRetriever):
     modality: str | None = "text"
     top_k: int = 5
 
-    class Config:
-        arbitrary_types_allowed = True
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     def _select_entry(self) -> dict[str, Any]:
         """Select a single matching entry from db_model_store.

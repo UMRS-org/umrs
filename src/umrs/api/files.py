@@ -31,7 +31,7 @@ from fastapi import (
     UploadFile,
     status,
 )
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from umrs.shared.storage.s3_presign import (
     generate_presigned_get,
@@ -121,15 +121,14 @@ class PresignRequest(BaseModel):
         None, description="Custom metadata for upload operations"
     )
 
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "operation": "upload",
-                "key": "project-123/documents/report.pdf",
-                "ttl_sec": 3600,
-                "content_type": "application/pdf",
-            }
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "operation": "upload",
+            "key": "project-123/documents/report.pdf",
+            "ttl_sec": 3600,
+            "content_type": "application/pdf",
         }
+    })
 
 
 class PresignResponse(BaseModel):
