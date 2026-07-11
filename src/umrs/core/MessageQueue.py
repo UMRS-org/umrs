@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import shutil
 import socket
 import tempfile
 import time
@@ -217,6 +218,18 @@ class MessageQueue:
         # Retained so close() can stop their background threads. Empty unless
         # UMRS_ZMQ_AUTH_TYPE is curve/session.
         self._zmq_authenticators: list = []
+
+        # Task 11: ZMQ file-transfer /tmp space guard
+        self._check_tmp_disk_space()
+
+        # Task 13: queue depth instrumentation
+        try:
+            from umrs.metrics import METRICS
+
+            self._metrics = METRICS
+        except Exception:
+            self._metrics = None  # no-op when prometheus unavailable
+        self._message_count = 0  # rough in-flight message counter
 
         # Initialize the selected queue type
         if self.type == "control":
@@ -795,6 +808,36 @@ class MessageQueue:
 
         return messages
 
+    def _check_tmp_disk_space(self) -> None:
+        """Guard against ZMQ file-transfer space exhaustion.
+
+        When ``self.tmp_dir`` is set, checks that at least 500 MiB of
+        free space is available.  Raises on critical shortage so that
+        ZMQ socket creation fails fast instead of silently corrupting
+        messages or filling the disk.
+        """
+        if not self.tmp_dir:
+            return
+        try:
+            stat = shutil.disk_usage(self.tmp_dir)
+            free_mb = stat.free / (1024 * 1024)
+            threshold_mb = 500  # minimum free space required
+            if free_mb < threshold_mb:
+                raise OSError(
+                    f"ZMQ tmp_dir {self.tmp_dir} has only {free_mb:.0f} MiB free "
+                    f"(need >= {threshold_mb} MiB) — refusing to create ZMQ files."
+                )
+            logger.debug(
+                "ZMQ disk guard OK: %.0f MiB free on %s",
+                free_mb,
+                self.tmp_dir,
+            )
+        except OSError as exc:
+            logger.warning(
+                "ZMQ disk guard check failed (%s) — continuing: %s",
+                self.tmp_dir, exc,
+            )
+
     def _process_file_cmd(self, client_id, nb_files, zmq_sender_id, result_cmd=None, extra_payload=None):
         if result_cmd is None:
             result_cmd = TaskCmd.FILE
@@ -981,10 +1024,10 @@ class MessageQueue:
         try:
             _, reply = self.recv_string()
         except zmq.Again:
-            raise RuntimeError("Timeout waiting for server response in notify_server") from None
+            raise TimeoutError("Timeout waiting for server response in notify_server") from None
 
         if reply is None:
-            raise RuntimeError(
+            raise TimeoutError(
                 f"Timeout waiting for server response to {notification_type} for user {client_id}. "
                 "The server may be blocked waiting for data-queue messages that did not arrive. "
                 "Check that the SSH tunnel forwards the configured data port range "
@@ -1011,7 +1054,7 @@ class MessageQueue:
         try:
             _, reply = self.recv_string()
         except zmq.Again:
-            raise RuntimeError("Timeout waiting for server response in request_status") from None
+            raise TimeoutError("Timeout waiting for server response in request_status") from None
 
         return reply
 
@@ -1032,7 +1075,7 @@ class MessageQueue:
         try:
             _, reply = self.recv_string()
         except zmq.Again:
-            raise RuntimeError("Timeout waiting for server response in request_export_embeddings") from None
+            raise TimeoutError("Timeout waiting for server response in request_export_embeddings") from None
         finally:
             self.socket.setsockopt(zmq.RCVTIMEO, old_rcv)
 
@@ -1056,7 +1099,7 @@ class MessageQueue:
         try:
             _, reply = self.recv_string()
         except zmq.Again:
-            raise RuntimeError("Timeout waiting for server response in request_status") from None
+            raise TimeoutError("Timeout waiting for server response in request_status") from None
 
         finally:
             self.set_timeouts(self.timeout,self.timeout)

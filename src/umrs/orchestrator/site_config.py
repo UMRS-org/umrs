@@ -226,7 +226,10 @@ class SiteConfig:
     step_executor: StepExecutorConfig = field(default_factory=StepExecutorConfig)
     database: DatabaseConfig = field(default_factory=DatabaseConfig)
     partition_profiles: dict[str, PartitionProfile] = field(default_factory=dict)
+    strict_secrets: bool = False  # Fail provisioning when required secrets missing
     extra: dict[str, Any] = field(default_factory=dict)
+
+    # --- helpers -----------------------------------------------------------
 
     # --- helpers -----------------------------------------------------------
 

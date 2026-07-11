@@ -2509,3 +2509,82 @@ async def deprovision_endpoint(
         job_id,
         project_id=endpoint.project_id if endpoint else "",
     )
+
+
+# ---------------------------------------------------------------------------
+# Admin route: programmatic location update (Task 6 Gap B)
+# ---------------------------------------------------------------------------
+
+class EndpointLocationUpdate(BaseModel):
+    """Payload for PUT /umrs/endpoints/{job_id}/location."""
+
+    host: str | None = None
+    port: int | None = None
+    metadata: dict[str, Any] | None = None
+
+
+class EndpointLocationResponse(BaseModel):
+    """Response body for a successful location update."""
+
+    job_id: str
+    host: str
+    port: int
+    status: str
+    metadata: dict[str, Any] | None = None
+
+
+@router.put(
+    "/{job_id}/location",
+    response_model=EndpointLocationResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def update_endpoint_location(
+    job_id: str,
+    request: EndpointLocationUpdate,
+    registry: EndpointRegistry = Depends(get_registry),
+) -> EndpointLocationResponse:
+    """Update endpoint host/port and merge metadata.
+
+    Admin-only route for operational heals when the boot-time
+    reconciler cannot auto-resolve an endpoint (e.g. external
+    system modified the registry directly).
+
+    Requires strict authentication mode (UMRS_AUTH_MODE=strict).
+    """
+    if os.environ.get("UMRS_AUTH_MODE", "mvp").strip().lower() != "strict":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "Route requires UMRS_AUTH_MODE=strict. "
+                "This admin route is only available in strict auth mode."
+            ),
+        )
+
+    endpoint = registry.get_by_job_id(job_id)
+    if not endpoint:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Endpoint not found: {job_id}",
+        )
+
+    registry.update_location(
+        job_id,
+        host=request.host,
+        port=request.port,
+        metadata=request.metadata,
+    )
+
+    updated = registry.get_by_job_id(job_id)
+    if not updated:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Endpoint disappeared after location update",
+        )
+
+    return EndpointLocationResponse(
+        job_id=updated.job_id,
+        host=updated.host,
+        port=updated.port,
+        status=updated.status.value,
+        metadata=updated.metadata,
+    )
