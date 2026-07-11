@@ -59,11 +59,17 @@ mask_secret_state() {
 }
 
 # ─── Task 4: assert-offline — fail fast if offline invariants violated ──────
+# Establish the offline inference posture in the batch shell so it is inherited
+# by every child process (podman, compose, vLLM). The container also receives
+# these via `-e`, but exporting here makes the invariant authoritative and lets
+# the assert below validate the real environment rather than an unset shell.
+export TRANSFORMERS_OFFLINE="${TRANSFORMERS_OFFLINE:-1}"
+export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
 _assert_offline_invariants() {
     local failed=0
     for _var in TRANSFORMERS_OFFLINE HF_HUB_OFFLINE; do
         if [ "${!_var:-0}" != "1" ]; then
-            echo "FAIL: ${_var}=${_var:-not set} (expected 1)"
+            echo "FAIL: ${_var}=${!_var:-not set} (expected 1)"
             failed=1
         fi
     done
