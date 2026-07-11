@@ -1133,7 +1133,12 @@ RAYEOF
         # (fully disabling it let a node thrash into unresponsiveness under load).
         # 0.95 protects the node from a true runaway while tolerating the
         # reclaimable page-cache spike during the GGUF read.
-        -e RAY_memory_usage_threshold=0.95
+        # NOTE: per-model overrides are possible via RAY_memory_usage_threshold
+        # and RAY_memory_monitor_refresh_ms in the pool roster env_vars. A roster
+        # value of RAY_memory_monitor_refresh_ms=0 disables the monitor entirely
+        # (needed for large GGUF models where Lustre page cache pre-fills the pool).
+        -e RAY_memory_usage_threshold="${RAY_memory_usage_threshold:-0.95}"
+        -e RAY_memory_monitor_refresh_ms="${RAY_memory_monitor_refresh_ms:-}"
         -e VLLM_LOGGING_LEVEL=DEBUG
     )
     if [[ "${_mn_tok_host}" != "/dev/null" ]]; then
