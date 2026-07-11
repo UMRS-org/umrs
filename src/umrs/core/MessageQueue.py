@@ -664,6 +664,19 @@ class MessageQueue:
         cmd = splited_msg[0]
         client_id = splited_msg[1] if len(splited_msg) > 1 else None
         payload_str = ":".join(splited_msg[2:]) if len(splited_msg) > 2 else ""
+        # Extract correlation_id from payload if present, log it.
+        # This bridges HTTP-style tracing to ZMQ transport (G-001).
+        if payload_str:
+            try:
+                payload_data = json.loads(payload_str)
+                if isinstance(payload_data, dict):
+                    from .zmq_correlation import extract_correlation_id
+
+                    cid = extract_correlation_id(payload_data)
+                    if cid:
+                        logger.info("ZMQ %s correlation_id=%s", cmd, cid)
+            except (json.JSONDecodeError, ValueError):
+                pass  # Not JSON — nothing to extract
         return cmd, (client_id, payload_str, zmq_sender_id)
 
     def _parse_bootstrap_context(self, splited_msg, zmq_sender_id):
