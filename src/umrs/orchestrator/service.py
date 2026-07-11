@@ -1030,6 +1030,110 @@ class OrchestrationService:
             self.port_manager.release(port, allocated_host)
         self.registry.remove(job_id)
 
+    async def reconcile_stale_endpoints(
+        self,
+        timeout_sec: int = 300,
+    ) -> dict:
+        """Re-resolve and re-probe endpoints stuck in PROVISIONING/STARTING.
+
+        Called at boot time after UMRS restart.  When a UMRS process dies
+        while a ``_finalize_provision`` task is running (or the task dies),
+        the endpoint registry retains rows in PROVISIONING/STARTING with
+        ``host="pending"``.  This method iterates those rows, resolves their
+        actual host/port from the backend, re-probes readiness, and either
+        promotes them to READY or marks them FAILED depending on the result.
+
+        Returns:
+            Summary dict with counts::
+
+                {
+                    "checked": N,
+                    "promoted_to_ready": N,
+                    "marked_failed": N,
+                    "timed_out": N,
+                    "errors": [...],
+                }
+        """
+        result = {
+            "checked": 0,
+            "promoted_to_ready": 0,
+            "marked_failed": 0,
+            "timed_out": 0,
+            "errors": [],
+        }
+
+        stuck_statuses = {EndpointStatus.PROVISIONING, EndpointStatus.STARTING}
+
+        # Gather candidates outside the registry lock so refresh_endpoint
+        # (which acquires it) doesn't deadlock.
+        with self.registry._lock:
+            candidates = [
+                ep for ep in self.registry._endpoints.values()
+                if ep.status in stuck_statuses
+            ]
+
+        if not candidates:
+            logger.info("No PROVISIONING/STARTING endpoints to reconcile")
+            return result
+
+        logger.info(
+            "Boot-time reconciler: found %d endpoints in %s — starting reconciliation",
+            len(candidates),
+            ", ".join(s.value for s in stuck_statuses),
+        )
+
+        for ep in candidates:
+            result["checked"] += 1
+            try:
+                refreshed = await self.refresh_endpoint(
+                    ep.job_id,
+                    timeout_sec=timeout_sec,
+                )
+            except Exception as exc:  # noqa: BLE001
+                error_msg = str(exc)[:200]
+                result["errors"].append({"job_id": ep.job_id, "error": error_msg})
+                logger.error(
+                    "Reconcile error for job %s: %s", ep.job_id, exc, exc_info=True
+                )
+                self.registry.mark_failed(ep.job_id, f"reconcile_error: {error_msg}")
+                result["marked_failed"] += 1
+                continue
+
+            if refreshed is None:
+                result["timed_out"] += 1
+                result["errors"].append({"job_id": ep.job_id, "error": "endpoint disappeared"})
+                continue
+
+            if refreshed.status == EndpointStatus.READY:
+                result["promoted_to_ready"] += 1
+                logger.info(
+                    "Reconciled job %s → READY (host=%s:%s)",
+                    ep.job_id,
+                    refreshed.host,
+                    refreshed.port,
+                )
+            else:
+                result["marked_failed"] += 1
+                self.registry.mark_failed(
+                    ep.job_id,
+                    f"reconcile: not ready after {timeout_sec}s (status={refreshed.status.value})",
+                )
+                logger.info(
+                    "Reconciled job %s → FAILED (status=%s)",
+                    ep.job_id,
+                    refreshed.status.value,
+                )
+
+        logger.info(
+            "Boot-time reconciler done: checked=%d ready=%d failed=%d timed_out=%d errors=%d",
+            result["checked"],
+            result["promoted_to_ready"],
+            result["marked_failed"],
+            result["timed_out"],
+            len(result["errors"]),
+        )
+        return result
+
     async def close(self):
         """Clean up resources."""
         if self._readiness_poller:

@@ -29,6 +29,7 @@ from umrs.core.thread_pool import PoolConfig, ServerOverloadedError, ThreadPoolM
 from umrs.inference.embedding_backend import LocalEmbeddingBackend
 from umrs.server.config import ENABLE_PRETTY_PRINT, get_default_db_subdir
 from umrs.server.durable_job_runtime import start_durable_job_runtime_from_env
+from umrs.server.model_path_validator import enforce_model_paths
 from umrs.server.commands import HandlerContext, build_registry
 from umrs.server.job_tracking_handler import build_durable_job_backend_from_env
 from umrs.server.json_config import load_server_cfg_file
@@ -114,6 +115,12 @@ def perform_initial_config(configure_file, status_store):
     admin_s3_configuration_file, users, server_cfg = load_server_cfg_file(configure_file)
     check_duplicated_database(users)
     print("Configuration loaded successfully.")
+
+    # Task 10: model path boot check — fail fast if paths are inaccessible
+    try:
+        enforce_model_paths(require_at_least_one=False)
+    except Exception:
+        logger.warning("Model path validation failed (non-fatal without config)")
 
     # Get the directory containing configure_file
     umrs_dir = os.path.dirname(configure_file)

@@ -12,6 +12,7 @@ Usage:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import threading
@@ -103,7 +104,9 @@ def _init_model_store(app, db_pool):
         ensure_model_registry_schema(model_conn)
         model_conn.commit()
         app.state.umrs_model_store_conn = model_conn
-        set_model_store(ModelStore(model_conn, path_validator=PathValidator(), pool=db_pool))
+        set_model_store(
+            ModelStore(model_conn, path_validator=PathValidator(), pool=db_pool)
+        )
         logger.info("Model store initialized for HTTP sidecar")
     except Exception:
         logger.warning(
@@ -255,6 +258,13 @@ def _check_durable_jobs_health():
 
         svc = get_job_service()
         if svc is not None and svc._started:
+            # Task 2-delta: include liveness heartbeat
+            from umrs.server.durable_job_runtime import get_runtime
+
+            rt = get_runtime()
+            if rt is not None:
+                status = rt.thread_status()
+                return {"status": "ok", "liveness": status}
             return {"status": "ok"}
         return {"status": "not_started"}
     except Exception:
@@ -339,6 +349,15 @@ def _check_durable_jobs_readiness():
 
         svc = get_job_service()
         if svc is not None and svc._started:
+            # Task 2-delta: include liveness heartbeat
+            from umrs.server.durable_job_runtime import get_runtime
+
+            rt = get_runtime()
+            if rt is not None:
+                status = rt.thread_status()
+                if status["error"] is not None:
+                    return {"status": "error", "liveness": status}, True
+                return {"status": "ok", "liveness": status}, False
             return {"status": "ok"}, False
         return {"status": "not_started"}, True
     except Exception as exc:
@@ -415,6 +434,8 @@ async def _readiness(request: Request):
 
 def _create_app():
     """Create a minimal FastAPI app mounting the Gateway-facing UMRS routers."""
+    from contextlib import asynccontextmanager
+
     from fastapi import FastAPI
 
     from umrs.server.structured_logging import configure_structured_logging
@@ -450,12 +471,25 @@ def _create_app():
     environment = os.environ.get("GATEWAY_ENVIRONMENT", "development").lower()
     enable_docs = environment in ("development", "dev", "test")
 
+    @asynccontextmanager
+    async def _lifespan(application: FastAPI):
+        from umrs.orchestrator.janitor import start_janitor, stop_janitor
+
+        start_janitor()
+        logger.info("Janitor started via lifespan hook")
+        try:
+            yield
+        finally:
+            stop_janitor()
+            logger.info("Janitor stopped via lifespan hook")
+
     app = FastAPI(
         title="UMRS Endpoint Discovery API",
         description="HTTP sidecar for Gateway endpoint discovery, LLM/RAG/MCP proxy",
         version="0.3.0",
         docs_url="/docs" if enable_docs else None,
         redoc_url="/redoc" if enable_docs else None,
+        lifespan=_lifespan,
     )
 
     # Correlation ID middleware: extracts X-Request-ID from Gateway (NGINX)
@@ -538,6 +572,32 @@ def start_http_sidecar(
 
         app = _create_app()
         logger.info("Starting HTTP sidecar on %s:%d", resolved_host, port)
+
+        # Boot-time reconciler: re-resolve endpoints stuck in PROVISIONING/
+        # STARTING after a UMRS restart (Task 6 Gap B).  Runs synchronously
+        # before uvicorn binds, so no requests are served until reconciliation
+        # is complete.  UMRS_RECONCILE_TIMEOUT_SEC controls the per-endpoint
+        # timeout (default 300s).
+        try:
+            from ..orchestrator.service import get_orchestration_service
+
+            service = get_orchestration_service()
+            timeout_sec = int(os.environ.get("UMRS_RECONCILE_TIMEOUT_SEC", "300"))
+            result = asyncio.get_event_loop().run_until_complete(
+                service.reconcile_stale_endpoints(timeout_sec=timeout_sec)
+            )
+            logger.info(
+                "Boot-time reconciler: checked=%d ready=%d failed=%d errors=%d",
+                result["checked"],
+                result["promoted_to_ready"],
+                result["marked_failed"],
+                len(result["errors"]),
+            )
+        except Exception:
+            logger.exception(
+                "Boot-time reconciler failed (non-fatal — sidecar still starts)"
+            )
+
         uvicorn.run(app, host=resolved_host, port=port, log_level="warning")
 
     thread = threading.Thread(

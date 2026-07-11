@@ -220,6 +220,13 @@ class UMRSMetrics:
             ["subsystem"],
         )
 
+        # -- Queue depth instrumentation ---------------------------------
+        self._queue_depth = _gauge(
+            "umrs_queue_depth",
+            "Number of messages currently queued",
+            ["queue_type"],  # control | data
+        )
+
         # -- LLM usage metering ----------------------------------------
         self._llm_tokens = _counter(
             "umrs_llm_tokens_total",
@@ -382,6 +389,10 @@ class UMRSMetrics:
     def llm_request(self, model: str, streaming: bool) -> None:
         """Increment LLM request counter."""
         self._llm_requests.labels(model=model, streaming=str(streaming).lower()).inc()
+
+    def set_queue_depth(self, queue_type: str, depth: float) -> None:
+        """Set the current message depth for a queue (control | data)."""
+        self._queue_depth.labels(queue_type=queue_type).set(depth)
 
 
 METRICS = UMRSMetrics()

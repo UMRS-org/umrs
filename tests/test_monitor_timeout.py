@@ -99,57 +99,55 @@ class TestTimeoutBranch:
     """Verify that timeout branches are taken and streaks tracked."""
 
     @pytest.mark.asyncio
-    async def test_single_timeout_tracked(self, monitor, fake_job, fake_attempt):
-        status_checker = AsyncMock(return_value=AttemptCheckResult(status="running"))
-        monitor.status_checker = status_checker
+    async def test_single_timeout_tracked(self, monitor, fake_attempt):
+        monitor.status_checker.check_status = AsyncMock(side_effect=asyncio.TimeoutError)
+        monitor.status_check_timeout = 0.01
         monitor._timeout_streaks.clear()
 
-        result = await monitor._check_attempt(fake_attempt, fake_job)
-        assert result is None  # timeout returns None
+        with patch("umrs.jobs.monitor.METRICS"):
+            await monitor._check_attempt(fake_attempt)
 
         # Streak should be 1 after one timeout
         assert monitor._timeout_streaks.get("attempt-1") == 1
 
     @pytest.mark.asyncio
-    async def test_sixty_timeout_triggers_degradation(self, job_store, status_checker):
-        """60 rapid timeouts should trigger degradation."""
+    async def test_sixty_timeout_triggers_degradation(
+        self, job_store, status_checker, fake_attempt
+    ):
+        """>=10 consecutive timeouts should trigger degradation."""
         monitor = AttemptMonitor(
             job_store=job_store,
             status_checker=status_checker,
             poll_interval=0.001,
         )
-        # Pre-seed streak at 58 so two more timeouts reach 60
-        monitor._timeout_streaks["attempt-1"] = 58
-
+        # Pre-seed streak at 8 so two more timeouts reach 10
+        monitor._timeout_streaks["attempt-1"] = 8
+        monitor.status_check_timeout = 0.001
         status_checker.check_status = AsyncMock(side_effect=asyncio.TimeoutError)
-        # Mock METRICS degradation tracking
-        with patch.object(
-            monitor, "status_check_timeout", 0.001
-        ), patch(
-            "umrs.jobs.monitor.METRICS"
-        ) as mock_metrics:
-            await monitor._check_attempt(fake_attempt, fake_job)
-            # First timeout → streak 59, no degradation yet
-            assert monitor._timeout_streaks["attempt-1"] == 59
+
+        with patch("umrs.jobs.monitor.METRICS") as mock_metrics:
+            await monitor._check_attempt(fake_attempt)
+            # First timeout → streak 9, no degradation yet
+            assert monitor._timeout_streaks["attempt-1"] == 9
             mock_metrics.degradation.assert_not_called()
 
-            await monitor._check_attempt(fake_attempt, fake_job)
-            # Second timeout → streak 60, degradation fires
-            assert monitor._timeout_streaks["attempt-1"] == 60
+            await monitor._check_attempt(fake_attempt)
+            # Second timeout → streak 10, degradation fires
+            assert monitor._timeout_streaks["attempt-1"] == 10
             assert mock_metrics.degradation.call_count == 1
 
     @pytest.mark.asyncio
-    async def test_succeeded_clears_streak(self, monitor, fake_job, fake_attempt):
+    async def test_succeeded_clears_streak(self, monitor, fake_attempt):
         monitor._timeout_streaks["attempt-1"] = 5
         monitor.status_checker.check_status = AsyncMock(
             return_value=AttemptCheckResult(status="succeeded")
         )
         with patch("umrs.jobs.monitor.METRICS"):
-            result = await monitor._check_attempt(fake_attempt, fake_job)
-            assert result is not None
-            assert result.status == "succeeded"
-            # Streak should be cleared
-            assert monitor._timeout_streaks.get("attempt-1") is None
+            await monitor._check_attempt(fake_attempt)
+
+        # Streak should be cleared and success recorded
+        assert monitor._timeout_streaks.get("attempt-1") is None
+        monitor.job_store.mark_attempt_succeeded.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
