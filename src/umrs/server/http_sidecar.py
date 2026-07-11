@@ -577,26 +577,34 @@ def start_http_sidecar(
         # STARTING after a UMRS restart (Task 6 Gap B).  Runs synchronously
         # before uvicorn binds, so no requests are served until reconciliation
         # is complete.  UMRS_RECONCILE_TIMEOUT_SEC controls the per-endpoint
-        # timeout (default 300s).
-        try:
-            from ..orchestrator.service import get_orchestration_service
+        # timeout (default 300s).  UMRS_BOOT_RECONCILE_ENABLED gates the
+        # feature ("true" by default; set "false" to disable).
+        if os.environ.get("UMRS_BOOT_RECONCILE_ENABLED", "true").lower() not in ("true", "1", "yes"):
+            logger.info("Boot-time reconciler disabled by UMRS_BOOT_RECONCILE_ENABLED")
+        else:
+            try:
+                from ..orchestrator.service import get_orchestration_service
 
-            service = get_orchestration_service()
-            timeout_sec = int(os.environ.get("UMRS_RECONCILE_TIMEOUT_SEC", "300"))
-            result = asyncio.get_event_loop().run_until_complete(
-                service.reconcile_stale_endpoints(timeout_sec=timeout_sec)
-            )
-            logger.info(
-                "Boot-time reconciler: checked=%d ready=%d failed=%d errors=%d",
-                result["checked"],
-                result["promoted_to_ready"],
-                result["marked_failed"],
-                len(result["errors"]),
-            )
-        except Exception:
-            logger.exception(
-                "Boot-time reconciler failed (non-fatal — sidecar still starts)"
-            )
+                service = get_orchestration_service()
+                timeout_sec = int(os.environ.get("UMRS_RECONCILE_TIMEOUT_SEC", "300"))
+                loop = asyncio.new_event_loop()
+                try:
+                    result = loop.run_until_complete(
+                        service.reconcile_stale_endpoints(timeout_sec=timeout_sec)
+                    )
+                    logger.info(
+                        "Boot-time reconciler: checked=%d ready=%d failed=%d errors=%d",
+                        result["checked"],
+                        result["promoted_to_ready"],
+                        result["marked_failed"],
+                        len(result["errors"]),
+                    )
+                finally:
+                    loop.close()
+            except Exception:
+                logger.exception(
+                    "Boot-time reconciler failed (non-fatal — sidecar still starts)"
+                )
 
         uvicorn.run(app, host=resolved_host, port=port, log_level="warning")
 

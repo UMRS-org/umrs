@@ -137,13 +137,13 @@ endpoints:
     model: deepseek-v4-flash-dspark
     tier: system
     node_count: 2
-    partition: ng-dgx-m3
+    partition: ng-dgx-m2
     max_model_len: 1048576          # 1M — model's true YaRN ceiling (not 1.5M)
     env_vars:
       VLLM_PATH_TO_HUGGINGFACE: "/lvs0/rccs-dmp/masaru.nagaso/umrs_models"
       VLLM_MODEL: "DeepSeek-V4-Flash-DSpark"
-      # MUST be the locally-built DSpark Stage-C NVFP4 image (see prereq #1).
-      VLLM_DOCKER_IMAGE: "vllm-dspark-runtime:dspark-nvfp4-stage-c"
+      # Locally-built DSpark NVFP4 image on both GB10 nodes (mia-raf-pr1).
+      VLLM_DOCKER_IMAGE: "vllm-dspark-runtime:mia-raf-pr1"
       # GB10 unified-memory headroom (see Qwen entry). Repo's 1M profile = 0.80.
       VLLM_GPU_MEM_UTIL: "0.80"
       VLLM_MAX_NUM_SEQS: "6"         # 1M ceiling pairs with 6 seqs (KV-pool sized)
@@ -185,17 +185,16 @@ endpoints:
         --speculative-config {"method":"dspark","num_speculative_tokens":3,"draft_sample_method":"probabilistic"}
       RCCS_SKIP_CDI: "1"
 
-  # ── GLM-5.2 IQ1_S (1-bit GGUF) — STILL DOWNLOADING ───────────────────
+  # ── GLM-5.2 IQ1_S (1-bit GGUF) ───────────────────
   #  GLM-5.2 744B MoE, 1-bit GGUF (IQ1_S). Single merged .gguf served by vLLM
   #  with tokenizer loaded separately. Mirrors the proven glm-5.2-iq2m entry
-  #  (2× ng-dgx-m3, PP=2). GLM requires enforce-eager.
-  #  DO NOT `pool up` until the weights finish downloading and the model is
-  #  registered as `glm-5.2-iq1s` in the catalog.
+  #  (2× ng-dgx-m2, PP=2). GLM requires enforce-eager.
+  #  Updated 2026-07-11: moved from ng-dgx-m3 to ng-dgx-m2 (image built on m2).
   - name: glm-5.2-iq1s
     model: glm-5.2-iq1s
     tier: system
     node_count: 2
-    partition: ng-dgx-m3
+    partition: ng-dgx-m2
     max_model_len: 1048576
     env_vars:
       VLLM_PATH_TO_HUGGINGFACE: "/lvs0/rccs-dmp/masaru.nagaso/umrs_models"

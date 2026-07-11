@@ -166,7 +166,11 @@ def _resolve_authenticated_project_id(
     requested_project_id = verified_project_id or _header_str(x_project_id)
 
     if strict and verified_project_id:
-        return verified_project_id
+        if verified_user_id:
+            return verified_project_id
+        # X-Verified-Project-ID without X-User-ID is a spoofed claim —
+        # only the gateway may set verified headers; reject without proof.
+        _raise_strict_project_auth_error()
 
     if claims:
         return _project_id_authorized_by_claims(claims, requested_project_id)
