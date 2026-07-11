@@ -148,7 +148,7 @@ def test_provision_endpoint_uses_bentoml_defaults_for_vision_model(monkeypatch):
     assert request.metadata["readiness_probe"] == "http"
     assert request.metadata["readiness_path"] == "/readyz"
     assert request.metadata["launch_profiles"] == ["harness", "vision-bentoml"]
-    assert request.env_vars["RIVAULT_PROFILES"] == "harness vision-bentoml"
+    assert request.env_vars["RIVAULT_EXTRA_PROFILES"] == "harness vision-bentoml"
     assert request.env_vars["VISION_REQUIRE_PRESIGNED_URLS"] == "true"
     assert request.env_vars["TRANSFORMERS_OFFLINE"] == "1"
 
@@ -227,7 +227,7 @@ def test_provision_endpoint_preserves_site_litellm_db_profile(monkeypatch):
         "vllm",
         "litellm-db",
     ]
-    assert service.requests[0].env_vars["RIVAULT_PROFILES"] == "harness vllm litellm-db"
+    assert service.requests[0].env_vars["RIVAULT_EXTRA_PROFILES"] == "harness vllm litellm-db"
 
 
 def test_provision_endpoint_llm_without_profiles_excludes_vision_bentoml(monkeypatch):
@@ -276,8 +276,8 @@ def test_provision_endpoint_llm_without_profiles_excludes_vision_bentoml(monkeyp
     assert request.metadata["model_type"] == "llm"
     assert request.metadata["serving_backend"] == "vllm"
     assert request.metadata["launch_profiles"] == ["harness", "vllm", "litellm-db"]
-    assert request.env_vars["RIVAULT_PROFILES"] == "harness vllm litellm-db"
-    assert "vision-bentoml" not in request.env_vars["RIVAULT_PROFILES"]
+    assert request.env_vars["RIVAULT_EXTRA_PROFILES"] == "harness vllm litellm-db"
+    assert "vision-bentoml" not in request.env_vars["RIVAULT_EXTRA_PROFILES"]
 
 
 def test_provision_endpoint_uses_gateway_project_header(monkeypatch):
