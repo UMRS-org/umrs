@@ -590,6 +590,7 @@ class EndpointResponse(BaseModel):
                 "job_status": "starting",
             }
         }
+    )
 
 
 class EndpointsListResponse(BaseModel):
