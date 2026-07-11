@@ -14,6 +14,7 @@ from umrs.client.control_commands import (
     prepare_control_command_line,
 )
 from umrs.core.TaskCmdStatus import TaskCmd
+from umrs.core.zmq_correlation import dumps_with_correlation_id
 
 
 class UMRSControlAPI:
@@ -47,7 +48,7 @@ class UMRSControlAPI:
         return parsed
 
     def list_models(self, scope: str | None = None) -> dict[str, Any]:
-        payload = json.dumps({"scope": scope}) if scope else ""
+        payload = dumps_with_correlation_id({"scope": scope}) if scope else ""
         raw = self._mq.request_model_command(
             self._client_id, TaskCmd.MODEL_LIST, payload
         )
@@ -86,8 +87,7 @@ class UMRSControlAPI:
         }
         if self._admin_token:
             body["admin_token"] = self._admin_token
-        payload = json.dumps(body)
-        return self._request_json(TaskCmd.MODEL_REGISTER, payload)
+        payload = dumps_with_correlation_id(body)
 
     def download_model_server_side(
         self,
@@ -107,7 +107,7 @@ class UMRSControlAPI:
         }
         if self._admin_token:
             body["admin_token"] = self._admin_token
-        payload = json.dumps(body)
+        payload = dumps_with_correlation_id(body)
         return self._request_json(TaskCmd.MODEL_DOWNLOAD, payload)
 
     def submit_job(
@@ -126,7 +126,7 @@ class UMRSControlAPI:
             job_spec["partition_override"] = partition
         if node:
             job_spec["nodelist_hint"] = node
-        payload = json.dumps(
+        payload = dumps_with_correlation_id(
             {
                 "job_type": job_type,
                 "spec": job_spec,
@@ -138,13 +138,13 @@ class UMRSControlAPI:
         return self._request_json(TaskCmd.JOB_SUBMIT, payload)
 
     def cancel_job(self, job_id: str) -> dict[str, Any]:
-        return self._request_json(TaskCmd.JOB_CANCEL, json.dumps({"job_id": job_id}))
+        return self._request_json(TaskCmd.JOB_CANCEL, dumps_with_correlation_id({"job_id": job_id}))
 
     def purge_buckets(self, bucket_names: list[str]) -> dict[str, Any]:
         """Request server-side deletion of user-owned S3 buckets."""
         return self._request_json(
             TaskCmd.PURGE_BUCKETS,
-            json.dumps({"buckets": bucket_names}),
+            dumps_with_correlation_id({"buckets": bucket_names}),
         )
 
     def list_jobs(
