@@ -118,10 +118,11 @@ class SlurmBackend(OrchestratorBackend):
             # The info file is a startup artifact; it is only deleted by
             # ``cleanup()``. A job that died by walltime, preemption, node
             # failure, or an external ``scancel`` leaves an orphaned file that
-            # still reports ``RIVAULT_STATUS=running``, producing a ghost
-            # endpoint. Cross-check live states against Slurm and only override
-            # on a positively terminal state (never on an ``UNKNOWN`` miss).
-            if status in (JobStatus.READY, JobStatus.RUNNING):
+            # still reports the last written status (``running`` or
+            # ``starting``), producing a ghost endpoint. Cross-check live
+            # states against Slurm and only override on a positively terminal
+            # state (never on an ``UNKNOWN`` miss).
+            if status in (JobStatus.READY, JobStatus.RUNNING, JobStatus.STARTING):
                 slurm_status = await self._query_slurm_job_status(job_id)
                 if slurm_status in (JobStatus.FAILED, JobStatus.STOPPED):
                     logger.warning(

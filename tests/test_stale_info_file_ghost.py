@@ -4,16 +4,17 @@ A Slurm job writes an info file (``rivault-job-<id>.info``) to the shared
 filesystem at startup. That file is only deleted by ``cleanup()``. When a job
 dies by walltime, preemption, node failure, or an external ``scancel`` — i.e.
 without going through UMRS ``cleanup()`` — the file is orphaned and still says
-``RIVAULT_STATUS=running``.
+``RIVAULT_STATUS=running`` or ``RIVAULT_STATUS=starting``.
 
 ``get_job_status`` previously trusted the info file verbatim, so a dead job kept
-reporting ``RUNNING``/``READY``. ``_filter_live_ready_endpoints`` therefore never
-pruned it and ``r4 endpoint list`` showed a ghost ``ready`` endpoint long after
-``squeue`` was empty.
+reporting ``RUNNING``/``READY``/``STARTING``. ``_filter_live_ready_endpoints``
+therefore never pruned it and ``r4 endpoint list`` showed a ghost endpoint long
+after ``squeue`` was empty.
 
-The fix cross-checks READY/RUNNING info-file states against Slurm and reports the
-terminal state (removing the stale file) when Slurm *positively* reports the job
-FAILED/STOPPED. A transient ``UNKNOWN`` miss must NOT delete a healthy endpoint.
+The fix cross-checks READY/RUNNING/STARTING info-file states against Slurm and
+reports the terminal state (removing the stale file) when Slurm *positively*
+reports the job FAILED/STOPPED. A transient ``UNKNOWN`` miss must NOT delete a
+healthy endpoint.
 """
 
 import asyncio
@@ -86,6 +87,34 @@ class TestRemoteSlurmGhostPruning:
         assert info.endpoint is not None
         backend._remove_stale_info_file.assert_not_awaited()
 
+    def test_dead_job_with_stale_starting_info_reports_terminal(self):
+        """Job that died before becoming READY leaves info file with STARTING status."""
+        backend = self._backend()
+        stale_starting = _STALE_RUNNING_INFO.replace("running", "starting")
+        backend._read_remote_job_info = AsyncMock(return_value=stale_starting)
+        backend._query_slurm_job_status = AsyncMock(return_value=(JobStatus.FAILED, None))
+        backend._remove_stale_info_file = AsyncMock()
+
+        info = _run(backend.get_job_status("208363"))
+
+        assert info.status == JobStatus.FAILED
+        assert info.endpoint is None
+        backend._remove_stale_info_file.assert_awaited_once_with("208363")
+
+    def test_starting_job_with_unknown_slurm_state_is_preserved(self):
+        """Transient squeue miss must NOT kill a job still booting."""
+        backend = self._backend()
+        stale_starting = _STALE_RUNNING_INFO.replace("running", "starting")
+        backend._read_remote_job_info = AsyncMock(return_value=stale_starting)
+        backend._query_slurm_job_status = AsyncMock(return_value=(JobStatus.UNKNOWN, None))
+        backend._remove_stale_info_file = AsyncMock()
+        backend._endpoint_via_tunnel = AsyncMock(side_effect=lambda ep: ep)
+
+        info = _run(backend.get_job_status("208363"))
+
+        assert info.status == JobStatus.STARTING
+        backend._remove_stale_info_file.assert_not_awaited()
+
 
 class TestLocalSlurmGhostPruning:
     def _backend(self, info_dir) -> SlurmBackend:
@@ -116,3 +145,28 @@ class TestLocalSlurmGhostPruning:
         assert info.status == JobStatus.RUNNING
         assert info.endpoint is not None
         assert info_path.exists()  # preserved on inconclusive verification
+
+    def test_dead_job_with_stale_starting_info_reports_terminal(self, tmp_path):
+        """Local backend: job died in STARTING phase leaves orphaned info file."""
+        backend = self._backend(tmp_path)
+        info_path = tmp_path / "rivault-job-208363.info"
+        info_path.write_text(_STALE_RUNNING_INFO.replace("running", "starting"))
+        backend._query_slurm_job_status = AsyncMock(return_value=JobStatus.FAILED)
+
+        info = _run(backend.get_job_status("208363"))
+
+        assert info.status == JobStatus.FAILED
+        assert info.endpoint is None
+        assert not info_path.exists()
+
+    def test_starting_job_unknown_slurm_is_preserved(self, tmp_path):
+        """Local backend: transient miss must not kill a booting job."""
+        backend = self._backend(tmp_path)
+        info_path = tmp_path / "rivault-job-208363.info"
+        info_path.write_text(_STALE_RUNNING_INFO.replace("running", "starting"))
+        backend._query_slurm_job_status = AsyncMock(return_value=JobStatus.UNKNOWN)
+
+        info = _run(backend.get_job_status("208363"))
+
+        assert info.status == JobStatus.STARTING
+        assert info_path.exists()

@@ -523,13 +523,13 @@ class RemoteSlurmBackend(SlurmBackend):
             # The info file is a startup artifact written to the shared
             # filesystem; it is only deleted by ``cleanup()``. If the job died
             # by walltime, preemption, node failure, or an external ``scancel``,
-            # the file is orphaned and still reports ``RIVAULT_STATUS=running``.
-            # Trusting it verbatim produces a ghost endpoint that appears
-            # ``ready`` in ``r4 endpoint list`` long after the job is gone.
-            # Cross-check live states against Slurm so a dead job is reported as
-            # terminal. Only override on a *positively* terminal Slurm state —
-            # a squeue miss / ``UNKNOWN`` must not delete a healthy endpoint.
-            if status in (JobStatus.READY, JobStatus.RUNNING):
+            # the file is orphaned and still reports the last written status
+            # (``running`` or ``starting``). Trusting it verbatim produces a
+            # ghost endpoint. Cross-check live states against Slurm so a dead
+            # job is reported as terminal. Only override on a *positively*
+            # terminal Slurm state — a squeue miss / ``UNKNOWN`` must not
+            # delete a healthy endpoint.
+            if status in (JobStatus.READY, JobStatus.RUNNING, JobStatus.STARTING):
                 slurm_status, _reason = await self._query_slurm_job_status(job_id)
                 if slurm_status in (JobStatus.FAILED, JobStatus.STOPPED):
                     logger.warning(
