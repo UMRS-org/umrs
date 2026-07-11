@@ -229,12 +229,13 @@ services:
     command:
       - "-c"
       - |
-        set -euo pipefail
+        set -eu
         # Task 4: assert-offline.sh — fail fast if offline invariants violated.
         # Runs inside the vLLM container; TRANSFORMERS_OFFLINE / HF_HUB_OFFLINE
         # are set in the environment block below. Use $$ so compose does not
         # interpolate these at parse time — the runtime shell reads the real
         # container env. POSIX sh has no indirect expansion, so check directly.
+        # NOTE: entrypoint is /bin/sh (dash/busybox) — do NOT use `pipefail`.
         if [ "$${TRANSFORMERS_OFFLINE:-0}" != "1" ]; then
           echo "FAIL: TRANSFORMERS_OFFLINE=$${TRANSFORMERS_OFFLINE:-not set} (expected 1)"; exit 1
         fi
@@ -247,7 +248,7 @@ services:
           fi
         done
         echo "OK: offline invariants satisfied"
-        pip install -q ray 2>/dev/null
+        pip install -q ray 2>/dev/null || true
         exec vllm serve "$$VLLM_MODEL_REF" $$VLLM_EXTRA_ARGS --served-model-name "$$VLLM_SERVED_MODEL_NAME" --api-key "$$VLLM_API_KEY" -tp "$$VLLM_TP" -pp "$$VLLM_PP" $${VLLM_DISTRIBUTED_EXECUTOR_BACKEND:+--distributed-executor-backend $$VLLM_DISTRIBUTED_EXECUTOR_BACKEND} --max-model-len "$${VLLM_MAX_MODEL_LEN:-4096}" --gpu-memory-utilization "$${VLLM_GPU_MEM_UTIL:-0.95}" $${VLLM_ENFORCE_EAGER:+--enforce-eager} --enable-auto-tool-choice --tool-call-parser "$${VLLM_TOOL_CALL_PARSER:-hermes}"
     environment:
       <<: *rivault-egress-env
