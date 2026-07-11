@@ -28,6 +28,8 @@ from fastapi import (
     UploadFile,
     status,
 )
+
+from ..core.zmq_correlation import dumps_with_correlation_id
 from pydantic import BaseModel, Field
 
 from ..core.TaskCmdStatus import TaskCmd
@@ -282,7 +284,7 @@ async def list_workflows(
     raw = handle_workflow_command(
         TaskCmd.LIST_WORKFLOWS,
         resolved_user_id or "_",
-        json.dumps(payload) if payload else "",
+        dumps_with_correlation_id(payload) if payload else "",
     )
     return _parse_command_response(raw, action="list")
 
