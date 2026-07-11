@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import logging
 import threading
+import time
 from concurrent.futures import TimeoutError as FutureTimeoutError
 
 from umrs.metrics import METRICS
@@ -18,6 +19,20 @@ from umrs.server.job_tracking_handler import (
 logger = logging.getLogger(__name__)
 
 _BRIDGE_NAME = "gen1_gen2_runtime"
+
+# Module-level reference for sidecar access (Task 2-delta)
+_global_runtime: DurableJobRuntime | None = None
+
+
+def _set_runtime(runtime: DurableJobRuntime | None) -> None:
+    """Store or clear the module-level runtime reference."""
+    global _global_runtime
+    _global_runtime = runtime
+
+
+def get_runtime() -> DurableJobRuntime | None:
+    """Return the running DurableJobRuntime instance, or None."""
+    return _global_runtime
 
 
 class DurableJobRuntimeError(RuntimeError):
@@ -38,6 +53,10 @@ class DurableJobRuntime:
         self._lock = threading.Lock()
         self._started = False
         self._shutdown_called = False
+        # Task 2-delta: liveness heartbeat (updated by background task)
+        self._heartbeat_ts: float = 0.0
+        self._heartbeat_interval: float = 10.0  # seconds
+        self._heartbeat_task: asyncio.Task | None = None
 
     @property
     def command_backend(self) -> DurableJobCommandBackend:
@@ -117,6 +136,33 @@ class DurableJobRuntime:
         self._command_backend = DurableJobCommandBackend(
             self._service.job_service.job_store,
         )
+        # Task 2-delta: start liveness heartbeat
+        self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
+
+    async def _heartbeat_loop(self) -> None:
+        """Update heartbeat timestamp at a fixed interval."""
+        while True:
+            self._heartbeat_ts = time.monotonic()
+            await asyncio.sleep(self._heartbeat_interval)
+
+    def thread_status(self) -> dict:
+        """Return liveness status for sidecar probes.
+
+        Returns dict with thread_alive, loop_alive, heartbeat_age, error.
+        """
+        thread_alive = self._thread is not None and self._thread.is_alive()
+        loop_alive = self._loop is not None and self._loop.is_running()
+        heartbeat_age = (
+            round(time.monotonic() - self._heartbeat_ts, 2)
+            if self._heartbeat_ts > 0
+            else -1.0
+        )
+        return {
+            "thread_alive": thread_alive,
+            "loop_alive": loop_alive,
+            "heartbeat_age": heartbeat_age,
+            "error": str(self._startup_error) if self._startup_error else None,
+        }
 
     def _run_loop(self) -> None:
         loop = asyncio.new_event_loop()
@@ -183,9 +229,11 @@ def start_durable_job_runtime_from_env(
         init_catalog_meta_store(db_pool)
         runtime = DurableJobRuntime(db_pool=db_pool)
         runtime.start(timeout=timeout)
+        _set_runtime(runtime)
         logger.info("Durable job runtime started")
         return runtime
     except Exception:
         logger.exception("Failed to start durable job runtime")
         METRICS.bridge_event(_BRIDGE_NAME, "start_failure")
+        _set_runtime(None)
         return None
