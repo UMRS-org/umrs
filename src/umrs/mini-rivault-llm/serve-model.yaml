@@ -230,15 +230,20 @@ services:
       - "-c"
       - |
         set -euo pipefail
-        # Task 4: assert-offline.sh — fail fast if offline invariants violated
-        for _var in TRANSFORMERS_OFFLINE HF_HUB_OFFLINE; do
-          if [ "${${_var}:-0}" != "1" ]; then
-            echo "FAIL: ${_var}=${${_var}:-not set} (expected 1)"; exit 1
-          fi
-        done
-        for _var in http_proxy HTTP_PROXY https_proxy HTTPS_PROXY; do
-          if [ -n "${${_var}:-}" ]; then
-            echo "FAIL: ${_var} set — proxy forbidden in offline mode"; exit 1
+        # Task 4: assert-offline.sh — fail fast if offline invariants violated.
+        # Runs inside the vLLM container; TRANSFORMERS_OFFLINE / HF_HUB_OFFLINE
+        # are set in the environment block below. Use $$ so compose does not
+        # interpolate these at parse time — the runtime shell reads the real
+        # container env. POSIX sh has no indirect expansion, so check directly.
+        if [ "$${TRANSFORMERS_OFFLINE:-0}" != "1" ]; then
+          echo "FAIL: TRANSFORMERS_OFFLINE=$${TRANSFORMERS_OFFLINE:-not set} (expected 1)"; exit 1
+        fi
+        if [ "$${HF_HUB_OFFLINE:-0}" != "1" ]; then
+          echo "FAIL: HF_HUB_OFFLINE=$${HF_HUB_OFFLINE:-not set} (expected 1)"; exit 1
+        fi
+        for _proxy in "$${http_proxy:-}" "$${HTTP_PROXY:-}" "$${https_proxy:-}" "$${HTTPS_PROXY:-}"; do
+          if [ -n "$$_proxy" ]; then
+            echo "FAIL: proxy env set — proxy forbidden in offline mode"; exit 1
           fi
         done
         echo "OK: offline invariants satisfied"
