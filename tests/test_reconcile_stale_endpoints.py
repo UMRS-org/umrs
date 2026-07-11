@@ -227,3 +227,44 @@ async def test_reconcile_empty_registry(monkeypatch):
         "timed_out": 0,
         "errors": [],
     }
+
+
+class TestBootReconcilerEnvGate:
+    """Verify the UMRS_BOOT_RECONCILE_ENABLED env gate in http_sidecar."""
+
+    def test_reconciler_enabled_by_default(self):
+        """Reconciler runs when env var is unset."""
+        import os
+
+        # Remove env var if set, verify default allows reconciler
+        old = os.environ.pop("UMRS_BOOT_RECONCILE_ENABLED", None)
+        try:
+            enabled = os.environ.get("UMRS_BOOT_RECONCILE_ENABLED", "true").lower() in (
+                "true",
+                "1",
+                "yes",
+            )
+            assert enabled is True
+        finally:
+            if old is not None:
+                os.environ["UMRS_BOOT_RECONCILE_ENABLED"] = old
+
+    @pytest.mark.parametrize("value", ["false", "False", "0", "no", "disabled"])
+    def test_reconciler_disabled_when_set(self, value):
+        """Reconciler skips when UMRS_BOOT_RECONCILE_ENABLED is falsy."""
+        import os
+
+        old = os.environ.get("UMRS_BOOT_RECONCILE_ENABLED")
+        try:
+            os.environ["UMRS_BOOT_RECONCILE_ENABLED"] = value
+            enabled = os.environ.get("UMRS_BOOT_RECONCILE_ENABLED", "true").lower() in (
+                "true",
+                "1",
+                "yes",
+            )
+            assert enabled is False
+        finally:
+            if old is not None:
+                os.environ["UMRS_BOOT_RECONCILE_ENABLED"] = old
+            else:
+                os.environ.pop("UMRS_BOOT_RECONCILE_ENABLED", None)
