@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from ..jobs.models import (
     Job,
@@ -177,8 +177,7 @@ class JobSpec(BaseModel):
         default_factory=dict, description="Additional job-specific parameters"
     )
 
-    class Config:
-        extra = "allow"  # Allow additional fields
+    model_config = ConfigDict(extra="allow")
 
 
 class JobCreateRequest(BaseModel):
@@ -205,22 +204,21 @@ class JobCreateRequest(BaseModel):
         True, description="Immediately queue for scheduling"
     )
 
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "project_id": "proj-123",
-                "user_id": "user-456",
-                "job_type": "endpoint_provision",
-                "spec": {
-                    "model": "rivault-gpt-oss-static",
-                    "model_path": "/models/rivault-gpt-oss",
-                },
-                "priority": 0,
-                "max_attempts": 3,
-                "restart_policy": "on_crash",
-                "enqueue_immediately": True,
-            }
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "project_id": "proj-123",
+            "user_id": "user-456",
+            "job_type": "endpoint_provision",
+            "spec": {
+                "model": "rivault-gpt-oss-static",
+                "model_path": "/models/rivault-gpt-oss",
+            },
+            "priority": 0,
+            "max_attempts": 3,
+            "restart_policy": "on_crash",
+            "enqueue_immediately": True,
         }
+    })
 
 
 class AttemptResponse(BaseModel):
@@ -263,26 +261,25 @@ class JobResponse(BaseModel):
     # Included in detail view
     attempts: list[AttemptResponse] | None = None
 
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "job_id": "job-abc123",
-                "project_id": "proj-123",
-                "user_id": "user-456",
-                "job_type": "endpoint_provision",
-                "spec": {"model": "rivault-gpt-oss-static"},
-                "status": "running",
-                "priority": 0,
-                "desired_max_attempts": 3,
-                "restart_policy": "on_crash",
-                "next_run_at": None,
-                "active_attempt_id": "att-xyz789",
-                "commit_attempt_id": None,
-                "created_at": "2024-01-15T10:30:00Z",
-                "updated_at": "2024-01-15T10:31:00Z",
-                "last_state_change_at": "2024-01-15T10:31:00Z",
-            }
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "job_id": "job-abc123",
+            "project_id": "proj-123",
+            "user_id": "user-456",
+            "job_type": "endpoint_provision",
+            "spec": {"model": "rivault-gpt-oss-static"},
+            "status": "running",
+            "priority": 0,
+            "desired_max_attempts": 3,
+            "restart_policy": "on_crash",
+            "next_run_at": None,
+            "active_attempt_id": "att-xyz789",
+            "commit_attempt_id": None,
+            "created_at": "2024-01-15T10:30:00Z",
+            "updated_at": "2024-01-15T10:31:00Z",
+            "last_state_change_at": "2024-01-15T10:31:00Z",
         }
+    })
 
 
 class JobListResponse(BaseModel):
