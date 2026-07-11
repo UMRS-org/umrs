@@ -20,7 +20,7 @@ from typing import Any
 
 import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..orchestrator.endpoint_registry import (
     EndpointRegistry,
@@ -568,26 +568,25 @@ class EndpointResponse(BaseModel):
     max_model_len: int | None = None
     variant: str | None = None
 
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "project_id": "proj-123",
-                "model": "rivault-gpt-oss-static",
-                "job_id": "slurm-456",
-                "host": "compute-node-01",
-                "port": 11434,
-                "status": "ready",
-                "created_at": "2024-01-15T10:30:00Z",
-                "ready_at": "2024-01-15T10:31:00Z",
-                "last_used_at": "2024-01-15T10:35:00Z",
-                "expires_at": "2024-01-15T11:30:00Z",
-                "backend": "slurm",
-                "error_message": None,
-                "litellm_url": "http://compute-node-01:11434/v1",
-                "owner_type": "user",
-                "owner_id": None,
-                "tier": "user",
-                "detail": "starting container / loading model",
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "project_id": "proj-123",
+            "model": "rivault-gpt-oss-static",
+            "job_id": "slurm-456",
+            "host": "compute-node-01",
+            "port": 11434,
+            "status": "ready",
+            "created_at": "2024-01-15T10:30:00Z",
+            "ready_at": "2024-01-15T10:31:00Z",
+            "last_used_at": "2024-01-15T10:35:00Z",
+            "expires_at": "2024-01-15T11:30:00Z",
+            "backend": "slurm",
+            "error_message": None,
+            "litellm_url": "http://compute-node-01:11434/v1",
+            "owner_type": "user",
+            "owner_id": None,
+            "tier": "user",
+            "detail": "starting container / loading model",
                 "job_status": "starting",
             }
         }

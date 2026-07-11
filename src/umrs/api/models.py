@@ -25,7 +25,7 @@ import os
 from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from ..jobs.models import JobType, RestartPolicy
 from ..jobs.store import DuplicateJobError, JobStore
@@ -203,23 +203,22 @@ class ModelCreateRequest(BaseModel):
         None, description="Model capabilities"
     )
 
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "name": "qwen-7b-team",
-                "scope": "project",
-                "storage_ref": "/shared/projects/proj-123/models/qwen-7b-team",
-                "model_type": "llm",
-                "project_id": "proj-123",
-                "huggingface_id": "Qwen/Qwen2.5-7B-Instruct",
-                "description": "Team fine-tuned Qwen model for code review",
-                "serving_profile": {
-                    "tensor_parallel_size": 1,
-                    "max_model_len": 4096,
-                    "gpu_memory_utilization": 0.9,
-                },
-            }
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "name": "qwen-7b-team",
+            "scope": "project",
+            "storage_ref": "/shared/projects/proj-123/models/qwen-7b-team",
+            "model_type": "llm",
+            "project_id": "proj-123",
+            "huggingface_id": "Qwen/Qwen2.5-7B-Instruct",
+            "description": "Team fine-tuned Qwen model for code review",
+            "serving_profile": {
+                "tensor_parallel_size": 1,
+                "max_model_len": 4096,
+                "gpu_memory_utilization": 0.9,
+            },
         }
+    })
 
 
 class ModelStageRequest(BaseModel):
@@ -238,17 +237,16 @@ class ModelStageRequest(BaseModel):
         None, description="Serving configuration"
     )
 
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "huggingface_id": "Qwen/Qwen2.5-7B-Instruct",
-                "name": "qwen-7b-myproject",
-                "scope": "project",
-                "model_type": "llm",
-                "project_id": "proj-123",
-                "description": "Qwen 7B for our project",
-            }
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "huggingface_id": "Qwen/Qwen2.5-7B-Instruct",
+            "name": "qwen-7b-myproject",
+            "scope": "project",
+            "model_type": "llm",
+            "project_id": "proj-123",
+            "description": "Qwen 7B for our project",
         }
+    })
 
 
 class ModelUpdateRequest(BaseModel):
@@ -334,14 +332,13 @@ class ModelDownloadRequest(BaseModel):
     )
     custom_name: str | None = Field(None, description="Custom name for the copy")
 
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "target_scope": "project",
-                "project_id": "proj-123",
-                "custom_name": "qwen-7b-team-copy",
-            }
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "target_scope": "project",
+            "project_id": "proj-123",
+            "custom_name": "qwen-7b-team-copy",
         }
+    })
 
 
 class ModelDownloadResponse(BaseModel):
@@ -381,17 +378,16 @@ class PolicyCreateRequest(BaseModel):
     is_system_model: bool = Field(False, description="Mark as system model")
     default_serving_profile: ServingProfileRequest | None = Field(None)
 
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "model_name": "qwen-7b-instruct",
-                "allowed_projects": [],
-                "is_system_model": True,
-                "enable_warm_pool": True,
-                "warm_pool_min": 1,
-                "warm_pool_max": 3,
-            }
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "model_name": "qwen-7b-instruct",
+            "allowed_projects": [],
+            "is_system_model": True,
+            "enable_warm_pool": True,
+            "warm_pool_min": 1,
+            "warm_pool_max": 3,
         }
+    })
 
 
 class PolicyUpdateRequest(BaseModel):
@@ -1252,13 +1248,12 @@ class ModelPublishRequest(BaseModel):
         None, description="Override model name in target scope"
     )
 
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "target_project_id": "proj-123",
-                "new_name": "my-finetune-v1-published",
-            }
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "target_project_id": "proj-123",
+            "new_name": "my-finetune-v1-published",
         }
+    })
 
 
 @router.post(
@@ -1445,20 +1440,19 @@ class SystemModelCreateRequest(BaseModel):
     )
     priority: int = Field(0, description="Scheduling priority")
 
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "name": "qwen-7b-instruct",
-                "storage_ref": "/shared/models/Qwen2.5-7B-Instruct",
-                "model_type": "llm",
-                "huggingface_id": "Qwen/Qwen2.5-7B-Instruct",
-                "description": "Qwen 7B Instruct - system model for all users",
-                "execution_authority_default": "slurm",
-                "enable_warm_pool": True,
-                "warm_pool_min": 1,
-                "warm_pool_max": 3,
-            }
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "name": "qwen-7b-instruct",
+            "storage_ref": "/shared/models/Qwen2.5-7B-Instruct",
+            "model_type": "llm",
+            "huggingface_id": "Qwen/Qwen2.5-7B-Instruct",
+            "description": "Qwen 7B Instruct - system model for all users",
+            "execution_authority_default": "slurm",
+            "enable_warm_pool": True,
+            "warm_pool_min": 1,
+            "warm_pool_max": 3,
         }
+    })
 
 
 class SystemModelCreateResponse(BaseModel):
