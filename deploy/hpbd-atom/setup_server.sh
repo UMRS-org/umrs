@@ -82,6 +82,15 @@ log "Installing server dependencies from ${SRC_DIR}/requirements.txt ..."
 # pip will skip them if the version satisfies the requirement.
 pip install --quiet -r "${SRC_DIR}/requirements.txt"
 
+# ─── Install r4-contracts when available (shared DTOs required by umrs) ─────
+R4_CONTRACTS_DIR="${R4_CONTRACTS_DIR:-${REPO_ROOT}/../r4-contracts}"
+if [[ -f "${R4_CONTRACTS_DIR}/pyproject.toml" ]]; then
+    log "Installing r4-contracts (editable) from ${R4_CONTRACTS_DIR} ..."
+    pip install --quiet -e "${R4_CONTRACTS_DIR}"
+else
+    log "r4-contracts not found at ${R4_CONTRACTS_DIR} — pip will resolve from the package index."
+fi
+
 # ─── Install umrs package in editable mode ───────────────────────────────────
 log "Installing umrs package (editable mode) ..."
 pip install --quiet -e "${SRC_DIR}"
@@ -89,6 +98,7 @@ pip install --quiet -e "${SRC_DIR}"
 # ─── Verify key imports ─────────────────────────────────────────────────────
 log "Verifying installation..."
 python3 -c "
+import r4_contracts; print('  r4-contracts OK')
 import umrs; print(f'  umrs package OK ({umrs.__file__})')
 import torch; print(f'  torch {torch.__version__} (CUDA: {torch.cuda.is_available()})')
 from sentence_transformers import SentenceTransformer; print('  sentence-transformers OK')
