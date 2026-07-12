@@ -11,8 +11,12 @@ requires-python = ">=3.10"
 # (``umrs[client]``) stays small. Heavy transport/storage/server dependencies
 # live in the extras below. ``jsonschema`` is required at import time by the
 # shared config loaders used by both client and server.
+# ``r4-contracts`` is stdlib-only shared DTOs; foundation modules (skills,
+# recipes, security, jobs/provenance) import it at module load. From a source
+# checkout install it editable alongside umrs: ``pip install -e ../r4-contracts``.
 dependencies = [
     "jsonschema",
+    "r4-contracts>=0.1.0",
 ]
 
 [project.optional-dependencies]
