@@ -59,11 +59,16 @@ mask_secret_state() {
 }
 
 # ─── Task 4: assert-offline — fail fast if offline invariants violated ──────
+# Establish the batch-shell offline posture BEFORE asserting: these vars are
+# passed to podman via -e later, but the assert runs at batch-shell scope where
+# they would otherwise be unset (regression: every provision died in ~10s).
+export TRANSFORMERS_OFFLINE="${TRANSFORMERS_OFFLINE:-1}"
+export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
 _assert_offline_invariants() {
     local failed=0
     for _var in TRANSFORMERS_OFFLINE HF_HUB_OFFLINE; do
         if [ "${!_var:-0}" != "1" ]; then
-            echo "FAIL: ${_var}=${_var:-not set} (expected 1)"
+            echo "FAIL: ${_var}=${!_var:-not set} (expected 1)"
             failed=1
         fi
     done
