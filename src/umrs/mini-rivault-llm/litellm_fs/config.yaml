@@ -36,6 +36,7 @@ litellm_settings:
   #failure_callback: ["sentry"]  # list of failure callbacks
   #callbacks: ["otel"]  # list of callbacks - runs on success and failure
   #service_callbacks: ["datadog", "prometheus"]  # logs redis, postgres failures on datadog, prometheus
+  require_auth_for_metrics_endpoint: false  # allow Prometheus scraping /metrics unauthenticated
   turn_off_message_logging: False # prevent the messages and responses from being logged to on your callbacks, but request metadata will still be logged. Useful for privacy/compliance when handling sensitive data.
   redact_user_api_key_info: False #XXX: needed to identify users for now #True  # Redact information about the user api key (hashed token, user_id, team id, etc.), from logs. Currently supported for Langfuse, OpenTelemetry, Logfire, ArizeAI logging.
   langfuse_default_tags: ["cache_hit", "cache_key", "proxy_base_url", "user_api_key_alias", "user_api_key_user_id", "user_api_key_user_email", "user_api_key_team_alias", "semantic-similarity", "proxy_base_url"] # default tags for Langfuse Logging
