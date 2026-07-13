@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from umrs.knowledge.parse_code import parse_code
+from dataclasses import asdict
 
+from umrs.knowledge.parse_code import parse_code
 
 # ── Python Tests ────────────────────────────────────────────────────────────
 
@@ -49,6 +50,8 @@ class Calculator:
     assert len(result.classes[0].methods) == 2
     assert result.classes[0].methods[0].name == "__init__"
     assert result.classes[0].methods[1].name == "add"
+    assert "Calculator.__init__" in result.apis
+    assert "Calculator.add" in result.apis
 
 
 def test_parse_python_imports():
@@ -105,6 +108,91 @@ def test_parse_python_syntax_error():
 
     assert result.error is not None
     assert "syntax" in result.error.lower()
+
+
+def test_parse_python_golden_output():
+    """Lock the complete parser output while internals are decomposed."""
+    source = (
+        b"import os\n"
+        b"async def fetch(x):\n"
+        b'    """Algorithm fetch."""\n'
+        b"    return x\n"
+        b"\n"
+        b"class Worker(Base):\n"
+        b'    """Worker."""\n'
+        b"    async def run(self, item):\n"
+        b"        return item\n"
+        b"\n"
+        b'if __name__ == "__main__":\n'
+        b"    pass\n"
+    )
+
+    assert asdict(parse_code("sample.py", source)) == {
+        "filename": "sample.py",
+        "language": "python",
+        "modules": ["sample"],
+        "apis": ["fetch", "Worker", "Worker.run"],
+        "functions": [
+            {
+                "name": "fetch",
+                "signature": "def fetch(x)",
+                "docstring": "Algorithm fetch.",
+                "line_start": 2,
+                "line_end": 4,
+                "is_method": False,
+                "class_name": "",
+                "is_kernel": False,
+                "parameters": ["x"],
+            }
+        ],
+        "classes": [
+            {
+                "name": "Worker",
+                "docstring": "Worker.",
+                "bases": ["Base"],
+                "methods": [
+                    {
+                        "name": "run",
+                        "signature": "def run(self, item)",
+                        "docstring": "",
+                        "line_start": 8,
+                        "line_end": 9,
+                        "is_method": True,
+                        "class_name": "Worker",
+                        "is_kernel": False,
+                        "parameters": ["self", "item"],
+                    }
+                ],
+                "line_start": 6,
+                "line_end": 9,
+            }
+        ],
+        "algorithms": ["fetch"],
+        "dependencies": ["os"],
+        "parameters": ["x", "self", "item"],
+        "kernels": [],
+        "execution_flow": "has_main_block",
+        "extracted_text": source.decode(),
+        "summary": (
+            "python file: sample.py\n"
+            "  Functions: 1\n"
+            "  Classes: 1\n"
+            "  Imports: 1\n"
+            "  Flow: has_main_block\n"
+            "  Top functions: fetch\n"
+            "  Top classes: Worker"
+        ),
+        "tags": [
+            "class:Worker",
+            "classes:1",
+            "fn:fetch",
+            "functions:1",
+            "has_main_block",
+            "imports:1",
+            "python",
+        ],
+        "error": None,
+    }
 
 
 # ── C++/CUDA Tests ──────────────────────────────────────────────────────────
@@ -205,6 +293,13 @@ def test_parse_unknown_extension():
 
     assert result.error is None
     assert result.language == "unknown"
+
+
+def test_parse_code_modules_are_flat():
+    """Module names must be flat so graph and coverage consumers can use them."""
+    for filename in ("solver.py", "solver.cpp", "solver.cu"):
+        result = parse_code(filename, b"")
+        assert result.modules == ["solver"]
 
 
 def test_parse_python_summary_contains_function_count():
