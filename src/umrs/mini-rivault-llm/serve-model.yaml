@@ -20,6 +20,13 @@ services:
       genai-private-net: {}
     extra_hosts:
       - litellm:${PRIV_IP1TO3:-10.0.0}.${LITELLM_IP4:-20}
+      # vllm MUST be in /etc/hosts: the `location = /metrics` block does
+      # `proxy_pass http://vllm:8000/metrics`, and nginx resolves upstream
+      # names ONCE at startup. Without this entry nginx loses the DNS race
+      # against podman's aardvark-dns and dies with `[emerg] host not found
+      # in upstream "vllm"`, leaving the published LiteLLM port (4000) down
+      # so the UMRS readiness poller can never reach the endpoint.
+      - vllm:${PRIV_IP1TO3:-10.0.0}.${VLLM_IP4:-22}
       - bentoml-vision:${PRIV_IP1TO3:-10.0.0}.${BENTOML_VISION_IP4:-35}
     ports:
       - ${NGINX_LITELLM_DOCKER_PORT:?}:4000
