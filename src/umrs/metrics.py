@@ -243,6 +243,13 @@ class UMRSMetrics:
             "Total LLM proxy requests",
             ["model", "streaming"],
         )
+        # Per-user token breakdown (bounded cardinality on HPC — user set is finite).
+        # direction: prompt | completion | cache_read | cache_write
+        self._llm_tokens_user = _counter(
+            "umrs_llm_tokens_user_total",
+            "LLM tokens per user/project (prompt|completion|cache_read|cache_write)",
+            ["model", "user_id", "project_id", "direction"],
+        )
 
     # -- Job lifecycle -------------------------------------------------
 
@@ -375,12 +382,46 @@ class UMRSMetrics:
 
     # -- LLM usage metering --------------------------------------------
 
-    def llm_tokens(self, model: str, prompt: int, completion: int) -> None:
-        """Record prompt and completion tokens for an LLM request."""
+    def llm_tokens(
+        self,
+        model: str,
+        prompt: int,
+        completion: int,
+        *,
+        user_id: str = "",
+        project_id: str = "",
+        cached_read: int = 0,
+        cached_write: int = 0,
+    ) -> None:
+        """Record prompt and completion tokens for an LLM request.
+
+        ``user_id`` / ``project_id`` / ``cached_read`` / ``cached_write``
+        are optional keyword-only arguments.  When ``user_id`` is provided,
+        the per-user counter ``umrs_llm_tokens_user_total`` is also updated
+        with direction labels: prompt | completion | cache_read | cache_write.
+        """
         if prompt:
             self._llm_tokens.labels(model=model, direction="prompt").inc(prompt)
         if completion:
             self._llm_tokens.labels(model=model, direction="completion").inc(completion)
+        if user_id:
+            pid = project_id or "default"
+            if prompt:
+                self._llm_tokens_user.labels(
+                    model=model, user_id=user_id, project_id=pid, direction="prompt"
+                ).inc(prompt)
+            if completion:
+                self._llm_tokens_user.labels(
+                    model=model, user_id=user_id, project_id=pid, direction="completion"
+                ).inc(completion)
+            if cached_read:
+                self._llm_tokens_user.labels(
+                    model=model, user_id=user_id, project_id=pid, direction="cache_read"
+                ).inc(cached_read)
+            if cached_write:
+                self._llm_tokens_user.labels(
+                    model=model, user_id=user_id, project_id=pid, direction="cache_write"
+                ).inc(cached_write)
 
     def llm_request_duration(self, model: str, seconds: float) -> None:
         """Record end-to-end proxy latency."""

@@ -190,7 +190,15 @@ def _do_record_sync(pool, record: UsageRecord) -> None:  # noqa: ANN001
     try:
         from umrs.metrics import METRICS
 
-        METRICS.llm_tokens(record.model, record.prompt_tokens, record.completion_tokens)
+        METRICS.llm_tokens(
+            record.model,
+            record.prompt_tokens,
+            record.completion_tokens,
+            user_id=record.user_id,
+            project_id=record.project_id,
+            cached_read=record.cached_read_tokens,
+            cached_write=record.cached_write_tokens,
+        )
         METRICS.llm_request(record.model, record.is_streaming)
         if record.duration_ms > 0:
             METRICS.llm_request_duration(record.model, record.duration_ms / 1000.0)
