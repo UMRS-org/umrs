@@ -1722,9 +1722,21 @@ async def proxy_endpoint_metrics(
         )
 
     target_url = f"http://{endpoint.host}:{endpoint.port}/metrics"
+    # Pass LiteLLM master key if configured — LiteLLM protects /metrics with
+    # bearer auth.  Fetched from site config so it matches the running stack.
+    metrics_headers: dict[str, str] = {}
+    try:
+        from ..orchestrator.site_config import get_site_config
+
+        _key = get_site_config().network.litellm_master_key
+        if _key:
+            metrics_headers["Authorization"] = f"Bearer {_key}"
+    except Exception:  # noqa: BLE001 - best-effort; continue without auth
+        pass
+
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            upstream = await client.get(target_url)
+            upstream = await client.get(target_url, headers=metrics_headers)
     except Exception as exc:  # noqa: BLE001 - best-effort proxy
         logger.warning(
             "Failed to fetch endpoint metrics from %s: %s", target_url, exc
