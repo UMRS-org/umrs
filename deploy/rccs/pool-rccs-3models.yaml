@@ -1,4 +1,4 @@
-# Pool roster: RCCS Cloud — Qwen3.6-35B-A3B-NVFP4 · DeepSeek-V4-Flash-DSpark · GLM-5.2 IQ1_S
+# Pool roster: RCCS Cloud — Qwen3.6-35B-A3B-NVFP4 · DeepSeek-V4-Flash-DSpark · GLM-5.2-NVFP4
 # Usage: R4_GATEWAY_URL=https://data0.ai.r-ccs.riken.jp/rccs r4 pool up pool-rccs-3models.yaml
 #
 # Target: rccs-front → SSH → rccs-cloud (DGX Spark / GB10 Blackwell, 128 GiB unified).
@@ -30,7 +30,19 @@
 #       source patch baked into that image, and staged+registered
 #       fraserprice/DeepSeek-V4-Flash-DSpark weights. See the full PREREQUISITES
 #       block on the endpoint entry below.
-#   - GLM-5.2 IQ1_S (GGUF)  : STILL DOWNLOADING — do not `pool up` this entry until staged.
+#   - GLM-5.2-NVFP4 (nvidia)  : MULTI-JOB SINGULARITY, PP=6 — see entry below.
+#       Weights staged (465 GB, 2026-07-13). NOT servable by `pool up`: needs 6
+#       nodes across 3 isolated 2-node partitions, launched as 6 independent
+#       sbatch jobs (submit-glm52-nvfp4.sh → glm52-nvfp4-node-sif.slurm).
+#       Podman is broken on GB10 (shared-home storage.conf corruption) and this
+#       site kills non-batch cgroup vehicles (srun/ssh steps) within ~40-120s,
+#       so both the hetjob srun-worker path and serve-model.slurm's multi-node
+#       worker launch are unusable here — batch-step Singularity only.
+#       STATUS 2026-07-13: PP=6 run (jobs 208914-919) FAILED at vLLM engine
+#       init ("Engine core initialization failed") — still under debug.
+#       Supersedes the hetjob+podman path (validate-glm52-nvfp4-4node.slurm),
+#       the GGUF IQ1_S/IQ2_M path (deleted 2026-07-13), and the FP8+vllm-moet
+#       plan.
 #
 # Each model must be registered in the rccs catalog before `pool up`:
 #   umrs-client --profile rccs-cloud model register <name> <path> --type llm --scope user
@@ -89,10 +101,13 @@ endpoints:
       # the compose image expr is ${VLLM_DOCKER_IMAGE:-.../:${VLLM_DOCKER_TAG}}.
       VLLM_DOCKER_IMAGE: "docker.io/vllm/vllm-openai:latest"
       RCCS_SKIP_CDI: "1"
-      # Monitoring loop timeout. Default 7200s (2h) exits the job early; set to
-      # 3h50m (just under the 4h Slurm walltime) for a clean exit. Raise to
-      # "82800" after Ansible redeploys rccs-front/site.yaml with time_limit 23h.
-      RIVAULT_JOB_TIMEOUT: "13800"
+      # Monitoring loop timeout. rccs-front/site.yaml time_limit is 23:00:00
+      # (deployed; squeue TIME_LIMIT confirms). 22h50m leaves ~10 min headroom
+      # under the walltime for a clean monitor-loop exit + compose teardown
+      # (same 10-min margin the old 13800/4h pairing used). The stale 13800
+      # (3h50m) value was killing "never-expire" pool endpoints every ~3h55m
+      # (jobs 208949 / 209299 / 209657 all died at 03:55 elapsed).
+      RIVAULT_JOB_TIMEOUT: "82200"
 
   # ── DeepSeek-V4-Flash-DSpark (1M NVFP4-KV, 2× DGX Spark, TP=2) ────────
   #  Recipe: github.com/tonyd2wild/DeepSeek-v4-Flash-DSpark-1M-NVFP4-KV-2x-DGX-Spark
@@ -137,7 +152,7 @@ endpoints:
     model: deepseek-v4-flash-dspark
     tier: system
     node_count: 2
-    partition: ng-dgx-m2
+    partition: ng-dgx-m1
     max_model_len: 1048576          # 1M — model's true YaRN ceiling (not 1.5M)
     env_vars:
       VLLM_PATH_TO_HUGGINGFACE: "/lvs0/rccs-dmp/masaru.nagaso/umrs_models"
@@ -184,32 +199,98 @@ endpoints:
         --generation-config vllm
         --speculative-config {"method":"dspark","num_speculative_tokens":3,"draft_sample_method":"probabilistic"}
       RCCS_SKIP_CDI: "1"
+      # Monitor-loop timeout: without this the serve wrapper defaults to 7200s
+      # (2h) and kills the never-expire endpoint early. 22h50m < 23h walltime.
+      RIVAULT_JOB_TIMEOUT: "82200"
 
-  # ── GLM-5.2 IQ1_S (1-bit GGUF) ───────────────────
-  #  GLM-5.2 744B MoE, 1-bit GGUF (IQ1_S, 404 GB on disk). Single merged .gguf
-  #  served by vLLM with tokenizer loaded separately. PP=2 across 2× GB10 nodes.
-  #  GLM requires enforce-eager.
-  #  Note: GGUF loads via mmap so not all 404 GB needs to be resident at once.
-  #  Ray memory monitor must be disabled (RAY_memory_monitor_refresh_ms=0)
-  #  because Lustre page cache from prior failed attempts fills the 121 GB pool
-  #  before CUDA gets a chance to allocate. CUDA lazily faults pages as needed.
-  #  Updated 2026-07-11: moved to ng-dgx-m3 (proven partition for GLM-5.2).
-  - name: glm-5.2-iq1s
-    model: glm-5.2-iq1s
+  # ── GLM-5.2-NVFP4 (nvidia ModelOpt, PP=6, 6× DGX Spark, multi-job SIF) ──────
+  #  nvidia/GLM-5.2-NVFP4: 753B total / 40B active MoE (GlmMoeDsaForCausalLM),
+  #  NVFP4 weights+activations (Blackwell-native), 465 GB on disk. Accuracy ≈ FP8
+  #  baseline (GPQA 89.4 vs 89.5). Supersedes the FP8+vllm-moet 2-bit plan and
+  #  the GGUF IQ1_S/IQ2_M path (deleted 2026-07-13).
+  #
+  #  TOPOLOGY — 6 × GB10 (1 GPU each), TP=1 / PP=6 over RJ45 (10.129.2.x):
+  #    PP=4 does NOT fit: only ~95 GiB of the 121.63 GiB pool is free to CUDA at
+  #    startup (OS + page cache eat ~26 GiB) and 465/4 = ~116 GB/node > free.
+  #    PP=6 across 3 partition pairs (m1+m2+m0) = ~78 GB/node @ GPU_UTIL 0.75.
+  #    TP over RJ45 is unusable (all-reduce per layer); PP ships only
+  #    activations per boundary.
+  #
+  #  ⚠ SITE CONSTRAINTS — `pool up` CANNOT launch this entry today:
+  #    a. GB10 partitions are isolated 2-node partitions → >2 nodes needs
+  #       either a hetjob or multiple jobs.
+  #    b. This site's Slurm (proctrack/cgroup, PrologFlags=Alloc,Contain) kills
+  #       every non-batch cgroup vehicle (srun step, ssh extern step) within
+  #       ~40-120s — so hetjob srun workers AND serve-model.slurm's srun-based
+  #       multi-node worker launch are both broken here. Only the batch step
+  #       survives long-term.
+  #    c. Podman is broken on GB10 (shared-home storage.conf runroot corruption
+  #       + fuse-overlayfs lsetxattr failures on fresh graphroots).
+  #  VALIDATED ARCHITECTURE (2026-07-13): 6 independent 1-node sbatch jobs, each
+  #  running Singularity (--userns, libcuda/libnvidia-ml/ptxjitcompiler binds,
+  #  NCCL_IB_DISABLE=1 + NCCL_SOCKET_IFNAME=enP7s7 to force the mgmt RJ45 NIC,
+  #  PYTHONNOUSERSITE=1) with Lustre rendezvous for the Ray head IP:
+  #      bash umrs/deploy/rccs/submit-glm52-nvfp4.sh   # → glm52-nvfp4-node-sif.slurm
+  #  (validate-glm52-nvfp4-4node.slurm = superseded hetjob+podman path; kept
+  #  only as reference, DO NOT use.)
+  #
+  #  STATUS 2026-07-13: latest PP=6 run (run-id 1783901556, jobs 208914-919)
+  #  FAILED at vLLM engine init ("Engine core initialization failed. Failed
+  #  core proc(s): {}") after ~74 min — weights loaded, engine bring-up under
+  #  debug. This entry documents the target config for when UMRS can express
+  #  the multi-job pattern.
+  #
+  #  PREREQUISITES:
+  #    1. WEIGHTS (done 2026-07-13): 465 GB at
+  #       /lvs0/rccs-dmp/masaru.nagaso/umrs_models/GLM-5.2-NVFP4
+  #    2. CATALOG REGISTRATION:
+  #         r4 model register glm-5.2-nvfp4 \
+  #           --path /lvs0/rccs-dmp/masaru.nagaso/umrs_models/GLM-5.2-NVFP4 \
+  #           --type llm --scope user
+  #    3. UMRS MULTI-JOB SUPPORT (pending) — until then DO NOT `pool up` this
+  #       entry; use submit-glm52-nvfp4.sh out-of-band.
+  #
+  #  IMAGE: cu130-nightly-aarch64 FAILED (job 208783) — its transformers does
+  #  not know `glm_moe_dsa`. arm64 vllm-openai:latest = vLLM 0.23.0 (the model-
+  #  card recommended version); the SIF is pre-pulled on the login node with
+  #  `singularity pull --arch arm64` (login node is x86_64 — default pull grabs
+  #  the wrong manifest).
+  - name: glm-5.2-nvfp4
+    model: glm-5.2-nvfp4
     tier: system
-    node_count: 2
-    partition: ng-dgx-m3
-    max_model_len: 1048576
+    node_count: 6                    # 2× ng-dgx-m1 + 2× ng-dgx-m2 + 2× ng-dgx-m0
+    partition: ng-dgx-m1             # head pair; workers span m2 + m0 (multi-job)
+    max_model_len: 8192              # conservative; raise after memory headroom is known
     env_vars:
       VLLM_PATH_TO_HUGGINGFACE: "/lvs0/rccs-dmp/masaru.nagaso/umrs_models"
-      # vLLM GGUF layout: directory with config.json + model.gguf symlink + tokenizer files
-      VLLM_MODEL: "glm-5.2-iq1s-vllm"
+      VLLM_MODEL: "GLM-5.2-NVFP4"
+      VLLM_DOCKER_IMAGE: "docker.io/vllm/vllm-openai:latest"
+      # GB10 NVFP4 MoE backend — same fix as the Qwen entry.
+      VLLM_MOE_BACKEND: "marlin"
+      # PP=6 across the 6 × 1-GPU nodes; TP over RJ45 is not viable.
+      VLLM_TP: "1"
+      VLLM_PP: "6"
+      # ~78 GB weights/node at PP=6; 0.97/PP=4 overshoots the ~95 GiB actually
+      # free to CUDA at startup (page cache from the Lustre weight read).
       VLLM_GPU_MEM_UTIL: "0.75"
       VLLM_MAX_NUM_SEQS: "4"
-      VLLM_ENFORCE_EAGER: "1"        # GLM-5.2 requires eager mode
-      # Disable Ray's system-memory OOM monitor. The 404 GB GGUF loads via mmap
-      # so peak RSS is << total file size, but Lustre page cache from prior
-      # failed attempts pushes the node past Ray's 95% kill threshold BEFORE
-      # CUDA even starts. Disabling the monitor lets CUDA handle OOM natively.
-      RAY_memory_monitor_refresh_ms: "0"
+      VLLM_ENFORCE_EAGER: "1"        # CUDA graphs cost memory we don't have
+      VLLM_TOOL_CALL_PARSER: "glm47"
+      VLLM_REASONING_PARSER: "glm45"
+      # fp8 KV cache halves KV footprint (model card recipe).
+      VLLM_EXTRA_ARGS: "--kv-cache-dtype fp8_e4m3"
+      # Ray memory monitor: leave headroom check nearly off — page cache from
+      # the ~78 GB/node Lustre read fills the unified pool during load.
+      RAY_memory_usage_threshold: "0.98"
+      NCCL_CUMEM_ENABLE: "0"
+      # Cross-pair NCCL: RoCE NICs only connect within each 2-node pair; force
+      # the mgmt RJ45 NIC that routes across pairs.
+      NCCL_IB_DISABLE: "1"
+      NCCL_SOCKET_IFNAME: "enP7s7"
+      # Shared $HOME leaks ~/.local site-packages (stale flashinfer) into the
+      # container — keep user site-packages out.
+      PYTHONNOUSERSITE: "1"
       RCCS_SKIP_CDI: "1"
+      # Monitor-loop timeout: without this the serve wrapper defaults to 7200s
+      # (2h) and kills the never-expire endpoint early. 22h50m < 23h walltime.
+      RIVAULT_JOB_TIMEOUT: "82200"

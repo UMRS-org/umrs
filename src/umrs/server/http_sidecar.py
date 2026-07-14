@@ -438,6 +438,9 @@ def _create_app():
 
     from fastapi import FastAPI
 
+    from umrs.api.knowledge_v2 import router as knowledge_v2_router
+    from umrs.knowledge.events_sse import router as events_sse_router
+
     from umrs.server.structured_logging import configure_structured_logging
 
     configure_structured_logging()
@@ -513,6 +516,8 @@ def _create_app():
     app.include_router(jobs_router)
     app.include_router(knowledge_router)
     app.include_router(knowledge_graph_router)
+    app.include_router(knowledge_v2_router)
+    app.include_router(events_sse_router)
     app.include_router(llm_router)
     app.include_router(mcp_router)
     app.include_router(models_router)

@@ -22,6 +22,17 @@ from .adapters import (
     create_backend_factory,
     create_status_checker,
 )
+from .data_ingestion import DataIngestionBackend
+from .data_ingestion import DataIngestionStatusChecker
+from .knowledge_adapters import (
+    KnowledgeEvent,
+    KnowledgeIngestBackend,
+    KnowledgeIngestResult,
+    KnowledgeIngestStatusChecker,
+    KnowledgeUnderstandBackend,
+    KnowledgeUnderstandResult,
+    KnowledgeUnderstandStatusChecker,
+)
 
 # Note: context_jobs excluded from selective merge
 from .ha import (
@@ -110,6 +121,15 @@ __all__ = [
     "EndpointProvisionStatusChecker",
     "IndexBuildBackend",
     "IndexBuildStatusChecker",
+    "DataIngestionBackend",
+    "DataIngestionStatusChecker",
+    "KnowledgeIngestBackend",
+    "KnowledgeIngestResult",
+    "KnowledgeIngestStatusChecker",
+    "KnowledgeUnderstandBackend",
+    "KnowledgeUnderstandResult",
+    "KnowledgeUnderstandStatusChecker",
+    "KnowledgeEvent",
     "WorkflowRunBackend",
     "create_backend_factory",
     "create_status_checker",

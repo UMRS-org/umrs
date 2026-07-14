@@ -1,0 +1,309 @@
+"""SSE endpoint for real-time KnowledgeEvent broadcast.
+
+No imports from ``umrs.api`` or ``umrs.server`` — only stdlib, events/adapter,
+and knowledge modules.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import os
+import time
+import uuid
+from collections import defaultdict
+from dataclasses import asdict, dataclass
+from typing import Any, AsyncIterator
+
+from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse
+
+from umrs.jobs.knowledge_adapters import KnowledgeEvent
+
+logger = logging.getLogger(__name__)
+
+# ── Configuration ────────────────────────────────────────────────────────────
+
+sse_timeout_sec: int = int(os.environ.get("SSE_TIMEOUT_SEC", "300"))
+sse_max_clients: int = int(os.environ.get("SSE_MAX_CLIENTS", "50"))
+
+# ── Client registry ──────────────────────────────────────────────────────────
+
+_client_counter: int = 0
+_client_lock = asyncio.Lock()
+
+# project_id -> list of client_ids
+_projects: dict[str, list[str]] = defaultdict(list)
+
+# client_id -> {"project": str, "queue": asyncio.Queue, "connected_at": float}
+_clients: dict[str, dict[str, Any]] = {}
+
+
+def _evict_dead() -> None:
+    """Remove disconnected clients (not yet tracked by disconnect hook —
+    safety net for ungraceful disconnects)."""
+    now = time.monotonic()
+    dead: list[str] = []
+    for cid, info in _clients.items():
+        if now - info["connected_at"] > sse_timeout_sec:
+            dead.append(cid)
+    for cid in dead:
+        _remove_client(cid)
+    if dead:
+        logger.info("Evicted %d dead SSE clients", len(dead))
+
+
+def _project_client_count(project_id: str) -> int:
+    """Return number of active clients for a project (approx)."""
+    return len([c for c in _projects[project_id] if c in _clients])
+
+
+def _remove_client(client_id: str) -> None:
+    """Remove a client from all registries."""
+    info = _clients.pop(client_id, None)
+    if info is None:
+        return
+    project_id = info["project"]
+    clients = _projects.get(project_id, [])
+    if client_id in clients:
+        clients.remove(client_id)
+    if not clients:
+        _projects.pop(project_id, None)
+
+
+def _is_last_event_id_match(client_id: str, last_event_id: str) -> bool:
+    """Check if the client's stored last_event_id matches."""
+    info = _clients.get(client_id)
+    return info is not None and info.get("last_event_id") == last_event_id
+
+
+# ── Broadcast engine ─────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class BroadcastEvent:
+    """Internal event pushed into client queues."""
+
+    event_type: str
+    data: dict[str, Any]
+    event_id: str
+
+
+_broadcast_queue: asyncio.Queue[BroadcastEvent] = asyncio.Queue(maxsize=5000)
+_broadcast_handler: asyncio.Task | None = None
+
+
+async def _broadcast_loop() -> None:
+    """Drain the broadcast queue and fan out to all client queues."""
+    logger.info("SSE broadcast loop started")
+    try:
+        while True:
+            bevent: BroadcastEvent = await _broadcast_queue.get()
+            delivered: int = 0
+            dropped: int = 0
+            async with _client_lock:
+                for cid, info in _clients.items():
+                    try:
+                        qsize = info["queue"].qsize()
+                        if qsize < 100:  # drop if queue is full
+                            await info["queue"].put(bevent)
+                            delivered += 1
+                        else:
+                            dropped += 1
+                    except Exception:
+                        pass  # client disconnected mid-broadcast
+            if bevent.event_type == "error":
+                logger.warning(
+                    "SSE broadcast: %s delivered=%d dropped=%d",
+                    bevent.event_type, delivered, dropped,
+                )
+    except asyncio.CancelledError:
+        logger.info("SSE broadcast loop stopped")
+
+
+def _start_broadcast_loop() -> None:
+    global _broadcast_handler
+    if _broadcast_handler is None or _broadcast_handler.done():
+        _broadcast_handler = asyncio.create_task(_broadcast_loop())
+
+
+def emit(event: KnowledgeEvent) -> None:
+    """Public API: broadcast a KnowledgeEvent to all SSE clients.
+
+    Mirrors the event.emit() logging but also fans out to SSE queues.
+    """
+    data = asdict(event)
+    event_id = str(uuid.uuid4())[:8]
+    bevent = BroadcastEvent(
+        event_type=event.event_type,
+        data=data,
+        event_id=event_id,
+    )
+    try:
+        _broadcast_queue.put_nowait(bevent)
+    except asyncio.QueueFull:
+        logger.warning("SSE broadcast queue full, dropping event %s", event_id)
+
+
+# ── SSE endpoint ─────────────────────────────────────────────────────────────
+
+router = APIRouter(
+    prefix="/umrs/knowledge",
+    tags=["knowledge-sse"],
+)
+
+
+@router.get("/projects/{project_id}/events")
+async def sse_events(
+    project_id: str,
+    last_event_id: str | None = Query(None, alias="Last-Event-ID"),
+    request: Request = None,
+) -> StreamingResponse:
+    """Stream KnowledgeEvents as SSE to the connecting client."""
+    if request is None:
+        request = type("FakeRequest", (), {"scope": {}})()
+
+    _evict_dead()
+
+    async with _client_lock:
+        count = _project_client_count(project_id)
+        if count >= sse_max_clients:
+            raise HTTPException(
+                status_code=429,
+                detail=f"Project {project_id} has reached the maximum "
+                f"of {sse_max_clients} SSE connections",
+            )
+
+    client_id, info = _register_client(project_id, last_event_id)
+
+    logger.info(
+        "SSE client %s connected to project %s (total: %d)",
+        client_id, project_id, _project_client_count(project_id),
+    )
+
+    _start_broadcast_loop()
+
+    return StreamingResponse(
+        _event_stream_iter(client_id, info, last_event_id),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+async def _event_stream_iter(
+    client_id: str,
+    info: dict[str, Any],
+    last_event_id: str | None,
+) -> AsyncIterator[str]:
+    """Top-level generator for SSE event streaming.
+
+    Kept separate from sse_events() to keep the route function under CCN 10.
+    """
+    try:
+        yield ": heartbeat\n\n"
+
+        if last_event_id:
+            async with _client_lock:
+                for ev in info["buffer"]:
+                    if _is_last_event_id_match(client_id, ev.event_id):
+                        yield _format_sse_event(ev.event_id, ev.event_type, ev.data)
+
+        while True:
+            try:
+                ev = await asyncio.wait_for(info["queue"].get(), timeout=10.0)
+                if _is_last_event_id_match(client_id, ev.event_id):
+                    continue
+                if len(info["buffer"]) >= 10:
+                    info["buffer"].pop(0)
+                info["buffer"].append(ev)
+                yield _format_sse_event(ev.event_id, ev.event_type, ev.data)
+            except asyncio.TimeoutError:
+                async with _client_lock:
+                    if client_id not in _clients:
+                        break
+                yield ": heartbeat\n\n"
+                continue
+    except GeneratorExit:
+        pass
+    finally:
+        _remove_client(client_id)
+
+
+def _register_client(project_id: str, last_event_id: str | None) -> tuple[str, dict[str, Any]]:
+    """Register a new SSE client and return (client_id, info)."""
+    global _client_counter
+    async with _client_lock:
+        _client_counter += 1
+        client_id = f"sse-{_client_counter}-{uuid.uuid4().hex[:6]}"
+
+    client_queue: asyncio.Queue[BroadcastEvent] = asyncio.Queue(maxsize=200)
+    info: dict[str, Any] = {
+        "project": project_id,
+        "queue": client_queue,
+        "connected_at": time.monotonic(),
+        "last_event_id": last_event_id,
+        "buffer": [],  # last 10 events for reconnection
+    }
+
+    async with _client_lock:
+        _clients[client_id] = info
+        _projects[project_id].append(client_id)
+
+    return client_id, info
+
+
+def _format_sse_event(event_id: str, event_type: str, data: dict[str, Any]) -> str:
+    """Format a single SSE event."""
+    return f"id: {event_id}\nevent: {event_type}\ndata: {json.dumps(data)}\n\n"
+
+
+# ── Lifecycle management ─────────────────────────────────────────────────────
+
+_sse_started = False
+
+
+def start_sse() -> None:
+    """Start the SSE broadcast loop. Call during UMRS server startup."""
+    global _sse_started
+    if _sse_started:
+        return
+    _start_broadcast_loop()
+    _sse_started = True
+    logger.info("SSE broadcast engine started (timeout=%ds, max_clients=%d)",
+                sse_timeout_sec, sse_max_clients)
+
+
+def stop_sse() -> None:
+    """Stop the SSE broadcast loop. Call during UMRS server shutdown."""
+    global _broadcast_handler, _sse_started
+    if _broadcast_handler is not None:
+        _broadcast_handler.cancel()
+        _sse_started = False
+        logger.info("SSE broadcast engine stopped")
+
+
+# ── Health check ─────────────────────────────────────────────────────────────
+
+@router.get("/projects/{project_id}/events/health")
+async def sse_health(project_id: str) -> dict[str, Any]:
+    """Return SSE client counts for monitoring."""
+    _evict_dead()
+    async with _client_lock:
+        total = len(_clients)
+        project_count = _project_client_count(project_id)
+    return {
+        "total_clients": total,
+        "project_clients": project_count,
+        "max_clients": sse_max_clients,
+        "timeout_sec": sse_timeout_sec,
+        "broadcast_queue_size": _broadcast_queue.qsize(),
+    }
+
+
+# ── Import guard ─────────────────────────────────────────────────────────────
+import os  # noqa: E402 — top-level for env vars, moved to avoid circular import
