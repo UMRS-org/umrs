@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from datetime import datetime, timezone
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from umrs.api.files import S3Config, get_project_id, get_s3_config
 from umrs.graph_reasoning import GraphNavigator
+from umrs.jobs.models import JobType
 from umrs.knowledge.knowledge_correction_controller import (
     KnowledgeCorrectionController,
 )
@@ -19,6 +21,7 @@ from umrs.knowledge.knowledge_dashboard_controller import (
 )
 from umrs.knowledge.project import ProjectPhase, ResearchProject
 from umrs.knowledge.research_readiness_controller import ResearchReadinessController
+from umrs.knowledge.verification_store import VerificationStore
 from umrs.knowledge_graph_api import InMemoryKnowledgeGraph, KnowledgeEdge
 from umrs.knowledge_model import InMemoryKnowledgeModelStore
 from umrs.scientific_memory import InMemoryScientificMemoryStore
@@ -353,3 +356,436 @@ async def verify_project_knowledge(
         logger.exception("verify failed for project %s", project_id)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     return answer.to_dict()
+
+
+# ── TASK-025: Knowledge Verification endpoints ────────────────────────────────
+
+
+class TransitionFindingRequest(BaseModel):
+    """Transition a finding to a new status."""
+
+    finding_key: str = Field(..., description="Finding identifier")
+    from_status: str = Field(..., description="Current status of the finding")
+    new_status: str = Field(
+        ...,
+        description="New status: acknowledged | resolved | waived",
+    )
+    evidence: str = Field(
+        "", description="Evidence for the transition", max_length=10000
+    )
+
+
+class ApproveRequest(BaseModel):
+    """Approve knowledge with optional force override."""
+
+    report_id: str = Field(..., description="Verification report to approve")
+    force: bool = Field(
+        False, description="Force approval despite low confidence (audited)"
+    )
+
+
+class ExportRequest(BaseModel):
+    """Export knowledge bundle."""
+
+    project_id: str = Field(..., description="Project to export")
+
+
+class VerifyJobRequest(BaseModel):
+    """Trigger knowledge verification job."""
+
+    verifier_names: Optional[list[str]] = Field(
+        None, description="Specific verifier names to run"
+    )
+
+
+def _utcnow() -> datetime:
+    """Timezone-aware UTC now."""
+    return datetime.now(timezone.utc)
+
+
+def _build_pool():
+    """Build the durable job DB pool for knowledge store access."""
+    from umrs.server.job_tracking_handler import (
+        build_durable_job_db_pool_from_env,
+    )
+
+    pool = build_durable_job_db_pool_from_env()
+    if pool is None:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    return pool
+
+
+@router.get("/status", response_model=dict[str, Any])
+async def knowledge_status(
+    project_id: str = Query(..., description="Project ID"),
+    _get_project_id: str = Depends(get_project_id),
+) -> dict[str, Any]:
+    """Get knowledge status: artifacts, graph stats, verification state."""
+    try:
+        from umrs.knowledge.store import KnowledgeStore
+
+        pool = _build_pool()
+        store = KnowledgeStore(pool)
+        artifacts = await store.list_artifacts(project_id=project_id)
+        active_count = sum(1 for a in artifacts if a.get("status") == "active")
+
+        # Get verification reports for this project (via join)
+        ver = VerificationStore(pool)
+        reports = await ver.list_reports(project_id=project_id, limit=25)
+        report_summaries = []
+        for r in reports:
+            report_summaries.append(
+                {
+                    "report_id": r.report_id,
+                    "spec_name": r.spec_name,
+                    "version": r.version,
+                    "confidence": r.confidence,
+                    "total_checks": r.total_checks,
+                    "failed_checks": r.failed_checks,
+                    "degraded": r.degraded,
+                    "degraded_reason": r.degraded_reason,
+                    "created_at": r.created_at.isoformat() if r.created_at else None,
+                }
+            )
+
+        # Readiness from latest report
+        readiness_level = "unverified"
+        confidence = 0.0
+        if report_summaries:
+            latest = report_summaries[0]
+            if latest["degraded"]:
+                readiness_level = "degraded"
+                confidence = latest["confidence"]
+            elif latest["confidence"] >= 0.8:
+                readiness_level = "ready"
+                confidence = latest["confidence"]
+            elif latest["confidence"] >= 0.5:
+                readiness_level = "partial"
+                confidence = latest["confidence"]
+            else:
+                readiness_level = "insufficient"
+                confidence = latest["confidence"]
+
+        return {
+            "project_id": project_id,
+            "artifacts_ingested": len(artifacts),
+            "artifacts_active": active_count,
+            "reports": report_summaries,
+            "total_reports": len(reports),
+            "readiness_level": readiness_level,
+            "confidence": confidence,
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to get knowledge status")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.get("/findings", response_model=dict[str, Any])
+async def knowledge_findings(
+    project_id: str = Query(..., description="Project ID"),
+    report_id: Optional[str] = Query(None, description="Filter by report"),
+    status: Optional[str] = Query(None, description="Filter by status"),
+    severity: Optional[str] = Query(None, description="Filter by severity"),
+    _get_project_id: str = Depends(get_project_id),
+) -> dict[str, Any]:
+    """List verification findings with filters."""
+    try:
+        pool = _build_pool()
+        ver = VerificationStore(pool)
+
+        if report_id:
+            findings = await ver.list_findings(
+                report_id=report_id,
+                status=status,
+                severity=severity,
+                limit=500,
+            )
+        else:
+            findings = await ver.list_findings(
+                status=status,
+                severity=severity,
+                limit=500,
+            )
+
+        findings_data = []
+        for f in findings:
+            findings_data.append(
+                {
+                    "finding_key": f.finding_key,
+                    "report_id": f.report_id,
+                    "category": f.category,
+                    "severity": f.severity,
+                    "status": f.status,
+                    "title": f.title,
+                    "description": f.description,
+                    "evidence": f.evidence,
+                    "artifact_id": f.artifact_id,
+                    "waived_evidence": f.waived_evidence,
+                    "waiver_expires": (
+                        f.waiver_expires.isoformat() if f.waiver_expires else None
+                    ),
+                    "created_at": (f.created_at.isoformat() if f.created_at else None),
+                    "updated_at": (f.updated_at.isoformat() if f.updated_at else None),
+                }
+            )
+
+        open_count = sum(1 for f in findings if f.status in ("open", "acknowledged"))
+        resolved_count = sum(1 for f in findings if f.status == "resolved")
+        waived_count = sum(1 for f in findings if f.status == "waived")
+
+        return {
+            "findings": findings_data,
+            "total": len(findings_data),
+            "open_count": open_count,
+            "resolved_count": resolved_count,
+            "waived_count": waived_count,
+        }
+    except Exception as exc:
+        logger.exception("Failed to list findings")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.patch("/findings/{finding_key}", response_model=dict[str, Any])
+async def transition_finding(
+    finding_key: str,
+    body: TransitionFindingRequest,
+    _get_project_id: str = Depends(get_project_id),
+) -> dict[str, Any]:
+    """Transition a finding status (acknowledged, resolved, waived)."""
+    try:
+        pool = _build_pool()
+        ver = VerificationStore(pool)
+
+        finding = await ver.transition_finding(
+            finding_key=finding_key,
+            from_status=body.from_status,
+            to_status=body.new_status,
+        )
+
+        # Store evidence for the transition
+        if body.evidence and body.new_status == "waived":
+            await ver.waive_finding(
+                finding_key=finding_key,
+                evidence=body.evidence,
+            )
+
+        return {
+            "finding_key": finding.finding_key,
+            "status": finding.status,
+            "report_id": finding.report_id,
+            "updated_at": (
+                finding.updated_at.isoformat() if finding.updated_at else None
+            ),
+        }
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        logger.warning("Finding transition failed: %s", exc)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Failed to transition finding")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.post("/approve", response_model=dict[str, Any])
+async def approve_knowledge(
+    body: ApproveRequest,
+    _get_project_id: str = Depends(get_project_id),
+) -> dict[str, Any]:
+    """Approve knowledge with confidence threshold and blocking findings check.
+
+    Force approval is audited (logged).
+    """
+    report_id = body.report_id
+    force = body.force
+    confidence_threshold = 0.8
+
+    try:
+        pool = _build_pool()
+        ver = VerificationStore(pool)
+        report = await ver.get_report(report_id)
+
+        if report is None:
+            raise HTTPException(
+                status_code=404, detail=f"Report not found: {report_id}"
+            )
+
+        # Confidence check
+        confidence_ok = report.confidence >= confidence_threshold
+
+        # Blocking findings check (unresolved only)
+        blocking = await ver.list_blocking_findings(report_id)
+        unresolved_blocking = [
+            b for b in blocking if b.status not in ("resolved", "waived")
+        ]
+        blocking_ok = len(unresolved_blocking) == 0
+
+        # Approval decision
+        if force:
+            approved = True
+            reason = "approved (force)"
+            logger.info(
+                "AUDIT: Force approve report=%s confidence=%.2f "
+                "threshold=%.2f blocking=%d",
+                report_id,
+                report.confidence,
+                confidence_threshold,
+                len(unresolved_blocking),
+            )
+        elif not confidence_ok and not blocking_ok:
+            approved = False
+            reason = (
+                f"confidence {report.confidence:.2f} below "
+                f"threshold {confidence_threshold} and "
+                f"{len(unresolved_blocking)} blocking finding(s)"
+            )
+        elif not confidence_ok:
+            approved = False
+            reason = (
+                f"confidence {report.confidence:.2f} below "
+                f"threshold {confidence_threshold}"
+            )
+        elif not blocking_ok:
+            approved = False
+            reason = f"{len(unresolved_blocking)} unresolved blocking finding(s)"
+        else:
+            approved = True
+            reason = "approved"
+
+        return {
+            "approved": approved,
+            "report_id": report_id,
+            "confidence": report.confidence,
+            "threshold": confidence_threshold,
+            "blocking_findings": len(unresolved_blocking),
+            "reason": reason,
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to approve knowledge")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.get("/readiness", response_model=dict[str, Any])
+async def knowledge_readiness(
+    project_id: str = Query(..., description="Project ID"),
+    _get_project_id: str = Depends(get_project_id),
+) -> dict[str, Any]:
+    """Get knowledge readiness: artifact count + verification status."""
+    try:
+        from umrs.knowledge.store import KnowledgeStore
+
+        pool = _build_pool()
+        store = KnowledgeStore(pool)
+        artifacts = await store.list_artifacts(project_id=project_id)
+        active_count = sum(1 for a in artifacts if a.get("status") == "active")
+
+        ver = VerificationStore(pool)
+        reports = await ver.list_reports(project_id=project_id, limit=1)
+
+        readiness_level = "unverified"
+        confidence = 0.0
+        if reports:
+            latest = reports[0]
+            confidence = latest.confidence
+            if latest.degraded:
+                readiness_level = "degraded"
+            elif latest.confidence >= 0.8:
+                readiness_level = "ready"
+            elif latest.confidence >= 0.5:
+                readiness_level = "partial"
+            else:
+                readiness_level = "insufficient"
+
+        return {
+            "project_id": project_id,
+            "artifact_count": len(artifacts),
+            "artifacts_active": active_count,
+            "readiness_level": readiness_level,
+            "confidence": confidence,
+            "has_verification": len(reports) > 0,
+        }
+    except Exception as exc:
+        logger.exception("Failed to get knowledge readiness")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.post("/export", response_model=dict[str, Any])
+async def export_knowledge(
+    body: ExportRequest,
+    _get_project_id: str = Depends(get_project_id),
+) -> dict[str, Any]:
+    """Trigger knowledge bundle export (.kb format)."""
+    try:
+        from umrs.server.durable_job_runtime import get_runtime
+
+        runtime = get_runtime()
+        if runtime is None:
+            raise HTTPException(
+                status_code=503,
+                detail="UMRS durable job runtime not available",
+            )
+
+        spec: dict[str, Any] = {
+            "project_id": body.project_id,
+        }
+
+        job_id = await runtime.submit_job_sync(
+            job_type=JobType.KNOWLEDGE_INGEST,
+            project_id=body.project_id,
+            spec={"export": spec},
+        )
+
+        logger.info("Knowledge export queued: %s", job_id)
+        return {
+            "job_id": job_id,
+            "bundle_id": job_id,
+            "status": "processing",
+        }
+    except Exception as exc:
+        logger.exception("Failed to queue knowledge export")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.post("/verify", response_model=dict[str, Any])
+async def trigger_verify(
+    body: VerifyJobRequest = VerifyJobRequest(),
+    project_id: str = Depends(get_project_id),
+) -> dict[str, Any]:
+    """Trigger a KNOWLEDGE_VERIFY durable job.
+
+    Runs all verifiers in the registry against the project's knowledge.
+    """
+    try:
+        from umrs.server.durable_job_runtime import get_runtime
+
+        runtime = get_runtime()
+        if runtime is None:
+            raise HTTPException(
+                status_code=503,
+                detail="UMRS durable job runtime not available",
+            )
+
+        spec: dict[str, Any] = {
+            "project_id": project_id,
+            "verifier_names": (body.verifier_names if body.verifier_names else None),
+        }
+
+        job_id = await runtime.submit_job_sync(
+            job_type=JobType.KNOWLEDGE_VERIFY,
+            project_id=project_id,
+            spec=spec,
+        )
+
+        logger.info("Knowledge verify queued: %s", job_id)
+        return {
+            "job_id": job_id,
+            "job_type": JobType.KNOWLEDGE_VERIFY.value,
+            "status": "queued",
+        }
+    except Exception as exc:
+        logger.exception("Failed to queue knowledge verify")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc

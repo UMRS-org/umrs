@@ -51,24 +51,14 @@ class TerminologyConsistencyVerifier(VerifierBase):
         self._llm_available = False
 
     def can_run(self, project_id: str) -> bool:
-        """Check if LLM endpoint is available."""
-        if self._llm_client is not None:
-            # Test client is provided — always runnable in tests.
-            self._llm_available = True
-            return True
-        if self._llm_available:
-            return True
-        # Probe r4 client availability.
-        try:
-            from r4 import Client  # noqa: F811
-            client = Client()
-            # Quick probe: does gateway accept auth headers?
-            client.config.gateway_url  # noqa: B018
-            self._llm_available = True
-            return True
-        except Exception:  # noqa: BLE001
-            self._llm_available = False
-            return False
+        """Check if an LLM client was injected.
+
+        UMRS must remain independently workable without the r4 client
+        package (import-boundary invariant), so availability is purely a
+        function of the injected ``llm_client`` callable.
+        """
+        self._llm_available = self._llm_client is not None
+        return self._llm_available
 
     async def run(self, knowledge_store: "KnowledgeStore", project_id: str) -> list[Finding]:
         """Run terminology consistency check.
@@ -149,14 +139,12 @@ class TerminologyConsistencyVerifier(VerifierBase):
         return "\n\n---\n\n".join(texts) if texts else ""
 
     async def _call_llm(self, prompt: str) -> str:
-        """Call the LLM with the given prompt."""
-        if self._llm_client is not None:
-            return await self._llm_client(prompt)
-        # Use r4 client.
-        from r4 import Client
-        client = Client()
-        response = client.chat(prompt)
-        return response.content if hasattr(response, "content") else str(response)
+        """Call the injected LLM client with the given prompt."""
+        if self._llm_client is None:
+            raise RuntimeError(
+                "TerminologyConsistencyVerifier requires an injected llm_client"
+            )
+        return await self._llm_client(prompt)
 
     def _parse_llm_response(self, raw: str) -> dict:
         """Parse LLM JSON response into structured dict."""

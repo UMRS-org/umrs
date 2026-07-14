@@ -18,11 +18,19 @@ import os
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Optional
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Optional
+
+if TYPE_CHECKING:
+    from umrs.knowledge.artifact_storage import ArtifactStorage
 
 import boto3
 
 from .models import Job, JobAttempt, JobType
+from .scheduler import OrchestratorBackend
+
+# Re-export KnowledgeExportResult for consumers that need it.
+from ..knowledge.bundle_export import KnowledgeExportResult  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +55,9 @@ class KnowledgeEvent:
 
     def __post_init__(self) -> None:
         if not self.timestamp:
-            object.__setattr__(self, "timestamp", datetime.now(timezone.utc).isoformat())
+            object.__setattr__(
+                self, "timestamp", datetime.now(timezone.utc).isoformat()
+            )
 
     def emit(self) -> "KnowledgeEvent":
         """Log and return self for chaining."""
@@ -127,6 +137,7 @@ def _get_pool() -> Any:
         return None
     try:
         import asyncpg
+
         return asyncpg.create_pool(dsn=conn_str)  # type: ignore[return-value]
     except Exception:
         return None
@@ -134,8 +145,7 @@ def _get_pool() -> Any:
 
 # ── Backend Protocol ─────────────────────────────────────────────────────────
 
-from .scheduler import OrchestratorBackend
-from .monitor import BackendStatusChecker, AttemptCheckResult
+from .monitor import BackendStatusChecker, AttemptCheckResult  # noqa: E402
 
 
 # ── KnowledgeIngestBackend ──────────────────────────────────────────────────
@@ -217,8 +227,13 @@ class KnowledgeIngestBackend(OrchestratorBackend):
             return f"knowledge_ingest|mode=degraded|project={project_id}"
 
         return _run_ingest_sync(
-            job, attempt, self._s3_client, self._bucket,
-            source_refs, project_id, allow_domains,
+            job,
+            attempt,
+            self._s3_client,
+            self._bucket,
+            source_refs,
+            project_id,
+            allow_domains,
         )
 
 
@@ -263,7 +278,11 @@ class KnowledgeUnderstandBackend(OrchestratorBackend):
 
         try:
             result = await _run_understand(
-                job, attempt, project_id, sources, pool,
+                job,
+                attempt,
+                project_id,
+                sources,
+                pool,
             )
         finally:
             if pool is not None:
@@ -312,9 +331,13 @@ def _run_ingest_sync(
             resolved = resolver.resolve(source_kind, uri, allow_domains=allow_domains)
 
             if not resolved.resolved:
-                result.failed_items.append({
-                    "source": source_kind, "uri": uri, "error": "resolution failed",
-                })
+                result.failed_items.append(
+                    {
+                        "source": source_kind,
+                        "uri": uri,
+                        "error": "resolution failed",
+                    }
+                )
                 continue
 
             storage = ArtifactStorage(s3_client, bucket)
@@ -322,9 +345,14 @@ def _run_ingest_sync(
 
             if resolved.kind == "local_file":
                 _put_file_sync(
-                    job.job_id, attempt.attempt_id,
-                    storage, project_id, resolved.path or "",
-                    artifact_id, result, success_ids,
+                    job.job_id,
+                    attempt.attempt_id,
+                    storage,
+                    project_id,
+                    resolved.path or "",
+                    artifact_id,
+                    result,
+                    success_ids,
                 )
             elif resolved.kind == "local_dir":
                 for rf in resolved.files:
@@ -333,9 +361,14 @@ def _run_ingest_sync(
                         f"{hashlib.md5(rf.absolute_path.encode()).hexdigest()[:8]}"
                     )
                     _put_file_sync(
-                        job.job_id, attempt.attempt_id,
-                        storage, project_id, rf.absolute_path,
-                        aid, result, success_ids,
+                        job.job_id,
+                        attempt.attempt_id,
+                        storage,
+                        project_id,
+                        rf.absolute_path,
+                        aid,
+                        result,
+                        success_ids,
                     )
             elif resolved.kind == "s3_uri":
                 # S3 reference — register without copy
@@ -343,32 +376,47 @@ def _run_ingest_sync(
                 result.artifact_ids.append(artifact_id)
                 KnowledgeEvent(
                     event_type="create",
-                    job_id=job.job_id, attempt_id=attempt.attempt_id,
-                    artifact_id=artifact_id, source_ref=uri,
+                    job_id=job.job_id,
+                    attempt_id=attempt.attempt_id,
+                    artifact_id=artifact_id,
+                    source_ref=uri,
                     details="s3 reference (no copy)",
                 ).emit()
             elif resolved.kind in ("http_url", "git_repo"):
                 _fetch_and_store_remote(
-                    job.job_id, attempt.attempt_id,
-                    storage, project_id, resolved,
-                    artifact_id, result, success_ids,
+                    job.job_id,
+                    attempt.attempt_id,
+                    storage,
+                    project_id,
+                    resolved,
+                    artifact_id,
+                    result,
+                    success_ids,
                 )
             else:
-                result.failed_items.append({
-                    "source": source_kind, "error": f"unsupported kind: {source_kind}",
-                })
+                result.failed_items.append(
+                    {
+                        "source": source_kind,
+                        "error": f"unsupported kind: {source_kind}",
+                    }
+                )
 
         except Exception as exc:
-            result.failed_items.append({
-                "source": source_kind, "uri": uri, "error": str(exc),
-            })
+            result.failed_items.append(
+                {
+                    "source": source_kind,
+                    "uri": uri,
+                    "error": str(exc),
+                }
+            )
 
     # Store artifact metadata in Postgres (best-effort)
     _store_artifacts_in_db_sync(project_id, success_ids)
 
     KnowledgeEvent(
         event_type="ingest" if not result.failed_items else "fail",
-        job_id=job.job_id, attempt_id=attempt.attempt_id,
+        job_id=job.job_id,
+        attempt_id=attempt.attempt_id,
         details=f"{len(success_ids)} artifacts | {len(result.failed_items)} failed",
     ).emit()
 
@@ -404,8 +452,10 @@ def _put_file_sync(
 
     KnowledgeEvent(
         event_type="create",
-        job_id=job_id, attempt_id=attempt_id,
-        artifact_id=artifact_id, source_ref=file_path,
+        job_id=job_id,
+        attempt_id=attempt_id,
+        artifact_id=artifact_id,
+        source_ref=file_path,
         details=f"hash={content_hash[:16]}... size={size_bytes}",
     ).emit()
 
@@ -426,20 +476,26 @@ def _fetch_and_store_remote(
     url = resolved.uri or ""
     uri = url
     if not url:
-        result.failed_items.append({
-            "source": resolved.kind, "uri": uri, "error": "no uri",
-        })
+        result.failed_items.append(
+            {
+                "source": resolved.kind,
+                "uri": uri,
+                "error": "no uri",
+            }
+        )
         return
 
     allow_domains = resolved.allow_domains if resolved.allow_domains else []
     fetch = fetch_url(url, allow_domains=allow_domains)
 
     if not fetch.content:
-        result.failed_items.append({
-            "source": resolved.kind,
-            "uri": uri,
-            "error": fetch.error,
-        })
+        result.failed_items.append(
+            {
+                "source": resolved.kind,
+                "uri": uri,
+                "error": fetch.error,
+            }
+        )
         return
 
     content_hash, size_bytes, _ = storage.put_artifact(project_id, fetch.content)
@@ -448,8 +504,10 @@ def _fetch_and_store_remote(
 
     KnowledgeEvent(
         event_type="create",
-        job_id=job_id, attempt_id=attempt_id,
-        artifact_id=artifact_id, source_ref=uri,
+        job_id=job_id,
+        attempt_id=attempt_id,
+        artifact_id=artifact_id,
+        source_ref=uri,
         details=f"remote={resolved.kind} domain={fetch.url} hash={content_hash[:16]}... size={size_bytes}",
     ).emit()
 
@@ -466,6 +524,7 @@ def _store_artifacts_in_db_sync(
 
         async def _do() -> None:
             from umrs.knowledge.store import KnowledgeStore
+
             store = KnowledgeStore(pool)
             for aid in artifact_ids:
                 try:
@@ -499,7 +558,6 @@ async def _run_understand(
     if pool is None:
         return KnowledgeUnderstandResult(degraded=True, degraded_reason="no pool")
 
-    from umrs.knowledge import parse_code
     from umrs.knowledge.ir import build_knowledge_ir
     from umrs.knowledge.store import KnowledgeStore
 
@@ -514,12 +572,14 @@ async def _run_understand(
         try:
             artifacts, _ = await store.list_artifacts(project_id)
             for art in artifacts:
-                artifacts_to_process.append({
-                    "artifact_id": art.artifact_id,
-                    "content_hash": art.content_hash,
-                    "kind": art.kind,
-                    "source_ref": art.source_ref,
-                })
+                artifacts_to_process.append(
+                    {
+                        "artifact_id": art.artifact_id,
+                        "content_hash": art.content_hash,
+                        "kind": art.kind,
+                        "source_ref": art.source_ref,
+                    }
+                )
         except Exception as exc:
             logger.error("Failed to list artifacts: %s", exc)
             artifacts_to_process = []
@@ -530,7 +590,6 @@ async def _run_understand(
         artifact_id = src.get("artifact_id", "")
         content_hash = src.get("content_hash", "")
         kind = src.get("kind", "document")
-        source_ref = src.get("source_ref", "")
 
         if not artifact_id or not content_hash:
             continue
@@ -546,7 +605,8 @@ async def _run_understand(
                 result.already_ir += 1
                 KnowledgeEvent(
                     event_type="verify",
-                    job_id=job.job_id, attempt_id=attempt.attempt_id,
+                    job_id=job.job_id,
+                    attempt_id=attempt.attempt_id,
                     artifact_id=artifact_id,
                     details=f"already has IR: {existing}",
                 ).emit()
@@ -557,9 +617,12 @@ async def _run_understand(
         # Parse artifact
         parsed = _parse_for_understand(artifact_id, content_hash, kind)
         if parsed is None:
-            result.failed_items.append({
-                "artifact_id": artifact_id, "error": "parse returned None",
-            })
+            result.failed_items.append(
+                {
+                    "artifact_id": artifact_id,
+                    "error": "parse returned None",
+                }
+            )
             continue
 
         # Build KnowledgeIR
@@ -606,16 +669,21 @@ async def _run_understand(
             result.edges_created += len(edges)
         except Exception as exc:
             logger.error("Node/edge upsert failed: %s: %s", artifact_id, exc)
-            result.failed_items.append({
-                "artifact_id": artifact_id, "error": f"graph: {exc}",
-            })
+            result.failed_items.append(
+                {
+                    "artifact_id": artifact_id,
+                    "error": f"graph: {exc}",
+                }
+            )
             continue
 
         summary = _build_summary(parsed)
         KnowledgeEvent(
             event_type="ingest",
-            job_id=job.job_id, attempt_id=attempt.attempt_id,
-            artifact_id=artifact_id, ir_id=ir.ir_id,
+            job_id=job.job_id,
+            attempt_id=attempt.attempt_id,
+            artifact_id=artifact_id,
+            ir_id=ir.ir_id,
             details=f"summary: {summary}",
         ).emit()
 
@@ -631,8 +699,12 @@ def _parse_for_understand(
     from umrs.knowledge import parse_code
 
     ext_map = {
-        "code": ".py", "cpp": ".cpp", "cuda": ".cu",
-        "document": ".md", "schema": ".json", "catalog": ".json",
+        "code": ".py",
+        "cpp": ".cpp",
+        "cuda": ".cu",
+        "document": ".md",
+        "schema": ".json",
+        "catalog": ".json",
     }
     ext = ext_map.get(kind, ".py")
     fake_name = f"{artifact_id}{ext}"
@@ -668,33 +740,45 @@ def _build_nodes(
     nodes: list = []
 
     file_id = f"node-file-{artifact_id}"
-    nodes.append(KnowledgeNode(
-        node_id=file_id, project_id=project_id,
-        label=artifact_id, node_type="file",
-        content={"artifact_id": artifact_id, "ir_id": ir_id},
-        content_hash=_sha256_hex(f"file-{artifact_id}".encode()),
-        source_ir=ir_id,
-    ))
+    nodes.append(
+        KnowledgeNode(
+            node_id=file_id,
+            project_id=project_id,
+            label=artifact_id,
+            node_type="file",
+            content={"artifact_id": artifact_id, "ir_id": ir_id},
+            content_hash=_sha256_hex(f"file-{artifact_id}".encode()),
+            source_ir=ir_id,
+        )
+    )
 
     for cls_name in parsed.get("classes", []):
         nid = f"node-class-{cls_name}-{artifact_id}"
-        nodes.append(KnowledgeNode(
-            node_id=nid, project_id=project_id,
-            label=cls_name, node_type="class",
-            content={"artifact_id": artifact_id, "parent": file_id},
-            content_hash=_sha256_hex(f"class-{cls_name}-{artifact_id}".encode()),
-            source_ir=ir_id,
-        ))
+        nodes.append(
+            KnowledgeNode(
+                node_id=nid,
+                project_id=project_id,
+                label=cls_name,
+                node_type="class",
+                content={"artifact_id": artifact_id, "parent": file_id},
+                content_hash=_sha256_hex(f"class-{cls_name}-{artifact_id}".encode()),
+                source_ir=ir_id,
+            )
+        )
 
     for fn_name in parsed.get("functions", []):
         nid = f"node-fn-{fn_name}-{artifact_id}"
-        nodes.append(KnowledgeNode(
-            node_id=nid, project_id=project_id,
-            label=fn_name, node_type="function",
-            content={"artifact_id": artifact_id},
-            content_hash=_sha256_hex(f"fn-{fn_name}-{artifact_id}".encode()),
-            source_ir=ir_id,
-        ))
+        nodes.append(
+            KnowledgeNode(
+                node_id=nid,
+                project_id=project_id,
+                label=fn_name,
+                node_type="function",
+                content={"artifact_id": artifact_id},
+                content_hash=_sha256_hex(f"fn-{fn_name}-{artifact_id}".encode()),
+                source_ir=ir_id,
+            )
+        )
 
     return nodes
 
@@ -708,25 +792,29 @@ def _build_edges(nodes: list) -> list:  # list[KnowledgeEdge]
         if node.node_type == "class":
             for n in nodes:
                 if n.node_type == "file":
-                    edges.append(KnowledgeEdge(
-                        edge_id=f"edge-{n.node_id}-contains-{node.node_id}",
-                        project_id=node.project_id,
-                        source_id=n.node_id,
-                        target_id=node.node_id,
-                        relation_type="contains",
-                        content={"role": "parent"},
-                    ))
+                    edges.append(
+                        KnowledgeEdge(
+                            edge_id=f"edge-{n.node_id}-contains-{node.node_id}",
+                            project_id=node.project_id,
+                            source_id=n.node_id,
+                            target_id=node.node_id,
+                            relation_type="contains",
+                            content={"role": "parent"},
+                        )
+                    )
         elif node.node_type == "function":
             for n in nodes:
                 if n.node_type == "class" and node.content.get("parent") == n.node_id:
-                    edges.append(KnowledgeEdge(
-                        edge_id=f"edge-{n.node_id}-defines-{node.node_id}",
-                        project_id=node.project_id,
-                        source_id=n.node_id,
-                        target_id=node.node_id,
-                        relation_type="defines",
-                        content={"role": "method"},
-                    ))
+                    edges.append(
+                        KnowledgeEdge(
+                            edge_id=f"edge-{n.node_id}-defines-{node.node_id}",
+                            project_id=node.project_id,
+                            source_id=n.node_id,
+                            target_id=node.node_id,
+                            relation_type="defines",
+                            content={"role": "method"},
+                        )
+                    )
                     break
     return edges
 
@@ -819,7 +907,6 @@ class KnowledgeVerifyBackend(OrchestratorBackend):
         from umrs.knowledge.verification_store import (
             VerificationStore,
             VerificationReport,
-            VerificationFinding,
         )
 
         project_id = self._project_id or job.spec.get("project_id", job.project_id)
@@ -835,8 +922,7 @@ class KnowledgeVerifyBackend(OrchestratorBackend):
         pool = _get_pool()
         if pool is None:
             return (
-                f"knowledge_verify|project={project_id}|"
-                f"degraded=no_pool|confidence=0.0"
+                f"knowledge_verify|project={project_id}|degraded=no_pool|confidence=0.0"
             )
 
         try:
@@ -850,15 +936,18 @@ class KnowledgeVerifyBackend(OrchestratorBackend):
                     result: VerifierResult = verifier.run(store, project_id)
                     if result.found:
                         for f in result.findings:
-                            findings.append({
-                                "verifier": verifier.name,
-                                "key": f.get("key", verifier.name),
-                                "severity": f.get("severity", "medium"),
-                                "message": f.get("message", ""),
-                            })
+                            findings.append(
+                                {
+                                    "verifier": verifier.name,
+                                    "key": f.get("key", verifier.name),
+                                    "severity": f.get("severity", "medium"),
+                                    "message": f.get("message", ""),
+                                }
+                            )
                     KnowledgeEvent(
                         event_type="verify",
-                        job_id=job.job_id, attempt_id=attempt.attempt_id,
+                        job_id=job.job_id,
+                        attempt_id=attempt.attempt_id,
                         details=f"verifier={verifier.name} found={result.found}",
                     ).emit()
                 except Exception as exc:
@@ -880,17 +969,21 @@ class KnowledgeVerifyBackend(OrchestratorBackend):
                 await vstore.create_report(report)
                 KnowledgeEvent(
                     event_type="verify",
-                    job_id=job.job_id, attempt_id=attempt.attempt_id,
+                    job_id=job.job_id,
+                    attempt_id=attempt.attempt_id,
                     details=f"confidence={confidence:.2f} report_v{report.report_version}",
                 ).emit()
             except Exception as report_exc:
                 logger.warning("Failed to write verification report: %s", report_exc)
 
-            _write_result(attempt, KnowledgeIngestResult(
-                artifact_ids=[],
-                failed_items=[],
-                degraded=False,
-            ))
+            _write_result(
+                attempt,
+                KnowledgeIngestResult(
+                    artifact_ids=[],
+                    failed_items=[],
+                    degraded=False,
+                ),
+            )
 
             return (
                 f"knowledge_verify|project={project_id}|"
@@ -931,7 +1024,13 @@ class KnowledgeVerifyBackend(OrchestratorBackend):
         return total_weight / count
 
     def _severity_counts(self, findings: list[dict[str, Any]]) -> dict[str, int]:
-        counts: dict[str, int] = {"blocking": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
+        counts: dict[str, int] = {
+            "blocking": 0,
+            "high": 0,
+            "medium": 0,
+            "low": 0,
+            "info": 0,
+        }
         for f in findings:
             severity = f.get("severity", "medium")
             if severity in counts:
@@ -969,3 +1068,647 @@ class KnowledgeVerifyStatusChecker(BackendStatusChecker):
         if attempt.backend_ref.startswith("knowledge_verify|"):
             return AttemptCheckResult.succeeded(metrics={"verified_after_submit": True})
         return AttemptCheckResult.failed("Unexpected backend reference")
+
+
+# ── KnowledgeExportBackend ────────────────────────────────────────────────────
+
+
+class KnowledgeExportBackend(OrchestratorBackend):
+    """Export project knowledge to a .kb bundle directory."""
+
+    def __init__(self) -> None:
+        self._project_id: str = ""
+
+    @property
+    def backend_name(self) -> str:
+        return "knowledge_export"
+
+    async def submit_job(
+        self,
+        job: Job,
+        attempt: JobAttempt,
+    ) -> str:
+        from umrs.knowledge.bundle_export import (
+            KnowledgeExportEngine,
+            verify_bundle_integrity,
+        )
+        from umrs.knowledge.store import KnowledgeStore
+
+        project_id = self._project_id or job.spec.get("project_id", job.project_id)
+        self._project_id = project_id
+
+        KnowledgeEvent(
+            event_type="create",
+            job_id=job.job_id,
+            attempt_id=attempt.attempt_id,
+            details=f"project={project_id} export",
+        ).emit()
+
+        pool = _get_pool()
+        degraded = False
+        degraded_reason = ""
+
+        if pool is None:
+            degraded_reason = "Postgres pool unavailable"
+            degraded = True
+            logger.warning("KnowledgeExport degraded: %s", degraded_reason)
+
+        try:
+            if pool is not None:
+                store = KnowledgeStore(pool)
+                engine = KnowledgeExportEngine(
+                    store=store,
+                    output_dir=Path(
+                        os.getenv(
+                            "UMRS_KB_EXPORT_DIR",
+                            str(Path(os.getcwd()) / ".kb_exports"),
+                        )
+                    ),
+                    secret_key=os.getenv("UMRS_SECRET_KEY", ""),
+                )
+                result = await engine.export_project(project_id)
+            else:
+                result = KnowledgeExportResult(
+                    project_id=project_id,
+                    degraded=True,
+                    degraded_reason=degraded_reason,
+                )
+
+            _write_result(attempt, result)
+
+            # Verify integrity if not degraded
+            if not result.degraded and result.bundle_path:
+                ok = verify_bundle_integrity(
+                    Path(result.bundle_path),
+                    os.getenv("UMRS_SECRET_KEY", ""),
+                )
+                if not ok:
+                    logger.error(
+                        "Bundle integrity check failed for %s", result.bundle_path
+                    )
+                    result.degraded = True
+                    result.degraded_reason = "bundle integrity check failed"
+
+            return (
+                f"knowledge_export|project={project_id}|"
+                f"artifacts={result.artifact_count}|"
+                f"embeds={result.embedding_count}|"
+                f"hash={result.manifest_hash}"
+            )
+
+        finally:
+            if pool is not None:
+                pool.close()
+                await pool.wait_closed()
+
+        if degraded:
+            result.degraded = True
+            result.degraded_reason = degraded_reason
+
+        return f"knowledge_export|project={project_id}|degraded={degraded_reason}"
+
+
+class KnowledgeExportStatusChecker(BackendStatusChecker):
+    """Status checker for synchronous knowledge-export jobs."""
+
+    @property
+    def job_type(self) -> JobType:
+        return JobType.KNOWLEDGE_EXPORT
+
+    async def check_status(
+        self,
+        attempt: JobAttempt,
+        job: Job,
+    ) -> AttemptCheckResult:
+        if not attempt.backend_ref:
+            return AttemptCheckResult.failed("No backend reference")
+        if attempt.backend_ref.startswith("knowledge_export|"):
+            return AttemptCheckResult.succeeded(metrics={"verified_after_submit": True})
+        return AttemptCheckResult.failed("Unexpected backend reference")
+
+
+# ── Auto-Ingestion Enqueuers (TASK-035) ───────────────────────────────────────
+
+
+async def _resolve_succeeded_attempts(pool: Any, job: Any) -> list[Any]:
+    """Resolve attempt IDs to inspect: commit pointer or latest success."""
+    commit_id = getattr(job, "commit_attempt_id", None)
+    if commit_id:
+        return [commit_id]
+    try:
+        rows = await pool.fetch(
+            "SELECT attempt_id FROM job_attempts WHERE job_id = $1 "
+            "AND status = 'succeeded' ORDER BY attempt_no DESC LIMIT 1",
+            job.job_id,
+        )
+        return [r["attempt_id"] for r in rows] if rows else []
+    except Exception:
+        return []
+
+
+async def _artifacts_from_attempt_metrics(pool: Any, attempts: list[Any]) -> list[dict[str, Any]]:
+    """Extract artifact dicts recorded in attempt metrics."""
+    results: list[dict[str, Any]] = []
+    for att_id in attempts:
+        try:
+            row = await pool.fetchval(
+                "SELECT metrics FROM job_attempts WHERE attempt_id = $1",
+                att_id,
+            )
+            metrics = row if isinstance(row, dict) else {}
+            for art in metrics.get("artifacts", []):
+                if isinstance(art, dict) and art.get("artifact_id"):
+                    results.append(art)
+        except Exception:
+            pass
+    return results
+
+
+async def _artifacts_from_store(pool: Any, project_id: str) -> list[dict[str, Any]]:
+    """Pull artifact refs from the knowledge_artifacts table."""
+    try:
+        rows = await pool.fetch(
+            "SELECT artifact_id, content_hash, kind, source_ref "
+            "FROM knowledge_artifacts WHERE project_id = $1 "
+            "ORDER BY created_at DESC",
+            project_id,
+        )
+    except Exception:
+        return []
+    return [
+        {
+            "artifact_id": r["artifact_id"],
+            "content_hash": r["content_hash"] or "",
+            "kind": r["kind"] or "document",
+            "source_ref": r.get("source_ref", ""),
+        }
+        for r in rows
+    ]
+
+
+def _collect_artifact_ids(job: Any) -> list[dict[str, Any]]:
+    """Collect artifact IDs from a successful job's attempt metrics.
+
+    Returns a list of dicts with artifact_id, content_hash, kind, source_ref.
+    """
+    artifacts: list[dict[str, Any]] = []
+
+    try:
+        pool = _get_pool()
+        if pool is None:
+            return artifacts
+
+        async def _collect() -> list[dict[str, Any]]:
+            attempts = await _resolve_succeeded_attempts(pool, job)
+            results = await _artifacts_from_attempt_metrics(pool, attempts)
+            results.extend(await _artifacts_from_store(pool, job.project_id))
+            return results
+
+        try:
+            artifacts = asyncio.run(_collect())
+            pool.close()
+            asyncio.run(pool.wait_closed())
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+    return artifacts
+
+
+def _dedup_artifacts(
+    artifact_refs: list[dict[str, Any]],
+    project_id: str,
+) -> tuple[list[dict[str, Any]], str]:
+    """Filter artifact refs through content-hash dedup (artifact_storage).
+
+    Returns (deduped_refs, bucket_name). Falls back to all refs when
+    S3 is unavailable (degraded mode).
+    """
+    deduped: list[dict[str, Any]] = []
+    seen_hashes: set[str] = set()
+    bucket = os.getenv("UMRS_DATA_S3_BUCKET", "umrs-data")
+
+    try:
+        from umrs.knowledge.artifact_storage import ArtifactStorage
+
+        endpoint = os.getenv("S3_ENDPOINT_URL", "http://localhost:9000")
+        key = os.getenv("S3_ACCESS_KEY", "")
+        secret = os.getenv("S3_SECRET_KEY", "")
+
+        s3_client = boto3.client(
+            "s3",
+            endpoint_url=endpoint,
+            aws_access_key_id=key,
+            aws_secret_access_key=secret,
+            use_ssl=False,
+        )
+        storage = ArtifactStorage(s3_client, bucket)
+
+        for art_ref in artifact_refs:
+            content_hash = art_ref.get("content_hash", "") or art_ref.get("sha256", "")
+
+            if not content_hash or content_hash in seen_hashes:
+                continue
+
+            # Check if content already exists (dedup)
+            if storage.artifact_exists(project_id, content_hash):
+                seen_hashes.add(content_hash)
+                logger.debug(
+                    "Artifact %s already exists (dedup), skip",
+                    content_hash[:16],
+                )
+                continue
+
+            seen_hashes.add(content_hash)
+            deduped.append(art_ref)
+    except Exception as exc:
+        # Storage unavailable — proceed anyway (degraded)
+        logger.warning(
+            "Dedup check skipped (S3 unavailable): %s — enqueuing all",
+            exc,
+        )
+        deduped = artifact_refs
+
+    return deduped, bucket
+
+
+def _store_artifact_provenance(
+    deduped: list[dict[str, Any]],
+    project_id: str,
+    job: Any,
+    attempt: Any,
+    workflow: str,
+    step: str,
+) -> None:
+    """Store artifact metadata with provenance (best-effort)."""
+    store_pool = _get_pool()
+    if not store_pool:
+        return
+    try:
+        from umrs.knowledge.store import KnowledgeStore
+
+        store = KnowledgeStore(store_pool)
+
+        async def _store_provenance():
+            for art in deduped:
+                try:
+                    aid = art.get("artifact_id", f"art-{uuid.uuid4().hex[:8]}")
+                    ch = art.get("content_hash", "") or art.get("sha256", "")
+                    kind = art.get("kind", "document")
+                    await store.insert_artifact(
+                        artifact_id=aid,
+                        content_hash=ch,
+                        kind=kind,
+                        project_id=project_id,
+                        metadata={
+                            "produced_by_job_id": job.job_id,
+                            "produced_by_attempt_id": attempt.attempt_id
+                            if hasattr(attempt, "attempt_id")
+                            else "",
+                            "workflow": workflow,
+                            "step": step,
+                        },
+                    )
+                except Exception:
+                    pass
+
+        try:
+            asyncio.run(_store_provenance())
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
+def _enqueue_ingest_job(
+    deduped: list[dict[str, Any]],
+    bucket: str,
+    project_id: str,
+    user_id: str,
+    job: Any,
+    attempt: Any,
+    workflow: str,
+    step: str,
+) -> str | None:
+    """Enqueue the KNOWLEDGE_INGEST job. Returns job ID or None."""
+    from .models import JobType
+    from .service import JobSubmission, get_job_service
+
+    ingest_sources = [
+        {
+            "kind": art.get("kind", "document"),
+            "uri": art.get("source_ref", ""),
+            "artifact_id": art.get("artifact_id", ""),
+            "content_hash": content_hash,
+        }
+        for art in deduped
+        if (content_hash := (art.get("content_hash") or art.get("sha256", "")))
+    ]
+
+    if not ingest_sources:
+        return None
+
+    _store_artifact_provenance(deduped, project_id, job, attempt, workflow, step)
+
+    job_id = get_job_service().submit_job(
+        JobSubmission(
+            project_id=project_id,
+            user_id=user_id,
+            job_type=JobType.KNOWLEDGE_INGEST,
+            spec={
+                "sources": ingest_sources,
+                "bucket": bucket,
+                "project_id": project_id,
+            },
+            priority=job.priority,
+            max_attempts=3,
+        ),
+    )
+    logger.info(
+        "Enqueued KNOWLEDGE_INGEST: job=%s artifacts=%d",
+        job_id,
+        len(ingest_sources),
+    )
+    return job_id
+
+
+def _list_project_artifact_sources(project_id: str) -> list[dict[str, Any]]:
+    """List all artifact sources for a project (best-effort)."""
+    store_pool = _get_pool()
+    if not store_pool:
+        return []
+    try:
+        from umrs.knowledge.store import KnowledgeStore
+
+        store = KnowledgeStore(store_pool)
+
+        async def _list_new():
+            arts, _ = await store.list_artifacts(project_id)
+            return [
+                {
+                    "artifact_id": a.artifact_id,
+                    "content_hash": a.content_hash,
+                    "kind": a.kind,
+                    "source_ref": a.source_ref,
+                }
+                for a in arts
+            ]
+
+        try:
+            return asyncio.run(_list_new())
+        except Exception:
+            return []
+    except Exception:
+        return []
+
+
+def _enqueue_understand_job(
+    project_id: str,
+    user_id: str,
+    job: Any,
+) -> str | None:
+    """Enqueue the KNOWLEDGE_UNDERSTAND job. Returns job ID or None."""
+    from .models import JobType
+
+    sources = _list_project_artifact_sources(project_id)
+    if not sources:
+        logger.info("No artifacts for KNOWLEDGE_UNDERSTAND: job=%s", job.job_id)
+        return None
+
+    from .service import JobSubmission, get_job_service
+
+    us_job_id = get_job_service().submit_job(
+        JobSubmission(
+            project_id=project_id,
+            user_id=user_id,
+            job_type=JobType.KNOWLEDGE_UNDERSTAND,
+            spec={
+                "sources": sources,
+                "project_id": project_id,
+                "parent_job_id": job.job_id,
+            },
+            priority=job.priority,
+            max_attempts=3,
+        ),
+    )
+    logger.info(
+        "Enqueued KNOWLEDGE_UNDERSTAND: job=%s artifacts=%d",
+        us_job_id,
+        len(sources),
+    )
+    return us_job_id
+
+
+def _create_produced_by_edges(
+    deduped: list[dict[str, Any]],
+    project_id: str,
+    user_id: str,
+    job: Any,
+    attempt: Any,
+    workflow: str,
+    step: str,
+) -> None:
+    """Create PRODUCED_BY edges in the knowledge graph (best-effort)."""
+    from umrs.knowledge.store import KnowledgeEdge, KnowledgeNode, KnowledgeStore
+
+    store_pool = _get_pool()
+    if not (store_pool and deduped):
+        return
+    try:
+        store = KnowledgeStore(store_pool)
+
+        async def _create_edges():
+            prod_entity_id = f"prod-job-{job.job_id}"
+            job_type = getattr(job, "job_type", "unknown")
+            # Create provenance node
+            await store.upsert_node(
+                KnowledgeNode(
+                    node_id=prod_entity_id,
+                    project_id=project_id,
+                    label=f"job:{job.job_id}",
+                    node_type="job",
+                    content={
+                        "job_id": job.job_id,
+                        "job_type": job_type.value
+                        if hasattr(job_type, "value")
+                        else job_type,
+                        "workflow": workflow,
+                        "step": step,
+                        "user_id": user_id,
+                    },
+                    content_hash=_sha256_hex(
+                        f"provenance-{job.job_id}-{workflow}-{step}".encode()
+                    ),
+                    source_ir="",
+                )
+            )
+
+            # Create PRODUCED_BY edges
+            for art in deduped:
+                aid = art.get("artifact_id", "")
+                if not aid:
+                    continue
+                try:
+                    await store.upsert_edge(
+                        KnowledgeEdge(
+                            edge_id=f"edge-{aid}-produced_by-{job.job_id}",
+                            project_id=project_id,
+                            source_id=aid,
+                            target_id=prod_entity_id,
+                            relation_type="produced_by",
+                            content={
+                                "workflow": workflow,
+                                "step": step,
+                                "attempt_id": attempt.attempt_id
+                                if hasattr(attempt, "attempt_id")
+                                else "",
+                            },
+                        )
+                    )
+                except Exception:
+                    pass
+
+        try:
+            asyncio.run(_create_edges())
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
+def enqueue_knowledge_ingest(
+    job: Any,
+    attempt: Any,
+    workflow: str = "default",
+    step: str = "main",
+) -> list[str]:
+    """Enqueue KNOWLEDGE_INGEST and KNOWLEDGE_UNDERSTAND jobs.
+
+    Idempotent by content hash — checks artifact_storage first.
+    Returns list of enqueued job IDs.
+
+    Sets artifact metadata:
+      - produced_by_job_id
+      - workflow
+      - step
+    """
+    enqueued: list[str] = []
+
+    project_id = getattr(job, "project_id", "")
+    user_id = getattr(job, "user_id", "")
+    if not project_id or not user_id:
+        return enqueued
+
+    # 1. Collect artifact references from the successful run
+    artifact_refs = _collect_artifact_ids(job)
+    if not artifact_refs:
+        logger.info("No artifacts found for auto-ingest: job=%s", job.job_id)
+        return enqueued
+
+    # 2. Filter through content-hash dedup (artifact_storage)
+    deduped, bucket = _dedup_artifacts(artifact_refs, project_id)
+    if not deduped:
+        logger.info(
+            "All artifacts deduplicated, nothing to ingest: job=%s",
+            job.job_id,
+        )
+        return enqueued
+
+    # 3. Enqueue KNOWLEDGE_INGEST job (with provenance metadata)
+    try:
+        ingest_job_id = _enqueue_ingest_job(
+            deduped, bucket, project_id, user_id, job, attempt, workflow, step
+        )
+        if ingest_job_id:
+            enqueued.append(ingest_job_id)
+    except Exception as exc:
+        logger.warning("Failed to enqueue KNOWLEDGE_INGEST: %s", exc)
+
+    # 4. Enqueue KNOWLEDGE_UNDERSTAND job (always after ingest)
+    try:
+        us_job_id = _enqueue_understand_job(project_id, user_id, job)
+        if us_job_id:
+            enqueued.append(us_job_id)
+    except Exception as exc:
+        logger.warning("KnowledgeUnderstand enqueue failed: %s", exc)
+
+    # 5. Create PRODUCED_BY edge in knowledge graph (best-effort)
+    try:
+        _create_produced_by_edges(
+            deduped, project_id, user_id, job, attempt, workflow, step
+        )
+    except Exception as exc:
+        logger.warning("PRODUCED_BY edge creation failed: %s", exc)
+
+    return enqueued
+
+
+def enqueue_ingest_failure(
+    job_id: str,
+    attempt_no: int,
+    exit_reason: str,
+    user_id: str,
+    project_id: str,
+) -> None:
+    """Log that auto-ingest was skipped due to job failure.
+
+    Creates a FAILURE node in the knowledge graph for traceability.
+    """
+    from umrs.knowledge.store import KnowledgeNode
+
+    try:
+        store_pool = _get_pool()
+        if store_pool is None:
+            return
+
+        from umrs.knowledge.store import KnowledgeStore
+
+        store = KnowledgeStore(store_pool)
+
+        async def _log_failure() -> None:
+            try:
+                fail_entity_id = f"fail-{job_id}-{attempt_no}"
+                await store.upsert_node(
+                    KnowledgeNode(
+                        node_id=fail_entity_id,
+                        project_id=project_id,
+                        label=f"job:{job_id} FAILED",
+                        node_type="job_failure",
+                        content={
+                            "job_id": job_id,
+                            "attempt_no": attempt_no,
+                            "exit_reason": exit_reason,
+                            "user_id": user_id,
+                        },
+                        content_hash=_sha256_hex(
+                            f"failure-{job_id}-{exit_reason}".encode()
+                        ),
+                        source_ir="",
+                    )
+                )
+                # Link the failed job to this failure node
+                try:
+                    from umrs.knowledge.store import KnowledgeEdge
+
+                    await store.upsert_edge(
+                        KnowledgeEdge(
+                            edge_id=f"edge-{job_id}-failure-{fail_entity_id}",
+                            project_id=project_id,
+                            source_id=f"prod-job-{job_id}",
+                            target_id=fail_entity_id,
+                            relation_type="caused_by",
+                            content={"reason": exit_reason},
+                        )
+                    )
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
+        try:
+            asyncio.run(_log_failure())
+        except Exception:
+            pass
+    except Exception:
+        pass

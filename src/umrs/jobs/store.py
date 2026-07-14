@@ -86,6 +86,25 @@ class JobStore:
         self.umrs_instance_id = umrs_instance_id or str(uuid.uuid4())
         self._ensure_schema()
 
+        # Post-completion callbacks (set by adapters module).
+        # Called after mark_attempt_succeeded / mark_attempt_failed.
+        self._post_success_callback: Any = None
+        self._post_failure_callback: Any = None
+
+    def set_post_completion_callbacks(
+        self,
+        on_succeeded: Any = None,
+        on_failed: Any = None,
+    ) -> None:
+        """Register post-completion callbacks.
+
+        Args:
+            on_succeeded: Callable with signature (job: Job, attempt: JobAttempt) -> None
+            on_failed: Callable with signature (job: Job, attempt: JobAttempt, exit_reason: str) -> None
+        """
+        self._post_success_callback = on_succeeded
+        self._post_failure_callback = on_failed
+
     def _ensure_schema(self) -> None:
         """Ensure database schema exists."""
         conn = self.db_pool.getconn()
@@ -635,6 +654,25 @@ class JobStore:
             logger.info(f"Attempt {attempt_id} succeeded (commit={commit})")
             METRICS.job_completed("durable")
 
+            # Invoke post-success hook (best-effort, non-blocking)
+            self._invoke_post_success(attempt_id, job_id)
+
+    def _invoke_post_success(self, attempt_id: str, job_id: str) -> None:
+        """Best-effort post-success hook dispatch."""
+        if self._post_success_callback is None:
+            return
+        try:
+            attempt = self.get_attempt(attempt_id)
+            job = self.get_job(job_id)
+            self._post_success_callback(job, attempt)
+        except Exception as exc:
+            logger.warning(
+                "Post-success hook failed for attempt %s job %s: %s",
+                attempt_id,
+                job_id,
+                exc,
+            )
+
     def mark_attempt_failed(
         self,
         attempt_id: str,
@@ -739,6 +777,16 @@ class JobStore:
                 METRICS.job_failed("durable")
 
             conn.commit()
+
+            # Invoke post-failure hook when job itself failed (no retry).
+            if not requeued and self._post_failure_callback:
+                try:
+                    job = self.get_job(job_id)
+                    self._post_failure_callback(job, attempt_no, exit_reason)
+                except Exception as exc:
+                    logger.warning(
+                        "Post-failure hook failed for job %s: %s", job_id, exc
+                    )
             return requeued
 
     def mark_attempt_lost(

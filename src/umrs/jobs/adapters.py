@@ -256,6 +256,7 @@ def _resolve_roster_defaults(model_name: str) -> dict[str, Any] | None:
     """Load roster defaults from pool-ai4s.yaml (same as old path)."""
     try:
         from ..orchestrator.provision_roster import resolve_model_provision_defaults
+
         return resolve_model_provision_defaults(model_name)
     except Exception:
         return None
@@ -661,7 +662,9 @@ class EndpointProvisionBackend(OrchestratorBackend):
             endpoint_metadata.setdefault("job_status", job_info.status.value)
             endpoint_metadata.setdefault("detail", _backend_progress_detail(job_info))
             if deployment_spec.parallel_strategy != "tp_pp":
-                endpoint_metadata["parallel_strategy"] = deployment_spec.parallel_strategy
+                endpoint_metadata["parallel_strategy"] = (
+                    deployment_spec.parallel_strategy
+                )
 
             self.registry.register(
                 project_id=project_id,
@@ -1419,11 +1422,118 @@ def create_status_checker(
     )
 
     checker.register(JobType.KNOWLEDGE_INGEST, KnowledgeIngestStatusChecker())
-    checker.register(
-        JobType.KNOWLEDGE_UNDERSTAND, KnowledgeUnderstandStatusChecker()
-    )
-    checker.register(
-        JobType.KNOWLEDGE_VERIFY, KnowledgeVerifyStatusChecker()
-    )
+    checker.register(JobType.KNOWLEDGE_UNDERSTAND, KnowledgeUnderstandStatusChecker())
+    checker.register(JobType.KNOWLEDGE_VERIFY, KnowledgeVerifyStatusChecker())
 
     return checker
+
+
+# ── Auto-Ingestion Hook (TASK-035) ────────────────────────────────────────────
+
+# Module-level registry: store -> callback mappings.
+# Populated once during JobService startup.
+_auto_ingest_callback: Any = None
+_auto_ingest_failure_callback: Any = None
+
+
+def register_auto_ingest_callbacks(
+    job_store: Any,
+) -> None:
+    """Wire auto-ingest hooks into a JobStore instance."""
+    global _auto_ingest_callback, _auto_ingest_failure_callback
+
+    def _on_succeeded(job: Any, attempt: Any) -> None:
+        _auto_ingest_callback(job, attempt)
+
+    def _on_failed(job: Any, attempt_no: int, exit_reason: str) -> None:
+        _auto_ingest_failure_callback(job, attempt_no, exit_reason)
+
+    job_store.set_post_completion_callbacks(
+        on_succeeded=_on_succeeded,
+        on_failed=_on_failed,
+    )
+
+
+def enqueue_auto_ingest(job: Any, attempt: Any) -> None:
+    """Post-success handler: enqueue KNOWLEDGE_INGEST / UNDERSTAND on success.
+
+    Only triggers when ``job.spec["ingest_results"]`` is truthy and the job
+    type is one that produces knowledge artifacts (PIPELINE_RUN, WORKFLOW_RUN,
+    DATA_INGESTION, or KNOWLEDGE_INGEST).
+    """
+    if not job or not hasattr(job, "spec"):
+        return
+
+    spec = job.spec
+    if not spec.get("ingest_results"):
+        return
+
+    job_type = getattr(job, "job_type", None)
+    if job_type is None:
+        return
+
+    if hasattr(job_type, "value"):
+        jt_val = job_type.value
+    else:
+        jt_val = job_type
+
+    productive_types = {
+        "pipeline_run",
+        "workflow_run",
+        "data_ingestion",
+        "knowledge_ingest",
+    }
+    if jt_val not in productive_types:
+        return
+
+    try:
+        from .knowledge_adapters import enqueue_knowledge_ingest
+
+        workflow = spec.get("workflow", "default")
+        step = spec.get("step", "main")
+        enqueue_knowledge_ingest(
+            job=job,
+            attempt=attempt,
+            workflow=workflow,
+            step=step,
+        )
+        logger.info(
+            "Auto-ingest enqueued for job %s (workflow=%s step=%s)",
+            job.job_id,
+            workflow,
+            step,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Auto-ingest enqueue failed for job %s: %s",
+            job.job_id,
+            exc,
+        )
+
+
+def enqueue_auto_ingest_failure(job: Any, attempt_no: int, exit_reason: str) -> None:
+    """Post-failure handler: log why ingestion was skipped.
+
+    Best-effort — no escalation, just audit logging.
+    """
+    try:
+        from .knowledge_adapters import enqueue_ingest_failure
+
+        enqueue_ingest_failure(
+            job_id=job.job_id,
+            attempt_no=attempt_no,
+            exit_reason=exit_reason,
+            user_id=job.user_id,
+            project_id=job.project_id,
+        )
+        logger.info(
+            "Auto-ingest skipped for failed job %s: %s",
+            job.job_id,
+            exit_reason,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Auto-ingest failure logging failed for job %s: %s",
+            job.job_id,
+            exc,
+        )

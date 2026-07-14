@@ -53,24 +53,16 @@ class UnsupportedClaimVerifier(VerifierBase):
         self._rag_available = False
 
     def can_run(self, project_id: str) -> bool:
-        """Check if RAG and LLM endpoints are available."""
-        if self._llm_client is not None and self._rag_query is not None:
-            self._llm_available = True
-            self._rag_available = True
-            return True
-        # Probe r4 client availability.
-        try:
-            from r4 import Client  # noqa: F811
+        """Check if RAG and LLM clients were injected.
 
-            client = Client()
-            client.config.gateway_url  # noqa: B018
-            self._llm_available = True
-            self._rag_available = True
-            return True
-        except Exception:  # noqa: BLE001
-            self._llm_available = False
-            self._rag_available = False
-            return False
+        UMRS must remain independently workable without the r4 client
+        package (import-boundary invariant), so availability is purely a
+        function of the injected ``llm_client`` / ``rag_query`` callables.
+        """
+        available = self._llm_client is not None and self._rag_query is not None
+        self._llm_available = available
+        self._rag_available = available
+        return available
 
     async def run(
         self, knowledge_store: "KnowledgeStore", project_id: str
@@ -135,33 +127,21 @@ class UnsupportedClaimVerifier(VerifierBase):
         return claims[:10]  # Limit to 10 claims per artifact.
 
     async def _retrieve_evidence(self, claim: str, project_id: str) -> list[str]:
-        """Retrieve supporting evidence via RAG."""
-        if self._rag_query is not None:
-            return self._rag_query(claim)
-
-        from r4 import Client
-
-        client = Client()
-        response = client.rag.query(claim, project_id=project_id, top_k=_RAG_TOP_K)
-        sources = response.get("sources", []) if isinstance(response, dict) else []
-        return [s.get("content", "") for s in sources[:_RAG_TOP_K]]
+        """Retrieve supporting evidence via the injected RAG callable."""
+        if self._rag_query is None:
+            return []
+        return self._rag_query(claim)
 
     async def _judge_claim(self, claim: str, evidence: list[str]) -> bool:
         """Ask LLM to judge if claim is supported by evidence."""
+        if self._llm_client is None:
+            # No injected LLM — conservative: treat as unsupported.
+            return False
         evidence_text = "\n\n".join(evidence) if evidence else "(no evidence found)"
         prompt = _JUDGE_PROMPT.format(claim=claim, evidence=evidence_text)
 
         try:
-            if self._llm_client is not None:
-                raw = await self._llm_client(prompt)
-            else:
-                from r4 import Client
-
-                client = Client()
-                response = client.chat(prompt)
-                raw = (
-                    response.content if hasattr(response, "content") else str(response)
-                )
+            raw = await self._llm_client(prompt)
 
             import json
 
