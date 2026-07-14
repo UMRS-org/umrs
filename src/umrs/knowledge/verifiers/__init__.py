@@ -13,6 +13,9 @@ Model-backed verifiers (degrade gracefully when LLM/VLM unavailable):
 - near_duplicate: embedding cosine similarity for near-duplicates
 - figure_legibility: optional VLM-assisted figure quality check
 
+MCP-based verifiers (runtime tool-call path):
+- mcp_adapter: wraps custom MCP tool as verifier (KNOWLEDGE_VERIFY)
+
 No umrs.api or umrs.server imports.
 """
 
@@ -46,6 +49,14 @@ from .figure_legibility import FigureLegibilityVerifier  # noqa: F401
 from .near_duplicate import NearDuplicateVerifier  # noqa: F401
 from .terminology_consistency import TerminologyConsistencyVerifier  # noqa: F401
 from .unsupported_claim import UnsupportedClaimVerifier  # noqa: F401
+
+# -- MCP adapter verifiers --
+
+from .mcp_adapter import (  # noqa: F401
+    MCPVerifier,
+    MCPVerifierConfig,
+    register_mcp_verifier,
+)
 
 # -- Registry --
 
@@ -81,6 +92,8 @@ def _register_all() -> None:
         NearDuplicateVerifier,
         TerminologyConsistencyVerifier,
         UnsupportedClaimVerifier,
+        # MCPVerifier is registered manually via register_mcp_verifier()
+        # because it needs a config (tool_name, config_path) per instance.
     ):
         try:
             register_verifier(_mod())
@@ -108,4 +121,7 @@ __all__ = [
     "NearDuplicateVerifier",
     "TerminologyConsistencyVerifier",
     "UnsupportedClaimVerifier",
+    "MCPVerifier",
+    "MCPVerifierConfig",
+    "register_mcp_verifier",
 ]

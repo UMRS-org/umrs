@@ -29,9 +29,13 @@ router = APIRouter(prefix="/umrs/k2", tags=["knowledge-v2"])
 
 
 class IngestRequest(BaseModel):
-    sources: list[dict[str, Any]] = Field(..., description="Source specs (kind, uri/path)")
+    sources: list[dict[str, Any]] = Field(
+        ..., description="Source specs (kind, uri/path)"
+    )
     project_id: Optional[str] = Field(None, description="Project ID override")
-    allow_domains: Optional[list[str]] = Field(None, description="Domain allowlist for remote sources")
+    allow_domains: Optional[list[str]] = Field(
+        None, description="Domain allowlist for remote sources"
+    )
 
 
 class LintRequest(BaseModel):
@@ -61,6 +65,14 @@ class EventListResponse(BaseModel):
     total: int
 
 
+class WorkflowDraftResponse(BaseModel):
+    workflow_id: str
+    name: str
+    steps: list[dict[str, Any]]
+    project_context: dict[str, Any]
+    meta: dict[str, Any]
+
+
 class VerifyRequest(BaseModel):
     project_id: Optional[str] = Field(None, description="Project to verify")
 
@@ -68,6 +80,106 @@ class VerifyRequest(BaseModel):
 class VerifyResponse(BaseModel):
     job_id: str
     status: str  # queued | running | completed | failed
+
+
+# -- Verification report/finding models --
+
+
+class FindingTransitionRequest(BaseModel):
+    finding_key: str = Field(..., description="Finding identifier")
+    new_status: str = Field(
+        ..., description="New status: acknowledged | resolved | waived"
+    )
+    evidence: str = Field("", description="Evidence for the transition")
+
+
+class FindingResponse(BaseModel):
+    finding_key: str
+    report_id: str
+    category: str
+    severity: str  # blocking | warning | info
+    status: str  # open | acknowledged | resolved | waived
+    title: str
+    description: str
+    evidence: str
+    artifact_id: Optional[str] = None
+    waived_evidence: Optional[str] = None
+    waiver_expires: Optional[str] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+class ReportSummary(BaseModel):
+    report_id: str
+    project_id: str
+    version: int
+    spec_name: str
+    confidence: float
+    total_checks: int
+    passed_checks: int
+    failed_checks: int
+    skipped_checks: int
+    degraded: bool
+    degraded_reason: Optional[str] = None
+    created_at: Optional[str] = None
+
+
+class ReportListResponse(BaseModel):
+    reports: list[ReportSummary]
+    total: int
+
+
+class FindingsResponse(BaseModel):
+    findings: list[FindingResponse]
+    total: int
+    open_count: int
+    resolved_count: int
+    waived_count: int
+
+
+class FindingListQuery(BaseModel):
+    report_id: Optional[str] = Field(None, description="Filter by report")
+    status: Optional[str] = Field(None, description="Filter by status")
+    severity: Optional[str] = Field(None, description="Filter by severity")
+
+
+class WaiveRequest(BaseModel):
+    finding_key: str = Field(..., description="Finding identifier")
+    evidence: str = Field(..., description="Waiver justification")
+    expires_days: Optional[int] = Field(None, description="Waiver expiry in days")
+
+
+class ApproveRequest(BaseModel):
+    report_id: str = Field(..., description="Report to approve")
+    force: bool = Field(
+        False, description="Force approval despite low confidence (audited)"
+    )
+
+
+class ApproveResponse(BaseModel):
+    approved: bool
+    report_id: str
+    confidence: float
+    threshold: float
+    blocking_findings: int
+    reason: str
+
+
+class EmitWorkflowRequest(BaseModel):
+    """Request body for plan-to-workflow emission."""
+
+    plan: dict[str, Any] = Field(
+        ..., description="ResearchPlan dict (objectives, hypotheses, experiments)"
+    )
+    model: Optional[str] = Field(
+        None, description="Model name for project context prefill"
+    )
+    partition: Optional[str] = Field(
+        None, description="Slurm partition for project context prefill"
+    )
+    account: Optional[str] = Field(
+        None, description="Slurm account for project context prefill"
+    )
 
 
 # -- Routes --
@@ -87,7 +199,9 @@ async def trigger_ingest(
 
     runtime = get_runtime()
     if runtime is None:
-        raise HTTPException(status_code=503, detail="UMRS durable job runtime not available")
+        raise HTTPException(
+            status_code=503, detail="UMRS durable job runtime not available"
+        )
 
     sources = body.sources if body.sources else []
     allow_domains = body.allow_domains if body.allow_domains else []
@@ -105,7 +219,11 @@ async def trigger_ingest(
             spec=spec,
         )
         logger.info("Knowledge ingest queued: %s", job_id)
-        return {"job_id": job_id, "job_type": JobType.KNOWLEDGE_INGEST.value, "status": "queued"}
+        return {
+            "job_id": job_id,
+            "job_type": JobType.KNOWLEDGE_INGEST.value,
+            "status": "queued",
+        }
     except Exception as exc:
         logger.exception("Failed to queue knowledge ingest")
         raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -220,11 +338,15 @@ async def trigger_verify(
 
     runtime = get_runtime()
     if runtime is None:
-        raise HTTPException(status_code=503, detail="UMRS durable job runtime not available")
+        raise HTTPException(
+            status_code=503, detail="UMRS durable job runtime not available"
+        )
 
     spec: dict[str, Any] = {
         "project_id": project_id,
-        "verifier_names": body.verifier_names if hasattr(body, "verifier_names") and body.verifier_names else None,
+        "verifier_names": body.verifier_names
+        if hasattr(body, "verifier_names") and body.verifier_names
+        else None,
     }
 
     try:
@@ -273,3 +395,43 @@ async def knowledge_readiness(
     except Exception as exc:
         logger.exception("Knowledge readiness check failed")
         raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.post("/emit-workflow", response_model=WorkflowDraftResponse)
+async def emit_workflow(
+    body: EmitWorkflowRequest,
+    project_id: str = Depends(get_project_id),
+) -> WorkflowDraftResponse:
+    """Emit a WorkflowDraft from a ResearchPlan.
+
+    Converts planner output (objectives, hypotheses, experiments) into a
+    workflow draft. Unmappable steps become manual placeholders with
+    ``type="manual"`` and ``instructions`` field.
+
+    Project context (model, partition, account) is prefilled from the request.
+    """
+    from umrs.knowledge.emit_workflow import emit_workflow as _emit_workflow
+
+    plan = body.plan
+    if not isinstance(plan, dict):
+        raise HTTPException(status_code=400, detail="plan must be a dict")
+
+    try:
+        result = _emit_workflow(
+            plan,
+            project_id=project_id,
+            model=body.model,
+            partition=body.partition,
+            account=body.account,
+        )
+    except Exception as exc:
+        logger.exception("Failed to emit workflow")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    return WorkflowDraftResponse(
+        workflow_id=result["workflow_id"],
+        name=result["name"],
+        steps=result["steps"],
+        project_context=result.get("project_context", {}),
+        meta=result.get("_meta", {}),
+    )

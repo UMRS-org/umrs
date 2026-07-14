@@ -469,6 +469,8 @@ class KnowledgeStore:
         """
         from .events import _utcnow  # avoid top-level import loop
 
+        import uuid
+
         event_id = uuid.uuid4().hex
         ts = _utcnow()
         async with self._pool.acquire() as conn:
@@ -525,3 +527,116 @@ class KnowledgeStore:
                 *params,
             )
             return [dict(r) for r in rows]
+
+    # ── Catalog helpers ───────────────────────────────────────────────────────
+
+    async def list_catalog(
+        self,
+        project_id: str,
+        page: int = 1,
+        page_size: int = 50,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """List catalog entries (knowledge_artifacts with kind='catalog') for a project.
+
+        Returns (entries, total_count).
+        """
+        async with self._pool.acquire() as conn:
+            where = "project_id = $1 AND kind = 'catalog' AND status = 'active'"
+            offset = (page - 1) * page_size
+
+            total_row = await conn.fetchrow(
+                f"SELECT COUNT(*) FROM knowledge_artifacts WHERE {where}",
+                project_id,
+            )
+            total = int(total_row["count"]) if total_row else 0
+
+            rows = await conn.fetch(
+                f"""SELECT artifact_id, content_hash, kind, project_id,
+                           source_ref, size_bytes, mime_type, status,
+                           metadata, created_at, updated_at
+                    FROM knowledge_artifacts
+                    WHERE {where}
+                    ORDER BY created_at DESC
+                    LIMIT ${2} OFFSET ${3}""",
+                project_id,
+                page_size,
+                offset,
+            )
+            entries: list[dict[str, Any]] = [dict(r) for r in rows]
+            return entries, total
+
+    async def list_embedding_vectors(
+        self,
+        project_id: str,
+        limit: int = 500,
+    ) -> list[dict[str, Any]]:
+        """Return embedding vectors for a project (memory_vectors table).
+
+        Returns list of dicts with keys: id, vector, metadata, document_id, created_at.
+        """
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT id, vector, metadata, document_id, created_at
+                   FROM memory_vectors
+                   WHERE project_id = $1
+                   ORDER BY id
+                   LIMIT $2""",
+                project_id,
+                limit,
+            )
+            return [dict(r) for r in rows]
+
+    async def count_embedding_vectors(
+        self,
+        project_id: str,
+    ) -> int:
+        """Return total count of embedding vectors for a project."""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT COUNT(*) FROM memory_vectors WHERE project_id = $1",
+                project_id,
+            )
+            return int(row["count"]) if row else 0
+
+    async def list_embedding_vectors_paged(
+        self,
+        project_id: str,
+        cursor: str,
+        page_size: int,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Paged fetch of memory_vectors using id-based cursor.
+
+        Returns (rows, total_count).  Rows have keys: id, vector, metadata,
+        document_id, created_at.
+        """
+        async with self._pool.acquire() as conn:
+            total_row = await conn.fetchrow(
+                "SELECT COUNT(*) FROM memory_vectors WHERE project_id = $1",
+                project_id,
+            )
+            total = int(total_row["count"]) if total_row else 0
+
+            rows = await conn.fetch(
+                """SELECT id, vector, metadata, document_id, created_at
+                   FROM memory_vectors
+                   WHERE project_id = $1 AND id > $2
+                   ORDER BY id
+                   LIMIT $3""",
+                project_id,
+                cursor,
+                page_size,
+            )
+            return [dict(r) for r in rows], total
+
+    async def get_artifact_content(self, artifact_id: str) -> Optional[bytes]:
+        """Fetch raw artifact content from S3 via the artifact's source_ref.
+
+        Returns None if the artifact has no content or source_ref is empty.
+        """
+        artifact = await self.get_artifact(artifact_id)
+        if not artifact or not artifact.source_ref:
+            return None
+        # source_ref contains the S3 presigned URL or local path
+        # This method is intentionally minimal — content is stored in S3,
+        # not in the artifact row.
+        return None

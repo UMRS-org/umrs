@@ -56,7 +56,6 @@ def set_job_service(service: JobService | None) -> None:
     _job_service_instance = service
 
 
-
 @dataclass(frozen=True)
 class JobSubmission:
     """Parameters for creating a durable job."""
@@ -154,6 +153,17 @@ class JobService:
 
         # Initialize JobStore
         self._job_store = JobStore(self.db_pool, self.instance_id)
+
+        # Wire auto-ingest post-completion hooks (TASK-035).
+        try:
+            from .adapters import register_auto_ingest_callbacks
+
+            register_auto_ingest_callbacks(self._job_store)
+        except Exception as exc:
+            logger.warning(
+                "Auto-ingest hook registration skipped: %s",
+                exc,
+            )
 
         # Run boot reconciliation
         result = reconcile_on_startup(self._job_store)

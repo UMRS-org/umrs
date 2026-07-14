@@ -29,6 +29,7 @@ class JobType(Enum):
     KNOWLEDGE_INGEST = "knowledge_ingest"  # Ingest sources → S3 artifacts
     KNOWLEDGE_UNDERSTAND = "knowledge_understand"  # Parse artifacts → KnowledgeIR
     KNOWLEDGE_VERIFY = "knowledge_verify"  # Run verifiers → confidence report
+    KNOWLEDGE_EXPORT = "knowledge_export"  # Export knowledge bundle (.kb)
     # Note: CONTEXT_RETENTION and CONVERSATION_SUMMARIZE excluded from selective merge
 
 
@@ -107,6 +108,10 @@ DEFAULT_BACKOFFS: dict[JobType, dict[str, Any]] = {
     JobType.KNOWLEDGE_VERIFY: {
         "delays": [10, 30, 60],
         "max_attempts": 2,
+    },
+    JobType.KNOWLEDGE_EXPORT: {
+        "delays": [30, 60, 120],
+        "max_attempts": 3,
     },
     # Note: CONTEXT_RETENTION and CONVERSATION_SUMMARIZE backoffs excluded
 }
