@@ -26,6 +26,9 @@ class JobType(Enum):
     MODEL_DOWNLOAD = "model_download"  # Download model weights to approved path
     CLEANUP = "cleanup"  # Delete resources
     DATA_INGESTION = "data_ingestion"  # Catalog + text extract after upload
+    KNOWLEDGE_INGEST = "knowledge_ingest"  # Ingest sources → S3 artifacts
+    KNOWLEDGE_UNDERSTAND = "knowledge_understand"  # Parse artifacts → KnowledgeIR
+    KNOWLEDGE_VERIFY = "knowledge_verify"  # Run verifiers → confidence report
     # Note: CONTEXT_RETENTION and CONVERSATION_SUMMARIZE excluded from selective merge
 
 
@@ -92,6 +95,18 @@ DEFAULT_BACKOFFS: dict[JobType, dict[str, Any]] = {
     JobType.DATA_INGESTION: {
         "delays": [10, 30, 60],
         "max_attempts": 4,
+    },
+    JobType.KNOWLEDGE_INGEST: {
+        "delays": [30, 60, 120],
+        "max_attempts": 3,
+    },
+    JobType.KNOWLEDGE_UNDERSTAND: {
+        "delays": [30, 60, 120],
+        "max_attempts": 3,
+    },
+    JobType.KNOWLEDGE_VERIFY: {
+        "delays": [10, 30, 60],
+        "max_attempts": 2,
     },
     # Note: CONTEXT_RETENTION and CONVERSATION_SUMMARIZE backoffs excluded
 }

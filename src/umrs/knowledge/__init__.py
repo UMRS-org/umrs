@@ -28,6 +28,8 @@ __all__ = [
     "parse_notebook",
     "CodeParseResult",
     "parse_code",
+    # S3 artifact storage (lazy import — requires botocore)
+    "ArtifactStorage",
     # Ingestion pipeline (lazy import — requires botocore)
     "KnowledgeIngester",
     "IngestionResult",
@@ -41,11 +43,21 @@ __all__ = [
     "UMRSEvidenceAdapter",
     "UMRSSearchAdapter",
     "UMRSEmbeddingsAdapter",
+    # Verification store (knowledge verification lifecycle)
+    "VerificationStore",
+    "VerificationReport",
+    "VerificationFinding",
+    "FindingStatus",
+    "TransitionError",
 ]
 
 
 def __getattr__(name: str):
-    """Lazy import for ingestion pipeline (avoids botocore dependency for parsers)."""
+    """Lazy import for storage and ingestion pipeline (avoids botocore dependency for parsers)."""
+    if name == "ArtifactStorage":
+        from .artifact_storage import ArtifactStorage
+
+        return ArtifactStorage
     if name in {"KnowledgeIngester", "IngestionResult", "IngestionError", "ingest_object"}:
         from .ingest import (
             IngestionError,
@@ -73,5 +85,31 @@ def __getattr__(name: str):
             UMRSSearchAdapter,
         )
         return locals()[name]
+    if name in {
+        "VerificationStore",
+        "VerificationReport",
+        "VerificationFinding",
+        "FindingStatus",
+        "TransitionError",
+    }:
+        from .verification_store import (
+            FindingStatus,
+            TransitionError,
+            VerificationFinding,
+            VerificationReport,
+            VerificationStore,
+        )
+        return locals()[name]
+    # TASK-013: KnowledgeEvent pub/sub, egress fetch (lazy — may add deps)
+    if name in {"KnowledgeEvent", "ScanResult", "FetchResult"}:
+        if name == "KnowledgeEvent":
+            from .events import KnowledgeEvent
+            return KnowledgeEvent
+        if name == "ScanResult":
+            from .egress_fetch import ScanResult
+            return ScanResult
+        if name == "FetchResult":
+            from .egress_fetch import FetchResult
+            return FetchResult
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 

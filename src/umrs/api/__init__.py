@@ -16,6 +16,7 @@ from .files import router as files_router
 from .jobs import router as jobs_router
 from .knowledge import router as knowledge_router
 from .knowledge_graph import router as knowledge_graph_router
+from .knowledge_v2 import router as knowledge_v2_router
 from .llm import router as llm_router
 from .mcp import router as mcp_router
 from .models import policy_router
@@ -43,6 +44,7 @@ __all__ = [
     "jobs_router",
     "knowledge_router",
     "knowledge_graph_router",
+    "knowledge_v2_router",
     "llm_router",
     "mcp_router",
     "models_router",

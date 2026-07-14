@@ -455,7 +455,7 @@ class EndpointProvisionBackend(OrchestratorBackend):
         # Lazy imports to avoid circular dependencies with orchestrator
         from umrs.orchestrator.deployment_spec import DeploymentSpec
         from umrs.orchestrator.endpoint_mounts import build_mount_environment
-        from umrs.orchestrator.preflight import PreflightResult, PreflightValidator
+        from umrs.orchestrator.preflight import PreflightValidator
         from umrs.orchestrator.site_config import load_site_config
 
         spec = job.spec
@@ -1318,6 +1318,12 @@ def create_backend_factory(
 
     workflow_run_backend = WorkflowRunBackend()
 
+    from .knowledge_adapters import (
+        KnowledgeIngestBackend,
+        KnowledgeUnderstandBackend,
+        KnowledgeVerifyBackend,
+    )
+
     model_download_backend = None
     if model_store and path_validator:
         from .model_download import ModelDownloadBackend
@@ -1326,6 +1332,10 @@ def create_backend_factory(
             model_store=model_store,
             path_validator=path_validator,
         )
+
+    knowledge_ingest_backend = KnowledgeIngestBackend()
+    knowledge_understand_backend = KnowledgeUnderstandBackend()
+    knowledge_verify_backend = KnowledgeVerifyBackend()
 
     def factory(job_type: JobType) -> OrchestratorBackend:
         if job_type == JobType.ENDPOINT_PROVISION:
@@ -1345,6 +1355,12 @@ def create_backend_factory(
                     "Provide model_store and path_validator."
                 )
             return model_download_backend
+        elif job_type == JobType.KNOWLEDGE_INGEST:
+            return knowledge_ingest_backend
+        elif job_type == JobType.KNOWLEDGE_UNDERSTAND:
+            return knowledge_understand_backend
+        elif job_type == JobType.KNOWLEDGE_VERIFY:
+            return knowledge_verify_backend
         else:
             raise ValueError(f"Unsupported job type: {job_type}")
 
@@ -1395,5 +1411,19 @@ def create_status_checker(
         from .model_download import ModelDownloadStatusChecker
 
         checker.register(JobType.MODEL_DOWNLOAD, ModelDownloadStatusChecker())
+
+    from .knowledge_adapters import (
+        KnowledgeIngestStatusChecker,
+        KnowledgeUnderstandStatusChecker,
+        KnowledgeVerifyStatusChecker,
+    )
+
+    checker.register(JobType.KNOWLEDGE_INGEST, KnowledgeIngestStatusChecker())
+    checker.register(
+        JobType.KNOWLEDGE_UNDERSTAND, KnowledgeUnderstandStatusChecker()
+    )
+    checker.register(
+        JobType.KNOWLEDGE_VERIFY, KnowledgeVerifyStatusChecker()
+    )
 
     return checker
