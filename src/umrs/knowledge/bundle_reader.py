@@ -73,6 +73,18 @@ class ExportBundleWriter:
         path.write_text(content, encoding="utf-8")
         logger.debug("Wrote manifest to %s", path)
 
+    async def write_a2l_links(self, rows: list[dict[str, Any]]) -> None:
+        """Write a2l_links.jsonl (knowledge artifact → A2L mapping)."""
+        path = self._dir / "a2l_links.jsonl"
+        await _write_jsonl(path, rows)
+        logger.debug("Wrote %d A2L link rows to %s", len(rows), path)
+
+    async def write_a2l_refs(self, rows: list[dict[str, Any]]) -> None:
+        """Write a2l_refs.jsonl (A2L artifact identity mappings)."""
+        path = self._dir / "a2l_refs.jsonl"
+        await _write_jsonl(path, rows)
+        logger.debug("Wrote %d A2L ref rows to %s", len(rows), path)
+
     async def write_signature(self, signature: str) -> None:
         """Write signature.sig."""
         path = self._dir / "signature.sig"

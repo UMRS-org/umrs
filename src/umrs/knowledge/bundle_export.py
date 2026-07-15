@@ -1,9 +1,9 @@
 """Server-side .kb bundle export logic for knowledge portability (INV-13).
 
 Dumps all knowledge (artifacts, IRs, nodes/edges, embeddings via paged cursor,
-catalog) into r4-kb v1.x format inside an S3 temp bucket.  Computes a SHA-256
-content hash of the manifest and generates an HMAC signature using the site
-secret key.
+catalog, and A2L lineage mappings) into r4-kb v1.x format inside an S3 temp
+bucket.  Computes a SHA-256 content hash of the manifest and generates an
+HMAC signature using the site secret key.
 
 Tables dumped:
   - knowledge_artifacts  → artifacts.jsonl
@@ -12,6 +12,11 @@ Tables dumped:
   - knowledge_edges      → edges.jsonl
   - memory_vectors       → embeddings.jsonl (paged cursor)
   - catalog artifacts    → catalog.jsonl
+  - knowledge_a2l_links  → a2l_links.jsonl (knowledge → A2L mapping)
+  - a2l_artifact_refs    → a2l_refs.jsonl (A2L artifact identity metadata)
+
+The a2l_links and a2l_refs tables are backward-compatible: older bundle
+readers (v1.0) that do not know these tables simply ignore them.
 
 Downloaded via Gateway with auth, validated on client with signature.sig.
 """
@@ -155,10 +160,48 @@ class KnowledgeExportEngine:
             "Exported %d catalog entries for project=%s", len(cat_rows), project_id
         )
 
-        # 7. Build manifest
+        # 7a. Knowledge↔A2L links (ADR-017 / TASK-052)
+        try:
+            a2l_link_rows = await self._store._pool.fetch(  # type: ignore[union-attr]
+                "SELECT * FROM knowledge_a2l_links WHERE knowledge_artifact_id IN "
+                "(SELECT id FROM knowledge_artifacts WHERE project_id = $1)"
+                " ORDER BY derived_at",
+                project_id,
+            )
+            link_rows = [dict(r) for r in a2l_link_rows]
+            await writer.write_a2l_links(link_rows)
+            logger.info(
+                "Exported %d knowledge↔A2L links for project=%s",
+                len(link_rows),
+                project_id,
+            )
+        except Exception:
+            link_rows = []
+            logger.warning("knowledge_a2l_links unavailable for project=%s", project_id)
+
+        # 7b. A2L artifact refs (ADR-017 / TASK-052)
+        try:
+            a2l_ref_rows = await self._store._pool.fetch(  # type: ignore[union-attr]
+                "SELECT * FROM a2l_artifact_refs WHERE artifact_id IN "
+                "(SELECT id FROM knowledge_artifacts WHERE project_id = $1)"
+                " ORDER BY synced_at",
+                project_id,
+            )
+            ref_rows = [dict(r) for r in a2l_ref_rows]
+            await writer.write_a2l_refs(ref_rows)
+            logger.info(
+                "Exported %d A2L artifact refs for project=%s",
+                len(ref_rows),
+                project_id,
+            )
+        except Exception:
+            ref_rows = []
+            logger.warning("a2l_artifact_refs unavailable for project=%s", project_id)
+
+        # 8. Build manifest
         self._manifest = {
             "format": "r4-kb",
-            "version": "1.0",
+            "version": "1.1",
             "project_id": project_id,
             "exported_at": datetime.now(timezone.utc).isoformat(),
             "tables": {
@@ -168,6 +211,8 @@ class KnowledgeExportEngine:
                 "edges": {"count": len(edge_rows), "file": "edges.jsonl"},
                 "embeddings": {"count": emb_total, "file": "embeddings.jsonl"},
                 "catalog": {"count": len(cat_rows), "file": "catalog.jsonl"},
+                "a2l_links": {"count": len(link_rows), "file": "a2l_links.jsonl"},
+                "a2l_refs": {"count": len(ref_rows), "file": "a2l_refs.jsonl"},
             },
         }
         await writer.write_manifest(self._manifest)

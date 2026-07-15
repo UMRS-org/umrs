@@ -175,7 +175,7 @@ async def sse_events(
                 f"of {sse_max_clients} SSE connections",
             )
 
-    client_id, info = _register_client(project_id, last_event_id)
+    client_id, info = await _register_client(project_id, last_event_id)
 
     logger.info(
         "SSE client %s connected to project %s (total: %d)",
@@ -234,7 +234,9 @@ async def _event_stream_iter(
         _remove_client(client_id)
 
 
-def _register_client(project_id: str, last_event_id: str | None) -> tuple[str, dict[str, Any]]:
+async def _register_client(
+    project_id: str, last_event_id: str | None
+) -> tuple[str, dict[str, Any]]:
     """Register a new SSE client and return (client_id, info)."""
     global _client_counter
     async with _client_lock:
