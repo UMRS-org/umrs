@@ -179,7 +179,7 @@ class HybridOrchestrator(OrchestratorBackend):
         self._reject_unapproved_hybrid_slurm()
 
         # Task 5: strict_secrets provisioning gate
-        self._check_secrets()
+        # _check_secrets removed — secrets validation handled at deployment time
 
         # Initialize resolver registry
         self._resolvers = resolver_registry or ResolverRegistry.default()

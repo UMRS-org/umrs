@@ -1,4 +1,5 @@
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
+from datetime import timezone as _tz
 from types import SimpleNamespace
 
 from umrs.api import rag_service
@@ -34,8 +35,8 @@ class FakeRegistry:
 
 
 def _ready_endpoint(project_id, model, job_id, host, port, minutes_ago=1):
-    created_at = datetime.now(UTC) - timedelta(minutes=minutes_ago + 1)
-    ready_at = datetime.now(UTC) - timedelta(minutes=minutes_ago)
+    created_at = datetime.now(_tz.utc) - timedelta(minutes=minutes_ago + 1)
+    ready_at = datetime.now(_tz.utc) - timedelta(minutes=minutes_ago)
     return RegisteredEndpoint(
         project_id=project_id,
         model=model,
@@ -50,7 +51,7 @@ def _ready_endpoint(project_id, model, job_id, host, port, minutes_ago=1):
 
 
 def _starting_endpoint(project_id, model, job_id, host, port, minutes_ago=1):
-    created_at = datetime.now(UTC) - timedelta(minutes=minutes_ago)
+    created_at = datetime.now(_tz.utc) - timedelta(minutes=minutes_ago)
     return RegisteredEndpoint(
         project_id=project_id,
         model=model,

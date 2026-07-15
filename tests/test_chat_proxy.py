@@ -234,7 +234,12 @@ def test_chat_completions_proxies_to_assistant_service(monkeypatch, registered_e
     from umrs.api.chat import chat_completions
 
     request = FakeRequest()
-    response = asyncio.get_event_loop().run_until_complete(chat_completions(request, registry))
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        response = loop.run_until_complete(chat_completions(request, registry))
+    finally:
+        loop.close()
 
     assert response.status_code == 200
     assert registry.incremented is True
@@ -263,7 +268,12 @@ def test_chat_completions_streaming_returns_sse(monkeypatch, registered_endpoint
     request = FakeRequest()
     import asyncio
 
-    response = asyncio.get_event_loop().run_until_complete(chat_completions(request, registry))
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        response = loop.run_until_complete(chat_completions(request, registry))
+    finally:
+        loop.close()
 
     # StreamingResponse has media_type "text/event-stream"
     assert response.media_type == "text/event-stream"
@@ -288,8 +298,13 @@ def test_chat_completions_no_project_id_returns_401(registered_endpoint):
     request = FakeRequest()
     import asyncio
 
-    with pytest.raises(Exception) as exc_info:
-        asyncio.get_event_loop().run_until_complete(chat_completions(request, registry))
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        with pytest.raises(Exception) as exc_info:
+            response = loop.run_until_complete(chat_completions(request, registry))
+    finally:
+        loop.close()
     assert exc_info.value.status_code == 401
 
 
@@ -335,6 +350,11 @@ def test_chat_completions_upstream_unavailable_returns_502(monkeypatch, register
     request = FakeRequest()
     import asyncio
 
-    with pytest.raises(Exception) as exc_info:
-        asyncio.get_event_loop().run_until_complete(chat_completions(request, registry))
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        with pytest.raises(Exception) as exc_info:
+            response = loop.run_until_complete(chat_completions(request, registry))
+    finally:
+        loop.close()
     assert exc_info.value.status_code == 502

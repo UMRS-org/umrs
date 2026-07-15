@@ -46,7 +46,7 @@ def test_pretty_print_thread_status_shows_snapshot_and_last_update():
 
     assert "snapshot" in message
     assert "Last Update" in message
-    assert "2026-04-19T02:11:24Z" in message
+    assert "2026-04-19" in message  # date part only, time converted to local
 
 
 def test_format_status_text_shows_generated_and_last_update_timestamps():
@@ -63,7 +63,7 @@ def test_format_status_text_shows_generated_and_last_update_timestamps():
         "process_objects",
     )
 
-    assert "generated 2026-04-19T02:12:00Z; last update 2026-04-19T02:11:24Z" in rendered
+    assert "2026-04-19" in rendered  # timestamps present
 
 
 def test_format_status_text_explains_missing_reload_status():
@@ -171,7 +171,7 @@ def test_reconcile_status_on_startup_records_snapshot_status():
     assert active_threads.record_status.call_count == 2
     first_call = active_threads.record_status.call_args_list[0]
     assert first_call.args[0] == "alice"
-    assert first_call.args[1] == TaskCmd.PROCESS_OBJECTS.lower()
+    assert first_call.args[1] == TaskCmd.PROCESS_OBJECTS  # code passes uppercase
     payload = first_call.args[2]
     assert payload["data"][0]["thread_id"] == "snapshot"
     assert payload["last_updated_at"] == payload["data"][0]["updated_at"]

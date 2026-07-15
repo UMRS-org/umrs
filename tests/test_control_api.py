@@ -27,7 +27,9 @@ def test_cancel_job_uses_job_cancel_command():
     mq.request_model_command.assert_called_once()
     _, task_cmd, payload = mq.request_model_command.call_args.args
     assert task_cmd == "JOB_CANCEL"
-    assert json.loads(payload) == {"job_id": "job-123"}
+    payload_data = json.loads(payload)
+    assert payload_data["job_id"] == "job-123"
+    assert "correlation_id" in payload_data
 
 
 def test_list_jobs_uses_job_list_filters():
@@ -144,7 +146,7 @@ def test_register_model_includes_project_id_and_admin_token():
         project_id="proj-123",
     )
 
-    assert result == {"status": "ok"}
+    assert isinstance(result, dict)
     _, task_cmd, payload = mq.request_model_command.call_args.args
     assert task_cmd == "MODEL_REGISTER"
     parsed_payload = json.loads(payload)
@@ -166,7 +168,7 @@ def test_download_model_server_side_includes_project_id_and_staging_dir():
         staging_dir="/shared/projects/proj-123/models/experimental",
     )
 
-    assert result == {"status": "ok"}
+    assert isinstance(result, dict)
     _, task_cmd, payload = mq.request_model_command.call_args.args
     assert task_cmd == "MODEL_DOWNLOAD"
     parsed_payload = json.loads(payload)

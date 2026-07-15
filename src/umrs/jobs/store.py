@@ -228,6 +228,7 @@ class JobStore:
                 conn.commit()
                 logger.info(f"Created job {job_id} (type={job_type.value})")
                 METRICS.job_submitted(job_type.value)
+                METRICS.jobs_created(job_type.value)
                 return job_id
 
             except psycopg2.errors.UniqueViolation:

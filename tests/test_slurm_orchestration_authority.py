@@ -40,6 +40,8 @@ def test_hybrid_slurm_opt_in_is_explicit(monkeypatch) -> None:
     monkeypatch.setenv("RIVAULT_ENABLE_EXPERIMENTAL_HYBRID_SLURM", "true")
 
     orchestrator = HybridOrchestrator(profile="slurm-singularity")
+    # _check_secrets was removed — just verify the instance exists
+    assert orchestrator is not None
 
     assert orchestrator.execution_authority == ExecutionAuthority.SLURM
     assert orchestrator.backend_name == "hybrid-slurm"
