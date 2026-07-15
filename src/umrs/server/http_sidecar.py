@@ -446,6 +446,7 @@ def _create_app():
     configure_structured_logging()
 
     from umrs.api import (
+        a2l_router,
         catalog_router,
         chat_router,
         egress_audit_router,
@@ -509,6 +510,7 @@ def _create_app():
     app.add_exception_handler(_HTTPException, structured_http_exception_handler)
 
     app.include_router(catalog_router)
+    app.include_router(a2l_router)
     app.include_router(chat_router)
     app.include_router(egress_audit_router)
     app.include_router(endpoints_router)

@@ -8,6 +8,7 @@ the existing ZeroMQ-based messaging.
 Note: Context/memory routers excluded from selective merge.
 """
 
+from .a2l import router as a2l_router
 from .catalog import router as catalog_router
 from .chat import router as chat_router
 from .egress_audit import router as egress_audit_router
@@ -37,6 +38,7 @@ from .workflows import router as workflows_router
 from .zmq_sessions import router as zmq_sessions_router
 
 __all__ = [
+    "a2l_router",
     "catalog_router",
     "chat_router",
     "egress_audit_router",
