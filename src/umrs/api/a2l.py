@@ -38,6 +38,24 @@ class ArtifactListResponse(BaseModel):
     artifacts: list[dict[str, Any]]
 
 
+class DeriveRequest(BaseModel):
+    """POST body for derive."""
+
+    knowledge_artifact_id: str
+    a2l_artifact_id: str
+    job_id: str = ""
+    attempt_id: str = ""
+    edge_kind: str = "derived"
+
+
+class DeriveResponse(BaseModel):
+    """Derive result."""
+
+    status: str = ""
+    link_id: str = ""
+    error: str = ""
+
+
 # ── Endpoints ─────────────────────────────────────────────────────────────
 
 
@@ -120,3 +138,37 @@ def _build_artifact_query(project_id: str, artifact_ids_filter: str):
                 ORDER BY a.synced_at DESC
                 LIMIT 200"""
     return query, params
+
+
+@router.post("/derive", response_model=DeriveResponse)
+async def derive_a2l_link(req: DeriveRequest) -> dict[str, str]:
+    """Register an A2L link for a knowledge artifact.
+
+    Called by knowledge jobs (INGEST, UNDERSTAND, VERIFY) to derive
+    A2L references. Best-effort: silently returns success on conflict.
+    """
+    try:
+        from umrs.knowledge.store import get_store
+
+        store = get_store()
+        async with store._pool.acquire() as conn:  # type: ignore[union-attr]
+            row = await conn.fetchrow(
+                """
+                INSERT INTO knowledge_a2l_links
+                    (knowledge_artifact_id, a2l_artifact_id, job_id, attempt_id, edge_kind)
+                VALUES ($1, $2, $3, $4, $5)
+                ON CONFLICT (knowledge_artifact_id, a2l_artifact_id)
+                DO UPDATE SET link_status = 'active'
+                RETURNING id
+                """,
+                req.knowledge_artifact_id,
+                req.a2l_artifact_id,
+                req.job_id,
+                req.attempt_id,
+                req.edge_kind,
+            )
+            if row:
+                return {"status": "created", "link_id": str(row["id"])}
+            return {"status": "updated", "link_id": "existing"}
+    except Exception:
+        return {"status": "error", "link_id": "", "error": "database unavailable"}
