@@ -471,3 +471,85 @@ class VerificationStore:
         if row is None:
             raise ValueError(f"Finding '{finding_key}' not found")
         return VerificationFinding(**row)
+
+    # -- verification sessions (TASK-046) ---------------------------------------
+
+    async def save_verification_session(
+        self,
+        session_id: str,
+        project_id: str,
+        question: str,
+        evidence_ids: list[str],
+        graph_traversal: list[str],
+        confidence: float,
+    ) -> None:
+        """Persist a verification-chat session (evidence + traversal).
+
+        The ephemeral LLM answer is NOT stored — it can be regenerated
+        from the evidence IDs and graph traversal on demand.
+        """
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO verification_sessions
+                   (session_id, project_id, question, evidence_ids,
+                    graph_traversal, confidence, timestamp)
+                   VALUES ($1, $2, $3, $4, $5, $6, now())
+                   ON CONFLICT (session_id) DO UPDATE SET
+                       question = EXCLUDED.question,
+                       evidence_ids = EXCLUDED.evidence_ids,
+                       graph_traversal = EXCLUDED.graph_traversal,
+                       confidence = EXCLUDED.confidence,
+                       timestamp = now()
+                """,
+                session_id,
+                project_id,
+                question,
+                evidence_ids,
+                graph_traversal,
+                confidence,
+            )
+
+    async def get_verification_session(
+        self, session_id: str
+    ) -> Optional[dict[str, Any]]:
+        """Fetch a single verification session by ID."""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM verification_sessions WHERE session_id = $1",
+                session_id,
+            )
+            return dict(row) if row else None
+
+    async def list_verification_sessions(
+        self,
+        *,
+        project_id: Optional[str] = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """List verification sessions with optional project filter."""
+        async with self._pool.acquire() as conn:
+            if project_id:
+                sql = (
+                    "SELECT * FROM verification_sessions"
+                    " WHERE project_id = $1"
+                    " ORDER BY timestamp DESC LIMIT $2"
+                )
+                rows = await conn.fetch(sql, project_id, limit)
+            else:
+                sql = (
+                    "SELECT * FROM verification_sessions"
+                    " ORDER BY timestamp DESC LIMIT $1"
+                )
+                rows = await conn.fetch(sql, limit)
+            return [dict(r) for r in rows]
+
+    async def delete_verification_session(
+        self, session_id: str
+    ) -> bool:
+        """Delete a verification session. Returns True if found and deleted."""
+        async with self._pool.acquire() as conn:
+            result = await conn.execute(
+                "DELETE FROM verification_sessions WHERE session_id = $1",
+                session_id,
+            )
+            return result.split()[1] == "1"

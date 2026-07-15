@@ -18,6 +18,7 @@ from .knowledge import router as knowledge_router
 from .knowledge_graph import router as knowledge_graph_router
 from .knowledge_v2 import router as knowledge_v2_router
 from .llm import router as llm_router
+from .loop import router as loops_router
 from .mcp import router as mcp_router
 from .models import policy_router
 from .models import router as models_router
@@ -46,6 +47,7 @@ __all__ = [
     "knowledge_graph_router",
     "knowledge_v2_router",
     "llm_router",
+    "loops_router",
     "mcp_router",
     "models_router",
     "ops_router",

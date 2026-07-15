@@ -1,0 +1,34 @@
+{
+  "exported_at": "2026-07-15T01:16:50.796751+00:00",
+  "format": "r4-kb",
+  "hash": "19da981a9f67929f6c1d8acc0c01142f691aca1f3acc7851e2225b8b3ae4f34a",
+  "project_id": "test-project",
+  "signature": "",
+  "tables": {
+    "artifacts": {
+      "count": 0,
+      "file": "artifacts.jsonl"
+    },
+    "catalog": {
+      "count": 0,
+      "file": "catalog.jsonl"
+    },
+    "documents": {
+      "count": 0,
+      "file": "documents.jsonl"
+    },
+    "edges": {
+      "count": 0,
+      "file": "edges.jsonl"
+    },
+    "embeddings": {
+      "count": 0,
+      "file": "embeddings.jsonl"
+    },
+    "nodes": {
+      "count": 0,
+      "file": "nodes.jsonl"
+    }
+  },
+  "version": "1.0"
+}
