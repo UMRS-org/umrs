@@ -628,6 +628,35 @@ class KnowledgeStore:
             )
             return [dict(r) for r in rows], total
 
+    # ── Knowledge↔A2L Links ──────────────────────────────────────────────
+
+    async def insert_knowledge_a2l_link(
+        self,
+        knowledge_artifact_id: str,
+        a2l_artifact_id: str,
+        job_id: str = "",
+        attempt_id: str = "",
+        edge_kind: str = "derived",
+    ) -> bool:
+        """Register a knowledge artifact → A2L link (ON CONFLICT DO NOTHING)."""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO knowledge_a2l_links
+                    (knowledge_artifact_id, a2l_artifact_id, job_id, attempt_id, edge_kind)
+                VALUES ($1, $2, $3, $4, $5)
+                ON CONFLICT (knowledge_artifact_id, a2l_artifact_id)
+                DO NOTHING
+                RETURNING id
+                """,
+                knowledge_artifact_id,
+                a2l_artifact_id,
+                job_id,
+                attempt_id,
+                edge_kind,
+            )
+            return row is not None
+
     # ── A2L Bridge ─────────────────────────────────────────────────────────
 
     async def insert_a2l_ref(

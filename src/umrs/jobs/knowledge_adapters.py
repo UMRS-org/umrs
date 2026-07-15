@@ -550,6 +550,46 @@ def _store_artifacts_in_db_sync(
         pass
 
 
+# ── A2L Derive Helper ─────────────────────────────────────────────────────
+
+
+def _derive_a2l_link(
+    knowledge_artifact_id: str,
+    a2l_artifact_id: str,
+    job_id: str = "",
+    attempt_id: str = "",
+    edge_kind: str = "derived",
+) -> None:
+    """Best-effort: derive A2L link for a knowledge artifact.
+
+    Logs a KnowledgeEvent warning on failure; never raises.
+    """
+    try:
+        from umrs.knowledge.store import get_store
+
+        store = get_store()
+        pool = store._pool
+        if pool:
+            async def _persist() -> None:
+                await store.insert_knowledge_a2l_link(
+                    knowledge_artifact_id, a2l_artifact_id, job_id, attempt_id, edge_kind
+                )
+
+            asyncio.run(_persist())
+    except Exception:
+        # Best-effort: silently degrade — A2L unavailable
+        try:
+            KnowledgeEvent(
+                event_type="a2l_link_skipped",
+                artifact_id=knowledge_artifact_id,
+                job_id=job_id,
+                attempt_id=attempt_id,
+                details=f"a2l_artifact={a2l_artifact_id} edge={edge_kind} skipped",
+            ).emit()
+        except Exception:
+            pass
+
+
 # ── Internal: Understand Runner (async) ────────────────────────────────────
 
 
@@ -692,6 +732,10 @@ async def _run_understand(
             ir_id=ir.ir_id,
             details=f"summary: {summary}",
         ).emit()
+
+        # Best-effort: derive A2L link for UNDERSTAND step (ADR-017)
+        if artifact_id:
+            _derive_a2l_link(artifact_id, a2l_artifact_id="", job_id=job.job_id, edge_kind="understand")
 
     return result
 
