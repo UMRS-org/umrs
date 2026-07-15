@@ -631,8 +631,10 @@ class TestBundleFormat:
 
         manifest = json.loads((tmp_bundle_dir / "manifest.json").read_text())
         assert manifest["format"] == "r4-kb"
-        assert manifest["version"] == "1.0"
+        assert manifest["version"] == "1.1"
         assert "tables" in manifest
+        assert "a2l_links" in manifest["tables"]
+        assert "a2l_refs" in manifest["tables"]
         assert "hash" in manifest
         assert "signature" in manifest
 
