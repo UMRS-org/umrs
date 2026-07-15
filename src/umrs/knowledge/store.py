@@ -628,6 +628,31 @@ class KnowledgeStore:
             )
             return [dict(r) for r in rows], total
 
+    # ── A2L Bridge ─────────────────────────────────────────────────────────
+
+    async def insert_a2l_ref(
+        self,
+        artifact_id: str,
+        a2l_hash: str,
+        a2l_id: str,
+        source: str = "auto",
+    ) -> bool:
+        """Persist an A2L→UMRS artifact mapping (ON CONFLICT DO NOTHING)."""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO a2l_artifact_refs (artifact_id, a2l_hash, a2l_id, source)
+                VALUES ($1, $2, $3, $4)
+                ON CONFLICT (artifact_id, a2l_hash) DO NOTHING
+                RETURNING id
+                """,
+                artifact_id,
+                a2l_hash,
+                a2l_id,
+                source,
+            )
+            return row is not None
+
     async def get_artifact_content(self, artifact_id: str) -> Optional[bytes]:
         """Fetch raw artifact content from S3 via the artifact's source_ref.
 

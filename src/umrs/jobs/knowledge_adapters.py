@@ -450,6 +450,9 @@ def _put_file_sync(
     success_ids.append(artifact_id)
     result.artifact_ids.append(artifact_id)
 
+    # Best-effort: bridge to A2L identity space (ADR-017)
+    _bridge_a2l_ref(artifact_id, content_hash, project_id)
+
     KnowledgeEvent(
         event_type="create",
         job_id=job_id,
@@ -501,6 +504,9 @@ def _fetch_and_store_remote(
     content_hash, size_bytes, _ = storage.put_artifact(project_id, fetch.content)
     success_ids.append(artifact_id)
     result.artifact_ids.append(artifact_id)
+
+    # Best-effort: bridge to A2L identity space (ADR-017)
+    _bridge_a2l_ref(artifact_id, content_hash, project_id)
 
     KnowledgeEvent(
         event_type="create",
@@ -1711,4 +1717,43 @@ def enqueue_ingest_failure(
         except Exception:
             pass
     except Exception:
+        pass
+
+
+# ── A2L Bridge (ADR-017) ──────────────────────────────────────────────────
+
+
+def _bridge_a2l_ref(artifact_id: str, content_hash: str, project_id: str) -> None:
+    """Best-effort: store artifact → A2L identity mapping in DB.
+
+    Never raises — A2L unavailability must NOT fail knowledge jobs.
+    """
+    try:
+        from umrs.knowledge.a2l_bridge import A2lBridge
+        from umrs.knowledge.store import get_store
+        from umrs.settings import Settings
+
+        settings = Settings()
+        bridge = A2lBridge(gateway_url=settings.gateway_url)
+
+        # Resolve first (A2L may already know this hash)
+        ref = bridge.resolve_a2l_hash(content_hash)
+        if ref and ref.a2l_id:
+            bridge.sync_a2l_ref(
+                type(ref)(artifact_id=artifact_id, a2l_hash=content_hash, a2l_id=ref.a2l_id)
+            )
+            a2l_id = ref.a2l_id
+        else:
+            a2l_id = ""
+
+        # Always persist UMRS→A2L mapping regardless of resolve result
+        store = get_store()
+        pool = store._pool
+        if pool:
+            async def _persist() -> None:  # noqa: D103
+                await store.insert_a2l_ref(artifact_id, content_hash, a2l_id)
+
+            asyncio.run(_persist())
+    except Exception:
+        # Best-effort: silently degrade — A2L absent or unavailable
         pass
