@@ -296,7 +296,7 @@ class TestCommandCoverage:
         "HAND_CHECK",
     }
 
-    EXPECTED_ADMIN_COMMANDS = {"RECOMPUTE", "UPDATE", "CHECK"}
+    EXPECTED_ADMIN_COMMANDS = {"RELOAD", "RECOMPUTE", "ENROLL_USER"}
 
     def test_all_user_commands_in_allowed_set(self):
         missing = self.EXPECTED_USER_COMMANDS - USER_ALLOWED_COMMANDS

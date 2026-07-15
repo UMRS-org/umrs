@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import json
 import importlib
-from datetime import UTC, datetime
+from datetime import datetime
+from datetime import timezone as _tz
 from unittest.mock import patch
 
 import pytest
@@ -74,9 +75,9 @@ def _workflow_job(status=JobStatus.QUEUED):
         idempotency_key="idem",
         status=status,
         restart_policy=RestartPolicy.ON_CRASH,
-        created_at=datetime.now(UTC),
-        updated_at=datetime.now(UTC),
-        last_state_change_at=datetime.now(UTC),
+        created_at=datetime.now(_tz.utc),
+        updated_at=datetime.now(_tz.utc),
+        last_state_change_at=datetime.now(_tz.utc),
     )
 
 

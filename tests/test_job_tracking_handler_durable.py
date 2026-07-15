@@ -1,5 +1,6 @@
 import json
-from datetime import UTC, datetime
+from datetime import datetime
+from datetime import timezone as _tz
 
 from umrs.jobs.models import Job, JobAttempt, JobStatus, JobType, RestartPolicy, AttemptStatus
 from umrs.server import job_tracking_handler
@@ -45,8 +46,8 @@ class FakeJobStore:
             priority=priority,
             desired_max_attempts=max_attempts,
             restart_policy=restart_policy,
-            created_at=datetime.now(UTC),
-            updated_at=datetime.now(UTC),
+            created_at=datetime.now(_tz.utc),
+            updated_at=datetime.now(_tz.utc),
         )
         self.jobs[job_id] = job
         self.attempts[job_id] = []
@@ -120,7 +121,7 @@ def test_durable_backend_list_includes_attempts():
             attempt_no=1,
             backend="slurm",
             status=AttemptStatus.RUNNING,
-            started_at=datetime.now(UTC),
+            started_at=datetime.now(_tz.utc),
         )
     )
     backend = DurableJobCommandBackend(store)
@@ -165,9 +166,9 @@ def test_durable_backend_cancel_completed_endpoint_submits_cleanup_job():
             backend="slurm",
             backend_ref="backend-123",
             status=AttemptStatus.SUCCEEDED,
-            started_at=datetime.now(UTC),
-            ended_at=datetime.now(UTC),
-            created_at=datetime.now(UTC),
+            started_at=datetime.now(_tz.utc),
+            ended_at=datetime.now(_tz.utc),
+            created_at=datetime.now(_tz.utc),
         )
     )
     backend = DurableJobCommandBackend(store)

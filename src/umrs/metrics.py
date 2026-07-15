@@ -114,6 +114,58 @@ class UMRSMetrics:
             "Reconciler execution count",
             ["outcome"],
         )
+        # -- Batch 4: Observability expansion ----------------------------
+        # Reconciler latency with explicit buckets: 0.1s, 0.5s, 1s, 5s, 10s+
+        self._reconciler_latency = _histogram(
+            "umrs_reconciler_latency_seconds",
+            "Reconciler loop iteration latency",
+            ["outcome"],
+        )
+        # Queue depth: pending reconciliations
+        self._reconciler_queue_depth = _gauge(
+            "umrs_reconciler_queue_depth",
+            "Number of pending reconciliation tasks",
+            [],
+        )
+        # Durable job lifecycle metrics
+        self._job_created = _counter(
+            "umrs_jobs_created_total",
+            "Jobs created (durable)",
+            ["authority"],
+        )
+        self._attempt_started = _counter(
+            "umrs_job_attempts_started_total",
+            "Job attempts started (durable)",
+            ["authority"],
+        )
+        self._attempt_completed = _counter(
+            "umrs_job_attempts_completed_total",
+            "Job attempts completed (durable)",
+            ["authority", "status"],
+        )
+        self._job_status_gauge = _gauge(
+            "umrs_jobs_status_count",
+            "Active jobs grouped by status (durable)",
+            ["status"],
+        )
+        self._attempt_status_gauge = _gauge(
+            "umrs_job_attempts_status_count",
+            "Active attempts grouped by status (durable)",
+            ["status"],
+        )
+        # Reconciler reconnect counter (ZMQ reconnects)
+        self._reconciler_reconnects = _counter(
+            "umrs_reconciler_reconnects_total",
+            "Reconciler ZMQ reconnect events",
+            ["transport"],
+        )
+        # Health check duration gauge
+        self._health_check_duration = _histogram(
+            "umrs_health_check_duration_seconds",
+            "Health check probe duration",
+            ["check_name"],
+        )
+
         self._reconciler_duration = _histogram(
             "umrs_reconciler_duration_seconds",
             "Time spent in reconciliation",
@@ -275,6 +327,35 @@ class UMRSMetrics:
 
     def reconciler_duration(self, seconds: float, outcome: str = "ok") -> None:
         self._reconciler_duration.labels(outcome=outcome).observe(seconds)
+
+    # -- Reconciler latency ------------------------------------------------
+
+    def reconciler_latency(self, seconds: float, outcome: str = "ok") -> None:
+        self._reconciler_latency.labels(outcome=outcome).observe(seconds)
+
+    def set_reconciler_queue_depth(self, depth: int) -> None:
+        self._reconciler_queue_depth.set(depth)
+
+    def jobs_created(self, authority: str = "slurm") -> None:
+        self._job_created.labels(authority=authority).inc()
+
+    def job_attempts_started(self, authority: str = "slurm") -> None:
+        self._attempt_started.labels(authority=authority).inc()
+
+    def job_attempts_completed(self, authority: str = "slurm", status: str = "completed") -> None:
+        self._attempt_completed.labels(authority=authority, status=status).inc()
+
+    def set_job_status_count(self, status: str, count: int) -> None:
+        self._job_status_gauge.labels(status=status).set(count)
+
+    def set_attempt_status_count(self, status: str, count: int) -> None:
+        self._attempt_status_gauge.labels(status=status).set(count)
+
+    def reconciler_reconnect(self, transport: str = "zmq") -> None:
+        self._reconciler_reconnects.labels(transport=transport).inc()
+
+    def health_check_duration(self, check_name: str, seconds: float) -> None:
+        self._health_check_duration.labels(check_name=check_name).observe(seconds)
 
     @contextmanager
     def reconciler_timer(self):

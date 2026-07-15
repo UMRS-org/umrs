@@ -88,6 +88,7 @@ class UMRSControlAPI:
         if self._admin_token:
             body["admin_token"] = self._admin_token
         payload = dumps_with_correlation_id(body)
+        return self._request_json(TaskCmd.MODEL_REGISTER, payload)
 
     def download_model_server_side(
         self,

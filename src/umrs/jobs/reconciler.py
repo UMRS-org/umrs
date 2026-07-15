@@ -88,12 +88,15 @@ class Reconciler:
         if not stale_attempts:
             logger.info("No stale attempts found - clean startup")
             METRICS.reconciler_run("ok")
-            METRICS.reconciler_duration(_time.monotonic() - _start, "ok")
-            METRICS.reconciler_backlog(0)
+            dur = _time.monotonic() - _start
+            METRICS.reconciler_duration(dur, "ok")
+            METRICS.reconciler_latency(dur, "ok")
+            METRICS.set_reconciler_queue_depth(0)
             return result
 
         logger.warning(f"Found {len(stale_attempts)} stale attempts to reconcile")
         METRICS.reconciler_backlog(len(stale_attempts))
+        METRICS.set_reconciler_queue_depth(len(stale_attempts))
 
         # Process each stale attempt
         for attempt_id, job_id, attempt_no, old_instance_id in stale_attempts:
@@ -108,7 +111,9 @@ class Reconciler:
         logger.info(f"Boot reconciliation complete: {result}")
         outcome = "error" if result.errors else "ok"
         METRICS.reconciler_run(outcome)
-        METRICS.reconciler_duration(_time.monotonic() - _start, outcome)
+        dur = _time.monotonic() - _start
+        METRICS.reconciler_duration(dur, outcome)
+        METRICS.reconciler_latency(dur, outcome)
         return result
 
     def _find_stale_attempts(self) -> list[tuple[str, str, int, str | None]]:

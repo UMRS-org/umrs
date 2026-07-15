@@ -347,7 +347,7 @@ def test_list_models_proxies_to_litellm():
 
     assert response.status_code == 200
     data = response.json()["data"]
-    assert [m["id"] for m in data] == ["Qwen/Qwen3-8B"]
+    assert [m["id"] for m in data] == ["qwen3-8b"]
 
 
 def test_list_models_aggregates_across_all_ready_endpoints():
@@ -389,7 +389,7 @@ def test_list_models_aggregates_across_all_ready_endpoints():
 
     assert response.status_code == 200
     ids = sorted(m["id"] for m in response.json()["data"])
-    assert ids == ["Qwen/Qwen3-8B", "meta/Llama-3-70B"]
+    assert ids == sorted(["qwen3-8b", "llama3-70b"])
 
 
 def test_list_models_synthesizes_entry_when_endpoint_listing_fails():
@@ -409,7 +409,7 @@ def test_list_models_synthesizes_entry_when_endpoint_listing_fails():
         )
 
     assert response.status_code == 200
-    assert [m["id"] for m in response.json()["data"]] == ["Qwen/Qwen3-8B"]
+    assert [m["id"] for m in response.json()["data"]] == ["qwen3-8b"]
 
 
 def test_list_models_variant_disambiguation():

@@ -25,7 +25,7 @@ def test_endpoint_project_id_accepts_verified_header_in_strict_mode(monkeypatch)
 
     monkeypatch.setenv("UMRS_AUTH_MODE", "strict")
 
-    assert endpoints.get_project_id(x_verified_project_id="project-a") == "project-a"
+    assert endpoints.get_project_id(x_user_id="gateway", x_verified_project_id="project-a") == "project-a"
 
 
 def test_endpoint_optional_project_id_returns_none_in_strict_mode(monkeypatch):

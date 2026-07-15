@@ -225,6 +225,7 @@ class Scheduler:
 
                 self._stats["jobs_scheduled"] += 1
                 METRICS.job_submitted(backend.backend_name)
+                METRICS.jobs_created(backend.backend_name)
                 self._consecutive_failures = 0
                 METRICS.degradation_level("scheduler", 0)
                 logger.info(

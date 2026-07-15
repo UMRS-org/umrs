@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import json
 import asyncio
-from datetime import UTC, datetime
+from datetime import datetime
+from datetime import timezone as _tz
 from unittest.mock import patch
 
 from umrs.jobs.models import Job, JobAttempt, JobStatus, JobType, RestartPolicy
@@ -44,8 +45,8 @@ class FakeJobStore:
             priority=options.get("priority", 0),
             desired_max_attempts=options.get("max_attempts", 3),
             restart_policy=options.get("restart_policy", RestartPolicy.ON_CRASH),
-            created_at=datetime.now(UTC),
-            updated_at=datetime.now(UTC),
+            created_at=datetime.now(_tz.utc),
+            updated_at=datetime.now(_tz.utc),
         )
         self.jobs[job_id] = job
         self.attempts[job_id] = []
