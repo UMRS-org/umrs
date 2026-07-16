@@ -164,9 +164,17 @@ def _build_cfg_store(configure_file: str) -> dict[str, Any]:
 
     # Reuse the same configuration logic as the main UMRS server but avoid
     # spinning up ZeroMQ, workers, etc.
+    #
+    # A single user with stale/invalid S3 credentials must NOT prevent the
+    # RAG service from starting for everyone else. ``connect_to_s3`` calls
+    # ``sys.exit(-1)`` on auth failure, so catch SystemExit as well.
     server_cfg = ServerCfg()
     for user in users:
-        configure_user(user, server_cfg)
+        try:
+            configure_user(user, server_cfg)
+        except (SystemExit, Exception) as exc:  # noqa: BLE001
+            username = user.get("username", "<unknown>")
+            print(f"WARNING: skipping user '{username}' during RAG startup: {exc!r}")
 
     db_model_store: dict[str, dict[str, Any]] = {}
     for path_to_bucket, entry in server_cfg.buckets_cfg.items():
