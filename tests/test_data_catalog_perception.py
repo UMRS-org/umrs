@@ -125,6 +125,27 @@ def test_summarize_text_uses_text_endpoint(monkeypatch):
     assert result.text == "Run notes for batch 3."
 
 
+def test_run_perception_summarizes_code(monkeypatch):
+    monkeypatch.setenv("UMRS_DATA_CATALOG_ENABLE_PERCEPTION", "true")
+    monkeypatch.setattr(perception, "_find_text_endpoint", lambda _pid: _FakeEndpoint())
+    monkeypatch.setattr(
+        perception,
+        "_chat_completion",
+        lambda _ep, _payload, **_kwargs: "PyTorch neural network for MOF yield prediction.",
+    )
+
+    source = "import torch\nclass YieldPredictor(torch.nn.Module):\n    pass\n"
+    result = perception.run_perception(
+        project_id="proj-1",
+        filename="model.py",
+        modality="code",
+        extracted_text=source,
+    )
+    assert result is not None
+    assert result.kind == "llm_summary"
+    assert "pytorch" in result.text.lower() or "torch" in result.text.lower()
+
+
 def test_run_perception_failure_returns_none(monkeypatch):
     monkeypatch.setenv("UMRS_DATA_CATALOG_ENABLE_PERCEPTION", "true")
     monkeypatch.setattr(perception, "_find_text_endpoint", lambda _pid: _FakeEndpoint())
