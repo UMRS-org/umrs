@@ -36,7 +36,15 @@ services:
       - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - umrs_pg_data:/var/lib/postgresql/data
-    command: postgres -c "listen_addresses=*" -c "unix_socket_directories="
+    # max_connections raised from the image default of 100: umrs-front runs a
+    # shared Postgres for all cluster databases (rccs/ai4s/bdrt/octopus), and
+    # each experience holds ~1 pooled connection, so the steady-state baseline
+    # (~1 per experience across the roster) was pinned against the 100 ceiling
+    # and any transient connection (e.g. a config reload) exhausted the pool
+    # with "remaining connection slots are reserved for non-replication
+    # superuser connections". 200 gives headroom for the current roster; revisit
+    # (or move to pgbouncer / lazy per-experience pools) as the roster grows.
+    command: postgres -c "listen_addresses=*" -c "unix_socket_directories=" -c "max_connections=200"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-umrs} -h 127.0.0.1"]
       interval: 5s
