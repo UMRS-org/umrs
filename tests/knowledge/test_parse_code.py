@@ -68,6 +68,9 @@ import os.path
     assert "numpy" in result.dependencies
     assert "typing" in result.dependencies
     assert "os.path" in result.dependencies
+    assert "numpy" in result.tags
+    assert "typing" in result.tags
+    assert "os" in result.tags
 
 
 def test_parse_python_main_block():
@@ -342,6 +345,13 @@ class MyClass:
 
     assert result.error is None
     assert "class:MyClass" in result.tags
+
+
+def test_parse_python_tags_include_import_roots():
+    """Import roots are searchable catalog tags (E2E torch gap)."""
+    source = b"import torch\n\nclass M(torch.nn.Module):\n    pass\n"
+    result = parse_code("model.py", source)
+    assert "torch" in result.tags
 
 
 def test_parse_python_tags_contain_kernel_names():
