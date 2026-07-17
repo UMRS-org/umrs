@@ -18,19 +18,28 @@ Run from the repository root unless noted.
 1. Confirm the direct UMRS profile is reachable:
 
    ```bash
-   PATH="$PWD/.venv/bin:$PATH" umrs-client --profile umrs-front status
+   cd umrs
+   PYTHONPATH=src:$PYTHONPATH umrs-client --profile umrs-front status
    ```
 
 2. Run the strict one-slice three-task HMAE flow:
 
    ```bash
-   cd umrs/demos_private/10_hmae_full_pipeline
-   PATH="$PWD/.venv/bin:$PATH" \
-     UMRS_PROFILE=umrs-front \
-     MAX_IMAGES=1 \
-     RESULT_DOWNLOAD_TIMEOUT=2400 \
-     HMAE_REQUIRE_RESULTS=1 \
-     # Follow the step-by-step commands in README.md
+   cd demos_private/10_hmae_full_pipeline
+   ```
+
+   Then run the following commands in sequence (or copy-paste all at once):
+
+   ```bash
+   # Upload Spring-8 concrete inputs to the three experience buckets
+   umrs-client upload_dir ../../tmp/hmae/spring8concrete demo-hmae
+   umrs-client upload_dir ../../tmp/hmae/spring8concrete demo-hmae-mae
+   umrs-client upload_dir ../../tmp/hmae/spring8concrete demo-hmae-features
+
+   # Wait for processing to complete, then download all results
+   umrs-client download_results demo-hmae ./results/reconstruction --force-overwrite
+   umrs-client download_results demo-hmae-mae ./results/mae_reconstruction --force-overwrite
+   umrs-client download_results demo-hmae-features ./results/feature_extraction --force-overwrite
    ```
 
 3. Point out these validated output lines:
@@ -50,6 +59,6 @@ Run from the repository root unless noted.
 
 ## Useful Overrides
 
-- Use more slices: `MAX_IMAGES=3 # Follow the step-by-step commands in README.md`
-- Use another Spring-8 slice directory: `IMAGE_DIR=/path/to/slices # Follow the step-by-step commands in README.md`
-- Require completed outputs: `HMAE_REQUIRE_RESULTS=1 RESULT_DOWNLOAD_TIMEOUT=2400 # Follow the step-by-step commands in README.md`
+- Use more slices: `MAX_IMAGES=3`
+- Use another Spring-8 slice directory: `IMAGE_DIR=/path/to/slices`
+- Require completed outputs: `HMAE_REQUIRE_RESULTS=1 RESULT_DOWNLOAD_TIMEOUT=2400`
