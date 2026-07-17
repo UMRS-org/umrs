@@ -6048,10 +6048,17 @@ def _action_s3_transfer(ctx):
         # part of the S3 key prefix, preserving the camera/Schedule date
         # hierarchy expected by the workflow step.
         norm_path = os.path.abspath(path)
+        nb_files_seen = 0
+        broken_symlinks = []
         for root, _dirs, files in os.walk(norm_path):
             for fname in files:
+                nb_files_seen += 1
                 file_path = os.path.join(root, fname)
                 if not os.path.isfile(file_path):
+                    if os.path.islink(file_path):
+                        broken_symlinks.append(
+                            f"{file_path} -> {os.readlink(file_path)}"
+                        )
                     continue
 
                 rel_dir = os.path.relpath(root, norm_path)
@@ -6086,6 +6093,26 @@ def _action_s3_transfer(ctx):
         if nb_objects > 0:
             ctx.control_mq.notify_server(
                 username, TaskCmd.PROCESS_OBJECTS, nb_objects
+            )
+        elif nb_files_seen == 0:
+            print(f"Error: directory '{path}' contains no files to upload.")
+        elif broken_symlinks:
+            print(
+                f"Error: none of the {nb_files_seen} entries in '{path}' "
+                "could be uploaded because they are broken symlinks "
+                "(their targets do not exist):"
+            )
+            for link in broken_symlinks:
+                print(f"  - {link}")
+            print(
+                "Re-stage the input files so the symlinks point at existing "
+                "targets, then retry."
+            )
+        else:
+            print(
+                f"Error: found {nb_files_seen} file(s) in '{path}' but none "
+                f"were accepted for modality '{modality}'. Check that the "
+                "files match the expected type for this modality."
             )
         return s3_key_list, file_list
 
