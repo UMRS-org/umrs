@@ -313,7 +313,6 @@ def server_event_loop(
         sys.exit(0)
     except Exception as e:
         print(f"\nFATAL: Unhandled exception in server event loop: {e}", flush=True)
-        import traceback
         traceback.print_exc()
         try:
             task_manager.active_threads.close()
