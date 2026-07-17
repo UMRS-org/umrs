@@ -2523,7 +2523,9 @@ def _handle_login(args):
     api_key = args.api_key
     username = args.username
 
-    # --- 1. Get the token ---
+    # --- 1. Get the token (positional JWT or --api-key) ---
+    jwt_arg = getattr(args, "jwt", None)
+    api_key = jwt_arg or api_key
     if not api_key:
         api_key = getpass.getpass("Enter JWT or onboarding token: ")
     if not api_key:
@@ -4251,7 +4253,7 @@ def _action_monitor(ctx):
             user_cfg=ctx.user if isinstance(ctx.user, dict) else None,
             connection_info=conn_info,
             capabilities=capabilities,
-            workflow_id=getattr(args, 'workflow_id', None),
+            workflow_id=getattr(args, "workflow_id", None),
         )
         if args.once:
             dash.render_once()
@@ -4321,9 +4323,7 @@ def _action_workflow(ctx):
         elif wf_action == "cancel":
             parsed = api.workflow_cancel(args.execution_id)
         elif wf_action == "errors":
-            parsed = api.workflow_errors(
-                args.execution_id, tail=args.tail
-            )
+            parsed = api.workflow_errors(args.execution_id, tail=args.tail)
         elif wf_action == "logs":
             return _action_workflow_logs(ctx)
         else:
@@ -4425,9 +4425,12 @@ def _print_workflow_status(parsed: dict) -> None:
         for s in steps:
             status = s.get("status", "?")
             marker = (
-                _green("✓") if status == "succeeded"
-                else _red("✗") if status == "failed"
-                else _dim("•") if status == "skipped"
+                _green("✓")
+                if status == "succeeded"
+                else _red("✗")
+                if status == "failed"
+                else _dim("•")
+                if status == "skipped"
                 else _dim("→")
             )
             print(
@@ -4499,12 +4502,8 @@ def _print_workflow_run(parsed: dict) -> None:
     print(f"  {_bold('Execution ID')}: {_cyan(execution_id)}")
     if durable_job_id:
         print(f"  {_bold('Job ID')}: {durable_job_id}")
-    print(
-        f"  {_dim('Track with:')} umrs-client workflow status {execution_id}"
-    )
-    print(
-        f"  {_dim('Stream logs:')} umrs-client workflow logs {execution_id} --follow"
-    )
+    print(f"  {_dim('Track with:')} umrs-client workflow status {execution_id}")
+    print(f"  {_dim('Stream logs:')} umrs-client workflow logs {execution_id} --follow")
 
 
 def _print_workflow_logs(parsed: dict) -> None:
@@ -4557,9 +4556,7 @@ def _action_workflow_logs(ctx):
                 if parsed.get("status") == "ok":
                     _print_workflow_logs(parsed)
                 else:
-                    print(
-                        f"{_red('✗')} {parsed.get('message', 'unknown error')}"
-                    )
+                    print(f"{_red('✗')} {parsed.get('message', 'unknown error')}")
                     return 1
             return 0
         except Exception as e:
@@ -4589,9 +4586,7 @@ def _action_workflow_logs(ctx):
                 continue
 
             if parsed.get("status") != "ok":
-                print(
-                    f"{_red('✗')} {parsed.get('message', 'unknown error')}"
-                )
+                print(f"{_red('✗')} {parsed.get('message', 'unknown error')}")
                 return 1
 
             logs = parsed.get("logs", [])
@@ -4617,9 +4612,7 @@ def _action_workflow_logs(ctx):
             if status in ("succeeded", "failed", "cancelled"):
                 if execution.get("error"):
                     print(f"\n{_red('Error')}: {execution['error']}")
-                print(
-                    f"\n{_dim('Workflow reached terminal state:')} {status}"
-                )
+                print(f"\n{_dim('Workflow reached terminal state:')} {status}")
                 break
 
             _time.sleep(interval)
@@ -4697,9 +4690,7 @@ def _action_visualize_workflow(ctx):
     return exit_code
 
 
-def _print_dag_ascii(
-    step_specs: list, levels: list[list[int]], wf_name: str
-) -> None:
+def _print_dag_ascii(step_specs: list, levels: list[list[int]], wf_name: str) -> None:
     """Print the DAG as ASCII art with execution levels."""
     print(f"\n{_bold('Workflow DAG')}: {wf_name}")
     print(f"{_dim('─' * 60)}")
@@ -4770,6 +4761,7 @@ def _action_validate_sandbox(ctx):
             with open(wf_path, encoding="utf-8") as fh:
                 wf_data = json.load(fh)
             from umrs.pipeline_sdk.workflow import WorkflowDefinition
+
             WorkflowDefinition.from_dict(wf_data)
             print(f"  {_green('✓')} workflow.json is valid")
         except Exception as e:
@@ -4840,9 +4832,24 @@ def _validate_dockerfile_syntax(dockerfile_path: str) -> list[str]:
     # Check for FROM instruction
     has_from = False
     valid_instructions = {
-        "FROM", "RUN", "CMD", "LABEL", "MAINTAINER", "EXPOSE", "ENV",
-        "ADD", "COPY", "ENTRYPOINT", "VOLUME", "USER", "WORKDIR",
-        "ARG", "ONBUILD", "STOPSIGNAL", "HEALTHCHECK", "SHELL",
+        "FROM",
+        "RUN",
+        "CMD",
+        "LABEL",
+        "MAINTAINER",
+        "EXPOSE",
+        "ENV",
+        "ADD",
+        "COPY",
+        "ENTRYPOINT",
+        "VOLUME",
+        "USER",
+        "WORKDIR",
+        "ARG",
+        "ONBUILD",
+        "STOPSIGNAL",
+        "HEALTHCHECK",
+        "SHELL",
     }
     for line_num, line in enumerate(lines, 1):
         stripped = line.strip()
@@ -4865,21 +4872,23 @@ def _validate_dockerfile_syntax(dockerfile_path: str) -> list[str]:
     return errors
 
 
-def _build_sandbox_image(
-    src_path: str, workflow_name: str
-) -> tuple[bool, str | None]:
+def _build_sandbox_image(src_path: str, workflow_name: str) -> tuple[bool, str | None]:
     """Build a container image from a Dockerfile.
 
     Returns (success, error_message).
     """
     import subprocess
+
     dockerfile_path = os.path.join(src_path, "Dockerfile")
     image_tag = f"{workflow_name}:latest"
     cmd = [
-        "podman", "build",
+        "podman",
+        "build",
         "--userns=host",
-        "-t", image_tag,
-        "-f", dockerfile_path,
+        "-t",
+        image_tag,
+        "-f",
+        dockerfile_path,
         src_path,
     ]
     try:
@@ -4900,9 +4909,7 @@ def _build_sandbox_image(
         return False, str(e)
 
 
-def _validate_step_scripts(
-    src_path: str, wf_path: str
-) -> list[str]:
+def _validate_step_scripts(src_path: str, wf_path: str) -> list[str]:
     """Validate that step scripts referenced in workflow.json exist.
 
     Returns a list of warning messages (empty if all scripts found).
@@ -5982,18 +5989,14 @@ def _action_s3_transfer(ctx):
                 check=(modality not in ("volume", "movie", "volume_movie")),
             )
             if s3_key and notify_server:
-                ctx.control_mq.notify_server(
-                    username, TaskCmd.PROCESS_OBJECTS, 1
-                )
+                ctx.control_mq.notify_server(username, TaskCmd.PROCESS_OBJECTS, 1)
             return s3_key, 1
         elif category == "text_file":
             s3_key = s3_store_text_file(
                 s3, full_bucket_name, subdir, file_path, data_mq, metadata_args
             )
             if s3_key and notify_server:
-                ctx.control_mq.notify_server(
-                    username, TaskCmd.PROCESS_OBJECTS, 1
-                )
+                ctx.control_mq.notify_server(username, TaskCmd.PROCESS_OBJECTS, 1)
             return s3_key, 1
         elif category == "text":
             try:
@@ -6091,9 +6094,7 @@ def _action_s3_transfer(ctx):
                     nb_objects += nb_sent
 
         if nb_objects > 0:
-            ctx.control_mq.notify_server(
-                username, TaskCmd.PROCESS_OBJECTS, nb_objects
-            )
+            ctx.control_mq.notify_server(username, TaskCmd.PROCESS_OBJECTS, nb_objects)
         elif nb_files_seen == 0:
             print(f"Error: directory '{path}' contains no files to upload.")
         elif broken_symlinks:
@@ -6294,6 +6295,140 @@ def _action_s3_transfer(ctx):
     return 0
 
 
+# === Umbrella command handlers ===
+
+
+def _action_bucket(ctx):
+    """Dispatch bucket subcommands."""
+    action = getattr(ctx.args, "bucket_action", None)
+    if action == "list":
+        return _action_list_buckets(ctx)
+    elif action == "purge":
+        return _action_purge_remote_buckets(ctx)
+    elif action == "create":
+        try:
+            s3_mod = _s3()
+            if not hasattr(s3_mod, "create_bucket"):
+                raise SystemExit(
+                    "Bucket creation requires client-full transport stack.\n"
+                    + _CLIENT_FULL_HINT
+                )
+            bucket_name = ctx.args.bucket_create_name  # set by argparse as 'name'
+            s3_mod.create_bucket(bucket_name)
+            print(f"✓ Bucket '{bucket_name}' created")
+            return 0
+        except Exception as e:
+            print(f"Error: {e}", file=sys.stderr)
+            return 1
+    else:
+        print(
+            "Unknown bucket action. Use: bucket list|purge|create",
+            file=sys.stderr,
+        )
+        return 1
+
+
+def _action_data(ctx):
+    """Dispatch data subcommands."""
+    action = getattr(ctx.args, "data_action", None)
+    if action == "upload":
+        ctx.args.action = "upload_file"
+        return _action_s3_transfer(ctx)
+    elif action == "dir-upload":
+        ctx.args.action = "upload_dir"
+        return _action_s3_transfer(ctx)
+    elif action == "download":
+        ctx.args.action = "download_results"
+        return _action_s3_transfer(ctx)
+    else:
+        print(
+            "Unknown data action. Use: data upload|dir-upload|download",
+            file=sys.stderr,
+        )
+        return 1
+
+
+def _action_project(ctx):
+    """Dispatch project subcommands (admin-only)."""
+    action = getattr(ctx.args, "project_action", None)
+    admin_token = ctx.args.admin_token or os.environ.get("UMRS_ADMIN_TOKEN")
+    if not admin_token:
+        print("Error: project commands require --admin-token", file=sys.stderr)
+        return 2
+
+    control_mq = ctx.control_mq
+    if not control_mq:
+        print(
+            "Error: project commands require ZMQ control connection",
+            file=sys.stderr,
+        )
+        return 1
+
+    try:
+        from umrs.client.control_api import UMRSControlAPI
+
+        api = UMRSControlAPI(control_mq=control_mq, admin_token=admin_token)
+
+        if action == "list":
+            result = api._request_json(TaskCmd.ADMIN_LIST_PROJECTS, {})
+            if ctx.args.output == "json":
+                print(json.dumps(result, indent=2))
+            else:
+                projects = result.get("projects", [])
+                if not projects:
+                    print("(no projects)")
+                else:
+                    print(
+                        f"{'Project ID':<30} {'Name':<30} {'Members':<10} {'Status':<10}"
+                    )
+                    print("-" * 80)
+                    for p in projects:
+                        print(
+                            f"{p.get('project_id', ''):<30}"
+                            f"{p.get('name', ''):<30}"
+                            f"{len(p.get('members', [])):<10}"
+                            f"{p.get('status', ''):<10}"
+                        )
+            return 0
+
+        elif action == "add":
+            result = api._request_json(
+                TaskCmd.ADMIN_ADD_PROJECT_MEMBER,
+                {
+                    "username": ctx.args.username,
+                    "project_id": ctx.args.project_id,
+                },
+            )
+            print(f"✓ Added {ctx.args.username} to project {ctx.args.project_id}")
+            return 0
+
+        elif action == "remove":
+            result = api._request_json(
+                TaskCmd.ADMIN_REMOVE_PROJECT_MEMBER,
+                {
+                    "username": ctx.args.username,
+                    "project_id": ctx.args.project_id,
+                },
+            )
+            print(f"✓ Removed {ctx.args.username} from project {ctx.args.project_id}")
+            return 0
+
+        elif action == "info":
+            result = api._request_json(
+                TaskCmd.ADMIN_GET_PROJECT_INFO,
+                {"project_id": ctx.args.project_id},
+            )
+            if ctx.args.output == "json":
+                print(json.dumps(result, indent=2))
+            else:
+                print(json.dumps(result, indent=2, default=str))
+            return 0
+
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+
 # Action dispatch table — maps CLI action name to handler function
 _ACTION_HANDLERS = {
     "ping": _action_ping,
@@ -6302,17 +6437,22 @@ _ACTION_HANDLERS = {
     "endpoint": _action_endpoint,
     "monitor": _action_monitor,
     "workflow": _action_workflow,
+    # New umbrella handlers
+    "bucket": _action_bucket,
+    "data": _action_data,
+    "project": _action_project,
+    # Legacy flat commands (backward compat)
     "list_buckets": _action_list_buckets,
     "purge_remote_buckets": _action_purge_remote_buckets,
+    "upload_file": _action_s3_transfer,
+    "upload_dir": _action_s3_transfer,
+    "download_results": _action_s3_transfer,
     "status": _action_status,
     "recompute": _action_maintenance,
     "update": _action_maintenance,
     "check": _action_maintenance,
     "reload": _action_maintenance,
     "export_embeddings": _action_export_embeddings,
-    "upload_file": _action_s3_transfer,
-    "upload_dir": _action_s3_transfer,
-    "download_results": _action_s3_transfer,
 }
 
 
@@ -6596,105 +6736,39 @@ def main():
         help="Show connection setup, transport modes, auth, and S3 status at a glance",
     )
 
-    ui_p = subparsers.add_parser(
-        "upload_file",
-        help="Upload file to a bucket (ommit empty lines in case of 'text' modality)",
+    # === Bucket commands ===
+    bucket_p = subparsers.add_parser(
+        "bucket", help="Bucket management (list, purge, create)"
     )
-    ui_p.add_argument("file_path")
-    ui_p.add_argument(
-        "bucket_alias",
-        help=(
-            "Alias of a bucket as defined in the client configuration file.\n"
-            "Use the list_bucket command to show available bucket aliases for a given user.\n"
-            "You may append a subdirectory using '/' as in a typical Unix path."
-        ),
-    )
+    bucket_sub = bucket_p.add_subparsers(dest="bucket_action", required=True)
 
-    ui_p.add_argument(
-        "username",
-        nargs="?",
-        help="Configured username owning the bucket (defaults to config if omitted)",
-    )
-
-    utf_p = subparsers.add_parser(
-        "upload_dir", help="Upload all files of a directory to a bucket"
-    )
-    utf_p.add_argument("path")
-    utf_p.add_argument(
-        "bucket_alias",
-        help=(
-            "Alias of a bucket as defined in the client configuration file.\n"
-            "Use the list_bucket command to show available bucket aliases for a given user.\n"
-            "You may append a subdirectory using '/' as in a typical Unix path."
-        ),
-    )
-    utf_p.add_argument(
-        "username",
-        nargs="?",
-        help="Configured username owning the bucket (defaults to config if omitted)",
-    )
-
-    dr_p = subparsers.add_parser(
-        "download_results", help="Download file results computed by the server"
-    )
-    dr_p.add_argument(
-        "bucket_alias",
-        help=(
-            "Alias of a bucket as defined in the client configuration file.\n"
-            "Use the list_bucket command to show available bucket aliases for a given user.\n"
-            "You may append a subdirectory using '/' as in a typical Unix path."
-        ),
-    )
-    dr_p.add_argument(
-        "local_path",
-        help=(
-            "local Unix path where the results will be stored.\n"
-            "New files will erase local files."
-        ),
-    )
-
-    dr_p.add_argument(
-        "--force-overwrite",
-        action="store_true",
-        default=False,
-        help="Force overwriting existing local files even if checksums mismatch.",
-    )
-    dr_p.add_argument(
-        "username",
-        nargs="?",
-        help="Configured username owning the bucket (defaults to config if omitted)",
-    )
-
-    # New actions
-    lb_p = subparsers.add_parser(
-        "list_buckets", help="List bucket aliases for a username"
-    )
-    lb_p.add_argument(
+    bl_p = bucket_sub.add_parser("list", help="List bucket aliases for a username")
+    bl_p.add_argument(
         "username",
         nargs="?",
         help="Username to filter buckets (defaults to config if omitted)",
     )
-    lb_p.add_argument(
+    bl_p.add_argument(
         "--no-check-remote",
         action="store_true",
         default=False,
         help="Skip probing MinIO/S3 for remote bucket status (faster)",
     )
 
-    prb_p = subparsers.add_parser(
-        "purge_remote_buckets", help="Delete extra remote S3 buckets not in user config"
+    bp_p = bucket_sub.add_parser(
+        "purge", help="Delete extra remote S3 buckets not in user config"
     )
-    prb_p.add_argument(
+    bp_p.add_argument(
         "username", nargs="?", help="Username (defaults to config if omitted)"
     )
-    prb_p.add_argument(
+    bp_p.add_argument(
         "--bucket",
         action="append",
         dest="buckets",
         metavar="NAME",
         help="Specific bucket name(s) to purge (repeatable; default: all extra)",
     )
-    prb_p.add_argument(
+    bp_p.add_argument(
         "-y",
         "--yes",
         action="store_true",
@@ -6702,12 +6776,115 @@ def main():
         help="Skip confirmation prompt",
     )
 
-    status_p = subparsers.add_parser(
-        "status", help="Fetch the latest server summary for maintenance commands"
+    bc_p = bucket_sub.add_parser(
+        "create", help="Create a new S3 bucket (if it doesn't exist)"
     )
-    configure_status_parser(status_p, include_username=True)
+    bc_p.add_argument(
+        "name",
+        help="Bucket name to create",
+    )
 
-    # Embedding maintenance actions
+    # === Data transfer commands ===
+    data_p = subparsers.add_parser("data", help="Data transfer (upload, download)")
+    data_sub = data_p.add_subparsers(dest="data_action", required=True)
+
+    # data upload (replaces upload_file)
+    du_p = data_sub.add_parser("upload", help="Upload file to a bucket")
+    du_p.add_argument("file_path")
+    du_p.add_argument(
+        "bucket_alias",
+        help=(
+            "Alias of a bucket as defined in the client configuration file.\n"
+            "Use the list_bucket command to show available bucket aliases for a given user.\n"
+            "You may append a subdirectory using '/' as in a typical Unix path."
+        ),
+    )
+    du_p.add_argument(
+        "username",
+        nargs="?",
+        help="Configured username owning the bucket (defaults to config if omitted)",
+    )
+
+    # data dir-upload (replaces upload_dir)
+    ddu_p = data_sub.add_parser(
+        "dir-upload", help="Upload all files of a directory to a bucket"
+    )
+    ddu_p.add_argument("path")
+    ddu_p.add_argument(
+        "bucket_alias",
+        help=(
+            "Alias of a bucket as defined in the client configuration file.\n"
+            "Use the list_bucket command to show available bucket aliases for a given user.\n"
+            "You may append a subdirectory using '/' as in a typical Unix path."
+        ),
+    )
+    ddu_p.add_argument(
+        "username",
+        nargs="?",
+        help="Configured username owning the bucket (defaults to config if omitted)",
+    )
+
+    # data download (replaces download_results)
+    dd_p = data_sub.add_parser(
+        "download", help="Download file results computed by the server"
+    )
+    dd_p.add_argument(
+        "bucket_alias",
+        help=(
+            "Alias of a bucket as defined in the client configuration file.\n"
+            "Use the list_bucket command to show available bucket aliases for a given user.\n"
+            "You may append a subdirectory using '/' as in a typical Unix path."
+        ),
+    )
+    dd_p.add_argument(
+        "local_path",
+        help=(
+            "local Unix path where the results will be stored.\n"
+            "New files will erase local files."
+        ),
+    )
+    dd_p.add_argument(
+        "--force-overwrite",
+        action="store_true",
+        default=False,
+        help="Force overwriting existing local files even if checksums mismatch.",
+    )
+    dd_p.add_argument(
+        "username",
+        nargs="?",
+        help="Configured username owning the bucket (defaults to config if omitted)",
+    )
+
+    # === Project commands (admin-only) ===
+    project_p = subparsers.add_parser(
+        "project", help="Project management (admin-only: list, add, remove, info)"
+    )
+    project_sub = project_p.add_subparsers(dest="project_action", required=True)
+
+    pj_p = project_sub.add_parser("list", help="List all projects (admin-only)")
+
+    pa_p = project_sub.add_parser("add", help="Add a user to a project (admin-only)")
+    pa_p.add_argument("username", help="Username to add")
+    pa_p.add_argument("project_id", help="Project ID")
+    pa_p.add_argument("-y", "--yes", action="store_true", help="Assume yes on prompts")
+
+    pr_p = project_sub.add_parser(
+        "remove", help="Remove a user from a project (admin-only)"
+    )
+    pr_p.add_argument("username", help="Username to remove")
+    pr_p.add_argument("project_id", help="Project ID")
+    pr_p.add_argument("-y", "--yes", action="store_true", help="Assume yes on prompts")
+
+    pi_p = project_sub.add_parser("info", help="Show project details (admin-only)")
+    pi_p.add_argument("project_id", help="Project ID")
+    pi_p.add_argument(
+        "--full",
+        action="store_true",
+        default=False,
+        help="Include full details (members, resources)",
+    )
+
+    # === Embedding maintenance commands ===
     subparsers.add_parser(
         "recompute", help="Recompute embeddings for your own buckets (admin: all users)"
     )
@@ -6724,7 +6901,13 @@ def main():
         help="Reload server configuration (users, buckets, models) without restart; if -c points to a user JSON, it will be uploaded and persisted on the server before reloading",
     )
 
-    # Export embeddings from pgvector (server-mediated)
+    # === Status command ===
+    status_p = subparsers.add_parser(
+        "status", help="Fetch the latest server summary for maintenance commands"
+    )
+    configure_status_parser(status_p, include_username=True)
+
+    # === Export embeddings from pgvector (server-mediated) ===
     ee_p = subparsers.add_parser(
         "export_embeddings",
         help="Export computed embeddings to a local file (via server)",
@@ -6905,7 +7088,8 @@ def main():
     #   workflow visualize <name>       -- render the workflow DAG
     #   workflow validate-sandbox <path> -- validate Dockerfile sandbox
     wf_p = subparsers.add_parser(
-        "workflow", help="Workflow commands (upload, list, run, status, results, cancel, errors, visualize, validate-sandbox)"
+        "workflow",
+        help="Workflow commands (upload, list, run, status, results, cancel, errors, visualize, validate-sandbox)",
     )
     wf_sub = wf_p.add_subparsers(dest="workflow_action", required=True)
 
@@ -6938,9 +7122,7 @@ def main():
     configure_workflow_run_parser(wr_p)
 
     # workflow status
-    wst_p = wf_sub.add_parser(
-        "status", help="Show execution status for a workflow run"
-    )
+    wst_p = wf_sub.add_parser("status", help="Show execution status for a workflow run")
     wst_p.add_argument("execution_id", help="Execution ID to inspect")
 
     # workflow results
@@ -6950,9 +7132,7 @@ def main():
     wres_p.add_argument("execution_id", help="Execution ID to fetch results for")
 
     # workflow cancel
-    wcan_p = wf_sub.add_parser(
-        "cancel", help="Cancel a running workflow execution"
-    )
+    wcan_p = wf_sub.add_parser("cancel", help="Cancel a running workflow execution")
     wcan_p.add_argument("execution_id", help="Execution ID to cancel")
 
     # workflow errors -- error logs for failed Attempts
@@ -6986,7 +7166,9 @@ def main():
         "validate-sandbox",
         help="Validate a workflow sandbox (Dockerfile + workflow.json) before running",
     )
-    wvs_p.add_argument("path", help="Local directory containing Dockerfile + workflow.json")
+    wvs_p.add_argument(
+        "path", help="Local directory containing Dockerfile + workflow.json"
+    )
     wvs_p.add_argument(
         "--dry-run",
         action="store_true",
@@ -7056,10 +7238,17 @@ def main():
     login_p = subparsers.add_parser(
         "login",
         help="Authenticate and configure connection in one step",
+        description="Login: `umrs-client login <JWT>` or `umrs-client login --api-key <JWT>`",
     )
+    login_p.add_argument("jwt", nargs="?", help="JWT token (positional or --api-key)")
     login_p.add_argument("--host", default="127.0.0.1", help="UMRS server host")
     login_p.add_argument("--port", type=int, default=5555, help="UMRS ZMQ control port")
-    login_p.add_argument("--api-key", "-k", help="JWT or onboarding token")
+    login_p.add_argument(
+        "--api-key",
+        "-k",
+        help="JWT or onboarding token (positional JWT takes precedence)",
+        default=None,
+    )
     login_p.add_argument(
         "--mode",
         default="direct",
@@ -7177,45 +7366,6 @@ def main():
         default=False,
         help="Overwrite if the output file already exists",
     )
-    cae_p = config_sub.add_parser(
-        "add-experience",
-        help="Merge experience fragment(s) from a JSON file into the current user config",
-    )
-    cae_p.add_argument(
-        "fragment",
-        help="Path to a JSON file containing one experience object or an array of experiences",
-    )
-    cae_p.add_argument(
-        "--update",
-        action="store_true",
-        default=False,
-        help="Replace existing experience(s) with matching xp_name instead of skipping",
-    )
-    cie_p = config_sub.add_parser(
-        "import",
-        help="Import experience(s) from a JSON file (alias for add-experience --update)",
-    )
-    cie_p.add_argument(
-        "fragment",
-        help="Path to a JSON file containing one experience object or an array of experiences",
-    )
-    cie_p.add_argument(
-        "--no-update",
-        dest="update",
-        action="store_false",
-        default=True,
-        help="Skip existing experiences instead of replacing them",
-    )
-    cre_p = config_sub.add_parser(
-        "remove-experience",
-        help="Remove experience(s) by xp_name from the current user config",
-    )
-    _configure_experience_remove_parser(cre_p)
-    crx_p = config_sub.add_parser(
-        "recover-experience",
-        help="Recover experience JSON from MinIO/S3 and optional Postgres status",
-    )
-    _configure_experience_recover_parser(crx_p)
     config_sub.add_parser(
         "list", help="List discovered conf_umrs.json, user*.json, and s3cfg candidates"
     )
@@ -7456,8 +7606,8 @@ def main():
     status_needs_config = args.action == "status" and not getattr(
         args, "username", None
     )
-    workflow_bucket_needs_config = (
-        args.action == "run-workflow" and bool(getattr(args, "bucket", None))
+    workflow_bucket_needs_config = args.action == "run-workflow" and bool(
+        getattr(args, "bucket", None)
     )
     requires_config = (
         args.action
