@@ -992,6 +992,22 @@ class MessageQueue:
         except (AttributeError, TypeError, ValueError):
             reply = self.socket.recv_string()
 
+        # ``recv_string`` swallows ``zmq.Again`` and returns ``(None, None)`` on a
+        # receive timeout, so the ``except zmq.Again`` above never fires for that
+        # case. Guard against a ``None`` reply here instead of letting the
+        # ``reply.startswith(...)`` call fail with the opaque
+        # ``'NoneType' object has no attribute 'startswith'`` error.
+        if reply is None:
+            raise RuntimeError(
+                f"Timeout waiting for server to allocate a data queue for client '{client_id}'. "
+                "The control channel reached the server (CURVE session is valid) but "
+                "the server did not return a data-queue endpoint in time. This "
+                "usually means the server failed while allocating the data queue "
+                "(check the server logs for a CREATE_DATA_QUEUE error) or the "
+                "configured data port range (UMRS_DATA_PORT_RANGE / "
+                "UMRS_DATA_BASE_PORT) is exhausted or unreachable."
+            )
+
         if reply.startswith("tcp://"):
             # Remove protocol prefix
             endpoint = reply[len("tcp://"):]

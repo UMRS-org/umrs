@@ -337,6 +337,48 @@ class TestCurveIntegration:
                 auth.stop()
             ctx.term()
 
+    def test_shared_context_reuses_single_zap_authenticator(self):
+        """Two server sockets on one context must share a single ZAP authenticator.
+
+        Regression for the CREATE_DATA_QUEUE crash: the on-demand data queue
+        shares the control queue's context (#64). Each server socket used to
+        start its own ZAP authenticator, but the ZAP handler binds
+        ``inproc://zeromq.zap.01`` which is unique per context — the second bind
+        failed with ``Address already in use`` and the data queue was never
+        created (the client then timed out with a cryptic ``NoneType.startswith``).
+        """
+        import zmq
+        from umrs.core.zmq_security import ZMQSecurityConfig
+
+        server_pub, server_secret = zmq.curve_keypair()
+        config = ZMQSecurityConfig(
+            auth_type="curve",
+            server_public_key=server_pub.decode("ascii"),
+            server_secret_key=server_secret.decode("ascii"),
+            allow_any_client_key=True,
+        )
+
+        ctx = zmq.Context()
+        sock1 = ctx.socket(zmq.ROUTER)
+        sock2 = ctx.socket(zmq.PULL)
+        auth1 = auth2 = None
+        try:
+            auth1 = config.apply_to_socket(sock1, server=True, context=ctx)
+            # Second server socket on the SAME context must NOT raise and must
+            # reuse the existing authenticator (returns None so it is not owned
+            # / stopped by this socket).
+            auth2 = config.apply_to_socket(sock2, server=True, context=ctx)
+
+            assert auth1 is not None
+            assert auth2 is None
+            assert sock2.curve_server == 1
+        finally:
+            sock1.close(linger=0)
+            sock2.close(linger=0)
+            if auth1 is not None:
+                auth1.stop()
+            ctx.term()
+
     def test_curve_rejects_unknown_client_key(self, tmp_path):
         """A client with an untrusted key is rejected by the server."""
         import zmq
