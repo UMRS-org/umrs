@@ -113,7 +113,7 @@ def run_perception(
                 image_bytes=image_bytes,
                 user_id=billing_user,
             )
-        if modality in ("text", "structured", "document") and extracted_text.strip():
+        if modality in ("text", "structured", "document", "code", "notebook") and extracted_text.strip():
             return summarize_text(
                 project_id,
                 filename=filename,
