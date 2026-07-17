@@ -127,7 +127,7 @@ def main():
 
 def _print_toplevel_help():
     """Print a lightweight help message without importing heavy deps."""
-    logger.info(
+    print(
         "usage: umrs-server [-h] {admin,...} ...\n"
         "\n"
         "UMRS server and admin CLI.\n"
@@ -157,5 +157,6 @@ def _print_toplevel_help():
         "  umrs-server admin user show <username>\n"
         '  eval "$(umrs-server completion bash)"\n'
         "\n"
-        "Run 'umrs-server admin -h' for admin subcommands.\n"
+        "Run 'umrs-server admin -h' for admin subcommands.\n",
+        file=sys.stderr,
     )
