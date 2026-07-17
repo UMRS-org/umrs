@@ -493,6 +493,10 @@ def _extract_tags(result: CodeParseResult) -> list[str]:
         tags.add(f"kernels:{len(result.kernels)}")
     if result.dependencies:
         tags.add(f"imports:{len(result.dependencies)}")
+        for dep in result.dependencies[:12]:
+            root = dep.split(".")[0].strip()
+            if root:
+                tags.add(root)
     if result.execution_flow:
         tags.add(result.execution_flow)
 
