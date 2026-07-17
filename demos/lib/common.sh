@@ -10,6 +10,27 @@
 # --- Default configuration ---
 REPO_ROOT="${REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 
+_default_umrs_profile() {
+    # If no profile/host is set explicitly, prefer the deployed RCCS
+    # connection profile (umrs-front) when it exists, so the private demos
+    # run against the shared RCCS deployment out of the box.
+    # Profile identity is still "rccs-cloud" on most clients; newer
+    # onboarding flows may name it "rccs".
+    [[ -z "${UMRS_PROFILE:-}" && -z "${UMRS_ZMQ_HOST:-}" ]] || return 0
+    command -v umrs-client >/dev/null 2>&1 || return 0
+    local profiles
+    profiles="$(umrs-client --output json profile list 2>/dev/null)" || return 0
+    local name
+    for name in rccs rccs-cloud; do
+        if grep -q "\"name\": \"${name}\"" <<<"$profiles"; then
+            export UMRS_PROFILE="$name"
+            return 0
+        fi
+    done
+}
+
+_default_umrs_profile
+
 _apply_umrs_profile_defaults() {
     command -v umrs-client >/dev/null 2>&1 || return 0
 
