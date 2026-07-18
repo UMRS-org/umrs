@@ -57,7 +57,7 @@ If you already have a configured UMRS server reachable from your machine:
 
 ```bash
 umrs-client ping
-umrs-client list_buckets
+umrs-client bucket list
 ```
 
 Site-specific setup scripts under `deploy/<site>/`, such as

@@ -481,8 +481,8 @@ EOF
 #   "model_type": "user_script:///home/user/my_models/workflow.json"
 
 # 4. Upload data, UMRS processes using their script
-umrs-client upload_dir --bucket my-images ~/data/scans/
-umrs-client update  # triggers processing via user's denoise pipeline
+umrs-client data dir-upload --bucket my-images ~/data/scans/
+umrs-client data update  # triggers processing via user's denoise pipeline
 ```
 
 ### What happens internally:

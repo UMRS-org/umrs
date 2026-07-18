@@ -48,7 +48,7 @@ config, then reload:
 cd umrs/demos/03_sam3_segmentation
 umrs-client config add-experience experience.json --update
 umrs-client reload
-umrs-client list_buckets
+umrs-client bucket list
 ```
 
 What reload creates:
@@ -73,9 +73,9 @@ cd umrs/demos/02_text_embedding
 For manual file workflows, the common shape is:
 
 ```bash
-umrs-client upload_dir ./input <bucket-alias>/<run-id>
+umrs-client data dir-upload ./input <bucket-alias>/<run-id>
 umrs-client status
-umrs-client download_results <bucket-alias>/<run-id> ./results --force-overwrite
+umrs-client data download <bucket-alias>/<run-id> ./results --force-overwrite
 ```
 
 Use [README.md](README.md) to choose a numbered demo by task.
@@ -165,7 +165,7 @@ are cleaned up by UMRS.
 
 | Symptom | Check |
 |---------|-------|
-| `No bucket` on upload | Run `umrs-client list_buckets`; if missing, add the experience and reload |
+| `No bucket` on upload | Run `umrs-client bucket list`; if missing, add the experience and reload |
 | Experience disappeared after reload | It was removed from user JSON; recover it with `experience recover` if data remains |
 | Recovery finds buckets but not tables | Check Postgres env vars or rerun without `--no-postgres` from a host that can reach DB |
 | Generated recovery JSON has defaults | Storage cannot prove model identity; edit `model_name`, `model_type`, and `vector_size` before reload |

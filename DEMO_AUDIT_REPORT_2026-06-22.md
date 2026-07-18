@@ -70,11 +70,11 @@ All experience.json files use the current API patterns:
 |---------|-------|--------|
 | `rivault://bentoml://` | Vision model dispatch | ✓ Current |
 | `pipeline://` | Custom pipeline dispatch | ✓ Current |
-| `umrs-client upload_dir` | Directory upload | ✓ Current |
-| `umrs-client download_results` | Result download | ✓ Current |
+| `umrs-client data dir-upload` | Directory upload | ✓ Current |
+| `umrs-client data download` | Result download | ✓ Current |
 | `umrs-client experience add` | Experience registration | ✓ Current |
 | `umrs-client reload` | Server reload | ✓ Current |
-| `umrs-client list_buckets` | Bucket verification | ✓ Current |
+| `umrs-client bucket list` | Bucket verification | ✓ Current |
 | `umrs-client upload-workflow` | Workflow upload | ✓ Current |
 | `umrs-client run-workflow` | Workflow execution | ✓ Current |
 
@@ -89,7 +89,7 @@ All workflow step files use the current `umrs.pipeline_sdk` API:
 Searched for deprecated patterns:
 - `process-objects` / `process_objects` — Not found in demo files ✓
 - `wait-output` / `wait_output` — Not found in demo files ✓
-- `upload_dir` — This is the CURRENT API (umrs-client upload_dir) ✓
+- `data dir-upload` — This is the CURRENT API (umrs-client data dir-upload) ✓
 
 ---
 
@@ -184,7 +184,7 @@ All demos have:
 5. Reload server: `umrs-client reload`
 6. (Optional) Register model: `umrs-client model register sam3 /path/to/sam3infer`
 7. Stage input images: Create `.upload_staging/<RUN_ID>/` with symlinks
-8. Upload images: `umrs-client upload_dir "${UPLOAD_DIR}" "jens-sam3-direct/${RUN_ID}"`
+8. Upload images: `umrs-client data dir-upload "${UPLOAD_DIR}" "jens-sam3-direct/${RUN_ID}"`
 9. Wait and download results
 10. Inspect results (pickle files)
 
@@ -201,7 +201,7 @@ All demos have:
 **Steps:**
 1-5. Same as Demo 11
 6. Stage input images (Spring-8 concrete CT slices preferred)
-7. Upload & run — MAE mode: `umrs-client upload_dir "${UPLOAD_DIR}" "jens-hmae-mae/${RUN_ID}"`
+7. Upload & run — MAE mode: `umrs-client data dir-upload "${UPLOAD_DIR}" "jens-hmae-mae/${RUN_ID}"`
 8. Upload & run — Reconstruct mode
 9. Upload & run — Features mode
 10. Wait and download results (per mode)
@@ -279,12 +279,12 @@ All demos have:
 1. Verify server connectivity: `umrs-client ping`
 2. Register experience: `umrs-client experience add experience.json --update`
 3. Reload server: `umrs-client reload`
-4. Verify bucket: `umrs-client list_buckets`
+4. Verify bucket: `umrs-client bucket list`
 5. Bundle opossum engine: `cp -r ../../tmp/opossum-video-analysis/src/opossum workflow/opossum`
 6. Upload workflow: `umrs-client upload-workflow workflow/ --name opossum-analysis`
-7. Upload videos: `umrs-client upload_dir ../../tmp/opossum-video-analysis/data demo-opossum`
+7. Upload videos: `umrs-client data dir-upload ../../tmp/opossum-video-analysis/data demo-opossum`
 8. Run workflow: `umrs-client run-workflow opossum-analysis --bucket demo-opossum`
-9. Download results: `umrs-client download_results demo-opossum results/ --force-overwrite`
+9. Download results: `umrs-client data download demo-opossum results/ --force-overwrite`
 
 **Expected Output:**
 - `results/motion_events.tsv` — aggregated motion events

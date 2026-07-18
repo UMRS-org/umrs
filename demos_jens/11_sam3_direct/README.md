@@ -141,7 +141,7 @@ ls -la "${UPLOAD_DIR}/"
 ### 8. Upload images to UMRS
 
 ```bash
-umrs-client upload_dir "${UPLOAD_DIR}" "jens-sam3-direct/${RUN_ID}"
+umrs-client data dir-upload "${UPLOAD_DIR}" "jens-sam3-direct/${RUN_ID}"
 ```
 
 This uploads the image(s) to MinIO bucket `jens-sam3-direct/<RUN_ID>/` and tells
@@ -155,7 +155,7 @@ and uploads results back to S3. This can take several minutes on first run
 
 ```bash
 mkdir -p "results/${RUN_ID}/artifacts"
-umrs-client download_results "jens-sam3-direct/${RUN_ID}" "results/${RUN_ID}/artifacts" --force-overwrite
+umrs-client data download "jens-sam3-direct/${RUN_ID}" "results/${RUN_ID}/artifacts" --force-overwrite
 ```
 
 > **Tip**: If no results appear yet, wait and retry the `download_results`

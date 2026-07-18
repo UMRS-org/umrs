@@ -45,7 +45,7 @@ umrs-client --output json status all
 #    On the current rccs-cloud profile this is `user1-textfiles`.
 TMPFILE=$(mktemp)
 echo "Pool demo $(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$TMPFILE"
-umrs-client upload_file "$TMPFILE" user1-textfiles
+umrs-client data upload "$TMPFILE" user1-textfiles
 umrs-client --output json status all
 rm -f "$TMPFILE"
 ```

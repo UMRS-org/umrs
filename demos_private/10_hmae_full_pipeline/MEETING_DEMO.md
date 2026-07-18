@@ -32,14 +32,14 @@ Run from the repository root unless noted.
 
    ```bash
    # Upload Spring-8 concrete inputs to the three experience buckets
-   umrs-client upload_dir ../../tmp/hmae/spring8concrete demo-hmae
-   umrs-client upload_dir ../../tmp/hmae/spring8concrete demo-hmae-mae
-   umrs-client upload_dir ../../tmp/hmae/spring8concrete demo-hmae-features
+   umrs-client data dir-upload ../../tmp/hmae/spring8concrete demo-hmae
+   umrs-client data dir-upload ../../tmp/hmae/spring8concrete demo-hmae-mae
+   umrs-client data dir-upload ../../tmp/hmae/spring8concrete demo-hmae-features
 
    # Wait for processing to complete, then download all results
-   umrs-client download_results demo-hmae ./results/reconstruction --force-overwrite
-   umrs-client download_results demo-hmae-mae ./results/mae_reconstruction --force-overwrite
-   umrs-client download_results demo-hmae-features ./results/feature_extraction --force-overwrite
+   umrs-client data download demo-hmae ./results/reconstruction --force-overwrite
+   umrs-client data download demo-hmae-mae ./results/mae_reconstruction --force-overwrite
+   umrs-client data download demo-hmae-features ./results/feature_extraction --force-overwrite
    ```
 
 3. Point out these validated output lines:

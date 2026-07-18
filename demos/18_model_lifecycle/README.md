@@ -67,7 +67,7 @@ umrs-client model list --scope user
 #    Upload a text file — the server will automatically embed it using
 #    the configured embedding model.
 echo "Testing the model lifecycle with a sample sentence." > /tmp/lifecycle_test.txt
-umrs-client upload_file /tmp/lifecycle_test.txt user1-textfiles
+umrs-client data upload /tmp/lifecycle_test.txt user1-textfiles
 
 # 7. Check final model inventory
 umrs-client model list --scope system

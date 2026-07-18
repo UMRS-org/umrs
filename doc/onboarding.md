@@ -381,7 +381,7 @@ channel. They rely on NFS visibility or out-of-band delivery by the admin.
 umrs-client ping
 
 # Bucket visibility
-umrs-client list_buckets
+umrs-client bucket list
 
 # Overall status
 umrs-client status all

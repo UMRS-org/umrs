@@ -2852,7 +2852,7 @@ def format_status_text(response_payload, default_key):
             message = (
                 "No status for 'reload'. Reload is synchronous; use "
                 "'umrs-client status all' for a summary or "
-                "'umrs-client list_buckets' to verify onboarding."
+                "'umrs-client bucket list' to verify onboarding."
             )
         return f"{_red('✗')} {message}"
 
@@ -3090,7 +3090,7 @@ def action_list_buckets(bucket_cfg, username, output_format, *, remote_info=None
                 lines.append("")
                 lines.append(f"  {_dim('Hints:')}")
                 lines.append(
-                    f"  {_dim('  Remove extra buckets:')}  umrs-client purge_remote_buckets"
+                    f"  {_dim('  Remove extra buckets:')}  umrs-client bucket purge"
                 )
                 lines.append(
                     f"  {_dim('  Add experience back:')}   umrs-client experience add <experience.json> --update"

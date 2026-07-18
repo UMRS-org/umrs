@@ -46,8 +46,8 @@ python3 run_plugin_demo.py --input-dir /path/to/your/data
 # 3. For server-side plugin execution (Slurm/K8s backends), you would
 #    use umrs-client to upload the plugin spec and trigger execution:
 #      umrs-client workflow upload ./my_plugin_dir --name "my-plugin"
-#      umrs-client upload_dir /data/input user1-plugin-bucket
-#      umrs-client download_results user1-plugin-bucket ./results
+#      umrs-client data dir-upload /data/input user1-plugin-bucket
+#      umrs-client data download user1-plugin-bucket ./results
 ```
 
 ## Plugin Architecture

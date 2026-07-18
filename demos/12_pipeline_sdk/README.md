@@ -51,9 +51,9 @@ python3 text_analysis_pipeline.py --input-dir /your/text/dir --top-n 5
 #    in text_analysis_pipeline.py to set:
 #      compute_backend=ComputeBackend.UMRS_EMBEDDING
 #    Then the pipeline uses these umrs-client commands internally:
-#      umrs-client upload_dir <input-dir> <bucket>     # ingest phase
+#      umrs-client data dir-upload <input-dir> <bucket>     # ingest phase
 #      umrs-client status process_objects               # compute phase
-#      umrs-client download_results <bucket> <output>   # collect phase
+#      umrs-client data download <bucket> <output>   # collect phase
 ```
 
 ## Pipeline Phases Explained

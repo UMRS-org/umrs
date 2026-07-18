@@ -17,7 +17,7 @@ This demo uses the same BentoML vision path as the SAM3 segmentation demo, but t
 
 1. `README.md (step-by-step commands)` merges `experience.json` into the active UMRS user config.
 2. The demo uses general pictures from `umrs/demos/sample_data/images` unless `IMAGE_DIR` or an argument is provided.
-3. `umrs-client upload_dir` is implemented in `umrs/src/client_umrs.py` in `_action_s3_transfer()`. It uploads image bytes to S3, then sends a ZMQ `PROCESS_OBJECTS` notification.
+3. `umrs-client data dir-upload` is implemented in `umrs/src/client_umrs.py` in `_action_s3_transfer()`. It uploads image bytes to S3, then sends a ZMQ `PROCESS_OBJECTS` notification.
 4. UMRS server processing enters `umrs/src/umrs/server/processing.py` through `process_s3_objects()`.
 5. For `model_type: rivault://bentoml://...`, processing calls `launch_rivault_model()` in `umrs/src/umrs/server/rivault_launcher.py`.
 6. `rivault_launcher.py` selects the `vision-bentoml` profile, submits the Slurm job, opens the SSH tunnel, waits for BentoML `/readyz`, and builds a BentoML-backed compute adapter.

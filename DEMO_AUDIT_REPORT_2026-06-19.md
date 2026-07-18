@@ -93,7 +93,7 @@ recursive upload attempt.
 **Validation Performed:**
 ```bash
 cd umrs/demos_private/14_opossum_analysis
-umrs-client upload_dir ../../tmp/opossum-video-analysis/data demo-opossum
+umrs-client data dir-upload ../../tmp/opossum-video-analysis/data demo-opossum
 ```
 Result: 47 files uploaded successfully. S3 keys preserve the hierarchy:
 ```
@@ -109,7 +109,7 @@ opossum_215_A/opossumA/Schedule/20260330/00/20260330_001132.mp4
 **Symptom:** README's "Manual Steps" section was missing 3 critical commands:
 - `umrs-client experience add experience.json --update`
 - `umrs-client reload`
-- `umrs-client list_buckets`
+- `umrs-client bucket list`
 
 **Root Cause:** The README was written before the experience registration flow was
 established. Without these commands, a new user following the README would:
@@ -141,17 +141,17 @@ cp -r ../../tmp/opossum-video-analysis/src/opossum workflow/opossum
 umrs-client upload-workflow workflow/ --name opossum-analysis
 
 # 4. Upload videos (preserves camera/Schedule date hierarchy)
-umrs-client upload_dir ../../tmp/opossum-video-analysis/data demo-opossum
+umrs-client data dir-upload ../../tmp/opossum-video-analysis/data demo-opossum
 
 # 5. Download results
-umrs-client download_results demo-opossum results/ --force-overwrite
+umrs-client data download demo-opossum results/ --force-overwrite
 ```
 
 **After (complete):**
 Added 3 missing commands to the "Manual Steps" section:
 - `umrs-client experience add experience.json --update` — register experience locally
 - `umrs-client reload` — push config to server, provision bucket
-- `umrs-client list_buckets` — verify demo-opossum bucket is configured
+- `umrs-client bucket list` — verify demo-opossum bucket is configured
 
 Each step now includes expected outputs and common failure modes.
 
@@ -187,7 +187,7 @@ Each step now includes expected outputs and common failure modes.
 
 4. **Bucket Verification** ✅
    ```bash
-   umrs-client list_buckets
+   umrs-client bucket list
    ```
    Output: `Opossum Analysis | demo-opossum | movie | embedding | synced | 47 | mnagaso.opossum-analysis.demo-opossum`
 
@@ -199,7 +199,7 @@ Each step now includes expected outputs and common failure modes.
 
 6. **Data Upload** ✅ (FIXED)
    ```bash
-   umrs-client upload_dir ../../tmp/opossum-video-analysis/data demo-opossum
+   umrs-client data dir-upload ../../tmp/opossum-video-analysis/data demo-opossum
    ```
    Output: 47 files uploaded, hierarchy preserved as S3 key prefixes.
    - S3 keys: `opossum_215_A/opossumA/Schedule/20260330/HH/*.mp4`
@@ -208,7 +208,7 @@ Each step now includes expected outputs and common failure modes.
 
 ### Summary
 
-The opossum demo's `upload_dir` failure was caused by a non-recursive `glob()` in the
+The opossum demo's `data dir-upload` failure was caused by a non-recursive `glob()` in the
 `process_dir` function. The fix uses `os.walk()` to traverse the directory hierarchy,
 preserving the camera/Schedule date structure as S3 key prefixes.
 

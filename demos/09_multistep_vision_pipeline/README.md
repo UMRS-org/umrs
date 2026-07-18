@@ -58,7 +58,7 @@ umrs-client workflow visualize vision-pipeline-demo
 # 3. Upload images to the pipeline's bucket
 #    Images uploaded here will trigger the 3-step pipeline:
 #    segment → crop → stats. Each step's output feeds into the next.
-umrs-client upload_dir ../sample_data/images user1-pipeline
+umrs-client data dir-upload ../sample_data/images user1-pipeline
 
 # 4. Download results once all 3 steps complete
 #    Results include segmentation metadata, cropped patches, and
@@ -66,7 +66,7 @@ umrs-client upload_dir ../sample_data/images user1-pipeline
 #    If you rerun against a shared bucket, clear the corresponding
 #    *-output bucket first or use clean filenames to avoid mixing old
 #    artifacts into the download.
-umrs-client download_results user1-pipeline ./results --force-overwrite
+umrs-client data download user1-pipeline ./results --force-overwrite
 ```
 
 ## Environment Variables

@@ -77,7 +77,7 @@ umrs-client reload
 # not initialised; restart the server or check `umrs-server` logs.
 
 # 4. Verify the demo-opossum bucket alias is now configured
-umrs-client list_buckets
+umrs-client bucket list
 # Expected: a row for "Opossum Analysis" with alias "demo-opossum"
 #           Remote = synced, Objects = 0
 # Common failure: "Bucket alias 'demo-opossum' not found" — repeat
@@ -99,7 +99,7 @@ umrs-client workflow visualize opossum-analysis
 # Expected: ASCII art showing the workflow DAG structure
 
 # 7. Upload videos (preserves camera/Schedule date hierarchy)
-umrs-client upload_dir ../../tmp/opossum-video-analysis/data demo-opossum
+umrs-client data dir-upload ../../tmp/opossum-video-analysis/data demo-opossum
 # Expected: 47 files uploaded; final JSON with
 #           bucket=mnagaso.opossum-analysis.demo-opossum, modality=movie
 # Common failure: "Cannot process directory" — fixed in client_umrs.py
@@ -126,7 +126,7 @@ umrs-client workflow errors <execution-id>
 # 9. Check job status (optional)
 umrs-client job status <job-id-from-step-8>
 # Wait until status is "succeeded" or "failed".
-umrs-client download_results demo-opossum results/ --force-overwrite
+umrs-client data download demo-opossum results/ --force-overwrite
 # Expected: per-camera TSVs, motion_events.tsv, analysis_summary.json
 #           written under results/
 ```
@@ -138,14 +138,14 @@ server to automatically trigger the workflow when data is uploaded to the
 bucket, eliminating the need for step 8 (`run-workflow`).
 
 When `auto_trigger` is `true`:
-1. Upload data: `umrs-client upload_dir <data-dir> demo-opossum`
+1. Upload data: `umrs-client data dir-upload <data-dir> demo-opossum`
 2. The server detects the upload and automatically queues the workflow
-3. Download results: `umrs-client download_results demo-opossum results/`
+3. Download results: `umrs-client data download demo-opossum results/`
 
 When `auto_trigger` is `false` (or omitted):
-1. Upload data: `umrs-client upload_dir <data-dir> demo-opossum`
+1. Upload data: `umrs-client data dir-upload <data-dir> demo-opossum`
 2. Manually trigger: `umrs-client workflow run opossum-analysis --bucket demo-opossum`
-3. Download results: `umrs-client download_results demo-opossum results/`
+3. Download results: `umrs-client data download demo-opossum results/`
 
 ## Dependencies
 

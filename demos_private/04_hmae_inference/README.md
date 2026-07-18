@@ -56,12 +56,12 @@ umrs-client model upload /path/to/hmae_checkpoint_dir \
 # 3. Upload volume slice images to the HMAE bucket
 #    The server will automatically dispatch images to the BentoML
 #    vision service running HMAE on GPU via Slurm.
-umrs-client upload_dir ../../demos/03_sam3_segmentation/test_data_full user1-hmae
+umrs-client data dir-upload ../../demos/03_sam3_segmentation/test_data_full user1-hmae
 
 # 4. Download reconstruction results
 #    Waits for server-side HMAE processing and retrieves output
 #    files (reconstructed images, metadata) to the local results/ directory.
-umrs-client download_results user1-hmae ./results --force-overwrite
+umrs-client data download user1-hmae ./results --force-overwrite
 ```
 
 ## Defaults Used By The Script
