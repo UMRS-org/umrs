@@ -73,13 +73,13 @@ umrs-client workflow upload workflow/ --name "vision-multi-mode"
 #    - segment:    runs GPU-based segmentation (bounding boxes)
 #    - features:   runs GPU-based feature extraction (embedding vectors)
 #    - thumbnails: runs CPU-based thumbnail generation (128px, 256px)
-umrs-client upload_dir ../sample_data/images user1-multi
+umrs-client data dir-upload ../sample_data/images user1-multi
 
 # 4. Download results from all 3 branches
 #    Results are organized by branch in the output:
 #    S3 objects are written under segment/, features/, and thumbnails/.
 #    The local client currently flattens those prefixes when downloading.
-umrs-client download_results user1-multi ./results --force-overwrite
+umrs-client data download user1-multi ./results --force-overwrite
 ```
 
 If you rerun the demo against a shared bucket, clear the corresponding

@@ -24,8 +24,8 @@ This is intentionally an operator/admin workflow, not a normal end-user demo.
 See what S3 buckets are configured for your user:
 
 ```bash
-umrs-client list_buckets
-umrs-client list_buckets alice    # specific user
+umrs-client bucket list
+umrs-client bucket list alice    # specific user
 ```
 
 ### 2. Check S3 ↔ DB consistency
@@ -86,7 +86,7 @@ umrs-client config use --user "$CONF"
 umrs-client ping
 
 # 1. Show configured buckets.
-umrs-client list_buckets || true
+umrs-client bucket list || true
 
 # 2. Run a consistency check.
 umrs-client --admin-token "$UMRS_ADMIN_TOKEN" check
@@ -122,7 +122,7 @@ Changed the embedding model in user config?
   └─ umrs-client --admin-token "$UMRS_ADMIN_TOKEN" recompute    (re-embed everything)
 
 First time, don't know what's configured?
-  └─ umrs-client list_buckets      (discover your buckets)
+  └─ umrs-client bucket list      (discover your buckets)
 ```
 
 ## How It Works

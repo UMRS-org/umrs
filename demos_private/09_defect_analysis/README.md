@@ -80,11 +80,11 @@ umrs-client upload-workflow workflow/ --name structural-defect-analysis
 #    Images are dispatched to SAM3 segmentation on the GPU node.
 #    The segmentation model detects structural features and defects
 #    using text-prompted segmentation.
-umrs-client upload_dir ../../demos/sample_data/images demo-sam3
+umrs-client data dir-upload ../../demos/sample_data/images demo-sam3
 
 # 4. Download segmentation results
 #    Retrieves bounding boxes, masks, scores, and overlay images.
-umrs-client download_results demo-sam3 ./results --force-overwrite
+umrs-client data download demo-sam3 ./results --force-overwrite
 ```
 
 ## Script Defaults

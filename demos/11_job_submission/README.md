@@ -33,8 +33,8 @@ umrs-client job submit endpoint_provision \
     --project my-project
 
 # Now uploads use the warm endpoint — no cold start:
-umrs-client upload_dir /data/images/batch-1/
-umrs-client upload_dir /data/images/batch-2/
+umrs-client data dir-upload /data/images/batch-1/
+umrs-client data dir-upload /data/images/batch-2/
 
 # When done, release the node hours:
 umrs-client job cancel <job_id>

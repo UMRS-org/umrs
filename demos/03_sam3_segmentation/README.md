@@ -64,10 +64,10 @@ umrs-client model download sam3.1 --name sam3.1 \
   --scope user --server-side --staging-dir /path/to/site-user-model-root
 
 # 3. Upload images
-umrs-client upload_dir ./test_data_full user1-sam3
+umrs-client data dir-upload ./test_data_full user1-sam3
 
 # 4. Download results once processing completes
-umrs-client download_results user1-sam3 ./results --force-overwrite
+umrs-client data download user1-sam3 ./results --force-overwrite
 ```
 
 ## Configuration

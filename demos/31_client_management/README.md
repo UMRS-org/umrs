@@ -462,19 +462,19 @@ umrs-client model delete my-old-model --delete-files --force
 
 ### Step 17: Purge Remote Buckets
 
-The `purge_remote_buckets` command deletes extra remote S3 buckets that
+The `bucket purge` command deletes extra remote S3 buckets that
 are not declared in the user config. This is useful for cleaning up
 orphaned buckets from deleted experiences.
 
 ```bash
 # Preview which buckets would be purged (dry run)
-umrs-client purge_remote_buckets --dry-run
+umrs-client bucket purge --dry-run
 
 # Purge all extra buckets
-umrs-client purge_remote_buckets --yes
+umrs-client bucket purge --yes
 
 # Purge a specific bucket
-umrs-client purge_remote_buckets --bucket orphaned-bucket --yes
+umrs-client bucket purge --bucket orphaned-bucket --yes
 ```
 
 **Expected output:**
@@ -548,8 +548,8 @@ umrs-client model upload <path>           # Upload model to staging
 umrs-client model delete <name>           # Delete a model
 
 # Bucket management
-umrs-client list_buckets                  # List bucket aliases
-umrs-client purge_remote_buckets          # Delete extra S3 buckets
+umrs-client bucket list                   # List bucket aliases
+umrs-client bucket purge                  # Delete extra S3 buckets
 
 # Shell completion
 umrs-client completion --shell <shell>    # Generate completion script

@@ -42,7 +42,7 @@ umrs-client model download intfloat/e5-base-v2 --scope user --server-side \
     --staging-dir /path/to/site-user-model-root
 
 # 3. Upload the bundled sample files
-umrs-client upload_dir ../sample_data/texts user1-textfiles
+umrs-client data dir-upload ../sample_data/texts user1-textfiles
 
 # 4. Monitor progress
 umrs-client --output text status process_objects
@@ -142,7 +142,7 @@ The `custom_embedding/` directory contains a complete working example:
 3. Upload text files and process as usual:
 
 ```bash
-umrs-client upload_dir ./test_data/ my-bucket
+umrs-client data dir-upload ./test_data/ my-bucket
 umrs-client status all
 ```
 

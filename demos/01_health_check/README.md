@@ -50,7 +50,7 @@ curl -sf http://localhost:9000/minio/health/live && echo "MinIO OK"
 nc -z localhost 5555 && echo "ZMQ port visible"
 
 # List configured buckets
-umrs-client list_buckets
+umrs-client bucket list
 ```
 
 ## Expected Output

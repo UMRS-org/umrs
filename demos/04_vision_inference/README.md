@@ -33,13 +33,13 @@ umrs-client ping
 #    Images are stored in S3 and the server dispatches each one
 #    to the BentoML vision model running on HPC via Slurm.
 #    The first upload may trigger a cold start (Slurm job launch).
-umrs-client upload_dir ../sample_data/images user1-sam3
+umrs-client data dir-upload ../sample_data/images user1-sam3
 
 # 3. Download inference results
 #    Polls the server until processing completes, then retrieves
 #    all output files (JSON metadata, overlay images, etc.) to
 #    the local results/ directory.
-umrs-client download_results user1-sam3 results/ --force-overwrite
+umrs-client data download user1-sam3 results/ --force-overwrite
 ```
 
 ## Plugging in a Different Vision Model
@@ -77,7 +77,7 @@ operator task rather than part of the normal user demo.
 
 ## How It Works
 
-1. Images are uploaded to MinIO (S3) via `umrs-client upload_dir`
+1. Images are uploaded to MinIO (S3) via `umrs-client data dir-upload`
 2. The server detects new objects and dispatches them to the BentoML vision
    service running on HPC (Slurm)
 3. The vision service loads the model, runs inference, and writes results

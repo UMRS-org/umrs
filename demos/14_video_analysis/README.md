@@ -70,12 +70,12 @@ umrs-client workflow upload workflow/ --name "video-motion-analysis"
 # 4. Upload videos to the analysis bucket
 #    Each video will be processed by the MotionDetectStep,
 #    producing a per-video JSON report with motion events.
-umrs-client upload_dir ./sample_videos user1-video
+umrs-client data dir-upload ./sample_videos user1-video
 
 # 5. Download analysis results
 #    Results include per-video motion reports and an aggregate
 #    summary.json with total events across all videos.
-umrs-client download_results user1-video ./results --force-overwrite
+umrs-client data download user1-video ./results --force-overwrite
 ```
 
 This demo shows the normal user path: upload the workflow bundle, upload data,

@@ -113,12 +113,12 @@ umrs-client workflow upload ./workflow --name "custom-text-counter"
 #    Files uploaded to this bucket will be processed by the custom workflow.
 #    The server detects new objects and runs the "count_words" step on each
 #    text file, producing a word_count_results.json output.
-umrs-client upload_dir ../sample_data/texts user1-custom-text
+umrs-client data dir-upload ../sample_data/texts user1-custom-text
 
 # 5. Download the processed results
 #    Retrieves all output files from the bucket to a local directory.
 #    The main output is word_count_results.json with per-file statistics.
-umrs-client download_results user1-custom-text ./results --force-overwrite
+umrs-client data download user1-custom-text ./results --force-overwrite
 ```
 
 This demo shows the normal user path: upload the workflow bundle, upload data,

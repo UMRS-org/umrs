@@ -156,19 +156,19 @@ ls -la "${UPLOAD_DIR}/"
 ### 8. Upload & run — MAE mode (masked reconstruction)
 
 ```bash
-umrs-client upload_dir "${UPLOAD_DIR}" "jens-hmae-mae/${RUN_ID}"
+umrs-client data dir-upload "${UPLOAD_DIR}" "jens-hmae-mae/${RUN_ID}"
 ```
 
 ### 9. Upload & run — Reconstruct mode (full reconstruction)
 
 ```bash
-umrs-client upload_dir "${UPLOAD_DIR}" "jens-hmae-reconstruct/${RUN_ID}"
+umrs-client data dir-upload "${UPLOAD_DIR}" "jens-hmae-reconstruct/${RUN_ID}"
 ```
 
 ### 10. Upload & run — Features mode (encoder feature extraction)
 
 ```bash
-umrs-client upload_dir "${UPLOAD_DIR}" "jens-hmae-features/${RUN_ID}"
+umrs-client data dir-upload "${UPLOAD_DIR}" "jens-hmae-features/${RUN_ID}"
 ```
 
 > **Note**: Each upload dispatches the vision stack for that particular mode.
@@ -184,17 +184,17 @@ Download results for each mode:
 
 ```bash
 mkdir -p "results/${RUN_ID}/mae/artifacts"
-umrs-client download_results "jens-hmae-mae/${RUN_ID}" "results/${RUN_ID}/mae/artifacts" --force-overwrite
+umrs-client data download "jens-hmae-mae/${RUN_ID}" "results/${RUN_ID}/mae/artifacts" --force-overwrite
 ```
 
 ```bash
 mkdir -p "results/${RUN_ID}/reconstruct/artifacts"
-umrs-client download_results "jens-hmae-reconstruct/${RUN_ID}" "results/${RUN_ID}/reconstruct/artifacts" --force-overwrite
+umrs-client data download "jens-hmae-reconstruct/${RUN_ID}" "results/${RUN_ID}/reconstruct/artifacts" --force-overwrite
 ```
 
 ```bash
 mkdir -p "results/${RUN_ID}/features/artifacts"
-umrs-client download_results "jens-hmae-features/${RUN_ID}" "results/${RUN_ID}/features/artifacts" --force-overwrite
+umrs-client data download "jens-hmae-features/${RUN_ID}" "results/${RUN_ID}/features/artifacts" --force-overwrite
 ```
 
 > **Tip**: If no results appear yet, wait and retry the `download_results`

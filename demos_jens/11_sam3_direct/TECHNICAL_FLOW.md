@@ -13,7 +13,7 @@ sequenceDiagram
     participant BM as BentoML (service.py)
     participant SAM as SAM3 Model
 
-    U->>T: umrs-client upload_dir
+    U->>T: umrs-client data dir-upload
     T->>UMRS: ZMQ PROCESS_OBJECTS
     UMRS->>S3: Put image to jens-sam3-direct/<RUN_ID>/
     UMRS->>S3: Generate presigned URL
@@ -28,7 +28,7 @@ sequenceDiagram
     SAM-->>BM: masks, boxes, scores
     BM->>S3: PUT result (pickle) via presigned URL
     BM-->>UMRS: {"status": "success"}
-    U->>UMRS: umrs-client download_results
+    U->>UMRS: umrs-client data download
     UMRS->>S3: Get result artifacts
     S3-->>U: pickle files (masks, boxes, scores)
 ```
@@ -110,7 +110,7 @@ find "${IMAGE_DIR}" -maxdepth 1 -type f \
 Upload to S3:
 ```bash
 # README.md (step-by-step commands) line 93
-umrs-client upload_dir "${UPLOAD_DIR}" "jens-sam3-direct/${RUN_ID}"
+umrs-client data dir-upload "${UPLOAD_DIR}" "jens-sam3-direct/${RUN_ID}"
 ```
 
 `upload_dir` in `umrs-client` calls `_action_s3_transfer()` which:
@@ -304,7 +304,7 @@ download_results_bounded "jens-sam3-direct/${RUN_ID}" "${RESULTS_DIR}/artifacts"
 
 `download_results_bounded` is a wrapper from `demos/lib/common.sh` that calls:
 ```bash
-umrs-client download_results "jens-sam3-direct/${RUN_ID}" "${RESULTS_DIR}/artifacts"
+umrs-client data download "jens-sam3-direct/${RUN_ID}" "${RESULTS_DIR}/artifacts"
 ```
 with a timeout of `RESULT_DOWNLOAD_TIMEOUT` seconds.
 

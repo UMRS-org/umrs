@@ -277,11 +277,11 @@ See [Demo 07](../demos/07_user_model/README.md) for a complete example
 | Command | Description |
 |---------|-------------|
 | `umrs-client ping` | Check server readiness |
-| `umrs-client list_buckets` | Show available bucket aliases |
-| `umrs-client upload_file <file> <bucket>` | Upload single file |
-| `umrs-client upload_dir <dir> <bucket>` | Upload directory |
+| `umrs-client bucket list` | Show available bucket aliases |
+| `umrs-client data upload <file> <bucket>` | Upload single file |
+| `umrs-client data dir-upload <dir> <bucket>` | Upload directory |
 | `umrs-client status [target]` | Check processing status |
-| `umrs-client download_results <bucket> <path>` | Download output files |
+| `umrs-client data download <bucket> <path>` | Download output files |
 | `umrs-client export_embeddings <bucket> <path>` | Export embeddings to CSV/JSONL |
 | `umrs-client recompute` | Recompute all embeddings |
 | `umrs-client update` | Update missing embeddings |

@@ -167,7 +167,7 @@ umrs-client workflow upload ./workflow --name hmae-full-pipeline
 umrs-client workflow list --output text --name hmae-full-pipeline
 
 # 3. Upload Spring-8 concrete inputs to the bucket you want the workflow to use
-umrs-client upload_dir ../../tmp/hmae/spring8concrete demo-hmae
+umrs-client data dir-upload ../../tmp/hmae/spring8concrete demo-hmae
 
 # 4. Trigger the registered workflow against that bucket
 #    (capture the execution_id from the output for steps 5-6)
@@ -206,8 +206,8 @@ HMAE_BUCKET=demo-hmae
 
 Each HMAE task can be run individually via its experience bucket, or all three
 in sequence via the `hmae-full-pipeline` workflow. Inputs are uploaded with
-`umrs-client upload_dir` (legacy S3 transfer); outputs are fetched with
-`umrs-client upload_dir` on the output bucket or `umrs-client workflow results`
+`umrs-client data dir-upload` (legacy S3 transfer); outputs are fetched with
+`umrs-client data download` on the output bucket or `umrs-client workflow results`
 for workflow executions.
 
 ### Individual experience runs
@@ -218,24 +218,24 @@ umrs-client ping
 
 # Task 1: Reconstruction (bucket: demo-hmae)
 #    Full image reconstruction — PNG + pkl output.
-umrs-client upload_dir ../../tmp/hmae/spring8concrete demo-hmae
+umrs-client data dir-upload ../../tmp/hmae/spring8concrete demo-hmae
 
 # Task 2: MAE Reconstruction (bucket: demo-hmae-mae)
 #    Masked reconstruction with anomaly scoring.
-umrs-client upload_dir ../../tmp/hmae/spring8concrete demo-hmae-mae
+umrs-client data dir-upload ../../tmp/hmae/spring8concrete demo-hmae-mae
 
 # Task 3: Feature Extraction (bucket: demo-hmae-features)
 #    CLS and patch-level feature vectors.
-umrs-client upload_dir ../../tmp/hmae/spring8concrete demo-hmae-features
+umrs-client data dir-upload ../../tmp/hmae/spring8concrete demo-hmae-features
 ```
 
 Outputs are written back to the respective S3 buckets. Download them with:
 
 ```bash
 # Download results from each experience bucket
-umrs-client download_results demo-hmae ./results/reconstruction --force-overwrite
-umrs-client download_results demo-hmae-mae ./results/mae_reconstruction --force-overwrite
-umrs-client download_results demo-hmae-features ./results/feature_extraction --force-overwrite
+umrs-client data download demo-hmae ./results/reconstruction --force-overwrite
+umrs-client data download demo-hmae-mae ./results/mae_reconstruction --force-overwrite
+umrs-client data download demo-hmae-features ./results/feature_extraction --force-overwrite
 ```
 
 > **Note**: The individual experience runs use the site's existing experience

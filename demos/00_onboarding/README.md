@@ -90,7 +90,7 @@ umrs-client config import path/to/experience.json
 umrs-client reload
 
 # Confirm buckets are visible
-umrs-client list_buckets
+umrs-client bucket list
 ```
 
 ### Experience recovery and removal
