@@ -92,6 +92,32 @@ endpoints:
       # `marlin` is the DGX Spark (GB10) NVFP4 MoE backend from the vLLM recipe
       # (recipes.vllm.ai/Qwen/Qwen3.6-35B-A3B?hardware=dgx_spark_gb10).
       VLLM_MOE_BACKEND: "marlin"
+      # HF model card (huggingface.co/nvidia/Qwen3.6-35B-A3B-NVFP4) recommended
+      # vllm serve flags for DGX Spark — applying the subset that doesn't
+      # conflict with the settings above or with values already pinned
+      # elsewhere in this entry (max-model-len, gpu-memory-utilization,
+      # max-num-seqs, trust-remote-code, moe-backend, reasoning/tool parsers
+      # all come from other env_vars/fields and must NOT be repeated here).
+      # Deliberately NOT included (2026-07-18):
+      #   --gpu-memory-utilization 0.4 — would be silently overridden by
+      #     VLLM_GPU_MEM_UTIL=0.75 anyway (extra args are inserted before the
+      #     template's own --gpu-memory-utilization flag, so the template's
+      #     value wins); 0.75 is deliberately tuned for this node's shared
+      #     unified memory (see comment above).
+      #   --speculative-config '{"method":"mtp",...}' — MTP speculative
+      #     decoding needs a model with a trained multi-token-prediction head;
+      #     unverified whether this Qwen3 MoE checkpoint has one. Untested on
+      #     this fragile aarch64/GB10/Marlin launch path — do not add without
+      #     isolated testing first.
+      #   --load-format fastsafetensors — unverified whether the fastsafetensors
+      #     package is present in docker.io/vllm/vllm-openai:latest (aarch64);
+      #     could crash at startup. Untested — do not add without isolated
+      #     testing first.
+      VLLM_EXTRA_ARGS: >-
+        --kv-cache-dtype fp8
+        --attention-backend flashinfer
+        --max-num-batched-tokens 8192
+        --enable-prefix-caching
       # The ng-dgx-m0 partition default image (site.yaml vllm_docker_tag:
       # cu130-nightly-aarch64) is a FROZEN vLLM 0.19.2 nightly that lacks the
       # ModelOpt NVFP4 MoE quant method — the experts fall to the Unquantized
