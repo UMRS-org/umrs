@@ -316,6 +316,8 @@ class SimpleBackendAdapter:
                 extra_kwargs["partition_override"] = job.spec["partition_override"]
             if job.spec.get("nodelist_hint"):
                 extra_kwargs["nodelist_hint"] = job.spec["nodelist_hint"]
+            if job.spec.get("slurm_reservation"):
+                extra_kwargs["slurm_reservation"] = job.spec["slurm_reservation"]
             if job.spec.get("node_count") and int(job.spec["node_count"]) > 1:
                 extra_kwargs["node_count"] = int(job.spec["node_count"])
             if job.spec.get("gpu_count"):

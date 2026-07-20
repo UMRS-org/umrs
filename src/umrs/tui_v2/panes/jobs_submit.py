@@ -82,6 +82,7 @@ class JobsSubmitPane(Static):
         self._model = Input(placeholder="model_name or model_id", id="model-name")
         self._project = Input(placeholder="project_id (optional)", id="project")
         self._partition = Input(placeholder="slurm partition (optional)", id="partition")
+        self._reservation = Input(placeholder="slurm reservation (optional)", id="reservation")
         self._nodes = Input(placeholder="1", id="nodes", value="1")
         self._gpus = Input(placeholder="1", id="gpus", value="1")
         self._max_attempts = Input(placeholder="1", id="max-attempts", value="1")
@@ -105,6 +106,9 @@ class JobsSubmitPane(Static):
             with Horizontal(classes="form-row"):
                 yield Label("Partition:")
                 yield self._partition
+            with Horizontal(classes="form-row"):
+                yield Label("Reservation:")
+                yield self._reservation
             with Horizontal(classes="form-row"):
                 yield Label("Nodes:")
                 yield self._nodes
@@ -134,8 +138,9 @@ class JobsSubmitPane(Static):
         model = self._model.value or "default"
         project = self._project.value or None
         partition = self._partition.value or None
+        reservation = self._reservation.value or None
         max_attempts = int(self._max_attempts.value or "1")
-        self._submit_job(job_type, model, project, partition, max_attempts)
+        self._submit_job(job_type, model, project, partition, reservation, max_attempts)
 
     def _submit_job(
         self,
@@ -143,6 +148,7 @@ class JobsSubmitPane(Static):
         model: str,
         project: str | None,
         partition: str | None,
+        reservation: str | None,
         max_attempts: int,
     ) -> None:
         """Submit a job — delegated to the app's action executor."""

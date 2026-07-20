@@ -166,6 +166,11 @@ def configure_job_submit_parser(parser: argparse.ArgumentParser) -> None:
         default=None,
         help='Slurm nodelist hint (e.g. "ai-h200-brc-00"); passed as --nodelist to sbatch',
     )
+    parser.add_argument(
+        "--reservation",
+        default=None,
+        help='Slurm reservation ID (e.g. "demo_day_2026"); passed as --reservation to sbatch',
+    )
 
 
 def configure_job_cancel_parser(parser: argparse.ArgumentParser) -> None:

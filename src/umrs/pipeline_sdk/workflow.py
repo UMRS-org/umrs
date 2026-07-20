@@ -130,6 +130,9 @@ class ResourceSpec:
     memory_limit: str = "1Gi"
     timeout_seconds: int = 3600
     extra: dict[str, Any] = field(default_factory=dict)
+    # Slurm-specific overrides (auto-detected when execution_mode=slurm)
+    slurm_partition: str = ""
+    slurm_reservation: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         d = {
@@ -140,6 +143,10 @@ class ResourceSpec:
         }
         if self.extra:
             d["extra"] = self.extra
+        if self.slurm_partition:
+            d["slurm_partition"] = self.slurm_partition
+        if self.slurm_reservation:
+            d["slurm_reservation"] = self.slurm_reservation
         return d
 
     @classmethod
@@ -150,6 +157,8 @@ class ResourceSpec:
             memory_limit=data.get("memory_limit", "1Gi"),
             timeout_seconds=data.get("timeout_seconds", 3600),
             extra=data.get("extra", {}),
+            slurm_partition=data.get("slurm_partition", ""),
+            slurm_reservation=data.get("slurm_reservation", ""),
         )
 
 

@@ -352,8 +352,14 @@ class UserWorkflowRunner:
         wf_def = self.workflow.to_workflow_definition()
         script_dir = str(_resolve_source(wf_def, s3))
 
+        partition = (
+            self.workflow.resources.slurm_partition
+            or self.workflow.resources.extra.get("slurm_partition", "a100")
+        )
+        reservation = self.workflow.resources.slurm_reservation
         runner = SlurmPluginRunner(
-            partition=self.workflow.resources.extra.get("slurm_partition", "a100"),
+            partition=partition,
+            reservation=reservation,
         )
 
         current_keys = list(s3_keys)
