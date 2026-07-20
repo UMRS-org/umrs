@@ -11,13 +11,13 @@ from umrs.client import cli
 
 
 def test_umrs_client_admin_is_disabled_by_default(monkeypatch, capsys) -> None:
-    monkeypatch.setattr(sys, "argv", ["umrs-client", "admin", "token", "list"])
+    monkeypatch.setattr(sys, "argv", ["umrs", "admin", "token", "list"])
 
     exit_code = cli.main()
 
     captured = capsys.readouterr()
     assert exit_code == 2
-    assert "umrs-client admin is disabled" in captured.err
+    assert "umrs admin is disabled" in captured.err
     assert "umrs-server admin" in captured.err
 
 
@@ -25,7 +25,7 @@ def test_umrs_client_admin_denial_respects_json_output(monkeypatch, capsys) -> N
     monkeypatch.setattr(
         sys,
         "argv",
-        ["umrs-client", "--output", "json", "admin", "token", "list"],
+        ["umrs", "--output", "json", "admin", "token", "list"],
     )
 
     exit_code = cli.main()
@@ -39,18 +39,18 @@ def test_umrs_client_admin_denial_respects_json_output(monkeypatch, capsys) -> N
 
 def test_umrs_client_admin_escape_hatch_is_removed(monkeypatch, capsys) -> None:
     monkeypatch.setenv("UMRS_CLIENT_ENABLE_LEGACY_ADMIN", "1")
-    monkeypatch.setattr(sys, "argv", ["umrs-client", "admin", "token", "list"])
+    monkeypatch.setattr(sys, "argv", ["umrs", "admin", "token", "list"])
 
     exit_code = cli.main()
 
     captured = capsys.readouterr()
     assert exit_code == 2
-    assert "umrs-client admin is disabled" in captured.err
+    assert "umrs admin is disabled" in captured.err
 
 
 def test_requested_action_skips_global_options() -> None:
     argv = [
-        "umrs-client",
+        "umrs",
         "--profile",
         "rccs",
         "--output=json",
@@ -63,7 +63,7 @@ def test_requested_action_skips_global_options() -> None:
 
 
 def test_umrs_client_help_points_to_r4_and_admin_cli(monkeypatch, capsys) -> None:
-    monkeypatch.setattr(sys, "argv", ["umrs-client", "--help"])
+    monkeypatch.setattr(sys, "argv", ["umrs", "--help"])
 
     with pytest.raises(SystemExit) as exc:
         cli.main()
@@ -78,7 +78,7 @@ def test_umrs_client_help_points_to_r4_and_admin_cli(monkeypatch, capsys) -> Non
 
 
 def test_umrs_client_completion_command_prints_setup(monkeypatch, capsys) -> None:
-    monkeypatch.setattr(sys, "argv", ["umrs-client", "completion", "bash"])
+    monkeypatch.setattr(sys, "argv", ["umrs", "completion", "bash"])
 
     exit_code = cli.main()
 

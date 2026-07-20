@@ -8,7 +8,7 @@ This is intentionally an operator/admin workflow, not a normal end-user demo.
 ## Prerequisites
 
 - UMRS server running and reachable
-- `umrs-client` available
+- `umrs` available
 - At least one user configured with data already uploaded (run `demos/02_text_embedding/` first)
 - On auth-enforced deployments, an admin token exported as `UMRS_ADMIN_TOKEN`
   or passed via `--admin-token` (see `demos/23_auth_enforcement/`)
@@ -24,8 +24,8 @@ This is intentionally an operator/admin workflow, not a normal end-user demo.
 See what S3 buckets are configured for your user:
 
 ```bash
-umrs-client bucket list
-umrs-client bucket list alice    # specific user
+umrs bucket list
+umrs bucket list alice    # specific user
 ```
 
 ### 2. Check S3 ↔ DB consistency
@@ -34,7 +34,7 @@ Verify that every object in S3 has a matching embedding in pgvector,
 and that checksums match:
 
 ```bash
-umrs-client --admin-token "$UMRS_ADMIN_TOKEN" check
+umrs --admin-token "$UMRS_ADMIN_TOKEN" check
 ```
 
 Output shows per-bucket: matches, mismatches, not-found, errors.
@@ -45,7 +45,7 @@ Re-embed only the objects that are missing or have stale embeddings
 (e.g., the file was re-uploaded with different content):
 
 ```bash
-umrs-client --admin-token "$UMRS_ADMIN_TOKEN" update
+umrs --admin-token "$UMRS_ADMIN_TOKEN" update
 ```
 
 This is **incremental** — it skips objects whose embeddings already match.
@@ -56,7 +56,7 @@ Force a full re-embedding of every object in every bucket. Use this after
 upgrading the embedding model:
 
 ```bash
-umrs-client --admin-token "$UMRS_ADMIN_TOKEN" recompute
+umrs --admin-token "$UMRS_ADMIN_TOKEN" recompute
 ```
 
 **Warning**: This overwrites all existing embeddings. For large datasets,
@@ -67,10 +67,10 @@ it will take a long time and consume GPU resources.
 All maintenance operations run server-side as threads. Check the status:
 
 ```bash
-umrs-client status all
-umrs-client status recompute
-umrs-client status update
-umrs-client status check
+umrs status all
+umrs status recompute
+umrs status update
+umrs status check
 ```
 
 ## Manual Equivalent to the Demo Script
@@ -80,28 +80,28 @@ REPO_ROOT="$(git rev-parse --show-toplevel)"
 cd "$(git rev-parse --show-toplevel)/$(test -d "$(git rev-parse --show-toplevel)/umrs/demos" && echo umrs)/demos/06_server_maintenance"
 
 CONF="${UMRS_USER_CONF:-$HOME/.config/umrs/users/user1.json}"
-umrs-client config use --user "$CONF"
+umrs config use --user "$CONF"
 
 # 0. Verify client → server connectivity.
-umrs-client ping
+umrs ping
 
 # 1. Show configured buckets.
-umrs-client bucket list || true
+umrs bucket list || true
 
 # 2. Run a consistency check.
-umrs-client --admin-token "$UMRS_ADMIN_TOKEN" check
+umrs --admin-token "$UMRS_ADMIN_TOKEN" check
 sleep 2
-umrs-client status check || true
+umrs status check || true
 
 # 3. Update only missing or stale embeddings.
-umrs-client --admin-token "$UMRS_ADMIN_TOKEN" update
+umrs --admin-token "$UMRS_ADMIN_TOKEN" update
 sleep 2
-umrs-client status update || true
+umrs status update || true
 
 # 4. Optional full recompute.
-umrs-client --admin-token "$UMRS_ADMIN_TOKEN" recompute
+umrs --admin-token "$UMRS_ADMIN_TOKEN" recompute
 sleep 5
-umrs-client status recompute || true
+umrs status recompute || true
 ```
 
 If your deployment does not enforce admin tokens, omit `--admin-token`.
@@ -112,17 +112,17 @@ still operator/admin maintenance.
 
 ```
 Upload finished, not sure if everything processed?
-  └─ umrs-client --admin-token "$UMRS_ADMIN_TOKEN" check
+  └─ umrs --admin-token "$UMRS_ADMIN_TOKEN" check
        └─ All consistent? → Done
        └─ Mismatches found?
-            └─ umrs-client --admin-token "$UMRS_ADMIN_TOKEN" update   (fix only broken entries)
+            └─ umrs --admin-token "$UMRS_ADMIN_TOKEN" update   (fix only broken entries)
 
 Changed the embedding model in user config?
-  └─ umrs-client --admin-token "$UMRS_ADMIN_TOKEN" reload       (pick up new model)
-  └─ umrs-client --admin-token "$UMRS_ADMIN_TOKEN" recompute    (re-embed everything)
+  └─ umrs --admin-token "$UMRS_ADMIN_TOKEN" reload       (pick up new model)
+  └─ umrs --admin-token "$UMRS_ADMIN_TOKEN" recompute    (re-embed everything)
 
 First time, don't know what's configured?
-  └─ umrs-client bucket list      (discover your buckets)
+  └─ umrs bucket list      (discover your buckets)
 ```
 
 ## How It Works
@@ -138,6 +138,6 @@ First time, don't know what's configured?
 
 ```bash
 # See the "Running Manually" section above for step-by-step commands
-umrs-client ping
-umrs-client --output text status all
+umrs ping
+umrs --output text status all
 ```

@@ -23,7 +23,7 @@ for demo_dir in 04_hmae_inference 09_defect_analysis 10_hmae_full_pipeline 14_op
     if [ ! -f "$README" ]; then
         continue
     fi
-    
+
     for old in "${!FIXES[@]}"; do
         new="${FIXES[$old]}"
         if grep -q "$old" "$README"; then

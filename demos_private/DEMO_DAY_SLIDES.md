@@ -32,7 +32,7 @@ Key Features:
 ```
 ┌─────────────────────────────────────────────────────┐
 │  Client Layer                                      │
-│  • umrs-client CLI (upload, download, model, etc.)  │
+│  • umrs CLI (upload, download, model, etc.)  │
 │  • r4 platform SDK (RAG, workflows, MCP)           │
 └──────────────────┬──────────────────────────────────┘
                    │ HTTP / ZMQ
@@ -65,16 +65,16 @@ Key Features:
 pip install -e /path/to/umrs/src/
 
 # Configure connection profile
-umrs-client --profile rccs-cloud ping
+umrs --profile rccs-cloud ping
 
 # Check server health
-umrs-client info
+umrs info
 
 # Authenticate (if required)
-umrs-client login --api-key <JWT_TOKEN>
+umrs login --api-key <JWT_TOKEN>
 
 # Show current profile
-umrs-client profile show
+umrs profile show
 ```
 
 ## Slide 5: Demo 1 — Text Embeddings & RAG
@@ -87,14 +87,14 @@ echo "RAG stands for Retrieval-Augmented Generation." > /tmp/rag-texts/doc1.txt
 echo "UMRS processes multimodal data including text, images, and embeddings." > /tmp/rag-texts/doc2.txt
 
 # Upload to text bucket (auto-fallback to available bucket)
-umrs-client data dir-upload /tmp/rag-texts mnagaso3-text
+umrs data dir-upload /tmp/rag-texts mnagaso3-text
 
 # Verify upload
-umrs-client data list mnagaso3-text
+umrs data list mnagaso3-text
 
 # ─── Step 2: Check models ───
 # List available models
-umrs-client model list --scope system
+umrs model list --scope system
 
 # ─── Step 3: RAG Ingestion ───
 # Create RAG pipeline (requires admin access)
@@ -104,7 +104,7 @@ r4 rag ingest create --project default --file <pipeline-config.json>
 r4 rag ingest list --project default
 
 # ─── Step 4: Download results ───
-umrs-client data download mnagaso3-text /tmp/rag-results --force-overwrite
+umrs data download mnagaso3-text /tmp/rag-results --force-overwrite
 ```
 
 ## Slide 6: Demo 2 — SAM3.1 Image Segmentation
@@ -119,15 +119,15 @@ umrs-client data download mnagaso3-text /tmp/rag-results --force-overwrite
 cd /home/mnagaso/workspace/RCCS/ai4s-platform/umrs
 
 # Upload directory of images
-umrs-client data dir-upload demos/sample_data/images demo-sam3
+umrs data dir-upload demos/sample_data/images demo-sam3
 
 # ─── Step 2: Monitor processing ───
 # Check job status
-umrs-client status all
+umrs status all
 
 # ─── Step 3: Download segmentation results ───
 # SAM3 returns: bounding boxes, masks, scores, overlay images
-umrs-client data download demo-sam3 /tmp/segmentation-results --force-overwrite
+umrs data download demo-sam3 /tmp/segmentation-results --force-overwrite
 
 # ─── Step 4: View results ───
 ls -la /tmp/segmentation-results/
@@ -142,14 +142,14 @@ ls -la /tmp/segmentation-results/
 # Bucket: user1-hmae (admin must provision)
 
 # ─── Step 1: Register HMAE model (admin) ───
-umrs-client model upload /path/to/hmae_checkpoint \
+umrs model upload /path/to/hmae_checkpoint \
   --name "hmae-pretrained" \
   --type vision \
   --scope user \
   --register-path /site-models/hmae-pretrained
 
 # ─── Step 2: Upload volume slices ───
-umrs-client data dir-upload \
+umrs data dir-upload \
   demos/03_sam3_segmentation/test_data_full \
   user1-hmae
 
@@ -158,7 +158,7 @@ umrs-client data dir-upload \
 # This may take several minutes on Slurm
 
 # ─── Step 4: Download reconstructions ───
-umrs-client data download user1-hmae /tmp/hmae-results --force-overwrite
+umrs data download user1-hmae /tmp/hmae-results --force-overwrite
 
 # ─── Step 5: View reconstruction outputs ───
 ls -la /tmp/hmae-results/
@@ -170,42 +170,42 @@ ls -la /tmp/hmae-results/
 ```bash
 # ─── Upload Workflows ───
 # Upload a custom workflow bundle
-umrs-client workflow upload \
+umrs workflow upload \
   demos_private/09_defect_analysis/workflow/ \
   --name "defect-analysis"
 
 # ─── Visualize Workflow DAG ───
-umrs-client workflow visualize defect-analysis
+umrs workflow visualize defect-analysis
 
 # ─── Run Workflow ───
-umrs-client workflow run defect-analysis --bucket demo-sam3
+umrs workflow run defect-analysis --bucket demo-sam3
 
 # ─── Check Workflow Status ───
-umrs-client workflow status <execution-id>
+umrs workflow status <execution-id>
 
 # ─── Auto-Trigger (if configured) ───
 # When auto_trigger=true in workflow.json, 
 # uploading data automatically triggers the workflow
-umrs-client data dir-upload /path/to/data <bucket>
+umrs data dir-upload /path/to/data <bucket>
 # Workflow runs automatically → download results
-umrs-client data download <bucket> /tmp/results
+umrs data download <bucket> /tmp/results
 ```
 
 ## Slide 9: Doctor Mode — System Health
 
 ```bash
 # ─── Run Full Health Check ───
-umrs-client doctor
+umrs doctor
 
 # ─── Check Specific Components ───
-umrs-client doctor server        # Server connectivity
-umrs-client doctor auth          # Authentication status
-umrs-client doctor storage       # S3/MinIO connectivity
-umrs-client doctor models        # Model registry
-umrs-client doctor rag           # RAG service
-umrs-client doctor workflows     # Workflow system
-umrs-client doctor jobs          # Job system
-umrs-client doctor demos         # Demo readiness
+umrs doctor server        # Server connectivity
+umrs doctor auth          # Authentication status
+umrs doctor storage       # S3/MinIO connectivity
+umrs doctor models        # Model registry
+umrs doctor rag           # RAG service
+umrs doctor workflows     # Workflow system
+umrs doctor jobs          # Job system
+umrs doctor demos         # Demo readiness
 
 # ─── Example Output ───
 # ✓ Server: Server is reachable
@@ -239,14 +239,14 @@ Security Invariants:
 
 ```
 Phase 1: Basic Operations (15 min)
-  1. Connect to server: `umrs-client ping`
-  2. Upload text data: `umrs-client data dir-upload ...`
+  1. Connect to server: `umrs ping`
+  2. Upload text data: `umrs data dir-upload ...`
   3. List uploaded files
   4. Download results
 
 Phase 2: Vision Inference (20 min)
-  1. Upload images: `umrs-client data dir-upload ... demo-sam3`
-  2. Wait for processing (check with `umrs-client status`)
+  1. Upload images: `umrs data dir-upload ... demo-sam3`
+  2. Wait for processing (check with `umrs status`)
   3. Download segmentation overlays
   4. Show segmentation masks on images
 
@@ -271,7 +271,7 @@ Documentation:
 • docs/ — Architecture documentation
 
 Getting Help:
-• Check doctor: `umrs-client doctor`
+• Check doctor: `umrs doctor`
 • View server logs (admin)
 • Contact platform team
 

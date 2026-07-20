@@ -17,7 +17,7 @@ This demo uploads general-purpose pictures, starts the Mini-RiVault BentoML visi
 
 1. The demo README merges `experience.json` into the active UMRS user config.
 2. The demo uses general pictures from `umrs/demos/sample_data/images` unless `IMAGE_DIR` is explicitly set.
-3. `umrs-client data dir-upload` is implemented in `umrs/src/client_umrs.py` in `_action_s3_transfer()`. It uploads the image bytes to the configured S3 bucket, then sends a ZMQ `PROCESS_OBJECTS` notification. The image itself does not travel over ZMQ.
+3. `umrs data dir-upload` is implemented in `umrs/src/client_umrs.py` in `_action_s3_transfer()`. It uploads the image bytes to the configured S3 bucket, then sends a ZMQ `PROCESS_OBJECTS` notification. The image itself does not travel over ZMQ.
 4. UMRS server processing enters `umrs/src/umrs/server/processing.py` through `process_s3_objects()`.
 5. For `model_type: rivault://bentoml://...`, processing calls `launch_rivault_model()` in `umrs/src/umrs/server/rivault_launcher.py`.
 6. `rivault_launcher.py` selects the `vision-bentoml` profile, submits the Slurm job, opens the SSH tunnel, waits for BentoML `/readyz`, and builds a BentoML-backed compute adapter.
@@ -37,7 +37,7 @@ Run from the repository root unless noted.
 1. Confirm the direct UMRS profile is reachable:
 
    ```bash
-   PATH="$PWD/.venv/bin:$PATH" umrs-client --profile umrs-front status
+   PATH="$PWD/.venv/bin:$PATH" umrs --profile umrs-front status
    ```
 
 2. Run one-image SAM3.1 demo with the general picture set:

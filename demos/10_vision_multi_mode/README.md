@@ -66,33 +66,33 @@ are no conflicts.
 
 ```bash
 # 1. Verify server connectivity
-umrs-client ping
+umrs ping
 
 # 2. Load the experience fragment into your user config
 #    This registers the multi-mode vision experience (model + bucket + table)
-umrs-client experience add experience.json
+umrs experience add experience.json
 
 # 3. Reload to apply the new experience and provision buckets
-umrs-client reload
+umrs reload
 
 # 4. Upload the multi-mode workflow to the server
 #    The upload-ready bundle lives under workflow/. Its workflow.json defines
 #    3 parallel branches (segment, features,
 #    thumbnails). Each branch processes the same input images independently.
-umrs-client workflow upload workflow/ --name "vision-multi-mode"
+umrs workflow upload workflow/ --name "vision-multi-mode"
 
 # 5. Upload images to the multi-mode bucket
 #    All 3 branches receive the same images simultaneously:
 #    - segment:    runs GPU-based segmentation (bounding boxes)
 #    - features:   runs GPU-based feature extraction (embedding vectors)
 #    - thumbnails: runs CPU-based thumbnail generation (128px, 256px)
-umrs-client data dir-upload ../sample_data/images user1-multi
+umrs data dir-upload ../sample_data/images user1-multi
 
 # 6. Download results from all 3 branches
 #    Results are organized by branch in the output:
 #    S3 objects are written under segment/, features/, and thumbnails/.
 #    The local client currently flattens those prefixes when downloading.
-umrs-client data download user1-multi ./results --force-overwrite
+umrs data download user1-multi ./results --force-overwrite
 ```
 
 If you rerun the demo against a shared bucket, clear the corresponding
@@ -118,7 +118,7 @@ Swap the vision model in `workflow/workflow.json`:
 }
 ```
 
-Register the model first via Demo 07 (`umrs-client model register ...`).
+Register the model first via Demo 07 (`umrs model register ...`).
 
 This demo is intentionally written from the general-user point of view: the user
 uploads the workflow and data, and the server executes the configured branches.

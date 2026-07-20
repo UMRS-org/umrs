@@ -32,14 +32,14 @@ All demos (except 08, 12, 13, 15, 21 which run locally) require:
 
   Check the active connection profile with:
   ```bash
-  umrs-client --output text profile show
+  umrs --output text profile show
   ```
 
   If the profile reports `tunnel_mode=true`, start the matching SSH tunnel
   before running demos. Site-specific tunnel scripts are available under
   `deploy/<site>/ssh_tunnel.sh`.
 
-3. **Python venv** with `umrs-client` installed.
+3. **Python venv** with `umrs` installed.
 
    This project uses [uv](https://docs.astral.sh/uv/) as the standard package manager.
    Install it once if you haven't already (`brew install uv` on macOS, or
@@ -49,7 +49,7 @@ All demos (except 08, 12, 13, 15, 21 which run locally) require:
    ```bash
    cd deploy/<site>/
   ./setup_client.sh            # installs user config, connection profile, and umrs package
-  umrs-client --output text profile show
+  umrs --output text profile show
    ```
 
    **Option B — manual:**
@@ -57,15 +57,15 @@ All demos (except 08, 12, 13, 15, 21 which run locally) require:
    uv venv .venv
    source .venv/bin/activate    # Windows: .venv\Scripts\activate
    uv pip install -e src/       # install umrs package
-   which umrs-client            # verify it's in PATH
+   which umrs            # verify it's in PATH
    ```
 
 4. **User config and connection profile** — create both with the interactive
   init subcommands:
 
   ```bash
-  umrs-client profile init           # creates ~/.config/umrs/connections/<name>.json
-  umrs-client config init            # creates ~/.config/umrs/users/<username>.json
+  umrs profile init           # creates ~/.config/umrs/connections/<name>.json
+  umrs config init            # creates ~/.config/umrs/users/<username>.json
   ```
 
   Or use a site-specific setup script which does both for you:
@@ -76,8 +76,8 @@ All demos (except 08, 12, 13, 15, 21 which run locally) require:
 
   To import an additional site profile manually:
   ```bash
-  umrs-client profile import deploy/<site>/client/connections/<site>.json
-  umrs-client profile use <site>
+  umrs profile import deploy/<site>/client/connections/<site>.json
+  umrs profile use <site>
   ```
 
 All demos source `lib/common.sh` which provides the `$CLIENT` command,
@@ -106,17 +106,17 @@ UMRS provisions the declared MinIO buckets and Postgres/pgvector database.
 
 ```bash
 # Add or update a workload experience in the active user config
-umrs-client experience add path/to/experience.json --update
+umrs experience add path/to/experience.json --update
 
 # Provision declared buckets, IAM policy, Postgres role/database, and tables
-umrs-client reload
+umrs reload
 
 # Remove an experience from the user JSON only; data is retained
-umrs-client experience remove <xp_name>
+umrs experience remove <xp_name>
 
 # Recover a missing experience JSON from existing MinIO/S3 buckets and
 # optional Postgres/pgvector status
-umrs-client experience recover [xp_name] \
+umrs experience recover [xp_name] \
   --username <user> \
   --s3cfg ~/.config/umrs/s3cfg_<user> \
   --output-path recovered-experience.json

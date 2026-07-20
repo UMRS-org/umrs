@@ -15,7 +15,7 @@
 | Jens (`demos_jens/`) | 0      | 2      | 0       | 1    |
 
 All failures share a common root cause: **the server cannot provision the
-S3 config for the demo user** because `umrs-client reload` returns
+S3 config for the demo user** because `umrs reload` returns
 `HTTP 503: Service Unavailable`. Without a valid `s3cfg`, every
 `upload_dir` / `upload_file` call fails with `403 Forbidden` or
 "Server connection timeout".
@@ -87,7 +87,7 @@ failing it.
 
 ## Root Cause Analysis
 
-### 1. `umrs-client reload` returns HTTP 503 — **BUG FIXED**
+### 1. `umrs reload` returns HTTP 503 — **BUG FIXED**
 
 **Symptom:**
 ```

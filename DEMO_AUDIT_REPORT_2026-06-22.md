@@ -70,13 +70,13 @@ All experience.json files use the current API patterns:
 |---------|-------|--------|
 | `rivault://bentoml://` | Vision model dispatch | ✓ Current |
 | `pipeline://` | Custom pipeline dispatch | ✓ Current |
-| `umrs-client data dir-upload` | Directory upload | ✓ Current |
-| `umrs-client data download` | Result download | ✓ Current |
-| `umrs-client experience add` | Experience registration | ✓ Current |
-| `umrs-client reload` | Server reload | ✓ Current |
-| `umrs-client bucket list` | Bucket verification | ✓ Current |
-| `umrs-client upload-workflow` | Workflow upload | ✓ Current |
-| `umrs-client run-workflow` | Workflow execution | ✓ Current |
+| `umrs data dir-upload` | Directory upload | ✓ Current |
+| `umrs data download` | Result download | ✓ Current |
+| `umrs experience add` | Experience registration | ✓ Current |
+| `umrs reload` | Server reload | ✓ Current |
+| `umrs bucket list` | Bucket verification | ✓ Current |
+| `umrs upload-workflow` | Workflow upload | ✓ Current |
+| `umrs run-workflow` | Workflow execution | ✓ Current |
 
 ### Pipeline SDK Integration (Verified)
 
@@ -89,7 +89,7 @@ All workflow step files use the current `umrs.pipeline_sdk` API:
 Searched for deprecated patterns:
 - `process-objects` / `process_objects` — Not found in demo files ✓
 - `wait-output` / `wait_output` — Not found in demo files ✓
-- `data dir-upload` — This is the CURRENT API (umrs-client data dir-upload) ✓
+- `data dir-upload` — This is the CURRENT API (umrs data dir-upload) ✓
 
 ---
 
@@ -102,9 +102,9 @@ Searched for deprecated patterns:
 | 14 | cv2, numpy, ffmpeg, ffprobe | ✓ `generate_test_videos.py` checks for cv2/numpy |
 | 09 | umrs.pipeline_sdk, bentoml_client | ✓ Import-time checks |
 | 10 | umrs.pipeline_sdk, bentoml_client | ✓ Import-time checks |
-| 11 | umrs-client, SAM3 model | ✓ README documents prerequisites |
-| 12 | umrs-client, HMAE checkpoint | ✓ README documents prerequisites |
-| 04 | umrs-client, HMAE checkpoint | ✓ README documents prerequisites |
+| 11 | umrs, SAM3 model | ✓ README documents prerequisites |
+| 12 | umrs, HMAE checkpoint | ✓ README documents prerequisites |
+| 04 | umrs, HMAE checkpoint | ✓ README documents prerequisites |
 
 ### Error Handling
 
@@ -173,18 +173,18 @@ All demos have:
 **Prerequisites:**
 - UMRS server running with `VISION_STACK=jens`
 - SSH tunnel open (if running remotely)
-- `umrs-client` installed and on PATH
+- `umrs` installed and on PATH
 - `internal_genAI/bento/sam3infer/` contains `bpe.gz` and `sam3.pt`
 
 **Steps:**
 1. Open SSH tunnel: `cd deploy/ansible && ./bootstrap.sh --profile rccs-cloud --tunnel`
 2. Go to demo directory: `cd umrs/demos_jens/11_sam3_direct`
-3. Verify server: `umrs-client ping`
-4. Register experience: `umrs-client config add-experience experience.json --update`
-5. Reload server: `umrs-client reload`
-6. (Optional) Register model: `umrs-client model register sam3 /path/to/sam3infer`
+3. Verify server: `umrs ping`
+4. Register experience: `umrs config add-experience experience.json --update`
+5. Reload server: `umrs reload`
+6. (Optional) Register model: `umrs model register sam3 /path/to/sam3infer`
 7. Stage input images: Create `.upload_staging/<RUN_ID>/` with symlinks
-8. Upload images: `umrs-client data dir-upload "${UPLOAD_DIR}" "jens-sam3-direct/${RUN_ID}"`
+8. Upload images: `umrs data dir-upload "${UPLOAD_DIR}" "jens-sam3-direct/${RUN_ID}"`
 9. Wait and download results
 10. Inspect results (pickle files)
 
@@ -201,7 +201,7 @@ All demos have:
 **Steps:**
 1-5. Same as Demo 11
 6. Stage input images (Spring-8 concrete CT slices preferred)
-7. Upload & run — MAE mode: `umrs-client data dir-upload "${UPLOAD_DIR}" "jens-hmae-mae/${RUN_ID}"`
+7. Upload & run — MAE mode: `umrs data dir-upload "${UPLOAD_DIR}" "jens-hmae-mae/${RUN_ID}"`
 8. Upload & run — Reconstruct mode
 9. Upload & run — Features mode
 10. Wait and download results (per mode)
@@ -216,11 +216,11 @@ All demos have:
 
 **Prerequisites:**
 - UMRS server running
-- `umrs-client` installed
+- `umrs` installed
 - HMAE model checkpoint and BentoML vision runtime available
 
 **Steps:**
-1. Verify server connectivity: `umrs-client ping`
+1. Verify server connectivity: `umrs ping`
 2. (Optional) Upload local HMAE model checkpoint
 3. Upload volume slice images to HMAE bucket
 4. Download reconstruction results
@@ -276,15 +276,15 @@ All demos have:
 - Python ≥3.11
 
 **Steps:**
-1. Verify server connectivity: `umrs-client ping`
-2. Register experience: `umrs-client experience add experience.json --update`
-3. Reload server: `umrs-client reload`
-4. Verify bucket: `umrs-client bucket list`
+1. Verify server connectivity: `umrs ping`
+2. Register experience: `umrs experience add experience.json --update`
+3. Reload server: `umrs reload`
+4. Verify bucket: `umrs bucket list`
 5. Bundle opossum engine: `cp -r ../../tmp/opossum-video-analysis/src/opossum workflow/opossum`
-6. Upload workflow: `umrs-client upload-workflow workflow/ --name opossum-analysis`
-7. Upload videos: `umrs-client data dir-upload ../../tmp/opossum-video-analysis/data demo-opossum`
-8. Run workflow: `umrs-client run-workflow opossum-analysis --bucket demo-opossum`
-9. Download results: `umrs-client data download demo-opossum results/ --force-overwrite`
+6. Upload workflow: `umrs upload-workflow workflow/ --name opossum-analysis`
+7. Upload videos: `umrs data dir-upload ../../tmp/opossum-video-analysis/data demo-opossum`
+8. Run workflow: `umrs run-workflow opossum-analysis --bucket demo-opossum`
+9. Download results: `umrs data download demo-opossum results/ --force-overwrite`
 
 **Expected Output:**
 - `results/motion_events.tsv` — aggregated motion events

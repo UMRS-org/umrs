@@ -19,7 +19,7 @@ Run from the repository root unless noted.
 
    ```bash
    cd umrs
-   PYTHONPATH=src:$PYTHONPATH umrs-client --profile umrs-front status
+   PYTHONPATH=src:$PYTHONPATH umrs --profile umrs-front status
    ```
 
 2. Run the strict one-slice three-task HMAE flow:
@@ -32,14 +32,14 @@ Run from the repository root unless noted.
 
    ```bash
    # Upload Spring-8 concrete inputs to the three experience buckets
-   umrs-client data dir-upload ../../tmp/hmae/spring8concrete demo-hmae
-   umrs-client data dir-upload ../../tmp/hmae/spring8concrete demo-hmae-mae
-   umrs-client data dir-upload ../../tmp/hmae/spring8concrete demo-hmae-features
+   umrs data dir-upload ../../tmp/hmae/spring8concrete demo-hmae
+   umrs data dir-upload ../../tmp/hmae/spring8concrete demo-hmae-mae
+   umrs data dir-upload ../../tmp/hmae/spring8concrete demo-hmae-features
 
    # Wait for processing to complete, then download all results
-   umrs-client data download demo-hmae ./results/reconstruction --force-overwrite
-   umrs-client data download demo-hmae-mae ./results/mae_reconstruction --force-overwrite
-   umrs-client data download demo-hmae-features ./results/feature_extraction --force-overwrite
+   umrs data download demo-hmae ./results/reconstruction --force-overwrite
+   umrs data download demo-hmae-mae ./results/mae_reconstruction --force-overwrite
+   umrs data download demo-hmae-features ./results/feature_extraction --force-overwrite
    ```
 
 3. Point out these validated output lines:

@@ -125,7 +125,7 @@ upload-ready `workflow/` bundle.
 
 ### What must be in the uploaded directory
 
-The directory you pass to `umrs-client workflow upload` must contain:
+The directory you pass to `umrs workflow upload` must contain:
 
 - `workflow.json` at the top level
 - the referenced Python step files, here under `steps/`
@@ -133,10 +133,10 @@ The directory you pass to `umrs-client workflow upload` must contain:
 This means the following two commands will fail for different reasons:
 
 ```bash
-umrs-client workflow upload ./workflow/workflow.json
+umrs workflow upload ./workflow/workflow.json
 # fails because the argument is a file, not a directory
 
-umrs-client workflow upload ./workflow/steps
+umrs workflow upload ./workflow/steps
 # fails because that directory does not contain workflow.json at its top level
 ```
 
@@ -161,28 +161,28 @@ From `demos_private/10_hmae_full_pipeline`, the exact working flow is:
 
 ```bash
 # 1. Upload the workflow package
-umrs-client workflow upload ./workflow --name hmae-full-pipeline
+umrs workflow upload ./workflow --name hmae-full-pipeline
 
 # 2. Verify registration
-umrs-client workflow list --output text --name hmae-full-pipeline
+umrs workflow list --output text --name hmae-full-pipeline
 
 # 3. Upload Spring-8 concrete inputs to the bucket you want the workflow to use
-umrs-client data dir-upload ../../tmp/hmae/spring8concrete demo-hmae
+umrs data dir-upload ../../tmp/hmae/spring8concrete demo-hmae
 
 # 4. Trigger the registered workflow against that bucket
 #    (capture the execution_id from the output for steps 5-6)
-EXEC_ID=$(umrs-client workflow run hmae-full-pipeline --bucket demo-hmae | grep execution_id | awk '{print $NF}')
+EXEC_ID=$(umrs workflow run hmae-full-pipeline --bucket demo-hmae | grep execution_id | awk '{print $NF}')
 
 # 5. Poll until the workflow completes
-umrs-client workflow status "$EXEC_ID"
+umrs workflow status "$EXEC_ID"
 
 # 6. Download results written by the workflow
-umrs-client workflow results "$EXEC_ID" ./results/workflow --force-overwrite
+umrs workflow results "$EXEC_ID" ./results/workflow --force-overwrite
 ```
 
 ### When to use `workflow run`
 
-Use `umrs-client workflow run ...` when you want to execute the registered
+Use `umrs workflow run ...` when you want to execute the registered
 workflow definition explicitly. Use the README when you want to exercise the
 site's existing HMAE experience wiring without re-registering a custom
 workflow package.
@@ -206,36 +206,36 @@ HMAE_BUCKET=demo-hmae
 
 Each HMAE task can be run individually via its experience bucket, or all three
 in sequence via the `hmae-full-pipeline` workflow. Inputs are uploaded with
-`umrs-client data dir-upload` (legacy S3 transfer); outputs are fetched with
-`umrs-client data download` on the output bucket or `umrs-client workflow results`
+`umrs data dir-upload` (legacy S3 transfer); outputs are fetched with
+`umrs data download` on the output bucket or `umrs workflow results`
 for workflow executions.
 
 ### Individual experience runs
 
 ```bash
 # 1. Verify server connectivity
-umrs-client ping
+umrs ping
 
 # Task 1: Reconstruction (bucket: demo-hmae)
 #    Full image reconstruction — PNG + pkl output.
-umrs-client data dir-upload ../../tmp/hmae/spring8concrete demo-hmae
+umrs data dir-upload ../../tmp/hmae/spring8concrete demo-hmae
 
 # Task 2: MAE Reconstruction (bucket: demo-hmae-mae)
 #    Masked reconstruction with anomaly scoring.
-umrs-client data dir-upload ../../tmp/hmae/spring8concrete demo-hmae-mae
+umrs data dir-upload ../../tmp/hmae/spring8concrete demo-hmae-mae
 
 # Task 3: Feature Extraction (bucket: demo-hmae-features)
 #    CLS and patch-level feature vectors.
-umrs-client data dir-upload ../../tmp/hmae/spring8concrete demo-hmae-features
+umrs data dir-upload ../../tmp/hmae/spring8concrete demo-hmae-features
 ```
 
 Outputs are written back to the respective S3 buckets. Download them with:
 
 ```bash
 # Download results from each experience bucket
-umrs-client data download demo-hmae ./results/reconstruction --force-overwrite
-umrs-client data download demo-hmae-mae ./results/mae_reconstruction --force-overwrite
-umrs-client data download demo-hmae-features ./results/feature_extraction --force-overwrite
+umrs data download demo-hmae ./results/reconstruction --force-overwrite
+umrs data download demo-hmae-mae ./results/mae_reconstruction --force-overwrite
+umrs data download demo-hmae-features ./results/feature_extraction --force-overwrite
 ```
 
 > **Note**: The individual experience runs use the site's existing experience
@@ -246,13 +246,13 @@ umrs-client data download demo-hmae-features ./results/feature_extraction --forc
 
 ```bash
 # Run the registered 3-step workflow against the reconstruction bucket
-EXEC_ID=$(umrs-client workflow run hmae-full-pipeline --bucket demo-hmae | grep execution_id | awk '{print $NF}')
+EXEC_ID=$(umrs workflow run hmae-full-pipeline --bucket demo-hmae | grep execution_id | awk '{print $NF}')
 
 # Wait until it completes
-umrs-client workflow status "$EXEC_ID"
+umrs workflow status "$EXEC_ID"
 
 # Fetch all results
-umrs-client workflow results "$EXEC_ID" ./results/workflow --force-overwrite
+umrs workflow results "$EXEC_ID" ./results/workflow --force-overwrite
 ```
 
 This private demo assumes the HMAE task buckets are already configured by the

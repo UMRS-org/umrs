@@ -46,7 +46,7 @@ umrs doctor rag          # Check RAG only
 **Purpose**: Automated demo execution with environment verification.
 
 **Features**:
-- Prerequisite check (umrs-client, server, buckets, models)
+- Prerequisite check (umrs, server, buckets, models)
 - Demo listing and selection
 - Auto-writes to `umrs/tests/results/<demo>.txt`
 
@@ -83,7 +83,7 @@ umrs doctor rag          # Check RAG only
 ┌─────────────────────────────────────────────────────┐
 │                   UMRS CLI                          │
 ├─────────────────────────────────────────────────────┤
-│  umrs-client   │  doctor   │  discovery   │  demos  │
+│  umrs   │  doctor   │  discovery   │  demos  │
 │                │           │              │         │
 │ ┌────────────┐ │ ┌──────┐  │ ┌──────────┐ │ │[0-9]*│
 │ │  server    │ │ │ rag  │  │ │ bucket   │ │ │1_chat│

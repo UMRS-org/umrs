@@ -17,12 +17,12 @@ Three inference modes:
 
 - UMRS server running with `VISION_STACK=jens`
 - SSH tunnel open (if running remotely against RCCS Cloud)
-- `umrs-client` installed and on PATH
+- `umrs` installed and on PATH
 - `internal_genAI/bento/hmaeinfer/checkpoints/latest_checkpoint.pth` (pre-staged on compute node)
 - **Your user must be enrolled on the server.** If you haven't been enrolled yet,
   ask an admin to run:
   ```bash
-  umrs-client admin user add <your_user_config.json> --admin-token $UMRS_ADMIN_TOKEN
+  umrs admin user add <your_user_config.json> --admin-token $UMRS_ADMIN_TOKEN
   ```
   Without enrollment, the server will reject your config upload and no MinIO
   buckets will be created (you'll see "No bucket" errors on `upload_dir`).
@@ -51,7 +51,7 @@ cd umrs/demos_jens/12_hmae_direct
 ### 3. Verify the server is reachable
 
 ```bash
-umrs-client ping
+umrs ping
 ```
 
 Expected output:
@@ -72,7 +72,7 @@ cat experience.json
 Merge it into your active user config:
 
 ```bash
-umrs-client config add-experience experience.json --update
+umrs config add-experience experience.json --update
 ```
 
 This adds (or replaces) the `"Jens HMAE Direct"` experience in your user config
@@ -81,22 +81,22 @@ file at `~/.config/umrs/users/<your_user>.json`.
 ### 5. Reload so the server provisions the MinIO buckets
 
 ```bash
-umrs-client reload
+umrs reload
 ```
 
 Then check that provisioning succeeded:
 
 ```bash
-umrs-client status
+umrs status
 ```
 
 ### 6. Register the model in the model registry (optional)
 
 The HMAE checkpoint is pre-staged on the compute node. To make the model
-visible in `umrs-client model list` and the monitor Models tab, register it:
+visible in `umrs model list` and the monitor Models tab, register it:
 
 ```bash
-umrs-client model register hmae \
+umrs model register hmae \
   /path/to/internal_genAI/bento/hmaeinfer/checkpoints \
   --type vision \
   --description "HMAE hierarchical masked auto-encoder"
@@ -109,7 +109,7 @@ If you have the checkpoint locally and want to copy it to the server staging
 area **and** register in one step:
 
 ```bash
-umrs-client model upload ./hmaeinfer/checkpoints \
+umrs model upload ./hmaeinfer/checkpoints \
   --name hmae \
   --type vision \
   --description "HMAE hierarchical masked auto-encoder" \
@@ -122,7 +122,7 @@ umrs-client model upload ./hmaeinfer/checkpoints \
 Verify:
 
 ```bash
-umrs-client model list
+umrs model list
 ```
 
 ### 7. Stage input images
@@ -156,19 +156,19 @@ ls -la "${UPLOAD_DIR}/"
 ### 8. Upload & run — MAE mode (masked reconstruction)
 
 ```bash
-umrs-client data dir-upload "${UPLOAD_DIR}" "jens-hmae-mae/${RUN_ID}"
+umrs data dir-upload "${UPLOAD_DIR}" "jens-hmae-mae/${RUN_ID}"
 ```
 
 ### 9. Upload & run — Reconstruct mode (full reconstruction)
 
 ```bash
-umrs-client data dir-upload "${UPLOAD_DIR}" "jens-hmae-reconstruct/${RUN_ID}"
+umrs data dir-upload "${UPLOAD_DIR}" "jens-hmae-reconstruct/${RUN_ID}"
 ```
 
 ### 10. Upload & run — Features mode (encoder feature extraction)
 
 ```bash
-umrs-client data dir-upload "${UPLOAD_DIR}" "jens-hmae-features/${RUN_ID}"
+umrs data dir-upload "${UPLOAD_DIR}" "jens-hmae-features/${RUN_ID}"
 ```
 
 > **Note**: Each upload dispatches the vision stack for that particular mode.
@@ -184,17 +184,17 @@ Download results for each mode:
 
 ```bash
 mkdir -p "results/${RUN_ID}/mae/artifacts"
-umrs-client data download "jens-hmae-mae/${RUN_ID}" "results/${RUN_ID}/mae/artifacts" --force-overwrite
+umrs data download "jens-hmae-mae/${RUN_ID}" "results/${RUN_ID}/mae/artifacts" --force-overwrite
 ```
 
 ```bash
 mkdir -p "results/${RUN_ID}/reconstruct/artifacts"
-umrs-client data download "jens-hmae-reconstruct/${RUN_ID}" "results/${RUN_ID}/reconstruct/artifacts" --force-overwrite
+umrs data download "jens-hmae-reconstruct/${RUN_ID}" "results/${RUN_ID}/reconstruct/artifacts" --force-overwrite
 ```
 
 ```bash
 mkdir -p "results/${RUN_ID}/features/artifacts"
-umrs-client data download "jens-hmae-features/${RUN_ID}" "results/${RUN_ID}/features/artifacts" --force-overwrite
+umrs data download "jens-hmae-features/${RUN_ID}" "results/${RUN_ID}/features/artifacts" --force-overwrite
 ```
 
 > **Tip**: If no results appear yet, wait and retry the `download_results`

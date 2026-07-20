@@ -22,7 +22,7 @@ cp "${CLIENT_DIR}/conf_umrs.json" "${CONFIG_DIR}/conf_umrs.json"
 # placeholder values (SET_MINIO_ROOT_USER) and the auto-discovery logic in
 # the client would pick it up and override the per-user s3cfg that the
 # server provisioning creates (e.g. ~/.s3cfg_user1).  The user's s3cfg is
-# written during the first `umrs-client reload` and does not need seeding.
+# written during the first `umrs reload` and does not need seeding.
 cp "${CLIENT_DIR}/user1.json"     "${CONFIG_DIR}/users/user1.json"
 cp "${CLIENT_DIR}/connections/${PROFILE_NAME}.json" "${CONFIG_DIR}/connections/${PROFILE_NAME}.json"
 printf '%s\n' "${PROFILE_NAME}" > "${CONFIG_DIR}/current_connection_profile"
@@ -51,7 +51,7 @@ echo "=== Client setup complete ==="
 echo ""
 echo "Next steps:"
 echo "  1. Activate your Python environment if needed"
-echo "  2. Inspect the selected connection:  umrs-client --output text profile show"
+echo "  2. Inspect the selected connection:  umrs --output text profile show"
 echo "  3. Start SSH tunnels:                ./ssh_tunnel.sh"
-echo "  4. Verify connectivity:              umrs-client ping"
+echo "  4. Verify connectivity:              umrs ping"
 echo "  5. Run Demo 01:                      cd ../../demos/01_health_check && bash run_demo.sh"

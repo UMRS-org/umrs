@@ -85,7 +85,7 @@ No executable scripts existed — content was always inline in READMEs under "Ru
 
 ### 1. Missing bucket aliases (demos 03, 04, 14)
 **Cause**: User only has `mnagaso3-text` bucket from the `default` experience.
-**Fix**: User must add the relevant `experience.json` to their config and run `umrs-client reload` to provision the bucket alias.
+**Fix**: User must add the relevant `experience.json` to their config and run `umrs reload` to provision the bucket alias.
 
 ### 2. No RAG ingestion pipeline (demos 02, 05, 19)
 **Cause**: The `r4 rag ingest list` shows "No ingestion pipelines found." The RAG service exists but no pipeline is configured.
@@ -111,7 +111,7 @@ No executable scripts existed — content was always inline in READMEs under "Ru
 
 ### For the user to make demos work:
 1. **Text embedding demo (02)**: The upload works. The only missing piece is an RAG ingestion pipeline. Create one via `r4 rag ingest create` or wait for it to be configured.
-2. **Vision demos (03, 04, 14)**: Add the respective `experience.json` files to the user config and run `umrs-client reload`.
+2. **Vision demos (03, 04, 14)**: Add the respective `experience.json` files to the user config and run `umrs reload`.
 3. **Job demos (20, 21)**: Ask admin to configure a Slurm account for the user.
 4. **Multi-user demo (17)**: This is a demo-only — not for production use.
 

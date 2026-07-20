@@ -130,7 +130,7 @@ Send the user:
 
 The user imports the template on their machine:
 ```bash
-umrs-client config init \
+umrs config init \
     --template alice.client.json \
     --username alice
 ```
@@ -194,7 +194,7 @@ looks like:
 ```
 
 Edit the template to add more experiences or modalities before sending it to
-the user. The user then imports it with `umrs-client config init --template`.
+the user. The user then imports it with `umrs config init --template`.
 
 ### Trigger Provisioning
 
@@ -205,7 +205,7 @@ auto-creates:
 
 ```bash
 # User runs on their machine:
-umrs-client reload
+umrs reload
 ```
 
 On operator-managed sites, treat the `reload` as an operator/site action.

@@ -652,7 +652,7 @@ Legacy compound names map to `(modality, task)` pairs (e.g., `"segmentation"` �
 ### Architecture
 ```
 Local machine        rccs-cloud (login node)      ng-dgx-s (compute)
-umrs-client      ← SSH tunnel →  umrs-server      ← Slurm →  mini-rivault
+umrs      ← SSH tunnel →  umrs-server      ← Slurm →  mini-rivault
                                  minio (podman)              vLLM / BentoML
                                  postgres (podman)
                                  /lvs0/rccs-dmp/ (Lustre shared)

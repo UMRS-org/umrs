@@ -4,7 +4,7 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../../.." && pwd)"
-UMRS_CLIENT="${UMRS_CLIENT:-$(which umrs-client 2>/dev/null || echo "$SCRIPT_DIR/../../../umrs/src/client_umrs.py")}"
+UMRS_CLIENT="${UMRS_CLIENT:-$(which umrs 2>/dev/null || echo "$SCRIPT_DIR/../../../umrs/src/client_umrs.py")}"
 PROFILE="${R4_PROFILE:-rccs-cloud}"
 PYTHONPATH="$SCRIPT_DIR/../../../umrs/src"
 
@@ -83,21 +83,21 @@ echo ""
 
 for demo_dir in 04_hmae_inference 09_defect_analysis 10_hmae_full_pipeline 14_opossum_analysis; do
     DEMO_PATH="$SCRIPT_DIR/../$demo_dir"
-    
+
     if [ ! -d "$DEMO_PATH" ] || [ ! -f "$DEMO_PATH/README.md" ]; then
         log_skip "$demo_dir: directory not found"
         continue
     fi
-    
+
     echo ""
     echo "=============================================="
     echo "  Testing: $demo_dir"
     echo "=============================================="
     echo ""
-    
+
     # Check what bucket/aliases the demo expects
     EXPECTED_BUCKET=$(grep -oE 'user1-[a-z_-]+|demo-[a-z_-]+|demo_user' "$DEMO_PATH/README.md" | grep -E 'bucket|Bucket' | head -1 || echo "")
-    
+
     # List available buckets
     echo "  Expected bucket: ${EXPECTED_BUCKET:-auto-detect}"
     echo "  Available buckets:"
@@ -108,7 +108,7 @@ data = json.loads(line) if line.strip() else {}
 for b in data.get('buckets', []):
     print(f'    {b.get(\"bucket_alias\", \"?\")} ({b.get(\"modality\", \"?\")} - {b.get(\"task\", \"?\")})')
 " 2>/dev/null
-    
+
     # Check demo structure
     if [ -d "$DEMO_PATH/workflow" ] && [ -f "$DEMO_PATH/workflow/workflow.json" ]; then
         echo -n "  Workflow bundle... "
@@ -117,7 +117,7 @@ for b in data.get('buckets', []):
         echo -n "  Workflow bundle... "
         log_skip "Not present (demo uses bucket path only)"
     fi
-    
+
     # Check if required bucket is available
     echo -n "  Bucket availability... "
     AVAIL=$(echo "$BUCKET_JSON" | python3 -c "
@@ -127,7 +127,7 @@ data = json.loads(line) if line.strip() else {}
 aliases = [b.get('bucket_alias') for b in data.get('buckets', [])]
 print(','.join(aliases))
 " 2>/dev/null)
-    
+
     HAS_BUCKET=false
     if [ -n "$EXPECTED_BUCKET" ]; then
         echo "$AVAIL" | grep -q "$EXPECTED_BUCKET" && HAS_BUCKET=true
@@ -137,7 +137,7 @@ print(','.join(aliases))
             HAS_BUCKET=true
         fi
     fi
-    
+
     if $HAS_BUCKET; then
         log_ok "Bucket available"
     else
@@ -145,14 +145,14 @@ print(','.join(aliases))
         log_info "  This demo needs an operator to provision: $EXPECTED_BUCKET"
         continue
     fi
-    
+
     echo -n "  Sample data... "
     if [ -d "$DEMO_PATH/../../demos/sample_data" ]; then
         log_ok "Sample data exists"
     else
         log_skip "No sample data"
     fi
-    
+
     echo -n "  Upload test (dry)... "
     # Quick upload test with existing test data
     if [ -d "$DEMO_PATH/../../demos/sample_data" ]; then
@@ -165,7 +165,7 @@ print(','.join(aliases))
     else
         log_skip "No test data"
     fi
-    
+
     echo ""
 done
 
@@ -185,7 +185,7 @@ echo ""
 if [ "$BLOCKED" -gt 0 ]; then
     echo "  Blocked demos require operator intervention:"
     echo "  - Create bucket aliases in site.yaml"
-    echo "  - Run: umrs-client reload (after adding experiences)"
+    echo "  - Run: umrs reload (after adding experiences)"
     echo "  - Ensure model checkpoints are staged on server"
 fi
 

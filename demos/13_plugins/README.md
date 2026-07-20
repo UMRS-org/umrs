@@ -31,7 +31,7 @@ python3 run_plugin_demo.py --input-dir ../../data/file_of_texts
 
 ## Running Manually
 
-This demo runs locally and does not require `umrs-client` for the
+This demo runs locally and does not require `umrs` for the
 default local execution backend.
 
 ```bash
@@ -44,10 +44,10 @@ python3 run_plugin_demo.py --input-dir ../../data/file_of_texts
 python3 run_plugin_demo.py --input-dir /path/to/your/data
 
 # 3. For server-side plugin execution (Slurm/K8s backends), you would
-#    use umrs-client to upload the plugin spec and trigger execution:
-#      umrs-client workflow upload ./my_plugin_dir --name "my-plugin"
-#      umrs-client data dir-upload /data/input user1-plugin-bucket
-#      umrs-client data download user1-plugin-bucket ./results
+#    use umrs to upload the plugin spec and trigger execution:
+#      umrs workflow upload ./my_plugin_dir --name "my-plugin"
+#      umrs data dir-upload /data/input user1-plugin-bucket
+#      umrs data download user1-plugin-bucket ./results
 ```
 
 ## Plugin Architecture

@@ -45,23 +45,23 @@ DEMO_DIRS="04_hmae_inference 09_defect_analysis 10_hmae_full_pipeline 14_opossum
 
 for demo_dir in $DEMO_DIRS; do
     EXP_FILE="$DEMO_BASE/$demo_dir/experience.json"
-    
+
     if [ ! -f "$EXP_FILE" ]; then
         log_fail "$demo_dir: experience.json not found"
         continue
     fi
-    
+
     XP_NAME=$(python3 -c "
 import json
 data = json.load(open('$EXP_FILE'))
 print(data.get('xp_name', 'unknown'))
 " 2>/dev/null)
-    
+
     echo ""
     echo "  --- Adding '$XP_NAME' ---"
-    
+
     OUTPUT=$(cd /home/mnagaso/workspace/RCCS/ai4s-platform/umrs && PYTHONPATH="$PYTHONPATH" python3 "$UMRS_PY" --profile "$PROFILE" experience add "$EXP_FILE" --update 2>&1)
-    
+
     if echo "$OUTPUT" | grep -q "✓\|Added"; then
         log_ok "$XP_NAME added"
     elif echo "$OUTPUT" | grep -q "already\|skip\|no change"; then
@@ -84,7 +84,7 @@ if echo "$RELOAD_OUTPUT" | grep -q "✓\|accepted\|ok"; then
     log_ok "Reload accepted"
 else
     log_fail "Reload failed: $RELOAD_OUTPUT"
-    echo "  Retry with: umrs-client reload"
+    echo "  Retry with: umrs reload"
 fi
 
 # Wait for reload to complete

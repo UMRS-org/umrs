@@ -6,7 +6,7 @@
 # falling back to 1 node / 1 GPU.
 #
 # Register a model first, e.g.:
-#   umrs-client --profile <profile> model register \
+#   umrs --profile <profile> model register \
 #     --name <served-name> --path <shared-fs>/models/<model>
 # ─────────────────────────────────────────────────────────────
 

@@ -6,9 +6,9 @@ Quick connectivity check for the UMRS server. Works with any deployment
 ## Prerequisites
 
 - UMRS server running (any deployment)
-- Selected connection profile (`umrs-client profile show`)
+- Selected connection profile (`umrs profile show`)
 - Network connectivity (SSH tunnels if the selected profile uses tunnel mode)
-- `umrs-client` installed and in PATH
+- `umrs` installed and in PATH
 - User config at `~/.config/umrs/users/user1.json`
 
 ## Quick Start
@@ -21,8 +21,8 @@ cd "$(git rev-parse --show-toplevel)/$(test -d "$(git rev-parse --show-toplevel)
 
 ## What This Demo Does
 
-1. **Show connection info** — `umrs-client info` reveals your effective server, transport, and auth settings
-2. **Ping** the UMRS server via `umrs-client` to verify real client connectivity
+1. **Show connection info** — `umrs info` reveals your effective server, transport, and auth settings
+2. **Ping** the UMRS server via `umrs` to verify real client connectivity
 3. **Check experiences** — list loaded experiences for your user config
 4. **List buckets** to confirm the user's S3 configuration
 
@@ -43,21 +43,21 @@ cd "$(git rev-parse --show-toplevel)/$(test -d "$(git rev-parse --show-toplevel)
 # Show effective connection, transport, auth, and S3 settings.
 # This command reveals your actual server host, ports, and tunnel status —
 # these values differ by deployment (local, rccs-cloud, etc.).
-umrs-client info
+umrs info
 
 # Ping the UMRS server
-umrs-client ping
+umrs ping
 
 # List loaded experiences for your user config
-umrs-client experience list
+umrs experience list
 
 # List configured buckets
-umrs-client bucket list
+umrs bucket list
 ```
 
 ## Expected Output
 
-`umrs-client info` shows your effective connection — host, ports, auth mode, and S3 status.
+`umrs info` shows your effective connection — host, ports, auth mode, and S3 status.
 Values vary by deployment (local dev vs rccs-cloud). A healthy connection looks like:
 
 ```
@@ -79,6 +79,6 @@ Values vary by deployment (local dev vs rccs-cloud). A healthy connection looks 
 
 If checks fail, verify that:
 - The UMRS server is running
-- `umrs-client ping` succeeds through the selected profile
+- `umrs ping` succeeds through the selected profile
 - SSH tunnels are active (if remote)
 - The selected connection profile matches the deployment you are targeting

@@ -24,7 +24,7 @@ platform:
 
 ### A. Direct UMRS Client (ZMQ/SSH Tunnel)
 
-Users run `umrs-client` directly against the server. Suitable for:
+Users run `umrs` directly against the server. Suitable for:
 - Developer/local deployments
 - HPC clusters where SSH tunnels are natural
 - Single-user or small-team setups
@@ -32,7 +32,7 @@ Users run `umrs-client` directly against the server. Suitable for:
 ### B. R4 Platform Gateway (Recommended for Shared Deployments)
 
 Users interact via the `r4` CLI and Gateway. The admin performs server-side
-enrollment; end users never touch `umrs-client` directly.
+enrollment; end users never touch `umrs` directly.
 
 See [R4 Quick Start](../../docs/r4/quickstart.md) and
 [R4 Admin Guide](../../docs/r4/admin-guide/README.md) for the Gateway path.
@@ -232,12 +232,12 @@ workload provisioning (buckets, databases, embedding pipelines).
 
 ### Recommended: `login` creates it automatically
 
-`umrs-client login` now handles both profile creation *and* user config
+`umrs login` now handles both profile creation *and* user config
 creation in one step. If `~/.config/umrs/users/<username>.json` does not
 exist, a default config is generated automatically:
 
 ```bash
-umrs-client login --host <server-host> --api-key <token-from-admin>
+umrs login --host <server-host> --api-key <token-from-admin>
 ```
 
 If a config file already exists at that path, login asks:
@@ -257,23 +257,23 @@ Add workload-specific experiences with:
 
 ```bash
 # Import an experience fragment (adds/replaces by xp_name)
-umrs-client experience add path/to/experience.json --update
+umrs experience add path/to/experience.json --update
 
 # Then push to the server and provision resources
-umrs-client reload
+umrs reload
 ```
 
 ### Alternative: Generate config explicitly
 
 ```bash
 # Interactive
-umrs-client config init
+umrs config init
 
 # Non-interactive
-umrs-client config init --username alice --fullname "Alice Smith"
+umrs config init --username alice --fullname "Alice Smith"
 
 # From admin-supplied template (legacy flow, still works)
-umrs-client config init --username alice --template alice.client.json
+umrs config init --username alice --template alice.client.json
 ```
 
 This writes to `~/.config/umrs/users/alice.json`.
@@ -327,7 +327,7 @@ compatibility.
 The user (or admin) sends the config to the running server:
 
 ```bash
-umrs-client reload
+umrs reload
 ```
 
 ### R4 Gateway Path
@@ -378,13 +378,13 @@ channel. They rely on NFS visibility or out-of-band delivery by the admin.
 
 ```bash
 # Connectivity
-umrs-client ping
+umrs ping
 
 # Bucket visibility
-umrs-client bucket list
+umrs bucket list
 
 # Overall status
-umrs-client status all
+umrs status all
 ```
 
 ### R4 Gateway Verification
@@ -399,28 +399,28 @@ r4 model list --limit 5
 
 ## Connection Profiles
 
-A **connection profile** tells `umrs-client` where the server is and how to
-reach it. It must exist before any `umrs-client` command can contact the
+A **connection profile** tells `umrs` where the server is and how to
+reach it. It must exist before any `umrs` command can contact the
 server.
 
 ### Creating a profile (recommended)
 
-`umrs-client login` creates the profile and authenticates in a single step.
+`umrs login` creates the profile and authenticates in a single step.
 It also auto-creates the user config (see Phase 3), so for most users this is
 the only setup command needed:
 
 ```bash
 # Direct ZMQ (local or same-host)
-umrs-client login --host <server-host> --api-key <token>
+umrs login --host <server-host> --api-key <token>
 
 # SSH tunnel mode (remote HPC — forwards ZMQ port over SSH)
-umrs-client login --host <server-host> --mode ssh_tunnel --api-key <token>
+umrs login --host <server-host> --mode ssh_tunnel --api-key <token>
 
 # Gateway / R4 mode (HTTPS)
-umrs-client login --gateway-url https://<gateway-host> --api-key <token>
+umrs login --gateway-url https://<gateway-host> --api-key <token>
 
 # With an explicit profile name (default is "<host>-<mode>")
-umrs-client login --host rccs-cloud --mode ssh_tunnel \
+umrs login --host rccs-cloud --mode ssh_tunnel \
     --profile-name rccs --api-key <token>
 ```
 
@@ -432,16 +432,16 @@ set as the active one.
 
 ```bash
 # Show currently active profile
-umrs-client profile show
+umrs profile show
 
 # List all profiles
-umrs-client profile list
+umrs profile list
 
 # Switch to a different profile
-umrs-client profile use rccs
+umrs profile use rccs
 
 # Override per-command with --profile
-umrs-client --profile rccs list_buckets
+umrs --profile rccs list_buckets
 ```
 
 ### SSH tunnel setup (HPC)
@@ -456,7 +456,7 @@ ssh -N -L 5555:localhost:5555 \
        rccs-cloud &
 
 # Then login
-umrs-client login --host 127.0.0.1 --mode ssh_tunnel --api-key <token>
+umrs login --host 127.0.0.1 --mode ssh_tunnel --api-key <token>
 ```
 
 Or use the bootstrap script if provided by your deployment:
@@ -469,14 +469,14 @@ Or use the bootstrap script if provided by your deployment:
 
 ```bash
 # Direct mode (local development)
-umrs-client profile init --name local --mode direct
+umrs profile init --name local --mode direct
 
 # SSH tunnel mode
-umrs-client profile init --name rccs --mode ssh_tunnel --ssh-host rccs-cloud
+umrs profile init --name rccs --mode ssh_tunnel --ssh-host rccs-cloud
 
 # Import an existing profile JSON
-umrs-client profile import /path/to/profile.json
-umrs-client profile use my-profile
+umrs profile import /path/to/profile.json
+umrs profile use my-profile
 ```
 
 ---
@@ -506,7 +506,7 @@ migrate. The auto-discovery system searches both:
 
 Existing `user_files/*.json` with old paths continue to work as-is. The
 `s3_configuration_file` field is treated as an opaque path — the server writes
-to whatever is declared. Only new configs generated by `umrs-client config init`
+to whatever is declared. Only new configs generated by `umrs config init`
 use the updated default.
 
 ---

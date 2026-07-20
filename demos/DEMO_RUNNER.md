@@ -22,7 +22,7 @@ R4_PROFILE=custom-profile ./umrs/demos/run_demo.sh 01_chat
 
 ### How It Works
 
-1. Checks that `umrs-client` is installed and reachable
+1. Checks that `umrs` is installed and reachable
 2. Pings the server to verify connectivity
 3. Lists visible S3 buckets
 4. Lists available models
@@ -30,9 +30,9 @@ R4_PROFILE=custom-profile ./umrs/demos/run_demo.sh 01_chat
 
 ### Prerequisites
 
-- `umrs-client` installed in PATH or accessible via `UMRS_CLIENT` env var
+- `umrs` installed in PATH or accessible via `UMRS_CLIENT` env var
 - Active authentication profile (`r4 auth login` completed)
-- `umrs-client` in PATH: `pip install -e /path/to/umrs/src/`
+- `umrs` in PATH: `pip install -e /path/to/umrs/src/`
 
 ## Doctor Command
 
@@ -128,7 +128,7 @@ healer.heal()  # Auto-creates missing bucket aliases and RAG pipelines
 
 ### Demo fails with "bucket alias not found"
 
-1. Run `umrs-client bucket list` to see available buckets
+1. Run `umrs bucket list` to see available buckets
 2. Check if bucket aliases are configured in your experience file
 3. Run `umrs doctor storage` for diagnostics
 4. Create missing bucket aliases with admin access
@@ -147,6 +147,6 @@ healer.heal()  # Auto-creates missing bucket aliases and RAG pipelines
 
 ### Server unreachable
 
-1. Check server URL in your profile: `umrs-client info`
+1. Check server URL in your profile: `umrs info`
 2. Verify network connectivity to the gateway
 3. Check if the server is running and not in maintenance mode
