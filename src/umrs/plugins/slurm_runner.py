@@ -42,6 +42,7 @@ class SlurmPluginRunner(PluginRunner):
     def __init__(
         self,
         partition: str = SLURM_PARTITION,
+        reservation: str = "",
         singularity_image: str = SINGULARITY_IMAGE_PATH,
         work_dir: str | None = None,
         **kwargs,
@@ -51,11 +52,13 @@ class SlurmPluginRunner(PluginRunner):
 
         Args:
             partition: Slurm partition for jobs.
+            reservation: Slurm reservation ID (e.g. "demo_day_2026").
             singularity_image: Path to plugin runner Singularity image.
             work_dir: Working directory for job files.
         """
         super().__init__(**kwargs)
         self.partition = partition
+        self.reservation = reservation
         self.singularity_image = singularity_image
         self.work_dir = Path(work_dir or tempfile.gettempdir()) / "plugin_jobs"
         self.work_dir.mkdir(parents=True, exist_ok=True)
@@ -147,8 +150,13 @@ class SlurmPluginRunner(PluginRunner):
 
         bind_args = ",".join(binds)
 
+        reservation_line = (
+            f"#SBATCH --reservation={self.reservation}" if self.reservation else ""
+        )
+
         script_content = f"""#!/bin/bash
 #SBATCH --job-name=plugin-{plugin_id[:8]}
+{reservation_line}
 #SBATCH --partition={self.partition}
 #SBATCH --time={time_limit}
 #SBATCH --cpus-per-task={spec.cpu_limit}

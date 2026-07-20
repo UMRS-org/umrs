@@ -17,6 +17,7 @@ def render_sbatch_script(
         "partition", cfg.slurm_partition
     )
     nodelist_hint = kwargs.get("nodelist_hint")
+    reservation = kwargs.get("slurm_reservation", "")
     time_limit = kwargs.get("time", cfg.slurm_time)
     # When site config sets gpus=0, GRES is not available (exclusive nodes).
     gpus = (
@@ -31,7 +32,15 @@ def render_sbatch_script(
         part.rstrip()
         for part in (
             _script_header(
-                cfg, partition, nodelist_hint, time_limit, gpus, cpus, mem, node_count
+                cfg,
+                partition,
+                nodelist_hint,
+                reservation,
+                time_limit,
+                gpus,
+                cpus,
+                mem,
+                node_count,
             ),
             _script_config(cfg, model_path),
             _script_job_info(),
@@ -54,6 +63,7 @@ def _script_header(
     cfg: OrchestratorConfig,
     partition: str,
     nodelist_hint: str | None,
+    reservation: str,
     time_limit: str,
     gpus: int,
     cpus: int,
@@ -61,6 +71,7 @@ def _script_header(
     node_count: int | None = None,
 ) -> str:
     nodelist = f"\n#SBATCH --nodelist={nodelist_hint}" if nodelist_hint else ""
+    reservation_line = f"\n#SBATCH --reservation={reservation}" if reservation else ""
     nodes = (
         node_count
         if node_count and node_count > 1
@@ -71,7 +82,7 @@ def _script_header(
     gres_line = f"\n#SBATCH --gres=gpu:{gpus}" if gpus else ""
     return f"""#!/bin/bash
 #SBATCH --job-name=mini-rivault
-#SBATCH --partition={partition}{nodelist}{nodes_line}
+#SBATCH --partition={partition}{reservation_line}{nodelist}{nodes_line}
 #SBATCH --time={time_limit}{gres_line}
 #SBATCH --cpus-per-task={cpus}{mem_line}
 #SBATCH --output={cfg.slurm_log_dir}/job-%j.out
