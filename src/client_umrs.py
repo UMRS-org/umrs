@@ -2036,18 +2036,28 @@ def _handle_experience_validate(ctx, args):
                 for m in models_resp.get("models", []):
                     catalog_names.add(m.get("name") or m.get("model_name"))
 
-                if model_name not in catalog_names:
+                # Build short-name → full-name mapping (catalog may use shortened names)
+                short_to_full: dict[str, str] = {}
+                for name in catalog_names:
+                    for part in name.split("/"):
+                        short_to_full[part] = name
+
+                # Check: direct match, or short-name match, or HF full name → short name
+                found = model_name in catalog_names
+                if not found:
+                    # Try short name match (e.g. "e5-base-v2" → "intfloat/e5-base-v2")
+                    for short, full in short_to_full.items():
+                        if short in model_name or model_name in full:
+                            found = True
+                            break
+
+                if not found:
                     warnings.append(
                         f"    ⚠  Model '{model_name}' not found in system catalog"
                     )
                     print(f"    {warnings[-1]}")
                 else:
                     print(f"    ✓  Model '{model_name}' found in system catalog")
-            except Exception:
-                warnings.append(
-                    f"    ⚠  Could not verify model (server unreachable or auth issue)"
-                )
-                print(f"    {warnings[-1]}")
             except Exception:
                 warnings.append(
                     f"    ⚠  Could not verify model (server unreachable or auth issue)"
