@@ -14,7 +14,7 @@ Supported commands (via TaskCmd):
     JOB_CANCEL  — cancel a running job
     JOB_LIST    — list tracked jobs
 
-To query running job state, use the existing STATUS command (umrs-client status)
+To query running job state, use the existing STATUS command (umrs status)
 which reads from the in-memory UMRSThreads store.
 """
 

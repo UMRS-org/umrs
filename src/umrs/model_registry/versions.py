@@ -4,7 +4,7 @@ Model Version Management (MM-003).
 NOTE: This module is production-ready but not yet surfaced in demos.
       See Demo 08 (model_registry) for model registration & staging usage.
       Version tracking will be integrated when the model registry CLI
-      commands (umrs-client model register/list/download) are wired in.
+      commands (umrs model register/list/download) are wired in.
 
 Provides version tracking for models, allowing:
 - Multiple versions per model

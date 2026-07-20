@@ -84,7 +84,8 @@ api-test = [
 ]
 
 [project.scripts]
-umrs-client = "umrs.client.cli:main"
+umrs = "umrs.client.cli:main"
+umrs-client = "umrs.client.cli:main"  # backwards-compatible alias
 umrs-server = "umrs.server.main:main"
 
 [tool.setuptools.packages.find]
