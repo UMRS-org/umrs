@@ -22,7 +22,7 @@ needed**.
 ## Quick Start
 
 ```bash
-# Follow the step-by-step commands in README.md
+# See the numbered steps below in this README
 ```
 
 Or run the pipeline directly:

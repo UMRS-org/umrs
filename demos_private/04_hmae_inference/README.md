@@ -9,31 +9,34 @@ this demo assumes a private or site-specific HMAE setup.
 
 ## What the current script does
 
-`README.md (step-by-step commands)` performs a small, practical flow:
+The README performs a small, practical flow:
 
 1. Runs the standard pre-flight checks.
 2. Optionally registers a local HMAE model directory if `HMAE_LOCAL_MODEL_DIR`
    is set.
-3. Uploads PNG slice images to the configured HMAE bucket (`user1-hmae` by default).
+3. Uploads PNG slice images to the configured HMAE bucket (`demo-hmae` by default).
 4. Downloads the reconstruction outputs after server-side processing completes.
 
 ## Quick Start
 
 ```bash
 cd demos_private/04_hmae_inference
-# Follow the step-by-step commands in README.md
+# See the numbered steps below in this README
 ```
 
 To use a custom image directory:
 
 ```bash
-# Follow the step-by-step commands in README.md /path/to/volume_slices
+cd demos_private/04_hmae_inference
+# See the numbered steps below in this README /path/to/volume_slices
 ```
 
 To register a local checkpoint directory before running:
 
 ```bash
-HMAE_LOCAL_MODEL_DIR=/path/to/hmae_checkpoint_dir # Follow the step-by-step commands in README.md
+cd demos_private/04_hmae_inference
+HMAE_LOCAL_MODEL_DIR=/path/to/hmae_checkpoint_dir
+# See the numbered steps below in this README
 ```
 
 ## Running Manually
@@ -56,19 +59,19 @@ umrs-client model upload /path/to/hmae_checkpoint_dir \
 # 3. Upload volume slice images to the HMAE bucket
 #    The server will automatically dispatch images to the BentoML
 #    vision service running HMAE on GPU via Slurm.
-umrs-client data dir-upload ../../demos/03_sam3_segmentation/test_data_full user1-hmae
+umrs-client data dir-upload ../../demos/03_sam3_segmentation/test_data_full demo-hmae
 
 # 4. Download reconstruction results
 #    Waits for server-side HMAE processing and retrieves output
 #    files (reconstructed images, metadata) to the local results/ directory.
-umrs-client data download user1-hmae ./results --force-overwrite
+umrs-client data download demo-hmae ./results --force-overwrite
 ```
 
 ## Defaults Used By The Script
 
 | Setting | Default |
 |---|---|
-| Bucket alias | `user1-hmae` |
+| Bucket alias | `demo-hmae` |
 | Default image dir | `../../demos/03_sam3_segmentation/test_data_full` |
 | Result dir | `results/` |
 

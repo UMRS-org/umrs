@@ -25,7 +25,7 @@ provisioning: project data at `/project` and a prebuilt index at `/rag-index`.
 ## Usage
 
 ```bash
-# Follow the step-by-step commands in README.md
+# See the numbered steps below in this README
 ```
 
 By default the demo scopes searches to Demo 02's text-file corpus by sending:
@@ -36,7 +36,8 @@ By default the demo scopes searches to Demo 02's text-file corpus by sending:
 Override those defaults when needed:
 
 ```bash
-RAG_BUCKET_ALIAS=my-bucket RAG_MODALITY=text # Follow the step-by-step commands in README.md
+RAG_BUCKET_ALIAS=my-bucket RAG_MODALITY=text
+# Use your own bucket and modality
 ```
 
 ## Running Manually

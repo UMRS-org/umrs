@@ -25,7 +25,7 @@ Start with the onboarding demo:
 
 ```bash
 cd umrs/demos/00_onboarding
-# Follow the step-by-step commands in README.md
+# See the numbered steps in the onboarding README
 ```
 
 For manual setup:
@@ -67,7 +67,7 @@ Each demo can be run directly:
 
 ```bash
 cd umrs/demos/02_text_embedding
-# Follow the step-by-step commands in README.md
+# See the numbered steps in each demo's README
 ```
 
 For manual file workflows, the common shape is:

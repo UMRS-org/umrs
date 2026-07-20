@@ -21,10 +21,11 @@ SSH tunnel guidance.
 
 ```bash
 cd "$(git rev-parse --show-toplevel)/umrs/demos/00_onboarding"
-# Follow the step-by-step commands in README.md
+# See the numbered steps (Step 1, Step 2, etc.) below in this README
 
 # Use a different username
-DEMO_USERNAME=other_user # Follow the step-by-step commands in README.md
+DEMO_USERNAME=other_user
+# Use any valid username
 ```
 
 ## Prerequisites

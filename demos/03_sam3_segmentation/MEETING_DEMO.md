@@ -15,7 +15,7 @@ This demo uploads general-purpose pictures, starts the Mini-RiVault BentoML visi
 
 ## How The Image And Prompt Flow
 
-1. `README.md (step-by-step commands)` merges `experience.json` into the active UMRS user config.
+1. The demo README merges `experience.json` into the active UMRS user config.
 2. The demo uses general pictures from `umrs/demos/sample_data/images` unless `IMAGE_DIR` is explicitly set.
 3. `umrs-client data dir-upload` is implemented in `umrs/src/client_umrs.py` in `_action_s3_transfer()`. It uploads the image bytes to the configured S3 bucket, then sends a ZMQ `PROCESS_OBJECTS` notification. The image itself does not travel over ZMQ.
 4. UMRS server processing enters `umrs/src/umrs/server/processing.py` through `process_s3_objects()`.
@@ -49,8 +49,9 @@ Run from the repository root unless noted.
      MAX_IMAGES=1 \
      RESULT_DOWNLOAD_TIMEOUT=600 \
      SAM3_REQUIRE_RESULTS=0 \
-     # Follow the step-by-step commands in README.md
    ```
+
+   See the numbered steps in the main README for the full script.
 
 3. During the meeting, point out these output lines:
 
@@ -76,6 +77,6 @@ Run from the repository root unless noted.
 
 ## Useful Overrides
 
-- Use more general pictures: `MAX_IMAGES=3 # Follow the step-by-step commands in README.md`
-- Use a custom general picture directory: `IMAGE_DIR=/path/to/pictures # Follow the step-by-step commands in README.md`
-- Require completed outputs for CI-like validation: `SAM3_REQUIRE_RESULTS=1 RESULT_DOWNLOAD_TIMEOUT=900 # Follow the step-by-step commands in README.md`
+- Use more general pictures: `MAX_IMAGES=3`
+- Use a custom general picture directory: `IMAGE_DIR=/path/to/pictures`
+- Require completed outputs for CI-like validation: `SAM3_REQUIRE_RESULTS=1 RESULT_DOWNLOAD_TIMEOUT=900`

@@ -12,7 +12,7 @@ UMRS server, send data through it, and download processed results.
 
 ```bash
 cd demos/16_custom_workflow
-# Follow the step-by-step commands in README.md
+# See the numbered steps below in this README
 ```
 
 ## What This Demo Does

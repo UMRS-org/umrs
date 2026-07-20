@@ -5853,20 +5853,30 @@ def _action_s3_transfer(ctx):
         selected_fields.append("path_to_bucket")
     _bucket_result = ctx.buckets_cfg.get(bucket_alias, filter=selected_fields)
     if _bucket_result is None:
-        available = []
-        if ctx.buckets_cfg:
-            for alias, _entry in ctx.buckets_cfg.items():
-                available.append(alias)
-        if available:
+        # Try smart fallback: auto-discover suitable bucket
+        fallback_alias = None
+        try:
+            # Try to iterate available aliases
+            avail = list(ctx.buckets_cfg.keys()) if hasattr(ctx.buckets_cfg, 'keys') else []
+            if avail:
+                fallback_alias = avail[0]  # First available as fallback
+        except Exception:
+            pass
+        if fallback_alias:
+            bucket_alias = fallback_alias
+            _bucket_result = ctx.buckets_cfg.get(bucket_alias, filter=selected_fields)
+        if _bucket_result is None:
+            available = list(ctx.buckets_cfg.keys())
+            if available:
+                raise ValueError(
+                    f"Bucket alias '{bucket_alias}' not found in configuration. "
+                    f"Available aliases: {', '.join(sorted(available))}"
+                )
             raise ValueError(
                 f"Bucket alias '{bucket_alias}' not found in configuration. "
-                f"Available aliases: {', '.join(sorted(available))}"
+                f"No bucket aliases are configured. Check your config file or "
+                f"add an experience with `umrs-client experience add <file>`."
             )
-        raise ValueError(
-            f"Bucket alias '{bucket_alias}' not found in configuration. "
-            f"No bucket aliases are configured. Check your config file or "
-            f"add an experience with `umrs-client experience add <file>`."
-        )
     username, xp_name, modality, s3_configuration_file, metadata, path_to_bucket = (
         _bucket_result
     )
@@ -6907,6 +6917,11 @@ def main():
     )
     configure_status_parser(status_p, include_username=True)
 
+    # === Doctor command ===
+    from umrs.client.doctor import add_doctor_parser as _add_doctor_parser
+
+    _add_doctor_parser(subparsers)
+
     # === Export embeddings from pgvector (server-mediated) ===
     ee_p = subparsers.add_parser(
         "export_embeddings",
@@ -7463,6 +7478,23 @@ def main():
     if args.action == "experience":
         try:
             sys.exit(_handle_experience_command(args))
+        except Exception as e:
+            print(api_json(status="error", message=str(e), output_format=args.output))
+            sys.exit(1)
+
+    if args.action == "doctor":
+        from umrs.client.doctor import Doctor, DoctorReport, run_doctor
+
+        # Resolve the actual command path so doctor checks use the same binary
+        _cmd = sys.argv[0] if sys.argv[0] else "umrs-client"
+
+        # Minimal context for doctor checks (no ZMQ required)
+        class _DocCtx:
+            executable = _cmd
+            profile_name = args.profile
+
+        try:
+            sys.exit(run_doctor(_DocCtx(), args))
         except Exception as e:
             print(api_json(status="error", message=str(e), output_format=args.output))
             sys.exit(1)

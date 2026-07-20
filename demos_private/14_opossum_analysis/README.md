@@ -18,9 +18,9 @@ GPU acceleration uses `cv2.cuda` (OpenCV CUDA module) when available.
 workflow/
   opossum_step.py      — Pipeline SDK step (production logic)
   workflow.json         — workflow spec (GPU, 8 CPU, 16 GiB)
-  opossum/              — bundled opossum engine (auto-copied by README.md (step-by-step commands))
+  opossum/              — bundled opossum engine (auto-copied by the demo script)
 generate_test_videos.py — synthetic test-video generator
-README.md (step-by-step commands)             — shell entrypoint (upload, workflow, results)
+README.md             — shell entrypoint (upload, workflow, results)
 experience.json         — UMRS experience definition
 results/                — output directory
 sample_videos/          — synthetic test videos (GEN_TEST_VIDEOS=1)
@@ -30,16 +30,19 @@ sample_videos/          — synthetic test videos (GEN_TEST_VIDEOS=1)
 
 ```bash
 # Production pipeline with real data
-# Follow the step-by-step commands in README.md ../../tmp/opossum-video-analysis/data
+# See the numbered steps below in this README ../../tmp/opossum-video-analysis/data
 
 # GPU-accelerated server execution
-GPU_ENABLED=1 # Follow the step-by-step commands in README.md ../../tmp/opossum-video-analysis/data
+GPU_ENABLED=1
+# See the numbered steps below in this README ../../tmp/opossum-video-analysis/data
 
 # Synthetic test videos (no real data needed)
-GEN_TEST_VIDEOS=1 # Follow the step-by-step commands in README.md
+GEN_TEST_VIDEOS=1
+# See the numbered steps below in this README
 
 # Limit videos per camera
-MAX_VIDEOS=10 # Follow the step-by-step commands in README.md ../../tmp/opossum-video-analysis/data
+MAX_VIDEOS=10
+# See the numbered steps below in this README ../../tmp/opossum-video-analysis/data
 ```
 
 ## Data Source

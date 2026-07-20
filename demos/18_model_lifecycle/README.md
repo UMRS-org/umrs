@@ -13,7 +13,7 @@ Shows both system-scoped (shared) and user-scoped (private) model management.
 
 ```bash
 cd demos/18_model_lifecycle
-# Follow the step-by-step commands in README.md
+# See the numbered steps below in this README
 ```
 
 ## What This Demo Does

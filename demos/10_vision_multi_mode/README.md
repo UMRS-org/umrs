@@ -25,14 +25,15 @@ vision service; the thumbnail branch runs on CPU and finishes quickly.
 ## Quick Start
 
 ```bash
-bash 10_vision_multi_mode/README.md (step-by-step commands)
+# See "Running Manually" section below for step-by-step commands
+cd "$(git rev-parse --show-toplevel)/umrs/demos/10_vision_multi_mode"
 
-# Custom image directory
-bash 10_vision_multi_mode/README.md (step-by-step commands) /path/to/images
-
-# Custom bucket
-MULTI_BUCKET=my-analysis bash 10_vision_multi_mode/README.md (step-by-step commands)
+# With your own images
+IMAGE_DIR=/path/to/images MULTI_BUCKET=my-analysis bash ./run_demo.sh
 ```
+
+> **Note:** The inline script `run_demo.sh` does not exist yet. Use the
+> step-by-step commands in the "Running Manually" section below instead.
 
 ## Steps
 

@@ -16,13 +16,14 @@ data (run Demo 02 first).
 
 ```bash
 cd demos/19_rag_advanced
-# Follow the step-by-step commands in README.md
+# See the numbered steps below in this README
 ```
 
 With a custom query:
 
 ```bash
-# Follow the step-by-step commands in README.md "How is machine learning used in materials science?"
+cd demos/19_rag_advanced
+# See the numbered steps below in this README
 ```
 
 ## What This Demo Does

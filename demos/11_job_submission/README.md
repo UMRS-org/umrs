@@ -177,5 +177,7 @@ umrs-client status all
 ## Run Demo
 
 ```bash
-./README.md (step-by-step commands)
+# See the step-by-step commands in the numbered sections below
+umrs-client ping
+umrs-client job submit --help
 ```

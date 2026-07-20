@@ -19,15 +19,21 @@ timestamps plus duration for each event.
 ## Quick Start
 
 ```bash
+# See "Running Manually" and "Generate Test Videos" sections below for step-by-step commands
+cd "$(git rev-parse --show-toplevel)/umrs/demos/14_video_analysis"
+
 # Generate synthetic test videos + analyse them
-bash 14_video_analysis/README.md (step-by-step commands)
+GEN_TEST_VIDEOS=1 bash ./run_demo.sh
 
 # Use your own videos
-bash 14_video_analysis/README.md (step-by-step commands) /path/to/videos
+VIDEO_DIR=/path/to/videos bash ./run_demo.sh
 
 # Custom bucket
-VIDEO_BUCKET=my-project bash 14_video_analysis/README.md (step-by-step commands)
+VIDEO_BUCKET=my-project bash ./run_demo.sh
 ```
+
+> **Note:** The inline script `run_demo.sh` does not exist yet. Use the
+> step-by-step commands in the "Running Manually" section below instead.
 
 ## Synthetic Test Videos
 

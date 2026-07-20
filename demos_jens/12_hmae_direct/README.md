@@ -266,7 +266,7 @@ Instead of the manual steps above, you can run everything in one go:
 HMAE_MODE=all \
   MAX_IMAGES=1 \
   RESULT_DOWNLOAD_TIMEOUT=1500 \
-  # Follow the step-by-step commands in README.md
+  # See the numbered steps above in this README
 ```
 
 ```bash
@@ -274,7 +274,7 @@ HMAE_MODE=all \
 HMAE_MODE=mae \
   MAX_IMAGES=1 \
   RESULT_DOWNLOAD_TIMEOUT=1500 \
-  # Follow the step-by-step commands in README.md
+  # See the numbered steps above in this README
 ```
 
 ---

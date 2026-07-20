@@ -73,7 +73,7 @@ umrs-client status update
 umrs-client status check
 ```
 
-## Manual Equivalent To `README.md (step-by-step commands)`
+## Manual Equivalent to the Demo Script
 
 ```bash
 REPO_ROOT="$(git rev-parse --show-toplevel)"
@@ -137,5 +137,7 @@ First time, don't know what's configured?
 ## Run Demo
 
 ```bash
-./README.md (step-by-step commands)
+# See the "Running Manually" section above for step-by-step commands
+umrs-client ping
+umrs-client --output text status all
 ```
