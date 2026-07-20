@@ -96,21 +96,39 @@ load_partition_profile() {
     [[ -n "$python_bin" && -f "$SITE_CONFIG_PATH" ]] || return 0
 
     rendered_exports="$({
-        PYTHONPATH="${REPO_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}" \
-            UMRS_SITE_CONFIG="$SITE_CONFIG_PATH" \
-            _PARTITION="$partition" \
-            "$python_bin" - <<'PY'
-import os
-import shlex
+        "$python_bin" - "$SITE_CONFIG_PATH" "$partition" <<'PY'
+import sys, os, shlex, yaml
 
-from umrs.orchestrator.site_config import load_site_config
+config_path = sys.argv[1]
+partition   = sys.argv[2]
 
-cfg = load_site_config(os.environ["UMRS_SITE_CONFIG"])
-part = os.environ.get("_PARTITION", "")
-env = cfg.partition_env(part)
-if env:
-    for key, value in sorted(env.items()):
-        print(f"export {key}={shlex.quote(value)}")
+with open(config_path, "r") as fh:
+    cfg = yaml.safe_load(fh)
+
+pp = (cfg or {}).get("partition_profiles", {}).get(partition)
+if pp is None:
+    sys.exit(0)
+
+env_map = {
+    "RIVAULT_PARTITION_ARCH":             pp.get("arch"),
+    "RIVAULT_PARTITION_GPU_VENDOR":       pp.get("gpu_vendor"),
+    "RIVAULT_PARTITION_OCI_RUNTIME":        pp.get("oci_runtime"),
+    "RIVAULT_USERNS_MODE":                pp.get("userns_mode"),
+    "RIVAULT_PARTITION_NETWORK_BACKEND":  pp.get("network_backend"),
+    "RIVAULT_PARTITION_GPUS":             pp.get("gpus"),
+}
+if pp.get("needs_netavark_switch", False):
+    env_map["RIVAULT_PARTITION_NEEDS_NETAVARK"] = "1"
+else:
+    env_map["RIVAULT_PARTITION_NEEDS_NETAVARK"] = "0"
+if pp.get("vllm_docker_tag"):
+    env_map["VLLM_DOCKER_TAG"] = pp["vllm_docker_tag"]
+if pp.get("vllm_docker_image"):
+    env_map["VLLM_DOCKER_IMAGE"] = pp["vllm_docker_image"]
+
+for key, value in sorted(env_map.items()):
+    if value is not None:
+        print(f"export {key}={shlex.quote(str(value))}")
 PY
     } 2>/dev/null)" || return 0
 
