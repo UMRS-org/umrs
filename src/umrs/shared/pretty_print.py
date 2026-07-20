@@ -75,7 +75,7 @@ def pretty_print_thread_status(thread_status, running_only=True, print_output=Tr
 
     if rows:
         headers = _thread_status_headers(running_only)
-        table = tabulate(rows, headers, tablefmt="fancy_grid")
+        table = tabulate(rows, headers, tablefmt="simple")
         message = "Server status:\n" + table
     else:
         message = "Server is idle"
@@ -147,7 +147,7 @@ def pretty_print_cfg(cfg_dict, print_output=True):
     message = (
         "\nServer configuration:"
         + "\n"
-        + tabulate(df, headers="keys", tablefmt="grid")
+        + tabulate(df, headers="keys", tablefmt="simple")
     )
     if print_output:
         print(message)
@@ -216,7 +216,7 @@ def pretty_print_cfg_for_user(cfg_dict, username, print_output=False):
         message = f"\nNo configuration found for user '{username}'."
     else:
         message = f"\nConfiguration for '{username}':\n" + tabulate(
-            df, headers="keys", tablefmt="grid"
+            df, headers="keys", tablefmt="simple"
         )
     if print_output:
         print(message)
@@ -262,7 +262,7 @@ def pretty_print_user_cfg(cfg_dict, print_output=True):
     df.reset_index(drop=True, inplace=True)
 
     message = f"Configuration for S3 user '{username}':\n" + tabulate(
-        df, headers="keys", tablefmt="fancy_grid"
+        df, headers="keys", tablefmt="simple"
     )
     if print_output:
         print(message)
@@ -317,7 +317,7 @@ def pretty_print_recompute(recompute_dict, update=False, print_output=True):
         return message
 
     colalign = ("right", "left", "left", "left", "left", "right", "right", "right")
-    table = tabulate(df, headers="keys", tablefmt="fancy_grid", colalign=colalign)
+    table = tabulate(df, headers="keys", tablefmt="simple", colalign=colalign)
     message = f"{title}\n{table}"
     if print_output:
         print(message)
@@ -377,7 +377,7 @@ def pretty_print_check(check_dict, print_output=True):
     message = (
         "\nObject Check Summary:"
         + "\n"
-        + tabulate(df, headers="keys", tablefmt="fancy_grid")
+        + tabulate(df, headers="keys", tablefmt="simple")
     )
     if print_output:
         print(message)
