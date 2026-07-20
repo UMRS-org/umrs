@@ -26,11 +26,16 @@ vision service; the thumbnail branch runs on CPU and finishes quickly.
 
 ```bash
 # See "Running Manually" section below for step-by-step commands
-cd "$(git rev-parse --show-toplevel)/umrs/demos/10_vision_multi_mode"
+cd "$(git rev-parse --show-toplevel)/$(test -d "$(git rev-parse --show-toplevel)/umrs/demos" && echo umrs)/demos/10_vision_multi_mode"
 
 # With your own images
 IMAGE_DIR=/path/to/images MULTI_BUCKET=my-analysis bash ./run_demo.sh
 ```
+
+> **Note:** To navigate to this demo from either repo level, use:
+> ```bash
+> cd "$(git rev-parse --show-toplevel)/$(test -d "$(git rev-parse --show-toplevel)/umrs/demos" && echo umrs)/demos/10_vision_multi_mode"
+> ```
 
 > **Note:** The inline script `run_demo.sh` does not exist yet. Use the
 > step-by-step commands in the "Running Manually" section below instead.
@@ -63,20 +68,27 @@ are no conflicts.
 # 1. Verify server connectivity
 umrs-client ping
 
-# 2. Upload the multi-mode workflow to the server
+# 2. Load the experience fragment into your user config
+#    This registers the multi-mode vision experience (model + bucket + table)
+umrs-client experience add experience.json
+
+# 3. Reload to apply the new experience and provision buckets
+umrs-client reload
+
+# 4. Upload the multi-mode workflow to the server
 #    The upload-ready bundle lives under workflow/. Its workflow.json defines
 #    3 parallel branches (segment, features,
 #    thumbnails). Each branch processes the same input images independently.
 umrs-client workflow upload workflow/ --name "vision-multi-mode"
 
-# 3. Upload images to the multi-mode bucket
+# 5. Upload images to the multi-mode bucket
 #    All 3 branches receive the same images simultaneously:
 #    - segment:    runs GPU-based segmentation (bounding boxes)
 #    - features:   runs GPU-based feature extraction (embedding vectors)
 #    - thumbnails: runs CPU-based thumbnail generation (128px, 256px)
 umrs-client data dir-upload ../sample_data/images user1-multi
 
-# 4. Download results from all 3 branches
+# 6. Download results from all 3 branches
 #    Results are organized by branch in the output:
 #    S3 objects are written under segment/, features/, and thumbnails/.
 #    The local client currently flattens those prefixes when downloading.

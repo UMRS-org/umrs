@@ -23,7 +23,7 @@ Step/`workflow.json` pattern.
 
 ```bash
 # From demos/ directory — see "Running Manually" section below for all steps
-cd "$(git rev-parse --show-toplevel)/umrs/demos/09_multistep_vision_pipeline"
+cd "$(git rev-parse --show-toplevel)/$(test -d "$(git rev-parse --show-toplevel)/umrs/demos" && echo umrs)/demos/09_multistep_vision_pipeline"
 
 # With your own images
 IMAGE_DIR=/path/to/images bash ./run_demo.sh
@@ -47,23 +47,30 @@ IMAGE_DIR=/path/to/images bash ./run_demo.sh
 # 1. Verify server connectivity
 umrs-client ping
 
-# 2. Upload the workflow definition to the server
+# 2. Load the experience fragment into your user config
+#    This registers the vision pipeline experience (model + bucket + table)
+umrs-client experience add experience.json
+
+# 3. Reload to apply the new experience and provision buckets
+umrs-client reload
+
+# 4. Upload the workflow definition to the server
 #    The upload-ready bundle lives under workflow/ and already contains
 #    workflow.json plus the referenced step modules.
 #    to the server. The server stores the pipeline definition and
 #    will execute it when data arrives in the associated bucket.
 umrs-client workflow upload workflow/ --name "vision-pipeline-demo"
 
-# 2a. (Optional) Visualize the workflow DAG before running
+# 4a. (Optional) Visualize the workflow DAG before running
 umrs-client workflow visualize vision-pipeline-demo
 # Expected: ASCII art showing the 3-step pipeline DAG
 
-# 3. Upload images to the pipeline's bucket
+# 5. Upload images to the pipeline's bucket
 #    Images uploaded here will trigger the 3-step pipeline:
 #    segment → crop → stats. Each step's output feeds into the next.
 umrs-client data dir-upload ../sample_data/images user1-pipeline
 
-# 4. Download results once all 3 steps complete
+# 6. Download results once all 3 steps complete
 #    Results include segmentation metadata, cropped patches, and
 #    per-patch statistics. The download blocks until processing finishes.
 #    If you rerun against a shared bucket, clear the corresponding

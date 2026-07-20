@@ -77,7 +77,7 @@ umrs-client status check
 
 ```bash
 REPO_ROOT="$(git rev-parse --show-toplevel)"
-cd "$REPO_ROOT/umrs/demos/06_server_maintenance"
+cd "$(git rev-parse --show-toplevel)/$(test -d "$(git rev-parse --show-toplevel)/umrs/demos" && echo umrs)/demos/06_server_maintenance"
 
 CONF="${UMRS_USER_CONF:-$HOME/.config/umrs/users/user1.json}"
 umrs-client config use --user "$CONF"

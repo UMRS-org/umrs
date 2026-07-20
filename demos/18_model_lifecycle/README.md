@@ -12,7 +12,7 @@ Shows both system-scoped (shared) and user-scoped (private) model management.
 ## Quick Start
 
 ```bash
-cd demos/18_model_lifecycle
+cd "$(git rev-parse --show-toplevel)/$(test -d "$(git rev-parse --show-toplevel)/umrs/demos" && echo umrs)/demos/18_model_lifecycle"
 # See the numbered steps below in this README
 ```
 

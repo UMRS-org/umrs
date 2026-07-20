@@ -6,7 +6,7 @@ Quick connectivity check for the UMRS server. Works with any deployment
 ## Prerequisites
 
 - UMRS server running (any deployment)
-- Selected connection profile (`umrs-client --output text profile show`)
+- Selected connection profile (`umrs-client profile show`)
 - Network connectivity (SSH tunnels if the selected profile uses tunnel mode)
 - `umrs-client` installed and in PATH
 - User config at `~/.config/umrs/users/user1.json`
@@ -14,15 +14,16 @@ Quick connectivity check for the UMRS server. Works with any deployment
 ## Quick Start
 
 ```bash
-cd demos/01_health_check
+# Navigate from any level (auto-detects parent repo vs umrs subdirectory)
+cd "$(git rev-parse --show-toplevel)/$(test -d "$(git rev-parse --show-toplevel)/umrs/demos" && echo umrs)/demos/01_health_check"
 # See the numbered steps below in this README
 ```
 
 ## What This Demo Does
 
-1. **Ping** the UMRS server via `umrs-client` to verify real client connectivity
-2. **Supplemental endpoint checks** — inspects MinIO (9000) and reports raw ZMQ port visibility for debugging
-3. **RAG service** — checks if the optional RAG endpoint (8081) is available
+1. **Show connection info** — `umrs-client info` reveals your effective server, transport, and auth settings
+2. **Ping** the UMRS server via `umrs-client` to verify real client connectivity
+3. **Check experiences** — list loaded experiences for your user config
 4. **List buckets** to confirm the user's S3 configuration
 
 ## Environment Variables
@@ -39,15 +40,16 @@ cd demos/01_health_check
 ## Running Manually
 
 ```bash
-# Inspect the effective connection first
-umrs-client --output text profile show
+# Show effective connection, transport, auth, and S3 settings.
+# This command reveals your actual server host, ports, and tunnel status —
+# these values differ by deployment (local, rccs-cloud, etc.).
+umrs-client info
 
 # Ping the UMRS server
 umrs-client ping
 
-# Optional supplemental checks
-curl -sf http://localhost:9000/minio/health/live && echo "MinIO OK"
-nc -z localhost 5555 && echo "ZMQ port visible"
+# List loaded experiences for your user config
+umrs-client experience list
 
 # List configured buckets
 umrs-client bucket list
@@ -55,14 +57,28 @@ umrs-client bucket list
 
 ## Expected Output
 
+`umrs-client info` shows your effective connection — host, ports, auth mode, and S3 status.
+Values vary by deployment (local dev vs rccs-cloud). A healthy connection looks like:
+
 ```
-[health_check] Server is ready.
-[health_check]   ✓ MinIO S3     (localhost:9000)
-[health_check]   ✓ RAG service  (http://127.0.0.1:8081)
+  ● Server ready  |  profile=rccs-cloud  |  data0.ai.r-ccs.riken.jp:50090
+
+  Transport:
+    Control channel : ZMQ (tcp://data0.ai.r-ccs.riken.jp:50090)
+    Data channel    : ZMQ (tcp://data0.ai.r-ccs.riken.jp:50091)
+    HTTP gateway    : https://data0.ai.r-ccs.riken.jp/ai4s
+
+  Authentication:
+    Mode            : JWT
+
+  S3 / MinIO:
+    Endpoint        : http://data0.ai.r-ccs.riken.jp:9000
+    Access key      : mnagaso
+    Buckets         : 1 configured
 ```
 
 If checks fail, verify that:
 - The UMRS server is running
 - `umrs-client ping` succeeds through the selected profile
-- SSH tunnels are active (if remote): ports 5555, 5556, 9000, 8081
+- SSH tunnels are active (if remote)
 - The selected connection profile matches the deployment you are targeting

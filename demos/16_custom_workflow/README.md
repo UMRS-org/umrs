@@ -11,7 +11,8 @@ UMRS server, send data through it, and download processed results.
 ## Quick Start
 
 ```bash
-cd demos/16_custom_workflow
+# Navigate from any level (auto-detects parent repo vs umrs subdirectory)
+cd "$(git rev-parse --show-toplevel)/$(test -d "$(git rev-parse --show-toplevel)/umrs/demos" && echo umrs)/demos/16_custom_workflow"
 # See the numbered steps below in this README
 ```
 
@@ -33,7 +34,14 @@ cd demos/16_custom_workflow
 #    Sends a ZMQ ping to confirm the server is alive and your config is valid.
 umrs-client ping
 
-# 2. Prepare your workflow files
+# 2. Load the experience fragment into your user config
+#    This registers the custom workflow experience (model + bucket + table)
+umrs-client experience add experience.json
+
+# 3. Reload to apply the new experience and provision buckets
+umrs-client reload
+
+# 4. Prepare your workflow files
 #    Create the uploaded workflow package locally.
 mkdir -p workflow results
 
@@ -103,19 +111,19 @@ class WordCounter(Step):
         )
 PYEOF
 
-# 3. Upload the custom workflow to the server
+# 5. Upload the custom workflow to the server
 #    This registers the workflow under the name "custom-text-counter".
 #    The server stores the workflow definition and step scripts so it can
 #    execute them when data arrives.
 umrs-client workflow upload ./workflow --name "custom-text-counter"
 
-# 4. Upload text data to the workflow's bucket
+# 6. Upload text data to the workflow's bucket
 #    Files uploaded to this bucket will be processed by the custom workflow.
 #    The server detects new objects and runs the "count_words" step on each
 #    text file, producing a word_count_results.json output.
 umrs-client data dir-upload ../sample_data/texts user1-custom-text
 
-# 5. Download the processed results
+# 7. Download the processed results
 #    Retrieves all output files from the bucket to a local directory.
 #    The main output is word_count_results.json with per-file statistics.
 umrs-client data download user1-custom-text ./results --force-overwrite

@@ -437,7 +437,7 @@ print_mini_rivault_mount_summary() {
 #   ensure_experience "$SCRIPT_DIR/experience.json"
 #   ensure_experience "$SCRIPT_DIR/experience.json" --update
 #
-# Calls `umrs-client config add-experience <fragment>` so the modalities
+# Calls `umrs-client experience add <fragment>` so the modalities
 # described in the fragment are present in the active user config.
 # The `--update` flag replaces an existing experience with the same xp_name.
 ensure_experience() {
@@ -448,7 +448,7 @@ ensure_experience() {
     [[ -f "$fragment" ]] || die "Experience fragment not found: $fragment"
 
     log "Ensuring experience from: $fragment"
-    "${CLIENT_ARGS[@]}" config add-experience "$fragment" ${extra_args[@]+"${extra_args[@]}"} \
+    "${CLIENT_ARGS[@]}" experience add "$fragment" ${extra_args[@]+"${extra_args[@]}"} \
         || die "Failed to add experience fragment: $fragment"
     ok "Experience merged into user config."
 }

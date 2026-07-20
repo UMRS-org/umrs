@@ -9,7 +9,7 @@
         "data": { "type": "inline", "mime_type": "text/plain" }
       },
       "model": {
-        "model_name": "intfloat/e5-base-v2",
+        "model_name": "e5-base-v2",
         "vector_size": "768",
         "model_type": "rivault://openai://http://localhost:{LOCAL_PORT}/v1",
         "return_type": null,
@@ -21,7 +21,9 @@
         "meta_data": [
           { "name": "keywords", "type": "TEXT" }
         ]
-      }
+      },
+      "auto_compute": false,
+      "keep_endpoint": true
     },
     {
       "modality_name": "text file",
@@ -30,7 +32,7 @@
         "data": { "type": "file", "mime_type": "text/plain" }
       },
       "model": {
-        "model_name": "intfloat/e5-base-v2",
+        "model_name": "e5-base-v2",
         "vector_size": "768",
         "model_type": "rivault://openai://http://localhost:{LOCAL_PORT}/v1",
         "return_type": null,
@@ -42,7 +44,9 @@
         "meta_data": [
           { "name": "keywords", "type": "TEXT" }
         ]
-      }
+      },
+      "auto_compute": true,
+      "keep_endpoint": true
     }
   ]
 }

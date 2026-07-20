@@ -106,7 +106,7 @@ UMRS provisions the declared MinIO buckets and Postgres/pgvector database.
 
 ```bash
 # Add or update a workload experience in the active user config
-umrs-client config add-experience path/to/experience.json --update
+umrs-client experience add path/to/experience.json --update
 
 # Provision declared buckets, IAM policy, Postgres role/database, and tables
 umrs-client reload
@@ -325,12 +325,11 @@ Need to see connection info, list profiles, or manage endpoints?
 | `workflow visualize` | 09, 14, 15 | Render the workflow DAG as ASCII art |
 | `workflow validate-sandbox` | 14 | Validate a workflow sandbox (Dockerfile + workflow.json) |
 | `monitor` | 22 | Live-refreshing jobs dashboard (TUI) |
-| `config add-experience` | 00, workload demos | Merge an experience JSON fragment into the active user config |
 | `config init` | 00, 31 | Create a new user config JSON |
 | `config list` | 31 | List discovered config candidates |
 | `config show` | 31 | Show resolved config stack for server, user, and S3 |
 | `config use` | 06, 07, 17 | Persist the current server/user/s3 config selections |
-| `experience add` | 31 | Merge experience fragment(s) from a JSON file (alias for `config add-experience`) |
+| `experience add` | 00, 02, 03, 04, 09, 10, 14, 16, 31 | Add experience fragment(s) from a JSON file |
 | `experience list` | 31 | List experiences in the current user config |
 | `experience remove` | 00, 99 | Remove an experience from the user JSON while retaining MinIO/Postgres data |
 | `experience recover` | 00, 99 | Reconstruct an experience JSON fragment from MinIO/S3 and optional pgvector status |

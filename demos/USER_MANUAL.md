@@ -46,7 +46,7 @@ config, then reload:
 
 ```bash
 cd umrs/demos/03_sam3_segmentation
-umrs-client config add-experience experience.json --update
+umrs-client experience add experience.json --update
 umrs-client reload
 umrs-client bucket list
 ```

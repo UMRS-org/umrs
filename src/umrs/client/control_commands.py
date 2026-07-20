@@ -252,6 +252,12 @@ def configure_endpoint_up_parser(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--node", default=None, help='Slurm nodelist hint (e.g. "ai-h200-brc-00")'
     )
+    parser.add_argument(
+        "--keep-endpoint",
+        action="store_true",
+        default=False,
+        help="Keep the endpoint alive indefinitely (overrides idle-ttl, 999999s TTL)",
+    )
 
 
 def configure_endpoint_list_parser(parser: argparse.ArgumentParser) -> None:

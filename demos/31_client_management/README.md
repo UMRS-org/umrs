@@ -508,8 +508,6 @@ umrs-client config list                   # List config candidates
 umrs-client config show                   # Show resolved config stack
 umrs-client config use --user <file>      # Set active user config
 umrs-client config init                   # Create new user config
-umrs-client config add-experience <file>  # Add experience fragment
-umrs-client config import <file>          # Import experience(s)
 
 # Experience management
 umrs-client experience add <file>         # Add experience fragment

@@ -64,7 +64,7 @@ umrs-client model list --scope system
 
 ```bash
 REPO_ROOT="$(git rev-parse --show-toplevel)"
-cd "$REPO_ROOT/umrs/demos/07_model_registry"
+cd "$(git rev-parse --show-toplevel)/$(test -d "$(git rev-parse --show-toplevel)/umrs/demos" && echo umrs)/demos/07_model_registry"
 
 CONF="${UMRS_USER_CONF:-$HOME/.config/umrs/users/user1.json}"
 MODEL_SCOPE="${MODEL_SCOPE:-user}"
