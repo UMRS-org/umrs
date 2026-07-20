@@ -102,6 +102,13 @@ def pretty_print_cfg(cfg_dict, print_output=True):
         ]
     )
     buckets_cfg = cfg_dict.buckets_cfg
+
+    def _truncate(val: str, max_len: int = 40) -> str:
+        s = str(val)
+        if len(s) > max_len:
+            return s[:max_len - 3] + "..."
+        return s
+
     for key, entry in buckets_cfg.items():
         bucket_alias = entry.bucket_alias
         s3_username = entry.s3_username
@@ -122,15 +129,15 @@ def pretty_print_cfg(cfg_dict, print_output=True):
             metadata_str += f"{name} ({value_type})"
 
         df.loc[len(df)] = [
-            bucket_alias,
-            s3_username,
-            key,
-            xp,
-            modality,
-            db_name,
-            table_name,
-            sql_username,
-            model_name,
+            _truncate(bucket_alias, 20),
+            _truncate(s3_username, 12),
+            _truncate(key, 50),
+            _truncate(xp, 15),
+            _truncate(modality, 10),
+            _truncate(db_name, 30),
+            _truncate(table_name, 12),
+            _truncate(sql_username, 12),
+            _truncate(model_name, 20),
             store_embeddings_flag,
             metadata_str,
         ]
@@ -140,7 +147,7 @@ def pretty_print_cfg(cfg_dict, print_output=True):
     message = (
         "\nServer configuration:"
         + "\n"
-        + tabulate(df, headers="keys", tablefmt="fancy_grid")
+        + tabulate(df, headers="keys", tablefmt="grid")
     )
     if print_output:
         print(message)
@@ -168,6 +175,13 @@ def pretty_print_cfg_for_user(cfg_dict, username, print_output=False):
             "Metadata",
         ]
     )
+
+    def _truncate(val: str, max_len: int = 40) -> str:
+        s = str(val)
+        if len(s) > max_len:
+            return s[:max_len - 3] + "..."
+        return s
+
     # Accept dict, BucketsCfg (has .items()), or object with .buckets_cfg attr
     if isinstance(cfg_dict, dict):
         buckets_cfg = cfg_dict
@@ -186,12 +200,12 @@ def pretty_print_cfg_for_user(cfg_dict, username, print_output=False):
                 metadata_str += " ; "
             metadata_str += f"{name} ({value_type})"
         df.loc[len(df)] = [
-            entry.bucket_alias,
-            entry.xp_name,
-            entry.modality_name,
-            entry.db_name,
-            entry.table_name,
-            _model_name_for_bucket(entry),
+            _truncate(entry.bucket_alias, 20),
+            _truncate(entry.xp_name, 15),
+            _truncate(entry.modality_name, 10),
+            _truncate(entry.db_name, 30),
+            _truncate(entry.table_name, 12),
+            _truncate(_model_name_for_bucket(entry), 20),
             entry.store_embeddings_flag,
             metadata_str,
         ]
@@ -202,7 +216,7 @@ def pretty_print_cfg_for_user(cfg_dict, username, print_output=False):
         message = f"\nNo configuration found for user '{username}'."
     else:
         message = f"\nConfiguration for '{username}':\n" + tabulate(
-            df, headers="keys", tablefmt="fancy_grid"
+            df, headers="keys", tablefmt="grid"
         )
     if print_output:
         print(message)
