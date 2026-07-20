@@ -32,7 +32,7 @@ profile exists locally. To target it explicitly:
 
 ```bash
 export UMRS_PROFILE=rccs-cloud     # or: rccs, depending on your client
-umrs-client ping                   # expect: ✓ Server ready | profile=rccs-cloud
+umrs ping                   # expect: ✓ Server ready | profile=rccs-cloud
 ```
 
 To run against a different deployment, set `UMRS_PROFILE` (or

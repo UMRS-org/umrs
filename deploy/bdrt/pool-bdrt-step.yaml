@@ -8,7 +8,7 @@
 # Model deployment order:
 #   1. Stage weights via UMRS (or copy to /home/mnagaso/umrs_models)
 #   2. Register models in bdrt catalog:
-#      umrs-client --profile bdrt model register <name> <path> --type llm --scope system
+#      umrs --profile bdrt model register <name> <path> --type llm --scope system
 #   3. r4 pool up pool-bdrt-step.yaml
 
 pool: bdrt-step

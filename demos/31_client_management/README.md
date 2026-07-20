@@ -36,7 +36,7 @@ utility commands that every UMRS user should know.
 
 ## Prerequisites
 
-- UMRS client installed: `which umrs-client`
+- UMRS client installed: `which umrs`
 - At least one connection profile configured (see Demo 00)
 - UMRS server reachable for server-dependent commands
 
@@ -51,7 +51,7 @@ setup, including transport modes, authentication status, and S3
 configuration.
 
 ```bash
-umrs-client info
+umrs info
 ```
 
 **Expected output:**
@@ -75,38 +75,38 @@ umrs-client info
 
 **Common issues:**
 - `Server not reachable` → Check your SSH tunnel or network connectivity
-- `No profile selected` → Run `umrs-client profile use <name>`
+- `No profile selected` → Run `umrs profile use <name>`
 
 ---
 
 ### Step 2: Generate Shell Completion
 
 The `completion` command generates shell completion scripts for bash,
-zsh, or fish. This enables tab-completion for all `umrs-client` commands.
+zsh, or fish. This enables tab-completion for all `umrs` commands.
 
 ```bash
-umrs-client completion --shell zsh
+umrs completion --shell zsh
 ```
 
 **Expected output:**
 ```
-#compdef umrs-client
-# zsh completion for umrs-client
+#compdef umrs
+# zsh completion for umrs
 ...
 ```
 
 **Setup (zsh):**
 ```bash
-umrs-client completion --shell zsh > ~/.zsh/completions/_umrs-client
+umrs completion --shell zsh > ~/.zsh/completions/_umrs
 # Or add to .zshrc:
-# eval "$(umrs-client completion --shell zsh)"
+# eval "$(umrs completion --shell zsh)"
 ```
 
 **Setup (bash):**
 ```bash
-umrs-client completion --shell bash > /etc/bash_completion.d/umrs-client
+umrs completion --shell bash > /etc/bash_completion.d/umrs
 # Or:
-# source <(umrs-client completion --shell bash)
+# source <(umrs completion --shell bash)
 ```
 
 ---
@@ -116,7 +116,7 @@ umrs-client completion --shell bash > /etc/bash_completion.d/umrs-client
 The `profile list` command shows all available connection profiles.
 
 ```bash
-umrs-client profile list
+umrs profile list
 ```
 
 **Expected output:**
@@ -136,7 +136,7 @@ The `profile show` command displays the effective connection that would
 be used, resolving from profile, environment variables, and CLI flags.
 
 ```bash
-umrs-client profile show
+umrs profile show
 ```
 
 **Expected output:**
@@ -158,7 +158,7 @@ The `config list` command lists all discovered configuration files for
 server, user, and S3.
 
 ```bash
-umrs-client config list
+umrs config list
 ```
 
 **Expected output:**
@@ -184,7 +184,7 @@ The `config show` command displays the resolved configuration stack,
 showing which files are active and what settings they provide.
 
 ```bash
-umrs-client config show
+umrs config show
 ```
 
 **Expected output:**
@@ -243,7 +243,7 @@ cat > my_experience.json << 'EOF'
 EOF
 
 # Add the experience to your user config
-umrs-client experience add my_experience.json --update
+umrs experience add my_experience.json --update
 ```
 
 **Expected output:**
@@ -263,7 +263,7 @@ The `experience list` command shows all experiences in the current user
 config.
 
 ```bash
-umrs-client experience list
+umrs experience list
 ```
 
 **Expected output:**
@@ -286,16 +286,16 @@ status, type, and project.
 
 ```bash
 # List all jobs
-umrs-client job list
+umrs job list
 
 # List running jobs only
-umrs-client job list --status running
+umrs job list --status running
 
 # List endpoint_provision jobs
-umrs-client job list --type endpoint_provision
+umrs job list --type endpoint_provision
 
 # Limit to 10 results
-umrs-client job list --limit 10
+umrs job list --limit 10
 ```
 
 **Expected output:**
@@ -316,19 +316,19 @@ instance) that can be used for multiple inference requests.
 
 ```bash
 # Provision an endpoint with a specific model
-umrs-client endpoint up --model Qwen/Qwen2.5-7B-Instruct
+umrs endpoint up --model Qwen/Qwen2.5-7B-Instruct
 
 # With custom idle timeout (default: 30m)
-umrs-client endpoint up --model Qwen/Qwen2.5-7B-Instruct --idle-ttl 60m
+umrs endpoint up --model Qwen/Qwen2.5-7B-Instruct --idle-ttl 60m
 
 # With GPU count specification
-umrs-client endpoint up --model Qwen/Qwen2.5-7B-Instruct --gpu-count 1
+umrs endpoint up --model Qwen/Qwen2.5-7B-Instruct --gpu-count 1
 ```
 
 **Expected output:**
 ```
   ✓ Endpoint provision queued as durable job job-xxx
-  → Use 'umrs-client endpoint status job-xxx' to check progress
+  → Use 'umrs endpoint status job-xxx' to check progress
 ```
 
 ---
@@ -338,7 +338,7 @@ umrs-client endpoint up --model Qwen/Qwen2.5-7B-Instruct --gpu-count 1
 The `endpoint list` command lists all endpoint provision jobs.
 
 ```bash
-umrs-client endpoint list
+umrs endpoint list
 ```
 
 **Expected output:**
@@ -357,7 +357,7 @@ The `endpoint status` command shows detailed status for a specific
 endpoint provision job.
 
 ```bash
-umrs-client endpoint status job-xxx
+umrs endpoint status job-xxx
 ```
 
 **Expected output:**
@@ -380,7 +380,7 @@ The `endpoint stop` command stops a running endpoint provision job,
 releasing the allocated resources.
 
 ```bash
-umrs-client endpoint stop job-xxx
+umrs endpoint stop job-xxx
 ```
 
 **Expected output:**
@@ -397,7 +397,7 @@ The `workflow list` command lists all registered workflows on the
 server.
 
 ```bash
-umrs-client workflow list
+umrs workflow list
 ```
 
 **Expected output:**
@@ -418,19 +418,19 @@ execution of a registered workflow on the server.
 
 ```bash
 # Run a workflow with default settings
-umrs-client workflow run vision-pipeline-demo
+umrs workflow run vision-pipeline-demo
 
 # Run with a specific input bucket
-umrs-client workflow run vision-pipeline-demo --bucket user1-pipeline
+umrs workflow run vision-pipeline-demo --bucket user1-pipeline
 
 # Run with additional parameters
-umrs-client workflow run vision-pipeline-demo --params '{"max_images": 5}'
+umrs workflow run vision-pipeline-demo --params '{"max_images": 5}'
 ```
 
 **Expected output:**
 ```
   ✓ Workflow 'vision-pipeline-demo' execution queued as durable job job-xxx
-  → Use 'umrs-client job status job-xxx' to check progress
+  → Use 'umrs job status job-xxx' to check progress
 ```
 
 ---
@@ -443,13 +443,13 @@ specified.
 
 ```bash
 # Delete a model (prompt for confirmation)
-umrs-client model delete my-old-model
+umrs model delete my-old-model
 
 # Delete without confirmation
-umrs-client model delete my-old-model --force
+umrs model delete my-old-model --force
 
 # Delete and remove files from disk
-umrs-client model delete my-old-model --delete-files --force
+umrs model delete my-old-model --delete-files --force
 ```
 
 **Expected output:**
@@ -468,13 +468,13 @@ orphaned buckets from deleted experiences.
 
 ```bash
 # Preview which buckets would be purged (dry run)
-umrs-client bucket purge --dry-run
+umrs bucket purge --dry-run
 
 # Purge all extra buckets
-umrs-client bucket purge --yes
+umrs bucket purge --yes
 
 # Purge a specific bucket
-umrs-client bucket purge --bucket orphaned-bucket --yes
+umrs bucket purge --bucket orphaned-bucket --yes
 ```
 
 **Expected output:**
@@ -496,61 +496,61 @@ to preview which buckets will be deleted.
 
 ```bash
 # Connection management
-umrs-client info                          # Show connection info
-umrs-client profile list                  # List connection profiles
-umrs-client profile show                  # Show effective connection
-umrs-client profile use <name>            # Set active profile
-umrs-client profile import <file>         # Import a profile JSON
-umrs-client profile init --name <name>    # Create a new profile
+umrs info                          # Show connection info
+umrs profile list                  # List connection profiles
+umrs profile show                  # Show effective connection
+umrs profile use <name>            # Set active profile
+umrs profile import <file>         # Import a profile JSON
+umrs profile init --name <name>    # Create a new profile
 
 # Config management
-umrs-client config list                   # List config candidates
-umrs-client config show                   # Show resolved config stack
-umrs-client config use --user <file>      # Set active user config
-umrs-client config init                   # Create new user config
+umrs config list                   # List config candidates
+umrs config show                   # Show resolved config stack
+umrs config use --user <file>      # Set active user config
+umrs config init                   # Create new user config
 
 # Experience management
-umrs-client experience add <file>         # Add experience fragment
-umrs-client experience list               # List experiences
-umrs-client experience remove <name>      # Remove experience
-umrs-client experience recover <name>     # Recover experience JSON
+umrs experience add <file>         # Add experience fragment
+umrs experience list               # List experiences
+umrs experience remove <name>      # Remove experience
+umrs experience recover <name>     # Recover experience JSON
 
 # Job management
-umrs-client job list                      # List durable jobs
-umrs-client job submit <type>             # Submit a new job
-umrs-client job status <id>               # Show job status
-umrs-client job cancel <id>               # Cancel a job
+umrs job list                      # List durable jobs
+umrs job submit <type>             # Submit a new job
+umrs job status <id>               # Show job status
+umrs job cancel <id>               # Cancel a job
 
 # Endpoint management
-umrs-client endpoint up --model <name>    # Provision an endpoint
-umrs-client endpoint list                 # List endpoint jobs
-umrs-client endpoint status <id>          # Show endpoint status
-umrs-client endpoint stop <id>            # Stop an endpoint
+umrs endpoint up --model <name>    # Provision an endpoint
+umrs endpoint list                 # List endpoint jobs
+umrs endpoint status <id>          # Show endpoint status
+umrs endpoint stop <id>            # Stop an endpoint
 
 # Workflow management
-umrs-client workflow list                 # List registered workflows
-umrs-client workflow run <name>           # Run a registered workflow
-umrs-client workflow upload <dir>         # Upload a workflow bundle
-umrs-client workflow status <exec-id>     # Show execution status
-umrs-client workflow results <exec-id>    # Fetch results for a completed run
-umrs-client workflow cancel <exec-id>     # Cancel a running execution
-umrs-client workflow errors <exec-id>     # Show error logs for failed Attempts
-umrs-client workflow visualize <name>     # Render the workflow DAG as ASCII art
-umrs-client workflow validate-sandbox <dir>  # Validate Dockerfile sandbox
+umrs workflow list                 # List registered workflows
+umrs workflow run <name>           # Run a registered workflow
+umrs workflow upload <dir>         # Upload a workflow bundle
+umrs workflow status <exec-id>     # Show execution status
+umrs workflow results <exec-id>    # Fetch results for a completed run
+umrs workflow cancel <exec-id>     # Cancel a running execution
+umrs workflow errors <exec-id>     # Show error logs for failed Attempts
+umrs workflow visualize <name>     # Render the workflow DAG as ASCII art
+umrs workflow validate-sandbox <dir>  # Validate Dockerfile sandbox
 
 # Model management
-umrs-client model list                    # List registered models
-umrs-client model register <name> <path>  # Register a local model
-umrs-client model download <repo>         # Download from HuggingFace
-umrs-client model upload <path>           # Upload model to staging
-umrs-client model delete <name>           # Delete a model
+umrs model list                    # List registered models
+umrs model register <name> <path>  # Register a local model
+umrs model download <repo>         # Download from HuggingFace
+umrs model upload <path>           # Upload model to staging
+umrs model delete <name>           # Delete a model
 
 # Bucket management
-umrs-client bucket list                   # List bucket aliases
-umrs-client bucket purge                  # Delete extra S3 buckets
+umrs bucket list                   # List bucket aliases
+umrs bucket purge                  # Delete extra S3 buckets
 
 # Shell completion
-umrs-client completion --shell <shell>    # Generate completion script
+umrs completion --shell <shell>    # Generate completion script
 ```
 
 ---

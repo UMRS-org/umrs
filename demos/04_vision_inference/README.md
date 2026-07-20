@@ -10,7 +10,7 @@ vision model.
 ## Prerequisites
 
 - UMRS server running with a vision-capable compute backend
-- `umrs-client` installed and in PATH (see [demos/README.md](../README.md#prerequisites))
+- `umrs` installed and in PATH (see [demos/README.md](../README.md#prerequisites))
 - User onboarded (see [Demo 00](../00_onboarding/))
 - Server config with a vision experience (e.g. SAM3 Segmentation)
 - A site/user bucket already configured for the vision model you want to exercise
@@ -28,26 +28,26 @@ cd "$(git rev-parse --show-toplevel)/$(test -d "$(git rev-parse --show-toplevel)
 ```bash
 # 1. Verify server connectivity
 #    Sends a ZMQ ping to confirm the server is alive.
-umrs-client ping
+umrs ping
 
 # 2. Load the experience fragment into your user config
 #    This registers the vision inference experience (model + bucket + table)
-umrs-client experience add experience.json
+umrs experience add experience.json
 
 # 3. Reload to apply the new experience and provision buckets
-umrs-client reload
+umrs reload
 
 # 4. Upload images to the vision bucket
 #    Images are stored in S3 and the server dispatches each one
 #    to the BentoML vision model running on HPC via Slurm.
 #    The first upload may trigger a cold start (Slurm job launch).
-umrs-client data dir-upload ../sample_data/images user1-sam3
+umrs data dir-upload ../sample_data/images user1-sam3
 
 # 5. Download inference results
 #    Polls the server until processing completes, then retrieves
 #    all output files (JSON metadata, overlay images, etc.) to
 #    the local results/ directory.
-umrs-client data download user1-sam3 results/ --force-overwrite
+umrs data download user1-sam3 results/ --force-overwrite
 ```
 
 ## Plugging in a Different Vision Model
@@ -57,7 +57,7 @@ your own model:
 
 1. **Register** the model with UMRS:
    ```bash
-   umrs-client model register my-model /path/to/model --type vision --scope user
+   umrs model register my-model /path/to/model --type vision --scope user
    ```
 
    On a local-client / remote-server deployment, use `model upload` with an
@@ -86,7 +86,7 @@ operator task rather than part of the normal user demo.
 
 ## How It Works
 
-1. Images are uploaded to MinIO (S3) via `umrs-client data dir-upload`
+1. Images are uploaded to MinIO (S3) via `umrs data dir-upload`
 2. The server detects new objects and dispatches them to the BentoML vision
    service running on HPC (Slurm)
 3. The vision service loads the model, runs inference, and writes results

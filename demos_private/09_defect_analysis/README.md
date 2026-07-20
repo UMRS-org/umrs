@@ -33,7 +33,7 @@ operator-provisioned. Use `DEFECT_BUCKET=demo-defect` only after an admin reload
 has provisioned that private experience server-side.
 
 If you want to upload the full workflow, use `workflow/` or `workflow_slurm/`
-directly with `umrs-client upload-workflow ...`. Those bundle directories are
+directly with `umrs upload-workflow ...`. Those bundle directories are
 already shaped to match the current CLI contract.
 
 ## Quick Start
@@ -60,31 +60,31 @@ DEFECT_BUCKET=demo-defect  # only after operator provisioning
 
 ```bash
 # 1. Verify server connectivity
-umrs-client ping
+umrs ping
 
 # 2. Verify that the SAM3 model is already visible to the server
-umrs-client model list --scope system
-umrs-client model list --scope user
+umrs model list --scope system
+umrs model list --scope user
 
 # Optional: stage a user-scoped copy when your site exposes a writable model root
-umrs-client model download facebook/sam2-hiera-small --name sam3 \
+umrs model download facebook/sam2-hiera-small --name sam3 \
   --scope user --server-side --staging-dir /path/to/site-user-model-root
 
 # Optional: upload the full defect-analysis workflow bundle instead of using
 # the simpler SAM3-only shell path.
-umrs-client upload-workflow workflow/ --name structural-defect-analysis
+umrs upload-workflow workflow/ --name structural-defect-analysis
 # or the Slurm-oriented variant:
-# umrs-client upload-workflow workflow_slurm/ --name defect-analysis-slurm
+# umrs upload-workflow workflow_slurm/ --name defect-analysis-slurm
 
 # 3. Upload images for defect analysis
 #    Images are dispatched to SAM3 segmentation on the GPU node.
 #    The segmentation model detects structural features and defects
 #    using text-prompted segmentation.
-umrs-client data dir-upload ../../demos/sample_data/images demo-defect
+umrs data dir-upload ../../demos/sample_data/images demo-defect
 
 # 4. Download segmentation results
 #    Retrieves bounding boxes, masks, scores, and overlay images.
-umrs-client data download demo-defect ./results --force-overwrite
+umrs data download demo-defect ./results --force-overwrite
 ```
 
 ## Script Defaults

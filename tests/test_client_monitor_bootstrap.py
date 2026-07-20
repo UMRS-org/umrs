@@ -129,7 +129,7 @@ def _configure_monitor_main_dependencies(monkeypatch, fake_control_mq, user_cfg)
 
 def _monitor_argv(tab="status"):
     return [
-        "umrs-client",
+        "umrs",
         "--output",
         "text",
         "--admin-token",

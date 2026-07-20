@@ -34,15 +34,15 @@ demos_private/
 
 ```bash
 # 1. Add experiences to user config
-umrs-client experience add demos_private/04_hmae_inference/experience.json --update
-umrs-client experience add demos_private/09_defect_analysis/experience.json --update
-umrs-client experience add demos_private/14_opossum_analysis/experience.json --update
+umrs experience add demos_private/04_hmae_inference/experience.json --update
+umrs experience add demos_private/09_defect_analysis/experience.json --update
+umrs experience add demos_private/14_opossum_analysis/experience.json --update
 
 # 2. Reload server (provisions buckets)
-umrs-client reload
+umrs reload
 
 # 3. Verify buckets
-umrs-client bucket list
+umrs bucket list
 # Shows all 6 buckets above
 ```
 
@@ -59,7 +59,7 @@ umrs-client bucket list
 
 ### Text Data Upload (Working)
 ```bash
-$ umrs-client data dir-upload demos/sample_data/texts demo-defect
+$ umrs data dir-upload demos/sample_data/texts demo-defect
 Processing file 'containers_hpc.txt'...
 Processing file 'hpc_computing.txt'...
 Processing file 'ml_materials.txt'...
@@ -70,7 +70,7 @@ status=ok
 
 ### Image Upload (Working)
 ```bash
-$ umrs-client data dir-upload demos/sample_data/images demo-defect
+$ umrs data dir-upload demos/sample_data/images demo-defect
 Processing file 'Cat_1.jpg'...
 Processing file 'Dog_1.jpeg'...
 Processing file 'Dog_1.jpg'...
@@ -79,7 +79,7 @@ status=ok
 
 ### Doctor Health Check
 ```bash
-$ umrs-client doctor
+$ umrs doctor
 ✓ Server: Server is reachable
 ✓ Storage: Connected, 6 buckets
 ✓ Models: 35 system models
@@ -118,7 +118,7 @@ $ umrs-client doctor
 1. **Add screenshots to PPTX**
    ```bash
    # Take screenshots during demo runs
-   $ umrs-client data dir-upload /path/to/images demo-defect
+   $ umrs data dir-upload /path/to/images demo-defect
    # Capture terminal output in PowerPoint slide
    ```
 
@@ -128,8 +128,8 @@ $ umrs-client doctor
 
 3. **Test the live demo flow**
    ```bash
-   $ umrs-client data dir-upload demos/sample_data/images demo-defect
-   $ umrs-client data download demo-defect /tmp/demo-results
+   $ umrs data dir-upload demos/sample_data/images demo-defect
+   $ umrs data download demo-defect /tmp/demo-results
    ```
 
 ### Presentation Flow (60 minutes)
@@ -147,19 +147,19 @@ $ umrs-client doctor
 
 ```bash
 # 1. Check server health
-umrs-client doctor
+umrs doctor
 
 # 2. Upload images
-umrs-client data dir-upload demos/sample_data/images demo-defect
+umrs data dir-upload demos/sample_data/images demo-defect
 
 # 3. Download results
-umrs-client data download demo-defect /tmp/segmentation --force-overwrite
+umrs data download demo-defect /tmp/segmentation --force-overwrite
 
 # 4. List buckets
-umrs-client bucket list
+umrs bucket list
 
 # 5. Check models
-umrs-client model list --scope system
+umrs model list --scope system
 ```
 
 ## File Locations

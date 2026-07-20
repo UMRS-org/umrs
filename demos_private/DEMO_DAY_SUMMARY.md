@@ -27,7 +27,7 @@
 
 ### 1. Doctor CLI Integration ✅
 - **File**: `umrs/src/umrs/client/doctor.py`
-- **Usage**: `umrs-client doctor` (or `umrs-client doctor <subcommand>`)
+- **Usage**: `umrs doctor` (or `umrs doctor <subcommand>`)
 - **Features**: 8 health checks with auto-suggestions
 - **Tests**: 17/17 passing
 
@@ -63,18 +63,18 @@
    - Architecture slide
 
 2. Connect to UMRS (3 min)
-   - umrs-client ping
-   - umrs-client info
-   - umrs-client doctor (health check)
+   - umrs ping
+   - umrs info
+   - umrs doctor (health check)
 
 3. Upload & Download Text Data (5 min)
    - Create sample text files
-   - umrs-client data dir-upload
-   - umrs-client data list
-   - umrs-client data download
+   - umrs data dir-upload
+   - umrs data list
+   - umrs data download
 
 4. Model Registry (5 min)
-   - umrs-client model list --scope system
+   - umrs model list --scope system
    - Explain model scopes (system/project/user)
    - Explain model types (embedding/vision/text)
 ```
@@ -84,15 +84,15 @@
 5. SAM3 Segmentation Concept (10 min)
    - Show architecture slide for vision pipeline
    - Upload demo images:
-     umrs-client data dir-upload demos/sample_data/images demo-sam3
+     umrs data dir-upload demos/sample_data/images demo-sam3
    - If demo-sam3 unavailable:
-     umrs-client data dir-upload demos/sample_data/images mnagaso3-text
+     umrs data dir-upload demos/sample_data/images mnagaso3-text
      (show auto-fallback works)
 
 6. HMAE Reconstruction (10 min)
    - Show HMAE workflow architecture
    - Upload volume slices:
-     umrs-client data dir-upload demos/03_sam3_segmentation/test_data_full user1-hmae
+     umrs data dir-upload demos/03_sam3_segmentation/test_data_full user1-hmae
    - If user1-hmae unavailable:
      Use auto-fallback to mnagaso3-text
    - Show expected outputs
@@ -103,11 +103,11 @@
 7. Workflow System (7 min)
    - List available workflows
    - Upload workflow bundle:
-     umrs-client workflow upload demos_private/09_defect_analysis/workflow/ --name defect-analysis
+     umrs workflow upload demos_private/09_defect_analysis/workflow/ --name defect-analysis
    - Visualize:
-     umrs-client workflow visualize defect-analysis
+     umrs workflow visualize defect-analysis
    - Run (if workflow engine ready):
-     umrs-client workflow run defect-analysis
+     umrs workflow run defect-analysis
 
 8. RAG Pipeline (3 min)
    - Show RAG architecture
@@ -133,13 +133,13 @@
 ### Server Verification
 ```bash
 # Basic connection
-umrs-client ping
+umrs ping
 
 # Full system status
-umrs-client info
+umrs info
 
 # Health check
-umrs-client doctor
+umrs doctor
 ```
 
 ### Text Data Operations
@@ -149,33 +149,33 @@ mkdir -p /tmp/umrs-demo
 echo "UMRS is a unified multimodal retrieval system." > /tmp/umrs-demo/doc1.txt
 
 # Upload to existing bucket
-umrs-client data dir-upload /tmp/umrs-demo mnagaso3-text
+umrs data dir-upload /tmp/umrs-demo mnagaso3-text
 
 # Verify upload
-umrs-client data list mnagaso3-text
+umrs data list mnagaso3-text
 
 # Download back
-umrs-client data download mnagaso3-text /tmp/umrs-download --force-overwrite
+umrs data download mnagaso3-text /tmp/umrs-download --force-overwrite
 ```
 
 ### Vision Demo (SAM3/HMAE)
 ```bash
 # Upload images (auto-fallback if demo-sam3 unavailable)
-umrs-client data dir-upload demos/sample_data/images demo-sam3 2>/dev/null || \
-  umrs-client data dir-upload demos/sample_data/images mnagaso3-text
+umrs data dir-upload demos/sample_data/images demo-sam3 2>/dev/null || \
+  umrs data dir-upload demos/sample_data/images mnagaso3-text
 
 # Upload volume slices (auto-fallback if user1-hmae unavailable)
-umrs-client data dir-upload demos/03_sam3_segmentation/test_data_full user1-hmae 2>/dev/null || \
-  umrs-client data dir-upload demos/03_sam3_segmentation/test_data_full mnagaso3-text
+umrs data dir-upload demos/03_sam3_segmentation/test_data_full user1-hmae 2>/dev/null || \
+  umrs data dir-upload demos/03_sam3_segmentation/test_data_full mnagaso3-text
 ```
 
 ### Workflow Demo
 ```bash
 # Upload workflow bundle
-umrs-client workflow upload demos_private/09_defect_analysis/workflow/ --name defect-analysis
+umrs workflow upload demos_private/09_defect_analysis/workflow/ --name defect-analysis
 
 # Visualize
-umrs-client workflow visualize defect-analysis
+umrs workflow visualize defect-analysis
 ```
 
 ---
@@ -206,10 +206,10 @@ modalities:
         mime_type: image/png
 
 # 2. Reload server
-umrs-client reload
+umrs reload
 
 # 3. Verify bucket created
-umrs-client bucket list
+umrs bucket list
 # Should show demo-defect bucket
 ```
 

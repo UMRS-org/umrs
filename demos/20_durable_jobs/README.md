@@ -7,7 +7,7 @@ poll status, test duplicate detection, and cancel a running durable endpoint job
 
 - UMRS server running and reachable (SSH tunnels if remote: ports 5555, 5556, 9000)
 - UMRS server with the job subsystem enabled
-- `umrs-client` installed and in PATH
+- `umrs` installed and in PATH
 
 ## Quick Start
 
@@ -30,13 +30,13 @@ cd "$(git rev-parse --show-toplevel)/$(test -d "$(git rev-parse --show-toplevel)
 
 ```bash
 # 1. Verify server connectivity
-umrs-client ping
+umrs ping
 
 # 2. Submit an index_build job
 #    The --spec flag passes a JSON payload with job parameters.
 #    --project scopes the job to a project namespace.
 #    On the current demo sequence, Demo 02 populated this table.
-umrs-client job submit index_build \
+umrs job submit index_build \
     --spec '{"database": "text_embedding_usr1_text", "table": "text_file"}' \
     --project demo20
 # Output includes a job_id, e.g.: {"job": {"job_id": "abc123..."}}
@@ -44,12 +44,12 @@ umrs-client job submit index_build \
 # 3. Check the job status
 #    Poll until the job reaches "completed" or "failed".
 #    Status values: queued → running → completed | failed | cancelled
-umrs-client job status <job_id>
+umrs job status <job_id>
 
 # 4. Test idempotency — resubmit the same job spec
 #    If the server enforces idempotency for this job type, it returns
 #    the same job_id instead of creating a duplicate job.
-umrs-client job submit index_build \
+umrs job submit index_build \
     --spec '{"database": "text_embedding_usr1_text", "table": "text_file"}' \
     --project demo20
 # Expected: same job_id as step 2
@@ -57,7 +57,7 @@ umrs-client job submit index_build \
 # 5. Submit a new endpoint_provision job and cancel it.
 #    This is a better cancellation demo than index_build because it stays
 #    active long enough to observe a real cancelled durable job state.
-umrs-client job submit endpoint_provision \
+umrs job submit endpoint_provision \
     --spec '{"model": "sam3"}' \
     --project demo20-cancel
 # Note the new job_id from the response
@@ -65,10 +65,10 @@ umrs-client job submit endpoint_provision \
 # 6. Cancel the job
 #    Sends a cancellation request. The server stops the job and
 #    transitions it to "cancelled" state.
-umrs-client job cancel <job_id>
+umrs job cancel <job_id>
 
 # 7. Verify the cancelled status
-umrs-client job status <job_id>
+umrs job status <job_id>
 # Expected: the job record reports status="cancelled"
 ```
 
@@ -90,7 +90,7 @@ QUEUED → RUNNING → COMPLETED
 
 ## Environment Variables
 
-No additional environment variables — uses the default `umrs-client` config.
+No additional environment variables — uses the default `umrs` config.
 
 ## Expected Output
 

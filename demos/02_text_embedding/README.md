@@ -39,8 +39,8 @@ Each demo ships an `experience.json` fragment that declares:
 - **Bucket alias** — the S3 bucket alias that UMRS provisions
 - **DB table** — the Postgres table name for storing embeddings/metadata
 
-When you run `umrs-client experience add experience.json`, this fragment is merged
-into your user config JSON. The next `umrs-client reload` instructs the server to
+When you run `umrs experience add experience.json`, this fragment is merged
+into your user config JSON. The next `umrs reload` instructs the server to
 provision the declared MinIO buckets and Postgres tables.
 
 ## Running Manually
@@ -49,38 +49,38 @@ If you prefer to run steps individually:
 
 ```bash
 # 1. Check server
-umrs-client ping
+umrs ping
 
 # 2. Load the experience fragment into your user config
 #    This registers the text embedding experience (model + bucket + table)
-umrs-client experience add experience.json
+umrs experience add experience.json
 
 # 3. Verify the experience was added successfully
-umrs-client experience list
+umrs experience list
 # Expected: "Text Embedding" should appear in the list
 
 # 3b. (Optional) Validate the experience fragment
 #    Checks the JSON structure and verifies model availability if server is reachable
-umrs-client experience validate experience.json
+umrs experience validate experience.json
 
 # 4. Check buckets before reload
-umrs-client bucket list
+umrs bucket list
 # Expected: only buckets from previous experiences (not demo-texts yet)
 
 # 5. Reload to apply the new experience and provision buckets
-umrs-client reload
+umrs reload
 
 # 6. Check buckets after reload — new buckets should appear
-umrs-client bucket list
+umrs bucket list
 # Expected: demo-texts and demo-textfiles now visible
 
 # 7. Verify the embedding model is visible to the server
-umrs-client model list --scope system
-umrs-client model list --scope user
+umrs model list --scope system
+umrs model list --scope user
 # Use this to confirm intfloat/e5-base-v2 is registered
 
 # Optional: only if your site gives you a writable, allowed staging root
-umrs-client model download intfloat/e5-base-v2 --scope user --server-side \
+umrs model download intfloat/e5-base-v2 --scope user --server-side \
     --staging-dir /path/to/site-user-model-root
 
 # 8. Upload the bundled sample files
@@ -90,19 +90,19 @@ umrs-client model download intfloat/e5-base-v2 --scope user --server-side \
 # on the server is prefixed by your username: <username>-<alias>.
 # So if your user is "mnagaso3", the bucket is "mnagaso3-textfiles",
 # NOT "demo-textfiles". Always use your username-prefixed alias.
-umrs-client data dir-upload ../sample_data/texts "$USER-textfiles"
+umrs data dir-upload ../sample_data/texts "$USER-textfiles"
 
 # 9. Monitor progress
-umrs-client status process_objects
+umrs status process_objects
 
 # 10. Once processing is done, export embeddings (default: minimal profile)
-umrs-client export_embeddings "$USER-textfiles" ./results/embeddings.csv --format csv
+umrs export_embeddings "$USER-textfiles" ./results/embeddings.csv --format csv
 
 # 11. Export all stored DB columns when you need the full row
-umrs-client export_embeddings "$USER-textfiles" ./results/embeddings-full.csv --format csv --profile full
+umrs export_embeddings "$USER-textfiles" ./results/embeddings-full.csv --format csv --profile full
 
 # 12. Export only the embedding vector itself
-umrs-client export_embeddings "$USER-textfiles" ./results/embeddings-only.csv --format csv --profile embedding-only
+umrs export_embeddings "$USER-textfiles" ./results/embeddings-only.csv --format csv --profile embedding-only
 ```
 
 ## Test Data
@@ -191,8 +191,8 @@ The `custom_embedding/` directory contains a complete working example:
 3. Upload text files and process as usual:
 
 ```bash
-umrs-client data dir-upload ./test_data/ my-bucket
-umrs-client status all
+umrs data dir-upload ./test_data/ my-bucket
+umrs status all
 ```
 
 ### Writing your own step

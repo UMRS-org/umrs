@@ -6,7 +6,7 @@ from pathlib import Path
 
 @pytest.fixture
 def ctx():
-    return MagicMock(executable="umrs-client", profile_name="test")
+    return MagicMock(executable="umrs", profile_name="test")
 
 
 class TestDoctorModule:

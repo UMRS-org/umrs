@@ -6,7 +6,7 @@ UMRS server, send data through it, and download processed results.
 ## Prerequisites
 
 - UMRS server running and reachable (SSH tunnels if remote: ports 5555, 5556, 9000)
-- `umrs-client` installed and in PATH
+- `umrs` installed and in PATH
 
 ## Quick Start
 
@@ -22,7 +22,7 @@ cd "$(git rev-parse --show-toplevel)/$(test -d "$(git rev-parse --show-toplevel)
 2. **Prepare workflow files** — creates `workflow.json` (pipeline definition)
    and `counter.py` (custom word-counting step)
 3. **Upload workflow** — sends the workflow package to the server via
-   `umrs-client workflow upload`
+   `umrs workflow upload`
 4. **Upload sample data** — sends text files to the workflow's bucket
 5. **Download results** — retrieves the processed output
    (`word_count_results.json`)
@@ -32,14 +32,14 @@ cd "$(git rev-parse --show-toplevel)/$(test -d "$(git rev-parse --show-toplevel)
 ```bash
 # 1. Verify server connectivity
 #    Sends a ZMQ ping to confirm the server is alive and your config is valid.
-umrs-client ping
+umrs ping
 
 # 2. Load the experience fragment into your user config
 #    This registers the custom workflow experience (model + bucket + table)
-umrs-client experience add experience.json
+umrs experience add experience.json
 
 # 3. Reload to apply the new experience and provision buckets
-umrs-client reload
+umrs reload
 
 # 4. Prepare your workflow files
 #    Create the uploaded workflow package locally.
@@ -115,18 +115,18 @@ PYEOF
 #    This registers the workflow under the name "custom-text-counter".
 #    The server stores the workflow definition and step scripts so it can
 #    execute them when data arrives.
-umrs-client workflow upload ./workflow --name "custom-text-counter"
+umrs workflow upload ./workflow --name "custom-text-counter"
 
 # 6. Upload text data to the workflow's bucket
 #    Files uploaded to this bucket will be processed by the custom workflow.
 #    The server detects new objects and runs the "count_words" step on each
 #    text file, producing a word_count_results.json output.
-umrs-client data dir-upload ../sample_data/texts user1-custom-text
+umrs data dir-upload ../sample_data/texts user1-custom-text
 
 # 7. Download the processed results
 #    Retrieves all output files from the bucket to a local directory.
 #    The main output is word_count_results.json with per-file statistics.
-umrs-client data download user1-custom-text ./results --force-overwrite
+umrs data download user1-custom-text ./results --force-overwrite
 ```
 
 This demo shows the normal user path: upload the workflow bundle, upload data,

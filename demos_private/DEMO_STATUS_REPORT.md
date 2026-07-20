@@ -24,7 +24,7 @@
 All 4 private demos are blocked by **missing bucket aliases**. The required buckets (`user1-hmae`, `demo-sam3`, `demo-defect`, `demo-hmae*`, `demo-opossum`) need to be provisioned by an operator via:
 
 1. **Add experiences** to site.yaml or user config
-2. **Run `umrs-client reload`** on the server
+2. **Run `umrs reload`** on the server
 3. **Ensure model checkpoints** are staged on the server
 
 ### Workaround: Use Existing `mnagaso3-text` Bucket
@@ -69,7 +69,7 @@ For demo purposes, all uploads can be redirected to the existing `mnagaso3-text`
 ### Short-term (1-2 weeks)
 1. Operator provisions bucket aliases for private demos
 2. Stage HMAE and SAM3 model checkpoints on server
-3. Run `umrs-client reload` after adding experiences
+3. Run `umrs reload` after adding experiences
 
 ### Medium-term (1 month)
 1. Add all bucket aliases via ansible/deployment

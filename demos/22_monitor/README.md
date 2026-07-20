@@ -8,7 +8,7 @@ connection health.
 ## Prerequisites
 
 - UMRS server running and reachable (SSH tunnels if remote: ports 5555, 5556)
-- `umrs-client` installed and in PATH
+- `umrs` installed and in PATH
 - `rich` library installed: `pip install 'rich>=13.0'`
 
 ## Quick Start
@@ -45,41 +45,41 @@ cd "$(git rev-parse --show-toplevel)/$(test -d "$(git rev-parse --show-toplevel)
 
 ```bash
 # 1. Verify server connectivity
-umrs-client ping
+umrs ping
 
 # 2. Verify the rich library is installed
 python3 -c "import importlib.metadata; print(importlib.metadata.version('rich'))"
 
 # 3. Submit a sample job (optional — dashboard works with any existing jobs)
-umrs-client job submit index_build \
+umrs job submit index_build \
   --spec '{"database": "text_embedding_usr1_text", "table": "text_file"}' \
   --project demo22
 
 # 4. One-shot snapshot — Jobs tab (default)
-umrs-client monitor --once
+umrs monitor --once
 
 # 5. One-shot snapshot — specific tabs
-umrs-client monitor --once --tab status
-umrs-client monitor --once --tab models
-umrs-client monitor --once --tab workflows
-umrs-client monitor --once --tab connection
+umrs monitor --once --tab status
+umrs monitor --once --tab models
+umrs monitor --once --tab workflows
+umrs monitor --once --tab connection
 
 # 6. Filtered jobs view
 #    This may legitimately show zero rows if nothing is currently queued.
-umrs-client monitor --once --status queued
+umrs monitor --once --status queued
 
 # 7. Launch the live-refreshing interactive dashboard
-umrs-client monitor
+umrs monitor
 
 # 8. Start on a specific tab
-umrs-client monitor --tab connection
+umrs monitor --tab connection
 
 # 9. Mount a config file (enables in-TUI reload via R key)
-umrs-client monitor --conf ~/.config/umrs/users/user1.json
+umrs monitor --conf ~/.config/umrs/users/user1.json
 
 # 10. Other options
-umrs-client monitor --interval 5         # refresh every 5 seconds
-umrs-client monitor --project myproject  # filter jobs by project
+umrs monitor --interval 5         # refresh every 5 seconds
+umrs monitor --project myproject  # filter jobs by project
 ```
 
 ## Keyboard Shortcuts (Live Mode)
@@ -121,7 +121,7 @@ umrs-client monitor --project myproject  # filter jobs by project
 ## Monitor Command Reference
 
 ```
-umrs-client monitor [OPTIONS]
+umrs monitor [OPTIONS]
 
 Options:
   --once                   Print once and exit (no live loop)
@@ -137,7 +137,7 @@ Options:
 When you pass `-c` / `--conf` pointing to a user config JSON file:
 - The **Status tab** shows the config filename and enables the `R` key
 - Pressing `R` uploads the config to the server and triggers a RELOAD
-- This is equivalent to running `umrs-client reload` but from
+- This is equivalent to running `umrs reload` but from
   within the dashboard
 
 Treat the `R` key as an operator/admin workflow. Normal end-user monitoring does

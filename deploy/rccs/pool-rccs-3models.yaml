@@ -45,7 +45,7 @@
 #       plan.
 #
 # Each model must be registered in the rccs catalog before `pool up`:
-#   umrs-client --profile rccs-cloud model register <name> <path> --type llm --scope user
+#   umrs --profile rccs-cloud model register <name> <path> --type llm --scope user
 # The `model:` field below must match the registered catalog name.
 
 pool: rccs-3models

@@ -55,27 +55,27 @@ explicitly need full-resolution mask arrays.
 ```bash
 # 1. Load the experience fragment into your user config
 #    This registers the SAM3 segmentation experience (model + bucket + table)
-umrs-client experience add experience.json
+umrs experience add experience.json
 
 # 2. Reload to apply the new experience and provision buckets
-umrs-client reload
+umrs reload
 
 # 3. Ensure the server deployment already includes the vision profile
 #    On rccs-cloud this is configured in site.yaml, so no client-side export is needed.
 
 # 4. Verify that the SAM3 model is already visible to the server
-umrs-client model list --scope system
-umrs-client model list --scope user
+umrs model list --scope system
+umrs model list --scope user
 
 # Optional: only if your site exposes a writable, allowed staging root
-umrs-client model download sam3.1 --name sam3.1 \
+umrs model download sam3.1 --name sam3.1 \
   --scope user --server-side --staging-dir /path/to/site-user-model-root
 
 # 5. Upload images
-umrs-client data dir-upload ./test_data_full user1-sam3
+umrs data dir-upload ./test_data_full user1-sam3
 
 # 6. Download results once processing completes
-umrs-client data download user1-sam3 ./results --force-overwrite
+umrs data download user1-sam3 ./results --force-overwrite
 ```
 
 ## Configuration

@@ -17,9 +17,9 @@ _default_umrs_profile() {
     # Profile identity is still "rccs-cloud" on most clients; newer
     # onboarding flows may name it "rccs".
     [[ -z "${UMRS_PROFILE:-}" && -z "${UMRS_ZMQ_HOST:-}" ]] || return 0
-    command -v umrs-client >/dev/null 2>&1 || return 0
+    command -v umrs >/dev/null 2>&1 || return 0
     local profiles
-    profiles="$(umrs-client --output json profile list 2>/dev/null)" || return 0
+    profiles="$(umrs --output json profile list 2>/dev/null)" || return 0
     local name
     for name in rccs rccs-cloud; do
         if grep -q "\"name\": \"${name}\"" <<<"$profiles"; then
@@ -32,7 +32,7 @@ _default_umrs_profile() {
 _default_umrs_profile
 
 _apply_umrs_profile_defaults() {
-    command -v umrs-client >/dev/null 2>&1 || return 0
+    command -v umrs >/dev/null 2>&1 || return 0
 
     local connection_args=()
     if [[ -n "${UMRS_PROFILE:-}" ]]; then
@@ -47,11 +47,11 @@ _apply_umrs_profile_defaults() {
 
     local profile_json
     if [[ ${#connection_args[@]} -gt 0 ]]; then
-        if ! profile_json="$(umrs-client "${connection_args[@]}" --output json profile show 2>/dev/null)"; then
+        if ! profile_json="$(umrs "${connection_args[@]}" --output json profile show 2>/dev/null)"; then
             return 0
         fi
     else
-        if ! profile_json="$(umrs-client --output json profile show 2>/dev/null)"; then
+        if ! profile_json="$(umrs --output json profile show 2>/dev/null)"; then
             return 0
         fi
     fi
@@ -100,11 +100,11 @@ else
 fi
 
 # Persist the resolved config so subsequent commands don't need -c.
-if command -v umrs-client >/dev/null 2>&1 && [[ -f "${CONF}" ]]; then
-    umrs-client config use --user "${CONF}" >/dev/null 2>&1 || true
+if command -v umrs >/dev/null 2>&1 && [[ -f "${CONF}" ]]; then
+    umrs config use --user "${CONF}" >/dev/null 2>&1 || true
 fi
 
-CLIENT_ARGS=(umrs-client)
+CLIENT_ARGS=(umrs)
 if [[ -n "${UMRS_PROFILE:-}" ]]; then
     CLIENT_ARGS+=(--profile "${UMRS_PROFILE}")
 fi
@@ -205,7 +205,7 @@ PY
 }
 
 preflight() {
-    which umrs-client >/dev/null 2>&1 || die "umrs-client not in PATH"
+    which umrs >/dev/null 2>&1 || die "umrs not in PATH"
     client_ping || die "Server not reachable within ${UMRS_PING_TIMEOUT:-20}s (is the SSH tunnel running?)"
     log "Server is ready."
 }
@@ -437,7 +437,7 @@ print_mini_rivault_mount_summary() {
 #   ensure_experience "$SCRIPT_DIR/experience.json"
 #   ensure_experience "$SCRIPT_DIR/experience.json" --update
 #
-# Calls `umrs-client experience add <fragment>` so the modalities
+# Calls `umrs experience add <fragment>` so the modalities
 # described in the fragment are present in the active user config.
 # The `--update` flag replaces an existing experience with the same xp_name.
 ensure_experience() {
@@ -466,7 +466,7 @@ onboard() {
     local client_cmd="${CLIENT_ARGS[*]}"
     if [[ "$conf" != "$CONF" ]]; then
         # Use config use to register the explicit config, then use base CLIENT_ARGS.
-        umrs-client config use --user "${conf}" >/dev/null 2>&1 || true
+        umrs config use --user "${conf}" >/dev/null 2>&1 || true
     fi
 
     log "Onboarding user config: ${conf}"

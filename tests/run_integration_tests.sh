@@ -8,7 +8,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-UMRS_CLIENT="${UMRS_CLIENT:-$(which umrs-client 2>/dev/null || echo "$REPO_ROOT/.venv/bin/umrs-client")}"
+UMRS_CLIENT="${UMRS_CLIENT:-$(which umrs 2>/dev/null || echo "$REPO_ROOT/.venv/bin/umrs")}"
 PROFILE="${R4_PROFILE:-rccs-cloud}"
 RESULTS_DIR="$SCRIPT_DIR/results"
 mkdir -p "$RESULTS_DIR"
@@ -31,7 +31,7 @@ echo ""
 # ── Check prerequisites ───────────────────────
 
 if ! command -v "$UMRS_CLIENT" &>/dev/null; then
-    log_fail "umrs-client not found"
+    log_fail "umrs not found"
     echo "Install with: pip install -e $REPO_ROOT/umrs/src/"
     exit 1
 fi

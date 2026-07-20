@@ -9,7 +9,7 @@ data (run Demo 02 first).
 - UMRS server running and reachable (SSH tunnels if remote: ports 5555, 5556, 9000, 8081)
 - RAG service enabled and running on port 8081
 - Text data already embedded (run [Demo 02](../02_text_embedding/README.md) first)
-- `umrs-client` installed and in PATH
+- `umrs` installed and in PATH
 - `curl` and `python3` available
 
 ## Quick Start
@@ -38,11 +38,11 @@ cd "$(git rev-parse --show-toplevel)/$(test -d "$(git rev-parse --show-toplevel)
 ## Running Manually
 
 This demo queries the RAG service directly via `curl` rather than through
-`umrs-client`, since the RAG API provides the fine-grained search control.
+`umrs`, since the RAG API provides the fine-grained search control.
 
 ```bash
 # 1. Verify server and RAG service connectivity
-umrs-client ping
+umrs ping
 RAG_URL="${RAG_URL:-http://127.0.0.1:8081}"
 curl -sf "${RAG_URL%/}/docs" >/dev/null && echo "RAG service OK"
 

@@ -31,7 +31,7 @@
 #        model-stage job with egress, or copy from source). GB10 is aarch64 —
 #        confirm the NVFP4 / GGUF artifacts match this arch.
 #     d. Register each model in the bdrt catalog (name must match `model:` below):
-#          umrs-client --profile bdrt model register <name> <path> --type llm --scope user
+#          umrs --profile bdrt model register <name> <path> --type llm --scope user
 #     e. r4 pool up pool-bdrt-3models.yaml   (or select just the spark-double entry)
 
 pool: bdrt-3models

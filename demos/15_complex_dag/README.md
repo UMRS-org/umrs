@@ -48,7 +48,7 @@ cd "$(git rev-parse --show-toplevel)/$(test -d "$(git rev-parse --show-toplevel)
 
 ## Running Manually
 
-This demo does not use `umrs-client` because it runs entirely locally.
+This demo does not use `umrs` because it runs entirely locally.
 You can replicate it step by step:
 
 ```bash

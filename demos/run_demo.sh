@@ -6,7 +6,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-UMRS_CLIENT="${UMRS_CLIENT:-$(which umrs-client 2>/dev/null || echo "$REPO_ROOT/.venv/bin/umrs-client")}"
+UMRS_CLIENT="${UMRS_CLIENT:-$(which umrs 2>/dev/null || echo "$REPO_ROOT/.venv/bin/umrs")}"
 PROFILE="${R4_PROFILE:-rccs-cloud}"
 
 log_ok()  { echo -e "\033[32m✓\033[0m $1"; }
@@ -23,7 +23,7 @@ echo ""
 echo "Checking environment..."
 
 if ! command -v "$UMRS_CLIENT" &>/dev/null; then
-    log_fail "umrs-client not found"
+    log_fail "umrs not found"
     log_info "Install with: pip install -e $REPO_ROOT/umrs/src/"
     exit 1
 fi
@@ -50,7 +50,7 @@ print(len(buckets))
 if [ "$BUCKET_COUNT" -gt 0 ]; then
     log_ok "Storage OK ($BUCKET_COUNT buckets)"
 else
-    log_skip "No buckets visible — try: umrs-client reload"
+    log_skip "No buckets visible — try: umrs reload"
 fi
 
 # Check models

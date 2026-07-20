@@ -28,7 +28,7 @@ UMRS_ADMIN_REMOTE_ACTIVATE=/lvs0/rccs-dmp/masaru.nagaso/ai4s-platform/.venv/bin/
 
 ## Prerequisites
 
-1. `umrs-client` installed and in PATH
+1. `umrs` installed and in PATH
 2. `umrs-server` available where the server-side token store lives, or SSH
    access to a host where it is available
 3. For server tests: UMRS server running and reachable
@@ -65,20 +65,20 @@ TOKEN=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["token"])' "$
 umrs-server admin token list --json
 
 # 3. Ping the server
-umrs-client ping
+umrs ping
 
 # 4. Attempt an admin-only maintenance action without a token.
 #    On rccs-cloud this is accepted by the client handoff but the server does
 #    not materialize a check status.
-umrs-client check || true
-umrs-client --output json status check
+umrs check || true
+umrs --output json status check
 
 # 5. Retry with the admin token; this should produce a real check summary.
-umrs-client --admin-token "$TOKEN" check
-umrs-client --admin-token "$TOKEN" --output json status check
+umrs --admin-token "$TOKEN" check
+umrs --admin-token "$TOKEN" --output json status check
 
 # 6. Inspect status all with admin privileges
-umrs-client --admin-token "$TOKEN" --output json status all
+umrs --admin-token "$TOKEN" --output json status all
 
 # 7. Revoke the token from the same server-side token store
 umrs-server admin token revoke "$TOKEN_NAME" -y

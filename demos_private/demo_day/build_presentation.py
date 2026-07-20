@@ -88,7 +88,7 @@ def add_header_bar(slide, text):
     bar.fill.solid()
     bar.fill.fore_color.rgb = UMRS_NAVY
     bar.line.fill.background()
-    
+
     add_textbox(slide, Inches(0.5), Inches(0.2), Inches(12), Inches(0.8),
                 text, font_size=28, font_color=UMRS_WHITE, bold=True)
 
@@ -99,11 +99,11 @@ def add_footer(slide, page_num, total_pages):
     footer.fill.solid()
     footer.fill.fore_color.rgb = UMRS_TEAL
     footer.line.fill.background()
-    
+
     add_textbox(slide, Inches(0.5), Inches(7.4), Inches(6), Inches(0.3),
                 "UMRS Demo Day • Confidential", font_size=10,
                 font_color=UMRS_WHITE, alignment=PP_ALIGN.LEFT)
-    
+
     add_textbox(slide, Inches(9), Inches(7.4), Inches(4), Inches(0.3),
                 f"Slide {page_num}/{total_pages}", font_size=10,
                 font_color=UMRS_WHITE, alignment=PP_ALIGN.RIGHT)
@@ -215,7 +215,7 @@ add_textbox(slide, Inches(8.2), Inches(2.2), Inches(1), Inches(0.4),
 
 # Description below
 add_textbox(slide, Inches(0.5), Inches(5.8), Inches(12), Inches(1.5),
-            "Client: umrs-client CLI, r4 SDK  |  Server: Job orchestration, container lifecycle  |  "
+            "Client: umrs CLI, r4 SDK  |  Server: Job orchestration, container lifecycle  |  "
             "Storage: S3/MinIO, PostgreSQL/pgvector  |  Compute: GPU via Slurm",
             font_size=14, font_color=UMRS_GRAY)
 
@@ -229,9 +229,9 @@ add_header_bar(slide, "Demo 1: Text Embeddings & RAG")
 
 steps = [
     "Create sample text files with scientific content",
-    "Upload to bucket: umrs-client data dir-upload /path/to/texts mnagaso3-text",
+    "Upload to bucket: umrs data dir-upload /path/to/texts mnagaso3-text",
     "UMRS processes files and generates embeddings",
-    "Download results: umrs-client data download mnagaso3-text /results",
+    "Download results: umrs data download mnagaso3-text /results",
     "RAG pipeline enables semantic search over uploaded documents"
 ]
 add_bullet_list(slide, Inches(0.8), Inches(1.5), Inches(6), Inches(5),
@@ -249,14 +249,14 @@ cmd_text = (
     "$ echo 'RAG enables...'\n"
     "  > /tmp/rag-texts/doc.txt\n"
     "\n"
-    "$ umrs-client data\n"
+    "$ umrs data\n"
     "  dir-upload /tmp/rag-texts\n"
     "  mnagaso3-text\n"
     "\n"
     "Processing file 'doc.txt'...\n"
     "status=ok\n"
     "\n"
-    "$ umrs-client data\n"
+    "$ umrs data\n"
     "  download mnagaso3-text\n"
     "  /results\n"
     "\n"
@@ -291,7 +291,7 @@ cmd_box.fill.fore_color.rgb = RGBColor(0x1E, 0x1E, 0x1E)
 cmd_box.line.fill.background()
 
 cmd_text = (
-    "$ umrs-client data\n"
+    "$ umrs data\n"
     "  dir-upload /images\n"
     "  demo-defect\n"
     "\n"
@@ -299,7 +299,7 @@ cmd_text = (
     "Processing Dog_1.jpg...\n"
     "status=ok\n"
     "\n"
-    "$ umrs-client data\n"
+    "$ umrs data\n"
     "  download demo-defect\n"
     "  /segmentation\n"
     "\n"
@@ -338,7 +338,7 @@ cmd_box.fill.fore_color.rgb = RGBColor(0x1E, 0x1E, 0x1E)
 cmd_box.line.fill.background()
 
 cmd_text = (
-    "$ umrs-client data\n"
+    "$ umrs data\n"
     "  dir-upload /slices\n"
     "  demo-hmae\n"
     "\n"
@@ -348,7 +348,7 @@ cmd_text = (
     "  → Submitting to HMAE service\n"
     "status=ok\n"
     "\n"
-    "$ umrs-client data\n"
+    "$ umrs data\n"
     "  download demo-hmae\n"
     "  /reconstructions\n"
     "\n"
@@ -379,15 +379,15 @@ features = [
 for i, (title, desc) in enumerate(features):
     x = Inches(0.5 + (i % 2) * 6.2)
     y = Inches(1.5 + (i // 2) * 2.5)
-    
+
     box = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, x, y, Inches(5.5), Inches(2))
     box.fill.solid()
     box.fill.fore_color.rgb = UMRS_NAVY
     box.line.fill.background()
-    
+
     add_textbox(slide, x + Inches(0.2), y + Inches(0.2), Inches(5), Inches(0.6),
                 title, font_size=20, font_color=UMRS_TEAL, bold=True)
-    
+
     add_textbox(slide, x + Inches(0.2), y + Inches(0.9), Inches(5), Inches(1),
                 desc, font_size=14, font_color=UMRS_WHITE)
 
@@ -419,7 +419,7 @@ results = [
 
 for i, (feature, status, details) in enumerate(results):
     y = Inches(2.2 + i * 0.6)
-    
+
     # Status color
     status_color = UMRS_GREEN if "✓" in status else UMRS_RED
     status_box = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE,
@@ -429,10 +429,10 @@ for i, (feature, status, details) in enumerate(results):
     status_box.line.fill.background()
     add_textbox(slide, Inches(5.1), y + Inches(0.02), Inches(2.3), Inches(0.4),
                 status, font_size=12, font_color=UMRS_WHITE, alignment=PP_ALIGN.CENTER)
-    
+
     add_textbox(slide, Inches(0.8), y, Inches(4), Inches(0.5),
                 feature, font_size=14, font_color=UMRS_GRAY)
-    
+
     add_textbox(slide, Inches(8), y, Inches(4.5), Inches(0.5),
                 details, font_size=13, font_color=UMRS_GRAY)
 

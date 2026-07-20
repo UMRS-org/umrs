@@ -472,7 +472,7 @@ Add it as a modality in the user config JSON:
 ```
 
 After adding the entry, activate it using the mechanism supported by your site.
-On local/dev deployments that may be `umrs-client reload` or a server restart.
+On local/dev deployments that may be `umrs reload` or a server restart.
 On operator-managed sites, ask the site/operator to activate the updated config.
 The server will call your workflow whenever new objects arrive in the
 `my-results` input bucket.

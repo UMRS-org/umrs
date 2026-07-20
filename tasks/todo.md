@@ -15,7 +15,7 @@ from trusted auth context plus loaded user config.
 
 ## Model Command ACL Hardening (2026-04-19)
 
-**Goal:** Harden the active `umrs-client model {register,download,upload}` path
+**Goal:** Harden the active `umrs model {register,download,upload}` path
 so scope enforcement and allowed-path validation apply on the current ZMQ
 command path, not only in the newer API/store layer.
 

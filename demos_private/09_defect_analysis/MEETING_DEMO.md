@@ -10,7 +10,7 @@ This private shell demo exercises the SAM3 upload, BentoML inference, and S3 res
 - Runtime service: `bentoml-vision` through the `vision-bentoml` profile
 - Adapter path: `umrs/src/umrs/vision_service/default_adapters/sam3_adapter.py`
 
-On the current `umrs-front` deployment, `umrs-client reload` is admin-only. The private `demo-defect` bucket may be present in the local config but not provisioned in MinIO until an operator reloads it. The meeting-safe path is therefore to use `DEFECT_BUCKET=demo-sam3`.
+On the current `umrs-front` deployment, `umrs reload` is admin-only. The private `demo-defect` bucket may be present in the local config but not provisioned in MinIO until an operator reloads it. The meeting-safe path is therefore to use `DEFECT_BUCKET=demo-sam3`.
 
 ## Meeting Steps
 
@@ -19,7 +19,7 @@ Run from the repository root unless noted.
 1. Confirm the direct UMRS profile is reachable:
 
    ```bash
-   PATH="$PWD/.venv/bin:$PATH" umrs-client --profile umrs-front status
+   PATH="$PWD/.venv/bin:$PATH" umrs --profile umrs-front status
    ```
 
 2. Run the strict one-image SAM3-backed defect path:

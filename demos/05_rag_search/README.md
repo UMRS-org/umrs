@@ -51,11 +51,11 @@ RAG_BUCKET_ALIAS="${RAG_BUCKET_ALIAS:-user1-textfiles}"
 RAG_MODALITY="${RAG_MODALITY:-text_file}"
 
 # 1. Verify UMRS and RAG connectivity.
-umrs-client ping
+umrs ping
 curl -sf "${RAG_URL%/}/docs" >/dev/null && echo "RAG docs OK"
 
 # 2. Check that embeddings already exist (run Demo 02 first if needed).
-umrs-client status all | head -5 || true
+umrs status all | head -5 || true
 
 # 3. Vector search (same style as the script).
 curl -sf -X POST "${RAG_URL%/}/rag/search" \

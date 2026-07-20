@@ -21,7 +21,7 @@ DEMO_SUBMIT_TASK=1
 
 ## Prerequisites
 
-1. `umrs-client` installed and in PATH
+1. `umrs` installed and in PATH
 2. UMRS server running and reachable
 
 ## Steps
@@ -39,15 +39,15 @@ DEMO_SUBMIT_TASK=1
 # 1. Query the full status payload and inspect the pool object.
 #    Some deployments, including the current rccs-cloud stack, may not expose
 #    pool metrics yet; in that case `pool` will be absent.
-umrs-client --output json status all
+umrs --output json status all
 
 # 2. Optionally submit a lightweight text-file upload and re-query.
 #    Use a text-file bucket alias that exists in your user config.
 #    On the current rccs-cloud profile this is `user1-textfiles`.
 TMPFILE=$(mktemp)
 echo "Pool demo $(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$TMPFILE"
-umrs-client data upload "$TMPFILE" user1-textfiles
-umrs-client --output json status all
+umrs data upload "$TMPFILE" user1-textfiles
+umrs --output json status all
 rm -f "$TMPFILE"
 ```
 
