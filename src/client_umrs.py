@@ -318,7 +318,7 @@ def _extract_bucket_aliases(user_cfg):
 
 
 # ---------------------------------------------------------------------------
-# umrs-client info — one-shot connection diagnostic
+# umrs info — one-shot connection diagnostic
 # ---------------------------------------------------------------------------
 def _handle_info(args):
     """Show transport, auth, and S3 status at a glance."""
@@ -996,7 +996,7 @@ def _handle_config_init(args):
     if out_path.exists() and not args.force:
         raise FileExistsError(
             f"Config already exists: {out_path}\n"
-            f"Use --force to overwrite, or 'umrs-client config use --user {out_path}' to select it."
+            f"Use --force to overwrite, or 'umrs config use --user {out_path}' to select it."
         )
 
     # Build config from template or from scratch.
@@ -1057,10 +1057,10 @@ def _handle_config_init(args):
         )
         print(f"  {_dim('Do not run the .json path directly in the shell.')}")
         print("  Then run:")
-        print(f"  {_cyan('umrs-client reload')}")
+        print(f"  {_cyan('umrs reload')}")
 
     # Auto-install shell tab completion
-    comp_msg = install_completion("umrs-client")
+    comp_msg = install_completion("umrs")
     if args.output != "json":
         print(f"  {comp_msg}")
 
@@ -1170,7 +1170,7 @@ def _resolve_target_user_config_path(args) -> Path:
         target = _resolve_current_user_config_path()
     if target is None or not target.is_file():
         raise FileNotFoundError(
-            "No user config found. Run 'umrs-client config init' first, or pass -c <path>."
+            "No user config found. Run 'umrs config init' first, or pass -c <path>."
         )
     return target
 
@@ -2425,12 +2425,12 @@ def _handle_admin_command(args):
         else:
             action = "Regenerated" if overwrite else "Generated"
             print(
-                f"{_green('✓')} {action} admin token for {_bold(args.name)} (for umrs-client --admin-token / $UMRS_ADMIN_TOKEN):"
+                f"{_green('✓')} {action} admin token for {_bold(args.name)} (for umrs --admin-token / $UMRS_ADMIN_TOKEN):"
             )
             print(f"  {_yellow(token)}")
             print("")
             print(f"  {_dim('Save this token — it cannot be retrieved later.')}")
-            print(f"  {_dim('Use with: umrs-client --admin-token <token> <command>')}")
+            print(f"  {_dim('Use with: umrs --admin-token <token> <command>')}")
             print(
                 f"  {_dim('NOTE: this is NOT a Gateway/r4 JWT — use umrs-server admin token generate-jwt for that.')}"
             )
@@ -2573,7 +2573,7 @@ def _handle_profile_init(args):
     if out_path.exists() and not args.force:
         raise FileExistsError(
             f"Profile already exists: {out_path}\n"
-            f"Use --force to overwrite, or 'umrs-client profile use {name}' to select it."
+            f"Use --force to overwrite, or 'umrs profile use {name}' to select it."
         )
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -2642,9 +2642,9 @@ def _ensure_user_config_after_login(username: str, args) -> int:
     set_current_user_config(str(cfg_path))
     print(f"\n  {_green('✓')} User config created → {_bold(str(cfg_path))}")
     print(
-        f"  Add experiences via: {_cyan('umrs-client experience add <experience.json>')}"
+        f"  Add experiences via: {_cyan('umrs experience add <experience.json>')}"
     )
-    print(f"  Then reload:        {_cyan('umrs-client reload')}")
+    print(f"  Then reload:        {_cyan('umrs reload')}")
     return 0
 
 
@@ -2657,7 +2657,7 @@ def _handle_login(args):
     gateway_url = getattr(args, "gateway_url", None)
 
     # If stdin is a TTY and no gateway URL was given, prompt for it so a bare
-    # ``umrs-client login`` is sufficient for the shared umrs-front deployment.
+    # ``umrs login`` is sufficient for the shared umrs-front deployment.
     if not gateway_url and sys.stdin.isatty():
         entered = input(
             f"Gateway URL (leave blank for direct ZMQ at {host}:{port}): "
@@ -2775,7 +2775,7 @@ def _handle_login(args):
                 print(f"  ✗ Server not ready via gateway (may still be starting)")
         except Exception as e:
             print(f"  ✗ Connection check failed: {e}")
-            print(f"  Profile saved — you can retry with `umrs-client ping`")
+            print(f"  Profile saved — you can retry with `umrs ping`")
         print(f"\n✓ Login complete for user '{username}' via {gateway_url}")
     else:
         print(f"  Verifying connection to {host}:{port} ...")
@@ -2795,7 +2795,7 @@ def _handle_login(args):
                 print(f"  ✗ Server did not respond to ping (may still be starting)")
         except Exception as e:
             print(f"  ✗ Connection check failed: {e}")
-            print(f"  Profile saved — you can retry with `umrs-client ping`")
+            print(f"  Profile saved — you can retry with `umrs ping`")
         print(f"\n✓ Login complete for user '{username}' on {host}:{port}")
     print(f"  Profile: {profile_name}")
 
@@ -2804,7 +2804,7 @@ def _handle_login(args):
     if rc:
         return rc
 
-    print(f"  Run `umrs-client ping` to verify full connectivity.")
+    print(f"  Run `umrs ping` to verify full connectivity.")
     return 0
 
 
@@ -3000,8 +3000,8 @@ def format_status_text(response_payload, default_key):
         if message == "No status for 'reload'":
             message = (
                 "No status for 'reload'. Reload is synchronous; use "
-                "'umrs-client status all' for a summary or "
-                "'umrs-client bucket list' to verify onboarding."
+                "'umrs status all' for a summary or "
+                "'umrs bucket list' to verify onboarding."
             )
         return f"{_red('✗')} {message}"
 
@@ -3239,13 +3239,13 @@ def action_list_buckets(bucket_cfg, username, output_format, *, remote_info=None
                 lines.append("")
                 lines.append(f"  {_dim('Hints:')}")
                 lines.append(
-                    f"  {_dim('  Remove extra buckets:')}  umrs-client bucket purge"
+                    f"  {_dim('  Remove extra buckets:')}  umrs bucket purge"
                 )
                 lines.append(
-                    f"  {_dim('  Add experience back:')}   umrs-client experience add <experience.json> --update"
+                    f"  {_dim('  Add experience back:')}   umrs experience add <experience.json> --update"
                 )
                 lines.append(
-                    f"  {_dim('  Edit user config:')}      umrs-client config edit --user"
+                    f"  {_dim('  Edit user config:')}      umrs config edit --user"
                 )
             warn = (remote_info or {}).get("warning")
             if warn:
@@ -3308,15 +3308,15 @@ _CLIENT_EPILOG = (
     "  1. Ask the operator to register you on the server:\n"
     '       umrs-server admin user add <username> --fullname "Your Name" --role user\n'
     "  2. Create or select your local client config:\n"
-    "       umrs-client config init --username <username>\n"
+    "       umrs config init --username <username>\n"
     "  3. Check the resolved config and server connectivity:\n"
-    "       umrs-client config show\n"
-    "       umrs-client ping\n\n"
+    "       umrs config show\n"
+    "       umrs ping\n\n"
     "Shell completion:\n"
-    '  eval "$(umrs-client completion bash)"\n\n'
+    '  eval "$(umrs completion bash)"\n\n'
     "Related CLIs:\n"
     "  r4            Gateway-mediated research workflows (chat, RAG, endpoints).\n"
-    "  umrs-client   UMRS diagnostics, endpoint control, experience recovery, migration.\n"
+    "  umrs   UMRS diagnostics, endpoint control, experience recovery, migration.\n"
     "  umrs-server   Offline operator administration (user management, server runtime).\n\n"
     "Install variants:\n"
     "  pip install 'umrs[client]'        Lightweight gateway client (no pyzmq/boto3).\n"
@@ -3327,7 +3327,7 @@ _CLIENT_EPILOG = (
 
 def _disabled_admin_message():
     return (
-        "umrs-client admin is disabled; admin operations are server-side only. "
+        "umrs admin is disabled; admin operations are server-side only. "
         "Use 'umrs-server admin --help' on the server. Examples: "
         "'umrs-server admin user add <username> --fullname \"Your Name\" --role user' "
         "and 'umrs-server admin user list'."
@@ -3641,7 +3641,7 @@ def _http_upload_workflow(
 def _try_read_r4_token(profile_name: str | None) -> str | None:
     """Read a JWT from r4's token store (stdlib only, no r4 import).
 
-    Falls back to r4's ``~/.config/r4/tokens.json`` when the umrs-client
+    Falls back to r4's ``~/.config/r4/tokens.json`` when the umrs
     ``.token`` file doesn't exist — sharing credentials across tools.
     """
     if not profile_name:
@@ -3831,7 +3831,7 @@ def _action_ping(ctx):
     )
     print(f"    ZMQ: {host}:{port} — not responding")
     print(f"    HTTP: no gateway_url in connection profile")
-    print(f"    hint: switch profile with `umrs-client config use --profile <name>`")
+    print(f"    hint: switch profile with `umrs config use --profile <name>`")
     print(
         f"          or add gateway_url to ~/.config/umrs/connections/{getattr(ctx.connection, 'profile_name', '?')}.json"
     )
@@ -4416,7 +4416,7 @@ def _action_monitor(ctx):
 
 
 def _action_workflow(ctx):
-    """Unified dispatch for ``umrs-client workflow <action>``.
+    """Unified dispatch for ``umrs workflow <action>``.
 
     Supported actions:
         upload          — Upload a workflow directory to the server
@@ -4651,8 +4651,8 @@ def _print_workflow_run(parsed: dict) -> None:
     print(f"  {_bold('Execution ID')}: {_cyan(execution_id)}")
     if durable_job_id:
         print(f"  {_bold('Job ID')}: {durable_job_id}")
-    print(f"  {_dim('Track with:')} umrs-client workflow status {execution_id}")
-    print(f"  {_dim('Stream logs:')} umrs-client workflow logs {execution_id} --follow")
+    print(f"  {_dim('Track with:')} umrs workflow status {execution_id}")
+    print(f"  {_dim('Stream logs:')} umrs workflow logs {execution_id} --follow")
 
 
 def _print_workflow_logs(parsed: dict) -> None:
@@ -5630,7 +5630,7 @@ def _action_purge_remote_buckets(ctx):
                             f"  {_green('✓')} Removed experience '{rn}' from local config"
                         )
                     print(
-                        f"  {_dim('Run')} umrs-client reload {_dim('to sync with server.')}"
+                        f"  {_dim('Run')} umrs reload {_dim('to sync with server.')}"
                     )
             except Exception as exc:
                 print(f"  {_yellow('⚠')} Could not update local config: {exc}")
@@ -6024,7 +6024,7 @@ def _action_s3_transfer(ctx):
             raise ValueError(
                 f"Bucket alias '{bucket_alias}' not found in configuration. "
                 f"No bucket aliases are configured. Check your config file or "
-                f"add an experience with `umrs-client experience add <file>`."
+                f"add an experience with `umrs experience add <file>`."
             )
     username, xp_name, modality, s3_configuration_file, metadata, path_to_bucket = (
         _bucket_result
@@ -7402,7 +7402,7 @@ def main():
     login_p = subparsers.add_parser(
         "login",
         help="Authenticate and configure connection in one step",
-        description="Login: `umrs-client login <JWT>` or `umrs-client login --api-key <JWT>`",
+        description="Login: `umrs login <JWT>` or `umrs login --api-key <JWT>`",
     )
     login_p.add_argument("jwt", nargs="?", help="JWT token (positional or --api-key)")
     login_p.add_argument("--host", default="127.0.0.1", help="UMRS server host")
@@ -7582,13 +7582,13 @@ def main():
     )
     _configure_experience_validate_parser(va_p)
 
-    if emit_completion_if_requested(parser, "umrs-client", "_UMRS_CLIENT_COMPLETE"):
+    if emit_completion_if_requested(parser, "umrs", "_UMRS_CLIENT_COMPLETE"):
         return 0
 
     args = parser.parse_args()
 
     if not args.action:
-        # Bare `umrs-client` with no subcommand: show full help including the
+        # Bare `umrs` with no subcommand: show full help including the
         # onboarding/shell-completion hints instead of a terse argparse error.
         parser.print_help()
         return 0
@@ -7596,15 +7596,15 @@ def main():
     if args.action == "completion":
         action = getattr(args, "completion_action", None)
         if action == "install":
-            print(install_completion("umrs-client", shell=args.shell))
+            print(install_completion("umrs", shell=args.shell))
             return 0
         if action == "uninstall":
-            print(uninstall_completion("umrs-client", shell=args.shell))
+            print(uninstall_completion("umrs", shell=args.shell))
             return 0
         if action in ("bash", "zsh"):
-            print_completion_script("umrs-client", "_UMRS_CLIENT_COMPLETE", action)
+            print_completion_script("umrs", "_UMRS_CLIENT_COMPLETE", action)
             return 0
-        print_completion_script("umrs-client", "_UMRS_CLIENT_COMPLETE", "bash")
+        print_completion_script("umrs", "_UMRS_CLIENT_COMPLETE", "bash")
         return 0
 
     if args.action == "profile":
@@ -7706,7 +7706,7 @@ def main():
         from umrs.client.doctor import Doctor, DoctorReport, run_doctor
 
         # Resolve the actual command path so doctor checks use the same binary
-        _cmd = sys.argv[0] if sys.argv[0] else "umrs-client"
+        _cmd = sys.argv[0] if sys.argv[0] else "umrs"
 
         # Minimal context for doctor checks (no ZMQ required)
         class _DocCtx:

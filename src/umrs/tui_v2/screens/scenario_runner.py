@@ -4,7 +4,7 @@ Replaces the former GuidedDemo.  Scenarios are generic (RAG, vision,
 multi-modal RAG) and exercise real OperationAPI/OperationSDK calls.
 Nothing references demos_private or any science-specific content.
 
-CLI:  umrs-client scenario list|run <name> [--json]
+CLI:  umrs scenario list|run <name> [--json]
 TUI:  keybinding 'g' opens this screen.
 """
 
