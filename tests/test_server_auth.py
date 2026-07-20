@@ -294,9 +294,12 @@ class TestCommandCoverage:
         "STATUS",
         "CREATE_DATA_QUEUE",
         "HAND_CHECK",
+        "RECOMPUTE",
+        "UPDATE",
+        "CHECK",
     }
 
-    EXPECTED_ADMIN_COMMANDS = {"RELOAD", "RECOMPUTE", "ENROLL_USER"}
+    EXPECTED_ADMIN_COMMANDS = {"RELOAD", "ENROLL_USER"}
 
     def test_all_user_commands_in_allowed_set(self):
         missing = self.EXPECTED_USER_COMMANDS - USER_ALLOWED_COMMANDS
