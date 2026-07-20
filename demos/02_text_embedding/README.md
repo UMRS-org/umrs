@@ -26,7 +26,7 @@ cd "$(git rev-parse --show-toplevel)/$(test -d "$(git rev-parse --show-toplevel)
 5. **Verify buckets** — confirm the new bucket exists before and after reload
 6. **Verify or prepare** the embedding model (reuse a staged model, or stage it if your site exposes a writable model root)
 7. **Upload** sample text files to the S3 bucket
-8. **Auto-compute** — embeddings are automatically triggered for `text file` modality (see `experience.json`)
+8. **Wait** for the embedding pipeline to finish
 9. **Verify** that embeddings are stored in pgvector
 10. **Export** embeddings to a local CSV file
 
@@ -38,8 +38,6 @@ Each demo ships an `experience.json` fragment that declares:
 - **Model** — the model name and type (e5-base-v2, sam3.1, etc.)
 - **Bucket alias** — the S3 bucket alias that UMRS provisions
 - **DB table** — the Postgres table name for storing embeddings/metadata
-- **auto_compute** — if `true`, triggers an `update` after upload (default: `false`)
-- **keep_endpoint** — if `true`, the endpoint stays alive indefinitely (default: `false`)
 
 When you run `umrs-client experience add experience.json`, this fragment is merged
 into your user config JSON. The next `umrs-client reload` instructs the server to
@@ -79,17 +77,13 @@ umrs-client bucket list
 # 7. Verify the embedding model is visible to the server
 umrs-client model list --scope system
 umrs-client model list --scope user
-# Use this to confirm e5-base-v2 is registered
+# Use this to confirm intfloat/e5-base-v2 is registered
 
 # Optional: only if your site gives you a writable, allowed staging root
-umrs-client model download e5-base-v2 --scope user --server-side \
+umrs-client model download intfloat/e5-base-v2 --scope user --server-side \
     --staging-dir /path/to/site-user-model-root
 
 # 8. Upload the bundled sample files
-#
-# NOTE: auto_compute is enabled for "text file" modality in experience.json,
-# so compute is triggered automatically. To disable auto-compute:
-#   umrs-client data dir-upload ../sample_data/texts "$USER-textfiles" --no-auto-compute
 #
 # IMPORTANT: The bucket alias depends on your username.
 # The experience.json declares "demo-texts", but the actual bucket name
@@ -110,35 +104,6 @@ umrs-client export_embeddings "$USER-textfiles" ./results/embeddings-full.csv --
 # 12. Export only the embedding vector itself
 umrs-client export_embeddings "$USER-textfiles" ./results/embeddings-only.csv --format csv --profile embedding-only
 ```
-
-## Manual Compute (if auto_compute is disabled)
-
-If your experience fragment has `auto_compute: false`, trigger compute manually:
-
-```bash
-# Recompute ALL buckets (slow — re-processes everything)
-umrs-client recompute
-
-# Update only missing entries (fast — only processes files without embeddings)
-umrs-client update
-
-# Check progress
-umrs-client status process_objects
-```
-
-## Endpoint Keep-Alive
-
-The `keep_endpoint: true` flag in `experience.json` sets the endpoint idle TTL
-to ~11.6 days (999999 seconds), effectively keeping the endpoint alive indefinitely.
-
-To manually provision an endpoint that stays alive:
-
-```bash
-umrs-client endpoint up --model e5-base-v2 --keep-endpoint
-```
-
-Without `--keep-endpoint`, the endpoint auto-teardowns after `--idle-ttl` seconds
-(default: 30 minutes).
 
 ## Test Data
 

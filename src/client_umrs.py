@@ -1067,7 +1067,7 @@ def _handle_config_init(args):
     return 0
 
 
-def _handle_config_add_experience(ctx, args):
+def _handle_config_add_experience(args):
     """Merge experience fragment(s) into the current user config JSON."""
     import json as _json_mod
 
@@ -1111,7 +1111,7 @@ def _handle_config_add_experience(ctx, args):
     return 0
 
 
-def _handle_config_remove_experience(ctx, args):
+def _handle_config_remove_experience(args):
     """Remove experience(s) by xp_name from the current user config JSON."""
     import json as _json_mod
 
@@ -1192,37 +1192,11 @@ def _coerce_experience_fragments(fragment) -> list[dict]:
         raise ValueError(
             "Fragment must be a JSON object (single experience) or array of experiences."
         )
-
-    # Required top-level keys
-    REQUIRED_TOP_KEYS = ["xp_name", "modalities"]
-
-    # Required modality-level keys
-    REQUIRED_MODALITY_KEYS = ["modality_name", "s3", "sql"]
-
     for xp in fragment_list:
         if not isinstance(xp, dict):
             raise ValueError("Each experience fragment must be a JSON object.")
-        xp_name = xp.get("xp_name")
-        if not xp_name:
+        if not xp.get("xp_name"):
             raise ValueError("Each experience fragment must have an 'xp_name' field.")
-
-        # Check required top-level keys
-        for key in REQUIRED_TOP_KEYS:
-            if key not in xp:
-                raise ValueError(
-                    f"Experience '{xp_name}': missing required key '{key}'"
-                )
-
-        # Check required modality-level keys
-        for mod in xp.get("modalities", []):
-            mod_name = mod.get("modality_name", mod.get("modality", "?"))
-            for key in REQUIRED_MODALITY_KEYS:
-                if key not in mod:
-                    raise ValueError(
-                        f"Experience '{xp_name}' → modality '{mod_name}': "
-                        f"missing required key '{key}'"
-                    )
-
     return fragment_list
 
 
@@ -1752,7 +1726,7 @@ def _resolve_recovery_username(args, user_cfg: dict | None) -> str:
     return username
 
 
-def _handle_experience_recover(ctx, args):
+def _handle_experience_recover(args):
     import json as _json_mod
 
     target = None
@@ -1880,7 +1854,7 @@ def _configure_experience_list_parser(parser):
     )
 
 
-def _handle_experience_list(ctx, args):
+def _handle_experience_list(args):
     """List experiences in the current user config JSON."""
     import json as _json_mod
 
@@ -1913,23 +1887,14 @@ def _handle_experience_list(ctx, args):
         name = xp.get("xp_name", "<unnamed>")
         sql_user = xp.get("sql_username", "-")
         modalities = xp.get("modalities", []) or []
-        mods_str = []
+        mod_names = []
         for m in modalities:
             mname = m.get("modality_name") or m.get("modality") or "<unnamed>"
-            model_name = (m.get("model") or {}).get("model_name", "-")
-            auto = m.get("auto_compute", False)
-            keep = m.get("keep_endpoint", False)
-            flags = []
-            if auto:
-                flags.append("auto_compute")
-            if keep:
-                flags.append("keep_endpoint")
-            flag_str = f" [{', '.join(flags)}]" if flags else ""
-            mods_str.append(f"{mname} → {model_name}{flag_str}")
-        mods_text = ", ".join(mods_str) if mods_str else _dim("(none)")
+            mod_names.append(mname)
+        mods_str = ", ".join(mod_names) if mod_names else _dim("(none)")
         print(f"    {_bold(name)}")
         print(f"      sql_username: {sql_user}")
-        print(f"      modalities ({len(modalities)}): {mods_text}")
+        print(f"      modalities ({len(modalities)}): {mods_str}")
     return 0
 
 
@@ -2036,28 +2001,18 @@ def _handle_experience_validate(ctx, args):
                 for m in models_resp.get("models", []):
                     catalog_names.add(m.get("name") or m.get("model_name"))
 
-                # Build short-name → full-name mapping (catalog may use shortened names)
-                short_to_full: dict[str, str] = {}
-                for name in catalog_names:
-                    for part in name.split("/"):
-                        short_to_full[part] = name
-
-                # Check: direct match, or short-name match, or HF full name → short name
-                found = model_name in catalog_names
-                if not found:
-                    # Try short name match (e.g. "e5-base-v2" → "intfloat/e5-base-v2")
-                    for short, full in short_to_full.items():
-                        if short in model_name or model_name in full:
-                            found = True
-                            break
-
-                if not found:
+                if model_name not in catalog_names:
                     warnings.append(
                         f"    ⚠  Model '{model_name}' not found in system catalog"
                     )
                     print(f"    {warnings[-1]}")
                 else:
                     print(f"    ✓  Model '{model_name}' found in system catalog")
+            except Exception:
+                warnings.append(
+                    f"    ⚠  Could not verify model (server unreachable or auth issue)"
+                )
+                print(f"    {warnings[-1]}")
             except Exception:
                 warnings.append(
                     f"    ⚠  Could not verify model (server unreachable or auth issue)"
@@ -3051,34 +3006,30 @@ def format_status_text(response_payload, default_key):
         return f"{_red('✗')} {message}"
 
     client_label = response_payload.get("client")
-    status_key = response_payload.get("key") or default_key
     lines = []
-
-    # Context header
-    header_parts = [f"{_bold('status')} ({status_key})"]
-    if client_label:
-        header_parts.append(f"client: {client_label}")
-    lines.append(_section(" - ".join(header_parts)))
 
     def append_entry(name, entry):
         header_parts = []
+        if client_label:
+            header_parts.append(client_label)
         if name:
             header_parts.append(name)
         generated_at = entry.get("generated_at")
         last_updated_at = entry.get("last_updated_at")
-        status_val = entry.get("status")
-        if header_parts or generated_at or last_updated_at or status_val:
-            header = " - ".join(filter(None, header_parts))
-            meta_parts = []
-            if status_val:
-                meta_parts.append(f"status: {status_val}")
+        if header_parts or generated_at or last_updated_at:
+            header = " - ".join(header_parts)
+            time_parts = []
             if generated_at:
-                meta_parts.append(f"generated {utc_to_local(generated_at)}")
+                time_parts.append(f"generated {utc_to_local(generated_at)}")
             if last_updated_at:
-                meta_parts.append(f"last update {utc_to_local(last_updated_at)}")
-            if meta_parts:
-                meta_text = f" {_dim('(' + '; '.join(meta_parts) + ')')}"
-                header = f"{header}{meta_text}" if header else _dim(meta_text.strip())
+                time_parts.append(f"last update {utc_to_local(last_updated_at)}")
+            if time_parts:
+                time_text = "; ".join(time_parts)
+                header = (
+                    f"{header} {_dim('(' + time_text + ')')}"
+                    if header
+                    else _dim(time_text)
+                )
             if header:
                 lines.append(_section(header))
         summary_body = entry.get("summary")
@@ -4271,12 +4222,6 @@ def _action_endpoint(ctx):
                 parse_json_object_arg(args.spec, field_name="spec") if args.spec else {}
             )
             idle_ttl_sec = _resolve_endpoint_idle_ttl_sec(args, ctx.user)
-
-            # --keep-endpoint flag or experience modality flag → infinite TTL
-            if getattr(args, "keep_endpoint", False) or _check_experience_keep_endpoint(ctx.user):
-                idle_ttl_sec = 999999  # ~11.6 days — effectively infinite
-                print(f"  {_dim('keep_endpoint')} → endpoint will not auto-teardown")
-
             parsed = api.endpoint_up(
                 model=args.model,
                 model_path=args.model_path,
@@ -4467,59 +4412,6 @@ def _action_monitor(ctx):
         pass
     finally:
         ctx.control_mq.close()
-    return 0
-
-
-def _action_monitor_v2(ctx):
-    """Launch the interactive TUI monitor v2 with action capabilities."""
-    args = ctx.args
-    client_id = _resolve_control_client_id(ctx.user)
-    try:
-        from umrs.tui_v2.dashboard import DashboardV2
-    except ImportError as exc:
-        if ctx.control_mq is not None:
-            ctx.control_mq.close()
-        print(
-            f"The monitor v2 TUI requires the 'textual' library.\n"
-            f"Install it with: pip install 'textual>=0.40'\n"
-            f"Error: {exc}"
-        )
-        return 1
-    try:
-        conn_info = ctx.connection.to_dict() if ctx.connection else {}
-    except Exception:
-        conn_info = {}
-    capabilities = _build_monitor_capabilities(
-        client_id,
-        admin_token=ctx.admin_token,
-        user_cfg=ctx.user if isinstance(ctx.user, dict) else None,
-    )
-    try:
-        dash = DashboardV2(
-            control_mq=ctx.control_mq,
-            client_id=client_id,
-            interval=args.interval,
-            status_filter=args.status,
-            project_filter=args.project,
-            initial_tab=args.tab,
-            job_type_filter=None,
-            config_path=ctx.configure_file
-            if ctx.configure_file and ctx.config_state.user.valid
-            else None,
-            user_cfg=ctx.user if isinstance(ctx.user, dict) else None,
-            connection_info=conn_info,
-            capabilities=capabilities,
-            workflow_id=getattr(args, "workflow_id", None),
-        )
-        if getattr(args, "once", False):
-            dash.render_once()
-        else:
-            dash.run()
-    except KeyboardInterrupt:
-        pass
-    finally:
-        if ctx.control_mq is not None:
-            ctx.control_mq.close()
     return 0
 
 
@@ -6600,16 +6492,10 @@ def _action_data(ctx):
     action = getattr(ctx.args, "data_action", None)
     if action == "upload":
         ctx.args.action = "upload_file"
-        result = _action_s3_transfer(ctx)
-        if result == 0:
-            _trigger_auto_compute(ctx)
-        return result
+        return _action_s3_transfer(ctx)
     elif action == "dir-upload":
         ctx.args.action = "upload_dir"
-        result = _action_s3_transfer(ctx)
-        if result == 0:
-            _trigger_auto_compute(ctx)
-        return result
+        return _action_s3_transfer(ctx)
     elif action == "download":
         ctx.args.action = "download_results"
         return _action_s3_transfer(ctx)
@@ -6620,45 +6506,6 @@ def _action_data(ctx):
         )
         return 1
 
-
-def _trigger_auto_compute(ctx):
-    """If the target bucket's experience has auto_compute=true, trigger update."""
-    # Determine the bucket alias from the upload args
-    bucket_alias = getattr(ctx.args, "bucket_alias", None)
-    if not bucket_alias:
-        return
-    if not ctx.user or not isinstance(ctx.user, dict):
-        return
-
-    # Find the experience that owns this bucket alias
-    for xp in ctx.user.get("experiences", []):
-        for mod in xp.get("modalities", []):
-            s3_cfg = mod.get("s3", {})
-            if s3_cfg.get("bucket_alias") == bucket_alias:
-                auto_compute = mod.get("auto_compute", False)
-                if auto_compute:
-                    print(f"  {_dim('auto_compute')} → triggering 'update' for {bucket_alias}")
-                    try:
-                        api = UMRSControlAPI(
-                            control_mq=ctx.control_mq,
-                            client_id=_resolve_control_client_id(ctx.user),
-                        )
-                        parsed = api.request_maintenance_command("update", "")
-                        print(f"  {_green('✓')} Update triggered: {parsed.get('message', 'OK')}")
-                    except Exception as e:
-                        print(f"  {_red('✗')} Failed to trigger update: {e}")
-                return
-
-
-def _check_experience_keep_endpoint(user_cfg):
-    """Return the first modality that has keep_endpoint=True, or None."""
-    if not user_cfg or not isinstance(user_cfg, dict):
-        return None
-    for xp in user_cfg.get("experiences", []):
-        for mod in xp.get("modalities", []):
-            if mod.get("keep_endpoint", False):
-                return mod
-    return None
 
 def _action_project(ctx):
     """Dispatch project subcommands (admin-only)."""
@@ -6748,7 +6595,6 @@ _ACTION_HANDLERS = {
     "job": _action_job,
     "endpoint": _action_endpoint,
     "monitor": _action_monitor,
-    "monitor-v2": _action_monitor_v2,
     "workflow": _action_workflow,
     # New umbrella handlers
     "bucket": _action_bucket,
@@ -7117,12 +6963,6 @@ def main():
         nargs="?",
         help="Configured username owning the bucket (defaults to config if omitted)",
     )
-    du_p.add_argument(
-        "--no-auto-compute",
-        action="store_true",
-        default=False,
-        help="Skip automatic compute trigger even if experience has auto_compute=true",
-    )
 
     # data dir-upload (replaces upload_dir)
     ddu_p = data_sub.add_parser(
@@ -7141,12 +6981,6 @@ def main():
         "username",
         nargs="?",
         help="Configured username owning the bucket (defaults to config if omitted)",
-    )
-    ddu_p.add_argument(
-        "--no-auto-compute",
-        action="store_true",
-        default=False,
-        help="Skip automatic compute trigger even if experience has auto_compute=true",
     )
 
     # data download (replaces download_results)
@@ -7551,53 +7385,6 @@ def main():
         help="Tab to display on startup (default: jobs)",
     )
     mon_p.add_argument(
-        "--workflow-id",
-        default=None,
-        help="Workflow execution ID to stream logs for (Workflow Logs tab)",
-    )
-
-    # --- Monitor v2 (TUI dashboard with actions) ---
-    mon2_p = subparsers.add_parser(
-        "monitor-v2", help="Interactive multi-tab monitor with inline actions (TUI v2)"
-    )
-    mon2_p.add_argument(
-        "--interval", type=float, default=3.0, help="Refresh interval in seconds"
-    )
-    mon2_p.add_argument(
-        "--status",
-        default=None,
-        choices=["running", "queued", "planned", "completed", "failed", "cancelled"],
-        help="Initial status filter (Jobs tab)",
-    )
-    mon2_p.add_argument(
-        "--project", default=None, help="Filter by project ID (Jobs tab)"
-    )
-    mon2_p.add_argument(
-        "--once",
-        action="store_true",
-        default=False,
-        help="Print dashboard once and exit (no live refresh)",
-    )
-    mon2_p.add_argument(
-        "--tab",
-        default="jobs",
-        choices=[
-            "jobs",
-            "endpoints",
-            "status",
-            "models",
-            "workflows",
-            "connection",
-            "logs",
-            "errors",
-            "workflow_logs",
-            "data_transfer",
-            "jobs_submit",
-            "config_editor",
-        ],
-        help="Tab to display on startup (default: jobs)",
-    )
-    mon2_p.add_argument(
         "--workflow-id",
         default=None,
         help="Workflow execution ID to stream logs for (Workflow Logs tab)",
@@ -8051,16 +7838,8 @@ def main():
     if args.action != "ping":
         profile_name = getattr(connection, "profile_name", None)
         profile_label = _bold(profile_name) if profile_name else _dim("(none)")
-        server_info = f"{connection.server_host}:{connection.control_port}"
-        # Append status target if present
-        status_target = getattr(args, "target", None) or getattr(args, "status_target", None)
-        if status_target:
-            info_parts = [f"profile={profile_label}", f"target={status_target}", server_info]
-        else:
-            info_parts = [f"profile={profile_label}", server_info]
         print(
-            f"{_green('✓')} Server ready  {_dim('|')}  " +
-            f"{_dim('|  ').join(info_parts)}"
+            f"{_green('✓')} Server ready  {_dim('|')}  profile={profile_label}  {_dim('|')}  {connection.server_host}:{connection.control_port}"
         )
 
     # Resolve admin token from CLI flag or environment
