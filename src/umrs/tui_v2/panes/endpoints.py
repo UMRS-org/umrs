@@ -46,7 +46,10 @@ class EndpointsPane(Static):
         self._summary_widget = Static("", classes="summary")
         self._table = DataTable(id="endpoints-table", cursor_type="row")
         self._detail = Static("", classes="detail")
-        self._actions_bar = Static("  Actions: Enter=Detail  s=Stop  → Submit tab for provisioning", classes="actions")
+        self._actions_bar = Static(
+            "  Actions: Enter=Detail  s=Stop  → Submit tab for provisioning",
+            classes="actions",
+        )
 
     def compose(self):
         yield self._summary_widget
@@ -107,7 +110,10 @@ class EndpointsPane(Static):
         if not self._selected_job_id:
             self._detail.update("")
             return
-        ep = next((e for e in self._endpoints if e.get("job_id") == self._selected_job_id), None)
+        ep = next(
+            (e for e in self._endpoints if e.get("job_id") == self._selected_job_id),
+            None,
+        )
         if not ep:
             self._detail.update("")
             return

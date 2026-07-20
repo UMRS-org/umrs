@@ -1,5 +1,6 @@
 """Panels for monitor v2."""
 
+from .artifacts import ArtifactsPane
 from .jobs import JobsPane
 from .endpoints import EndpointsPane
 from .status import StatusPane
@@ -14,6 +15,7 @@ from .jobs_submit import JobsSubmitPane
 from .config_editor import ConfigEditorPane
 
 __all__ = [
+    "ArtifactsPane",
     "JobsPane",
     "EndpointsPane",
     "StatusPane",

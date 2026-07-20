@@ -1,0 +1,64 @@
+# Pool roster: bdrt (NVIDIA GB10 DGX-Spark, aarch64) — Qwen3.6-35B-A3B-NVFP4 · Step-3.7-Flash-148B
+# Usage:
+#   r4 source use bdrt && r4 pool up umrs/deploy/bdrt/pool-bdrt-step.yaml
+#
+# Target: nimbus-0 login node → Slurm partitions `spark` (1 node) / `spark-double` (2 nodes).
+#         GB10 Grace-Blackwell, 128 GiB unified memory per node.
+#
+# Model deployment order:
+#   1. Stage weights via UMRS (or copy to /home/mnagaso/umrs_models)
+#   2. Register models in bdrt catalog:
+#      umrs-client --profile bdrt model register <name> <path> --type llm --scope system
+#   3. r4 pool up pool-bdrt-step.yaml
+
+pool: bdrt-step
+defaults:
+  source: bdrt
+  tier: system
+  ttl_sec: 0
+  timeout: 172800         # 2 days
+
+endpoints:
+  # ── Qwen3.6-35B-A3B-NVFP4 (single node → spark) ──────────────────────
+  #  35B MoE (3B active), NVFP4 (Blackwell-native 4-bit float). Fits 1× GB10.
+  - name: qwen3.6-35b-a3b
+    model: Qwen3.6-35B-A3B-NVFP4
+    tier: system
+    node_count: 1
+    partition: spark
+    max_model_len: 262144
+    env_vars:
+      VLLM_HOST_MODEL_PATH: "/home/mnagaso/umrs_models/hub/models--nvidia--Qwen3.6-35B-A3B-NVFP4/snapshots"
+      VLLM_PATH_TO_HUGGINGFACE: "/home/mnagaso/umrs_models"
+      VLLM_MODEL: "nvidia/Qwen3.6-35B-A3B-NVFP4"
+      VLLM_TOKENIZER: "nvidia/Qwen3.6-35B-A3B-NVFP4"
+      VLLM_GPU_MEM_UTIL: "0.78"
+      VLLM_MAX_NUM_SEQS: "4"
+      VLLM_TOOL_CALL_PARSER: "qwen3_xml"
+      VLLM_REASONING_PARSER: "qwen3"
+      VLLM_TRUST_REMOTE_CODE: "1"
+      VLLM_ENFORCE_EAGER: "1"
+      VLLM_MOE_BACKEND: "triton"
+      RCCS_SKIP_CDI: "1"
+
+  # ── Step-3.7-Flash-148B (2 nodes → edge-double) ─────────────────────
+  #  148B MoE, NVFP4 quantized (base: stepfun-ai/Step-3.7-Flash-NVFP4).
+  #  ~50-60 GB active GPU mem per node → requires 2× GB10, TP=2.
+  #  Architecture: step3p7 (requires VLLM_TRUST_REMOTE_CODE).
+  - name: step-3.7-flash-148b
+    model: step-3.7-flash-148b
+    tier: system
+    node_count: 2
+    partition: edge-double
+    max_model_len: 262144
+    env_vars:
+      VLLM_HOST_MODEL_PATH: "/home/mnagaso/umrs_models/hub/models--0xSero--Step-3.7-Flash-148B/snapshots"
+      VLLM_PATH_TO_HUGGINGFACE: "/home/mnagaso/umrs_models"
+      VLLM_MODEL: "0xSero/Step-3.7-Flash-148B"
+      VLLM_TOKENIZER: "0xSero/Step-3.7-Flash-148B"
+      VLLM_GPU_MEM_UTIL: "0.78"
+      VLLM_MAX_NUM_SEQS: "2"
+      VLLM_TENSOR_PARALLEL_SIZE: "2"
+      VLLM_MOE_BACKEND: "triton"
+      VLLM_TRUST_REMOTE_CODE: "1"
+      RCCS_SKIP_CDI: "1"

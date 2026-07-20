@@ -39,7 +39,12 @@ UMRS provides:
         help="UMRS base URL",
     )
 
+    from . import scenario
+
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
+
+    # Scenario subcommand
+    scenario.build_scenario_parser(subparsers)
 
     # Status command
     status_parser = subparsers.add_parser("status", help="Show UMRS server status")

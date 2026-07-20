@@ -62,7 +62,9 @@ class Fetchers:
 
     async def fetch_status(self) -> None:
         try:
-            data = await self._run("request_status", lambda: self._api.request_status("all"))
+            data = await self._run(
+                "request_status", lambda: self._api.request_status("all")
+            )
             await self._store.set("status", data)
         except Exception as exc:
             await self._store.set("status", None, error=str(exc))
@@ -91,14 +93,87 @@ class Fetchers:
 
     async def fetch_workflow_logs(self, execution_id: str) -> None:
         try:
-            data = await self._run("workflow_logs", lambda: self._api.workflow_logs(execution_id))
+            data = await self._run(
+                "workflow_logs", lambda: self._api.workflow_logs(execution_id)
+            )
             await self._store.set("workflow_logs", data)
         except Exception as exc:
             await self._store.set("workflow_logs", None, error=str(exc))
 
     async def fetch_connection(self) -> None:
         try:
-            data = await self._run("ping", lambda: {"ping_ok": True, "host": "localhost"})
+            # Try to ping the UMRS API first
+            ping = await self._run("ping", lambda: self._api.ping())
+            ping_ok = ping.get("status") == "ok" if isinstance(ping, dict) else True
+
+            # Read the current local connection profile from disk
+            profile_name: str | None = None
+            zmq_info: dict[str, Any] = {}
+            tunnel_mode: bool = False
+            gateway_url: str | None = None
+
+            try:
+                from umrs.shared.connection_profiles import (
+                    resolve_connection,
+                    resolve_profile_name,
+                )
+                from pathlib import Path
+                import json
+
+                profile_name = resolve_profile_name()
+                if profile_name:
+                    profile_file = Path(
+                        __import__("umrs.shared.config", fromlist=["CONNECTION_PROFILE_DIR"])
+                        .CONNECTION_PROFILE_DIR
+                    ) / f"{profile_name}.json"
+                    if profile_file.exists():
+                        with profile_file.open() as f:
+                            profile_data = json.load(f)
+                        mode = profile_data.get("mode", "direct")
+                        tunnel_mode = mode == "tunnel"
+                        if mode == "tunnel" and "ssh" in profile_data:
+                            zmq_host = profile_data["ssh"]["host"]
+                        elif "zmq" in profile_data:
+                            zmq_host = profile_data["zmq"].get("host", "localhost")
+                        else:
+                            zmq_host = "localhost"
+
+                        # Extract ZMQ port info from the profile
+                        if "zmq" in profile_data:
+                            zmq_info = profile_data["zmq"]
+                            if "ports" in zmq_info and isinstance(zmq_info["ports"], list):
+                                control_port = zmq_info["ports"][0] if zmq_info["ports"] else None
+                                data_ports = zmq_info["ports"][1:] if len(zmq_info["ports"]) > 1 else []
+                                zmq_info["control_port"] = control_port
+                                zmq_info["data_ports"] = data_ports
+                                zmq_info["control_port"] = zmq_info.get("control_port", control_port)
+                        gateway_url = profile_data.get("gateway_url") or resolve_connection().gateway_url
+            except Exception:
+                pass  # Fallback to ? values below
+
+            # Build connection info dict
+            connection_info = {
+                "ping_ok": ping_ok,
+                "profile": profile_name or "?",
+                "gateway_url": gateway_url,
+                "zmq": {
+                    "host": zmq_info.get("host", gateway_url or "localhost"),
+                    "control_port": zmq_info.get(
+                        "control_port", zmq_info.get("ports", [None])[0] if "ports" in zmq_info else None
+                    ),
+                    "data_port_range": zmq_info.get(
+                        "data_ports",
+                        zmq_info.get("data_port_range"),
+                    ),
+                    "tunnel_mode": tunnel_mode,
+                },
+                "services": {
+                    "minio_url": profile_data.get("minio_url") if "profile_data" in dir() else None,
+                    "rag_url": profile_data.get("rag_url") if "profile_data" in dir() else None,
+                },
+            }
+
+            data = {**ping, **{"ping_ok": ping_ok, "connection_info": connection_info}}
             await self._store.set("connection", data)
         except Exception as exc:
             await self._store.set("connection", None, error=str(exc))

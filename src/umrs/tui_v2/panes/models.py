@@ -63,7 +63,7 @@ class ModelsPane(Static):
                 str(m.get("scope", "?")),
                 str(m.get("status", "?")),
                 str(m.get("storage_ref", "?"))[:20],
-                key=str(m.get("name", idx)),
+                key=str(m.get("model_id", idx)),
             )
         if saved_cursor is not None and self._models:
             self._table.move_cursor(row=min(saved_cursor, len(self._models) - 1))
@@ -76,13 +76,29 @@ class ModelsPane(Static):
         if not self._selected_name:
             self._detail.update("")
             return
-        m = next((model for model in self._models if model.get("name") == self._selected_name), None)
+        m = next(
+            (
+                model
+                for model in self._models
+                if model.get("name") == self._selected_name
+            ),
+            None,
+        )
         if not m:
             self._detail.update("")
             return
         lines = [f"[bold]Model: {self._selected_name}[/bold]"]
-        for k in ("name", "model_type", "scope", "status", "project_id",
-                  "huggingface_id", "storage_ref", "description", "registered_at"):
+        for k in (
+            "name",
+            "model_type",
+            "scope",
+            "status",
+            "project_id",
+            "huggingface_id",
+            "storage_ref",
+            "description",
+            "registered_at",
+        ):
             v = m.get(k)
             if v is not None:
                 lines.append(f"{k}: {v}")

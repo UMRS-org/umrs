@@ -21,7 +21,6 @@ class LogsPane(Static):
         border: round $primary;
         padding: 0 1;
         overflow-y: auto;
-        font: monospace;
     }
     """
 

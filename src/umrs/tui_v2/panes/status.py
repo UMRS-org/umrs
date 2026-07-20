@@ -60,7 +60,11 @@ class StatusPane(Static):
             for user, entry in list(summaries.items())[:20]:
                 if isinstance(entry, dict):
                     status = entry.get("status", "?")
-                    updated = entry.get("last_updated_at", "")[:19] if entry.get("last_updated_at") else ""
+                    updated = (
+                        (entry.get("last_updated_at") or "")[:19]
+                        if entry.get("last_updated_at")
+                        else ""
+                    )
                     lines.append(f"  {user}: [{status}] {updated}")
         else:
             lines.append("  [dim](no per-user summaries)[/dim]")

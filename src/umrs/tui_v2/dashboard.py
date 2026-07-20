@@ -9,9 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 from rich.console import Console
-from rich.panel import Panel
 from rich.table import Table
-from rich.text import Text
 
 
 class DashboardV2:
@@ -85,7 +83,11 @@ class DashboardV2:
             return
 
         jobs = parsed.get("jobs", []) if isinstance(parsed, dict) else []
-        table = Table(title="UMRS Monitor v2 — Jobs (one-shot)", show_lines=False, header_style="bold")
+        table = Table(
+            title="UMRS Monitor v2 — Jobs (one-shot)",
+            show_lines=False,
+            header_style="bold",
+        )
         table.add_column("#", width=3, justify="right")
         table.add_column("Job ID", min_width=10)
         table.add_column("Type", min_width=10)
@@ -104,4 +106,15 @@ class DashboardV2:
                 str(len(job.get("attempts", []))),
                 str(job.get("created_at", "?"))[:19],
             )
+        # Connection & status summary (merged from Connection+Status widgets)
+        conn = self._connection_info
+        status_filter = self._status_filter
+        if conn:
+            profile = conn.get("profile", conn.get("name", "?"))
+            mode = conn.get("mode", conn.get("zmq", {}).get("tunnel_mode", "?"))
+            out_console.print(f"[bold]Connection[/bold]: profile={profile}")
+            out_console.print(f"  mode={mode}")
+            out_console.print(f"[bold]Filter[/bold]: status={status_filter or 'all'}")
+            out_console.print("")
+
         out_console.print(table)

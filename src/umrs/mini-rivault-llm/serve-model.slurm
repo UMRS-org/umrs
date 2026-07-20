@@ -88,8 +88,6 @@ _assert_offline_invariants
 
 mkdir -p "${HOME}/.config/containers/"
 
-mkdir -p "${HOME}/.config/containers/"
-
 cat <<EOF > "${HOME}/.config/containers/storage.conf"
 [storage]
 driver="overlay"
@@ -101,6 +99,10 @@ mount_program = "/usr/bin/fuse-overlayfs"
 [storage.options.overlay]
 mountopt="xattr_permissions=2,threaded=1"
 EOF
+
+# Chroot isolation (user-NS GID mapping gap on compute nodes)
+export BUILDAH_ISOLATION=chroot
+export CONTAINERS_BUILDAH_ISOLATION=chroot
 
 uuid=$(cat /proc/sys/kernel/random/uuid)
 
@@ -358,6 +360,12 @@ VLLM_DISTRIBUTED_EXECUTOR_BACKEND=${VLLM_DISTRIBUTED_EXECUTOR_BACKEND:-}
 RAY_ADDRESS=${RAY_ADDRESS:-}
 # Container image tag for the vLLM service
 VLLM_DOCKER_TAG=${VLLM_DOCKER_TAG:-v0.20.0}
+# Full vLLM image reference — computed here so the compose file
+# does NOT need nested default substitution (podman-compose dotenv
+# parser cannot handle ${X:-${Y:-z}}).  The image line in
+# serve-model.yaml can then use the simple form:
+#     image: ${VLLM_DOCKER_IMAGE:-docker.io/vllm/vllm-openai:v0.20.0}
+VLLM_DOCKER_IMAGE=${VLLM_DOCKER_IMAGE:-docker.io/vllm/vllm-openai:${VLLM_DOCKER_TAG}}
 # Fraction of GPU memory vLLM is allowed to use for KV-cache
 VLLM_GPU_MEM_UTIL=${VLLM_GPU_MEM_UTIL:-0.95}
 # Tool-call parsing strategy (hermes = Hermes-style function call format)
@@ -1002,6 +1010,21 @@ if [[ "${SLURM_JOB_NUM_NODES:-${SLURM_NNODES:-1}}" -gt 1 ]]; then
     RAY_ADDRESS="${HEAD_IP}:${RAY_PORT}"
     VLLM_IMAGE="${VLLM_DOCKER_IMAGE:-docker.io/vllm/vllm-openai:${VLLM_DOCKER_TAG:-v0.20.0}}"
 
+    # ─── Pre-pull vLLM image (ensure fully cached before container launch) ────
+    # `podman run` does an implicit pull, but for large images (~11GB) this
+    # race conditions the readiness probe. Pull first so `podman run` starts
+    # immediately with a cached image.
+    echo "[rivault] Pre-pulling vLLM image: ${VLLM_IMAGE}..."
+    podman pull "${VLLM_IMAGE}" >/dev/null 2>&1 || {
+        echo "[rivault] WARN: vLLM image pull failed — attempting fallback tag..."
+        podman pull "docker.io/vllm/vllm-openai:cu130-nightly-aarch64" >/dev/null 2>&1 || {
+            echo "[rivault] FATAL: could not pull vLLM image. Check network or image tag."
+            exit 1
+        }
+        VLLM_IMAGE="docker.io/vllm/vllm-openai:cu130-nightly-aarch64"
+    }
+    echo "[rivault] vLLM image ready (${VLLM_IMAGE})."
+
     # Default the tensor-parallel degree in the SCRIPT's shell scope. The env
     # file heredoc's `VLLM_TP=${VLLM_TP:-1}` only substitutes into the file
     # text — it does NOT assign this shell variable. The multi-node head/worker
@@ -1161,6 +1184,8 @@ RAYEOF
     podman rm -f rivault-vllm-mn >/dev/null 2>&1 || true
     podman run -d --name rivault-vllm-mn --network host --shm-size=4g \
         --entrypoint /bin/sh \
+        -e "LD_LIBRARY_PATH=/usr/lib/aarch64-linux-gnu" \
+        -e "TRITON_LIBCUDA_PATH=/usr/lib/aarch64-linux-gnu" \
         --env-file "./env.${uuid}" \
         "${_mn_vllm_args[@]}" \
         "${VLLM_IMAGE}" \
@@ -1178,8 +1203,15 @@ RAYEOF
     # itself fails (e.g. a bad `--num-gpus` value), GCS never binds and this
     # probe will exhaust the full window before FATAL — check the head
     # container's own logs for the `ray start` error in that case.
+    # For multi-node allocations with large models (e.g. Step 148B), the Ray
+    # worker registration itself takes longer, so extend to 1200s (600 x 2s).
+    _ray_max_attempts=300
+    _mn_node_count="${SLURM_JOB_NUM_NODES:-1}"
+    if [[ "${_mn_node_count}" -ge 2 ]]; then
+        _ray_max_attempts=600  # multi-node: up to 20 min for all workers to register
+    fi
     _ray_ready=0
-    for _ in $(seq 1 300); do
+    for _ in $(seq 1 "${_ray_max_attempts}"); do
         if (exec 3<>"/dev/tcp/${HEAD_IP}/${RAY_PORT}") 2>/dev/null; then
             exec 3>&- 3<&- 2>/dev/null || true
             _ray_ready=1
@@ -1188,7 +1220,7 @@ RAYEOF
         sleep 2
     done
     if [[ "${_ray_ready}" -ne 1 ]]; then
-        echo "[rivault] FATAL: Ray head did not become ready at ${RAY_ADDRESS}" >&2
+        echo "[rivault] FATAL: Ray head did not become ready at ${RAY_ADDRESS} (tried ${_ray_max_attempts}x2s)" >&2
         exit 1
     fi
 
@@ -1224,6 +1256,8 @@ RAYEOF
                 srun --nodes=1 --ntasks=1 --nodelist="${wnode}" \
                     podman run --name rivault-ray-worker --replace --network host --shm-size=4g \
                         --entrypoint /bin/sh \
+                        -e "LD_LIBRARY_PATH=/usr/lib/aarch64-linux-gnu" \
+                        -e "TRITON_LIBCUDA_PATH=/usr/lib/aarch64-linux-gnu" \
                         "${_mn_vllm_args[@]}" \
                         "${VLLM_IMAGE}" \
                         -c "export PATH=/usr/local/bin:\$PATH; python3 -m pip install -q --no-index --find-links /root/.cache/huggingface/ray_aarch64_env/wheels ray 2>/dev/null || python3 -m pip install -q ray; python3 -c 'import pynvml; pynvml.nvmlInit(); assert pynvml.nvmlDeviceGetCount() > 0' && exec ray start --address='${RAY_ADDRESS}' --num-gpus='${_gpus_per_node}' --object-store-memory=1073741824 --block"

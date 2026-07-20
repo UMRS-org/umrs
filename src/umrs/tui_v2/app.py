@@ -3,45 +3,37 @@
 Adds action tabs (data-transfer, jobs-submit, config-editor), inline
 actions on existing tables (run/stop/cancel/upload/download),
 progress indicators, confirmation dialogs, and actions history.
+
+Entry point: ``MonitorAppV2`` (use via DashboardV2.run())
 """
 
 from __future__ import annotations
 
-import json
 import time
 from typing import Any
 
-from textual import on, work
+from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal
 from textual.css.query import NoMatches
-from textual.events import Click
-from textual.screen import ModalScreen
 from textual.widgets import (
-    Button,
-    DataTable,
-    Label,
     Static,
     TabbedContent,
     TabPane,
-    TextArea,
 )
 
 from .data.fetchers import Fetchers
 from .data.store import MonitorStore
 from .forms.screens import (
-    ActionConfirmScreen,
     FilterScreen,
-    UploadFormScreen,
-    SubmitFormScreen,
-    RunFormScreen,
 )
-from .prefs import MonitorPrefs
-
-# ── Tab → pane class mapping ──────────────────────────────────
+from .models import OperationQueue
+from .op_api import OperationAPI
 from .panes import (
+    ArtifactsPane,
     ConnectionPane,
+    DataTransferPane,
     EndpointsPane,
     ErrorsPane,
     JobsPane,
@@ -49,9 +41,17 @@ from .panes import (
     ModelsPane,
     StatusPane,
     WorkflowLogsPane,
-    DataTransferPane,
-    JobsSubmitPane,
+    WorkflowsPane,
     ConfigEditorPane,
+)
+from .prefs import MonitorPrefs
+from .screens import (
+    ArtifactBrowser,
+    DownloadWizard,
+    ExperienceLauncher,
+    ScenarioRunner,
+    UploadWizard,
+    WorkflowWizard,
 )
 
 _PANE_TYPES: dict[str, type] = {
@@ -59,13 +59,12 @@ _PANE_TYPES: dict[str, type] = {
     "endpoints": EndpointsPane,
     "status": StatusPane,
     "models": ModelsPane,
-    "workflows": None,  # imported below
+    "workflows": WorkflowsPane,
     "connection": ConnectionPane,
     "logs": LogsPane,
     "errors": ErrorsPane,
     "workflow_logs": WorkflowLogsPane,
     "data_transfer": DataTransferPane,
-    "jobs_submit": JobsSubmitPane,
     "config_editor": ConfigEditorPane,
 }
 
@@ -104,9 +103,14 @@ class MonitorAppV2(App):
         Binding("8", "switch_tab('errors')", "Errors"),
         Binding("9", "switch_tab('workflow_logs')", "WF Logs"),
         Binding("0", "switch_tab('data_transfer')", "Data"),
-        Binding("a", "switch_tab('jobs_submit')", "Submit"),
-        Binding("b", "switch_tab('config_editor')", "Config"),
+            Binding("b", "switch_tab('config_editor')", "Config"),
         Binding("slash", "focus_filter", "Filter", show=False),
+        Binding("u", "show_upload", "Upload", show=False),
+        Binding("e", "show_experience", "Experience", show=False),
+        Binding("w", "show_workflow", "Workflow", show=False),
+        Binding("d", "show_download", "Download", show=False),
+        Binding("x", "show_artifacts", "Artifacts", show=False),
+        Binding("g", "start_demo", "Demo", show=False),
         Binding("question", "toggle_help", "Help", show=False),
     ]
 
@@ -143,6 +147,7 @@ class MonitorAppV2(App):
         # Data layer
         self._store = MonitorStore()
         from umrs.client.control_api import UMRSControlAPI
+
         self._api = UMRSControlAPI(control_mq, client_id, config_path)
         self._fetchers = Fetchers(
             store=self._store,
@@ -160,6 +165,17 @@ class MonitorAppV2(App):
 
         # Actions history
         self._actions: list[dict[str, Any]] = []
+
+        # Background operations
+        self._op_queue = OperationQueue()
+        self._op_api = OperationAPI(
+            control_api=self._api,
+            control_mq=control_mq,
+            client_id=client_id,
+            operation_queue=self._op_queue,
+            config_path=config_path,
+        )
+        self._op_queue.register_callback(self._on_operation_progress)
 
     # ------------------------------------------------------------------
     # UI composition
@@ -182,28 +198,26 @@ class MonitorAppV2(App):
             with TabPane("Models", id="models"):
                 yield ModelsPane()
             with TabPane("Workflows", id="workflows"):
-                yield self._create_workflows_pane()
+                yield WorkflowsPane()
             with TabPane("Connection", id="connection"):
                 yield ConnectionPane()
             with TabPane("Logs", id="logs"):
                 yield LogsPane()
             with TabPane("Errors", id="errors"):
                 yield ErrorsPane()
+            with TabPane("Artifacts", id="artifacts"):
+                yield ArtifactsPane()
             with TabPane("WF Logs", id="workflow_logs"):
                 yield WorkflowLogsPane()
             with TabPane("Data", id="data_transfer"):
                 yield DataTransferPane()
-            with TabPane("Submit", id="jobs_submit"):
-                yield JobsSubmitPane()
             with TabPane("Config", id="config_editor"):
                 yield ConfigEditorPane()
+        # Progress container (hidden when no operations)
+        yield Static("", id="progress-bar")
+
         # Footer
         yield Static(_FOOTER_INIT, id="footer")
-
-    def _create_workflows_pane(self):
-        """Create workflows pane with inline actions."""
-        from .panes.workflows import WorkflowsPaneV2
-        return WorkflowsPaneV2()
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -324,13 +338,7 @@ class MonitorAppV2(App):
     # Helpers
     # ------------------------------------------------------------------
     def _update_pane(self, tab: str, data: Any) -> None:
-        if tab == "workflows":
-            try:
-                pane = self.query_one(".WorkflowsPaneV2")
-                pane.update_data(data)
-            except NoMatches:
-                pass
-            return
+        """Update the pane for ``tab`` with ``data``."""
         pane_type = _PANE_TYPES.get(tab)
         if pane_type is None:
             return
@@ -393,17 +401,156 @@ class MonitorAppV2(App):
         except NoMatches:
             return "jobs"
 
-    def _record_action(self, action_type: str, target: str, status: str, details: str = "") -> None:
-        self._actions.append({
-            "time": time.strftime("%H:%M:%S"),
-            "action": action_type,
-            "target": target,
-            "status": status,
-            "details": details,
-        })
+    def _record_action(
+        self, action_type: str, target: str, status: str, details: str = ""
+    ) -> None:
+        self._actions.append(
+            {
+                "time": time.strftime("%H:%M:%S"),
+                "action": action_type,
+                "target": target,
+                "status": status,
+                "details": details,
+            }
+        )
         # Keep last 50 actions
         if len(self._actions) > 50:
             self._actions.pop(0)
+
+    # ------------------------------------------------------------------
+    # Background operations
+    # ------------------------------------------------------------------
+
+    def _resolve_bucket_aliases(self) -> list[str]:
+        """Resolve configured bucket aliases from config."""
+        aliases: list[str] = []
+        try:
+            import os
+
+            cfg_path = self._config_path or os.path.expanduser("~/.umrs/config.json")
+            if os.path.exists(cfg_path):
+                import json
+
+                with open(cfg_path) as f:
+                    cfg = json.load(f)
+                # Buckets are under 'buckets' key, each entry has 'alias' or 'name'
+                buckets = cfg.get("buckets", cfg.get("bucket_aliases", []))
+                for b in buckets:
+                    if isinstance(b, dict):
+                        alias = b.get("alias", b.get("name", ""))
+                        if alias:
+                            aliases.append(alias)
+                    elif isinstance(b, str):
+                        aliases.append(b)
+        except Exception:
+            pass
+        if not aliases:
+            # Default buckets for HMAE demo
+            aliases = ["demo-hmae", "demo-hmae-mae", "demo-hmae-features"]
+        return sorted(set(aliases))
+
+    def action_show_upload(self) -> None:
+        """Show the upload wizard."""
+        try:
+            buckets = self._resolve_bucket_aliases()
+            self.push_screen(UploadWizard(buckets=buckets))
+        except Exception as e:
+            self.notify(f"Cannot open upload: {e}", severity="error")
+
+    def action_show_experience(self) -> None:
+        """Show the experience launcher."""
+        try:
+            self.push_screen(ExperienceLauncher())
+        except Exception as e:
+            self.notify(f"Cannot open launcher: {e}", severity="error")
+
+    def action_show_workflow(self) -> None:
+        """Show the workflow wizard."""
+        try:
+            self.push_screen(WorkflowWizard())
+        except Exception as e:
+            self.notify(f"Cannot open workflow: {e}", severity="error")
+
+    def action_show_download(self) -> None:
+        """Show the download wizard."""
+        try:
+            buckets = self._resolve_bucket_aliases()
+            self.push_screen(DownloadWizard(buckets=buckets))
+        except Exception as e:
+            self.notify(f"Cannot open download: {e}", severity="error")
+
+    def action_show_artifacts(self) -> None:
+        """Show the artifact browser."""
+        try:
+            self.push_screen(ArtifactBrowser())
+        except Exception as e:
+            self.notify(f"Cannot open artifacts: {e}", severity="error")
+
+    def action_start_demo(self, scenario_name: str = "RAG Pipeline") -> None:
+        """Start the scenario runner with operation API."""
+        try:
+            screen = ScenarioRunner(
+                scenario_name=scenario_name,
+                operation_api=self._op_api,
+                operation_queue=self._op_queue,
+            )
+            self.push_screen(screen)
+        except Exception as e:
+            self.notify(f"Cannot start demo: {e}", severity="error")
+
+    def _on_operation_progress(self, operation) -> None:
+        """Callback from OperationQueue on progress updates."""
+        self._render_progress_bar()
+        if operation.completed:
+            if operation.status.value == "succeeded":
+                self.notify(f"✓ {operation.title}: Done", severity="information")
+            elif operation.status.value == "failed":
+                self.notify(f"✗ {operation.title}: {operation.error}", severity="error")
+            elif operation.status.value == "cancelled":
+                self.notify(f"Cancelled: {operation.title}", severity="warning")
+
+    def _render_progress_bar(self) -> None:
+        """Render progress bar for active operations."""
+        try:
+            bar_widget = self.query_one("#progress-bar", Static)
+            ops = self._op_queue.active()
+            if ops:
+                op = ops[-1]  # Show latest active operation
+                bar = op.progress.bar
+                msg = op.progress.message
+                pct = op.progress.percent
+                bar_widget.update(
+                    f"  [{op.status.value}] {op.title}  [{bar}] {pct:.0f}%  {msg}"
+                )
+                bar_widget.add_class("visible")
+            else:
+                bar_widget.update("")
+                bar_widget.remove_class("visible")
+        except NoMatches:
+            pass
+
+    def action_cancel_operation(self) -> None:
+        """Cancel the currently active operation."""
+        active = self._op_queue.active()
+        if active:
+            self._op_queue.cancel(active[0].operation_id)
+            self._render_progress_bar()
+            self.notify(f"Cancelled: {active[0].title}", severity="warning")
+        else:
+            self.notify("No active operation to cancel", severity="information")
+
+    def action_op_history(self) -> None:
+        """Show operation history (completed operations)."""
+        completed = self._op_queue.completed()
+        if not completed:
+            self.notify("No completed operations yet")
+            return
+        lines = ["[bold]Recent Operations[/bold]"]
+        for op in completed[-10:]:
+            status = op.status.value.upper()
+            dur = f"{op.duration_seconds:.1f}s"
+            lines.append(f"  [{status}] {op.title}  ({dur})")
+        self.notify("\n".join(lines), title="Operation History", timeout=10)
 
     # ------------------------------------------------------------------
     # Actions
@@ -449,9 +596,16 @@ class MonitorAppV2(App):
         if result is None:
             return
         tab = self._active_tab_name()
+        # Apply filter based on active tab
         if tab == "jobs":
             self._status_filter = result or None
             self._fetchers.status_filter = self._status_filter
+        elif tab == "endpoints":
+            self._prefs.project_filter = result or None
+            self._fetchers.project_filter = self._prefs.project_filter
+        elif tab == "models":
+            self._prefs.project_filter = result or None
+            self._fetchers.project_filter = self._prefs.project_filter
         self._refresh_active_tab()
 
     def action_toggle_help(self) -> None:
@@ -476,6 +630,7 @@ class MonitorAppV2(App):
     def action_export(self) -> None:
         """Export current tab data to JSON."""
         from ..tui.export import export_tab as export_fn
+
         tab = self._active_tab_name()
         data = self._store.tab(tab).data
         if data is None:
