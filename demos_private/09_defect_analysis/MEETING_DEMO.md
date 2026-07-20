@@ -33,7 +33,7 @@ Run from the repository root unless noted.
      MAX_IMAGES=1 \
      RESULT_DOWNLOAD_TIMEOUT=1800 \
      SAM3_REQUIRE_RESULTS=1 \
-     # Follow the step-by-step commands in README.md
+     # See the numbered steps in the main README
    ```
 
 3. Point out these validated output lines:
@@ -53,6 +53,6 @@ Run from the repository root unless noted.
 
 ## Useful Overrides
 
-- Use operator-provisioned private bucket: `DEFECT_BUCKET=demo-defect # Follow the step-by-step commands in README.md`
-- Use structural slice images: `IMAGE_DIR=../../tmp/hmae/images # Follow the step-by-step commands in README.md`
-- Require completed outputs: `SAM3_REQUIRE_RESULTS=1 RESULT_DOWNLOAD_TIMEOUT=1800 # Follow the step-by-step commands in README.md`
+- Use operator-provisioned private bucket: `DEFECT_BUCKET=demo-defect`
+- Use structural slice images: `IMAGE_DIR=../../tmp/hmae/images`
+- Require completed outputs: `SAM3_REQUIRE_RESULTS=1 RESULT_DOWNLOAD_TIMEOUT=1800`

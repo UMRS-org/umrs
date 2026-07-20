@@ -15,7 +15,7 @@ This demo uses the same BentoML vision path as the SAM3 segmentation demo, but t
 
 ## How The Image And Prompt Flow
 
-1. `README.md (step-by-step commands)` merges `experience.json` into the active UMRS user config.
+1. The demo README merges `experience.json` into the active UMRS user config.
 2. The demo uses general pictures from `umrs/demos/sample_data/images` unless `IMAGE_DIR` or an argument is provided.
 3. `umrs-client data dir-upload` is implemented in `umrs/src/client_umrs.py` in `_action_s3_transfer()`. It uploads image bytes to S3, then sends a ZMQ `PROCESS_OBJECTS` notification.
 4. UMRS server processing enters `umrs/src/umrs/server/processing.py` through `process_s3_objects()`.
@@ -50,8 +50,9 @@ Run from the repository root unless noted.
    RESULT_DOWNLOAD_TIMEOUT=1500 \
      VISION_REQUIRE_RESULTS=1 \
      REQUIRE_VISIBLE_MODEL=0 \
-     # Follow the step-by-step commands in README.md
    ```
+
+   See the numbered steps in the main README for the full script.
 
 3. During the meeting, point out these output lines:
 
@@ -70,6 +71,6 @@ Run from the repository root unless noted.
 
 ## Useful Overrides
 
-- Use more images: `MAX_IMAGES=3 # Follow the step-by-step commands in README.md`
-- Use a custom input directory: `# Follow the step-by-step commands in README.md /path/to/pictures`
-- Require completed outputs: `VISION_REQUIRE_RESULTS=1 RESULT_DOWNLOAD_TIMEOUT=1500 # Follow the step-by-step commands in README.md`
+- Use more images: `MAX_IMAGES=3`
+- Use a custom input directory: `IMAGE_DIR=/path/to/pictures`
+- Require completed outputs: `VISION_REQUIRE_RESULTS=1 RESULT_DOWNLOAD_TIMEOUT=1500`

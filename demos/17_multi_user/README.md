@@ -17,7 +17,7 @@ neither can access the other's data.
 
 ```bash
 cd demos/17_multi_user
-# Follow the step-by-step commands in README.md
+# See the numbered steps below in this README
 ```
 
 ## What This Demo Does

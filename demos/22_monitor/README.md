@@ -15,7 +15,7 @@ connection health.
 
 ```bash
 cd demos/22_monitor
-# Follow the step-by-step commands in README.md
+# See the numbered steps below in this README
 ```
 
 ## What This Demo Does

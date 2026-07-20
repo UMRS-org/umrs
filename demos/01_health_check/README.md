@@ -15,7 +15,7 @@ Quick connectivity check for the UMRS server. Works with any deployment
 
 ```bash
 cd demos/01_health_check
-# Follow the step-by-step commands in README.md
+# See the numbered steps below in this README
 ```
 
 ## What This Demo Does

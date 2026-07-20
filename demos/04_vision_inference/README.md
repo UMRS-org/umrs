@@ -19,7 +19,7 @@ vision model.
 
 ```bash
 cd demos/04_vision_inference
-# Follow the step-by-step commands in README.md
+# See the numbered steps below in this README
 ```
 
 ## Running Manually
@@ -60,7 +60,8 @@ your own model:
 
 3. **Run** with a custom bucket or a user-visible model name:
    ```bash
-   VISION_BUCKET=my-bucket VISION_MODEL_NAME=my-model # Follow the step-by-step commands in README.md /path/to/images
+   VISION_BUCKET=my-bucket VISION_MODEL_NAME=my-model /path/to/images
+# See the numbered steps below in this README
    ```
 
 If the bucket/experience itself needs to be created or rewired, that is a site

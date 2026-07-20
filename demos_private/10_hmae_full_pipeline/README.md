@@ -17,7 +17,7 @@ These files describe the intended full HMAE pipeline.
 
 ## Important Current-State Note
 
-The shipped `README.md (step-by-step commands)` is simpler than the full workflow description above.
+The shipped README is simpler than the full workflow description above.
 It uploads Spring-8 concrete PNG slices to the configured `demo_user` HMAE
 buckets (`demo-hmae`, `demo-hmae-mae`, and `demo-hmae-features`) and downloads
 the server-side HMAE outputs for each task. It does **not** re-register the
@@ -100,7 +100,7 @@ image, and also writes `features/all_embeddings.npy` for the full batch.
 
 There are two different ways to use this demo, and they are easy to conflate:
 
-1. `README.md (step-by-step commands)` is the simple operational path. It uploads images to the
+1. The README is the simple operational path. It uploads images to the
 	configured HMAE buckets and downloads whatever the server-side HMAE
 	experience produces.
 2. `workflow/` is the explicit custom-workflow reference.
@@ -114,7 +114,7 @@ If you want to iterate on the workflow itself:
 3. Upload input data to the bucket wired to that workflow and inspect the JSON,
 	PNG, `.pt`, and `.npy` outputs written by each stage.
 
-In practice, use `README.md (step-by-step commands)` when validating the deployed site behavior, and
+In practice, use the README when validating the deployed site behavior, and
 use `workflow/` when developing or debugging the
 pipeline logic itself.
 
@@ -183,7 +183,7 @@ umrs-client workflow results "$EXEC_ID" ./results/workflow --force-overwrite
 ### When to use `workflow run`
 
 Use `umrs-client workflow run ...` when you want to execute the registered
-workflow definition explicitly. Use `README.md (step-by-step commands)` when you want to exercise the
+workflow definition explicitly. Use the README when you want to exercise the
 site's existing HMAE experience wiring without re-registering a custom
 workflow package.
 

@@ -16,10 +16,10 @@ These demos follow the same conventions as the public demos in `demos/`:
 
 ```bash
 cd demos_private/
-# Follow the step-by-step commands in each demo directory
+# See the step-by-step commands in each demo directory's README
 
 cd demos_private/04_hmae_inference
-# Follow the step-by-step commands in README.md
+# See the numbered steps in that README.md
 ```
 
 They source `demos/lib/common.sh` so the UMRS server must be reachable.

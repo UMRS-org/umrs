@@ -19,15 +19,15 @@ structure clustering.
   - `hmae_features.py`
   - `anomaly_detection.py`
   - `structure_discovery.py`
-- `README.md (step-by-step commands)` provides a practical shell demo that reuses the configured
+The README provides a practical shell demo that reuses the configured
   SAM3 experience to exercise upload, server-side processing, and result
   download.
 
 ## Important Current-State Note
 
-The checked-in `README.md (step-by-step commands)` does **not** automatically execute the full
+The checked-in README does **not** automatically execute the full
 private multi-step workflow. In normal user mode it reuses the already
-provisioned SAM3 bucket flow (`demo-sam3` by default) so the data path can still
+provisioned SAM3 bucket flow (`demo-defect` by default) so the data path can still
 be exercised even when the private `demo-defect` bucket has not been
 operator-provisioned. Use `DEFECT_BUCKET=demo-defect` only after an admin reload
 has provisioned that private experience server-side.
@@ -40,20 +40,20 @@ already shaped to match the current CLI contract.
 
 ```bash
 cd demos_private/09_defect_analysis
-DEFECT_BUCKET=demo-sam3 \
+DEFECT_BUCKET=demo-defect \
   IMAGE_DIR=../../demos/sample_data/images \
   MAX_IMAGES=1 \
   RESULT_DOWNLOAD_TIMEOUT=1800 \
   SAM3_REQUIRE_RESULTS=1 \
-  # Follow the step-by-step commands in README.md
+  # See the numbered steps below in this README
 ```
 
 Useful overrides:
 
 ```bash
-MAX_IMAGES=4 # Follow the step-by-step commands in README.md
-IMAGE_DIR=/path/to/real/images # Follow the step-by-step commands in README.md
-DEFECT_BUCKET=demo-defect # Follow the step-by-step commands in README.md  # only after operator provisioning
+MAX_IMAGES=4
+IMAGE_DIR=/path/to/real/images
+DEFECT_BUCKET=demo-defect  # only after operator provisioning
 ```
 
 ## Running Manually
@@ -80,18 +80,18 @@ umrs-client upload-workflow workflow/ --name structural-defect-analysis
 #    Images are dispatched to SAM3 segmentation on the GPU node.
 #    The segmentation model detects structural features and defects
 #    using text-prompted segmentation.
-umrs-client data dir-upload ../../demos/sample_data/images demo-sam3
+umrs-client data dir-upload ../../demos/sample_data/images demo-defect
 
 # 4. Download segmentation results
 #    Retrieves bounding boxes, masks, scores, and overlay images.
-umrs-client data download demo-sam3 ./results --force-overwrite
+umrs-client data download demo-defect ./results --force-overwrite
 ```
 
 ## Script Defaults
 
 | Setting | Default |
 |---|---|
-| Bucket alias | `demo-sam3` |
+| Bucket alias | `demo-defect` |
 | Image source | `../../tmp/hmae/images` |
 | Result dir | `results/` |
 

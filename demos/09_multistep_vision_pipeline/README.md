@@ -22,12 +22,15 @@ Step/`workflow.json` pattern.
 ## Quick Start
 
 ```bash
-# From demos/ directory
-bash 09_multistep_vision_pipeline/README.md (step-by-step commands)
+# From demos/ directory — see "Running Manually" section below for all steps
+cd "$(git rev-parse --show-toplevel)/umrs/demos/09_multistep_vision_pipeline"
 
 # With your own images
-bash 09_multistep_vision_pipeline/README.md (step-by-step commands) /path/to/images
+IMAGE_DIR=/path/to/images bash ./run_demo.sh
 ```
+
+> **Note:** The inline script `run_demo.sh` does not exist yet. Use the
+> step-by-step commands in the "Running Manually" section below instead.
 
 ## What the Script Does
 

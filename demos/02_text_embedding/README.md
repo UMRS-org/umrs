@@ -12,8 +12,8 @@ verify results in pgvector, and export.
 ## Quick Start
 
 ```bash
-cd demos/02_text_embedding
-# Follow the step-by-step commands in README.md
+cd "$(git rev-parse --show-toplevel)/umrs/demos/02_text_embedding"
+# See the numbered steps below in this README
 ```
 
 ## What This Demo Does
@@ -83,7 +83,8 @@ only works when the deployment exposes a writable, allowed staging root.
 If your site uses a different bucket alias, override it with:
 
 ```bash
-TEXT_BUCKET=my-text-bucket # Follow the step-by-step commands in README.md
+TEXT_BUCKET=my-text-bucket
+# Use any available bucket alias
 ```
 
 ## Expected Output
