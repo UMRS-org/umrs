@@ -20,12 +20,9 @@ SSH tunnel guidance.
 ## Usage
 
 ```bash
-cd "$(git rev-parse --show-toplevel)/umrs/demos/00_onboarding"
+# Navigate from either repo level (auto-detects parent vs subdirectory)
+cd "$(git rev-parse --show-toplevel)/$(test -d "$(git rev-parse --show-toplevel)/umrs/demos" && echo umrs)/demos/00_onboarding"
 # See the numbered steps (Step 1, Step 2, etc.) below in this README
-
-# Use a different username
-DEMO_USERNAME=other_user
-# Use any valid username
 ```
 
 ## Prerequisites
@@ -84,15 +81,15 @@ creates the connection profile **and** the user config automatically.
 # Authenticate: creates connection profile + user config in one step
 umrs-client login --host <server-host> --api-key <token-from-admin>
 
-# (Optional) Add workload-specific experiences
-umrs-client config import path/to/experience.json
-
 # Trigger provisioning (idempotent)
 umrs-client reload
 
 # Confirm buckets are visible
 umrs-client bucket list
 ```
+
+> **Note:** `umrs-client login` automatically downloads and imports your user config
+> from the server — no need to run `umrs-client config import` separately.
 
 ### Experience recovery and removal
 
@@ -116,6 +113,34 @@ umrs-client experience recover <xp_name> \
 
 Review the recovered model fields before reload. MinIO/Postgres can identify the
 bucket, table, and vector shape, but may not prove the original model name.
+
+### Available experiences
+
+Each demo ships with an `experience.json` fragment that registers a
+modality + model + bucket + DB table. Load them in order as your
+workload grows:
+
+| Demo | Experience name | Modality | Model | Bucket alias |
+|------|-----------------|----------|-------|--------------|
+| [02](../02_text_embedding/) | Text Embedding | text | `intfloat/e5-base-v2` (768-d) | `demo-texts` / `demo-textfiles` |
+| [03](../03_sam3_segmentation/) | SAM3 Segmentation | image | `sam3.1` | `demo-sam3` |
+| [04](../04_vision_inference/) | Vision Inference | image | `sam3.1` | `demo-images` |
+| [09](../09_multistep_vision_pipeline/) | Vision Pipeline | image | `facebook/sam2-hiera-small` | `demo-pipeline` |
+| [10](../10_vision_multi_mode/) | Vision Multi Mode | image | `facebook/sam2-hiera-small` | `demo-vision-multi` |
+| [14](../14_video_analysis/) | Video Analysis | movie | `opencv-motion-analysis` | `demo-video` |
+| [16](../16_custom_workflow/) | Custom Workflow | text | `custom-workflow` | `demo-custom-text` |
+
+Load any of these before running the corresponding demo:
+
+```bash
+# Example: load text embedding experience before running Demo 02
+umrs-client experience add ../02_text_embedding/experience.json
+umrs-client reload
+
+# Example: load SAM3 segmentation experience before running Demo 03
+umrs-client experience add ../03_sam3_segmentation/experience.json
+umrs-client reload
+```
 
 ### SSH tunnel (remote HPC)
 

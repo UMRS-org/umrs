@@ -18,7 +18,8 @@ vision model.
 ## Quick Start
 
 ```bash
-cd demos/04_vision_inference
+# Navigate from any level (auto-detects parent repo vs umrs subdirectory)
+cd "$(git rev-parse --show-toplevel)/$(test -d "$(git rev-parse --show-toplevel)/umrs/demos" && echo umrs)/demos/04_vision_inference"
 # See the numbered steps below in this README
 ```
 
@@ -29,13 +30,20 @@ cd demos/04_vision_inference
 #    Sends a ZMQ ping to confirm the server is alive.
 umrs-client ping
 
-# 2. Upload images to the vision bucket
+# 2. Load the experience fragment into your user config
+#    This registers the vision inference experience (model + bucket + table)
+umrs-client experience add experience.json
+
+# 3. Reload to apply the new experience and provision buckets
+umrs-client reload
+
+# 4. Upload images to the vision bucket
 #    Images are stored in S3 and the server dispatches each one
 #    to the BentoML vision model running on HPC via Slurm.
 #    The first upload may trigger a cold start (Slurm job launch).
 umrs-client data dir-upload ../sample_data/images user1-sam3
 
-# 3. Download inference results
+# 5. Download inference results
 #    Polls the server until processing completes, then retrieves
 #    all output files (JSON metadata, overlay images, etc.) to
 #    the local results/ directory.

@@ -44,7 +44,7 @@ RAG_BUCKET_ALIAS=my-bucket RAG_MODALITY=text
 
 ```bash
 REPO_ROOT="$(git rev-parse --show-toplevel)"
-cd "$REPO_ROOT/umrs/demos/05_rag_search"
+cd "$(git rev-parse --show-toplevel)/$(test -d "$(git rev-parse --show-toplevel)/umrs/demos" && echo umrs)/demos/05_rag_search"
 
 RAG_URL="${RAG_URL:-http://127.0.0.1:8081}"
 RAG_BUCKET_ALIAS="${RAG_BUCKET_ALIAS:-user1-textfiles}"

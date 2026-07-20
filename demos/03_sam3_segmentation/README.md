@@ -31,7 +31,8 @@ All vision inference runs inside Mini-Rivault for security isolation:
 ## Quick Start
 
 ```bash
-cd demos/03_sam3_segmentation
+# Navigate from any level (auto-detects parent repo vs umrs subdirectory)
+cd "$(git rev-parse --show-toplevel)/$(test -d "$(git rev-parse --show-toplevel)/umrs/demos" && echo umrs)/demos/03_sam3_segmentation"
 # See the numbered steps below in this README
 ```
 
@@ -52,10 +53,17 @@ explicitly need full-resolution mask arrays.
 ## Running Manually
 
 ```bash
-# 1. Ensure the server deployment already includes the vision profile
+# 1. Load the experience fragment into your user config
+#    This registers the SAM3 segmentation experience (model + bucket + table)
+umrs-client experience add experience.json
+
+# 2. Reload to apply the new experience and provision buckets
+umrs-client reload
+
+# 3. Ensure the server deployment already includes the vision profile
 #    On rccs-cloud this is configured in site.yaml, so no client-side export is needed.
 
-# 2. Verify that the SAM3 model is already visible to the server
+# 4. Verify that the SAM3 model is already visible to the server
 umrs-client model list --scope system
 umrs-client model list --scope user
 
@@ -63,10 +71,10 @@ umrs-client model list --scope user
 umrs-client model download sam3.1 --name sam3.1 \
   --scope user --server-side --staging-dir /path/to/site-user-model-root
 
-# 3. Upload images
+# 5. Upload images
 umrs-client data dir-upload ./test_data_full user1-sam3
 
-# 4. Download results once processing completes
+# 6. Download results once processing completes
 umrs-client data download user1-sam3 ./results --force-overwrite
 ```
 

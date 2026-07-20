@@ -1067,7 +1067,7 @@ def _handle_config_init(args):
     return 0
 
 
-def _handle_config_add_experience(args):
+def _handle_config_add_experience(ctx, args):
     """Merge experience fragment(s) into the current user config JSON."""
     import json as _json_mod
 
@@ -1111,7 +1111,7 @@ def _handle_config_add_experience(args):
     return 0
 
 
-def _handle_config_remove_experience(args):
+def _handle_config_remove_experience(ctx, args):
     """Remove experience(s) by xp_name from the current user config JSON."""
     import json as _json_mod
 
@@ -1192,11 +1192,37 @@ def _coerce_experience_fragments(fragment) -> list[dict]:
         raise ValueError(
             "Fragment must be a JSON object (single experience) or array of experiences."
         )
+
+    # Required top-level keys
+    REQUIRED_TOP_KEYS = ["xp_name", "modalities"]
+
+    # Required modality-level keys
+    REQUIRED_MODALITY_KEYS = ["modality_name", "s3", "sql"]
+
     for xp in fragment_list:
         if not isinstance(xp, dict):
             raise ValueError("Each experience fragment must be a JSON object.")
-        if not xp.get("xp_name"):
+        xp_name = xp.get("xp_name")
+        if not xp_name:
             raise ValueError("Each experience fragment must have an 'xp_name' field.")
+
+        # Check required top-level keys
+        for key in REQUIRED_TOP_KEYS:
+            if key not in xp:
+                raise ValueError(
+                    f"Experience '{xp_name}': missing required key '{key}'"
+                )
+
+        # Check required modality-level keys
+        for mod in xp.get("modalities", []):
+            mod_name = mod.get("modality_name", mod.get("modality", "?"))
+            for key in REQUIRED_MODALITY_KEYS:
+                if key not in mod:
+                    raise ValueError(
+                        f"Experience '{xp_name}' → modality '{mod_name}': "
+                        f"missing required key '{key}'"
+                    )
+
     return fragment_list
 
 
@@ -1726,7 +1752,7 @@ def _resolve_recovery_username(args, user_cfg: dict | None) -> str:
     return username
 
 
-def _handle_experience_recover(args):
+def _handle_experience_recover(ctx, args):
     import json as _json_mod
 
     target = None
@@ -1833,15 +1859,18 @@ def _handle_experience_recover(args):
     return 0
 
 
-def _handle_experience_command(args):
+def _handle_experience_command(ctx):
+    args = ctx.args
     if args.experience_action == "add":
-        return _handle_config_add_experience(args)
+        return _handle_config_add_experience(ctx, args)
     if args.experience_action == "remove":
-        return _handle_config_remove_experience(args)
+        return _handle_config_remove_experience(ctx, args)
     if args.experience_action == "recover":
-        return _handle_experience_recover(args)
+        return _handle_experience_recover(ctx, args)
     if args.experience_action == "list":
-        return _handle_experience_list(args)
+        return _handle_experience_list(ctx, args)
+    if args.experience_action == "validate":
+        return _handle_experience_validate(ctx, args)
     raise ValueError(f"Unknown experience action: {args.experience_action}")
 
 
@@ -1851,7 +1880,7 @@ def _configure_experience_list_parser(parser):
     )
 
 
-def _handle_experience_list(args):
+def _handle_experience_list(ctx, args):
     """List experiences in the current user config JSON."""
     import json as _json_mod
 
@@ -1884,15 +1913,170 @@ def _handle_experience_list(args):
         name = xp.get("xp_name", "<unnamed>")
         sql_user = xp.get("sql_username", "-")
         modalities = xp.get("modalities", []) or []
-        mod_names = []
+        mods_str = []
         for m in modalities:
             mname = m.get("modality_name") or m.get("modality") or "<unnamed>"
-            mod_names.append(mname)
-        mods_str = ", ".join(mod_names) if mod_names else _dim("(none)")
+            model_name = (m.get("model") or {}).get("model_name", "-")
+            auto = m.get("auto_compute", False)
+            keep = m.get("keep_endpoint", False)
+            flags = []
+            if auto:
+                flags.append("auto_compute")
+            if keep:
+                flags.append("keep_endpoint")
+            flag_str = f" [{', '.join(flags)}]" if flags else ""
+            mods_str.append(f"{mname} → {model_name}{flag_str}")
+        mods_text = ", ".join(mods_str) if mods_str else _dim("(none)")
         print(f"    {_bold(name)}")
         print(f"      sql_username: {sql_user}")
-        print(f"      modalities ({len(modalities)}): {mods_str}")
+        print(f"      modalities ({len(modalities)}): {mods_text}")
     return 0
+
+
+def _handle_experience_validate(ctx, args):
+    """Validate experience fragment(s) against the server model catalog.
+
+    When no fragment is provided, validates the currently loaded user config
+    (i.e. all experiences the user has configured).
+    """
+    import json as _json_mod
+    import sys as _sys_mod
+
+    # Use user from context if available
+    user_cfg = ctx.user
+
+    # Resolve user config and experiences
+    if args.fragment is not None:
+        fragment_path = Path(args.fragment).expanduser()
+        if not fragment_path.is_file():
+            print(
+                f"  {_red('✗')} Fragment not found: {fragment_path}",
+                file=_sys_mod.stderr,
+            )
+            return 1
+
+        with open(fragment_path, encoding="utf-8") as f:
+            fragment = _json_mod.load(f)
+
+        fragments = _coerce_experience_fragments(fragment)
+    else:
+        # Validate the full loaded user config
+        if user_cfg is None:
+            # Fallback: load from file
+            target = _resolve_target_user_config_path(args)
+            if not target.is_file():
+                print(
+                    f"  {_red('✗')} No user config found at: {target}",
+                    file=_sys_mod.stderr,
+                )
+                return 1
+
+            with open(target, encoding="utf-8") as f:
+                user_cfg = _json_mod.load(f)
+        else:
+            # user_cfg already loaded in context
+            pass
+
+        # Extract experiences from user config
+        experiences = user_cfg.get("experiences", [])
+        if not experiences:
+            print(f"  {_dim('ℹ')} No experiences configured in user config")
+            if user_cfg and isinstance(user_cfg, dict):
+                pass  # ok
+            return 0
+
+        # Wrap in the same structure expected by validation logic
+        fragments = [{"xp_name": f"user_experience_{i}", **xp} for i, xp in enumerate(experiences)]
+
+    errors = []
+    warnings = []
+
+    for idx, xp in enumerate(fragments):
+        xp_name = xp.get("xp_name", f"<unnamed at index {idx}>")
+        print(f"\n  Checking experience: {_bold(xp_name)}")
+
+        # Validate required fields
+        if "modalities" not in xp:
+            errors.append(f"  {xp_name}: missing 'modalities' key")
+            continue
+
+        for mod in xp.get("modalities", []):
+            mod_name = mod.get("modality_name", mod.get("modality", "?"))
+            model = mod.get("model", {})
+            model_name = model.get("model_name", "?")
+
+            print(f"    modality: {mod_name}")
+            print(f"    model:    {model_name}")
+
+            # Check if model exists in server catalog (non-destructive)
+            if ctx.control_mq is None:
+                warnings.append(
+                    f"    ⚠  ZMQ not available — skipping model check"
+                )
+                print(f"    {warnings[-1]}")
+                continue
+
+            try:
+                from umrs.client.control_api import UMRSControlAPI
+
+                # Get client_id from user config or args
+                client_id = ctx.args._client_id if hasattr(ctx.args, '_client_id') else None
+                if not client_id and user_cfg and isinstance(user_cfg, dict):
+                    client_id = user_cfg.get("username")
+                if not client_id:
+                    client_id = ctx.connection.server_host.split(".")[-1] if hasattr(ctx, 'connection') and ctx.connection else "_"
+
+                api = UMRSControlAPI(
+                    control_mq=ctx.control_mq,
+                    client_id=client_id,
+                    admin_token=ctx.admin_token,
+                )
+                models_resp = api.list_models(scope="system")
+                catalog_names = set()
+                for m in models_resp.get("models", []):
+                    catalog_names.add(m.get("name") or m.get("model_name"))
+
+                if model_name not in catalog_names:
+                    warnings.append(
+                        f"    ⚠  Model '{model_name}' not found in system catalog"
+                    )
+                    print(f"    {warnings[-1]}")
+                else:
+                    print(f"    ✓  Model '{model_name}' found in system catalog")
+            except Exception:
+                warnings.append(
+                    f"    ⚠  Could not verify model (server unreachable or auth issue)"
+                )
+                print(f"    {warnings[-1]}")
+            except Exception:
+                warnings.append(
+                    f"    ⚠  Could not verify model (server unreachable or auth issue)"
+                )
+                print(f"    {warnings[-1]}")
+
+    if errors:
+        print(f"\n  {_red('✗')} {len(errors)} error(s):")
+        for e in errors:
+            print(f"    {e}")
+        return 1
+
+    if warnings:
+        print(f"\n  {_dim('ℹ')} {len(warnings)} warning(s):")
+        for w in warnings:
+            print(f"    {w}")
+
+    print(f"\n  {_green('✓')} Experience fragment is valid")
+    return 0
+
+
+def _configure_experience_validate_parser(parser):
+    parser.add_argument(
+        "fragment",
+        nargs="?",
+        default=None,
+        help="Path to a JSON file containing one experience object or an array of experiences. "
+        "Omit to validate the currently loaded user config.",
+    )
 
 
 def _configure_experience_add_parser(parser):
@@ -2857,30 +3041,34 @@ def format_status_text(response_payload, default_key):
         return f"{_red('✗')} {message}"
 
     client_label = response_payload.get("client")
+    status_key = response_payload.get("key") or default_key
     lines = []
+
+    # Context header
+    header_parts = [f"{_bold('status')} ({status_key})"]
+    if client_label:
+        header_parts.append(f"client: {client_label}")
+    lines.append(_section(" - ".join(header_parts)))
 
     def append_entry(name, entry):
         header_parts = []
-        if client_label:
-            header_parts.append(client_label)
         if name:
             header_parts.append(name)
         generated_at = entry.get("generated_at")
         last_updated_at = entry.get("last_updated_at")
-        if header_parts or generated_at or last_updated_at:
-            header = " - ".join(header_parts)
-            time_parts = []
+        status_val = entry.get("status")
+        if header_parts or generated_at or last_updated_at or status_val:
+            header = " - ".join(filter(None, header_parts))
+            meta_parts = []
+            if status_val:
+                meta_parts.append(f"status: {status_val}")
             if generated_at:
-                time_parts.append(f"generated {utc_to_local(generated_at)}")
+                meta_parts.append(f"generated {utc_to_local(generated_at)}")
             if last_updated_at:
-                time_parts.append(f"last update {utc_to_local(last_updated_at)}")
-            if time_parts:
-                time_text = "; ".join(time_parts)
-                header = (
-                    f"{header} {_dim('(' + time_text + ')')}"
-                    if header
-                    else _dim(time_text)
-                )
+                meta_parts.append(f"last update {utc_to_local(last_updated_at)}")
+            if meta_parts:
+                meta_text = f" {_dim('(' + '; '.join(meta_parts) + ')')}"
+                header = f"{header}{meta_text}" if header else _dim(meta_text.strip())
             if header:
                 lines.append(_section(header))
         summary_body = entry.get("summary")
@@ -4073,6 +4261,12 @@ def _action_endpoint(ctx):
                 parse_json_object_arg(args.spec, field_name="spec") if args.spec else {}
             )
             idle_ttl_sec = _resolve_endpoint_idle_ttl_sec(args, ctx.user)
+
+            # --keep-endpoint flag or experience modality flag → infinite TTL
+            if getattr(args, "keep_endpoint", False) or _check_experience_keep_endpoint(ctx.user):
+                idle_ttl_sec = 999999  # ~11.6 days — effectively infinite
+                print(f"  {_dim('keep_endpoint')} → endpoint will not auto-teardown")
+
             parsed = api.endpoint_up(
                 model=args.model,
                 model_path=args.model_path,
@@ -6343,10 +6537,16 @@ def _action_data(ctx):
     action = getattr(ctx.args, "data_action", None)
     if action == "upload":
         ctx.args.action = "upload_file"
-        return _action_s3_transfer(ctx)
+        result = _action_s3_transfer(ctx)
+        if result == 0:
+            _trigger_auto_compute(ctx)
+        return result
     elif action == "dir-upload":
         ctx.args.action = "upload_dir"
-        return _action_s3_transfer(ctx)
+        result = _action_s3_transfer(ctx)
+        if result == 0:
+            _trigger_auto_compute(ctx)
+        return result
     elif action == "download":
         ctx.args.action = "download_results"
         return _action_s3_transfer(ctx)
@@ -6357,6 +6557,45 @@ def _action_data(ctx):
         )
         return 1
 
+
+def _trigger_auto_compute(ctx):
+    """If the target bucket's experience has auto_compute=true, trigger update."""
+    # Determine the bucket alias from the upload args
+    bucket_alias = getattr(ctx.args, "bucket_alias", None)
+    if not bucket_alias:
+        return
+    if not ctx.user or not isinstance(ctx.user, dict):
+        return
+
+    # Find the experience that owns this bucket alias
+    for xp in ctx.user.get("experiences", []):
+        for mod in xp.get("modalities", []):
+            s3_cfg = mod.get("s3", {})
+            if s3_cfg.get("bucket_alias") == bucket_alias:
+                auto_compute = mod.get("auto_compute", False)
+                if auto_compute:
+                    print(f"  {_dim('auto_compute')} → triggering 'update' for {bucket_alias}")
+                    try:
+                        api = UMRSControlAPI(
+                            control_mq=ctx.control_mq,
+                            client_id=_resolve_control_client_id(ctx.user),
+                        )
+                        parsed = api.request_maintenance_command("update", "")
+                        print(f"  {_green('✓')} Update triggered: {parsed.get('message', 'OK')}")
+                    except Exception as e:
+                        print(f"  {_red('✗')} Failed to trigger update: {e}")
+                return
+
+
+def _check_experience_keep_endpoint(user_cfg):
+    """Return the first modality that has keep_endpoint=True, or None."""
+    if not user_cfg or not isinstance(user_cfg, dict):
+        return None
+    for xp in user_cfg.get("experiences", []):
+        for mod in xp.get("modalities", []):
+            if mod.get("keep_endpoint", False):
+                return mod
+    return None
 
 def _action_project(ctx):
     """Dispatch project subcommands (admin-only)."""
@@ -6814,6 +7053,12 @@ def main():
         nargs="?",
         help="Configured username owning the bucket (defaults to config if omitted)",
     )
+    du_p.add_argument(
+        "--no-auto-compute",
+        action="store_true",
+        default=False,
+        help="Skip automatic compute trigger even if experience has auto_compute=true",
+    )
 
     # data dir-upload (replaces upload_dir)
     ddu_p = data_sub.add_parser(
@@ -6832,6 +7077,12 @@ def main():
         "username",
         nargs="?",
         help="Configured username owning the bucket (defaults to config if omitted)",
+    )
+    ddu_p.add_argument(
+        "--no-auto-compute",
+        action="store_true",
+        default=False,
+        help="Skip automatic compute trigger even if experience has auto_compute=true",
     )
 
     # data download (replaces download_results)
@@ -7428,6 +7679,10 @@ def main():
         "list", help="List experiences in the current user config"
     )
     _configure_experience_list_parser(el_p)
+    va_p = experience_sub.add_parser(
+        "validate", help="Validate an experience fragment and verify model availability"
+    )
+    _configure_experience_validate_parser(va_p)
 
     if emit_completion_if_requested(parser, "umrs-client", "_UMRS_CLIENT_COMPLETE"):
         return 0
@@ -7476,8 +7731,75 @@ def main():
             sys.exit(1)
 
     if args.action == "experience":
+        # Resolve full context (connection, ZMQ, user config) before dispatching
+        # so that experience subcommands (especially validate) can reach
+        # the server for model-catalog checks via ZMQ.
         try:
-            sys.exit(_handle_experience_command(args))
+            connection = resolve_connection(
+                explicit_profile_name=args.profile,
+                explicit_server_ip=args.server_ip,
+                explicit_control_port=args.control_port,
+            )
+            _maybe_bootstrap_curve_session(connection)
+
+            control_mq = MessageQueue(
+                role="client",
+                queue_type="control",
+                server_ip=connection.server_host,
+                port=connection.control_port,
+                tunnel_mode=connection.tunnel_mode,
+                prefer_env_server_host=False,
+            )
+
+            # Check server readiness
+            if not args.no_check_server and not control_mq.is_server_ready(
+                timeout_ms=connection.health_check_timeout_ms
+            ):
+                # Try CURVE session refresh once
+                if _force_refresh_curve_session(connection):
+                    control_mq.close()
+                    control_mq = MessageQueue(
+                        role="client",
+                        queue_type="control",
+                        server_ip=connection.server_host,
+                        port=connection.control_port,
+                        tunnel_mode=connection.tunnel_mode,
+                        prefer_env_server_host=False,
+                    )
+                    if not control_mq.is_server_ready(
+                        timeout_ms=connection.health_check_timeout_ms
+                    ):
+                        sys.exit(f"{_red('✗')} Server connection timeout — cannot continue!")
+
+            # Load user config
+            config_state = resolve_loaded_config(
+                explicit_server_config_path=args.server_conf,
+                explicit_user_config_path=args.conf,
+                explicit_s3_config_path=args.s3cfg,
+            )
+            configure_file = config_state.user.path if config_state.user.path else None
+            user = None
+            if configure_file and config_state.user.valid:
+                user = load_client_cfg_file(configure_file)
+                if config_state.s3.valid and config_state.s3.path:
+                    user = apply_s3_config_override(user, config_state.s3.path)
+
+            admin_token = args.admin_token or os.environ.get("UMRS_ADMIN_TOKEN")
+
+            # Set client_id on args so subcommands that access it directly can find it
+            args._client_id = user.get("username") if user else None
+
+            ctx = _ClientContext(
+                args=args,
+                control_mq=control_mq,
+                connection=connection,
+                admin_token=admin_token,
+                config_state=config_state,
+                configure_file=configure_file,
+                user=user,
+                buckets_cfg=build_buckets_cfg(user) if user else None,
+            )
+            sys.exit(_handle_experience_command(ctx))
         except Exception as e:
             print(api_json(status="error", message=str(e), output_format=args.output))
             sys.exit(1)
@@ -7618,8 +7940,16 @@ def main():
     if args.action != "ping":
         profile_name = getattr(connection, "profile_name", None)
         profile_label = _bold(profile_name) if profile_name else _dim("(none)")
+        server_info = f"{connection.server_host}:{connection.control_port}"
+        # Append status target if present
+        status_target = getattr(args, "target", None) or getattr(args, "status_target", None)
+        if status_target:
+            info_parts = [f"profile={profile_label}", f"target={status_target}", server_info]
+        else:
+            info_parts = [f"profile={profile_label}", server_info]
         print(
-            f"{_green('✓')} Server ready  {_dim('|')}  profile={profile_label}  {_dim('|')}  {connection.server_host}:{connection.control_port}"
+            f"{_green('✓')} Server ready  {_dim('|')}  " +
+            f"{_dim('|  ').join(info_parts)}"
         )
 
     # Resolve admin token from CLI flag or environment

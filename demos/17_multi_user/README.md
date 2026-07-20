@@ -16,7 +16,7 @@ neither can access the other's data.
 ## Quick Start
 
 ```bash
-cd demos/17_multi_user
+cd "$(git rev-parse --show-toplevel)/$(test -d "$(git rev-parse --show-toplevel)/umrs/demos" && echo umrs)/demos/17_multi_user"
 # See the numbered steps below in this README
 ```
 

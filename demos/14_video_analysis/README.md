@@ -20,7 +20,7 @@ timestamps plus duration for each event.
 
 ```bash
 # See "Running Manually" and "Generate Test Videos" sections below for step-by-step commands
-cd "$(git rev-parse --show-toplevel)/umrs/demos/14_video_analysis"
+cd "$(git rev-parse --show-toplevel)/$(test -d "$(git rev-parse --show-toplevel)/umrs/demos" && echo umrs)/demos/14_video_analysis"
 
 # Generate synthetic test videos + analyse them
 GEN_TEST_VIDEOS=1 bash ./run_demo.sh
@@ -62,18 +62,25 @@ python generate_test_videos.py -o sample_videos/ --count 8 --fps 30
 # 1. Verify server connectivity
 umrs-client ping
 
-# 2. (Optional) Generate synthetic test videos
+# 2. Load the experience fragment into your user config
+#    This registers the video analysis experience (model + bucket + table)
+umrs-client experience add experience.json
+
+# 3. Reload to apply the new experience and provision buckets
+umrs-client reload
+
+# 4. (Optional) Generate synthetic test videos
 #    Creates short MP4 files with a moving white rectangle.
 #    Every 3rd video is static (no motion) for negative test cases.
 python3 generate_test_videos.py -o sample_videos/ --count 4 --fps 15
 
-# 3. Upload the motion detection workflow to the server
+# 5. Upload the motion detection workflow to the server
 #    The workflow contains a MotionDetectStep that analyzes
 #    consecutive frames for pixel intensity changes and reports
 #    motion events with timestamps.
 umrs-client workflow upload workflow/ --name "video-motion-analysis"
 
-# 4. Upload videos to the analysis bucket
+# 6. Upload videos to the analysis bucket
 #    Each video will be processed by the MotionDetectStep,
 #    producing a per-video JSON report with motion events.
 umrs-client data dir-upload ./sample_videos user1-video

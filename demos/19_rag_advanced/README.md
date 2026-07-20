@@ -15,14 +15,15 @@ data (run Demo 02 first).
 ## Quick Start
 
 ```bash
-cd demos/19_rag_advanced
+# Navigate from any level (auto-detects parent repo vs umrs subdirectory)
+cd "$(git rev-parse --show-toplevel)/$(test -d "$(git rev-parse --show-toplevel)/umrs/demos" && echo umrs)/demos/19_rag_advanced"
 # See the numbered steps below in this README
 ```
 
 With a custom query:
 
 ```bash
-cd demos/19_rag_advanced
+cd "$(git rev-parse --show-toplevel)/$(test -d "$(git rev-parse --show-toplevel)/umrs/demos" && echo umrs)/demos/19_rag_advanced"
 # See the numbered steps below in this README
 ```
 

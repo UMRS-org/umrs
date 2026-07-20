@@ -12,7 +12,7 @@ poll status, test duplicate detection, and cancel a running durable endpoint job
 ## Quick Start
 
 ```bash
-cd demos/20_durable_jobs
+cd "$(git rev-parse --show-toplevel)/$(test -d "$(git rev-parse --show-toplevel)/umrs/demos" && echo umrs)/demos/20_durable_jobs"
 # See the numbered steps below in this README
 ```
 

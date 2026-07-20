@@ -14,7 +14,7 @@ connection health.
 ## Quick Start
 
 ```bash
-cd demos/22_monitor
+cd "$(git rev-parse --show-toplevel)/$(test -d "$(git rev-parse --show-toplevel)/umrs/demos" && echo umrs)/demos/22_monitor"
 # See the numbered steps below in this README
 ```
 

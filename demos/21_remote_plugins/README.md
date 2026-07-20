@@ -20,7 +20,7 @@ PluginSpec → Validate → Fetch → Install → Execute → Complete
 ## Quick Start
 
 ```bash
-cd demos/21_remote_plugins
+cd "$(git rev-parse --show-toplevel)/$(test -d "$(git rev-parse --show-toplevel)/umrs/demos" && echo umrs)/demos/21_remote_plugins"
 python3 simulate_plugins.py results
 ```
 
