@@ -344,7 +344,12 @@ class UMRSControlAPI:
             "status": "error",
             "action": action,
             "accepted": False,
-            "message": "Authorization denied (admin required)",
+            "message": (
+                "Authorization denied by server for "
+                f"'{action}' (requires admin privileges, or the server is "
+                "running an older version that has not picked up an updated "
+                "authorization policy — ask an operator to restart/redeploy it)"
+            ),
         }
 
     def enroll_user(self, config_path: str) -> dict[str, Any]:

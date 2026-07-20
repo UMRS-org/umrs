@@ -1068,6 +1068,11 @@ class MessageQueue:
             return True
         elif reply == "NO_DATA_QUEUE":
             raise RuntimeError(f"Error: the server cannot find the data queue for user {client_id}.")
+        elif reply.startswith("UNAUTHORIZED:"):
+            logger.warning(
+                "Server denied %s for user %s: %s", notification_type, client_id, reply
+            )
+            return False
         else:
             raise RuntimeError(f"Unexpected error on server side for user {client_id}: {reply}.")
 
