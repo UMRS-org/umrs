@@ -304,7 +304,7 @@ import os
 from pathlib import Path
 from umrs.orchestrator.site_config import load_site_config
 
-default_root = Path(f"/lvs0/dne1/rccs-dmp/{os.environ.get('USER', 'test-operator')}/umrs_models")
+default_root = Path(f"/home/{os.environ.get('USER', 'test-operator')}/umrs_models")
 try:
     cfg = load_site_config()
     hf_cache = Path(cfg.storage.model_cache_dir) if cfg.storage.model_cache_dir else default_root / "hf"
@@ -322,9 +322,9 @@ PY
     fi
 
     printf '%s\n%s\n%s\n' \
-        "/lvs0/dne1/rccs-dmp/${USER}/umrs_models" \
-        "/lvs0/dne1/rccs-dmp/${USER}/umrs_models/hf" \
-        "/lvs0/dne1/rccs-dmp/${USER}/umrs_models/sentence_transformers"
+        "/home/${USER}/umrs_models" \
+        "/home/${USER}/umrs_models/hf" \
+        "/home/${USER}/umrs_models/sentence_transformers"
 }
 
 # ─── Guard: must run on a Linux host where podman is available ───────────────

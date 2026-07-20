@@ -106,6 +106,12 @@ export CONTAINERS_BUILDAH_ISOLATION=chroot
 
 uuid=$(cat /proc/sys/kernel/random/uuid)
 
+# Job-scoped names prevent cross-job collisions on shared nodes.
+RIVAULT_COMPOSE_PROJECT="${RIVAULT_COMPOSE_PROJECT:-rivault-${SLURM_JOB_ID:-$uuid}}"
+RIVAULT_EXIT_PROJECT="${RIVAULT_EXIT_PROJECT:-exit-${SLURM_JOB_ID:-$uuid}}"
+RIVAULT_NETWORK_NAME="${RIVAULT_NETWORK_NAME:-genai-private-net-${SLURM_JOB_ID:-$uuid}}"
+export RIVAULT_COMPOSE_PROJECT RIVAULT_EXIT_PROJECT RIVAULT_NETWORK_NAME
+
 prepare_mcp_mount_overlay() {
     [[ -n "${RIVAULT_MCP_MOUNTS_JSON:-}" ]] || return 0
 
@@ -602,25 +608,27 @@ fi
 # Tear down any leftovers from previous jobs: remove all containers that are
 # still connected to genai-private-net (handles unnamed/bracketed-name podman
 # quirks), then remove the network itself so IPAM starts from a clean slate.
-podman ps -qa --filter network=genai-private-net --format '{{.ID}}' 2>/dev/null | \
+podman ps -qa --filter "network=${RIVAULT_NETWORK_NAME}" --format '{{.ID}}' 2>/dev/null | \
 	xargs -r podman rm -f 2>/dev/null || true
-podman ps -qa --filter 'name=rivault_' --format '{{.ID}}' 2>/dev/null | \
-	xargs -r podman rm -f 2>/dev/null || true
-podman network rm -f genai-private-net 2>/dev/null || true
+podman ps -qa --filter "label=com.docker.compose.project=${RIVAULT_COMPOSE_PROJECT}" --format '{{.ID}}' 2>/dev/null | \
+    xargs -r podman rm -f 2>/dev/null || true
+podman ps -qa --filter "label=com.docker.compose.project=${RIVAULT_EXIT_PROJECT}" --format '{{.ID}}' 2>/dev/null | \
+    xargs -r podman rm -f 2>/dev/null || true
+podman network rm -f "${RIVAULT_NETWORK_NAME}" 2>/dev/null || true
 
 # Verify the network is actually gone (belt-and-suspenders)
 # When containers from a prior Slurm job are orphaned (crun state files gone
 # after $XDG_RUNTIME_DIR cleanup), podman can't stop them normally.
 # Fix: cleanup --rm clears metadata; pkill conmon kills any survivors.
-if podman network exists genai-private-net 2>/dev/null; then
-	echo "[rivault] WARN: genai-private-net still exists; cleaning orphaned containers..."
+if podman network exists "${RIVAULT_NETWORK_NAME}" 2>/dev/null; then
+    echo "[rivault] WARN: ${RIVAULT_NETWORK_NAME} still exists; cleaning orphaned containers..."
 	pkill -9 conmon 2>/dev/null || true
 	sleep 1
 	podman container cleanup --rm --all 2>/dev/null || true
 	podman rm -af 2>/dev/null || true
-	podman network rm -f genai-private-net 2>/dev/null || true
-	if podman network exists genai-private-net 2>/dev/null; then
-		echo "[rivault] ERROR: cannot remove genai-private-net"; exit 1
+    podman network rm -f "${RIVAULT_NETWORK_NAME}" 2>/dev/null || true
+    if podman network exists "${RIVAULT_NETWORK_NAME}" 2>/dev/null; then
+        echo "[rivault] ERROR: cannot remove ${RIVAULT_NETWORK_NAME}"; exit 1
 	fi
 fi
 
@@ -643,23 +651,23 @@ for _candidate in "${_preferred_ip1to3}" '172.16.4' '10.0.4' '192.168.4'; do
 done
 for IP1TO3 in "${_candidate_subnets[@]}"; do
 	# Note: --disable-dns needed because infra lacks dns, but we need fixed ips
-	if podman network create --disable-dns --subnet "${IP1TO3}.0/24" genai-private-net 2>/dev/null; then
+    if podman network create --disable-dns --subnet "${IP1TO3}.0/24" "${RIVAULT_NETWORK_NAME}" 2>/dev/null; then
 		_net_created=1
 		break
 	fi
 done
 if [ "$_net_created" -ne 1 ]; then
-	echo "[rivault] ERROR: failed to create genai-private-net with any candidate subnet"
+    echo "[rivault] ERROR: failed to create ${RIVAULT_NETWORK_NAME} with any candidate subnet"
 	exit 1
 fi
-echo "[rivault] genai-private-net created with subnet ${IP1TO3}.0/24"
+echo "[rivault] ${RIVAULT_NETWORK_NAME} created with subnet ${IP1TO3}.0/24"
 
 # Verify network is visible to podman (catches netavark storage issues)
-if ! podman network exists genai-private-net 2>/dev/null; then
+if ! podman network exists "${RIVAULT_NETWORK_NAME}" 2>/dev/null; then
 	echo "[rivault] WARN: network exists check failed after create; running system migrate..."
 	podman system migrate 2>/dev/null || true
-	if ! podman network exists genai-private-net 2>/dev/null; then
-		echo "[rivault] ERROR: genai-private-net not visible after migrate"
+    if ! podman network exists "${RIVAULT_NETWORK_NAME}" 2>/dev/null; then
+        echo "[rivault] ERROR: ${RIVAULT_NETWORK_NAME} not visible after migrate"
 		echo "[rivault] DEBUG: network ls output:"
 		podman network ls 2>&1
 		echo "[rivault] DEBUG: network backend:"
@@ -855,15 +863,15 @@ cleanup_stack() {
         done
     fi
     cleanup_ssh_tunnels
-    podman-compose --project-name "exit" --in-pod false \
+    podman-compose --project-name "${RIVAULT_EXIT_PROJECT}" --in-pod false \
                --env-file "./env.${uuid}" \
                --file "./userdata-access.yaml" \
                down >/dev/null 2>&1 || true
-    podman-compose --project-name "rivault" --in-pod false \
+    podman-compose --project-name "${RIVAULT_COMPOSE_PROJECT}" --in-pod false \
                --env-file "./env.${uuid}" \
                --file "./serve-model.yaml" ${GPUoverride[@]} \
                down >/dev/null 2>&1 || true
-    podman network rm -f genai-private-net >/dev/null 2>&1 || true
+    podman network rm -f "${RIVAULT_NETWORK_NAME}" >/dev/null 2>&1 || true
     # Clear /tmp/run-user-* runtime state left by podman
     rm -rf "/tmp/run-user-$(id -u)/containers" 2>/dev/null || true
     rm -rf "/tmp/run-user-$(id -u)/libpod/tmp" 2>/dev/null || true
@@ -901,7 +909,7 @@ run_litellm_db_sql_migrations() {
     rm -rf "${migrations_dir}" 2>/dev/null || true
     mkdir -p "${migrations_dir}"
 
-    if ! podman-compose --project-name "rivault" --in-pod false \
+    if ! podman-compose --project-name "${RIVAULT_COMPOSE_PROJECT}" --in-pod false \
              --env-file "./env.${uuid}" \
              --file "./serve-model.yaml" \
              ${GPUoverride[@]} \
@@ -912,7 +920,7 @@ run_litellm_db_sql_migrations() {
     fi
 
     for _attempt in $(seq 1 60); do
-        postgres_container_id="$(podman ps --filter 'name=rivault_ll-postgres_1' --format '{{.ID}}' | head -1)"
+        postgres_container_id="$(podman ps --filter "name=${RIVAULT_COMPOSE_PROJECT}_ll-postgres_1" --format '{{.ID}}' | head -1)"
         if [[ -n "${postgres_container_id}" ]] && \
            podman run --rm --network "container:${postgres_container_id}" \
                -e "PGPASSWORD=${_litellm_postgres_password}" \
@@ -1166,9 +1174,19 @@ RAYEOF
         # value of RAY_memory_monitor_refresh_ms=0 disables the monitor entirely
         # (needed for large GGUF models where Lustre page cache pre-fills the pool).
         -e RAY_memory_usage_threshold="${RAY_memory_usage_threshold:-0.95}"
-        -e RAY_memory_monitor_refresh_ms="${RAY_memory_monitor_refresh_ms:-}"
         -e VLLM_LOGGING_LEVEL=DEBUG
     )
+    # CRITICAL: only pass RAY_memory_monitor_refresh_ms when actually
+    # overridden. `-e RAY_memory_monitor_refresh_ms=` (empty string, NOT
+    # unset) makes Ray's native config parser SIGSEGV on `import ray` itself
+    # (confirmed via reproduction 2026-07-20 on GB10 aarch64) — every downstream
+    # `ray start --head`/`ray status` call then crashes silently (masked by the
+    # `;`-joined shell sequence), so the GCS port never binds and the job hangs
+    # until the outer TCP-probe timeout. Ray only accepts a real integer or no
+    # env var at all — never an empty string.
+    if [[ -n "${RAY_memory_monitor_refresh_ms:-}" ]]; then
+        _mn_vllm_args+=( -e "RAY_memory_monitor_refresh_ms=${RAY_memory_monitor_refresh_ms}" )
+    fi
     if [[ "${_mn_tok_host}" != "/dev/null" ]]; then
         _mn_vllm_args+=( -v "${_mn_tok_host}:${_mn_tok_ctr}:ro" )
     fi
@@ -1182,7 +1200,13 @@ RAYEOF
     # `vllm serve` as a Ray driver on the local node.
     echo "[rivault] Starting Ray head + co-located vLLM on ${HEAD_NODE} (${HEAD_IP})..."
     podman rm -f rivault-vllm-mn >/dev/null 2>&1 || true
+    # --security-opt seccomp=unconfined: the default podman seccomp profile
+    # blocks a syscall Ray's native _raylet.so extension needs during module
+    # init on GB10 (Grace aarch64) — without this, even `python3 -c "import ray"`
+    # segfaults (SIGSEGV/exit 139), so `ray start --head` silently never binds
+    # its GCS port (confirmed via reproduction 2026-07-20).
     podman run -d --name rivault-vllm-mn --network host --shm-size=4g \
+        --security-opt seccomp=unconfined \
         --entrypoint /bin/sh \
         -e "LD_LIBRARY_PATH=/usr/lib/aarch64-linux-gnu" \
         -e "TRITON_LIBCUDA_PATH=/usr/lib/aarch64-linux-gnu" \
@@ -1255,6 +1279,7 @@ RAYEOF
                 # passes the head GPU gate but crashes the vLLM worker later.
                 srun --nodes=1 --ntasks=1 --nodelist="${wnode}" \
                     podman run --name rivault-ray-worker --replace --network host --shm-size=4g \
+                        --security-opt seccomp=unconfined \
                         --entrypoint /bin/sh \
                         -e "LD_LIBRARY_PATH=/usr/lib/aarch64-linux-gnu" \
                         -e "TRITON_LIBCUDA_PATH=/usr/lib/aarch64-linux-gnu" \
@@ -1276,7 +1301,7 @@ RAYEOF
     # gate can never block the job indefinitely; if the count can't be
     # confirmed we warn and proceed (the co-located vLLM driver waits for the
     # GPUs itself and re-validates on ray.init).
-    _have_gpus="$(timeout 200 podman run --rm --network host --shm-size=4g --entrypoint /bin/sh \
+    _have_gpus="$(timeout 200 podman run --rm --network host --shm-size=4g --security-opt seccomp=unconfined --entrypoint /bin/sh \
         "${VLLM_IMAGE}" -c "export PATH=/usr/local/bin:\$PATH; python3 -m pip install -q --no-index --find-links /root/.cache/huggingface/ray_aarch64_env/wheels ray 2>/dev/null || python3 -m pip install -q ray; i=0; while [ \$i -lt 30 ]; do g=\$(ray status --address='${RAY_ADDRESS}' 2>/dev/null | grep -oE '[0-9.]+/[0-9.]+ GPU' | head -1 | sed 's@.*/@@; s@ GPU@@; s@[.].*@@'); if [ \"\${g:-0}\" = \"${_want_gpus}\" ]; then echo \$g; break; fi; sleep 5; i=\$((i+1)); done; echo \${g:-0}" \
         2>/dev/null | tail -1)"
     _have_gpus="${_have_gpus:-0}"
@@ -1324,7 +1349,7 @@ if ! run_litellm_db_sql_migrations; then
     exit 1
 fi
 
-if ! podman-compose --project-name "rivault" --in-pod false \
+if ! podman-compose --project-name "${RIVAULT_COMPOSE_PROJECT}" --in-pod false \
          --env-file "./env.${uuid}" \
          --file "./serve-model.yaml" ${GPUoverride[@]} \
          ${_profile_flags} \
@@ -1334,7 +1359,7 @@ if ! podman-compose --project-name "rivault" --in-pod false \
 	exit 1
 fi
 
-if ! podman-compose --project-name "exit" --in-pod false \
+if ! podman-compose --project-name "${RIVAULT_EXIT_PROJECT}" --in-pod false \
          --env-file "./env.${uuid}" \
          --file "./userdata-access.yaml" \
          --profile harness \
@@ -1417,7 +1442,7 @@ while [ "$ELAPSED" -lt "$RIVAULT_JOB_TIMEOUT" ]; do
         echo "[rivault] Graceful stop requested via ${RIVAULT_STOP_REQUEST_FILE}. Exiting monitor loop."
         exit 0
     fi
-    RUNNING=$(podman ps -q --filter "network=genai-private-net" 2>/dev/null | wc -l)
+    RUNNING=$(podman ps -q --filter "network=${RIVAULT_NETWORK_NAME}" 2>/dev/null | wc -l)
     if [ "$RUNNING" -eq 0 ]; then
         echo "[rivault] All containers stopped. Exiting."
         break
