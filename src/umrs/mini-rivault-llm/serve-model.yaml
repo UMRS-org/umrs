@@ -659,5 +659,5 @@ services:
 
 networks:
   genai-private-net:
-    name: "genai-private-net"
+    name: "${RIVAULT_NETWORK_NAME:-genai-private-net}"
     external: true
