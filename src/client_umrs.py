@@ -1067,7 +1067,7 @@ def _handle_config_init(args):
     return 0
 
 
-def _handle_config_add_experience(args):
+def _handle_config_add_experience(ctx, args):
     """Merge experience fragment(s) into the current user config JSON."""
     import json as _json_mod
 
@@ -1726,7 +1726,7 @@ def _resolve_recovery_username(args, user_cfg: dict | None) -> str:
     return username
 
 
-def _handle_experience_recover(args):
+def _handle_experience_recover(ctx, args):
     import json as _json_mod
 
     target = None
@@ -1854,7 +1854,7 @@ def _configure_experience_list_parser(parser):
     )
 
 
-def _handle_experience_list(args):
+def _handle_experience_list(ctx, args):
     """List experiences in the current user config JSON."""
     import json as _json_mod
 
@@ -1996,23 +1996,41 @@ def _handle_experience_validate(ctx, args):
                     client_id=client_id,
                     admin_token=ctx.admin_token,
                 )
-                models_resp = api.list_models(scope="system")
+                # Check both system and user scopes
                 catalog_names = set()
-                for m in models_resp.get("models", []):
-                    catalog_names.add(m.get("name") or m.get("model_name"))
+                for scope in ("system", "user"):
+                    models_resp = api.list_models(scope=scope)
+                    for m in models_resp.get("models", []):
+                        catalog_names.add(m.get("name") or m.get("model_name"))
 
-                if model_name not in catalog_names:
+                # Normalize names for matching: experience fragment may use
+                # HuggingFace-style name (intfloat/e5-base-v2) while the
+                # catalog may store a canonical short name (e5-base-v2).
+                # Match by checking if one normalizes to the other.
+                def _norm(name: str) -> str:
+                    """Normalize model name for comparison."""
+                    n = name.lower()
+                    # Strip HuggingFace org prefix: intfloat/e5-base-v2 → e5-base-v2
+                    if "/" in n:
+                        n = n.split("/", 1)[1]
+                    return n
+
+                matched = False
+                for catalog_name in catalog_names:
+                    if model_name == catalog_name:
+                        matched = True
+                        break
+                    if _norm(model_name) == _norm(catalog_name):
+                        matched = True
+                        break
+
+                if not matched:
                     warnings.append(
-                        f"    ⚠  Model '{model_name}' not found in system catalog"
+                        f"    ⚠  Model '{model_name}' not found in model catalog (catalog names: {', '.join(sorted(catalog_names))})"
                     )
                     print(f"    {warnings[-1]}")
                 else:
-                    print(f"    ✓  Model '{model_name}' found in system catalog")
-            except Exception:
-                warnings.append(
-                    f"    ⚠  Could not verify model (server unreachable or auth issue)"
-                )
-                print(f"    {warnings[-1]}")
+                    print(f"    ✓  Model '{model_name}' found in model catalog")
             except Exception:
                 warnings.append(
                     f"    ⚠  Could not verify model (server unreachable or auth issue)"
