@@ -82,7 +82,7 @@ class WorkflowsPaneV2(Static):
                 str(wf.get("user_id", "—")),
                 str(len(steps)),
                 str(wf.get("registered_at", "?"))[:19],
-                key=str(wf.get("name", idx)),
+                key=str(wf.get("workflow_id", wf.get("name", idx))),
             )
         if saved_cursor is not None and self._workflows:
             self._table.move_cursor(row=min(saved_cursor, len(self._workflows) - 1))
@@ -95,13 +95,22 @@ class WorkflowsPaneV2(Static):
         if not self._selected_name:
             self._detail.update("")
             return
-        wf = next((w for w in self._workflows if w.get("name") == self._selected_name), None)
+        wf = next(
+            (w for w in self._workflows if w.get("name") == self._selected_name), None
+        )
         if not wf:
             self._detail.update("")
             return
         lines = [f"[bold]Workflow: {self._selected_name}[/bold]"]
-        for k in ("name", "version", "scope", "user_id", "source_path",
-                  "description", "registered_at"):
+        for k in (
+            "name",
+            "version",
+            "scope",
+            "user_id",
+            "source_path",
+            "description",
+            "registered_at",
+        ):
             v = wf.get(k)
             if v is not None:
                 lines.append(f"{k}: {v}")
@@ -111,7 +120,9 @@ class WorkflowsPaneV2(Static):
             for i, s in enumerate(steps):
                 dep = s.get("depends_on")
                 dep_str = f" (depends on: {', '.join(dep)})" if dep else ""
-                lines.append(f"  {i+1}. {s.get('name', '?')} — {s.get('entrypoint', '?')}{dep_str}")
+                lines.append(
+                    f"  {i + 1}. {s.get('name', '?')} — {s.get('entrypoint', '?')}{dep_str}"
+                )
         self._detail.update("\n".join(lines))
 
     @on(DataTable.RowSelected)
@@ -151,7 +162,10 @@ class WorkflowsPaneV2(Static):
     def action_cancel_selected(self) -> None:
         """Trigger cancel for a selected execution."""
         if not self._selected_exec_id:
-            self.notify("No execution selected — select an execution in WF Logs tab first", severity="warning")
+            self.notify(
+                "No execution selected — select an execution in WF Logs tab first",
+                severity="warning",
+            )
             return
         self.app.notify(
             f"Cancel requested: {self._selected_exec_id}",

@@ -9,7 +9,7 @@ MonitorAppV2 {
 
 #topbar {
     dock: top;
-    height: 3;
+    height: 8;
     background: $boost;
     color: $primary;
     padding: 0 2;
@@ -19,18 +19,20 @@ MonitorAppV2 {
     grid-gutter: 1 2;
 }
 
-#topbar > .logo {
+#topbar > #logo {
     text-align: left;
     width: 1fr;
+
+    color: $primary;
 }
 
-#topbar > .stats {
+#topbar > #stats {
     text-align: right;
     width: 1fr;
     color: $text;
 }
 
-#topbar > .connection-status {
+#topbar > #connection-status {
     dock: top;
     height: 1;
     background: $boost;
@@ -53,7 +55,7 @@ TabbedContent .TabList {
     color: $text-muted;
 }
 
-TabbedContent .TabList .Tab - Focus {
+TabbedContent .TabList .Tab:focus {
     background: $primary;
     color: $background;
 }
@@ -105,4 +107,22 @@ ToastNotification {
     height: auto;
     dock: bottom;
     margin-bottom: 2;
+}
+
+/* ── Progress container ─────────────────────────────────── */
+
+/* ── Progress bar ───────────────────────────────────────── */
+
+#progress-bar {
+    dock: bottom;
+    height: 3;
+    display: none;
+    background: $surface;
+    border-top: solid $primary;
+    color: $text;
+    padding: 0 1;
+}
+
+#progress-bar.visible {
+    display: block;
 }

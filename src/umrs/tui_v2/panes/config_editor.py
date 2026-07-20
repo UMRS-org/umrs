@@ -4,15 +4,13 @@ from __future__ import annotations
 
 from typing import Any
 
+from textual import on
 from textual.app import ComposeResult
-from textual.containers import Horizontal, Vertical
+from textual.events import Click
 from textual.widgets import (
     Button,
-    Label,
     Static,
 )
-
-from ..forms.screens import FormScreen, FormSchema, FormField
 
 
 class ConfigEditorPane(Static):
@@ -64,9 +62,9 @@ class ConfigEditorPane(Static):
         yield self._content
         yield self._actions_bar
 
-    def on_mount(self) -> None:
-        self._reload_btn.on_click(self._on_reload_click)
-        self._render_config()
+    @on(Click, "#btn-reload")
+    def on_reload_btn_click(self) -> None:
+        self._on_reload_click()
 
     def update_data(self, data: Any) -> None:
         self._summary_widget.update("  User config & server maintenance")

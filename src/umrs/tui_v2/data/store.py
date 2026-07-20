@@ -7,13 +7,14 @@ lock so concurrent fetches don't corrupt state.
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 
 @dataclass
 class TabData:
     """Data for a single tab."""
+
     name: str
     data: Any = None
     fetched_at: float = 0.0
@@ -45,6 +46,7 @@ class MonitorStore:
             td.data = data
             td.error = error
             import time as _time
+
             td.fetched_at = _time.monotonic()
 
     async def get(self, name: str) -> Any:

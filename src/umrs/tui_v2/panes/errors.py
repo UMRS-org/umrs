@@ -21,7 +21,6 @@ class ErrorsPane(Static):
         border: round $primary;
         padding: 0 1;
         overflow-y: auto;
-        font: monospace;
     }
     """
 
@@ -42,7 +41,7 @@ class ErrorsPane(Static):
             return
         lines = [f"[bold]Errors ({len(error_logs)})[/bold]"]
         for entry in error_logs[:100]:
-            ts = entry.get("timestamp", "?")[:19]
+            ts = (entry.get("timestamp") or "")[:19]
             level = entry.get("level", "?")
             msg = entry.get("message", "?")
             src = entry.get("source", "")

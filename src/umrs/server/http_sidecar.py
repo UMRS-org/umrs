@@ -447,6 +447,7 @@ def _create_app():
 
     from umrs.api import (
         a2l_router,
+        artifact_router,
         catalog_router,
         chat_router,
         egress_audit_router,
@@ -512,6 +513,7 @@ def _create_app():
 
     app.include_router(catalog_router)
     app.include_router(a2l_router)
+    app.include_router(artifact_router)
     app.include_router(chat_router)
     app.include_router(egress_audit_router)
     app.include_router(endpoints_router)

@@ -27,7 +27,6 @@ class WorkflowLogsPane(Static):
         border: round $primary;
         padding: 0 1;
         overflow-y: auto;
-        font: monospace;
     }
     """
 
@@ -52,30 +51,36 @@ class WorkflowLogsPane(Static):
         if not isinstance(data, dict):
             self._content.update(str(data))
             return
+        self._render_execution(data)
 
-        # Render execution status
-        execution = data.get("execution", data)
+    def _render_execution(self, execution: dict) -> None:
+        """Render execution status and steps."""
         status = execution.get("status", "?")
         exec_id = execution.get("execution_id", self._exec_id or "?")
         progress = execution.get("progress", 0.0)
-
         lines = [f"[bold]Execution: {exec_id}[/bold]"]
         lines.append(f"  Status: {status}  Progress: {progress:.0%}")
+        self._add_time_lines(execution, lines)
+        self._add_error_line(execution, lines)
+        self._add_steps_line(execution, lines)
+        self._render_logs(execution, lines)
+        self._content.update("\n".join(lines))
 
-        submitted = execution.get("submitted_at")
-        if submitted:
-            lines.append(f"  Submitted: {submitted[:19]}")
-        started = execution.get("started_at")
-        if started:
-            lines.append(f"  Started: {started[:19]}")
-        finished = execution.get("finished_at")
-        if finished:
-            lines.append(f"  Finished: {finished[:19]}")
+    def _add_time_lines(self, execution: dict, lines: list[str]) -> None:
+        """Add submitted/started/finished times."""
+        for key, label in [("submitted_at", "Submitted"), ("started_at", "Started"), ("finished_at", "Finished")]:
+            val = execution.get(key)
+            if val:
+                lines.append(f"  {label}: {val[:19]}")
 
+    def _add_error_line(self, execution: dict, lines: list[str]) -> None:
+        """Add error line if present."""
         error = execution.get("error")
         if error:
             lines.append(f"\n  [red]Error:[/red] {error}")
 
+    def _add_steps_line(self, execution: dict, lines: list[str]) -> None:
+        """Add steps section."""
         steps = execution.get("steps", [])
         if steps:
             lines.append(f"\n[bold]Steps ({len(steps)}):[/bold]")
@@ -86,12 +91,13 @@ class WorkflowLogsPane(Static):
                 marker = "✓" if st == "succeeded" else "✗" if st == "failed" else "→"
                 lines.append(f"  {marker} {name}: {st} {prog:.0%}")
 
-        # Render logs
-        logs = data.get("logs", [])
+    def _render_logs(self, execution: dict, lines: list[str]) -> None:
+        """Render logs section."""
+        logs = execution.get("logs", [])
         if logs:
             lines.append(f"\n[bold]Logs ({len(logs)}):[/bold]")
             for log in logs[-200:]:  # Last 200 lines
-                ts = log.get("timestamp", "")[:19]
+                ts = (log.get("timestamp") or "")[:19]
                 level = log.get("level", "INFO")
                 src = log.get("source", "")
                 msg = log.get("message", "")
@@ -100,7 +106,11 @@ class WorkflowLogsPane(Static):
                     color = "[red]"
                 elif level == "WARN":
                     color = "[yellow]"
-                lines.append(f"{color}[{ts}] {level} [{src}] {msg}[/]" if color else f"[{ts}] {level} [{src}] {msg}")
+                lines.append(
+                    f"{color}[{ts}] {level} [{src}] {msg}[/]"
+                    if color
+                    else f"[{ts}] {level} [{src}] {msg}"
+                )
 
         self._content.update("\n".join(lines))
 
@@ -108,4 +118,6 @@ class WorkflowLogsPane(Static):
         if self._exec_id:
             self._header.update(f"  Execution: {self._exec_id}  |  r=Refresh  q=Back")
         else:
-            self._header.update("  No execution selected — select a workflow to stream logs")
+            self._header.update(
+                "  No execution selected — select a workflow to stream logs"
+            )

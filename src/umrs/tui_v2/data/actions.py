@@ -7,11 +7,10 @@ and error handling.
 
 from __future__ import annotations
 
-import asyncio
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable
+from typing import Any
 
 from umrs.client.control_api import UMRSControlAPI
 
@@ -27,6 +26,7 @@ class ActionStatus(Enum):
 @dataclass
 class ActionResult:
     """Result of a mutating action."""
+
     status: ActionStatus
     message: str = ""
     data: dict[str, Any] = field(default_factory=dict)
@@ -63,7 +63,9 @@ class ActionExecutor:
         params: dict[str, Any] | None = None,
     ) -> ActionResult:
         """Trigger a workflow execution."""
-        result = ActionResult(status=ActionStatus.RUNNING, message=f"Running {workflow_name}")
+        result = ActionResult(
+            status=ActionStatus.RUNNING, message=f"Running {workflow_name}"
+        )
         self._results.append(result)
         try:
             parsed = self._api.run_workflow(
@@ -89,7 +91,9 @@ class ActionExecutor:
 
     async def cancel_workflow(self, execution_id: str) -> ActionResult:
         """Cancel a running workflow execution."""
-        result = ActionResult(status=ActionStatus.RUNNING, message=f"Cancelling {execution_id}")
+        result = ActionResult(
+            status=ActionStatus.RUNNING, message=f"Cancelling {execution_id}"
+        )
         self._results.append(result)
         try:
             parsed = self._api.workflow_cancel(execution_id)
@@ -109,7 +113,9 @@ class ActionExecutor:
 
     async def run_endpoint(self, model: str, **kwargs) -> ActionResult:
         """Provision a new endpoint."""
-        result = ActionResult(status=ActionStatus.RUNNING, message=f"Provisioning {model}")
+        result = ActionResult(
+            status=ActionStatus.RUNNING, message=f"Provisioning {model}"
+        )
         self._results.append(result)
         try:
             parsed = self._api.endpoint_up(model=model, **kwargs)
@@ -160,7 +166,9 @@ class ActionExecutor:
         node: str | None = None,
     ) -> ActionResult:
         """Submit a new durable job."""
-        result = ActionResult(status=ActionStatus.RUNNING, message=f"Submitting {job_type}")
+        result = ActionResult(
+            status=ActionStatus.RUNNING, message=f"Submitting {job_type}"
+        )
         self._results.append(result)
         try:
             parsed = self._api.submit_job(
@@ -190,7 +198,9 @@ class ActionExecutor:
 
     async def cancel_job(self, job_id: str) -> ActionResult:
         """Cancel a running job."""
-        result = ActionResult(status=ActionStatus.RUNNING, message=f"Cancelling {job_id}")
+        result = ActionResult(
+            status=ActionStatus.RUNNING, message=f"Cancelling {job_id}"
+        )
         self._results.append(result)
         try:
             parsed = self._api.cancel_job(job_id)
@@ -222,10 +232,6 @@ class ActionExecutor:
         self._results.append(result)
         try:
             # This uses the data transfer path through ZMQ
-            from umrs.shared.connection_profiles import resolve_connection
-            from umrs.core.MessageQueue import MessageQueue as MessageQueueCls
-            from umrs.shared.s3 import s3_store_text_file
-            import os
 
             # For now, best-effort upload via S3 directly
             # Full upload requires user config + bucket resolution

@@ -7,8 +7,6 @@ from typing import Any
 from textual import on
 from textual.widgets import DataTable, Static
 
-from ..widgets.status_badge import status_style
-
 
 class JobsPane(Static):
     """Jobs tab pane v2."""
@@ -36,7 +34,9 @@ class JobsPane(Static):
         self._summary_widget = Static("", classes="summary")
         self._table = DataTable(id="jobs-table", cursor_type="row")
         self._detail = Static("", classes="detail")
-        self._actions_bar = Static("  Actions: Enter=Detail  x=Cancel  j=Jump to Submit", classes="actions")
+        self._actions_bar = Static(
+            "  Actions: Enter=Detail  x=Cancel  j=Jump to Submit", classes="actions"
+        )
 
     def compose(self):
         yield self._summary_widget
@@ -96,7 +96,9 @@ class JobsPane(Static):
         if not self._selected_job_id:
             self._detail.update("")
             return
-        job = next((j for j in self._jobs if j.get("job_id") == self._selected_job_id), None)
+        job = next(
+            (j for j in self._jobs if j.get("job_id") == self._selected_job_id), None
+        )
         if not job:
             self._detail.update("")
             return
@@ -110,7 +112,7 @@ class JobsPane(Static):
             lines.append(f"\nAttempts ({len(attempts)}):")
             for i, a in enumerate(attempts):
                 st = a.get("status", "?")
-                lines.append(f"  {i+1}. [{st}] {a.get('started_at', '?')[:19]}")
+                lines.append(f"  {i + 1}. [{st}] {(a.get('started_at') or '?')[:19]}")
         self._detail.update("\n".join(lines))
 
     @on(DataTable.RowSelected)

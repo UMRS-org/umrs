@@ -113,24 +113,11 @@ endpoints:
       #     package is present in docker.io/vllm/vllm-openai:latest (aarch64);
       #     could crash at startup. Untested — do not add without isolated
       #     testing first.
-      # REMOVED --enable-prefix-caching (2026-07-20): vLLM logs this at startup
-      # for this model — "Prefix caching in Mamba cache 'align' mode is
-      # currently enabled. Its support for Mamba layers is experimental."
-      # Qwen3.6-35B-A3B-NVFP4 uses hybrid GDN/Mamba-style linear-attention
-      # layers (qwen_gdn_linear_attn), so this is not a generic warning — it
-      # applies directly to this checkpoint. Correlated with a much faster
-      # VLLM::EngineCore busy-loop wedge recurrence: job 214384 wedged (GPU
-      # 96% util, zero generation_tokens_total progress, Rl-state EngineCore)
-      # within ~46 minutes of a clean launch, vs. ~4.6 hours before prefix
-      # caching was added (2026-07-18 incident, see
-      # memories/repo/qwen-vllm-wedged-enginecore-2026-07-18.md). Keeping
-      # kv-cache-dtype/attention-backend/max-num-batched-tokens — no
-      # experimental-support warnings logged for those, and they showed a
-      # verified throughput gain without a correlated stability regression.
       VLLM_EXTRA_ARGS: >-
         --kv-cache-dtype fp8
         --attention-backend flashinfer
         --max-num-batched-tokens 8192
+        --enable-prefix-caching
       # The ng-dgx-m0 partition default image (site.yaml vllm_docker_tag:
       # cu130-nightly-aarch64) is a FROZEN vLLM 0.19.2 nightly that lacks the
       # ModelOpt NVFP4 MoE quant method — the experts fall to the Unquantized

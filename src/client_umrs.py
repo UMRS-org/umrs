@@ -4460,6 +4460,59 @@ def _action_monitor(ctx):
     return 0
 
 
+def _action_monitor_v2(ctx):
+    """Launch the interactive TUI monitor v2 with action capabilities."""
+    args = ctx.args
+    client_id = _resolve_control_client_id(ctx.user)
+    try:
+        from umrs.tui_v2.dashboard import DashboardV2
+    except ImportError as exc:
+        if ctx.control_mq is not None:
+            ctx.control_mq.close()
+        print(
+            f"The monitor v2 TUI requires the 'textual' library.\n"
+            f"Install it with: pip install 'textual>=0.40'\n"
+            f"Error: {exc}"
+        )
+        return 1
+    try:
+        conn_info = ctx.connection.to_dict() if ctx.connection else {}
+    except Exception:
+        conn_info = {}
+    capabilities = _build_monitor_capabilities(
+        client_id,
+        admin_token=ctx.admin_token,
+        user_cfg=ctx.user if isinstance(ctx.user, dict) else None,
+    )
+    try:
+        dash = DashboardV2(
+            control_mq=ctx.control_mq,
+            client_id=client_id,
+            interval=args.interval,
+            status_filter=args.status,
+            project_filter=args.project,
+            initial_tab=args.tab,
+            job_type_filter=None,
+            config_path=ctx.configure_file
+            if ctx.configure_file and ctx.config_state.user.valid
+            else None,
+            user_cfg=ctx.user if isinstance(ctx.user, dict) else None,
+            connection_info=conn_info,
+            capabilities=capabilities,
+            workflow_id=getattr(args, "workflow_id", None),
+        )
+        if getattr(args, "once", False):
+            dash.render_once()
+        else:
+            dash.run()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        if ctx.control_mq is not None:
+            ctx.control_mq.close()
+    return 0
+
+
 def _action_workflow(ctx):
     """Unified dispatch for ``umrs-client workflow <action>``.
 
@@ -6685,6 +6738,7 @@ _ACTION_HANDLERS = {
     "job": _action_job,
     "endpoint": _action_endpoint,
     "monitor": _action_monitor,
+    "monitor-v2": _action_monitor_v2,
     "workflow": _action_workflow,
     # New umbrella handlers
     "bucket": _action_bucket,
@@ -7487,6 +7541,53 @@ def main():
         help="Tab to display on startup (default: jobs)",
     )
     mon_p.add_argument(
+        "--workflow-id",
+        default=None,
+        help="Workflow execution ID to stream logs for (Workflow Logs tab)",
+    )
+
+    # --- Monitor v2 (TUI dashboard with actions) ---
+    mon2_p = subparsers.add_parser(
+        "monitor-v2", help="Interactive multi-tab monitor with inline actions (TUI v2)"
+    )
+    mon2_p.add_argument(
+        "--interval", type=float, default=3.0, help="Refresh interval in seconds"
+    )
+    mon2_p.add_argument(
+        "--status",
+        default=None,
+        choices=["running", "queued", "planned", "completed", "failed", "cancelled"],
+        help="Initial status filter (Jobs tab)",
+    )
+    mon2_p.add_argument(
+        "--project", default=None, help="Filter by project ID (Jobs tab)"
+    )
+    mon2_p.add_argument(
+        "--once",
+        action="store_true",
+        default=False,
+        help="Print dashboard once and exit (no live refresh)",
+    )
+    mon2_p.add_argument(
+        "--tab",
+        default="jobs",
+        choices=[
+            "jobs",
+            "endpoints",
+            "status",
+            "models",
+            "workflows",
+            "connection",
+            "logs",
+            "errors",
+            "workflow_logs",
+            "data_transfer",
+            "jobs_submit",
+            "config_editor",
+        ],
+        help="Tab to display on startup (default: jobs)",
+    )
+    mon2_p.add_argument(
         "--workflow-id",
         default=None,
         help="Workflow execution ID to stream logs for (Workflow Logs tab)",

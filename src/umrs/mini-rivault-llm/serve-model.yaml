@@ -189,7 +189,10 @@ services:
     # VLLM_DOCKER_IMAGE lets a partition profile override the full image
     # (repo + tag), e.g. ROCm nodes set docker.io/vllm/vllm-openai-rocm:latest.
     # When unset, fall back to the CUDA image parameterised by VLLM_DOCKER_TAG.
-    image: ${VLLM_DOCKER_IMAGE:-docker.io/vllm/vllm-openai:${VLLM_DOCKER_TAG:-v0.20.0}}
+    # NOTE: VLLM_DOCKER_IMAGE must be computed in the wrapper env file
+    # (serve-model.slurm) because podman-compose dotenv parser cannot handle
+    # nested default substitution like ${X:-${Y:-z}}.
+    image: ${VLLM_DOCKER_IMAGE:-docker.io/vllm/vllm-openai:v0.20.0}
     networks:
       genai-private-net:
         ipv4_address: ${PRIV_IP1TO3:-10.0.0}.${VLLM_IP4:-22}
@@ -237,11 +240,11 @@ services:
       - "-c"
       - |
         set -eu
-        # Task 4: assert-offline.sh — fail fast if offline invariants violated.
-        # Runs inside the vLLM container; TRANSFORMERS_OFFLINE / HF_HUB_OFFLINE
-        # are set in the environment block below. Use $$ so compose does not
-        # interpolate these at parse time — the runtime shell reads the real
-        # container env. POSIX sh has no indirect expansion, so check directly.
+        # On GB10 DGX-Spark (RCCS_SKIP_CDI=1) the nvidia CDI hook is skipped so
+        # ldconfig is stale/missing inside the container.  The bind-mounted
+        # libcuda.so.1 + LD_LIBRARY_PATH (see environment block) makes the
+        # dynamic linker and Triton find the GPU without needing an ldconfig
+        # run inside the container.
         # NOTE: entrypoint is /bin/sh (dash/busybox) — do NOT use `pipefail`.
         if [ "$${TRANSFORMERS_OFFLINE:-0}" != "1" ]; then
           echo "FAIL: TRANSFORMERS_OFFLINE=$${TRANSFORMERS_OFFLINE:-not set} (expected 1)"; exit 1
@@ -266,12 +269,13 @@ services:
       #VLLM_USE_FLASHINFER_MXFP4_MOE: 1
       ##VLLM_ATTENTION_BACKEND: "TRITON_ATTN_VLLM_V1"
       TIKTOKEN_RS_CACHE_DIR: ${VLLM_MODEL_TIKTOKEN:-""}
-      # Triton locates libcuda.so.1 via `ldconfig -p`. On nodes that skip the
-      # nvidia CDI hook (RCCS_SKIP_CDI=1 on GB10 DGX-Spark) the driver libs are
-      # bind-mounted (see volumes above) but the container ld.so.cache is never
-      # refreshed, so ldconfig can't see libcuda → "libcuda.so cannot found!" →
-      # model-arch inspection crashes and vLLM exits(1). Point Triton straight
-      # at the bind-mounted lib dir so it skips the ldconfig lookup entirely.
+      # On GB10 DGX-Spark (RCCS_SKIP_CDI=1) the nvidia CDI hook is skipped so
+      # the container ld.so.cache is stale and Triton cannot find libcuda.
+      # Bind-mount individual libs above; add LD_LIBRARY_PATH so the dynamic
+      # linker (and Triton's fallback os.path.search) can locate them even
+      # without an ldconfig run inside the container.
+      LD_LIBRARY_PATH: ${VLLM_LD_LIBRARY_PATH:-/usr/lib/aarch64-linux-gnu}
+      # Also point Triton at the bind-mounted lib dir.
       TRITON_LIBCUDA_PATH: ${VLLM_TRITON_LIBCUDA_PATH:-/usr/lib/aarch64-linux-gnu}
       TRANSFORMERS_OFFLINE: 1
       HF_HUB_OFFLINE: 1
