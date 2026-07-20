@@ -51,7 +51,7 @@ class Doctor:
         report.checks.extend(self._check_demos())
         return report
     def _check_server(self) -> List[CheckResult]:
-        r = self._run(self.ctx.executable or "umrs-client", "--output", "json", "ping")
+        r = self._run(self.ctx.executable or "umrs", "--output", "json", "ping")
         if r.returncode == 0:
             try:
                 if json.loads(r.stdout).get("status") == "ok":
@@ -67,7 +67,7 @@ class Doctor:
                 return [CheckResult(name="Authentication", status="ok", message=f"Profile {profile} configured")]
         return [CheckResult(name="Authentication", status="warning", message="No profile configured", suggestion="Run: r4 auth login")]
     def _check_storage(self) -> List[CheckResult]:
-        r = self._run(self.ctx.executable or "umrs-client", "--output", "json", "bucket", "list")
+        r = self._run(self.ctx.executable or "umrs", "--output", "json", "bucket", "list")
         if r.returncode == 0:
             try:
                 # Extract JSON from mixed output (server status line + JSON)
@@ -77,12 +77,12 @@ class Doctor:
                     buckets = data.get("buckets", [])
                     if buckets:
                         return [CheckResult(name="Storage", status="ok", message=f"Connected, {len(buckets)} buckets")]
-                    return [CheckResult(name="Storage", status="warning", message="No buckets", suggestion="Run: umrs-client reload")]
+                    return [CheckResult(name="Storage", status="warning", message="No buckets", suggestion="Run: umrs reload")]
             except json.JSONDecodeError:
                 return [CheckResult(name="Storage", status="ok", message="S3 connectivity confirmed")]
         return [CheckResult(name="Storage", status="error", message="S3 connection failed", suggestion="Check s3cfg file")]
     def _check_models(self) -> List[CheckResult]:
-        r = self._run(self.ctx.executable or "umrs-client", "--output", "json", "model", "list", "--scope", "system")
+        r = self._run(self.ctx.executable or "umrs", "--output", "json", "model", "list", "--scope", "system")
         if r.returncode == 0:
             try:
                 line = next((l for l in r.stdout.split("\n") if l.strip().startswith("{")), "")
@@ -100,12 +100,12 @@ class Doctor:
             return [CheckResult(name="RAG", status="warning", message="No pipelines", suggestion="Run: r4 rag ingest create --project default")]
         return [CheckResult(name="RAG", status="ok", message="RAG service available")]
     def _check_workflows(self) -> List[CheckResult]:
-        r = self._run(self.ctx.executable or "umrs-client", "--output", "json", "workflow", "list")
+        r = self._run(self.ctx.executable or "umrs", "--output", "json", "workflow", "list")
         if r.returncode == 0:
             return [CheckResult(name="Workflows", status="ok", message="Workflow system operational")]
         return [CheckResult(name="Workflows", status="warning", message="Workflow check failed")]
     def _check_jobs(self) -> List[CheckResult]:
-        r = self._run(self.ctx.executable or "umrs-client", "--output", "json", "status", "all")
+        r = self._run(self.ctx.executable or "umrs", "--output", "json", "status", "all")
         if r.returncode == 0:
             return [CheckResult(name="Jobs", status="ok", message="Job system responsive")]
         return [CheckResult(name="Jobs", status="warning", message="Job check returned non-zero")]
@@ -113,7 +113,7 @@ class Doctor:
         demo_dir = Path(__file__).parent.parent.parent.parent / "demos"
         if not demo_dir.exists():
             return [CheckResult(name="Demos", status="missing", message="Demo directory not found")]
-        r = self._run(self.ctx.executable or "umrs-client", "--output", "json", "bucket", "list")
+        r = self._run(self.ctx.executable or "umrs", "--output", "json", "bucket", "list")
         has_buckets = r.returncode == 0 and "buckets" in r.stdout
         total = len([d for d in demo_dir.iterdir() if d.is_dir()])
         ready = total if has_buckets else 0

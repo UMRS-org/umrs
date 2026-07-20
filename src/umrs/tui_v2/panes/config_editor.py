@@ -85,12 +85,12 @@ class ConfigEditorPane(Static):
             "  • Check — check S3/DB consistency",
             "",
             "[bold]Experiences[/bold]",
-            "  Add/remove via: umrs-client experience add/remove",
+            "  Add/remove via: umrs experience add/remove",
             "  Or edit the config JSON file directly",
             "",
             "[bold]Connection Profiles[/bold]",
-            "  Switch with: umrs-client profile use <name>",
-            "  List with: umrs-client profile list",
+            "  Switch with: umrs profile use <name>",
+            "  List with: umrs profile list",
         ]
         self._content.update("\n".join(lines))
 

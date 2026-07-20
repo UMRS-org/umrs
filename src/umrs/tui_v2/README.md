@@ -6,7 +6,7 @@ HMAE meeting demo and everyday operations.
 ## Launch
 
 ```bash
-umrs-client monitor-v2 [--profile PROFILE] [--conf CONFIG_PATH]
+umrs monitor-v2 [--profile PROFILE] [--conf CONFIG_PATH]
 ```
 
 ## Screens

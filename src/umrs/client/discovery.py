@@ -131,7 +131,7 @@ class EnvironmentDiscoverer:
         Initialize the discoverer with the UMRS client context.
 
         Args:
-            ctx: The UMRS client context (from ctx in umrs-client commands)
+            ctx: The UMRS client context (from ctx in umrs commands)
         """
         self.ctx = ctx
 
@@ -272,7 +272,7 @@ class EnvironmentDiscoverer:
             import subprocess
             result = subprocess.run(
                 [
-                    self.ctx.executable or "umrs-client",
+                    self.ctx.executable or "umrs",
                     "ping",
                     "--output", "json",
                 ],
@@ -372,7 +372,7 @@ class EnvironmentDiscoverer:
             import subprocess
             result = subprocess.run(
                 [
-                    self.ctx.executable or "umrs-client",
+                    self.ctx.executable or "umrs",
                     "model", "list",
                     "--scope", "system",
                     "--output", "json",
@@ -405,7 +405,7 @@ class EnvironmentDiscoverer:
             import subprocess
             result = subprocess.run(
                 [
-                    self.ctx.executable or "umrs-client",
+                    self.ctx.executable or "umrs",
                     "model", "list",
                     "--scope", "user",
                     "--output", "json",
@@ -585,11 +585,11 @@ class EnvironmentHealer:
             True if the alias was created successfully
         """
         try:
-            # Call umrs-client reload to apply changes
+            # Call umrs reload to apply changes
             import subprocess
             result = subprocess.run(
                 [
-                    self.ctx.executable or "umrs-client",
+                    self.ctx.executable or "umrs",
                     "reload",
                     "--output", "json",
                 ],
@@ -644,7 +644,7 @@ class EnvironmentHealer:
             import subprocess
             result = subprocess.run(
                 [
-                    self.ctx.executable or "umrs-client",
+                    self.ctx.executable or "umrs",
                     "reload",
                     "--output", "json",
                 ],
@@ -695,7 +695,7 @@ class EnvironmentHealer:
 
             result = subprocess.run(
                 [
-                    self.ctx.executable or "umrs-client",
+                    self.ctx.executable or "umrs",
                     "experience", "add",
                     str(experience_file),
                     "--update",
