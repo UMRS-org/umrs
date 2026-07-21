@@ -222,7 +222,7 @@ cat > my_experience.json << 'EOF'
       "modality_name": "text",
       "task": "embedding",
       "s3": {
-        "bucket_alias": "my-text",
+        "bucket_alias": "demo-example-text",
         "need_output_bucket": true,
         "data": {"type": "file", "mime_type": "text/plain"}
       },
@@ -244,6 +244,9 @@ EOF
 
 # Add the experience to your user config
 umrs experience add my_experience.json --update
+
+# Reload the server to pick up the new experience
+umrs reload
 ```
 
 **Expected output:**
@@ -272,9 +275,10 @@ umrs experience list
 
     Name                    Modality    Bucket Alias    Task
     ----                    --------    ------------    ----
-    Text Embedding          text        user1-text      embedding
-    SAM3 Segmentation       image       user1-sam3      segmentation
-    My Text Experience      text        my-text         embedding
+    Text Embedding          text        demo-texts      embedding
+    SAM3 Segmentation       image       demo-sam3       segmentation
+    My Text Experience      text        demo-example-text  embedding
+```
 ```
 
 ---
