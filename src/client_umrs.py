@@ -6020,30 +6020,17 @@ def _action_s3_transfer(ctx):
         selected_fields.append("path_to_bucket")
     _bucket_result = ctx.buckets_cfg.get(bucket_alias, filter=selected_fields)
     if _bucket_result is None:
-        # Try smart fallback: auto-discover suitable bucket
-        fallback_alias = None
-        try:
-            # Try to iterate available aliases
-            avail = list(ctx.buckets_cfg.keys()) if hasattr(ctx.buckets_cfg, 'keys') else []
-            if avail:
-                fallback_alias = avail[0]  # First available as fallback
-        except Exception:
-            pass
-        if fallback_alias:
-            bucket_alias = fallback_alias
-            _bucket_result = ctx.buckets_cfg.get(bucket_alias, filter=selected_fields)
-        if _bucket_result is None:
-            available = list(ctx.buckets_cfg.keys())
-            if available:
-                raise ValueError(
-                    f"Bucket alias '{bucket_alias}' not found in configuration. "
-                    f"Available aliases: {', '.join(sorted(available))}"
-                )
+        available = list(ctx.buckets_cfg.keys())
+        if available:
             raise ValueError(
                 f"Bucket alias '{bucket_alias}' not found in configuration. "
-                f"No bucket aliases are configured. Check your config file or "
-                f"add an experience with `umrs experience add <file>`."
+                f"Available aliases: {', '.join(sorted(available))}"
             )
+        raise ValueError(
+            f"Bucket alias '{bucket_alias}' not found in configuration. "
+            f"No bucket aliases are configured. Check your config file or "
+            f"add an experience with `umrs experience add <file>`."
+        )
     username, xp_name, modality, s3_configuration_file, metadata, path_to_bucket = (
         _bucket_result
     )
