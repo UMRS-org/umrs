@@ -6022,15 +6022,24 @@ def _action_s3_transfer(ctx):
     if _bucket_result is None:
         available = list(ctx.buckets_cfg.keys())
         if available:
-            raise ValueError(
+            message = (
                 f"Bucket alias '{bucket_alias}' not found in configuration. "
-                f"Available aliases: {', '.join(sorted(available))}"
+                f"Available aliases: {', '.join(sorted(available))}. "
+                f"To register a new bucket, add its experience and reload:\n"
+                f"  umrs experience add <experience.json>\n"
+                f"  umrs reload"
             )
-        raise ValueError(
-            f"Bucket alias '{bucket_alias}' not found in configuration. "
-            f"No bucket aliases are configured. Check your config file or "
-            f"add an experience with `umrs experience add <file>`."
-        )
+        else:
+            message = (
+                f"Bucket alias '{bucket_alias}' not found in configuration. "
+                f"No bucket aliases are configured. "
+                f"Add an experience and reload to register its bucket:\n"
+                f"  umrs experience add <experience.json>\n"
+                f"  umrs reload"
+            )
+        print(api_json(status="error", message=message, output_format=args.output))
+        ctx.control_mq.close()
+        return 1
     username, xp_name, modality, s3_configuration_file, metadata, path_to_bucket = (
         _bucket_result
     )
