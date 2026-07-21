@@ -5,6 +5,10 @@
     {
       "modality": "image",
       "task": "reconstruction",
+      "slurm": {
+        "partition": "ng-dgx-m3",
+        "reservation": "nagaso_m3-15_0721"
+      },
       "s3": {
         "bucket_alias": "demo-hmae",
         "need_output_bucket": true,
@@ -27,6 +31,10 @@
     {
       "modality": "image",
       "task": "mae_reconstruction",
+      "slurm": {
+        "partition": "ng-dgx-m3",
+        "reservation": "nagaso_m3-15_0721"
+      },
       "s3": {
         "bucket_alias": "demo-hmae-mae",
         "need_output_bucket": true,
@@ -49,6 +57,10 @@
     {
       "modality": "image",
       "task": "feature_extraction",
+      "slurm": {
+        "partition": "ng-dgx-m3",
+        "reservation": "nagaso_m3-15_0721"
+      },
       "s3": {
         "bucket_alias": "demo-hmae-features",
         "need_output_bucket": true,

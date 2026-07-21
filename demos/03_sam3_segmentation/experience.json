@@ -4,6 +4,10 @@
   "modalities": [
     {
       "modality_name": "segmentation",
+      "slurm": {
+        "partition": "ng-dgx-m3",
+        "reservation": "nagaso_m3-15_0721"
+      },
       "s3": {
         "bucket_alias": "demo-sam3",
         "need_output_bucket": true,
