@@ -77,7 +77,7 @@ def test_format_status_text_explains_missing_reload_status():
 
     assert "Reload is synchronous" in rendered
     assert "status all" in rendered
-    assert "list_buckets" in rendered
+    assert "bucket list" in rendered
 
 
 def test_fmt_cell_pads_before_applying_style(monkeypatch):
