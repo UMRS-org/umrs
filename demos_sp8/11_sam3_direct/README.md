@@ -63,7 +63,7 @@ cat experience.json
 Merge it into your active user config:
 
 ```bash
-umrs config experience add experience.json
+umrs experience add experience.json
 ```
 
 This adds (or replaces) the `"Jens SAM3 Direct"` experience in your user config
