@@ -525,6 +525,9 @@ def get_slurm_node(
         _gpus = getattr(_site.scheduler, "gpus", 0)
         if _gpus:
             sbatch_extra_args.append(f"--gres=gpu:{_gpus}")
+        # Site-level extra sbatch flags (e.g. --reservation=..., --nodelist=...),
+        # matching the async orchestrator backends.
+        sbatch_extra_args.extend(getattr(_site.scheduler, "extra_sbatch", []) or [])
     except Exception:
         pass  # site config unavailable — let #SBATCH directives or Slurm default decide
 
@@ -633,6 +636,9 @@ def _remote_sbatch_args(site, sbatch_env):
         args.append(f"--account={scheduler.account}")
     if getattr(scheduler, "qos", ""):
         args.append(f"--qos={scheduler.qos}")
+    # Site-level extra sbatch flags (e.g. --reservation=..., --nodelist=...),
+    # matching the async orchestrator backends.
+    args.extend(getattr(scheduler, "extra_sbatch", []) or [])
 
     env_overrides = dict(sbatch_env or {})
     wrapper_script = _remote_wrapper_script(site)
