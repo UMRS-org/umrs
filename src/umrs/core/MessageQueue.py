@@ -596,8 +596,13 @@ class MessageQueue:
             with contextlib.suppress(RuntimeError):
                 self.send_string(f"NO_DATA_PORT_AVAILABLE:{port_range.label}", zmq_sender_id)
             return None
+        # Advertise a client-reachable host, never the bind address.
+        # UMRS_SERVER_HOST is typically "0.0.0.0" inside containers, which is
+        # meaningless to a remote client (it would connect to its own
+        # localhost and every data message would be silently dropped).
+        advertise_host = os.environ.get("UMRS_ADVERTISE_HOST") or self.server_ip
         with contextlib.suppress(RuntimeError):
-            self.send_string(f"tcp://{self.server_ip}:{port}", zmq_sender_id)
+            self.send_string(f"tcp://{advertise_host}:{port}", zmq_sender_id)
         return None
 
     def _parse_status(self, splited_msg, zmq_sender_id):
@@ -1014,6 +1019,20 @@ class MessageQueue:
             # Split IP and port
             server_ip, port_str = endpoint.split(":")
             port = int(port_str)
+
+            # Servers that bind to a wildcard address may advertise it
+            # verbatim (e.g. "tcp://0.0.0.0:50091"). Connecting a PUSH
+            # socket there would target the client's own localhost and
+            # silently drop every S3 event message. Fall back to the
+            # control channel's host, which is known to be reachable.
+            if server_ip in ("0.0.0.0", "::", ""):
+                logger.warning(
+                    "Server advertised non-routable data endpoint %s; "
+                    "falling back to control host %s",
+                    reply,
+                    self.server_ip,
+                )
+                server_ip = self.server_ip
 
             # Create MessageQueue with parsed IP and port
             data_mq = MessageQueue(
