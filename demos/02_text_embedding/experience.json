@@ -22,7 +22,7 @@
           { "name": "keywords", "type": "TEXT" }
         ]
       },
-      "auto_compute": false,
+      "auto_compute": true,
       "keep_endpoint": true
     },
     {
