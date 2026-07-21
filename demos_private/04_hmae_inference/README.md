@@ -56,12 +56,21 @@ umrs model upload /path/to/hmae_checkpoint_dir \
   --register-path /path/to/site-user-model-root/hmae-pretrained \
   --force
 
-# 3. Upload volume slice images to the HMAE bucket
+# 3. Register the HMAE experience (creates the demo-hmae* buckets/tables)
+umrs experience add experience.json
+
+# 4. Reload the server config so the new buckets are provisioned
+umrs reload
+
+# 5. Confirm the buckets exist before uploading
+umrs bucket list
+
+# 6. Upload volume slice images to the HMAE bucket
 #    The server will automatically dispatch images to the BentoML
 #    vision service running HMAE on GPU via Slurm.
 umrs data dir-upload ../../demos/03_sam3_segmentation/test_data_full demo-hmae
 
-# 4. Download reconstruction results
+# 7. Download reconstruction results
 #    Waits for server-side HMAE processing and retrieves output
 #    files (reconstructed images, metadata) to the local results/ directory.
 umrs data download demo-hmae ./results --force-overwrite
