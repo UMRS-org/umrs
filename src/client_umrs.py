@@ -1111,7 +1111,7 @@ def _handle_config_add_experience(ctx, args):
     return 0
 
 
-def _handle_config_remove_experience(args):
+def _handle_config_remove_experience(ctx, args):
     """Remove experience(s) by xp_name from the current user config JSON."""
     import json as _json_mod
 
