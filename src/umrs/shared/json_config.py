@@ -49,6 +49,19 @@ client_schema = {
                                     "type": "boolean",
                                     "default": False,
                                 },
+                                "slurm": {
+                                    "type": "object",
+                                    "properties": {
+                                        "partition": {"type": "string"},
+                                        "reservation": {"type": "string"},
+                                        "nodelist": {"type": "string"},
+                                        "extra_sbatch": {
+                                            "type": "array",
+                                            "items": {"type": "string"},
+                                        },
+                                    },
+                                    "additionalProperties": False,
+                                },
                                 "s3": {
                                     "type": "object",
                                     "required": ["bucket_alias", "data"],
