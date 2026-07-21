@@ -126,7 +126,29 @@ Removing an experience does **not** delete MinIO buckets or pgvector data.
 Reload simply drops the experience from the active in-memory registry. If the
 same experience is re-added later, existing buckets and database tables can be
 reused. Use explicit purge tooling only when the data should be destroyed.
+## Bucket Alias Naming Convention
 
+All `experience.json` files use bucket aliases following the pattern:
+
+```
+demo-<feature>
+```
+
+| Experience | Bucket Alias(s) |
+|------------|----------------|
+| Text Embedding (02) | `demo-texts`, `demo-textfiles` |
+| SAM3 Segmentation (03) | `demo-sam3` |
+| Vision Inference (04) | `demo-images` |
+| Vision Pipeline (09) | `demo-pipeline` |
+| Vision Multi Mode (10) | `demo-vision-multi` |
+| Video Analysis (14) | `demo-video` |
+| Custom Workflow (16) | `demo-custom-text` |
+
+RAG demos (05, 19) operate on `demo-textfiles` (the text-file modality from
+Demo 02) and do not declare their own bucket alias in an experience fragment.
+
+Use descriptive, lowercase, hyphen-separated names. Avoid generic aliases like
+`my-bucket` or `user1-textfiles` — they obscure ownership and make cleanup harder.
 ## Basic Usage
 
 Core data flow: upload data → compute embeddings → search/export.

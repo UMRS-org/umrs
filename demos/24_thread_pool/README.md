@@ -43,10 +43,10 @@ umrs --output json status all
 
 # 2. Optionally submit a lightweight text-file upload and re-query.
 #    Use a text-file bucket alias that exists in your user config.
-#    On the current rccs-cloud profile this is `user1-textfiles`.
+#    On the current rccs-cloud profile this is `demo-textfiles`.
 TMPFILE=$(mktemp)
 echo "Pool demo $(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$TMPFILE"
-umrs data upload "$TMPFILE" user1-textfiles
+umrs data upload "$TMPFILE" demo-textfiles
 umrs --output json status all
 rm -f "$TMPFILE"
 ```

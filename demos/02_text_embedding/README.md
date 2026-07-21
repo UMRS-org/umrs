@@ -120,7 +120,7 @@ Sample text files live in `../sample_data/texts/`:
 ## Configuration
 
 The demo script assumes a configured UMRS client and uses:
-- Bucket alias: `user1-textfiles`
+- Bucket alias: `demo-textfiles`
 - Model: `intfloat/e5-base-v2` (768-d embeddings via vLLM in Mini-Rivault)
 - Modality: `text`
 

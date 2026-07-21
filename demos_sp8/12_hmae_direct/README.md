@@ -72,7 +72,7 @@ cat experience.json
 Merge it into your active user config:
 
 ```bash
-umrs config add-experience experience.json --update
+umrs config experience add experience.json
 ```
 
 This adds (or replaces) the `"Jens HMAE Direct"` experience in your user config
@@ -87,7 +87,7 @@ umrs reload
 Then check that provisioning succeeded:
 
 ```bash
-umrs status
+umrs bucket list
 ```
 
 ### 6. Register the model in the model registry (optional)

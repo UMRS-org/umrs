@@ -13,7 +13,7 @@ UMRS demos use three coordinated resources:
 | Layer | User-visible handle | Backing resource |
 |-------|---------------------|------------------|
 | User JSON | `~/.config/umrs/users/<user>.json` | Declares experiences, modalities, bucket aliases, SQL tables, and model settings |
-| MinIO/S3 | bucket alias, for example `jens-sam3-direct` | Physical buckets named from `<user>.<xp_name>.<bucket_alias>` |
+| MinIO/S3 | bucket alias, for example `demo-sam3` | Physical buckets named from `<user>.<xp_name>.<bucket_alias>` |
 | Postgres/pgvector | `sql_username` + `xp_name` | Database named from the experience and SQL user, with one table per modality |
 
 `umrs reload` reads the active user JSON on the server and provisions any
