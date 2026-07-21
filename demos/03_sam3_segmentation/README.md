@@ -78,6 +78,33 @@ umrs data dir-upload ./test_data_full user1-sam3
 umrs data download user1-sam3 ./results --force-overwrite
 ```
 
+## Interactive Gradio UI (optional)
+
+For exploratory, one-image-at-a-time segmentation you can drive the same
+running BentoML vision endpoint from a local Gradio web UI instead of the
+batch `dir-upload` path. This uses the `r4` client (Gateway-mediated), so it
+requires an authenticated `r4` profile in addition to the `umrs` client.
+
+```bash
+# Gradio is an optional dependency of the r4 client
+pip install gradio
+
+# Launch the local UI (blocking). Point it at the SAM3 adapter.
+# --endpoint-id pins a specific warm endpoint (see note below); omit it to
+# let the Gateway pick the model by name.
+r4 vision ui --adapter sam3 --endpoint-id <endpoint-job-id>
+```
+
+Then open http://127.0.0.1:7860, drop an image, and type a text prompt
+(e.g. `defect`) for promptable segmentation. Results are written to project
+S3 storage and the `s3://` object keys are shown in the UI.
+
+> **Keep the endpoint warm.** Interactive use benefits from a persistent
+> backend. Set `"keep_endpoint": true` on the modality in `experience.json`
+> so the mini-rivault/BentoML endpoint is not auto-released between batches
+> (the idle janitor still reaps it once genuinely idle). Otherwise the first
+> UI request pays the endpoint cold-start cost.
+
 ## Configuration
 
 ### Mini-Rivault Profile
