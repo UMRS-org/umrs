@@ -318,6 +318,12 @@ def _configure_modality_bucket(
     )
 
     model_cfg = modality["model"]
+    # Per-modality Slurm placement overrides (partition / reservation /
+    # nodelist / extra_sbatch) ride on the model config so they reach
+    # rivault_launcher without any server-side configuration change.
+    slurm_overrides = modality.get("slurm") or {}
+    if slurm_overrides:
+        model_cfg["slurm"] = dict(slurm_overrides)
     model = load_model(model_cfg, modality_name, task=task)
     try:
         _upload_weights_to_rivault(

@@ -486,12 +486,22 @@ def _ensure_output_dir():
 
 
 def get_slurm_node(
-    slurm_script, model_type_key, job_id_to_use=None, sbatch_env=None, job_metadata=None
+    slurm_script,
+    model_type_key,
+    job_id_to_use=None,
+    sbatch_env=None,
+    job_metadata=None,
+    slurm_overrides=None,
 ):
     site = _get_site_config_if_available()
     if _is_remote_slurm_site(site):
         return get_remote_slurm_node(
-            site, model_type_key, job_id_to_use, sbatch_env, job_metadata
+            site,
+            model_type_key,
+            job_id_to_use,
+            sbatch_env,
+            job_metadata,
+            slurm_overrides=slurm_overrides,
         )
 
     output_file = error_file = None
@@ -509,19 +519,23 @@ def get_slurm_node(
 
     sbatch_extra_args = [f"--output={output_file}", f"--error={error_file}"]
 
+    # Per-request overrides (experience config "slurm" block) take precedence
+    # over site.yaml defaults. Site defaults remain untouched.
+    overrides = dict(slurm_overrides or {})
+    partition = str(overrides.get("partition") or "").strip()
+
     # Inject partition from site config when the Slurm script lacks its own
     # #SBATCH --partition directive (avoids the "No partition specified" error).
     try:
         from umrs.orchestrator.site_config import get_site_config
 
         _site = get_site_config()
-        _partition = getattr(_site.scheduler, "partition", "")
-        if _partition:
-            # Pick the first candidate; full selection logic lives in the
-            # async orchestrator backend — here we just need *any* valid value.
-            _first = _partition.split(",")[0].strip()
-            if _first:
-                sbatch_extra_args.append(f"--partition={_first}")
+        if not partition:
+            _partition = getattr(_site.scheduler, "partition", "")
+            if _partition:
+                # Pick the first candidate; full selection logic lives in the
+                # async orchestrator backend — here we just need *any* valid value.
+                partition = _partition.split(",")[0].strip()
         _gpus = getattr(_site.scheduler, "gpus", 0)
         if _gpus:
             sbatch_extra_args.append(f"--gres=gpu:{_gpus}")
@@ -530,6 +544,16 @@ def get_slurm_node(
         sbatch_extra_args.extend(getattr(_site.scheduler, "extra_sbatch", []) or [])
     except Exception:
         pass  # site config unavailable — let #SBATCH directives or Slurm default decide
+
+    if partition:
+        sbatch_extra_args.append(f"--partition={partition}")
+    if overrides.get("reservation"):
+        sbatch_extra_args.append(f"--reservation={overrides['reservation']}")
+    if overrides.get("nodelist"):
+        sbatch_extra_args.append(f"--nodelist={overrides['nodelist']}")
+    # Per-request extra flags come last so they win over site-level duplicates
+    # (sbatch uses the last occurrence of a repeated option).
+    sbatch_extra_args.extend(overrides.get("extra_sbatch") or [])
 
     if sbatch_env:
         env_pairs = ",".join(f"{k}={v}" for k, v in sbatch_env.items())
@@ -610,16 +634,19 @@ def _remote_job_info_dir(site):
     return "/tmp"
 
 
-def _remote_sbatch_args(site, sbatch_env):
+def _remote_sbatch_args(site, sbatch_env, slurm_overrides=None):
     job_info_dir = _remote_job_info_dir(site)
     scheduler = site.scheduler
+    overrides = dict(slurm_overrides or {})
     args = [
         "sbatch",
         f"--output={job_info_dir}/slurm-%j.out",
         f"--error={job_info_dir}/slurm-%j.err",
     ]
 
-    partition = _first_site_partition(site)
+    partition = (
+        str(overrides.get("partition") or "").strip() or _first_site_partition(site)
+    )
     if partition:
         args.append(f"--partition={partition}")
     if getattr(scheduler, "time_limit", ""):
@@ -639,6 +666,13 @@ def _remote_sbatch_args(site, sbatch_env):
     # Site-level extra sbatch flags (e.g. --reservation=..., --nodelist=...),
     # matching the async orchestrator backends.
     args.extend(getattr(scheduler, "extra_sbatch", []) or [])
+
+    # Per-request overrides come last so they win over site-level duplicates.
+    if overrides.get("reservation"):
+        args.append(f"--reservation={overrides['reservation']}")
+    if overrides.get("nodelist"):
+        args.append(f"--nodelist={overrides['nodelist']}")
+    args.extend(overrides.get("extra_sbatch") or [])
 
     env_overrides = dict(sbatch_env or {})
     wrapper_script = _remote_wrapper_script(site)
@@ -667,13 +701,18 @@ def _rivault_model_path_env():
 
 
 def get_remote_slurm_node(
-    site, model_type_key, job_id_to_use=None, sbatch_env=None, job_metadata=None
+    site,
+    model_type_key,
+    job_id_to_use=None,
+    sbatch_env=None,
+    job_metadata=None,
+    slurm_overrides=None,
 ):
     job_info_dir = _remote_job_info_dir(site)
     if job_id_to_use is not None:
         job_id = int(job_id_to_use)
     else:
-        sbatch_args = _remote_sbatch_args(site, sbatch_env)
+        sbatch_args = _remote_sbatch_args(site, sbatch_env, slurm_overrides)
         command = shlex.join(sbatch_args)
         logger.info(f"[remote-slurm] {command}")
         result = _run_remote_slurm_command(site, command, timeout=60)
@@ -1150,6 +1189,11 @@ def launch_rivault_model(model_cfg):
 
     sbatch_env = {"RIVAULT_PROFILES": " ".join(job_profiles)}
     sbatch_env.update(_rivault_model_path_env())
+    # Per-modality Slurm placement overrides injected by provisioning from
+    # the experience config's "slurm" block (partition / reservation / ...).
+    slurm_overrides = model_cfg.get("slurm") or {}
+    if slurm_overrides:
+        logger.info(f"[rivault] per-request slurm overrides: {slurm_overrides}")
 
     output_file, error_file, job_id = get_slurm_node(
         rivault_slurm_script,
@@ -1157,6 +1201,7 @@ def launch_rivault_model(model_cfg):
         job_id_to_use=job_id,
         sbatch_env=sbatch_env,
         job_metadata=job_metadata,
+        slurm_overrides=slurm_overrides,
     )
     logger.info(f"{output_file=} {job_id=}")
 
