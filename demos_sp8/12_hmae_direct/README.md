@@ -72,7 +72,7 @@ cat experience.json
 Merge it into your active user config:
 
 ```bash
-umrs config experience add experience.json
+umrs experience add experience.json
 ```
 
 This adds (or replaces) the `"Jens HMAE Direct"` experience in your user config
@@ -139,7 +139,7 @@ Link one sample image. Use Spring-8 concrete CT images if available:
 
 ```bash
 # Option A: Spring-8 concrete CT slices (1024x1024 grayscale, preferred)
-ln -sf "$(cd ../internal_genAI/bento/hmaeinfer/spring8concrete && pwd)/volume_170.png" "${UPLOAD_DIR}/"
+ln -sf "$(cd ../../tmp/hmae/spring8concrete && pwd)/volume_170.png" "${UPLOAD_DIR}/"
 ```
 
 ```bash
