@@ -28,6 +28,7 @@ def process_s3_objects(
     nb_objects = len(s3_objects)
     keys_per_bucket = defaultdict(list)
     users = []
+    keep_endpoint_requested = False
     logger.info(f"\t-->Detected {nb_objects} new file(s):")
 
     for s3_object in s3_objects:
@@ -51,6 +52,7 @@ def process_s3_objects(
             "s3_connection",
             "output_path_to_bucket",
             "reentrant_lock",
+            "keep_endpoint",
         ]
         result = buckets_cfg.get(path_to_bucket, filter=selected_fields)
         if result is None:
@@ -70,9 +72,12 @@ def process_s3_objects(
             s3_connection,
             output_bucket,
             reentrant_lock,
+            keep_endpoint,
         ) = result
 
         users.append(user)
+        if keep_endpoint:
+            keep_endpoint_requested = True
         s3_keys = keys_per_bucket[path_to_bucket]
         if model.type == "rivault":
             from umrs.server.rivault_launcher import launch_rivault_model
@@ -144,7 +149,16 @@ def process_s3_objects(
     
     # --- Service lifecycle: auto-release backend jobs when idle ---
     service_lifecycle = os.environ.get("UMRS_SERVICE_LIFECYCLE", "auto_release")
-    if service_lifecycle == "auto_release":
+    if keep_endpoint_requested:
+        # A processed experience opted to keep its backend endpoint warm
+        # (experience.json `keep_endpoint: true`). Skip auto-release so the
+        # mini-rivault endpoint stays available (e.g. for interactive/local
+        # inference against the running BentoML endpoint). The idle janitor
+        # (U-111 TTL) still reaps it once it is genuinely idle.
+        logger.info(
+            "[lifecycle] keep_endpoint requested — leaving backend endpoint(s) warm"
+        )
+    elif service_lifecycle == "auto_release":
         with active_threads.lock:
             current_ident = threading.current_thread().ident
             still_running = sum(

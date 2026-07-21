@@ -45,6 +45,10 @@ client_schema = {
                                     "enum": VALID_MODALITIES,
                                 },
                                 "task": {"type": "string"},
+                                "keep_endpoint": {
+                                    "type": "boolean",
+                                    "default": False,
+                                },
                                 "s3": {
                                     "type": "object",
                                     "required": ["bucket_alias", "data"],
