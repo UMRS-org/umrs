@@ -29,6 +29,9 @@ class ServerBucketEntry:
     return_type: str
     output_path_to_bucket: str | None = None
     reentrant_lock: RLock = field(default_factory=RLock)
+    # When True, the mini-rivault backend endpoint serving this bucket's model
+    # is left warm after a processing batch instead of being auto-released.
+    keep_endpoint: bool = False
 
 
 @dataclass

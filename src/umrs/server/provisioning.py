@@ -343,6 +343,7 @@ def _configure_modality_bucket(
         output_path_to_bucket = None
 
     sql_cfg = modality["sql"]
+    keep_endpoint = bool(modality.get("keep_endpoint", False))
     table_name, store_embeddings_flag, metadata = configure_table(
         data_base, sql_cfg, modality_name, model
     )
@@ -365,6 +366,7 @@ def _configure_modality_bucket(
         model.return_type,
         output_path_to_bucket,
         threading.RLock(),
+        keep_endpoint,
     )
     return bucket_alias, path_to_bucket, num_objects, bucket_entry
 
