@@ -374,6 +374,14 @@ VLLM_DOCKER_TAG=${VLLM_DOCKER_TAG:-v0.20.0}
 VLLM_DOCKER_IMAGE=${VLLM_DOCKER_IMAGE:-docker.io/vllm/vllm-openai:${VLLM_DOCKER_TAG}}
 # Fraction of GPU memory vLLM is allowed to use for KV-cache
 VLLM_GPU_MEM_UTIL=${VLLM_GPU_MEM_UTIL:-0.95}
+# Maximum context length (vLLM --max-model-len). Injected into the job env by
+# the orchestrator (service.py sets it from request.max_model_len). MUST be
+# written into this file so the multi-node podman-run container — which reads
+# ONLY env.<uuid> and does NOT inherit the job shell env — serves at the
+# requested context instead of silently defaulting to 4096. Without this line
+# large-context clients (e.g. Copilot) overrun the 4096 window and the request
+# fails upstream (nginx 500).
+VLLM_MAX_MODEL_LEN=${VLLM_MAX_MODEL_LEN:-4096}
 # Tool-call parsing strategy (hermes = Hermes-style function call format)
 VLLM_TOOL_CALL_PARSER=${VLLM_TOOL_CALL_PARSER:-hermes}
 # Reasoning parser for models that emit thinking/reasoning content
@@ -834,6 +842,59 @@ if [[ -n "${RIVAULT_CONTROL_DIR}" && -n "${SLURM_JOB_ID:-}" ]]; then
     RIVAULT_STOP_REQUEST_FILE="${RIVAULT_CONTROL_DIR%/}/stop-${SLURM_JOB_ID}.request"
 fi
 
+# ─── Ray post-mortem artifact preservation ───────────────────────────────────
+# Multi-node Ray failures (GCS crash, raylet SIGSEGV, worker registration
+# timeout) leave their ONLY evidence in the container's stdout and in
+# /tmp/ray/session_*/logs (gcs_server.{out,err}, raylet.{out,err},
+# dashboard.log, monitor.log, runtime_env*.log). The cleanup below removes
+# those containers, so without archiving first every failure is undebuggable.
+# This grabs the full Ray session tree + container logs from the head and every
+# worker into JOB_INFO_DIR (next to slurm-<jobid>.out on shared storage) BEFORE
+# teardown. Called only on genuine failures (see cleanup_stack), never on a
+# clean exit or an operator-initiated stop.
+_archive_ray_sessions() {
+    [[ "${_MULTI_NODE:-0}" -eq 1 ]] || return 0
+    local dest="${JOB_INFO_DIR:-${HOME}/.rivault/ray-sessions}"
+    local jid="${SLURM_JOB_ID:-$$}"
+    mkdir -p "${dest}" 2>/dev/null || return 0
+    echo "[rivault] Preserving Ray post-mortem artifacts under ${dest} ..."
+
+    # Head node: co-located Ray head + vLLM driver container. `podman cp` and
+    # `podman logs` both work on a stopped-but-not-yet-removed container. All
+    # commands are wrapped in `timeout` so a wedged node can never hang teardown.
+    if podman container exists rivault-vllm-mn 2>/dev/null; then
+        timeout 60 podman logs rivault-vllm-mn > "${dest%/}/ray-head-${jid}.log" 2>&1 || true
+        local head_tar="${dest%/}/ray-head-session-${jid}.tar.gz"
+        timeout 120 podman cp rivault-vllm-mn:/tmp/ray - 2>/dev/null | gzip > "${head_tar}" 2>/dev/null || true
+        if tar tzf "${head_tar}" 2>/dev/null | grep -q .; then
+            echo "[rivault]   head:   ${head_tar}"
+        else
+            rm -f "${head_tar}" 2>/dev/null || true
+        fi
+    fi
+
+    # Worker nodes: one Ray worker container per remaining node, reached via srun.
+    local i wnode wlog wtar
+    for ((i=1; i<${#RAY_NODES[@]}; i++)); do
+        wnode="${RAY_NODES[$i]}"
+        wlog="${dest%/}/ray-worker-${wnode}-${jid}.log"
+        timeout 90 srun --nodes=1 --ntasks=1 --nodelist="${wnode}" --overlap sh -c \
+            'podman container exists rivault-ray-worker && podman logs rivault-ray-worker 2>&1' \
+            > "${wlog}" 2>/dev/null || true
+        [[ -s "${wlog}" ]] || rm -f "${wlog}" 2>/dev/null || true
+        wtar="${dest%/}/ray-worker-${wnode}-session-${jid}.tar.gz"
+        timeout 150 srun --nodes=1 --ntasks=1 --nodelist="${wnode}" --overlap sh -c \
+            'podman container exists rivault-ray-worker && podman cp rivault-ray-worker:/tmp/ray - 2>/dev/null' \
+            2>/dev/null | gzip > "${wtar}" 2>/dev/null || true
+        if tar tzf "${wtar}" 2>/dev/null | grep -q .; then
+            echo "[rivault]   worker ${wnode}: ${wtar}"
+        else
+            rm -f "${wtar}" 2>/dev/null || true
+        fi
+    done
+    return 0
+}
+
 cleanup_stack() {
     local reason="${1:-exit}"
     local rc="${2:-0}"
@@ -845,6 +906,13 @@ cleanup_stack() {
     trap - EXIT TERM INT
 
     echo "[rivault] Cleaning up stack (${reason})..."
+    # Preserve Ray post-mortem artifacts on genuine failures BEFORE tearing the
+    # containers down. Skip on a clean exit (0) or operator-initiated stop
+    # (INT=130, TERM=143) — those are not crashes and need no evidence.
+    case "${rc}" in
+        0|130|143) : ;;
+        *) _archive_ray_sessions ;;
+    esac
     # Stop Ray workers and head (multi-node only)
     if [[ ${#WORKER_PIDS[@]} -gt 0 ]]; then
         kill "${WORKER_PIDS[@]}" 2>/dev/null || true
