@@ -48,6 +48,12 @@ endpoints:
       VLLM_MOE_BACKEND: "marlin"
       VLLM_DOCKER_IMAGE: "docker.io/vllm/vllm-openai:latest"
       RCCS_SKIP_CDI: "1"
+      VLLM_EXTRA_ARGS: >-
+        --kv-cache-dtype fp8
+        --attention-backend flashinfer
+        --max-num-batched-tokens 8192
+        --enable-prefix-caching
+
 
   # ── Step-3.7-Flash-148B (2 nodes → edge-double) ─────────────────────
   #  148B MoE, NVFP4 quantized (base: stepfun-ai/Step-3.7-Flash-NVFP4).
@@ -86,6 +92,33 @@ endpoints:
   #  Quantized with compressed-tensors (5.3-bit).
   #  Requires 2× GB10 for TP=2 (~60-70 GB active mem per node).
   #  Architecture: hy_v3 (HYV3ForCausalLM).
+  #  NOTE: Using triton backend for testing Ray networking on BDRT.
+  - name: hy3-295b-test-triton
+    model: hy3-295b
+    tier: system
+    node_count: 2
+    partition: edge-double
+    max_model_len: 262144
+    env_vars:
+      VLLM_HOST_MODEL_PATH: "/home/mnagaso/umrs_models/hub/models--rdtand--Hy3-295B-A21B-PrismaQuant-5.3bit-2xSpark-vllm/snapshots"
+      VLLM_PATH_TO_HUGGINGFACE: "/home/mnagaso/umrs_models"
+      VLLM_MODEL: "rdtand/Hy3-295B-A21B-PrismaQuant-5.3bit-2xSpark-vllm"
+      VLLM_TOKENIZER: "rdtand/Hy3-295B-A21B-PrismaQuant-5.3bit-2xSpark-vllm"
+      VLLM_GPU_MEM_UTIL: "0.78"
+      VLLM_MAX_NUM_SEQS: "2"
+      VLLM_TENSOR_PARALLEL_SIZE: "2"
+      VLLM_MOE_BACKEND: "triton"
+      VLLM_DOCKER_IMAGE: "docker.io/vllm/vllm-openai:latest"
+      VLLM_TRUST_REMOTE_CODE: "1"
+      VLLM_EXTRA_ARGS: "--max-num-batched-tokens 8192"
+      VLLM_LOGGING_LEVEL: "INFO"
+      RCCS_SKIP_CDI: "1"
+
+  # ── Hy3-295B-A21B (2 nodes → edge-double) ────────────────────────────
+  #  295B MoE (A21B = 21B active params, 192 experts, 8 per token).
+  #  Quantized with compressed-tensors (5.3-bit).
+  #  Requires 2× GB10 for TP=2 (~60-70 GB active mem per node).
+  #  Architecture: hy_v3 (HYV3ForCausalLM).
   - name: hy3-295b
     model: hy3-295b
     tier: system
@@ -100,10 +133,50 @@ endpoints:
       VLLM_GPU_MEM_UTIL: "0.78"
       VLLM_MAX_NUM_SEQS: "2"
       VLLM_TENSOR_PARALLEL_SIZE: "2"
-      # Hy3 uses compressed-tensors 5.3-bit quant — Marlin supports this.
       VLLM_MOE_BACKEND: "marlin"
       VLLM_DOCKER_IMAGE: "docker.io/vllm/vllm-openai:latest"
       VLLM_TRUST_REMOTE_CODE: "1"
       VLLM_EXTRA_ARGS: "--max-num-batched-tokens 8192"
       VLLM_LOGGING_LEVEL: "INFO"
+      RCCS_SKIP_CDI: "1"
+
+  # ── Laguna-S 2.1 FP8 (2 nodes → edge-double) ─────────────────────────
+  #  118B MoE (~8B active), FP8 checkpoint (~112.7 GiB).
+  #  poolside/Laguna-S-2.1-FP8 with sapidlabs/Sparkulator-Laguna-S-2.1 W4A16
+  #  DFlash draft — spec-decoding k=6 → 60.9 tok/s (2.3× no-draft baseline).
+  #  Requires 2× GB10: TP2 is a FIT decision (112.7 GiB won't fit one node's
+  #  121 GiB with KV pool room). Cross-node TP2 CUDA-graph replay deadlocks on
+  #  GB10 — --enforce-eager is mandatory.
+  #  Architecture: LagunaForCausalLM (natively registered, no trust-remote-code).
+  #  Hybrid attention: 12 full-attention + 36 sliding-window-512 layers → KV
+  #  pool cheap; pinned to 5 GiB/rank (273K tokens = 1.04× at 262K ctx).
+  - name: laguna-s-2.1-fp8
+    model: laguna-s-2.1-fp8
+    tier: system
+    node_count: 2
+    partition: edge-double
+    max_model_len: 262144
+    env_vars:
+      VLLM_HOST_MODEL_PATH: "/home/mnagaso/umrs_models/hub/models--poolside--Laguna-S-2.1-FP8/snapshots"
+      VLLM_PATH_TO_HUGGINGFACE: "/home/mnagaso/umrs_models"
+      VLLM_MODEL: "poolside/Laguna-S-2.1-FP8"
+      VLLM_TOKENIZER: "poolside/Laguna-S-2.1-FP8"
+      VLLM_GPU_MEM_UTIL: "0.85"
+      VLLM_MAX_NUM_SEQS: "2"
+      VLLM_TENSOR_PARALLEL_SIZE: "2"
+      # FP8 checkpoint has native kv_cache_scheme (8-bit), vLLM resolves to
+      # fp8_e4m3 automatically — no flag needed.
+      VLLM_MOE_BACKEND: "marlin"
+      VLLM_DOCKER_IMAGE: "docker.io/vllm/vllm-openai:latest"
+      # Spec-decoding with W4A16 DFlash draft at k=6 (measured peak: 60.9 tok/s).
+      # Draft model: sapidlabs/Sparkulator-Laguna-S-2.1 (W4A16 quant of poolside's
+      # FP8 DFlash draft — target-precision-specific, must pair with FP8 target).
+      VLLM_EXTRA_ARGS: >-
+        --enforce-eager
+        --kv-cache-dtype fp8
+        --kv-cache-memory-bytes 5368709120
+        --max-num-batched-tokens 8192
+        --speculative-config {"method":"dflash","model":"/home/mnagaso/umrs_models/hub/models--sapidlabs--Sparkulator-Laguna-S-2.1/snapshots","num_speculative_tokens":6}
+      # VLLM_HOST_MODEL_PATH must be mirrored on BOTH nodes for TP2 — each rank
+      # reads all shards (~56.6 GiB/rank). The draft is also on both nodes.
       RCCS_SKIP_CDI: "1"
