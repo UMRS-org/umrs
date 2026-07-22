@@ -1,4 +1,4 @@
-# Pool roster: bdrt (NVIDIA GB10 DGX-Spark, aarch64) — Qwen3.6-35B-A3B-NVFP4 · Step-3.7-Flash-148B
+# Pool roster: bdrt (NVIDIA GB10 DGX-Spark, aarch64) — Qwen3.6-35B-A3B-NVFP4 · Step-3.7-Flash-148B · Hy3-295B
 # Usage:
 #   r4 source use bdrt && r4 pool up umrs/deploy/bdrt/pool-bdrt-step.yaml
 #
@@ -60,10 +60,10 @@ endpoints:
     partition: edge-double
     max_model_len: 262144
     env_vars:
-      VLLM_HOST_MODEL_PATH: "/home/mnagaso/umrs_models/hub/models--0xSero--Step-3.7-Flash-148B/snapshots"
+      VLLM_HOST_MODEL_PATH: "/home/mnagaso/umrs_models/hub/models--stepfun-ai--Step-3.7-Flash-NVFP4/snapshots"
       VLLM_PATH_TO_HUGGINGFACE: "/home/mnagaso/umrs_models"
-      VLLM_MODEL: "0xSero/Step-3.7-Flash-148B"
-      VLLM_TOKENIZER: "0xSero/Step-3.7-Flash-148B"
+      VLLM_MODEL: "stepfun-ai/Step-3.7-Flash-NVFP4"
+      VLLM_TOKENIZER: "stepfun-ai/Step-3.7-Flash-NVFP4"
       VLLM_GPU_MEM_UTIL: "0.78"
       VLLM_MAX_NUM_SEQS: "2"
       VLLM_TENSOR_PARALLEL_SIZE: "2"
@@ -79,4 +79,31 @@ endpoints:
       VLLM_MOE_BACKEND: "marlin"
       VLLM_DOCKER_IMAGE: "docker.io/vllm/vllm-openai:latest"
       VLLM_TRUST_REMOTE_CODE: "1"
+      RCCS_SKIP_CDI: "1"
+
+  # ── Hy3-295B-A21B (2 nodes → edge-double) ────────────────────────────
+  #  295B MoE (A21B = 21B active params, 192 experts, 8 per token).
+  #  Quantized with compressed-tensors (5.3-bit).
+  #  Requires 2× GB10 for TP=2 (~60-70 GB active mem per node).
+  #  Architecture: hy_v3 (HYV3ForCausalLM).
+  - name: hy3-295b
+    model: hy3-295b
+    tier: system
+    node_count: 2
+    partition: edge-double
+    max_model_len: 262144
+    env_vars:
+      VLLM_HOST_MODEL_PATH: "/home/mnagaso/umrs_models/hub/models--rdtand--Hy3-295B-A21B-PrismaQuant-5.3bit-2xSpark-vllm/snapshots"
+      VLLM_PATH_TO_HUGGINGFACE: "/home/mnagaso/umrs_models"
+      VLLM_MODEL: "rdtand/Hy3-295B-A21B-PrismaQuant-5.3bit-2xSpark-vllm"
+      VLLM_TOKENIZER: "rdtand/Hy3-295B-A21B-PrismaQuant-5.3bit-2xSpark-vllm"
+      VLLM_GPU_MEM_UTIL: "0.78"
+      VLLM_MAX_NUM_SEQS: "2"
+      VLLM_TENSOR_PARALLEL_SIZE: "2"
+      # Hy3 uses compressed-tensors 5.3-bit quant — Marlin supports this.
+      VLLM_MOE_BACKEND: "marlin"
+      VLLM_DOCKER_IMAGE: "docker.io/vllm/vllm-openai:latest"
+      VLLM_TRUST_REMOTE_CODE: "1"
+      VLLM_EXTRA_ARGS: "--max-num-batched-tokens 8192"
+      VLLM_LOGGING_LEVEL: "INFO"
       RCCS_SKIP_CDI: "1"
