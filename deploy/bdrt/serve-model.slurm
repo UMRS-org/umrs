@@ -483,6 +483,18 @@ if ls /dev/nvidia[0-9]* >/dev/null 2>&1; then
     for _dev in /dev/nvidia[0-9]* /dev/nvidiactl /dev/nvidia-uvm /dev/nvidia-uvm-tools /dev/nvidia-caps/nvidia-cap1 /dev/nvidia-caps/nvidia-cap2; do
         [[ -e "$_dev" ]] && _GPU_DEVS="${_GPU_DEVS}      - ${_dev}:${_dev}:rwm\n"
     done
+    # Resolve the driver's PTX JIT compiler lib (versioned .so.1 is a symlink to
+    # a driver-versioned file). vLLM 0.23.0 aarch64 ships no precompiled
+    # Blackwell SASS, so Marlin/NVFP4 MoE kernels JIT-compile from PTX at first
+    # launch and need libnvidia-ptxjitcompiler.so.1 — without it the KV-cache
+    # profiling forward pass dies with cudaErrorJitCompilerNotFound.
+    _PTXJIT_VOL=""
+    for _pj in /usr/lib/aarch64-linux-gnu/libnvidia-ptxjitcompiler.so.1; do
+        if [[ -e "$_pj" ]]; then
+            _PTXJIT_VOL="      - ${_pj}:${_pj}:ro"
+            break
+        fi
+    done
     cat > "${_OVERRIDE}" <<GPUEOF
 services:
   vllm:
@@ -492,6 +504,7 @@ $(echo -e "$_GPU_DEVS")
     volumes:
       - /usr/lib/aarch64-linux-gnu/libcuda.so.1:/usr/lib/aarch64-linux-gnu/libcuda.so.1:ro
       - /usr/lib/aarch64-linux-gnu/libnvidia-ml.so.1:/usr/lib/aarch64-linux-gnu/libnvidia-ml.so.1:ro
+${_PTXJIT_VOL}
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
