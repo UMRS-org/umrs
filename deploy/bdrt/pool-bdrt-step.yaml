@@ -38,7 +38,15 @@ endpoints:
       VLLM_REASONING_PARSER: "qwen3"
       VLLM_TRUST_REMOTE_CODE: "1"
       VLLM_ENFORCE_EAGER: "1"
-      VLLM_MOE_BACKEND: "triton"
+      # NVFP4 mixed-precision MoE on GB10 Blackwell: pin the quant-aware Marlin
+      # fused-MoE backend AND override to vLLM 0.23.0 (arm64 `:latest`). The
+      # partition-default cu130-nightly-aarch64 image is a FROZEN 0.19.2 nightly
+      # with NO ModelOpt NVFP4 MoE quant method, so the experts fall back to the
+      # "Unquantized MoE backend" (marlin isn't even offered) → vLLM aborts
+      # weight-load with KeyError: 'layers.0.mlp.experts.w2_input_scale'.
+      # Same fix as deploy/rccs/pool-rccs-3models.yaml (verified end-to-end).
+      VLLM_MOE_BACKEND: "marlin"
+      VLLM_DOCKER_IMAGE: "docker.io/vllm/vllm-openai:latest"
       RCCS_SKIP_CDI: "1"
 
   # ── Step-3.7-Flash-148B (2 nodes → edge-double) ─────────────────────
@@ -59,6 +67,11 @@ endpoints:
       VLLM_GPU_MEM_UTIL: "0.78"
       VLLM_MAX_NUM_SEQS: "2"
       VLLM_TENSOR_PARALLEL_SIZE: "2"
-      VLLM_MOE_BACKEND: "triton"
+      # NVFP4 MoE on GB10 Blackwell — same fix as the Qwen entry above:
+      # Marlin quant-aware MoE backend + vLLM 0.23.0 (arm64 `:latest`).
+      # The frozen 0.19.2 nightly lacks the ModelOpt NVFP4 MoE method, so the
+      # experts fall back to the Unquantized MoE backend → KeyError w2_input_scale.
+      VLLM_MOE_BACKEND: "marlin"
+      VLLM_DOCKER_IMAGE: "docker.io/vllm/vllm-openai:latest"
       VLLM_TRUST_REMOTE_CODE: "1"
       RCCS_SKIP_CDI: "1"
