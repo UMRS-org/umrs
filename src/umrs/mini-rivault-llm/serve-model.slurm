@@ -1242,7 +1242,12 @@ RAYEOF
         # value of RAY_memory_monitor_refresh_ms=0 disables the monitor entirely
         # (needed for large GGUF models where Lustre page cache pre-fills the pool).
         -e RAY_memory_usage_threshold="${RAY_memory_usage_threshold:-0.95}"
-        -e VLLM_LOGGING_LEVEL=DEBUG
+        # Default INFO: DEBUG makes gpu_model_runner emit 2 log records per
+        # decode step per worker, serialized cross-node through Ray's log
+        # forwarder — measurable per-token overhead at single-digit tok/s on
+        # GB10. Override via pool env_vars VLLM_LOGGING_LEVEL=DEBUG only for
+        # Ray-formation diagnostics.
+        -e VLLM_LOGGING_LEVEL="${VLLM_LOGGING_LEVEL:-INFO}"
     )
     # CRITICAL: only pass RAY_memory_monitor_refresh_ms when actually
     # overridden. `-e RAY_memory_monitor_refresh_ms=` (empty string, NOT

@@ -67,6 +67,11 @@ endpoints:
       VLLM_GPU_MEM_UTIL: "0.78"
       VLLM_MAX_NUM_SEQS: "2"
       VLLM_TENSOR_PARALLEL_SIZE: "2"
+      # Prefill throughput: vLLM defaults max_num_batched_tokens to 2048 for
+      # the OpenAI server, chunking a 100k-token prefill into ~50 tiny steps
+      # (each paying the cross-node PP bubble). 8192 quarters the step count
+      # and time-to-first-token without affecting decode memory.
+      VLLM_EXTRA_ARGS: "--max-num-batched-tokens 8192"
       # NVFP4 MoE on GB10 Blackwell — same fix as the Qwen entry above:
       # Marlin quant-aware MoE backend + vLLM 0.23.0 (arm64 `:latest`).
       # The frozen 0.19.2 nightly lacks the ModelOpt NVFP4 MoE method, so the
