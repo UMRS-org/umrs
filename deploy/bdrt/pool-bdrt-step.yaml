@@ -180,3 +180,75 @@ endpoints:
       # VLLM_HOST_MODEL_PATH must be mirrored on BOTH nodes for TP2 — each rank
       # reads all shards (~56.6 GiB/rank). The draft is also on both nodes.
       RCCS_SKIP_CDI: "1"
+
+  # ── Hy3 NVFP4 (2 nodes → edge-double) ────────────────────────────────
+  #  295B MoE (21B active), NVFP4 weight-only on routed-expert FFNs.
+  #  LibertAIDAI/Hy3-NVFP4 checkpoint (~169 GB, 99 shards).
+  #  TP2 is a FIT decision: 169 GB won't fit one node's 121 GiB.
+  #  --moe-backend marlin is the ONLY NVFP4-MoE backend on sm_121 (GB10).
+  #  MTP speculative decode (k=1) from checkpoint's own draft layer:
+  #  61.3% acceptance, 1.61 tok/step, +43% over base (19.5 vs 13.6 tok/s).
+  #  KV pool pinned to fp8 176,784 tokens (1.08× at 160K ctx).
+  #  Architecture: HYV3ForCausalLM (natively registered).
+  #  NOTE: Requires CUDA 13 vLLM build — docker.io/vllm/vllm-openai:hy3-arm64-cu130.
+  - name: hy3-nvfp4
+    model: hy3-nvfp4
+    tier: system
+    node_count: 2
+    partition: edge-double
+    max_model_len: 163840
+    env_vars:
+      VLLM_HOST_MODEL_PATH: "/home/mnagaso/umrs_models/hub/models--LibertAIDAI--Hy3-NVFP4/snapshots"
+      VLLM_PATH_TO_HUGGINGFACE: "/home/mnagaso/umrs_models"
+      VLLM_MODEL: "LibertAIDAI/Hy3-NVFP4"
+      VLLM_TOKENIZER: "LibertAIDAI/Hy3-NVFP4"
+      VLLM_GPU_MEM_UTIL: "0.85"
+      VLLM_MAX_NUM_SEQS: "2"
+      VLLM_TENSOR_PARALLEL_SIZE: "2"
+      # NVFP4 MoE on GB10: marlin is the ONLY backend that runs on sm_121.
+      VLLM_MOE_BACKEND: "marlin"
+      VLLM_DOCKER_IMAGE: "docker.io/vllm/vllm-openai:hy3-arm64-cu130"
+      # MTP spec decode from checkpoint's native draft layer (k=1).
+      VLLM_EXTRA_ARGS: >-
+        --enforce-eager
+        --kv-cache-dtype fp8
+        --max-num-batched-tokens 8192
+        --speculative-config {"method":"mtp","num_speculative_tokens":1}
+      # Cross-node TP2: each rank reads all 99 shards (~84.5 GB/rank).
+      RCCS_SKIP_CDI: "1"
+
+  # ── GLM-5.2 (2 nodes → edge-double) ──────────────────────────────────
+  #  753B MoE (FP8 + NVFP4 2-bit experts).
+  #  zai-org/GLM-5.2-FP8 checkpoint + pruned TP2 planes (2-bit experts).
+  #  Requires vLLM-Moet (spark-gb10 branch) with 2-bit expert kernels.
+  #  Base: ~15 tok/s single-stream. Fast build (NVFP4 big-3 + dspark W4A16):
+  #  ~22 tok/s at 96K ctx, 2-bit speculator (dspark) at K=2.
+  #  TP2 is FIT: 753B requires ~376 GB per rank — won't fit one node.
+  #  Architecture: ChatGLMForCausalLM (requires trust-remote-code).
+  #  NOTE: Requires vLLM-Moet setup (not stock vLLM). Uses prepacked planes.
+  - name: glm-5.2
+    model: glm-5.2
+    tier: system
+    node_count: 2
+    partition: edge-double
+    max_model_len: 98304
+    env_vars:
+      VLLM_HOST_MODEL_PATH: "/home/mnagaso/umrs_models/hub/models--zai-org--GLM-5.2-FP8/snapshots"
+      VLLM_PATH_TO_HUGGINGFACE: "/home/mnagaso/umrs_models"
+      VLLM_MODEL: "zai-org/GLM-5.2-FP8"
+      VLLM_TOKENIZER: "zai-org/GLM-5.2-FP8"
+      VLLM_GPU_MEM_UTIL: "0.85"
+      VLLM_MAX_NUM_SEQS: "2"
+      VLLM_TENSOR_PARALLEL_SIZE: "2"
+      # GLM-5.2 requires vLLM-Moet spark-gb10 branch with 2-bit expert kernels.
+      VLLM_DOCKER_IMAGE: "docker.io/vllm/vllm-openai:hy3-arm64-cu130"
+      # MTP speculative decode at K=1 (base config).
+      VLLM_EXTRA_ARGS: >-
+        --enforce-eager
+        --kv-cache-dtype fp8
+        --kv-cache-memory-bytes 10737418240
+        --max-num-batched-tokens 8192
+        --speculative-config {"method":"mtp","num_speculative_tokens":1}
+      # VLLM_MOE_W2_PREPACKED_DIR — paths to pruned TP2 planes (2-bit).
+      VLLM_MOE_W2_PREPACKED_DIR: "/home/mnagaso/umrs_models/hub/models--zai-org--GLM-5.2-FP8/snapshots/moe_w2_planes_tp2_p208"
+      RCCS_SKIP_CDI: "1"
