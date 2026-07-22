@@ -60,7 +60,7 @@ endpoints:
     partition: edge-double
     max_model_len: 262144
     env_vars:
-      VLLM_HOST_MODEL_PATH: "/home/mnagaso/umrs_models/hub/models--stepfun-ai--Step-3.7-Flash-NVFP4/snapshots"
+      VLLM_HOST_MODEL_PATH: "/home/mnagaso/umrs_models/hub/models--0xSero--Step-3.7-Flash-148B/snapshots"
       VLLM_PATH_TO_HUGGINGFACE: "/home/mnagaso/umrs_models"
       VLLM_MODEL: "stepfun-ai/Step-3.7-Flash-NVFP4"
       VLLM_TOKENIZER: "stepfun-ai/Step-3.7-Flash-NVFP4"
