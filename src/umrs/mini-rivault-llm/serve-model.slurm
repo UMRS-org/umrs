@@ -1506,11 +1506,11 @@ fi
 # Keep job alive while containers are running; exit on idle timeout (safety net).
 # Slurm cancellation or an explicit signal should now run the cleanup trap
 # above so the compose stack is torn down promptly.
-RIVAULT_JOB_TIMEOUT=${RIVAULT_JOB_TIMEOUT:-7200}   # default 2 h; override via sbatch --export
+RIVAULT_JOB_TIMEOUT=${RIVAULT_JOB_TIMEOUT:-0}     # 0 = infinite; override via sbatch --export
 INTERVAL=${RIVAULT_JOB_POLL_INTERVAL:-5}
 ELAPSED=0
-echo "[rivault] Stack is up. Monitoring containers (timeout=${RIVAULT_JOB_TIMEOUT}s)..."
-while [ "$ELAPSED" -lt "$RIVAULT_JOB_TIMEOUT" ]; do
+echo "[rivault] Stack is up. Monitoring containers (timeout=${RIVAULT_JOB_TIMEOUT}s, infinite=${RIVAULT_JOB_TIMEOUT==0})..."
+while [ "$RIVAULT_JOB_TIMEOUT" -eq 0 ] || [ "$ELAPSED" -lt "$RIVAULT_JOB_TIMEOUT" ]; do
     if [[ -n "${RIVAULT_STOP_REQUEST_FILE}" && -f "${RIVAULT_STOP_REQUEST_FILE}" ]]; then
         echo "[rivault] Graceful stop requested via ${RIVAULT_STOP_REQUEST_FILE}. Exiting monitor loop."
         exit 0
@@ -1523,7 +1523,7 @@ while [ "$ELAPSED" -lt "$RIVAULT_JOB_TIMEOUT" ]; do
     sleep "$INTERVAL"
     ELAPSED=$(( ELAPSED + INTERVAL ))
 done
-if [ "$ELAPSED" -ge "$RIVAULT_JOB_TIMEOUT" ]; then
+if [ "$RIVAULT_JOB_TIMEOUT" -ne 0 ] && [ "$ELAPSED" -ge "$RIVAULT_JOB_TIMEOUT" ]; then
 	echo "[rivault] Timeout ${RIVAULT_JOB_TIMEOUT}s reached. Exiting."
 	exit 124
 fi
