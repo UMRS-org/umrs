@@ -479,6 +479,17 @@ def _create_app():
 
     @asynccontextmanager
     async def _lifespan(application: FastAPI):
+        # Tag all LLM metrics with the operational source (site name).
+        try:
+            from umrs.orchestrator.site_config import load_site_config
+            from umrs.metrics import METRICS
+
+            METRICS.set_source(load_site_config().name)
+            logger.info("LLM metrics source tagged: %s", METRICS._source)  # noqa: SLF001
+        except Exception:
+            logger.debug(
+                "No site config available — LLM metrics will have empty source"
+            )
         from umrs.orchestrator.janitor import start_janitor, stop_janitor
 
         start_janitor()
@@ -590,7 +601,11 @@ def start_http_sidecar(
         # is complete.  UMRS_RECONCILE_TIMEOUT_SEC controls the per-endpoint
         # timeout (default 300s).  UMRS_BOOT_RECONCILE_ENABLED gates the
         # feature ("true" by default; set "false" to disable).
-        if os.environ.get("UMRS_BOOT_RECONCILE_ENABLED", "true").lower() not in ("true", "1", "yes"):
+        if os.environ.get("UMRS_BOOT_RECONCILE_ENABLED", "true").lower() not in (
+            "true",
+            "1",
+            "yes",
+        ):
             logger.info("Boot-time reconciler disabled by UMRS_BOOT_RECONCILE_ENABLED")
         else:
             try:
