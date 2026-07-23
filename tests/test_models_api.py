@@ -76,6 +76,68 @@ def test_stage_model_enqueues_durable_job_with_caller_project_id():
     job_store.enqueue_job.assert_called_once_with("job-123")
 
 
+def test_admin_can_stage_system_model_to_configured_root(monkeypatch):
+    monkeypatch.setenv("UMRS_MODEL_STAGING_ROOT", "/home/operator/models")
+    store = MagicMock()
+    job_store = MagicMock()
+    store.create_model.return_value = ModelEntry(
+        model_id="mdl-system-stage",
+        name="glm-planes",
+        scope=ModelScope.SYSTEM,
+        storage_ref="/home/operator/models/glm-planes",
+        model_type=ModelType.LLM,
+        huggingface_id="sapidlabs/glm-planes",
+        serving_profile=ServingProfile(),
+        execution_authority_default=ExecutionAuthority.SLURM,
+        status=ModelStatus.STAGING,
+    )
+    job_store.create_job.return_value = "job-system-stage"
+
+    with _create_test_client(store, job_store) as client:
+        response = client.post(
+            "/umrs/models/stage",
+            params={"caller_project_id": "default"},
+            headers={
+                "X-User-ID": "operator",
+                "X-Verified-Is-Admin": "true",
+                "X-Verified-Project-ID": "default",
+            },
+            json={
+                "huggingface_id": "sapidlabs/glm-planes",
+                "name": "glm-planes",
+                "scope": "system",
+                "model_type": "llm",
+            },
+        )
+
+    assert response.status_code == 202
+    assert job_store.create_job.call_args.kwargs["spec"]["target_path"] == (
+        "/home/operator/models/glm-planes"
+    )
+
+
+def test_non_admin_cannot_stage_system_model():
+    store = MagicMock()
+    job_store = MagicMock()
+
+    with _create_test_client(store, job_store) as client:
+        response = client.post(
+            "/umrs/models/stage",
+            params={"user_id": "alice", "caller_project_id": "default"},
+            json={
+                "huggingface_id": "sapidlabs/glm-planes",
+                "name": "glm-planes",
+                "scope": "system",
+                "model_type": "llm",
+            },
+        )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Admin role required to stage system models"
+    store.create_model.assert_not_called()
+    job_store.create_job.assert_not_called()
+
+
 def test_download_model_creates_staging_copy_and_local_copy_job():
     store = MagicMock()
     job_store = MagicMock()
