@@ -67,7 +67,7 @@ umrs model list --scope user
 #    Upload a text file — the server will automatically embed it using
 #    the configured embedding model.
 echo "Testing the model lifecycle with a sample sentence." > /tmp/lifecycle_test.txt
-umrs data upload /tmp/lifecycle_test.txt user1-textfiles
+umrs data upload /tmp/lifecycle_test.txt demo-lifecycle-test
 
 # 7. Check final model inventory
 umrs model list --scope system
@@ -87,7 +87,7 @@ umrs model list --scope user
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `EMBEDDING_MODEL` | `intfloat/e5-base-v2` | HuggingFace model to download |
-| `TEXT_BUCKET` | `user1-textfiles` | Bucket alias for inference test |
+| `TEXT_BUCKET` | `demo-lifecycle-test` | Bucket alias for inference test |
 | `DEMO_LOCAL_MODEL_UPLOAD` | `0` | Set to `1` to enable user model upload step |
 
 ## Expected Output

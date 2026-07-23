@@ -46,7 +46,7 @@ umrs ping
 #    be visible to user2.
 umrs config use --user ~/.config/umrs/users/user1.json
 echo "This is user1's private data" > /tmp/user1_data.txt
-umrs data upload /tmp/user1_data.txt user1-textfiles
+umrs data upload /tmp/user1_data.txt demo-user1-textfiles
 
 # 3. User2 uploads a test file to their private bucket
 umrs config use --user ~/.config/umrs/users/user2.json
@@ -86,14 +86,14 @@ umrs model list --scope system
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `USER1_BUCKET` | `user1-textfiles` | Bucket alias for user1 |
+| `USER1_BUCKET` | `demo-user1-textfiles` | Bucket alias for user1 |
 | `USER2_BUCKET` | `user2-textfiles` | Bucket alias for user2 |
 
 ## Expected Output
 
 ```
 [multi_user]   ✓ Both users can reach server
-[multi_user]   ✓ User1 uploaded data to user1-textfiles
+[multi_user]   ✓ User1 uploaded data to demo-user1-textfiles
 [multi_user]   ✓ User2 uploaded data to user2-textfiles
 [multi_user]   ✓ User1 CANNOT access user2's bucket (expected)
 [multi_user]   ✓ User2 CANNOT access user1's bucket (expected)

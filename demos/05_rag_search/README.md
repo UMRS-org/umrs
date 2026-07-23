@@ -30,7 +30,7 @@ provisioning: project data at `/project` and a prebuilt index at `/rag-index`.
 
 By default the demo scopes searches to Demo 02's text-file corpus by sending:
 
-- `bucket_alias=user1-textfiles`
+- `bucket_alias=demo-textfiles`
 - `modality=text_file`
 
 Override those defaults when needed:
@@ -47,7 +47,7 @@ REPO_ROOT="$(git rev-parse --show-toplevel)"
 cd "$(git rev-parse --show-toplevel)/$(test -d "$(git rev-parse --show-toplevel)/umrs/demos" && echo umrs)/demos/05_rag_search"
 
 RAG_URL="${RAG_URL:-http://127.0.0.1:8081}"
-RAG_BUCKET_ALIAS="${RAG_BUCKET_ALIAS:-user1-textfiles}"
+RAG_BUCKET_ALIAS="${RAG_BUCKET_ALIAS:-demo-textfiles}"
 RAG_MODALITY="${RAG_MODALITY:-text_file}"
 
 # 1. Verify UMRS and RAG connectivity.
@@ -108,7 +108,7 @@ the compose stack.
 ```bash
 curl -s -X POST "${RAG_URL%/}/rag/search" \
   -H 'Content-Type: application/json' \
-  -d '{"query": "seismic wave propagation methods", "top_k": 5, "bucket_alias": "user1-textfiles", "modality": "text_file"}'
+  -d '{"query": "seismic wave propagation methods", "top_k": 5, "bucket_alias": "demo-textfiles", "modality": "text_file"}'
 ```
 
 Parameters:
@@ -123,7 +123,7 @@ Parameters:
 ```bash
 curl -s -X POST "${RAG_URL%/}/rag/qa" \
   -H 'Content-Type: application/json' \
-  -d '{"query": "How is ML used in geophysics?", "top_k": 5, "bucket_alias": "user1-textfiles", "modality": "text_file"}'
+  -d '{"query": "How is ML used in geophysics?", "top_k": 5, "bucket_alias": "demo-textfiles", "modality": "text_file"}'
 ```
 
 Additional parameters:
