@@ -15,7 +15,6 @@
 #SBATCH --job-name=umrs-rivault
 ##SBATCH --partition=ng-dgx-m0  # disabled — partition set by orchestrator via --partition CLI arg
 #SBATCH --nodes=1
-#SBATCH --time=4:00:00
 #SBATCH --signal=B:TERM@120
 
 # ─── Output FQDN header (required by rivault_launcher.extract_node_address) ───
