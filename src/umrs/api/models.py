@@ -46,6 +46,7 @@ from ..model_registry.store import (
     PathNotAllowedError,
     PermissionDeniedError,
 )
+from ..shared.config import get_resolved_model_staging_root
 from .jobs import get_job_store
 
 logger = logging.getLogger(__name__)
@@ -866,10 +867,10 @@ async def stage_model(
         scope = ModelScope(request.scope)
 
         # Validate scope permissions
-        if scope == ModelScope.SYSTEM:
+        if scope == ModelScope.SYSTEM and not ctx.is_admin:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="Cannot stage system models via API. Contact admin.",
+                detail="Admin role required to stage system models",
             )
 
         if (
@@ -883,7 +884,9 @@ async def stage_model(
                 )
 
         # Compute target storage path based on scope
-        if scope == ModelScope.PROJECT:
+        if scope == ModelScope.SYSTEM:
+            storage_ref = os.path.join(get_resolved_model_staging_root(), request.name)
+        elif scope == ModelScope.PROJECT:
             storage_ref = f"/shared/projects/{request.project_id}/models/{request.name}"
         else:  # USER
             storage_ref = f"/shared/users/{ctx.user_id}/models/{request.name}"
