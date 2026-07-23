@@ -280,28 +280,32 @@ class UMRSMetrics:
         )
 
         # -- LLM usage metering ----------------------------------------
+        # source label enables cross-HPC profiling (bdrt, rccs, ai4s, atom, …).
         self._llm_tokens = _counter(
             "umrs_llm_tokens_total",
-            "LLM tokens processed through the proxy, by direction",
-            ["model", "direction"],  # direction = prompt | completion
+            "LLM tokens processed through the proxy, by direction and source",
+            ["source", "model", "direction"],  # direction = prompt | completion
         )
         self._llm_request_duration = _histogram(
             "umrs_llm_request_duration_seconds",
             "End-to-end LLM proxy latency in seconds",
-            ["model"],
+            ["source", "model"],
         )
         self._llm_requests = _counter(
             "umrs_llm_requests_total",
-            "Total LLM proxy requests",
-            ["model", "streaming"],
+            "Total LLM proxy requests by source, model, streaming",
+            ["source", "model", "streaming"],
         )
         # Per-user token breakdown (bounded cardinality on HPC — user set is finite).
         # direction: prompt | completion | cache_read | cache_write
         self._llm_tokens_user = _counter(
             "umrs_llm_tokens_user_total",
             "LLM tokens per user/project (prompt|completion|cache_read|cache_write)",
-            ["model", "user_id", "project_id", "direction"],
+            ["source", "model", "user_id", "project_id", "direction"],
         )
+
+        # Operational source — set once at startup by http_sidecar.
+        self._source: str = ""
 
     # -- Job lifecycle -------------------------------------------------
 
@@ -342,7 +346,9 @@ class UMRSMetrics:
     def job_attempts_started(self, authority: str = "slurm") -> None:
         self._attempt_started.labels(authority=authority).inc()
 
-    def job_attempts_completed(self, authority: str = "slurm", status: str = "completed") -> None:
+    def job_attempts_completed(
+        self, authority: str = "slurm", status: str = "completed"
+    ) -> None:
         self._attempt_completed.labels(authority=authority, status=status).inc()
 
     def set_job_status_count(self, status: str, count: int) -> None:
@@ -463,6 +469,14 @@ class UMRSMetrics:
 
     # -- LLM usage metering --------------------------------------------
 
+    def set_source(self, source: str) -> None:
+        """Set the operational source identifier (set once at startup).
+
+        Called by http_sidecar during startup with the site name so that
+        all LLM metrics carry the ``source`` label for cross-HPC profiling.
+        """
+        self._source = source
+
     def llm_tokens(
         self,
         model: str,
@@ -473,44 +487,74 @@ class UMRSMetrics:
         project_id: str = "",
         cached_read: int = 0,
         cached_write: int = 0,
+        source: str = "",
     ) -> None:
         """Record prompt and completion tokens for an LLM request.
 
-        ``user_id`` / ``project_id`` / ``cached_read`` / ``cached_write``
-        are optional keyword-only arguments.  When ``user_id`` is provided,
-        the per-user counter ``umrs_llm_tokens_user_total`` is also updated
-        with direction labels: prompt | completion | cache_read | cache_write.
+        ``user_id`` / ``project_id`` / ``cached_read`` / ``cached_write`` /
+        ``source`` are optional keyword-only arguments.  When ``source`` is
+        omitted the instance-level default set via :meth:`set_source` is used.
+        When ``user_id`` is provided, the per-user counter
+        ``umrs_llm_tokens_user_total`` is also updated with direction labels:
+        prompt | completion | cache_read | cache_write.
         """
+        s = source or self._source
         if prompt:
-            self._llm_tokens.labels(model=model, direction="prompt").inc(prompt)
+            self._llm_tokens.labels(source=s, model=model, direction="prompt").inc(
+                prompt
+            )
         if completion:
-            self._llm_tokens.labels(model=model, direction="completion").inc(completion)
+            self._llm_tokens.labels(source=s, model=model, direction="completion").inc(
+                completion
+            )
         if user_id:
             pid = project_id or "default"
             if prompt:
                 self._llm_tokens_user.labels(
-                    model=model, user_id=user_id, project_id=pid, direction="prompt"
+                    source=s,
+                    model=model,
+                    user_id=user_id,
+                    project_id=pid,
+                    direction="prompt",
                 ).inc(prompt)
             if completion:
                 self._llm_tokens_user.labels(
-                    model=model, user_id=user_id, project_id=pid, direction="completion"
+                    source=s,
+                    model=model,
+                    user_id=user_id,
+                    project_id=pid,
+                    direction="completion",
                 ).inc(completion)
             if cached_read:
                 self._llm_tokens_user.labels(
-                    model=model, user_id=user_id, project_id=pid, direction="cache_read"
+                    source=s,
+                    model=model,
+                    user_id=user_id,
+                    project_id=pid,
+                    direction="cache_read",
                 ).inc(cached_read)
             if cached_write:
                 self._llm_tokens_user.labels(
-                    model=model, user_id=user_id, project_id=pid, direction="cache_write"
+                    source=s,
+                    model=model,
+                    user_id=user_id,
+                    project_id=pid,
+                    direction="cache_write",
                 ).inc(cached_write)
 
-    def llm_request_duration(self, model: str, seconds: float) -> None:
+    def llm_request_duration(
+        self, model: str, seconds: float, source: str = ""
+    ) -> None:
         """Record end-to-end proxy latency."""
-        self._llm_request_duration.labels(model=model).observe(seconds)
+        s = source or self._source
+        self._llm_request_duration.labels(source=s, model=model).observe(seconds)
 
-    def llm_request(self, model: str, streaming: bool) -> None:
+    def llm_request(self, model: str, streaming: bool, source: str = "") -> None:
         """Increment LLM request counter."""
-        self._llm_requests.labels(model=model, streaming=str(streaming).lower()).inc()
+        s = source or self._source
+        self._llm_requests.labels(
+            source=s, model=model, streaming=str(streaming).lower()
+        ).inc()
 
     def set_queue_depth(self, queue_type: str, depth: float) -> None:
         """Set the current message depth for a queue (control | data)."""
