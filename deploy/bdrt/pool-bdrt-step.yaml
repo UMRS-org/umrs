@@ -16,7 +16,8 @@ defaults:
   source: bdrt
   tier: system
   ttl_sec: 0
-  timeout: 172800         # 2 days
+  timeout: 172800         # 2 days (provision HTTP timeout)
+  RIVAULT_JOB_TIMEOUT: "0"   # infinite monitor loop — BDRT has no Slurm timelimit
 
 endpoints:
   # ── Qwen3.6-35B-A3B-NVFP4 (single node → spark) ──────────────────────
