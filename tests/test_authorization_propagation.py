@@ -448,13 +448,19 @@ class TestClientSessionBootstrap:
         assert info.grants == {"projects": ["test"]}
 
     def test_bootstrap_404_raises(self):
-        """404 from server-key endpoint should raise SessionBootstrapError."""
+        """404 from session registration should raise SessionBootstrapError."""
         from umrs.client.session_bootstrap import SessionBootstrapError, bootstrap_curve_session
 
         mock_resp = MagicMock()
         mock_resp.status_code = 404
 
-        with patch("requests.get", return_value=mock_resp):
+        server_key_resp = MagicMock()
+        server_key_resp.status_code = 404
+
+        with (
+            patch("requests.get", return_value=server_key_resp),
+            patch("requests.post", return_value=mock_resp),
+        ):
             with pytest.raises(SessionBootstrapError, match="not enabled"):
                 bootstrap_curve_session(
                     gateway_url="http://localhost:8000",

@@ -165,6 +165,7 @@ class JobStore:
         priority: int = 0,
         max_attempts: int = 3,
         restart_policy: RestartPolicy = RestartPolicy.ON_CRASH,
+        ttl_seconds: int | None = None,
     ) -> str:
         """
         Create a new job.
@@ -178,6 +179,8 @@ class JobStore:
             priority: Higher = more urgent (default 0)
             max_attempts: Maximum retry attempts
             restart_policy: When to retry
+            ttl_seconds: Seconds to keep container alive after completion
+                        (None=immediate, >0=N seconds, -1=partition walltime)
 
         Returns:
             job_id of created job
@@ -201,12 +204,12 @@ class JobStore:
                         INSERT INTO jobs (
                             job_id, project_id, user_id, job_type, spec,
                             idempotency_key, status, priority,
-                            desired_max_attempts, restart_policy,
+                            desired_max_attempts, restart_policy, ttl_seconds,
                             created_at, updated_at
                         ) VALUES (
                             %s, %s, %s, %s, %s,
                             %s, %s, %s,
-                            %s, %s,
+                            %s, %s, %s,
                             %s, %s
                         )
                     """,
@@ -221,6 +224,7 @@ class JobStore:
                         priority,
                         max_attempts,
                         restart_policy.value,
+                        ttl_seconds,
                         now,
                         now,
                     ),
@@ -244,6 +248,197 @@ class JobStore:
                 row = cur.fetchone()
                 existing_id = row[0] if row else "unknown"
                 raise DuplicateJobError(existing_id) from None
+
+    def create_fan_out_graph(
+        self,
+        project_id: str,
+        user_id: str,
+        parent_job_type: JobType,
+        parent_spec: dict[str, Any],
+        children: list[dict[str, Any]],
+        priority: int = 0,
+        max_attempts: int = 3,
+        restart_policy: RestartPolicy = RestartPolicy.ON_CRASH,
+        ttl_seconds: int | None = None,
+    ) -> str:
+        """Create a durable parent and dependency-aware child jobs."""
+        parent_id = generate_job_id()
+        child_ids = [generate_job_id() for _ in children]
+        names = [
+            str(child.get("name") or index) for index, child in enumerate(children)
+        ]
+        if len(set(names)) != len(names):
+            raise ValueError("fan_out_jobs child names must be unique")
+        name_to_id = dict(zip(names, child_ids, strict=True))
+        dependency_graph = {
+            name: [str(value) for value in child.get("depends_on", [])]
+            for name, child in zip(names, children, strict=True)
+        }
+        for name, dependencies in dependency_graph.items():
+            unknown = [
+                dependency
+                for dependency in dependencies
+                if dependency not in name_to_id
+            ]
+            if unknown:
+                raise ValueError(f"Unknown fan-out dependencies for {name}: {unknown}")
+
+        visiting: set[str] = set()
+        visited: set[str] = set()
+
+        def visit(name: str) -> None:
+            if name in visiting:
+                raise ValueError("fan_out_jobs dependencies contain a cycle")
+            if name in visited:
+                return
+            visiting.add(name)
+            for dependency in dependency_graph[name]:
+                visit(dependency)
+            visiting.remove(name)
+            visited.add(name)
+
+        for name in names:
+            visit(name)
+        now = datetime.utcnow()
+
+        child_rows: list[tuple[Any, ...]] = []
+        for index, (child, child_id) in enumerate(
+            zip(children, child_ids, strict=True)
+        ):
+            child_type = JobType(child["job_type"])
+            child_spec = dict(child.get("spec") or {})
+            for key in ("data_source", "source", "source_uri", "input_uri", "inputs"):
+                if key in parent_spec and key not in child_spec:
+                    child_spec[key] = parent_spec[key]
+            dependency_names = dependency_graph[names[index]]
+            dependency_ids = [name_to_id[name] for name in dependency_names]
+            child_spec["_fan_out"] = {
+                "parent_job_id": parent_id,
+                "name": names[index],
+                "depends_on": dependency_ids,
+            }
+            child_rows.append(
+                (
+                    child_id,
+                    project_id,
+                    user_id,
+                    child_type.value,
+                    json.dumps(child_spec),
+                    compute_idempotency_key(
+                        project_id, user_id, child_type, child_spec
+                    ),
+                    JobStatus.PLANNED.value
+                    if dependency_ids
+                    else JobStatus.QUEUED.value,
+                    priority,
+                    max_attempts,
+                    restart_policy.value,
+                    ttl_seconds,
+                    now if not dependency_ids else None,
+                    now,
+                    now,
+                )
+            )
+
+        parent_graph_spec = dict(parent_spec)
+        parent_graph_spec["_fan_out"] = {"children": child_ids}
+        with self._get_conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO jobs (
+                    job_id, project_id, user_id, job_type, spec, idempotency_key,
+                    status, priority, desired_max_attempts, restart_policy,
+                    ttl_seconds, fan_out_child_job_ids, created_at, updated_at,
+                    last_state_change_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    parent_id,
+                    project_id,
+                    user_id,
+                    parent_job_type.value,
+                    json.dumps(parent_graph_spec),
+                    compute_idempotency_key(
+                        project_id, user_id, parent_job_type, parent_graph_spec
+                    ),
+                    JobStatus.RUNNING.value,
+                    priority,
+                    max_attempts,
+                    restart_policy.value,
+                    ttl_seconds,
+                    child_ids,
+                    now,
+                    now,
+                    now,
+                ),
+            )
+            cur.executemany(
+                """
+                INSERT INTO jobs (
+                    job_id, project_id, user_id, job_type, spec, idempotency_key,
+                    status, priority, desired_max_attempts, restart_policy,
+                    ttl_seconds, next_run_at, created_at, updated_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                child_rows,
+            )
+            conn.commit()
+        return parent_id
+
+    def _reconcile_fan_out_parent(self, conn: Any, child_job_id: str) -> None:
+        """Unblock dependants and aggregate a fan-out parent after child completion."""
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT spec FROM jobs WHERE job_id = %s", (child_job_id,))
+            row = cur.fetchone()
+            if not row:
+                return
+            spec = (
+                row["spec"]
+                if isinstance(row["spec"], dict)
+                else json.loads(row["spec"])
+            )
+            parent_id = spec.get("_fan_out", {}).get("parent_job_id")
+            if not parent_id:
+                return
+            cur.execute(
+                "SELECT job_id, status, spec FROM jobs WHERE %s = ANY(fan_out_child_job_ids)",
+                (child_job_id,),
+            )
+            parent = cur.fetchone()
+            if not parent:
+                return
+            cur.execute(
+                "SELECT job_id, status, spec FROM jobs WHERE job_id = ANY(%s)",
+                (parent["spec"].get("_fan_out", {}).get("children", []),),
+            )
+            children = cur.fetchall()
+            statuses = {child["job_id"]: child["status"] for child in children}
+            completed = {JobStatus.COMPLETED.value, JobStatus.ALL_COMPLETE.value}
+            for child in children:
+                child_spec = (
+                    child["spec"]
+                    if isinstance(child["spec"], dict)
+                    else json.loads(child["spec"])
+                )
+                dependencies = child_spec.get("_fan_out", {}).get("depends_on", [])
+                if child["status"] == JobStatus.PLANNED.value and all(
+                    statuses.get(dependency) in completed for dependency in dependencies
+                ):
+                    cur.execute(
+                        """UPDATE jobs SET status = %s, next_run_at = NOW(),
+                           last_state_change_at = NOW() WHERE job_id = %s""",
+                        (JobStatus.QUEUED.value, child["job_id"]),
+                    )
+            if any(status == JobStatus.FAILED.value for status in statuses.values()):
+                parent_status = JobStatus.FAILED.value
+            elif statuses and all(status in completed for status in statuses.values()):
+                parent_status = JobStatus.ALL_COMPLETE.value
+            else:
+                parent_status = JobStatus.RUNNING.value
+            cur.execute(
+                "UPDATE jobs SET status = %s, last_state_change_at = NOW() WHERE job_id = %s",
+                (parent_status, parent_id),
+            )
 
     def get_job(self, job_id: str) -> Job:
         """Get job by ID."""
@@ -651,6 +846,8 @@ class JobStore:
                 update_values,
             )
 
+            self._reconcile_fan_out_parent(conn, job_id)
+
             conn.commit()
             logger.info(f"Attempt {attempt_id} succeeded (commit={commit})")
             METRICS.job_completed("durable")
@@ -776,6 +973,8 @@ class JobStore:
                     f"Attempt {attempt_id} failed, job {job_id} exhausted retries"
                 )
                 METRICS.job_failed("durable")
+
+                self._reconcile_fan_out_parent(conn, job_id)
 
             conn.commit()
 
@@ -997,6 +1196,8 @@ class JobStore:
             priority=row["priority"],
             desired_max_attempts=row["desired_max_attempts"],
             restart_policy=RestartPolicy(row["restart_policy"]),
+            ttl_seconds=row.get("ttl_seconds"),
+            fan_out_child_job_ids=row.get("fan_out_child_job_ids") or [],
             next_run_at=row["next_run_at"],
             active_attempt_id=row["active_attempt_id"],
             commit_attempt_id=row["commit_attempt_id"],

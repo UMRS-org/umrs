@@ -4,7 +4,6 @@ from argparse import Namespace
 from datetime import datetime, timedelta
 
 import pytest
-
 from client_umrs import _resolve_endpoint_idle_ttl_sec
 from umrs.client.control_api import UMRSControlAPI
 from umrs.client.control_commands import parse_duration_seconds
@@ -151,6 +150,7 @@ def test_endpoint_up_submits_keepalive_provision_job_with_idle_ttl():
                 "idle_ttl_sec": 2700,
                 "tier": "user",
                 "gpu_count": 1,
+                "node_count": 1,
                 "max_model_len": 4096,
             },
             "project": "demo",
@@ -158,6 +158,7 @@ def test_endpoint_up_submits_keepalive_provision_job_with_idle_ttl():
             "keep_alive": True,
             "partition": "gpu",
             "node": "node-a",
+            "reservation": None,
         }
     ]
 

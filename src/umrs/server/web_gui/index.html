@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>UMRS Operations</title>
+  <link rel="stylesheet" href="/umrs/web/app.css">
+</head>
+<body>
+  <header>
+    <div><strong>UMRS</strong><span>Operations</span></div>
+    <p id="health">Checking system health...</p>
+  </header>
+  <main>
+    <section aria-labelledby="jobs-heading">
+      <div class="section-head">
+        <h1 id="jobs-heading">Jobs</h1>
+        <select id="job-status" aria-label="Filter jobs by status">
+          <option value="">All statuses</option>
+          <option>planned</option><option>queued</option><option>running</option>
+          <option>completed</option><option>all_complete</option><option>failed</option>
+        </select>
+      </div>
+      <table>
+        <thead><tr><th>ID</th><th>Type</th><th>Status</th><th>TTL</th><th>Updated</th></tr></thead>
+        <tbody id="jobs"><tr><td colspan="5">Loading...</td></tr></tbody>
+      </table>
+      <pre id="job-detail" hidden></pre>
+    </section>
+    <section aria-labelledby="models-heading">
+      <h1 id="models-heading">Models</h1>
+      <table>
+        <thead><tr><th>Name</th><th>Type</th><th>Status</th><th>Active version</th></tr></thead>
+        <tbody id="models"><tr><td colspan="4">Loading...</td></tr></tbody>
+      </table>
+    </section>
+  </main>
+  <script src="/umrs/web/app.js" defer></script>
+</body>
+</html>

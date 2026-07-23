@@ -68,6 +68,10 @@ class SlurmBackend(OrchestratorBackend):
 
     def _build_sbatch_script(self, model_path: str, **kwargs: Any) -> str:
         """Generate sbatch script content."""
+        ttl_seconds = kwargs.get("ttl_seconds")
+        if ttl_seconds == -1:
+            kwargs.pop("time", None)
+        kwargs.setdefault("env", {})["UMRS_JOB_TTL_SECONDS"] = str(ttl_seconds or 0)
         return render_sbatch_script(self.config, model_path, **kwargs)
 
     async def submit_job(

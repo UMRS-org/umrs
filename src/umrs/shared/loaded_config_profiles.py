@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import sys
 import configparser
 import copy
+import os
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -117,21 +117,12 @@ def _write_pointer(pointer_path: Path, target_path: Path) -> Path:
 
 
 def _project_candidates(pattern: str) -> list[Path]:
-    cwd = Path.cwd()
-    matches = []
-    for path in cwd.rglob(pattern):
-        if path.is_file():
-            matches.append(path)
-    return matches
+    return [path for path in Path.cwd().glob(pattern) if path.is_file()]
 
 
 def _config_root_candidates(pattern: str) -> list[Path]:
     cfg_dir = Path(get_resolved_umrs_cfg_dir()).expanduser()
-    matches = []
-    for path in cfg_dir.rglob(pattern):
-        if path.is_file():
-            matches.append(path)
-    return matches
+    return [path for path in cfg_dir.glob(pattern) if path.is_file()]
 
 
 def _candidate_paths_for_server() -> list[Path]:
@@ -336,9 +327,7 @@ def discover_loaded_config_profiles(
     if skip_server:
         server_candidates: list[ConfigFileCandidate] = []
     else:
-        server_paths = _unique_paths(
-            [*_candidate_paths_for_server(), current_server]
-        )
+        server_paths = _unique_paths([*_candidate_paths_for_server(), current_server])
         server_candidates = [
             _make_candidate("server", path, current_server) for path in server_paths
         ]
@@ -427,6 +416,18 @@ def resolve_loaded_config(
     explicit_user_config_path: str | None = None,
     explicit_s3_config_path: str | None = None,
 ) -> ResolvedLoadedConfig:
+    server_from_argument = explicit_server_config_path is not None
+    user_from_argument = explicit_user_config_path is not None
+    s3_from_argument = explicit_s3_config_path is not None
+    explicit_server_config_path = (
+        explicit_server_config_path
+        or os.environ.get("UMRS_SERVER_CONF")
+        or os.environ.get("UMRS_CONF")
+    )
+    explicit_user_config_path = explicit_user_config_path or os.environ.get(
+        "UMRS_USER_CONF"
+    )
+    explicit_s3_config_path = explicit_s3_config_path or os.environ.get("UMRS_S3CFG")
     # Skip auto-discovery for config types whose path was explicitly
     # provided (e.g. via -c / -s CLI flags).  This avoids scanning and
     # validating every candidate file on disk when the caller already
@@ -448,6 +449,12 @@ def resolve_loaded_config(
         discovered["server"],
         get_current_server_config_path(),
     )
+    if (
+        not server_from_argument
+        and explicit_server_config_path
+        and (os.environ.get("UMRS_SERVER_CONF") or os.environ.get("UMRS_CONF"))
+    ):
+        server.source = "env:UMRS_SERVER_CONF"
 
     derived_user_path = _derive_user_path(
         server, explicit_user_config_path, current_user
@@ -460,6 +467,12 @@ def resolve_loaded_config(
         discovered["user"],
         get_current_user_config_path(),
     )
+    if (
+        not user_from_argument
+        and explicit_user_config_path
+        and os.environ.get("UMRS_USER_CONF")
+    ):
+        user.source = "env:UMRS_USER_CONF"
 
     if derived_user_path and user.path == str(Path(derived_user_path).expanduser()):
         user.source = f"server:{server.path}"
@@ -470,6 +483,12 @@ def resolve_loaded_config(
         current_s3,
         discovered["s3"],
     )
+    if (
+        not s3_from_argument
+        and explicit_s3_config_path
+        and os.environ.get("UMRS_S3CFG")
+    ):
+        s3.source = "env:UMRS_S3CFG"
 
     warnings = _build_config_warnings(server, user, s3)
     return ResolvedLoadedConfig(server=server, user=user, s3=s3, warnings=warnings)
@@ -497,27 +516,17 @@ def _resolve_s3_config(
 ) -> tuple[ConfigLayer, str | None]:
     """Resolve the S3 config layer, applying user-config-derived defaults."""
     derived_s3_path = user.details.get("s3_configuration_file") if user.valid else None
-    s3 = _resolve_selector(
-        "s3",
-        derived_s3_path,
-        explicit_s3_config_path,
-        current_s3,
-        discovered_s3,
-        get_current_s3_config_path(),
-    )
-
-    if not s3.path and derived_s3_path:
+    if explicit_s3_config_path:
+        s3 = _VALIDATORS["s3"](Path(explicit_s3_config_path).expanduser())
+        s3.source = _FLAG_SOURCES["s3"]
+    elif current_s3:
+        s3 = _VALIDATORS["s3"](Path(current_s3).expanduser())
+        s3.source = f"current:{get_current_s3_config_path()}"
+    elif derived_s3_path:
         s3 = _VALIDATORS["s3"](Path(derived_s3_path).expanduser())
         s3.source = f"user:{user.path}"
-    elif (
-        derived_s3_path
-        and s3.path == str(Path(derived_s3_path).expanduser())
-        and not (
-            s3.source
-            and (s3.source.startswith("current:") or s3.source.startswith("flag:"))
-        )
-    ):
-        s3.source = f"user:{user.path}"
+    else:
+        s3 = _auto_select(discovered_s3, "s3")
 
     return s3, derived_s3_path
 
@@ -554,8 +563,7 @@ def _warn_s3_override(user: ConfigLayer, s3: ConfigLayer) -> list[str]:
         return []
     user_s3_path = user.details.get("s3_configuration_file")
     if user_s3_path and _normalize_path(user_s3_path) != _normalize_path(s3.path):
-        warnings = ["An explicit S3 config override is active for this client session."]
-        sys.exit(f"this warning should never be raised: {warnings=}")
+        return ["An explicit S3 config override is active for this client session."]
     return []
 
 

@@ -40,6 +40,7 @@ class JobStatus(Enum):
     QUEUED = "queued"  # Ready to schedule
     RUNNING = "running"  # Has active attempt
     COMPLETED = "completed"  # Successfully finished
+    ALL_COMPLETE = "all_complete"  # Fan-out parent completed all children
     FAILED = "failed"  # All retries exhausted
     CANCELLED = "cancelled"  # User cancelled
 
@@ -167,6 +168,16 @@ class Job:
     desired_max_attempts: int = 3
     restart_policy: RestartPolicy = RestartPolicy.ON_CRASH
 
+    # Job TTL — how long the job container stays alive after completion
+    # None = terminate immediately (default)
+    # > 0 = seconds to keep alive
+    # -1 = until partition walltime limit
+    ttl_seconds: int | None = None
+
+    # Fan-out/fan-in job orchestration (GitHub Issue #87, TASK-015-005)
+    # Child job IDs spawned by this parent job
+    fan_out_child_job_ids: list[str] = field(default_factory=list)
+
     next_run_at: datetime | None = None
     active_attempt_id: str | None = None
     commit_attempt_id: str | None = None
@@ -205,6 +216,8 @@ class Job:
             "priority": self.priority,
             "desired_max_attempts": self.desired_max_attempts,
             "restart_policy": self.restart_policy.value,
+            "ttl_seconds": self.ttl_seconds,
+            "fan_out_child_job_ids": self.fan_out_child_job_ids,
             "next_run_at": self.next_run_at.isoformat() if self.next_run_at else None,
             "active_attempt_id": self.active_attempt_id,
             "commit_attempt_id": self.commit_attempt_id,
@@ -232,6 +245,8 @@ class Job:
             priority=data.get("priority", 0),
             desired_max_attempts=data.get("desired_max_attempts", 3),
             restart_policy=RestartPolicy(data.get("restart_policy", "on_crash")),
+            ttl_seconds=data.get("ttl_seconds"),
+            fan_out_child_job_ids=data.get("fan_out_child_job_ids", []),
             next_run_at=_parse_datetime(data.get("next_run_at")),
             active_attempt_id=data.get("active_attempt_id"),
             commit_attempt_id=data.get("commit_attempt_id"),

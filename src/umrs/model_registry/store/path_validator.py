@@ -146,9 +146,6 @@ class PathValidator:
         if token is None:
             return []
         patterns = [pattern for pattern in self.allowed_patterns if token in pattern]
-        # Also include operator-configured "unscoped" patterns — those without
-        # any scope token.  These are explicitly allowed by the operator for
-        # any scope (e.g. site-wide model dirs from MODEL_ALLOWED_PATHS).
         for pattern in self._operator_patterns:
             if "{owner_id}" not in pattern and "{project_id}" not in pattern:
                 _append_unique(patterns, pattern)
