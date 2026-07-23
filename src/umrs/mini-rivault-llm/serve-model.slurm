@@ -836,6 +836,7 @@ _cleanup_started=0
 RIVAULT_CONTROL_DIR="${RIVAULT_CONTROL_DIR:-}"
 RIVAULT_STOP_REQUEST_FILE=""
 RAY_HEAD_PID=""
+NATIVE_LLM_PID=""
 WORKER_PIDS=()
 if [[ -n "${RIVAULT_CONTROL_DIR}" && -n "${SLURM_JOB_ID:-}" ]]; then
     mkdir -p "${RIVAULT_CONTROL_DIR}" 2>/dev/null || true
@@ -919,6 +920,15 @@ cleanup_stack() {
     fi
     if [[ -n "${RAY_HEAD_PID}" ]]; then
         kill "${RAY_HEAD_PID}" 2>/dev/null || true
+    fi
+    if [[ -n "${NATIVE_LLM_PID}" ]]; then
+        kill "${NATIVE_LLM_PID}" 2>/dev/null || true
+    fi
+    if [[ "${RIVAULT_NATIVE_LLM_RUNNER:-}" == "glm52-vllm-moet" && ${#RAY_NODES[@]} -gt 0 ]]; then
+        for wnode in "${RAY_NODES[@]}"; do
+            srun --nodes=1 --ntasks=1 --nodelist="${wnode}" --overlap \
+                "${VLLM_MOET_VENV}/bin/ray" stop --force >/dev/null 2>&1 || true
+        done
     fi
     # Stop standalone multi-node vLLM (host-network container, not on the bridge)
     podman rm -f rivault-vllm-mn >/dev/null 2>&1 || true
@@ -1055,6 +1065,109 @@ printf "%s" "$count"'
     echo "[rivault] LiteLLM DB schema initialized (${applied_count} SQL migrations)."
 }
 
+# ─── Native GLM-5.2 runner ───────────────────────────────────────────────────
+start_native_glm52() {
+    local node_count="${SLURM_JOB_NUM_NODES:-${SLURM_NNODES:-1}}"
+    local fabric_if="${VLLM_FABRIC_IFACE:-enp1s0f1np1}"
+    local venv="${VLLM_MOET_VENV:?VLLM_MOET_VENV is required}"
+    local repo="${VLLM_MOET_REPO:?VLLM_MOET_REPO is required}"
+    local nccl_so="${VLLM_NCCL_SO_PATH:?VLLM_NCCL_SO_PATH is required}"
+    local planes="${VLLM_MOE_W2_PREPACKED_DIR:?VLLM_MOE_W2_PREPACKED_DIR is required}"
+    local model="${_vllm_host_model_path}"
+    local head_ip worker_ip ray_common
+    local -a native_extra_args=()
+
+    [[ "${node_count}" -eq 2 ]] || {
+        echo "[rivault] FATAL: glm52-vllm-moet requires exactly two nodes" >&2
+        return 1
+    }
+    [[ "${SLURM_JOB_PARTITION:-}" == "edge-double" ]] || {
+        echo "[rivault] FATAL: glm52-vllm-moet requires edge-double, got ${SLURM_JOB_PARTITION:-unset}" >&2
+        return 1
+    }
+
+    mapfile -t RAY_NODES < <(scontrol show hostnames "${SLURM_JOB_NODELIST:-}")
+    [[ ${#RAY_NODES[@]} -eq 2 ]] || {
+        echo "[rivault] FATAL: could not resolve both GLM nodes" >&2
+        return 1
+    }
+
+    for wnode in "${RAY_NODES[@]}"; do
+        # shellcheck disable=SC2016  # Positional parameters expand in remote bash.
+        if ! srun --nodes=1 --ntasks=1 --nodelist="${wnode}" --overlap bash -c \
+            'test -x "$1/bin/vllm" && test -x "$1/bin/ray" && test -f "$2/spark/purge-cache.py" && test -r "$3" && test -d "$4" && find "$4" -type f -print -quit | grep -q .' \
+            _ "${venv}" "${repo}" "${nccl_so}" "${planes}"; then
+            echo "[rivault] FATAL: native GLM prerequisites missing on ${wnode}" >&2
+            return 1
+        fi
+    done
+    [[ -f "${model}/config.json" ]] || {
+        echo "[rivault] FATAL: GLM model config missing at ${model}" >&2
+        return 1
+    }
+
+    head_ip="$(srun --nodes=1 --ntasks=1 --nodelist="${RAY_NODES[0]}" --overlap \
+        ip -4 -o addr show dev "${fabric_if}" | awk '{sub(/\/.*/, "", $4); print $4; exit}')"
+    worker_ip="$(srun --nodes=1 --ntasks=1 --nodelist="${RAY_NODES[1]}" --overlap \
+        ip -4 -o addr show dev "${fabric_if}" | awk '{sub(/\/.*/, "", $4); print $4; exit}')"
+    [[ -n "${head_ip}" && -n "${worker_ip}" ]] || {
+        echo "[rivault] FATAL: cannot resolve ${fabric_if} addresses" >&2
+        return 1
+    }
+
+    ray_common="RAY_memory_monitor_refresh_ms=0 RAY_local_fs_capacity_threshold=1 NCCL_IB_DISABLE=1 NCCL_SOCKET_IFNAME=${fabric_if} GLOO_SOCKET_IFNAME=${fabric_if} NCCL_GRAPH_MIXING_SUPPORT=1 VLLM_NCCL_SO_PATH=${nccl_so} MALLOC_MMAP_THRESHOLD_=65536"
+    echo "[rivault] Native GLM fabric: ${RAY_NODES[0]}=${head_ip}, ${RAY_NODES[1]}=${worker_ip}"
+
+    for wnode in "${RAY_NODES[@]}"; do
+        srun --nodes=1 --ntasks=1 --nodelist="${wnode}" --overlap \
+            "${venv}/bin/ray" stop --force >/dev/null 2>&1 || true
+    done
+
+    srun --nodes=1 --ntasks=1 --nodelist="${RAY_NODES[0]}" --overlap \
+        bash -lc "env ${ray_common} VLLM_HOST_IP=${head_ip} ${venv}/bin/ray start --head --node-ip-address=${head_ip} --port=6379 --num-gpus=1 --object-store-memory=2000000000 --include-dashboard=false" || return 1
+    srun --nodes=1 --ntasks=1 --nodelist="${RAY_NODES[1]}" --overlap \
+        bash -lc "env ${ray_common} VLLM_HOST_IP=${worker_ip} ${venv}/bin/ray start --address=${head_ip}:6379 --node-ip-address=${worker_ip} --num-gpus=1 --object-store-memory=2000000000" || return 1
+
+    RAY_ADDRESS="${head_ip}:6379"
+    HEAD_IP="${head_ip}"
+    export RAY_ADDRESS VLLM_HOST_IP="${head_ip}"
+    export VLLM_MOE_W2=1 VLLM_MOE_W2_PLANES_MMAP=1
+    export VLLM_MOE_W2_CUBIT_DIR="${repo}/kernels/cubins-sm120"
+    export VLLM_MOE_W2_DELTA_GB="${VLLM_MOE_W2_DELTA_GB:-0}"
+    export VLLM_MOE_W2_FADVISE_GLOB="${VLLM_MOE_W2_FADVISE_GLOB:-}"
+    export MALLOC_MMAP_THRESHOLD_="${MALLOC_MMAP_THRESHOLD_:-65536}"
+
+    srun --nodes=1 --ntasks=1 --nodelist="${RAY_NODES[0]}" --overlap \
+        "${venv}/bin/python" "${repo}/spark/purge-cache.py" "$(dirname "${model}")" || true
+    srun --nodes=1 --ntasks=1 --nodelist="${RAY_NODES[1]}" --overlap \
+        "${venv}/bin/python" "${repo}/spark/purge-cache.py" "$(dirname "${model}")" || true
+
+    if [[ -n "${VLLM_EXTRA_ARGS:-}" ]]; then
+        read -r -a native_extra_args <<< "${VLLM_EXTRA_ARGS}"
+    fi
+    "${venv}/bin/vllm" serve "${model}" \
+        --served-model-name "${VLLM_SERVED_MODEL_NAME:-glm-5.2}" \
+        --api-key "${VLLM_API_KEY}" --trust-remote-code \
+        --distributed-executor-backend ray --tensor-parallel-size 2 \
+        --kv-cache-dtype fp8 --max-model-len "${VLLM_MAX_MODEL_LEN:-98304}" \
+        --gpu-memory-utilization "${VLLM_GPU_MEM_UTIL:-0.85}" \
+        --kv-cache-memory-bytes "${VLLM_KV_CACHE_MEMORY_BYTES:-10737418240}" \
+        --max-num-batched-tokens "${VLLM_MAX_NUM_BATCHED_TOKENS:-512}" \
+        --max-num-seqs "${VLLM_MAX_NUM_SEQS:-2}" \
+        --speculative-config "{\"method\":\"mtp\",\"num_speculative_tokens\":${MTP_K:-1}}" \
+        --compilation-config '{"cudagraph_mode":"FULL_AND_PIECEWISE","custom_ops":["all"]}' \
+        --host 0.0.0.0 --port 8000 "${native_extra_args[@]}" &
+    NATIVE_LLM_PID=$!
+
+    RIVAULT_PROFILES="$(echo "${RIVAULT_PROFILES}" | tr ' ' '\n' | grep -vxE 'vllm|vision-bentoml' | tr '\n' ' ')"
+    _profile_flags=""
+    for _p in ${RIVAULT_PROFILES}; do
+        _profile_flags="${_profile_flags} --profile ${_p}"
+    done
+    sed -i "s@http://vllm:8000/v1@http://${HEAD_IP}:8000/v1@g" "./litellm_fs/config.yaml.${uuid}"
+    echo "[rivault] LiteLLM repointed to native GLM at http://${HEAD_IP}:8000/v1"
+}
+
 # ─── Multi-node Ray cluster bootstrap ────────────────────────────────────────
 # When Slurm allocates more than one node, bootstrap a Ray cluster across the
 # allocation before starting the compose stack.  The vLLM container (in compose)
@@ -1067,7 +1180,10 @@ printf "%s" "$count"'
 # container (on the genai-private-net bridge) reaches the Ray head through the
 # bridge gateway, which routes to the host's external IP.
 _MULTI_NODE=0
-if [[ "${SLURM_JOB_NUM_NODES:-${SLURM_NNODES:-1}}" -gt 1 ]]; then
+if [[ "${RIVAULT_NATIVE_LLM_RUNNER:-}" == "glm52-vllm-moet" ]]; then
+    _MULTI_NODE=1
+    start_native_glm52 || exit 1
+elif [[ "${SLURM_JOB_NUM_NODES:-${SLURM_NNODES:-1}}" -gt 1 ]]; then
     _MULTI_NODE=1
     echo "[rivault] Multi-node allocation: ${SLURM_JOB_NUM_NODES:-${SLURM_NNODES}} nodes"
 

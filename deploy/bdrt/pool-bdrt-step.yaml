@@ -221,12 +221,11 @@ endpoints:
   # ── GLM-5.2 (2 nodes → edge-double) ──────────────────────────────────
   #  753B MoE (FP8 + NVFP4 2-bit experts).
   #  zai-org/GLM-5.2-FP8 checkpoint + pruned TP2 planes (2-bit experts).
-  #  Requires vLLM-Moet (spark-gb10 branch) with 2-bit expert kernels.
-  #  Base: ~15 tok/s single-stream. Fast build (NVFP4 big-3 + dspark W4A16):
-  #  ~22 tok/s at 96K ctx, 2-bit speculator (dspark) at K=2.
-  #  TP2 is FIT: 753B requires ~376 GB per rank — won't fit one node.
-  #  Architecture: ChatGLMForCausalLM (requires trust-remote-code).
-  #  NOTE: Requires vLLM-Moet setup (not stock vLLM). Uses prepacked planes.
+  #  Recipe: https://howtospark.com/recipes/glm-5-2-dual-spark-tp2
+  #  Requires native vLLM-Moet 0.24.0 + Ray 2.56.0, NCCL >= 2.30.7,
+  #  and rank-local TP2 planes pruned to 208 experts (~79 GiB/rank).
+  #  Base recipe: ~15 tok/s at 96K context with native MTP k=1.
+  #  Stock vLLM containers and load-time plane conversion are unsupported.
   - name: glm-5.2
     model: glm-5.2
     tier: system
@@ -236,20 +235,22 @@ endpoints:
     env_vars:
       VLLM_HOST_MODEL_PATH: "/home/mnagaso/umrs_models/hub/models--zai-org--GLM-5.2-FP8/snapshots"
       VLLM_PATH_TO_HUGGINGFACE: "/home/mnagaso/umrs_models"
-      VLLM_MODEL: "zai-org/GLM-5.2-FP8"
-      VLLM_TOKENIZER: "zai-org/GLM-5.2-FP8"
+      VLLM_MODEL: "/home/mnagaso/umrs_models/hub/models--zai-org--GLM-5.2-FP8/snapshots"
+      VLLM_TOKENIZER: "/home/mnagaso/umrs_models/hub/models--zai-org--GLM-5.2-FP8/snapshots"
       VLLM_GPU_MEM_UTIL: "0.85"
+      VLLM_MAX_MODEL_LEN: "98304"
       VLLM_MAX_NUM_SEQS: "2"
+      VLLM_MAX_NUM_BATCHED_TOKENS: "512"
+      VLLM_KV_CACHE_MEMORY_BYTES: "10737418240"
       VLLM_TENSOR_PARALLEL_SIZE: "2"
-      # GLM-5.2 requires vLLM-Moet spark-gb10 branch with 2-bit expert kernels.
-      VLLM_DOCKER_IMAGE: "docker.io/vllm/vllm-openai:hy3-arm64-cu130"
-      # MTP speculative decode at K=1 (base config).
-      VLLM_EXTRA_ARGS: >-
-        --enforce-eager
-        --kv-cache-dtype fp8
-        --kv-cache-memory-bytes 10737418240
-        --max-num-batched-tokens 8192
-        --speculative-config {"method":"mtp","num_speculative_tokens":1}
-      # VLLM_MOE_W2_PREPACKED_DIR — paths to pruned TP2 planes (2-bit).
-      VLLM_MOE_W2_PREPACKED_DIR: "/home/mnagaso/umrs_models/hub/models--zai-org--GLM-5.2-FP8/snapshots/moe_w2_planes_tp2_p208"
+      RIVAULT_NATIVE_LLM_RUNNER: "glm52-vllm-moet"
+      VLLM_MOET_VENV: "/home/mnagaso/venvs/vllm-moet"
+      VLLM_MOET_REPO: "/home/mnagaso/Dev/vLLM-Moet"
+      VLLM_NCCL_SO_PATH: "/home/mnagaso/nccl-2.30.7/libnccl.so.2"
+      MTP_K: "1"
+      # Each node receives only its own rank shard at this identical local path.
+      VLLM_MOE_W2_PREPACKED_DIR: "/var/tmp/umrs-glm52/moe_w2_planes_tp2_p208"
+      VLLM_MOE_W2_DELTA_GB: "0"
+      VLLM_MOE_W2_FADVISE_GLOB: ""
+      MALLOC_MMAP_THRESHOLD_: "65536"
       RCCS_SKIP_CDI: "1"
