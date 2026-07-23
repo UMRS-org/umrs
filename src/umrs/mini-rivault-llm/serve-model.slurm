@@ -1228,7 +1228,7 @@ RAYEOF
         -e NCCL_DEBUG=INFO
         # GB10 has UNIFIED memory (GPU allocations + kernel page cache share the
         # same pool as host RAM). Two levers keep the ~94 GiB/node weight load
-        # within the 121.63 GiB pool: (1) --object-store-memory=1g on `ray start`
+        # within the 121.63 GiB pool: (1) --object-store-memory=1073741824 (1GiB) on `ray start`
         # (below) caps the otherwise ~10 GB Ray plasma reservation, which is
         # unused in the PP path (weights load from disk, pipeline tensors go over
         # NCCL/GPU) and was the bulk of the head's non-torch overhead; (2) a small

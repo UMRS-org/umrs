@@ -1,0 +1,31 @@
+# Temp pool: laguna-s-2.1-fp8 only (bdrt) — using hy3-arm64-cu130 image
+pool: bdrt-laguna
+defaults:
+  source: bdrt
+  tier: system
+  ttl_sec: 0
+  timeout: 172800
+
+endpoints:
+  - name: laguna-s-2.1-fp8
+    model: laguna-s-2.1-fp8
+    tier: system
+    node_count: 2
+    partition: edge-double
+    max_model_len: 262144
+    env_vars:
+      VLLM_HOST_MODEL_PATH: "/home/mnagaso/umrs_models/hub/models--poolside--Laguna-S-2.1-FP8/snapshots"
+      VLLM_PATH_TO_HUGGINGFACE: "/home/mnagaso/umrs_models"
+      VLLM_MODEL: "poolside/Laguna-S-2.1-FP8"
+      VLLM_TOKENIZER: "poolside/Laguna-S-2.1-FP8"
+      VLLM_GPU_MEM_UTIL: "0.85"
+      VLLM_MAX_NUM_SEQS: "2"
+      VLLM_TENSOR_PARALLEL_SIZE: "2"
+      VLLM_MOE_BACKEND: "marlin"
+      VLLM_DOCKER_IMAGE: "docker.io/vllm/vllm-openai:hy3-arm64-cu130"
+      VLLM_EXTRA_ARGS: >-
+        --enforce-eager
+        --kv-cache-dtype fp8
+        --kv-cache-memory-bytes 5368709120
+        --max-num-batched-tokens 8192
+      RCCS_SKIP_CDI: "1"
