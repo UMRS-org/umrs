@@ -92,7 +92,8 @@ check_server_bootstrap_complete() {
     # Fallback marker: "Starting HTTP sidecar" is emitted via the logging module
     # (stderr, unbuffered) right after bootstrap finishes.
     tail -c "+$((log_offset + 1))" "$LOG_FILE" 2>/dev/null \
-        | grep -Fq -e "Server configuration done!" -e "Starting HTTP sidecar"
+        | grep -F -e "Server configuration done!" -e "Starting HTTP sidecar" \
+            >/dev/null
 }
 
 check_postgres_catalog_ready() {
