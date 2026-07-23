@@ -25,7 +25,7 @@ scheduler:
   partition: spark,spark-double,edge-double  # dgx-spark-[0-1] (GB10 Grace-Blackwell)
   account: ""                   # no Slurm account required on the DGX-Spark cluster
   qos: ""
-  time_limit: "2-00:00:00"   # 2 days; allows queued jobs to run uninterrupted once started
+  time_limit: "0"            # BDRT partitions have no time limit
   gpus: 0  # single GB10 per node; allocate the node implicitly (partition may reject --gres/--gpus)
   cpus: 8
   memory: ""  # omit --mem; let the scheduler assign node defaults
