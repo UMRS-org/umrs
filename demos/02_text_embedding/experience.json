@@ -6,7 +6,8 @@
       "modality_name": "text",
       "slurm": {
         "partition": "ng-dgx-m3",
-        "reservation": "nagaso_m3-15_0721"
+        "reservation": "nagaso_m3-15_0721",
+        "nodelist": "ng-dgx-m3-15"
       },
       "s3": {
         "bucket_alias": "demo-texts",
@@ -33,7 +34,8 @@
       "modality_name": "text file",
       "slurm": {
         "partition": "ng-dgx-m3",
-        "reservation": "nagaso_m3-15_0721"
+        "reservation": "nagaso_m3-15_0721",
+        "nodelist": "ng-dgx-m3-15"
       },
       "s3": {
         "bucket_alias": "demo-textfiles",

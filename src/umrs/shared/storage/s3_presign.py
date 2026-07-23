@@ -37,7 +37,7 @@ DEFAULT_TTL_SEC = 3600
 #
 # Example: ``S3_PRESIGN_ENDPOINT=http://minio-host:19000``
 
-_presign_clients: dict[str, Any] = {}
+_presign_clients: dict[tuple[str, str], Any] = {}
 
 
 def _get_presign_endpoint(endpoint_override: str | None = None):
@@ -76,11 +76,16 @@ def _get_presign_client(s3_client, endpoint_override: str | None = None):
     if not endpoint:
         return s3_client
 
-    if endpoint in _presign_clients:
-        return _presign_clients[endpoint]
-
     # Extract credentials from the existing client's session.
     creds = s3_client._request_signer._credentials  # noqa: SLF001
+
+    # Cache per (endpoint, access_key): presigned URLs embed the signing
+    # credentials, so a cache keyed by endpoint alone would reuse the first
+    # user's credentials for every other user (403 on their buckets).
+    cache_key = (endpoint, creds.access_key)
+    if cache_key in _presign_clients:
+        return _presign_clients[cache_key]
+
     client = boto3.client(
         "s3",
         endpoint_url=endpoint,
@@ -88,7 +93,7 @@ def _get_presign_client(s3_client, endpoint_override: str | None = None):
         aws_secret_access_key=creds.secret_key,
         config=BotoConfig(signature_version="s3v4"),
     )
-    _presign_clients[endpoint] = client
+    _presign_clients[cache_key] = client
     logger.info(
         "Created presign S3 client with external endpoint: %s",
         endpoint,
