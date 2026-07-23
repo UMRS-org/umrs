@@ -8,7 +8,6 @@ import sys
 import time
 import traceback
 from dataclasses import dataclass
-from glob import glob
 from pathlib import Path
 from typing import Any
 
@@ -1834,7 +1833,7 @@ def _handle_experience_recover(ctx, args):
 
 
 def _handle_experience_command(ctx):
-    args = ctx.args
+    args = getattr(ctx, "args", ctx)
     if args.experience_action == "add":
         return _handle_config_add_experience(ctx, args)
     if args.experience_action == "remove":
@@ -1951,7 +1950,10 @@ def _handle_experience_validate(ctx, args):
             return 0
 
         # Wrap in the same structure expected by validation logic
-        fragments = [{"xp_name": f"user_experience_{i}", **xp} for i, xp in enumerate(experiences)]
+        fragments = [
+            {"xp_name": f"user_experience_{i}", **xp}
+            for i, xp in enumerate(experiences)
+        ]
 
     errors = []
     warnings = []
@@ -1975,9 +1977,7 @@ def _handle_experience_validate(ctx, args):
 
             # Check if model exists in server catalog (non-destructive)
             if ctx.control_mq is None:
-                warnings.append(
-                    f"    ⚠  ZMQ not available — skipping model check"
-                )
+                warnings.append("    ⚠  ZMQ not available — skipping model check")
                 print(f"    {warnings[-1]}")
                 continue
 
@@ -1985,11 +1985,17 @@ def _handle_experience_validate(ctx, args):
                 from umrs.client.control_api import UMRSControlAPI
 
                 # Get client_id from user config or args
-                client_id = ctx.args._client_id if hasattr(ctx.args, '_client_id') else None
+                client_id = (
+                    ctx.args._client_id if hasattr(ctx.args, "_client_id") else None
+                )
                 if not client_id and user_cfg and isinstance(user_cfg, dict):
                     client_id = user_cfg.get("username")
                 if not client_id:
-                    client_id = ctx.connection.server_host.split(".")[-1] if hasattr(ctx, 'connection') and ctx.connection else "_"
+                    client_id = (
+                        ctx.connection.server_host.split(".")[-1]
+                        if hasattr(ctx, "connection") and ctx.connection
+                        else "_"
+                    )
 
                 api = UMRSControlAPI(
                     control_mq=ctx.control_mq,
@@ -2033,7 +2039,7 @@ def _handle_experience_validate(ctx, args):
                     print(f"    ✓  Model '{model_name}' found in model catalog")
             except Exception:
                 warnings.append(
-                    f"    ⚠  Could not verify model (server unreachable or auth issue)"
+                    "    ⚠  Could not verify model (server unreachable or auth issue)"
                 )
                 print(f"    {warnings[-1]}")
 
@@ -2659,9 +2665,7 @@ def _ensure_user_config_after_login(username: str, args) -> int:
 
     set_current_user_config(str(cfg_path))
     print(f"\n  {_green('✓')} User config created → {_bold(str(cfg_path))}")
-    print(
-        f"  Add experiences via: {_cyan('umrs experience add <experience.json>')}"
-    )
+    print(f"  Add experiences via: {_cyan('umrs experience add <experience.json>')}")
     print(f"  Then reload:        {_cyan('umrs reload')}")
     return 0
 
@@ -2707,7 +2711,7 @@ def _handle_login(args):
         jwt_user = claims.get("sub")
         if jwt_user and not username:
             username = jwt_user
-        print(f"  JWT identity (display only, not authoritative):")
+        print("  JWT identity (display only, not authoritative):")
         if jwt_user:
             print(f"    Username: {jwt_user}")
         if "email" in claims:
@@ -2723,7 +2727,7 @@ def _handle_login(args):
                 mins = int((remaining % 3600) // 60)
                 print(f"    Expires in: {hours}h {mins}m")
             else:
-                print(f"    Token EXPIRED")
+                print("    Token EXPIRED")
 
     if not username:
         username = input("UMRS username: ").strip()
@@ -2788,12 +2792,12 @@ def _handle_login(args):
         try:
             result = _http_ping(gateway_url, api_key)
             if result.get("server_ready"):
-                print(f"  ✓ Server is reachable via gateway")
+                print("  ✓ Server is reachable via gateway")
             else:
-                print(f"  ✗ Server not ready via gateway (may still be starting)")
+                print("  ✗ Server not ready via gateway (may still be starting)")
         except Exception as e:
             print(f"  ✗ Connection check failed: {e}")
-            print(f"  Profile saved — you can retry with `umrs ping`")
+            print("  Profile saved — you can retry with `umrs ping`")
         print(f"\n✓ Login complete for user '{username}' via {gateway_url}")
     else:
         print(f"  Verifying connection to {host}:{port} ...")
@@ -2808,12 +2812,12 @@ def _handle_login(args):
             )
             mq.set_timeouts(5000, 5000)
             if mq.is_server_ready(timeout_ms=5000):
-                print(f"  ✓ Server is reachable")
+                print("  ✓ Server is reachable")
             else:
-                print(f"  ✗ Server did not respond to ping (may still be starting)")
+                print("  ✗ Server did not respond to ping (may still be starting)")
         except Exception as e:
             print(f"  ✗ Connection check failed: {e}")
-            print(f"  Profile saved — you can retry with `umrs ping`")
+            print("  Profile saved — you can retry with `umrs ping`")
         print(f"\n✓ Login complete for user '{username}' on {host}:{port}")
     print(f"  Profile: {profile_name}")
 
@@ -2822,7 +2826,7 @@ def _handle_login(args):
     if rc:
         return rc
 
-    print(f"  Run `umrs ping` to verify full connectivity.")
+    print("  Run `umrs ping` to verify full connectivity.")
     return 0
 
 
@@ -3256,9 +3260,7 @@ def action_list_buckets(bucket_cfg, username, output_format, *, remote_info=None
                     )
                 lines.append("")
                 lines.append(f"  {_dim('Hints:')}")
-                lines.append(
-                    f"  {_dim('  Remove extra buckets:')}  umrs bucket purge"
-                )
+                lines.append(f"  {_dim('  Remove extra buckets:')}  umrs bucket purge")
                 lines.append(
                     f"  {_dim('  Add experience back:')}   umrs experience add <experience.json> --update"
                 )
@@ -3848,8 +3850,8 @@ def _action_ping(ctx):
         f"  {_status_dot(False)} Server {_red('unreachable')}  {_dim('|')}  profile={profile_label}"
     )
     print(f"    ZMQ: {host}:{port} — not responding")
-    print(f"    HTTP: no gateway_url in connection profile")
-    print(f"    hint: switch profile with `umrs config use --profile <name>`")
+    print("    HTTP: no gateway_url in connection profile")
+    print("    hint: switch profile with `umrs config use --profile <name>`")
     print(
         f"          or add gateway_url to ~/.config/umrs/connections/{getattr(ctx.connection, 'profile_name', '?')}.json"
     )
@@ -5647,9 +5649,7 @@ def _action_purge_remote_buckets(ctx):
                         print(
                             f"  {_green('✓')} Removed experience '{rn}' from local config"
                         )
-                    print(
-                        f"  {_dim('Run')} umrs reload {_dim('to sync with server.')}"
-                    )
+                    print(f"  {_dim('Run')} umrs reload {_dim('to sync with server.')}")
             except Exception as exc:
                 print(f"  {_yellow('⚠')} Could not update local config: {exc}")
 
@@ -7681,7 +7681,9 @@ def main():
                     if not control_mq.is_server_ready(
                         timeout_ms=connection.health_check_timeout_ms
                     ):
-                        sys.exit(f"{_red('✗')} Server connection timeout — cannot continue!")
+                        sys.exit(
+                            f"{_red('✗')} Server connection timeout — cannot continue!"
+                        )
 
             # Load user config
             config_state = resolve_loaded_config(
@@ -7717,7 +7719,7 @@ def main():
             sys.exit(1)
 
     if args.action == "doctor":
-        from umrs.client.doctor import Doctor, DoctorReport, run_doctor
+        from umrs.client.doctor import run_doctor
 
         # Resolve the actual command path so doctor checks use the same binary
         _cmd = sys.argv[0] if sys.argv[0] else "umrs"

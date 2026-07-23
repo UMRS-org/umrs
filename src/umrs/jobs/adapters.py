@@ -468,7 +468,11 @@ class EndpointProvisionBackend(OrchestratorBackend):
         gpu_count = spec.get("gpu_count", 1)
         node_count = spec.get("node_count")
         max_model_len = spec.get("max_model_len", 4096)
-        ttl_sec = spec.get("ttl_sec", 3600)
+        ttl_sec = (
+            job.ttl_seconds
+            if job.ttl_seconds is not None and job.ttl_seconds > 0
+            else spec.get("ttl_sec", 3600)
+        )
         idle_ttl_sec = spec.get("idle_ttl_sec")
         parallel_strategy = spec.get("parallel_strategy")
         partition_override = spec.get("partition_override")
@@ -591,6 +595,7 @@ class EndpointProvisionBackend(OrchestratorBackend):
         submit_env["PROJECT_ID"] = project_id
         submit_env["MODEL_NAME"] = model_name
         submit_env["VLLM_MODEL_PATH"] = model_path
+        submit_env["UMRS_JOB_TTL_SECONDS"] = str(job.ttl_seconds or 0)
 
         # LiteLLM master key from orchestrator process env
         litellm_master_key = os.environ.get("LITELLM_MASTER_KEY")
@@ -622,6 +627,7 @@ class EndpointProvisionBackend(OrchestratorBackend):
                 "env": submit_env,
                 "gpu_count": deployment_spec.gpus_per_node,
                 "requesting_user": job.user_id,
+                "ttl_seconds": job.ttl_seconds,
             }
             if slurm_account:
                 submit_kwargs["slurm_account"] = slurm_account

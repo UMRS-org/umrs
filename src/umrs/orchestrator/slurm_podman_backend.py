@@ -223,6 +223,7 @@ class SlurmPodmanBackend(OrchestratorBackend):
         min_gpu_memory_gb = kwargs.pop(
             "min_gpu_memory_gb", None
         )  # resource hint from model catalog
+        ttl_seconds = kwargs.pop("ttl_seconds", None)
 
         if partition_override:
             allowed = self._partition_candidates(site.scheduler.partition)
@@ -316,6 +317,7 @@ class SlurmPodmanBackend(OrchestratorBackend):
             env_overrides["VLLM_MODEL"] = served_model_name
         if selected_partition:
             env_overrides["SLURM_PARTITION"] = selected_partition
+        env_overrides["UMRS_JOB_TTL_SECONDS"] = str(ttl_seconds or 0)
         env_overrides.setdefault("RIVAULT_CONTROL_DIR", str(self._control_dir))
         env_overrides.update(
             {

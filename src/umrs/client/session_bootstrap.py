@@ -162,6 +162,8 @@ def bootstrap_curve_session(
             raise SessionBootstrapError(
                 "JWT authentication failed during session registration (401)"
             )
+        if resp.status_code == 404:
+            raise SessionBootstrapError("CURVE session mode is not enabled (404)")
         if resp.status_code == 503:
             raise SessionBootstrapError(
                 "CURVE session mode not available on server (503)"

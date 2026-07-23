@@ -15,9 +15,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import pathlib
 import threading
 
 from fastapi import Request
+from fastapi.staticfiles import StaticFiles
+
+from ..api.web_dashboard import router as web_dashboard_router
 
 logger = logging.getLogger(__name__)
 
@@ -518,9 +522,14 @@ def _create_app():
     # Structured error responses: all HTTPException responses include
     # error_id and request_id for distributed tracing and automation.
     from fastapi import HTTPException as _HTTPException
-    from umrs.api.error_responses import structured_http_exception_handler
+    from umrs.api.error_responses import (
+        structured_http_exception_handler,
+        structured_warning_exception_handler,
+    )
+    from umrs.shared.warnings import UMRSWarningError
 
     app.add_exception_handler(_HTTPException, structured_http_exception_handler)
+    app.add_exception_handler(UMRSWarningError, structured_warning_exception_handler)
 
     app.include_router(catalog_router)
     app.include_router(a2l_router)
@@ -550,6 +559,7 @@ def _create_app():
     app.include_router(usage_router)
     app.include_router(workflows_router)
     app.include_router(zmq_sessions_router)
+    app.include_router(web_dashboard_router)
 
     db_pool = _build_db_pool(app)
     if db_pool is not None:
@@ -564,6 +574,14 @@ def _create_app():
     app.get("/health")(_health)
     app.get("/metrics")(_metrics)
     app.get("/readiness")(_readiness)
+
+    dashboard_dir = pathlib.Path(__file__).resolve().parent / "web_gui"
+    if dashboard_dir.is_dir():
+        app.mount(
+            "/umrs/web",
+            StaticFiles(directory=str(dashboard_dir), html=True),
+            name="umrs-web",
+        )
 
     return app
 
