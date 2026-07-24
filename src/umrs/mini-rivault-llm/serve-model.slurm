@@ -1492,7 +1492,21 @@ RAYEOF
                 # `ray start --num-gpus` otherwise advertises a phantom GPU to
                 # the head even when the container has no device access, which
                 # passes the head GPU gate but crashes the vLLM worker later.
-                srun --nodes=1 --ntasks=1 --nodelist="${wnode}" \
+                #
+                # --overlap is MANDATORY here (same as the migrate srun above).
+                # Without it, this long-lived `ray start --block` runs as an
+                # EXCLUSIVE Slurm step on the worker node. Any subsequent step
+                # that touches the node (the diagnostic `srun --overlap podman
+                # logs` in the GPU-wait loop, the teardown log-collection srun,
+                # or the next retry's migrate) forces Slurm's step scheduler to
+                # signal SIGTERM to this non-overlap step. That SIGTERM reaches
+                # the raylet as PID 1 inside the container, so Ray unregisters
+                # the whole worker node with EXPECTED_TERMINATION ("received
+                # SIGTERM") on a ~60s cadence — killing the vLLM RayWorkerProc
+                # actor and collapsing the cluster (confirmed via GCS log,
+                # job 2941, 2026-07-24). --overlap lets the persistent worker
+                # step coexist with all diagnostic/monitoring steps.
+                srun --nodes=1 --ntasks=1 --nodelist="${wnode}" --overlap \
                     podman run --name rivault-ray-worker --replace --network host --shm-size=4g \
                         --security-opt seccomp=unconfined \
                         --entrypoint /bin/sh \
