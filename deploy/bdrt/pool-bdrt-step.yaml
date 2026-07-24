@@ -164,6 +164,11 @@ endpoints:
       VLLM_TOKENIZER: "poolside/Laguna-S-2.1-FP8"
       VLLM_GPU_MEM_UTIL: "0.85"
       VLLM_MAX_NUM_SEQS: "2"
+      # Cross-node TP2 / PP1 per the dual-spark recipe (--tensor-parallel-size 2,
+      # NO pipeline parallelism). serve-model.slurm reads VLLM_TP natively; set it
+      # explicitly so the multi-node wrapper forms a single TP=2 group across the
+      # two nodes instead of deriving PP=2 (the DFlash draft is not SupportsPP).
+      VLLM_TP: "2"
       VLLM_TENSOR_PARALLEL_SIZE: "2"
       # FP8 checkpoint has native kv_cache_scheme (8-bit), vLLM resolves to
       # fp8_e4m3 automatically — no flag needed.
@@ -172,7 +177,13 @@ endpoints:
       # Spec-decoding with W4A16 DFlash draft at k=6 (measured peak: 60.9 tok/s).
       # Draft model: sapidlabs/Sparkulator-Laguna-S-2.1 (W4A16 quant of poolside's
       # FP8 DFlash draft — target-precision-specific, must pair with FP8 target).
-      VLLM_SPECULATIVE_CONFIG: '{"method":"dflash","model":"/home/mnagaso/umrs_models/hub/models--sapidlabs--Sparkulator-Laguna-S-2.1/snapshots","num_speculative_tokens":6}'
+      # The draft `model` must be the CONTAINER-visible path: the HF cache root
+      # (VLLM_PATH_TO_HUGGINGFACE=/home/mnagaso/umrs_models) is bind-mounted to
+      # /root/.cache/huggingface inside the vLLM container, so the host path
+      # /home/mnagaso/umrs_models/hub/... maps to /root/.cache/huggingface/hub/...
+      # A host absolute path would not exist in-container → vLLM falls back to
+      # HF-Hub repo-id resolution and fails under HF_HUB_OFFLINE=1.
+      VLLM_SPECULATIVE_CONFIG: '{"method":"dflash","model":"/root/.cache/huggingface/hub/models--sapidlabs--Sparkulator-Laguna-S-2.1/snapshots","num_speculative_tokens":6}'
       VLLM_EXTRA_ARGS: >-
         --enforce-eager
         --kv-cache-dtype fp8

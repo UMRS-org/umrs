@@ -373,8 +373,12 @@ VLLM_TOKENIZER_HOST_PATH=${_vllm_tokenizer_host_path:-/dev/null}
 VLLM_TOKENIZER_CONTAINER_PATH=${_vllm_tokenizer_container_path:-/tokenizer}
 
 # ─── 2. vLLM: Parallelism & Performance ──────────────────────────────────────
-# Tensor parallelism degree (split layers across GPUs horizontally)
-VLLM_TP=${VLLM_TP:-1}
+# Tensor parallelism degree (split layers across GPUs horizontally).
+# Honor the standard VLLM_TENSOR_PARALLEL_SIZE name (set by rosters, site
+# config, and the orchestrator) as a fallback — mirrors the Singularity defs
+# (mini-rivault*.def) so a roster that pins VLLM_TENSOR_PARALLEL_SIZE=2 forms a
+# cross-node TP group (TP=2/PP=1) instead of being mis-derived to across-node PP.
+VLLM_TP=${VLLM_TP:-${VLLM_TENSOR_PARALLEL_SIZE:-1}}
 # Pipeline parallelism degree (split layers across GPUs vertically; >1 for
 # multi-node large-model inference via Slurm --nodes)
 VLLM_PP=${VLLM_PP:-1}
@@ -1244,8 +1248,10 @@ elif [[ "${SLURM_JOB_NUM_NODES:-${SLURM_NNODES:-1}}" -gt 1 ]]; then
     # `${_gpus_per_node}` (ray start --num-gpus) directly via outer-shell
     # expansion, so an unset VLLM_TP produced empty flags and `ray start`
     # failed, so the GCS never bound and the whole stack timed out. Roster may
-    # pin VLLM_TP (e.g. DSpark TP=2); default is TP=1 (across-node PP).
-    VLLM_TP="${VLLM_TP:-1}"
+    # pin VLLM_TP (e.g. DSpark TP=2); the standard VLLM_TENSOR_PARALLEL_SIZE
+    # name is honored as a fallback so a roster/site value forms a cross-node TP
+    # group. Default is TP=1 (across-node PP).
+    VLLM_TP="${VLLM_TP:-${VLLM_TENSOR_PARALLEL_SIZE:-1}}"
 
     # Physical GPUs per node. GB10 DGX-Spark nodes have exactly 1; other sites
     # override via VLLM_GPUS_PER_NODE. This is the actual device count each Ray
