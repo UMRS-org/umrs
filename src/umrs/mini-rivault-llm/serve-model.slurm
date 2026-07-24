@@ -1402,6 +1402,15 @@ RAYEOF
     if [[ -n "${RAY_memory_monitor_refresh_ms:-}" ]]; then
         _mn_vllm_args+=( -e "RAY_memory_monitor_refresh_ms=${RAY_memory_monitor_refresh_ms}" )
     fi
+    # Optional NCCL transport knobs (roster env_vars, forwarded only when set).
+    # Added for GLM-5.2 on spark-double (job 2967): ncclCommInitRank died with
+    # "unhandled system error" after NCCL detected bogus cross-node
+    # "isAllCudaP2p 1" on the GB10 pair — NCCL_P2P_DISABLE=1 forces NET/Socket.
+    for _mn_nccl_var in NCCL_P2P_DISABLE NCCL_SHM_DISABLE NCCL_SOCKET_IFNAME NCCL_NET; do
+        if [[ -n "${!_mn_nccl_var:-}" ]]; then
+            _mn_vllm_args+=( -e "${_mn_nccl_var}=${!_mn_nccl_var}" )
+        fi
+    done
     # GCS-connectivity tolerance (roster env_vars can override the defaults).
     # ROOT CAUSE (jobs 2941-2944 laguna, 2946 hy3-nvfp4, 2026-07-24): during
     # multi-node weight load BOTH ranks stream 56-85 GB of shards from the
