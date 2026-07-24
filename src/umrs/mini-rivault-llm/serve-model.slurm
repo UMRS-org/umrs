@@ -260,7 +260,7 @@ if [[ -n "${VLLM_MOE_BACKEND:-}" ]]; then
 fi
 
 # Merge the roster/pool-supplied VLLM_EXTRA_ARGS (arbitrary vLLM flags declared
-# in an endpoint's env_vars, e.g. DSpark's --kv-cache-dtype / --speculative-config)
+# in an endpoint's env_vars, e.g. DSpark's --kv-cache-dtype)
 # with the tokenizer/trust/moe flags derived above into ONE value that reaches
 # BOTH launch paths:
 #   • single-node: podman-compose interpolates ${VLLM_EXTRA_ARGS}; the process
@@ -347,6 +347,9 @@ VLLM_SERVED_MODEL_NAME=${_vllm_served_model_name}
 # VLLM_EXTRA_ARGS (see the merge block above) so multi-node podman-run
 # containers — which read ONLY this file — receive the roster flags.
 ${_vllm_extra_args:+VLLM_EXTRA_ARGS=${_vllm_extra_args}}
+# Structured speculative configuration is kept separate from VLLM_EXTRA_ARGS so
+# JSON is passed to vLLM as one quoted argv value rather than shell-split words.
+${VLLM_SPECULATIVE_CONFIG:+VLLM_SPECULATIVE_CONFIG=${VLLM_SPECULATIVE_CONFIG}}
 # Host path bind-mounted as the tokenizer directory
 VLLM_TOKENIZER_HOST_PATH=${_vllm_tokenizer_host_path:-/dev/null}
 # Container path where the tokenizer directory is mounted
@@ -1402,7 +1405,7 @@ RAYEOF
         --env-file "./env.${uuid}" \
         "${_mn_vllm_args[@]}" \
         "${VLLM_IMAGE}" \
-        -c 'export PATH=/usr/local/bin:$PATH; python3 -m pip install -q --no-index --find-links /root/.cache/huggingface/ray_aarch64_env/wheels ray 2>&1 | grep -v "^$\|already\|Requirement" || python3 -m pip install -q ray; ray start --head --node-ip-address="'"${HEAD_IP}"'" --port="'"${RAY_PORT}"'" --num-gpus="'"${_gpus_per_node}"'" --object-store-memory=1073741824 --include-dashboard=false; echo "[vllm-head] Ray head started; waiting for '"${_want_gpus}"' GPUs..."; i=0; while [ $i -lt 120 ]; do g=$(ray status 2>/dev/null | grep -oE "[0-9.]+/[0-9.]+ GPU" | head -1 | sed "s@.*/@@; s@ GPU@@; s@[.].*@@"); [ "${g:-0}" = "'"${_want_gpus}"'" ] && break; sleep 5; i=$((i+1)); done; echo "[vllm-head] GPUs=${g:-0}; launching vLLM"; exec vllm serve "$VLLM_MODEL_REF" $VLLM_EXTRA_ARGS --served-model-name "$VLLM_SERVED_MODEL_NAME" --api-key "$VLLM_API_KEY" -tp "$VLLM_TP" -pp "$VLLM_PP" --distributed-executor-backend ray --host 0.0.0.0 --port 8000 --max-model-len "${VLLM_MAX_MODEL_LEN:-4096}" --gpu-memory-utilization "${VLLM_GPU_MEM_UTIL:-0.95}" ${VLLM_ENFORCE_EAGER:+--enforce-eager} --enable-auto-tool-choice --tool-call-parser "${VLLM_TOOL_CALL_PARSER:-hermes}"' \
+        -c 'export PATH=/usr/local/bin:$PATH; python3 -m pip install -q --no-index --find-links /root/.cache/huggingface/ray_aarch64_env/wheels ray 2>&1 | grep -v "^$\|already\|Requirement" || python3 -m pip install -q ray; ray start --head --node-ip-address="'"${HEAD_IP}"'" --port="'"${RAY_PORT}"'" --num-gpus="'"${_gpus_per_node}"'" --object-store-memory=1073741824 --include-dashboard=false; echo "[vllm-head] Ray head started; waiting for '"${_want_gpus}"' GPUs..."; i=0; while [ $i -lt 120 ]; do g=$(ray status 2>/dev/null | grep -oE "[0-9.]+/[0-9.]+ GPU" | head -1 | sed "s@.*/@@; s@ GPU@@; s@[.].*@@"); [ "${g:-0}" = "'"${_want_gpus}"'" ] && break; sleep 5; i=$((i+1)); done; echo "[vllm-head] GPUs=${g:-0}; launching vLLM"; exec vllm serve "$VLLM_MODEL_REF" $VLLM_EXTRA_ARGS ${VLLM_SPECULATIVE_CONFIG:+--speculative-config "$VLLM_SPECULATIVE_CONFIG"} --served-model-name "$VLLM_SERVED_MODEL_NAME" --api-key "$VLLM_API_KEY" -tp "$VLLM_TP" -pp "$VLLM_PP" --distributed-executor-backend ray --host 0.0.0.0 --port 8000 --max-model-len "${VLLM_MAX_MODEL_LEN:-4096}" --gpu-memory-utilization "${VLLM_GPU_MEM_UTIL:-0.95}" ${VLLM_ENFORCE_EAGER:+--enforce-eager} --enable-auto-tool-choice --tool-call-parser "${VLLM_TOOL_CALL_PARSER:-hermes}"' \
         || { echo "[rivault] FATAL: failed to launch Ray head + vLLM container"; exit 1; }
     RAY_HEAD_PID=""
 
