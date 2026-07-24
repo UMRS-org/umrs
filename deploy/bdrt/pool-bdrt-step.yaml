@@ -210,11 +210,13 @@ endpoints:
       VLLM_MOE_BACKEND: "marlin"
       VLLM_DOCKER_IMAGE: "docker.io/vllm/vllm-openai:hy3-arm64-cu130"
       # MTP spec decode from checkpoint's native draft layer (k=1).
+      # Kept in its own var (not VLLM_EXTRA_ARGS) because the JSON contains a
+      # comma, which sbatch --export would otherwise truncate.
+      VLLM_SPECULATIVE_CONFIG: '{"method":"mtp","num_speculative_tokens":1}'
       VLLM_EXTRA_ARGS: >-
         --enforce-eager
         --kv-cache-dtype fp8
         --max-num-batched-tokens 8192
-        --speculative-config {"method":"mtp","num_speculative_tokens":1}
       # Cross-node TP2: each rank reads all 99 shards (~84.5 GB/rank).
       RCCS_SKIP_CDI: "1"
 
