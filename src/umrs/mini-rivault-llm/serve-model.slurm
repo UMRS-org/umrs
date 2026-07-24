@@ -1560,6 +1560,14 @@ RAYEOF
                         "${_mn_vllm_args[@]}" \
                         "${VLLM_IMAGE}" \
                         -c "export PATH=/usr/local/bin:\$PATH; python3 -m pip install -q --no-index --find-links /root/.cache/huggingface/ray_aarch64_env/wheels ray 2>/dev/null || python3 -m pip install -q ray; python3 -c 'import pynvml; pynvml.nvmlInit(); assert pynvml.nvmlDeviceGetCount() > 0' && exec ray start --address='${RAY_ADDRESS}' --num-gpus='${_gpus_per_node}' --object-store-memory=1073741824 --block"
+                # POST-MORTEM before --replace destroys the evidence: the dying
+                # container's exit state, its last log lines, and the user
+                # journal (who sent the SIGTERM — conmon/systemd scope teardown
+                # shows up here). Needed because jobs 2941-2955 all lost the
+                # original worker logs to the relaunch (2026-07-25).
+                srun --nodes=1 --ntasks=1 --nodelist="${wnode}" --overlap bash -c \
+                    'podman inspect rivault-ray-worker --format "exit={{.State.ExitCode}} oom={{.State.OOMKilled}} err={{.State.Error}} started={{.State.StartedAt}} finished={{.State.FinishedAt}}" 2>&1; echo "--- last container log lines ---"; podman logs --tail 40 rivault-ray-worker 2>&1 | tail -40; echo "--- user journal tail ---"; journalctl --user -n 40 --no-pager 2>&1 | tail -40' \
+                    2>&1 | sed "s/^/[rivault][worker-postmortem:${wnode}] /" || true
                 echo "[rivault] Ray worker on ${wnode} exited (attempt ${_wattempt}/5); relaunching in 5s..." >&2
                 sleep 5
             done
