@@ -1538,21 +1538,25 @@ RAYEOF
                 # the head even when the container has no device access, which
                 # passes the head GPU gate but crashes the vLLM worker later.
                 #
-                # --overlap is MANDATORY here (same as the migrate srun above).
-                # Without it, this long-lived `ray start --block` runs as an
-                # EXCLUSIVE Slurm step on the worker node. Any subsequent step
-                # that touches the node (the diagnostic `srun --overlap podman
-                # logs` in the GPU-wait loop, the teardown log-collection srun,
-                # or the next retry's migrate) forces Slurm's step scheduler to
-                # signal SIGTERM to this non-overlap step. That SIGTERM reaches
-                # the raylet as PID 1 inside the container, so Ray unregisters
-                # the whole worker node with EXPECTED_TERMINATION ("received
-                # SIGTERM") on a ~60s cadence — killing the vLLM RayWorkerProc
-                # actor and collapsing the cluster (confirmed via GCS log,
-                # job 2941, 2026-07-24). --overlap lets the persistent worker
-                # step coexist with all diagnostic/monitoring steps.
+                # DETACHED launch (-d) instead of a foreground `ray start
+                # --block` step. REASON (2026-07-25, jobs 2941-2961 + bare
+                # probe job 2962): something on this cluster signals SIGTERM to
+                # every *running srun step* of this user's jobs on a ~60s
+                # cadence (steps die at exact minute boundaries: "STEP ...
+                # CANCELLED", `scancel --signal=TERM`-style: batch shells and
+                # detached containers survive, only steps die). Confirmed NOT
+                # ours: a minimal non-UMRS sleeper job's step was killed the
+                # same way while its batch shell survived. A foreground worker
+                # step therefore can never live longer than ~60s — the raylet
+                # (container PID 1) got the TERM and Ray recorded the node
+                # dying with EXPECTED_TERMINATION "received SIGTERM" mid
+                # weight-load. Detaching moves the container under the node's
+                # user systemd manager (libpod-conmon-*.scope — outside the
+                # step cgroup), so it survives the step's death; we then watch
+                # it with short-lived polling steps that the step-killer cannot
+                # meaningfully disrupt (a killed poll is just retried).
                 srun --nodes=1 --ntasks=1 --nodelist="${wnode}" --overlap \
-                    podman run --name rivault-ray-worker --replace --network host --shm-size=4g \
+                    podman run -d --name rivault-ray-worker --replace --network host --shm-size=4g \
                         --security-opt seccomp=unconfined \
                         --entrypoint /bin/sh \
                         -e "LD_LIBRARY_PATH=/usr/lib/aarch64-linux-gnu" \
@@ -1560,6 +1564,27 @@ RAYEOF
                         "${_mn_vllm_args[@]}" \
                         "${VLLM_IMAGE}" \
                         -c "export PATH=/usr/local/bin:\$PATH; python3 -m pip install -q --no-index --find-links /root/.cache/huggingface/ray_aarch64_env/wheels ray 2>/dev/null || python3 -m pip install -q ray; python3 -c 'import pynvml; pynvml.nvmlInit(); assert pynvml.nvmlDeviceGetCount() > 0' && exec ray start --address='${RAY_ADDRESS}' --num-gpus='${_gpus_per_node}' --object-store-memory=1073741824 --block"
+                # Watch the detached container with short polling steps. Only
+                # relaunch when it has verifiably exited; transient poll
+                # failures (srun step killed by the cluster's step-killer, ssh
+                # blips) are tolerated up to 3 consecutive misses.
+                _wfails=0
+                while :; do
+                    sleep 20
+                    _wstate="$(srun --nodes=1 --ntasks=1 --nodelist="${wnode}" --overlap \
+                        podman inspect rivault-ray-worker --format '{{.State.Status}}' 2>/dev/null | tr -d '[:space:]')"
+                    if [[ "${_wstate}" == "running" ]]; then
+                        _wfails=0
+                        continue
+                    fi
+                    if [[ "${_wstate}" == "exited" || "${_wstate}" == "stopped" ]]; then
+                        break
+                    fi
+                    _wfails=$(( _wfails + 1 ))
+                    if [[ ${_wfails} -ge 3 ]]; then
+                        break
+                    fi
+                done
                 # POST-MORTEM before --replace destroys the evidence: the dying
                 # container's exit state, its last log lines, and the user
                 # journal (who sent the SIGTERM — conmon/systemd scope teardown
