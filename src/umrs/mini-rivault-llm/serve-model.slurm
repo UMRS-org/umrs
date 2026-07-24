@@ -1402,6 +1402,32 @@ RAYEOF
     if [[ -n "${RAY_memory_monitor_refresh_ms:-}" ]]; then
         _mn_vllm_args+=( -e "RAY_memory_monitor_refresh_ms=${RAY_memory_monitor_refresh_ms}" )
     fi
+    # GCS-connectivity tolerance (roster env_vars can override the defaults).
+    # ROOT CAUSE (jobs 2941-2944 laguna, 2946 hy3-nvfp4, 2026-07-24): during
+    # multi-node weight load BOTH ranks stream 56-85 GB of shards from the
+    # NFS-shared home over the SAME network path that carries Ray's GCS gRPC
+    # traffic. The link saturates, the worker raylet loses its GCS channel, and
+    # after Ray's default 60 s reconnect deadline
+    # (gcs_rpc_server_reconnect_timeout_s) it SELF-TERMINATES: "Failed to
+    # connect to GCS within 60 seconds ... The program will terminate"
+    # (raylet.out, job 2946). `ray start --block` then SIGTERMs the remaining
+    # components, so the GCS ledger records the node dying with
+    # EXPECTED_TERMINATION "received SIGTERM" on the observed ~60-80 s cadence.
+    # NOT model-specific (control job 2946, different model/image, failed
+    # identically) and NOT memory (OOMKilled=false, monitor disabled, cap had
+    # no effect). Defaults below let both sides ride out a multi-minute I/O
+    # storm instead of collapsing the cluster:
+    #   - reconnect deadline 60 s -> 600 s (covers the whole weight load)
+    #   - GCS->raylet health check: period 3 s/timeout 10 s/5 fails (~35 s to
+    #     drain) -> period 10 s/timeout 60 s/10 fails (~10 min tolerance).
+    # Always real integers (never empty strings — see SIGSEGV note above).
+    _mn_vllm_args+=(
+        -e RAY_gcs_rpc_server_reconnect_timeout_s="${RAY_gcs_rpc_server_reconnect_timeout_s:-600}"
+        -e RAY_health_check_initial_delay_ms="${RAY_health_check_initial_delay_ms:-30000}"
+        -e RAY_health_check_period_ms="${RAY_health_check_period_ms:-10000}"
+        -e RAY_health_check_timeout_ms="${RAY_health_check_timeout_ms:-60000}"
+        -e RAY_health_check_failure_threshold="${RAY_health_check_failure_threshold:-10}"
+    )
     # OPTIONAL cgroup memory cap for the head + worker Ray containers. On GB10
     # UNIFIED memory the weight-load page-cache spike (56.6 GiB FP8 shards read
     # from the bind-mounted HF cache) fills the shared 121 GiB pool. Without a
