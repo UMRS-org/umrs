@@ -1402,6 +1402,25 @@ RAYEOF
     if [[ -n "${RAY_memory_monitor_refresh_ms:-}" ]]; then
         _mn_vllm_args+=( -e "RAY_memory_monitor_refresh_ms=${RAY_memory_monitor_refresh_ms}" )
     fi
+    # OPTIONAL cgroup memory cap for the head + worker Ray containers. On GB10
+    # UNIFIED memory the weight-load page-cache spike (56.6 GiB FP8 shards read
+    # from the bind-mounted HF cache) fills the shared 121 GiB pool. Without a
+    # cap the node either trips Ray's memory monitor (SIGTERM node) or, with the
+    # monitor disabled (RAY_memory_monitor_refresh_ms=0), thrashes into
+    # unresponsiveness so the GCS health-check drains it — BOTH surface as the
+    # worker node dying with EXPECTED_TERMINATION "received SIGTERM" ~80s in,
+    # mid-load (confirmed job 2941/2943). The upstream recipe prevents this by
+    # running each raylet as a systemd --user service with `-p MemoryMax=110G
+    # -p MemorySwapMax=0`, which FORCES page-cache reclaim under the cap instead
+    # of thrashing. Rootless podman on these nodes has the cgroup-v2 `memory`
+    # controller delegated (verified `cgroup.controllers` = cpu memory pids), so
+    # `--memory=<cap> --memory-swap=<cap>` (equal → swap disabled, matching
+    # MemorySwapMax=0) reproduces that behaviour per container. Opt-in via the
+    # roster env `RIVAULT_MN_MEMORY_CAP` (e.g. "110g"); unset → no cap (preserves
+    # existing behaviour for other multi-node endpoints / non-GB10 nodes).
+    if [[ -n "${RIVAULT_MN_MEMORY_CAP:-}" ]]; then
+        _mn_vllm_args+=( --memory="${RIVAULT_MN_MEMORY_CAP}" --memory-swap="${RIVAULT_MN_MEMORY_CAP}" )
+    fi
     if [[ "${_mn_tok_host}" != "/dev/null" ]]; then
         _mn_vllm_args+=( -v "${_mn_tok_host}:${_mn_tok_ctr}:ro" )
     fi
