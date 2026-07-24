@@ -172,12 +172,12 @@ endpoints:
       # Spec-decoding with W4A16 DFlash draft at k=6 (measured peak: 60.9 tok/s).
       # Draft model: sapidlabs/Sparkulator-Laguna-S-2.1 (W4A16 quant of poolside's
       # FP8 DFlash draft — target-precision-specific, must pair with FP8 target).
+      VLLM_SPECULATIVE_CONFIG: '{"method":"dflash","model":"/home/mnagaso/umrs_models/hub/models--sapidlabs--Sparkulator-Laguna-S-2.1/snapshots","num_speculative_tokens":6}'
       VLLM_EXTRA_ARGS: >-
         --enforce-eager
         --kv-cache-dtype fp8
         --kv-cache-memory-bytes 5368709120
         --max-num-batched-tokens 8192
-        --speculative-config {"method":"dflash","model":"/home/mnagaso/umrs_models/hub/models--sapidlabs--Sparkulator-Laguna-S-2.1/snapshots","num_speculative_tokens":6}
       # VLLM_HOST_MODEL_PATH must be mirrored on BOTH nodes for TP2 — each rank
       # reads all shards (~56.6 GiB/rank). The draft is also on both nodes.
       RCCS_SKIP_CDI: "1"
