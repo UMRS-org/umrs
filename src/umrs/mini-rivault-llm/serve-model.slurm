@@ -14,6 +14,23 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 # Default to 1 if not already set by the outer wrapper or environment.
 export GOMAXPROCS="${GOMAXPROCS:-1}"
 
+# ─── Decode base64-transported env values ────────────────────────────────────
+# Slurm `sbatch --export` is a comma-delimited KEY=VALUE list with NO escaping,
+# so the control plane base64-encodes any value containing a comma (e.g. the
+# VLLM_SPECULATIVE_CONFIG JSON) and passes it under a "<NAME>_B64" key. Decode
+# every "*_B64" variable back to its original name here — before any consumer
+# (env.<uuid> generation, compose interpolation, or the vLLM exec) reads it.
+# No-op when no such variables are present.
+for _b64_name in $(compgen -v | grep '_B64$' || true); do
+    _orig_name="${_b64_name%_B64}"
+    _b64_value="${!_b64_name}"
+    if _decoded="$(printf '%s' "$_b64_value" | base64 -d 2>/dev/null)"; then
+        export "${_orig_name}=${_decoded}"
+    fi
+    unset "$_b64_name"
+done
+unset _b64_name _orig_name _b64_value _decoded
+
 load_site_env_defaults() {
     local python_bin
     local rendered_exports
