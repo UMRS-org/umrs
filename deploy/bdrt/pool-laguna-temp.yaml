@@ -1,4 +1,5 @@
-# Temp pool: laguna-s-2.1-fp8 only (bdrt) — using hy3-arm64-cu130 image
+# Temp pool: laguna-s-2.1-fp8 only (bdrt) — cross-node TP2/PP1 per dual-spark recipe
+# Mirrors the laguna-s-2.1-fp8 block in pool-bdrt-step.yaml.
 pool: bdrt-laguna
 defaults:
   source: bdrt
@@ -20,9 +21,16 @@ endpoints:
       VLLM_TOKENIZER: "poolside/Laguna-S-2.1-FP8"
       VLLM_GPU_MEM_UTIL: "0.85"
       VLLM_MAX_NUM_SEQS: "2"
+      # Cross-node TP2 / PP1 per the dual-spark recipe (--tensor-parallel-size 2,
+      # NO pipeline parallelism). serve-model.slurm reads VLLM_TP natively.
+      VLLM_TP: "2"
       VLLM_TENSOR_PARALLEL_SIZE: "2"
       VLLM_MOE_BACKEND: "marlin"
-      VLLM_DOCKER_IMAGE: "docker.io/vllm/vllm-openai:hy3-arm64-cu130"
+      VLLM_DOCKER_IMAGE: "docker.io/vllm/vllm-openai:latest"
+      # Spec-decoding with W4A16 DFlash draft at k=6. The draft model path must be
+      # CONTAINER-visible: VLLM_PATH_TO_HUGGINGFACE is bind-mounted to
+      # /root/.cache/huggingface inside the vLLM container.
+      VLLM_SPECULATIVE_CONFIG: '{"method":"dflash","model":"/root/.cache/huggingface/hub/models--sapidlabs--Sparkulator-Laguna-S-2.1/snapshots","num_speculative_tokens":6}'
       VLLM_EXTRA_ARGS: >-
         --enforce-eager
         --kv-cache-dtype fp8
