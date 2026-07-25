@@ -1459,6 +1459,17 @@ RAYEOF
     if [[ "${_mn_tok_host}" != "/dev/null" ]]; then
         _mn_vllm_args+=( -v "${_mn_tok_host}:${_mn_tok_ctr}:ro" )
     fi
+    # Optional roster-supplied vLLM source patch: bind-mount a patched copy of
+    # vllm's laguna_dflash.py over the in-image module on head AND workers.
+    # Needed for vLLM 0.25.1 + W4A16 compressed-tensors DFlash drafts:
+    # CompressedTensorsConfig lacks get_cache_scale() (an FP8-only API), so the
+    # unguarded call in DFlashLagunaModel.load_weights raises AttributeError on
+    # the worker rank. The patched file lives on the shared home so ONE copy
+    # serves every node; containers are recreated from the image each launch,
+    # so an in-container edit would not survive a restart.
+    if [[ -n "${VLLM_PATCH_LAGUNA_DFLASH:-}" ]]; then
+        _mn_vllm_args+=( -v "${VLLM_PATCH_LAGUNA_DFLASH}:/usr/local/lib/python3.12/dist-packages/vllm/model_executor/models/laguna_dflash.py:ro" )
+    fi
     if [[ -n "${_mn_s3host}" ]]; then
         _mn_vllm_args+=( --add-host "${_mn_s3host}:${_mn_priv}.${_mn_nginxout}" )
     fi
