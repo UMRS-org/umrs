@@ -1169,6 +1169,10 @@ start_native_glm52() {
     if [[ -n "${VLLM_EXTRA_ARGS:-}" ]]; then
         read -r -a native_extra_args <<< "${VLLM_EXTRA_ARGS}"
     fi
+    # Tool/reasoning parsers: GLM-5.2 emits GLM-format tool calls and <think>
+    # reasoning. Without parsers, tool calls leak as plain text and agent
+    # clients stall (same failure class as Laguna/poolside_v1, job 2996).
+    # Model-card recipe: --tool-call-parser glm47 --reasoning-parser glm45.
     "${venv}/bin/vllm" serve "${model}" \
         --served-model-name "${VLLM_SERVED_MODEL_NAME:-glm-5.2}" \
         --api-key "${VLLM_API_KEY}" --trust-remote-code \
@@ -1178,6 +1182,9 @@ start_native_glm52() {
         --kv-cache-memory-bytes "${VLLM_KV_CACHE_MEMORY_BYTES:-10737418240}" \
         --max-num-batched-tokens "${VLLM_MAX_NUM_BATCHED_TOKENS:-512}" \
         --max-num-seqs "${VLLM_MAX_NUM_SEQS:-2}" \
+        --enable-auto-tool-choice \
+        --tool-call-parser "${VLLM_TOOL_CALL_PARSER:-glm47}" \
+        --reasoning-parser "${VLLM_REASONING_PARSER:-glm45}" \
         --speculative-config "{\"method\":\"mtp\",\"num_speculative_tokens\":${MTP_K:-1}}" \
         --compilation-config '{"cudagraph_mode":"FULL_AND_PIECEWISE","custom_ops":["all"]}' \
         --host 0.0.0.0 --port 8000 "${native_extra_args[@]}" &
