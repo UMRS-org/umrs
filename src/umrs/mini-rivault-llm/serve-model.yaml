@@ -290,6 +290,13 @@ services:
       VLLM_MAX_MODEL_LEN: ${VLLM_MAX_MODEL_LEN:-4096}
       VLLM_GPU_MEM_UTIL: ${VLLM_GPU_MEM_UTIL:-0.95}
       VLLM_TOOL_CALL_PARSER: ${VLLM_TOOL_CALL_PARSER:-hermes}
+      # Must be declared here or the roster value never reaches the container:
+      # the command uses ${VLLM_REASONING_PARSER:+--reasoning-parser ...}, which
+      # is expanded by the *container* shell. Undeclared => flag silently
+      # dropped => reasoning stays inline in `content` instead of being split
+      # into `reasoning_content`, so clients render raw chain-of-thought.
+      # Empty default keeps the flag off for non-reasoning models.
+      VLLM_REASONING_PARSER: ${VLLM_REASONING_PARSER:-}
       # Opt-in eager mode. Empty by default so models run WITH CUDA graphs
       # (much higher decode throughput). Models that need eager (e.g.
       # DeepSeek-V4 NaN guard, GLM-5.2) set VLLM_ENFORCE_EAGER=1 in their
