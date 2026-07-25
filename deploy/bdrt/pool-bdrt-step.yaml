@@ -39,6 +39,12 @@ endpoints:
       VLLM_REASONING_PARSER: "qwen3"
       VLLM_TRUST_REMOTE_CODE: "1"
       VLLM_ENFORCE_EAGER: "1"
+      # Explicit context-length env_var channel — the pool top-level
+      # max_model_len flows through the UMRS API → submit_env, but the
+      # env var path is the proven reliable route (same one used in the
+      # multi-node diag roster). Guarantees the vLLM container serves at
+      # the requested context instead of silently defaulting to 4096.
+      VLLM_MAX_MODEL_LEN: "262144"
       # NVFP4 mixed-precision MoE on GB10 Blackwell: pin the quant-aware Marlin
       # fused-MoE backend AND override to vLLM 0.23.0 (arm64 `:latest`). The
       # partition-default cu130-nightly-aarch64 image is a FROZEN 0.19.2 nightly
