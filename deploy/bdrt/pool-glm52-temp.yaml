@@ -1,0 +1,60 @@
+# Temp pool for GLM-5.2 only
+#
+# ██ DO NOT LAUNCH — NOT VIABLE (2026-07-25, jobs 2970/2971) ██
+# GLM-5.2-FP8 weights = 704 GB; 2×GB10 = 256 GB unified total. The stock
+# vLLM container path below can NEVER load it (worker OOM-killed on
+# dgx-spark-1 both runs). The only working recipe is the native vLLM-Moet
+# runner (RIVAULT_NATIVE_LLM_RUNNER=glm52-vllm-moet, see glm-5.2 entry in
+# pool-bdrt-step.yaml) with 2-bit pruned expert planes (~79 GiB/rank) —
+# and its prereqs (venvs/vllm-moet, Dev/vLLM-Moet, nccl-2.30.7, planes in
+# /var/tmp/umrs-glm52) are not provisioned on the cluster, plus the runner
+# hard-requires edge-double (currently owned by Laguna).
+# Kept only as a record of the NCCL_P2P_DISABLE finding for spark-double.
+pool: glm-5.2-temp
+defaults:
+  source: bdrt
+  tier: system
+  ttl_sec: 0
+  timeout: 172800
+  RIVAULT_JOB_TIMEOUT: "0"
+
+endpoints:
+  - name: glm-5.2
+    model: glm-5.2
+    tier: system
+    node_count: 2
+    # spark-double (dgx-spark-[0-1]) so it can run CONCURRENTLY with Laguna
+    # on edge-double (dgx-spark-[3-4]).
+    partition: spark-double
+    max_model_len: 98304
+    env_vars:
+      VLLM_HOST_MODEL_PATH: "/home/mnagaso/umrs_models/hub/models--zai-org--GLM-5.2-FP8/snapshots"
+      VLLM_PATH_TO_HUGGINGFACE: "/home/mnagaso/umrs_models"
+      VLLM_MODEL: "zai-org/GLM-5.2-FP8"
+      VLLM_TOKENIZER: "zai-org/GLM-5.2-FP8"
+      VLLM_GPU_MEM_UTIL: "0.85"
+      VLLM_MAX_NUM_SEQS: "2"
+      VLLM_TENSOR_PARALLEL_SIZE: "2"
+      VLLM_DOCKER_IMAGE: "docker.io/vllm/vllm-openai:hy3-arm64-cu130"
+      VLLM_EXTRA_ARGS: >-
+        --enforce-eager
+        --kv-cache-dtype fp8
+        --kv-cache-memory-bytes 10737418240
+        --max-num-batched-tokens 8192
+      # Kept in its own var (not VLLM_EXTRA_ARGS): the JSON contains a comma,
+      # which sbatch --export would otherwise truncate.
+      VLLM_SPECULATIVE_CONFIG: '{"method":"mtp","num_speculative_tokens":1}'
+      VLLM_MOE_W2_PREPACKED_DIR: "/home/mnagaso/umrs_models/hub/models--zai-org--GLM-5.2-FP8/snapshots/moe_w2_planes_tp2_p208"
+      RCCS_SKIP_CDI: "1"
+      # dgx-spark-1: rootless podman fuse-overlayfs broken in userns (mknod
+      # ENODATA); native kernel overlay works. Conf strips mount_program+mountopt.
+      CONTAINERS_STORAGE_CONF: "/home/mnagaso/.config/containers/storage-native.conf"
+      # Job 2967: ncclCommInitRank "unhandled system error" after NCCL saw bogus
+      # cross-node "isAllCudaP2p 1" on the spark-double GB10 pair. Force the
+      # NET/Socket path (fabric ping between atom-0/1 verified OK, job 2968).
+      NCCL_P2P_DISABLE: "1"
+      # Job 2970: ray.exceptions.OutOfMemoryError — Ray memory monitor killed
+      # the worker on dgx-spark-1 during weight load (GB10 unified memory).
+      # Same knobs that made Laguna (job 2969) survive:
+      RAY_memory_monitor_refresh_ms: "0"
+      RIVAULT_MN_MEMORY_CAP: "110g"

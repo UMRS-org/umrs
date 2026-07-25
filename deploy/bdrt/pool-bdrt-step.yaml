@@ -170,10 +170,40 @@ endpoints:
       # two nodes instead of deriving PP=2 (the DFlash draft is not SupportsPP).
       VLLM_TP: "2"
       VLLM_TENSOR_PARALLEL_SIZE: "2"
+      # Disable Ray's memory monitor (recipe requirement). On GB10 unified
+      # memory, Ray counts CPU+GPU usage system-wide; loading the ~56.6 GiB/rank
+      # FP8 checkpoint crosses the default 95% threshold and Ray SIGTERMs the
+      # worker node (~45s after join), killing the vLLM TP1 RayWorkerProc actor
+      # ("node terminated expectedly: received SIGTERM"). That fails EngineCore
+      # init, the head vLLM exits, the head GCS dies, and the worker raylet then
+      # crash-loops ("Failed to connect to GCS ... TimedOut"). The recipe sets
+      # RAY_memory_monitor_refresh_ms=0 on both raylets AND the serve process;
+      # serve-model.slurm forwards this roster var into the shared _mn_vllm_args
+      # so it reaches both the head (ray head + vLLM) and worker ray containers.
+      RAY_memory_monitor_refresh_ms: "0"
+      # cgroup memory cap for the head + worker ray containers. GB10 has 121 GiB
+      # UNIFIED CPU+GPU memory; the FP8 weight-load page-cache spike otherwise
+      # thrashes the node (or trips the monitor) into the SIGTERM death above.
+      # This forces page-cache reclaim under the cap, mirroring the recipe's
+      # systemd `-p MemoryMax=110G -p MemorySwapMax=0`.
+      RIVAULT_MN_MEMORY_CAP: "110g"
       # FP8 checkpoint has native kv_cache_scheme (8-bit), vLLM resolves to
       # fp8_e4m3 automatically — no flag needed.
       VLLM_MOE_BACKEND: "marlin"
       VLLM_DOCKER_IMAGE: "docker.io/vllm/vllm-openai:latest"
+      # Laguna emits poolside-format tool calls (<tool_call>name<arg_key>k</arg_key>
+      # <arg_value>v</arg_value></tool_call>) and </think> reasoning markers. The
+      # default hermes parser cannot parse them → tool calls leak as plain text and
+      # agent clients (Copilot) stall after the first sentence. vLLM 0.25.1 ships
+      # dedicated poolside_v1 tool + reasoning parsers (validated job 2996:
+      # finish_reason=tool_calls with structured arguments).
+      VLLM_TOOL_CALL_PARSER: "poolside_v1"
+      VLLM_REASONING_PARSER: "poolside_v1"
+      # Patched vllm/model_executor/models/laguna_dflash.py (hasattr guard around
+      # quant_config.get_cache_scale — CompressedTensorsConfig W4A16 draft lacks
+      # that FP8-only API in vLLM 0.25.1). Bind-mounted over the in-image module
+      # on head AND workers by serve-model.slurm. Lives on shared /home NFS.
+      VLLM_PATCH_LAGUNA_DFLASH: "/home/mnagaso/patches/laguna_dflash.py"
       # Spec-decoding with W4A16 DFlash draft at k=6 (measured peak: 60.9 tok/s).
       # Draft model: sapidlabs/Sparkulator-Laguna-S-2.1 (W4A16 quant of poolside's
       # FP8 DFlash draft — target-precision-specific, must pair with FP8 target).

@@ -27,6 +27,22 @@ endpoints:
       VLLM_TENSOR_PARALLEL_SIZE: "2"
       VLLM_MOE_BACKEND: "marlin"
       VLLM_DOCKER_IMAGE: "docker.io/vllm/vllm-openai:latest"
+      # Laguna emits poolside-format tool calls (<tool_call>name<arg_key>k</arg_key>
+      # <arg_value>v</arg_value></tool_call>) and </think> reasoning markers. The
+      # default hermes parser cannot parse them → tool calls leak as plain text and
+      # agent clients (Copilot) stall. vLLM 0.25.1 ships dedicated poolside_v1
+      # tool + reasoning parsers.
+      VLLM_TOOL_CALL_PARSER: "poolside_v1"
+      VLLM_REASONING_PARSER: "poolside_v1"
+      # Recipe-required (validated job 2969): disable Ray memory monitor and cap
+      # container memory so GB10 unified-memory page-cache spikes reclaim cleanly.
+      RAY_memory_monitor_refresh_ms: "0"
+      RIVAULT_MN_MEMORY_CAP: "110g"
+      # Patched vllm/model_executor/models/laguna_dflash.py (hasattr guard around
+      # quant_config.get_cache_scale — CompressedTensorsConfig W4A16 draft lacks
+      # that FP8-only API in vLLM 0.25.1). Bind-mounted over the in-image module
+      # on head AND workers by serve-model.slurm. Lives on shared /home NFS.
+      VLLM_PATCH_LAGUNA_DFLASH: "/home/mnagaso/patches/laguna_dflash.py"
       # Spec-decoding with W4A16 DFlash draft at k=6. The draft model path must be
       # CONTAINER-visible: VLLM_PATH_TO_HUGGINGFACE is bind-mounted to
       # /root/.cache/huggingface inside the vLLM container.
