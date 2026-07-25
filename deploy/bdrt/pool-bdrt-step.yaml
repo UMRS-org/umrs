@@ -287,6 +287,11 @@ endpoints:
       VLLM_KV_CACHE_MEMORY_BYTES: "10737418240"
       VLLM_TENSOR_PARALLEL_SIZE: "2"
       RIVAULT_NATIVE_LLM_RUNNER: "glm52-vllm-moet"
+      # GLM-5.2 emits GLM-format tool calls + <think> reasoning; without parsers
+      # tool calls leak as plain text and agent clients stall (same failure
+      # class as Laguna/poolside_v1). Model-card recipe parsers:
+      VLLM_TOOL_CALL_PARSER: "glm47"
+      VLLM_REASONING_PARSER: "glm45"
       VLLM_MOET_VENV: "/home/mnagaso/venvs/vllm-moet"
       VLLM_MOET_REPO: "/home/mnagaso/Dev/vLLM-Moet"
       VLLM_NCCL_SO_PATH: "/home/mnagaso/nccl-2.30.7/libnccl.so.2"
