@@ -264,6 +264,10 @@ services:
     environment:
       # Cluster-specific overrides
       UMRS_SITE_CONFIG: /etc/umrs/site.yaml
+      # Pool roster — sizing defaults for single-endpoint provisions of large
+      # models (routes qwen3.6/GLM-5.2 etc. to the right node/GPU/context/TTL
+      # instead of silently defaulting to 1 node / 1 GPU / 4096 context).
+      UMRS_PROVISION_ROSTER: /etc/umrs/pool-bdrt-step.yaml
       UMRS_CONFIG: /etc/umrs
       UMRS_CERTIFICATION_MODE: ${UMRS_CERTIFICATION_MODE:-warn}
       UMRS_PREFLIGHT_MODE: ${UMRS_PREFLIGHT_MODE:-warn}
@@ -295,6 +299,8 @@ services:
       PYTHONUNBUFFERED: "1"
     volumes:
       - ../bdrt-front/site.yaml:/etc/umrs/site.yaml:ro,z
+      # Pool roster — sizing defaults for endpoint provisioning
+      - ../bdrt/pool-bdrt-step.yaml:/etc/umrs/pool-bdrt-step.yaml:ro,z
       - ./conf_umrs_bdrt.json:/etc/umrs/conf_umrs.json:z
       - ./user_files_bdrt:/etc/umrs/user_files:z
       - ./s3cfg:/etc/umrs/s3cfg:ro,z
