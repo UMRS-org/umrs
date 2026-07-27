@@ -7,11 +7,11 @@
 
 ## 1. Root Cause Report
 
-### Issue: `upload_dir` fails with "Cannot process directory"
+### Issue: `data dir-upload` fails with "Cannot process directory"
 
 **Symptom:**
 ```
-umrs-client upload_dir ../../tmp/opossum-video-analysis/data demo-opossum
+umrs data dir-upload ../../tmp/opossum-video-analysis/data demo-opossum
 status=error
 message=Cannot process directory: ../../tmp/opossum-video-analysis/data
 bucket=mnagaso.opossum-analysis.demo-opossum
@@ -44,15 +44,15 @@ keyword argument 's3_keys'` on every recursive upload attempt.
    - Both the `image` category and `text_file` category branches were affected
 
 3. `umrs/demos_private/14_opossum_analysis/README.md` — "Manual Steps" section:
-   - Added `umrs-client experience add experience.json --update` (step 2)
-   - Added `umrs-client reload` (step 3)
-   - Added `umrs-client list_buckets` (step 4)
+   - Added `umrs experience add experience.json --update` (step 2)
+   - Added `umrs reload` (step 3)
+   - Added `umrs bucket list` (step 4)
    - Each step includes expected outputs and common failure modes
 
 **Validation Performed:**
 ```bash
 cd umrs/demos_private/14_opossum_analysis
-umrs-client upload_dir ../../tmp/opossum-video-analysis/data demo-opossum
+umrs data dir-upload ../../tmp/opossum-video-analysis/data demo-opossum
 ```
 Result: 47 files uploaded successfully. S3 keys preserve the hierarchy:
 ```
@@ -72,26 +72,29 @@ Bucket `mnagaso.opossum-analysis.demo-opossum` contains 47 objects.
 **Before (incomplete):**
 ```bash
 # 1. Verify server connectivity
-umrs-client ping
+umrs ping
 
 # 2. Bundle opossum engine into workflow
 cp -r ../../tmp/opossum-video-analysis/src/opossum workflow/opossum
 
 # 3. Upload workflow (includes bundled engine)
-umrs-client upload-workflow workflow/ --name opossum-analysis
+umrs upload-workflow workflow/ --name opossum-analysis
 
 # 4. Upload videos (preserves camera/Schedule date hierarchy)
-umrs-client upload_dir ../../tmp/opossum-video-analysis/data demo-opossum
+umrs data dir-upload ../../tmp/opossum-video-analysis/data demo-opossum
 
 # 5. Download results
-umrs-client download_results demo-opossum results/ --force-overwrite
+umrs data download demo-opossum results/ --force-overwrite
 ```
 
 **After (complete):**
 Added 3 missing commands to the "Manual Steps" section:
-- `umrs-client experience add experience.json --update` — register experience locally
-- `umrs-client reload` — push config to server, provision bucket
-- `umrs-client list_buckets` — verify demo-opossum bucket is configured
+- `umrs experience add experience.json --update` — register experience locally
+- `umrs data dir-upload` — upload data with preserved hierarchy
+- `umrs data download` — download results
+- `umrs upload-workflow` — upload workflow bundle
+- `umrs reload` — push config to server, provision bucket
+- `umrs bucket list` — verify buckets
 
 Each step now includes expected outputs and common failure modes.
 
@@ -101,7 +104,7 @@ Each step now includes expected outputs and common failure modes.
 
 | Demo | Status | Evidence |
 |------|--------|----------|
-| `demos_private/14_opossum_analysis` | **FIXED** | `upload_dir` succeeded: 47 files uploaded, hierarchy preserved |
+| `demos_private/14_opossum_analysis` | **FIXED** | `data dir-upload` succeeded: 47 files uploaded, hierarchy preserved |
 
 ---
 
@@ -117,37 +120,37 @@ Each step now includes expected outputs and common failure modes.
 
 1. **Server Connectivity** ✅
    ```bash
-   umrs-client ping
+   umrs ping
    ```
    Output: `✓ Server ready | profile=rccs-cloud | data0.ai.r-ccs.riken.jp:50090`
 
 2. **Experience Registration** ✅
    ```bash
-   umrs-client experience add experience.json --update
+   umrs experience add experience.json --update
    ```
    Output: `✓ Added experience(s): Opossum Analysis`
 
 3. **Server Reload** ✅
    ```bash
-   umrs-client reload
+   umrs reload
    ```
    Output: `✓ reload accepted`
 
 4. **Bucket Verification** ✅
    ```bash
-   umrs-client list_buckets
+   umrs bucket list
    ```
    Output: `Opossum Analysis | demo-opossum | movie | embedding | synced | 47 | mnagaso.opossum-analysis.demo-opossum`
 
 5. **Workflow Upload** ✅
    ```bash
-   umrs-client upload-workflow workflow/ --name opossum-analysis
+   umrs upload-workflow workflow/ --name opossum-analysis
    ```
    Output: `✓ Workflow opossum-analysis uploaded successfully`
 
 6. **Data Upload** ✅ (FIXED)
    ```bash
-   umrs-client upload_dir ../../tmp/opossum-video-analysis/data demo-opossum
+   umrs data dir-upload ../../tmp/opossum-video-analysis/data demo-opossum
    ```
    Output: 47 files uploaded, hierarchy preserved as S3 key prefixes.
    - S3 keys: `opossum_215_A/opossumA/Schedule/20260330/HH/*.mp4`
@@ -156,7 +159,7 @@ Each step now includes expected outputs and common failure modes.
 
 ### Summary
 
-The opossum demo's `upload_dir` failure was caused by a non-recursive `glob()` in the
+The opossum demo's `data dir-upload` failure was caused by a non-recursive `glob()` in the
 `process_dir` function. The fix uses `os.walk()` to traverse the directory hierarchy,
 preserving the camera/Schedule date structure as S3 key prefixes.
 

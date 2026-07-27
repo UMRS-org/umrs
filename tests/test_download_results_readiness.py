@@ -205,31 +205,33 @@ class TestDownloadResultsCliFlags:
     def test_wait_flags_default_and_no_wait(self):
         parser = argparse.ArgumentParser()
         sub = parser.add_subparsers(dest="action")
-        dr_p = sub.add_parser("download_results")
-        dr_p.add_argument("bucket_alias")
-        dr_p.add_argument("local_path")
-        wait_group = dr_p.add_mutually_exclusive_group()
+        data_p = sub.add_parser("data")
+        data_sub = data_p.add_subparsers(dest="data_action", required=True)
+        dd_p = data_sub.add_parser("download")
+        dd_p.add_argument("bucket_alias")
+        dd_p.add_argument("local_path")
+        wait_group = dd_p.add_mutually_exclusive_group()
         wait_group.add_argument(
             "--wait", dest="wait", action="store_true", default=True
         )
         wait_group.add_argument(
             "--no-wait", dest="wait", action="store_false"
         )
-        dr_p.add_argument("--timeout", type=int, default=3600)
+        dd_p.add_argument("--timeout", type=int, default=3600)
 
         args = parser.parse_args(
-            ["download_results", "alias", "/tmp/out"]
+            ["data", "download", "alias", "/tmp/out"]
         )
         assert args.wait is True
         assert args.timeout == 3600
 
         args = parser.parse_args(
-            ["download_results", "alias", "/tmp/out", "--no-wait"]
+            ["data", "download", "alias", "/tmp/out", "--no-wait"]
         )
         assert args.wait is False
 
         args = parser.parse_args(
-            ["download_results", "alias", "/tmp/out", "--timeout", "30"]
+            ["data", "download", "alias", "/tmp/out", "--timeout", "30"]
         )
         assert args.timeout == 30
         assert args.wait is True

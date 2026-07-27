@@ -9,14 +9,14 @@ Removing an experience from the user JSON is safe and reversible. It does not
 delete MinIO buckets, Postgres databases, tables, or pgvector embeddings.
 
 ```bash
-umrs-client experience remove <xp_name>
-umrs-client reload
+umrs experience remove <xp_name>
+umrs reload
 ```
 
 To recover the JSON later from retained storage state:
 
 ```bash
-umrs-client experience recover <xp_name> \
+umrs experience recover <xp_name> \
    --username <user> \
    --s3cfg ~/.config/umrs/s3cfg_<user> \
    --output-path recovered-experience.json
@@ -43,10 +43,11 @@ shape, but may not prove the exact original model name.
 
 ```bash
 # Clean up the default demo_user
-# Follow the step-by-step commands in README.md
+# See the numbered steps below in this README
 
 # Clean up a different user
-DEMO_USERNAME=other_user # Follow the step-by-step commands in README.md
+DEMO_USERNAME=other_user
+# See the numbered steps below in this README
 ```
 
 ## Prerequisites

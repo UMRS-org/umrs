@@ -1,0 +1,23 @@
+:root { color-scheme: light; font-family: "IBM Plex Sans", "Noto Sans", sans-serif; color: #172126; background: #edf1ef; }
+* { box-sizing: border-box; }
+body { margin: 0; }
+header { min-height: 92px; padding: 22px clamp(20px, 5vw, 72px); background: #12352f; color: #f8fbf7; display: flex; align-items: center; justify-content: space-between; }
+header div { display: flex; align-items: baseline; gap: 12px; }
+header strong { font-family: Georgia, serif; font-size: 30px; letter-spacing: 0; }
+header span { color: #9fcdb9; }
+header p { margin: 0; font-size: 14px; }
+main { width: min(1200px, calc(100% - 32px)); margin: 32px auto; display: grid; gap: 28px; }
+section { background: #fff; border: 1px solid #ccd6d1; border-top: 4px solid #d6523c; padding: 20px; }
+section:nth-child(2) { border-top-color: #147d73; }
+.section-head { display: flex; justify-content: space-between; align-items: center; gap: 16px; }
+h1 { margin: 0 0 18px; font-family: Georgia, serif; font-size: 24px; letter-spacing: 0; }
+select { border: 1px solid #9baaa4; background: #fff; padding: 8px 12px; }
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+th, td { text-align: left; padding: 11px 9px; border-bottom: 1px solid #dde4e1; }
+th { color: #52615c; font-size: 12px; text-transform: uppercase; }
+tbody tr[data-id] { cursor: pointer; }
+tbody tr[data-id]:hover { background: #f3f7f5; }
+.status { font-weight: 700; }
+pre { max-height: 320px; overflow: auto; padding: 16px; background: #172126; color: #d8e8e0; }
+.error { color: #b12f24; }
+@media (max-width: 700px) { header { align-items: flex-start; flex-direction: column; gap: 10px; } section { overflow-x: auto; } th, td { min-width: 110px; } }

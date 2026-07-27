@@ -2,7 +2,7 @@
 
 This test ensures that module-level constants in config.py are not
 accidentally shadowed by subsequent assignments, which caused
-umrs-client profile resolution to fail silently.
+umrs profile resolution to fail silently.
 
 See .github/instructions/umrs-branch-separation.instructions.md §5.
 """

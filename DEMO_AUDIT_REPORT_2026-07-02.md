@@ -193,7 +193,7 @@ demos_private/09_defect_analysis/workflow_slurm/steps/__pycache__/
 ### Prerequisite Checks
 
 All demos source `lib/common.sh` which provides:
-- `preflight()` — checks `umrs-client` in PATH, server reachable
+- `preflight()` — checks `umrs` in PATH, server reachable
 - `client_ping()` — bounded timeout ping
 - `admin_hint()` — warns if `UMRS_ADMIN_TOKEN` not set
 

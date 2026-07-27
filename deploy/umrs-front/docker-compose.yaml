@@ -36,7 +36,15 @@ services:
       - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - umrs_pg_data:/var/lib/postgresql/data
-    command: postgres -c "listen_addresses=*" -c "unix_socket_directories="
+    # max_connections raised from the image default of 100: umrs-front runs a
+    # shared Postgres for all cluster databases (rccs/ai4s/bdrt/octopus), and
+    # each experience holds ~1 pooled connection, so the steady-state baseline
+    # (~1 per experience across the roster) was pinned against the 100 ceiling
+    # and any transient connection (e.g. a config reload) exhausted the pool
+    # with "remaining connection slots are reserved for non-replication
+    # superuser connections". 200 gives headroom for the current roster; revisit
+    # (or move to pgbouncer / lazy per-experience pools) as the roster grows.
+    command: postgres -c "listen_addresses=*" -c "unix_socket_directories=" -c "max_connections=200"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-umrs} -h 127.0.0.1"]
       interval: 5s
@@ -256,6 +264,10 @@ services:
     environment:
       # Cluster-specific overrides
       UMRS_SITE_CONFIG: /etc/umrs/site.yaml
+      # Pool roster — sizing defaults for single-endpoint provisions of large
+      # models (routes qwen3.6/GLM-5.2 etc. to the right node/GPU/context/TTL
+      # instead of silently defaulting to 1 node / 1 GPU / 4096 context).
+      UMRS_PROVISION_ROSTER: /etc/umrs/pool-bdrt-step.yaml
       UMRS_CONFIG: /etc/umrs
       UMRS_CERTIFICATION_MODE: ${UMRS_CERTIFICATION_MODE:-warn}
       UMRS_PREFLIGHT_MODE: ${UMRS_PREFLIGHT_MODE:-warn}
@@ -287,6 +299,8 @@ services:
       PYTHONUNBUFFERED: "1"
     volumes:
       - ../bdrt-front/site.yaml:/etc/umrs/site.yaml:ro,z
+      # Pool roster — sizing defaults for endpoint provisioning
+      - ../bdrt/pool-bdrt-step.yaml:/etc/umrs/pool-bdrt-step.yaml:ro,z
       - ./conf_umrs_bdrt.json:/etc/umrs/conf_umrs.json:z
       - ./user_files_bdrt:/etc/umrs/user_files:z
       - ./s3cfg:/etc/umrs/s3cfg:ro,z

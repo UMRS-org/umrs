@@ -13,10 +13,10 @@ UMRS demos use three coordinated resources:
 | Layer | User-visible handle | Backing resource |
 |-------|---------------------|------------------|
 | User JSON | `~/.config/umrs/users/<user>.json` | Declares experiences, modalities, bucket aliases, SQL tables, and model settings |
-| MinIO/S3 | bucket alias, for example `jens-sam3-direct` | Physical buckets named from `<user>.<xp_name>.<bucket_alias>` |
+| MinIO/S3 | bucket alias, for example `demo-sam3` | Physical buckets named from `<user>.<xp_name>.<bucket_alias>` |
 | Postgres/pgvector | `sql_username` + `xp_name` | Database named from the experience and SQL user, with one table per modality |
 
-`umrs-client reload` reads the active user JSON on the server and provisions any
+`umrs reload` reads the active user JSON on the server and provisions any
 missing resources. Reload is idempotent: existing buckets and tables are reused.
 
 ## 2. First-Time Setup
@@ -25,15 +25,15 @@ Start with the onboarding demo:
 
 ```bash
 cd umrs/demos/00_onboarding
-# Follow the step-by-step commands in README.md
+# See the numbered steps in the onboarding README
 ```
 
 For manual setup:
 
 ```bash
-umrs-client profile show
-umrs-client ping
-umrs-client config show
+umrs profile show
+umrs ping
+umrs config show
 ```
 
 If the deployment uses SSH tunneling, start the site tunnel before running demo
@@ -46,9 +46,9 @@ config, then reload:
 
 ```bash
 cd umrs/demos/03_sam3_segmentation
-umrs-client config add-experience experience.json --update
-umrs-client reload
-umrs-client list_buckets
+umrs experience add experience.json --update
+umrs reload
+umrs bucket list
 ```
 
 What reload creates:
@@ -67,15 +67,15 @@ Each demo can be run directly:
 
 ```bash
 cd umrs/demos/02_text_embedding
-# Follow the step-by-step commands in README.md
+# See the numbered steps in each demo's README
 ```
 
 For manual file workflows, the common shape is:
 
 ```bash
-umrs-client upload_dir ./input <bucket-alias>/<run-id>
-umrs-client status
-umrs-client download_results <bucket-alias>/<run-id> ./results --force-overwrite
+umrs data dir-upload ./input <bucket-alias>/<run-id>
+umrs status
+umrs data download <bucket-alias>/<run-id> ./results --force-overwrite
 ```
 
 Use [README.md](README.md) to choose a numbered demo by task.
@@ -86,8 +86,8 @@ Use `experience remove` when you want the user JSON to stop declaring an
 experience:
 
 ```bash
-umrs-client experience remove <xp_name>
-umrs-client reload
+umrs experience remove <xp_name>
+umrs reload
 ```
 
 Important behavior:
@@ -109,7 +109,7 @@ If an experience was removed from the user JSON but its MinIO/Postgres data stil
 exists, recover a JSON fragment:
 
 ```bash
-umrs-client experience recover <xp_name> \
+umrs experience recover <xp_name> \
   --username <user> \
   --s3cfg ~/.config/umrs/s3cfg_<user> \
   --output-path recovered-experience.json
@@ -122,7 +122,7 @@ size. Model identity cannot always be proven from storage alone, so the recovery
 command uses conservative defaults unless you pass overrides:
 
 ```bash
-umrs-client experience recover <xp_name> \
+umrs experience recover <xp_name> \
   --username <user> \
   --s3cfg ~/.config/umrs/s3cfg_<user> \
   --model-name intfloat/e5-base-v2 \
@@ -134,12 +134,12 @@ umrs-client experience recover <xp_name> \
 To merge directly into the active user config:
 
 ```bash
-umrs-client experience recover <xp_name> \
+umrs experience recover <xp_name> \
   --username <user> \
   --s3cfg ~/.config/umrs/s3cfg_<user> \
   --merge --update
 
-umrs-client reload
+umrs reload
 ```
 
 Use `--no-postgres` when the client cannot reach Postgres. The generated JSON is
@@ -151,10 +151,10 @@ reload.
 For demos that benefit from a warm endpoint, use the endpoint lifecycle commands:
 
 ```bash
-umrs-client endpoint up --model <model-name> --idle-ttl 30m
-umrs-client endpoint list
-umrs-client endpoint status <job_id>
-umrs-client endpoint stop <job_id>
+umrs endpoint up --model <model-name> --idle-ttl 30m
+umrs endpoint list
+umrs endpoint status <job_id>
+umrs endpoint stop <job_id>
 ```
 
 The default idle TTL is `30m`. It can be overridden with `--idle-ttl` or by the
@@ -165,19 +165,19 @@ are cleaned up by UMRS.
 
 | Symptom | Check |
 |---------|-------|
-| `No bucket` on upload | Run `umrs-client list_buckets`; if missing, add the experience and reload |
+| `No bucket` on upload | Run `umrs bucket list`; if missing, add the experience and reload |
 | Experience disappeared after reload | It was removed from user JSON; recover it with `experience recover` if data remains |
 | Recovery finds buckets but not tables | Check Postgres env vars or rerun without `--no-postgres` from a host that can reach DB |
 | Generated recovery JSON has defaults | Storage cannot prove model identity; edit `model_name`, `model_type`, and `vector_size` before reload |
-| Demo waits for results | Job may still be running; inspect `umrs-client status` or `umrs-client monitor --tab endpoints` |
+| Demo waits for results | Job may still be running; inspect `umrs status` or `umrs monitor --tab endpoints` |
 
 ## 9. Cleanup
 
 Use JSON removal for reversible cleanup:
 
 ```bash
-umrs-client experience remove <xp_name>
-umrs-client reload
+umrs experience remove <xp_name>
+umrs reload
 ```
 
 Use explicit purge only when the data should be destroyed. Full purge is an

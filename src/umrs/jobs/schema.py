@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 # Schema version - increment when schema changes
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 4
 
 
 # SQL for creating the jobs table (U-701)
@@ -36,6 +36,13 @@ CREATE TABLE IF NOT EXISTS jobs (
     priority INTEGER NOT NULL DEFAULT 0,
     desired_max_attempts INTEGER NOT NULL DEFAULT 3,
     restart_policy VARCHAR(32) NOT NULL DEFAULT 'on_crash',
+
+    -- Job TTL: NULL = terminate immediately, positive = seconds,
+    -- -1 = keep alive until partition walltime limit.
+    ttl_seconds INTEGER,
+
+    -- Fan-out child job IDs (GitHub Issue #87, TASK-015-005)
+    fan_out_child_job_ids TEXT[],
 
     next_run_at TIMESTAMPTZ,
     active_attempt_id VARCHAR(64),
@@ -220,6 +227,12 @@ CREATE TABLE IF NOT EXISTS schema_versions (
 """
 
 
+SCHEMA_MIGRATIONS = {
+    3: "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS ttl_seconds INTEGER;",
+    4: "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS fan_out_child_job_ids TEXT[];",
+}
+
+
 def ensure_schema(conn) -> bool:
     """
     Ensure job tracking schema exists.
@@ -257,6 +270,11 @@ def ensure_schema(conn) -> bool:
 
             # Create update trigger
             cur.execute(CREATE_UPDATE_TRIGGER)
+
+            for version in range(current_version + 1, SCHEMA_VERSION + 1):
+                migration = SCHEMA_MIGRATIONS.get(version)
+                if migration:
+                    cur.execute(migration)
 
             # Update schema version
             cur.execute(

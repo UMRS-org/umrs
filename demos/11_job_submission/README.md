@@ -16,7 +16,7 @@ not the lifecycle control that has been validated for durable
 ## Prerequisites
 
 - UMRS server running and reachable
-- `umrs-client` available
+- `umrs` available
 
 ## Why 3 Job Types?
 
@@ -28,16 +28,16 @@ batches, pre-warm the endpoint and cancel it explicitly when you are done:
 
 ```bash
 # Pre-warm Mini-RiVault/BentoML endpoint (the site-configured backend starts immediately):
-umrs-client job submit endpoint_provision \
+umrs job submit endpoint_provision \
     --spec '{"model": "sam3"}' \
     --project my-project
 
 # Now uploads use the warm endpoint — no cold start:
-umrs-client upload_dir /data/images/batch-1/
-umrs-client upload_dir /data/images/batch-2/
+umrs data dir-upload /data/images/batch-1/
+umrs data dir-upload /data/images/batch-2/
 
 # When done, release the node hours:
-umrs-client job cancel <job_id>
+umrs job cancel <job_id>
 ```
 
 In current durable deployments, the UMRS job record completes once the warm
@@ -57,7 +57,7 @@ operation, not a file upload:
 ```bash
 # Rebuild the RAG index after a large ingestion run.
 # On the current demo sequence, Demo 02 populates this table:
-umrs-client job submit index_build \
+umrs job submit index_build \
     --spec '{"database": "text_embedding_usr1_text", "table": "text_file"}' \
     --project my-project
 ```
@@ -69,7 +69,7 @@ automatically, but sometimes you want immediate teardown:
 
 ```bash
 # Teardown a specific endpoint explicitly:
-umrs-client job submit cleanup \
+umrs job submit cleanup \
     --spec '{"target": "endpoint", "job_id": "<endpoint_provision_job_id>"}' \
     --project my-project
 
@@ -82,7 +82,7 @@ umrs-client job submit cleanup \
 ```bash
 # Running or queued jobs are cancelled directly.
 # Completed endpoint_provision jobs are converted into cleanup jobs.
-umrs-client job cancel job-abc123def456
+umrs job cancel job-abc123def456
 ```
 
 ### Query running jobs
@@ -91,8 +91,8 @@ Use the monitor dashboard for the durable job list, or `status all` for the
 broader server summary:
 
 ```bash
-umrs-client monitor --once --project my-project
-umrs-client status all
+umrs monitor --once --project my-project
+umrs status all
 ```
 
 ## What About the Other Operations?
@@ -100,8 +100,8 @@ umrs-client status all
 | Operation | Why no `job submit` needed |
 |-----------|--------------------------|
 | Embedding computation | Automatic via `upload_file`/`upload_dir` → `PROCESS_OBJECTS` |
-| Model download | Dedicated `umrs-client model download` command |
-| Re-embed with new model | `umrs-client recompute` / `umrs-client update` maintenance commands |
+| Model download | Dedicated `umrs model download` command |
+| Re-embed with new model | `umrs recompute` / `umrs update` maintenance commands |
 
 ## Lifecycle Notes
 
@@ -138,21 +138,21 @@ multi-instance support.
 
 ```bash
 # 1. Verify server connectivity
-umrs-client ping
+umrs ping
 
 # 2. Pre-warm a compute endpoint (avoid cold-start on first upload)
 #    The endpoint stays warm until you cancel it or TTL expires.
 #    Use this before batch upload sessions.
-umrs-client job submit endpoint_provision \
+umrs job submit endpoint_provision \
     --spec '{"model": "sam3"}' \
     --project my-project
 
 # 3. Inspect the durable job list for this project
-umrs-client monitor --once --project my-project
+umrs monitor --once --project my-project
 
 # 4. Rebuild the pgvector index after bulk inserts
 #    Demo 02 populates text_embedding_usr1_text.text_file.
-umrs-client job submit index_build \
+umrs job submit index_build \
     --spec '{"database": "text_embedding_usr1_text", "table": "text_file"}' \
     --project my-project
 
@@ -160,22 +160,24 @@ umrs-client job submit index_build \
 #    Replace <job_id> with the ID returned in step 2.
 #    If the provision job is still active it becomes cancelled.
 #    If it already completed, UMRS submits the matching cleanup job.
-umrs-client job cancel <job_id>
+umrs job cancel <job_id>
 
 # 6. Explicit cleanup remains available when you want to target a specific
 #    endpoint job id directly, or when you want a no-op cleanup against an
 #    already-gone endpoint.
-umrs-client job submit cleanup \
+umrs job submit cleanup \
     --spec '{"target": "endpoint", "job_id": "<endpoint_provision_job_id>"}' \
     --project my-project
 
 # 7. Monitor job status
-umrs-client monitor --once --project my-project
-umrs-client status all
+umrs monitor --once --project my-project
+umrs status all
 ```
 
 ## Run Demo
 
 ```bash
-./README.md (step-by-step commands)
+# See the step-by-step commands in the numbered sections below
+umrs ping
+umrs job submit --help
 ```

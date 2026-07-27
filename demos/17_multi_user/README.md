@@ -7,7 +7,7 @@ neither can access the other's data.
 ## Prerequisites
 
 - UMRS server running and reachable (SSH tunnels if remote: ports 5555, 5556-5563, 9000)
-- `umrs-client` installed and in PATH (see [demos/README.md](../README.md#prerequisites))
+- `umrs` installed and in PATH (see [demos/README.md](../README.md#prerequisites))
 - Two users onboarded on the server (see [Demo 00](../00_onboarding/) for the admin enrollment flow via `umrs-server admin user add`)
 - Two user configuration files:
   - `~/.config/umrs/users/user1.json`
@@ -16,8 +16,8 @@ neither can access the other's data.
 ## Quick Start
 
 ```bash
-cd demos/17_multi_user
-# Follow the step-by-step commands in README.md
+cd "$(git rev-parse --show-toplevel)/$(test -d "$(git rev-parse --show-toplevel)/umrs/demos" && echo umrs)/demos/17_multi_user"
+# See the numbered steps below in this README
 ```
 
 ## What This Demo Does
@@ -36,41 +36,41 @@ cd demos/17_multi_user
 ```bash
 # 1. Verify both users can reach the server
 #    Use `config use` to switch the active user identity.
-umrs-client config use --user ~/.config/umrs/users/user1.json
-umrs-client ping
-umrs-client config use --user ~/.config/umrs/users/user2.json
-umrs-client ping
+umrs config use --user ~/.config/umrs/users/user1.json
+umrs ping
+umrs config use --user ~/.config/umrs/users/user2.json
+umrs ping
 
 # 2. User1 uploads a test file to their private bucket
 #    This file is stored in user1's namespace and should not
 #    be visible to user2.
-umrs-client config use --user ~/.config/umrs/users/user1.json
+umrs config use --user ~/.config/umrs/users/user1.json
 echo "This is user1's private data" > /tmp/user1_data.txt
-umrs-client upload_file /tmp/user1_data.txt user1-textfiles
+umrs data upload /tmp/user1_data.txt demo-user1-textfiles
 
 # 3. User2 uploads a test file to their private bucket
-umrs-client config use --user ~/.config/umrs/users/user2.json
+umrs config use --user ~/.config/umrs/users/user2.json
 echo "This is user2's private data" > /tmp/user2_data.txt
-umrs-client upload_file /tmp/user2_data.txt user2-textfiles
+umrs data upload /tmp/user2_data.txt user2-textfiles
 
 # 4. User1 lists their own bucket (should succeed)
-umrs-client config use --user ~/.config/umrs/users/user1.json
-umrs-client list_buckets
+umrs config use --user ~/.config/umrs/users/user1.json
+umrs bucket list
 
 # 5. User2 lists their own bucket (user1's data is not visible)
-umrs-client config use --user ~/.config/umrs/users/user2.json
-umrs-client list_buckets
+umrs config use --user ~/.config/umrs/users/user2.json
+umrs bucket list
 
 # 6. Check user-scoped model isolation
 #    User-scoped models are private — each user sees only their own.
-umrs-client config use --user ~/.config/umrs/users/user1.json
-umrs-client model list --scope user
-umrs-client config use --user ~/.config/umrs/users/user2.json
-umrs-client model list --scope user
+umrs config use --user ~/.config/umrs/users/user1.json
+umrs model list --scope user
+umrs config use --user ~/.config/umrs/users/user2.json
+umrs model list --scope user
 
 # 7. Check system-scoped models (shared across all users)
 #    System models are visible to everyone.
-umrs-client model list --scope system
+umrs model list --scope system
 ```
 
 ## Isolation Model
@@ -86,14 +86,14 @@ umrs-client model list --scope system
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `USER1_BUCKET` | `user1-textfiles` | Bucket alias for user1 |
+| `USER1_BUCKET` | `demo-user1-textfiles` | Bucket alias for user1 |
 | `USER2_BUCKET` | `user2-textfiles` | Bucket alias for user2 |
 
 ## Expected Output
 
 ```
 [multi_user]   ✓ Both users can reach server
-[multi_user]   ✓ User1 uploaded data to user1-textfiles
+[multi_user]   ✓ User1 uploaded data to demo-user1-textfiles
 [multi_user]   ✓ User2 uploaded data to user2-textfiles
 [multi_user]   ✓ User1 CANNOT access user2's bucket (expected)
 [multi_user]   ✓ User2 CANNOT access user1's bucket (expected)

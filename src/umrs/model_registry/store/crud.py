@@ -8,6 +8,7 @@ with ACL enforcement and path validation.
 from __future__ import annotations
 
 import json
+from datetime import datetime
 import logging
 from typing import Any
 
@@ -33,6 +34,12 @@ from .acl import AccessContext, ACLEnforcer
 from .errors import DuplicateModelError, ModelNotFoundError, PermissionDeniedError
 from .path_validator import PathValidator
 from umrs.metrics import METRICS
+
+from ..versions import (
+    ModelVersion,
+    VersionHistory,
+    VersionStatus,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1045,3 +1052,181 @@ class ModelStore:
             )
 
         return True, None
+
+    # =========================================================================
+    # Version Management (GitHub Issue #87, TASK-015-004)
+    # =========================================================================
+
+    def create_version(
+        self,
+        model_id: str,
+        version: str,
+        storage_ref: str,
+        ctx: AccessContext | None = None,
+        changelog: str | None = None,
+        source_type: str = "manual",
+    ) -> ModelVersion:
+        """Create a new model version."""
+        self.get_model(model_id)  # Verify model exists
+
+        version_id = ModelVersion.generate_version_id()
+        now = datetime.now()
+
+        ver_obj = ModelVersion(
+            version_id=version_id,
+            model_id=model_id,
+            version=version,
+            storage_ref=storage_ref,
+            changelog=changelog,
+            status=VersionStatus.RELEASED,
+            created_at=now,
+            released_at=now,
+            source_type=source_type,
+            is_latest=True,
+            is_stable=False,
+            metrics={},
+        )
+
+        try:
+            with self.conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE model_releases SET is_latest = FALSE WHERE model_id = %s",
+                    (model_id,),
+                )
+                cur.execute(
+                    """
+                    INSERT INTO model_releases (
+                        release_id, model_id, version, storage_ref,
+                        changelog, is_latest, is_stable,
+                        source_type, status, created_at, published_at
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        version_id,
+                        model_id,
+                        version,
+                        storage_ref,
+                        changelog,
+                        True,
+                        False,
+                        source_type,
+                        VersionStatus.RELEASED.value,
+                        now,
+                        now,
+                    ),
+                )
+                self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+
+        logger.info("Created version %s for model %s", version, model_id)
+        return ver_obj
+
+    def get_model_versions(
+        self,
+        model_id: str,
+        ctx: AccessContext | None = None,
+    ) -> VersionHistory:
+        """Get all versions for a model."""
+        self.get_model(model_id, ctx)  # Validate model exists
+
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT release_id, model_id, version, storage_ref,
+                       changelog, is_latest, is_stable,
+                      source_type, status, created_at, published_at, deprecated_at
+                FROM model_releases
+                WHERE model_id = %s
+                ORDER BY version DESC
+                """,
+                (model_id,),
+            )
+            rows = cur.fetchall()
+
+        versions = []
+        for row in rows:
+            ver = ModelVersion(
+                version_id=row[0],
+                model_id=row[1],
+                version=row[2],
+                storage_ref=row[3],
+                changelog=row[4],
+                is_latest=row[5] or False,
+                is_stable=row[6] or False,
+                source_type=row[7] or "manual",
+                status=VersionStatus(row[8]),
+                created_at=row[9],
+                released_at=row[10],
+                deprecated_at=row[11],
+            )
+            versions.append(ver)
+
+        return VersionHistory(model_id=model_id, versions=versions)
+
+    def deactivate_version(
+        self,
+        model_id: str,
+        version_str: str,
+        ctx: AccessContext | None = None,
+    ) -> ModelVersion:
+        """Mark a version as deprecated."""
+        versions = self.get_model_versions(model_id, ctx)
+        ver = versions.get_version(version_str)
+
+        if ver is None:
+            raise ModelNotFoundError(
+                f"Version {version_str} not found for model {model_id}"
+            )
+
+        ver.status = VersionStatus.DEPRECATED
+        ver.deprecated_at = datetime.now()
+        ver.is_latest = False
+
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE model_releases
+                SET status = %s, deprecated_at = NOW(), is_latest = FALSE
+                WHERE release_id = %s
+                """,
+                ("deprecated", ver.version_id),
+            )
+            self.conn.commit()
+
+        return ver
+
+    def activate_version(
+        self,
+        model_id: str,
+        version_str: str,
+        ctx: AccessContext | None = None,
+    ) -> ModelVersion:
+        """Promote a version to active/latest.
+
+        This unsets is_latest on the current version and sets it on the target.
+        """
+        versions = self.get_model_versions(model_id, ctx)
+        ver = versions.get_version(version_str)
+        if ver is None:
+            raise ModelNotFoundError(
+                f"Version {version_str} not found for model {model_id}"
+            )
+
+        with self.conn.cursor() as cur:
+            # Unset all latest
+            cur.execute(
+                "UPDATE model_releases SET is_latest = FALSE WHERE model_id = %s",
+                (model_id,),
+            )
+            # Set new latest
+            cur.execute(
+                """UPDATE model_releases
+                   SET is_latest = TRUE, status = %s, deprecated_at = NULL
+                   WHERE model_id = %s AND version = %s""",
+                (VersionStatus.RELEASED.value, model_id, version_str),
+            )
+            self.conn.commit()
+
+        return self.get_model_versions(model_id, ctx).get_version(version_str)  # type: ignore[return-value]

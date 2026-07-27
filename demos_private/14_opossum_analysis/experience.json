@@ -4,6 +4,10 @@
   "modalities": [
     {
       "modality_name": "movie",
+      "slurm": {
+        "partition": "ng-dgx-m3",
+        "reservation": "nagaso_m3-15_0721"
+      },
       "s3": {
         "bucket_alias": "demo-opossum",
         "need_output_bucket": true,

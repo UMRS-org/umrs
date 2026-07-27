@@ -476,9 +476,9 @@ def _maybe_emit_template(args, store, rec) -> None:
                     f"       r4 auth login --gateway-url <GATEWAY_URL> --api-key {token_hint}"
                 )
             print(
-                f"  2. (alternative) umrs-client direct ZMQ — requires CURVE keys if CURVE auth is enabled:"
+                f"  2. (alternative) umrs direct ZMQ — requires CURVE keys if CURVE auth is enabled:"
             )
-            print(f"       umrs-client login --host <HOST> --api-key {token_hint}")
+            print(f"       umrs login --host <HOST> --api-key {token_hint}")
         else:
             print(
                 f"  1. Generate a token for the user (embed --gateway-url for single-flag login):"
@@ -489,9 +489,9 @@ def _maybe_emit_template(args, store, rec) -> None:
             print(f"  2. Give the token to the user, who runs:")
             print(f"       r4 auth login --api-key <TOKEN>")
             print(
-                f"     (alternative) umrs-client direct ZMQ — requires CURVE keys if CURVE auth is enabled:"
+                f"     (alternative) umrs direct ZMQ — requires CURVE keys if CURVE auth is enabled:"
             )
-            print(f"       umrs-client login --host <HOST> --api-key <TOKEN>")
+            print(f"       umrs login --host <HOST> --api-key <TOKEN>")
         if not rec.slurm_account and not rec.slurm_accounts:
             require_acct, _ = _resolve_slurm_account_requirement()
             if require_acct:
@@ -851,15 +851,15 @@ def _cmd_token_generate(args: argparse.Namespace, _store: UserStore) -> int:
     else:
         action = "Regenerated" if overwrite else "Generated"
         print(
-            f"{action} admin token '{args.name}' (for umrs-client --admin-token / $UMRS_ADMIN_TOKEN)"
+            f"{action} admin token '{args.name}' (for umrs --admin-token / $UMRS_ADMIN_TOKEN)"
         )
         print(f"token: {token}")
         print("  (this is the only time the raw token will be shown)")
         print()
-        print("  Use with: umrs-client --admin-token <token> <command>")
+        print("  Use with: umrs --admin-token <token> <command>")
         print("         or: export UMRS_ADMIN_TOKEN=<token>")
         print()
-        print("  NOTE: this token is for the umrs-client ZMQ control plane only.")
+        print("  NOTE: this token is for the umrs ZMQ control plane only.")
         print(
             "        To authenticate r4/Gateway, use 'umrs-server admin token generate-jwt' instead."
         )
@@ -1183,7 +1183,7 @@ _GENERATE_JWT_DESCRIPTION = (
     "For shared user sessions prefer OIDC/Okta. "
     "The signing secret is read from --secret, $JWT_SECRET, the persisted Gateway secret, "
     "or the built-in dev default. "
-    "NOTE: this token is NOT for umrs-client --admin-token — "
+    "NOTE: this token is NOT for umrs --admin-token — "
     "for that, use 'generate' instead."
 )
 
@@ -1372,7 +1372,7 @@ def _add_user_parsers(user_sub: argparse._SubParsersAction) -> None:
         description=(
             "Generate a ready-to-use user config JSON template. "
             "The file can be sent to the new user who then imports it with:\n"
-            "  umrs-client config init --template <file> --username <username>"
+            "  umrs config init --template <file> --username <username>"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -1396,10 +1396,10 @@ def _add_user_parsers(user_sub: argparse._SubParsersAction) -> None:
 def _add_token_parsers(token_sub: argparse._SubParsersAction) -> None:
     gen_p = token_sub.add_parser(
         "generate",
-        help="Generate an opaque admin token for umrs-client --admin-token (ZMQ control plane)",
+        help="Generate an opaque admin token for umrs --admin-token (ZMQ control plane)",
         description=(
             "Generate (or regenerate) a named opaque admin token stored in admin_tokens.json. "
-            "This token is used with 'umrs-client --admin-token' or $UMRS_ADMIN_TOKEN for "
+            "This token is used with 'umrs --admin-token' or $UMRS_ADMIN_TOKEN for "
             "privileged ZMQ control-plane operations (reload, recompute, monitor, etc.). "
             "It is NOT used for r4 CLI / Gateway HTTP authentication — for that, use 'generate-jwt'."
         ),
@@ -2024,7 +2024,7 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "Create, list, inspect, disable, and update server-side UMRS user "
             "records. Use this command on the server/operator side; "
-            "umrs-client does not perform admin actions."
+            "umrs does not perform admin actions."
         ),
         epilog=(
             "Most common commands:\n"

@@ -8,12 +8,12 @@ Upload images through UMRS → Slurm dispatches `internal_genAI` on GPU → SAM3
 
 - UMRS server running with `VISION_STACK=jens`
 - SSH tunnel open (if running remotely against RCCS Cloud)
-- `umrs-client` installed and on PATH
+- `umrs` installed and on PATH
 - `internal_genAI/bento/sam3infer/` contains `bpe.gz` and `sam3.pt` (pre-staged on compute node)
 - **Your user must be enrolled on the server.** If you haven't been enrolled yet,
   ask an admin to run:
   ```bash
-  umrs-client admin user add <your_user_config.json> --admin-token $UMRS_ADMIN_TOKEN
+  umrs admin user add <your_user_config.json> --admin-token $UMRS_ADMIN_TOKEN
   ```
   Without enrollment, the server will reject your config upload and no MinIO
   buckets will be created (you'll see "No bucket" errors on `upload_dir`).
@@ -42,7 +42,7 @@ cd umrs/demos_jens/11_sam3_direct
 ### 3. Verify the server is reachable
 
 ```bash
-umrs-client ping
+umrs ping
 ```
 
 Expected output:
@@ -63,7 +63,7 @@ cat experience.json
 Merge it into your active user config:
 
 ```bash
-umrs-client config add-experience experience.json --update
+umrs experience add experience.json
 ```
 
 This adds (or replaces) the `"Jens SAM3 Direct"` experience in your user config
@@ -72,22 +72,22 @@ file at `~/.config/umrs/users/<your_user>.json`.
 ### 5. Reload so the server provisions the MinIO bucket
 
 ```bash
-umrs-client reload
+umrs reload
 ```
 
 Then check that provisioning succeeded:
 
 ```bash
-umrs-client status
+umrs status
 ```
 
 ### 6. Register the model in the model registry (optional)
 
 The SAM3 model weights are pre-staged on the compute node. To make the model
-visible in `umrs-client model list` and the monitor Models tab, register it:
+visible in `umrs model list` and the monitor Models tab, register it:
 
 ```bash
-umrs-client model register sam3 \
+umrs model register sam3 \
   /path/to/internal_genAI/bento/sam3infer \
   --type vision \
   --description "SAM3 text-prompt segmentation"
@@ -100,7 +100,7 @@ If you have the model weights locally and want to copy them to the server
 staging area **and** register in one step:
 
 ```bash
-umrs-client model upload ./sam3infer \
+umrs model upload ./sam3infer \
   --name sam3 \
   --type vision \
   --description "SAM3 text-prompt segmentation" \
@@ -113,7 +113,7 @@ umrs-client model upload ./sam3infer \
 Verify:
 
 ```bash
-umrs-client model list
+umrs model list
 ```
 
 ### 7. Stage input images
@@ -141,7 +141,7 @@ ls -la "${UPLOAD_DIR}/"
 ### 8. Upload images to UMRS
 
 ```bash
-umrs-client upload_dir "${UPLOAD_DIR}" "jens-sam3-direct/${RUN_ID}"
+umrs data dir-upload "${UPLOAD_DIR}" "jens-sam3-direct/${RUN_ID}"
 ```
 
 This uploads the image(s) to MinIO bucket `jens-sam3-direct/<RUN_ID>/` and tells
@@ -155,7 +155,7 @@ and uploads results back to S3. This can take several minutes on first run
 
 ```bash
 mkdir -p "results/${RUN_ID}/artifacts"
-umrs-client download_results "jens-sam3-direct/${RUN_ID}" "results/${RUN_ID}/artifacts" --force-overwrite
+umrs data download "jens-sam3-direct/${RUN_ID}" "results/${RUN_ID}/artifacts" --force-overwrite
 ```
 
 > **Tip**: If no results appear yet, wait and retry the `download_results`
@@ -213,7 +213,7 @@ Edit `experience.json` — change `"prompt"` under `vision_model_config`:
 Then re-register:
 
 ```bash
-umrs-client config add-experience experience.json --update
+umrs config add-experience experience.json --update
 ```
 
 ## Running the automated script (alternative)
@@ -224,7 +224,7 @@ Instead of the manual steps above, you can run everything in one go:
 SAM3_PROMPT=cat \
   MAX_IMAGES=1 \
   RESULT_DOWNLOAD_TIMEOUT=1500 \
-  # Follow the step-by-step commands in README.md
+  # See the numbered steps above in this README
 ```
 
 ---

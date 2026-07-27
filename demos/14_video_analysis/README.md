@@ -19,15 +19,21 @@ timestamps plus duration for each event.
 ## Quick Start
 
 ```bash
+# See "Running Manually" and "Generate Test Videos" sections below for step-by-step commands
+cd "$(git rev-parse --show-toplevel)/$(test -d "$(git rev-parse --show-toplevel)/umrs/demos" && echo umrs)/demos/14_video_analysis"
+
 # Generate synthetic test videos + analyse them
-bash 14_video_analysis/README.md (step-by-step commands)
+GEN_TEST_VIDEOS=1 bash ./run_demo.sh
 
 # Use your own videos
-bash 14_video_analysis/README.md (step-by-step commands) /path/to/videos
+VIDEO_DIR=/path/to/videos bash ./run_demo.sh
 
 # Custom bucket
-VIDEO_BUCKET=my-project bash 14_video_analysis/README.md (step-by-step commands)
+VIDEO_BUCKET=my-project bash ./run_demo.sh
 ```
+
+> **Note:** The inline script `run_demo.sh` does not exist yet. Use the
+> step-by-step commands in the "Running Manually" section below instead.
 
 ## Synthetic Test Videos
 
@@ -54,28 +60,35 @@ python generate_test_videos.py -o sample_videos/ --count 8 --fps 30
 
 ```bash
 # 1. Verify server connectivity
-umrs-client ping
+umrs ping
 
-# 2. (Optional) Generate synthetic test videos
+# 2. Load the experience fragment into your user config
+#    This registers the video analysis experience (model + bucket + table)
+umrs experience add experience.json
+
+# 3. Reload to apply the new experience and provision buckets
+umrs reload
+
+# 4. (Optional) Generate synthetic test videos
 #    Creates short MP4 files with a moving white rectangle.
 #    Every 3rd video is static (no motion) for negative test cases.
 python3 generate_test_videos.py -o sample_videos/ --count 4 --fps 15
 
-# 3. Upload the motion detection workflow to the server
+# 5. Upload the motion detection workflow to the server
 #    The workflow contains a MotionDetectStep that analyzes
 #    consecutive frames for pixel intensity changes and reports
 #    motion events with timestamps.
-umrs-client workflow upload workflow/ --name "video-motion-analysis"
+umrs workflow upload workflow/ --name "video-motion-analysis"
 
-# 4. Upload videos to the analysis bucket
+# 6. Upload videos to the analysis bucket
 #    Each video will be processed by the MotionDetectStep,
 #    producing a per-video JSON report with motion events.
-umrs-client upload_dir ./sample_videos user1-video
+umrs data dir-upload ./sample_videos user1-video
 
 # 5. Download analysis results
 #    Results include per-video motion reports and an aggregate
 #    summary.json with total events across all videos.
-umrs-client download_results user1-video ./results --force-overwrite
+umrs data download user1-video ./results --force-overwrite
 ```
 
 This demo shows the normal user path: upload the workflow bundle, upload data,
@@ -142,7 +155,7 @@ To add a second analysis pass (e.g. optical flow, object tracking):
 
 1. Create `workflow/optical_flow_step.py`
 2. Add a second entry to `workflow/workflow.json → steps[]`
-3. Re-upload: `umrs-client workflow upload workflow/`
+3. Re-upload: `umrs workflow upload workflow/`
 
 ## See Also
 

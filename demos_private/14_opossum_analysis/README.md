@@ -18,9 +18,9 @@ GPU acceleration uses `cv2.cuda` (OpenCV CUDA module) when available.
 workflow/
   opossum_step.py      — Pipeline SDK step (production logic)
   workflow.json         — workflow spec (GPU, 8 CPU, 16 GiB)
-  opossum/              — bundled opossum engine (auto-copied by README.md (step-by-step commands))
+  opossum/              — bundled opossum engine (auto-copied by the demo script)
 generate_test_videos.py — synthetic test-video generator
-README.md (step-by-step commands)             — shell entrypoint (upload, workflow, results)
+README.md             — shell entrypoint (upload, workflow, results)
 experience.json         — UMRS experience definition
 results/                — output directory
 sample_videos/          — synthetic test videos (GEN_TEST_VIDEOS=1)
@@ -30,16 +30,19 @@ sample_videos/          — synthetic test videos (GEN_TEST_VIDEOS=1)
 
 ```bash
 # Production pipeline with real data
-# Follow the step-by-step commands in README.md ../../tmp/opossum-video-analysis/data
+# See the numbered steps below in this README ../../tmp/opossum-video-analysis/data
 
 # GPU-accelerated server execution
-GPU_ENABLED=1 # Follow the step-by-step commands in README.md ../../tmp/opossum-video-analysis/data
+GPU_ENABLED=1
+# See the numbered steps below in this README ../../tmp/opossum-video-analysis/data
 
 # Synthetic test videos (no real data needed)
-GEN_TEST_VIDEOS=1 # Follow the step-by-step commands in README.md
+GEN_TEST_VIDEOS=1
+# See the numbered steps below in this README
 
 # Limit videos per camera
-MAX_VIDEOS=10 # Follow the step-by-step commands in README.md ../../tmp/opossum-video-analysis/data
+MAX_VIDEOS=10
+# See the numbered steps below in this README ../../tmp/opossum-video-analysis/data
 ```
 
 ## Data Source
@@ -60,24 +63,24 @@ Multi-camera layout: `opossum_NNN_X/opossumX/Schedule/YYYYMMDD/HH/*.mp4`
 
 ```bash
 # 1. Verify server connectivity
-umrs-client ping
+umrs ping
 # Expected: "✓ Server ready | profile=rccs-cloud | data0.ai.r-ccs.riken.jp:50090"
 
 # 2. Register the experience into your user config
 #    Merges the "Opossum Analysis" experience (bucket alias "demo-opossum")
 #    into ~/.config/umrs/users/<username>.json
-umrs-client experience add experience.json --update
+umrs experience add experience.json --update
 # Expected: "✓ Added experience(s): Opossum Analysis"
 # Common failure: "Fragment not found" — run from the demo directory.
 
 # 3. Reload so the server provisions the MinIO bucket
-umrs-client reload
+umrs reload
 # Expected: "✓ reload accepted"
 # Common failure: "HTTP 503: Service Unavailable" — server reload endpoint
 # not initialised; restart the server or check `umrs-server` logs.
 
 # 4. Verify the demo-opossum bucket alias is now configured
-umrs-client list_buckets
+umrs bucket list
 # Expected: a row for "Opossum Analysis" with alias "demo-opossum"
 #           Remote = synced, Objects = 0
 # Common failure: "Bucket alias 'demo-opossum' not found" — repeat
@@ -87,19 +90,19 @@ umrs-client list_buckets
 cp -r ../../tmp/opossum-video-analysis/src/opossum workflow/opossum
 
 # 6. Upload workflow (includes bundled engine)
-umrs-client workflow upload workflow/ --name opossum-analysis
+umrs workflow upload workflow/ --name opossum-analysis
 # Expected: workflow upload success message
 
 # 6a. (Optional) Validate the sandbox Dockerfile before running
-umrs-client workflow validate-sandbox workflow/ --dry-run
+umrs workflow validate-sandbox workflow/ --dry-run
 # Expected: ✓ Validation passed
 
 # 6b. (Optional) Visualize the workflow DAG
-umrs-client workflow visualize opossum-analysis
+umrs workflow visualize opossum-analysis
 # Expected: ASCII art showing the workflow DAG structure
 
 # 7. Upload videos (preserves camera/Schedule date hierarchy)
-umrs-client upload_dir ../../tmp/opossum-video-analysis/data demo-opossum
+umrs data dir-upload ../../tmp/opossum-video-analysis/data demo-opossum
 # Expected: 47 files uploaded; final JSON with
 #           bucket=mnagaso.opossum-analysis.demo-opossum, modality=movie
 # Common failure: "Cannot process directory" — fixed in client_umrs.py
@@ -108,7 +111,7 @@ umrs-client upload_dir ../../tmp/opossum-video-analysis/data demo-opossum
 #                 steps 2-3 to register and reload the experience.
 
 # 8. Run the workflow on the uploaded videos
-umrs-client workflow run opossum-analysis --bucket demo-opossum
+umrs workflow run opossum-analysis --bucket demo-opossum
 # Expected: "✓ Workflow 'opossum-analysis' execution queued as durable job
 #           job-XXXXX (1 steps)"
 # The workflow runs server-side: it downloads the videos, runs the
@@ -116,17 +119,17 @@ umrs-client workflow run opossum-analysis --bucket demo-opossum
 # and an aggregated motion_events.tsv back to the bucket.
 
 # 8a. (Optional) Check workflow execution status
-umrs-client workflow status <execution-id>
+umrs workflow status <execution-id>
 # Expected: execution status with progress and step details
 
 # 8b. (Optional) Show error logs if the workflow fails
-umrs-client workflow errors <execution-id>
+umrs workflow errors <execution-id>
 # Expected: error logs for failed Attempts, including per-step errors
 
 # 9. Check job status (optional)
-umrs-client job status <job-id-from-step-8>
+umrs job status <job-id-from-step-8>
 # Wait until status is "succeeded" or "failed".
-umrs-client download_results demo-opossum results/ --force-overwrite
+umrs data download demo-opossum results/ --force-overwrite
 # Expected: per-camera TSVs, motion_events.tsv, analysis_summary.json
 #           written under results/
 ```
@@ -138,14 +141,14 @@ server to automatically trigger the workflow when data is uploaded to the
 bucket, eliminating the need for step 8 (`run-workflow`).
 
 When `auto_trigger` is `true`:
-1. Upload data: `umrs-client upload_dir <data-dir> demo-opossum`
+1. Upload data: `umrs data dir-upload <data-dir> demo-opossum`
 2. The server detects the upload and automatically queues the workflow
-3. Download results: `umrs-client download_results demo-opossum results/`
+3. Download results: `umrs data download demo-opossum results/`
 
 When `auto_trigger` is `false` (or omitted):
-1. Upload data: `umrs-client upload_dir <data-dir> demo-opossum`
-2. Manually trigger: `umrs-client workflow run opossum-analysis --bucket demo-opossum`
-3. Download results: `umrs-client download_results demo-opossum results/`
+1. Upload data: `umrs data dir-upload <data-dir> demo-opossum`
+2. Manually trigger: `umrs workflow run opossum-analysis --bucket demo-opossum`
+3. Download results: `umrs data download demo-opossum results/`
 
 ## Dependencies
 
@@ -180,7 +183,7 @@ results/
 ## Custom Container Images
 
 Each workflow can include a `Dockerfile` alongside `workflow.json`. When
-`umrs-client upload-workflow` detects a `Dockerfile`, it:
+`umrs upload-workflow` detects a `Dockerfile`, it:
 
 1. Extracts the workflow zip as before.
 2. Runs `podman build -t <workflow-name>:latest` in the extracted directory.

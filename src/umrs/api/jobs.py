@@ -10,12 +10,14 @@ Provides:
 """
 
 import logging
+from datetime import datetime
 import os
 from dataclasses import dataclass
 from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, Field
+from pydantic import field_validator
 
 from ..jobs.models import (
     Job,
@@ -200,25 +202,56 @@ class JobCreateRequest(BaseModel):
         "on_crash", description="Restart policy: on_crash, on_failure, never"
     )
 
+    # Job TTL — how long the job stays alive after completion
+    # None = terminate immediately (default)
+    # > 0 = seconds to keep alive
+    # -1 = until partition walltime limit
+    ttl_seconds: int | None = Field(
+        None,
+        description=(
+            "Time-to-live in seconds after job completion. "
+            "None=terminate immediately, >0=keep alive N seconds, "
+            "-1=keep alive until partition walltime limit."
+        ),
+    )
+
+    # Fan-out job orchestration (GitHub Issue #87, TASK-015-005)
+    fan_out_jobs: list[dict[str, Any]] | None = Field(
+        None,
+        description=(
+            "Child jobs to create via fan-out. Each child spec contains "
+            "job_type, spec, and optional depends_on (job IDs to wait for)."
+        ),
+    )
+
     enqueue_immediately: bool = Field(
         True, description="Immediately queue for scheduling"
     )
 
-    model_config = ConfigDict(json_schema_extra={
-        "example": {
-            "project_id": "proj-123",
-            "user_id": "user-456",
-            "job_type": "endpoint_provision",
-            "spec": {
-                "model": "rivault-gpt-oss-static",
-                "model_path": "/models/rivault-gpt-oss",
-            },
-            "priority": 0,
-            "max_attempts": 3,
-            "restart_policy": "on_crash",
-            "enqueue_immediately": True,
+    @field_validator("ttl_seconds")
+    @classmethod
+    def validate_ttl_seconds(cls, value: int | None) -> int | None:
+        if value is not None and value != -1 and value <= 0:
+            raise ValueError("ttl_seconds must be null, -1, or a positive integer")
+        return value
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "project_id": "proj-123",
+                "user_id": "user-456",
+                "job_type": "endpoint_provision",
+                "spec": {
+                    "model": "rivault-gpt-oss-static",
+                    "model_path": "/models/rivault-gpt-oss",
+                },
+                "priority": 0,
+                "max_attempts": 3,
+                "restart_policy": "on_crash",
+                "enqueue_immediately": True,
+            }
         }
-    })
+    )
 
 
 class AttemptResponse(BaseModel):
@@ -251,6 +284,9 @@ class JobResponse(BaseModel):
     priority: int
     desired_max_attempts: int
     restart_policy: str
+    ttl_seconds: int | None = None
+    remaining_alive_seconds: int | None = None
+    fan_out_child_job_ids: list[str] = Field(default_factory=list)
     next_run_at: str | None
     active_attempt_id: str | None
     commit_attempt_id: str | None
@@ -261,25 +297,28 @@ class JobResponse(BaseModel):
     # Included in detail view
     attempts: list[AttemptResponse] | None = None
 
-    model_config = ConfigDict(json_schema_extra={
-        "example": {
-            "job_id": "job-abc123",
-            "project_id": "proj-123",
-            "user_id": "user-456",
-            "job_type": "endpoint_provision",
-            "spec": {"model": "rivault-gpt-oss-static"},
-            "status": "running",
-            "priority": 0,
-            "desired_max_attempts": 3,
-            "restart_policy": "on_crash",
-            "next_run_at": None,
-            "active_attempt_id": "att-xyz789",
-            "commit_attempt_id": None,
-            "created_at": "2024-01-15T10:30:00Z",
-            "updated_at": "2024-01-15T10:31:00Z",
-            "last_state_change_at": "2024-01-15T10:31:00Z",
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "job_id": "job-abc123",
+                "project_id": "proj-123",
+                "user_id": "user-456",
+                "job_type": "endpoint_provision",
+                "spec": {"model": "rivault-gpt-oss-static"},
+                "status": "running",
+                "priority": 0,
+                "desired_max_attempts": 3,
+                "restart_policy": "on_crash",
+                "ttl_seconds": 300,
+                "next_run_at": None,
+                "active_attempt_id": "att-xyz789",
+                "commit_attempt_id": None,
+                "created_at": "2024-01-15T10:30:00Z",
+                "updated_at": "2024-01-15T10:31:00Z",
+                "last_state_change_at": "2024-01-15T10:31:00Z",
+            }
         }
-    })
+    )
 
 
 class JobListResponse(BaseModel):
@@ -325,6 +364,21 @@ def _job_to_response(job: Job, include_attempts: bool = False) -> JobResponse:
         priority=job.priority,
         desired_max_attempts=job.desired_max_attempts,
         restart_policy=job.restart_policy.value,
+        ttl_seconds=job.ttl_seconds,
+        remaining_alive_seconds=(
+            max(
+                0,
+                job.ttl_seconds
+                - int((datetime.utcnow() - job.updated_at).total_seconds()),
+            )
+            if job.ttl_seconds
+            and job.ttl_seconds > 0
+            and job.status == JobStatus.COMPLETED
+            else job.ttl_seconds
+            if job.ttl_seconds == -1 and job.status == JobStatus.COMPLETED
+            else None
+        ),
+        fan_out_child_job_ids=job.fan_out_child_job_ids,
         next_run_at=job.next_run_at.isoformat() if job.next_run_at else None,
         active_attempt_id=job.active_attempt_id,
         commit_attempt_id=job.commit_attempt_id,
@@ -430,16 +484,41 @@ async def create_job(
             x_verified_project_id,
         )
 
-        # Create job
-        job_id = store.create_job(
+        create_method = (
+            store.create_fan_out_graph if request.fan_out_jobs else store.create_job
+        )
+        create_kwargs = dict(
             project_id=project_id,
             user_id=user_id,
-            job_type=job_type,
-            spec=spec,
-            idempotency_key=request.idempotency_key,
             priority=request.priority,
             max_attempts=request.max_attempts,
             restart_policy=restart_policy,
+            ttl_seconds=request.ttl_seconds,
+        )
+        if request.fan_out_jobs:
+            try:
+                job_id = create_method(
+                    parent_job_type=job_type,
+                    parent_spec=spec,
+                    children=request.fan_out_jobs,
+                    **create_kwargs,
+                )
+            except (KeyError, ValueError) as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=str(exc),
+                ) from exc
+            return JobCreateResponse(
+                job_id=job_id,
+                status="running",
+                message="Fan-out parent and child jobs created",
+            )
+
+        job_id = create_method(
+            job_type=job_type,
+            spec=spec,
+            idempotency_key=request.idempotency_key,
+            **create_kwargs,
         )
 
         # Optionally enqueue immediately

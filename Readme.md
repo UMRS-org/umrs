@@ -22,7 +22,7 @@ Mini-RiVault launches for GPU inference.
 
 At a high level, the current branch organizes UMRS into these layers:
 
-- `umrs-client` / `src/client_umrs.py` for CLI operations.
+- `umrs` / `src/client_umrs.py` for CLI operations.
 - `src/server_umrs.py` as the legacy server entrypoint and runtime host.
 - `src/umrs/server/` for server-owned handlers, provisioning, SQL, and runtime.
 - `src/umrs/orchestrator/` for endpoint lifecycle, readiness, durable launch,
@@ -50,14 +50,14 @@ uv venv .venv
 source .venv/bin/activate
 uv pip install -e src/
 
-umrs-client --help
+umrs --help
 ```
 
 If you already have a configured UMRS server reachable from your machine:
 
 ```bash
-umrs-client ping
-umrs-client list_buckets
+umrs ping
+umrs bucket list
 ```
 
 Site-specific setup scripts under `deploy/<site>/`, such as
@@ -137,7 +137,7 @@ Private or proprietary variants live under [demos_private/README.md](demos_priva
 ```text
 src/
     pyproject.toml                 Python package definition
-    client_umrs.py                 CLI entrypoint (`umrs-client` when installed)
+    client_umrs.py                 CLI entrypoint (`umrs` when installed)
     server_umrs.py                 server entrypoint
     umrs/
         api/                         FastAPI services

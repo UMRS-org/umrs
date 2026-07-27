@@ -15,7 +15,7 @@
 | Jens (`demos_jens/`) | 0      | 2      | 0       | 1    |
 
 All failures share a common root cause: **the server cannot provision the
-S3 config for the demo user** because `umrs-client reload` returns
+S3 config for the demo user** because `umrs reload` returns
 `HTTP 503: Service Unavailable`. Without a valid `s3cfg`, every
 `upload_dir` / `upload_file` call fails with `403 Forbidden` or
 "Server connection timeout".
@@ -27,7 +27,7 @@ failing it.
 
 ---
 
-## Public Demos (`demo# Follow the step-by-step commands in each demo directory`)
+## Public Demos (`demos/`)
 
 | #  | Demo                          | Result  | Notes                                              |
 |----|-------------------------------|---------|----------------------------------------------------|
@@ -65,7 +65,7 @@ failing it.
 
 ---
 
-## Private Demos (`demos_privat# Follow the step-by-step commands in each demo directory`)
+## Private Demos (`demos_private/`)
 
 | #  | Demo                          | Result  | Notes                                              |
 |----|-------------------------------|---------|----------------------------------------------------|
@@ -87,7 +87,7 @@ failing it.
 
 ## Root Cause Analysis
 
-### 1. `umrs-client reload` returns HTTP 503 — **BUG FIXED**
+### 1. `umrs reload` returns HTTP 503 — **BUG FIXED**
 
 **Symptom:**
 ```
@@ -194,10 +194,10 @@ treating the server config as invalid but not crashing discovery.
    config. Once the gateway and MinIO are running, re-run the demos:
 
    ```bash
-   cd umrs/demos && # Follow the step-by-step commands in each demo directory
-   cd umrs/demos_private && # Follow the step-by-step commands in each demo directory
-   cd umrs/demos_jens/11_sam3_direct && # Follow the step-by-step commands in README.md
-   cd umrs/demos_jens/12_hmae_direct && # Follow the step-by-step commands in README.md
+   cd umrs/demos && # See step-by-step commands in each demo's README
+   cd umrs/demos_private && # See step-by-step commands in each demo's README
+   cd umrs/demos_jens/11_sam3_direct && # See step-by-step commands in the demo README
+   cd umrs/demos_jens/12_hmae_direct && # See step-by-step commands in the demo README
    ```
 
 4. **The code bug fix in `loaded_config_profiles.py` should be

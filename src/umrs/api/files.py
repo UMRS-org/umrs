@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import time
 import uuid
 from datetime import datetime, timezone
 from enum import Enum
@@ -28,6 +29,7 @@ from fastapi import (
     Form,
     Header,
     HTTPException,
+    Query,
     UploadFile,
     status,
 )
@@ -37,6 +39,7 @@ from umrs.shared.storage.s3_presign import (
     generate_presigned_get,
     generate_presigned_put,
 )
+from umrs.shared.warnings import check_download_ready
 
 logger = logging.getLogger(__name__)
 
@@ -120,15 +123,27 @@ class PresignRequest(BaseModel):
     metadata: dict[str, str] | None = Field(
         None, description="Custom metadata for upload operations"
     )
+    # Optional job association for download validation
+    job_id: str | None = Field(
+        None, description="Job ID to validate download readiness"
+    )
+    blocking: bool = Field(
+        False, description="Block until download is ready (requires job_id)"
+    )
+    block_timeout: int = Field(
+        300, ge=0, le=3600, description="Max seconds to block (0=infinite)"
+    )
 
-    model_config = ConfigDict(json_schema_extra={
-        "example": {
-            "operation": "upload",
-            "key": "project-123/documents/report.pdf",
-            "ttl_sec": 3600,
-            "content_type": "application/pdf",
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "operation": "upload",
+                "key": "project-123/documents/report.pdf",
+                "ttl_sec": 3600,
+                "content_type": "application/pdf",
+            }
         }
-    })
+    )
 
 
 class PresignResponse(BaseModel):
@@ -370,7 +385,65 @@ async def generate_presigned_url(
     project_id: str = Depends(get_project_id),
     config: S3Config = Depends(get_s3_config),
 ) -> PresignResponse:
-    """Generate presigned URL for upload or download."""
+    """Generate presigned URL for upload or download.
+
+    For download operations, if job_id is provided, validates that
+    the job's task has completed before generating the URL.
+    If blocking=true, waits until the download is ready or timeout.
+    """
+
+    def _download_not_ready_error(attempt_status: str) -> HTTPException:
+        """Create HTTP 409 for download not ready."""
+        return HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "error_id": "warning.blocking",
+                "message": f"Task is {attempt_status} — download not available yet",
+                "details": {
+                    "operation": "download",
+                    "reason": "task_not_ready",
+                    "task_status": attempt_status,
+                },
+                "suggestion": "Use ?blocking=true to wait, or retry later",
+            },
+            headers={"Retry-After": "30"},
+        )
+
+    # Validate download readiness if job_id provided
+    if request.operation == PresignedOperation.DOWNLOAD and request.job_id:
+        from .jobs import get_optional_job_store as get_jobs_store
+
+        job_store = get_jobs_store()
+        if not job_store:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Job status is unavailable; download cannot be authorized",
+            )
+
+        import asyncio
+
+        deadline = asyncio.get_running_loop().time() + request.block_timeout
+        while True:
+            try:
+                job = job_store.get_job(request.job_id)
+                attempt_status = job.status.value
+                if job.active_attempt_id:
+                    attempt = job_store.get_attempt(job.active_attempt_id)
+                    attempt_status = attempt.status.value
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Job {request.job_id} was not found",
+                ) from exc
+
+            readiness = check_download_ready(
+                request.job_id, attempt_status, blocking=request.blocking
+            )
+            if readiness["ready"]:
+                break
+            if not request.blocking or asyncio.get_running_loop().time() >= deadline:
+                raise _download_not_ready_error(attempt_status)
+            await asyncio.sleep(2)
 
     # Validate and namespace the key
     key = validate_key(request.key, project_id)
@@ -632,3 +705,137 @@ async def check_files_exist(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to check files",
         ) from e
+
+
+# =============================================================================
+# Download Status & Blocking Mode (Issue #87)
+# =============================================================================
+
+
+class DownloadStatusResponse(BaseModel):
+    """Response for download readiness check."""
+
+    ready: bool
+    job_id: str
+    status: str
+    message: str | None = None
+    warnings: list[dict[str, Any]] | None = None
+    retry_after: int | None = None
+    blocking: bool = False
+
+
+@router.get(
+    "/download-status",
+    response_model=DownloadStatusResponse,
+    summary="Check download readiness",
+    description=(
+        "Check if a job's download is ready. Returns current task status. "
+        "Use blocking=true to wait until ready or timeout."
+    ),
+)
+async def check_download_status(
+    job_id: str = Query(..., description="Job ID to check"),
+    blocking: bool = Query(False, description="Block until download is ready"),
+    timeout: int = Query(300, ge=0, le=3600, description="Max seconds to block"),
+) -> DownloadStatusResponse:
+    """Check if download is ready for a job, optionally blocking.
+
+    Returns:
+        - ready=true: Download is available
+        - ready=false: Task still running (include status)
+        - With blocking=true: Polls until ready or timeout
+    """
+    from .jobs import get_optional_job_store as get_jobs_store
+
+    job_store = get_jobs_store()
+
+    if blocking and timeout > 0:
+        # Blocking mode: poll until ready or timeout
+        start = time.time()
+        while time.time() - start < timeout:
+            try:
+                job = job_store.get_job(job_id)
+                if job.active_attempt_id:
+                    try:
+                        attempt = job_store.get_attempt(job.active_attempt_id)
+                        status_result = check_download_ready(
+                            job_id, attempt.status.value, blocking=False
+                        )
+                        if status_result["ready"]:
+                            return DownloadStatusResponse(
+                                ready=True,
+                                job_id=job_id,
+                                status=attempt.status.value,
+                                message="Download is ready",
+                            )
+                    except Exception:
+                        pass
+
+            except Exception:
+                pass
+
+            # Wait before polling again
+            time.sleep(2)
+
+        return DownloadStatusResponse(
+            ready=False,
+            job_id=job_id,
+            status="timeout",
+            message=f"Download not ready within {timeout}s timeout",
+            warnings=[
+                {
+                    "category": "blocking",
+                    "message": f"Timed out waiting for job {job_id} to complete",
+                    "suggestion": "Check job status or increase timeout",
+                }
+            ],
+            blocking=True,
+        )
+
+    # Non-blocking mode: check once
+    try:
+        job = job_store.get_job(job_id)
+        if job.active_attempt_id:
+            try:
+                attempt = job_store.get_attempt(job.active_attempt_id)
+                status_result = check_download_ready(
+                    job_id, attempt.status.value, blocking=False
+                )
+                return DownloadStatusResponse(
+                    ready=status_result["ready"],
+                    job_id=job_id,
+                    status=attempt.status.value,
+                    message=None
+                    if status_result["ready"]
+                    else status_result.get("message"),
+                    blocking=status_result.get("blocking", False),
+                    retry_after=30 if not status_result["ready"] else None,
+                )
+            except Exception:
+                pass
+
+        # No active attempt — check job status directly
+        if job.status.value in ("completed",):
+            return DownloadStatusResponse(
+                ready=True,
+                job_id=job_id,
+                status=job.status.value,
+                message="Download is ready",
+            )
+
+        return DownloadStatusResponse(
+            ready=False,
+            job_id=job_id,
+            status=job.status.value,
+            message=f"Task is {job.status.value} — download not available yet",
+            retry_after=30,
+        )
+
+    except Exception:
+        return DownloadStatusResponse(
+            ready=False,
+            job_id=job_id,
+            status="unknown",
+            message=f"Could not determine status for job {job_id}",
+            retry_after=10,
+        )

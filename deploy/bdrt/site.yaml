@@ -22,10 +22,10 @@ description: >-
 
 scheduler:
   kind: slurm-podman
-  partition: spark,spark-double  # dgx-spark-[0-1] (GB10 Grace-Blackwell)
+  partition: spark,spark-double,edge-double  # dgx-spark-[0-1] (GB10 Grace-Blackwell)
   account: ""                   # no Slurm account required on the DGX-Spark cluster
   qos: ""
-  time_limit: "2-00:00:00"   # 2 days; allows queued jobs to run uninterrupted once started
+  time_limit: "0"            # BDRT partitions have no time limit
   gpus: 0  # single GB10 per node; allocate the node implicitly (partition may reject --gres/--gpus)
   cpus: 8
   memory: ""  # omit --mem; let the scheduler assign node defaults
@@ -85,7 +85,7 @@ vllm:
 # and steps must execute on compute nodes with GPUs.
 step_executor:
   kind: slurm                                 # Submit steps as Slurm jobs to GPU compute nodes
-  partition: spark,spark-double               # GB10 DGX-Spark partitions
+  partition: spark,spark-double,edge-double               # GB10 DGX-Spark partitions
   gpus: 0                                     # single GB10 per node; allocate implicitly
   cpus: 8                                     # 8 CPUs per step
   memory: ""                                  # omit --mem; let the scheduler assign node defaults
@@ -122,7 +122,7 @@ partition_profiles:
     vllm_docker_tag: cu130-nightly-aarch64
     gpus: 0                    # single GB10 per node; allocate implicitly
     needs_netavark_switch: false
-  spark-double:
+  edge-double:
     arch: aarch64
     gpu_vendor: nvidia
     gpu_memory_gb: 128

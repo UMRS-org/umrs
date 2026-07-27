@@ -207,7 +207,7 @@ else
         echo "Client next steps:"
         echo "  1. ./setup_client.sh     (copy configs, install umrs)"
         echo "  2. ./ssh_tunnel.sh       (open SSH tunnels)"
-        echo "  3. umrs-client ping      (verify connection)"
+        echo "  3. umrs ping      (verify connection)"
         echo "  4. cd ../../demos/00_onboarding && bash run_demo.sh"
     fi
 fi

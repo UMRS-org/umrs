@@ -29,7 +29,7 @@
 #        hf download InternScience/Agents-A1 \
 #          --local-dir /lvs0/rccs-dmp/masaru.nagaso/umrs_models/Agents-A1
 #   2. CATALOG registration (name must match the `model:` field):
-#        umrs-client --profile rccs-cloud model register agents-a1 \
+#        umrs --profile rccs-cloud model register agents-a1 \
 #          /lvs0/rccs-dmp/masaru.nagaso/umrs_models/Agents-A1 \
 #          --type llm --scope system --huggingface-id InternScience/Agents-A1
 

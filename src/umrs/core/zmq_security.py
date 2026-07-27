@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
+import weakref
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
@@ -9,6 +11,20 @@ from typing import Any, Mapping
 logger = logging.getLogger(__name__)
 
 CURVE_KEY_LEN = 40
+
+# A ZAP authenticator binds ``inproc://zeromq.zap.01``, which is unique per ZMQ
+# context. Only ONE authenticator may run per context. Server sockets that share
+# a context (the control queue plus on-demand data queues, see GitHub issue #64)
+# must therefore reuse the single existing authenticator instead of starting a
+# second one — otherwise the second bind fails with
+# ``Address already in use (addr='inproc://zeromq.zap.01')`` and the data queue
+# is never created. This registry tracks the authenticator started per context.
+# Values are held weakly so an entry is dropped once the owning socket stops the
+# authenticator and releases its reference.
+_AUTHENTICATOR_REGISTRY_LOCK = threading.Lock()
+_CONTEXT_AUTHENTICATORS: "weakref.WeakValueDictionary[int, Any]" = (
+    weakref.WeakValueDictionary()
+)
 
 
 def _env_value(env: Mapping[str, str], name: str) -> str | None:
@@ -157,6 +173,22 @@ class ZMQSecurityConfig:
                 "A ZMQ context is required for CURVE server authentication"
             )
 
+        # Reuse the single per-context ZAP authenticator when one is already
+        # running for this context (control queue + shared data queues, #64).
+        # Returning None tells the caller this socket does not own the
+        # authenticator and must not stop it when the socket closes.
+        with _AUTHENTICATOR_REGISTRY_LOCK:
+            if id(context) in _CONTEXT_AUTHENTICATORS:
+                logger.debug(
+                    "Reusing existing per-context ZAP authenticator for shared "
+                    "ZMQ context (#64); not starting a second one"
+                )
+                return None
+            authenticator = self._create_curve_authenticator(context)
+            _CONTEXT_AUTHENTICATORS[id(context)] = authenticator
+            return authenticator
+
+    def _create_curve_authenticator(self, context: Any) -> Any:
         if self.auth_type == "session":
             # Session mode: use custom authenticator that returns session_id
             # as the ZAP user-id (RFC 27 identity propagation)

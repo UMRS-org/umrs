@@ -1,0 +1,38 @@
+# Diagnostic pool: bdrt step-3.7 ONLY — reproduce the two-node Ray-formation
+# failure to capture gcs_server.err via the launcher's _archive_ray_sessions().
+# Identical step-3.7 config to pool-bdrt-step.yaml; qwen intentionally omitted.
+pool: bdrt-step-diag
+defaults:
+  source: bdrt
+  tier: system
+  ttl_sec: 0
+  timeout: 172800         # 2 days
+
+endpoints:
+  - name: step-3.7-flash-148b
+    model: step-3.7-flash-148b
+    tier: system
+    node_count: 2
+    partition: edge-double
+    max_model_len: 262144
+    env_vars:
+      VLLM_HOST_MODEL_PATH: "/home/mnagaso/umrs_models/hub/models--0xSero--Step-3.7-Flash-148B/snapshots"
+      VLLM_PATH_TO_HUGGINGFACE: "/home/mnagaso/umrs_models"
+      VLLM_MODEL: "0xSero/Step-3.7-Flash-148B"
+      VLLM_TOKENIZER: "0xSero/Step-3.7-Flash-148B"
+      VLLM_GPU_MEM_UTIL: "0.78"
+      # Explicit context length via the proven env_vars channel (same path
+      # VLLM_GPU_MEM_UTIL uses to reach env.<uuid>). Guarantees the multi-node
+      # container serves the full context instead of defaulting to 4096.
+      VLLM_MAX_MODEL_LEN: "262144"
+      VLLM_MAX_NUM_SEQS: "2"
+      VLLM_TENSOR_PARALLEL_SIZE: "2"
+      # Prefill throughput: vLLM defaults max_num_batched_tokens to 2048 for
+      # the OpenAI server, chunking a 100k-token Copilot prefill into ~50
+      # tiny steps (each paying the cross-node PP bubble). 8192 quarters the
+      # step count and time-to-first-token without affecting decode memory.
+      VLLM_EXTRA_ARGS: "--max-num-batched-tokens 8192"
+      VLLM_MOE_BACKEND: "marlin"
+      VLLM_DOCKER_IMAGE: "docker.io/vllm/vllm-openai:latest"
+      VLLM_TRUST_REMOTE_CODE: "1"
+      RCCS_SKIP_CDI: "1"

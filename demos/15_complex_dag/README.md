@@ -32,8 +32,8 @@ fan-in capabilities.
 ## Quick Start
 
 ```bash
-cd demos/15_complex_dag
-# Follow the step-by-step commands in README.md
+cd "$(git rev-parse --show-toplevel)/$(test -d "$(git rev-parse --show-toplevel)/umrs/demos" && echo umrs)/demos/15_complex_dag"
+# See the numbered steps below in this README
 ```
 
 ## What This Demo Does
@@ -48,12 +48,11 @@ cd demos/15_complex_dag
 
 ## Running Manually
 
-This demo does not use `umrs-client` because it runs entirely locally.
+This demo does not use `umrs` because it runs entirely locally.
 You can replicate it step by step:
 
 ```bash
-REPO_ROOT="$(git rev-parse --show-toplevel)/umrs"
-cd "$REPO_ROOT/demos/15_complex_dag"
+cd "$(git rev-parse --show-toplevel)/$(test -d "$(git rev-parse --show-toplevel)/umrs/demos" && echo umrs)/demos/15_complex_dag"
 
 # 1. Create working directories.
 mkdir -p steps results

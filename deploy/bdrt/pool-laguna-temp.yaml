@@ -1,0 +1,55 @@
+# Temp pool: laguna-s-2.1-fp8 only (bdrt) — cross-node TP2/PP1 per dual-spark recipe
+# Mirrors the laguna-s-2.1-fp8 block in pool-bdrt-step.yaml.
+pool: bdrt-laguna
+defaults:
+  source: bdrt
+  tier: system
+  ttl_sec: 0
+  timeout: 172800
+
+endpoints:
+  - name: laguna-s-2.1-fp8
+    model: laguna-s-2.1-fp8
+    tier: system
+    node_count: 2
+    partition: edge-double
+    max_model_len: 262144
+    env_vars:
+      VLLM_HOST_MODEL_PATH: "/home/mnagaso/umrs_models/hub/models--poolside--Laguna-S-2.1-FP8/snapshots"
+      VLLM_PATH_TO_HUGGINGFACE: "/home/mnagaso/umrs_models"
+      VLLM_MODEL: "poolside/Laguna-S-2.1-FP8"
+      VLLM_TOKENIZER: "poolside/Laguna-S-2.1-FP8"
+      VLLM_GPU_MEM_UTIL: "0.85"
+      VLLM_MAX_NUM_SEQS: "2"
+      # Cross-node TP2 / PP1 per the dual-spark recipe (--tensor-parallel-size 2,
+      # NO pipeline parallelism). serve-model.slurm reads VLLM_TP natively.
+      VLLM_TP: "2"
+      VLLM_TENSOR_PARALLEL_SIZE: "2"
+      VLLM_MOE_BACKEND: "marlin"
+      VLLM_DOCKER_IMAGE: "docker.io/vllm/vllm-openai:latest"
+      # Laguna emits poolside-format tool calls (<tool_call>name<arg_key>k</arg_key>
+      # <arg_value>v</arg_value></tool_call>) and </think> reasoning markers. The
+      # default hermes parser cannot parse them → tool calls leak as plain text and
+      # agent clients (Copilot) stall. vLLM 0.25.1 ships dedicated poolside_v1
+      # tool + reasoning parsers.
+      VLLM_TOOL_CALL_PARSER: "poolside_v1"
+      VLLM_REASONING_PARSER: "poolside_v1"
+      # Recipe-required (validated job 2969): disable Ray memory monitor and cap
+      # container memory so GB10 unified-memory page-cache spikes reclaim cleanly.
+      RAY_memory_monitor_refresh_ms: "0"
+      RIVAULT_MN_MEMORY_CAP: "110g"
+      # Patched vllm/model_executor/models/laguna_dflash.py (hasattr guard around
+      # quant_config.get_cache_scale — CompressedTensorsConfig W4A16 draft lacks
+      # that FP8-only API in vLLM 0.25.1). Bind-mounted over the in-image module
+      # on head AND workers by serve-model.slurm. Lives on shared /home NFS.
+      VLLM_PATCH_LAGUNA_DFLASH: "/home/mnagaso/patches/laguna_dflash.py"
+      # Spec-decoding with W4A16 DFlash draft at k=6. The draft model path must be
+      # CONTAINER-visible: VLLM_PATH_TO_HUGGINGFACE is bind-mounted to
+      # /root/.cache/huggingface inside the vLLM container.
+      VLLM_SPECULATIVE_CONFIG: '{"method":"dflash","model":"/root/.cache/huggingface/hub/models--sapidlabs--Sparkulator-Laguna-S-2.1/snapshots","num_speculative_tokens":6}'
+      VLLM_EXTRA_ARGS: >-
+        --enforce-eager
+        --kv-cache-dtype fp8
+        --kv-cache-memory-bytes 5368709120
+        --max-num-batched-tokens 8192
+      RCCS_SKIP_CDI: "1"

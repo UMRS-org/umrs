@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="820" viewBox="0 0 1600 820">
+<rect width="1600" height="820" fill="#f6f3ed"/>
+<style>text{font-family:DejaVu Sans,sans-serif;fill:#17324d}.title{font-size:34px;font-weight:bold}.label{font-size:25px;font-weight:bold}.small{font-size:20px}.box{stroke-width:3;rx:14;ry:14}</style>
+<text x="80" y="75" class="title">UMRS operational architecture</text>
+<rect x="80" y="130" width="330" height="160" class="box" fill="#d9edf2" stroke="#267c89"/><text x="118" y="190" class="label">Client layer</text><text x="118" y="230" class="small">umrs-client · r4 SDK/CLI</text>
+<rect x="630" y="115" width="365" height="200" class="box" fill="#f8dfb7" stroke="#b87812"/><text x="710" y="185" class="label">UMRS</text><text x="675" y="225" class="small">jobs · workflows · registry</text><text x="670" y="260" class="small">policy · audit · routing</text>
+<rect x="1180" y="130" width="330" height="160" class="box" fill="#e5e8f1" stroke="#536b95"/><text x="1265" y="190" class="label">Slurm GPU</text><text x="1240" y="230" class="small">vision · HMAE · SAM3.1</text>
+<rect x="435" y="510" width="310" height="150" class="box" fill="#dceccf" stroke="#578a4c"/><text x="520" y="570" class="label">MinIO / S3</text><text x="485" y="610" class="small">inputs and outputs</text>
+<rect x="870" y="510" width="310" height="150" class="box" fill="#ead8ec" stroke="#91609a"/><text x="925" y="570" class="label">PostgreSQL</text><text x="935" y="610" class="small">RAG + pgvector</text>
+<g stroke="#17324d" stroke-width="5" fill="none" marker-end="url(#arrow)"><path d="M410 210H630"/><path d="M995 210H1180"/><path d="M790 315V510H745"/><path d="M830 315V510H870"/></g><defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#17324d"/></marker></defs>
+</svg>

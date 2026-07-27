@@ -31,8 +31,9 @@ All vision inference runs inside Mini-Rivault for security isolation:
 ## Quick Start
 
 ```bash
-cd demos/03_sam3_segmentation
-# Follow the step-by-step commands in README.md
+# Navigate from any level (auto-detects parent repo vs umrs subdirectory)
+cd "$(git rev-parse --show-toplevel)/$(test -d "$(git rev-parse --show-toplevel)/umrs/demos" && echo umrs)/demos/03_sam3_segmentation"
+# See the numbered steps below in this README
 ```
 
 ## What This Demo Does
@@ -52,23 +53,57 @@ explicitly need full-resolution mask arrays.
 ## Running Manually
 
 ```bash
-# 1. Ensure the server deployment already includes the vision profile
+# 1. Load the experience fragment into your user config
+#    This registers the SAM3 segmentation experience (model + bucket + table)
+umrs experience add experience.json
+
+# 2. Reload to apply the new experience and provision buckets
+umrs reload
+
+# 3. Ensure the server deployment already includes the vision profile
 #    On rccs-cloud this is configured in site.yaml, so no client-side export is needed.
 
-# 2. Verify that the SAM3 model is already visible to the server
-umrs-client model list --scope system
-umrs-client model list --scope user
+# 4. Verify that the SAM3 model is already visible to the server
+umrs model list --scope system
+umrs model list --scope user
 
 # Optional: only if your site exposes a writable, allowed staging root
-umrs-client model download sam3.1 --name sam3.1 \
+umrs model download sam3.1 --name sam3.1 \
   --scope user --server-side --staging-dir /path/to/site-user-model-root
 
-# 3. Upload images
-umrs-client upload_dir ./test_data_full user1-sam3
+# 5. Upload images
+umrs data dir-upload ./test_data_full user1-sam3
 
-# 4. Download results once processing completes
-umrs-client download_results user1-sam3 ./results --force-overwrite
+# 6. Download results once processing completes
+umrs data download user1-sam3 ./results --force-overwrite
 ```
+
+## Interactive Gradio UI (optional)
+
+For exploratory, one-image-at-a-time segmentation you can drive the same
+running BentoML vision endpoint from a local Gradio web UI instead of the
+batch `dir-upload` path. This uses the `r4` client (Gateway-mediated), so it
+requires an authenticated `r4` profile in addition to the `umrs` client.
+
+```bash
+# Gradio is an optional dependency of the r4 client
+pip install gradio
+
+# Launch the local UI (blocking). Point it at the SAM3 adapter.
+# --endpoint-id pins a specific warm endpoint (see note below); omit it to
+# let the Gateway pick the model by name.
+r4 vision ui --adapter sam3 --endpoint-id <endpoint-job-id>
+```
+
+Then open http://127.0.0.1:7860, drop an image, and type a text prompt
+(e.g. `defect`) for promptable segmentation. Results are written to project
+S3 storage and the `s3://` object keys are shown in the UI.
+
+> **Keep the endpoint warm.** Interactive use benefits from a persistent
+> backend. Set `"keep_endpoint": true` on the modality in `experience.json`
+> so the mini-rivault/BentoML endpoint is not auto-released between batches
+> (the idle janitor still reaps it once genuinely idle). Otherwise the first
+> UI request pays the endpoint cold-start cost.
 
 ## Configuration
 

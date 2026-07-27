@@ -123,12 +123,25 @@ class TunnelPool:
         key = self._tunnel_key(remote_host, remote_port)
 
         async with self._lock:
-            # Return existing tunnel if already open.
+            # Return existing tunnel if already open AND its local listener
+            # still accepts connections. A ControlMaster restart silently
+            # drops master-owned forwards (``process is None``), so trusting
+            # ``_spec_alive`` alone would treat them as alive forever.
             if key in self._tunnels:
                 existing = self._tunnels[key]
-                if self._spec_alive(existing):
+                if self._spec_alive(existing) and await self._listener_up(
+                    existing.local_port
+                ):
                     return existing.local_port
-                # Process died, remove stale entry.
+                # Tunnel dead (slave process exited or listener gone):
+                # best-effort teardown, then re-establish below.
+                logger.warning(
+                    "Tunnel localhost:%d -> %s:%d is dead; re-establishing",
+                    existing.local_port,
+                    remote_host,
+                    remote_port,
+                )
+                await self._teardown_spec(existing)
                 del self._tunnels[key]
 
             port = local_port or self._allocate_local_port()
@@ -229,6 +242,26 @@ class TunnelPool:
         if spec.process is None:
             return True
         return spec.process.returncode is None
+
+    async def _listener_up(self, local_port: int, *, timeout: float = 1.0) -> bool:
+        """Return True if something accepts TCP connections on the local port.
+
+        Detects forwards silently dropped by a ControlMaster restart: the
+        pool still tracks the spec but nothing listens on the local port.
+        """
+        try:
+            _reader, writer = await asyncio.wait_for(
+                asyncio.open_connection(self._config.bind_address, local_port),
+                timeout=timeout,
+            )
+        except (OSError, asyncio.TimeoutError):
+            return False
+        writer.close()
+        try:
+            await writer.wait_closed()
+        except OSError:
+            pass
+        return True
 
     def get_local_port(self, remote_host: str, remote_port: int) -> Optional[int]:
         """Get the local port for an active tunnel. Returns None if not open."""

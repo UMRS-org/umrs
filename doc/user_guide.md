@@ -5,7 +5,7 @@ compute embeddings, and use vision models.
 
 ## 1. Install the Client
 
-The UMRS client is a Python package that provides the `umrs-client` CLI.
+The UMRS client is a Python package that provides the `umrs` CLI.
 
 ```bash
 # Clone the repository (or get a copy of src/)
@@ -22,7 +22,7 @@ uv pip install .
 
 Verify:
 ```bash
-umrs-client --help
+umrs --help
 ```
 
 ## 2. Get Your Configuration
@@ -68,7 +68,7 @@ Example user config:
 
 ```bash
 # Check if the UMRS server is reachable
-umrs-client -c conf_umrs.json --server-ip <SERVER_IP> ping
+umrs -c conf_umrs.json --server-ip <SERVER_IP> ping
 ```
 
 Expected output:
@@ -84,7 +84,7 @@ ssh -L 5555:localhost:5555 login-node
 ## 4. List Your Buckets
 
 ```bash
-umrs-client -c conf_umrs.json list_buckets
+umrs -c conf_umrs.json list_buckets
 ```
 
 This shows the bucket aliases defined in your config, mapped to S3 paths.
@@ -95,18 +95,18 @@ This shows the bucket aliases defined in your config, mapped to S3 paths.
 
 ```bash
 # Upload a single text file
-umrs-client -c conf_umrs.json upload_file myfile.txt alice-text
+umrs -c conf_umrs.json upload_file myfile.txt alice-text
 
 # Upload all files in a directory
-umrs-client -c conf_umrs.json upload_dir ./texts/ alice-text
+umrs -c conf_umrs.json upload_dir ./texts/ alice-text
 ```
 
 ### Images
 
 For image modalities (segmentation, tomography):
 ```bash
-umrs-client -c conf_umrs.json upload_file photo.jpg alice-images
-umrs-client -c conf_umrs.json upload_dir ./images/ alice-images
+umrs -c conf_umrs.json upload_file photo.jpg alice-images
+umrs -c conf_umrs.json upload_dir ./images/ alice-images
 ```
 
 Upload automatically triggers embedding computation on the server.
@@ -115,20 +115,20 @@ Upload automatically triggers embedding computation on the server.
 
 Use `/` in the bucket alias to organise data:
 ```bash
-umrs-client -c conf_umrs.json upload_dir ./batch1/ alice-text/experiment-a
+umrs -c conf_umrs.json upload_dir ./batch1/ alice-text/experiment-a
 ```
 
 ## 6. Check Processing Status
 
 ```bash
 # All summaries
-umrs-client -c conf_umrs.json status all
+umrs -c conf_umrs.json status all
 
 # Specific target
-umrs-client -c conf_umrs.json status process_objects
+umrs -c conf_umrs.json status process_objects
 
 # Human-readable output
-umrs-client -c conf_umrs.json --output text status all
+umrs -c conf_umrs.json --output text status all
 ```
 
 Wait until all tasks show `"Done"` before exporting results.
@@ -139,16 +139,16 @@ Once processing is complete, export computed embeddings:
 
 ```bash
 # CSV format
-umrs-client -c conf_umrs.json export_embeddings alice-text ./embeddings.csv
+umrs -c conf_umrs.json export_embeddings alice-text ./embeddings.csv
 
 # JSONL format
-umrs-client -c conf_umrs.json export_embeddings alice-text ./embeddings.jsonl --format jsonl
+umrs -c conf_umrs.json export_embeddings alice-text ./embeddings.jsonl --format jsonl
 ```
 
 Database connection defaults to environment variables (`DB_HOST`, `DB_PORT`,
 `POSTGRES_USER`, `POSTGRES_PASSWORD`) or can be overridden:
 ```bash
-umrs-client -c conf_umrs.json export_embeddings alice-text ./out.csv \
+umrs -c conf_umrs.json export_embeddings alice-text ./out.csv \
     --db-host localhost --db-port 15432 --db-user umrs --db-password umrs_dev
 ```
 
@@ -157,7 +157,7 @@ umrs-client -c conf_umrs.json export_embeddings alice-text ./out.csv \
 If your modality produces output files (e.g., segmentation masks):
 
 ```bash
-umrs-client -c conf_umrs.json download_results alice-images ./results/ \
+umrs -c conf_umrs.json download_results alice-images ./results/ \
     --force-overwrite
 ```
 
@@ -187,7 +187,7 @@ from the user side the workflow is the same as any modality.
 2. Upload images — the server routes them through a Mini-Rivault instance with
    the `vision-bentoml` profile:
    ```bash
-   umrs-client -c conf_umrs.json upload_dir ./images/ alice-images
+   umrs -c conf_umrs.json upload_dir ./images/ alice-images
    ```
 
 3. Check status and download results as usual.
@@ -212,16 +212,16 @@ These tell the server to reprocess data (useful after model updates):
 
 ```bash
 # Recompute all embeddings from scratch
-umrs-client -c conf_umrs.json recompute
+umrs -c conf_umrs.json recompute
 
 # Update only missing/changed embeddings
-umrs-client -c conf_umrs.json update
+umrs -c conf_umrs.json update
 
 # Check S3 ↔ database consistency
-umrs-client -c conf_umrs.json check
+umrs -c conf_umrs.json check
 
 # Reload server config (e.g., after admin adds new users)
-umrs-client -c conf_umrs.json reload
+umrs -c conf_umrs.json reload
 ```
 
 ## 11. Adding a Custom Processing Pipeline
@@ -233,7 +233,7 @@ To add a new model or modality:
 2. **Add a modality entry** in your user config JSON
 3. **Set `model_type`** to an appropriate scheme (`openai://`, `bentoml://`,
    or `user_script://` for custom pipelines)
-4. **Reload** the server: `umrs-client -c conf_umrs.json reload`
+4. **Reload** the server: `umrs -c conf_umrs.json reload`
 
 ### Custom Embedding Pipelines (`user_script://`)
 
@@ -276,17 +276,17 @@ See [Demo 07](../demos/07_user_model/README.md) for a complete example
 
 | Command | Description |
 |---------|-------------|
-| `umrs-client ping` | Check server readiness |
-| `umrs-client list_buckets` | Show available bucket aliases |
-| `umrs-client upload_file <file> <bucket>` | Upload single file |
-| `umrs-client upload_dir <dir> <bucket>` | Upload directory |
-| `umrs-client status [target]` | Check processing status |
-| `umrs-client download_results <bucket> <path>` | Download output files |
-| `umrs-client export_embeddings <bucket> <path>` | Export embeddings to CSV/JSONL |
-| `umrs-client recompute` | Recompute all embeddings |
-| `umrs-client update` | Update missing embeddings |
-| `umrs-client check` | S3 ↔ DB consistency check |
-| `umrs-client reload` | Reload server configuration |
+| `umrs ping` | Check server readiness |
+| `umrs bucket list` | Show available bucket aliases |
+| `umrs data upload <file> <bucket>` | Upload single file |
+| `umrs data dir-upload <dir> <bucket>` | Upload directory |
+| `umrs status [target]` | Check processing status |
+| `umrs data download <bucket> <path>` | Download output files |
+| `umrs export_embeddings <bucket> <path>` | Export embeddings to CSV/JSONL |
+| `umrs recompute` | Recompute all embeddings |
+| `umrs update` | Update missing embeddings |
+| `umrs check` | S3 ↔ DB consistency check |
+| `umrs reload` | Reload server configuration |
 
 All commands accept `-c <config>` (config file), `--server-ip <ip>`, `--output json|text`, and `-v` (verbose).
 

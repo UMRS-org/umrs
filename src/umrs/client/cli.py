@@ -6,7 +6,7 @@ import json
 import sys
 
 ADMIN_DENIED_MESSAGE = (
-    "umrs-client admin is disabled. Use 'umrs-server admin' for offline "
+    "umrs admin is disabled. Use 'umrs-server admin' for offline "
     "operator tasks. Examples: 'umrs-server admin user add <username> ...' "
     "and 'umrs-server admin user list'."
 )

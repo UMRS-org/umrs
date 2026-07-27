@@ -27,6 +27,7 @@ Configuration in site.yaml::
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 import os
 import re
@@ -476,6 +477,14 @@ class RemoteSlurmBackend(SlurmBackend):
         The ``--export`` arg is shell-quoted because values may contain spaces
         (e.g. ``RIVAULT_PROFILES="harness vllm"``); otherwise the remote shell
         word-splits the comma list and sbatch treats the tail as a stray file.
+
+        Slurm ``--export`` is a **comma-delimited** ``KEY=VALUE`` list with no
+        escaping mechanism, so any value that itself contains a comma (e.g. the
+        ``VLLM_SPECULATIVE_CONFIG`` JSON ``{"method":"dflash",...}``) is
+        silently truncated at its first comma on the compute node. Such values
+        are base64-encoded (the base64 alphabet has no commas) and emitted under
+        a ``<KEY>_B64`` name; the serve wrapper decodes every ``*_B64`` variable
+        back to its original name before any consumer reads it.
         """
         env_overrides: dict[str, str] = {}
         if isinstance(requested_env, dict):
@@ -508,7 +517,13 @@ class RemoteSlurmBackend(SlurmBackend):
         if attribution_parts:
             args.append(f"--comment={','.join(attribution_parts)}")
 
-        export_parts = ["ALL"] + [f"{k}={v}" for k, v in env_overrides.items()]
+        export_parts = ["ALL"]
+        for k, v in env_overrides.items():
+            if "," in v:
+                encoded = base64.b64encode(v.encode()).decode()
+                export_parts.append(f"{k}_B64={encoded}")
+            else:
+                export_parts.append(f"{k}={v}")
         args.append(shlex.quote(f"--export={','.join(export_parts)}"))
         return args
 

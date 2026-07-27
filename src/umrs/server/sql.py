@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import sys
+import threading
 import time
 from datetime import datetime
 
@@ -17,6 +18,17 @@ from umrs.core.TaskCmdStatus import TaskStatus
 from umrs.server.config import get_db_config, get_umrs_server_db_name, get_umrs_server_db_user
 from umrs.shared.buckets import BucketsCfg
 from umrs.shared.sql_helpers import create_db_name, metadata_dict
+
+# Per-process cache of per-experience DataBase/connection-pool objects, keyed
+# by db_name. create_db() is called on every server start AND on every
+# configuration reload (once per experience per user). Without this cache,
+# each call built a brand-new psycopg2 SimpleConnectionPool(minconn=1, ...)
+# that eagerly opens a connection which is never closed when the previous
+# pool object is superseded (buckets_cfg.store() simply overwrites the old
+# bucket_entry). Over repeated reloads this silently leaked one Postgres
+# connection per experience per reload until max_connections was exhausted.
+_db_pool_cache: dict[str, "DataBase"] = {}
+_db_pool_cache_lock = threading.Lock()
 
 
 class DataBase:
@@ -366,6 +378,20 @@ def create_db_user(username):
 
 def create_db(sql_username, xp_name, username=None):
     db_name = create_db_name(sql_username, xp_name, username)
+
+    # Reuse an already-open pool for this database within this process
+    # instead of opening a brand-new SimpleConnectionPool on every call.
+    # configure_user() calls create_db() once per experience on EVERY server
+    # start AND every configuration reload; without this cache each reload
+    # leaked at least one idle Postgres connection per experience (the old
+    # pool object was simply discarded when buckets_cfg overwrote the bucket
+    # entry, never calling closeall()), eventually exhausting max_connections.
+    with _db_pool_cache_lock:
+        cached = _db_pool_cache.get(db_name)
+    if cached is not None:
+        logger.info(f"\t\t-->  Reusing existing connection pool for '{db_name}'.")
+        return cached, db_name
+
     legacy_db_name = create_db_name(sql_username, xp_name)
     logger.info(f"\t\t-->  Configuring database '{db_name}'...")
     cfg = get_db_config()
@@ -461,7 +487,15 @@ def create_db(sql_username, xp_name, username=None):
         host=cfg["host"],
         port=cfg["port"],
     )
-    return DataBase(db_pool, db_name, sql_username), db_name
+    data_base = DataBase(db_pool, db_name, sql_username)
+    with _db_pool_cache_lock:
+        # Another thread may have created and cached a pool for this
+        # db_name while we were doing the setup above; prefer that one and
+        # close ours to avoid leaking the connection(s) we just opened.
+        winner = _db_pool_cache.setdefault(db_name, data_base)
+        if winner is not data_base:
+            db_pool.closeall()
+    return winner, db_name
 
 
 

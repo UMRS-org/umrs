@@ -5,7 +5,7 @@ description: my_instruction
 
 ## ABSOLUTE RULE: Client Runs LOCALLY — Never on Remote
 
-UMRS is a **local-client / remote-server** architecture. The `umrs-client`
+UMRS is a **local-client / remote-server** architecture. The `umrs`
 CLI and ALL demo scripts (`demos/`, `demos_private/`) MUST run on the
 **local Mac**, NEVER via SSH on rccs-cloud.
 

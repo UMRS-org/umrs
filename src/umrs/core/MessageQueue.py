@@ -596,8 +596,13 @@ class MessageQueue:
             with contextlib.suppress(RuntimeError):
                 self.send_string(f"NO_DATA_PORT_AVAILABLE:{port_range.label}", zmq_sender_id)
             return None
+        # Advertise a client-reachable host, never the bind address.
+        # UMRS_SERVER_HOST is typically "0.0.0.0" inside containers, which is
+        # meaningless to a remote client (it would connect to its own
+        # localhost and every data message would be silently dropped).
+        advertise_host = os.environ.get("UMRS_ADVERTISE_HOST") or self.server_ip
         with contextlib.suppress(RuntimeError):
-            self.send_string(f"tcp://{self.server_ip}:{port}", zmq_sender_id)
+            self.send_string(f"tcp://{advertise_host}:{port}", zmq_sender_id)
         return None
 
     def _parse_status(self, splited_msg, zmq_sender_id):
@@ -992,12 +997,42 @@ class MessageQueue:
         except (AttributeError, TypeError, ValueError):
             reply = self.socket.recv_string()
 
+        # ``recv_string`` swallows ``zmq.Again`` and returns ``(None, None)`` on a
+        # receive timeout, so the ``except zmq.Again`` above never fires for that
+        # case. Guard against a ``None`` reply here instead of letting the
+        # ``reply.startswith(...)`` call fail with the opaque
+        # ``'NoneType' object has no attribute 'startswith'`` error.
+        if reply is None:
+            raise RuntimeError(
+                f"Timeout waiting for server to allocate a data queue for client '{client_id}'. "
+                "The control channel reached the server (CURVE session is valid) but "
+                "the server did not return a data-queue endpoint in time. This "
+                "usually means the server failed while allocating the data queue "
+                "(check the server logs for a CREATE_DATA_QUEUE error) or the "
+                "configured data port range (UMRS_DATA_PORT_RANGE / "
+                "UMRS_DATA_BASE_PORT) is exhausted or unreachable."
+            )
+
         if reply.startswith("tcp://"):
             # Remove protocol prefix
             endpoint = reply[len("tcp://"):]
             # Split IP and port
             server_ip, port_str = endpoint.split(":")
             port = int(port_str)
+
+            # Servers that bind to a wildcard address may advertise it
+            # verbatim (e.g. "tcp://0.0.0.0:50091"). Connecting a PUSH
+            # socket there would target the client's own localhost and
+            # silently drop every S3 event message. Fall back to the
+            # control channel's host, which is known to be reachable.
+            if server_ip in ("0.0.0.0", "::", ""):
+                logger.warning(
+                    "Server advertised non-routable data endpoint %s; "
+                    "falling back to control host %s",
+                    reply,
+                    self.server_ip,
+                )
+                server_ip = self.server_ip
 
             # Create MessageQueue with parsed IP and port
             data_mq = MessageQueue(
@@ -1052,6 +1087,11 @@ class MessageQueue:
             return True
         elif reply == "NO_DATA_QUEUE":
             raise RuntimeError(f"Error: the server cannot find the data queue for user {client_id}.")
+        elif reply.startswith("UNAUTHORIZED:"):
+            logger.warning(
+                "Server denied %s for user %s: %s", notification_type, client_id, reply
+            )
+            return False
         else:
             raise RuntimeError(f"Unexpected error on server side for user {client_id}: {reply}.")
 

@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from umrs.api.files import S3Config, get_project_id, get_s3_config
@@ -231,6 +231,7 @@ async def trigger_ingest(
 
 @router.get("/artifacts")
 async def list_artifacts(
+    request: Request,
     project_id: str = Depends(get_project_id),
     page: int = Query(1, ge=1),
     page_size: int = Query(25, ge=1, le=100),
@@ -240,9 +241,11 @@ async def list_artifacts(
     """List knowledge artifacts (paginated)."""
     try:
         from umrs.knowledge.store import KnowledgeStore
-        from umrs.server.job_tracking_handler import build_durable_job_db_pool_from_env
 
-        pool = build_durable_job_db_pool_from_env()
+        # Reuse the shared app-level pool (built once in http_sidecar.py) —
+        # do NOT call build_durable_job_db_pool_from_env() here, which opens
+        # a brand-new connection pool on every request and leaks it.
+        pool = getattr(request.app.state, "umrs_db_pool", None)
         if pool is None:
             raise HTTPException(status_code=503, detail="Database unavailable")
 
@@ -364,6 +367,7 @@ async def trigger_verify(
 
 @router.get("/readiness")
 async def knowledge_readiness(
+    request: Request,
     project_id: str = Depends(get_project_id),
     config: S3Config = Depends(get_s3_config),
 ) -> dict[str, Any]:
@@ -373,9 +377,11 @@ async def knowledge_readiness(
     """
     try:
         from umrs.knowledge.store import KnowledgeStore
-        from umrs.server.job_tracking_handler import build_durable_job_db_pool_from_env
 
-        pool = build_durable_job_db_pool_from_env()
+        # Reuse the shared app-level pool (built once in http_sidecar.py) —
+        # do NOT call build_durable_job_db_pool_from_env() here, which opens
+        # a brand-new connection pool on every request and leaks it.
+        pool = getattr(request.app.state, "umrs_db_pool", None)
         if pool is None:
             raise HTTPException(status_code=503, detail="Database unavailable")
 

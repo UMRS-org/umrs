@@ -22,16 +22,19 @@ Step/`workflow.json` pattern.
 ## Quick Start
 
 ```bash
-# From demos/ directory
-bash 09_multistep_vision_pipeline/README.md (step-by-step commands)
+# From demos/ directory — see "Running Manually" section below for all steps
+cd "$(git rev-parse --show-toplevel)/$(test -d "$(git rev-parse --show-toplevel)/umrs/demos" && echo umrs)/demos/09_multistep_vision_pipeline"
 
 # With your own images
-bash 09_multistep_vision_pipeline/README.md (step-by-step commands) /path/to/images
+IMAGE_DIR=/path/to/images bash ./run_demo.sh
 ```
+
+> **Note:** The inline script `run_demo.sh` does not exist yet. Use the
+> step-by-step commands in the "Running Manually" section below instead.
 
 ## What the Script Does
 
-1. **Pre-flight** — verifies `umrs-client` can reach the server
+1. **Pre-flight** — verifies `umrs` can reach the server
 2. **Upload workflow** — pushes the upload-ready `workflow/` bundle to the server
 3. **Upload images** — sends images to the configured bucket
 4. **Wait & download** — polls until the 3-step pipeline completes, then
@@ -42,31 +45,38 @@ bash 09_multistep_vision_pipeline/README.md (step-by-step commands) /path/to/ima
 
 ```bash
 # 1. Verify server connectivity
-umrs-client ping
+umrs ping
 
-# 2. Upload the workflow definition to the server
+# 2. Load the experience fragment into your user config
+#    This registers the vision pipeline experience (model + bucket + table)
+umrs experience add experience.json
+
+# 3. Reload to apply the new experience and provision buckets
+umrs reload
+
+# 4. Upload the workflow definition to the server
 #    The upload-ready bundle lives under workflow/ and already contains
 #    workflow.json plus the referenced step modules.
 #    to the server. The server stores the pipeline definition and
 #    will execute it when data arrives in the associated bucket.
-umrs-client workflow upload workflow/ --name "vision-pipeline-demo"
+umrs workflow upload workflow/ --name "vision-pipeline-demo"
 
-# 2a. (Optional) Visualize the workflow DAG before running
-umrs-client workflow visualize vision-pipeline-demo
+# 4a. (Optional) Visualize the workflow DAG before running
+umrs workflow visualize vision-pipeline-demo
 # Expected: ASCII art showing the 3-step pipeline DAG
 
-# 3. Upload images to the pipeline's bucket
+# 5. Upload images to the pipeline's bucket
 #    Images uploaded here will trigger the 3-step pipeline:
 #    segment → crop → stats. Each step's output feeds into the next.
-umrs-client upload_dir ../sample_data/images user1-pipeline
+umrs data dir-upload ../sample_data/images user1-pipeline
 
-# 4. Download results once all 3 steps complete
+# 6. Download results once all 3 steps complete
 #    Results include segmentation metadata, cropped patches, and
 #    per-patch statistics. The download blocks until processing finishes.
 #    If you rerun against a shared bucket, clear the corresponding
 #    *-output bucket first or use clean filenames to avoid mixing old
 #    artifacts into the download.
-umrs-client download_results user1-pipeline ./results --force-overwrite
+umrs data download user1-pipeline ./results --force-overwrite
 ```
 
 ## Environment Variables
@@ -95,8 +105,8 @@ Edit `workflow.json` → `steps[0].config`:
 
 1. Create `steps/my_step.py` implementing `Step`
 2. Add an entry to `workflow/workflow.json → steps[]`
-3. Re-upload the workflow: `umrs-client workflow upload workflow/`
-4. Visualize the updated DAG: `umrs-client workflow visualize vision-pipeline-demo`
+3. Re-upload the workflow: `umrs workflow upload workflow/`
+4. Visualize the updated DAG: `umrs workflow visualize vision-pipeline-demo`
 
 This demo shows the normal user path: upload the workflow bundle, upload data,
 and collect outputs. If your site requires extra server-side activation, that is

@@ -14,6 +14,23 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 # Default to 1 if not already set by the outer wrapper or environment.
 export GOMAXPROCS="${GOMAXPROCS:-1}"
 
+# ─── Decode base64-transported env values ────────────────────────────────────
+# Slurm `sbatch --export` is a comma-delimited KEY=VALUE list with NO escaping,
+# so the control plane base64-encodes any value containing a comma (e.g. the
+# VLLM_SPECULATIVE_CONFIG JSON) and passes it under a "<NAME>_B64" key. Decode
+# every "*_B64" variable back to its original name here — before any consumer
+# (env.<uuid> generation, compose interpolation, or the vLLM exec) reads it.
+# No-op when no such variables are present.
+for _b64_name in $(compgen -v | grep '_B64$' || true); do
+    _orig_name="${_b64_name%_B64}"
+    _b64_value="${!_b64_name}"
+    if _decoded="$(printf '%s' "$_b64_value" | base64 -d 2>/dev/null)"; then
+        export "${_orig_name}=${_decoded}"
+    fi
+    unset "$_b64_name"
+done
+unset _b64_name _orig_name _b64_value _decoded
+
 load_site_env_defaults() {
     local python_bin
     local rendered_exports
@@ -88,8 +105,6 @@ _assert_offline_invariants
 
 mkdir -p "${HOME}/.config/containers/"
 
-mkdir -p "${HOME}/.config/containers/"
-
 cat <<EOF > "${HOME}/.config/containers/storage.conf"
 [storage]
 driver="overlay"
@@ -102,7 +117,17 @@ mount_program = "/usr/bin/fuse-overlayfs"
 mountopt="xattr_permissions=2,threaded=1"
 EOF
 
+# Chroot isolation (user-NS GID mapping gap on compute nodes)
+export BUILDAH_ISOLATION=chroot
+export CONTAINERS_BUILDAH_ISOLATION=chroot
+
 uuid=$(cat /proc/sys/kernel/random/uuid)
+
+# Job-scoped names prevent cross-job collisions on shared nodes.
+RIVAULT_COMPOSE_PROJECT="${RIVAULT_COMPOSE_PROJECT:-rivault-${SLURM_JOB_ID:-$uuid}}"
+RIVAULT_EXIT_PROJECT="${RIVAULT_EXIT_PROJECT:-exit-${SLURM_JOB_ID:-$uuid}}"
+RIVAULT_NETWORK_NAME="${RIVAULT_NETWORK_NAME:-genai-private-net-${SLURM_JOB_ID:-$uuid}}"
+export RIVAULT_COMPOSE_PROJECT RIVAULT_EXIT_PROJECT RIVAULT_NETWORK_NAME
 
 prepare_mcp_mount_overlay() {
     [[ -n "${RIVAULT_MCP_MOUNTS_JSON:-}" ]] || return 0
@@ -252,7 +277,7 @@ if [[ -n "${VLLM_MOE_BACKEND:-}" ]]; then
 fi
 
 # Merge the roster/pool-supplied VLLM_EXTRA_ARGS (arbitrary vLLM flags declared
-# in an endpoint's env_vars, e.g. DSpark's --kv-cache-dtype / --speculative-config)
+# in an endpoint's env_vars, e.g. DSpark's --kv-cache-dtype)
 # with the tokenizer/trust/moe flags derived above into ONE value that reaches
 # BOTH launch paths:
 #   • single-node: podman-compose interpolates ${VLLM_EXTRA_ARGS}; the process
@@ -339,14 +364,21 @@ VLLM_SERVED_MODEL_NAME=${_vllm_served_model_name}
 # VLLM_EXTRA_ARGS (see the merge block above) so multi-node podman-run
 # containers — which read ONLY this file — receive the roster flags.
 ${_vllm_extra_args:+VLLM_EXTRA_ARGS=${_vllm_extra_args}}
+# Structured speculative configuration is kept separate from VLLM_EXTRA_ARGS so
+# JSON is passed to vLLM as one quoted argv value rather than shell-split words.
+${VLLM_SPECULATIVE_CONFIG:+VLLM_SPECULATIVE_CONFIG=${VLLM_SPECULATIVE_CONFIG}}
 # Host path bind-mounted as the tokenizer directory
 VLLM_TOKENIZER_HOST_PATH=${_vllm_tokenizer_host_path:-/dev/null}
 # Container path where the tokenizer directory is mounted
 VLLM_TOKENIZER_CONTAINER_PATH=${_vllm_tokenizer_container_path:-/tokenizer}
 
 # ─── 2. vLLM: Parallelism & Performance ──────────────────────────────────────
-# Tensor parallelism degree (split layers across GPUs horizontally)
-VLLM_TP=${VLLM_TP:-1}
+# Tensor parallelism degree (split layers across GPUs horizontally).
+# Honor the standard VLLM_TENSOR_PARALLEL_SIZE name (set by rosters, site
+# config, and the orchestrator) as a fallback — mirrors the Singularity defs
+# (mini-rivault*.def) so a roster that pins VLLM_TENSOR_PARALLEL_SIZE=2 forms a
+# cross-node TP group (TP=2/PP=1) instead of being mis-derived to across-node PP.
+VLLM_TP=${VLLM_TP:-${VLLM_TENSOR_PARALLEL_SIZE:-1}}
 # Pipeline parallelism degree (split layers across GPUs vertically; >1 for
 # multi-node large-model inference via Slurm --nodes)
 VLLM_PP=${VLLM_PP:-1}
@@ -358,8 +390,22 @@ VLLM_DISTRIBUTED_EXECUTOR_BACKEND=${VLLM_DISTRIBUTED_EXECUTOR_BACKEND:-}
 RAY_ADDRESS=${RAY_ADDRESS:-}
 # Container image tag for the vLLM service
 VLLM_DOCKER_TAG=${VLLM_DOCKER_TAG:-v0.20.0}
+# Full vLLM image reference — computed here so the compose file
+# does NOT need nested default substitution (podman-compose dotenv
+# parser cannot handle ${X:-${Y:-z}}).  The image line in
+# serve-model.yaml can then use the simple form:
+#     image: ${VLLM_DOCKER_IMAGE:-docker.io/vllm/vllm-openai:v0.20.0}
+VLLM_DOCKER_IMAGE=${VLLM_DOCKER_IMAGE:-docker.io/vllm/vllm-openai:${VLLM_DOCKER_TAG}}
 # Fraction of GPU memory vLLM is allowed to use for KV-cache
 VLLM_GPU_MEM_UTIL=${VLLM_GPU_MEM_UTIL:-0.95}
+# Maximum context length (vLLM --max-model-len). Injected into the job env by
+# the orchestrator (service.py sets it from request.max_model_len). MUST be
+# written into this file so the multi-node podman-run container — which reads
+# ONLY env.<uuid> and does NOT inherit the job shell env — serves at the
+# requested context instead of silently defaulting to 4096. Without this line
+# large-context clients (e.g. Copilot) overrun the 4096 window and the request
+# fails upstream (nginx 500).
+VLLM_MAX_MODEL_LEN=${VLLM_MAX_MODEL_LEN:-4096}
 # Tool-call parsing strategy (hermes = Hermes-style function call format)
 VLLM_TOOL_CALL_PARSER=${VLLM_TOOL_CALL_PARSER:-hermes}
 # Reasoning parser for models that emit thinking/reasoning content
@@ -594,25 +640,27 @@ fi
 # Tear down any leftovers from previous jobs: remove all containers that are
 # still connected to genai-private-net (handles unnamed/bracketed-name podman
 # quirks), then remove the network itself so IPAM starts from a clean slate.
-podman ps -qa --filter network=genai-private-net --format '{{.ID}}' 2>/dev/null | \
+podman ps -qa --filter "network=${RIVAULT_NETWORK_NAME}" --format '{{.ID}}' 2>/dev/null | \
 	xargs -r podman rm -f 2>/dev/null || true
-podman ps -qa --filter 'name=rivault_' --format '{{.ID}}' 2>/dev/null | \
-	xargs -r podman rm -f 2>/dev/null || true
-podman network rm -f genai-private-net 2>/dev/null || true
+podman ps -qa --filter "label=com.docker.compose.project=${RIVAULT_COMPOSE_PROJECT}" --format '{{.ID}}' 2>/dev/null | \
+    xargs -r podman rm -f 2>/dev/null || true
+podman ps -qa --filter "label=com.docker.compose.project=${RIVAULT_EXIT_PROJECT}" --format '{{.ID}}' 2>/dev/null | \
+    xargs -r podman rm -f 2>/dev/null || true
+podman network rm -f "${RIVAULT_NETWORK_NAME}" 2>/dev/null || true
 
 # Verify the network is actually gone (belt-and-suspenders)
 # When containers from a prior Slurm job are orphaned (crun state files gone
 # after $XDG_RUNTIME_DIR cleanup), podman can't stop them normally.
 # Fix: cleanup --rm clears metadata; pkill conmon kills any survivors.
-if podman network exists genai-private-net 2>/dev/null; then
-	echo "[rivault] WARN: genai-private-net still exists; cleaning orphaned containers..."
+if podman network exists "${RIVAULT_NETWORK_NAME}" 2>/dev/null; then
+    echo "[rivault] WARN: ${RIVAULT_NETWORK_NAME} still exists; cleaning orphaned containers..."
 	pkill -9 conmon 2>/dev/null || true
 	sleep 1
 	podman container cleanup --rm --all 2>/dev/null || true
 	podman rm -af 2>/dev/null || true
-	podman network rm -f genai-private-net 2>/dev/null || true
-	if podman network exists genai-private-net 2>/dev/null; then
-		echo "[rivault] ERROR: cannot remove genai-private-net"; exit 1
+    podman network rm -f "${RIVAULT_NETWORK_NAME}" 2>/dev/null || true
+    if podman network exists "${RIVAULT_NETWORK_NAME}" 2>/dev/null; then
+        echo "[rivault] ERROR: cannot remove ${RIVAULT_NETWORK_NAME}"; exit 1
 	fi
 fi
 
@@ -635,23 +683,23 @@ for _candidate in "${_preferred_ip1to3}" '172.16.4' '10.0.4' '192.168.4'; do
 done
 for IP1TO3 in "${_candidate_subnets[@]}"; do
 	# Note: --disable-dns needed because infra lacks dns, but we need fixed ips
-	if podman network create --disable-dns --subnet "${IP1TO3}.0/24" genai-private-net 2>/dev/null; then
+    if podman network create --disable-dns --subnet "${IP1TO3}.0/24" "${RIVAULT_NETWORK_NAME}" 2>/dev/null; then
 		_net_created=1
 		break
 	fi
 done
 if [ "$_net_created" -ne 1 ]; then
-	echo "[rivault] ERROR: failed to create genai-private-net with any candidate subnet"
+    echo "[rivault] ERROR: failed to create ${RIVAULT_NETWORK_NAME} with any candidate subnet"
 	exit 1
 fi
-echo "[rivault] genai-private-net created with subnet ${IP1TO3}.0/24"
+echo "[rivault] ${RIVAULT_NETWORK_NAME} created with subnet ${IP1TO3}.0/24"
 
 # Verify network is visible to podman (catches netavark storage issues)
-if ! podman network exists genai-private-net 2>/dev/null; then
+if ! podman network exists "${RIVAULT_NETWORK_NAME}" 2>/dev/null; then
 	echo "[rivault] WARN: network exists check failed after create; running system migrate..."
 	podman system migrate 2>/dev/null || true
-	if ! podman network exists genai-private-net 2>/dev/null; then
-		echo "[rivault] ERROR: genai-private-net not visible after migrate"
+    if ! podman network exists "${RIVAULT_NETWORK_NAME}" 2>/dev/null; then
+        echo "[rivault] ERROR: ${RIVAULT_NETWORK_NAME} not visible after migrate"
 		echo "[rivault] DEBUG: network ls output:"
 		podman network ls 2>&1
 		echo "[rivault] DEBUG: network backend:"
@@ -812,11 +860,65 @@ _cleanup_started=0
 RIVAULT_CONTROL_DIR="${RIVAULT_CONTROL_DIR:-}"
 RIVAULT_STOP_REQUEST_FILE=""
 RAY_HEAD_PID=""
+NATIVE_LLM_PID=""
 WORKER_PIDS=()
 if [[ -n "${RIVAULT_CONTROL_DIR}" && -n "${SLURM_JOB_ID:-}" ]]; then
     mkdir -p "${RIVAULT_CONTROL_DIR}" 2>/dev/null || true
     RIVAULT_STOP_REQUEST_FILE="${RIVAULT_CONTROL_DIR%/}/stop-${SLURM_JOB_ID}.request"
 fi
+
+# ─── Ray post-mortem artifact preservation ───────────────────────────────────
+# Multi-node Ray failures (GCS crash, raylet SIGSEGV, worker registration
+# timeout) leave their ONLY evidence in the container's stdout and in
+# /tmp/ray/session_*/logs (gcs_server.{out,err}, raylet.{out,err},
+# dashboard.log, monitor.log, runtime_env*.log). The cleanup below removes
+# those containers, so without archiving first every failure is undebuggable.
+# This grabs the full Ray session tree + container logs from the head and every
+# worker into JOB_INFO_DIR (next to slurm-<jobid>.out on shared storage) BEFORE
+# teardown. Called only on genuine failures (see cleanup_stack), never on a
+# clean exit or an operator-initiated stop.
+_archive_ray_sessions() {
+    [[ "${_MULTI_NODE:-0}" -eq 1 ]] || return 0
+    local dest="${JOB_INFO_DIR:-${HOME}/.rivault/ray-sessions}"
+    local jid="${SLURM_JOB_ID:-$$}"
+    mkdir -p "${dest}" 2>/dev/null || return 0
+    echo "[rivault] Preserving Ray post-mortem artifacts under ${dest} ..."
+
+    # Head node: co-located Ray head + vLLM driver container. `podman cp` and
+    # `podman logs` both work on a stopped-but-not-yet-removed container. All
+    # commands are wrapped in `timeout` so a wedged node can never hang teardown.
+    if podman container exists rivault-vllm-mn 2>/dev/null; then
+        timeout 60 podman logs rivault-vllm-mn > "${dest%/}/ray-head-${jid}.log" 2>&1 || true
+        local head_tar="${dest%/}/ray-head-session-${jid}.tar.gz"
+        timeout 120 podman cp rivault-vllm-mn:/tmp/ray - 2>/dev/null | gzip > "${head_tar}" 2>/dev/null || true
+        if tar tzf "${head_tar}" 2>/dev/null | grep -q .; then
+            echo "[rivault]   head:   ${head_tar}"
+        else
+            rm -f "${head_tar}" 2>/dev/null || true
+        fi
+    fi
+
+    # Worker nodes: one Ray worker container per remaining node, reached via srun.
+    local i wnode wlog wtar
+    for ((i=1; i<${#RAY_NODES[@]}; i++)); do
+        wnode="${RAY_NODES[$i]}"
+        wlog="${dest%/}/ray-worker-${wnode}-${jid}.log"
+        timeout 90 srun --nodes=1 --ntasks=1 --nodelist="${wnode}" --overlap sh -c \
+            'podman container exists rivault-ray-worker && podman logs rivault-ray-worker 2>&1' \
+            > "${wlog}" 2>/dev/null || true
+        [[ -s "${wlog}" ]] || rm -f "${wlog}" 2>/dev/null || true
+        wtar="${dest%/}/ray-worker-${wnode}-session-${jid}.tar.gz"
+        timeout 150 srun --nodes=1 --ntasks=1 --nodelist="${wnode}" --overlap sh -c \
+            'podman container exists rivault-ray-worker && podman cp rivault-ray-worker:/tmp/ray - 2>/dev/null' \
+            2>/dev/null | gzip > "${wtar}" 2>/dev/null || true
+        if tar tzf "${wtar}" 2>/dev/null | grep -q .; then
+            echo "[rivault]   worker ${wnode}: ${wtar}"
+        else
+            rm -f "${wtar}" 2>/dev/null || true
+        fi
+    done
+    return 0
+}
 
 cleanup_stack() {
     local reason="${1:-exit}"
@@ -829,12 +931,28 @@ cleanup_stack() {
     trap - EXIT TERM INT
 
     echo "[rivault] Cleaning up stack (${reason})..."
+    # Preserve Ray post-mortem artifacts on genuine failures BEFORE tearing the
+    # containers down. Skip on a clean exit (0) or operator-initiated stop
+    # (INT=130, TERM=143) — those are not crashes and need no evidence.
+    case "${rc}" in
+        0|130|143) : ;;
+        *) _archive_ray_sessions ;;
+    esac
     # Stop Ray workers and head (multi-node only)
     if [[ ${#WORKER_PIDS[@]} -gt 0 ]]; then
         kill "${WORKER_PIDS[@]}" 2>/dev/null || true
     fi
     if [[ -n "${RAY_HEAD_PID}" ]]; then
         kill "${RAY_HEAD_PID}" 2>/dev/null || true
+    fi
+    if [[ -n "${NATIVE_LLM_PID}" ]]; then
+        kill "${NATIVE_LLM_PID}" 2>/dev/null || true
+    fi
+    if [[ "${RIVAULT_NATIVE_LLM_RUNNER:-}" == "glm52-vllm-moet" && ${#RAY_NODES[@]} -gt 0 ]]; then
+        for wnode in "${RAY_NODES[@]}"; do
+            srun --nodes=1 --ntasks=1 --nodelist="${wnode}" --overlap \
+                "${VLLM_MOET_VENV}/bin/ray" stop --force >/dev/null 2>&1 || true
+        done
     fi
     # Stop standalone multi-node vLLM (host-network container, not on the bridge)
     podman rm -f rivault-vllm-mn >/dev/null 2>&1 || true
@@ -847,15 +965,15 @@ cleanup_stack() {
         done
     fi
     cleanup_ssh_tunnels
-    podman-compose --project-name "exit" --in-pod false \
+    podman-compose --project-name "${RIVAULT_EXIT_PROJECT}" --in-pod false \
                --env-file "./env.${uuid}" \
                --file "./userdata-access.yaml" \
                down >/dev/null 2>&1 || true
-    podman-compose --project-name "rivault" --in-pod false \
+    podman-compose --project-name "${RIVAULT_COMPOSE_PROJECT}" --in-pod false \
                --env-file "./env.${uuid}" \
                --file "./serve-model.yaml" ${GPUoverride[@]} \
                down >/dev/null 2>&1 || true
-    podman network rm -f genai-private-net >/dev/null 2>&1 || true
+    podman network rm -f "${RIVAULT_NETWORK_NAME}" >/dev/null 2>&1 || true
     # Clear /tmp/run-user-* runtime state left by podman
     rm -rf "/tmp/run-user-$(id -u)/containers" 2>/dev/null || true
     rm -rf "/tmp/run-user-$(id -u)/libpod/tmp" 2>/dev/null || true
@@ -893,7 +1011,7 @@ run_litellm_db_sql_migrations() {
     rm -rf "${migrations_dir}" 2>/dev/null || true
     mkdir -p "${migrations_dir}"
 
-    if ! podman-compose --project-name "rivault" --in-pod false \
+    if ! podman-compose --project-name "${RIVAULT_COMPOSE_PROJECT}" --in-pod false \
              --env-file "./env.${uuid}" \
              --file "./serve-model.yaml" \
              ${GPUoverride[@]} \
@@ -904,7 +1022,7 @@ run_litellm_db_sql_migrations() {
     fi
 
     for _attempt in $(seq 1 60); do
-        postgres_container_id="$(podman ps --filter 'name=rivault_ll-postgres_1' --format '{{.ID}}' | head -1)"
+        postgres_container_id="$(podman ps --filter "name=${RIVAULT_COMPOSE_PROJECT}_ll-postgres_1" --format '{{.ID}}' | head -1)"
         if [[ -n "${postgres_container_id}" ]] && \
            podman run --rm --network "container:${postgres_container_id}" \
                -e "PGPASSWORD=${_litellm_postgres_password}" \
@@ -971,6 +1089,116 @@ printf "%s" "$count"'
     echo "[rivault] LiteLLM DB schema initialized (${applied_count} SQL migrations)."
 }
 
+# ─── Native GLM-5.2 runner ───────────────────────────────────────────────────
+start_native_glm52() {
+    local node_count="${SLURM_JOB_NUM_NODES:-${SLURM_NNODES:-1}}"
+    local fabric_if="${VLLM_FABRIC_IFACE:-enp1s0f1np1}"
+    local venv="${VLLM_MOET_VENV:?VLLM_MOET_VENV is required}"
+    local repo="${VLLM_MOET_REPO:?VLLM_MOET_REPO is required}"
+    local nccl_so="${VLLM_NCCL_SO_PATH:?VLLM_NCCL_SO_PATH is required}"
+    local planes="${VLLM_MOE_W2_PREPACKED_DIR:?VLLM_MOE_W2_PREPACKED_DIR is required}"
+    local model="${_vllm_host_model_path}"
+    local head_ip worker_ip ray_common
+    local -a native_extra_args=()
+
+    [[ "${node_count}" -eq 2 ]] || {
+        echo "[rivault] FATAL: glm52-vllm-moet requires exactly two nodes" >&2
+        return 1
+    }
+    [[ "${SLURM_JOB_PARTITION:-}" == "edge-double" ]] || {
+        echo "[rivault] FATAL: glm52-vllm-moet requires edge-double, got ${SLURM_JOB_PARTITION:-unset}" >&2
+        return 1
+    }
+
+    mapfile -t RAY_NODES < <(scontrol show hostnames "${SLURM_JOB_NODELIST:-}")
+    [[ ${#RAY_NODES[@]} -eq 2 ]] || {
+        echo "[rivault] FATAL: could not resolve both GLM nodes" >&2
+        return 1
+    }
+
+    for wnode in "${RAY_NODES[@]}"; do
+        # shellcheck disable=SC2016  # Positional parameters expand in remote bash.
+        if ! srun --nodes=1 --ntasks=1 --nodelist="${wnode}" --overlap bash -c \
+            'test -x "$1/bin/vllm" && test -x "$1/bin/ray" && test -f "$2/spark/purge-cache.py" && test -r "$3" && test -d "$4" && find "$4" -type f -print -quit | grep -q .' \
+            _ "${venv}" "${repo}" "${nccl_so}" "${planes}"; then
+            echo "[rivault] FATAL: native GLM prerequisites missing on ${wnode}" >&2
+            return 1
+        fi
+    done
+    [[ -f "${model}/config.json" ]] || {
+        echo "[rivault] FATAL: GLM model config missing at ${model}" >&2
+        return 1
+    }
+
+    head_ip="$(srun --nodes=1 --ntasks=1 --nodelist="${RAY_NODES[0]}" --overlap \
+        ip -4 -o addr show dev "${fabric_if}" | awk '{sub(/\/.*/, "", $4); print $4; exit}')"
+    worker_ip="$(srun --nodes=1 --ntasks=1 --nodelist="${RAY_NODES[1]}" --overlap \
+        ip -4 -o addr show dev "${fabric_if}" | awk '{sub(/\/.*/, "", $4); print $4; exit}')"
+    [[ -n "${head_ip}" && -n "${worker_ip}" ]] || {
+        echo "[rivault] FATAL: cannot resolve ${fabric_if} addresses" >&2
+        return 1
+    }
+
+    ray_common="RAY_memory_monitor_refresh_ms=0 RAY_local_fs_capacity_threshold=1 NCCL_IB_DISABLE=1 NCCL_SOCKET_IFNAME=${fabric_if} GLOO_SOCKET_IFNAME=${fabric_if} NCCL_GRAPH_MIXING_SUPPORT=1 VLLM_NCCL_SO_PATH=${nccl_so} MALLOC_MMAP_THRESHOLD_=65536"
+    echo "[rivault] Native GLM fabric: ${RAY_NODES[0]}=${head_ip}, ${RAY_NODES[1]}=${worker_ip}"
+
+    for wnode in "${RAY_NODES[@]}"; do
+        srun --nodes=1 --ntasks=1 --nodelist="${wnode}" --overlap \
+            "${venv}/bin/ray" stop --force >/dev/null 2>&1 || true
+    done
+
+    srun --nodes=1 --ntasks=1 --nodelist="${RAY_NODES[0]}" --overlap \
+        bash -lc "env ${ray_common} VLLM_HOST_IP=${head_ip} ${venv}/bin/ray start --head --node-ip-address=${head_ip} --port=6379 --num-gpus=1 --object-store-memory=2000000000 --include-dashboard=false" || return 1
+    srun --nodes=1 --ntasks=1 --nodelist="${RAY_NODES[1]}" --overlap \
+        bash -lc "env ${ray_common} VLLM_HOST_IP=${worker_ip} ${venv}/bin/ray start --address=${head_ip}:6379 --node-ip-address=${worker_ip} --num-gpus=1 --object-store-memory=2000000000" || return 1
+
+    RAY_ADDRESS="${head_ip}:6379"
+    HEAD_IP="${head_ip}"
+    export RAY_ADDRESS VLLM_HOST_IP="${head_ip}"
+    export VLLM_MOE_W2=1 VLLM_MOE_W2_PLANES_MMAP=1
+    export VLLM_MOE_W2_CUBIT_DIR="${repo}/kernels/cubins-sm120"
+    export VLLM_MOE_W2_DELTA_GB="${VLLM_MOE_W2_DELTA_GB:-0}"
+    export VLLM_MOE_W2_FADVISE_GLOB="${VLLM_MOE_W2_FADVISE_GLOB:-}"
+    export MALLOC_MMAP_THRESHOLD_="${MALLOC_MMAP_THRESHOLD_:-65536}"
+
+    srun --nodes=1 --ntasks=1 --nodelist="${RAY_NODES[0]}" --overlap \
+        "${venv}/bin/python" "${repo}/spark/purge-cache.py" "$(dirname "${model}")" || true
+    srun --nodes=1 --ntasks=1 --nodelist="${RAY_NODES[1]}" --overlap \
+        "${venv}/bin/python" "${repo}/spark/purge-cache.py" "$(dirname "${model}")" || true
+
+    if [[ -n "${VLLM_EXTRA_ARGS:-}" ]]; then
+        read -r -a native_extra_args <<< "${VLLM_EXTRA_ARGS}"
+    fi
+    # Tool/reasoning parsers: GLM-5.2 emits GLM-format tool calls and <think>
+    # reasoning. Without parsers, tool calls leak as plain text and agent
+    # clients stall (same failure class as Laguna/poolside_v1, job 2996).
+    # Model-card recipe: --tool-call-parser glm47 --reasoning-parser glm45.
+    "${venv}/bin/vllm" serve "${model}" \
+        --served-model-name "${VLLM_SERVED_MODEL_NAME:-glm-5.2}" \
+        --api-key "${VLLM_API_KEY}" --trust-remote-code \
+        --distributed-executor-backend ray --tensor-parallel-size 2 \
+        --kv-cache-dtype fp8 --max-model-len "${VLLM_MAX_MODEL_LEN:-98304}" \
+        --gpu-memory-utilization "${VLLM_GPU_MEM_UTIL:-0.85}" \
+        --kv-cache-memory-bytes "${VLLM_KV_CACHE_MEMORY_BYTES:-10737418240}" \
+        --max-num-batched-tokens "${VLLM_MAX_NUM_BATCHED_TOKENS:-512}" \
+        --max-num-seqs "${VLLM_MAX_NUM_SEQS:-2}" \
+        --enable-auto-tool-choice \
+        --tool-call-parser "${VLLM_TOOL_CALL_PARSER:-glm47}" \
+        --reasoning-parser "${VLLM_REASONING_PARSER:-glm45}" \
+        --speculative-config "{\"method\":\"mtp\",\"num_speculative_tokens\":${MTP_K:-1}}" \
+        --compilation-config '{"cudagraph_mode":"FULL_AND_PIECEWISE","custom_ops":["all"]}' \
+        --host 0.0.0.0 --port 8000 "${native_extra_args[@]}" &
+    NATIVE_LLM_PID=$!
+
+    RIVAULT_PROFILES="$(echo "${RIVAULT_PROFILES}" | tr ' ' '\n' | grep -vxE 'vllm|vision-bentoml' | tr '\n' ' ')"
+    _profile_flags=""
+    for _p in ${RIVAULT_PROFILES}; do
+        _profile_flags="${_profile_flags} --profile ${_p}"
+    done
+    sed -i "s@http://vllm:8000/v1@http://${HEAD_IP}:8000/v1@g" "./litellm_fs/config.yaml.${uuid}"
+    echo "[rivault] LiteLLM repointed to native GLM at http://${HEAD_IP}:8000/v1"
+}
+
 # ─── Multi-node Ray cluster bootstrap ────────────────────────────────────────
 # When Slurm allocates more than one node, bootstrap a Ray cluster across the
 # allocation before starting the compose stack.  The vLLM container (in compose)
@@ -983,7 +1211,10 @@ printf "%s" "$count"'
 # container (on the genai-private-net bridge) reaches the Ray head through the
 # bridge gateway, which routes to the host's external IP.
 _MULTI_NODE=0
-if [[ "${SLURM_JOB_NUM_NODES:-${SLURM_NNODES:-1}}" -gt 1 ]]; then
+if [[ "${RIVAULT_NATIVE_LLM_RUNNER:-}" == "glm52-vllm-moet" ]]; then
+    _MULTI_NODE=1
+    start_native_glm52 || exit 1
+elif [[ "${SLURM_JOB_NUM_NODES:-${SLURM_NNODES:-1}}" -gt 1 ]]; then
     _MULTI_NODE=1
     echo "[rivault] Multi-node allocation: ${SLURM_JOB_NUM_NODES:-${SLURM_NNODES}} nodes"
 
@@ -1002,6 +1233,21 @@ if [[ "${SLURM_JOB_NUM_NODES:-${SLURM_NNODES:-1}}" -gt 1 ]]; then
     RAY_ADDRESS="${HEAD_IP}:${RAY_PORT}"
     VLLM_IMAGE="${VLLM_DOCKER_IMAGE:-docker.io/vllm/vllm-openai:${VLLM_DOCKER_TAG:-v0.20.0}}"
 
+    # ─── Pre-pull vLLM image (ensure fully cached before container launch) ────
+    # `podman run` does an implicit pull, but for large images (~11GB) this
+    # race conditions the readiness probe. Pull first so `podman run` starts
+    # immediately with a cached image.
+    echo "[rivault] Pre-pulling vLLM image: ${VLLM_IMAGE}..."
+    podman pull "${VLLM_IMAGE}" >/dev/null 2>&1 || {
+        echo "[rivault] WARN: vLLM image pull failed — attempting fallback tag..."
+        podman pull "docker.io/vllm/vllm-openai:cu130-nightly-aarch64" >/dev/null 2>&1 || {
+            echo "[rivault] FATAL: could not pull vLLM image. Check network or image tag."
+            exit 1
+        }
+        VLLM_IMAGE="docker.io/vllm/vllm-openai:cu130-nightly-aarch64"
+    }
+    echo "[rivault] vLLM image ready (${VLLM_IMAGE})."
+
     # Default the tensor-parallel degree in the SCRIPT's shell scope. The env
     # file heredoc's `VLLM_TP=${VLLM_TP:-1}` only substitutes into the file
     # text — it does NOT assign this shell variable. The multi-node head/worker
@@ -1009,8 +1255,10 @@ if [[ "${SLURM_JOB_NUM_NODES:-${SLURM_NNODES:-1}}" -gt 1 ]]; then
     # `${_gpus_per_node}` (ray start --num-gpus) directly via outer-shell
     # expansion, so an unset VLLM_TP produced empty flags and `ray start`
     # failed, so the GCS never bound and the whole stack timed out. Roster may
-    # pin VLLM_TP (e.g. DSpark TP=2); default is TP=1 (across-node PP).
-    VLLM_TP="${VLLM_TP:-1}"
+    # pin VLLM_TP (e.g. DSpark TP=2); the standard VLLM_TENSOR_PARALLEL_SIZE
+    # name is honored as a fallback so a roster/site value forms a cross-node TP
+    # group. Default is TP=1 (across-node PP).
+    VLLM_TP="${VLLM_TP:-${VLLM_TENSOR_PARALLEL_SIZE:-1}}"
 
     # Physical GPUs per node. GB10 DGX-Spark nodes have exactly 1; other sites
     # override via VLLM_GPUS_PER_NODE. This is the actual device count each Ray
@@ -1129,7 +1377,7 @@ RAYEOF
         -e NCCL_DEBUG=INFO
         # GB10 has UNIFIED memory (GPU allocations + kernel page cache share the
         # same pool as host RAM). Two levers keep the ~94 GiB/node weight load
-        # within the 121.63 GiB pool: (1) --object-store-memory=1g on `ray start`
+        # within the 121.63 GiB pool: (1) --object-store-memory=1073741824 (1GiB) on `ray start`
         # (below) caps the otherwise ~10 GB Ray plasma reservation, which is
         # unused in the PP path (weights load from disk, pipeline tensors go over
         # NCCL/GPU) and was the bulk of the head's non-torch overhead; (2) a small
@@ -1143,11 +1391,91 @@ RAYEOF
         # value of RAY_memory_monitor_refresh_ms=0 disables the monitor entirely
         # (needed for large GGUF models where Lustre page cache pre-fills the pool).
         -e RAY_memory_usage_threshold="${RAY_memory_usage_threshold:-0.95}"
-        -e RAY_memory_monitor_refresh_ms="${RAY_memory_monitor_refresh_ms:-}"
-        -e VLLM_LOGGING_LEVEL=DEBUG
+        # Default INFO: DEBUG makes gpu_model_runner emit 2 log records per
+        # decode step per worker, serialized cross-node through Ray's log
+        # forwarder — measurable per-token overhead at single-digit tok/s on
+        # GB10. Override via pool env_vars VLLM_LOGGING_LEVEL=DEBUG only for
+        # Ray-formation diagnostics.
+        -e VLLM_LOGGING_LEVEL="${VLLM_LOGGING_LEVEL:-INFO}"
     )
+    # CRITICAL: only pass RAY_memory_monitor_refresh_ms when actually
+    # overridden. `-e RAY_memory_monitor_refresh_ms=` (empty string, NOT
+    # unset) makes Ray's native config parser SIGSEGV on `import ray` itself
+    # (confirmed via reproduction 2026-07-20 on GB10 aarch64) — every downstream
+    # `ray start --head`/`ray status` call then crashes silently (masked by the
+    # `;`-joined shell sequence), so the GCS port never binds and the job hangs
+    # until the outer TCP-probe timeout. Ray only accepts a real integer or no
+    # env var at all — never an empty string.
+    if [[ -n "${RAY_memory_monitor_refresh_ms:-}" ]]; then
+        _mn_vllm_args+=( -e "RAY_memory_monitor_refresh_ms=${RAY_memory_monitor_refresh_ms}" )
+    fi
+    # Optional NCCL transport knobs (roster env_vars, forwarded only when set).
+    # Added for GLM-5.2 on spark-double (job 2967): ncclCommInitRank died with
+    # "unhandled system error" after NCCL detected bogus cross-node
+    # "isAllCudaP2p 1" on the GB10 pair — NCCL_P2P_DISABLE=1 forces NET/Socket.
+    for _mn_nccl_var in NCCL_P2P_DISABLE NCCL_SHM_DISABLE NCCL_SOCKET_IFNAME NCCL_NET; do
+        if [[ -n "${!_mn_nccl_var:-}" ]]; then
+            _mn_vllm_args+=( -e "${_mn_nccl_var}=${!_mn_nccl_var}" )
+        fi
+    done
+    # GCS-connectivity tolerance (roster env_vars can override the defaults).
+    # ROOT CAUSE (jobs 2941-2944 laguna, 2946 hy3-nvfp4, 2026-07-24): during
+    # multi-node weight load BOTH ranks stream 56-85 GB of shards from the
+    # NFS-shared home over the SAME network path that carries Ray's GCS gRPC
+    # traffic. The link saturates, the worker raylet loses its GCS channel, and
+    # after Ray's default 60 s reconnect deadline
+    # (gcs_rpc_server_reconnect_timeout_s) it SELF-TERMINATES: "Failed to
+    # connect to GCS within 60 seconds ... The program will terminate"
+    # (raylet.out, job 2946). `ray start --block` then SIGTERMs the remaining
+    # components, so the GCS ledger records the node dying with
+    # EXPECTED_TERMINATION "received SIGTERM" on the observed ~60-80 s cadence.
+    # NOT model-specific (control job 2946, different model/image, failed
+    # identically) and NOT memory (OOMKilled=false, monitor disabled, cap had
+    # no effect). Defaults below let both sides ride out a multi-minute I/O
+    # storm instead of collapsing the cluster:
+    #   - reconnect deadline 60 s -> 600 s (covers the whole weight load)
+    #   - GCS->raylet health check: period 3 s/timeout 10 s/5 fails (~35 s to
+    #     drain) -> period 10 s/timeout 60 s/10 fails (~10 min tolerance).
+    # Always real integers (never empty strings — see SIGSEGV note above).
+    _mn_vllm_args+=(
+        -e RAY_gcs_rpc_server_reconnect_timeout_s="${RAY_gcs_rpc_server_reconnect_timeout_s:-600}"
+        -e RAY_health_check_initial_delay_ms="${RAY_health_check_initial_delay_ms:-30000}"
+        -e RAY_health_check_period_ms="${RAY_health_check_period_ms:-10000}"
+        -e RAY_health_check_timeout_ms="${RAY_health_check_timeout_ms:-60000}"
+        -e RAY_health_check_failure_threshold="${RAY_health_check_failure_threshold:-10}"
+    )
+    # OPTIONAL cgroup memory cap for the head + worker Ray containers. On GB10
+    # UNIFIED memory the weight-load page-cache spike (56.6 GiB FP8 shards read
+    # from the bind-mounted HF cache) fills the shared 121 GiB pool. Without a
+    # cap the node either trips Ray's memory monitor (SIGTERM node) or, with the
+    # monitor disabled (RAY_memory_monitor_refresh_ms=0), thrashes into
+    # unresponsiveness so the GCS health-check drains it — BOTH surface as the
+    # worker node dying with EXPECTED_TERMINATION "received SIGTERM" ~80s in,
+    # mid-load (confirmed job 2941/2943). The upstream recipe prevents this by
+    # running each raylet as a systemd --user service with `-p MemoryMax=110G
+    # -p MemorySwapMax=0`, which FORCES page-cache reclaim under the cap instead
+    # of thrashing. Rootless podman on these nodes has the cgroup-v2 `memory`
+    # controller delegated (verified `cgroup.controllers` = cpu memory pids), so
+    # `--memory=<cap> --memory-swap=<cap>` (equal → swap disabled, matching
+    # MemorySwapMax=0) reproduces that behaviour per container. Opt-in via the
+    # roster env `RIVAULT_MN_MEMORY_CAP` (e.g. "110g"); unset → no cap (preserves
+    # existing behaviour for other multi-node endpoints / non-GB10 nodes).
+    if [[ -n "${RIVAULT_MN_MEMORY_CAP:-}" ]]; then
+        _mn_vllm_args+=( --memory="${RIVAULT_MN_MEMORY_CAP}" --memory-swap="${RIVAULT_MN_MEMORY_CAP}" )
+    fi
     if [[ "${_mn_tok_host}" != "/dev/null" ]]; then
         _mn_vllm_args+=( -v "${_mn_tok_host}:${_mn_tok_ctr}:ro" )
+    fi
+    # Optional roster-supplied vLLM source patch: bind-mount a patched copy of
+    # vllm's laguna_dflash.py over the in-image module on head AND workers.
+    # Needed for vLLM 0.25.1 + W4A16 compressed-tensors DFlash drafts:
+    # CompressedTensorsConfig lacks get_cache_scale() (an FP8-only API), so the
+    # unguarded call in DFlashLagunaModel.load_weights raises AttributeError on
+    # the worker rank. The patched file lives on the shared home so ONE copy
+    # serves every node; containers are recreated from the image each launch,
+    # so an in-container edit would not survive a restart.
+    if [[ -n "${VLLM_PATCH_LAGUNA_DFLASH:-}" ]]; then
+        _mn_vllm_args+=( -v "${VLLM_PATCH_LAGUNA_DFLASH}:/usr/local/lib/python3.12/dist-packages/vllm/model_executor/models/laguna_dflash.py:ro" )
     fi
     if [[ -n "${_mn_s3host}" ]]; then
         _mn_vllm_args+=( --add-host "${_mn_s3host}:${_mn_priv}.${_mn_nginxout}" )
@@ -1159,12 +1487,20 @@ RAYEOF
     # `vllm serve` as a Ray driver on the local node.
     echo "[rivault] Starting Ray head + co-located vLLM on ${HEAD_NODE} (${HEAD_IP})..."
     podman rm -f rivault-vllm-mn >/dev/null 2>&1 || true
+    # --security-opt seccomp=unconfined: the default podman seccomp profile
+    # blocks a syscall Ray's native _raylet.so extension needs during module
+    # init on GB10 (Grace aarch64) — without this, even `python3 -c "import ray"`
+    # segfaults (SIGSEGV/exit 139), so `ray start --head` silently never binds
+    # its GCS port (confirmed via reproduction 2026-07-20).
     podman run -d --name rivault-vllm-mn --network host --shm-size=4g \
+        --security-opt seccomp=unconfined \
         --entrypoint /bin/sh \
+        -e "LD_LIBRARY_PATH=/usr/lib/aarch64-linux-gnu" \
+        -e "TRITON_LIBCUDA_PATH=/usr/lib/aarch64-linux-gnu" \
         --env-file "./env.${uuid}" \
         "${_mn_vllm_args[@]}" \
         "${VLLM_IMAGE}" \
-        -c 'export PATH=/usr/local/bin:$PATH; python3 -m pip install -q --no-index --find-links /root/.cache/huggingface/ray_aarch64_env/wheels ray 2>&1 | grep -v "^$\|already\|Requirement" || python3 -m pip install -q ray; ray start --head --node-ip-address="'"${HEAD_IP}"'" --port="'"${RAY_PORT}"'" --num-gpus="'"${_gpus_per_node}"'" --object-store-memory=1073741824 --include-dashboard=false; echo "[vllm-head] Ray head started; waiting for '"${_want_gpus}"' GPUs..."; i=0; while [ $i -lt 120 ]; do g=$(ray status 2>/dev/null | grep -oE "[0-9.]+/[0-9.]+ GPU" | head -1 | sed "s@.*/@@; s@ GPU@@; s@[.].*@@"); [ "${g:-0}" = "'"${_want_gpus}"'" ] && break; sleep 5; i=$((i+1)); done; echo "[vllm-head] GPUs=${g:-0}; launching vLLM"; exec vllm serve "$VLLM_MODEL_REF" $VLLM_EXTRA_ARGS --served-model-name "$VLLM_SERVED_MODEL_NAME" --api-key "$VLLM_API_KEY" -tp "$VLLM_TP" -pp "$VLLM_PP" --distributed-executor-backend ray --host 0.0.0.0 --port 8000 --max-model-len "${VLLM_MAX_MODEL_LEN:-4096}" --gpu-memory-utilization "${VLLM_GPU_MEM_UTIL:-0.95}" ${VLLM_ENFORCE_EAGER:+--enforce-eager} --enable-auto-tool-choice --tool-call-parser "${VLLM_TOOL_CALL_PARSER:-hermes}"' \
+        -c 'export PATH=/usr/local/bin:$PATH; python3 -m pip install -q --no-index --find-links /root/.cache/huggingface/ray_aarch64_env/wheels ray 2>&1 | grep -v "^$\|already\|Requirement" || python3 -m pip install -q ray; ray start --head --node-ip-address="'"${HEAD_IP}"'" --port="'"${RAY_PORT}"'" --num-gpus="'"${_gpus_per_node}"'" --object-store-memory=1073741824 --include-dashboard=false; echo "[vllm-head] Ray head started; waiting for '"${_want_gpus}"' GPUs..."; i=0; while [ $i -lt 120 ]; do g=$(ray status 2>/dev/null | grep -oE "[0-9.]+/[0-9.]+ GPU" | head -1 | sed "s@.*/@@; s@ GPU@@; s@[.].*@@"); [ "${g:-0}" = "'"${_want_gpus}"'" ] && break; sleep 5; i=$((i+1)); done; echo "[vllm-head] GPUs=${g:-0}; launching vLLM"; exec vllm serve "$VLLM_MODEL_REF" $VLLM_EXTRA_ARGS ${VLLM_SPECULATIVE_CONFIG:+--speculative-config "$VLLM_SPECULATIVE_CONFIG"} --served-model-name "$VLLM_SERVED_MODEL_NAME" --api-key "$VLLM_API_KEY" -tp "$VLLM_TP" -pp "$VLLM_PP" --distributed-executor-backend ray --host 0.0.0.0 --port 8000 --max-model-len "${VLLM_MAX_MODEL_LEN:-4096}" --gpu-memory-utilization "${VLLM_GPU_MEM_UTIL:-0.95}" ${VLLM_ENFORCE_EAGER:+--enforce-eager} --enable-auto-tool-choice --tool-call-parser "${VLLM_TOOL_CALL_PARSER:-hermes}" ${VLLM_REASONING_PARSER:+--reasoning-parser "$VLLM_REASONING_PARSER"}' \
         || { echo "[rivault] FATAL: failed to launch Ray head + vLLM container"; exit 1; }
     RAY_HEAD_PID=""
 
@@ -1178,8 +1514,15 @@ RAYEOF
     # itself fails (e.g. a bad `--num-gpus` value), GCS never binds and this
     # probe will exhaust the full window before FATAL — check the head
     # container's own logs for the `ray start` error in that case.
+    # For multi-node allocations with large models (e.g. Step 148B), the Ray
+    # worker registration itself takes longer, so extend to 1200s (600 x 2s).
+    _ray_max_attempts=300
+    _mn_node_count="${SLURM_JOB_NUM_NODES:-1}"
+    if [[ "${_mn_node_count}" -ge 2 ]]; then
+        _ray_max_attempts=600  # multi-node: up to 20 min for all workers to register
+    fi
     _ray_ready=0
-    for _ in $(seq 1 300); do
+    for _ in $(seq 1 "${_ray_max_attempts}"); do
         if (exec 3<>"/dev/tcp/${HEAD_IP}/${RAY_PORT}") 2>/dev/null; then
             exec 3>&- 3<&- 2>/dev/null || true
             _ray_ready=1
@@ -1188,7 +1531,7 @@ RAYEOF
         sleep 2
     done
     if [[ "${_ray_ready}" -ne 1 ]]; then
-        echo "[rivault] FATAL: Ray head did not become ready at ${RAY_ADDRESS}" >&2
+        echo "[rivault] FATAL: Ray head did not become ready at ${RAY_ADDRESS} (tried ${_ray_max_attempts}x2s)" >&2
         exit 1
     fi
 
@@ -1221,12 +1564,62 @@ RAYEOF
                 # `ray start --num-gpus` otherwise advertises a phantom GPU to
                 # the head even when the container has no device access, which
                 # passes the head GPU gate but crashes the vLLM worker later.
-                srun --nodes=1 --ntasks=1 --nodelist="${wnode}" \
-                    podman run --name rivault-ray-worker --replace --network host --shm-size=4g \
+                #
+                # DETACHED launch (-d) instead of a foreground `ray start
+                # --block` step. REASON (2026-07-25, jobs 2941-2961 + bare
+                # probe job 2962): something on this cluster signals SIGTERM to
+                # every *running srun step* of this user's jobs on a ~60s
+                # cadence (steps die at exact minute boundaries: "STEP ...
+                # CANCELLED", `scancel --signal=TERM`-style: batch shells and
+                # detached containers survive, only steps die). Confirmed NOT
+                # ours: a minimal non-UMRS sleeper job's step was killed the
+                # same way while its batch shell survived. A foreground worker
+                # step therefore can never live longer than ~60s — the raylet
+                # (container PID 1) got the TERM and Ray recorded the node
+                # dying with EXPECTED_TERMINATION "received SIGTERM" mid
+                # weight-load. Detaching moves the container under the node's
+                # user systemd manager (libpod-conmon-*.scope — outside the
+                # step cgroup), so it survives the step's death; we then watch
+                # it with short-lived polling steps that the step-killer cannot
+                # meaningfully disrupt (a killed poll is just retried).
+                srun --nodes=1 --ntasks=1 --nodelist="${wnode}" --overlap \
+                    podman run -d --name rivault-ray-worker --replace --network host --shm-size=4g \
+                        --security-opt seccomp=unconfined \
                         --entrypoint /bin/sh \
+                        -e "LD_LIBRARY_PATH=/usr/lib/aarch64-linux-gnu" \
+                        -e "TRITON_LIBCUDA_PATH=/usr/lib/aarch64-linux-gnu" \
                         "${_mn_vllm_args[@]}" \
                         "${VLLM_IMAGE}" \
                         -c "export PATH=/usr/local/bin:\$PATH; python3 -m pip install -q --no-index --find-links /root/.cache/huggingface/ray_aarch64_env/wheels ray 2>/dev/null || python3 -m pip install -q ray; python3 -c 'import pynvml; pynvml.nvmlInit(); assert pynvml.nvmlDeviceGetCount() > 0' && exec ray start --address='${RAY_ADDRESS}' --num-gpus='${_gpus_per_node}' --object-store-memory=1073741824 --block"
+                # Watch the detached container with short polling steps. Only
+                # relaunch when it has verifiably exited; transient poll
+                # failures (srun step killed by the cluster's step-killer, ssh
+                # blips) are tolerated up to 3 consecutive misses.
+                _wfails=0
+                while :; do
+                    sleep 20
+                    _wstate="$(srun --nodes=1 --ntasks=1 --nodelist="${wnode}" --overlap \
+                        podman inspect rivault-ray-worker --format '{{.State.Status}}' 2>/dev/null | tr -d '[:space:]')"
+                    if [[ "${_wstate}" == "running" ]]; then
+                        _wfails=0
+                        continue
+                    fi
+                    if [[ "${_wstate}" == "exited" || "${_wstate}" == "stopped" ]]; then
+                        break
+                    fi
+                    _wfails=$(( _wfails + 1 ))
+                    if [[ ${_wfails} -ge 3 ]]; then
+                        break
+                    fi
+                done
+                # POST-MORTEM before --replace destroys the evidence: the dying
+                # container's exit state, its last log lines, and the user
+                # journal (who sent the SIGTERM — conmon/systemd scope teardown
+                # shows up here). Needed because jobs 2941-2955 all lost the
+                # original worker logs to the relaunch (2026-07-25).
+                srun --nodes=1 --ntasks=1 --nodelist="${wnode}" --overlap bash -c \
+                    'podman inspect rivault-ray-worker --format "exit={{.State.ExitCode}} oom={{.State.OOMKilled}} err={{.State.Error}} started={{.State.StartedAt}} finished={{.State.FinishedAt}}" 2>&1; echo "--- last container log lines ---"; podman logs --tail 40 rivault-ray-worker 2>&1 | tail -40; echo "--- user journal tail ---"; journalctl --user -n 40 --no-pager 2>&1 | tail -40' \
+                    2>&1 | sed "s/^/[rivault][worker-postmortem:${wnode}] /" || true
                 echo "[rivault] Ray worker on ${wnode} exited (attempt ${_wattempt}/5); relaunching in 5s..." >&2
                 sleep 5
             done
@@ -1242,7 +1635,7 @@ RAYEOF
     # gate can never block the job indefinitely; if the count can't be
     # confirmed we warn and proceed (the co-located vLLM driver waits for the
     # GPUs itself and re-validates on ray.init).
-    _have_gpus="$(timeout 200 podman run --rm --network host --shm-size=4g --entrypoint /bin/sh \
+    _have_gpus="$(timeout 200 podman run --rm --network host --shm-size=4g --security-opt seccomp=unconfined --entrypoint /bin/sh \
         "${VLLM_IMAGE}" -c "export PATH=/usr/local/bin:\$PATH; python3 -m pip install -q --no-index --find-links /root/.cache/huggingface/ray_aarch64_env/wheels ray 2>/dev/null || python3 -m pip install -q ray; i=0; while [ \$i -lt 30 ]; do g=\$(ray status --address='${RAY_ADDRESS}' 2>/dev/null | grep -oE '[0-9.]+/[0-9.]+ GPU' | head -1 | sed 's@.*/@@; s@ GPU@@; s@[.].*@@'); if [ \"\${g:-0}\" = \"${_want_gpus}\" ]; then echo \$g; break; fi; sleep 5; i=\$((i+1)); done; echo \${g:-0}" \
         2>/dev/null | tail -1)"
     _have_gpus="${_have_gpus:-0}"
@@ -1290,7 +1683,7 @@ if ! run_litellm_db_sql_migrations; then
     exit 1
 fi
 
-if ! podman-compose --project-name "rivault" --in-pod false \
+if ! podman-compose --project-name "${RIVAULT_COMPOSE_PROJECT}" --in-pod false \
          --env-file "./env.${uuid}" \
          --file "./serve-model.yaml" ${GPUoverride[@]} \
          ${_profile_flags} \
@@ -1300,7 +1693,7 @@ if ! podman-compose --project-name "rivault" --in-pod false \
 	exit 1
 fi
 
-if ! podman-compose --project-name "exit" --in-pod false \
+if ! podman-compose --project-name "${RIVAULT_EXIT_PROJECT}" --in-pod false \
          --env-file "./env.${uuid}" \
          --file "./userdata-access.yaml" \
          --profile harness \
@@ -1374,16 +1767,16 @@ fi
 # Keep job alive while containers are running; exit on idle timeout (safety net).
 # Slurm cancellation or an explicit signal should now run the cleanup trap
 # above so the compose stack is torn down promptly.
-RIVAULT_JOB_TIMEOUT=${RIVAULT_JOB_TIMEOUT:-7200}   # default 2 h; override via sbatch --export
+RIVAULT_JOB_TIMEOUT=${RIVAULT_JOB_TIMEOUT:-0}     # 0 = infinite; override via sbatch --export
 INTERVAL=${RIVAULT_JOB_POLL_INTERVAL:-5}
 ELAPSED=0
-echo "[rivault] Stack is up. Monitoring containers (timeout=${RIVAULT_JOB_TIMEOUT}s)..."
-while [ "$ELAPSED" -lt "$RIVAULT_JOB_TIMEOUT" ]; do
+echo "[rivault] Stack is up. Monitoring containers (timeout=${RIVAULT_JOB_TIMEOUT}s, infinite=${RIVAULT_JOB_TIMEOUT==0})..."
+while [ "$RIVAULT_JOB_TIMEOUT" -eq 0 ] || [ "$ELAPSED" -lt "$RIVAULT_JOB_TIMEOUT" ]; do
     if [[ -n "${RIVAULT_STOP_REQUEST_FILE}" && -f "${RIVAULT_STOP_REQUEST_FILE}" ]]; then
         echo "[rivault] Graceful stop requested via ${RIVAULT_STOP_REQUEST_FILE}. Exiting monitor loop."
         exit 0
     fi
-    RUNNING=$(podman ps -q --filter "network=genai-private-net" 2>/dev/null | wc -l)
+    RUNNING=$(podman ps -q --filter "network=${RIVAULT_NETWORK_NAME}" 2>/dev/null | wc -l)
     if [ "$RUNNING" -eq 0 ]; then
         echo "[rivault] All containers stopped. Exiting."
         break
@@ -1391,7 +1784,7 @@ while [ "$ELAPSED" -lt "$RIVAULT_JOB_TIMEOUT" ]; do
     sleep "$INTERVAL"
     ELAPSED=$(( ELAPSED + INTERVAL ))
 done
-if [ "$ELAPSED" -ge "$RIVAULT_JOB_TIMEOUT" ]; then
+if [ "$RIVAULT_JOB_TIMEOUT" -ne 0 ] && [ "$ELAPSED" -ge "$RIVAULT_JOB_TIMEOUT" ]; then
 	echo "[rivault] Timeout ${RIVAULT_JOB_TIMEOUT}s reached. Exiting."
 	exit 124
 fi

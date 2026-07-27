@@ -12,7 +12,7 @@ UMRS uses a **local-client / remote-server** split architecture.
 ```
 ┌──────────── LOCAL MACHINE (Mac) ─────────────┐    ┌────────── REMOTE (rccs-cloud) ──────────┐
 │                                               │    │                                         │
-│  umrs-client (Python CLI in local .venv)      │    │  server_umrs.py (native on login node)  │
+│  umrs (Python CLI in local .venv)      │    │  server_umrs.py (native on login node)  │
 │    ├─ ZMQ control → localhost:5555 ───────────┼──→ │    └─ ZMQ :5555 / :5556                │
 │    └─ S3 (boto3)  → localhost:9000 ───────────┼──→ │  podman: postgres :5432, minio :9000   │
 │                                               │    │  Slurm → compute nodes: BentoML, vLLM  │
@@ -25,7 +25,7 @@ UMRS uses a **local-client / remote-server** split architecture.
 ```
 
 **The client NEVER runs on rccs-cloud.** Demos are bash scripts executed
-on the local machine. They call `umrs-client` (installed locally) which
+on the local machine. They call `umrs` (installed locally) which
 talks to the remote server through SSH-tunnelled ports on `127.0.0.1`.
 
 ## NEVER Do This
@@ -39,7 +39,7 @@ talks to the remote server through SSH-tunnelled ports on `127.0.0.1`.
 
 - ✅ Run demos **locally**: `bash demos/01_health_check/run_demo.sh`
 - ✅ Run `demos/run_all.sh` **locally**: `bash demos/run_all.sh`
-- ✅ Use the **local** venv (`.venv/` at repo root) with `umrs-client` in PATH
+- ✅ Use the **local** venv (`.venv/` at repo root) with `umrs` in PATH
 - ✅ Ensure SSH tunnel is running in a separate terminal first
 
 ## How to Run Demos (Step by Step)
@@ -48,11 +48,11 @@ talks to the remote server through SSH-tunnelled ports on `127.0.0.1`.
 
 ```bash
 # From repo root
-source .venv/bin/activate            # local venv with umrs-client
-which umrs-client                    # must print a path in .venv
+source .venv/bin/activate            # local venv with umrs
+which umrs                    # must print a path in .venv
 
 # Verify connection profile
-umrs-client --output text profile show
+umrs --output text profile show
 # Should show: mode=ssh_tunnel, server_host=127.0.0.1, tunnel_mode=true
 ```
 
@@ -155,24 +155,24 @@ The SSH tunnel makes the remote services appear local.
 
 Profile management:
 ```bash
-umrs-client profile list             # show available profiles
-umrs-client profile use rccs-cloud   # select active profile
-umrs-client profile show             # show resolved connection params
-umrs-client profile import <file>    # import a new profile
+umrs profile list             # show available profiles
+umrs profile use rccs-cloud   # select active profile
+umrs profile show             # show resolved connection params
+umrs profile import <file>    # import a new profile
 ```
 
 ## How common.sh Works
 
 Every demo sources `demos/lib/common.sh`, which:
 
-1. Calls `umrs-client profile show` to auto-discover connection params
+1. Calls `umrs profile show` to auto-discover connection params
 2. Exports `UMRS_ZMQ_HOST`, `UMRS_ZMQ_PORT`, `UMRS_MINIO_HOST`, etc.
 3. Resolves the user config (`$CONF`)
-4. Builds the `$CLIENT` command string (e.g., `umrs-client --profile rccs-cloud -c ~/.config/umrs/users/user1.json`)
+4. Builds the `$CLIENT` command string (e.g., `umrs --profile rccs-cloud -c ~/.config/umrs/users/user1.json`)
 5. Provides helpers: `preflight()`, `wait_tasks()`, `banner()`, `log()`, `ok()`, `warn()`, `die()`
 
 `preflight()` verifies:
-- `umrs-client` is in PATH
+- `umrs` is in PATH
 - `$CLIENT ping` succeeds (proves ZMQ connectivity through tunnel)
 
 ## Data Flow for a Typical Demo
@@ -181,8 +181,8 @@ Example: SAM3 Segmentation (Demo 03)
 
 1. User runs `bash demos/03_sam3_segmentation/run_demo.sh` **locally**
 2. Script calls `$CLIENT upload_dir ./test_data_full/ user1-sam3`
-3. `umrs-client` uploads images via boto3 → S3 (MinIO) through tunnel at `localhost:9000`
-4. `umrs-client` sends ZMQ control message to server at `localhost:5555`
+3. `umrs` uploads images via boto3 → S3 (MinIO) through tunnel at `localhost:9000`
+4. `umrs` sends ZMQ control message to server at `localhost:5555`
 5. Server (on rccs-cloud) detects new objects, dispatches SAM3 via `sbatch` to GPU node
 6. Compute node runs BentoML model, writes results back to MinIO
 7. Script calls `$CLIENT download_results user1-sam3 ./results/`
@@ -192,7 +192,7 @@ Example: SAM3 Segmentation (Demo 03)
 
 | Component | Where | How |
 |-----------|-------|-----|
-| `umrs-client` | Local Mac | `pip install -e src/` in local `.venv` |
+| `umrs` | Local Mac | `pip install -e src/` in local `.venv` |
 | `demos/*.sh` | Local Mac | `bash demos/XX/run_demo.sh` |
 | `demos/lib/common.sh` | Local Mac | Sourced by every demo |
 | SSH tunnel | Local Mac | `deploy/rccs-cloud/ssh_tunnel.sh` in bg terminal |
@@ -239,7 +239,7 @@ part of the active public or private demo suites.
 
 | Venv | Location | Purpose | Contains |
 |------|----------|---------|----------|
-| **Local** | `.venv/` (repo root) | Client operations, demos | `umrs-client`, lightweight deps |
+| **Local** | `.venv/` (repo root) | Client operations, demos | `umrs`, lightweight deps |
 | **Remote** | `deploy/rccs-cloud/.venv/` | Server on rccs-cloud | `server_umrs.py`, torch, transformers, etc. |
 
 When running demos, always use the **local** venv. The remote venv is only
@@ -260,14 +260,14 @@ cd deploy/rccs-cloud
 ./setup_client.sh                # copies configs to ~/.config/umrs/, installs umrs package
 
 # 3. Verify
-umrs-client --output text profile show
+umrs --output text profile show
 # Should show: mode=ssh_tunnel, tunnel_mode=true
 
 # 4. Start tunnel (separate terminal)
 ./ssh_tunnel.sh
 
 # 5. Test connectivity
-umrs-client ping
+umrs ping
 # Should print: server_ready=true
 
 # 6. Run first demo

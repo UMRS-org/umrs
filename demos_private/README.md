@@ -16,13 +16,34 @@ These demos follow the same conventions as the public demos in `demos/`:
 
 ```bash
 cd demos_private/
-# Follow the step-by-step commands in each demo directory
+# See the step-by-step commands in each demo directory's README
 
 cd demos_private/04_hmae_inference
-# Follow the step-by-step commands in README.md
+# See the numbered steps in that README.md
 ```
 
 They source `demos/lib/common.sh` so the UMRS server must be reachable.
+
+### RCCS profile (umrs-front shared deployment)
+
+`lib/common.sh` now auto-selects the deployed RCCS connection profile
+(`rccs` or `rccs-cloud`) when `UMRS_PROFILE`/`UMRS_ZMQ_HOST` are unset and the
+profile exists locally. To target it explicitly:
+
+```bash
+export UMRS_PROFILE=rccs-cloud     # or: rccs, depending on your client
+umrs ping                   # expect: ✓ Server ready | profile=rccs-cloud
+```
+
+To run against a different deployment, set `UMRS_PROFILE` (or
+`UMRS_ZMQ_HOST`/`UMRS_ZMQ_PORT`) before sourcing the demo commands.
+
+### R4-first wrappers
+
+The `ai4s-platform` superproject ships r4 CLI wrappers for this suite under
+`demos_private/` (repo root), including a capstone knowledge/RAG/MCP
+enhanced-inference demo. Prefer those when working through the Gateway.
+
 
 The current private demo suite intentionally omits the Jens direct stack. The
 Jens-specific direct demos are isolated under `demos_jens/`, and the supported

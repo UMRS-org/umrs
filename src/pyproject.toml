@@ -66,7 +66,6 @@ server = [
     "langchain-openai",
     "bentoml>=1.3.0",
     "opencv-python-headless",
-    "posix_ipc",
     "sysv_ipc",
     "pypdf>=4.0",
     "python-pptx>=1.0",
@@ -84,7 +83,8 @@ api-test = [
 ]
 
 [project.scripts]
-umrs-client = "umrs.client.cli:main"
+umrs = "umrs.client.cli:main"
+umrs-client = "umrs.client.cli:main"  # backwards-compatible alias
 umrs-server = "umrs.server.main:main"
 
 [tool.setuptools.packages.find]

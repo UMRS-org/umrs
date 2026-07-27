@@ -13,7 +13,7 @@ sequenceDiagram
     participant BM as BentoML (service.py)
     participant SAM as SAM3 Model
 
-    U->>T: umrs-client upload_dir
+    U->>T: umrs data dir-upload
     T->>UMRS: ZMQ PROCESS_OBJECTS
     UMRS->>S3: Put image to jens-sam3-direct/<RUN_ID>/
     UMRS->>S3: Generate presigned URL
@@ -28,7 +28,7 @@ sequenceDiagram
     SAM-->>BM: masks, boxes, scores
     BM->>S3: PUT result (pickle) via presigned URL
     BM-->>UMRS: {"status": "success"}
-    U->>UMRS: umrs-client download_results
+    U->>UMRS: umrs data download
     UMRS->>S3: Get result artifacts
     S3-->>U: pickle files (masks, boxes, scores)
 ```
@@ -92,8 +92,8 @@ The `model_type` URI `rivault://bentoml://http://localhost:{LOCAL_PORT}/vision/i
 The experience is registered with the server via:
 
 ```bash
-# README.md (step-by-step commands) line 89 — calls umrs-client config add-experience
-umrs-client config add-experience results/<RUN_ID>/experience.json --update
+# README.md (step-by-step commands) line 89 — calls umrs config add-experience
+umrs config add-experience results/<RUN_ID>/experience.json --update
 ```
 
 ### 2. Image Staging & Upload
@@ -110,10 +110,10 @@ find "${IMAGE_DIR}" -maxdepth 1 -type f \
 Upload to S3:
 ```bash
 # README.md (step-by-step commands) line 93
-umrs-client upload_dir "${UPLOAD_DIR}" "jens-sam3-direct/${RUN_ID}"
+umrs data dir-upload "${UPLOAD_DIR}" "jens-sam3-direct/${RUN_ID}"
 ```
 
-`upload_dir` in `umrs-client` calls `_action_s3_transfer()` which:
+`upload_dir` in `umrs` calls `_action_s3_transfer()` which:
 1. Uploads each file as bytes to MinIO bucket `jens-sam3-direct/<RUN_ID>/`
 2. Sends a ZMQ `PROCESS_OBJECTS` message to the UMRS server
 3. UMRS server creates presigned URLs and dispatches vision inference
@@ -304,7 +304,7 @@ download_results_bounded "jens-sam3-direct/${RUN_ID}" "${RESULTS_DIR}/artifacts"
 
 `download_results_bounded` is a wrapper from `demos/lib/common.sh` that calls:
 ```bash
-umrs-client download_results "jens-sam3-direct/${RUN_ID}" "${RESULTS_DIR}/artifacts"
+umrs data download "jens-sam3-direct/${RUN_ID}" "${RESULTS_DIR}/artifacts"
 ```
 with a timeout of `RESULT_DOWNLOAD_TIMEOUT` seconds.
 

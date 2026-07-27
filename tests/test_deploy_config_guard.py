@@ -1,11 +1,10 @@
 """Static guards for production deployment configuration."""
 
-from pathlib import Path
 import re
-
+from pathlib import Path
 
 UMRS_ROOT = Path(__file__).resolve().parents[1]
-RCCS_CLOUD_SITE_CONFIG = UMRS_ROOT / "deploy" / "rccs-cloud" / "site.yaml"
+RCCS_CLOUD_SITE_CONFIG = UMRS_ROOT / "deploy" / "rccs" / "site.yaml"
 
 
 FORBIDDEN_RCCS_SITE_PATTERNS = {

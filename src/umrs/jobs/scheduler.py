@@ -316,17 +316,23 @@ class SimpleBackendAdapter:
                 extra_kwargs["partition_override"] = job.spec["partition_override"]
             if job.spec.get("nodelist_hint"):
                 extra_kwargs["nodelist_hint"] = job.spec["nodelist_hint"]
+            if job.spec.get("slurm_reservation"):
+                extra_kwargs["slurm_reservation"] = job.spec["slurm_reservation"]
             if job.spec.get("node_count") and int(job.spec["node_count"]) > 1:
                 extra_kwargs["node_count"] = int(job.spec["node_count"])
             if job.spec.get("gpu_count"):
                 extra_kwargs["gpu_count"] = int(job.spec["gpu_count"])
+            extra_kwargs["ttl_seconds"] = job.ttl_seconds
 
             job_info = await asyncio.get_event_loop().run_in_executor(
                 None,
                 lambda: self._orchestrator.submit_job(
                     model_path=model_path,
                     project_id=project_id,
-                    env_vars=job.spec.get("env_vars", {}),
+                    env_vars={
+                        **job.spec.get("env_vars", {}),
+                        "UMRS_JOB_TTL_SECONDS": str(job.ttl_seconds or 0),
+                    },
                     **extra_kwargs,
                 ),
             )

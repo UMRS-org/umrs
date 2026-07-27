@@ -53,8 +53,8 @@ use a **different** name (`DEFAULT_FOO_OVERRIDE`).
 > **Why this rule exists — the config-shadowing break (2026-06):** a merge added
 > `DEFAULT_CURRENT_CONNECTION_PROFILE_FILE = None` and
 > `DEFAULT_CURRENT_S3_CONFIG_FILE = None` directly below the correct string
-> assignments in `src/umrs/shared/config.py`. Result: `umrs-client profile use`
-> died with `[Errno 21] Is a directory: '.'`, `umrs-client info` showed
+> assignments in `src/umrs/shared/config.py`. Result: `umrs profile use`
+> died with `[Errno 21] Is a directory: '.'`, `umrs info` showed
 > `profile: (none)`, and `r4 auth login` skipped ZMQ bootstrap (503). Nothing
 > failed at import time. See umrs-branch-separation.instructions.md.
 
@@ -142,7 +142,7 @@ if _reload_configure_file is None or _reload_buckets_cfg is None:
 
 If `set_reload_context()` is **never called** during server startup, the
 endpoint always returns `503`. This is a *silent* regression: the server starts
-fine, ZMQ works, but `umrs-client reload` fails with:
+fine, ZMQ works, but `umrs reload` fails with:
 
 ```
 ✗ reload rejected: HTTP 503: Service Unavailable
@@ -170,7 +170,7 @@ set_reload_context(
 > `set_reload_context()` was defined in `src/umrs/api/ops.py` but **never
 > called** from `src/server_umrs.py`. The function existed, the endpoint
 > existed, but the module-level `_reload_configure_file` and
-> `_reload_buckets_cfg` remained `None`. Result: every `umrs-client reload`
+> `_reload_buckets_cfg` remained `None`. Result: every `umrs reload`
 > returned HTTP 503 with body `"Reload context not initialised — server may
 > still be starting"`. Without reload, no `s3cfg` was generated, and all
 > `upload_dir` / `upload_file` calls failed. The server appeared healthy
@@ -179,7 +179,7 @@ set_reload_context(
 > **Fix:** Added `set_reload_context()` call in `server_umrs.py` after
 > `perform_initial_config()` and before `start_http_sidecar()`. Deployed via
 > `./bootstrap.sh --profile umrs-front --ask-become-pass`. Verified:
-> `umrs-client reload` now returns `✓ reload accepted`.
+> `umrs reload` now returns `✓ reload accepted`.
 
 ---
 
@@ -328,7 +328,7 @@ candidate. Verified state:
 
 The bug exists on `main` too: `set_reload_context()` is defined in
 `src/umrs/api/ops.py` but never called from `src/server_umrs.py`. Result: every
-`umrs-client reload` returns HTTP 503 with body
+`umrs reload` returns HTTP 503 with body
 `"Reload context not initialised — server may still be starting"`. Without
 reload, no `s3cfg` is generated, and all `upload_dir` / `upload_file` calls
 fail. The server appears healthy (ping succeeded, ZMQ worked) — masking the
@@ -337,7 +337,7 @@ regression.
 **Fix:** Added `set_reload_context()` call in `src/server_umrs.py` after
 `perform_initial_config()` and before `start_http_sidecar()`. Deployed via
 `./bootstrap.sh --profile umrs-front --ask-become-pass`. Verified:
-`umrs-client reload` now returns `✓ reload accepted`.
+`umrs reload` now returns `✓ reload accepted`.
 
 **Recommended PR to `main`:** "fix(ops): wire set_reload_context() at startup
 so POST /gw/ops/reload does not return 503". The change is safe for every

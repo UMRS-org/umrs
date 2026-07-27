@@ -438,7 +438,7 @@ def ops_timeline(
 
 
 # ---------------------------------------------------------------------------
-# Lightweight ping (no admin required) — used by umrs-client over HTTP
+# Lightweight ping (no admin required) — used by umrs over HTTP
 # ---------------------------------------------------------------------------
 
 
@@ -456,7 +456,7 @@ class OpsPingResponse(BaseModel):
 def ops_ping() -> dict[str, Any]:
     """Return server readiness without requiring admin privileges.
 
-    Intended for ``umrs-client ping --gateway-url`` to verify connectivity
+    Intended for ``umrs ping --gateway-url`` to verify connectivity
     via the HTTP Gateway when ZMQ is not directly reachable.
 
     NOTE: This endpoint is unauthenticated — do not expose internal state

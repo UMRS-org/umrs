@@ -318,6 +318,7 @@ def test_factory_dispatches_to_podman(monkeypatch):
     monkeypatch.setenv("UMRS_STEP_EXECUTOR", "podman")
     monkeypatch.setenv("UMRS_STEP_IMAGE", "example.com/umrs-step:tag")
     monkeypatch.delenv("UMRS_STEP_PODMAN_EXTRA_ARGS", raising=False)
+    monkeypatch.delenv("UMRS_STEP_GPU", raising=False)
     executor = build_step_executor()
     assert isinstance(executor, PodmanExecutor)
     assert executor.image == "example.com/umrs-step:tag"
