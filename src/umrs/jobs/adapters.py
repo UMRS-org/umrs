@@ -655,6 +655,10 @@ class EndpointProvisionBackend(OrchestratorBackend):
                 "deployment_spec": deployment_spec.to_dict(),
                 "preflight_passed": result.passed,
                 "certification": certification,
+                # Surfaced to Gateway (/gw/llm/v1/models, /gw/endpoints) so
+                # clients (VS Code Copilot model picker) size their context
+                # window correctly instead of falling back to a ~32k default.
+                "max_model_len": deployment_spec.max_model_len,
             }
             if idle_ttl_sec is not None:
                 with contextlib.suppress(TypeError, ValueError):

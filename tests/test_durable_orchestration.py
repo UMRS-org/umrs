@@ -700,6 +700,152 @@ class TestAdapters:
         assert env["LITELLM_PORT"] == "11434"
         assert env["MODEL_NAME"] == "test-model"
 
+    def test_endpoint_provision_backend_registers_max_model_len(self):
+        """Registered endpoint metadata must carry max_model_len.
+
+        Regression test: the durable-job path (this adapter) built
+        endpoint_metadata without a max_model_len key, unlike the legacy
+        service.py OrchestrationService.provision() path. Gateway's
+        /gw/llm/v1/models and /gw/endpoints routes read this field to tell
+        clients (e.g. the VS Code Copilot model picker) the real context
+        window; without it, clients fall back to a ~32k default even
+        though vLLM is actually serving the full max_model_len (e.g.
+        262144 on bdrt).
+        """
+        from umrs.jobs import (
+            Job,
+            JobAttempt,
+            JobType,
+            JobStatus,
+            AttemptStatus,
+            compute_idempotency_key,
+        )
+        from umrs.jobs.adapters import EndpointProvisionBackend
+        from umrs.orchestrator.deployment_spec import DeploymentSpec
+        from umrs.orchestrator.preflight import PreflightResult
+
+        fake_spec = DeploymentSpec(
+            alias="test-model",
+            huggingface_id="test-model",
+            model_family="qwen3_5_moe",
+            served_names=("test-model",),
+            storage_ref="/models/test",
+            tp=1,
+            pp=1,
+            ep=False,
+            parallel_strategy="tp_pp",
+            gpus_per_node=1,
+            node_count=1,
+            tool_call_parser="qwen3_xml",
+            reasoning_parser="qwen3",
+            kv_cache_dtype="fp8",
+            enforce_eager=True,
+            flashinfer_moe_fp16=True,
+            chat_template_format=None,
+            mm_encoder_tp_mode=None,
+            trust_remote_code=True,
+            enable_auto_tool_choice=True,
+            enable_prefix_caching=True,
+            max_model_len=262144,
+            max_num_seqs=4,
+            max_num_batched_tokens=8192,
+            gpu_memory_utilization=0.78,
+            partition="test-gpu",
+            slurm_account=None,
+            container_image="/images/test.sif",
+            slurm_time_limit="96:00:00",
+            slurm_cpus=8,
+            slurm_memory="",
+            readiness_probe="models",
+            readiness_probe_model="test-model",
+            readiness_path=None,
+            env_overrides={},
+            ttl_sec=0,
+            tier="user",
+            registry_model_id="model-123",
+        )
+
+        mock_orchestrator = AsyncMock()
+        mock_orchestrator.backend_type = "slurm"
+        mock_orchestrator.submit_job = AsyncMock(
+            return_value=MagicMock(
+                job_id="slurm-262144",
+                status=MagicMock(value="pending"),
+                endpoint=MagicMock(node="dgx-spark-0"),
+            )
+        )
+        mock_registry = MagicMock()
+        mock_port_manager = MagicMock(allocate=MagicMock(return_value=11434))
+
+        backend = EndpointProvisionBackend(
+            orchestrator=mock_orchestrator,
+            registry=mock_registry,
+            port_manager=mock_port_manager,
+        )
+
+        spec = {
+            "model": "test-model",
+            "model_path": "/models/test",
+            "gpu_count": 1,
+            "max_model_len": 262144,
+            "ttl_sec": 0,
+        }
+        idempotency_key = compute_idempotency_key(
+            project_id="proj-1",
+            user_id="user-1",
+            job_type=JobType.ENDPOINT_PROVISION,
+            spec=spec,
+        )
+        job = Job(
+            job_id="job-262144",
+            project_id="proj-1",
+            user_id="user-1",
+            job_type=JobType.ENDPOINT_PROVISION,
+            status=JobStatus.RUNNING,
+            spec=spec,
+            idempotency_key=idempotency_key,
+            priority=0,
+            desired_max_attempts=3,
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        attempt = JobAttempt(
+            attempt_id="att-262144",
+            job_id="job-262144",
+            attempt_no=1,
+            backend="slurm",
+            status=AttemptStatus.CREATED,
+            umrs_instance_id="umrs-1",
+            created_at=datetime.utcnow(),
+        )
+
+        fake_site = MagicMock()
+        fake_site.scheduler.partition = "test-gpu"
+        fake_site.partition_profiles = {}
+
+        with (
+            patch.object(backend, "_determine_target_host", return_value="dgx-spark-0"),
+            patch("umrs.jobs.adapters._resolve_model_entry", return_value=MagicMock()),
+            patch(
+                "umrs.jobs.adapters._check_active_certification",
+                return_value={"cert_id": "cert-1", "smoke_test_passed": True},
+            ),
+            patch(
+                "umrs.orchestrator.site_config.load_site_config",
+                return_value=fake_site,
+            ),
+            patch.object(DeploymentSpec, "from_registry", return_value=fake_spec),
+            patch(
+                "umrs.orchestrator.preflight.PreflightValidator.run_all",
+                new=AsyncMock(return_value=PreflightResult(passed=True, checks=[])),
+            ),
+        ):
+            asyncio.run(backend.submit_job(job, attempt))
+
+        mock_registry.register.assert_called_once()
+        registered_metadata = mock_registry.register.call_args.kwargs["metadata"]
+        assert registered_metadata["max_model_len"] == 262144
+
     @pytest.mark.skip(reason="Requires model registry (Postgres or catalog). Run with mocked store." )
     def test_endpoint_provision_backend_translates_mounts(self):
         """Durable endpoint jobs should translate mount intent to launch env."""
