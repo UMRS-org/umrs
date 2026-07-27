@@ -176,6 +176,23 @@ endpoints:
       # two nodes instead of deriving PP=2 (the DFlash draft is not SupportsPP).
       VLLM_TP: "2"
       VLLM_TENSOR_PARALLEL_SIZE: "2"
+      # Pin NCCL to the direct Spark-to-Spark QSFP fabric (10.200.0.4/30:
+      # spark-edge-0=.5, spark-edge-1=.6). REQUIRED for cross-node TP2.
+      # ROOT CAUSE (job 3033, 2026-07-28): with NCCL_SOCKET_IFNAME unset, NCCL
+      # auto-enumerates every interface on the edge nodes and picks
+      # `enP2p1s0f1np1`, which carries ONLY an IPv6 link-local address
+      # (fe80::.../64) and no IPv4 and no route. ncclCommInitRank then dies with
+      #   socketStartConnect: connect to fe80::b9e0:40b:9006:4402%enP2p1s0f1np1
+      #   failed : Network is unreachable
+      #   -> RuntimeError: NCCL error: unhandled system error
+      # which fails EngineCore init and exits the head vLLM container. Pinning
+      # the single routable fabric iface also excludes wifi (wlP9s9), docker0
+      # and the 1G mgmt NIC (enP7s7) from the candidate set, so the TP2
+      # all-reduce rides the 200G direct link. serve-model.slurm forwards
+      # NCCL_SOCKET_IFNAME into the shared _mn_vllm_args, so this reaches BOTH
+      # the head and the worker container. Same iface the native GLM path
+      # already pins via VLLM_FABRIC_IFACE (serve-model.slurm:1095).
+      NCCL_SOCKET_IFNAME: "enp1s0f1np1"
       # Disable Ray's memory monitor (recipe requirement). On GB10 unified
       # memory, Ray counts CPU+GPU usage system-wide; loading the ~56.6 GiB/rank
       # FP8 checkpoint crosses the default 95% threshold and Ray SIGTERMs the
