@@ -949,6 +949,12 @@ cleanup_stack() {
         kill "${NATIVE_LLM_PID}" 2>/dev/null || true
     fi
     if [[ "${RIVAULT_NATIVE_LLM_RUNNER:-}" == "glm52-vllm-moet" && ${#RAY_NODES[@]} -gt 0 ]]; then
+        # The worker raylet lives in the user systemd manager, outside every
+        # step cgroup, so `ray stop` alone would leave the unit behind.
+        if [[ -n "${GLM_RAY_UNIT:-}" && ${#RAY_NODES[@]} -gt 1 ]]; then
+            srun --nodes=1 --ntasks=1 --nodelist="${RAY_NODES[1]}" --overlap \
+                systemctl --user stop "${GLM_RAY_UNIT}.service" >/dev/null 2>&1 || true
+        fi
         for wnode in "${RAY_NODES[@]}"; do
             srun --nodes=1 --ntasks=1 --nodelist="${wnode}" --overlap \
                 "${VLLM_MOET_VENV}/bin/ray" stop --force >/dev/null 2>&1 || true
@@ -1147,17 +1153,73 @@ start_native_glm52() {
     }
 
     ray_common="RAY_memory_monitor_refresh_ms=0 RAY_local_fs_capacity_threshold=1 NCCL_IB_DISABLE=1 NCCL_SOCKET_IFNAME=${fabric_if} GLOO_SOCKET_IFNAME=${fabric_if} NCCL_GRAPH_MIXING_SUPPORT=1 VLLM_NCCL_SO_PATH=${nccl_so} MALLOC_MMAP_THRESHOLD_=65536"
+    # Global (not local): the exit trap stops this unit from another function.
+    GLM_RAY_UNIT="rivault-ray-worker-${SLURM_JOB_ID:-0}"
     echo "[rivault] Native GLM fabric: ${RAY_NODES[0]}=${head_ip}, ${RAY_NODES[1]}=${worker_ip}"
 
     for wnode in "${RAY_NODES[@]}"; do
         srun --nodes=1 --ntasks=1 --nodelist="${wnode}" --overlap \
             "${venv}/bin/ray" stop --force >/dev/null 2>&1 || true
     done
-
-    srun --nodes=1 --ntasks=1 --nodelist="${RAY_NODES[0]}" --overlap \
-        bash -lc "env ${ray_common} VLLM_HOST_IP=${head_ip} ${venv}/bin/ray start --head --node-ip-address=${head_ip} --port=6379 --num-gpus=1 --object-store-memory=2000000000 --include-dashboard=false" || return 1
     srun --nodes=1 --ntasks=1 --nodelist="${RAY_NODES[1]}" --overlap \
-        bash -lc "env ${ray_common} VLLM_HOST_IP=${worker_ip} ${venv}/bin/ray start --address=${head_ip}:6379 --node-ip-address=${worker_ip} --num-gpus=1 --object-store-memory=2000000000" || return 1
+        systemctl --user stop "${GLM_RAY_UNIT}.service" >/dev/null 2>&1 || true
+
+    # ── Ray head: started by the BATCH STEP itself, never via `srun` ─────────
+    # ROOT CAUSE (job 3043, 2026-07-28): the head used to be launched as
+    # `srun ... ray start --head`. `ray start` daemonizes and returns, so that
+    # step COMPLETES immediately — and slurmstepd then tears down the step's
+    # cgroup, taking the freshly daemonized GCS with it. The worker, starting
+    # seconds later, hit "Failed to connect to GCS at 10.200.0.1:6379 within 5
+    # seconds" and start_native_glm52 returned 1.
+    # Slurm runs the batch script on the first node of the allocation, which is
+    # exactly RAY_NODES[0], so the head can simply run here: the batch shell
+    # lives for the whole job, and (per the container path's note below) batch
+    # shells are also immune to this cluster's ~60 s srun-step killer.
+    if [[ "$(hostname -s)" != "${RAY_NODES[0]}" ]]; then
+        echo "[rivault] FATAL: batch step on $(hostname -s), expected head node ${RAY_NODES[0]}" >&2
+        return 1
+    fi
+    env ${ray_common} VLLM_HOST_IP="${head_ip}" \
+        "${venv}/bin/ray" start --head --node-ip-address="${head_ip}" --port=6379 \
+        --num-gpus=1 --object-store-memory=2000000000 --include-dashboard=false || return 1
+
+    # ── Ray worker: escape the step cgroup via the user systemd manager ──────
+    # The worker cannot run in the batch step (wrong node) and cannot survive a
+    # foreground `srun` step: this cluster SIGTERMs every running srun step of
+    # this user's jobs on a ~60 s cadence (see the detached-container note in
+    # the multi-node container path). The container path escapes by detaching
+    # under libpod-conmon-*.scope; the native path has no container, so use the
+    # same escape hatch directly — `systemd-run --user` starts the raylet under
+    # the node's user systemd manager, outside the step cgroup. `--block` keeps
+    # the unit alive as the raylet's supervisor. The srun step that calls
+    # systemd-run returns immediately, so it is never around long enough to be
+    # killed. Validated on dgx-spark-[0-1] (probe job 3044): both nodes stayed
+    # registered with 2.0/2.0 GPU for 4 min, worker unit still `active`.
+    local _setenv_flags=()
+    for _kv in ${ray_common}; do _setenv_flags+=( "--setenv=${_kv}" ); done
+    _setenv_flags+=( "--setenv=VLLM_HOST_IP=${worker_ip}" )
+    srun --nodes=1 --ntasks=1 --nodelist="${RAY_NODES[1]}" --overlap \
+        systemd-run --user --unit="${GLM_RAY_UNIT}" --collect "${_setenv_flags[@]}" \
+        "${venv}/bin/ray" start --address="${head_ip}:6379" \
+        --node-ip-address="${worker_ip}" --num-gpus=1 \
+        --object-store-memory=2000000000 --block || return 1
+
+    # Both ranks must be registered before `vllm serve` starts placing workers,
+    # otherwise vLLM waits on GPUs that have not joined the cluster yet.
+    local _ray_deadline=$(( SECONDS + ${VLLM_RAY_CLUSTER_TIMEOUT:-300} ))
+    local _ray_gpus=""
+    while (( SECONDS < _ray_deadline )); do
+        _ray_gpus="$(env RAY_ADDRESS="${head_ip}:6379" "${venv}/bin/ray" status 2>/dev/null \
+            | grep -oE '[0-9]+\.?[0-9]*/2\.0 GPU' | head -1)"
+        [[ -n "${_ray_gpus}" ]] && break
+        sleep 5
+    done
+    if [[ -z "${_ray_gpus}" ]]; then
+        echo "[rivault] FATAL: Ray cluster did not reach 2 GPUs within ${VLLM_RAY_CLUSTER_TIMEOUT:-300}s" >&2
+        env RAY_ADDRESS="${head_ip}:6379" "${venv}/bin/ray" status 2>&1 | head -20 >&2
+        return 1
+    fi
+    echo "[rivault] Ray cluster ready: ${_ray_gpus}"
 
     RAY_ADDRESS="${head_ip}:6379"
     HEAD_IP="${head_ip}"
