@@ -245,3 +245,45 @@ partition_profiles:
     vllm_docker_tag: ""
     gpus: 1
     needs_netavark_switch: true
+
+# ─────────────────────────────────────────────────────────────
+# Deploy Runtime — custom vendor-supplied container images
+#
+# These profiles use NVIDIA's official vLLM builds optimized
+# for DGX-Spark / Edge Expert GB10 (Blackwell).  They override
+# the standard vLLM image and activate the multinode launcher.
+#
+# Recipes:
+#   Laguna S 2.1 FP8:  https://howtospark.com/recipes/laguna-s-2-1-fp8-dual-spark-tp2
+#   GLM-5.2:           https://howtospark.com/recipes/glm-5-2-dual-spark-tp2
+# ─────────────────────────────────────────────────────────────
+deploy_runtime:
+  # ── Laguna S 2.1 FP8 (dual Spark TP=2) ─────────────────────────────────
+  # Image reference: replace with the actual nvcr.io/... image from the recipe.
+  lags-fp8-tp2:
+    type: custom-image
+    image: "docker.io/rapidsai/cuda130-vllm-dev:laguna-s2-1-fp8"  # ← UPDATE with recipe image
+    startup_command: ""            # empty → default vLLM serve arguments
+    node_count: 2                  # dual-node tensor parallel
+    multinode_script: "serve-model-multinode.slurm"  # path relative to deploy/bdrt/
+    extra_env:
+      VLLM_DTYPE: fp8
+      VLLM_KV_CACHE_dtype: fp8
+
+  # ── GLM-5.2 (dual Spark TP=2, NVFP4 MoE) ──────────────────────────────
+  # Image reference: replace with the actual nvcr.io/... image from the recipe.
+  glm52-nvfp4-tp2:
+    type: custom-image
+    image: "docker.io/rapidsai/cuda130-vllm-dev:glm52-nvfp4"  # ← UPDATE with recipe image
+    node_count: 2
+    multinode_script: "serve-model-multinode.slurm"
+    extra_env:
+      VLLM_KV_CACHE_dtype: fp8_e4m3
+      VLLM_MOE_BACKEND: marlin
+      VLLM_ENABLE_TORCH_COMPILE: "false"  # Marlin NVFP4 often needs eager mode
+
+# ─────────────────────────────────────────────────────────────
+# Note: deploy_runtime can also be set per-partition via
+# partition_profiles.<name>.deploy_runtime_ref to reference
+# one of the named profiles above by key.
+# ─────────────────────────────────────────────────────────────

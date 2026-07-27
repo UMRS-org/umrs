@@ -109,9 +109,23 @@ class SlurmPodmanBackend(OrchestratorBackend):
 
     @property
     def slurm_script(self) -> str:
-        """Resolve the path to the site's serve-model.slurm."""
+        """Resolve the path to the site's serve-model.slurm (or multinode variant)."""
         if self._slurm_script:
             return self._slurm_script
+
+        # If deploy_runtime config explicitly sets a multinode script, use it.
+        dr = getattr(self.site, "deploy_runtime", None)
+        if dr is not None and self.is_multinode:
+            multinode = dr.get("multinode_script") if isinstance(dr, dict) else dr.multinode_script
+            if multinode:
+                repo_dir = self.site.runtime.repo_dir or ""
+                deploy_dir = os.path.join(repo_dir, "deploy", self.site.name)
+                candidate = os.path.join(deploy_dir, multinode)
+                if os.path.isfile(candidate):
+                    logger.info(
+                        "Using multinode launcher from deploy_runtime: %s", candidate
+                    )
+                    return candidate
 
         site = self.site
 
@@ -143,6 +157,16 @@ class SlurmPodmanBackend(OrchestratorBackend):
             "RIVAULT_SLURM_SCRIPT",
             get_resolved_umrs_subdir("serve-model.slurm"),
         )
+
+    @property
+    def is_multinode(self) -> bool:
+        """Return True when deploy_runtime requests multinode mode."""
+        dr = getattr(self.site, "deploy_runtime", None)
+        if dr is None:
+            return False
+        if isinstance(dr, dict):
+            return dr.get("type") == "custom-image" and dr.get("node_count", 1) > 1
+        return dr.is_custom() and dr.node_count > 1
 
     @property
     def backend_name(self) -> str:
@@ -224,6 +248,21 @@ class SlurmPodmanBackend(OrchestratorBackend):
             "min_gpu_memory_gb", None
         )  # resource hint from model catalog
         ttl_seconds = kwargs.pop("ttl_seconds", None)
+
+        # When deploy_runtime specifies a custom image with node_count,
+        # use it as the default (unless explicitly overridden).
+        if node_count is None:
+            dr = getattr(site, "deploy_runtime", None)
+            if dr is not None:
+                if isinstance(dr, dict):
+                    dr_node_count = dr.get("node_count", 1)
+                else:
+                    dr_node_count = dr.node_count
+                if dr_node_count > 1:
+                    node_count = dr_node_count
+                    logger.info(
+                        "Using deploy_runtime node_count=%d", node_count
+                    )
 
         if partition_override:
             allowed = self._partition_candidates(site.scheduler.partition)
