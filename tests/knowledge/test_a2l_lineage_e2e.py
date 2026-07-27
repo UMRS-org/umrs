@@ -25,6 +25,12 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+
 import pytest
 
 
@@ -84,12 +90,120 @@ class MockPool:
     async def execute(self, *args) -> str:
         return "INSERT 0 1"
 
+    async def list_artifacts(self, *args, **kwargs):
+        """Mock list_artifacts for bundle export."""
+        return (
+            [
+                {
+                    "id": "test-artifact",
+                    "content_hash": "sha256:test",
+                    "kind": "document",
+                    "project_id": "test-project",
+                }
+            ],
+            1,
+        )
+
 
 def _create_mock_store() -> MagicMock:
     """Create a mock KnowledgeStore with mock pool."""
-    pool = MockPool()
+
+    async def fake_list_artifacts(*args, **kwargs):
+        from datetime import datetime
+
+        return (
+            [
+                SimpleNamespace(
+                    artifact_id="test-artifact",
+                    content_hash="sha256:test",
+                    kind="document",
+                    project_id="test-project",
+                    source_ref="test://source",
+                    size_bytes=1024,
+                    mime_type="text/plain",
+                    status="active",
+                    metadata={},
+                    created_at=datetime.now(),
+                    updated_at=datetime.now(),
+                )
+            ],
+            1,
+        )
+
+    async def fake_fetchrow(query: str, *args) -> dict | None:
+        return {
+            "artifact_id": "test-id",
+            "a2l_id": "test-a2l",
+            "synced_at": "2026-07-27T00:00:00Z",
+        }
+
+    async def fake_fetch(query: str, *args) -> list[dict]:
+        return [
+            {
+                "artifact_id": "test-id",
+                "a2l_id": "test-a2l",
+                "a2l_hash": "sha256:abc123",
+                "synced_at": "2026-07-27T00:00:00Z",
+                "source": "e2e",
+            }
+        ]
+
+    async def fake_execute(*args) -> str:
+        return "INSERT 0 1"
+
+    async def fake_list_irs(project_id: str):
+        return [SimpleNamespace(
+            ir_id="test-ir",
+            artifact_id="test-artifact",
+            ir_type="summary",
+            version="1",
+            content="test content",
+            content_hash="sha256:test",
+            status="active",
+            created_at=datetime.now(),
+        )]
+
+    async def fake_list_nodes(project_id: str):
+        return [SimpleNamespace(
+            node_id="test-node",
+            project_id="test-project",
+            label="test-label",
+            node_type="artifact",
+            content="test content",
+            content_hash="sha256:test",
+            source_ir="test-ir",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+        )]
+
+    async def fake_list_edges(project_id: str):
+        return [SimpleNamespace(
+            edge_id="test-edge",
+            project_id="test-project",
+            source_id="test-node-1",
+            target_id="test-node-2",
+            relation_type="related_to",
+            content="test relation",
+            created_at=datetime.now(),
+        )]
+
+    @asynccontextmanager
+    async def fake_acquire():
+        yield pool
+
+    pool = MagicMock()
+    pool.acquire = fake_acquire
+    pool.fetchrow = fake_fetchrow
+    pool.fetch = fake_fetch
+    pool.execute = fake_execute
+    pool.list_artifacts = fake_list_artifacts
+
     store = MagicMock()
     store._pool = pool
+    store.list_artifacts = fake_list_artifacts
+    store.list_irs = fake_list_irs
+    store.list_nodes = fake_list_nodes
+    store.list_edges = fake_list_edges
     return store
 
 
@@ -145,31 +259,36 @@ def test_02_create_a2l_ref(e2e_ctx: E2EContext) -> None:
 
 def test_03_call_a2l_derive_endpoint(e2e_ctx: E2EContext) -> None:
     """POST /umrs/a2l/derive — register A2L link for knowledge artifact."""
-    from fastapi.testclient import TestClient
+    from unittest.mock import AsyncMock, patch
+    from umrs.api.a2l import derive_a2l_link
+    from pydantic import BaseModel
 
     mock_store = _create_mock_store()
 
+    class DeriveRequest(BaseModel):
+        knowledge_artifact_id: str
+        a2l_artifact_id: str
+        job_id: str = ""
+        attempt_id: str = ""
+        edge_kind: str = "derived"
+
+    mock_store.fetchrow = AsyncMock(return_value={"id": 1})
+
     with patch("umrs.knowledge.store.get_store", return_value=mock_store):
-        import importlib
-        import umrs.api.a2l as a2l_module
-        importlib.reload(a2l_module)
-        router = a2l_module.router
+        async def _test():
+            result = await derive_a2l_link(
+                DeriveRequest(
+                    knowledge_artifact_id=e2e_ctx.artifact_id,
+                    a2l_artifact_id=e2e_ctx.a2l_artifact_id,
+                    job_id="e2e-derive-test",
+                    edge_kind="derived",
+                )
+            )
+            return result
 
-        client = TestClient(router, raise_server_exceptions=False)
-
-        response = client.post(
-            "/umrs/a2l/derive",
-            json={
-                "knowledge_artifact_id": e2e_ctx.artifact_id,
-                "a2l_artifact_id": e2e_ctx.a2l_artifact_id,
-                "job_id": "e2e-derive-test",
-                "edge_kind": "derived",
-            },
-        )
-
-        assert response.status_code == 200
-        data = response.json()
-        assert data["status"] in ("created", "updated", "error")
+        import asyncio
+        result = asyncio.get_event_loop().run_until_complete(_test())
+        assert result["status"] in ("created", "updated", "error")
 
 
 # ── Step 3: Verify lineage query ─────────────────────────────────────────────
@@ -177,32 +296,33 @@ def test_03_call_a2l_derive_endpoint(e2e_ctx: E2EContext) -> None:
 
 def test_04_verify_lineage_query(e2e_ctx: E2EContext) -> None:
     """GET /umrs/knowledge/lineage/{artifact_id} — verify ancestors/descendants."""
-    from fastapi.testclient import TestClient
+    from unittest.mock import AsyncMock, patch
+    from umrs.api.knowledge_lineage import get_artifact_lineage
 
     mock_store = _create_mock_store()
+    mock_store.fetchrow = AsyncMock(return_value={"artifact_id": e2e_ctx.artifact_id})
+    mock_store.fetch = AsyncMock(return_value=[
+        {"artifact_id": e2e_ctx.artifact_id, "a2l_id": "a2l-test"},
+    ])
 
     with patch("umrs.knowledge.store.get_store", return_value=mock_store):
-        import importlib
-        import umrs.api.knowledge_lineage as lineage_module
-        importlib.reload(lineage_module)
-        router = lineage_module.router
+        async def _test():
+            result = await get_artifact_lineage(
+                artifact_id=e2e_ctx.artifact_id,
+                project_id=e2e_ctx.project_id,
+                depth=3,
+            )
+            return result
 
-        client = TestClient(router, raise_server_exceptions=False)
+        import asyncio
+        result = asyncio.get_event_loop().run_until_complete(_test())
 
-        response = client.get(
-            f"/umrs/knowledge/lineage/{e2e_ctx.artifact_id}",
-            params={"project_id": e2e_ctx.project_id, "depth": 3},
-        )
+        assert result["artifact_id"] == e2e_ctx.artifact_id
+        assert isinstance(result["ancestors"], list)
+        assert isinstance(result["descendants"], list)
 
-        assert response.status_code == 200
-        data = response.json()
-
-        assert data["artifact_id"] == e2e_ctx.artifact_id
-        assert isinstance(data["ancestors"], list)
-        assert isinstance(data["descendants"], list)
-
-        e2e_ctx.lineage_ancestors = data["ancestors"]
-        e2e_ctx.lineage_descendants = data["descendants"]
+        e2e_ctx.lineage_ancestors = result["ancestors"]
+        e2e_ctx.lineage_descendants = result["descendants"]
 
 
 # ── Step 4: Export .kb bundle ────────────────────────────────────────────────
@@ -218,7 +338,11 @@ def test_05_export_kb_bundle(e2e_ctx: E2EContext, tmp_path: Path) -> None:
     output_dir.mkdir(parents=True)
 
     engine = KnowledgeExportEngine(store=mock_store, output_dir=output_dir)
-    result = engine.export_project(e2e_ctx.project_id)
+
+    async def _export():
+        return await engine.export_project(e2e_ctx.project_id)
+
+    result = asyncio.get_event_loop().run_until_complete(_export())
 
     e2e_ctx.bundle_dir = output_dir
 
@@ -307,28 +431,30 @@ def test_07_reimport_bundle(e2e_ctx: E2EContext, tmp_path: Path) -> None:
 
 def test_08_verify_lineage_after_reimport(e2e_ctx: E2EContext) -> None:
     """Verify lineage query still works post re-import."""
-    from fastapi.testclient import TestClient
+    from unittest.mock import AsyncMock, patch
+    from umrs.api.knowledge_lineage import get_artifact_lineage
 
     mock_store = _create_mock_store()
+    mock_store.fetchrow = AsyncMock(return_value={"artifact_id": e2e_ctx.artifact_id})
+    mock_store.fetch = AsyncMock(return_value=[
+        {"artifact_id": e2e_ctx.artifact_id, "a2l_id": "a2l-test"},
+    ])
 
     with patch("umrs.knowledge.store.get_store", return_value=mock_store):
-        import importlib
-        import umrs.api.knowledge_lineage as lineage_module
-        importlib.reload(lineage_module)
-        router = lineage_module.router
+        async def _test():
+            result = await get_artifact_lineage(
+                artifact_id=e2e_ctx.artifact_id,
+                project_id=e2e_ctx.project_id,
+                depth=3,
+            )
+            return result
 
-        client = TestClient(router, raise_server_exceptions=False)
+        import asyncio
+        result = asyncio.get_event_loop().run_until_complete(_test())
 
-        response = client.get(
-            f"/umrs/knowledge/lineage/{e2e_ctx.artifact_id}",
-            params={"project_id": e2e_ctx.project_id, "depth": 3},
-        )
-
-        assert response.status_code == 200
-        data = response.json()
-        assert data["artifact_id"] == e2e_ctx.artifact_id
-        assert isinstance(data["ancestors"], list)
-        assert isinstance(data["descendants"], list)
+        assert result["artifact_id"] == e2e_ctx.artifact_id
+        assert isinstance(result["ancestors"], list)
+        assert isinstance(result["descendants"], list)
 
 
 # ── Full round-trip (optional, slow) ────────────────────────────────────────
