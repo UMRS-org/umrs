@@ -13,6 +13,12 @@ from pathlib import Path
 from typing import Any
 
 from umrs.client.control_api import UMRSControlAPI
+from umrs.client.download_results import (
+    classify_wait_reply,
+    format_wait_progress,
+    incomplete_error_payload,
+    parse_process_objects_readiness,
+)
 from umrs.client.control_commands import (
     MODEL_SCOPE_CHOICES,
     MODEL_TYPE_CHOICES,
@@ -6092,6 +6098,8 @@ def _action_s3_transfer(ctx):
     def download_results_fn(full_bucket_name, modality, subdir):
         effective_username = args.username
         verbose = args.verbose
+        wait_for_ready = getattr(args, "wait", True)
+        max_wait_sec = int(getattr(args, "timeout", 3600) or 3600)
         if not effective_username and isinstance(ctx.user, dict):
             effective_username = ctx.user.get("username")
         if not effective_username:
@@ -6116,53 +6124,100 @@ def _action_s3_transfer(ctx):
             }
             return False, response
 
-        done = False
-        print_only_new = False
-        objects_received = set()
-        timeout = 1
-        _wait_start = time.time()
-        while not done:
+        def _fetch_readiness():
             raw_response = ctx.control_mq.request_status(
                 effective_username, TaskCmd.PROCESS_OBJECTS
             )
             if raw_response is None:
-                break
-            parsed = _json.loads(raw_response)
+                return parse_process_objects_readiness(None, full_bucket_name)
+            try:
+                parsed = _json.loads(raw_response)
+            except (_json.JSONDecodeError, TypeError):
+                return parse_process_objects_readiness(None, full_bucket_name)
+            if not isinstance(parsed, dict):
+                return parse_process_objects_readiness(None, full_bucket_name)
+            return parse_process_objects_readiness(parsed, full_bucket_name)
 
-            message = parsed.get("message")
-            if message == "No status entries":
-                done = True
-            else:
-                data = parsed["summary"]["data"]
-                done = not any(
-                    entry["status"] not in ("Done", "Idle")
-                    and any(
-                        w["bucket"] == full_bucket_name
-                        or full_bucket_name == w["bucket"] + "-output"
-                        for w in entry["work"]
-                    )
-                    for entry in data
+        readiness = _fetch_readiness()
+        if not readiness.ready:
+            if not wait_for_ready:
+                return False, incomplete_error_payload(
+                    readiness,
+                    full_bucket_name=full_bucket_name,
+                    subdir=subdir,
+                    modality=modality,
+                    output_format=args.output,
                 )
-            if not done:
-                if verbose:
-                    elapsed = int(time.time() - _wait_start)
-                    print(
-                        f"Waiting for update... (elapsed: {elapsed // 60}m {elapsed % 60}s)"
+
+            poll_timeout = 1
+            wait_start = time.time()
+            print(format_wait_progress(readiness, elapsed_sec=0), flush=True)
+            while not readiness.ready:
+                elapsed = int(time.time() - wait_start)
+                if elapsed >= max_wait_sec:
+                    return False, incomplete_error_payload(
+                        readiness,
+                        full_bucket_name=full_bucket_name,
+                        subdir=subdir,
+                        modality=modality,
+                        output_format=args.output,
+                        elapsed_sec=elapsed,
+                        timed_out=True,
+                        max_wait_sec=max_wait_sec,
                     )
+
                 res = ctx.control_mq.wait_for_new_data(
-                    effective_username, full_bucket_name, timeout=timeout
+                    effective_username, full_bucket_name, timeout=poll_timeout
                 )
-                if res == "TIMEOUT":
-                    timeout = min(timeout * 2, 64)
-                elif res == "UPDATE":
-                    timeout = 1
+                kind = classify_wait_reply(res)
+                if kind == "timeout":
+                    poll_timeout = min(poll_timeout * 2, 64)
+                elif kind == "update":
+                    poll_timeout = 1
+                elif kind == "hard_error":
+                    response = {
+                        "status": "error",
+                        "message": (
+                            f"Cannot wait for results for bucket "
+                            f"'{full_bucket_name}': server returned '{res}'."
+                        ),
+                        "bucket": full_bucket_name,
+                        "subdir": subdir,
+                        "modality": modality,
+                        "server_reply": res,
+                        "output_format": args.output,
+                    }
+                    return False, response
                 else:
-                    if verbose:
-                        print(
-                            f"Error: receiving '{res}' from server while waiting to be notified for new data"
-                        )
+                    response = {
+                        "status": "error",
+                        "message": (
+                            f"Unexpected reply while waiting for results: '{res}'."
+                        ),
+                        "bucket": full_bucket_name,
+                        "subdir": subdir,
+                        "modality": modality,
+                        "server_reply": res,
+                        "output_format": args.output,
+                    }
+                    return False, response
+
+                readiness = _fetch_readiness()
+                if not readiness.ready:
+                    print(
+                        format_wait_progress(
+                            readiness,
+                            elapsed_sec=int(time.time() - wait_start),
+                        ),
+                        flush=True,
+                    )
+                elif verbose:
+                    print(readiness.message, flush=True)
+
+        print_only_new = False
+        objects_received = set()
         objects_list, _, checksums = list_s3_bucket(s3, full_bucket_name, prefix=subdir)
-        downloaded_files, _ = download_objects(
+        download_result = download_objects(
             s3,
             objects_list,
             checksums,
@@ -6171,8 +6226,39 @@ def _action_s3_transfer(ctx):
             force_overwrite=args.force_overwrite,
             print_only_new=print_only_new,
         )
+        if download_result is None:
+            response = {
+                "status": "error",
+                "message": (
+                    f"Local path {args.local_path} is not a directory. Nothing downloaded."
+                ),
+                "bucket": full_bucket_name,
+                "subdir": subdir,
+                "modality": modality,
+                "output_format": args.output,
+            }
+            return False, response
 
-        objects_received.update(downloaded_files)
+        downloaded_files, _ = download_result
+        objects_received.update(downloaded_files or [])
+
+        if not objects_list:
+            response = {
+                "status": "warning",
+                "message": (
+                    f"Task is complete but no objects found in output bucket "
+                    f"'{full_bucket_name}'"
+                    + (f" (prefix '{subdir}')" if subdir else "")
+                    + "."
+                ),
+                "bucket": full_bucket_name,
+                "local_path": args.local_path,
+                "subdir": subdir,
+                "modality": modality,
+                "output_format": args.output,
+                "objects_received": "[]",
+            }
+            return True, response
 
         response = {
             "status": "ok",
@@ -6257,10 +6343,16 @@ def _action_s3_transfer(ctx):
         elif args.action == "download_results":
             ok, response = download_results_fn(full_bucket_name, modality, subdir)
             print(api_json(**response))
+            ctx.control_mq.close()
+            data_mq.close()
+            return 0 if ok and response.get("status") != "error" else 1
     except Exception as e:
         print(api_json(status="error", message=str(e), output_format=args.output))
         if args.verbose:
             traceback.print_exc()
+        ctx.control_mq.close()
+        data_mq.close()
+        return 1
 
     ctx.control_mq.close()
     data_mq.close()
@@ -6631,6 +6723,33 @@ def main():
         action="store_true",
         default=False,
         help="Force overwriting existing local files even if checksums mismatch.",
+    )
+    wait_group = dr_p.add_mutually_exclusive_group()
+    wait_group.add_argument(
+        "--wait",
+        dest="wait",
+        action="store_true",
+        default=True,
+        help=(
+            "Block until PROCESS_OBJECTS work for this bucket is complete "
+            "before downloading (default)."
+        ),
+    )
+    wait_group.add_argument(
+        "--no-wait",
+        dest="wait",
+        action="store_false",
+        help=(
+            "Fail immediately with a warning if the task is still incomplete "
+            "or status is unknown."
+        ),
+    )
+    dr_p.add_argument(
+        "--timeout",
+        type=int,
+        default=3600,
+        metavar="SECONDS",
+        help="Max seconds to wait when --wait is set (default: 3600).",
     )
     dr_p.add_argument(
         "username",
