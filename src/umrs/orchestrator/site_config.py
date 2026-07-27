@@ -209,67 +209,6 @@ class DatabaseConfig:
 
 
 @dataclass
-class DeployRuntimeConfig:
-    """Per-deployment runtime overrides for vendor-supplied container images.
-
-    Use when a model requires a vLLM image that differs from the site default
-    (e.g. NVIDIA's custom vLLM builds for DGX Spark / Edge Expert GB10).
-
-    Fields
-    ------
-    type : str
-        ``"standard"`` (use site-configured image, the default) or
-        ``"custom-image"`` to activate the deployment-specific image.
-    image : str
-        Full OCI image reference (``registry/.../repo:tag``) for vLLM.
-        Required when *type* is ``"custom-image"``.
-    startup_command : str | None
-        Override the default ``vllm serve`` entrypoint.  When ``None``, the
-        wrapper applies the standard arguments from site-config.
-    extra_env : dict[str, str] | None
-        Additional environment variables injected before ``podman run``.
-    node_count : int
-        Number of Slurm nodes for this deployment.  Default is 1.  Set to 2
-        (or more) for multi-node tensor-parallel deployments.
-    multinode_script : str | None
-        Path to a Slurm multinode launcher script when *node_count* > 1.
-        When ``None`` the default ``serve-model.slurm`` wrapper is used.
-    """
-
-    type: str = "standard"  # standard | custom-image
-    image: str = ""  # Full OCI image reference (e.g. nvcr.io/.../vllm:tag)
-    startup_command: str | None = None
-    extra_env: dict[str, str] | None = None
-    node_count: int = 1  # Number of Slurm nodes (1 = standard)
-    multinode_script: str | None = None  # Override slurm script for multinode
-
-    def is_custom(self) -> bool:
-        """Return True when this config activates a custom image."""
-        return self.type == "custom-image" and bool(self.image)
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "type": self.type,
-            "image": self.image,
-            "startup_command": self.startup_command,
-            "extra_env": self.extra_env,
-            "node_count": self.node_count,
-            "multinode_script": self.multinode_script,
-        }
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "DeployRuntimeConfig":
-        return cls(
-            type=data.get("type", "standard"),
-            image=data.get("image", ""),
-            startup_command=data.get("startup_command"),
-            extra_env=data.get("extra_env"),
-            node_count=int(data.get("node_count", 1)),
-            multinode_script=data.get("multinode_script"),
-        )
-
-
-@dataclass
 class SiteConfig:
     """
     Top-level site configuration.
@@ -287,7 +226,6 @@ class SiteConfig:
     step_executor: StepExecutorConfig = field(default_factory=StepExecutorConfig)
     database: DatabaseConfig = field(default_factory=DatabaseConfig)
     partition_profiles: dict[str, PartitionProfile] = field(default_factory=dict)
-    deploy_runtime: DeployRuntimeConfig = field(default_factory=DeployRuntimeConfig)
     strict_secrets: bool = False  # Fail provisioning when required secrets missing
     extra: dict[str, Any] = field(default_factory=dict)
 
@@ -343,7 +281,6 @@ class SiteConfig:
             _network_env(self.network),
             _vllm_env(self.vllm),
             _step_executor_env(self.step_executor),
-            _deploy_runtime_env(self.deploy_runtime),
             _database_env(self.database),
         ):
             env.update(layer)
@@ -449,33 +386,6 @@ def _step_executor_env(cfg: StepExecutorConfig) -> dict[str, str]:
         env["UMRS_SLURM_TIME"] = cfg.time_limit
         if cfg.account:
             env["UMRS_SLURM_ACCOUNT"] = cfg.account
-    return env
-
-
-def _deploy_runtime_env(
-    deploy_runtime: DeployRuntimeConfig,
-) -> dict[str, str]:
-    """Export deploy-runtime settings as environment variables.
-
-    These env vars are consumed by the wrapper (serve-model.slurm) and the
-    SlurmPodmanBackend to switch image / launcher for custom-deployment types.
-    """
-    env: dict[str, str] = {}
-    if deploy_runtime.is_custom():
-        env["UMRS_DEPLOY_RUNTIME_TYPE"] = deploy_runtime.type
-        if deploy_runtime.image:
-            env["VLLM_DOCKER_IMAGE"] = deploy_runtime.image
-            env["UMRS_DEPLOY_RUNTIME_IMAGE"] = deploy_runtime.image
-        if deploy_runtime.startup_command:
-            env["UMRS_DEPLOY_RUNTIME_CMD"] = deploy_runtime.startup_command
-        if deploy_runtime.node_count > 1:
-            env["UMRS_DEPLOY_NODE_COUNT"] = str(deploy_runtime.node_count)
-            env["UMRS_DEPLOY_RUNTIME_MULTINODE"] = "1"
-        if deploy_runtime.multinode_script:
-            env["UMRS_DEPLOY_MULTINODE_SCRIPT"] = deploy_runtime.multinode_script
-        if deploy_runtime.extra_env:
-            for k, v in deploy_runtime.extra_env.items():
-                env[f"UMRS_DEPLOY_EXTRA_{k.upper()}"] = str(v)
     return env
 
 
@@ -614,9 +524,6 @@ def _parse_raw(raw: dict[str, Any]) -> SiteConfig:
         step_executor=_dict_to_dataclass(StepExecutorConfig, raw.get("step_executor", {})),
         database=_dict_to_dataclass(DatabaseConfig, raw.get("database", {})),
         partition_profiles=profiles,
-        deploy_runtime=DeployRuntimeConfig.from_dict(
-            raw.get("deploy_runtime", {})
-        ),
         extra=raw.get("extra", {}),
     )
 
