@@ -93,6 +93,21 @@ case "${1:-}" in
         ;;
     --clean)
         echo "Stopping all containers and removing volumes..."
+        # Refuse to destroy data that lives outside the podman graphroot.
+        # With UMRS_VOLUME_ROOT the database and object store are bind-backed
+        # on a separate filesystem (see start.sh). `--clean` exists to reset a
+        # scratch stack, not to wipe relocated production data, and podman's
+        # own `volume rm` gives no second chance.
+        for _vol in umrs_pg_data umrs_minio_data; do
+            _opts="$(podman volume inspect "$_vol" --format '{{.Options}}' 2>/dev/null || true)"
+            if [[ "$_opts" == *device:* ]]; then
+                echo "ERROR: volume '$_vol' is bind-backed outside the podman store:" >&2
+                echo "         $_opts" >&2
+                echo "       Refusing --clean. Use --all to stop the stack, or remove the" >&2
+                echo "       volume and its backing directory explicitly if that is intended." >&2
+                exit 1
+            fi
+        done
         if [[ -f "$COMPOSE_FILE" ]]; then
             podman compose -f "$COMPOSE_FILE" down -v 2>/dev/null || true
         else

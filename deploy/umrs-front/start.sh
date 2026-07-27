@@ -98,9 +98,50 @@ if [[ "$START_MODE" != "--server" ]]; then
         fi
     fi
 
-    # Ensure named volumes exist (compose uses external: true)
-    podman volume inspect umrs_pg_data >/dev/null 2>&1 || podman volume create umrs_pg_data
-    podman volume inspect umrs_minio_data >/dev/null 2>&1 || podman volume create umrs_minio_data
+    # Ensure named volumes exist (compose uses external: true).
+    #
+    # UMRS_VOLUME_ROOT relocates the persistent data off the podman graphroot
+    # (which lives under $HOME) and onto a dedicated filesystem. On umrs-front
+    # the root fs is shared with the container image store — which is by far
+    # the largest consumer — while MinIO object storage grows without bound, so
+    # keeping both on the same volume eventually starves the database.
+    #
+    # When set, the volumes are created as bind-backed local volumes pointing
+    # at $UMRS_VOLUME_ROOT/<name>. The directory must already exist and be
+    # writable by this user, and on SELinux hosts it must carry a
+    # container-writable label:
+    #   sudo semanage fcontext -a -e /home /share/umrs
+    #   sudo restorecon -Rv /share/umrs
+    #
+    # We deliberately fail instead of falling back to the graphroot: a stack
+    # that silently writes the database somewhere other than the operator
+    # intended is worse than a stack that refuses to start.
+    _ensure_volume() {
+        local name="$1"
+        if podman volume inspect "$name" >/dev/null 2>&1; then
+            return 0
+        fi
+        if [[ -z "${UMRS_VOLUME_ROOT:-}" ]]; then
+            podman volume create "$name"
+            return 0
+        fi
+        local dir="${UMRS_VOLUME_ROOT%/}/${name}"
+        if [[ ! -d "$dir" ]]; then
+            echo "ERROR: UMRS_VOLUME_ROOT is set but '$dir' does not exist." >&2
+            echo "       Create and label it before starting (see comment above)." >&2
+            return 1
+        fi
+        if [[ ! -w "$dir" ]]; then
+            echo "ERROR: '$dir' is not writable by $(whoami)." >&2
+            return 1
+        fi
+        echo "  Creating volume $name backed by $dir"
+        podman volume create --driver local \
+            --opt type=none --opt o=bind --opt device="$dir" "$name"
+    }
+
+    _ensure_volume umrs_pg_data
+    _ensure_volume umrs_minio_data
 
     # Remove legacy containers that conflict with compose-managed names
     for _ctr in umrs-postgres umrs-minio; do
