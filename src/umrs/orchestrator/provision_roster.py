@@ -116,6 +116,21 @@ def _build_index(paths: list[str]) -> dict[tuple[str, str | None], dict[str, Any
             if isinstance(env_vars, dict) and env_vars:
                 defaults["env_vars"] = {str(k): str(v) for k, v in env_vars.items()}
             index[key] = defaults
+            # The first entry for a model is also its *canonical* sizing, so a
+            # provision that names only the model — `r4 endpoint up --model X`,
+            # the VS Code play button — resolves to it via the (model, None)
+            # fallback in resolve_model_provision_defaults().
+            #
+            # Without this, a roster whose entries all carry a `name:` has no
+            # (model, None) key at all, so those provisions silently miss the
+            # roster and fall back to 1-node/1-GPU defaults, dropping the
+            # per-deployment vLLM overrides (VLLM_DOCKER_IMAGE, tool/reasoning
+            # parsers, patch bind-mounts) with them. That is exactly the
+            # failure this module exists to prevent, and it is silent: Slurm
+            # just holds the undersized job pending. Named variants stay
+            # addressable for explicit `pool up`.
+            if variant is not None:
+                index.setdefault((model, None), defaults)
     return index
 
 
