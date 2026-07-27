@@ -27,10 +27,11 @@ async def test_warning_exception_handler_returns_structured_409():
 
     response = await structured_warning_exception_handler(
         MagicMock(),
-        UMRSWarningError(blocking_download_warning("job-1", "running")),
+        UMRSWarningError(blocking_download_warning("job-1", "running", retry_after=30)),
     )
     assert response.status_code == 409
     assert b'"task_status":"running"' in response.body
+    assert response.headers.get("retry-after") == "30"
 
 
 class TestWarningCategory:
