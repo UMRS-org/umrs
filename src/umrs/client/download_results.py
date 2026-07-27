@@ -10,6 +10,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from umrs.shared.warnings import (
+    UMRSWarning,
+    WarningCategory,
+    recoverable_error_warning,
+)
+
 # Terminal statuses for PROCESS_OBJECTS thread entries.
 _TERMINAL_STATUSES = frozenset({"Done", "Idle"})
 
@@ -197,6 +203,33 @@ def task_status_field(readiness: BucketWorkStatus) -> list[str] | str:
     return "pending"
 
 
+def build_incomplete_download_warning(
+    readiness: BucketWorkStatus,
+    *,
+    timed_out: bool = False,
+    max_wait_sec: int | None = None,
+) -> UMRSWarning:
+    """Structured warning when download_results cannot proceed."""
+    if timed_out and max_wait_sec is not None:
+        return recoverable_error_warning(
+            f"Timed out after {max_wait_sec}s waiting for results. {readiness.message}",
+            retry_after=30,
+        )
+    if readiness.incomplete_statuses:
+        return UMRSWarning(
+            category=WarningCategory.BLOCKING,
+            message=readiness.message,
+            details={"task_status": list(readiness.incomplete_statuses)},
+            suggestion="Use --wait to block until results are ready, or retry later",
+        )
+    return UMRSWarning(
+        category=WarningCategory.RECOVERABLE_ERROR,
+        message=readiness.message,
+        suggestion="Retry later or check server status",
+        retry_after=30,
+    )
+
+
 def incomplete_error_payload(
     readiness: BucketWorkStatus,
     *,
@@ -207,7 +240,7 @@ def incomplete_error_payload(
     elapsed_sec: int | None = None,
     timed_out: bool = False,
     max_wait_sec: int | None = None,
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], UMRSWarning]:
     """Build the error dict returned when download cannot proceed."""
     if timed_out and max_wait_sec is not None:
         message = (
@@ -216,6 +249,11 @@ def incomplete_error_payload(
         )
     else:
         message = readiness.message
+    warning = build_incomplete_download_warning(
+        readiness,
+        timed_out=timed_out,
+        max_wait_sec=max_wait_sec,
+    )
     payload: dict[str, Any] = {
         "status": "error",
         "message": message,
@@ -224,10 +262,11 @@ def incomplete_error_payload(
         "modality": modality,
         "task_status": task_status_field(readiness),
         "output_format": output_format,
+        "warnings": [warning.to_dict()],
     }
     if elapsed_sec is not None:
         payload["elapsed_sec"] = elapsed_sec
-    return payload
+    return payload, warning
 
 
 def classify_wait_reply(reply: str) -> str:

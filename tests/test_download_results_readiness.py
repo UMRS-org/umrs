@@ -166,7 +166,7 @@ class TestControlFlowHelpers:
             _status_payload([_entry("Running", "b")]),
             "b-output",
         )
-        payload = incomplete_error_payload(
+        payload, _warning = incomplete_error_payload(
             readiness,
             full_bucket_name="b-output",
             subdir="",
@@ -176,10 +176,11 @@ class TestControlFlowHelpers:
         assert payload["status"] == "error"
         assert payload["task_status"] == ["Running"]
         assert "incomplete" in payload["message"]
+        assert payload["warnings"]
 
     def test_incomplete_error_payload_timeout(self):
         readiness = parse_process_objects_readiness(None, "b-output")
-        payload = incomplete_error_payload(
+        payload, _warning = incomplete_error_payload(
             readiness,
             full_bucket_name="b-output",
             subdir="x",

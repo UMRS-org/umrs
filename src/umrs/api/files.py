@@ -39,7 +39,11 @@ from umrs.shared.storage.s3_presign import (
     generate_presigned_get,
     generate_presigned_put,
 )
-from umrs.shared.warnings import check_download_ready
+from umrs.shared.warnings import (
+    UMRSWarningError,
+    blocking_download_warning,
+    check_download_ready,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -392,25 +396,16 @@ async def generate_presigned_url(
     If blocking=true, waits until the download is ready or timeout.
     """
 
-    def _download_not_ready_error(attempt_status: str) -> HTTPException:
+    def _download_not_ready_error(job_id: str, attempt_status: str) -> UMRSWarningError:
         """Create HTTP 409 for download not ready."""
-        return HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail={
-                "error_id": "warning.blocking",
-                "message": f"Task is {attempt_status} — download not available yet",
-                "details": {
-                    "operation": "download",
-                    "reason": "task_not_ready",
-                    "task_status": attempt_status,
-                },
-                "suggestion": "Use ?blocking=true to wait, or retry later",
-            },
-            headers={"Retry-After": "30"},
-        )
+        warning = blocking_download_warning(job_id, attempt_status, retry_after=30)
+        warning.details.setdefault("operation", "download")
+        warning.details.setdefault("reason", "task_not_ready")
+        return UMRSWarningError(warning, http_status=status.HTTP_409_CONFLICT)
 
     # Validate download readiness if job_id provided
     if request.operation == PresignedOperation.DOWNLOAD and request.job_id:
+        from umrs.jobs.store import JobNotFoundError
         from .jobs import get_optional_job_store as get_jobs_store
 
         job_store = get_jobs_store()
@@ -430,10 +425,20 @@ async def generate_presigned_url(
                 if job.active_attempt_id:
                     attempt = job_store.get_attempt(job.active_attempt_id)
                     attempt_status = attempt.status.value
-            except Exception as exc:
+            except JobNotFoundError as exc:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail=f"Job {request.job_id} was not found",
+                ) from exc
+            except Exception as exc:
+                logger.warning(
+                    "Failed to read job status for presign download job_id=%s: %s",
+                    request.job_id,
+                    exc,
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Job status is unavailable; download cannot be authorized",
                 ) from exc
 
             readiness = check_download_ready(
@@ -442,7 +447,7 @@ async def generate_presigned_url(
             if readiness["ready"]:
                 break
             if not request.blocking or asyncio.get_running_loop().time() >= deadline:
-                raise _download_not_ready_error(attempt_status)
+                raise _download_not_ready_error(request.job_id, attempt_status)
             await asyncio.sleep(2)
 
     # Validate and namespace the key
@@ -745,9 +750,15 @@ async def check_download_status(
         - ready=false: Task still running (include status)
         - With blocking=true: Polls until ready or timeout
     """
+    from umrs.jobs.store import JobNotFoundError
     from .jobs import get_optional_job_store as get_jobs_store
 
     job_store = get_jobs_store()
+    if not job_store:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Job status is unavailable; download readiness cannot be determined",
+        )
 
     if blocking and timeout > 0:
         # Blocking mode: poll until ready or timeout
@@ -769,10 +780,26 @@ async def check_download_status(
                                 message="Download is ready",
                             )
                     except Exception:
-                        pass
+                        logger.warning(
+                            "Failed to read attempt status for job %s during blocking poll",
+                            job_id,
+                            exc_info=True,
+                        )
 
+            except JobNotFoundError:
+                return DownloadStatusResponse(
+                    ready=False,
+                    job_id=job_id,
+                    status="unknown",
+                    message=f"Job {job_id} was not found",
+                    retry_after=10,
+                )
             except Exception:
-                pass
+                logger.warning(
+                    "Failed to read job status for job %s during blocking poll",
+                    job_id,
+                    exc_info=True,
+                )
 
             # Wait before polling again
             time.sleep(2)
@@ -801,18 +828,30 @@ async def check_download_status(
                 status_result = check_download_ready(
                     job_id, attempt.status.value, blocking=False
                 )
+                not_ready_warning = status_result.get("error")
                 return DownloadStatusResponse(
                     ready=status_result["ready"],
                     job_id=job_id,
                     status=attempt.status.value,
                     message=None
                     if status_result["ready"]
-                    else status_result.get("message"),
+                    else (
+                        not_ready_warning.get("message")
+                        if isinstance(not_ready_warning, dict)
+                        else None
+                    ),
+                    warnings=[not_ready_warning]
+                    if not status_result["ready"] and isinstance(not_ready_warning, dict)
+                    else None,
                     blocking=status_result.get("blocking", False),
                     retry_after=30 if not status_result["ready"] else None,
                 )
             except Exception:
-                pass
+                logger.warning(
+                    "Failed to read attempt status for job %s",
+                    job_id,
+                    exc_info=True,
+                )
 
         # No active attempt — check job status directly
         if job.status.value in ("completed",):
@@ -831,7 +870,20 @@ async def check_download_status(
             retry_after=30,
         )
 
+    except JobNotFoundError:
+        return DownloadStatusResponse(
+            ready=False,
+            job_id=job_id,
+            status="unknown",
+            message=f"Job {job_id} was not found",
+            retry_after=10,
+        )
     except Exception:
+        logger.warning(
+            "Failed to determine download status for job %s",
+            job_id,
+            exc_info=True,
+        )
         return DownloadStatusResponse(
             ready=False,
             job_id=job_id,

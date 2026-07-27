@@ -161,6 +161,9 @@ class CommandRegistry:
         """
         if client_id is None:
             logger.warning("Cannot authorize cmd='%s': no client_id in payload", cmd)
+            if zmq_sender_id is not None:
+                with contextlib.suppress(RuntimeError):
+                    ctx.control_mq.send_string(f"UNAUTHORIZED:{cmd}", zmq_sender_id)
             return False
 
         auth_ctx = ctx.control_mq.get_auth_context(client_id)
