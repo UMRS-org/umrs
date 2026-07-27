@@ -1097,6 +1097,7 @@ start_native_glm52() {
     local repo="${VLLM_MOET_REPO:?VLLM_MOET_REPO is required}"
     local nccl_so="${VLLM_NCCL_SO_PATH:?VLLM_NCCL_SO_PATH is required}"
     local planes="${VLLM_MOE_W2_PREPACKED_DIR:?VLLM_MOE_W2_PREPACKED_DIR is required}"
+    local required_partition="${VLLM_REQUIRED_PARTITION:-}"
     local model="${_vllm_host_model_path}"
     local head_ip worker_ip ray_common
     local -a native_extra_args=()
@@ -1105,10 +1106,16 @@ start_native_glm52() {
         echo "[rivault] FATAL: glm52-vllm-moet requires exactly two nodes" >&2
         return 1
     }
-    [[ "${SLURM_JOB_PARTITION:-}" == "edge-double" ]] || {
-        echo "[rivault] FATAL: glm52-vllm-moet requires edge-double, got ${SLURM_JOB_PARTITION:-unset}" >&2
+    # The partition is deployment configuration, not a property of this runner:
+    # any 2-node DGX-Spark partition works provided the fabric iface and the
+    # per-node prerequisites below are present. Set VLLM_REQUIRED_PARTITION in
+    # the provision roster to pin it; leave unset to accept any 2-node
+    # partition. (Was hardcoded to `edge-double`, which blocked running GLM on
+    # `spark-double` while laguna occupies `edge-double`.)
+    if [[ -n "${required_partition}" && "${SLURM_JOB_PARTITION:-}" != "${required_partition}" ]]; then
+        echo "[rivault] FATAL: glm52-vllm-moet pinned to ${required_partition}, got ${SLURM_JOB_PARTITION:-unset}" >&2
         return 1
-    }
+    fi
 
     mapfile -t RAY_NODES < <(scontrol show hostnames "${SLURM_JOB_NODELIST:-}")
     [[ ${#RAY_NODES[@]} -eq 2 ]] || {
