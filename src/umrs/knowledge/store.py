@@ -98,6 +98,47 @@ class KnowledgeStore:
         """Initialize store with an asyncpg connection pool."""
         self._pool = pool
 
+
+# ── Global store singleton ────────────────────────────────────────────────────
+# TODO: This is a temporary fix. Define proper store factory.
+
+_pool: Any = None
+_instance: KnowledgeStore | None = None
+
+
+def get_store() -> KnowledgeStore:
+    """Return the global KnowledgeStore singleton.
+    
+    Uses a simple pool-based singleton pattern. In production,
+    this should be replaced with a proper dependency injection
+    or factory pattern.
+    """
+    global _pool, _instance
+    if _pool is None:
+        raise RuntimeError(
+            "Knowledge store pool not initialized. "
+            "Call build_knowledge_pool(uri) first."
+        )
+    if _instance is None:
+        _instance = KnowledgeStore(_pool)
+    return _instance
+
+
+def build_knowledge_pool(uri: str, **kwargs) -> Any:
+    """Create the asyncpg pool for the knowledge store."""
+    import asyncpg  # type: ignore[import-untyped]
+
+    _pool = asyncio.get_event_loop().run_until_complete(
+        asyncpg.create_pool(dsn=uri, **kwargs)
+    )
+    return _pool
+
+
+def reset_store() -> None:
+    """Reset the store singleton for testing."""
+    global _instance
+    _instance = None
+
     async def insert_artifact(
         self,
         artifact_id: str,
