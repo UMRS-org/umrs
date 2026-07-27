@@ -17,16 +17,15 @@ import sys
 import threading
 import time
 import types
-from typing import Any, Dict, List
+from typing import Any
 
 import pytest
-
 from umrs.pipeline_sdk.step import Step, StepContext, StepResult
+from umrs.server.step_router import reset_feedback_store
 from umrs.server.workflow_execution_registry import (
     get_execution_registry,
     reset_execution_registry_for_tests,
 )
-from umrs.server.step_router import reset_feedback_store
 from umrs.server.workflow_runner import run_workflow_record
 
 
@@ -64,7 +63,7 @@ def _entry(class_name: str) -> str:
 
 def test_independent_steps_run_concurrently(probe_module, tmp_path):
     barrier = threading.Barrier(2, timeout=5.0)
-    thread_ids: List[int] = []
+    thread_ids: list[int] = []
     lock = threading.Lock()
 
     class SleeperA(Step):
@@ -122,7 +121,7 @@ def test_independent_steps_run_concurrently(probe_module, tmp_path):
 
 
 def test_fan_in_step_sees_all_parent_results(probe_module, tmp_path):
-    captured: Dict[str, Any] = {}
+    captured: dict[str, Any] = {}
 
     class A(Step):
         name = "a"
@@ -344,7 +343,7 @@ def test_max_parallel_steps_env_caps_pool_size(probe_module, tmp_path, monkeypat
 
 
 def test_cancel_between_waves_short_circuits(probe_module, tmp_path):
-    record_holder: Dict[str, Any] = {}
+    record_holder: dict[str, Any] = {}
 
     class First(Step):
         name = "first"
@@ -430,6 +429,6 @@ def test_concurrent_blob_writes_do_not_lose_data(probe_module, tmp_path):
     assert record.status == "succeeded", record.error
     blobs = record.results["blobs"]
     for i in range(8):
-        full_key = f"wf-runner/writes/w{i}.json"
+        full_key = f"wf-runner-output/writes/w{i}.json"
         assert full_key in blobs, f"missing blob for w{i}"
-        assert blobs[full_key] == f"w{i}".encode("utf-8")
+        assert blobs[full_key] == f"w{i}".encode()

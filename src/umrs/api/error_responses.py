@@ -4,12 +4,23 @@ Provides a consistent JSON error envelope for all UMRS API endpoints.
 Machine-readable error_id fields enable automation, while human messages
 remain free to change between releases.
 
+Integration with unified warning framework:
+    from umrs.shared.warnings import UMRSWarning, WarningCategory
+
+    # Raise a structured warning → converted to HTTP response
+    raise UMRSWarning(
+        category=WarningCategory.BLOCKING,
+        message="Task is still running — download not available yet",
+        details={"task_status": "running"}
+    )
+
 Response format:
     {
-        "error_id": "rag.service_unavailable",
-        "message": "RAG service is not reachable",
+        "error_id": "warning.blocking",
+        "message": "Task is still running — download not available yet",
         "request_id": "abc-123",
-        "details": {}
+        "details": {"task_status": "running"},
+        "suggestion": "Use ?blocking=true to wait, or retry later"
     }
 """
 
@@ -50,6 +61,7 @@ def structured_error_response(
     error_id: str = "",
     request_id: str = "",
     details: dict[str, Any] | None = None,
+    suggestion: str | None = None,
 ) -> JSONResponse:
     """Build a structured JSON error response."""
     body: dict[str, Any] = {
@@ -60,6 +72,8 @@ def structured_error_response(
         body["request_id"] = request_id
     if details:
         body["details"] = details
+    if suggestion:
+        body["suggestion"] = suggestion
     return JSONResponse(status_code=status_code, content=body)
 
 
@@ -68,8 +82,7 @@ async def structured_http_exception_handler(
 ) -> JSONResponse:
     """FastAPI exception handler that returns structured error JSON.
 
-    Replaces the default handler so all HTTPException responses include
-    error_id and request_id for distributed tracing and automation.
+    Also handles UMRSWarning exceptions from the unified warning framework.
     """
     request_id = ""
     try:
@@ -85,4 +98,18 @@ async def structured_http_exception_handler(
         exc.status_code,
         detail,
         request_id=request_id,
+    )
+
+
+async def structured_warning_exception_handler(
+    request: Request, exc: Exception
+) -> JSONResponse:
+    """Convert a blocking UMRS warning exception to JSON."""
+    from umrs.shared.warnings import UMRSWarningError, blocking_warning_response
+
+    if not isinstance(exc, UMRSWarningError):
+        raise exc
+    return JSONResponse(
+        status_code=exc.http_status,
+        content=blocking_warning_response(exc.warning),
     )

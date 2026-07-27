@@ -12,18 +12,36 @@ verify results in pgvector, and export.
 ## Quick Start
 
 ```bash
-cd demos/02_text_embedding
-# Follow the step-by-step commands in README.md
+# Navigate from either repo level (auto-detects parent vs subdirectory)
+cd "$(git rev-parse --show-toplevel)/$(test -d "$(git rev-parse --show-toplevel)/umrs/demos" && echo umrs)/demos/02_text_embedding"
+# See the numbered steps below in this README
 ```
 
 ## What This Demo Does
 
 1. **Ping** the UMRS server to verify connectivity
-2. **Verify or prepare** the embedding model (reuse a staged model, or stage it if your site exposes a writable model root)
-3. **Upload** sample text files to the S3 bucket via `umrs-client`
-4. **Wait** for the embedding pipeline to finish
-5. **Verify** that embeddings are stored in pgvector
-6. **Export** embeddings to a local CSV file
+2. **Load the experience** — `experience.json` declares this demo's modality, model, bucket, and DB table. See the [User Manual](../USER_MANUAL.md#experiences) for the full schema.
+3. **Verify the experience was added** — confirm it appears in your user config
+4. **Reload** — triggers server-side bucket + DB provisioning
+5. **Verify buckets** — confirm the new bucket exists before and after reload
+6. **Verify or prepare** the embedding model (reuse a staged model, or stage it if your site exposes a writable model root)
+7. **Upload** sample text files to the S3 bucket
+8. **Wait** for the embedding pipeline to finish
+9. **Verify** that embeddings are stored in pgvector
+10. **Export** embeddings to a local CSV file
+
+## What is `experience.json`?
+
+Each demo ships an `experience.json` fragment that declares:
+
+- **Modality** — the data type (text, image, movie, etc.)
+- **Model** — the model name and type (e5-base-v2, sam3.1, etc.)
+- **Bucket alias** — the S3 bucket alias that UMRS provisions
+- **DB table** — the Postgres table name for storing embeddings/metadata
+
+When you run `umrs experience add experience.json`, this fragment is merged
+into your user config JSON. The next `umrs reload` instructs the server to
+provision the declared MinIO buckets and Postgres tables.
 
 ## Running Manually
 
@@ -31,30 +49,60 @@ If you prefer to run steps individually:
 
 ```bash
 # 1. Check server
-umrs-client ping
+umrs ping
 
-# 2. Ensure the embedding model is visible to the server
-umrs-client model list --scope system
-umrs-client model list --scope user
+# 2. Load the experience fragment into your user config
+#    This registers the text embedding experience (model + bucket + table)
+umrs experience add experience.json
+
+# 3. Verify the experience was added successfully
+umrs experience list
+# Expected: "Text Embedding" should appear in the list
+
+# 3b. (Optional) Validate the experience fragment
+#    Checks the JSON structure and verifies model availability if server is reachable
+umrs experience validate experience.json
+
+# 4. Check buckets before reload
+umrs bucket list
+# Expected: only buckets from previous experiences (not demo-texts yet)
+
+# 5. Reload to apply the new experience and provision buckets
+umrs reload
+
+# 6. Check buckets after reload — new buckets should appear
+umrs bucket list
+# Expected: demo-texts and demo-textfiles now visible
+
+# 7. Verify the embedding model is visible to the server
+umrs model list --scope system
+umrs model list --scope user
+# Use this to confirm intfloat/e5-base-v2 is registered
 
 # Optional: only if your site gives you a writable, allowed staging root
-umrs-client model download intfloat/e5-base-v2 --scope user --server-side \
+umrs model download intfloat/e5-base-v2 --scope user --server-side \
     --staging-dir /path/to/site-user-model-root
 
-# 3. Upload the bundled sample files
-umrs-client upload_dir ../sample_data/texts user1-textfiles
+# 8. Upload the bundled sample files
+#
+# IMPORTANT: The bucket alias depends on your username.
+# The experience.json declares "demo-texts", but the actual bucket name
+# on the server is prefixed by your username: <username>-<alias>.
+# So if your user is "mnagaso3", the bucket is "mnagaso3-textfiles",
+# NOT "demo-textfiles". Always use your username-prefixed alias.
+umrs data dir-upload ../sample_data/texts "$USER-textfiles"
 
-# 4. Monitor progress
-umrs-client --output text status process_objects
+# 9. Monitor progress
+umrs status process_objects
 
-# 5. Once processing is done, export embeddings (default: minimal profile)
-umrs-client export_embeddings user1-textfiles ./results/embeddings.csv --format csv
+# 10. Once processing is done, export embeddings (default: minimal profile)
+umrs export_embeddings "$USER-textfiles" ./results/embeddings.csv --format csv
 
-# 6. Export all stored DB columns when you need the full row
-umrs-client export_embeddings user1-textfiles ./results/embeddings-full.csv --format csv --profile full
+# 11. Export all stored DB columns when you need the full row
+umrs export_embeddings "$USER-textfiles" ./results/embeddings-full.csv --format csv --profile full
 
-# 7. Export only the embedding vector itself
-umrs-client export_embeddings user1-textfiles ./results/embeddings-only.csv --format csv --profile embedding-only
+# 12. Export only the embedding vector itself
+umrs export_embeddings "$USER-textfiles" ./results/embeddings-only.csv --format csv --profile embedding-only
 ```
 
 ## Test Data
@@ -72,7 +120,7 @@ Sample text files live in `../sample_data/texts/`:
 ## Configuration
 
 The demo script assumes a configured UMRS client and uses:
-- Bucket alias: `user1-textfiles`
+- Bucket alias: `demo-textfiles`
 - Model: `intfloat/e5-base-v2` (768-d embeddings via vLLM in Mini-Rivault)
 - Modality: `text`
 
@@ -83,7 +131,8 @@ only works when the deployment exposes a writable, allowed staging root.
 If your site uses a different bucket alias, override it with:
 
 ```bash
-TEXT_BUCKET=my-text-bucket # Follow the step-by-step commands in README.md
+TEXT_BUCKET=my-text-bucket
+# Use any available bucket alias
 ```
 
 ## Expected Output
@@ -142,8 +191,8 @@ The `custom_embedding/` directory contains a complete working example:
 3. Upload text files and process as usual:
 
 ```bash
-umrs-client upload_dir ./test_data/ my-bucket
-umrs-client status all
+umrs data dir-upload ./test_data/ my-bucket
+umrs status all
 ```
 
 ### Writing your own step

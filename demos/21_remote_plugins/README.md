@@ -20,7 +20,7 @@ PluginSpec → Validate → Fetch → Install → Execute → Complete
 ## Quick Start
 
 ```bash
-cd demos/21_remote_plugins
+cd "$(git rev-parse --show-toplevel)/$(test -d "$(git rev-parse --show-toplevel)/umrs/demos" && echo umrs)/demos/21_remote_plugins"
 python3 simulate_plugins.py results
 ```
 
@@ -37,7 +37,7 @@ python3 simulate_plugins.py results
 
 ## Running Manually
 
-This demo does not use `umrs-client` because it runs entirely locally
+This demo does not use `umrs` because it runs entirely locally
 as a Python simulation. You can run it step by step:
 
 ```bash

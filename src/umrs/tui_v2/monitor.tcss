@@ -1,0 +1,128 @@
+/* UMRS Monitor TUI v2 CSS */
+
+MonitorAppV2 {
+    background: $surface;
+    layout: vertical;
+}
+
+/* ── Top bar ────────────────────────────────────────────── */
+
+#topbar {
+    dock: top;
+    height: 8;
+    background: $boost;
+    color: $primary;
+    padding: 0 2;
+    border-bottom: solid $primary;
+    layout: grid;
+    grid-size: 2;
+    grid-gutter: 1 2;
+}
+
+#topbar > #logo {
+    text-align: left;
+    width: 1fr;
+
+    color: $primary;
+}
+
+#topbar > #stats {
+    text-align: right;
+    width: 1fr;
+    color: $text;
+}
+
+#topbar > #connection-status {
+    dock: top;
+    height: 1;
+    background: $boost;
+    color: $text-muted;
+    padding: 0 2;
+}
+
+/* ── Tabbed content ─────────────────────────────────────── */
+
+TabbedContent {
+    height: 1fr;
+}
+
+TabPane {
+    padding: 0 1;
+}
+
+TabbedContent .TabList {
+    background: $boost;
+    color: $text-muted;
+}
+
+TabbedContent .TabList .Tab:focus {
+    background: $primary;
+    color: $background;
+}
+
+/* ── Footer ─────────────────────────────────────────────── */
+
+#footer {
+    dock: bottom;
+    height: 1;
+    background: $boost;
+    color: $text-muted;
+    padding: 0 2;
+    text-align: left;
+}
+
+/* ── Action buttons ─────────────────────────────────────── */
+
+ActionButton {
+    /* Generic action button style */
+    min-width: 6;
+    padding: 0 1;
+}
+
+/* ── Progress indicator ─────────────────────────────────── */
+
+#progress-overlay {
+    dock: top;
+    height: 3;
+    background: $primary;
+    color: $background;
+    display: none;
+}
+
+/* ── Confirmation dialog ────────────────────────────────── */
+
+#confirm-dialog {
+    width: 60;
+    height: auto;
+    max-height: 20;
+    background: $surface;
+    border: thick $primary;
+    padding: 1 2;
+}
+
+/* ── Notification toast ─────────────────────────────────── */
+
+ToastNotification {
+    width: 60;
+    height: auto;
+    dock: bottom;
+    margin-bottom: 2;
+}
+
+/* ── Progress container ─────────────────────────────────── */
+
+/* ── Progress bar ───────────────────────────────────────── */
+
+#progress-bar {
+    dock: bottom;
+    height: 3;
+    display: none;
+    background: $surface;
+    border-top: solid $primary;
+    color: $text;
+    padding: 0 1;
+}
+
+#progress-bar.visible {
+    display: block;
+}

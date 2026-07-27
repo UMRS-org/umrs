@@ -15,8 +15,8 @@ import pytest
 
 # Import the modules we're testing
 from umrs.jobs.models import (
-    AttemptStatus,
     DEFAULT_BACKOFFS,
+    AttemptStatus,
     Job,
     JobAttempt,
     JobStatus,
@@ -230,7 +230,15 @@ class TestJobStatus:
 
     def test_all_job_statuses(self):
         """Verify all expected job statuses exist."""
-        expected = ["planned", "queued", "running", "completed", "failed", "cancelled"]
+        expected = [
+            "planned",
+            "queued",
+            "running",
+            "completed",
+            "all_complete",
+            "failed",
+            "cancelled",
+        ]
         actual = [s.value for s in JobStatus]
         assert set(expected) == set(actual)
 
@@ -254,6 +262,11 @@ class TestJobTypes:
             "model_download",
             "cleanup",
             "workflow_run",
+            "data_ingestion",
+            "knowledge_ingest",
+            "knowledge_understand",
+            "knowledge_verify",
+            "knowledge_export",
         ]
         actual = [t.value for t in JobType]
         assert set(expected) == set(actual)
@@ -275,10 +288,10 @@ class TestSchemaGeneration:
     def test_schema_sql_valid(self):
         """Verify schema SQL is syntactically correct."""
         from umrs.jobs.schema import (
-            CREATE_JOBS_TABLE,
             CREATE_ATTEMPTS_TABLE,
-            CREATE_JOB_LOCKS_TABLE,
             CREATE_INDEXES,
+            CREATE_JOB_LOCKS_TABLE,
+            CREATE_JOBS_TABLE,
         )
 
         # Basic sanity checks - SQL should contain expected elements

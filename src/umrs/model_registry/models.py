@@ -411,6 +411,7 @@ class ModelEntry:
     model_type: ModelType = ModelType.LLM
     huggingface_id: str | None = None  # Source model on HF Hub
     description: str | None = None
+    version: str | None = None
 
     # Serving configuration
     serving_profile: ServingProfile = field(default_factory=ServingProfile)
@@ -478,6 +479,7 @@ class ModelEntry:
         return {
             "model_id": self.model_id,
             "name": self.name,
+            "version": self.version,
             "scope": self.scope.value,
             "owner_id": self.owner_id,
             "project_id": self.project_id,
@@ -503,6 +505,7 @@ class ModelEntry:
             model_id=data["model_id"],
             name=data["name"],
             scope=ModelScope(data["scope"]),
+            version=data.get("version"),
             owner_id=data.get("owner_id"),
             project_id=data.get("project_id"),
             storage_ref=data.get("storage_ref", ""),

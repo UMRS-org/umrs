@@ -4,7 +4,7 @@ Model Version Management (MM-003).
 NOTE: This module is production-ready but not yet surfaced in demos.
       See Demo 08 (model_registry) for model registration & staging usage.
       Version tracking will be integrated when the model registry CLI
-      commands (umrs-client model register/list/download) are wired in.
+      commands (umrs model register/list/download) are wired in.
 
 Provides version tracking for models, allowing:
 - Multiple versions per model
@@ -64,6 +64,9 @@ class ModelVersion:
 
     # Status
     status: VersionStatus = VersionStatus.DRAFT
+    is_latest: bool = False
+    is_stable: bool = False
+    source_type: str = "manual"
 
     # Timestamps
     created_at: datetime = field(default_factory=datetime.now)
@@ -92,6 +95,9 @@ class ModelVersion:
             "parent_version_id": self.parent_version_id,
             "created_from": self.created_from,
             "status": self.status.value,
+            "is_latest": self.is_latest,
+            "is_stable": self.is_stable,
+            "source_type": self.source_type,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "released_at": self.released_at.isoformat() if self.released_at else None,
             "deprecated_at": self.deprecated_at.isoformat()
@@ -115,6 +121,9 @@ class ModelVersion:
             parent_version_id=data.get("parent_version_id"),
             created_from=data.get("created_from"),
             status=VersionStatus(data.get("status", "draft")),
+            is_latest=data.get("is_latest", False),
+            is_stable=data.get("is_stable", False),
+            source_type=data.get("source_type", "manual"),
             created_at=(
                 datetime.fromisoformat(data["created_at"])
                 if data.get("created_at")
@@ -199,6 +208,10 @@ class VersionHistory:
         released = [v for v in self.versions if v.status == VersionStatus.RELEASED]
         if not released:
             return None
+
+        active = next((version for version in released if version.is_latest), None)
+        if active:
+            return active
 
         # Sort by version number
         released.sort(

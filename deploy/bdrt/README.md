@@ -87,7 +87,7 @@ cleanup of that job, and a fresh second job after cleanup, with no remaining
 ```
 Local machine (optional)          rccs-cloud (login node)          ng-dgx-m* (compute)
 ────────────────────              ───────────────────────          ──────────────────────────
-umrs-client  ←── SSH tunnel ───►  umrs-server  (NATIVE)  ←── Slurm ───►  mini-rivault
+umrs  ←── SSH tunnel ───►  umrs-server  (NATIVE)  ←── Slurm ───►  mini-rivault
 rag client   ←── SSH tunnel ───►  rag-service  (NATIVE, optional)        vLLM / BentoML + LiteLLM
                                   minio     (podman container)  ◄── SSH tunnel ──┘
                                   postgres  (podman container)
@@ -442,7 +442,7 @@ installing the UMRS client package into the venv at `deploy/rccs-cloud/.venv/`.
 Verify the install:
 
 ```bash
-umrs-client --help
+umrs --help
 ```
 
 ---
@@ -495,14 +495,14 @@ bash run_demo.sh
 See [demos/README.md](../../demos/README.md) for the full list of demos and
 [demos/README.md](../../demos/README.md) for the canonical demo walkthrough.
 
-Or use `umrs-client` directly:
+Or use `umrs` directly:
 
 ```bash
 # Push text files and retrieve embeddings
-umrs-client -c ~/.config/umrs/users/user1.json upload_dir ./my_texts --modality text
+umrs -c ~/.config/umrs/users/user1.json upload_dir ./my_texts --modality text
 
 # List available buckets
-umrs-client -c ~/.config/umrs/users/user1.json list_buckets
+umrs -c ~/.config/umrs/users/user1.json list_buckets
 ```
 
 See [Deployment Verification](#deployment-verification) for the full demo list
@@ -570,8 +570,8 @@ tail -f logs/server.log
 # Container status
 podman compose ps
 
-# Reload server config (without restart) — via umrs-client
-umrs-client reload
+# Reload server config (without restart) — via umrs
+umrs reload
 
 # Restart just the server (containers stay up)
 ./start.sh --server
@@ -630,7 +630,7 @@ UMRS handles multi-user S3 access automatically.  Each user defined in
 3. Send the RELOAD command to provision the new user without restarting:
 
 ```bash
-umrs-client reload
+umrs reload
 ```
 
 The server will create the MinIO IAM user, generate `~/.config/umrs/s3cfg_user2` in the
@@ -769,7 +769,7 @@ If you intentionally want to wipe both postgres and MinIO, run:
 `--postgres-clean` removes only the postgres volume. `--clean` is fully destructive:
 it removes both the postgres and minio volumes managed by this RCCS harness.
 
-### umrs-client cannot connect
+### umrs cannot connect
 
 Make sure `ssh_tunnel.sh` is running.  Test the tunnel:
 

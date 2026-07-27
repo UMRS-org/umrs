@@ -117,7 +117,7 @@ if $do_local; then
   pointer="$cfg_dir/current_user_config"
   if [ -f "$pointer" ] && grep -q "$USER_TO_CLEAN" "$pointer" 2>/dev/null; then
     rm -v "$pointer"
-    echo "  (pointer reset — run 'umrs-client login' to re-authenticate)"
+    echo "  (pointer reset — run 'umrs login' to re-authenticate)"
   fi
 
   green "Local cleanup done."
@@ -126,6 +126,6 @@ fi
 echo ""
 bold "Clean state for '$USER_TO_CLEAN'. To re-onboard:"
 echo "  1. Server: cd $DEPLOY_DIR && umrs-server admin user add $USER_TO_CLEAN --role user --slurm-account rccs-dmp"
-echo "  2. Client: umrs-client login --host <HOST> --api-key <TOKEN>"
-echo "  3. Add experiences: umrs-client config import <experience.json>"
-echo "  4. Reload: umrs-client reload"
+echo "  2. Client: umrs login --host <HOST> --api-key <TOKEN>"
+echo "  3. Add experiences: umrs config import <experience.json>"
+echo "  4. Reload: umrs reload"

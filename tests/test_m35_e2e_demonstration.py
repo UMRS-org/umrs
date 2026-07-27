@@ -24,6 +24,7 @@ milestone is complete.
 
 from __future__ import annotations
 
+import pytest
 from umrs.knowledge.knowledge_correction_controller import (
     KnowledgeCorrectionController,
 )
@@ -100,36 +101,82 @@ def _build_knowledge_base():
     kg.add_node(node_id=code_id, node_type="code", title="transformer_model.py")
     kg.add_node(node_id=notebook_id, node_type="notebook", title="transformer_experiment.ipynb")
     kg.add_node(node_id=dataset_id, node_type="dataset", title="QM9 Molecular Dataset")
-    kg.add_node(node_id=hypothesis_id, node_type="hypothesis", title="Transformers can predict molecular properties")
+    kg.add_node(
+        node_id=hypothesis_id,
+        node_type="hypothesis",
+        title="Transformers can predict molecular properties",
+    )
     kg.add_node(node_id=experiment_id, node_type="experiment", title="Transformer on QM9")
     kg.add_node(node_id=finding_id, node_type="finding", title="Transformer achieves 95% accuracy")
 
     # Add typed edges (relationships)
-    kg.add_edge(source_id=paper1_id, target_id=paper2_id, relation_type=RelationType.CITES, confidence=0.9)
-    kg.add_edge(source_id=paper1_id, target_id=code_id, relation_type=RelationType.IMPLEMENTS, confidence=0.85)
-    kg.add_edge(source_id=paper1_id, target_id=hypothesis_id, relation_type=RelationType.DESCRIBES, confidence=0.8)
-    kg.add_edge(source_id=code_id, target_id=notebook_id, relation_type=RelationType.RELATED_TO, confidence=0.7)
-    kg.add_edge(source_id=notebook_id, target_id=dataset_id, relation_type=RelationType.USES, confidence=0.95)
-    kg.add_edge(source_id=notebook_id, target_id=experiment_id, relation_type=RelationType.PRODUCES, confidence=0.85)
-    kg.add_edge(source_id=experiment_id, target_id=finding_id, relation_type=RelationType.PRODUCES, confidence=0.9)
-    kg.add_edge(source_id=finding_id, target_id=hypothesis_id, relation_type=RelationType.SUPPORTS, confidence=0.95)
+    kg.add_edge(
+        source_id=paper1_id, target_id=paper2_id, relation_type=RelationType.CITES, confidence=0.9
+    )
+    kg.add_edge(
+        source_id=paper1_id,
+        target_id=code_id,
+        relation_type=RelationType.IMPLEMENTS,
+        confidence=0.85,
+    )
+    kg.add_edge(
+        source_id=paper1_id,
+        target_id=hypothesis_id,
+        relation_type=RelationType.DESCRIBES,
+        confidence=0.8,
+    )
+    kg.add_edge(
+        source_id=code_id,
+        target_id=notebook_id,
+        relation_type=RelationType.RELATED_TO,
+        confidence=0.7,
+    )
+    kg.add_edge(
+        source_id=notebook_id,
+        target_id=dataset_id,
+        relation_type=RelationType.USES,
+        confidence=0.95,
+    )
+    kg.add_edge(
+        source_id=notebook_id,
+        target_id=experiment_id,
+        relation_type=RelationType.PRODUCES,
+        confidence=0.85,
+    )
+    kg.add_edge(
+        source_id=experiment_id,
+        target_id=finding_id,
+        relation_type=RelationType.PRODUCES,
+        confidence=0.9,
+    )
+    kg.add_edge(
+        source_id=finding_id,
+        target_id=hypothesis_id,
+        relation_type=RelationType.SUPPORTS,
+        confidence=0.95,
+    )
 
     # Add scientific memory entries
-    sm.add(MemoryEntry(
-        project_id="proj-001",
-        content="Transformer model was trained on QM9 dataset with 95% accuracy",
-        summary="Training result",
-    ))
-    sm.add(MemoryEntry(
-        project_id="proj-001",
-        content="The transformer architecture uses self-attention mechanism",
-        summary="Architecture description",
-    ))
+    sm.add(
+        MemoryEntry(
+            project_id="proj-001",
+            content="Transformer model was trained on QM9 dataset with 95% accuracy",
+            summary="Training result",
+        )
+    )
+    sm.add(
+        MemoryEntry(
+            project_id="proj-001",
+            content="The transformer architecture uses self-attention mechanism",
+            summary="Architecture description",
+        )
+    )
 
     return km, kg, sm
 
 
-def test_end_to_end_knowledge_verification():
+@pytest.mark.asyncio
+async def test_end_to_end_knowledge_verification():
     """Test the complete Interactive Scientific Knowledge Verification workflow.
 
     Steps:
@@ -166,12 +213,16 @@ def test_end_to_end_knowledge_verification():
     assert summary.finding_count == 1, f"Expected 1 finding, got {summary.finding_count}"
     assert summary.total_objects == 8, f"Expected 8 total objects, got {summary.total_objects}"
     assert summary.graph_node_count == 8, f"Expected 8 graph nodes, got {summary.graph_node_count}"
-    assert summary.memory_entry_count == 2, f"Expected 2 memory entries, got {summary.memory_entry_count}"
+    assert summary.memory_entry_count == 2, (
+        f"Expected 2 memory entries, got {summary.memory_entry_count}"
+    )
     assert summary.coverage_score > 0.0, "Coverage should be > 0"
 
     # ── Step 3: User browses Knowledge Graph ────────────────────────────
     objects = km.list_objects(limit=100)
-    paper1_id = [o for o in objects if o.content.get("title") == "Attention Is All You Need"][0].object_id
+    paper1_id = [o for o in objects if o.content.get("title") == "Attention Is All You Need"][
+        0
+    ].object_id
 
     # Get object detail (should include related objects and provenance)
     detail = dashboard_controller.get_object_detail(paper1_id)
@@ -186,7 +237,7 @@ def test_end_to_end_knowledge_verification():
 
     # ── Step 4: User asks "What did you learn?" ────────────────────────
     verification_controller = VerificationChatController()
-    answer = verification_controller.ask(
+    answer = await verification_controller.ask(
         question="What did you learn from the uploaded papers?",
         anchor_object_id=paper1_id,
     )
@@ -208,7 +259,11 @@ def test_end_to_end_knowledge_verification():
 
     # User marks paper2 as unrelated to paper1
     objects = km.list_objects(limit=100)
-    paper2_id = [o for o in objects if o.content.get("title") == "BERT: Pre-training of Deep Bidirectional Transformers"][0].object_id
+    paper2_id = [
+        o
+        for o in objects
+        if o.content.get("title") == "BERT: Pre-training of Deep Bidirectional Transformers"
+    ][0].object_id
 
     correction = correction_controller.mark_unrelated(
         object_id_1=paper1_id,
@@ -324,11 +379,21 @@ def test_readiness_levels():
     assert report.readiness_level == "blocked" or report.readiness_level == "not_ready"
 
     # Add some objects → should improve readiness
-    km.create_object(project_id="p1", object_type=KnowledgeObjectType.PAPER, content={"title": "Paper 1"})
-    km.create_object(project_id="p1", object_type=KnowledgeObjectType.HYPOTHESIS, content={"title": "H1"})
-    km.create_object(project_id="p1", object_type=KnowledgeObjectType.EXPERIMENT, content={"title": "E1"})
-    km.create_object(project_id="p1", object_type=KnowledgeObjectType.FINDING, content={"title": "F1"})
-    km.create_object(project_id="p1", object_type=KnowledgeObjectType.EVIDENCE, content={"title": "EV1"})
+    km.create_object(
+        project_id="p1", object_type=KnowledgeObjectType.PAPER, content={"title": "Paper 1"}
+    )
+    km.create_object(
+        project_id="p1", object_type=KnowledgeObjectType.HYPOTHESIS, content={"title": "H1"}
+    )
+    km.create_object(
+        project_id="p1", object_type=KnowledgeObjectType.EXPERIMENT, content={"title": "E1"}
+    )
+    km.create_object(
+        project_id="p1", object_type=KnowledgeObjectType.FINDING, content={"title": "F1"}
+    )
+    km.create_object(
+        project_id="p1", object_type=KnowledgeObjectType.EVIDENCE, content={"title": "EV1"}
+    )
 
     report = controller.evaluate_readiness()
     assert report.knowledge_completeness > 0.0

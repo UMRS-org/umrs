@@ -110,5 +110,5 @@ networks:
     name: "podman"  # Note: attach to podman's default "public" network to get out
     external: true
   genai-private-net:
-    name: "genai-private-net"
+    name: "${RIVAULT_NETWORK_NAME:-genai-private-net}"
     external: true

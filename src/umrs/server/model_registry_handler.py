@@ -317,6 +317,10 @@ def _validate_register_request(
         owner_id=access_ctx.user_id if scope == ModelScope.USER else None,
         project_id=project_id if scope == ModelScope.PROJECT else None,
     )
+    if scope == ModelScope.PROJECT:
+        PathValidator(["/shared/projects/{project_id}/models/*"]).validate_scope_path(
+            normalized_path, scope, project_id=project_id
+        )
     return {
         "access_ctx": access_ctx,
         "name": name,

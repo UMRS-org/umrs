@@ -7,7 +7,7 @@ and executes them automatically.
 ## Quick start
 
 ```bash
-# Follow the step-by-step commands in README.md
+# See the numbered steps below in this README
 ```
 
 This runs the unit test suite and an integration smoke test using a mock S3.
@@ -26,7 +26,7 @@ fi
 # 1. Run the step test suite.
 PYTHONPATH="$REPO_ROOT/src" "$PYTHON" -m pytest tests/test_user_steps.py -v --tb=short
 
-# 2. Run the same integration smoke test as README.md (step-by-step commands).
+# 2. Run the same integration smoke test as the manual steps below.
 PYTHONPATH="$REPO_ROOT/src" SCRIPT_DIR="$REPO_ROOT/demos/08_user_model" "$PYTHON" - <<'PY'
 import json
 import os
@@ -453,7 +453,7 @@ Add it as a modality in the user config JSON:
 {
     "modality_name": "image",
     "s3": {
-        "bucket_alias": "my-results",
+        "bucket_alias": "demo-user-model",  # Use demo-<feature> convention
         "data": { "type": "file", "mime_type": "image/png" },
         "need_output_bucket": true
     },
@@ -471,11 +471,15 @@ Add it as a modality in the user config JSON:
 }
 ```
 
+> **Note:** `demo-user-model` follows the `demo-<feature>` naming convention.
+> Replace with your own alias when deploying, but keep the same pattern for
+> consistency across experiences.
+
 After adding the entry, activate it using the mechanism supported by your site.
-On local/dev deployments that may be `umrs-client reload` or a server restart.
+On local/dev deployments that may be `umrs reload` or a server restart.
 On operator-managed sites, ask the site/operator to activate the updated config.
 The server will call your workflow whenever new objects arrive in the
-`my-results` input bucket.
+`demo-user-model` input bucket.
 
 ---
 

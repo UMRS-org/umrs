@@ -192,6 +192,7 @@ def test_parse_python_golden_output():
             "functions:1",
             "has_main_block",
             "imports:1",
+            "os",
             "python",
         ],
         "error": None,

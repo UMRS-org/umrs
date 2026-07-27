@@ -15,7 +15,6 @@
 #SBATCH --job-name=umrs-rivault
 ##SBATCH --partition=ng-dgx-m0  # disabled — partition set by orchestrator via --partition CLI arg
 #SBATCH --nodes=1
-#SBATCH --time=4:00:00
 #SBATCH --signal=B:TERM@120
 
 # ─── Output FQDN header (required by rivault_launcher.extract_node_address) ───
@@ -96,21 +95,39 @@ load_partition_profile() {
     [[ -n "$python_bin" && -f "$SITE_CONFIG_PATH" ]] || return 0
 
     rendered_exports="$({
-        PYTHONPATH="${REPO_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}" \
-            UMRS_SITE_CONFIG="$SITE_CONFIG_PATH" \
-            _PARTITION="$partition" \
-            "$python_bin" - <<'PY'
-import os
-import shlex
+        "$python_bin" - "$SITE_CONFIG_PATH" "$partition" <<'PY'
+import sys, os, shlex, yaml
 
-from umrs.orchestrator.site_config import load_site_config
+config_path = sys.argv[1]
+partition   = sys.argv[2]
 
-cfg = load_site_config(os.environ["UMRS_SITE_CONFIG"])
-part = os.environ.get("_PARTITION", "")
-env = cfg.partition_env(part)
-if env:
-    for key, value in sorted(env.items()):
-        print(f"export {key}={shlex.quote(value)}")
+with open(config_path, "r") as fh:
+    cfg = yaml.safe_load(fh)
+
+pp = (cfg or {}).get("partition_profiles", {}).get(partition)
+if pp is None:
+    sys.exit(0)
+
+env_map = {
+    "RIVAULT_PARTITION_ARCH":             pp.get("arch"),
+    "RIVAULT_PARTITION_GPU_VENDOR":       pp.get("gpu_vendor"),
+    "RIVAULT_PARTITION_OCI_RUNTIME":        pp.get("oci_runtime"),
+    "RIVAULT_USERNS_MODE":                pp.get("userns_mode"),
+    "RIVAULT_PARTITION_NETWORK_BACKEND":  pp.get("network_backend"),
+    "RIVAULT_PARTITION_GPUS":             pp.get("gpus"),
+}
+if pp.get("needs_netavark_switch", False):
+    env_map["RIVAULT_PARTITION_NEEDS_NETAVARK"] = "1"
+else:
+    env_map["RIVAULT_PARTITION_NEEDS_NETAVARK"] = "0"
+if pp.get("vllm_docker_tag"):
+    env_map["VLLM_DOCKER_TAG"] = pp["vllm_docker_tag"]
+if pp.get("vllm_docker_image"):
+    env_map["VLLM_DOCKER_IMAGE"] = pp["vllm_docker_image"]
+
+for key, value in sorted(env_map.items()):
+    if value is not None:
+        print(f"export {key}={shlex.quote(str(value))}")
 PY
     } 2>/dev/null)" || return 0
 
@@ -189,21 +206,21 @@ export NGINX_LITELLM_DOCKER_PORT="${LITELLM_PORT:-${NGINX_LITELLM_DOCKER_PORT:-8
 # Must match LITELLM_MASTER_KEY in .env so the server can authenticate.
 export LITELLM_MASTER_KEY="${LITELLM_MASTER_KEY:?Set LITELLM_MASTER_KEY in .env}"
 
-# ─── Model cache on Lustre (inherit from server or set default) ──────────────
-export SAM3_MODEL_PATH="${SAM3_MODEL_PATH:-/lvs0/dne1/rccs-dmp/${USER}/umrs_models/sam3.1}"
-export HMAE_MODEL_PATH="${HMAE_MODEL_PATH:-/lvs0/dne1/rccs-dmp/${USER}/umrs_models/hmae}"
-export HMAE_CONFIG_PATH="${HMAE_CONFIG_PATH:-/lvs0/dne1/rccs-dmp/${USER}/umrs_models/hmae/infer_hmae_vit_b.yaml}"
-export HMAE_CHECKPOINT="${HMAE_CHECKPOINT:-/lvs0/dne1/rccs-dmp/${USER}/umrs_models/hmae/latest_checkpoint.pth}"
+# ─── Model cache on shared home (inherit from server or set default) ──────────
+export SAM3_MODEL_PATH="${SAM3_MODEL_PATH:-/home/${USER}/umrs_models/sam3.1}"
+export HMAE_MODEL_PATH="${HMAE_MODEL_PATH:-/home/${USER}/umrs_models/hmae}"
+export HMAE_CONFIG_PATH="${HMAE_CONFIG_PATH:-/home/${USER}/umrs_models/hmae/infer_hmae_vit_b.yaml}"
+export HMAE_CHECKPOINT="${HMAE_CHECKPOINT:-/home/${USER}/umrs_models/hmae/latest_checkpoint.pth}"
 export USER_MODEL_PATH="${USER_MODEL_PATH:-/tmp}"
 
 # ─── vLLM configuration (embedding model on GPU) ─────────────────────────────
-# VLLM_PATH_TO_HUGGINGFACE: HuggingFace hub cache on Lustre (shared with login)
+# VLLM_PATH_TO_HUGGINGFACE: HuggingFace hub cache on shared home
 # VLLM_MODEL: model to serve via vLLM (must be in HF cache)
 # VLLM_DOCKER_TAG: vLLM image tag — auto-selected per arch if not overridden
 #   aarch64 → cu130-nightly-aarch64   (Blackwell, GB10)
 #   x86_64  → cu130-nightly-x86_64    (H200, L40S, etc.)
 # VLLM_GPU_MEM_UTIL: low memory fraction — keep room for BentoML vision
-export VLLM_PATH_TO_HUGGINGFACE="${VLLM_PATH_TO_HUGGINGFACE:-/lvs0/dne1/rccs-dmp/${USER}/umrs_models/hf}"
+export VLLM_PATH_TO_HUGGINGFACE="${VLLM_PATH_TO_HUGGINGFACE:-/home/${USER}/umrs_models}"
 export VLLM_MODEL="${VLLM_MODEL:-intfloat/e5-base-v2}"
 # VLLM_DOCKER_TAG: prefer partition profile value; fall back to arch auto-detect.
 if [[ -z "${VLLM_DOCKER_TAG:-}" ]]; then
@@ -214,6 +231,28 @@ if [[ -z "${VLLM_DOCKER_TAG:-}" ]]; then
 fi
 export VLLM_DOCKER_TAG
 export VLLM_GPU_MEM_UTIL="${VLLM_GPU_MEM_UTIL:-0.10}"
+
+# ─── BDRT path normalization guard ───────────────────────────────────────────
+# Some launch paths may still inject legacy /lvs0 model cache locations.
+# On BDRT compute nodes those paths are unavailable; normalize to /home.
+_LEGACY_MODEL_ROOT="/lvs0/dne1/rccs-dmp/${USER}/umrs_models"
+_BDRT_MODEL_ROOT="/home/${USER}/umrs_models"
+normalize_model_path_var() {
+    local key="${1}"
+    local value="${!key:-}"
+    [[ -n "${value}" ]] || return 0
+    if [[ "${value}" == "${_LEGACY_MODEL_ROOT}"* ]]; then
+        local normalized="${value/#${_LEGACY_MODEL_ROOT}/${_BDRT_MODEL_ROOT}}"
+        export "${key}=${normalized}"
+        echo "[wrapper] Normalized ${key}: ${value} -> ${normalized}"
+    fi
+}
+normalize_model_path_var "VLLM_PATH_TO_HUGGINGFACE"
+normalize_model_path_var "SAM3_MODEL_PATH"
+normalize_model_path_var "HMAE_MODEL_PATH"
+normalize_model_path_var "HMAE_CONFIG_PATH"
+normalize_model_path_var "HMAE_CHECKPOINT"
+normalize_model_path_var "VISION_TARBALL"
 
 # ─── Fix HOME (container sets HOME=/root, but job runs as actual user) ────────
 # Inside the umrs-server container HOME=/root. When sbatch is submitted,
@@ -355,16 +394,16 @@ fi
 #
 # Cache hierarchy:
 #   1. podman local store (/var/tmp/podman_$USER/storage) — survives across jobs on same node
-#   2. Lustre tarball (per-arch) — shared across all compute nodes of same arch
-#   3. Build from source — first time only, then saved to Lustre
+#   2. Shared-home tarball (per-arch) — shared across all compute nodes of same arch
+#   3. Build from source — first time only, then saved to shared home
 #
 # Per-arch tarballs:
 #   VISION_TARBALL is treated as a base path. The wrapper appends -<arch>.tar:
-#     /lvs0/.../umrs-vision-arm64.tar   (for aarch64 nodes: ng-dgx-m*)
-#     /lvs0/.../umrs-vision-amd64.tar   (for x86_64 nodes: ai-h200-brc, ai-l40s, genoa, etc.)
+#     /home/.../umrs-vision-arm64.tar   (for aarch64 nodes)
+#     /home/.../umrs-vision-amd64.tar   (for x86_64 nodes)
 #   This avoids cross-arch overwrites when jobs run on different node types.
 _VISION_IMAGE="${BENTOML_VISION_IMAGE:-umrs-vision:latest}"
-_VISION_TARBALL_BASE="${VISION_TARBALL:-/lvs0/dne1/rccs-dmp/${USER}/umrs_models/umrs-vision.tar}"
+_VISION_TARBALL_BASE="${VISION_TARBALL:-/home/${USER}/umrs_models/umrs-vision.tar}"
 _UMRS_REPO="${UMRS_REPO:-${_DEFAULT_REPO}}"
 
 # Derive per-arch tarball path from base
@@ -443,6 +482,18 @@ if ls /dev/nvidia[0-9]* >/dev/null 2>&1; then
     for _dev in /dev/nvidia[0-9]* /dev/nvidiactl /dev/nvidia-uvm /dev/nvidia-uvm-tools /dev/nvidia-caps/nvidia-cap1 /dev/nvidia-caps/nvidia-cap2; do
         [[ -e "$_dev" ]] && _GPU_DEVS="${_GPU_DEVS}      - ${_dev}:${_dev}:rwm\n"
     done
+    # Resolve the driver's PTX JIT compiler lib (versioned .so.1 is a symlink to
+    # a driver-versioned file). vLLM 0.23.0 aarch64 ships no precompiled
+    # Blackwell SASS, so Marlin/NVFP4 MoE kernels JIT-compile from PTX at first
+    # launch and need libnvidia-ptxjitcompiler.so.1 — without it the KV-cache
+    # profiling forward pass dies with cudaErrorJitCompilerNotFound.
+    _PTXJIT_VOL=""
+    for _pj in /usr/lib/aarch64-linux-gnu/libnvidia-ptxjitcompiler.so.1; do
+        if [[ -e "$_pj" ]]; then
+            _PTXJIT_VOL="      - ${_pj}:${_pj}:ro"
+            break
+        fi
+    done
     cat > "${_OVERRIDE}" <<GPUEOF
 services:
   vllm:
@@ -452,6 +503,7 @@ $(echo -e "$_GPU_DEVS")
     volumes:
       - /usr/lib/aarch64-linux-gnu/libcuda.so.1:/usr/lib/aarch64-linux-gnu/libcuda.so.1:ro
       - /usr/lib/aarch64-linux-gnu/libnvidia-ml.so.1:/usr/lib/aarch64-linux-gnu/libnvidia-ml.so.1:ro
+${_PTXJIT_VOL}
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
@@ -524,7 +576,7 @@ _build_vision_image() {
          -f "${_UMRS_REPO}/src/umrs/vision_service/Dockerfile" "${_UMRS_REPO}"
     build_status=$?
     if [[ "${build_status}" -eq 0 ]]; then
-        echo "[wrapper] Saving tarball to Lustre: ${_VISION_TARBALL}"
+        echo "[wrapper] Saving tarball to shared home: ${_VISION_TARBALL}"
         mkdir -p "$(dirname "${_VISION_TARBALL}")"
         podman save "${_VISION_IMAGE}" -o "${_VISION_TARBALL}.tmp" && mv "${_VISION_TARBALL}.tmp" "${_VISION_TARBALL}"
         echo "[wrapper] Vision image built and cached (${_VISION_HOST_ARCH})."
@@ -539,7 +591,7 @@ _build_vision_image() {
 # The tarball path already includes the host arch suffix, so no cross-arch
 # mismatch check is needed — each arch loads its own tarball.
 if [[ -f "${_VISION_TARBALL}" ]]; then
-    echo "[wrapper] Loading vision image from Lustre tarball: ${_VISION_TARBALL}"
+    echo "[wrapper] Loading vision image from shared-home tarball: ${_VISION_TARBALL}"
     podman load -i "${_VISION_TARBALL}"
     echo "[wrapper] Vision image loaded (${_VISION_HOST_ARCH})."
 else

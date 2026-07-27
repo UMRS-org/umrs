@@ -25,7 +25,7 @@ Key components:
 4. RAG service: FastAPI micro-service that combines embedding retrieval
    (pgvector) with LLM generation for question-answering workflows.
 
-The UMRS client (umrs-client) is the primary user interface.  It connects
+The UMRS client (umrs) is the primary user interface.  It connects
 to the control plane via SSH-tunnelled ZMQ sockets and exposes commands
 for uploading data, querying embeddings, managing models, and submitting
 long-running jobs.

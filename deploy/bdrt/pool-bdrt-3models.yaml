@@ -31,14 +31,15 @@
 #        model-stage job with egress, or copy from source). GB10 is aarch64 —
 #        confirm the NVFP4 / GGUF artifacts match this arch.
 #     d. Register each model in the bdrt catalog (name must match `model:` below):
-#          umrs-client --profile bdrt model register <name> <path> --type llm --scope user
+#          umrs --profile bdrt model register <name> <path> --type llm --scope user
 #     e. r4 pool up pool-bdrt-3models.yaml   (or select just the spark-double entry)
 
 pool: bdrt-3models
 defaults:
-  tier: user
+  source: bdrt            # pin to bdrt gateway — do NOT rely on active `r4 source`
+  tier: system
   ttl_sec: 0              # never expires
-  timeout: 86400
+  timeout: 172800         # 2 days — HTTP submit timeout (wait=False: only bounds the sbatch call)
 
 endpoints:
   # ── Qwen3.6-35B-A3B-NVFP4 (single node → spark) ──────────────────────
@@ -46,7 +47,7 @@ endpoints:
   #  (128 GiB unified). qwen3_moe architecture, tool calling + reasoning.
   - name: qwen3.6-35b-a3b-nvfp4
     model: Qwen3.6-35B-A3B-NVFP4
-    tier: user
+    tier: system
     node_count: 1
     partition: spark
     max_model_len: 262144
@@ -69,7 +70,7 @@ endpoints:
   #    via VLLM_CHAT_TEMPLATE=<path.jinja> before the endpoint serves /chat.
   - name: deepseek-v4-flash
     model: DeepSeek-V4-Flash
-    tier: user
+    tier: system
     node_count: 1
     partition: spark
     max_model_len: 262144
@@ -93,7 +94,7 @@ endpoints:
   #  registered as `glm-5.2-iq1s` in the bdrt catalog.
   - name: glm-5.2-iq1s
     model: glm-5.2-iq1s
-    tier: user
+    tier: system
     node_count: 2
     partition: spark-double
     max_model_len: 1048576

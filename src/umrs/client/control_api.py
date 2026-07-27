@@ -121,12 +121,15 @@ class UMRSControlAPI:
         keep_alive: bool = False,
         partition: str | None = None,
         node: str | None = None,
+        reservation: str | None = None,
     ) -> dict[str, Any]:
         job_spec = dict(spec or {})
         if partition:
             job_spec["partition_override"] = partition
         if node:
             job_spec["nodelist_hint"] = node
+        if reservation:
+            job_spec["slurm_reservation"] = reservation
         payload = dumps_with_correlation_id(
             {
                 "job_type": job_type,
@@ -139,7 +142,9 @@ class UMRSControlAPI:
         return self._request_json(TaskCmd.JOB_SUBMIT, payload)
 
     def cancel_job(self, job_id: str) -> dict[str, Any]:
-        return self._request_json(TaskCmd.JOB_CANCEL, dumps_with_correlation_id({"job_id": job_id}))
+        return self._request_json(
+            TaskCmd.JOB_CANCEL, dumps_with_correlation_id({"job_id": job_id})
+        )
 
     def purge_buckets(self, bucket_names: list[str]) -> dict[str, Any]:
         """Request server-side deletion of user-owned S3 buckets."""
@@ -196,6 +201,7 @@ class UMRSControlAPI:
         spec: dict[str, Any] | None = None,
         partition: str | None = None,
         node: str | None = None,
+        reservation: str | None = None,
     ) -> dict[str, Any]:
         endpoint_spec = dict(spec or {})
         endpoint_spec.update(
@@ -220,6 +226,7 @@ class UMRSControlAPI:
             keep_alive=True,
             partition=partition,
             node=node,
+            reservation=reservation,
         )
         if parsed.get("status") == "ok":
             parsed["endpoint"] = {
@@ -305,22 +312,14 @@ class UMRSControlAPI:
         payload = json.dumps({"execution_id": execution_id})
         return self._request_json(TaskCmd.WORKFLOW_CANCEL, payload)
 
-    def workflow_errors(
-        self, execution_id: str, *, tail: int = 50
-    ) -> dict[str, Any]:
+    def workflow_errors(self, execution_id: str, *, tail: int = 50) -> dict[str, Any]:
         """Show error logs for a failed workflow execution (Attempts)."""
-        payload = json.dumps(
-            {"execution_id": execution_id, "tail": tail}
-        )
+        payload = json.dumps({"execution_id": execution_id, "tail": tail})
         return self._request_json(TaskCmd.WORKFLOW_ERRORS, payload)
 
-    def workflow_logs(
-        self, execution_id: str, *, tail: int = 200
-    ) -> dict[str, Any]:
+    def workflow_logs(self, execution_id: str, *, tail: int = 200) -> dict[str, Any]:
         """Stream execution logs for a workflow run."""
-        payload = json.dumps(
-            {"execution_id": execution_id, "tail": tail}
-        )
+        payload = json.dumps({"execution_id": execution_id, "tail": tail})
         return self._request_json(TaskCmd.WORKFLOW_LOGS, payload)
 
     def maintenance(
@@ -345,7 +344,12 @@ class UMRSControlAPI:
             "status": "error",
             "action": action,
             "accepted": False,
-            "message": "Authorization denied (admin required)",
+            "message": (
+                "Authorization denied by server for "
+                f"'{action}' (requires admin privileges, or the server is "
+                "running an older version that has not picked up an updated "
+                "authorization policy — ask an operator to restart/redeploy it)"
+            ),
         }
 
     def enroll_user(self, config_path: str) -> dict[str, Any]:
@@ -452,6 +456,7 @@ class UMRSControlAPI:
                     keep_alive=args.keep_alive,
                     partition=args.partition,
                     node=args.node,
+                    reservation=args.reservation,
                 )
         if args.action == "endpoint":
             if args.endpoint_action == "up":
@@ -477,6 +482,7 @@ class UMRSControlAPI:
                     spec=spec,
                     partition=args.partition,
                     node=args.node,
+                    reservation=args.reservation,
                 )
             if args.endpoint_action == "list":
                 return self.list_endpoints(

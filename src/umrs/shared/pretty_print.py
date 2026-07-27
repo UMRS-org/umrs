@@ -1,9 +1,49 @@
+"""Plain-text table rendering for server summaries.
+
+All tables share the aligned-column style used by ``umrs bucket list``::
+
+    [Title]
+      Header1  Header2
+      -----------------
+      value1   value2
+"""
+
 import sys
 
-import pandas as pd
-from tabulate import tabulate
-
 from umrs.shared.utils import utc_to_local
+
+
+def format_table(title, headers, rows, empty_message="(no entries)"):
+    """Render rows as an aligned-column table (``umrs bucket list`` style)."""
+    lines = [f"[{title}]"] if title else []
+    if not rows:
+        lines.append(f"  {empty_message}")
+        return "\n".join(lines)
+    str_rows = [[str(cell) for cell in row] for row in rows]
+    widths = [
+        max(len(header), *(len(row[i]) for row in str_rows))
+        for i, header in enumerate(headers)
+    ]
+    lines.append(
+        "  " + "  ".join(h.ljust(w) for h, w in zip(headers, widths)).rstrip()
+    )
+    lines.append("  " + "-" * (sum(widths) + 2 * (len(widths) - 1)))
+    for row in str_rows:
+        lines.append(
+            "  " + "  ".join(c.ljust(w) for c, w in zip(row, widths)).rstrip()
+        )
+    return "\n".join(lines)
+
+
+def _truncate(value, max_len=40):
+    s = str(value)
+    if len(s) > max_len:
+        return s[: max_len - 3] + "..."
+    return s
+
+
+def _metadata_str(metadata):
+    return " ; ".join(f"{m['name']} ({m['type']})" for m in metadata.values())
 
 
 def _thread_sort_key(thread_status, key):
@@ -75,8 +115,7 @@ def pretty_print_thread_status(thread_status, running_only=True, print_output=Tr
 
     if rows:
         headers = _thread_status_headers(running_only)
-        table = tabulate(rows, headers, tablefmt="fancy_grid")
-        message = "Server status:\n" + table
+        message = format_table("Server status", headers, rows)
     else:
         message = "Server is idle"
     if print_output:
@@ -85,63 +124,40 @@ def pretty_print_thread_status(thread_status, running_only=True, print_output=Tr
 
 
 def pretty_print_cfg(cfg_dict, print_output=True):
-    # Create an empty DataFrame with predefined columns
-    df = pd.DataFrame(
-        columns=[
-            "Bucket alias",
-            "S3 user",
-            "S3 path",
-            "Experience",
-            "Modality",
-            "Database",
-            "SQL table",
-            "SQL user",
-            "Model",
-            "Embeds?",
-            "Metadata",
-        ]
-    )
-    buckets_cfg = cfg_dict.buckets_cfg
-    for key, entry in buckets_cfg.items():
-        bucket_alias = entry.bucket_alias
-        s3_username = entry.s3_username
-        sql_username = entry.sql_username
-        model_name = entry.model.model_name
-        store_embeddings_flag = entry.store_embeddings_flag
-        modality = entry.modality_name
-        table_name = entry.table_name
-        xp = entry.xp_name
-        db_name = entry.db_name
-        metadata = entry.metadata
-        metadata_str = ""
-        for mentry in metadata.values():
-            name = mentry["name"]
-            value_type = mentry["type"]
-            if metadata_str != "":
-                metadata_str += " ; "
-            metadata_str += f"{name} ({value_type})"
+    headers = [
+        "Bucket alias",
+        "S3 user",
+        "S3 path",
+        "Experience",
+        "Modality",
+        "Database",
+        "SQL table",
+        "SQL user",
+        "Model",
+        "Embeds?",
+        "Metadata",
+    ]
 
-        df.loc[len(df)] = [
-            bucket_alias,
-            s3_username,
-            key,
-            xp,
-            modality,
-            db_name,
-            table_name,
-            sql_username,
-            model_name,
-            store_embeddings_flag,
-            metadata_str,
-        ]
+    rows = []
+    for key, entry in cfg_dict.buckets_cfg.items():
+        rows.append(
+            [
+                _truncate(entry.bucket_alias, 20),
+                _truncate(entry.s3_username, 12),
+                _truncate(key, 50),
+                _truncate(entry.xp_name, 15),
+                _truncate(entry.modality_name, 10),
+                _truncate(entry.db_name, 30),
+                _truncate(entry.table_name, 12),
+                _truncate(entry.sql_username, 12),
+                _truncate(entry.model.model_name, 20),
+                entry.store_embeddings_flag,
+                _metadata_str(entry.metadata),
+            ]
+        )
 
-    df.sort_values(by=["S3 user", "Bucket alias"], inplace=True)
-    df.reset_index(drop=True, inplace=True)
-    message = (
-        "\nServer configuration:"
-        + "\n"
-        + tabulate(df, headers="keys", tablefmt="fancy_grid")
-    )
+    rows.sort(key=lambda r: (r[1], r[0]))
+    message = "\n" + format_table("Server configuration", headers, rows)
     if print_output:
         print(message)
     return message
@@ -156,18 +172,17 @@ def _model_name_for_bucket(entry) -> str:
 
 def pretty_print_cfg_for_user(cfg_dict, username, print_output=False):
     """Return a configuration summary filtered to a single user's buckets."""
-    df = pd.DataFrame(
-        columns=[
-            "Bucket alias",
-            "Experience",
-            "Modality",
-            "Database",
-            "SQL table",
-            "Model",
-            "Embeds?",
-            "Metadata",
-        ]
-    )
+    headers = [
+        "Bucket alias",
+        "Experience",
+        "Modality",
+        "Database",
+        "SQL table",
+        "Model",
+        "Embeds?",
+        "Metadata",
+    ]
+
     # Accept dict, BucketsCfg (has .items()), or object with .buckets_cfg attr
     if isinstance(cfg_dict, dict):
         buckets_cfg = cfg_dict
@@ -175,34 +190,30 @@ def pretty_print_cfg_for_user(cfg_dict, username, print_output=False):
         buckets_cfg = cfg_dict
     else:
         buckets_cfg = cfg_dict.buckets_cfg
-    for key, entry in buckets_cfg.items():
+
+    rows = []
+    for _key, entry in buckets_cfg.items():
         if entry.s3_username != username:
             continue
-        metadata_str = ""
-        for mentry in entry.metadata.values():
-            name = mentry["name"]
-            value_type = mentry["type"]
-            if metadata_str:
-                metadata_str += " ; "
-            metadata_str += f"{name} ({value_type})"
-        df.loc[len(df)] = [
-            entry.bucket_alias,
-            entry.xp_name,
-            entry.modality_name,
-            entry.db_name,
-            entry.table_name,
-            _model_name_for_bucket(entry),
-            entry.store_embeddings_flag,
-            metadata_str,
-        ]
+        rows.append(
+            [
+                _truncate(entry.bucket_alias, 20),
+                _truncate(entry.xp_name, 15),
+                _truncate(entry.modality_name, 10),
+                _truncate(entry.db_name, 30),
+                _truncate(entry.table_name, 12),
+                _truncate(_model_name_for_bucket(entry), 20),
+                entry.store_embeddings_flag,
+                _metadata_str(entry.metadata),
+            ]
+        )
 
-    df.sort_values(by=["Bucket alias"], inplace=True)
-    df.reset_index(drop=True, inplace=True)
-    if df.empty:
+    rows.sort(key=lambda r: r[0])
+    if not rows:
         message = f"\nNo configuration found for user '{username}'."
     else:
-        message = f"\nConfiguration for '{username}':\n" + tabulate(
-            df, headers="keys", tablefmt="fancy_grid"
+        message = "\n" + format_table(
+            f"Configuration for {username}", headers, rows
         )
     if print_output:
         print(message)
@@ -210,46 +221,36 @@ def pretty_print_cfg_for_user(cfg_dict, username, print_output=False):
 
 
 def pretty_print_user_cfg(cfg_dict, print_output=True):
-
-    df = pd.DataFrame(
-        columns=[
-            "Modality",
-            "Bucket alias",
-            "Experience",
-            "Bucket path",
-            "DB name",
-            "SQL user",
-        ]
-    )
+    headers = [
+        "Modality",
+        "Bucket alias",
+        "Experience",
+        "Bucket path",
+        "DB name",
+        "SQL user",
+    ]
     username = None
+    rows = []
     for key, entry in cfg_dict.items():
-        bucket_alias = key
-        bucket_path = entry.path_to_bucket
-        xp_name = entry.xp_name
-        modality = entry.modality_name
-        sql_username = entry.sql_username
-        db_name = entry.db_name
-
         user = entry.username
         if not username:
             username = user
         elif user != username:
             sys.exit(f"user mismatch between {username} and {user}")
 
-        df.loc[len(df)] = [
-            modality,
-            bucket_alias,
-            xp_name,
-            bucket_path,
-            db_name,
-            sql_username,
-        ]
-    df.sort_values(by=["Bucket alias"], inplace=True)
-    df.reset_index(drop=True, inplace=True)
+        rows.append(
+            [
+                entry.modality_name,
+                key,
+                entry.xp_name,
+                entry.path_to_bucket,
+                entry.db_name,
+                entry.sql_username,
+            ]
+        )
 
-    message = f"Configuration for S3 user '{username}':\n" + tabulate(
-        df, headers="keys", tablefmt="fancy_grid"
-    )
+    rows.sort(key=lambda r: r[1])
+    message = format_table(f"Configuration for S3 user {username}", headers, rows)
     if print_output:
         print(message)
     return message
@@ -257,114 +258,82 @@ def pretty_print_user_cfg(cfg_dict, print_output=True):
 
 def pretty_print_recompute(recompute_dict, update=False, print_output=True):
     objects_col = "Synced/Total" if update else "Objects"
-    df = pd.DataFrame(
-        columns=[
-            "Bucket alias",
-            "S3 user",
-            "Bucket path",
-            "Modality",
-            "Model",
-            objects_col,
-            "Size (MB)",
-            "Duration (s)",
-        ]
-    )
+    headers = [
+        "Bucket alias",
+        "S3 user",
+        "Bucket path",
+        "Modality",
+        "Model",
+        objects_col,
+        "Size (MB)",
+        "Duration (s)",
+    ]
 
+    rows = []
     for path_to_bucket, entry in recompute_dict.items():
-        bucket_alias = entry["bucket_alias"]
-        modality = entry["modality_name"]
-        duration = entry["duration"]
-        num_objects = entry["nb_objects"]
-        s3_user = entry["s3_username"]
-        model = entry["model"].model_name
-        size = entry["total_size_MB"]
+        rows.append(
+            [
+                entry["bucket_alias"],
+                entry["s3_username"],
+                path_to_bucket,
+                entry["modality_name"],
+                entry["model"].model_name,
+                entry["nb_objects"],
+                entry["total_size_MB"],
+                entry["duration"],
+            ]
+        )
 
-        df.loc[len(df)] = [
-            bucket_alias,
-            s3_user,
-            path_to_bucket,
-            modality,
-            model,
-            num_objects,
-            size,
-            duration,
-        ]
-
-    df.sort_values(by=["S3 user", "Bucket alias"], inplace=True)
-    df.reset_index(drop=True, inplace=True)
-
-    title = "\nUpdate Summary:" if update else "\nRecompute Summary:"
-
-    # If no rows to display, avoid tabulate alignment issues and print a friendly message
-    if df.empty:
-        message = f"{title}\n(no buckets to process)"
-        if print_output:
-            print(message)
-        return message
-
-    colalign = ("right", "left", "left", "left", "left", "right", "right", "right")
-    table = tabulate(df, headers="keys", tablefmt="fancy_grid", colalign=colalign)
-    message = f"{title}\n{table}"
+    rows.sort(key=lambda r: (r[1], r[0]))
+    title = "Update Summary" if update else "Recompute Summary"
+    message = "\n" + format_table(
+        title, headers, rows, empty_message="(no buckets to process)"
+    )
     if print_output:
         print(message)
     return message
 
 
 def pretty_print_check(check_dict, print_output=True):
-    df = pd.DataFrame(
-        columns=[
-            "Bucket alias",
-            "S3 user",
-            "Bucket path",
-            "Modality",
-            "Model",
-            "Objects",
-            "Size (MB)",
-            "Matches",
-            "Mismatches",
-            "Not Found",
-            "Errors",
-        ]
-    )
+    headers = [
+        "Bucket alias",
+        "S3 user",
+        "Bucket path",
+        "Modality",
+        "Model",
+        "Objects",
+        "Size (MB)",
+        "Matches",
+        "Mismatches",
+        "Not Found",
+        "Errors",
+    ]
 
+    rows = []
     for path_to_bucket, entry in check_dict.items():
-        bucket_alias = entry["bucket_alias"]
-        s3_user = entry["s3_username"]
-        modality = entry["modality_name"]
         model_name = (
             entry["model"].model_name
             if hasattr(entry["model"], "model_name")
             else str(entry["model"])
         )
-        num_objects = entry["nb_objects"]
-        size_mb = entry["total_size_MB"]
-        nb_match = entry["matches"]
-        nb_mismatch = entry["Mismatches"]
-        nb_not_found = entry["Not_found"]
-        nb_error = entry["Errors"]
+        rows.append(
+            [
+                entry["bucket_alias"],
+                entry["s3_username"],
+                path_to_bucket,
+                entry["modality_name"],
+                model_name,
+                entry["nb_objects"],
+                entry["total_size_MB"],
+                entry["matches"],
+                entry["Mismatches"],
+                entry["Not_found"],
+                entry["Errors"],
+            ]
+        )
 
-        df.loc[len(df)] = [
-            bucket_alias,
-            s3_user,
-            path_to_bucket,
-            modality,
-            model_name,
-            num_objects,
-            size_mb,
-            nb_match,
-            nb_mismatch,
-            nb_not_found,
-            nb_error,
-        ]
-
-    df.sort_values(by=["S3 user", "Bucket alias"], inplace=True)
-    df.reset_index(drop=True, inplace=True)
-
-    message = (
-        "\nObject Check Summary:"
-        + "\n"
-        + tabulate(df, headers="keys", tablefmt="fancy_grid")
-    )
+    rows.sort(key=lambda r: (r[1], r[0]))
+    message = "\n" + format_table("Object Check Summary", headers, rows)
     if print_output:
         print(message)
     return message

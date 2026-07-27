@@ -229,15 +229,15 @@ def _format_bucket_error(path_to_bucket, code, message):
             "    • The MinIO policy for this user does not cover the requested bucket.\n"
             "  Remediation:\n"
             "    1. Verify the bucket name matches the user configuration.\n"
-            "    2. Regenerate or re-issue the s3cfg with `umrs-client s3cfg` (admin) or ask the administrator to re-provision the user's S3 access.\n"
-            "    3. If the bucket is legitimately missing, create it via `umrs-client create_bucket` or the provisioning flow."
+            "    2. Regenerate or re-issue the s3cfg with `umrs s3cfg` (admin) or ask the administrator to re-provision the user's S3 access.\n"
+            "    3. If the bucket is legitimately missing, create it via `umrs create_bucket` or the provisioning flow."
         )
     elif code in (404, "404"):
         hint = "\n  The bucket does not exist on the S3 service."
     elif code in (401, "401"):
         hint = (
             "\n  Authentication failed: the access key in the s3cfg is invalid or expired.\n"
-            "  Regenerate the s3cfg with `umrs-client s3cfg` (admin) or contact the administrator."
+            "  Regenerate the s3cfg with `umrs s3cfg` (admin) or contact the administrator."
         )
     else:
         hint = f"\n  Underlying S3 error: {message}"

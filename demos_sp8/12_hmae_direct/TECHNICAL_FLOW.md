@@ -13,7 +13,7 @@ sequenceDiagram
     participant BM as BentoML (service.py)
     participant HMAE as HMAE Model
 
-    U->>T: umrs-client upload_dir (×3 modes)
+    U->>T: umrs data dir-upload (×3 modes)
     T->>UMRS: ZMQ PROCESS_OBJECTS
     UMRS->>S3: Put image to jens-hmae-{mode}/<RUN_ID>/
 
@@ -30,7 +30,7 @@ sequenceDiagram
         BM->>S3: PUT result (pickle) via presigned URL
     end
 
-    U->>UMRS: umrs-client download_results (per mode)
+    U->>UMRS: umrs data download (per mode)
     UMRS->>S3: Get result artifacts
     S3-->>U: pickle files
 ```
@@ -131,7 +131,7 @@ while IFS= read -r mode; do
     task="$(mode_task "${mode}")"       # e.g. "mae_reconstruction"
 
     # Upload to mode-specific bucket
-    umrs-client upload_dir "${UPLOAD_DIR}" "${alias}/${RUN_ID}"
+    umrs data dir-upload "${UPLOAD_DIR}" "${alias}/${RUN_ID}"
 
     # Download results for this mode
     download_results_bounded "${alias}/${RUN_ID}" "${mode_results}/artifacts" --force-overwrite

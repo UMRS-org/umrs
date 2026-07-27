@@ -6,7 +6,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from umrs.api.files import S3Config, get_project_id, get_s3_config
@@ -403,13 +403,15 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _build_pool():
-    """Build the durable job DB pool for knowledge store access."""
-    from umrs.server.job_tracking_handler import (
-        build_durable_job_db_pool_from_env,
-    )
+def _build_pool(request: Request):
+    """Return the shared app-level durable job DB pool for knowledge store access.
 
-    pool = build_durable_job_db_pool_from_env()
+    Reuses the pool built once in http_sidecar.py (``app.state.umrs_db_pool``)
+    instead of calling ``build_durable_job_db_pool_from_env()`` per request,
+    which used to open a brand-new connection pool on every call and leak it
+    (the old pool object was simply dropped without ``closeall()``).
+    """
+    pool = getattr(request.app.state, "umrs_db_pool", None)
     if pool is None:
         raise HTTPException(status_code=503, detail="Database unavailable")
     return pool
@@ -417,6 +419,7 @@ def _build_pool():
 
 @router.get("/status", response_model=dict[str, Any])
 async def knowledge_status(
+    request: Request,
     project_id: str = Query(..., description="Project ID"),
     _get_project_id: str = Depends(get_project_id),
 ) -> dict[str, Any]:
@@ -424,7 +427,7 @@ async def knowledge_status(
     try:
         from umrs.knowledge.store import KnowledgeStore
 
-        pool = _build_pool()
+        pool = _build_pool(request)
         store = KnowledgeStore(pool)
         artifacts = await store.list_artifacts(project_id=project_id)
         active_count = sum(1 for a in artifacts if a.get("status") == "active")
@@ -484,6 +487,7 @@ async def knowledge_status(
 
 @router.get("/findings", response_model=dict[str, Any])
 async def knowledge_findings(
+    request: Request,
     project_id: str = Query(..., description="Project ID"),
     report_id: Optional[str] = Query(None, description="Filter by report"),
     status: Optional[str] = Query(None, description="Filter by status"),
@@ -492,7 +496,7 @@ async def knowledge_findings(
 ) -> dict[str, Any]:
     """List verification findings with filters."""
     try:
-        pool = _build_pool()
+        pool = _build_pool(request)
         ver = VerificationStore(pool)
 
         if report_id:
@@ -551,11 +555,12 @@ async def knowledge_findings(
 async def transition_finding(
     finding_key: str,
     body: TransitionFindingRequest,
+    request: Request,
     _get_project_id: str = Depends(get_project_id),
 ) -> dict[str, Any]:
     """Transition a finding status (acknowledged, resolved, waived)."""
     try:
-        pool = _build_pool()
+        pool = _build_pool(request)
         ver = VerificationStore(pool)
 
         finding = await ver.transition_finding(
@@ -592,6 +597,7 @@ async def transition_finding(
 @router.post("/approve", response_model=dict[str, Any])
 async def approve_knowledge(
     body: ApproveRequest,
+    request: Request,
     _get_project_id: str = Depends(get_project_id),
 ) -> dict[str, Any]:
     """Approve knowledge with confidence threshold and blocking findings check.
@@ -603,7 +609,7 @@ async def approve_knowledge(
     confidence_threshold = 0.8
 
     try:
-        pool = _build_pool()
+        pool = _build_pool(request)
         ver = VerificationStore(pool)
         report = await ver.get_report(report_id)
 
@@ -671,6 +677,7 @@ async def approve_knowledge(
 
 @router.get("/readiness", response_model=dict[str, Any])
 async def knowledge_readiness(
+    request: Request,
     project_id: str = Query(..., description="Project ID"),
     _get_project_id: str = Depends(get_project_id),
 ) -> dict[str, Any]:
@@ -678,7 +685,7 @@ async def knowledge_readiness(
     try:
         from umrs.knowledge.store import KnowledgeStore
 
-        pool = _build_pool()
+        pool = _build_pool(request)
         store = KnowledgeStore(pool)
         artifacts = await store.list_artifacts(project_id=project_id)
         active_count = sum(1 for a in artifacts if a.get("status") == "active")

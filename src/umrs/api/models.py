@@ -46,6 +46,7 @@ from ..model_registry.store import (
     PathNotAllowedError,
     PermissionDeniedError,
 )
+from ..shared.config import get_resolved_model_staging_root
 from .jobs import get_job_store
 
 logger = logging.getLogger(__name__)
@@ -203,22 +204,24 @@ class ModelCreateRequest(BaseModel):
         None, description="Model capabilities"
     )
 
-    model_config = ConfigDict(json_schema_extra={
-        "example": {
-            "name": "qwen-7b-team",
-            "scope": "project",
-            "storage_ref": "/shared/projects/proj-123/models/qwen-7b-team",
-            "model_type": "llm",
-            "project_id": "proj-123",
-            "huggingface_id": "Qwen/Qwen2.5-7B-Instruct",
-            "description": "Team fine-tuned Qwen model for code review",
-            "serving_profile": {
-                "tensor_parallel_size": 1,
-                "max_model_len": 4096,
-                "gpu_memory_utilization": 0.9,
-            },
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "name": "qwen-7b-team",
+                "scope": "project",
+                "storage_ref": "/shared/projects/proj-123/models/qwen-7b-team",
+                "model_type": "llm",
+                "project_id": "proj-123",
+                "huggingface_id": "Qwen/Qwen2.5-7B-Instruct",
+                "description": "Team fine-tuned Qwen model for code review",
+                "serving_profile": {
+                    "tensor_parallel_size": 1,
+                    "max_model_len": 4096,
+                    "gpu_memory_utilization": 0.9,
+                },
+            }
         }
-    })
+    )
 
 
 class ModelStageRequest(BaseModel):
@@ -237,16 +240,18 @@ class ModelStageRequest(BaseModel):
         None, description="Serving configuration"
     )
 
-    model_config = ConfigDict(json_schema_extra={
-        "example": {
-            "huggingface_id": "Qwen/Qwen2.5-7B-Instruct",
-            "name": "qwen-7b-myproject",
-            "scope": "project",
-            "model_type": "llm",
-            "project_id": "proj-123",
-            "description": "Qwen 7B for our project",
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "huggingface_id": "Qwen/Qwen2.5-7B-Instruct",
+                "name": "qwen-7b-myproject",
+                "scope": "project",
+                "model_type": "llm",
+                "project_id": "proj-123",
+                "description": "Qwen 7B for our project",
+            }
         }
-    })
+    )
 
 
 class ModelUpdateRequest(BaseModel):
@@ -332,13 +337,15 @@ class ModelDownloadRequest(BaseModel):
     )
     custom_name: str | None = Field(None, description="Custom name for the copy")
 
-    model_config = ConfigDict(json_schema_extra={
-        "example": {
-            "target_scope": "project",
-            "project_id": "proj-123",
-            "custom_name": "qwen-7b-team-copy",
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "target_scope": "project",
+                "project_id": "proj-123",
+                "custom_name": "qwen-7b-team-copy",
+            }
         }
-    })
+    )
 
 
 class ModelDownloadResponse(BaseModel):
@@ -378,16 +385,18 @@ class PolicyCreateRequest(BaseModel):
     is_system_model: bool = Field(False, description="Mark as system model")
     default_serving_profile: ServingProfileRequest | None = Field(None)
 
-    model_config = ConfigDict(json_schema_extra={
-        "example": {
-            "model_name": "qwen-7b-instruct",
-            "allowed_projects": [],
-            "is_system_model": True,
-            "enable_warm_pool": True,
-            "warm_pool_min": 1,
-            "warm_pool_max": 3,
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "model_name": "qwen-7b-instruct",
+                "allowed_projects": [],
+                "is_system_model": True,
+                "enable_warm_pool": True,
+                "warm_pool_min": 1,
+                "warm_pool_max": 3,
+            }
         }
-    })
+    )
 
 
 class PolicyUpdateRequest(BaseModel):
@@ -866,10 +875,10 @@ async def stage_model(
         scope = ModelScope(request.scope)
 
         # Validate scope permissions
-        if scope == ModelScope.SYSTEM:
+        if scope == ModelScope.SYSTEM and not ctx.is_admin:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="Cannot stage system models via API. Contact admin.",
+                detail="Admin role required to stage system models",
             )
 
         if (
@@ -883,7 +892,9 @@ async def stage_model(
                 )
 
         # Compute target storage path based on scope
-        if scope == ModelScope.PROJECT:
+        if scope == ModelScope.SYSTEM:
+            storage_ref = os.path.join(get_resolved_model_staging_root(), request.name)
+        elif scope == ModelScope.PROJECT:
             storage_ref = f"/shared/projects/{request.project_id}/models/{request.name}"
         else:  # USER
             storage_ref = f"/shared/users/{ctx.user_id}/models/{request.name}"
@@ -1170,7 +1181,7 @@ async def _detect_via_ssh(model) -> Any:
 
     # Read all three config files in a single SSH call
     cmd = (
-        'for f in config.json tokenizer_config.json generation_config.json; do '
+        "for f in config.json tokenizer_config.json generation_config.json; do "
         'printf "\\x1e%s\\x1e\\n" "$f"; '
         f'cat "{storage_path}/$f" 2>/dev/null; '
         'printf "\\x1f"; done'
@@ -1203,7 +1214,7 @@ async def _detect_via_ssh(model) -> Any:
         if sep_idx == -1:
             continue
         fname = rest[:sep_idx].strip()
-        content = rest[sep_idx + 1:].lstrip("\n")
+        content = rest[sep_idx + 1 :].lstrip("\n")
         if fname in files and content:
             try:
                 parsed[fname] = json.loads(content)
@@ -1248,12 +1259,14 @@ class ModelPublishRequest(BaseModel):
         None, description="Override model name in target scope"
     )
 
-    model_config = ConfigDict(json_schema_extra={
-        "example": {
-            "target_project_id": "proj-123",
-            "new_name": "my-finetune-v1-published",
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "target_project_id": "proj-123",
+                "new_name": "my-finetune-v1-published",
+            }
         }
-    })
+    )
 
 
 @router.post(
@@ -1440,19 +1453,21 @@ class SystemModelCreateRequest(BaseModel):
     )
     priority: int = Field(0, description="Scheduling priority")
 
-    model_config = ConfigDict(json_schema_extra={
-        "example": {
-            "name": "qwen-7b-instruct",
-            "storage_ref": "/shared/models/Qwen2.5-7B-Instruct",
-            "model_type": "llm",
-            "huggingface_id": "Qwen/Qwen2.5-7B-Instruct",
-            "description": "Qwen 7B Instruct - system model for all users",
-            "execution_authority_default": "slurm",
-            "enable_warm_pool": True,
-            "warm_pool_min": 1,
-            "warm_pool_max": 3,
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "name": "qwen-7b-instruct",
+                "storage_ref": "/shared/models/Qwen2.5-7B-Instruct",
+                "model_type": "llm",
+                "huggingface_id": "Qwen/Qwen2.5-7B-Instruct",
+                "description": "Qwen 7B Instruct - system model for all users",
+                "execution_authority_default": "slurm",
+                "enable_warm_pool": True,
+                "warm_pool_min": 1,
+                "warm_pool_max": 3,
+            }
         }
-    })
+    )
 
 
 class SystemModelCreateResponse(BaseModel):
@@ -1946,3 +1961,222 @@ async def delete_policy(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=str(e),
         ) from e
+
+
+# =============================================================================
+# Model Version Management (GitHub Issue #87, TASK-015-004)
+# =============================================================================
+
+
+class VersionCreateRequest(BaseModel):
+    """Request to create a new model version."""
+
+    version: str = Field(..., description="Semantic version string")
+    storage_ref: str = Field(..., description="Filesystem path to model weights")
+    changelog: str | None = Field(None, max_length=2000)
+    source_type: str = Field("manual", description="manual, huggingface, s3, pvc")
+
+
+class VersionListResponse(BaseModel):
+    """Response for model version listing."""
+
+    model_id: str
+    versions: list[dict[str, Any]]
+    latest_version: str | None = None
+
+
+class VersionResponse(BaseModel):
+    """Response for a single model version."""
+
+    release_id: str
+    model_id: str
+    version: str
+    storage_ref: str
+    changelog: str | None
+    is_latest: bool
+    is_stable: bool
+    source_type: str
+    status: str
+    created_at: str | None
+
+
+class VersionActivationRequest(BaseModel):
+    """Set whether a model version is active."""
+
+    active: bool
+
+
+@router.post(
+    "/{model_id}/versions",
+    response_model=VersionResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create a new model version",
+    description="Add a new version to an existing model.",
+)
+async def create_model_version(
+    model_id: str,
+    request: VersionCreateRequest,
+    ctx: AccessContext = Depends(get_access_context),
+    store: ModelStore = Depends(get_model_store),
+) -> VersionResponse:
+    """Create a new version for a model."""
+    try:
+        ver = store.create_version(
+            model_id=model_id,
+            version=request.version,
+            storage_ref=request.storage_ref,
+            ctx=ctx,
+            changelog=request.changelog,
+            source_type=request.source_type,
+        )
+        return VersionResponse(
+            release_id=ver.version_id,
+            model_id=ver.model_id,
+            version=ver.version,
+            storage_ref=ver.storage_ref,
+            changelog=ver.changelog,
+            is_latest=ver.is_latest,
+            is_stable=ver.is_stable,
+            source_type=ver.source_type,
+            status=ver.status.value,
+            created_at=ver.created_at.isoformat() if ver.created_at else None,
+        )
+    except ModelNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Model not found: {model_id}",
+        )
+
+
+@router.get(
+    "/{model_id}/versions",
+    response_model=VersionListResponse,
+    summary="List model versions",
+    description="Get all versions for a model.",
+)
+async def list_model_versions(
+    model_id: str,
+    ctx: AccessContext = Depends(get_access_context),
+    store: ModelStore = Depends(get_model_store),
+) -> VersionListResponse:
+    """List all versions for a model."""
+    try:
+        history = store.get_model_versions(model_id, ctx)
+        versions_data = [v.to_dict() for v in history.versions]
+        latest = history.latest.version if history.latest else None
+        return VersionListResponse(
+            model_id=model_id,
+            versions=versions_data,
+            latest_version=latest,
+        )
+    except ModelNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Model not found: {model_id}",
+        )
+
+
+@router.post(
+    "/{model_id}/versions/{version_str}/activate",
+    response_model=VersionResponse,
+    summary="Activate a model version",
+    description="Promote a version to active/latest.",
+)
+async def activate_model_version(
+    model_id: str,
+    version_str: str,
+    ctx: AccessContext = Depends(get_access_context),
+    store: ModelStore = Depends(get_model_store),
+) -> VersionResponse:
+    """Activate a specific version as the latest."""
+    try:
+        ver = store.activate_version(model_id, version_str, ctx)
+        return VersionResponse(
+            release_id=ver.version_id,
+            model_id=ver.model_id,
+            version=ver.version,
+            storage_ref=ver.storage_ref,
+            changelog=ver.changelog,
+            is_latest=ver.is_latest,
+            is_stable=ver.is_stable,
+            source_type=ver.source_type,
+            status=ver.status.value,
+            created_at=ver.created_at.isoformat() if ver.created_at else None,
+        )
+    except ModelNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Version {version_str} not found for model {model_id}",
+        )
+
+
+@router.patch(
+    "/{model_id}/versions/{version_str}",
+    response_model=VersionResponse,
+    summary="Promote or demote a model version",
+)
+async def update_model_version_activation(
+    model_id: str,
+    version_str: str,
+    request: VersionActivationRequest,
+    ctx: AccessContext = Depends(get_access_context),
+    store: ModelStore = Depends(get_model_store),
+) -> VersionResponse:
+    """Promote a version or demote it by marking it deprecated."""
+    try:
+        ver = (
+            store.activate_version(model_id, version_str, ctx)
+            if request.active
+            else store.deactivate_version(model_id, version_str, ctx)
+        )
+        return VersionResponse(
+            release_id=ver.version_id,
+            model_id=ver.model_id,
+            version=ver.version,
+            storage_ref=ver.storage_ref,
+            changelog=ver.changelog,
+            is_latest=ver.is_latest,
+            is_stable=ver.is_stable,
+            source_type=ver.source_type,
+            status=ver.status.value,
+            created_at=ver.created_at.isoformat() if ver.created_at else None,
+        )
+    except ModelNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Version {version_str} not found for model {model_id}",
+        ) from exc
+
+
+@router.post(
+    "/{model_id}/versions/{version_str}/deactivate",
+    response_model=VersionResponse,
+    summary="Deprecate a model version",
+    description="Mark a version as deprecated.",
+)
+async def deactivate_model_version(
+    model_id: str,
+    version_str: str,
+    ctx: AccessContext = Depends(get_access_context),
+    store: ModelStore = Depends(get_model_store),
+) -> VersionResponse:
+    """Deprecate a specific version."""
+    try:
+        ver = store.deactivate_version(model_id, version_str, ctx)
+        return VersionResponse(
+            release_id=ver.version_id,
+            model_id=ver.model_id,
+            version=ver.version,
+            storage_ref=ver.storage_ref,
+            changelog=ver.changelog,
+            is_latest=ver.is_latest,
+            is_stable=ver.is_stable,
+            source_type=ver.source_type,
+            status=ver.status.value,
+            created_at=ver.created_at.isoformat() if ver.created_at else None,
+        )
+    except ModelNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Version {version_str} not found for model {model_id}",
+        )

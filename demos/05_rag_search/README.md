@@ -25,36 +25,37 @@ provisioning: project data at `/project` and a prebuilt index at `/rag-index`.
 ## Usage
 
 ```bash
-# Follow the step-by-step commands in README.md
+# See the numbered steps below in this README
 ```
 
 By default the demo scopes searches to Demo 02's text-file corpus by sending:
 
-- `bucket_alias=user1-textfiles`
+- `bucket_alias=demo-textfiles`
 - `modality=text_file`
 
 Override those defaults when needed:
 
 ```bash
-RAG_BUCKET_ALIAS=my-bucket RAG_MODALITY=text # Follow the step-by-step commands in README.md
+RAG_BUCKET_ALIAS=my-bucket RAG_MODALITY=text
+# Use your own bucket and modality
 ```
 
 ## Running Manually
 
 ```bash
 REPO_ROOT="$(git rev-parse --show-toplevel)"
-cd "$REPO_ROOT/umrs/demos/05_rag_search"
+cd "$(git rev-parse --show-toplevel)/$(test -d "$(git rev-parse --show-toplevel)/umrs/demos" && echo umrs)/demos/05_rag_search"
 
 RAG_URL="${RAG_URL:-http://127.0.0.1:8081}"
-RAG_BUCKET_ALIAS="${RAG_BUCKET_ALIAS:-user1-textfiles}"
+RAG_BUCKET_ALIAS="${RAG_BUCKET_ALIAS:-demo-textfiles}"
 RAG_MODALITY="${RAG_MODALITY:-text_file}"
 
 # 1. Verify UMRS and RAG connectivity.
-umrs-client ping
+umrs ping
 curl -sf "${RAG_URL%/}/docs" >/dev/null && echo "RAG docs OK"
 
 # 2. Check that embeddings already exist (run Demo 02 first if needed).
-umrs-client status all | head -5 || true
+umrs status all | head -5 || true
 
 # 3. Vector search (same style as the script).
 curl -sf -X POST "${RAG_URL%/}/rag/search" \
@@ -107,7 +108,7 @@ the compose stack.
 ```bash
 curl -s -X POST "${RAG_URL%/}/rag/search" \
   -H 'Content-Type: application/json' \
-  -d '{"query": "seismic wave propagation methods", "top_k": 5, "bucket_alias": "user1-textfiles", "modality": "text_file"}'
+  -d '{"query": "seismic wave propagation methods", "top_k": 5, "bucket_alias": "demo-textfiles", "modality": "text_file"}'
 ```
 
 Parameters:
@@ -122,7 +123,7 @@ Parameters:
 ```bash
 curl -s -X POST "${RAG_URL%/}/rag/qa" \
   -H 'Content-Type: application/json' \
-  -d '{"query": "How is ML used in geophysics?", "top_k": 5, "bucket_alias": "user1-textfiles", "modality": "text_file"}'
+  -d '{"query": "How is ML used in geophysics?", "top_k": 5, "bucket_alias": "demo-textfiles", "modality": "text_file"}'
 ```
 
 Additional parameters:

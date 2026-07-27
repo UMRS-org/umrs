@@ -36,6 +36,7 @@ class UsageRecord:
     served_model: str = ""
     endpoint_job_id: str = ""
     endpoint_tier: str = ""
+    source: str = ""  # HPC source (bdrt, rccs, ai4s, atom, …)
 
     # Tokens
     prompt_tokens: int = 0
@@ -99,12 +100,8 @@ def _parse_usage_dict(usage: dict) -> dict:
             or prompt_details.get("audio_tokens", 0)
         ),
         # Speculative decoding stats (vLLM ``spec_token_acceptance_rate``)
-        "accepted_prediction_tokens": int(
-            usage.get("accepted_prediction_tokens", 0)
-        ),
-        "rejected_prediction_tokens": int(
-            usage.get("rejected_prediction_tokens", 0)
-        ),
+        "accepted_prediction_tokens": int(usage.get("accepted_prediction_tokens", 0)),
+        "rejected_prediction_tokens": int(usage.get("rejected_prediction_tokens", 0)),
     }
 
 
@@ -198,10 +195,13 @@ def _do_record_sync(pool, record: UsageRecord) -> None:  # noqa: ANN001
             project_id=record.project_id,
             cached_read=record.cached_read_tokens,
             cached_write=record.cached_write_tokens,
+            source=record.source,
         )
-        METRICS.llm_request(record.model, record.is_streaming)
+        METRICS.llm_request(record.model, record.is_streaming, source=record.source)
         if record.duration_ms > 0:
-            METRICS.llm_request_duration(record.model, record.duration_ms / 1000.0)
+            METRICS.llm_request_duration(
+                record.model, record.duration_ms / 1000.0, source=record.source
+            )
     except Exception:
         logger.debug("Prometheus metrics unavailable", exc_info=True)
 
@@ -279,12 +279,8 @@ def fill_usage(record: UsageRecord, usage: dict) -> None:
     record.cached_write_tokens = usage.get("cached_write_tokens", 0)
     record.reasoning_tokens = usage.get("reasoning_tokens", 0)
     record.audio_tokens = usage.get("audio_tokens", 0)
-    record.accepted_prediction_tokens = usage.get(
-        "accepted_prediction_tokens", 0
-    )
-    record.rejected_prediction_tokens = usage.get(
-        "rejected_prediction_tokens", 0
-    )
+    record.accepted_prediction_tokens = usage.get("accepted_prediction_tokens", 0)
+    record.rejected_prediction_tokens = usage.get("rejected_prediction_tokens", 0)
 
 
 class ProxyTimer:

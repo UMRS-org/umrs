@@ -9,66 +9,78 @@ this demo assumes a private or site-specific HMAE setup.
 
 ## What the current script does
 
-`README.md (step-by-step commands)` performs a small, practical flow:
+The README performs a small, practical flow:
 
 1. Runs the standard pre-flight checks.
 2. Optionally registers a local HMAE model directory if `HMAE_LOCAL_MODEL_DIR`
    is set.
-3. Uploads PNG slice images to the configured HMAE bucket (`user1-hmae` by default).
+3. Uploads PNG slice images to the configured HMAE bucket (`demo-hmae` by default).
 4. Downloads the reconstruction outputs after server-side processing completes.
 
 ## Quick Start
 
 ```bash
 cd demos_private/04_hmae_inference
-# Follow the step-by-step commands in README.md
+# See the numbered steps below in this README
 ```
 
 To use a custom image directory:
 
 ```bash
-# Follow the step-by-step commands in README.md /path/to/volume_slices
+cd demos_private/04_hmae_inference
+# See the numbered steps below in this README /path/to/volume_slices
 ```
 
 To register a local checkpoint directory before running:
 
 ```bash
-HMAE_LOCAL_MODEL_DIR=/path/to/hmae_checkpoint_dir # Follow the step-by-step commands in README.md
+cd demos_private/04_hmae_inference
+HMAE_LOCAL_MODEL_DIR=/path/to/hmae_checkpoint_dir
+# See the numbered steps below in this README
 ```
 
 ## Running Manually
 
 ```bash
 # 1. Verify server connectivity
-umrs-client ping
+umrs ping
 
 # 2. (Optional) Upload a local HMAE model checkpoint
 #    On a local-client / remote-server deployment, a plain `model register`
 #    path only works for paths that already exist on the server. Use
 #    `model upload` plus an explicit server-visible register path instead.
-umrs-client model upload /path/to/hmae_checkpoint_dir \
+umrs model upload /path/to/hmae_checkpoint_dir \
   --name "hmae-pretrained" \
   --type vision --scope user \
   --description "HMAE ViT pretrained checkpoint" \
   --register-path /path/to/site-user-model-root/hmae-pretrained \
   --force
 
-# 3. Upload volume slice images to the HMAE bucket
+# 3. Register the HMAE experience (creates the demo-hmae* buckets/tables)
+umrs experience add experience.json
+
+# 4. Reload the server config so the new buckets are provisioned
+umrs reload
+
+# 5. Confirm the buckets exist before uploading
+umrs bucket list
+
+# 6. Upload volume slice images to the HMAE bucket
 #    The server will automatically dispatch images to the BentoML
 #    vision service running HMAE on GPU via Slurm.
-umrs-client upload_dir ../../demos/03_sam3_segmentation/test_data_full user1-hmae
+umrs data dir-upload ../../demos/03_sam3_segmentation/test_data_full demo-hmae
 
-# 4. Download reconstruction results
+# 7. Download reconstruction results
 #    Waits for server-side HMAE processing and retrieves output
 #    files (reconstructed images, metadata) to the local results/ directory.
-umrs-client download_results user1-hmae ./results --force-overwrite
+umrs data download demo-hmae ./results --force-overwrite
 ```
 
 ## Defaults Used By The Script
 
 | Setting | Default |
 |---|---|
-| Bucket alias | `user1-hmae` |
+| Bucket alias | `demo-hmae` |
 | Default image dir | `../../demos/03_sam3_segmentation/test_data_full` |
 | Result dir | `results/` |
 

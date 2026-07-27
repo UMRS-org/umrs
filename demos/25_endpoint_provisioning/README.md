@@ -36,7 +36,7 @@ the full demo suite does not allocate a new endpoint unless explicitly asked.
 ## Prerequisites
 
 - UMRS HTTP sidecar running (`UMRS_HTTP_URL` or default `http://localhost:8001`)
-- At least one model registered via `umrs-client model register`
+- At least one model registered via `umrs model register`
 - `curl` and `jq` installed
 - A valid project ID (default: `default-project`)
 

@@ -1,7 +1,8 @@
 # UMRS Demos
 
 Step-by-step demos ordered from basic usage to advanced features.
-Each demo has a `README.md (step-by-step commands)` that can be executed standalone.
+Each demo's `README.md` contains step-by-step commands inlined under
+"Quick Start" and "Running Manually" sections — no separate script files exist.
 
 These demos work with **any deployment** (Docker Compose, rccs-cloud, hpbd-atom,
 or any other setup) as long as the UMRS server is reachable from your client
@@ -31,14 +32,14 @@ All demos (except 08, 12, 13, 15, 21 which run locally) require:
 
   Check the active connection profile with:
   ```bash
-  umrs-client --output text profile show
+  umrs --output text profile show
   ```
 
   If the profile reports `tunnel_mode=true`, start the matching SSH tunnel
   before running demos. Site-specific tunnel scripts are available under
   `deploy/<site>/ssh_tunnel.sh`.
 
-3. **Python venv** with `umrs-client` installed.
+3. **Python venv** with `umrs` installed.
 
    This project uses [uv](https://docs.astral.sh/uv/) as the standard package manager.
    Install it once if you haven't already (`brew install uv` on macOS, or
@@ -48,7 +49,7 @@ All demos (except 08, 12, 13, 15, 21 which run locally) require:
    ```bash
    cd deploy/<site>/
   ./setup_client.sh            # installs user config, connection profile, and umrs package
-  umrs-client --output text profile show
+  umrs --output text profile show
    ```
 
    **Option B — manual:**
@@ -56,15 +57,15 @@ All demos (except 08, 12, 13, 15, 21 which run locally) require:
    uv venv .venv
    source .venv/bin/activate    # Windows: .venv\Scripts\activate
    uv pip install -e src/       # install umrs package
-   which umrs-client            # verify it's in PATH
+   which umrs            # verify it's in PATH
    ```
 
 4. **User config and connection profile** — create both with the interactive
   init subcommands:
 
   ```bash
-  umrs-client profile init           # creates ~/.config/umrs/connections/<name>.json
-  umrs-client config init            # creates ~/.config/umrs/users/<username>.json
+  umrs profile init           # creates ~/.config/umrs/connections/<name>.json
+  umrs config init            # creates ~/.config/umrs/users/<username>.json
   ```
 
   Or use a site-specific setup script which does both for you:
@@ -75,8 +76,8 @@ All demos (except 08, 12, 13, 15, 21 which run locally) require:
 
   To import an additional site profile manually:
   ```bash
-  umrs-client profile import deploy/<site>/client/connections/<site>.json
-  umrs-client profile use <site>
+  umrs profile import deploy/<site>/client/connections/<site>.json
+  umrs profile use <site>
   ```
 
 All demos source `lib/common.sh` which provides the `$CLIENT` command,
@@ -105,17 +106,17 @@ UMRS provisions the declared MinIO buckets and Postgres/pgvector database.
 
 ```bash
 # Add or update a workload experience in the active user config
-umrs-client config add-experience path/to/experience.json --update
+umrs experience add path/to/experience.json --update
 
 # Provision declared buckets, IAM policy, Postgres role/database, and tables
-umrs-client reload
+umrs reload
 
 # Remove an experience from the user JSON only; data is retained
-umrs-client experience remove <xp_name>
+umrs experience remove <xp_name>
 
 # Recover a missing experience JSON from existing MinIO/S3 buckets and
 # optional Postgres/pgvector status
-umrs-client experience recover [xp_name] \
+umrs experience recover [xp_name] \
   --username <user> \
   --s3cfg ~/.config/umrs/s3cfg_<user> \
   --output-path recovered-experience.json
@@ -125,7 +126,29 @@ Removing an experience does **not** delete MinIO buckets or pgvector data.
 Reload simply drops the experience from the active in-memory registry. If the
 same experience is re-added later, existing buckets and database tables can be
 reused. Use explicit purge tooling only when the data should be destroyed.
+## Bucket Alias Naming Convention
 
+All `experience.json` files use bucket aliases following the pattern:
+
+```
+demo-<feature>
+```
+
+| Experience | Bucket Alias(s) |
+|------------|----------------|
+| Text Embedding (02) | `demo-texts`, `demo-textfiles` |
+| SAM3 Segmentation (03) | `demo-sam3` |
+| Vision Inference (04) | `demo-images` |
+| Vision Pipeline (09) | `demo-pipeline` |
+| Vision Multi Mode (10) | `demo-vision-multi` |
+| Video Analysis (14) | `demo-video` |
+| Custom Workflow (16) | `demo-custom-text` |
+
+RAG demos (05, 19) operate on `demo-textfiles` (the text-file modality from
+Demo 02) and do not declare their own bucket alias in an experience fragment.
+
+Use descriptive, lowercase, hyphen-separated names. Avoid generic aliases like
+`my-bucket` or `user1-textfiles` — they obscure ownership and make cleanup harder.
 ## Basic Usage
 
 Core data flow: upload data → compute embeddings → search/export.
@@ -324,12 +347,11 @@ Need to see connection info, list profiles, or manage endpoints?
 | `workflow visualize` | 09, 14, 15 | Render the workflow DAG as ASCII art |
 | `workflow validate-sandbox` | 14 | Validate a workflow sandbox (Dockerfile + workflow.json) |
 | `monitor` | 22 | Live-refreshing jobs dashboard (TUI) |
-| `config add-experience` | 00, workload demos | Merge an experience JSON fragment into the active user config |
 | `config init` | 00, 31 | Create a new user config JSON |
 | `config list` | 31 | List discovered config candidates |
 | `config show` | 31 | Show resolved config stack for server, user, and S3 |
 | `config use` | 06, 07, 17 | Persist the current server/user/s3 config selections |
-| `experience add` | 31 | Merge experience fragment(s) from a JSON file (alias for `config add-experience`) |
+| `experience add` | 00, 02, 03, 04, 09, 10, 14, 16, 31 | Add experience fragment(s) from a JSON file |
 | `experience list` | 31 | List experiences in the current user config |
 | `experience remove` | 00, 99 | Remove an experience from the user JSON while retaining MinIO/Postgres data |
 | `experience recover` | 00, 99 | Reconstruct an experience JSON fragment from MinIO/S3 and optional pgvector status |

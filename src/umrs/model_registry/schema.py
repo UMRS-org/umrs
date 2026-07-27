@@ -14,7 +14,7 @@ import psycopg2
 logger = logging.getLogger(__name__)
 
 # Schema version - increment when schema changes
-MODEL_REGISTRY_SCHEMA_VERSION = 7
+MODEL_REGISTRY_SCHEMA_VERSION = 8
 
 # SQL for creating the model_catalog_entries table (U-801)
 CREATE_MODEL_CATALOG_TABLE = """
@@ -162,6 +162,8 @@ CREATE TABLE IF NOT EXISTS model_releases (
     changelog TEXT,
     is_latest BOOLEAN DEFAULT FALSE,
     is_stable BOOLEAN DEFAULT FALSE,
+    status VARCHAR(32) NOT NULL DEFAULT 'released'
+        CHECK (status IN ('draft', 'released', 'deprecated', 'archived')),
 
     -- Download/source info
     source_type VARCHAR(32) DEFAULT 'manual' CHECK (source_type IN ('manual', 'huggingface', 's3', 'pvc')),
@@ -183,8 +185,8 @@ CREATE INDEX IF NOT EXISTS idx_releases_model_version
     ON model_releases(model_id, version);
 
 -- Index for finding latest stable version
-CREATE INDEX IF NOT EXISTS idx_releases_latest
-    ON model_releases(model_id, is_latest)
+CREATE UNIQUE INDEX IF NOT EXISTS idx_releases_latest
+    ON model_releases(model_id)
     WHERE is_latest = TRUE;
 
 COMMENT ON TABLE model_releases IS 'Model version tracking (U-802) - immutable releases of model weights';
@@ -558,6 +560,34 @@ def _migrate_schema(
         cur.execute(CREATE_MODEL_CERTIFICATIONS_TABLE)
 
         logger.info("Migration to version 7 complete")
+
+    if from_version < 8:
+        logger.info("Running migration to version 8")
+        cur.execute("""
+            ALTER TABLE model_releases
+            ADD COLUMN IF NOT EXISTS status VARCHAR(32) NOT NULL DEFAULT 'released'
+        """)
+        cur.execute("DROP INDEX IF EXISTS idx_releases_latest")
+        cur.execute("""
+            WITH ranked AS (
+                SELECT release_id,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY model_id
+                           ORDER BY published_at DESC NULLS LAST, created_at DESC
+                       ) AS rank
+                FROM model_releases
+                WHERE is_latest = TRUE
+            )
+            UPDATE model_releases AS release
+            SET is_latest = FALSE
+            FROM ranked
+            WHERE release.release_id = ranked.release_id AND ranked.rank > 1
+        """)
+        cur.execute("""
+            CREATE UNIQUE INDEX idx_releases_latest
+            ON model_releases(model_id) WHERE is_latest = TRUE
+        """)
+        logger.info("Migration to version 8 complete")
 
 
 def drop_schema(conn: psycopg2.extensions.connection) -> None:
