@@ -694,3 +694,43 @@ class KnowledgeStore:
         # This method is intentionally minimal — content is stored in S3,
         # not in the artifact row.
         return None
+
+
+# ── Global store singleton ────────────────────────────────────────────────────
+# TODO: This is a temporary fix. Define proper store factory.
+
+_pool: Any = None
+
+
+def get_store() -> "KnowledgeStore":
+    """Return the global KnowledgeStore singleton.
+    
+    Uses a simple pool-based singleton pattern. In production,
+    this should be replaced with a proper dependency injection
+    or factory pattern.
+    """
+    global _pool
+    if _pool is None:
+        raise RuntimeError(
+            "Knowledge store pool not initialized. "
+            "Call build_knowledge_pool(uri) first."
+        )
+    if not hasattr(get_store, "_instance") or get_store._instance is None:
+        get_store._instance = KnowledgeStore(_pool)  # type: ignore[attr-defined]
+    return get_store._instance  # type: ignore[attr-defined]
+
+
+def build_knowledge_pool(uri: str, **kwargs) -> Any:
+    """Create the asyncpg pool for the knowledge store."""
+    import asyncpg  # type: ignore[import-untyped]
+
+    _pool = asyncio.get_event_loop().run_until_complete(
+        asyncpg.create_pool(dsn=uri, **kwargs)
+    )
+    return _pool
+
+
+def reset_store() -> None:
+    """Reset the store singleton for testing."""
+    if hasattr(reset_store, "_instance"):
+        delattr(reset_store, "_instance")
