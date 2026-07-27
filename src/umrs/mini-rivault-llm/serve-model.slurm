@@ -1175,8 +1175,12 @@ start_native_glm52() {
     # exactly RAY_NODES[0], so the head can simply run here: the batch shell
     # lives for the whole job, and (per the container path's note below) batch
     # shells are also immune to this cluster's ~60 s srun-step killer.
-    if [[ "$(hostname -s)" != "${RAY_NODES[0]}" ]]; then
-        echo "[rivault] FATAL: batch step on $(hostname -s), expected head node ${RAY_NODES[0]}" >&2
+    # Compare against SLURMD_NODENAME, not `hostname -s`: on this cluster the
+    # Slurm node names (dgx-spark-N) differ from the hosts' own short hostnames
+    # (spark-atom-N), and RAY_NODES holds Slurm node names.
+    _batch_node="${SLURMD_NODENAME:-$(hostname -s)}"
+    if [[ "${_batch_node}" != "${RAY_NODES[0]}" ]]; then
+        echo "[rivault] FATAL: batch step on ${_batch_node}, expected head node ${RAY_NODES[0]}" >&2
         return 1
     fi
     env ${ray_common} VLLM_HOST_IP="${head_ip}" \
