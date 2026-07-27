@@ -67,5 +67,24 @@ UMRS_SITE_NAME="${UMRS_SITE_NAME:-${UMRS_CLUSTER}}"
 # Slurm partitions probed by harness_probe.sh. Newline- or space-separated.
 UMRS_PARTITIONS="${UMRS_PARTITIONS:-}"
 
+# Pool roster(s) consulted when a SINGLE endpoint is provisioned (`r4 endpoint
+# up`, the VS Code play button) — os.pathsep-joined, read by
+# umrs.orchestrator.provision_roster.
+#
+# Leaving this unset is a silent trap: the provision falls back to 1-node /
+# 1-GPU defaults AND drops the roster's per-deployment vLLM overrides
+# (VLLM_DOCKER_IMAGE, tool/reasoning parsers, patch bind-mounts). A large
+# multi-node model then lands on a partition that cannot satisfy it and Slurm
+# holds the job pending forever.
+#
+# Clusters set this in cluster.env, which is sourced above and so may reference
+# ${UMRS_CLUSTER_DIR}. Default to the conventional roster filename when the
+# cluster ships one, otherwise stay empty (provision_roster treats an unset or
+# empty value as "no roster", preserving historical behaviour).
+if [[ -z "${UMRS_PROVISION_ROSTER:-}" && -f "${UMRS_CLUSTER_DIR}/pool-${UMRS_CLUSTER}.yaml" ]]; then
+    UMRS_PROVISION_ROSTER="${UMRS_CLUSTER_DIR}/pool-${UMRS_CLUSTER}.yaml"
+fi
+UMRS_PROVISION_ROSTER="${UMRS_PROVISION_ROSTER:-}"
+
 export UMRS_CLUSTER UMRS_MODEL_ROOT UMRS_SSH_ALIAS UMRS_GATEWAY_PORT \
-    UMRS_CLIENT_PROFILE UMRS_SITE_NAME UMRS_PARTITIONS
+    UMRS_CLIENT_PROFILE UMRS_SITE_NAME UMRS_PARTITIONS UMRS_PROVISION_ROSTER
