@@ -196,7 +196,14 @@ endpoints:
       # FP8 checkpoint has native kv_cache_scheme (8-bit), vLLM resolves to
       # fp8_e4m3 automatically — no flag needed.
       VLLM_MOE_BACKEND: "marlin"
-      VLLM_DOCKER_IMAGE: "docker.io/vllm/vllm-openai:latest"
+      # PINNED, not :latest — :latest silently moved v0.25.1 -> v0.26.0 (built
+      # 2026-07-27) and broke this recipe: DFlash's _create_draft_vllm_config()
+      # now flows through a changed AttentionConfig/replace() path, surfacing as
+      # "ValueError: Field 'backend_per_kind' not found in AttentionConfig" at
+      # EngineCore startup. hy3-arm64-cu130 is a fixed tag already validated on
+      # this hardware (checked job 2963: also lacks get_cache_scale, i.e. same
+      # vLLM vintage as the working 0.25.1 recipe) and does not float underneath us.
+      VLLM_DOCKER_IMAGE: "docker.io/vllm/vllm-openai:hy3-arm64-cu130"
       # Laguna emits poolside-format tool calls (<tool_call>name<arg_key>k</arg_key>
       # <arg_value>v</arg_value></tool_call>) and </think> reasoning markers. The
       # default hermes parser cannot parse them → tool calls leak as plain text and
