@@ -330,6 +330,9 @@ endpoints:
       VLLM_KV_CACHE_MEMORY_BYTES: "10737418240"
       VLLM_TENSOR_PARALLEL_SIZE: "2"
       RIVAULT_NATIVE_LLM_RUNNER: "glm52-vllm-moet"
+      # Pin the runner to this partition (checked in start_native_glm52).
+      # Must match `partition:` above.
+      VLLM_REQUIRED_PARTITION: "spark-double"
       # GLM-5.2 emits GLM-format tool calls + <think> reasoning; without parsers
       # tool calls leak as plain text and agent clients stall (same failure
       # class as Laguna/poolside_v1). Model-card recipe parsers:
