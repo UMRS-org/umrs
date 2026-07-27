@@ -6135,7 +6135,7 @@ def _action_s3_transfer(ctx):
         return 1
 
     if args.verbose:
-        action_label = "Retreiving" if args.action == "download_results" else "Storing"
+        action_label = "Retrieving" if args.action == "download_results" else "Storing"
         print(
             f"{action_label} data for:\n\tUser: '{username}'\n\tXP: '{xp_name}'\n\tModality: '{modality}'"
         )
@@ -6148,7 +6148,9 @@ def _action_s3_transfer(ctx):
             "notify_server",
             f"server rejected PROCESS_OBJECTS notification for {count} object(s)",
         )
-        emit_cli_warning(warning, output_format=args.output)
+        body = emit_cli_warning(warning, output_format=args.output)
+        if args.output == "json":
+            print(api_json(**body))
         return False
 
     def process_file(
@@ -6314,7 +6316,8 @@ def _action_s3_transfer(ctx):
         effective_username = args.username
         verbose = args.verbose
         wait_for_ready = getattr(args, "wait", True)
-        max_wait_sec = int(getattr(args, "timeout", 3600) or 3600)
+        timeout_val = getattr(args, "timeout", None)
+        max_wait_sec = int(timeout_val) if timeout_val is not None else 3600
         if not effective_username and isinstance(ctx.user, dict):
             effective_username = ctx.user.get("username")
         if not effective_username:
@@ -6367,7 +6370,7 @@ def _action_s3_transfer(ctx):
 
             poll_timeout = 1
             wait_start = time.time()
-            print(format_wait_progress(readiness, elapsed_sec=0), flush=True)
+            print(format_wait_progress(readiness, elapsed_sec=0), flush=True, file=sys.stderr)
             while not readiness.ready:
                 elapsed = int(time.time() - wait_start)
                 if elapsed >= max_wait_sec:
@@ -6427,6 +6430,7 @@ def _action_s3_transfer(ctx):
                             elapsed_sec=int(time.time() - wait_start),
                         ),
                         flush=True,
+                        file=sys.stderr,
                     )
                 elif verbose:
                     print(readiness.message, flush=True)

@@ -10,6 +10,7 @@ Endpoints:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import re
@@ -415,8 +416,6 @@ async def generate_presigned_url(
                 detail="Job status is unavailable; download cannot be authorized",
             )
 
-        import asyncio
-
         deadline = asyncio.get_running_loop().time() + request.block_timeout
         while True:
             try:
@@ -802,7 +801,7 @@ async def check_download_status(
                 )
 
             # Wait before polling again
-            time.sleep(2)
+            await asyncio.sleep(2)
 
         return DownloadStatusResponse(
             ready=False,
