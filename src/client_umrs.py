@@ -12,6 +12,14 @@ from pathlib import Path
 from typing import Any
 
 from umrs.client.control_api import UMRSControlAPI
+from umrs.client.download_results import (
+    classify_wait_reply,
+    format_wait_progress,
+    incomplete_error_payload,
+    parse_process_objects_readiness,
+)
+from umrs.client.warnings_cli import emit_cli_warning
+from umrs.shared.warnings import operation_ignored_warning, print_warning_structured
 from umrs.client.control_commands import (
     MODEL_SCOPE_CHOICES,
     MODEL_TYPE_CHOICES,
@@ -5775,6 +5783,7 @@ def _action_status(ctx):
                 output_format=args.output,
             )
         )
+        return 1
     finally:
         ctx.control_mq.close()
     return 0
@@ -6131,6 +6140,17 @@ def _action_s3_transfer(ctx):
             f"{action_label} data for:\n\tUser: '{username}'\n\tXP: '{xp_name}'\n\tModality: '{modality}'"
         )
 
+    def _notify_after_upload(username, count):
+        ok = ctx.control_mq.notify_server(username, TaskCmd.PROCESS_OBJECTS, count)
+        if ok:
+            return True
+        warning = operation_ignored_warning(
+            "notify_server",
+            f"server rejected PROCESS_OBJECTS notification for {count} object(s)",
+        )
+        emit_cli_warning(warning, output_format=args.output)
+        return False
+
     def process_file(
         s3,
         full_bucket_name,
@@ -6144,7 +6164,7 @@ def _action_s3_transfer(ctx):
     ):
         if not os.path.isfile(file_path):
             print(f"Error: file {file_path} is not a valid.")
-            return None, 0
+            return None, 0, True
 
         category = modality_category(modality)
         print(
@@ -6161,16 +6181,18 @@ def _action_s3_transfer(ctx):
                 metadata_args,
                 check=(modality not in ("volume", "movie", "volume_movie")),
             )
+            notify_ok = True
             if s3_key and notify_server:
-                ctx.control_mq.notify_server(username, TaskCmd.PROCESS_OBJECTS, 1)
-            return s3_key, 1
+                notify_ok = _notify_after_upload(username, 1)
+            return s3_key, 1, notify_ok
         elif category == "text_file":
             s3_key = s3_store_text_file(
                 s3, full_bucket_name, subdir, file_path, data_mq, metadata_args
             )
+            notify_ok = True
             if s3_key and notify_server:
-                ctx.control_mq.notify_server(username, TaskCmd.PROCESS_OBJECTS, 1)
-            return s3_key, 1
+                notify_ok = _notify_after_upload(username, 1)
+            return s3_key, 1, notify_ok
         elif category == "text":
             try:
                 with open(file_path) as file:
@@ -6189,13 +6211,10 @@ def _action_s3_transfer(ctx):
                             )
                             s3_key_list.append(s3_key)
                             nb_objects += 1
+                    notify_ok = True
                     if notify_server and nb_objects > 0:
-                        ctx.control_mq.notify_server(
-                            username,
-                            TaskCmd.PROCESS_OBJECTS,
-                            nb_objects,
-                        )
-                    return s3_key_list, nb_objects
+                        notify_ok = _notify_after_upload(username, nb_objects)
+                    return s3_key_list, nb_objects, notify_ok
             except UnicodeDecodeError as e:
                 print(f"Unicode decoding error: {e}")
                 print(
@@ -6206,14 +6225,14 @@ def _action_s3_transfer(ctx):
                 f"Error: Unknown modality category '{category}' (modality: '{modality}'). Nothing has been sent to the server"
             )
 
-        return None, 0
+        return None, 0, True
 
     def process_dir(
         path, s3, full_bucket_name, subdir, modality, data_mq, metadata_args, username
     ):
         if not os.path.isdir(path):
             print(f"Error: {path} is not a valid directory.")
-            return [], []
+            return [], [], True
 
         s3_key_list = []
         file_list = []
@@ -6245,7 +6264,7 @@ def _action_s3_transfer(ctx):
                 else:
                     file_subdir = rel_dir
 
-                s3_key, nb_sent = process_file(
+                s3_key, nb_sent, _notify_ok = process_file(
                     s3,
                     full_bucket_name,
                     file_subdir,
@@ -6266,8 +6285,9 @@ def _action_s3_transfer(ctx):
                         file_list.append(file_path)
                     nb_objects += nb_sent
 
+        notify_ok = True
         if nb_objects > 0:
-            ctx.control_mq.notify_server(username, TaskCmd.PROCESS_OBJECTS, nb_objects)
+            notify_ok = _notify_after_upload(username, nb_objects)
         elif nb_files_seen == 0:
             print(f"Error: directory '{path}' contains no files to upload.")
         elif broken_symlinks:
@@ -6288,11 +6308,13 @@ def _action_s3_transfer(ctx):
                 f"were accepted for modality '{modality}'. Check that the "
                 "files match the expected type for this modality."
             )
-        return s3_key_list, file_list
+        return s3_key_list, file_list, notify_ok
 
     def download_results_fn(full_bucket_name, modality, subdir):
         effective_username = args.username
         verbose = args.verbose
+        wait_for_ready = getattr(args, "wait", True)
+        max_wait_sec = int(getattr(args, "timeout", 3600) or 3600)
         if not effective_username and isinstance(ctx.user, dict):
             effective_username = ctx.user.get("username")
         if not effective_username:
@@ -6317,53 +6339,102 @@ def _action_s3_transfer(ctx):
             }
             return False, response
 
-        done = False
-        print_only_new = False
-        objects_received = set()
-        timeout = 1
-        _wait_start = time.time()
-        while not done:
+        def _fetch_readiness():
             raw_response = ctx.control_mq.request_status(
                 effective_username, TaskCmd.PROCESS_OBJECTS
             )
             if raw_response is None:
-                break
-            parsed = _json.loads(raw_response)
+                return parse_process_objects_readiness(None, full_bucket_name)
+            try:
+                parsed = _json.loads(raw_response)
+            except (_json.JSONDecodeError, TypeError):
+                return parse_process_objects_readiness(None, full_bucket_name)
+            if not isinstance(parsed, dict):
+                return parse_process_objects_readiness(None, full_bucket_name)
+            return parse_process_objects_readiness(parsed, full_bucket_name)
 
-            message = parsed.get("message")
-            if message == "No status entries":
-                done = True
-            else:
-                data = parsed["summary"]["data"]
-                done = not any(
-                    entry["status"] not in ("Done", "Idle")
-                    and any(
-                        w["bucket"] == full_bucket_name
-                        or full_bucket_name == w["bucket"] + "-output"
-                        for w in entry["work"]
-                    )
-                    for entry in data
+        readiness = _fetch_readiness()
+        if not readiness.ready:
+            if not wait_for_ready:
+                payload, _warning = incomplete_error_payload(
+                    readiness,
+                    full_bucket_name=full_bucket_name,
+                    subdir=subdir,
+                    modality=modality,
+                    output_format=args.output,
                 )
-            if not done:
-                if verbose:
-                    elapsed = int(time.time() - _wait_start)
-                    print(
-                        f"Waiting for update... (elapsed: {elapsed // 60}m {elapsed % 60}s)"
+                return False, payload
+
+            poll_timeout = 1
+            wait_start = time.time()
+            print(format_wait_progress(readiness, elapsed_sec=0), flush=True)
+            while not readiness.ready:
+                elapsed = int(time.time() - wait_start)
+                if elapsed >= max_wait_sec:
+                    payload, _warning = incomplete_error_payload(
+                        readiness,
+                        full_bucket_name=full_bucket_name,
+                        subdir=subdir,
+                        modality=modality,
+                        output_format=args.output,
+                        elapsed_sec=elapsed,
+                        timed_out=True,
+                        max_wait_sec=max_wait_sec,
                     )
+                    return False, payload
+
                 res = ctx.control_mq.wait_for_new_data(
-                    effective_username, full_bucket_name, timeout=timeout
+                    effective_username, full_bucket_name, timeout=poll_timeout
                 )
-                if res == "TIMEOUT":
-                    timeout = min(timeout * 2, 64)
-                elif res == "UPDATE":
-                    timeout = 1
+                kind = classify_wait_reply(res)
+                if kind == "timeout":
+                    poll_timeout = min(poll_timeout * 2, 64)
+                elif kind == "update":
+                    poll_timeout = 1
+                elif kind == "hard_error":
+                    response = {
+                        "status": "error",
+                        "message": (
+                            f"Cannot wait for results for bucket "
+                            f"'{full_bucket_name}': server returned '{res}'."
+                        ),
+                        "bucket": full_bucket_name,
+                        "subdir": subdir,
+                        "modality": modality,
+                        "server_reply": res,
+                        "output_format": args.output,
+                    }
+                    return False, response
                 else:
-                    if verbose:
-                        print(
-                            f"Error: receiving '{res}' from server while waiting to be notified for new data"
-                        )
+                    response = {
+                        "status": "error",
+                        "message": (
+                            f"Unexpected reply while waiting for results: '{res}'."
+                        ),
+                        "bucket": full_bucket_name,
+                        "subdir": subdir,
+                        "modality": modality,
+                        "server_reply": res,
+                        "output_format": args.output,
+                    }
+                    return False, response
+
+                readiness = _fetch_readiness()
+                if not readiness.ready:
+                    print(
+                        format_wait_progress(
+                            readiness,
+                            elapsed_sec=int(time.time() - wait_start),
+                        ),
+                        flush=True,
+                    )
+                elif verbose:
+                    print(readiness.message, flush=True)
+
+        print_only_new = False
+        objects_received = set()
         objects_list, _, checksums = list_s3_bucket(s3, full_bucket_name, prefix=subdir)
-        downloaded_files, _ = download_objects(
+        download_result = download_objects(
             s3,
             objects_list,
             checksums,
@@ -6372,8 +6443,39 @@ def _action_s3_transfer(ctx):
             force_overwrite=args.force_overwrite,
             print_only_new=print_only_new,
         )
+        if download_result is None:
+            response = {
+                "status": "error",
+                "message": (
+                    f"Local path {args.local_path} is not a directory. Nothing downloaded."
+                ),
+                "bucket": full_bucket_name,
+                "subdir": subdir,
+                "modality": modality,
+                "output_format": args.output,
+            }
+            return False, response
 
-        objects_received.update(downloaded_files)
+        downloaded_files, _ = download_result
+        objects_received.update(downloaded_files or [])
+
+        if not objects_list:
+            response = {
+                "status": "warning",
+                "message": (
+                    f"Task is complete but no objects found in output bucket "
+                    f"'{full_bucket_name}'"
+                    + (f" (prefix '{subdir}')" if subdir else "")
+                    + "."
+                ),
+                "bucket": full_bucket_name,
+                "local_path": args.local_path,
+                "subdir": subdir,
+                "modality": modality,
+                "output_format": args.output,
+                "objects_received": "[]",
+            }
+            return True, response
 
         response = {
             "status": "ok",
@@ -6387,9 +6489,10 @@ def _action_s3_transfer(ctx):
         }
         return True, response
 
+    upload_exit_code = 0
     try:
         if args.action == "upload_file":
-            s3_key, nb_sent = process_file(
+            s3_key, nb_sent, notify_ok = process_file(
                 s3,
                 full_bucket_name,
                 subdir,
@@ -6400,7 +6503,9 @@ def _action_s3_transfer(ctx):
                 username,
                 notify_server=True,
             )
-            if s3_key:
+            if s3_key and not notify_ok:
+                upload_exit_code = 1
+            elif s3_key:
                 print(
                     api_json(
                         s3_key=s3_key,
@@ -6421,9 +6526,10 @@ def _action_s3_transfer(ctx):
                         output_format=args.output,
                     )
                 )
+                upload_exit_code = 1
 
         elif args.action == "upload_dir":
-            s3_key_list, file_list = process_dir(
+            s3_key_list, file_list, notify_ok = process_dir(
                 args.path,
                 s3,
                 full_bucket_name,
@@ -6433,7 +6539,9 @@ def _action_s3_transfer(ctx):
                 metadata_args,
                 username,
             )
-            if len(s3_key_list) > 0:
+            if len(s3_key_list) > 0 and not notify_ok:
+                upload_exit_code = 1
+            elif len(s3_key_list) > 0:
                 print(
                     api_json(
                         s3_key_list=s3_key_list,
@@ -6455,16 +6563,38 @@ def _action_s3_transfer(ctx):
                         output_format=args.output,
                     )
                 )
+                upload_exit_code = 1
         elif args.action == "download_results":
             ok, response = download_results_fn(full_bucket_name, modality, subdir)
+            if not ok and args.output != "json" and response.get("warnings"):
+                from umrs.shared.warnings import UMRSWarning, WarningCategory
+
+                for warning_dict in response["warnings"]:
+                    category_value = warning_dict.get("category", "recoverable_error")
+                    warning = UMRSWarning(
+                        category=WarningCategory(category_value),
+                        message=warning_dict.get("message", ""),
+                        details=warning_dict.get("details", {}),
+                        suggestion=warning_dict.get("suggestion"),
+                        retry_after=warning_dict.get("retry_after_seconds"),
+                    )
+                    print_warning_structured(warning)
             print(api_json(**response))
+            ctx.control_mq.close()
+            data_mq.close()
+            return 0 if ok and response.get("status") != "error" else 1
     except Exception as e:
         print(api_json(status="error", message=str(e), output_format=args.output))
         if args.verbose:
             traceback.print_exc()
+        ctx.control_mq.close()
+        data_mq.close()
+        return 1
 
     ctx.control_mq.close()
     data_mq.close()
+    if args.action in ("upload_file", "upload_dir"):
+        return upload_exit_code
     return 0
 
 
@@ -7021,6 +7151,33 @@ def main():
         action="store_true",
         default=False,
         help="Force overwriting existing local files even if checksums mismatch.",
+    )
+    wait_group = dd_p.add_mutually_exclusive_group()
+    wait_group.add_argument(
+        "--wait",
+        dest="wait",
+        action="store_true",
+        default=True,
+        help=(
+            "Block until PROCESS_OBJECTS work for this bucket is complete "
+            "before downloading (default)."
+        ),
+    )
+    wait_group.add_argument(
+        "--no-wait",
+        dest="wait",
+        action="store_false",
+        help=(
+            "Fail immediately with a warning if the task is still incomplete "
+            "or status is unknown."
+        ),
+    )
+    dd_p.add_argument(
+        "--timeout",
+        type=int,
+        default=3600,
+        metavar="SECONDS",
+        help="Max seconds to wait when --wait is set (default: 3600).",
     )
     dd_p.add_argument(
         "username",

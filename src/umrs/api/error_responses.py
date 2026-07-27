@@ -109,7 +109,25 @@ async def structured_warning_exception_handler(
 
     if not isinstance(exc, UMRSWarningError):
         raise exc
+
+    request_id = ""
+    try:
+        from umrs.server.correlation import get_request_id
+
+        request_id = get_request_id()
+    except Exception:
+        pass
+
+    body = blocking_warning_response(exc.warning)
+    if request_id:
+        body["request_id"] = request_id
+
+    headers: dict[str, str] = {}
+    if exc.warning.retry_after is not None:
+        headers["Retry-After"] = str(exc.warning.retry_after)
+
     return JSONResponse(
         status_code=exc.http_status,
-        content=blocking_warning_response(exc.warning),
+        content=body,
+        headers=headers,
     )
