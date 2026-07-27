@@ -291,7 +291,7 @@ endpoints:
       # Cross-node TP2: each rank reads all 99 shards (~84.5 GB/rank).
       RCCS_SKIP_CDI: "1"
 
-  # ── GLM-5.2 (2 nodes → edge-double) ──────────────────────────────────
+  # ── GLM-5.2 (2 nodes → spark-double) ─────────────────────────────────
   #  753B MoE (FP8 + NVFP4 2-bit experts).
   #  zai-org/GLM-5.2-FP8 checkpoint + pruned TP2 planes (2-bit experts).
   #  Recipe: https://howtospark.com/recipes/glm-5-2-dual-spark-tp2
@@ -299,11 +299,24 @@ endpoints:
   #  and rank-local TP2 planes pruned to 208 experts (~79 GiB/rank).
   #  Base recipe: ~15 tok/s at 96K context with native MTP k=1.
   #  Stock vLLM containers and load-time plane conversion are unsupported.
+  #
+  #  Placed on `spark-double` (dgx-spark-[0-1] = spark-atom-0/1) so it does
+  #  NOT contend with laguna-s-2.1-fp8, which occupies `edge-double`
+  #  (dgx-spark-[3-4]). Both are 2-node cross-node TP2 deployments and the
+  #  cluster has only two double partitions.
+  #
+  #  Fabric on the atom nodes matches the edge nodes: `enp1s0f1np1` carries
+  #  10.200.0.1/30 (atom-0) <-> 10.200.0.2/30 (atom-1). The native
+  #  glm52-vllm-moet path already pins NCCL/GLOO to VLLM_FABRIC_IFACE
+  #  (default `enp1s0f1np1`), which is REQUIRED here: the atom nodes also run
+  #  k8s (flannel.1/cni0/docker0) and expose many IPv6-link-local-only veth*
+  #  interfaces that NCCL would otherwise auto-select and fail on — the same
+  #  failure class as the laguna job-3033 outage (see 2026-07-28 memory).
   - name: glm-5.2
     model: glm-5.2
     tier: system
     node_count: 2
-    partition: edge-double
+    partition: spark-double
     max_model_len: 98304
     env_vars:
       VLLM_HOST_MODEL_PATH: "/home/mnagaso/umrs_models/hub/models--zai-org--GLM-5.2-FP8/snapshots"
