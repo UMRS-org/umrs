@@ -13,6 +13,8 @@ def render_sbatch_script(
     **kwargs: Any,
 ) -> str:
     """Generate sbatch script content for a Singularity Mini-RiVault job."""
+    env_overrides = kwargs.get("env", {}) or {}
+
     partition = kwargs.get("partition_override") or kwargs.get(
         "partition", cfg.slurm_partition
     )
@@ -42,7 +44,7 @@ def render_sbatch_script(
                 mem,
                 node_count,
             ),
-            _script_config(cfg, model_path),
+            _script_config(cfg, model_path, env_overrides),
             _script_job_info(),
             _script_cleanup(),
             _script_validation(),
@@ -95,27 +97,53 @@ def _script_header(
 set -e"""
 
 
-def _script_config(cfg: OrchestratorConfig, model_path: str) -> str:
-    return f"""# Configuration
-VLLM_MODEL_PATH=\"{model_path}\"
-VLLM_PORT={cfg.vllm_port}
-LITELLM_PORT={cfg.litellm_port}
-LITELLM_MASTER_KEY=\"{cfg.litellm_master_key}\"
-VLLM_MAX_MODEL_LEN={cfg.vllm_max_model_len}
-VLLM_MAX_NUM_SEQS={cfg.vllm_max_num_seqs}
-VLLM_TENSOR_PARALLEL_SIZE={cfg.vllm_tensor_parallel_size}
-VLLM_GPU_MEMORY_UTILIZATION={cfg.vllm_gpu_memory_utilization}
-VLLM_ENABLE_PREFIX_CACHING={"true" if cfg.vllm_enable_prefix_caching else "false"}
-SINGULARITY_IMAGE=\"{cfg.singularity_image}\"
-JOB_INFO_DIR=\"{cfg.slurm_job_info_dir}\"
+def _script_config(
+    cfg: OrchestratorConfig, model_path: str, env: dict | None = None
+) -> str:
+    """Generate the configuration section of the sbatch script.
 
-echo \"=============================================\"
-echo \"Mini-RiVault Slurm Job\"
-echo \"=============================================\"
-echo \"Job ID:      $SLURM_JOB_ID\"
-echo \"Node:        $(hostname)\"
-echo \"Model:       $VLLM_MODEL_PATH\"
-echo \"=============================================\""""
+    The ``env`` dict (from caller overrides like ``submit_env``) takes
+    precedence over the orchestrator config so that pool-YAML
+    ``max_model_len`` and similar runtime knobs reach vLLM instead of
+    silently defaulting to the site-config value (typically 4096).
+    """
+    env = env or {}
+    _vllm_env: dict[str, str | bool] = {
+        "VLLM_MODEL_PATH": model_path,
+        "VLLM_PORT": str(cfg.vllm_port),
+        "LITELLM_PORT": str(cfg.litellm_port),
+        "LITELLM_MASTER_KEY": cfg.litellm_master_key,
+        "VLLM_MAX_MODEL_LEN": str(
+            env.get("VLLM_MAX_MODEL_LEN", cfg.vllm_max_model_len)
+        ),
+        "VLLM_MAX_NUM_SEQS": str(env.get("VLLM_MAX_NUM_SEQS", cfg.vllm_max_num_seqs)),
+        "VLLM_TENSOR_PARALLEL_SIZE": str(
+            env.get("VLLM_TENSOR_PARALLEL_SIZE", cfg.vllm_tensor_parallel_size)
+        ),
+        "VLLM_GPU_MEMORY_UTILIZATION": str(
+            env.get("VLLM_GPU_MEMORY_UTILIZATION", cfg.vllm_gpu_memory_utilization)
+        ),
+        "VLLM_ENABLE_PREFIX_CACHING": cfg.vllm_enable_prefix_caching,
+        "SINGULARITY_IMAGE": cfg.singularity_image,
+        "JOB_INFO_DIR": cfg.slurm_job_info_dir,
+    }
+    lines = ["# Configuration"]
+    for key, value in _vllm_env.items():
+        if value is True:
+            lines.append(f"{key}=true")
+        elif value is False:
+            lines.append(f"{key}=false")
+        else:
+            lines.append(f'{key}="{value}"')
+    lines.append("")
+    lines.append('echo "============================================="')
+    lines.append('echo "Mini-RiVault Slurm Job"')
+    lines.append('echo "============================================="')
+    lines.append('echo "Job ID:      $SLURM_JOB_ID"')
+    lines.append('echo "Node:        $(hostname)"')
+    lines.append('echo "Model:       $VLLM_MODEL_PATH"')
+    lines.append('echo "============================================="')
+    return "\n".join(lines)
 
 
 def _script_job_info() -> str:

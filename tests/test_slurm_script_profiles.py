@@ -31,3 +31,34 @@ def test_slurm_script_uses_configured_log_dir_and_modules():
 
 def test_empty_slurm_modules_render_no_site_modules_comment():
     assert module_load_lines([]) == "# No site modules configured"
+
+
+def test_env_overrides_take_precedence_over_site_config():
+    """Caller-supplied env (pool YAML max_model_len) must beat site config."""
+    cfg = OrchestratorConfig(
+        model_path="/models/test",
+        vllm_max_model_len=512,
+        vllm_max_num_seqs=4,
+        vllm_tensor_parallel_size=1,
+        vllm_gpu_memory_utilization=0.9,
+    )
+
+    default_script = render_sbatch_script(cfg, "/models/test")
+    assert 'VLLM_MAX_MODEL_LEN="512"' in default_script
+
+    script = render_sbatch_script(
+        cfg,
+        "/models/test",
+        env={
+            "VLLM_MAX_MODEL_LEN": "262144",
+            "VLLM_MAX_NUM_SEQS": "16",
+            "VLLM_TENSOR_PARALLEL_SIZE": "4",
+            "VLLM_GPU_MEMORY_UTILIZATION": "0.85",
+        },
+    )
+
+    assert 'VLLM_MAX_MODEL_LEN="262144"' in script
+    assert 'VLLM_MAX_NUM_SEQS="16"' in script
+    assert 'VLLM_TENSOR_PARALLEL_SIZE="4"' in script
+    assert 'VLLM_GPU_MEMORY_UTILIZATION="0.85"' in script
+    assert 'VLLM_MAX_MODEL_LEN="512"' not in script
