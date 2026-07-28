@@ -1239,8 +1239,14 @@ start_native_glm52() {
     srun --nodes=1 --ntasks=1 --nodelist="${RAY_NODES[1]}" --overlap \
         "${venv}/bin/python" "${repo}/spark/purge-cache.py" "$(dirname "${model}")" || true
 
-    if [[ -n "${VLLM_EXTRA_ARGS:-}" ]]; then
-        read -r -a native_extra_args <<< "${VLLM_EXTRA_ARGS}"
+    # Use the RAW roster flags, not the merged VLLM_EXTRA_ARGS: the merge above
+    # prepends container-only paths (e.g. `--tokenizer=/tokenizer`, a bind-mount
+    # target that exists only inside the vLLM container). This runner executes a
+    # bare host venv, where that path does not exist — job 3047 died with
+    # HFValidationError: Repo id ... '/tokenizer'. GLM-5.2's tokenizer lives in
+    # the model snapshot directory, so no --tokenizer flag is needed here.
+    if [[ -n "${_roster_extra_args:-}" ]]; then
+        read -r -a native_extra_args <<< "${_roster_extra_args}"
     fi
     # Tool/reasoning parsers: GLM-5.2 emits GLM-format tool calls and <think>
     # reasoning. Without parsers, tool calls leak as plain text and agent
