@@ -451,6 +451,12 @@ endpoints:
   #  Supersedes the stale single-node `deepseek-v4-flash` entry in
   #  pool-bdrt-3models.yaml (partition `spark`, enforce-eager, deepseek_r1
   #  parser). That entry's weights are no longer staged.
+  # NOTE: originally targeted `spark-double`, but dgx-spark-1 (spark-atom-1)
+  # has a broken rootless podman store — every container create fails with
+  #   mknod .../merged/run/.containerenv: no data available   (ENODATA)
+  # from fuse-overlayfs. It survives `podman system reset -f`, so it is a
+  # node-level fault, not a stale-image problem. dgx-spark-[3-4] smoke-test
+  # clean, so this runs on `edge-double` until dgx-spark-1 is repaired.
   - name: deepseek-v4-flash
     model: deepseek-v4-flash
     tier: system
@@ -461,7 +467,17 @@ endpoints:
       VLLM_HOST_MODEL_PATH: "/home/mnagaso/umrs_models/hub/models--deepseek-ai--DeepSeek-V4-Flash/snapshots"
       VLLM_PATH_TO_HUGGINGFACE: "/home/mnagaso/umrs_models"
       VLLM_MODEL: "deepseek-ai/DeepSeek-V4-Flash"
-      VLLM_TOKENIZER: "deepseek-ai/DeepSeek-V4-Flash"
+      # NOTE: VLLM_TOKENIZER intentionally UNSET. This repo was staged via
+      # `hf download` (standard HF cache layout: snapshots/<hash>/ with
+      # symlinks to ../../blobs/). The separate tokenizer mount path in
+      # serve-model.slurm (line ~1460: -v snapshots/<hash>:/tokenizer:ro)
+      # does NOT include the blobs/ sibling, so the tokenizer.json symlink
+      # breaks inside the container -> "Couldn't instantiate the backend
+      # tokenizer". With VLLM_TOKENIZER unset, vLLM loads the tokenizer from
+      # --model (the full model dir IS mounted with blobs/ by the symlink
+      # handling at serve-model.slurm ~L220). --tokenizer-mode deepseek_v4
+      # (in VLLM_EXTRA_ARGS) is unaffected — it controls tokenizer *mode*,
+      # not the *path*.
       # Explicit env channel — the multi-node serve line reads
       # ${VLLM_MAX_MODEL_LEN:-4096}, so omitting this silently serves 4096.
       # Recipe value is 256000, deliberately below the 262144 native max.

@@ -260,9 +260,29 @@ if [[ -z "$_vllm_tokenizer_host_path" && -n "${VLLM_TOKENIZER:-}" ]]; then
         fi
     fi
 fi
+# ─── Handle HF cache symlinks in tokenizer path (mirrors model path L220) ───
+# HF cache snapshot dirs contain symlinks (tokenizer.json -> ../../blobs/xxx).
+# Binding ONLY the snapshot dir drops the blobs/ sibling so symlinks break
+# inside the container -> "Couldn't instantiate the backend tokenizer" (vLLM
+# VllmConfig validation fails before model load). Mount the full HF model
+# directory (includes blobs/) and point --tokenizer at the snapshot subdir.
+_vllm_tokenizer_arg_path="${_vllm_tokenizer_container_path}"
+if [[ -n "$_vllm_tokenizer_host_path" && -d "$_vllm_tokenizer_host_path" ]]; then
+    if [[ -L "${_vllm_tokenizer_host_path}/tokenizer.json" || -L "${_vllm_tokenizer_host_path}/tokenizer_config.json" ]]; then
+        _tok_model_root="${_vllm_tokenizer_host_path}"
+        while [[ "$_tok_model_root" != "/" && ! -d "${_tok_model_root}/blobs" ]]; do
+            _tok_model_root="$(dirname "$_tok_model_root")"
+        done
+        if [[ -d "${_tok_model_root}/blobs" ]]; then
+            _tok_rel_path="${_vllm_tokenizer_host_path#${_tok_model_root}/}"
+            _vllm_tokenizer_host_path="${_tok_model_root}"
+            _vllm_tokenizer_arg_path="${_vllm_tokenizer_container_path}/${_tok_rel_path}"
+        fi
+    fi
+fi
 _vllm_tokenizer_args="${VLLM_TOKENIZER_ARGS:-}"
 if [[ -z "$_vllm_tokenizer_args" && -n "${VLLM_TOKENIZER:-}" ]]; then
-    _vllm_tokenizer_args=" --tokenizer=${_vllm_tokenizer_container_path}"
+    _vllm_tokenizer_args=" --tokenizer=${_vllm_tokenizer_arg_path}"
 fi
 if [[ -n "${VLLM_TRUST_REMOTE_CODE:-}" ]]; then
     _vllm_tokenizer_args="${_vllm_tokenizer_args} --trust-remote-code"
