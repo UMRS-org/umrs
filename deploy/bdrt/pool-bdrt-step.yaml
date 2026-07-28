@@ -451,12 +451,16 @@ endpoints:
   #  Supersedes the stale single-node `deepseek-v4-flash` entry in
   #  pool-bdrt-3models.yaml (partition `spark`, enforce-eager, deepseek_r1
   #  parser). That entry's weights are no longer staged.
-  # NOTE: originally targeted `spark-double`, but dgx-spark-1 (spark-atom-1)
-  # has a broken rootless podman store — every container create fails with
+  # NOTE: dgx-spark-1 (spark-atom-1) has a broken rootless podman fuse-overlayfs
+  # store — every container create fails with
   #   mknod .../merged/run/.containerenv: no data available   (ENODATA)
-  # from fuse-overlayfs. It survives `podman system reset -f`, so it is a
-  # node-level fault, not a stale-image problem. dgx-spark-[3-4] smoke-test
-  # clean, so this runs on `edge-double` until dgx-spark-1 is repaired.
+  # It survives `podman system reset -f` (node-level fault, not stale-image).
+  # FIX: CONTAINERS_STORAGE_CONF below points both nodes at the native kernel
+  # overlay config (storage-native.conf), which works on dgx-spark-1 (verified
+  # busybox smoke test 2026-07-28) AND on dgx-spark-0 (native overlay mounts
+  # existing fuse-created images fine). Same pattern as pool-glm52-temp.yaml.
+  # This keeps deepseek on `spark-double` so it runs concurrently with laguna
+  # on `edge-double` (the only two 2-node partitions on this 4-node cluster).
   - name: deepseek-v4-flash
     model: deepseek-v4-flash
     tier: system
@@ -467,6 +471,10 @@ endpoints:
       VLLM_HOST_MODEL_PATH: "/home/mnagaso/umrs_models/hub/models--deepseek-ai--DeepSeek-V4-Flash/snapshots"
       VLLM_PATH_TO_HUGGINGFACE: "/home/mnagaso/umrs_models"
       VLLM_MODEL: "deepseek-ai/DeepSeek-V4-Flash"
+      # Native kernel overlay (NOT fuse-overlayfs) — required on dgx-spark-1
+      # whose fuse store is corrupt (ENODATA on mknod). Works on both atom
+      # nodes. Propagates sbatch→srun→podman client env (no script change).
+      CONTAINERS_STORAGE_CONF: "/home/mnagaso/.config/containers/storage-native.conf"
       # NOTE: VLLM_TOKENIZER intentionally UNSET. This repo was staged via
       # `hf download` (standard HF cache layout: snapshots/<hash>/ with
       # symlinks to ../../blobs/). The separate tokenizer mount path in
