@@ -187,6 +187,21 @@ def _handle_list_workflows(client_id: str, payload_str: str) -> str:
     )
 
 
+def _workflow_identity_provenance(
+    params: dict[str, Any],
+    *,
+    identity_verified: bool = False,
+) -> str:
+    from umrs.api.workflow_auth import strict_auth_mode
+
+    project_id = _workflow_project_id(params)
+    if project_id == "default":
+        return "unverified"
+    if strict_auth_mode():
+        return "gateway_verified" if identity_verified else "unverified"
+    return "mvp_claim"
+
+
 def _workflow_project_id(params: Any) -> str:
     if isinstance(params, dict) and isinstance(params.get("project_id"), str):
         project_id = params["project_id"].strip()
@@ -201,18 +216,7 @@ def _workflow_run_context(
     source_path: str | None = None,
 ) -> tuple[str, dict[str, Any], int]:
     if source_path is None:
-        with _CATALOG_LOCK:
-            catalog = _load_catalog()
-
-        entry = None
-        for workflow_entry in catalog.get("workflows", []):
-            if workflow_entry["name"] == workflow_name:
-                if workflow_entry.get("user_id") == client_id:
-                    entry = workflow_entry
-                    break
-                if entry is None:
-                    entry = workflow_entry
-
+        entry = _resolve_workflow_catalog_entry(workflow_name, client_id)
         if entry is None:
             raise ValueError(f"Workflow '{workflow_name}' not found in registry")
         source_path = entry.get("source_path", "")
@@ -233,6 +237,28 @@ def _workflow_run_context(
     return source_path, workflow_json, len(workflow_json.get("steps", []))
 
 
+def _resolve_workflow_catalog_entry(
+    workflow_name: str,
+    client_id: str,
+) -> dict[str, Any] | None:
+    """Resolve a workflow by caller-owned entry first, then shared system scope."""
+    with _CATALOG_LOCK:
+        catalog = _load_catalog()
+
+    owned: dict[str, Any] | None = None
+    system: dict[str, Any] | None = None
+    for workflow_entry in catalog.get("workflows", []):
+        if workflow_entry.get("name") != workflow_name:
+            continue
+        if workflow_entry.get("user_id") == client_id:
+            owned = workflow_entry
+            break
+        if workflow_entry.get("scope") == "system" and system is None:
+            system = workflow_entry
+
+    return owned or system
+
+
 def _launch_workflow_from_catalog(
     *,
     workflow_name: str,
@@ -241,6 +267,7 @@ def _launch_workflow_from_catalog(
     execution_id: str | None = None,
     durable_job_id: str | None = None,
     source_path: str | None = None,
+    identity_verified: bool = False,
 ):
     source_path, workflow_json, step_count = _workflow_run_context(
         workflow_name,
@@ -268,6 +295,10 @@ def _launch_workflow_from_catalog(
         params=params,
         execution_id=execution_id,
         durable_job_id=durable_job_id,
+        identity_provenance=_workflow_identity_provenance(
+            params,
+            identity_verified=identity_verified,
+        ),
     )
 
     project_id = _workflow_project_id(params)
@@ -372,6 +403,8 @@ def _handle_run_workflow(
             {"status": "error", "message": "workflow params must be an object"}
         )
 
+    identity_verified = bool(payload.get("_identity_verified"))
+
     try:
         source_path, _, step_count = _workflow_run_context(workflow_name, client_id)
     except ValueError as exc:
@@ -394,6 +427,7 @@ def _handle_run_workflow(
         client_id=client_id,
         params=params,
         source_path=source_path,
+        identity_verified=identity_verified,
     )
 
     return json.dumps(
@@ -462,19 +496,42 @@ def _parse_execution_id(payload_str: str) -> tuple[str | None, dict[str, Any]]:
     return payload.get("execution_id"), payload
 
 
+def _zmq_execution_access(
+    client_id: str,
+    payload: dict[str, Any],
+    execution_id: str,
+) -> tuple[Any | None, Any | None, str | None]:
+    """Resolve execution context and return an access-denied JSON string when needed."""
+    from umrs.api.jobs import get_optional_job_store
+    from umrs.api.workflow_auth import (
+        check_zmq_execution_access,
+        resolve_execution_context,
+        zmq_caller_from_payload,
+    )
+
+    store = get_optional_job_store()
+    record, job = resolve_execution_context(execution_id, store=store)
+    if record is None and job is None:
+        return None, None, None
+    caller = zmq_caller_from_payload(client_id, payload)
+    denied = check_zmq_execution_access(caller, record=record, job=job)
+    if denied is not None:
+        return record, job, denied
+    return record, job, None
+
+
 def _handle_workflow_status(client_id: str, payload_str: str) -> str:
     """Handle WORKFLOW_STATUS — show execution status for a workflow run."""
-    from umrs.server.workflow_execution_registry import get_execution_registry
-
-    execution_id, _payload = _parse_execution_id(payload_str)
+    execution_id, payload = _parse_execution_id(payload_str)
     if not execution_id:
         return json.dumps(
             {"status": "error", "message": "execution_id is required"}
         )
 
-    registry = get_execution_registry()
-    record = registry.get(execution_id)
-    if record is None:
+    record, job, denied = _zmq_execution_access(client_id, payload, execution_id)
+    if denied is not None:
+        return denied
+    if record is None and job is None:
         return json.dumps(
             {
                 "status": "error",
@@ -483,11 +540,20 @@ def _handle_workflow_status(client_id: str, payload_str: str) -> str:
                 ),
             }
         )
+    if record is not None:
+        return json.dumps(
+            {
+                "status": "ok",
+                "execution": record.to_dict(),
+            },
+            default=str,
+        )
+    from umrs.api.workflow_auth import execution_payload_from_job
 
     return json.dumps(
         {
             "status": "ok",
-            "execution": record.to_dict(),
+            "execution": execution_payload_from_job(job),
         },
         default=str,
     )
@@ -495,17 +561,16 @@ def _handle_workflow_status(client_id: str, payload_str: str) -> str:
 
 def _handle_workflow_results(client_id: str, payload_str: str) -> str:
     """Handle WORKFLOW_RESULTS — fetch results for a completed workflow run."""
-    from umrs.server.workflow_execution_registry import get_execution_registry
-
-    execution_id, _payload = _parse_execution_id(payload_str)
+    execution_id, payload = _parse_execution_id(payload_str)
     if not execution_id:
         return json.dumps(
             {"status": "error", "message": "execution_id is required"}
         )
 
-    registry = get_execution_registry()
-    record = registry.get(execution_id)
-    if record is None:
+    record, job, denied = _zmq_execution_access(client_id, payload, execution_id)
+    if denied is not None:
+        return denied
+    if record is None and job is None:
         return json.dumps(
             {
                 "status": "error",
@@ -513,6 +578,18 @@ def _handle_workflow_results(client_id: str, payload_str: str) -> str:
                     f"No workflow execution exists with ID '{execution_id}'."
                 ),
             }
+        )
+    if record is None:
+        from umrs.api.workflow_auth import execution_payload_from_job
+
+        return json.dumps(
+            {
+                "status": "ok",
+                "execution": execution_payload_from_job(job),
+                "results": {"steps": {}, "final": None},
+                "artifacts": [],
+            },
+            default=str,
         )
 
     return json.dumps(
@@ -530,14 +607,50 @@ def _handle_workflow_cancel(client_id: str, payload_str: str) -> str:
     """Handle WORKFLOW_CANCEL — cancel a running workflow execution."""
     from umrs.server.workflow_execution_registry import get_execution_registry
 
-    execution_id, _payload = _parse_execution_id(payload_str)
+    execution_id, payload = _parse_execution_id(payload_str)
     if not execution_id:
         return json.dumps(
             {"status": "error", "message": "execution_id is required"}
         )
 
+    record, job, denied = _zmq_execution_access(client_id, payload, execution_id)
+    if denied is not None:
+        return denied
+    if record is None and job is None:
+        return json.dumps(
+            {
+                "status": "error",
+                "message": (
+                    f"No workflow execution exists with ID '{execution_id}'."
+                ),
+            }
+        )
+
     registry = get_execution_registry()
-    record = registry.cancel(execution_id)
+    record = registry.cancel(execution_id) if record is not None else None
+    from umrs.api.jobs import get_optional_job_store
+    from umrs.jobs.store import InvalidTransitionError
+
+    store = get_optional_job_store()
+    if job is not None and store is not None:
+        try:
+            store.cancel_job(job.job_id, reason="workflow_execution_cancelled")
+        except InvalidTransitionError:
+            pass
+        job = store.get_job(job.job_id)
+
+    if record is None and job is not None:
+        from umrs.api.workflow_auth import execution_payload_from_job
+
+        return json.dumps(
+            {
+                "status": "ok",
+                "message": f"Execution '{execution_id}' cancelled",
+                "execution": execution_payload_from_job(job),
+            },
+            default=str,
+        )
+
     if record is None:
         return json.dumps(
             {
@@ -580,8 +693,9 @@ def _handle_workflow_errors(client_id: str, payload_str: str) -> str:
         if isinstance(tail_val, int) and tail_val > 0:
             tail = tail_val
 
-    registry = get_execution_registry()
-    record = registry.get(execution_id)
+    record, job, denied = _zmq_execution_access(client_id, payload, execution_id)
+    if denied is not None:
+        return denied
     if record is None:
         return json.dumps(
             {
@@ -650,8 +764,6 @@ def _handle_workflow_logs(
     The CLI can poll this endpoint with ``--follow`` to stream updates
     until the workflow reaches a terminal state.
     """
-    from umrs.server.workflow_execution_registry import get_execution_registry
-
     execution_id, payload = _parse_execution_id(payload_str)
     if not execution_id:
         return json.dumps(
@@ -664,9 +776,10 @@ def _handle_workflow_logs(
         if isinstance(tail_val, int) and tail_val > 0:
             tail = tail_val
 
-    registry = get_execution_registry()
-    record = registry.get(execution_id)
-    if record is None:
+    record, job, denied = _zmq_execution_access(client_id, payload, execution_id)
+    if denied is not None:
+        return denied
+    if record is None and job is None:
         return json.dumps(
             {
                 "status": "error",
@@ -674,6 +787,18 @@ def _handle_workflow_logs(
                     f"No workflow execution exists with ID '{execution_id}'."
                 ),
             }
+        )
+    if record is None:
+        from umrs.api.workflow_auth import execution_payload_from_job
+
+        return json.dumps(
+            {
+                "status": "ok",
+                "execution": execution_payload_from_job(job),
+                "logs": [],
+                "count": 0,
+            },
+            default=str,
         )
 
     # Build log timeline
