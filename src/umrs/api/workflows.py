@@ -20,6 +20,7 @@ from typing import Any
 
 from fastapi import (
     APIRouter,
+    Depends,
     File,
     Form,
     Header,
@@ -30,7 +31,7 @@ from fastapi import (
 )
 
 from ..core.zmq_correlation import dumps_with_correlation_id
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from ..core.TaskCmdStatus import TaskCmd
 from ..jobs.models import JobStatus, JobType
@@ -38,10 +39,19 @@ from ..jobs.store import InvalidTransitionError, JobNotFoundError, JobStore
 from ..server.file_handling import handle_upload_workflow
 from ..server.job_tracking_handler import DurableJobCommandBackend
 from ..server.workflow_registry_handler import (
+    _resolve_workflow_catalog_entry,
     handle_workflow_command,
     register_workflow,
 )
-from .jobs import get_optional_job_store
+from .jobs import CallerIdentity, get_caller_identity, get_optional_job_store
+from .workflow_auth import (
+    enforce_http_execution_access,
+    execution_payload_from_job,
+    find_workflow_job_by_execution_id,
+    resolve_execution_context,
+    strict_auth_mode,
+    workflow_job_status,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -49,13 +59,48 @@ router = APIRouter(prefix="/umrs/workflows", tags=["workflows"])
 
 
 class WorkflowTriggerRequest(BaseModel):
-    """Workflow trigger request body."""
+    """Workflow trigger request body (UMRS + public Gateway contract)."""
 
-    user_id: str = Field(..., min_length=1, description="Workflow owner or caller")
+    user_id: str | None = Field(
+        default=None,
+        min_length=1,
+        description="Workflow owner or caller (MVP mode only)",
+    )
     params: dict[str, Any] = Field(
         default_factory=dict,
-        description="Workflow runtime parameters",
+        description="Legacy UMRS runtime parameters",
     )
+    parameters: dict[str, Any] | None = Field(
+        default=None,
+        description="Public contract runtime parameters",
+    )
+    input_files: list[str] | None = Field(
+        default=None,
+        description="Optional input file keys",
+    )
+    project_id: str | None = Field(
+        default=None,
+        description="Project context (MVP mode only; strict uses verified headers)",
+    )
+
+    def resolved_params(self) -> dict[str, Any]:
+        merged = dict(self.params)
+        if isinstance(self.parameters, dict):
+            merged.update(self.parameters)
+        if self.input_files:
+            merged["input_files"] = list(self.input_files)
+        if self.project_id:
+            merged.setdefault("project_id", self.project_id)
+        return merged
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_legacy_aliases(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        if "parameters" not in data and isinstance(data.get("params"), dict):
+            return data
+        return data
 
 
 class WorkflowUploadResponse(BaseModel):
@@ -66,6 +111,82 @@ class WorkflowUploadResponse(BaseModel):
     accepted: bool = Field(..., description="Whether the upload was accepted")
     source_path: str = Field(..., description="Extracted workflow directory")
     message: str = Field(..., description="Human-readable result message")
+
+
+def _workflow_parameter_schema(workflow_json: dict[str, Any]) -> dict[str, Any]:
+    for key in ("parameter_schema", "parameters_schema", "parameters"):
+        candidate = workflow_json.get(key)
+        if isinstance(candidate, dict) and candidate.get("type"):
+            return candidate
+        if isinstance(candidate, list):
+            properties = {}
+            required = []
+            for item in candidate:
+                if not isinstance(item, dict):
+                    continue
+                name = item.get("name")
+                if not isinstance(name, str) or not name:
+                    continue
+                properties[name] = {
+                    key: value
+                    for key, value in item.items()
+                    if key not in {"name", "required"}
+                }
+                if item.get("required"):
+                    required.append(name)
+            schema: dict[str, Any] = {"type": "object", "properties": properties}
+            if required:
+                schema["required"] = required
+            return schema
+    return {"type": "object", "properties": {}}
+
+
+def _describe_workflow_entry(entry: dict[str, Any]) -> dict[str, Any]:
+    source_path = entry.get("source_path", "")
+    workflow_json: dict[str, Any] = {}
+    wf_json_path = os.path.join(source_path, "workflow.json")
+    if source_path and os.path.isfile(wf_json_path):
+        with open(wf_json_path, encoding="utf-8") as handle:
+            workflow_json = json.load(handle)
+    return {
+        "status": "ok",
+        "contract_version": "1.0.0",
+        "workflow_name": entry.get("name"),
+        "version": entry.get("version") or workflow_json.get("version", ""),
+        "description": entry.get("description") or workflow_json.get("description", ""),
+        "scope": entry.get("scope", "user"),
+        "user_id": entry.get("user_id", ""),
+        "parameter_schema": _workflow_parameter_schema(workflow_json),
+        "steps": entry.get("steps", []),
+        "requirements": entry.get("requirements", []),
+    }
+
+
+def _validate_params_against_schema(
+    params: dict[str, Any],
+    schema: dict[str, Any],
+) -> None:
+    """Minimal JSON-schema enforcement for required top-level properties."""
+    if schema.get("type") != "object":
+        return
+    required = schema.get("required")
+    if not isinstance(required, list):
+        return
+    missing = [
+        name
+        for name in required
+        if isinstance(name, str) and name not in params
+    ]
+    if missing:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "error": "validation_error",
+                "code": "workflow_parameters_invalid",
+                "message": f"Missing required workflow parameters: {', '.join(missing)}",
+                "missing": missing,
+            },
+        )
 
 
 def _parse_command_response(raw: str, *, action: str) -> dict[str, Any]:
@@ -122,7 +243,7 @@ def _raise_upload_error(message: str) -> None:
 
 
 def _strict_auth_mode() -> bool:
-    return os.environ.get("UMRS_AUTH_MODE", "mvp").strip().lower() == "strict"
+    return strict_auth_mode()
 
 
 def _header_str(value: Any) -> str | None:
@@ -176,14 +297,7 @@ def _require_verified_workflow_identity(
 
 
 def _workflow_job_status(job_status: JobStatus) -> str:
-    return {
-        JobStatus.PLANNED: "submitted",
-        JobStatus.QUEUED: "submitted",
-        JobStatus.RUNNING: "running",
-        JobStatus.COMPLETED: "succeeded",
-        JobStatus.FAILED: "failed",
-        JobStatus.CANCELLED: "cancelled",
-    }[job_status]
+    return workflow_job_status(job_status)
 
 
 def _workflow_job_payload(job) -> dict[str, Any]:
@@ -194,16 +308,7 @@ def _find_workflow_job_by_execution_id(
     store: JobStore | None,
     execution_id: str,
 ):
-    if store is None:
-        return None
-    try:
-        jobs = store.list_jobs(job_type=JobType.WORKFLOW_RUN, limit=1000)
-    except TypeError:
-        jobs = store.list_jobs(job_type=JobType.WORKFLOW_RUN)
-    for job in jobs:
-        if job.spec.get("execution_id") == execution_id:
-            return job
-    return None
+    return find_workflow_job_by_execution_id(store, execution_id)
 
 
 def _get_job_for_record(store: JobStore | None, record) -> Any:
@@ -236,30 +341,7 @@ def _execution_payload(record, job=None) -> dict[str, Any]:
 
 
 def _execution_payload_from_job(job) -> dict[str, Any]:
-    spec = job.spec
-    return {
-        "execution_id": spec.get("execution_id"),
-        "workflow_name": spec.get("workflow_name"),
-        "user_id": job.user_id,
-        "status": _workflow_job_status(job.status),
-        "submitted_at": job.created_at.timestamp() if job.created_at else None,
-        "started_at": None,
-        "finished_at": (
-            job.last_state_change_at.timestamp()
-            if job.status
-            in {JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED}
-            and job.last_state_change_at
-            else None
-        ),
-        "error": None,
-        "progress": 1.0 if job.status == JobStatus.COMPLETED else 0.0,
-        "params": spec.get("params", {}),
-        "steps": [],
-        "artifacts": [],
-        "durable_job_id": job.job_id,
-        "durable_job": _workflow_job_payload(job),
-        "cancel_requested": job.status == JobStatus.CANCELLED,
-    }
+    return execution_payload_from_job(job)
 
 
 @router.get("")
@@ -287,6 +369,24 @@ async def list_workflows(
         dumps_with_correlation_id(payload) if payload else "",
     )
     return _parse_command_response(raw, action="list")
+
+
+@router.get("/{workflow_name}")
+async def describe_workflow(
+    workflow_name: str,
+    x_user_id: str | None = Header(None),
+    x_verified_project_id: str | None = Header(None),
+):
+    """Return declared parameter schema and metadata for a workflow."""
+    _require_verified_workflow_identity(x_user_id, x_verified_project_id)
+    caller = _header_str(x_user_id) or ""
+    entry = _resolve_workflow_catalog_entry(workflow_name, caller)
+    if entry is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Workflow '{workflow_name}' not found",
+        )
+    return _describe_workflow_entry(entry)
 
 
 @router.post(
@@ -390,10 +490,22 @@ async def trigger_workflow(
     x_user_id: str | None = Header(None),
     x_verified_project_id: str | None = Header(None),
 ):
-    user_id = _verified_workflow_user(request.user_id, x_user_id)
-    params = _verified_workflow_params(request.params, x_verified_project_id)
+    user_id = _verified_workflow_user(request.user_id or "", x_user_id)
+    params = _verified_workflow_params(request.resolved_params(), x_verified_project_id)
+    entry = _resolve_workflow_catalog_entry(workflow_name, user_id)
+    if entry is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Workflow '{workflow_name}' not found",
+        )
+    describe = _describe_workflow_entry(entry)
+    schema = describe.get("parameter_schema", {})
+    _validate_params_against_schema(params, schema)
     store = get_optional_job_store()
     job_backend = DurableJobCommandBackend(store) if store is not None else None
+    identity_verified = bool(
+        _header_str(x_user_id) and _header_str(x_verified_project_id)
+    )
     raw = handle_workflow_command(
         TaskCmd.RUN_WORKFLOW,
         user_id,
@@ -401,6 +513,7 @@ async def trigger_workflow(
             {
                 "workflow_name": workflow_name,
                 "params": params,
+                "_identity_verified": identity_verified,
             }
         ),
         job_backend=job_backend,
@@ -416,69 +529,59 @@ async def trigger_workflow(
 @router.get("/executions/{execution_id}")
 async def get_execution_status(
     execution_id: str,
-    x_user_id: str | None = Header(None),
-    x_verified_project_id: str | None = Header(None),
+    identity: CallerIdentity = Depends(get_caller_identity),
 ):
     """Return workflow execution status, backed by durable job state when present."""
-    from ..server.workflow_execution_registry import get_execution_registry
-
-    _require_verified_workflow_identity(x_user_id, x_verified_project_id)
     store = get_optional_job_store()
-    registry = get_execution_registry()
-    record = registry.get(execution_id)
+    record, job = resolve_execution_context(execution_id, store=store)
+    enforce_http_execution_access(
+        identity,
+        record=record,
+        job=job,
+        execution_id=execution_id,
+    )
     if record is not None:
-        job = _get_job_for_record(store, record)
-        return {"status": "ok", "execution": _execution_payload(record, job)}
-
-    job = _find_workflow_job_by_execution_id(store, execution_id)
-    if job is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Execution {execution_id} not found",
-        )
+        linked_job = _get_job_for_record(store, record) if job is None else job
+        return {"status": "ok", "execution": _execution_payload(record, linked_job)}
     return {"status": "ok", "execution": _execution_payload_from_job(job)}
 
 
 @router.get("/executions/{execution_id}/results")
 async def get_execution_results(
     execution_id: str,
-    x_user_id: str | None = Header(None),
-    x_verified_project_id: str | None = Header(None),
+    identity: CallerIdentity = Depends(get_caller_identity),
 ):
     """Return the structured outputs of a finished execution.
 
     For unfinished executions, returns the partial results gathered so
     far (so clients can render progressive UIs without retrying).
     """
-    from ..server.workflow_execution_registry import get_execution_registry
     from ..server.workflow_runner import list_artifacts
 
-    _require_verified_workflow_identity(x_user_id, x_verified_project_id)
     store = get_optional_job_store()
-    registry = get_execution_registry()
-    record = registry.get(execution_id)
+    record, job = resolve_execution_context(execution_id, store=store)
+    enforce_http_execution_access(
+        identity,
+        record=record,
+        job=job,
+        execution_id=execution_id,
+    )
     if record is None:
-        job = _find_workflow_job_by_execution_id(store, execution_id)
-        if job is not None:
-            execution = _execution_payload_from_job(job)
-            return {
-                "status": "ok",
-                "execution_id": execution_id,
-                "execution_status": execution["status"],
-                "progress": execution["progress"],
-                "error": execution["error"],
-                "results": {"steps": {}, "final": None},
-                "artifacts": [],
-                "durable_job_id": job.job_id,
-                "durable_job": execution["durable_job"],
-            }
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Execution {execution_id} not found",
-        )
+        execution = _execution_payload_from_job(job)
+        return {
+            "status": "ok",
+            "execution_id": execution_id,
+            "execution_status": execution["status"],
+            "progress": execution["progress"],
+            "error": execution["error"],
+            "results": {"steps": {}, "final": None},
+            "artifacts": [],
+            "durable_job_id": job.job_id,
+            "durable_job": execution["durable_job"],
+        }
 
-    job = _get_job_for_record(store, record)
-    execution = _execution_payload(record, job)
+    linked_job = _get_job_for_record(store, record) if job is None else job
+    execution = _execution_payload(record, linked_job)
 
     artifacts = [
         {"key": key, "size_bytes": size} for key, size in list_artifacts(record)
@@ -502,30 +605,31 @@ async def get_execution_results(
 @router.post("/executions/{execution_id}/cancel")
 async def cancel_execution(
     execution_id: str,
-    x_user_id: str | None = Header(None),
-    x_verified_project_id: str | None = Header(None),
+    identity: CallerIdentity = Depends(get_caller_identity),
 ):
     """Request cancellation of a workflow execution."""
     from ..server.workflow_execution_registry import get_execution_registry
 
-    _require_verified_workflow_identity(x_user_id, x_verified_project_id)
     store = get_optional_job_store()
-    registry = get_execution_registry()
-    record = registry.cancel(execution_id)
-    job = None
-    if record is not None:
-        job = _get_job_for_record(store, record)
-    if job is None:
-        job = _find_workflow_job_by_execution_id(store, execution_id)
-    if job is not None and store is not None:
-        with contextlib.suppress(InvalidTransitionError):
-            store.cancel_job(job.job_id, reason="workflow_execution_cancelled")
+    record, job = resolve_execution_context(execution_id, store=store)
+    enforce_http_execution_access(
+        identity,
+        record=record,
+        job=job,
+        execution_id=execution_id,
+    )
 
-    if record is None and job is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Execution {execution_id} not found",
-        )
+    registry = get_execution_registry()
+    cancelled_record = registry.cancel(execution_id) if record is not None else None
+    if cancelled_record is not None:
+        record = cancelled_record
+    linked_job = job
+    if record is not None and linked_job is None:
+        linked_job = _get_job_for_record(store, record)
+    if linked_job is not None and store is not None:
+        with contextlib.suppress(InvalidTransitionError):
+            store.cancel_job(linked_job.job_id, reason="workflow_execution_cancelled")
+
     if record is not None:
-        return {"status": "ok", "execution": _execution_payload(record, job)}
-    return {"status": "ok", "execution": _execution_payload_from_job(job)}
+        return {"status": "ok", "execution": _execution_payload(record, linked_job)}
+    return {"status": "ok", "execution": _execution_payload_from_job(linked_job)}

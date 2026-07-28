@@ -81,8 +81,18 @@ def _workflow_job(status=JobStatus.QUEUED):
     )
 
 
+def _auth_headers(user: str = "alice", project: str = "project-a") -> dict[str, str]:
+    return {
+        "X-User-ID": user,
+        "X-Verified-Project-ID": project,
+    }
+
+
 def test_executions_status_404_for_unknown(client):
-    response = client.get("/umrs/workflows/executions/does-not-exist")
+    response = client.get(
+        "/umrs/workflows/executions/does-not-exist",
+        headers=_auth_headers(),
+    )
     assert response.status_code == 404
 
 
@@ -91,10 +101,14 @@ def test_executions_status_returns_record(client):
     record = registry.create(
         workflow_name="wf",
         user_id="alice",
-        params={"image": "x.png"},
+        params={"project_id": "project-a"},
+        identity_provenance="gateway_verified",
     )
 
-    response = client.get(f"/umrs/workflows/executions/{record.execution_id}")
+    response = client.get(
+        f"/umrs/workflows/executions/{record.execution_id}",
+        headers=_auth_headers(),
+    )
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "ok"
@@ -104,13 +118,21 @@ def test_executions_status_returns_record(client):
 
 def test_executions_results_includes_artifacts(client):
     registry = get_execution_registry()
-    record = registry.create(workflow_name="wf", user_id="alice")
+    record = registry.create(
+        workflow_name="wf",
+        user_id="alice",
+        params={"project_id": "project-a"},
+        identity_provenance="gateway_verified",
+    )
     # Pretend a step produced an artifact.
     record.results.setdefault("blobs", {})["wf-runner/foo.json"] = b"{}"
     record.add_artifact("wf-runner/foo.json")
     record.update(status="succeeded", progress=1.0)
 
-    response = client.get(f"/umrs/workflows/executions/{record.execution_id}/results")
+    response = client.get(
+        f"/umrs/workflows/executions/{record.execution_id}/results",
+        headers=_auth_headers(),
+    )
     assert response.status_code == 200
     body = response.json()
     assert body["execution_status"] == "succeeded"
@@ -120,8 +142,16 @@ def test_executions_results_includes_artifacts(client):
 
 def test_cancel_marks_submitted_record_as_cancelled(client):
     registry = get_execution_registry()
-    record = registry.create(workflow_name="wf", user_id="alice")
-    response = client.post(f"/umrs/workflows/executions/{record.execution_id}/cancel")
+    record = registry.create(
+        workflow_name="wf",
+        user_id="alice",
+        params={"project_id": "project-a"},
+        identity_provenance="gateway_verified",
+    )
+    response = client.post(
+        f"/umrs/workflows/executions/{record.execution_id}/cancel",
+        headers=_auth_headers(),
+    )
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "ok"
@@ -129,7 +159,10 @@ def test_cancel_marks_submitted_record_as_cancelled(client):
 
 
 def test_cancel_unknown_returns_404(client):
-    response = client.post("/umrs/workflows/executions/does-not-exist/cancel")
+    response = client.post(
+        "/umrs/workflows/executions/does-not-exist/cancel",
+        headers=_auth_headers(),
+    )
     assert response.status_code == 404
 
 
@@ -137,7 +170,10 @@ def test_status_falls_back_to_durable_workflow_job(client, monkeypatch):
     store = FakeJobStore(_workflow_job())
     monkeypatch.setattr(jobs_api, "_job_store", store)
 
-    response = client.get("/umrs/workflows/executions/wf-durable")
+    response = client.get(
+        "/umrs/workflows/executions/wf-durable",
+        headers=_auth_headers(),
+    )
 
     assert response.status_code == 200
     execution = response.json()["execution"]
@@ -150,7 +186,10 @@ def test_cancel_falls_back_to_durable_workflow_job(client, monkeypatch):
     store = FakeJobStore(_workflow_job())
     monkeypatch.setattr(jobs_api, "_job_store", store)
 
-    response = client.post("/umrs/workflows/executions/wf-durable/cancel")
+    response = client.post(
+        "/umrs/workflows/executions/wf-durable/cancel",
+        headers=_auth_headers(),
+    )
 
     assert response.status_code == 200
     assert store.cancelled is True
