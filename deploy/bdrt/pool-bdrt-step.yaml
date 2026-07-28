@@ -253,6 +253,84 @@ endpoints:
       # reads all shards (~56.6 GiB/rank). The draft is also on both nodes.
       RCCS_SKIP_CDI: "1"
 
+  # ── Laguna-M.1 NVFP4 (2 nodes → spark-double) ────────────────────────
+  #  226B MoE (~22B active), 70 layers, 256 experts top-16, NVFP4.
+  #  poolside/Laguna-M.1-NVFP4 checkpoint (139.32 GB, 28 shards, 40 files).
+  #  TP2 is a FIT decision: 64.98 GiB weights/rank won't leave usable KV on
+  #  one GB10 (119.69 GiB unified CPU+GPU).
+  #  Per howtospark "Laguna-M.1 NVFP4 dual-Spark TP2" recipe (verified
+  #  2026-07-28 on this exact hardware).
+  #  Architecture LagunaForCausalLM is NATIVELY registered in vLLM 0.26.0 —
+  #  no --trust-remote-code, and NO source patches of any kind. That is why
+  #  this model runs on the stock container path (unlike GLM-5.2, which
+  #  needed a bare venv and was abandoned).
+  #  First start ~25 min: ~8 min/rank shard load + ~15 min NVFP4 MoE kernel JIT.
+  - name: laguna-m1-nvfp4
+    model: laguna-m1-nvfp4
+    tier: system
+    node_count: 2
+    partition: spark-double
+    max_model_len: 196608
+    env_vars:
+      VLLM_HOST_MODEL_PATH: "/home/mnagaso/umrs_models/hub/models--poolside--Laguna-M.1-NVFP4/snapshots"
+      VLLM_PATH_TO_HUGGINGFACE: "/home/mnagaso/umrs_models"
+      VLLM_MODEL: "poolside/Laguna-M.1-NVFP4"
+      VLLM_TOKENIZER: "poolside/Laguna-M.1-NVFP4"
+      # Explicit env channel — the multi-node serve line reads
+      # ${VLLM_MAX_MODEL_LEN:-4096}, so omitting this silently serves 4096.
+      VLLM_MAX_MODEL_LEN: "196608"
+      VLLM_GPU_MEM_UTIL: "0.85"
+      # Cross-node TP2 / PP1. serve-model.slurm passes -tp "$VLLM_TP"; set both
+      # so the wrapper forms ONE TP=2 group across the pair instead of PP=2.
+      VLLM_TP: "2"
+      VLLM_TENSOR_PARALLEL_SIZE: "2"
+      # REQUIRED — NOT a tuning knob. Cross-node TP2 cudagraph replay deadlocks
+      # on GB10: the first real generation hangs and the engine dies on an RPC
+      # timeout. This is a FLEET property of dual-Spark TP2, not a Laguna one.
+      # Confirmed the hard way by GLM-5.2 job 3056 (2026-07-28), which reached
+      # "Application startup complete" and then hung 533s on an 8-token
+      # completion with cudagraphs captured (FULL_AND_PIECEWISE).
+      VLLM_ENFORCE_EAGER: "1"
+      # Pin NCCL to the routable 200G Spark-to-Spark fabric. Without this NCCL
+      # enumerates an IPv6-link-local-only iface and ncclCommInitRank dies with
+      # "Network is unreachable" (same fix as laguna-s-2.1-fp8, job 3033).
+      NCCL_SOCKET_IFNAME: "enp1s0f1np1"
+      # GB10 unified CPU+GPU pool: Ray's monitor counts both, so the 64.98 GiB
+      # /rank weight load crosses the default 95% threshold and Ray SIGTERMs the
+      # worker mid-load. Recipe disables the monitor on both raylets.
+      RAY_memory_monitor_refresh_ms: "0"
+      RIVAULT_MN_MEMORY_CAP: "110g"
+      # Caps ninja parallelism for the ~15 min NVFP4 MoE kernel JIT. Load-bearing:
+      # unset, ninja uses nproc (20) at ~3-4 GiB/process and the burst takes the
+      # node down. serve-model.slurm forwards this into BOTH raylet containers
+      # (Ray actors inherit the raylet env, not the driver's).
+      MAX_JOBS: "4"
+      # vLLM v0.26.0, arm64, CUDA 13.0.2 — the version the recipe requires.
+      # Verified on-node: org.opencontainers.image.version=vllm/vllm-openai:v0.26.0.
+      # NOTE: `:latest` FLOATS (it moved 0.25.1 -> 0.26.0 on 2026-07-27 and broke
+      # laguna-s-2.1-fp8). Pin to a digest once this entry is validated.
+      VLLM_DOCKER_IMAGE: "docker.io/vllm/vllm-openai:latest"
+      # Laguna family emits poolside-format tool calls and </think> reasoning
+      # markers; the default hermes parser leaks them as plain text.
+      VLLM_TOOL_CALL_PARSER: "poolside_v1"
+      VLLM_REASONING_PARSER: "poolside_v1"
+      # Deliberately NOT setting VLLM_MOE_BACKEND. Our Hy3 entry pins marlin as
+      # "the only NVFP4-MoE backend on sm_121", but that predates 0.26.0 — this
+      # recipe expects vLLM to auto-select FLASHINFER_CUTLASS. Expect the log
+      # line: Using 'FLASHINFER_CUTLASS' NvFp4 MoE backend.
+      #
+      # KV comes up FP8 automatically from the checkpoint's kv_cache_scheme, so
+      # no --kv-cache-dtype. 16 GiB pool => ~239,664 tokens at 140 KiB/token.
+      # --max-num-seqs is NOT on the multi-node serve line (single-node only,
+      # L1305), so it must be passed here.
+      VLLM_EXTRA_ARGS: >-
+        --kv-cache-memory-bytes 17179869184
+        --max-num-seqs 2
+        --max-num-batched-tokens 4096
+      # Single staged copy is enough: bdrt $HOME is shared NFS
+      # (storage00-0:/HPBD_HOMES), unlike the recipe's node-local assumption.
+      RCCS_SKIP_CDI: "1"
+
   # ── Hy3 NVFP4 (2 nodes → edge-double) ────────────────────────────────
   #  295B MoE (21B active), NVFP4 weight-only on routed-expert FFNs.
   #  LibertAIDAI/Hy3-NVFP4 checkpoint (~169 GB, 99 shards).

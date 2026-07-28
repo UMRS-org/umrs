@@ -1534,7 +1534,18 @@ RAYEOF
     # Added for GLM-5.2 on spark-double (job 2967): ncclCommInitRank died with
     # "unhandled system error" after NCCL detected bogus cross-node
     # "isAllCudaP2p 1" on the GB10 pair — NCCL_P2P_DISABLE=1 forces NET/Socket.
-    for _mn_nccl_var in NCCL_P2P_DISABLE NCCL_SHM_DISABLE NCCL_SOCKET_IFNAME NCCL_NET; do
+    #
+    # MAX_JOBS caps ninja parallelism for on-the-fly kernel JIT. It MUST reach
+    # the RAYLET environment, not just the driver: vLLM's RayWorkerWrapper
+    # actors inherit the raylet's env, so setting it only on the serve process
+    # leaves the remote rank compiling at nproc (20 on GB10) x ~3-4 GiB/process.
+    # That burst exhausts the 119 GiB unified CPU+GPU pool and takes the node
+    # (and the server) down mid-JIT. Because `_mn_vllm_args` is shared by BOTH
+    # the head container (~L1622) and the worker container (~L1712, whose PID 1
+    # is `ray start --block`), forwarding it here puts it on both raylets.
+    # Required by the Laguna-M.1 NVFP4 dual-Spark TP2 recipe, whose NVFP4 MoE
+    # kernels JIT for ~15 min on first start.
+    for _mn_nccl_var in NCCL_P2P_DISABLE NCCL_SHM_DISABLE NCCL_SOCKET_IFNAME NCCL_NET MAX_JOBS; do
         if [[ -n "${!_mn_nccl_var:-}" ]]; then
             _mn_vllm_args+=( -e "${_mn_nccl_var}=${!_mn_nccl_var}" )
         fi
