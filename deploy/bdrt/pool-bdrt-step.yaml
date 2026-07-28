@@ -435,3 +435,99 @@ endpoints:
       VLLM_MOE_W2_FADVISE_GLOB: ""
       MALLOC_MMAP_THRESHOLD_: "65536"
       RCCS_SKIP_CDI: "1"
+
+  # ── DeepSeek-V4-Flash (2 nodes → spark-double) ───────────────────────
+  #  Transcribed 1:1 from the Spark Arena verified recipe (recipe_version 2,
+  #  min_nodes 2), which measured 37.80 tok/s text generation on 2× DGX Spark:
+  #    https://spark-arena.com/benchmark/443dcd0a-8a88-492b-917c-485d6261334e
+  #
+  #  Fit on 2× GB10 (119.69 GiB unified per node; TP2 splits the weights):
+  #    checkpoint  148.7 GiB / 2   = 74.4 GiB per rank
+  #    budget      119.69 × 0.825  = 98.7 GiB per rank
+  #    headroom                    ≈ 24.3 GiB per rank (KV + activations + MTP)
+  #  Comfortable because V4 uses MLA — the KV cache is a compressed latent,
+  #  which is also why the recipe ships the sparse-MLA Triton knobs below.
+  #
+  #  Supersedes the stale single-node `deepseek-v4-flash` entry in
+  #  pool-bdrt-3models.yaml (partition `spark`, enforce-eager, deepseek_r1
+  #  parser). That entry's weights are no longer staged.
+  - name: deepseek-v4-flash
+    model: deepseek-v4-flash
+    tier: system
+    node_count: 2
+    partition: spark-double
+    max_model_len: 256000
+    env_vars:
+      VLLM_HOST_MODEL_PATH: "/home/mnagaso/umrs_models/hub/models--deepseek-ai--DeepSeek-V4-Flash/snapshots"
+      VLLM_PATH_TO_HUGGINGFACE: "/home/mnagaso/umrs_models"
+      VLLM_MODEL: "deepseek-ai/DeepSeek-V4-Flash"
+      VLLM_TOKENIZER: "deepseek-ai/DeepSeek-V4-Flash"
+      # Explicit env channel — the multi-node serve line reads
+      # ${VLLM_MAX_MODEL_LEN:-4096}, so omitting this silently serves 4096.
+      # Recipe value is 256000, deliberately below the 262144 native max.
+      VLLM_MAX_MODEL_LEN: "256000"
+      VLLM_GPU_MEM_UTIL: "0.825"
+      # recipe: tensor_parallel 2, pipeline_parallel 1. Set both spellings —
+      # serve-model.slurm passes -tp "$VLLM_TP", then derives PP = GPUs/TP = 1.
+      VLLM_TP: "2"
+      VLLM_TENSOR_PARALLEL_SIZE: "2"
+      # Pin NCCL to the routable 200G Spark-to-Spark fabric. Without this NCCL
+      # enumerates an IPv6-link-local-only iface and ncclCommInitRank dies with
+      # "Network is unreachable" (laguna job-3033). Load-bearing on the atom
+      # pair in particular: those nodes also carry k8s flannel/cni0/docker0.
+      NCCL_SOCKET_IFNAME: "enp1s0f1np1"
+      # GB10 unified CPU+GPU pool: Ray's monitor counts both, so the 74 GiB
+      # /rank weight load crosses the default 95% threshold and Ray SIGTERMs
+      # the worker mid-load.
+      RAY_memory_monitor_refresh_ms: "0"
+      RIVAULT_MN_MEMORY_CAP: "110g"
+      # Caps ninja parallelism during kernel JIT; unset, ninja uses nproc (20)
+      # at ~3-4 GiB/process and the burst takes the node down.
+      MAX_JOBS: "4"
+      # The recipe's own container — NOT vllm/vllm-openai. This image carries
+      # the DeepSeek-V4 sparse-MLA Triton kernels plus the deepseek_v4
+      # tokenizer/tool/reasoning parsers the recipe depends on; none of them
+      # exist in upstream vllm-openai:v0.26.0.
+      # Single-image manifest (aarch64 DGX Spark build), not a manifest list.
+      VLLM_DOCKER_IMAGE: "docker.io/scitrera/dgx-spark-vllm-jasl-ds4:20260609"
+      # recipe parsers — deepseek_v4, NOT the older deepseek_r1.
+      VLLM_TOOL_CALL_PARSER: "deepseek_v4"
+      VLLM_REASONING_PARSER: "deepseek_v4"
+      VLLM_TRUST_REMOTE_CODE: "1"
+      # Own env var rather than inline in VLLM_EXTRA_ARGS: sbatch --export is
+      # comma-delimited with no escaping, so comma-bearing values are base64
+      # hopped by _build_wrapper_job_exports and decoded in the wrapper
+      # preamble. Same treatment as hy3-nvfp4 / laguna-s.
+      VLLM_SPECULATIVE_CONFIG: '{"method":"mtp","num_speculative_tokens":2}'
+      # recipe `env:` block — sparse-MLA kernel tuning.
+      TILELANG_CLEANUP_TEMP_FILES: "1"
+      VLLM_TRITON_MLA_SPARSE: "1"
+      VLLM_TRITON_MLA_SPARSE_HEAD_BLOCK_SIZE: "4"
+      VLLM_TRITON_MLA_SPARSE_QUERY_CHUNK_SIZE: "512"
+      VLLM_TRITON_MLA_SPARSE_TOPK_CHUNK_SIZE: "512"
+      # Remaining recipe flags that have no dedicated env channel on the
+      # multi-node serve line (--max-num-seqs is single-node only, L1305).
+      #
+      # CUDAGRAPHS ARE ON HERE, ON PURPOSE, AND THIS CONTRADICTS TWO OF OUR
+      # OWN RECORDS. The recipe reached 37.80 tok/s with
+      # cudagraph_mode=FULL_AND_PIECEWISE and capture size 8. Against that:
+      #   • DeepSeek-V4 emitted NaN/garbage logits under cudagraph capture
+      #     (ai4s job 10986, 2026-06-08) — recorded as a model property.
+      #   • cross-node TP2 cudagraph replay deadlocks on GB10 (GLM-5.2 job
+      #     3056, 2026-07-28) — recorded as a fleet property.
+      # Kept as specified on the theory that the -ds4 container is exactly
+      # what closes that gap. FALLBACK if generation returns garbage or the
+      # first completion hangs: delete --compilation-config below and add
+      #     VLLM_ENFORCE_EAGER: "1"
+      # That is the known-good configuration, at the cost of the MTP speedup.
+      VLLM_EXTRA_ARGS: >-
+        --max-num-seqs 10
+        --max-num-batched-tokens 6144
+        --tokenizer-mode deepseek_v4
+        --kv-cache-dtype fp8
+        --load-format instanttensor
+        --enable-prefix-caching
+        --max-cudagraph-capture-size 8
+        --compilation-config {"cudagraph_mode":"FULL_AND_PIECEWISE","custom_ops":["all"]}
+      # Single staged copy is enough: bdrt $HOME is shared NFS.
+      RCCS_SKIP_CDI: "1"
