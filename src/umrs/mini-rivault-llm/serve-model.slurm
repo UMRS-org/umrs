@@ -1168,8 +1168,17 @@ start_native_glm52() {
     # out in the vLLM-Moet spark RUNBOOK ("raylets from login shells").
     local cuda_home="${CUDA_HOME:-/usr/local/cuda}"
     local ray_path="${venv}/bin:${cuda_home}/bin:${PATH}"
-    ray_common="RAY_memory_monitor_refresh_ms=0 RAY_local_fs_capacity_threshold=1 NCCL_IB_DISABLE=1 NCCL_SOCKET_IFNAME=${fabric_if} GLOO_SOCKET_IFNAME=${fabric_if} NCCL_GRAPH_MIXING_SUPPORT=1 VLLM_NCCL_SO_PATH=${nccl_so} MALLOC_MMAP_THRESHOLD_=65536 FLASHINFER_WORKSPACE_BASE=${flashinfer_base} CUDA_HOME=${cuda_home} PATH=${ray_path}"
+    # DeepGEMM JIT-compiles its layout kernels into $VLLM_CACHE_ROOT/deep_gemm/
+    # cache. The default root is $HOME/.cache/vllm — shared NFS again — and
+    # DeepGEMM's C++ helper does check-then-create without tolerating EEXIST,
+    # so both ranks racing there kill the engine with "Failed to make
+    # directory: ... created: false, value: 17" (job 3052). Give each rank a
+    # node-local root AND pre-create the leaf below, so no rank ever has to
+    # win the mkdir.
+    local vllm_cache_root="${VLLM_CACHE_ROOT_LOCAL:-/var/tmp/umrs-glm52/vllm-cache}"
+    ray_common="RAY_memory_monitor_refresh_ms=0 RAY_local_fs_capacity_threshold=1 NCCL_IB_DISABLE=1 NCCL_SOCKET_IFNAME=${fabric_if} GLOO_SOCKET_IFNAME=${fabric_if} NCCL_GRAPH_MIXING_SUPPORT=1 VLLM_NCCL_SO_PATH=${nccl_so} MALLOC_MMAP_THRESHOLD_=65536 FLASHINFER_WORKSPACE_BASE=${flashinfer_base} VLLM_CACHE_ROOT=${vllm_cache_root} CUDA_HOME=${cuda_home} PATH=${ray_path}"
     export FLASHINFER_WORKSPACE_BASE="${flashinfer_base}"
+    export VLLM_CACHE_ROOT="${vllm_cache_root}"
     export CUDA_HOME="${cuda_home}"
     export PATH="${ray_path}"
     # Global (not local): the exit trap stops this unit from another function.
@@ -1177,6 +1186,8 @@ start_native_glm52() {
     echo "[rivault] Native GLM fabric: ${RAY_NODES[0]}=${head_ip}, ${RAY_NODES[1]}=${worker_ip}"
 
     for wnode in "${RAY_NODES[@]}"; do
+        srun --nodes=1 --ntasks=1 --nodelist="${wnode}" --overlap \
+            mkdir -p "${vllm_cache_root}/deep_gemm/cache" "${flashinfer_base}" >/dev/null 2>&1 || true
         srun --nodes=1 --ntasks=1 --nodelist="${wnode}" --overlap \
             "${venv}/bin/ray" stop --force >/dev/null 2>&1 || true
     done
