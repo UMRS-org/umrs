@@ -1152,7 +1152,15 @@ start_native_glm52() {
         return 1
     }
 
-    ray_common="RAY_memory_monitor_refresh_ms=0 RAY_local_fs_capacity_threshold=1 NCCL_IB_DISABLE=1 NCCL_SOCKET_IFNAME=${fabric_if} GLOO_SOCKET_IFNAME=${fabric_if} NCCL_GRAPH_MIXING_SUPPORT=1 VLLM_NCCL_SO_PATH=${nccl_so} MALLOC_MMAP_THRESHOLD_=65536"
+    # FlashInfer resolves its JIT workspace to $FLASHINFER_WORKSPACE_BASE/.cache
+    # /flashinfer/<ver>/<arch>. The default base is $HOME, which on bdrt is a
+    # SHARED NFS home: both ranks then race on the same os.makedirs() and one of
+    # them dies with FileNotFoundError on the freshly created directory (job
+    # 3049). Give each rank a node-local base — no race, and JIT artifacts land
+    # on local nvme instead of NFS.
+    local flashinfer_base="${VLLM_FLASHINFER_WORKSPACE_BASE:-/var/tmp/umrs-glm52/flashinfer}"
+    ray_common="RAY_memory_monitor_refresh_ms=0 RAY_local_fs_capacity_threshold=1 NCCL_IB_DISABLE=1 NCCL_SOCKET_IFNAME=${fabric_if} GLOO_SOCKET_IFNAME=${fabric_if} NCCL_GRAPH_MIXING_SUPPORT=1 VLLM_NCCL_SO_PATH=${nccl_so} MALLOC_MMAP_THRESHOLD_=65536 FLASHINFER_WORKSPACE_BASE=${flashinfer_base}"
+    export FLASHINFER_WORKSPACE_BASE="${flashinfer_base}"
     # Global (not local): the exit trap stops this unit from another function.
     GLM_RAY_UNIT="rivault-ray-worker-${SLURM_JOB_ID:-0}"
     echo "[rivault] Native GLM fabric: ${RAY_NODES[0]}=${head_ip}, ${RAY_NODES[1]}=${worker_ip}"
