@@ -81,6 +81,7 @@ class ExecutionRecord:
     artifacts: list[str] = field(default_factory=list)
     durable_job_id: str | None = None
     cancel_requested: bool = False
+    identity_provenance: str = "unverified"
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def to_dict(self) -> dict[str, Any]:
@@ -100,6 +101,7 @@ class ExecutionRecord:
                 "artifacts": list(self.artifacts),
                 "durable_job_id": self.durable_job_id,
                 "cancel_requested": self.cancel_requested,
+                "identity_provenance": self.identity_provenance,
             }
 
     def is_terminal(self) -> bool:
@@ -145,6 +147,7 @@ class WorkflowExecutionRegistry:
         params: dict[str, Any] | None = None,
         execution_id: str | None = None,
         durable_job_id: str | None = None,
+        identity_provenance: str = "unverified",
     ) -> ExecutionRecord:
         record = ExecutionRecord(
             execution_id=execution_id or f"wf-{uuid.uuid4().hex[:12]}",
@@ -152,6 +155,7 @@ class WorkflowExecutionRegistry:
             user_id=user_id,
             params=dict(params or {}),
             durable_job_id=durable_job_id,
+            identity_provenance=identity_provenance,
         )
         with self._lock:
             self._records[record.execution_id] = record
