@@ -305,11 +305,20 @@ endpoints:
       # node down. serve-model.slurm forwards this into BOTH raylet containers
       # (Ray actors inherit the raylet env, not the driver's).
       MAX_JOBS: "4"
-      # vLLM v0.26.0, arm64, CUDA 13.0.2 — the version the recipe requires.
-      # Verified on-node: org.opencontainers.image.version=vllm/vllm-openai:v0.26.0.
-      # NOTE: `:latest` FLOATS (it moved 0.25.1 -> 0.26.0 on 2026-07-27 and broke
-      # laguna-s-2.1-fp8). Pin to a digest once this entry is validated.
-      VLLM_DOCKER_IMAGE: "docker.io/vllm/vllm-openai:latest"
+      # Pinned to the exact version the recipe was verified against (vLLM
+      # 0.26.0 / torch 2.11.0+cu130, CUDA 13.0.2). LagunaForCausalLM is natively
+      # registered there, so no --trust-remote-code and no source patches.
+      #
+      # Do NOT use `:latest` here — it is mutable and already broke
+      # laguna-s-2.1-fp8 when it moved 0.25.1 -> 0.26.0 on 2026-07-27.
+      # `v0.26.0` is a multi-arch manifest list, so podman selects the image for
+      # the node's architecture; nothing here assumes aarch64:
+      #   arm64 -> sha256:e51157695347d2cee1b13f1ac05369df6216af5d2991b6ad5a2e700861cba4b1
+      #   amd64 -> sha256:770fe65b2c73ee74a5c42165cf3433de4048cc2cd9c57a937ca4e35aba5aa87b
+      # The arm64 digest is already among the local image's RepoDigests on the
+      # bdrt nodes (it is the same content `:latest` resolved to), so this pin
+      # costs no additional layer pull.
+      VLLM_DOCKER_IMAGE: "docker.io/vllm/vllm-openai:v0.26.0"
       # Laguna family emits poolside-format tool calls and </think> reasoning
       # markers; the default hermes parser leaks them as plain text.
       VLLM_TOOL_CALL_PARSER: "poolside_v1"
