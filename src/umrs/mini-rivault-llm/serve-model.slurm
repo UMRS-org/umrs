@@ -1159,8 +1159,19 @@ start_native_glm52() {
     # 3049). Give each rank a node-local base — no race, and JIT artifacts land
     # on local nvme instead of NFS.
     local flashinfer_base="${VLLM_FLASHINFER_WORKSPACE_BASE:-/var/tmp/umrs-glm52/flashinfer}"
-    ray_common="RAY_memory_monitor_refresh_ms=0 RAY_local_fs_capacity_threshold=1 NCCL_IB_DISABLE=1 NCCL_SOCKET_IFNAME=${fabric_if} GLOO_SOCKET_IFNAME=${fabric_if} NCCL_GRAPH_MIXING_SUPPORT=1 VLLM_NCCL_SO_PATH=${nccl_so} MALLOC_MMAP_THRESHOLD_=65536 FLASHINFER_WORKSPACE_BASE=${flashinfer_base}"
+    # GLM-5.2 needs FlashInfer's SM120 sparse-MLA decode kernel, and the
+    # flashinfer-jit-cache cu130 AOT wheel has no aarch64 build — the kernel is
+    # JIT-compiled on first use. Ray actors inherit the raylet's PATH, so both
+    # raylets must see `nvcc` and `ninja` or the backend selector reports
+    # "FLASHINFER_MLA_SPARSE_SM120 requires FlashInfer's sparse MLA decode API"
+    # and no attention backend is left (job 3051). Same requirement is called
+    # out in the vLLM-Moet spark RUNBOOK ("raylets from login shells").
+    local cuda_home="${CUDA_HOME:-/usr/local/cuda}"
+    local ray_path="${venv}/bin:${cuda_home}/bin:${PATH}"
+    ray_common="RAY_memory_monitor_refresh_ms=0 RAY_local_fs_capacity_threshold=1 NCCL_IB_DISABLE=1 NCCL_SOCKET_IFNAME=${fabric_if} GLOO_SOCKET_IFNAME=${fabric_if} NCCL_GRAPH_MIXING_SUPPORT=1 VLLM_NCCL_SO_PATH=${nccl_so} MALLOC_MMAP_THRESHOLD_=65536 FLASHINFER_WORKSPACE_BASE=${flashinfer_base} CUDA_HOME=${cuda_home} PATH=${ray_path}"
     export FLASHINFER_WORKSPACE_BASE="${flashinfer_base}"
+    export CUDA_HOME="${cuda_home}"
+    export PATH="${ray_path}"
     # Global (not local): the exit trap stops this unit from another function.
     GLM_RAY_UNIT="rivault-ray-worker-${SLURM_JOB_ID:-0}"
     echo "[rivault] Native GLM fabric: ${RAY_NODES[0]}=${head_ip}, ${RAY_NODES[1]}=${worker_ip}"
