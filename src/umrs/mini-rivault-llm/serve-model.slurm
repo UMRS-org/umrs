@@ -1176,7 +1176,19 @@ start_native_glm52() {
     # node-local root AND pre-create the leaf below, so no rank ever has to
     # win the mkdir.
     local vllm_cache_root="${VLLM_CACHE_ROOT_LOCAL:-/var/tmp/umrs-glm52/vllm-cache}"
-    ray_common="RAY_memory_monitor_refresh_ms=0 RAY_local_fs_capacity_threshold=1 NCCL_IB_DISABLE=1 NCCL_SOCKET_IFNAME=${fabric_if} GLOO_SOCKET_IFNAME=${fabric_if} NCCL_GRAPH_MIXING_SUPPORT=1 VLLM_NCCL_SO_PATH=${nccl_so} MALLOC_MMAP_THRESHOLD_=65536 FLASHINFER_WORKSPACE_BASE=${flashinfer_base} VLLM_CACHE_ROOT=${vllm_cache_root} CUDA_HOME=${cuda_home} PATH=${ray_path}"
+    # The MoE-W2 (2-bit expert) hook MUST be in the RAYLET env, not just the
+    # driver's. Ray workers inherit the raylet's environment and apply it OVER
+    # the driver's, so exporting these after `ray start` (as this function used
+    # to) leaves every Worker_TP with the hook disabled: Fp8MoEMethod then takes
+    # the upstream modular-kernel branch and dies with "Fp8MoEMethod uses the
+    # new modular kernel initialization logic. This function should not be
+    # called." (job 3053). It also explains POOL-PRUNED never appearing — the
+    # workers never saw the prepacked planes either. Both failures are recorded
+    # in the vLLM-Moet handoff 01-tp2-cudagraph-nccl-replay-hang.md.
+    # Only node-local truths go here: the planes dir is a per-node path holding
+    # that rank's own TP2 planes, which is what the handoff requires.
+    local moe_common="VLLM_MOE_W2=1 VLLM_MOE_W2_PLANES_MMAP=1 VLLM_MOE_W2_CUBIT_DIR=${repo}/kernels/cubins-sm120 VLLM_MOE_W2_DELTA_GB=${VLLM_MOE_W2_DELTA_GB:-0} VLLM_MOE_W2_PREPACKED_DIR=${planes}"
+    ray_common="RAY_memory_monitor_refresh_ms=0 RAY_local_fs_capacity_threshold=1 NCCL_IB_DISABLE=1 NCCL_SOCKET_IFNAME=${fabric_if} GLOO_SOCKET_IFNAME=${fabric_if} NCCL_GRAPH_MIXING_SUPPORT=1 VLLM_NCCL_SO_PATH=${nccl_so} MALLOC_MMAP_THRESHOLD_=65536 FLASHINFER_WORKSPACE_BASE=${flashinfer_base} VLLM_CACHE_ROOT=${vllm_cache_root} CUDA_HOME=${cuda_home} PATH=${ray_path} ${moe_common}"
     export FLASHINFER_WORKSPACE_BASE="${flashinfer_base}"
     export VLLM_CACHE_ROOT="${vllm_cache_root}"
     export CUDA_HOME="${cuda_home}"
