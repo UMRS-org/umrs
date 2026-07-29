@@ -24,14 +24,38 @@ from umrs.knowledge.loop import (
     LoopStatus,
     ResearchLoop,
 )
+from umrs.knowledge.loop_store import LoopStore
 from umrs.knowledge.project import ResearchProject
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/umrs/loops", tags=["loops"])
 
-_loop_store: dict[str, ResearchLoop] = {}
+# Store defaults to in-memory (identical behavior to previous dict); the
+# server upgrades it to the Postgres-backed LoopStore at boot via
+# configure_loop_store(pool). State survives restarts from that point on.
+_loop_store: LoopStore = LoopStore.memory()
 _loop_engine: AutonomousResearchLoop | None = None
+
+
+def configure_loop_store(pool: Any) -> None:
+    """Upgrade the loop store to Postgres persistence at server boot.
+
+    Memory-resident loops (test runs, non-configured startups) are preserved:
+    they are written through to Postgres so ongoing work is not lost.
+    """
+    global _loop_store
+    incoming = LoopStore(pool)
+    for live in _loop_store.list_all():
+        try:
+            incoming.save(live)
+        except Exception as exc:
+            logger.warning("loop migration on boot skipped %s: %s", live.loop_id, exc)
+    _loop_store = incoming
+    logger.info(
+        "loop store upgraded to Postgres (%d loops carried)",
+        len(_loop_store.list_all()),
+    )
 
 
 def _get_engine() -> AutonomousResearchLoop:
@@ -177,7 +201,7 @@ async def start_loop(request: StartLoopRequest) -> StartLoopResponse:
         research_goal=request.research_goal,
         max_iterations=request.max_iterations,
     )
-    _loop_store[loop.loop_id] = loop
+    _loop_store.save(loop)
 
     return StartLoopResponse(
         loop_id=loop.loop_id,
@@ -195,8 +219,12 @@ async def start_loop(request: StartLoopRequest) -> StartLoopResponse:
 )
 async def list_loops() -> ListLoopsResponse:
     loops = [
-        {"loop_id": lid, "status": loop_obj.status.value, "phase": loop_obj.phase.value}
-        for lid, loop_obj in _loop_store.items()
+        {
+            "loop_id": loop_obj.loop_id,
+            "status": loop_obj.status.value,
+            "phase": loop_obj.phase.value,
+        }
+        for loop_obj in _loop_store.list_all()
     ]
     return ListLoopsResponse(loops=loops)
 
@@ -313,4 +341,6 @@ async def resume_loop(loop_id: str) -> StartLoopResponse:
 
 
 def clear_loop_store() -> None:
+    """Test utility — wipes the loop store. Memory mode only; pool-backed
+    store requires explicit per-loop deletes."""
     _loop_store.clear()
