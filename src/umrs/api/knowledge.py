@@ -97,6 +97,62 @@ async def search_knowledge(
     return result.to_dict()
 
 
+# ── D5/D6 — Unified academic-source search (arXiv | S2 | CrossRef | CiNii | J-STAGE) ─
+
+
+class ExternalSearchRequest(BaseModel):
+    query: str = Field(..., min_length=1)
+    sources: list[str] | None = Field(
+        default=None,
+        description="Subset of arxiv, semantic_scholar, crossref, cinii, jstage",
+    )
+    limit_per_source: int = Field(default=5, ge=1, le=25)
+    project_id: str | None = None
+
+
+@router.post("/external/search")
+async def post_external_search(req: ExternalSearchRequest):
+    """Fan out one query across academic sources including JA-native ones.
+
+    Defaults include CiNii Research and J-STAGE so Japanese-language
+    research content is first-class alongside arXiv/S2/CrossRef. Matches
+    the r4 SDK's `KnowledgeClient.external_search()` contract.
+    """
+    from umrs.knowledge.external import ExternalKnowledgeSearcher, ExternalSourceType
+
+    default = ["arxiv", "semantic_scholar", "crossref", "cinii", "jstage"]
+    names = req.sources or default
+    try:
+        source_types = [ExternalSourceType(n) for n in names]
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail=f"unknown source in {names!r}; allowed: {', '.join(default)}",
+        ) from None
+
+    searcher = ExternalKnowledgeSearcher()
+    results = searcher.search_all(
+        req.query,
+        max_results_per_source=req.limit_per_source,
+        sources=source_types,
+    )
+    return {
+        "query": req.query,
+        "sources": names,
+        "results": [
+            {
+                "source_type": r.source_type.value,
+                "status": r.status.value,
+                "total_results": r.total_results,
+                "error_message": r.error_message,
+                "search_duration_sec": r.search_duration_sec,
+                "references": [ref.to_dict() for ref in r.references],
+            }
+            for r in results
+        ],
+    }
+
+
 # ── M3.5 — Interactive Scientific Knowledge Verification ──────────────────
 
 # Shared in-memory stores for the M3.5 controllers.  A real deployment would
@@ -403,6 +459,30 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _approval_decision(
+    *,
+    force: bool,
+    confidence_ok: bool,
+    unresolved_count: int,
+    confidence: float,
+    threshold: float,
+) -> tuple[bool, str]:
+    """Approve / reject with reason; force always approves."""
+    blocking_ok = unresolved_count == 0
+    if force:
+        return True, "approved (force)"
+    if not confidence_ok and not blocking_ok:
+        return False, (
+            f"confidence {confidence:.2f} below threshold {threshold} and "
+            f"{unresolved_count} blocking finding(s)"
+        )
+    if not confidence_ok:
+        return False, f"confidence {confidence:.2f} below threshold {threshold}"
+    if not blocking_ok:
+        return False, f"{unresolved_count} unresolved blocking finding(s)"
+    return True, "approved"
+
+
 def _build_pool(request: Request):
     """Return the shared app-level durable job DB pool for knowledge store access.
 
@@ -415,6 +495,33 @@ def _build_pool(request: Request):
     if pool is None:
         raise HTTPException(status_code=503, detail="Database unavailable")
     return pool
+
+
+def _report_summary(r) -> dict[str, Any]:
+    """One verification report → API dict."""
+    return {
+        "report_id": r.report_id,
+        "spec_name": r.spec_name,
+        "version": r.version,
+        "confidence": r.confidence,
+        "total_checks": r.total_checks,
+        "failed_checks": r.failed_checks,
+        "degraded": r.degraded,
+        "degraded_reason": r.degraded_reason,
+        "created_at": r.created_at.isoformat() if r.created_at else None,
+    }
+
+
+def _readiness_from_latest(latest: dict[str, Any]) -> tuple[str, float]:
+    """Map one report summary to (readiness_level, confidence)."""
+    confidence = latest["confidence"]
+    if latest["degraded"]:
+        return "degraded", confidence
+    if confidence >= 0.8:
+        return "ready", confidence
+    if confidence >= 0.5:
+        return "partial", confidence
+    return "insufficient", confidence
 
 
 @router.get("/status", response_model=dict[str, Any])
@@ -432,42 +539,14 @@ async def knowledge_status(
         artifacts = await store.list_artifacts(project_id=project_id)
         active_count = sum(1 for a in artifacts if a.get("status") == "active")
 
-        # Get verification reports for this project (via join)
         ver = VerificationStore(pool)
         reports = await ver.list_reports(project_id=project_id, limit=25)
-        report_summaries = []
-        for r in reports:
-            report_summaries.append(
-                {
-                    "report_id": r.report_id,
-                    "spec_name": r.spec_name,
-                    "version": r.version,
-                    "confidence": r.confidence,
-                    "total_checks": r.total_checks,
-                    "failed_checks": r.failed_checks,
-                    "degraded": r.degraded,
-                    "degraded_reason": r.degraded_reason,
-                    "created_at": r.created_at.isoformat() if r.created_at else None,
-                }
-            )
+        report_summaries = [_report_summary(r) for r in reports]
 
-        # Readiness from latest report
         readiness_level = "unverified"
         confidence = 0.0
         if report_summaries:
-            latest = report_summaries[0]
-            if latest["degraded"]:
-                readiness_level = "degraded"
-                confidence = latest["confidence"]
-            elif latest["confidence"] >= 0.8:
-                readiness_level = "ready"
-                confidence = latest["confidence"]
-            elif latest["confidence"] >= 0.5:
-                readiness_level = "partial"
-                confidence = latest["confidence"]
-            else:
-                readiness_level = "insufficient"
-                confidence = latest["confidence"]
+            readiness_level, confidence = _readiness_from_latest(report_summaries[0])
 
         return {
             "project_id": project_id,
@@ -485,6 +564,45 @@ async def knowledge_status(
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
+async def _list_findings_filtered(ver, report_id, status, severity):
+    """Filter wrapper — keeps the handler body single-expression."""
+    kwargs: dict[str, Any] = {"status": status, "severity": severity, "limit": 500}
+    if report_id:
+        kwargs["report_id"] = report_id
+    return await ver.list_findings(**kwargs)
+
+
+def _findings_payload(findings) -> dict[str, Any]:
+    """Serialize findings + status-count summary."""
+    findings_data = [_finding_dict(f) for f in findings]
+    return {
+        "findings": findings_data,
+        "total": len(findings_data),
+        "open_count": sum(1 for f in findings if f.status in ("open", "acknowledged")),
+        "resolved_count": sum(1 for f in findings if f.status == "resolved"),
+        "waived_count": sum(1 for f in findings if f.status == "waived"),
+    }
+
+
+def _finding_dict(f) -> dict[str, Any]:
+    """One finding → API dict."""
+    return {
+        "finding_key": f.finding_key,
+        "report_id": f.report_id,
+        "category": f.category,
+        "severity": f.severity,
+        "status": f.status,
+        "title": f.title,
+        "description": f.description,
+        "evidence": f.evidence,
+        "artifact_id": f.artifact_id,
+        "waived_evidence": f.waived_evidence,
+        "waiver_expires": (f.waiver_expires.isoformat() if f.waiver_expires else None),
+        "created_at": (f.created_at.isoformat() if f.created_at else None),
+        "updated_at": (f.updated_at.isoformat() if f.updated_at else None),
+    }
+
+
 @router.get("/findings", response_model=dict[str, Any])
 async def knowledge_findings(
     request: Request,
@@ -499,53 +617,8 @@ async def knowledge_findings(
         pool = _build_pool(request)
         ver = VerificationStore(pool)
 
-        if report_id:
-            findings = await ver.list_findings(
-                report_id=report_id,
-                status=status,
-                severity=severity,
-                limit=500,
-            )
-        else:
-            findings = await ver.list_findings(
-                status=status,
-                severity=severity,
-                limit=500,
-            )
-
-        findings_data = []
-        for f in findings:
-            findings_data.append(
-                {
-                    "finding_key": f.finding_key,
-                    "report_id": f.report_id,
-                    "category": f.category,
-                    "severity": f.severity,
-                    "status": f.status,
-                    "title": f.title,
-                    "description": f.description,
-                    "evidence": f.evidence,
-                    "artifact_id": f.artifact_id,
-                    "waived_evidence": f.waived_evidence,
-                    "waiver_expires": (
-                        f.waiver_expires.isoformat() if f.waiver_expires else None
-                    ),
-                    "created_at": (f.created_at.isoformat() if f.created_at else None),
-                    "updated_at": (f.updated_at.isoformat() if f.updated_at else None),
-                }
-            )
-
-        open_count = sum(1 for f in findings if f.status in ("open", "acknowledged"))
-        resolved_count = sum(1 for f in findings if f.status == "resolved")
-        waived_count = sum(1 for f in findings if f.status == "waived")
-
-        return {
-            "findings": findings_data,
-            "total": len(findings_data),
-            "open_count": open_count,
-            "resolved_count": resolved_count,
-            "waived_count": waived_count,
-        }
+        findings = await _list_findings_filtered(ver, report_id, status, severity)
+        return _findings_payload(findings)
     except Exception as exc:
         logger.exception("Failed to list findings")
         raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -626,12 +699,15 @@ async def approve_knowledge(
         unresolved_blocking = [
             b for b in blocking if b.status not in ("resolved", "waived")
         ]
-        blocking_ok = len(unresolved_blocking) == 0
 
-        # Approval decision
+        approved, reason = _approval_decision(
+            force=force,
+            confidence_ok=confidence_ok,
+            unresolved_count=len(unresolved_blocking),
+            confidence=report.confidence,
+            threshold=confidence_threshold,
+        )
         if force:
-            approved = True
-            reason = "approved (force)"
             logger.info(
                 "AUDIT: Force approve report=%s confidence=%.2f "
                 "threshold=%.2f blocking=%d",
@@ -640,25 +716,6 @@ async def approve_knowledge(
                 confidence_threshold,
                 len(unresolved_blocking),
             )
-        elif not confidence_ok and not blocking_ok:
-            approved = False
-            reason = (
-                f"confidence {report.confidence:.2f} below "
-                f"threshold {confidence_threshold} and "
-                f"{len(unresolved_blocking)} blocking finding(s)"
-            )
-        elif not confidence_ok:
-            approved = False
-            reason = (
-                f"confidence {report.confidence:.2f} below "
-                f"threshold {confidence_threshold}"
-            )
-        elif not blocking_ok:
-            approved = False
-            reason = f"{len(unresolved_blocking)} unresolved blocking finding(s)"
-        else:
-            approved = True
-            reason = "approved"
 
         return {
             "approved": approved,
