@@ -289,6 +289,84 @@ def test_zmq_cancel_durable_job(client, monkeypatch):
     assert data["execution"]["status"] == "cancelled"
 
 
+@pytest.mark.parametrize(
+    "cmd",
+    [TaskCmd.WORKFLOW_STATUS, TaskCmd.WORKFLOW_RESULTS, TaskCmd.WORKFLOW_CANCEL],
+)
+def test_http_zmq_strict_parity_cross_tenant_denied(client, monkeypatch, cmd):
+    """HTTP and ZMQ return the same denial code under strict auth."""
+    monkeypatch.setenv("UMRS_AUTH_MODE", "strict")
+    registry = get_execution_registry()
+    record = registry.create(
+        workflow_name="wf",
+        user_id="alice",
+        params={"project_id": "project-a"},
+        identity_provenance="gateway_verified",
+    )
+
+    if cmd == TaskCmd.WORKFLOW_STATUS:
+        http_resp = client.get(
+            f"/umrs/workflows/executions/{record.execution_id}",
+            headers=_auth_headers(user="bob", project="project-b"),
+        )
+    elif cmd == TaskCmd.WORKFLOW_RESULTS:
+        http_resp = client.get(
+            f"/umrs/workflows/executions/{record.execution_id}/results",
+            headers=_auth_headers(user="bob", project="project-b"),
+        )
+    else:
+        http_resp = client.post(
+            f"/umrs/workflows/executions/{record.execution_id}/cancel",
+            headers=_auth_headers(user="bob", project="project-b"),
+        )
+    assert http_resp.status_code == 403
+    assert http_resp.json()["detail"]["code"] == "workflow_access_denied"
+
+    zmq_raw = handle_workflow_command(
+        cmd,
+        "bob",
+        json.dumps(
+            {
+                "execution_id": record.execution_id,
+                "project_id": "project-b",
+                "_identity_verified": True,
+            }
+        ),
+    )
+    zmq_data = json.loads(zmq_raw)
+    assert zmq_data["status"] == "error"
+    assert zmq_data["code"] == "workflow_access_denied"
+
+
+def test_zmq_strict_denies_unverified_identity(monkeypatch):
+    monkeypatch.setenv("UMRS_AUTH_MODE", "strict")
+    registry = get_execution_registry()
+    record = registry.create(
+        workflow_name="wf",
+        user_id="alice",
+        params={"project_id": "project-a"},
+        identity_provenance="gateway_verified",
+    )
+    raw = handle_workflow_command(
+        TaskCmd.WORKFLOW_STATUS,
+        "alice",
+        json.dumps(
+            {
+                "execution_id": record.execution_id,
+                "project_id": "project-a",
+                "_identity_verified": False,
+            }
+        ),
+    )
+    data = json.loads(raw)
+    assert data["status"] == "error"
+    assert data["code"] in (
+        "workflow_access_denied",
+        "workflow_identity_unverified",
+        "unauthorized",
+    )
+
+
 def test_workflow_name_resolution_prefers_owner_then_system(tmp_catalog, tmp_path):
     alice_dir = tmp_path / "alice-wf"
     alice_dir.mkdir()
