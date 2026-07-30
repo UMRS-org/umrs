@@ -29,7 +29,7 @@ from .endpoint_registry import (
     RegisteredEndpoint,
     get_registry,
 )
-from .factory import get_orchestrator
+from .factory import get_orchestrator, resolve_configured_backend_name
 from .ports import PortManager, get_port_manager
 from .readiness import (
     ReadinessPoller,
@@ -120,9 +120,7 @@ class ProvisionRequest:
     requesting_user: str | None = (
         None  # Username for per-user Slurm delegation & accounting
     )
-    variant: str | None = (
-        None  # Deployment variant name (e.g. "128k", "tep-128k")
-    )
+    variant: str | None = None  # Deployment variant name (e.g. "128k", "tep-128k")
 
 
 @dataclass
@@ -208,17 +206,7 @@ class OrchestrationService:
     @staticmethod
     def _configured_backend_name() -> str | None:
         """Return an explicitly configured backend, if one exists."""
-        explicit = (os.getenv("RIVAULT_ORCHESTRATOR") or "").strip()
-        if explicit:
-            return explicit
-
-        try:
-            site = load_site_config()
-        except FileNotFoundError:
-            return None
-
-        configured = (site.scheduler.kind or "").strip()
-        return configured or None
+        return resolve_configured_backend_name()
 
     @property
     def backend(self) -> OrchestratorBackend:
@@ -926,9 +914,7 @@ class OrchestrationService:
                 return None
 
         # 2. Re-probe readiness using the endpoint's configured probe.
-        readiness_probe_kind = str(
-            endpoint.metadata.get("readiness_probe") or "chat"
-        )
+        readiness_probe_kind = str(endpoint.metadata.get("readiness_probe") or "chat")
         readiness_path = endpoint.metadata.get("readiness_path")
 
         try:
@@ -1068,7 +1054,8 @@ class OrchestrationService:
         # (which acquires it) doesn't deadlock.
         with self.registry._lock:
             candidates = [
-                ep for ep in self.registry._endpoints.values()
+                ep
+                for ep in self.registry._endpoints.values()
                 if ep.status in stuck_statuses
             ]
 
@@ -1101,7 +1088,9 @@ class OrchestrationService:
 
             if refreshed is None:
                 result["timed_out"] += 1
-                result["errors"].append({"job_id": ep.job_id, "error": "endpoint disappeared"})
+                result["errors"].append(
+                    {"job_id": ep.job_id, "error": "endpoint disappeared"}
+                )
                 continue
 
             if refreshed.status == EndpointStatus.READY:

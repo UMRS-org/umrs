@@ -20,7 +20,7 @@ from typing import Any
 from .base import OrchestratorBackend
 from .detection import detect_backend
 from .endpoint_registry import EndpointRegistry, EndpointStatus, get_registry
-from .factory import get_orchestrator
+from .factory import get_orchestrator, resolve_configured_backend_name
 
 logger = logging.getLogger(__name__)
 
@@ -163,10 +163,25 @@ class Janitor:
 
     @property
     def backend(self) -> OrchestratorBackend:
-        """Get orchestrator backend (lazy init)."""
+        """Get orchestrator backend (lazy init).
+
+        Prefer the explicitly configured backend (env or site.yaml
+        ``scheduler.kind``) over environment auto-detection. On front-end
+        deployments (e.g. umrs-front containers driving a remote Slurm
+        cluster) no local sbatch/kubectl/docker exists, so detection
+        returns UNKNOWN and every backend-dependent cleanup silently
+        no-ops while orphan cleanup errors every cycle.
+        """
         if self._backend is None:
-            detection = detect_backend()
-            self._backend = get_orchestrator(detection.backend.value)
+            configured = resolve_configured_backend_name()
+            if configured:
+                self._backend = get_orchestrator(configured)
+                logger.info(
+                    "Janitor using configured orchestrator backend: %s", configured
+                )
+            else:
+                detection = detect_backend()
+                self._backend = get_orchestrator(detection.backend.value)
         return self._backend
 
     def add_cleanup_callback(self, callback: Callable[[str], None]):

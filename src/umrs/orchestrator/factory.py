@@ -84,6 +84,31 @@ def _command_succeeds(*args: str) -> bool:
     return result.returncode == 0
 
 
+def resolve_configured_backend_name() -> str | None:
+    """Resolve the explicitly configured orchestrator backend name.
+
+    Checks, in order:
+    1. ``RIVAULT_ORCHESTRATOR`` environment variable
+    2. site.yaml ``scheduler.kind``
+
+    Returns None when no explicit configuration exists; callers should
+    then fall back to environment auto-detection.
+    """
+    explicit = (os.environ.get("RIVAULT_ORCHESTRATOR") or "").strip()
+    if explicit:
+        return explicit
+
+    try:
+        from .site_config import load_site_config
+
+        site = load_site_config()
+    except FileNotFoundError:
+        return None
+
+    configured = (site.scheduler.kind or "").strip()
+    return configured or None
+
+
 def get_orchestrator(
     backend: str | None = None,
     config: OrchestratorConfig | None = None,
