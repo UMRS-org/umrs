@@ -44,6 +44,9 @@ class ExternalSourceType(str, Enum):
     ARXIV = "arxiv"
     SEMANTIC_SCHOLAR = "semantic_scholar"
     CROSSREF = "crossref"
+    CINII = "cinii"
+    JSTAGE = "jstage"
+    WEKO3 = "weko3"
     PUBMED = "pubmed"
     GOOGLE_SCHOLAR = "google_scholar"
     WEB = "web"
@@ -160,7 +163,9 @@ class ArxivSource:
                 references = self._parse_arxiv_response(response)
                 result.references = references
                 result.total_results = len(references)
-                result.status = SearchStatus.SUCCESS if references else SearchStatus.NO_RESULTS
+                result.status = (
+                    SearchStatus.SUCCESS if references else SearchStatus.NO_RESULTS
+                )
             else:
                 result.status = SearchStatus.ERROR
                 result.error_message = "Failed to fetch from arXiv"
@@ -203,13 +208,17 @@ class ArxivSource:
                 ref.title = title_match.group(1).strip()
 
             # Extract arxiv ID
-            id_match = re.search(r"<id>(http://arxiv.org/abs/)?(.+?)</id>", entry, re.DOTALL)
+            id_match = re.search(
+                r"<id>(http://arxiv.org/abs/)?(.+?)</id>", entry, re.DOTALL
+            )
             if id_match:
                 ref.arxiv_id = id_match.group(2).strip()
                 ref.url = f"http://arxiv.org/abs/{ref.arxiv_id}"
 
             # Extract authors
-            author_pattern = re.compile(r"<author>.*?<name>(.*?)</name>.*?</author>", re.DOTALL)
+            author_pattern = re.compile(
+                r"<author>.*?<name>(.*?)</name>.*?</author>", re.DOTALL
+            )
             for author_match in author_pattern.finditer(entry):
                 ref.authors.append(author_match.group(1).strip())
 
@@ -219,7 +228,9 @@ class ArxivSource:
                 ref.abstract = summary_match.group(1).strip()
 
             # Extract published date
-            published_match = re.search(r"<published>(.*?)</published>", entry, re.DOTALL)
+            published_match = re.search(
+                r"<published>(.*?)</published>", entry, re.DOTALL
+            )
             if published_match:
                 ref.published_date = published_match.group(1).strip()
 
@@ -261,7 +272,9 @@ class SemanticScholarSource:
                 references = self._parse_s2_response(data)
                 result.references = references
                 result.total_results = len(references)
-                result.status = SearchStatus.SUCCESS if references else SearchStatus.NO_RESULTS
+                result.status = (
+                    SearchStatus.SUCCESS if references else SearchStatus.NO_RESULTS
+                )
             else:
                 result.status = SearchStatus.ERROR
                 result.error_message = "Failed to fetch from Semantic Scholar"
@@ -287,43 +300,34 @@ class SemanticScholarSource:
             logger.warning("Failed to fetch %s: %s", url, exc)
             return None
 
+    @staticmethod
+    def _parse_s2_paper(paper: dict) -> ExternalReference:
+        """Build one reference from a single Semantic Scholar record."""
+        ref = ExternalReference(source_type=ExternalSourceType.SEMANTIC_SCHOLAR)
+        ref.title = paper.get("title", "")
+        ref.abstract = paper.get("abstract", "") or ""
+        ref.authors = [a.get("name", "") for a in paper.get("authors", [])]
+
+        year = paper.get("year")
+        if year:
+            ref.published_date = str(year)
+        ref.citations = paper.get("citationCount", 0) or 0
+
+        ext_ids = paper.get("externalIds", {}) or {}
+        ref.doi = ext_ids.get("DOI", "")
+        ref.arxiv_id = ext_ids.get("ArXiv", "")
+        ref.pubmed_id = ext_ids.get("PubMed", "")
+
+        if ref.doi:
+            ref.url = f"https://doi.org/{ref.doi}"
+        elif ref.arxiv_id:
+            ref.url = f"http://arxiv.org/abs/{ref.arxiv_id}"
+        return ref
+
     def _parse_s2_response(self, data: dict) -> list[ExternalReference]:
         """Parse Semantic Scholar API JSON response."""
-        references: list[ExternalReference] = []
-
-        for paper in data.get("data", []):
-            ref = ExternalReference(source_type=ExternalSourceType.SEMANTIC_SCHOLAR)
-            ref.title = paper.get("title", "")
-            ref.abstract = paper.get("abstract", "") or ""
-
-            # Authors
-            for author in paper.get("authors", []):
-                ref.authors.append(author.get("name", ""))
-
-            # Year
-            year = paper.get("year")
-            if year:
-                ref.published_date = str(year)
-
-            # Citation count
-            ref.citations = paper.get("citationCount", 0) or 0
-
-            # External IDs (DOI, arXiv, PubMed)
-            ext_ids = paper.get("externalIds", {}) or {}
-            ref.doi = ext_ids.get("DOI", "")
-            ref.arxiv_id = ext_ids.get("ArXiv", "")
-            ref.pubmed_id = ext_ids.get("PubMed", "")
-
-            # URL
-            if ref.doi:
-                ref.url = f"https://doi.org/{ref.doi}"
-            elif ref.arxiv_id:
-                ref.url = f"http://arxiv.org/abs/{ref.arxiv_id}"
-
-            if ref.title:
-                references.append(ref)
-
-        return references
+        references = [self._parse_s2_paper(p) for p in data.get("data", [])]
+        return [r for r in references if r.title]
 
 
 class CrossRefSource:
@@ -358,7 +362,9 @@ class CrossRefSource:
                 references = self._parse_crossref_response(data)
                 result.references = references
                 result.total_results = len(references)
-                result.status = SearchStatus.SUCCESS if references else SearchStatus.NO_RESULTS
+                result.status = (
+                    SearchStatus.SUCCESS if references else SearchStatus.NO_RESULTS
+                )
             else:
                 result.status = SearchStatus.ERROR
                 result.error_message = "Failed to fetch from CrossRef"
@@ -386,45 +392,310 @@ class CrossRefSource:
             logger.warning("Failed to fetch %s: %s", url, exc)
             return None
 
+    @staticmethod
+    def _parse_crossref_item(item: dict) -> ExternalReference:
+        """Build one reference from a single CrossRef work item."""
+        ref = ExternalReference(source_type=ExternalSourceType.CROSSREF)
+        ref.doi = item.get("DOI", "")
+
+        titles = item.get("title", [])
+        if titles:
+            ref.title = titles[0]
+
+        for author in item.get("author", []):
+            name = f"{author.get('given', '')} {author.get('family', '')}".strip()
+            if name:
+                ref.authors.append(name)
+
+        ref.abstract = item.get("abstract", "") or ""
+
+        published = item.get("published", {})
+        if published:
+            parts = published.get("date-parts", [[]])[0]
+            if parts:
+                ref.published_date = "-".join(str(p) for p in parts)
+
+        if ref.doi:
+            ref.url = f"https://doi.org/{ref.doi}"
+        return ref
+
     def _parse_crossref_response(self, data: dict) -> list[ExternalReference]:
         """Parse CrossRef API JSON response."""
-        references: list[ExternalReference] = []
+        refs = [
+            self._parse_crossref_item(i)
+            for i in data.get("message", {}).get("items", [])
+        ]
+        return [r for r in refs if r.title]
 
-        for item in data.get("message", {}).get("items", []):
-            ref = ExternalReference(source_type=ExternalSourceType.CROSSREF)
-            ref.doi = item.get("DOI", "")
 
-            # Title
-            titles = item.get("title", [])
-            if titles:
-                ref.title = titles[0]
+class CiNiiSource:
+    """CiNii Research (NII) — Japan's researcher/publisher-integrated index.
 
-            # Authors
-            for author in item.get("author", []):
-                name = f"{author.get('given', '')} {author.get('family', '')}".strip()
-                if name:
-                    ref.authors.append(name)
+    Uses the CiNii Research REST API (`/v1/rsearch`) which returns Atom-style
+    XML over JPCOAR metadata. No API key is required for read-only search.
+    """
 
-            # Abstract
-            ref.abstract = item.get("abstract", "") or ""
+    BASE_URL = "https://cir.nii.ac.jp/opensearch/all"
 
-            # Published date
-            published = item.get("published", {})
-            if published:
-                parts = [
-                    published.get("date-parts", [[]])[0],
-                ]
-                if parts[0]:
-                    ref.published_date = "-".join(str(p) for p in parts[0])
+    def search(self, query: str, *, max_results: int = 10) -> ExternalSearchResult:
+        """Search CiNii for papers in Japanese or English metadata."""
+        start_time = datetime.now(timezone.utc)
+        result = ExternalSearchResult(
+            query=query,
+            source_type=ExternalSourceType.CINII,
+            searched_at=start_time.isoformat(),
+        )
+        try:
+            params = {
+                "q": query,
+                "count": max_results,
+                "format": "json",
+            }
+            url = f"{self.BASE_URL}?{urllib.parse.urlencode(params)}"
+            response = self._fetch_url(url)
+            if response:
+                data = json.loads(response)
+                references = self._parse_response(data)
+                result.references = references
+                result.total_results = len(references)
+                result.status = (
+                    SearchStatus.SUCCESS if references else SearchStatus.NO_RESULTS
+                )
+            else:
+                result.status = SearchStatus.ERROR
+                result.error_message = "Failed to fetch from CiNii"
+        except Exception as exc:
+            result.status = SearchStatus.ERROR
+            result.error_message = str(exc)
+        result.search_duration_sec = (
+            datetime.now(timezone.utc) - start_time
+        ).total_seconds()
+        return result
 
-            # URL
-            if ref.doi:
-                ref.url = f"https://doi.org/{ref.doi}"
+    def _fetch_url(self, url: str, timeout: int = 30) -> str | None:
+        try:
+            req = urllib.request.Request(
+                url, headers={"User-Agent": "R4-Knowledge/1.0"}
+            )
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return resp.read().decode("utf-8")
+        except Exception as exc:
+            logger.warning("Failed to fetch %s: %s", url, exc)
+            return None
 
-            if ref.title:
-                references.append(ref)
+    @staticmethod
+    def _authors_from_item(item: dict) -> list[str]:
+        """Normalize the variable creator shape into a list of names."""
+        creator = item.get("creator")
+        if isinstance(creator, list):
+            return [c.get("name", "") for c in creator if isinstance(c, dict)]
+        if isinstance(creator, dict):
+            name = creator.get("name", "")
+            return [name] if name else []
+        return []
 
-        return references
+    def _parse_one_item(self, item: dict) -> ExternalReference:
+        """Build one reference from a CiNii metadata item."""
+        ref = ExternalReference(source_type=ExternalSourceType.CINII)
+        ref.title = item.get("title", "").strip()
+        ref.authors = self._authors_from_item(item)
+        ref.abstract = (item.get("description") or "").strip()
+        ref.published_date = str(item.get("pubDate") or "").strip()
+        link = item.get("link") or {}
+        if isinstance(link, dict):
+            ref.url = link.get("@id", "") or link.get("item", "")
+        return ref
+
+    def _parse_response(self, data: dict) -> list[ExternalReference]:
+        refs = [
+            self._parse_one_item(i)
+            for i in data.get("@graph", [{}])[0].get("items", [])
+        ]
+        return [r for r in refs if r.title]
+
+
+class JStageSource:
+    """J-STAGE (JST) — Japanese Scientific and Technological Aggregator, Electronic.
+
+    Uses the `/material/search` OpenSearch endpoint which returns JROS XML
+    with the OpenSearch 1.1 envelope.
+    """
+
+    BASE_URL = "https://www.jstage.jst.go.jp/browseapi/mat/search"
+
+    def search(self, query: str, *, max_results: int = 10) -> ExternalSearchResult:
+        """Search J-STAGE for research articles."""
+        start_time = datetime.now(timezone.utc)
+        result = ExternalSearchResult(
+            query=query,
+            source_type=ExternalSourceType.JSTAGE,
+            searched_at=start_time.isoformat(),
+        )
+        try:
+            params = {
+                "service": "1",
+                "kwd": query,
+                "count": max_results,
+            }
+            url = f"{self.BASE_URL}?{urllib.parse.urlencode(params)}"
+            response = self._fetch_url(url)
+            if response:
+                references = self._parse_response(response)
+                result.references = references
+                result.total_results = len(references)
+                result.status = (
+                    SearchStatus.SUCCESS if references else SearchStatus.NO_RESULTS
+                )
+            else:
+                result.status = SearchStatus.ERROR
+                result.error_message = "Failed to fetch from J-STAGE"
+        except Exception as exc:
+            result.status = SearchStatus.ERROR
+            result.error_message = str(exc)
+        result.search_duration_sec = (
+            datetime.now(timezone.utc) - start_time
+        ).total_seconds()
+        return result
+
+    def _fetch_url(self, url: str, timeout: int = 30) -> str | None:
+        try:
+            req = urllib.request.Request(
+                url, headers={"User-Agent": "R4-Knowledge/1.0"}
+            )
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return resp.read().decode("utf-8")
+        except Exception as exc:
+            logger.warning("Failed to fetch %s: %s", url, exc)
+            return None
+
+    def _parse_one_entry(self, entry: str) -> ExternalReference:
+        """Build one reference from a JROS `<entry>` block."""
+        ref = ExternalReference(source_type=ExternalSourceType.JSTAGE)
+
+        title_match = re.search(r"<title>(.*?)</title>", entry, re.DOTALL)
+        if title_match:
+            ref.title = title_match.group(1).strip()
+        author_pattern = re.compile(
+            r"<\w*:?creator\b[^>]*>(.*?)</\w*:?creator>", re.DOTALL
+        )
+        ref.authors = [m.group(1).strip() for m in author_pattern.finditer(entry)]
+        desc_match = re.search(
+            r"<\w*:?description\b[^>]*>(.*?)</\w*:?description>", entry, re.DOTALL
+        )
+        if desc_match:
+            ref.abstract = desc_match.group(1).strip()
+        pub_match = re.search(
+            r"<\w*:?publicationDate\b[^>]*>(.*?)</\w*:?publicationDate>", entry
+        )
+        if pub_match:
+            ref.published_date = pub_match.group(1).strip()
+        link_match = re.search(r'<link href="([^"]+)"', entry)
+        if link_match:
+            ref.url = link_match.group(1)
+        return ref
+
+    def _parse_response(self, xml_text: str) -> list[ExternalReference]:
+        entry_pattern = re.compile(r"<entry>(.*?)</entry>", re.DOTALL)
+        refs = [
+            self._parse_one_entry(m.group(1)) for m in entry_pattern.finditer(xml_text)
+        ]
+        return [r for r in refs if r.title]
+
+
+class WEKO3Source:
+    """WEKO3 (NII Official Repository software) — per-university OAI-PMH.
+
+    Queries via OAI-PMH `ListRecords&metadataPrefix=oai_dc` so every
+    institution using stock WEKO3 metadata is reachable the same way.
+    """
+
+    def search(
+        self,
+        query: str,
+        *,
+        base_url: str = "https://repository.nii.ac.jp/oai",
+        max_results: int = 10,
+        timeout: int = 30,
+    ) -> ExternalSearchResult:
+        """Search WEKO3 OAI-PMH endpoint for repository records."""
+        start_time = datetime.now(timezone.utc)
+        result = ExternalSearchResult(
+            query=query,
+            source_type=ExternalSourceType.WEKO3,
+            searched_at=start_time.isoformat(),
+        )
+        try:
+            params = {
+                "verb": "ListRecords",
+                "metadataPrefix": "oai_dc",
+                "set": "weko3",
+            }
+            url = f"{base_url}?{urllib.parse.urlencode(params)}"
+            response = self._fetch_url(url, timeout=timeout)
+            if response:
+                references = self._parse_oai_dc(response, query)
+                result.references = references[:max_results]
+                result.total_results = len(result.references)
+                result.status = (
+                    SearchStatus.SUCCESS
+                    if result.references
+                    else SearchStatus.NO_RESULTS
+                )
+            else:
+                result.status = SearchStatus.ERROR
+                result.error_message = "Failed to fetch from WEKO3 endpoint"
+        except Exception as exc:
+            result.status = SearchStatus.ERROR
+            result.error_message = str(exc)
+        result.search_duration_sec = (
+            datetime.now(timezone.utc) - start_time
+        ).total_seconds()
+        return result
+
+    def _fetch_url(self, url: str, timeout: int = 30) -> str | None:
+        try:
+            req = urllib.request.Request(
+                url, headers={"User-Agent": "R4-Knowledge/1.0"}
+            )
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return resp.read().decode("utf-8")
+        except Exception as exc:
+            logger.warning("Failed to fetch %s: %s", url, exc)
+            return None
+
+    def _parse_oai_dc_record(self, record: str) -> ExternalReference:
+        """Build one reference from a single ``<record>`` block."""
+        ref = ExternalReference(source_type=ExternalSourceType.WEKO3)
+        title_m = re.search(r"<dc:title>(.*?)</dc:title>", record, re.DOTALL)
+        if title_m:
+            ref.title = title_m.group(1).strip()
+        creator_pattern = re.compile(
+            r"<\w*:?creator\b[^>]*>(.*?)</\w*:?creator>", re.DOTALL
+        )
+        ref.authors = [c.group(1).strip() for c in creator_pattern.finditer(record)]
+        desc_m = re.search(
+            r"<\w*:?description\b[^>]*>(.*?)</\w*:?description>", record, re.DOTALL
+        )
+        if desc_m:
+            ref.abstract = desc_m.group(1).strip()
+        date_m = re.search(r"<dc:date>(.*?)</dc:date>", record)
+        if date_m:
+            ref.published_date = date_m.group(1).strip()
+        ident_m = re.search(r"<dc:identifier>(http[^<]+)</dc:identifier>", record)
+        if ident_m:
+            ref.url = ident_m.group(1).strip()
+        return ref
+
+    def _parse_oai_dc(self, xml_text: str, query: str) -> list[ExternalReference]:
+        needle = query.lower()
+        record_pattern = re.compile(r"<record>.*?</record>", re.DOTALL)
+        refs = [
+            self._parse_oai_dc_record(m.group(0))
+            for m in record_pattern.finditer(xml_text)
+        ]
+        return [
+            r for r in refs if r.title and (not needle or needle in r.title.lower())
+        ]
 
 
 # ── External Knowledge Searcher ───────────────────────────────────────────
@@ -443,6 +714,8 @@ class ExternalKnowledgeSearcher:
             ExternalSourceType.ARXIV: ArxivSource(),
             ExternalSourceType.SEMANTIC_SCHOLAR: SemanticScholarSource(),
             ExternalSourceType.CROSSREF: CrossRefSource(),
+            ExternalSourceType.CINII: CiNiiSource(),
+            ExternalSourceType.JSTAGE: JStageSource(),
         }
 
     def search(
@@ -540,6 +813,26 @@ def search_crossref(query: str, max_results: int = 10) -> ExternalSearchResult:
     """Search CrossRef for papers (convenience function)."""
     source = CrossRefSource()
     return source.search(query, max_results=max_results)
+
+
+def search_cinii(query: str, max_results: int = 10) -> ExternalSearchResult:
+    """Search CiNii Research (NII) for papers (convenience function)."""
+    return CiNiiSource().search(query, max_results=max_results)
+
+
+def search_jstage(query: str, max_results: int = 10) -> ExternalSearchResult:
+    """Search J-STAGE for articles (convenience function)."""
+    return JStageSource().search(query, max_results=max_results)
+
+
+def search_weko3(
+    query: str,
+    max_results: int = 10,
+    *,
+    base_url: str = "https://repository.nii.ac.jp/oai",
+) -> ExternalSearchResult:
+    """Search a WEKO3 OAI-PMH endpoint for records (convenience function)."""
+    return WEKO3Source().search(query, base_url=base_url, max_results=max_results)
 
 
 def search_external(

@@ -52,18 +52,20 @@ def test_search_status_enum():
 def test_external_reference_defaults():
     """Test ExternalReference defaults."""
     ref = ExternalReference(source_type=ExternalSourceType.ARXIV)
-
     assert ref.source_type == ExternalSourceType.ARXIV
-    assert ref.title == ""
-    assert ref.authors == []
-    assert ref.abstract == ""
-    assert ref.doi == ""
-    assert ref.arxiv_id == ""
-    assert ref.pubmed_id == ""
-    assert ref.url == ""
-    assert ref.published_date == ""
-    assert ref.keywords == []
-    assert ref.citations == 0
+    for name, expected in (
+        ("title", ""),
+        ("authors", []),
+        ("abstract", ""),
+        ("doi", ""),
+        ("arxiv_id", ""),
+        ("pubmed_id", ""),
+        ("url", ""),
+        ("published_date", ""),
+        ("keywords", []),
+        ("citations", 0),
+    ):
+        assert getattr(ref, name) == expected, name
 
 
 def test_external_reference_to_dict():
@@ -364,12 +366,18 @@ def test_search_arxiv_convenience(mock_fetch):
 
 def test_search_external_convenience():
     """Test search_external convenience function."""
+    # D5: CiNii + J-STAGE joined the default source pack; WEKO3 stays opt-in
+    # because it needs a per-university base_url.
+    from umrs.knowledge.external import CiNiiSource, JStageSource
+
     with (
         patch.object(ArxivSource, "_fetch_url", return_value=None),
         patch.object(SemanticScholarSource, "_fetch_url", return_value=None),
         patch.object(CrossRefSource, "_fetch_url", return_value=None),
+        patch.object(CiNiiSource, "_fetch_url", return_value=None),
+        patch.object(JStageSource, "_fetch_url", return_value=None),
     ):
         results = search_external("test", max_results_per_source=2)
 
-    assert len(results) == 3  # arXiv, Semantic Scholar, CrossRef
+    assert len(results) == 5  # arXiv, Semantic Scholar, CrossRef, CiNii, J-STAGE
     assert all(r.status == SearchStatus.ERROR for r in results)
