@@ -1203,7 +1203,10 @@ class TestOrchestrationServiceConfig:
         fake_backend = MagicMock()
 
         with (
-            patch("umrs.orchestrator.service.load_site_config", return_value=fake_site),
+            patch(
+                "umrs.orchestrator.site_config.load_site_config",
+                return_value=fake_site,
+            ),
             patch(
                 "umrs.orchestrator.service.get_orchestrator", return_value=fake_backend
             ) as mock_get_orchestrator,
