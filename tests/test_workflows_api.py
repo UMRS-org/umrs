@@ -41,8 +41,8 @@ def tmp_catalog(tmp_path):
         yield catalog_file
 
 
-def _workflow_json(name: str = "ct-analysis"):
-    return {
+def _workflow_json(name: str = "ct-analysis", *, with_required_bucket: bool = False):
+    payload = {
         "name": name,
         "version": "1.0",
         "description": "workflow test",
@@ -52,6 +52,13 @@ def _workflow_json(name: str = "ct-analysis"):
             {"name": "step-2", "entrypoint": "my_module:StepTwo"},
         ],
     }
+    if with_required_bucket:
+        payload["parameter_schema"] = {
+            "type": "object",
+            "properties": {"bucket": {"type": "string"}},
+            "required": ["bucket"],
+        }
+    return payload
 
 
 def _workflow_zip_bytes(name: str = "ct-analysis") -> bytes:
@@ -228,3 +235,56 @@ def test_upload_workflow_rejects_invalid_archive(client):
 
     assert response.status_code == 400
     assert "zip" in response.json()["detail"].lower()
+
+
+def test_describe_workflow_returns_parameter_schema(client, tmp_path):
+    workflow_dir = tmp_path / "ct-analysis"
+    workflow_dir.mkdir()
+    workflow_json = _workflow_json(with_required_bucket=True)
+    (workflow_dir / "workflow.json").write_text(json.dumps(workflow_json))
+
+    register_workflow(
+        workflow_name="ct-analysis",
+        version="1.0",
+        user_id="alice",
+        source_path=str(workflow_dir),
+        workflow_json=workflow_json,
+        scope="user",
+    )
+
+    response = client.get(
+        "/umrs/workflows/ct-analysis",
+        headers=_auth_headers("alice", "project-a"),
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["workflow_name"] == "ct-analysis"
+    assert data["parameter_schema"]["required"] == ["bucket"]
+
+
+def test_trigger_workflow_rejects_missing_required_params(client, tmp_path):
+    workflow_dir = tmp_path / "ct-analysis"
+    workflow_dir.mkdir()
+    workflow_json = _workflow_json(with_required_bucket=True)
+    (workflow_dir / "workflow.json").write_text(json.dumps(workflow_json))
+
+    register_workflow(
+        workflow_name="ct-analysis",
+        version="1.0",
+        user_id="alice",
+        source_path=str(workflow_dir),
+        workflow_json=workflow_json,
+        scope="user",
+    )
+
+    response = client.post(
+        "/umrs/workflows/ct-analysis/trigger",
+        headers=_auth_headers("alice", "project-a"),
+        json={"user_id": "alice", "params": {}},
+    )
+
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert detail["code"] == "workflow_parameters_invalid"
+    assert "bucket" in detail["missing"]
