@@ -251,3 +251,50 @@ class TenantManager:
         if limit == -1:  # unlimited
             return True
         return current < limit
+
+
+# ── Default Manager Factory ─────────────────────────────────────────────
+
+
+def build_default_manager(
+    db_pool: Any = None, *, execute_schema_ddl: bool | None = None
+) -> Any:
+    """Build the default tenant manager backend.
+
+    Selection via ``UMRS_TENANTS_STORE_BACKEND`` (default ``auto``):
+
+      - ``pg``     — force Postgres (raises if unavailable)
+      - ``memory`` — force the in-memory reference manager
+      - ``auto``   — Postgres when a pool is provided or the environment
+                     points at a database, otherwise in-memory
+
+    ``execute_schema_ddl`` defaults from ``UMRS_TENANTS_EXECUTE_SCHEMA_DDL``
+    (default ``false``): when true, provision/deprovision also run the
+    per-tenant CREATE/DROP SCHEMA DDL. The registry is durable either way.
+
+    Postgres uses the ``sat_tenants`` table (migration 0060).
+    """
+    import os as _os
+
+    from umrs.shared.pg import resolve_satellite_pool
+
+    backend = _os.environ.get("UMRS_TENANTS_STORE_BACKEND", "auto").lower()
+    if backend == "memory":
+        return TenantManager()
+    if backend not in ("auto", "pg"):
+        logger.warning("Unknown store backend %r; using auto", backend)
+        backend = "auto"
+
+    pool = resolve_satellite_pool(backend, db_pool, "Tenant registry")
+    if pool is None:
+        return TenantManager()
+
+    if execute_schema_ddl is None:
+        execute_schema_ddl = (
+            _os.environ.get("UMRS_TENANTS_EXECUTE_SCHEMA_DDL", "false").lower()
+            in ("1", "true", "yes")
+        )
+
+    from .pg_store import PgTenantManager
+
+    return PgTenantManager(pool, execute_schema_ddl=execute_schema_ddl)

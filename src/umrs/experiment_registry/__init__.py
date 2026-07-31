@@ -19,11 +19,14 @@ Experiments can be updated (e.g., status changes), creating new versions.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 from uuid import uuid4
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "ExperimentStatus",
@@ -32,6 +35,8 @@ __all__ = [
     "ExperimentNotFoundError",
     "DuplicateExperimentError",
     "InMemoryExperimentRegistry",
+    "InvalidStatusTransitionError",
+    "build_default_store",
 ]
 
 
@@ -424,3 +429,39 @@ class InMemoryExperimentRegistry:
         ]
         results.sort(key=lambda e: e.created_at)
         return results
+
+
+# ── Default Store Factory ───────────────────────────────────────────────
+
+
+def build_default_store(db_pool: Any = None) -> Any:
+    """Build the default experiment registry backend.
+
+    Selection via ``UMRS_EXPERIMENT_REGISTRY_STORE_BACKEND`` (default ``auto``):
+
+      - ``pg``     — force Postgres (raises if unavailable)
+      - ``memory`` — force the in-memory reference registry
+      - ``auto``   — Postgres when a pool is provided or the environment
+                     points at a database, otherwise in-memory
+
+    Postgres uses the ``experiments`` / ``experiment_results`` tables
+    (migration 0059).
+    """
+    import os as _os
+
+    from umrs.shared.pg import resolve_satellite_pool
+
+    backend = _os.environ.get("UMRS_EXPERIMENT_REGISTRY_STORE_BACKEND", "auto").lower()
+    if backend == "memory":
+        return InMemoryExperimentRegistry()
+    if backend not in ("auto", "pg"):
+        logger.warning("Unknown store backend %r; using auto", backend)
+        backend = "auto"
+
+    pool = resolve_satellite_pool(backend, db_pool, "Experiment registry")
+    if pool is None:
+        return InMemoryExperimentRegistry()
+
+    from .pg_store import PgExperimentRegistry
+
+    return PgExperimentRegistry(pool)

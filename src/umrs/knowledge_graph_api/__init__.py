@@ -22,11 +22,14 @@ module contains the skeletal implementation.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 from uuid import uuid4
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "RelationType",
@@ -34,6 +37,7 @@ __all__ = [
     "KnowledgeEdge",
     "KnowledgeGraphAPI",
     "InMemoryKnowledgeGraph",
+    "build_default_graph",
 ]
 
 
@@ -400,3 +404,38 @@ class InMemoryKnowledgeGraph(KnowledgeGraphAPI):
                 if nid in self._nodes
             ]
         return list(self._nodes.values())
+
+
+# ── Default Graph Factory ───────────────────────────────────────────────
+
+
+def build_default_graph(db_pool: Any = None) -> Any:
+    """Build the default knowledge graph backend.
+
+    Selection via ``UMRS_KNOWLEDGE_GRAPH_STORE_BACKEND`` (default ``auto``):
+
+      - ``pg``     — force Postgres (raises if unavailable)
+      - ``memory`` — force the in-memory reference graph
+      - ``auto``   — Postgres when a pool is provided or the environment
+                     points at a database, otherwise in-memory
+
+    Postgres uses ``sat_kg_nodes`` / ``sat_kg_edges`` (migration 0060).
+    """
+    import os as _os
+
+    from umrs.shared.pg import resolve_satellite_pool
+
+    backend = _os.environ.get("UMRS_KNOWLEDGE_GRAPH_STORE_BACKEND", "auto").lower()
+    if backend == "memory":
+        return InMemoryKnowledgeGraph()
+    if backend not in ("auto", "pg"):
+        logger.warning("Unknown store backend %r; using auto", backend)
+        backend = "auto"
+
+    pool = resolve_satellite_pool(backend, db_pool, "Knowledge graph")
+    if pool is None:
+        return InMemoryKnowledgeGraph()
+
+    from .pg_store import PgKnowledgeGraph
+
+    return PgKnowledgeGraph(pool)

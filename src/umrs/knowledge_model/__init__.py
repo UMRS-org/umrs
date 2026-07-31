@@ -43,11 +43,14 @@ Soft deletes are supported via tombstones. Objects are never hard-deleted.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 from uuid import uuid4
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "KnowledgeObjectType",
@@ -58,6 +61,7 @@ __all__ = [
     "KnowledgeObjectNotFoundError",
     "DuplicateKnowledgeObjectError",
     "InMemoryKnowledgeModelStore",
+    "build_default_store",
 ]
 
 
@@ -551,3 +555,39 @@ class InMemoryKnowledgeModelStore:
             The tombstone, or None if not found
         """
         return self._tombstones.get(object_id)
+
+
+# ── Default Store Factory ───────────────────────────────────────────────
+
+
+def build_default_store(db_pool: Any = None) -> Any:
+    """Build the default knowledge model store backend.
+
+    Selection via ``UMRS_KNOWLEDGE_MODEL_STORE_BACKEND`` (default ``auto``):
+
+      - ``pg``     — force Postgres (raises if unavailable)
+      - ``memory`` — force the in-memory reference store
+      - ``auto``   — Postgres when a pool is provided or the environment
+                     points at a database, otherwise in-memory
+
+    Postgres uses ``sat_knowledge_objects`` / ``sat_knowledge_object_versions``
+    / ``sat_knowledge_tombstones`` (migration 0060).
+    """
+    import os as _os
+
+    from umrs.shared.pg import resolve_satellite_pool
+
+    backend = _os.environ.get("UMRS_KNOWLEDGE_MODEL_STORE_BACKEND", "auto").lower()
+    if backend == "memory":
+        return InMemoryKnowledgeModelStore()
+    if backend not in ("auto", "pg"):
+        logger.warning("Unknown store backend %r; using auto", backend)
+        backend = "auto"
+
+    pool = resolve_satellite_pool(backend, db_pool, "Knowledge model store")
+    if pool is None:
+        return InMemoryKnowledgeModelStore()
+
+    from .pg_store import PgKnowledgeModelStore
+
+    return PgKnowledgeModelStore(pool)
