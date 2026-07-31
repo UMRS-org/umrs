@@ -22,7 +22,6 @@ from __future__ import annotations
 import builtins
 import json
 import logging
-import os
 import threading
 import time
 import traceback
@@ -276,13 +275,19 @@ _registry_lock = threading.Lock()
 
 
 def get_execution_registry() -> WorkflowExecutionRegistry:
-    """Return the process-wide :class:`WorkflowExecutionRegistry`."""
+    """Return the process-wide execution registry (W1: durable when available).
+
+    On first build, resolves through ``umrs.workflow.pg_registry``
+    ``build_execution_registry`` -- Postgres-backed when the environment
+    provides a database, otherwise the classic in-memory registry.
+    """
     global _registry
     if _registry is None:
         with _registry_lock:
             if _registry is None:
-                cap = int(os.environ.get("UMRS_WF_EXEC_REGISTRY_MAX", "1000"))
-                _registry = WorkflowExecutionRegistry(max_records=cap)
+                from ..workflow.pg_registry import build_execution_registry
+
+                _registry = build_execution_registry()
     return _registry
 
 
