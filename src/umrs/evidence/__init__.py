@@ -21,11 +21,14 @@ The store is append-only — evidence items are never deleted, only retracted.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 from uuid import uuid4
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "EvidenceSourceType",
@@ -34,6 +37,7 @@ __all__ = [
     "EvidenceNotFoundError",
     "DuplicateEvidenceError",
     "InMemoryEvidenceStore",
+    "build_default_store",
 ]
 
 
@@ -175,6 +179,24 @@ class DuplicateEvidenceError(Exception):
     """Raised when a duplicate evidence item is added."""
 
 
+def _evidence_matches(
+    evd: Evidence,
+    *,
+    project_id: str | None = None,
+    source_type: EvidenceSourceType | None = None,
+    status: EvidenceStatus | None = None,
+    claim_id: str | None = None,
+) -> bool:
+    """Return True when an evidence item satisfies all optional filters."""
+    if project_id and evd.project_id != project_id:
+        return False
+    if source_type and evd.source_type != source_type:
+        return False
+    if status is not None and evd.status != status:
+        return False
+    return not (claim_id and evd.claim_id != claim_id)
+
+
 # ── In-Memory Evidence Store ──────────────────────────────────────────────
 
 
@@ -248,17 +270,17 @@ class InMemoryEvidenceStore:
         """
         if status is None:
             status = EvidenceStatus.ACTIVE
-        results: list[Evidence] = []
-        for evd in self._evidence.values():
-            if project_id and evd.project_id != project_id:
-                continue
-            if source_type and evd.source_type != source_type:
-                continue
-            if status is not None and evd.status != status:
-                continue
-            if claim_id and evd.claim_id != claim_id:
-                continue
-            results.append(evd)
+        results: list[Evidence] = [
+            evd
+            for evd in self._evidence.values()
+            if _evidence_matches(
+                evd,
+                project_id=project_id,
+                source_type=source_type,
+                status=status,
+                claim_id=claim_id,
+            )
+        ]
         # Sort by relevance_score descending (most relevant first)
         results.sort(key=lambda e: e.relevance_score, reverse=True)
         return results[:limit]
@@ -363,3 +385,38 @@ class InMemoryEvidenceStore:
                 continue
             count += 1
         return count
+
+
+# ── Default Store Factory ───────────────────────────────────────────────
+
+
+def build_default_store(db_pool: Any = None) -> Any:
+    """Build the default evidence store backend.
+
+    Selection via ``UMRS_EVIDENCE_STORE_BACKEND`` (default ``auto``):
+
+      - ``pg``     — force Postgres (raises if unavailable)
+      - ``memory`` — force the in-memory reference store
+      - ``auto``   — Postgres when a pool is provided or the environment
+                     points at a database, otherwise in-memory
+
+    Postgres uses the ``evidence_items`` table (migration 0059).
+    """
+    import os as _os
+
+    from umrs.shared.pg import resolve_satellite_pool
+
+    backend = _os.environ.get("UMRS_EVIDENCE_STORE_BACKEND", "auto").lower()
+    if backend == "memory":
+        return InMemoryEvidenceStore()
+    if backend not in ("auto", "pg"):
+        logger.warning("Unknown store backend %r; using auto", backend)
+        backend = "auto"
+
+    pool = resolve_satellite_pool(backend, db_pool, "Evidence store")
+    if pool is None:
+        return InMemoryEvidenceStore()
+
+    from .pg_store import PgEvidenceStore
+
+    return PgEvidenceStore(pool)

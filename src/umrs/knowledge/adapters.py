@@ -19,16 +19,21 @@ from __future__ import annotations
 from typing import Any
 
 from umrs.embeddings_api import InMemoryEmbeddingStore
+from umrs.embeddings_api import build_default_store as _build_default_embedding_store
 from umrs.evidence import (
     Evidence,
     EvidenceSourceType,
     EvidenceStatus,
     InMemoryEvidenceStore,
 )
+from umrs.evidence import build_default_store as _build_default_evidence_store
 from umrs.experiment_registry import (
     Experiment,
     ExperimentStatus,
     InMemoryExperimentRegistry,
+)
+from umrs.experiment_registry import (
+    build_default_store as _build_default_experiment_registry,
 )
 from umrs.knowledge_graph_api import (
     InMemoryKnowledgeGraph,
@@ -36,17 +41,26 @@ from umrs.knowledge_graph_api import (
     KnowledgeNode,
     RelationType,
 )
+from umrs.knowledge_graph_api import (
+    build_default_graph as _build_default_knowledge_graph,
+)
 from umrs.knowledge_model import (
     InMemoryKnowledgeModelStore,
     KnowledgeObject,
     KnowledgeObjectStatus,
     KnowledgeObjectType,
 )
+from umrs.knowledge_model import (
+    build_default_store as _build_default_knowledge_model_store,
+)
 from umrs.scientific_memory import (
     InMemoryScientificMemoryStore,
     MemoryEntry,
     MemoryEntryStatus,
     MemoryEntryType,
+)
+from umrs.scientific_memory import (
+    build_default_store as _build_default_scientific_memory_store,
 )
 from umrs.search_api import (
     SearchDepth,
@@ -59,7 +73,7 @@ __all__ = [
     "UMRSScientificMemoryAdapter",
     "UMRSKnowledgeModelAdapter",
     "UMRSKnowledgeGraphAdapter",
-    "UMRSExperimentRegistryAdapter",
+    "UMRSScientificExperimentRegistryAdapter",
     "UMRSEvidenceAdapter",
     "UMRSSearchAdapter",
     "UMRSEmbeddingsAdapter",
@@ -80,7 +94,9 @@ class UMRSScientificMemoryAdapter:
     """
 
     def __init__(self, store: InMemoryScientificMemoryStore | None = None) -> None:
-        self._store = store or InMemoryScientificMemoryStore()
+        # Default backend comes from the satellite factory: Postgres when a
+        # database pool/env is available (migration 0059), else in-memory.
+        self._store = store or _build_default_scientific_memory_store()
 
     def add(self, entry: MemoryEntry) -> str:
         """Add a new entry to the store."""
@@ -165,7 +181,8 @@ class UMRSKnowledgeModelAdapter:
     """
 
     def __init__(self, store: InMemoryKnowledgeModelStore | None = None) -> None:
-        self._store = store or InMemoryKnowledgeModelStore()
+        # Default backend via satellite factory (PG when available).
+        self._store = store or _build_default_knowledge_model_store()
 
     def create_object(
         self,
@@ -274,7 +291,8 @@ class UMRSKnowledgeGraphAdapter:
     """
 
     def __init__(self, graph: InMemoryKnowledgeGraph | None = None) -> None:
-        self._graph = graph or InMemoryKnowledgeGraph()
+        # Default backend via satellite factory (PG when available).
+        self._graph = graph or _build_default_knowledge_graph()
 
     @property
     def graph(self) -> InMemoryKnowledgeGraph:
@@ -404,7 +422,8 @@ class UMRSScientificExperimentRegistryAdapter:
     """
 
     def __init__(self, registry: InMemoryExperimentRegistry | None = None) -> None:
-        self._registry = registry or InMemoryExperimentRegistry()
+        # Default backend via satellite factory (PG when available).
+        self._registry = registry or _build_default_experiment_registry()
 
     def create_experiment(
         self,
@@ -495,7 +514,8 @@ class UMRSEvidenceAdapter:
     """
 
     def __init__(self, store: InMemoryEvidenceStore | None = None) -> None:
-        self._store = store or InMemoryEvidenceStore()
+        # Default backend via satellite factory (PG when available).
+        self._store = store or _build_default_evidence_store()
 
     def add_evidence(self, evidence: Evidence) -> str:
         """Add a new evidence item."""
@@ -669,7 +689,8 @@ class UMRSEmbeddingsAdapter:
     """
 
     def __init__(self, store: InMemoryEmbeddingStore | None = None) -> None:
-        self._store = store or InMemoryEmbeddingStore()
+        # Default backend via satellite factory (PG when available).
+        self._store = store or _build_default_embedding_store()
 
     def create_embedding(
         self,

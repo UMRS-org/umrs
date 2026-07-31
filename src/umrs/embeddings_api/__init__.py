@@ -23,11 +23,14 @@ are searched).
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Protocol
 from uuid import uuid4
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "EmbeddingStatus",
@@ -37,6 +40,8 @@ __all__ = [
     "EmbeddingNotFoundError",
     "DuplicateEmbeddingError",
     "InMemoryEmbeddingStore",
+    "hash_based_vector",
+    "build_default_store",
 ]
 
 
@@ -192,6 +197,21 @@ class EmbeddingNotFoundError(Exception):
 
 class DuplicateEmbeddingError(Exception):
     """Raised when a duplicate embedding is added."""
+
+
+def hash_based_vector(text: str, dim: int = 384) -> list[float]:
+    """Deterministic hash-based vector (testing fallback, NOT a real embedding).
+
+    Shared by the in-memory and Postgres stores when no embedder is
+    configured.
+    """
+    import hashlib
+
+    hash_bytes = hashlib.sha256(text.encode("utf-8")).digest()
+    return [
+        (hash_bytes[i % len(hash_bytes)] / 255.0) * 2 - 1
+        for i in range(dim)
+    ]
 
 
 # ── In-Memory Embedding Store ────────────────────────────────────────────
@@ -426,24 +446,8 @@ class InMemoryEmbeddingStore:
         This is NOT a real embedding — it's just a deterministic vector
         based on the text content. Used only when no real embedder is
         configured.
-
-        Args:
-            text: The text to create a vector for
-            dim: The dimension of the vector
-
-        Returns:
-            A list of floats representing the vector
         """
-        import hashlib
-
-        # Create a deterministic vector based on text hash
-        hash_bytes = hashlib.sha256(text.encode("utf-8")).digest()
-        vector = []
-        for i in range(dim):
-            # Use bytes from the hash to create vector values
-            byte_idx = i % len(hash_bytes)
-            vector.append((hash_bytes[byte_idx] / 255.0) * 2 - 1)  # Scale to [-1, 1]
-        return vector
+        return hash_based_vector(text, dim)
 
     def _cosine_similarity(
         self,
@@ -479,3 +483,40 @@ class InMemoryEmbeddingStore:
 
         # Clamp to [0, 1] (cosine similarity can be [-1, 1])
         return max(0.0, min(1.0, similarity))
+
+
+# ── Default Store Factory ───────────────────────────────────────────────
+
+
+def build_default_store(
+    db_pool: Any = None, embedder: EmbedderProtocol | None = None
+) -> Any:
+    """Build the default embedding store backend.
+
+    Selection via ``UMRS_EMBEDDINGS_STORE_BACKEND`` (default ``auto``):
+
+      - ``pg``     — force Postgres + pgvector (raises if unavailable)
+      - ``memory`` — force the in-memory reference store
+      - ``auto``   — Postgres when a pool is provided or the environment
+                     points at a database, otherwise in-memory
+
+    Postgres uses the ``sat_embeddings`` table (migration 0060).
+    """
+    import os as _os
+
+    from umrs.shared.pg import resolve_satellite_pool
+
+    backend = _os.environ.get("UMRS_EMBEDDINGS_STORE_BACKEND", "auto").lower()
+    if backend == "memory":
+        return InMemoryEmbeddingStore(embedder)
+    if backend not in ("auto", "pg"):
+        logger.warning("Unknown store backend %r; using auto", backend)
+        backend = "auto"
+
+    pool = resolve_satellite_pool(backend, db_pool, "Embeddings store")
+    if pool is None:
+        return InMemoryEmbeddingStore(embedder)
+
+    from .pg_store import PgEmbeddingStore
+
+    return PgEmbeddingStore(pool, embedder)

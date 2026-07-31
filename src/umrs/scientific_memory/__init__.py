@@ -32,11 +32,14 @@ Entry statuses:
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 from uuid import uuid4
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "MemoryEntryType",
@@ -45,6 +48,7 @@ __all__ = [
     "MemoryEntryNotFoundError",
     "DuplicateMemoryEntryError",
     "InMemoryScientificMemoryStore",
+    "build_default_store",
 ]
 
 
@@ -197,6 +201,33 @@ class DuplicateMemoryEntryError(Exception):
     """Raised when a duplicate memory entry is added."""
 
 
+def _entry_matches(
+    entry: MemoryEntry,
+    *,
+    project_id: str | None = None,
+    entry_type: MemoryEntryType | None = None,
+    status: MemoryEntryStatus | None = None,
+    experiment_id: str | None = None,
+) -> bool:
+    """Return True when an entry satisfies all optional filters."""
+    if project_id and entry.project_id != project_id:
+        return False
+    if entry_type and entry.entry_type != entry_type:
+        return False
+    if status and entry.status != status:
+        return False
+    return not (experiment_id and entry.experiment_id != experiment_id)
+
+
+def _entry_text_matches(entry: MemoryEntry, query_lower: str) -> bool:
+    """Return True when the (lowercased) query hits content, summary, or tags."""
+    if query_lower in entry.content.lower():
+        return True
+    if query_lower in entry.summary.lower():
+        return True
+    return any(query_lower in tag.lower() for tag in entry.tags)
+
+
 # ── In-Memory Store ───────────────────────────────────────────────────────
 
 
@@ -264,17 +295,17 @@ class InMemoryScientificMemoryStore:
         Returns:
             List of matching entries, sorted by created_at descending
         """
-        results: list[MemoryEntry] = []
-        for entry in self._entries.values():
-            if project_id and entry.project_id != project_id:
-                continue
-            if entry_type and entry.entry_type != entry_type:
-                continue
-            if status and entry.status != status:
-                continue
-            if experiment_id and entry.experiment_id != experiment_id:
-                continue
-            results.append(entry)
+        results: list[MemoryEntry] = [
+            entry
+            for entry in self._entries.values()
+            if _entry_matches(
+                entry,
+                project_id=project_id,
+                entry_type=entry_type,
+                status=status,
+                experiment_id=experiment_id,
+            )
+        ]
         # Sort by created_at descending (newest first)
         results.sort(key=lambda e: e.created_at, reverse=True)
         return results[:limit]
@@ -299,19 +330,14 @@ class InMemoryScientificMemoryStore:
             List of matching entries
         """
         query_lower = query.lower()
-        results: list[MemoryEntry] = []
-        for entry in self._entries.values():
-            if project_id and entry.project_id != project_id:
-                continue
-            if entry_type and entry.entry_type != entry_type:
-                continue
-            # Search in content, summary, and tags
-            if (
-                query_lower in entry.content.lower()
-                or query_lower in entry.summary.lower()
-                or any(query_lower in tag.lower() for tag in entry.tags)
-            ):
-                results.append(entry)
+        results: list[MemoryEntry] = [
+            entry
+            for entry in self._entries.values()
+            if _entry_matches(
+                entry, project_id=project_id, entry_type=entry_type
+            )
+            and _entry_text_matches(entry, query_lower)
+        ]
         results.sort(key=lambda e: e.created_at, reverse=True)
         return results[:limit]
 
@@ -380,3 +406,38 @@ class InMemoryScientificMemoryStore:
         ]
         results.sort(key=lambda e: e.created_at)
         return results
+
+
+# ── Default Store Factory ───────────────────────────────────────────────
+
+
+def build_default_store(db_pool: Any = None) -> Any:
+    """Build the default scientific memory store backend.
+
+    Selection via ``UMRS_SCIENTIFIC_MEMORY_STORE_BACKEND`` (default ``auto``):
+
+      - ``pg``     — force Postgres (raises if unavailable)
+      - ``memory`` — force the in-memory reference store
+      - ``auto``   — Postgres when a pool is provided or the environment
+                     points at a database, otherwise in-memory
+
+    Postgres uses the ``scientific_memory_entries`` table (migration 0059).
+    """
+    import os as _os
+
+    from umrs.shared.pg import resolve_satellite_pool
+
+    backend = _os.environ.get("UMRS_SCIENTIFIC_MEMORY_STORE_BACKEND", "auto").lower()
+    if backend == "memory":
+        return InMemoryScientificMemoryStore()
+    if backend not in ("auto", "pg"):
+        logger.warning("Unknown store backend %r; using auto", backend)
+        backend = "auto"
+
+    pool = resolve_satellite_pool(backend, db_pool, "Scientific memory")
+    if pool is None:
+        return InMemoryScientificMemoryStore()
+
+    from .pg_store import PgScientificMemoryStore
+
+    return PgScientificMemoryStore(pool)
