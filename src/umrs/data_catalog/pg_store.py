@@ -293,9 +293,7 @@ class CatalogMetaStore:
         order_sql = "updated_at DESC"
         order_params: list[Any] = []
         if ts_query:
-            order_sql = (
-                "ts_rank_cd(search_vector, to_tsquery('simple', %s)) DESC, updated_at DESC"
-            )
+            order_sql = "ts_rank_cd(search_vector, to_tsquery('simple', %s)) DESC, updated_at DESC"
             order_params.append(ts_query)
 
         where_sql = " AND ".join(clauses)
