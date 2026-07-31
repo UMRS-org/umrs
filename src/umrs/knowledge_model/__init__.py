@@ -506,23 +506,14 @@ class InMemoryKnowledgeModelStore:
             List of matching objects
         """
         query_lower = query.lower()
-        results: list[KnowledgeObject] = []
-        for obj in self._objects.values():
-            if obj.status == KnowledgeObjectStatus.DELETED:
-                continue
-            if project_id and obj.project_id != project_id:
-                continue
-            if object_type and obj.object_type != object_type:
-                continue
-            # Search in content, metadata, and object_id
-            content_str = str(obj.content).lower()
-            metadata_str = str(obj.metadata).lower()
-            if (
-                query_lower in content_str
-                or query_lower in metadata_str
-                or query_lower in obj.object_id.lower()
-            ):
-                results.append(obj)
+        results: list[KnowledgeObject] = [
+            obj
+            for obj in self._objects.values()
+            if _object_search_matches(
+                obj, query_lower, project_id=project_id,
+                object_type=object_type,
+            )
+        ]
         results.sort(key=lambda o: o.created_at, reverse=True)
         return results[:limit]
 
@@ -555,6 +546,27 @@ class InMemoryKnowledgeModelStore:
             The tombstone, or None if not found
         """
         return self._tombstones.get(object_id)
+
+
+def _object_search_matches(
+    obj: KnowledgeObject,
+    query_lower: str,
+    *,
+    project_id: str | None,
+    object_type: KnowledgeObjectType | None,
+) -> bool:
+    """True when an object is visible, in scope, and matches the query."""
+    if obj.status == KnowledgeObjectStatus.DELETED:
+        return False
+    if project_id and obj.project_id != project_id:
+        return False
+    if object_type and obj.object_type != object_type:
+        return False
+    return (
+        query_lower in str(obj.content).lower()
+        or query_lower in str(obj.metadata).lower()
+        or query_lower in obj.object_id.lower()
+    )
 
 
 # ── Default Store Factory ───────────────────────────────────────────────

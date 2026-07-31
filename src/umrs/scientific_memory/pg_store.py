@@ -102,6 +102,17 @@ class PgScientificMemoryStore:
             raise
         return entry.entry_id
 
+    def get_creation_ids(self) -> list[str]:
+        """Entry IDs in insertion order (parity with reference store's
+        ``_creation_order`` reconstructed deterministically from the
+        (created_at, entry_id) unique pair)."""
+        with self._cursor() as cur:
+            cur.execute(
+                "SELECT entry_id FROM scientific_memory_entries "
+                "ORDER BY created_at ASC, entry_id ASC"
+            )
+            return [str(row["entry_id"]) for row in cur.fetchall()]
+
     def get(self, entry_id: str) -> MemoryEntry | None:
         """Get an entry by ID, or None."""
         with self._cursor() as cur:

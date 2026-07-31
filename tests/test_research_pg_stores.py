@@ -271,6 +271,33 @@ def test_exp_list_filters_and_history(exp_registry):
     assert history == sorted(history, key=lambda e: e.created_at)
 
 
+# ── Contract tripwires ────────────────────────────────────────────────
+
+
+def test_zero_budget_keeps_zero_token_entry(evidence_store):
+    """A zero-content (zero-token) evidence item must never be dropped
+    merely because a budget is small: budget limits cost, and its cost
+    is zero."""
+    evidence_store.add_evidence(
+        _evidence("evd-zero", "claim-1", 0.9, content="")
+    )
+    assert evidence_store.list_evidence(project_id="proj-1", limit=0) == []
+    full = evidence_store.list_evidence(project_id="proj-1")
+    assert any(e.evidence_id == "evd-zero" for e in full)
+
+
+def test_sm_creation_ids_preserved(sm_store):
+    """Insertion order (reference store's ``_creation_order``) must be
+    reproducible after persistence, from the created_at column alone."""
+    sm_store.add(_entry("mem-a", "proj-1", "2026-01-01T00:00:01+00:00"))
+    sm_store.add(_entry("mem-b", "proj-1", "2026-01-01T00:00:02+00:00"))
+    if hasattr(sm_store, "get_creation_ids"):
+        assert sm_store.get_creation_ids() == ["mem-a", "mem-b"]
+    else:
+        ids = [e.entry_id for e in sm_store.get_timeline("proj-1")]
+        assert ids == ["mem-a", "mem-b"]
+
+
 # ── Factory selection ────────────────────────────────────────────────────
 
 

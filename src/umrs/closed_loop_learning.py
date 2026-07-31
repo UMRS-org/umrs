@@ -33,6 +33,7 @@ from umrs.evidence import (
     EvidenceSourceType,
 )
 from umrs.hypothesis_lifecycle import (
+    Hypothesis,
     HypothesisLifecycle,
     HypothesisStatus,
 )
@@ -151,9 +152,21 @@ class ClosedLoopLearning:
         hypothesis_lifecycle: HypothesisLifecycle | None = None,
         reasoning_engine: ScientificReasoningEngine | None = None,
     ) -> None:
-        self._graph = knowledge_graph or InMemoryKnowledgeGraph()
-        self._memory = scientific_memory or InMemoryScientificMemoryStore()
-        self._hypothesis_lifecycle = hypothesis_lifecycle or HypothesisLifecycle()
+        if knowledge_graph is None:
+            from umrs.knowledge_graph_api import build_default_graph
+
+            knowledge_graph = build_default_graph()
+        if scientific_memory is None:
+            from umrs.scientific_memory import build_default_store
+
+            scientific_memory = build_default_store()
+        if hypothesis_lifecycle is None:
+            from umrs.hypothesis_lifecycle import build_default_lifecycle
+
+            hypothesis_lifecycle = build_default_lifecycle()
+        self._graph = knowledge_graph
+        self._memory = scientific_memory
+        self._hypothesis_lifecycle = hypothesis_lifecycle
         self._reasoning_engine = reasoning_engine or ScientificReasoningEngine()
 
     def process_experiment_result(
@@ -186,9 +199,25 @@ class ClosedLoopLearning:
         )
 
         # 2. Link the Finding to the Hypothesis via KnowledgeGraph
-        relation = (
-            RelationType.SUPPORTS if supporting else RelationType.CONTRADICTS
-        )
+        self._link_finding_to_hypothesis(finding, result, supporting)
+
+        # 3. Register the Finding as Evidence
+        evidence = self._register_finding_evidence(finding, result)
+        finding.evidence_ids.append(evidence.evidence_id)
+
+        # 4. Update Scientific Memory with the Finding
+        self._record_finding_in_memory(finding, result, supporting)
+
+        # 5. Update the Hypothesis lifecycle
+        self._advance_hypothesis(result, evidence, supporting)
+
+        return finding
+
+    def _link_finding_to_hypothesis(
+        self, finding: Finding, result: ExperimentResult, supporting: bool
+    ) -> None:
+        """Step 2: graph edge finding -[SUPPORTS|CONTRADICTS]-> hypothesis."""
+        relation = RelationType.SUPPORTS if supporting else RelationType.CONTRADICTS
         self._graph.add_edge(
             source_id=finding.finding_id,
             target_id=result.hypothesis_id,
@@ -196,8 +225,11 @@ class ClosedLoopLearning:
             confidence=finding.confidence,
         )
 
-        # 3. Register the Finding as Evidence
-        evidence = Evidence(
+    def _register_finding_evidence(
+        self, finding: Finding, result: ExperimentResult
+    ) -> Evidence:
+        """Step 3: Evidence item referencing the experiment result."""
+        return Evidence(
             project_id="",  # Set by caller
             claim_id=result.hypothesis_id,
             source_type=EvidenceSourceType.EXPERIMENT_RESULT,
@@ -206,51 +238,59 @@ class ClosedLoopLearning:
             relevance_score=finding.confidence,
             citation=f"Finding {finding.finding_id} from experiment {result.experiment_id}",
         )
-        finding.evidence_ids.append(evidence.evidence_id)
 
-        # 4. Update Scientific Memory with the Finding
+    def _record_finding_in_memory(
+        self, finding: Finding, result: ExperimentResult, supporting: bool
+    ) -> None:
+        """Step 4: scientific-memory entry for the finding."""
         memory_entry = MemoryEntry(
             project_id="",
             experiment_id=result.experiment_id,
-            entry_type=MemoryEntryType.ACCEPTED_FINDING if supporting else MemoryEntryType.FAILED_EXPERIMENT,
+            entry_type=MemoryEntryType.ACCEPTED_FINDING
+            if supporting
+            else MemoryEntryType.FAILED_EXPERIMENT,
             content=finding.statement,
             summary=f"Finding from experiment {result.experiment_id}",
             confidence=finding.confidence,
         )
         self._memory.add(memory_entry)
 
-        # 5. Update the Hypothesis lifecycle
+    def _advance_hypothesis(
+        self, result: ExperimentResult, evidence: Evidence, supporting: bool
+    ) -> None:
+        """Step 5: hypothesis lifecycle transitions driven by the evidence."""
         hyp = self._hypothesis_lifecycle.get(result.hypothesis_id)
-        if hyp:
-            # Transition from PROPOSED to TESTING on first evidence
-            if hyp.status == HypothesisStatus.PROPOSED:
-                self._hypothesis_lifecycle.transition(
-                    result.hypothesis_id,
-                    HypothesisStatus.TESTING,
-                )
-
-            # Add evidence to the hypothesis
-            self._hypothesis_lifecycle.add_evidence(
+        if not hyp:
+            return
+        if hyp.status == HypothesisStatus.PROPOSED:
+            self._hypothesis_lifecycle.transition(
                 result.hypothesis_id,
-                evidence.evidence_id,
-                supports=supporting,
+                HypothesisStatus.TESTING,
             )
+        self._hypothesis_lifecycle.add_evidence(
+            result.hypothesis_id,
+            evidence.evidence_id,
+            supports=supporting,
+        )
+        hyp = self._hypothesis_lifecycle.get(result.hypothesis_id)
+        if not hyp or hyp.status != HypothesisStatus.TESTING:
+            return
+        self._resolve_testing_hypothesis(result, hyp, supporting)
 
-            # Transition based on evidence (only if in TESTING)
-            hyp = self._hypothesis_lifecycle.get(result.hypothesis_id)
-            if hyp and hyp.status == HypothesisStatus.TESTING:
-                if supporting and hyp.confidence >= 0.8:
-                    self._hypothesis_lifecycle.transition(
-                        result.hypothesis_id,
-                        HypothesisStatus.SUPPORTED,
-                    )
-                elif not supporting and hyp.confidence <= 0.2:
-                    self._hypothesis_lifecycle.transition(
-                        result.hypothesis_id,
-                        HypothesisStatus.CONTRADICTED,
-                    )
-
-        return finding
+    def _resolve_testing_hypothesis(
+        self, result: ExperimentResult, hyp: Hypothesis, supporting: bool
+    ) -> None:
+        """Terminal transition once evidence confidence crosses thresholds."""
+        if supporting and hyp.confidence >= 0.8:
+            self._hypothesis_lifecycle.transition(
+                result.hypothesis_id,
+                HypothesisStatus.SUPPORTED,
+            )
+        elif not supporting and hyp.confidence <= 0.2:
+            self._hypothesis_lifecycle.transition(
+                result.hypothesis_id,
+                HypothesisStatus.CONTRADICTED,
+            )
 
     def generate_next_hypothesis(
         self,
@@ -286,9 +326,7 @@ class ClosedLoopLearning:
 
     def _generate_finding_statement(self, result: ExperimentResult) -> str:
         """Generate a finding statement from an experiment result."""
-        metrics_str = ", ".join(
-            f"{k}={v}" for k, v in result.metrics.items()
-        )
+        metrics_str = ", ".join(f"{k}={v}" for k, v in result.metrics.items())
         return (
             f"Experiment {result.experiment_id} "
             f"{'succeeded' if result.status == 'success' else 'failed'}. "

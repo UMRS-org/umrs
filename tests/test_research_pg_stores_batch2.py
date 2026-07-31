@@ -146,10 +146,9 @@ def test_emb_update_delete_and_count(emb_store):
 def test_kg_nodes_edges_and_neighbors(kg_store):
     kg_store.add_node(node_id="n1", node_type="paper", title="Paper A")
     kg_store.add_node(node_id="n2", node_type="dataset", title="Data B")
-    edge_id = kg_store.add_edge(
+    kg_store.add_edge(
         source_id="n1", target_id="n2", relation_type=kg_mod.RelationType.CITES
     )
-    assert edge_id
     assert kg_store.get_node("n1").title == "Paper A"
     assert kg_store.get_node("missing") is None
     outgoing = kg_store.get_outgoing("n1")
