@@ -91,6 +91,8 @@ class PgExperimentRegistry:
         notes: str = "",
     ) -> str:
         """Create a new experiment and return its experiment_id."""
+        if not validation_method:
+            raise ValueError("validation_method must be non-empty")
         exp = Experiment(
             project_id=project_id,
             hypothesis_id=hypothesis_id,

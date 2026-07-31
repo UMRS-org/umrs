@@ -144,6 +144,37 @@ class HealthResponse(BaseModel):
     instance_id: str | None = None
 
 
+class WorkflowExecutionCounts(BaseModel):
+    """Aggregate workflow execution counts (U1 dashboard section).
+
+    Source: the in-process workflow execution registry. Counts reflect
+    executions tracked by this UMRS process since start (interim until W1
+    makes the registry durable).
+    """
+
+    total: int = 0
+    running: int = 0
+    completed: int = 0
+    failed: int = 0
+    cancelled: int = 0
+
+
+class ConnectorInventory(BaseModel):
+    """Available data-intake connector types (U1/U3 dashboard section).
+
+    U1: static inventory of connector implementations UMRS can run.
+    U3: per-connector availability probe via umrs.connectors.introspect
+    (import errors surface as ``unavailable`` + detail map). Per-source sync
+    state (cursors, health) lands with P2 intake hardening; until then
+    ``sync_state`` is None on purpose so dashboards can render "n/a".
+    """
+
+    available_types: list[str]
+    sync_state: str | None = None
+    unavailable: list[str] = []
+    details: dict[str, dict] = {}
+
+
 class OverviewResponse(BaseModel):
     """Dashboard overview — aggregate counts + system status."""
 
@@ -159,6 +190,11 @@ class OverviewResponse(BaseModel):
     deprecated_models: int
 
     system_health: str  # "healthy", "degraded", "unhealthy"
+
+    # U1 sections — additive, nullable: None means the source is
+    # unavailable in this process (e.g. no workflow runner).
+    workflows: WorkflowExecutionCounts | None = None
+    connectors: ConnectorInventory | None = None
 
 
 class NotificationItem(BaseModel):
@@ -228,37 +264,15 @@ async def get_overview(request: Request) -> OverviewResponse:
     total_jobs = running + queued + completed + failed
 
     # Model counts
-    model_store = get_optional_model_store()
-    available_models = staging_models = deprecated_models = 0
-    if model_store:
-        try:
-            models = model_store.list_models(ctx=None)  # type: ignore[arg-type]
-            total_models = len(models)
-            for m in models:
-                if m.status.value == "available":
-                    available_models += 1
-                elif m.status.value == "staging":
-                    staging_models += 1
-                elif m.status.value == "deprecated":
-                    deprecated_models += 1
-        except Exception:
-            total_models = 0
+    (
+        total_models,
+        available_models,
+        staging_models,
+        deprecated_models,
+    ) = _model_status_counts()
 
     # Health
-    db_pool = getattr(app.state, "umrs_db_pool", None)
-    health = "healthy"
-    try:
-        if db_pool:
-            conn = db_pool.getconn()
-            try:
-                cur = conn.cursor()
-                cur.execute("SELECT 1")
-            finally:
-                db_pool.putconn(conn)
-        else:
-            health = "degraded"
-    except Exception:
-        health = "unhealthy"
+    health = _probe_db_health(getattr(app.state, "umrs_db_pool", None))
 
     return OverviewResponse(
         total_jobs=total_jobs,
@@ -271,7 +285,218 @@ async def get_overview(request: Request) -> OverviewResponse:
         staging_models=staging_models,
         deprecated_models=deprecated_models,
         system_health=health,
+        workflows=_workflow_execution_counts(),
+        connectors=_connector_inventory(),
     )
+
+
+# Connector implementers ship one module per source under umrs.connectors.
+# Kept as a constant so the dashboard and CLI render the same list.
+_CONNECTOR_TYPES = [
+    "confluence",
+    "federated",
+    "filesystem",
+    "gdrive",
+    "github",
+    "notion",
+    "slack",
+    "web_crawl",
+]
+
+
+def _workflow_execution_counts() -> WorkflowExecutionCounts | None:
+    """Aggregate workflow executions; None when the registry is unavailable."""
+    try:
+        from ..server.workflow_execution_registry import get_execution_registry
+
+        records = get_execution_registry().list()
+    except Exception:  # noqa: BLE001 — dashboard must degrade, not 500
+        logger.debug("workflow execution registry unavailable", exc_info=True)
+        return None
+    counts = WorkflowExecutionCounts(total=len(records))
+    for record in records:
+        status_value = getattr(record, "status", "")
+        if status_value == "succeeded":
+            counts.completed += 1
+        elif status_value == "failed":
+            counts.failed += 1
+        elif status_value == "cancelled":
+            counts.cancelled += 1
+        elif not record.is_terminal():
+            counts.running += 1  # non-terminal: running/pending/etc.
+    return counts
+
+
+def _connector_inventory() -> ConnectorInventory | None:
+    """Connector inventory with availability probe (U3).
+
+    Falls back to the static U1 type list when the introspection module is
+    unavailable; None only when the connectors package itself is missing.
+    """
+    try:
+        from ..connectors import introspect
+    except Exception:  # noqa: BLE001
+        logger.debug("connector introspection unavailable", exc_info=True)
+        return ConnectorInventory(available_types=list(_CONNECTOR_TYPES))
+
+    report = introspect.inventory()
+    return ConnectorInventory(
+        available_types=report.available,
+        unavailable=report.unavailable,
+        details={c.name: c.to_dict() for c in report.connectors},
+    )
+
+
+# ── Overview/health/list helpers (complexity decomposition) ─────────────
+
+
+def _model_status_counts() -> tuple[int, int, int, int]:
+    """Return (total, available, staging, deprecated) model counts."""
+    model_store = get_optional_model_store()
+    if not model_store:
+        return 0, 0, 0, 0
+    try:
+        models = model_store.list_models(ctx=None)  # type: ignore[arg-type]
+    except Exception:  # noqa: BLE001 — degrade to zero counts
+        return 0, 0, 0, 0
+    counts = {"available": 0, "staging": 0, "deprecated": 0}
+    for m in models:
+        if m.status.value in counts:
+            counts[m.status.value] += 1
+    return len(models), counts["available"], counts["staging"], counts["deprecated"]
+
+
+def _probe_db(db_pool: Any) -> bool:
+    """True when the shared Postgres pool answers SELECT 1."""
+    if not db_pool:
+        return False
+    try:
+        conn = db_pool.getconn()
+        try:
+            conn.cursor().execute("SELECT 1")
+        finally:
+            db_pool.putconn(conn)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _probe_db_health(db_pool: Any) -> str:
+    """healthy / degraded / unhealthy for the overview payload."""
+    if not db_pool:
+        return "degraded"
+    return "healthy" if _probe_db(db_pool) else "unhealthy"
+
+
+def _presence_component(name: str, store: Any, *, healthy_detail: str) -> HealthComponent:
+    """Health component whose state is pure store presence."""
+    return HealthComponent(
+        name=name,
+        status="healthy" if store else "unavailable",
+        detail=healthy_detail if store else "Not configured",
+    )
+
+
+def _overall_health(db_ok: bool, job_ok: bool, model_ok: bool) -> str:
+    """Aggregate component states into one status string."""
+    if db_ok and job_ok and model_ok:
+        return "healthy"
+    return "degraded" if db_ok else "unhealthy"
+
+
+def _fetch_jobs(
+    job_store: Any,
+    status: str | None,
+    job_type: str | None,
+    user_id: str | None,
+    limit: int,
+    offset: int,
+) -> list[Any]:
+    """Store query + in-memory user filter; empty on any failure."""
+    from ..jobs.models import JobStatus, JobType
+
+    try:
+        jobs = job_store.list_jobs(
+            status=JobStatus(status) if status else None,
+            job_type=JobType(job_type) if job_type else None,
+            limit=limit,
+            offset=offset,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Dashboard job query failed: %s", exc)
+        return []
+    if user_id:
+        jobs = [job for job in jobs if job.user_id == user_id]
+    return jobs
+
+
+def _job_total(job_store: Any, jobs: list[Any], status_filter: Any) -> int:
+    """Store-backed total when available, else the window size."""
+    try:
+        if hasattr(job_store, "count_all"):
+            return job_store.count_all(status=status_filter)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Dashboard job count failed: %s", exc)
+    return len(jobs)
+
+
+def _job_summary(j: Any) -> JobSummary:
+    """Serialize a durable job row into a JobSummary."""
+    return JobSummary(
+        job_id=j.job_id,
+        status=j.status.value,
+        job_type=j.job_type.value,
+        ttl_seconds=j.ttl_seconds,
+        fan_out_child_job_ids=j.fan_out_child_job_ids,
+        created_at=j.created_at.isoformat() if j.created_at else None,
+        updated_at=j.updated_at.isoformat() if j.updated_at else None,
+    )
+
+
+def _model_summary(model_store: Any, model: Any) -> ModelSummary:
+    """Serialize a model row, resolving the latest version best-effort."""
+    latest_version = None
+    try:
+        history = model_store.get_model_versions(model.model_id, ctx=None)
+        latest_version = history.latest.version if history.latest else None
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Could not load versions for model %s: %s", model.model_id, exc
+        )
+    return ModelSummary(
+        model_id=model.model_id,
+        name=model.name,
+        scope=model.scope.value,
+        model_type=model.model_type.value,
+        status=model.status.value,
+        version=model.version,
+        latest_version=latest_version,
+        created_at=model.created_at.isoformat() if model.created_at else None,
+    )
+
+
+def _attempt_dicts(store: Any, job: Any) -> list[dict[str, Any]]:
+    """Attempt dicts for a job; empty when the store lacks the surface."""
+    if not (job.active_attempt_id or hasattr(store, "get_attempts_for_job")):
+        return []
+    try:
+        all_attempts = store.get_attempts_for_job(job.job_id)
+    except Exception:  # noqa: BLE001
+        return []
+    return [
+        {
+            "attempt_id": a.attempt_id,
+            "attempt_no": a.attempt_no,
+            "status": a.status.value,
+            "backend": a.backend,
+            "started_at": a.started_at.isoformat() if a.started_at else None,
+            "ended_at": a.ended_at.isoformat() if a.ended_at else None,
+            "exit_reason": a.exit_reason,
+            "status_detail": a.status_detail,
+            "metrics": a.metrics or {},
+        }
+        for a in all_attempts
+    ]
 
 
 @router.get(
@@ -303,41 +528,9 @@ async def list_jobs(
             ),
         )
 
-    try:
-        jobs = job_store.list_jobs(
-            status=JobStatus(status) if status else None,
-            job_type=JobType(job_type) if job_type else None,
-            limit=limit,
-            offset=offset,
-        )
-        if user_id:
-            jobs = [job for job in jobs if job.user_id == user_id]
-    except Exception as exc:
-        logger.warning("Dashboard job query failed: %s", exc)
-        jobs = []
-
-    # Serialize
-    items = [
-        JobSummary(
-            job_id=j.job_id,
-            status=j.status.value,
-            job_type=j.job_type.value,
-            ttl_seconds=j.ttl_seconds,
-            fan_out_child_job_ids=j.fan_out_child_job_ids,
-            created_at=j.created_at.isoformat() if j.created_at else None,
-            updated_at=j.updated_at.isoformat() if j.updated_at else None,
-        )
-        for j in jobs
-    ]
-
-    # Get total count
-    total = len(jobs)
-    try:
-        if hasattr(job_store, "count_all"):
-            total = job_store.count_all(status=JobStatus(status) if status else None)
-    except Exception as exc:
-        logger.warning("Dashboard job count failed: %s", exc)
-
+    jobs = _fetch_jobs(job_store, status, job_type, user_id, limit, offset)
+    items = [_job_summary(j) for j in jobs]
+    total = _job_total(job_store, jobs, JobStatus(status) if status else None)
     has_next = offset + limit < total
     has_prev = offset > 0
 
@@ -391,28 +584,7 @@ async def list_models(
     except Exception:
         models = []
 
-    items = []
-    for model in models:
-        latest_version = None
-        try:
-            history = model_store.get_model_versions(model.model_id, ctx=None)
-            latest_version = history.latest.version if history.latest else None
-        except Exception as exc:
-            logger.warning(
-                "Could not load versions for model %s: %s", model.model_id, exc
-            )
-        items.append(
-            ModelSummary(
-                model_id=model.model_id,
-                name=model.name,
-                scope=model.scope.value,
-                model_type=model.model_type.value,
-                status=model.status.value,
-                version=model.version,
-                latest_version=latest_version,
-                created_at=model.created_at.isoformat() if model.created_at else None,
-            )
-        )
+    items = [_model_summary(model_store, model) for model in models]
 
     total = len(models)
     has_next = offset + limit < total
@@ -444,55 +616,29 @@ async def get_health(request: Request) -> HealthResponse:
     start_time = getattr(app.state, "start_time", None) or 0
     uptime = time.time() - float(start_time) if start_time else 0
 
-    components: list[HealthComponent] = []
-
-    # Check database
-    db_pool = getattr(app.state, "umrs_db_pool", None)
-    db_ok = False
-    if db_pool:
-        try:
-            conn = db_pool.getconn()
-            try:
-                cur = conn.cursor()
-                cur.execute("SELECT 1")
-                db_ok = True
-            finally:
-                db_pool.putconn(conn)
-        except Exception:
-            db_ok = False
-
-    components.append(
+    db_ok = _probe_db(getattr(app.state, "umrs_db_pool", None))
+    components = [
         HealthComponent(
             name="database",
             status="healthy" if db_ok else "unavailable",
             detail="PostgreSQL" if db_ok else "Connection failed",
-        )
+        ),
+        _presence_component(
+            "job_store",
+            get_optional_job_store(),
+            healthy_detail="Durable job tracking",
+        ),
+        _presence_component(
+            "model_store",
+            get_optional_model_store(),
+            healthy_detail="Model registry",
+        ),
+    ]
+    status_val = _overall_health(
+        db_ok,
+        components[1].status == "healthy",
+        components[2].status == "healthy",
     )
-
-    # Check job store
-    job_store = get_optional_job_store()
-    components.append(
-        HealthComponent(
-            name="job_store",
-            status="healthy" if job_store else "unavailable",
-            detail="Durable job tracking" if job_store else "Not configured",
-        )
-    )
-
-    # Check model store
-    model_store = get_optional_model_store()
-    components.append(
-        HealthComponent(
-            name="model_store",
-            status="healthy" if model_store else "unavailable",
-            detail="Model registry" if model_store else "Not configured",
-        )
-    )
-
-    # Overall health
-    status_val = "healthy"
-    if not db_ok or not job_store or not model_store:
-        status_val = "degraded" if db_ok else "unhealthy"
 
     instance_id = getattr(app.state, "instance_id", None)
 
@@ -525,37 +671,8 @@ async def get_job_detail(job_id: str) -> JobDetailResponse:
             detail=f"Job not found: {job_id}",
         )
 
-    job_summary = JobSummary(
-        job_id=job.job_id,
-        status=job.status.value,
-        job_type=job.job_type.value,
-        ttl_seconds=job.ttl_seconds,
-        fan_out_child_job_ids=job.fan_out_child_job_ids,
-        created_at=job.created_at.isoformat() if job.created_at else None,
-        updated_at=job.updated_at.isoformat() if job.updated_at else None,
-    )
-
-    # Get attempts if available
-    attempts: list[dict[str, Any]] = []
-    if job.active_attempt_id or hasattr(store, "get_attempts_for_job"):
-        try:
-            all_attempts = store.get_attempts_for_job(job_id)
-            attempts = [
-                {
-                    "attempt_id": a.attempt_id,
-                    "attempt_no": a.attempt_no,
-                    "status": a.status.value,
-                    "backend": a.backend,
-                    "started_at": a.started_at.isoformat() if a.started_at else None,
-                    "ended_at": a.ended_at.isoformat() if a.ended_at else None,
-                    "exit_reason": a.exit_reason,
-                    "status_detail": a.status_detail,
-                    "metrics": a.metrics or {},
-                }
-                for a in all_attempts
-            ]
-        except Exception:
-            pass
+    job_summary = _job_summary(job)
+    attempts = _attempt_dicts(store, job)
 
     return JobDetailResponse(job=job_summary, attempts=attempts)
 

@@ -17,30 +17,34 @@ Each hypothesis knows:
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 from uuid import uuid4
 
+logger = logging.getLogger(__name__)
+
 __all__ = [
     "HypothesisStatus",
     "Hypothesis",
     "HypothesisLifecycle",
+    "build_default_lifecycle",
 ]
 
 
 class HypothesisStatus(str, Enum):
     """Lifecycle states of a hypothesis."""
 
-    PROPOSED = "proposed"           # Just proposed, not yet tested
-    TESTING = "testing"             # Experiments are running
-    SUPPORTED = "supported"         # Evidence supports the hypothesis
-    CONTRADICTED = "contradicted"   # Evidence contradicts the hypothesis
+    PROPOSED = "proposed"  # Just proposed, not yet tested
+    TESTING = "testing"  # Experiments are running
+    SUPPORTED = "supported"  # Evidence supports the hypothesis
+    CONTRADICTED = "contradicted"  # Evidence contradicts the hypothesis
     INCONCLUSIVE = "inconclusive"  # Evidence is inconclusive
-    REFINED = "refined"             # Refined into a new hypothesis
-    ACCEPTED = "accepted"           # Accepted as a finding
-    REJECTED = "rejected"           # Rejected based on evidence
+    REFINED = "refined"  # Refined into a new hypothesis
+    ACCEPTED = "accepted"  # Accepted as a finding
+    REJECTED = "rejected"  # Rejected based on evidence
 
 
 # Valid state transitions
@@ -199,9 +203,7 @@ class HypothesisLifecycle:
             metadata=metadata or {},
         )
         self._hypotheses[hyp.hypothesis_id] = hyp
-        self._history[hyp.hypothesis_id] = [
-            (HypothesisStatus.PROPOSED, hyp.created_at)
-        ]
+        self._history[hyp.hypothesis_id] = [(HypothesisStatus.PROPOSED, hyp.created_at)]
         return hyp.hypothesis_id
 
     def transition(
@@ -301,11 +303,46 @@ class HypothesisLifecycle:
         Returns:
             The new hypothesis_id
         """
-        self.transition(
-            parent_hypothesis_id, HypothesisStatus.REFINED
-        )
+        self.transition(parent_hypothesis_id, HypothesisStatus.REFINED)
         return self.propose(
             statement=new_statement,
             planner_version=planner_version,
             parent_hypothesis_id=parent_hypothesis_id,
         )
+
+
+# ── Default Store Factory ───────────────────────────────────────────────
+
+
+def build_default_lifecycle(db_pool: Any = None) -> Any:
+    """Build the default hypothesis lifecycle backend.
+
+    Selection via ``UMRS_HYPOTHESIS_LIFECYCLE_STORE_BACKEND`` (default
+    ``auto``):
+
+      - ``pg``     — force Postgres (raises if unavailable)
+      - ``memory`` — force the in-memory reference lifecycle
+      - ``auto``   — Postgres when a pool is provided or the environment
+                     points at a database, otherwise in-memory
+
+    Postgres uses the ``hypotheses`` / ``hypothesis_history`` tables
+    (migration 0061).
+    """
+    import os as _os
+
+    from umrs.shared.pg import resolve_satellite_pool
+
+    backend = _os.environ.get("UMRS_HYPOTHESIS_LIFECYCLE_STORE_BACKEND", "auto").lower()
+    if backend == "memory":
+        return HypothesisLifecycle()
+    if backend not in ("auto", "pg"):
+        logger.warning("Unknown store backend %r; using auto", backend)
+        backend = "auto"
+
+    pool = resolve_satellite_pool(backend, db_pool, "Hypothesis lifecycle")
+    if pool is None:
+        return HypothesisLifecycle()
+
+    from .hypothesis_lifecycle_pg import PgHypothesisLifecycle
+
+    return PgHypothesisLifecycle(pool)
