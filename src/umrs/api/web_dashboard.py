@@ -173,6 +173,10 @@ class ConnectorInventory(BaseModel):
     sync_state: str | None = None
     unavailable: list[str] = []
     details: dict[str, dict] = {}
+    # P2: per-connector sync state hydrated from connector_sync_state
+    # (cursor age, docs/errors, DLQ depth). Empty until syncs run (P2
+    # runner I2) — render as "n/a "honestly.
+    sync: dict[str, dict] = {}
 
 
 class OverviewResponse(BaseModel):
@@ -344,7 +348,33 @@ def _connector_inventory() -> ConnectorInventory | None:
         available_types=report.available,
         unavailable=report.unavailable,
         details={c.name: c.to_dict() for c in report.connectors},
+        sync=_connector_sync_view(),
     )
+
+
+def _connector_sync_view() -> dict[str, dict]:
+    """Per-connector sync state for the overview payload (P2).
+
+    Degrades to {} when the store is unavailable (lib-only runner yet to
+    execute a sync, or no DB) — dashboards render "n/a "honestly.
+    """
+    try:
+        from ..connectors.sync_state import build_default_store
+
+        store = build_default_store()
+        return {
+            row.name: {
+                "last_sync_at": row.last_sync_at,
+                "status": row.last_status,
+                "docs_synced": row.docs_synced,
+                "errors": row.errors_count,
+                "dlq": len(row.dlq),
+            }
+            for row in store.list()
+        }
+    except Exception:  # noqa: BLE001
+        logger.debug("connector sync state unavailable", exc_info=True)
+        return {}
 
 
 # ── Overview/health/list helpers (complexity decomposition) ─────────────
@@ -388,7 +418,9 @@ def _probe_db_health(db_pool: Any) -> str:
     return "healthy" if _probe_db(db_pool) else "unhealthy"
 
 
-def _presence_component(name: str, store: Any, *, healthy_detail: str) -> HealthComponent:
+def _presence_component(
+    name: str, store: Any, *, healthy_detail: str
+) -> HealthComponent:
     """Health component whose state is pure store presence."""
     return HealthComponent(
         name=name,
@@ -460,9 +492,7 @@ def _model_summary(model_store: Any, model: Any) -> ModelSummary:
         history = model_store.get_model_versions(model.model_id, ctx=None)
         latest_version = history.latest.version if history.latest else None
     except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "Could not load versions for model %s: %s", model.model_id, exc
-        )
+        logger.warning("Could not load versions for model %s: %s", model.model_id, exc)
     return ModelSummary(
         model_id=model.model_id,
         name=model.name,
@@ -517,7 +547,7 @@ async def list_jobs(
     request: Request = None,
 ) -> PaginatedJobsResponse:
     """List jobs with pagination and filters."""
-    from ..jobs.models import JobStatus, JobType
+    from ..jobs.models import JobStatus
 
     job_store = get_job_store()
     if not job_store:
