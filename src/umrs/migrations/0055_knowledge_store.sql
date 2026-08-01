@@ -190,8 +190,7 @@ CREATE INDEX IF NOT EXISTS idx_approval_project
     ON readiness_approvals(project_id, approved_at);
 
 CREATE INDEX IF NOT EXISTS idx_approval_active
-    ON readiness_approvals(project_id, expires_at)
-    WHERE expires_at IS NULL OR expires_at > now();
+    ON readiness_approvals(project_id, expires_at DESC NULLS FIRST);
 
 -- =============================================================================
 -- 8. Loop Iterations
