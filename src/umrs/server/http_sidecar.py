@@ -470,6 +470,8 @@ def _create_app():
         provenance_router,
         reflective_memory_router,
         scientific_memory_router,
+        evidence_router,
+        experiment_registry_router,
         rag_router,
         skills_router,
         traces_router,
@@ -565,16 +567,27 @@ def _create_app():
     # Previously-dormant satellite routers (now durable when DB env present).
     app.include_router(scientific_memory_router)
     app.include_router(reflective_memory_router)
+    app.include_router(evidence_router)
+    app.include_router(experiment_registry_router)
 
-    # Scientific-memory store auto-resolves via the satellite factory
-    # (Postgres when a database pool is resolvable, else in-memory).
+    # Satellite stores auto-resolve via the shared factories (Postgres when
+    # a pool is resolvable, else in-memory). Routers return 503 on failure.
+    from umrs.api.evidence import set_store as set_evidence_store
+    from umrs.api.experiment_registry import set_registry as set_exp_registry
     from umrs.api.scientific_memory import set_store as set_scientific_memory_store
+    from umrs.evidence import build_default_store as build_evidence_store
+    from umrs.experiment_registry import build_default_store as build_registry_store
     from umrs.scientific_memory import build_default_store as build_sm_store
 
-    try:
-        set_scientific_memory_store(build_sm_store())
-    except Exception:  # noqa: BLE001 — router returns 503 instead of crashing app
-        logger.warning("scientific memory store init failed", exc_info=True)
+    for starter, builder, name in (
+        (set_scientific_memory_store, build_sm_store, "scientific memory"),
+        (set_evidence_store, build_evidence_store, "evidence"),
+        (set_exp_registry, build_registry_store, "experiment registry"),
+    ):
+        try:
+            starter(builder())
+        except Exception:  # noqa: BLE001
+            logger.warning("%s satellite store init failed", name, exc_info=True)
 
     db_pool = _build_db_pool(app)
     if db_pool is not None:
