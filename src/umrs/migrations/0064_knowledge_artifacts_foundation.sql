@@ -13,17 +13,33 @@
 --   created_at, updated_at.
 
 CREATE TABLE IF NOT EXISTS knowledge_artifacts (
-    artifact_id TEXT PRIMARY KEY,
-    project_id  TEXT NOT NULL DEFAULT '',
-    kind        TEXT NOT NULL DEFAULT 'document',
-    source_uri  TEXT NOT NULL DEFAULT '',
-    title       TEXT NOT NULL DEFAULT '',
-    content     TEXT NOT NULL DEFAULT '',
-    metadata    JSONB      NOT NULL DEFAULT '{}'::jsonb,
-    created_at  TEXT NOT NULL DEFAULT '',
-    updated_at  TEXT NOT NULL DEFAULT ''
+    -- Row-level PK for a2l-style cascades (0018/0019 FK, api/a2l.py JOIN)
+    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    -- Business identifier used by store.py and migrations 0055/0056
+    artifact_id  TEXT NOT NULL UNIQUE,
+    project_id   TEXT NOT NULL DEFAULT '',
+    kind         TEXT NOT NULL DEFAULT 'document',
+    -- Lifecycle status: store.py queries with status = 'active'
+    status       TEXT NOT NULL DEFAULT 'active',
+    source_uri   TEXT NOT NULL DEFAULT '',
+    title        TEXT NOT NULL DEFAULT '',
+    content      TEXT NOT NULL DEFAULT '',
+    -- Deduplication key: store.py WHERE content_hash = $1 AND status='active'
+    content_hash TEXT,
+    metadata     JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at   TEXT NOT NULL DEFAULT '',
+    updated_at   TEXT NOT NULL DEFAULT ''
 );
+-- Convergence path for environments where the table pre-exists in an
+-- older shape (created before this migration existed): idempotent ALTERs.
+ALTER TABLE knowledge_artifacts
+    ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active';
+ALTER TABLE knowledge_artifacts
+    ADD COLUMN IF NOT EXISTS content_hash TEXT;
+
 CREATE INDEX IF NOT EXISTS idx_knowledge_artifacts_project
     ON knowledge_artifacts (project_id);
 CREATE INDEX IF NOT EXISTS idx_knowledge_artifacts_kind
     ON knowledge_artifacts (kind);
+CREATE INDEX IF NOT EXISTS idx_knowledge_artifacts_status
+    ON knowledge_artifacts (status);
