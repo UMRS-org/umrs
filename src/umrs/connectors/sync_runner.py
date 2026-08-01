@@ -24,6 +24,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Iterator
 
 from . import Connector, ConnectorConfig, Document, SyncCheckpoint
+from .intake_gate import IntakeGate, IntakePolicy
 from .sync_state import SyncStateRecord
 
 logger = logging.getLogger(__name__)
@@ -41,8 +42,10 @@ class SyncRunReport:
     docs_synced: int = 0
     docs_skipped_dup: int = 0
     docs_failed: int = 0
+    docs_blocked: int = 0
     new_cursor: str | None = None
     dead_letters: list[dict[str, str]] = field(default_factory=list)
+    scan_patterns: dict[str, int] = field(default_factory=dict)
     error: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -53,8 +56,10 @@ class SyncRunReport:
             "docs_synced": self.docs_synced,
             "docs_skipped_dup": self.docs_skipped_dup,
             "docs_failed": self.docs_failed,
+            "docs_blocked": self.docs_blocked,
             "new_cursor": self.new_cursor,
             "dead_letters": list(self.dead_letters),
+            "scan_patterns": dict(self.scan_patterns),
             "error": self.error,
         }
 
@@ -67,8 +72,9 @@ def _doc_hash(doc: Document) -> str:
 class ConnectorSyncRunner:
     """Executes connector syncs with durable checkpoints and dedup."""
 
-    def __init__(self, store) -> None:
+    def __init__(self, store, policy: IntakePolicy | None = None) -> None:
         self._store = store
+        self._gate = IntakeGate(policy)
 
     def run(
         self,
@@ -117,9 +123,22 @@ class ConnectorSyncRunner:
     # ── internals ─────────────────────────────────────────────────────────
 
     def _consume(self, source, name: str, ingest_fn, report: SyncRunReport) -> None:
-        """Stream documents, dedup, ingest, collect dead letters."""
+        """Stream documents; gate first (I2), then dedup, ingest, collect DLQ."""
         for doc in source:
             report.docs_seen += 1
+            decision = self._gate.inspect(doc, doc_index=report.docs_seen - 1)
+            if decision.action != "allow":
+                report.docs_blocked += 1
+                pat = decision.pattern or "gate:block"
+                report.scan_patterns[pat] = report.scan_patterns.get(pat, 0) + 1
+                report.dead_letters.append(
+                    {
+                        "source_id": doc.source_id,
+                        "blocked_by": pat,
+                        "reason": decision.reason,
+                    }
+                )
+                continue
             try:
                 digest = _doc_hash(doc)
                 if self._store.seen(name, digest):
@@ -149,6 +168,11 @@ class ConnectorSyncRunner:
         dlq = ((prior.dlq if prior else []) + report.dead_letters)[_DLQ_CAP_DROP:]
         checkpoint_payload = dict((prior.checkpoint_json if prior else {}))
         checkpoint_payload.update(checkpoint.metadata)
+        if report.docs_blocked:
+            checkpoint_payload["last_scan"] = {
+                "blocked": report.docs_blocked,
+                "patterns": dict(report.scan_patterns),
+            }
         self._store.put(
             SyncStateRecord(
                 name=name,
