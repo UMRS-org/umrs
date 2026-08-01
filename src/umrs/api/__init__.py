@@ -32,6 +32,8 @@ from .pipelines import (
 )
 from .provenance import router as provenance_router
 from .rag import router as rag_router
+from .reflective_memory import router as reflective_memory_router
+from .scientific_memory import router as scientific_memory_router
 from .skills import router as skills_router
 from .traces import router as traces_router
 from .usage import router as usage_router
@@ -61,6 +63,8 @@ __all__ = [
     "pipelines_router",
     "provenance_router",
     "rag_router",
+    "reflective_memory_router",
+    "scientific_memory_router",
     "skills_router",
     "traces_router",
     "usage_router",

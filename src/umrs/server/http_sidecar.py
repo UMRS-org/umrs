@@ -468,6 +468,8 @@ def _create_app():
         pipelines_router,
         policy_router,
         provenance_router,
+        reflective_memory_router,
+        scientific_memory_router,
         rag_router,
         skills_router,
         traces_router,
@@ -560,6 +562,19 @@ def _create_app():
     app.include_router(workflows_router)
     app.include_router(zmq_sessions_router)
     app.include_router(web_dashboard_router)
+    # Previously-dormant satellite routers (now durable when DB env present).
+    app.include_router(scientific_memory_router)
+    app.include_router(reflective_memory_router)
+
+    # Scientific-memory store auto-resolves via the satellite factory
+    # (Postgres when a database pool is resolvable, else in-memory).
+    from umrs.api.scientific_memory import set_store as set_scientific_memory_store
+    from umrs.scientific_memory import build_default_store as build_sm_store
+
+    try:
+        set_scientific_memory_store(build_sm_store())
+    except Exception:  # noqa: BLE001 — router returns 503 instead of crashing app
+        logger.warning("scientific memory store init failed", exc_info=True)
 
     db_pool = _build_db_pool(app)
     if db_pool is not None:
