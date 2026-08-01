@@ -58,8 +58,17 @@ CREATE TABLE IF NOT EXISTS knowledge_ir (
 CREATE INDEX IF NOT EXISTS idx_ir_artifact
     ON knowledge_ir(artifact_id, status);
 
+-- knowledge_ir carries no project_id column (see KnowledgeIRRow in
+-- knowledge/store.py); index ir_type alone. The original (ir_type,
+-- project_id) was authored against a column never created here.
 CREATE INDEX IF NOT EXISTS idx_ir_type
-    ON knowledge_ir(ir_type, project_id);
+    ON knowledge_ir(ir_type);
+
+-- Unique guard for the ON CONFLICT (artifact_id, version) upsert path.
+-- The CREATE TABLE above already declares it for fresh installations;
+-- this index converges environments that created the table pre-0055.
+CREATE UNIQUE INDEX IF NOT EXISTS knowledge_ir_artifact_version_key
+    ON knowledge_ir(artifact_id, version);
 
 COMMENT ON TABLE knowledge_ir IS 'Versioned intermediate representations. ON CONFLICT DO NOTHING for idempotent inserts.';
 
