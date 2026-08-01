@@ -42,6 +42,22 @@ from ..connectors.sync_runner import SyncRunReport
 logger = logging.getLogger(__name__)
 
 
+def _emit_tick_metric(summary: "TickSummary") -> None:
+    """Record the X1 tick outcome; instrumentation never breaks a schedule."""
+    try:
+        from ..metrics import METRICS
+
+        if summary.due == 0:
+            outcome = "empty"
+        elif summary.any_error:
+            outcome = "error"
+        else:
+            outcome = "ok"
+        METRICS.connector_tick(outcome)
+    except Exception:  # noqa: BLE001 — metrics must not break schedules
+        logger.debug("connector tick metric failed", exc_info=True)
+
+
 @dataclass
 class ExecutorResult:
     """One scheduled execution outcome."""
@@ -97,6 +113,7 @@ class ConnectorSyncExecutor:
                 summary.syncs_error += 1
             else:
                 summary.skipped += 1
+        _emit_tick_metric(summary)
         return summary
 
     # ── internals ─────────────────────────────────────────────────────────

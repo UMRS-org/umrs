@@ -499,14 +499,18 @@ def _create_app():
                 "No site config available — LLM metrics will have empty source"
             )
         from umrs.orchestrator.janitor import start_janitor, stop_janitor
+        from umrs.scheduler.service import start_scheduler, stop_scheduler
 
         start_janitor()
         logger.info("Janitor started via lifespan hook")
+        if start_scheduler():
+            logger.info("Scheduler service started via lifespan hook")
         try:
             yield
         finally:
+            stop_scheduler()
             stop_janitor()
-            logger.info("Janitor stopped via lifespan hook")
+            logger.info("Scheduler service + janitor stopped via lifespan hook")
 
     app = FastAPI(
         title="UMRS Endpoint Discovery API",

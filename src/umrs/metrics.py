@@ -304,6 +304,30 @@ class UMRSMetrics:
             ["source", "model", "user_id", "project_id", "direction"],
         )
 
+        # -- Connector intake (X1) --------------------------------------
+        # Labels are bounded enums only (connector_type is the ConnectorType
+        # registry value; status/outcome are fixed sets) — never user data.
+        self._connector_syncs = _counter(
+            "umrs_connector_syncs_total",
+            "Connector sync runs by type and outcome status",
+            ["connector_type", "status"],  # status: ok | error | skipped_disabled
+        )
+        self._connector_sync_duration = _histogram(
+            "umrs_connector_sync_duration_seconds",
+            "Time for one connector sync run",
+            ["connector_type"],
+        )
+        self._connector_docs = _counter(
+            "umrs_connector_docs_total",
+            "Documents processed by connector syncs, by outcome",
+            ["connector_type", "outcome"],  # outcome: synced | dup | failed | blocked
+        )
+        self._connector_ticks = _counter(
+            "umrs_connector_ticks_total",
+            "Scheduler executor ticks by outcome",
+            ["outcome"],  # outcome: ok | error | empty
+        )
+
         # Operational source — set once at startup by http_sidecar.
         self._source: str = ""
 
@@ -508,39 +532,45 @@ class UMRSMetrics:
                 completion
             )
         if user_id:
-            pid = project_id or "default"
-            if prompt:
+            self._record_user_tokens(
+                user_id,
+                project_id,
+                s,
+                model,
+                prompt,
+                completion,
+                cached_read,
+                cached_write,
+            )
+
+    def _record_user_tokens(
+        self,
+        user_id: str,
+        project_id: str,
+        source: str,
+        model: str,
+        prompt: int,
+        completion: int,
+        cached_read: int,
+        cached_write: int,
+    ) -> None:
+        """Per-user token breakdown (bounded user cardinality on HPC)."""
+        pid = project_id or "default"
+        directions = (
+            ("prompt", prompt),
+            ("completion", completion),
+            ("cache_read", cached_read),
+            ("cache_write", cached_write),
+        )
+        for direction, count in directions:
+            if count:
                 self._llm_tokens_user.labels(
-                    source=s,
+                    source=source,
                     model=model,
                     user_id=user_id,
                     project_id=pid,
-                    direction="prompt",
-                ).inc(prompt)
-            if completion:
-                self._llm_tokens_user.labels(
-                    source=s,
-                    model=model,
-                    user_id=user_id,
-                    project_id=pid,
-                    direction="completion",
-                ).inc(completion)
-            if cached_read:
-                self._llm_tokens_user.labels(
-                    source=s,
-                    model=model,
-                    user_id=user_id,
-                    project_id=pid,
-                    direction="cache_read",
-                ).inc(cached_read)
-            if cached_write:
-                self._llm_tokens_user.labels(
-                    source=s,
-                    model=model,
-                    user_id=user_id,
-                    project_id=pid,
-                    direction="cache_write",
-                ).inc(cached_write)
+                    direction=direction,
+                ).inc(count)
 
     def llm_request_duration(
         self, model: str, seconds: float, source: str = ""
@@ -559,6 +589,40 @@ class UMRSMetrics:
     def set_queue_depth(self, queue_type: str, depth: float) -> None:
         """Set the current message depth for a queue (control | data)."""
         self._queue_depth.labels(queue_type=queue_type).set(depth)
+
+    # -- Connector intake (X1) ------------------------------------------
+
+    def connector_sync(self, connector_type: str, status: str, seconds: float) -> None:
+        """Record one connector sync run (status + duration)."""
+        self._connector_syncs.labels(connector_type=connector_type, status=status).inc()
+        self._connector_sync_duration.labels(connector_type=connector_type).observe(
+            seconds
+        )
+
+    def connector_docs(
+        self,
+        connector_type: str,
+        *,
+        synced: int = 0,
+        dup: int = 0,
+        failed: int = 0,
+        blocked: int = 0,
+    ) -> None:
+        """Record per-sync document outcome counts (synced|dup|failed|blocked)."""
+        for outcome, count in (
+            ("synced", synced),
+            ("dup", dup),
+            ("failed", failed),
+            ("blocked", blocked),
+        ):
+            if count:
+                self._connector_docs.labels(
+                    connector_type=connector_type, outcome=outcome
+                ).inc(count)
+
+    def connector_tick(self, outcome: str) -> None:
+        """Record one scheduler executor tick (ok | error | empty)."""
+        self._connector_ticks.labels(outcome=outcome).inc()
 
 
 METRICS = UMRSMetrics()

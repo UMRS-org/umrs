@@ -69,6 +69,26 @@ def _doc_hash(doc: Document) -> str:
     return hashlib.sha256(f"{doc.source_id}:{doc.content}".encode()).hexdigest()
 
 
+def _emit_metrics(
+    config: ConnectorConfig, report: SyncRunReport, elapsed: float
+) -> None:
+    """Record X1 connector metrics; instrumentation never breaks a sync."""
+    try:
+        from ..metrics import METRICS
+
+        ctype = config.connector_type.value
+        METRICS.connector_sync(ctype, report.status, elapsed)
+        METRICS.connector_docs(
+            ctype,
+            synced=report.docs_synced,
+            dup=report.docs_skipped_dup,
+            failed=report.docs_failed,
+            blocked=report.docs_blocked,
+        )
+    except Exception:  # noqa: BLE001 — metrics must not break syncs
+        logger.debug("connector metrics emission failed", exc_info=True)
+
+
 class ConnectorSyncRunner:
     """Executes connector syncs with durable checkpoints and dedup."""
 
@@ -97,7 +117,12 @@ class ConnectorSyncRunner:
 
         if config.enabled is False:
             report.status = "skipped_disabled"
+            _emit_metrics(config, report, 0.0)
             return report
+
+        import time as _time
+
+        start = _time.monotonic()
 
         # Provisional row first: seen-hashFK requires the state row to exist
         # before any dedup insert lands (also makes the run visible mid-sync).
@@ -117,7 +142,9 @@ class ConnectorSyncRunner:
         else:
             report.status = "ok"
 
+        elapsed = _time.monotonic() - start
         self._persist(name, config, checkpoint, prior, report)
+        _emit_metrics(config, report, elapsed)
         return report
 
     # ── internals ─────────────────────────────────────────────────────────
