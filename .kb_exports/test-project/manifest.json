@@ -1,10 +1,18 @@
 {
-  "exported_at": "2026-07-15T01:16:50.796751+00:00",
+  "exported_at": "2026-07-30T23:38:24.954340+00:00",
   "format": "r4-kb",
-  "hash": "19da981a9f67929f6c1d8acc0c01142f691aca1f3acc7851e2225b8b3ae4f34a",
+  "hash": "3a4b60c92246a919cf4a363e2cfc6fa84371baaa9e7587e885cf4f35c507ec86",
   "project_id": "test-project",
   "signature": "",
   "tables": {
+    "a2l_links": {
+      "count": 0,
+      "file": "a2l_links.jsonl"
+    },
+    "a2l_refs": {
+      "count": 0,
+      "file": "a2l_refs.jsonl"
+    },
     "artifacts": {
       "count": 0,
       "file": "artifacts.jsonl"
@@ -30,5 +38,5 @@
       "file": "nodes.jsonl"
     }
   },
-  "version": "1.0"
+  "version": "1.1"
 }

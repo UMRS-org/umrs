@@ -18,8 +18,11 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import time
 from dataclasses import dataclass
 from typing import Any, Optional, Protocol, runtime_checkable
+
+from umrs.metrics import METRICS
 
 from .ir import KnowledgeIR
 from .store import KnowledgeEdge, KnowledgeIRRow, KnowledgeNode, KnowledgeStore
@@ -107,28 +110,44 @@ class PgGraphSink:
         Returns:
             Number of nodes created/upserted.
         """
-        store = store or self._store
-        if project_id is None or ir_ids is None:
-            raise ValueError("project_id and ir_ids are required for generate()")
+        t0 = time.monotonic()
+        outcome = "ok"
+        nodes_written = 0
+        try:
+            store = store or self._store
+            if project_id is None or ir_ids is None:
+                raise ValueError("project_id and ir_ids are required for generate()")
 
-        # 1. Truncate derived nodes/edges for the project
-        await store.truncate_nodes(project_id)
-        await store.truncate_edges()
+            # 1. Truncate derived nodes/edges for the project
+            await store.truncate_nodes(project_id)
+            await store.truncate_edges()
 
-        # 2. Load canonical IRs by id
-        irs = await store.list_ir_by_ids(ir_ids)
-        if not irs:
-            logger.info("No IRs found for project %s — no nodes created", project_id)
-            return 0
+            # 2. Load canonical IRs by id
+            irs = await store.list_ir_by_ids(ir_ids)
+            if not irs:
+                logger.info(
+                    "No IRs found for project %s — no nodes created", project_id
+                )
+                return 0
 
-        # 3. Extract nodes/edges from IRs
-        node_count = 0
-        for ir in irs:
-            await self._upsert_node(store, ir, project_id)
-            node_count += 1
-            await self._upsert_edges(store, ir, project_id)
+            # 3. Extract nodes/edges from IRs
+            for ir in irs:
+                await self._upsert_node(store, ir, project_id)
+                nodes_written += 1
+                await self._upsert_edges(store, ir, project_id)
 
-        return node_count
+            return nodes_written
+        except Exception:
+            outcome = "error"
+            raise
+        finally:
+            # X1 metrics: failure-isolated — metric outage never breaks generate().
+            try:
+                METRICS.graph_sink_generate(
+                    self.name, outcome, time.monotonic() - t0, nodes_written
+                )
+            except Exception:  # noqa: BLE001
+                pass
 
     async def _upsert_node(
         self,

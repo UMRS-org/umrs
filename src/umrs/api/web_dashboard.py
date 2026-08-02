@@ -12,14 +12,21 @@ Endpoints:
 - GET /umrs/web/dashboard/notifications — Unified warning notifications (from TASK-015-001)
 - GET /umrs/web/dashboard/jobs/{job_id} — Single job detail with attempts
 - GET /umrs/web/dashboard/models/{model_id} — Single model detail with versions
+- GET /umrs/web/dashboard/workflows — Workflow executions panel
+- GET /umrs/web/dashboard/connectors — Connector intake panel
+- GET /umrs/web/dashboard/knowledge — Per-project knowledge panel
 - GET /umrs/web/dashboard/metrics — Prometheus metrics (proxied)
-- GET /umrs/web/sse/jobs — Server-Sent Events stream for job updates
+- GET /umrs/web/dashboard/sse/jobs — Server-Sent Events stream for job updates
+- GET /umrs/web/dashboard/sse/workflows — Workflow execution SSE snapshots
+- GET /umrs/web/dashboard/sse/intake — Connector intake SSE snapshots
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
 from typing import Any
 
 from fastapi import APIRouter, Query, Request, status
@@ -828,4 +835,291 @@ async def jobs_sse(request: Request):
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
         },
+    )
+
+
+# ===========================================================================
+# U6: Dashboard panels (workflows / connectors / knowledge)
+# ===========================================================================
+
+
+class WorkflowRunSummary(BaseModel):
+    """One workflow execution row for the dashboard."""
+
+    execution_id: str
+    workflow_name: str
+    status: str
+    submitted_at: float
+    finished_at: float | None = None
+    gate_count: int = 0
+
+
+class WorkflowsPanelResponse(BaseModel):
+    """Workflow executions panel: counts by status + recent rows."""
+
+    counts: dict[str, int]
+    recent: list[WorkflowRunSummary]
+    degraded: bool = False
+    degraded_reason: str = ""
+
+
+class ConnectorSyncRow(BaseModel):
+    """One connector's sync-state row for the intake panel."""
+
+    status: str
+    last_sync_at: str | None = None
+    docs_synced: int = 0
+    errors: int = 0
+    dlq: int = 0
+
+
+class ConnectorsPanelResponse(BaseModel):
+    """Connector intake panel (null-safe when the store is unavailable)."""
+
+    connectors: dict[str, ConnectorSyncRow] | None = None
+    degraded: bool = False
+    degraded_reason: str = ""
+
+
+class KnowledgePanelResponse(BaseModel):
+    """Per-project knowledge stats panel."""
+
+    project_id: str
+    artifact_count: int = 0
+    active_artifact_count: int = 0
+    document_count: int = 0
+    node_count: int = 0
+    edge_count: int = 0
+    last_confidence: float | None = None
+    degraded: bool = False
+    degraded_reason: str = ""
+
+
+def _workflow_summary(record: Any) -> WorkflowRunSummary:
+    """Execution record → dashboard row."""
+    return WorkflowRunSummary(
+        execution_id=record.execution_id,
+        workflow_name=record.workflow_name,
+        status=record.status,
+        submitted_at=record.submitted_at,
+        finished_at=record.finished_at,
+        gate_count=len(getattr(record, "gate_decisions", {}) or {}),
+    )
+
+
+def _workflows_panel_payload(*, recent_limit: int = 25) -> WorkflowsPanelResponse:
+    """Registry counts + recent executions (null-safe when unavailable)."""
+    try:
+        from ..server.workflow_execution_registry import get_execution_registry
+
+        records = get_execution_registry().list()
+    except Exception as exc:
+        logger.warning("Workflow panel degraded: %s", exc)
+        return WorkflowsPanelResponse(
+            counts={},
+            recent=[],
+            degraded=True,
+            degraded_reason=str(exc),
+        )
+
+    counts: dict[str, int] = {}
+    for record in records:
+        counts[record.status] = counts.get(record.status, 0) + 1
+    recent = [_workflow_summary(r) for r in records[:recent_limit]]
+    return WorkflowsPanelResponse(counts=counts, recent=recent)
+
+
+@router.get(
+    "/workflows",
+    response_model=WorkflowsPanelResponse,
+    summary="Workflow executions panel",
+    description="Counts by status plus the most recent workflow executions.",
+)
+async def get_workflows_panel() -> WorkflowsPanelResponse:
+    """Workflow executions panel (W1 registry view for the dashboard)."""
+    return _workflows_panel_payload()
+
+
+def _connectors_panel_payload() -> ConnectorsPanelResponse:
+    """Connector intake rows from the sync-state store (null-safe)."""
+    try:
+        from ..connectors.sync_state import build_default_store
+
+        rows = build_default_store().list()
+    except Exception as exc:
+        logger.warning("Connectors panel degraded: %s", exc)
+        return ConnectorsPanelResponse(
+            connectors=None,
+            degraded=True,
+            degraded_reason=str(exc),
+        )
+
+    connectors = {
+        row.name: ConnectorSyncRow(
+            status=row.last_status,
+            last_sync_at=row.last_sync_at,
+            docs_synced=row.docs_synced,
+            errors=row.errors_count,
+            dlq=len(row.dlq),
+        )
+        for row in rows
+    }
+    return ConnectorsPanelResponse(connectors=connectors)
+
+
+@router.get(
+    "/connectors",
+    response_model=ConnectorsPanelResponse,
+    summary="Connector intake panel",
+    description="Per-connector sync state (status, last sync, counts, DLQ depth).",
+)
+async def get_connectors_panel() -> ConnectorsPanelResponse:
+    """Connector intake panel (I-sync state view)."""
+    return _connectors_panel_payload()
+
+
+async def _knowledge_panel_payload(
+    project_id: str, store: Any, verification_store: Any
+) -> KnowledgePanelResponse:
+    """Per-project knowledge aggregates from the shared stores."""
+    artifacts, _total = await store.list_artifacts(
+        project_id=project_id, status=None, page=1, page_size=1000
+    )
+    active = [a for a in artifacts if getattr(a, "status", "active") == "active"]
+    documents = await store.list_irs(project_id=project_id)
+    nodes = await store.list_nodes(project_id=project_id)
+    edges = await store.list_edges(project_id=project_id)
+
+    last_confidence: float | None = None
+    if verification_store is not None:
+        try:
+            reports = await verification_store.list_reports(
+                project_id=project_id, limit=1
+            )
+            if reports:
+                last_confidence = float(getattr(reports[0], "confidence", 0.0))
+        except Exception:
+            logger.debug("verification store unavailable for project %s", project_id)
+
+    return KnowledgePanelResponse(
+        project_id=project_id,
+        artifact_count=_total,
+        active_artifact_count=len(active),
+        document_count=len(documents),
+        node_count=len(nodes),
+        edge_count=len(edges),
+        last_confidence=last_confidence,
+    )
+
+
+@router.get(
+    "/knowledge",
+    response_model=KnowledgePanelResponse,
+    summary="Knowledge panel",
+    description="Per-project knowledge stats (artifacts, documents, graph, confidence).",
+)
+async def get_knowledge_panel(
+    request: Request,
+    project_id: str = Query(
+        ..., description="Project scope (knowledge is project-bound)"
+    ),
+) -> KnowledgePanelResponse:
+    """Per-project knowledge panel for the dashboard."""
+    pool = getattr(request.app.state, "umrs_db_pool", None)
+    if pool is None:
+        return KnowledgePanelResponse(
+            project_id=project_id,
+            degraded=True,
+            degraded_reason="database unavailable",
+        )
+    from ..knowledge.store import KnowledgeStore
+    from ..knowledge.verification_store import VerificationStore
+
+    return await _knowledge_panel_payload(
+        project_id, KnowledgeStore(pool), VerificationStore(pool)
+    )
+
+
+# ---------------------------------------------------------------------------
+# U6: SSE channels (snapshot stream + keepalive)
+# ---------------------------------------------------------------------------
+
+
+def _sse_headers() -> dict[str, str]:
+    return {
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no",
+    }
+
+
+async def _sse_snapshot_stream(
+    *,
+    snapshot_fn,
+    channel: str,
+    interval: float,
+) -> Any:
+    """SSE stream yielding one snapshot frame immediately, then keepalives.
+
+    First frame: ``event: <channel>-snapshot`` with a JSON payload from
+    ``snapshot_fn()`` — clients render instantly without waiting a full
+    poll cycle. Errors inside the snapshot never break the stream (the
+    frame carries ``degraded`` payloads).
+    """
+    payload = json.dumps(snapshot_fn(), default=str)
+    yield f"event: {channel}-snapshot\ndata: {payload}\n\n"
+    while True:
+        yield ": keepalive\n\n"
+        await asyncio.sleep(interval)
+
+
+def _workflow_sse_payload() -> dict[str, Any]:
+    """JSON-safe view of the workflows panel."""
+    panel = _workflows_panel_payload(recent_limit=10)
+    return json.loads(panel.model_dump_json())
+
+
+def _intake_sse_payload() -> dict[str, Any]:
+    """JSON-safe view of the connectors panel."""
+    panel = _connectors_panel_payload()
+    return json.loads(panel.model_dump_json())
+
+
+@router.get(
+    "/sse/workflows",
+    summary="Workflow execution SSE snapshots",
+    description="Immediate workflow panel snapshot frame + keepalives.",
+)
+async def workflows_sse(request: Request):
+    """SSE channel for workflow executions (snapshot-on-connect)."""
+    from fastapi.responses import StreamingResponse
+
+    return StreamingResponse(
+        _sse_snapshot_stream(
+            snapshot_fn=_workflow_sse_payload,
+            channel="workflows",
+            interval=float(os.getenv("UMRS_SSE_POLL_SECONDS", "30")),
+        ),
+        media_type="text/event-stream",
+        headers=_sse_headers(),
+    )
+
+
+@router.get(
+    "/sse/intake",
+    summary="Connector intake SSE snapshots",
+    description="Immediate intake panel snapshot frame + keepalives.",
+)
+async def intake_sse(request: Request):
+    """SSE channel for connector intake (snapshot-on-connect)."""
+    from fastapi.responses import StreamingResponse
+
+    return StreamingResponse(
+        _sse_snapshot_stream(
+            snapshot_fn=_intake_sse_payload,
+            channel="intake",
+            interval=float(os.getenv("UMRS_SSE_POLL_SECONDS", "30")),
+        ),
+        media_type="text/event-stream",
+        headers=_sse_headers(),
     )

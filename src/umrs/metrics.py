@@ -328,6 +328,44 @@ class UMRSMetrics:
             ["outcome"],  # outcome: ok | error | empty
         )
 
+        # -- Workflow executions (X1) -------------------------------------
+        # Executor label is the executor class name (bounded by codebase);
+        # outcome is succeeded | failed | cancelled.
+        self._workflow_runs = _counter(
+            "umrs_workflow_runs_total",
+            "Workflow executions by executor backend and outcome",
+            ["executor", "outcome"],
+        )
+        self._workflow_run_duration = _histogram(
+            "umrs_workflow_run_duration_seconds",
+            "End-to-end workflow execution duration",
+            ["executor", "outcome"],
+        )
+
+        # -- Embedding compute (X1) ----------------------------------------
+        self._embedding_compute = _histogram(
+            "umrs_embedding_compute_seconds",
+            "Embedding compute_and_store call duration",
+            ["modality", "outcome"],  # outcome: ok | error
+        )
+
+        # -- Knowledge graph sink (X1) --------------------------------------
+        self._graph_sink_writes = _counter(
+            "umrs_graph_sink_writes_total",
+            "Graph sink generate() runs by outcome",
+            ["sink", "outcome"],  # outcome: ok | error
+        )
+        self._graph_sink_duration = _histogram(
+            "umrs_graph_sink_generate_seconds",
+            "Graph sink generate() duration (truncate + recompile)",
+            ["sink"],
+        )
+        self._graph_sink_nodes = _histogram(
+            "umrs_graph_sink_nodes_written",
+            "Nodes written per generate() run",
+            ["sink"],
+        )
+
         # Operational source — set once at startup by http_sidecar.
         self._source: str = ""
 
@@ -623,6 +661,33 @@ class UMRSMetrics:
     def connector_tick(self, outcome: str) -> None:
         """Record one scheduler executor tick (ok | error | empty)."""
         self._connector_ticks.labels(outcome=outcome).inc()
+
+    # -- Workflow executions (X1) -------------------------------------------
+
+    def workflow_run(self, executor: str, outcome: str, seconds: float) -> None:
+        """Record one workflow execution (count + end-to-end duration)."""
+        self._workflow_runs.labels(executor=executor, outcome=outcome).inc()
+        self._workflow_run_duration.labels(executor=executor, outcome=outcome).observe(
+            seconds
+        )
+
+    # -- Embedding compute (X1) ---------------------------------------------
+
+    def embedding_compute(self, modality: str, outcome: str, seconds: float) -> None:
+        """Record one compute_and_store_embedding call duration."""
+        self._embedding_compute.labels(modality=modality, outcome=outcome).observe(
+            seconds
+        )
+
+    # -- Knowledge graph sink (X1) -------------------------------------------
+
+    def graph_sink_generate(
+        self, sink: str, outcome: str, seconds: float, nodes: int
+    ) -> None:
+        """Record one graph sink generate() (count + duration + node count)."""
+        self._graph_sink_writes.labels(sink=sink, outcome=outcome).inc()
+        self._graph_sink_duration.labels(sink=sink).observe(seconds)
+        self._graph_sink_nodes.labels(sink=sink).observe(nodes)
 
 
 METRICS = UMRSMetrics()

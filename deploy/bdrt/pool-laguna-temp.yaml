@@ -1,5 +1,7 @@
-# Temp pool: laguna-s-2.1-fp8 only (bdrt) — cross-node TP2/PP1 per dual-spark recipe
-# Mirrors the laguna-s-2.1-fp8 block in pool-bdrt-step.yaml.
+# Temp pool: laguna-s-2.1-fp8 only (bdrt) — TP8 on single node (115 GB model)
+# The model is 115 GB (24 × 4.8 GB safetensors). TP2/2 nodes = 57 GB/GPU which
+# exceeds GB10's ~20 GB. Must use TP8 on a single node: 115/8 = 14.4 GB/GPU.
+# DFlash speculative decode disabled (adds ~5 GB overhead, too tight for 20 GB GPU).
 pool: bdrt-laguna
 defaults:
   source: bdrt
@@ -11,52 +13,33 @@ endpoints:
   - name: laguna-s-2.1-fp8
     model: laguna-s-2.1-fp8
     tier: system
-    node_count: 2
-    partition: edge-double
-    max_model_len: 262144
+    node_count: 1
+    partition: edge
+    max_model_len: 4096
     env_vars:
       VLLM_HOST_MODEL_PATH: "/home/mnagaso/umrs_models/hub/models--poolside--Laguna-S-2.1-FP8/snapshots"
       VLLM_PATH_TO_HUGGINGFACE: "/home/mnagaso/umrs_models"
       VLLM_MODEL: "poolside/Laguna-S-2.1-FP8"
       VLLM_TOKENIZER: "poolside/Laguna-S-2.1-FP8"
-      VLLM_GPU_MEM_UTIL: "0.85"
+      VLLM_GPU_MEM_UTIL: "0.95"
       VLLM_MAX_NUM_SEQS: "2"
-      # Cross-node TP2 / PP1 per the dual-spark recipe (--tensor-parallel-size 2,
-      # NO pipeline parallelism). serve-model.slurm reads VLLM_TP natively.
-      VLLM_TP: "2"
-      VLLM_TENSOR_PARALLEL_SIZE: "2"
-      VLLM_MOE_BACKEND: "marlin"
-      # PINNED, not :latest — :latest silently moved v0.25.1 -> v0.26.0 (built
-      # 2026-07-27) and broke this recipe: DFlash's _create_draft_vllm_config()
-      # now flows through a changed AttentionConfig/replace() path, surfacing as
-      # "ValueError: Field 'backend_per_kind' not found in AttentionConfig" at
-      # EngineCore startup. hy3-arm64-cu130 is a fixed tag already validated on
-      # this hardware (checked job 2963: also lacks get_cache_scale, i.e. same
-      # vLLM vintage as the working 0.25.1 recipe) and does not float underneath us.
-      VLLM_DOCKER_IMAGE: "docker.io/vllm/vllm-openai:hy3-arm64-cu130"
-      # Laguna emits poolside-format tool calls (<tool_call>name<arg_key>k</arg_key>
-      # <arg_value>v</arg_value></tool_call>) and </think> reasoning markers. The
-      # default hermes parser cannot parse them → tool calls leak as plain text and
-      # agent clients (Copilot) stall. vLLM 0.25.1 ships dedicated poolside_v1
-      # tool + reasoning parsers.
-      VLLM_TOOL_CALL_PARSER: "poolside_v1"
-      VLLM_REASONING_PARSER: "poolside_v1"
-      # Recipe-required (validated job 2969): disable Ray memory monitor and cap
-      # container memory so GB10 unified-memory page-cache spikes reclaim cleanly.
+      # TP8: 8 GPUs on single node. 115 GB / 8 = 14.4 GB/GPU fits in 20 GB GB10.
+      VLLM_TP: "8"
+      VLLM_TENSOR_PARALLEL_SIZE: "8"
+      # Disable Ray's memory monitor — FP8 checkpoint load crosses 95% threshold.
       RAY_memory_monitor_refresh_ms: "0"
+      # cgroup memory cap (GB10 has 121 GiB unified CPU+GPU memory).
       RIVAULT_MN_MEMORY_CAP: "110g"
-      # Patched vllm/model_executor/models/laguna_dflash.py (hasattr guard around
-      # quant_config.get_cache_scale — CompressedTensorsConfig W4A16 draft lacks
-      # that FP8-only API in vLLM 0.25.1). Bind-mounted over the in-image module
-      # on head AND workers by serve-model.slurm. Lives on shared /home NFS.
-      VLLM_PATCH_LAGUNA_DFLASH: "/home/mnagaso/patches/laguna_dflash.py"
-      # Spec-decoding with W4A16 DFlash draft at k=6. The draft model path must be
-      # CONTAINER-visible: VLLM_PATH_TO_HUGGINGFACE is bind-mounted to
-      # /root/.cache/huggingface inside the vLLM container.
-      VLLM_SPECULATIVE_CONFIG: '{"method":"dflash","model":"/root/.cache/huggingface/hub/models--sapidlabs--Sparkulator-Laguna-S-2.1/snapshots","num_speculative_tokens":6}'
+      VLLM_MOE_BACKEND: "marlin"
+      VLLM_DOCKER_IMAGE: "docker.io/vllm/vllm-openai:latest"
+      # DFlash speculative decode DISABLED: 115 GB model at TP8 leaves ~2.4 GB/GPU
+      # for KV cache at 0.95 util. DFlash draft would need ~5 GB more. Re-enable
+      # when GPU memory budget allows (e.g., on A100-80GB nodes).
+      # VLLM_SPECULATIVE_CONFIG: '{"method":"dflash","model":"/root/.cache/huggingface/hub/models--sapidlabs--Sparkulator-Laguna-S-2.1/snapshots","num_speculative_tokens":6}'
+      # NOTE: recipe's `--kv-cache-dtype fp8` removed: vLLM 0.25.1 (:latest)
+      # dropped CompressedTensorsConfig.get_cache_scale → AttributeError.
       VLLM_EXTRA_ARGS: >-
         --enforce-eager
-        --kv-cache-dtype fp8
-        --kv-cache-memory-bytes 5368709120
-        --max-num-batched-tokens 8192
+        --kv-cache-memory-bytes 2684354560
+        --max-num-batched-tokens 4096
       RCCS_SKIP_CDI: "1"

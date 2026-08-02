@@ -1,0 +1,60 @@
+# Temp single-model roster: deepseek-v4-flash only (2026-07-28)
+# Use with: r4 pool up umrs/deploy/bdrt/pool-deepseek-v4-flash-only.yaml
+# Separate roster file = isolated state (won't disrupt laguna 3068 on edge-double).
+
+pool: bdrt-deepseek-only
+defaults:
+  source: bdrt
+  tier: system
+  ttl_sec: 0
+  timeout: 172800
+  RIVAULT_JOB_TIMEOUT: "0"
+
+endpoints:
+  - name: deepseek-v4-flash
+    model: deepseek-v4-flash
+    tier: system
+    node_count: 2
+    partition: spark-double
+    max_model_len: 256000
+    env_vars:
+      VLLM_HOST_MODEL_PATH: "/home/mnagaso/umrs_models/hub/models--deepseek-ai--DeepSeek-V4-Flash/snapshots"
+      VLLM_PATH_TO_HUGGINGFACE: "/home/mnagaso/umrs_models"
+      VLLM_MODEL: "deepseek-ai/DeepSeek-V4-Flash"
+      CONTAINERS_STORAGE_CONF: "/home/mnagaso/.config/containers/storage-native.conf"
+      VLLM_MAX_MODEL_LEN: "256000"
+      VLLM_GPU_MEM_UTIL: "0.825"
+      VLLM_TP: "2"
+      VLLM_TENSOR_PARALLEL_SIZE: "2"
+      NCCL_SOCKET_IFNAME: "enp1s0f1np1"
+      RAY_memory_monitor_refresh_ms: "0"
+      RIVAULT_MN_MEMORY_CAP: "110g"
+      MAX_JOBS: "4"
+      # OFFICIAL upstream image (2026-07-29). The scitrera ds4:20260609 image
+      # is CUDA 13.2 and therefore fails PTX JIT on this fleet's CUDA 13.0
+      # (580.x) driver. v0.26.0 is built for CUDA 13.0.2 (matches driver),
+      # pins sm_121 support (TORCH_CUDA_ARCH_LIST up to 12.0), and at this
+      # exact tag contains DeepSeek-V4: vllm/models/deepseek_v4 + the
+      # deepseek_v4 tokenizer-mode/tool-call-parser/reasoning-parser, plus
+      # the sparse-MLA machinery used by this checkpoint. No new image pull
+      # needed — it is already mirrored on the bdrt nodes (laguna-m1-nvfp4).
+      VLLM_DOCKER_IMAGE: "docker.io/vllm/vllm-openai:v0.26.0"
+      VLLM_TOOL_CALL_PARSER: "deepseek_v4"
+      VLLM_REASONING_PARSER: "deepseek_v4"
+      VLLM_TRUST_REMOTE_CODE: "1"
+      VLLM_SPECULATIVE_CONFIG: '{"method":"mtp","num_speculative_tokens":2}'
+      # NOTE: TILELANG_* and VLLM_TRITON_MLA_SPARSE_* envs are scitrera-image-
+      # specific and do not exist in upstream v0.26.0 — sparse-MLA is handled
+      # natively via its attention/config there, so these are dropped.
+      #
+      # --load-format instanttensor is scitrera-specific and unknown to
+      # upstream; dropped (upstream defaults handle safetensors/shards).
+      VLLM_EXTRA_ARGS: >-
+        --max-num-seqs 10
+        --max-num-batched-tokens 6144
+        --tokenizer-mode deepseek_v4
+        --kv-cache-dtype fp8
+        --enable-prefix-caching
+        --max-cudagraph-capture-size 8
+        --compilation-config {"cudagraph_mode":"FULL_AND_PIECEWISE","custom_ops":["all"]}
+      RCCS_SKIP_CDI: "1"

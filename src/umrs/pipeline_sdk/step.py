@@ -32,6 +32,8 @@ from __future__ import annotations
 import io
 import logging
 from abc import ABC, abstractmethod
+from collections.abc import Callable, Mapping
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -39,6 +41,137 @@ if TYPE_CHECKING:
     import numpy as np
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class StepPolicy:
+    """Per-step execution policy shared by all executors (ADR-021).
+
+    Members are normalized by ``from_mapping`` so executor-duplicated
+    parsing semantics (invalid values fall back with a warning, clamps)
+    live in exactly one place. Gate steps are NOT policy — detection of
+    manual-approval steps stays at the executor boundary.
+    """
+
+    max_retries: int = 0
+    retry_delay: float = 1.0
+    timeout_seconds: float | None = None
+
+    @classmethod
+    def from_mapping(cls, spec: Mapping[str, Any]) -> "StepPolicy":
+        """Parse a raw step spec (workflow.json dict) into a StepPolicy."""
+        return cls(
+            max_retries=_int_field(spec, "max_retries", 0, minimum=0),
+            retry_delay=_float_field(spec, "retry_delay", 1.0, minimum=0.0),
+            timeout_seconds=_timeout_field(spec),
+        )
+
+
+def _int_field(
+    spec: Mapping[str, Any], name: str, default: int, *, minimum: int | None
+) -> int:
+    """Coerce an int policy field; invalid values fall back with a warning."""
+    raw = spec.get(name, default)
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        logger.warning(
+            "Step %s: invalid %s=%r; using %r",
+            spec.get("name", "?"),
+            name,
+            raw,
+            default,
+        )
+        return default
+    if minimum is not None and value < minimum:
+        logger.warning(
+            "Step %s: %s=%r below minimum %r; clamped",
+            spec.get("name", "?"),
+            name,
+            raw,
+            minimum,
+        )
+        return minimum
+    return value
+
+
+def _float_field(
+    spec: Mapping[str, Any], name: str, default: float, *, minimum: float | None
+) -> float:
+    """Coerce a float policy field; invalid values fall back with a warning."""
+    raw = spec.get(name, default)
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        logger.warning(
+            "Step %s: invalid %s=%r; using %r",
+            spec.get("name", "?"),
+            name,
+            raw,
+            default,
+        )
+        return default
+    if minimum is not None and value < minimum:
+        logger.warning(
+            "Step %s: %s=%r below minimum %r; clamped",
+            spec.get("name", "?"),
+            name,
+            raw,
+            minimum,
+        )
+        return minimum
+    return value
+
+
+def _timeout_field(spec: Mapping[str, Any]) -> float | None:
+    """Coerce timeout_seconds; non-positive/invalid → None with a warning."""
+    raw = spec.get("timeout_seconds")
+    if raw is None:
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        logger.warning(
+            "Step %s: invalid timeout_seconds=%r; ignoring",
+            spec.get("name", "?"),
+            raw,
+        )
+        return None
+    if value <= 0:
+        logger.warning(
+            "Step %s: timeout_seconds=%r non-positive; ignoring",
+            spec.get("name", "?"),
+            raw,
+        )
+        return None
+    return value
+
+
+def call_with_deadline(
+    fn: Callable[[], Any],
+    *,
+    timeout_seconds: float | None,
+    label: str = "step",
+) -> Any:
+    """Run ``fn()`` with an optional soft deadline.
+
+    ``timeout_seconds=None``/``<=0`` runs inline with no thread
+    overhead.  A breach raises :class:`TimeoutError`.  The underlying
+    work is **not** interrupted (threads cannot be killed safely in
+    CPython); the late result is discarded and the worker unwinds on
+    its own.  Treat this as an advisory timeout: failure is reported
+    at the deadline, background completion is best-effort.
+    """
+    if not timeout_seconds or timeout_seconds <= 0:
+        return fn()
+    pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="umrs-step-deadline")
+    future = pool.submit(fn)
+    try:
+        return future.result(timeout=float(timeout_seconds))
+    except FutureTimeoutError as exc:
+        raise TimeoutError(f"{label} exceeded deadline of {timeout_seconds}s") from exc
+    finally:
+        pool.shutdown(wait=False)
 
 
 # ── Step execution context ───────────────────────────────────────────────────

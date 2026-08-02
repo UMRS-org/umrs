@@ -34,7 +34,7 @@ from ..core.zmq_correlation import dumps_with_correlation_id
 from pydantic import BaseModel, Field, model_validator
 
 from ..core.TaskCmdStatus import TaskCmd
-from ..jobs.models import JobStatus, JobType
+from ..jobs.models import JobStatus
 from ..jobs.store import InvalidTransitionError, JobNotFoundError, JobStore
 from ..server.file_handling import handle_upload_workflow
 from ..server.job_tracking_handler import DurableJobCommandBackend
@@ -113,41 +113,59 @@ class WorkflowUploadResponse(BaseModel):
     message: str = Field(..., description="Human-readable result message")
 
 
+def _schema_from_item_list(items: list[Any]) -> dict[str, Any]:
+    """Build a JSON-schema object from an item-list parameter declaration."""
+    properties: dict[str, Any] = {}
+    required: list[str] = []
+    for item in items:
+        entry = _schema_entry_from_item(item)
+        if entry is None:
+            continue
+        name, spec, is_required = entry
+        properties[name] = spec
+        if is_required:
+            required.append(name)
+    schema: dict[str, Any] = {"type": "object", "properties": properties}
+    if required:
+        schema["required"] = required
+    return schema
+
+
+def _schema_entry_from_item(item: Any) -> tuple[str, dict[str, Any], bool] | None:
+    """Normalize one parameter item into (name, spec, required) or None."""
+    if not isinstance(item, dict):
+        return None
+    name = item.get("name")
+    if not isinstance(name, str) or not name:
+        return None
+    spec = {
+        key: value for key, value in item.items() if key not in {"name", "required"}
+    }
+    return name, spec, bool(item.get("required"))
+
+
 def _workflow_parameter_schema(workflow_json: dict[str, Any]) -> dict[str, Any]:
     for key in ("parameter_schema", "parameters_schema", "parameters"):
         candidate = workflow_json.get(key)
         if isinstance(candidate, dict) and candidate.get("type"):
             return candidate
         if isinstance(candidate, list):
-            properties = {}
-            required = []
-            for item in candidate:
-                if not isinstance(item, dict):
-                    continue
-                name = item.get("name")
-                if not isinstance(name, str) or not name:
-                    continue
-                properties[name] = {
-                    key: value
-                    for key, value in item.items()
-                    if key not in {"name", "required"}
-                }
-                if item.get("required"):
-                    required.append(name)
-            schema: dict[str, Any] = {"type": "object", "properties": properties}
-            if required:
-                schema["required"] = required
-            return schema
+            return _schema_from_item_list(candidate)
     return {"type": "object", "properties": {}}
 
 
-def _describe_workflow_entry(entry: dict[str, Any]) -> dict[str, Any]:
+def _read_entry_workflow_json(entry: dict[str, Any]) -> dict[str, Any]:
+    """Read a catalog entry's workflow.json ({} when unavailable)."""
     source_path = entry.get("source_path", "")
-    workflow_json: dict[str, Any] = {}
     wf_json_path = os.path.join(source_path, "workflow.json")
     if source_path and os.path.isfile(wf_json_path):
         with open(wf_json_path, encoding="utf-8") as handle:
-            workflow_json = json.load(handle)
+            return json.load(handle)
+    return {}
+
+
+def _describe_workflow_entry(entry: dict[str, Any]) -> dict[str, Any]:
+    workflow_json = _read_entry_workflow_json(entry)
     return {
         "status": "ok",
         "contract_version": "1.0.0",
@@ -159,6 +177,8 @@ def _describe_workflow_entry(entry: dict[str, Any]) -> dict[str, Any]:
         "parameter_schema": _workflow_parameter_schema(workflow_json),
         "steps": entry.get("steps", []),
         "requirements": entry.get("requirements", []),
+        # W4: declared event subscriptions (additive; empty by default)
+        "triggers": workflow_json.get("triggers", []),
     }
 
 
@@ -173,9 +193,7 @@ def _validate_params_against_schema(
     if not isinstance(required, list):
         return
     missing = [
-        name
-        for name in required
-        if isinstance(name, str) and name not in params
+        name for name in required if isinstance(name, str) and name not in params
     ]
     if missing:
         raise HTTPException(
@@ -371,6 +389,37 @@ async def list_workflows(
     return _parse_command_response(raw, action="list")
 
 
+class GateDecisionRequest(BaseModel):
+    """Manual gate approval decision (W5)."""
+
+    approved: bool = Field(..., description="True = approve, False = reject")
+    approver: str | None = Field(default=None, max_length=255)
+    comment: str | None = Field(default=None, max_length=2000)
+
+
+@router.get("/{workflow_name}/triggers")
+async def list_workflow_triggers(
+    workflow_name: str,
+    x_user_id: str | None = Header(None),
+    x_verified_project_id: str | None = Header(None),
+):
+    """W4: return the workflow's declared event trigger subscriptions."""
+    _require_verified_workflow_identity(x_user_id, x_verified_project_id)
+    caller = _header_str(x_user_id) or ""
+    entry = _resolve_workflow_catalog_entry(workflow_name, caller)
+    if entry is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Workflow '{workflow_name}' not found",
+        )
+    workflow_json = _read_entry_workflow_json(entry)
+    return {
+        "status": "ok",
+        "workflow_name": workflow_name,
+        "triggers": workflow_json.get("triggers", []),
+    }
+
+
 @router.get("/{workflow_name}")
 async def describe_workflow(
     workflow_name: str,
@@ -389,24 +438,8 @@ async def describe_workflow(
     return _describe_workflow_entry(entry)
 
 
-@router.post(
-    "/upload",
-    response_model=WorkflowUploadResponse,
-    status_code=status.HTTP_202_ACCEPTED,
-)
-async def upload_workflow(
-    file: UploadFile = File(...),
-    user_id: str = Form(...),
-    workflow_name: str | None = Form(None),
-    scope: str = Form("user"),
-    x_user_id: str | None = Header(None),
-    x_verified_project_id: str | None = Header(None),
-):
-    _require_verified_workflow_identity(x_user_id, x_verified_project_id)
-    resolved_user_id = _verified_workflow_user(user_id, x_user_id)
-
-    # Governance quota check
-    project_id = x_verified_project_id or ""
+def _check_workflow_quota(project_id: str) -> None:
+    """Best-effort governance quota check (no-op when inactive)."""
     try:
         from .governance import check_quota
 
@@ -416,38 +449,46 @@ async def upload_workflow(
             raise
         pass  # governance not active
 
-    if not file.filename:
+
+def _resolved_upload_name(filename: str, workflow_name: str | None) -> str:
+    """Validate filename/name form inputs and return the final name."""
+    if not filename:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Filename required"
         )
-
-    resolved_workflow_name = workflow_name or Path(file.filename).stem
-    if not resolved_workflow_name:
+    resolved = workflow_name or Path(filename).stem
+    if not resolved:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="workflow_name is required"
         )
+    return resolved
 
-    with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as temp_file:
-        temp_path = temp_file.name
-        temp_file.write(await file.read())
 
-    ok, dest, err = handle_upload_workflow(
-        resolved_user_id, temp_path, resolved_workflow_name
-    )
-    if not ok:
-        _raise_upload_error(err or "Workflow upload failed")
-
+def _load_extracted_workflow_json(dest: str) -> tuple[str, dict[str, Any]]:
+    """Read version + payload from the extracted workflow.json."""
     workflow_json_path = os.path.join(dest, "workflow.json")
     try:
         with open(workflow_json_path, encoding="utf-8") as handle:
             workflow_json = json.load(handle)
-        version = str(workflow_json.get("version", "0.1"))
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to load extracted workflow.json: {exc}",
         ) from exc
+    return str(workflow_json.get("version", "0.1")), workflow_json
 
+
+def _register_uploaded_workflow(
+    *,
+    resolved_workflow_name: str,
+    version: str,
+    resolved_user_id: str,
+    dest: str,
+    workflow_json: dict[str, Any],
+    scope: str,
+    project_id: str,
+) -> None:
+    """Register the workflow in the catalog + governance ledger."""
     result = register_workflow(
         workflow_name=resolved_workflow_name,
         version=version,
@@ -474,6 +515,47 @@ async def upload_workflow(
         tier=scope,
     )
 
+
+@router.post(
+    "/upload",
+    response_model=WorkflowUploadResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def upload_workflow(
+    file: UploadFile = File(...),
+    user_id: str = Form(...),
+    workflow_name: str | None = Form(None),
+    scope: str = Form("user"),
+    x_user_id: str | None = Header(None),
+    x_verified_project_id: str | None = Header(None),
+):
+    _require_verified_workflow_identity(x_user_id, x_verified_project_id)
+    resolved_user_id = _verified_workflow_user(user_id, x_user_id)
+
+    project_id = x_verified_project_id or ""
+    _check_workflow_quota(project_id)
+    resolved_workflow_name = _resolved_upload_name(file.filename or "", workflow_name)
+
+    with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as temp_file:
+        temp_path = temp_file.name
+        temp_file.write(await file.read())
+
+    ok, dest, err = handle_upload_workflow(
+        resolved_user_id, temp_path, resolved_workflow_name
+    )
+    if not ok:
+        _raise_upload_error(err or "Workflow upload failed")
+
+    version, workflow_json = _load_extracted_workflow_json(dest)
+    _register_uploaded_workflow(
+        resolved_workflow_name=resolved_workflow_name,
+        version=version,
+        resolved_user_id=resolved_user_id,
+        dest=dest,
+        workflow_json=workflow_json,
+        scope=scope,
+        project_id=project_id,
+    )
     return WorkflowUploadResponse(
         status="ok",
         workflow_name=resolved_workflow_name,
@@ -633,3 +715,93 @@ async def cancel_execution(
     if record is not None:
         return {"status": "ok", "execution": _execution_payload(record, linked_job)}
     return {"status": "ok", "execution": _execution_payload_from_job(linked_job)}
+
+
+# ---------------------------------------------------------------------------
+# Manual gate approval (W5)
+# ---------------------------------------------------------------------------
+
+
+def _gate_state_for(record: Any, step_name: str) -> str:
+    """Classify a step's gate state for approve-route validation."""
+    step = record.steps.get(step_name)
+    if step is None:
+        return "unknown_step"
+    if record.gate_decisions.get(step_name) is not None:
+        return "already_decided"
+    if step.status != "waiting_approval":
+        return "not_waiting"
+    return "waiting"
+
+
+def _reject_gate_decision(state: str, execution_id: str, step_name: str) -> None:
+    """Raise the HTTP error matching a non-waiting gate state."""
+    if state == "unknown_step":
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=(f"Step '{step_name}' is not part of execution '{execution_id}'"),
+        )
+    detail = (
+        f"Step '{step_name}' in execution '{execution_id}' already has a "
+        "recorded gate decision"
+        if state == "already_decided"
+        else (
+            f"Step '{step_name}' in execution '{execution_id}' is not "
+            "waiting for approval"
+        )
+    )
+    raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=detail)
+
+
+@router.post("/executions/{execution_id}/steps/{step_name}/approve")
+async def approve_execution_gate(
+    execution_id: str,
+    step_name: str,
+    request: GateDecisionRequest,
+    identity: CallerIdentity = Depends(get_caller_identity),
+):
+    """W5: approve or reject a waiting manual-gate step.
+
+    Releases the parked worker thread; the decision lands in the
+    execution's ``results.gate_audit`` trail (durable via the record's
+    persist hook). Non-waiting steps return 409 with the reason.
+    """
+    from ..server.workflow_execution_registry import get_execution_registry
+
+    store = get_optional_job_store()
+    record, job = resolve_execution_context(execution_id, store=store)
+    enforce_http_execution_access(
+        identity,
+        record=record,
+        job=job,
+        execution_id=execution_id,
+    )
+    if record is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=(
+                f"Execution '{execution_id}' is not tracked by the in-process registry"
+            ),
+        )
+
+    gate_state = _gate_state_for(record, step_name)
+    if gate_state != "waiting":
+        _reject_gate_decision(gate_state, execution_id, step_name)
+
+    registry = get_execution_registry()
+    approver = request.approver or getattr(identity, "user_id", None) or record.user_id
+    updated = registry.resolve_approval(
+        execution_id,
+        step_name,
+        approved=request.approved,
+        approver=approver,
+        comment=request.comment,
+    )
+    if updated is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Execution '{execution_id}' is not tracked by the registry",
+        )
+
+    linked_job = _get_job_for_record(store, record) if job is None else job
+    return {"status": "ok", "execution": _execution_payload(updated, linked_job)}

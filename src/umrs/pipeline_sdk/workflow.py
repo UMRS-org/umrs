@@ -51,7 +51,7 @@ from umrs.pipeline_sdk.base import (
     Result,
     TaskHandle,
 )
-from umrs.pipeline_sdk.step import Step
+from umrs.pipeline_sdk.step import Step, StepPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -186,12 +186,14 @@ class StepSpec:
     """One processing step inside a workflow."""
 
     name: str
-    entrypoint: str  # "module:ClassName"
+    entrypoint: str = ""  # "module:ClassName" (unused when gate=True)
     config: dict[str, Any] = field(default_factory=dict)
     extends: str | None = None  # "name@version" reference to a registered step
     depends_on: list[str] | None = None  # step names this step depends on
     max_retries: int = 0  # per-step retry count (0 = no retries)
     retry_delay: float = 1.0  # seconds between retries
+    timeout_seconds: float | None = None  # per-step soft deadline (None = no limit)
+    gate: bool = False  # W5: manual-approval gate step (no Python class executed)
     # ---- routing / resource hints (all optional, default-omitted in to_dict) ----
     requires: list[str] = field(default_factory=list)  # capability tags
     model: str | None = None  # symbolic model alias (e.g. "vlm-large")
@@ -202,31 +204,48 @@ class StepSpec:
     def validate(self) -> None:
         if not self.name:
             raise ValueError("Step name cannot be empty")
-        if ":" not in self.entrypoint:
+        if not self.gate and ":" not in self.entrypoint:
             raise ValueError(
                 f"Step '{self.name}': entrypoint must be 'module:ClassName', "
                 f"got '{self.entrypoint}'"
             )
-        if self.requires:
-            if not isinstance(self.requires, list) or any(
-                not isinstance(tag, str) or not tag for tag in self.requires
-            ):
-                raise ValueError(
-                    f"Step '{self.name}': requires must be a list of non-empty strings"
-                )
-            unknown = [tag for tag in self.requires if tag not in KNOWN_CAPABILITY_TAGS]
-            if unknown:
-                logger.warning(
-                    "Step '%s' declares unknown capability tag(s): %s; "
-                    "router will treat them as opaque hints.",
-                    self.name,
-                    ", ".join(sorted(unknown)),
-                )
+        self._validate_requires()
+        self._validate_model_type()
+
+    def _validate_requires(self) -> None:
+        """Capability-tag shape check (+ advisory warning for unknown tags)."""
+        if not self.requires:
+            return
+        if not isinstance(self.requires, list) or any(
+            not isinstance(tag, str) or not tag for tag in self.requires
+        ):
+            raise ValueError(
+                f"Step '{self.name}': requires must be a list of non-empty strings"
+            )
+        unknown = [tag for tag in self.requires if tag not in KNOWN_CAPABILITY_TAGS]
+        if unknown:
+            logger.warning(
+                "Step '%s' declares unknown capability tag(s): %s; "
+                "router will treat them as opaque hints.",
+                self.name,
+                ", ".join(sorted(unknown)),
+            )
+
+    def _validate_model_type(self) -> None:
         if self.model_type is not None and self.model_type not in KNOWN_MODEL_TYPES:
             raise ValueError(
                 f"Step '{self.name}': model_type must be one of "
                 f"{sorted(KNOWN_MODEL_TYPES)}, got '{self.model_type}'"
             )
+
+    @property
+    def policy(self) -> StepPolicy:
+        """Normalized execution policy (ADR-021) for this step."""
+        return StepPolicy(
+            max_retries=self.max_retries,
+            retry_delay=self.retry_delay,
+            timeout_seconds=self.timeout_seconds,
+        )
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -241,8 +260,17 @@ class StepSpec:
         if self.max_retries > 0:
             d["max_retries"] = self.max_retries
             d["retry_delay"] = self.retry_delay
-        # New routing fields are omitted when at default to keep existing
-        # workflow.json fixtures byte-stable on round-trip.
+        if self.timeout_seconds is not None:
+            d["timeout_seconds"] = self.timeout_seconds
+        if self.gate:
+            d["gate"] = True
+        d.update(self._routing_fields_dict())
+        return d
+
+    def _routing_fields_dict(self) -> dict[str, Any]:
+        """Routing/resource fields — omitted at defaults to keep existing
+        workflow.json fixtures byte-stable on round-trip."""
+        d: dict[str, Any] = {}
         if self.requires:
             d["requires"] = list(self.requires)
         if self.model is not None:
@@ -265,6 +293,8 @@ class StepSpec:
             depends_on=data.get("depends_on"),
             max_retries=data.get("max_retries", 0),
             retry_delay=data.get("retry_delay", 1.0),
+            timeout_seconds=data.get("timeout_seconds"),
+            gate=bool(data.get("gate", False)),
             requires=list(data.get("requires") or []),
             model=data.get("model"),
             lora=data.get("lora"),
@@ -290,6 +320,18 @@ def _normalize_execution_parallel_steps(
     if not parallel_names:
         return normalized_steps
 
+    _validate_parallel_names(parallel_names, normalized_steps)
+
+    if any("depends_on" in step for step in normalized_steps):
+        return normalized_steps
+
+    return _apply_parallel_groups(normalized_steps, set(parallel_names))
+
+
+def _validate_parallel_names(
+    parallel_names: Any, normalized_steps: list[dict[str, Any]]
+) -> None:
+    """Shape + referential checks for the ``execution.parallel`` list."""
     if not isinstance(parallel_names, list) or any(
         not isinstance(name, str) for name in parallel_names
     ):
@@ -298,6 +340,13 @@ def _normalize_execution_parallel_steps(
     if len(set(parallel_names)) != len(parallel_names):
         raise ValueError("execution.parallel contains duplicate step names")
 
+    _assert_parallel_names_exist(parallel_names, normalized_steps)
+
+
+def _assert_parallel_names_exist(
+    parallel_names: list[str], normalized_steps: list[dict[str, Any]]
+) -> None:
+    """Every name in ``execution.parallel`` must reference a real step."""
     step_names = [step.get("name") for step in normalized_steps if "name" in step]
     missing = [name for name in parallel_names if name not in step_names]
     if missing:
@@ -306,10 +355,15 @@ def _normalize_execution_parallel_steps(
             f"execution.parallel references unknown step(s): {missing_csv}"
         )
 
-    if any("depends_on" in step for step in normalized_steps):
-        return normalized_steps
 
-    parallel_set = set(parallel_names)
+def _apply_parallel_groups(
+    normalized_steps: list[dict[str, Any]], parallel_set: set[str]
+) -> list[dict[str, Any]]:
+    """Wire legacy parallel shorthand into ``depends_on`` edges.
+
+    A parallel group receives the previous serial step as its parent;
+    the next serial step depends on the whole group.
+    """
     previous_serial_name: str | None = None
     current_parallel_group: list[str] = []
 
@@ -372,6 +426,8 @@ class WorkflowDefinition:
     output: OutputSpec = field(default_factory=OutputSpec)
     execution_mode: ExecutionMode = ExecutionMode.IN_PROCESS
     auto_trigger: bool = False
+    # W4: event subscriptions ("on": "ingest", plus optional matchers)
+    triggers: list[dict[str, Any]] = field(default_factory=list)
 
     def validate(self) -> None:
         """Run all validation checks; raise ``ValueError`` on failure."""
@@ -381,32 +437,44 @@ class WorkflowDefinition:
             raise ValueError("Workflow must contain at least one step")
 
         self.source.validate()
+        seen_names = self._validate_unique_steps()
+        self._validate_dependencies(seen_names)
 
+    def _validate_unique_steps(self) -> set[str]:
+        """Per-step validation + duplicate-name detection."""
         seen_names: set[str] = set()
         for step in self.steps:
             step.validate()
             if step.name in seen_names:
                 raise ValueError(f"Duplicate step name: '{step.name}'")
             seen_names.add(step.name)
+        return seen_names
 
-        # Validate depends_on references and detect cycles
+    def _validate_dependency_targets(self, seen_names: set[str]) -> None:
+        """depends_on reference checks: known step + no self-dependency."""
+        for step in self.steps:
+            if step.depends_on is None:
+                continue
+            for dep in step.depends_on:
+                if dep not in seen_names:
+                    raise ValueError(
+                        f"Step '{step.name}' depends on unknown step '{dep}'"
+                    )
+                if dep == step.name:
+                    raise ValueError(f"Step '{step.name}' depends on itself")
+
+    def _validate_dependencies(self, seen_names: set[str]) -> None:
+        """Validate depends_on references and detect cycles (when declared)."""
         has_deps = any(s.depends_on is not None for s in self.steps)
-        if has_deps:
-            for step in self.steps:
-                if step.depends_on is not None:
-                    for dep in step.depends_on:
-                        if dep not in seen_names:
-                            raise ValueError(
-                                f"Step '{step.name}' depends on unknown step '{dep}'"
-                            )
-                        if dep == step.name:
-                            raise ValueError(f"Step '{step.name}' depends on itself")
-            from umrs.pipeline_sdk.dag import DAGScheduler, DAGValidationError
+        if not has_deps:
+            return
+        self._validate_dependency_targets(seen_names)
+        from umrs.pipeline_sdk.dag import DAGScheduler, DAGValidationError
 
-            try:
-                DAGScheduler(self.steps).validate()
-            except DAGValidationError as exc:
-                raise ValueError(str(exc)) from exc
+        try:
+            DAGScheduler(self.steps).validate()
+        except DAGValidationError as exc:
+            raise ValueError(str(exc)) from exc
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -424,6 +492,8 @@ class WorkflowDefinition:
             d["execution_mode"] = self.execution_mode.value
         if self.auto_trigger:
             d["auto_trigger"] = True
+        if self.triggers:
+            d["triggers"] = list(self.triggers)
         return d
 
     @classmethod
@@ -445,6 +515,7 @@ class WorkflowDefinition:
             output=OutputSpec.from_dict(data.get("output", {})),
             execution_mode=ExecutionMode(mode_str),
             auto_trigger=data.get("auto_trigger", False),
+            triggers=list(data.get("triggers") or []),
         )
 
     @classmethod
@@ -525,12 +596,11 @@ def _download_s3_source(s3: Any, s3_uri: str) -> Path:
     return tmp_dir
 
 
-def _import_step_class(spec: StepSpec, script_dir: Path) -> type[Step]:
-    """Import and validate a single step class.
+def _resolve_module_file(spec: StepSpec, script_dir: Path) -> tuple[str, str, Path]:
+    """Validate entrypoint shape; return (module_name, class_name, module_file).
 
-    Uses ``importlib.util.spec_from_file_location`` for thread-safe
-    loading without mutating ``sys.path``.  Results are cached by
-    ``(entrypoint, script_dir)`` to avoid repeated filesystem access.
+    Supports dotted modules: ``pkg.sub.mod`` → ``pkg/sub/mod.py`` with
+    a package fallback to ``pkg/sub/mod/__init__.py``.
     """
     ep = spec.entrypoint
     if not _ENTRYPOINT_RE.match(ep):
@@ -540,15 +610,73 @@ def _import_step_class(spec: StepSpec, script_dir: Path) -> type[Step]:
         )
 
     module_name, class_name = ep.split(":", 1)
-    str_dir = str(script_dir)
-
-    # Resolve the module file on disk
-    # Support dotted modules: "pkg.sub.mod" -> pkg/sub/mod.py
     rel_parts = module_name.replace(".", "/")
     module_file = script_dir / f"{rel_parts}.py"
     if not module_file.is_file():
         # Try as a package: pkg/sub/mod/__init__.py
         module_file = script_dir / rel_parts / "__init__.py"
+    return module_name, class_name, module_file
+
+
+def _exec_module_from_file(
+    spec: StepSpec, module_name: str, module_file: Path, script_dir: Path
+) -> Any:
+    """Thread-safe file import via importlib.util (no sys.path mutation)."""
+    loader_spec = importlib.util.spec_from_file_location(
+        module_name,
+        str(module_file),
+        submodule_search_locations=[str(script_dir)],
+    )
+    if loader_spec is None or loader_spec.loader is None:
+        raise ScriptLoadError(
+            f"Step '{spec.name}': cannot create module spec for "
+            f"'{module_name}' at {module_file}"
+        )
+    mod = importlib.util.module_from_spec(loader_spec)
+    sys.modules[module_name] = mod
+    try:
+        loader_spec.loader.exec_module(mod)
+    except Exception as exc:
+        sys.modules.pop(module_name, None)
+        raise ScriptLoadError(
+            f"Step '{spec.name}': cannot load module '{module_name}' "
+            f"from {module_file}: {exc}"
+        ) from exc
+    return mod
+
+
+def _import_fallback_module(spec: StepSpec, module_name: str, script_dir: Path) -> Any:
+    """Import when no file on disk (already-installed package)."""
+    try:
+        return importlib.import_module(module_name)
+    except Exception as exc:
+        raise ScriptLoadError(
+            f"Step '{spec.name}': cannot import module '{module_name}' "
+            f"from {script_dir}: {exc}"
+        ) from exc
+
+
+def _checked_step_class(spec: StepSpec, mod: Any, class_name: str) -> type[Step]:
+    """Resolve + type-check the step class on an imported module."""
+    cls = getattr(mod, class_name, None)
+    if cls is None:
+        raise ScriptLoadError(
+            f"Step '{spec.name}': class '{class_name}' not found in "
+            f"module '{mod.__name__}'"
+        )
+    if not (isinstance(cls, type) and issubclass(cls, Step)):
+        raise ScriptLoadError(f"Step '{spec.name}': {class_name} does not inherit Step")
+    return cls
+
+
+def _import_step_class(spec: StepSpec, script_dir: Path) -> type[Step]:
+    """Import and validate a single step class.
+
+    Uses ``importlib.util.spec_from_file_location`` for thread-safe
+    loading without mutating ``sys.path``.  Results are cached by
+    ``(entrypoint, script_dir)`` to avoid repeated filesystem access.
+    """
+    module_name, class_name, module_file = _resolve_module_file(spec, script_dir)
 
     if module_file.is_file():
         resolved_module = str(module_file.resolve())
@@ -557,7 +685,7 @@ def _import_step_class(spec: StepSpec, script_dir: Path) -> type[Step]:
         resolved_module = module_name
         module_mtime = None
 
-    cache_key = (ep, str_dir, resolved_module, module_mtime)
+    cache_key = (spec.entrypoint, str(script_dir), resolved_module, module_mtime)
 
     with _step_cache_lock:
         cached = _step_class_cache.get(cache_key)
@@ -565,46 +693,12 @@ def _import_step_class(spec: StepSpec, script_dir: Path) -> type[Step]:
             return cached
 
     if module_file.is_file():
-        # Use importlib.util for thread-safe import without sys.path mutation
-        loader_spec = importlib.util.spec_from_file_location(
-            module_name,
-            str(module_file),
-            submodule_search_locations=[str(script_dir)],
-        )
-        if loader_spec is None or loader_spec.loader is None:
-            raise ScriptLoadError(
-                f"Step '{spec.name}': cannot create module spec for "
-                f"'{module_name}' at {module_file}"
-            )
-        mod = importlib.util.module_from_spec(loader_spec)
-        sys.modules[module_name] = mod
-        try:
-            loader_spec.loader.exec_module(mod)
-        except Exception as exc:
-            sys.modules.pop(module_name, None)
-            raise ScriptLoadError(
-                f"Step '{spec.name}': cannot load module '{module_name}' "
-                f"from {module_file}: {exc}"
-            ) from exc
+        mod = _exec_module_from_file(spec, module_name, module_file, script_dir)
     else:
         # Fallback: module may already be importable (e.g. installed package)
-        try:
-            mod = importlib.import_module(module_name)
-        except Exception as exc:
-            raise ScriptLoadError(
-                f"Step '{spec.name}': cannot import module '{module_name}' "
-                f"from {script_dir}: {exc}"
-            ) from exc
+        mod = _import_fallback_module(spec, module_name, script_dir)
 
-    cls = getattr(mod, class_name, None)
-    if cls is None:
-        raise ScriptLoadError(
-            f"Step '{spec.name}': class '{class_name}' not found in "
-            f"module '{module_name}'"
-        )
-
-    if not (isinstance(cls, type) and issubclass(cls, Step)):
-        raise ScriptLoadError(f"Step '{spec.name}': {class_name} does not inherit Step")
+    cls = _checked_step_class(spec, mod, class_name)
 
     with _step_cache_lock:
         _step_class_cache[cache_key] = cls
