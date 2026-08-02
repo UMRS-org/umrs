@@ -2,6 +2,12 @@
 
 from .connection_status import ConnectionStatus
 from .footer_bar import FooterBar
+from .lifecycle import (
+    build_status_map,
+    detect_transitions,
+    filter_by_status,
+    stage_tracker,
+)
 from .logo import LogoWidget
 from .progress_bar import ProgressBar
 from .sparkline import PingSparkline
@@ -19,6 +25,10 @@ __all__ = [
     "ProgressBar",
     "StatBar",
     "StatsBar",
+    "build_status_map",
+    "detect_transitions",
+    "filter_by_status",
+    "stage_tracker",
     "status_style",
     "status_text",
 ]
