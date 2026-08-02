@@ -452,14 +452,17 @@ def _create_app():
     from umrs.api import (
         a2l_router,
         artifact_router,
+        bundle_restore_router,
         catalog_router,
         chat_router,
         egress_audit_router,
         endpoints_router,
         files_router,
+        intake_uploads_router,
         jobs_router,
         knowledge_graph_router,
         knowledge_lineage_router,
+        knowledge_query_router,
         knowledge_router,
         llm_router,
         mcp_router,
@@ -542,14 +545,17 @@ def _create_app():
     app.include_router(catalog_router)
     app.include_router(a2l_router)
     app.include_router(artifact_router)
+    app.include_router(bundle_restore_router)
     app.include_router(chat_router)
     app.include_router(egress_audit_router)
     app.include_router(endpoints_router)
     app.include_router(files_router)
+    app.include_router(intake_uploads_router)
     app.include_router(jobs_router)
     app.include_router(knowledge_router)
     app.include_router(knowledge_graph_router)
     app.include_router(knowledge_lineage_router)
+    app.include_router(knowledge_query_router)
     app.include_router(knowledge_v2_router)
     app.include_router(events_sse_router)
     app.include_router(llm_router)

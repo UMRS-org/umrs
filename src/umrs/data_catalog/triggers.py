@@ -34,7 +34,9 @@ def trigger_post_upload_ingestion(
 
         meta_store = get_optional_catalog_meta_store()
         if meta_store is None:
-            logger.warning("Catalog store unavailable — skipping pending stub for %s", s3_key)
+            logger.warning(
+                "Catalog store unavailable — skipping pending stub for %s", s3_key
+            )
         else:
             write_pending_stub(
                 s3_key=s3_key,
@@ -49,7 +51,7 @@ def trigger_post_upload_ingestion(
         logger.exception("Failed to write pending catalog stub for %s", s3_key)
 
     try:
-        return _enqueue_ingestion_job(
+        job_id = _enqueue_ingestion_job(
             bucket=bucket,
             s3_key=s3_key,
             object_etag=object_etag,
@@ -59,6 +61,41 @@ def trigger_post_upload_ingestion(
     except Exception:
         logger.exception("Failed to enqueue DATA_INGESTION for %s", s3_key)
         return None
+
+    _dispatch_workflow_triggers(
+        project_id=project_id,
+        bucket=bucket,
+        s3_key=s3_key,
+        owner=owner,
+    )
+    return job_id
+
+
+def _dispatch_workflow_triggers(
+    *, project_id: str, bucket: str, s3_key: str, owner: str
+) -> None:
+    """W4 fan-out: ingest event -> subscribed workflows (best-effort).
+
+    Never raises — a broken workflow subscription must not break the
+    upload path (same philosophy as the ingestion enqueue above).
+    """
+    try:
+        from umrs.server.workflow_triggers import dispatch_catalog_event
+
+        execution_ids = dispatch_catalog_event(
+            project_id=project_id,
+            bucket=bucket,
+            s3_key=s3_key,
+            owner=owner,
+        )
+        if execution_ids:
+            logger.info(
+                "Ingest triggers launched %d workflow run(s) for %s",
+                len(execution_ids),
+                s3_key,
+            )
+    except Exception:
+        logger.exception("Workflow trigger dispatch failed for %s", s3_key)
 
 
 def _enqueue_ingestion_job(

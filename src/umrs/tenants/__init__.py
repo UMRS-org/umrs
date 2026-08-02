@@ -1,4 +1,6 @@
-"""UMRS Multi-tenant schema isolation.
+"""**EXPERIMENTAL** — durable but NOT wired into request flows (X3, 2026-08-02).
+
+UMRS Multi-tenant schema isolation.
 
 Provides per-project schema isolation using Postgres schemas.
 Each project gets its own schema with the standard UMRS tables,
@@ -8,6 +10,13 @@ Designed for Alembic migration compatibility. Each tenant schema
 runs the same migration set independently.
 
 No dependency on r4.
+
+Status — the manager is durable behind ``build_default_manager()``
+(`sat_tenants`, migration 0060 + optional schema DDL via
+``UMRS_TENANTS_EXECUTE_SCHEMA_DDL``), but no UMRS route or job
+consumes it yet. Do not build against this API until the X3
+consumer batch wires it into request flows; the surface is
+subject to change.
 """
 
 from __future__ import annotations

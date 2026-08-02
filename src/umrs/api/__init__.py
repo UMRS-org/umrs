@@ -10,15 +10,18 @@ Note: Context/memory routers excluded from selective merge.
 
 from .a2l import router as a2l_router
 from .artifact_routes import router as artifact_router
+from .bundle_restore import router as bundle_restore_router
 from .catalog import router as catalog_router
 from .chat import router as chat_router
 from .egress_audit import router as egress_audit_router
 from .endpoints import router as endpoints_router
 from .files import router as files_router
+from .intake_uploads import router as intake_uploads_router
 from .jobs import router as jobs_router
 from .knowledge import router as knowledge_router
 from .knowledge_graph import router as knowledge_graph_router
 from .knowledge_lineage import router as knowledge_lineage_router
+from .knowledge_query import router as knowledge_query_router
 from .knowledge_v2 import router as knowledge_v2_router
 from .llm import router as llm_router
 from .loop import router as loops_router
@@ -46,15 +49,18 @@ from .zmq_sessions import router as zmq_sessions_router
 __all__ = [
     "a2l_router",
     "artifact_router",
+    "bundle_restore_router",
     "catalog_router",
     "chat_router",
     "egress_audit_router",
     "endpoints_router",
     "files_router",
+    "intake_uploads_router",
     "jobs_router",
     "knowledge_router",
     "knowledge_graph_router",
     "knowledge_lineage_router",
+    "knowledge_query_router",
     "knowledge_v2_router",
     "llm_router",
     "loops_router",

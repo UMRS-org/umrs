@@ -103,7 +103,7 @@ class MonitorAppV2(App):
         Binding("8", "switch_tab('errors')", "Errors"),
         Binding("9", "switch_tab('workflow_logs')", "WF Logs"),
         Binding("0", "switch_tab('data_transfer')", "Data"),
-            Binding("b", "switch_tab('config_editor')", "Config"),
+        Binding("b", "switch_tab('config_editor')", "Config"),
         Binding("slash", "focus_filter", "Filter", show=False),
         Binding("u", "show_upload", "Upload", show=False),
         Binding("e", "show_experience", "Experience", show=False),
@@ -243,27 +243,25 @@ class MonitorAppV2(App):
     # ------------------------------------------------------------------
     # Refresh logic
     # ------------------------------------------------------------------
+    def _tab_refreshers(self) -> dict[str, object]:
+        """Tab name → refresh callable (logs tab has no refresh)."""
+        return {
+            "jobs": self._refresh_jobs,
+            "endpoints": self._refresh_endpoints,
+            "status": self._refresh_status,
+            "models": self._refresh_models,
+            "workflows": self._refresh_workflows,
+            "connection": self._refresh_connection,
+            "errors": self._refresh_errors,
+            "workflow_logs": self._refresh_workflow_logs,
+        }
+
     def _refresh_active_tab(self) -> None:
         tab = self._active_tab_name()
         self._refresh_connection()
-        if tab == "jobs":
-            self._refresh_jobs()
-        elif tab == "endpoints":
-            self._refresh_endpoints()
-        elif tab == "status":
-            self._refresh_status()
-        elif tab == "models":
-            self._refresh_models()
-        elif tab == "workflows":
-            self._refresh_workflows()
-        elif tab == "connection":
-            self._refresh_connection()
-        elif tab == "logs":
-            pass
-        elif tab == "errors":
-            self._refresh_errors()
-        elif tab == "workflow_logs":
-            self._refresh_workflow_logs()
+        refresher = self._tab_refreshers().get(tab)
+        if callable(refresher):
+            refresher()
 
     @work
     async def _refresh_jobs(self) -> None:
@@ -629,7 +627,7 @@ class MonitorAppV2(App):
 
     def action_export(self) -> None:
         """Export current tab data to JSON."""
-        from ..tui.export import export_tab as export_fn
+        from .export import export_tab as export_fn
 
         tab = self._active_tab_name()
         data = self._store.tab(tab).data

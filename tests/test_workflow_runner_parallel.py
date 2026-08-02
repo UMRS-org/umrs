@@ -108,11 +108,12 @@ def test_independent_steps_run_concurrently(probe_module, tmp_path):
 
     assert record.status == "succeeded", record.error
     # Both barriers fired -> truly concurrent. If serial, the first
-    # ``barrier.wait`` would have timed out.
+    # ``barrier.wait`` would have timed out. This IS the proof.
     assert len(set(thread_ids)) == 2
-    # Two steps that each sleep 50ms should run in <150ms when parallel,
-    # not >100ms when serial. Generous bound to avoid CI flake.
-    assert duration < 0.5, f"workflow took {duration:.2f}s; expected parallel"
+    # Duration is only a hang-breaker: serial execution deadlocks on the
+    # 5s barrier timeout. Flaky tighter bounds (0.5s, 1.0s) fired at 0.60s
+    # / 1.11s under full-suite load, so guard at 4.0s instead.
+    assert duration < 4.0, f"workflow took {duration:.2f}s; expected parallel"
 
 
 # ---------------------------------------------------------------------------

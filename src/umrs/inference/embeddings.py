@@ -12,6 +12,9 @@ import os
 from sentence_transformers import SentenceTransformer
 from sklearn.cluster import KMeans
 
+import time as _time
+
+from umrs.metrics import METRICS
 from umrs.shared.storage.s3 import load_data_from_s3
 from umrs.shared.utils import zero_out_embeddings_for_empty_objects
 
@@ -119,6 +122,46 @@ def compute_embeddings_core(
     return embeddings, checksums, metadata, saved_s3_keys
 
 
+def _embedding_dim(embeddings) -> int | None:
+    """Vector dimension of the first non-empty embedding, else None."""
+    if embeddings and hasattr(embeddings[0], "__len__"):
+        return len(embeddings[0])
+    return None
+
+
+def _stamp_lineage(md, indexing_job_id, model_version, model_path, embedding_dim):
+    """Stamp lineage fields onto one metadata dict."""
+    if indexing_job_id:
+        md["indexing_job_id"] = indexing_job_id
+    if model_version:
+        md["model_version"] = model_version
+    if model_path:
+        md["model_path"] = model_path
+    if embedding_dim is not None:
+        md["embedding_dimension"] = embedding_dim
+
+
+def _inject_lineage_metadata(
+    metadata, embeddings, *, indexing_job_id, model_version, model_path
+):
+    """Inject RAG lineage metadata (MEM-C1) into each item's metadata dict
+    so store_one_embedding_in_db can persist them as column values."""
+    if not (indexing_job_id or model_version or model_path):
+        return
+    embedding_dim = _embedding_dim(embeddings)
+    for md in metadata:
+        _stamp_lineage(md, indexing_job_id, model_version, model_path, embedding_dim)
+
+
+def _resolve_store_fn(store_fn):
+    """Default to the production SQL store when no override is supplied."""
+    if store_fn is not None:
+        return store_fn
+    from umrs.server.sql import store_embeddings_in_db  # noqa: boundary
+
+    return store_embeddings_in_db
+
+
 def compute_and_store_embedding(
     path_to_bucket,
     s3_keys,
@@ -136,55 +179,55 @@ def compute_and_store_embedding(
     model_version=None,
     model_path=None,
 ):
-    embeddings, checksums, metadata, saved_s3_keys = compute_embeddings_core(
-        model,
-        modality_name,
-        s3_connection,
-        path_to_bucket,
-        s3_keys,
-        output_bucket=output_bucket,
-        task=task,
-        skip_existing=skip_existing,
-    )
-
-    assert len(embeddings) == len(checksums)
-    assert len(embeddings) == len(metadata)
-
-    # Inject RAG lineage metadata (MEM-C1) into each item's metadata dict
-    # so store_one_embedding_in_db can persist them as column values.
-    if indexing_job_id or model_version or model_path:
-        embedding_dim = (
-            len(embeddings[0])
-            if embeddings and hasattr(embeddings[0], "__len__")
-            else None
+    t0 = _time.monotonic()
+    outcome = "ok"
+    try:
+        embeddings, checksums, metadata, saved_s3_keys = compute_embeddings_core(
+            model,
+            modality_name,
+            s3_connection,
+            path_to_bucket,
+            s3_keys,
+            output_bucket=output_bucket,
+            task=task,
+            skip_existing=skip_existing,
         )
-        for md in metadata:
-            if indexing_job_id:
-                md["indexing_job_id"] = indexing_job_id
-            if model_version:
-                md["model_version"] = model_version
-            if model_path:
-                md["model_path"] = model_path
-            if embedding_dim is not None:
-                md["embedding_dimension"] = embedding_dim
 
-    if store_fn is None:
-        from umrs.server.sql import store_embeddings_in_db  # noqa: boundary
+        assert len(embeddings) == len(checksums)
+        assert len(embeddings) == len(metadata)
 
-        store_fn = store_embeddings_in_db
+        _inject_lineage_metadata(
+            metadata,
+            embeddings,
+            indexing_job_id=indexing_job_id,
+            model_version=model_version,
+            model_path=model_path,
+        )
 
-    store_fn(
-        data_base,
-        embeddings,
-        table_name,
-        path_to_bucket,
-        s3_keys,
-        saved_s3_keys,
-        modality_name,
-        checksums,
-        model.model_name,
-        metadata_list=metadata,
-    )
+        store_fn = _resolve_store_fn(store_fn)
+        store_fn(
+            data_base,
+            embeddings,
+            table_name,
+            path_to_bucket,
+            s3_keys,
+            saved_s3_keys,
+            modality_name,
+            checksums,
+            model.model_name,
+            metadata_list=metadata,
+        )
+    except Exception:
+        outcome = "error"
+        raise
+    finally:
+        # X1 metrics: failure-isolated — a metric outage never breaks compute.
+        try:
+            METRICS.embedding_compute(
+                str(modality_name), outcome, _time.monotonic() - t0
+            )
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def load_embedding_model(model_name):

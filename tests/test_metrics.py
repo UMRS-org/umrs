@@ -9,7 +9,6 @@ from __future__ import annotations
 import time
 
 import pytest
-
 from umrs.metrics import (
     METRICS,
     UMRSMetrics,
@@ -17,7 +16,6 @@ from umrs.metrics import (
     _NoOpGauge,
     _NoOpHistogram,
 )
-
 
 # ---------------------------------------------------------------------------
 # No-op fallback behaviour
@@ -67,6 +65,28 @@ class TestNoOpGauge:
 
 
 # ---------------------------------------------------------------------------
+# X1 metrics — workflow / embedding / graph-sink surface
+# ---------------------------------------------------------------------------
+
+
+class TestX1Metrics:
+    """X1 methods are callable and degradable (no-op without prometheus)."""
+
+    def test_workflow_run(self):
+        METRICS.workflow_run("InProcessExecutor", "succeeded", 1.25)
+        METRICS.workflow_run("SubprocessExecutor", "failed", 0.5)
+        METRICS.workflow_run("none", "cancelled", 0.01)
+
+    def test_embedding_compute(self):
+        METRICS.embedding_compute("text", "ok", 0.4)
+        METRICS.embedding_compute("image", "error", 1.0)
+
+    def test_graph_sink_generate(self):
+        METRICS.graph_sink_generate("pg_graph", "ok", 2.0, 37)
+        METRICS.graph_sink_generate("pg_graph", "error", 0.1, 0)
+
+
+# ---------------------------------------------------------------------------
 # UMRSMetrics API — every public method must be callable without error.
 # Uses the module-level singleton to avoid Prometheus registry conflicts.
 # ---------------------------------------------------------------------------
@@ -103,9 +123,8 @@ class TestReconciler:
             pass  # simulate work
 
     def test_reconciler_timer_failure(self):
-        with pytest.raises(ValueError, match="boom"):
-            with METRICS.reconciler_timer():
-                raise ValueError("boom")
+        with pytest.raises(ValueError, match="boom"), METRICS.reconciler_timer():
+            raise ValueError("boom")
 
     def test_reconciler_items(self):
         METRICS.reconciler_items("requeued")

@@ -81,6 +81,10 @@ class ExecutionRecord:
     durable_job_id: str | None = None
     cancel_requested: bool = False
     identity_provenance: str = "unverified"
+    # Manual approval gates (W5). Decisions are serializable audit data;
+    # the wait events are transient threading primitives (never serialized).
+    gate_decisions: dict[str, dict[str, Any]] = field(default_factory=dict)
+    _gate_events: dict[str, threading.Event] = field(default_factory=dict, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def to_dict(self) -> dict[str, Any]:
@@ -101,6 +105,7 @@ class ExecutionRecord:
                 "durable_job_id": self.durable_job_id,
                 "cancel_requested": self.cancel_requested,
                 "identity_provenance": self.identity_provenance,
+                "gates": {k: dict(v) for k, v in self.gate_decisions.items()},
             }
 
     def is_terminal(self) -> bool:
@@ -124,6 +129,48 @@ class ExecutionRecord:
 
     def set_durable_job_id(self, job_id: str) -> None:
         self.update(durable_job_id=job_id)
+
+    # ------------------------------------------------------------------
+    # Manual approval gates (W5)
+    # ------------------------------------------------------------------
+
+    def prepare_gate(self, step_name: str) -> threading.Event:
+        """Create (or fetch) the wait event for a manual gate step."""
+        with self._lock:
+            return self._gate_events.setdefault(step_name, threading.Event())
+
+    def resolve_gate(
+        self,
+        step_name: str,
+        *,
+        approved: bool,
+        approver: str | None,
+        comment: str | None,
+    ) -> None:
+        """Store an approval decision and release the waiting gate thread.
+
+        The decision is appended to ``results["gate_audit"]`` so gate
+        outcomes live in the durable record's audit trail. ``update()``
+        is invoked with no fields purely so durable subclasses fire
+        their persist hook. First decision wins — late duplicate calls
+        are no-ops.
+        """
+        decision = {
+            "step": step_name,
+            "approved": bool(approved),
+            "approver": approver,
+            "comment": comment,
+            "decided_at": time.time(),
+        }
+        with self._lock:
+            if step_name in self.gate_decisions:
+                return
+            self.gate_decisions[step_name] = decision
+            self.results.setdefault("gate_audit", []).append(dict(decision))
+        self.update()  # persist hook (see DurableExecutionRecord)
+        event = self._gate_events.get(step_name)
+        if event is not None:
+            event.set()
 
 
 class WorkflowExecutionRegistry:
@@ -184,6 +231,27 @@ class WorkflowExecutionRegistry:
             if record.status == "submitted":
                 record.status = "cancelled"
                 record.finished_at = time.time()
+        return record
+
+    def resolve_approval(
+        self,
+        execution_id: str,
+        step_name: str,
+        *,
+        approved: bool,
+        approver: str | None,
+        comment: str | None,
+    ) -> ExecutionRecord | None:
+        """Forward a manual-gate decision to a tracked execution (W5)."""
+        record = self.get(execution_id)
+        if record is None:
+            return None
+        record.resolve_gate(
+            step_name,
+            approved=approved,
+            approver=approver,
+            comment=comment,
+        )
         return record
 
     # ------------------------------------------------------------------
