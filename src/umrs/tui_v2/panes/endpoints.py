@@ -7,7 +7,14 @@ from typing import Any
 from textual import on
 from textual.widgets import DataTable, Static
 
+from umrs.tui_v2.widgets.lifecycle import (
+    build_status_map,
+    detect_transitions,
+    stage_tracker,
+)
 from umrs.tui_v2.widgets.status_badge import status_text
+
+_FILTER_ORDER = ("all", "queued", "provisioning", "running", "failed")
 
 
 def _fmt_duration(seconds: int | None) -> str:
@@ -38,6 +45,9 @@ def _attempt_lines(attempts: list[dict[str, Any]]) -> list[str]:
 def _detail_lines(ep: dict[str, Any], job_id: str | None) -> list[str]:
     spec = ep.get("spec", {}) or {}
     lines = [f"[bold]Endpoint: {job_id}[/bold]"]
+    tracker = stage_tracker(str(ep.get("status", "")))
+    if tracker:
+        lines.append(tracker)
     for k in ("status", "user_id", "project_id"):
         v = ep.get(k)
         if v is not None:
@@ -67,19 +77,19 @@ class EndpointsPane(Static):
     BINDINGS = [
         ("enter", "show_detail", "Detail"),
         ("s", "stop_selected", "Stop Endpoint"),
+        ("f", "cycle_filter", "Filter"),
     ]
 
     def __init__(self) -> None:
         super().__init__("")
         self._endpoints: list[dict[str, Any]] = []
         self._selected_job_id: str | None = None
+        self._status_map: dict[str, str] = {}
+        self._filter = "all"
         self._summary_widget = Static("", classes="summary")
         self._table = DataTable(id="endpoints-table", cursor_type="row")
         self._detail = Static("", classes="detail")
-        self._actions_bar = Static(
-            "  Actions: Enter=Detail  s=Stop  → Submit tab for provisioning",
-            classes="actions",
-        )
+        self._actions_bar = Static("", classes="actions")
 
     def compose(self):
         yield self._summary_widget
@@ -93,12 +103,36 @@ class EndpointsPane(Static):
             return
         endpoints = data.get("endpoints", []) or data.get("jobs", [])
         self._endpoints = endpoints
+        self._notify_transitions(endpoints)
         self._render_table()
         self._render_summary()
+        self._render_actions()
         self._render_detail()
+
+    def _notify_transitions(self, endpoints: list[dict[str, Any]]) -> None:
+        """Toast when an endpoint's status flips into a watched state."""
+        current = build_status_map(endpoints)
+        for job_id, new in detect_transitions(self._status_map, current):
+            severity = "error" if new == "failed" else "information"
+            self.app.notify(
+                f"endpoint …{job_id[-8:]} → {new}",
+                title="Status changed",
+                severity=severity,
+            )
+        self._status_map = current
+
+    def _visible_endpoints(self) -> list[dict[str, Any]]:
+        if self._filter == "all":
+            return self._endpoints
+        return [
+            ep
+            for ep in self._endpoints
+            if str(ep.get("status", "")).lower() == self._filter
+        ]
 
     def _render_table(self) -> None:
         saved_cursor = self._table.cursor_row
+        visible = self._visible_endpoints()
         self._table.clear(columns=True)
         self._table.add_column("#", width=3)
         self._table.add_column("Job ID", width=12)
@@ -106,7 +140,7 @@ class EndpointsPane(Static):
         self._table.add_column("Model", width=24)
         self._table.add_column("Idle TTL", width=8)
         self._table.add_column("Backend", width=16)
-        for idx, ep in enumerate(self._endpoints):
+        for idx, ep in enumerate(visible):
             spec = ep.get("spec", {}) or {}
             status = ep.get("status", "")
             # Find backend_ref from latest attempt
@@ -125,8 +159,8 @@ class EndpointsPane(Static):
                 backend or "-",
             )
             self._table.add_row(*row, key=str(ep.get("job_id", idx)))
-        if saved_cursor is not None and self._endpoints:
-            self._table.move_cursor(row=min(saved_cursor, len(self._endpoints) - 1))
+        if saved_cursor is not None and visible:
+            self._table.move_cursor(row=min(saved_cursor, len(visible) - 1))
 
     def _render_summary(self) -> None:
         total = len(self._endpoints)
@@ -134,7 +168,22 @@ class EndpointsPane(Static):
         parts = [f"Endpoints: {total}"]
         if running:
             parts.append(f"{running} running")
+        if self._filter != "all":
+            parts.append(f"[cyan]filter: {self._filter}[/cyan]")
         self._summary_widget.update("  │  ".join(parts))
+
+    def _render_actions(self) -> None:
+        self._actions_bar.update(
+            "  Actions: Enter=Detail  s=Stop"
+            f"  f=Filter: {self._filter}  → Submit tab for provisioning"
+        )
+
+    def action_cycle_filter(self) -> None:
+        idx = (_FILTER_ORDER.index(self._filter) + 1) % len(_FILTER_ORDER)
+        self._filter = _FILTER_ORDER[idx]
+        self._render_table()
+        self._render_summary()
+        self._render_actions()
 
     def _selected_endpoint(self) -> dict[str, Any] | None:
         if not self._selected_job_id:
