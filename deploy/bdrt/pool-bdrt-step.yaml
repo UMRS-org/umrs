@@ -557,3 +557,74 @@ endpoints:
         --compilation-config {"cudagraph_mode":"FULL_AND_PIECEWISE","custom_ops":["all"]}
       # Single staged copy is enough: bdrt $HOME is shared NFS.
       RCCS_SKIP_CDI: "1"
+
+  # ── DeepSeek-V4-Flash-0731 (2 nodes → spark-double) ──────────────────
+  #  Official 0731 release (supersedes the preview above). Same 155 GiB
+  #  MXFP4/FP8 checkpoint shape (304B params), served by upstream
+  #  vllm-openai:v0.26.0 — same proven recipe as deepseek-v4-flash, with
+  #  the speculation swapped: the 0731 checkpoint has NO MTP head; it ships
+  #  DSpark stages (3-layer block drafter) instead, driven by
+  #  --speculative-config '{"method":"dspark",...}' which v0.26.0 supports
+  #  natively (vllm/models/deepseek_v4/nvidia/dspark.py).
+  #
+  #  NOTE (Patch-4 analysis, 2026-08-02): the community recipe
+  #  (tonyd2wild/DeepSeek-v4-Flash-0731-DSpark-1M-NVFP4-KV-2x-DGX-Spark)
+  #  documents a silent dspark-loader bug — shared_experts.w1/w3 dropped →
+  #  acceptance collapsed 60% -> 26%. That bug exists only in their forked
+  #  tree (vllm/v1/spec_decode/dspark.py, narrowed mapping). UPSTREAM
+  #  v0.26.0 nvidia/dspark.py maps ("gate_up_proj","w1",0)/("gate_up_proj",
+  #  "w3",1) generically and additionally renames .shared_experts.w2 ->
+  #  .shared_experts.down_proj, so the stock image is CORRECT — no
+  #  VLLM_PATCH_* bind-mount needed. Verified against tag v0.26.0 source.
+  #
+  #  k=3+probabilistic, NOT k=5: the cudagraph capture ladder with
+  #  --max-cudagraph-capture-size 8 yields sizes [1,2,4,8]; spec decode
+  #  requires a captured size that is a multiple of (k+1). k=3 → 4 ✓
+  #  (multiples of 4), k=5 → 6 ✗ -> engine init "No valid cudagraph
+  #  sizes". Keep --max-num-seqs 10 (>= capture 8). Raise later to k=5
+  #  only with max-num-seqs 12 (or explicit capture sizes).
+  #  draft_sample_method probabilistic per the 2026-07-03 garble fix —
+  #  greedy draft provokes cold-start garbage under concurrency.
+  #
+  #  KV stays fp8_ds_mla (fp8) — same as validated on the preview entry;
+  #  the nvfp4_ds_mla dtype lives only in the community stage-c image and
+  #  changes capacity, not correctness, under MLA compression.
+  - name: deepseek-v4-flash-0731
+    model: deepseek-v4-flash-0731
+    tier: system
+    node_count: 2
+    partition: spark-double
+    max_model_len: 256000
+    env_vars:
+      VLLM_HOST_MODEL_PATH: "/home/mnagaso/umrs_models/hub/models--deepseek-ai--DeepSeek-V4-Flash-0731/snapshots"
+      VLLM_PATH_TO_HUGGINGFACE: "/home/mnagaso/umrs_models"
+      VLLM_MODEL: "deepseek-ai/DeepSeek-V4-Flash-0731"
+      # VLLM_TOKENIZER intentionally UNSET — same HF-cache symlink layout
+      # reasoning as the preview entry; tokenizer loads from --model dir.
+      VLLM_MAX_MODEL_LEN: "256000"
+      VLLM_GPU_MEM_UTIL: "0.825"
+      VLLM_TP: "2"
+      VLLM_TENSOR_PARALLEL_SIZE: "2"
+      NCCL_SOCKET_IFNAME: "enp1s0f1np1"
+      RAY_memory_monitor_refresh_ms: "0"
+      RIVAULT_MN_MEMORY_CAP: "110g"
+      MAX_JOBS: "4"
+      # Native kernel overlay for the broken fuse store on dgx-spark-1.
+      CONTAINERS_STORAGE_CONF: "/home/mnagaso/.config/containers/storage-native.conf"
+      VLLM_DOCKER_IMAGE: "docker.io/vllm/vllm-openai:v0.26.0"
+      VLLM_TOOL_CALL_PARSER: "deepseek_v4"
+      VLLM_REASONING_PARSER: "deepseek_v4"
+      VLLM_TRUST_REMOTE_CODE: "1"
+      # DSpark (no MTP head in 0731). JSON goes through the base64
+      # sbatch --export hop like the other comma-bearing values.
+      VLLM_SPECULATIVE_CONFIG: '{"method":"dspark","num_speculative_tokens":3,"draft_sample_method":"probabilistic"}'
+      VLLM_EXTRA_ARGS: >-
+        --max-num-seqs 10
+        --max-num-batched-tokens 6144
+        --tokenizer-mode deepseek_v4
+        --kv-cache-dtype fp8
+        --enable-prefix-caching
+        --max-cudagraph-capture-size 8
+        --compilation-config {"cudagraph_mode":"FULL_AND_PIECEWISE","custom_ops":["all"]}
+      # Single staged copy is enough: bdrt $HOME is shared NFS.
+      RCCS_SKIP_CDI: "1"
