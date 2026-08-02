@@ -7,7 +7,7 @@ from .progress_bar import ProgressBar
 from .sparkline import PingSparkline
 from .stat_bar import StatBar
 from .stats_bar import StatsBar
-from .status_badge import status_style
+from .status_badge import status_style, status_text
 from .timeline import AttemptTimeline
 
 __all__ = [
@@ -20,4 +20,5 @@ __all__ = [
     "StatBar",
     "StatsBar",
     "status_style",
+    "status_text",
 ]

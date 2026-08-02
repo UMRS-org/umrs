@@ -7,6 +7,28 @@ from typing import Any
 from textual import on
 from textual.widgets import DataTable, Static
 
+from umrs.tui_v2.widgets.status_badge import status_text
+
+
+def _attempt_lines(attempts: list[dict[str, Any]]) -> list[str]:
+    if not attempts:
+        return []
+    lines = [f"\nAttempts ({len(attempts)}):"]
+    for i, a in enumerate(attempts):
+        st = a.get("status", "?")
+        lines.append(f"  {i + 1}. [{st}] {(a.get('started_at') or '?')[:19]}")
+    return lines
+
+
+def _detail_lines(job: dict[str, Any], job_id: str | None) -> list[str]:
+    lines = [f"[bold]Job: {job_id}[/bold]"]
+    for k in ("job_type", "status", "user_id", "project_id", "job_id"):
+        v = job.get(k)
+        if v is not None:
+            lines.append(f"{k}: {v}")
+    lines.extend(_attempt_lines(job.get("attempts", [])))
+    return lines
+
 
 class JobsPane(Static):
     """Jobs tab pane v2."""
@@ -60,7 +82,7 @@ class JobsPane(Static):
         self._table.add_column("#", width=3)
         self._table.add_column("Job ID", width=12)
         self._table.add_column("Type", width=14)
-        self._table.add_column("Status", width=10)
+        self._table.add_column("Status", width=13)
         self._table.add_column("User", width=10)
         self._table.add_column("Attempts", width=8)
         self._table.add_column("Created", width=12)
@@ -71,7 +93,7 @@ class JobsPane(Static):
                 str(idx + 1),
                 str(job.get("job_id", "?"))[-8:],
                 str(job.get("job_type", "?")),
-                status,
+                status_text(status),
                 str(job.get("user_id", "?")),
                 str(len(job.get("attempts", []))),
                 str(job.get("created_at", "?"))[:19],
@@ -92,28 +114,19 @@ class JobsPane(Static):
             parts.append(f"{failed} failed")
         self._summary_widget.update("  │  ".join(parts))
 
-    def _render_detail(self) -> None:
+    def _selected_job(self) -> dict[str, Any] | None:
         if not self._selected_job_id:
-            self._detail.update("")
-            return
-        job = next(
+            return None
+        return next(
             (j for j in self._jobs if j.get("job_id") == self._selected_job_id), None
         )
-        if not job:
+
+    def _render_detail(self) -> None:
+        job = self._selected_job()
+        if job is None:
             self._detail.update("")
             return
-        lines = [f"[bold]Job: {self._selected_job_id}[/bold]"]
-        for k in ("job_type", "status", "user_id", "project_id", "job_id"):
-            v = job.get(k)
-            if v is not None:
-                lines.append(f"{k}: {v}")
-        attempts = job.get("attempts", [])
-        if attempts:
-            lines.append(f"\nAttempts ({len(attempts)}):")
-            for i, a in enumerate(attempts):
-                st = a.get("status", "?")
-                lines.append(f"  {i + 1}. [{st}] {(a.get('started_at') or '?')[:19]}")
-        self._detail.update("\n".join(lines))
+        self._detail.update("\n".join(_detail_lines(job, self._selected_job_id)))
 
     @on(DataTable.RowSelected)
     def _on_row_selected(self, event: DataTable.RowSelected) -> None:

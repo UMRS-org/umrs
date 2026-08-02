@@ -7,6 +7,8 @@ from typing import Any
 from textual import on
 from textual.widgets import DataTable, Static
 
+from umrs.tui_v2.widgets.status_badge import status_text
+
 
 def _fmt_duration(seconds: int | None) -> str:
     if not seconds:
@@ -18,6 +20,34 @@ def _fmt_duration(seconds: int | None) -> str:
     if seconds % 60 == 0:
         return f"{seconds // 60}m"
     return f"{seconds}s"
+
+
+def _attempt_lines(attempts: list[dict[str, Any]]) -> list[str]:
+    if not attempts:
+        return []
+    latest = attempts[-1]
+    lines = [f"\nLatest attempt: {latest.get('status', '?')}"]
+    if latest.get("backend_ref"):
+        lines.append(f"  Backend: {latest['backend_ref']}")
+    port = latest.get("outputs", {}).get("endpoint_port")
+    if port:
+        lines.append(f"  Port: {port}")
+    return lines
+
+
+def _detail_lines(ep: dict[str, Any], job_id: str | None) -> list[str]:
+    spec = ep.get("spec", {}) or {}
+    lines = [f"[bold]Endpoint: {job_id}[/bold]"]
+    for k in ("status", "user_id", "project_id"):
+        v = ep.get(k)
+        if v is not None:
+            lines.append(f"{k}: {v}")
+    for k in ("model", "idle_ttl_sec", "model_path", "gpu_count", "max_model_len"):
+        v = spec.get(k)
+        if v is not None:
+            lines.append(f"{k}: {v}")
+    lines.extend(_attempt_lines(ep.get("attempts", [])))
+    return lines
 
 
 class EndpointsPane(Static):
@@ -72,7 +102,7 @@ class EndpointsPane(Static):
         self._table.clear(columns=True)
         self._table.add_column("#", width=3)
         self._table.add_column("Job ID", width=12)
-        self._table.add_column("Status", width=10)
+        self._table.add_column("Status", width=13)
         self._table.add_column("Model", width=24)
         self._table.add_column("Idle TTL", width=8)
         self._table.add_column("Backend", width=16)
@@ -89,7 +119,7 @@ class EndpointsPane(Static):
             row = (
                 str(idx + 1),
                 str(ep.get("job_id", "?"))[-8:],
-                status,
+                status_text(str(status)),
                 str(spec.get("model", "?")),
                 _fmt_duration(spec.get("idle_ttl_sec")),
                 backend or "-",
@@ -106,36 +136,20 @@ class EndpointsPane(Static):
             parts.append(f"{running} running")
         self._summary_widget.update("  │  ".join(parts))
 
-    def _render_detail(self) -> None:
+    def _selected_endpoint(self) -> dict[str, Any] | None:
         if not self._selected_job_id:
-            self._detail.update("")
-            return
-        ep = next(
+            return None
+        return next(
             (e for e in self._endpoints if e.get("job_id") == self._selected_job_id),
             None,
         )
-        if not ep:
+
+    def _render_detail(self) -> None:
+        ep = self._selected_endpoint()
+        if ep is None:
             self._detail.update("")
             return
-        spec = ep.get("spec", {}) or {}
-        lines = [f"[bold]Endpoint: {self._selected_job_id}[/bold]"]
-        for k in ("status", "user_id", "project_id"):
-            v = ep.get(k)
-            if v is not None:
-                lines.append(f"{k}: {v}")
-        for k in ("model", "idle_ttl_sec", "model_path", "gpu_count", "max_model_len"):
-            v = spec.get(k)
-            if v is not None:
-                lines.append(f"{k}: {v}")
-        attempts = ep.get("attempts", [])
-        if attempts:
-            latest = attempts[-1]
-            lines.append(f"\nLatest attempt: {latest.get('status', '?')}")
-            if latest.get("backend_ref"):
-                lines.append(f"  Backend: {latest['backend_ref']}")
-            if latest.get("outputs", {}).get("endpoint_port"):
-                lines.append(f"  Port: {latest['outputs']['endpoint_port']}")
-        self._detail.update("\n".join(lines))
+        self._detail.update("\n".join(_detail_lines(ep, self._selected_job_id)))
 
     @on(DataTable.RowSelected)
     def _on_row_selected(self, event: DataTable.RowSelected) -> None:
