@@ -34,7 +34,7 @@ from .planner import (
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_WORKFLOW_NAME = "demo08_yield_eval"
+_DEFAULT_WORKFLOW_NAME = "demo08_yield_eval"  # Demo 08 only — never used as a silent fallback
 _TOKEN_RE = re.compile(r"[a-z0-9]{3,}", re.IGNORECASE)
 # Demo 08 / lab yield figures commonly appear as "85.0" / "4.21" near batch-3.
 _BATCH3_YIELD_RE = re.compile(
@@ -42,10 +42,9 @@ _BATCH3_YIELD_RE = re.compile(
     re.IGNORECASE,
 )
 _CO2_UPTAKE_RE = re.compile(
-    r"(\d+(?:\.\d+)?)\s*(?:mmol|/g|co2)",
+    r"(\d+(?:\.\d+)?)\s*(?:mmol\s*/\s*g|mmol/g|mmol)",
     re.IGNORECASE,
 )
-_PCT_RE = re.compile(r"(\d+(?:\.\d+)?)\s*%")
 
 
 # ── Loop Phase ─────────────────────────────────────────────────────────────
@@ -222,6 +221,7 @@ class AutonomousResearchLoop:
         workflow_port: Any | None = None,
         knowledge_store: Any | None = None,
         graph_navigator: Any | None = None,
+        memory_manager: Any | None = None,
         cancel_check: Callable[[], bool] | None = None,
         iteration_hook: Callable[[LoopIteration], None] | None = None,
     ) -> None:
@@ -230,6 +230,7 @@ class AutonomousResearchLoop:
         self._workflow_port = workflow_port
         self._knowledge_store = knowledge_store
         self._graph_navigator = graph_navigator
+        self._memory_manager = memory_manager
         self._cancel_check = cancel_check
         self._iteration_hook = iteration_hook
         self._cancel_requested = False
@@ -478,12 +479,13 @@ class AutonomousResearchLoop:
             self._checkpoint(iteration)
             return
 
-        # Phase 6: Output collection
+        # Phase 6: Output collection — normalize experiment outputs onto results
         loop.phase = LoopPhase.OUTPUT_COLLECTION
         iteration.phase = LoopPhase.OUTPUT_COLLECTION
         if self._check_cancel_or_abort(loop, iteration):
             self._checkpoint(iteration)
             return
+        self._collect_outputs(iteration)
 
         # Phase 7: Analysis
         loop.phase = LoopPhase.ANALYSIS
@@ -544,12 +546,13 @@ class AutonomousResearchLoop:
         ]
         loop.total_findings += 1
 
-        # Phase 10: Memory update
+        # Phase 10: Memory update — persist findings/analysis into scientific memory
         loop.phase = LoopPhase.MEMORY_UPDATE
         iteration.phase = LoopPhase.MEMORY_UPDATE
         if self._check_cancel_or_abort(loop, iteration):
             self._checkpoint(iteration)
             return
+        self._update_scientific_memory(loop, iteration)
 
         # Complete iteration
         iteration.completed_at = datetime.now(timezone.utc).isoformat()
@@ -561,6 +564,64 @@ class AutonomousResearchLoop:
         # Update success rate
         if loop.total_experiments_run > 0:
             loop.success_rate = loop.total_findings / loop.total_experiments_run
+
+    def _collect_outputs(self, iteration: LoopIteration) -> None:
+        """Normalize experiment outputs into ``iteration.results`` (no-op when empty)."""
+        results = dict(iteration.results or {})
+        if not results:
+            return
+        outputs = results.get("outputs")
+        if not isinstance(outputs, dict):
+            outputs = {}
+        metrics = results.get("metrics")
+        if not isinstance(metrics, dict):
+            metrics = {}
+        artifacts = results.get("artifacts")
+        if not isinstance(artifacts, list):
+            artifacts = []
+        # Promote known metric keys from outputs when the backend omitted metrics.
+        for key in ("batch_id", "yield_pct", "co2_uptake_mmol_g"):
+            if metrics.get(key) is None and outputs.get(key) is not None:
+                metrics[key] = outputs[key]
+        results["outputs"] = outputs
+        results["metrics"] = metrics
+        results["artifacts"] = artifacts
+        if "status" not in results:
+            results["status"] = "completed" if self._simulated else "unknown"
+        iteration.results = results
+
+    def _update_scientific_memory(
+        self,
+        loop: ResearchLoop,
+        iteration: LoopIteration,
+    ) -> None:
+        """Write this iteration's analysis and findings into scientific memory."""
+        manager = self._memory_manager
+        if manager is None:
+            return
+        if iteration.analysis:
+            try:
+                manager.register_analysis_result(
+                    project_id=loop.project_id,
+                    analysis=iteration.analysis,
+                    summary=f"Analysis from iteration {iteration.iteration_number}",
+                    experiment_id=iteration.experiment_id or "",
+                    created_by="research_loop",
+                )
+            except Exception as exc:  # noqa: BLE001 — memory must not kill the loop
+                logger.warning("register_analysis_result failed: %s", exc)
+        for finding in iteration.findings:
+            statement = getattr(finding, "statement", None) or str(finding)
+            confidence = getattr(finding, "confidence", 0.7) or 0.7
+            try:
+                manager.register_accepted_finding(
+                    project_id=loop.project_id,
+                    finding=statement,
+                    confidence=confidence,
+                    created_by="research_loop",
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("register_accepted_finding failed: %s", exc)
 
     def _retrieve_knowledge(
         self,
@@ -723,18 +784,13 @@ class AutonomousResearchLoop:
                 "workflow execution port required for real mode"
             )
 
-        workflow_name = _DEFAULT_WORKFLOW_NAME
+        workflow_name = self._resolve_workflow_name(experiment)
         params: dict[str, Any] = {
             "project_id": loop.project_id,
             "iteration": loop.current_iteration,
             "hypothesis_id": iteration.hypothesis_id,
         }
         if experiment is not None:
-            workflow_name = (
-                getattr(experiment, "workflow_name", None)
-                or (experiment.metadata or {}).get("workflow_name")
-                or _DEFAULT_WORKFLOW_NAME
-            )
             params.update(dict(experiment.parameters or {}))
             params.setdefault("experiment_id", experiment.experiment_id)
 
@@ -771,12 +827,39 @@ class AutonomousResearchLoop:
             "outputs": outputs,
             "metrics": metrics,
             "artifacts": results_payload.get("artifacts") or [],
+            "workflow_name": workflow_name,
         }
         loop.total_experiments_run += 1
 
     @staticmethod
+    def _resolve_workflow_name(experiment: Any | None) -> str:
+        """Require an explicit workflow name from the planned experiment."""
+        if experiment is None:
+            raise RuntimeError(
+                "no experiment selected; real mode requires a planned experiment "
+                "with metadata['workflow_name'] set to a registered UMRS workflow"
+            )
+        name = getattr(experiment, "workflow_name", None)
+        if not name:
+            metadata = getattr(experiment, "metadata", None) or {}
+            name = metadata.get("workflow_name") if isinstance(metadata, dict) else None
+        if not name:
+            params = getattr(experiment, "parameters", None) or {}
+            name = params.get("workflow_name") if isinstance(params, dict) else None
+        if not name or not str(name).strip():
+            raise RuntimeError(
+                "experiment has no workflow_name; set metadata['workflow_name'] "
+                "to a registered UMRS workflow before running real mode "
+                f"(e.g. '{_DEFAULT_WORKFLOW_NAME}' for Demo 08)"
+            )
+        return str(name).strip()
+
+    @staticmethod
     def _extract_evidence_figures(excerpts: list[str], results: dict[str, Any]) -> dict[str, Any]:
-        """Pull Demo 08-style yield / CO2 figures from evidence or workflow metrics."""
+        """Pull quantitative figures from workflow metrics or explicit batch-3 evidence.
+
+        Does not invent Demo 08 labels. Never treats an arbitrary ``%`` as yield.
+        """
         figures: dict[str, Any] = {}
         metrics = (results or {}).get("metrics") or {}
         for key in ("yield_pct", "co2_uptake_mmol_g", "batch_id"):
@@ -784,20 +867,23 @@ class AutonomousResearchLoop:
                 figures[key] = metrics[key]
 
         corpus = "\n".join(excerpts)
-        if "yield_pct" not in figures:
+        corpus_l = corpus.lower()
+        has_batch3_context = (
+            figures.get("batch_id") == "batch-3"
+            or "batch-3" in corpus_l
+            or "batch_3" in corpus_l
+        )
+        if "yield_pct" not in figures and has_batch3_context:
             m = _BATCH3_YIELD_RE.search(corpus)
             if m:
                 figures["yield_pct"] = float(m.group(1))
                 figures.setdefault("batch_id", "batch-3")
-            else:
-                pct = _PCT_RE.search(corpus)
-                if pct:
-                    figures["yield_pct"] = float(pct.group(1))
-        if "co2_uptake_mmol_g" not in figures:
+        if "co2_uptake_mmol_g" not in figures and (
+            figures.get("yield_pct") is not None or has_batch3_context
+        ):
             co2 = _CO2_UPTAKE_RE.search(corpus)
             if co2:
                 figures["co2_uptake_mmol_g"] = float(co2.group(1))
-        figures.setdefault("batch_id", metrics.get("batch_id") or "batch-3")
         return figures
 
     def _build_analysis(self, iteration: LoopIteration, excerpts: list[str]) -> str:
@@ -808,9 +894,8 @@ class AutonomousResearchLoop:
         if iteration.hypothesis:
             parts.append(f"hypothesis='{iteration.hypothesis}'")
         if figures.get("yield_pct") is not None:
-            parts.append(
-                f"{figures.get('batch_id', 'batch-3')} yield={figures['yield_pct']}%"
-            )
+            batch = figures.get("batch_id") or "lab batch"
+            parts.append(f"{batch} yield={figures['yield_pct']}%")
         if figures.get("co2_uptake_mmol_g") is not None:
             parts.append(f"CO2 uptake={figures['co2_uptake_mmol_g']} mmol/g")
         if iteration.durable_job_id:
@@ -845,8 +930,9 @@ class AutonomousResearchLoop:
     ) -> str:
         figures = self._extract_evidence_figures(excerpts, iteration.results)
         if figures.get("yield_pct") is not None:
+            batch = figures.get("batch_id") or "lab batch"
             statement = (
-                f"Batch-3 lab evidence shows yield "
+                f"{batch} lab evidence shows yield "
                 f"{figures['yield_pct']}% at CO2 uptake "
                 f"{figures.get('co2_uptake_mmol_g', 'n/a')} mmol/g"
             )

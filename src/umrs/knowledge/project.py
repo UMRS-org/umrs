@@ -718,6 +718,7 @@ class ResearchProject:
             workflow_port=None if simulate else port,
             knowledge_store=None if simulate else self._knowledge_store,
             graph_navigator=None if simulate else graph_navigator,
+            memory_manager=self._memory_manager,
             cancel_check=cancel_check,
             iteration_hook=_persist_iteration,
         )
@@ -755,30 +756,12 @@ class ResearchProject:
 
                 unregister_active_engine(run_handle.run_id)
 
-        # Register research loop results in scientific memory + graph
+        # Graph edges for real findings; scientific memory is updated per-iteration
+        # inside AutonomousResearchLoop.MEMORY_UPDATE via memory_manager.
         for iteration in self._research_loop.iterations:
             _persist_iteration(iteration)
-            self._memory_manager.register_analysis_result(
-                project_id=self.project_id,
-                analysis=iteration.analysis or "",
-                summary=f"Analysis from iteration {iteration.iteration_number}",
-            )
             supporting = "supports" in (iteration.evaluation or "").lower()
             for finding in iteration.findings:
-                statement = (
-                    finding.statement
-                    if hasattr(finding, "statement")
-                    else (
-                        finding.get("statement", finding)
-                        if isinstance(finding, dict)
-                        else finding
-                    )
-                )
-                self._memory_manager.register_accepted_finding(
-                    project_id=self.project_id,
-                    finding=statement,
-                    confidence=getattr(finding, "confidence", 0.7) or 0.7,
-                )
                 if not simulate:
                     self._register_finding_graph_edges(
                         finding,
