@@ -41,15 +41,17 @@ from .project import (
 logger = logging.getLogger(__name__)
 
 
-# ── Workflow Result ───────────────────────────────────────────────────────
+# ── Project Workflow Result ───────────────────────────────────────────────
+# Not to be confused with r4_contracts.workflows.WorkflowResult (registered
+# UMRS run result). This type is the RC1 project-pipeline summary.
 
 
 @dataclass
-class WorkflowResult:
-    """Result of running the full project workflow.
+class ProjectWorkflowResult:
+    """Result of running the full project pipeline (ingest→plan→loop).
 
     Contains the completed ResearchProject plus metadata about the
-    workflow execution: total duration, per-phase durations, success/failure
+    pipeline execution: total duration, per-phase durations, success/failure
     status, and any errors encountered.
     """
 
@@ -114,6 +116,7 @@ class WorkflowOptions:
         s3_bucket: S3 bucket name (required with s3_client for catalog ingest)
         owner_id: Owner user ID for catalog ACL (defaults to user_id)
         ingester_config: Optional KnowledgeIngester configuration
+        simulate: If True, run the research loop in explicit simulation mode
     """
 
     research_goal: str = "What research should we perform next?"
@@ -127,6 +130,8 @@ class WorkflowOptions:
     owner_id: str | None = None
     ingester_config: IngesterConfig | None = None
     meta_store: Any | None = None
+    simulate: bool = False
+    workflow_port: Any | None = None
 
 
 def _research_project_kwargs(
@@ -141,6 +146,7 @@ def _research_project_kwargs(
     owner_id: str | None,
     ingester_config: IngesterConfig | None,
     meta_store: Any | None = None,
+    workflow_port: Any | None = None,
 ) -> dict[str, Any]:
     """Build ``ResearchProject`` constructor kwargs from workflow options."""
     return {
@@ -153,6 +159,7 @@ def _research_project_kwargs(
         "owner_id": owner_id or user_id,
         "ingester_config": ingester_config,
         "meta_store": meta_store,
+        "workflow_port": workflow_port,
     }
 
 
@@ -175,7 +182,9 @@ def run_project_workflow(
     owner_id: str | None = None,
     ingester_config: IngesterConfig | None = None,
     meta_store: Any | None = None,
-) -> WorkflowResult:
+    simulate: bool = False,
+    workflow_port: Any | None = None,
+) -> ProjectWorkflowResult:
     """Run the full scientific workflow end-to-end.
 
     This is the single entry point for the R4 scientific workflow. It
@@ -200,7 +209,7 @@ def run_project_workflow(
         ingester_config: Optional KnowledgeIngester configuration
 
     Returns:
-        A WorkflowResult containing the completed project and execution
+        A ProjectWorkflowResult containing the completed project and execution
         metadata.
 
     The workflow stages are:
@@ -218,7 +227,7 @@ def run_project_workflow(
     to FAILED.
     """
     start_time = datetime.now(timezone.utc)
-    result = WorkflowResult(
+    result = ProjectWorkflowResult(
         project=ResearchProject(
             **_research_project_kwargs(
                 project_id=project_id,
@@ -231,6 +240,7 @@ def run_project_workflow(
                 owner_id=owner_id,
                 ingester_config=ingester_config,
                 meta_store=meta_store,
+                workflow_port=workflow_port,
             ),
         ),
     )
@@ -338,7 +348,11 @@ def run_project_workflow(
 
         # ── Stage 7: RESEARCH ──────────────────────────────────────────
         phase_start = datetime.now(timezone.utc)
-        loop = result.project.run_research(max_iterations=max_iterations)
+        loop = result.project.run_research(
+            max_iterations=max_iterations,
+            simulate=simulate,
+            workflow_port=workflow_port,
+        )
         result.phase_durations["research"] = (
             datetime.now(timezone.utc) - phase_start
         ).total_seconds()
@@ -466,7 +480,9 @@ def full_research_cycle(
     owner_id: str | None = None,
     ingester_config: IngesterConfig | None = None,
     user_id: str = "user",
-) -> WorkflowResult:
+    simulate: bool = False,
+    workflow_port: Any | None = None,
+) -> ProjectWorkflowResult:
     """Run the full research cycle (convenience function).
 
     This is a shortcut for `run_project_workflow()` with auto_approve=True
@@ -481,7 +497,7 @@ def full_research_cycle(
         storage_path: Optional path for persistent storage
 
     Returns:
-        A WorkflowResult containing the completed project and execution
+        A ProjectWorkflowResult containing the completed project and execution
         metadata.
     """
     return run_project_workflow(
@@ -496,4 +512,6 @@ def full_research_cycle(
         owner_id=owner_id,
         ingester_config=ingester_config,
         user_id=user_id,
+        simulate=simulate,
+        workflow_port=workflow_port,
     )

@@ -363,7 +363,7 @@ def test_run_research_executes_loop(project_dir: Path):
     project.approve_readiness()
     project.plan_research("What research should we perform next?")
 
-    loop = project.run_research(max_iterations=3)
+    loop = project.run_research(max_iterations=3, simulate=True)
 
     assert loop is not None
     assert len(loop.iterations) == 3
@@ -381,7 +381,7 @@ def test_run_research_without_approval_raises(project_dir: Path):
     # Don't approve
 
     with pytest.raises(RuntimeError, match="must be approved"):
-        project.run_research()
+        project.run_research(simulate=True)
 
 
 def test_run_research_without_plan_raises(project_dir: Path):
@@ -394,7 +394,7 @@ def test_run_research_without_plan_raises(project_dir: Path):
     # Don't plan
 
     with pytest.raises(RuntimeError, match="must be generated"):
-        project.run_research()
+        project.run_research(simulate=True)
 
 
 # ── M5: Memory Timeline ───────────────────────────────────────────────────
@@ -411,7 +411,7 @@ def test_scientific_memory_updated_after_research(project_dir: Path):
 
     initial_memory_count = len(project.memory_manager.store._entries)
 
-    project.run_research(max_iterations=2)
+    project.run_research(max_iterations=2, simulate=True)
 
     final_memory_count = len(project.memory_manager.store._entries)
     assert final_memory_count > initial_memory_count
@@ -425,7 +425,7 @@ def test_workflow_transitions_logged(project_dir: Path):
     project.check_readiness()
     project.approve_readiness()
     project.plan_research("What research next?")
-    project.run_research(max_iterations=1)
+    project.run_research(max_iterations=1, simulate=True)
 
     transitions = project.transitions
 
@@ -503,7 +503,7 @@ def test_full_end_to_end_workflow(project_dir: Path):
     assert len(plan.experiments) >= 1
 
     # 8. Run research
-    loop = project.run_research(max_iterations=3)
+    loop = project.run_research(max_iterations=3, simulate=True)
     assert loop is not None
     assert len(loop.iterations) == 3
     assert project.phase == ProjectPhase.COMPLETED

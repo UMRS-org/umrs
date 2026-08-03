@@ -47,7 +47,7 @@ def test_blank_project_workflow_e2e(tmp_path: Path):
         name="Blank Project RC1",
         research_goal="What GCMC MOF research should we perform next?",
         max_iterations=2,
-        auto_approve=True,
+        auto_approve=True, simulate=True,
         verify_questions=[
             "Explain my project",
             "What algorithms are implemented?",
