@@ -118,13 +118,13 @@ def test_research_loop_to_dict():
 
 def test_loop_engine_init():
     """Test AutonomousResearchLoop initialization."""
-    loop_engine = AutonomousResearchLoop()
+    loop_engine = AutonomousResearchLoop(simulated=True)
     assert loop_engine is not None
 
 
 def test_loop_engine_start_loop():
     """Test starting a research loop."""
-    loop_engine = AutonomousResearchLoop()
+    loop_engine = AutonomousResearchLoop(simulated=True)
     loop = loop_engine.start_loop(
         project_id="proj-001",
         research_goal="Understand the effect of learning rate on convergence",
@@ -143,7 +143,7 @@ def test_loop_engine_start_loop():
 
 def test_loop_engine_run_loop():
     """Test running a research loop to completion."""
-    loop_engine = AutonomousResearchLoop()
+    loop_engine = AutonomousResearchLoop(simulated=True)
     loop = loop_engine.start_loop(
         project_id="proj-001",
         research_goal="Understand X",
@@ -164,7 +164,7 @@ def test_loop_engine_run_loop():
 
 def test_loop_engine_run_loop_with_zero_iterations():
     """Test running a loop with max_iterations=0."""
-    loop_engine = AutonomousResearchLoop()
+    loop_engine = AutonomousResearchLoop(simulated=True)
     loop = loop_engine.start_loop(
         project_id="proj-001",
         research_goal="Understand X",
@@ -180,7 +180,7 @@ def test_loop_engine_run_loop_with_zero_iterations():
 
 def test_loop_engine_iterations_have_unique_ids():
     """Test that iterations have unique IDs."""
-    loop_engine = AutonomousResearchLoop()
+    loop_engine = AutonomousResearchLoop(simulated=True)
     loop = loop_engine.start_loop(
         project_id="proj-001",
         research_goal="Understand X",
@@ -195,7 +195,7 @@ def test_loop_engine_iterations_have_unique_ids():
 
 def test_loop_engine_iterations_have_correct_numbers():
     """Test that iterations have correct sequential numbers."""
-    loop_engine = AutonomousResearchLoop()
+    loop_engine = AutonomousResearchLoop(simulated=True)
     loop = loop_engine.start_loop(
         project_id="proj-001",
         research_goal="Understand X",
@@ -210,7 +210,7 @@ def test_loop_engine_iterations_have_correct_numbers():
 
 def test_loop_engine_run_loop_phases():
     """Test that each iteration goes through the correct phases."""
-    loop_engine = AutonomousResearchLoop()
+    loop_engine = AutonomousResearchLoop(simulated=True)
     loop = loop_engine.start_loop(
         project_id="proj-001",
         research_goal="Understand X",
@@ -234,6 +234,7 @@ def test_run_research_loop_convenience_function():
         project_id="proj-001",
         research_goal="Understand X",
         max_iterations=2,
+        simulate=True,
     )
 
     assert isinstance(loop, ResearchLoop)

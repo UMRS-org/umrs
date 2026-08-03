@@ -226,6 +226,88 @@ class ResearchPlan:
             "metadata": self.metadata,
         }
 
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ResearchPlan":
+        """Rehydrate a plan saved via ``to_dict`` (plus optional research_goal)."""
+        objectives = [
+            ResearchObjective(
+                objective_id=str(o.get("objective_id") or ""),
+                title=str(o.get("title") or ""),
+                description=str(o.get("description") or ""),
+                objective_type=ResearchObjectiveType(o["objective_type"])
+                if o.get("objective_type")
+                else ResearchObjectiveType.UNDERSTANDING,
+                success_criteria=str(o.get("success_criteria") or ""),
+                priority=int(o.get("priority") or 0),
+                related_hypotheses=list(o.get("related_hypotheses") or []),
+                related_experiments=list(o.get("related_experiments") or []),
+                metadata=dict(o.get("metadata") or {}),
+            )
+            for o in (data.get("objectives") or [])
+            if isinstance(o, dict)
+        ]
+        hypotheses = [
+            ResearchHypothesis(
+                hypothesis_id=str(h.get("hypothesis_id") or ""),
+                objective_id=str(h.get("objective_id") or ""),
+                statement=str(h.get("statement") or ""),
+                hypothesis_type=HypothesisType(h["hypothesis_type"])
+                if h.get("hypothesis_type")
+                else HypothesisType.ALTERNATIVE,
+                rationale=str(h.get("rationale") or ""),
+                expected_outcome=str(h.get("expected_outcome") or ""),
+                confidence=float(h.get("confidence") or 0.5),
+                evidence_for=list(h.get("evidence_for") or []),
+                evidence_against=list(h.get("evidence_against") or []),
+                metadata=dict(h.get("metadata") or {}),
+            )
+            for h in (data.get("hypotheses") or [])
+            if isinstance(h, dict)
+        ]
+        experiments = [
+            ResearchExperiment(
+                experiment_id=str(e.get("experiment_id") or ""),
+                hypothesis_id=str(e.get("hypothesis_id") or ""),
+                title=str(e.get("title") or ""),
+                description=str(e.get("description") or ""),
+                experiment_type=ExperimentType(e["experiment_type"])
+                if e.get("experiment_type")
+                else ExperimentType.COMPUTATIONAL,
+                parameters=dict(e.get("parameters") or {}),
+                expected_runtime_hours=float(e.get("expected_runtime_hours") or 0.0),
+                required_resources=dict(e.get("required_resources") or {}),
+                validation_method=ValidationMethod(e["validation_method"])
+                if e.get("validation_method")
+                else ValidationMethod.STATISTICAL_TEST,
+                expected_outcome=str(e.get("expected_outcome") or ""),
+                metadata=dict(e.get("metadata") or {}),
+            )
+            for e in (data.get("experiments") or [])
+            if isinstance(e, dict)
+        ]
+        status_raw = data.get("status") or PlanStatus.DRAFT.value
+        try:
+            status = PlanStatus(status_raw)
+        except ValueError:
+            status = PlanStatus.DRAFT
+        return cls(
+            plan_id=str(data.get("plan_id") or ""),
+            project_id=str(data.get("project_id") or ""),
+            title=str(data.get("title") or ""),
+            description=str(data.get("description") or ""),
+            status=status,
+            created_at=str(data.get("created_at") or ""),
+            updated_at=str(data.get("updated_at") or ""),
+            objectives=objectives,
+            hypotheses=hypotheses,
+            experiments=experiments,
+            source_knowledge_ids=list(data.get("source_knowledge_ids") or []),
+            source_external_refs=list(data.get("source_external_refs") or []),
+            expected_outcomes=list(data.get("expected_outcomes") or []),
+            success_probability=float(data.get("success_probability") or 0.5),
+            metadata=dict(data.get("metadata") or {}),
+        )
+
 
 # ── Autonomous Research Planner ───────────────────────────────────────────
 

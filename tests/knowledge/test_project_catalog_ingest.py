@@ -251,7 +251,7 @@ def test_run_project_workflow_uses_catalog_when_s3_configured(
     result = run_project_workflow(
         "proj-1",
         project_dir,
-        auto_approve=True,
+        auto_approve=True, simulate=True,
         max_iterations=1,
         s3_client=client,
         s3_bucket="bucket",

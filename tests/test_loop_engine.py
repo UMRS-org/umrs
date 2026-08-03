@@ -171,11 +171,11 @@ class TestAutonomousResearchLoopEngine:
     """Test the AutonomousResearchLoop orchestration engine."""
 
     def test_engine_creation(self):
-        engine = AutonomousResearchLoop()
+        engine = AutonomousResearchLoop(simulated=True)
         assert engine._planner is not None
 
     def test_start_loop_creates_research_loop(self):
-        engine = AutonomousResearchLoop()
+        engine = AutonomousResearchLoop(simulated=True)
         loop = engine.start_loop(
             project_id="proj-001",
             research_goal="Understand learning rates",
@@ -191,7 +191,7 @@ class TestAutonomousResearchLoopEngine:
         assert loop.plan is not None  # Planner generates a plan
 
     def test_start_loop_with_max_iterations(self):
-        engine = AutonomousResearchLoop()
+        engine = AutonomousResearchLoop(simulated=True)
         loop = engine.start_loop(
             project_id="proj-002",
             research_goal="Test goal",
@@ -200,7 +200,7 @@ class TestAutonomousResearchLoopEngine:
         assert loop.max_iterations == 1
 
     def test_run_loop_completes(self):
-        engine = AutonomousResearchLoop()
+        engine = AutonomousResearchLoop(simulated=True)
         loop = engine.start_loop(
             project_id="proj-003",
             research_goal="Test goal",
@@ -211,7 +211,7 @@ class TestAutonomousResearchLoopEngine:
         assert result.status in (LoopStatus.STOPPED, LoopStatus.ERROR)
 
     def test_run_loop_iterations(self):
-        engine = AutonomousResearchLoop()
+        engine = AutonomousResearchLoop(simulated=True)
         loop = engine.start_loop(
             project_id="proj-004",
             research_goal="Test iterations",
@@ -222,7 +222,7 @@ class TestAutonomousResearchLoopEngine:
         assert len(loop.iterations) >= 1
 
     def test_run_loop_status_transitions(self):
-        engine = AutonomousResearchLoop()
+        engine = AutonomousResearchLoop(simulated=True)
         loop = engine.start_loop(
             project_id="proj-005",
             research_goal="Test transitions",
@@ -237,7 +237,7 @@ class TestAutonomousResearchLoopEngine:
 
     def test_run_loop_max_iterations_enforced(self):
         """Loop must not exceed max_iterations."""
-        engine = AutonomousResearchLoop()
+        engine = AutonomousResearchLoop(simulated=True)
         loop = engine.start_loop(
             project_id="proj-006",
             research_goal="Max iterations test",
@@ -248,7 +248,7 @@ class TestAutonomousResearchLoopEngine:
 
     def test_run_loop_error_handling(self):
         """If an iteration raises, the loop should catch it and set ERROR status."""
-        engine = AutonomousResearchLoop()
+        engine = AutonomousResearchLoop(simulated=True)
 
         # Inject a loop that will cause _run_iteration to raise
         loop = _make_loop(
@@ -265,7 +265,7 @@ class TestAutonomousResearchLoopEngine:
 
     def test_run_loop_preserves_iterations(self):
         """Iterations created during run must be stored on the loop."""
-        engine = AutonomousResearchLoop()
+        engine = AutonomousResearchLoop(simulated=True)
         loop = engine.start_loop(
             project_id="proj-pres",
             research_goal="Preservation test",
@@ -294,7 +294,7 @@ class TestProductionIntegration:
         project.plan_research("Test goal")
 
         with pytest.raises(RuntimeError, match="readiness report must be approved"):
-            project.run_research(max_iterations=1)
+            project.run_research(max_iterations=1, simulate=True)
 
     def test_run_research_requires_plan(self):
         """run_research() must raise if no plan exists."""
@@ -316,7 +316,7 @@ class TestProductionIntegration:
         project._readiness_report = report
 
         with pytest.raises(RuntimeError, match="Research plan must be generated"):
-            project.run_research(max_iterations=1)
+            project.run_research(max_iterations=1, simulate=True)
 
     def test_run_research_success_path(self):
         """Happy path: approved + planned → loop runs."""
@@ -329,7 +329,7 @@ class TestProductionIntegration:
         project.approve_readiness(user_id="test-user")
         project.plan_research("Test research goal")
 
-        loop = project.run_research(max_iterations=2)
+        loop = project.run_research(max_iterations=2, simulate=True)
         assert loop.loop_id != ""
         assert loop.project_id == "proj-happy"
         assert loop.status in (LoopStatus.STOPPED, LoopStatus.ERROR)
@@ -346,6 +346,6 @@ class TestProductionIntegration:
 
         assert project.phase == ProjectPhase.PLANNING
 
-        project.run_research(max_iterations=1)
+        project.run_research(max_iterations=1, simulate=True)
 
         assert project.phase == ProjectPhase.COMPLETED
