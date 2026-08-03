@@ -318,13 +318,18 @@ class TestProductionIntegration:
         with pytest.raises(RuntimeError, match="Research plan must be generated"):
             project.run_research(max_iterations=1, simulate=True)
 
-    def test_run_research_success_path(self):
+    def test_run_research_success_path(self, tmp_path):
         """Happy path: approved + planned → loop runs."""
         from umrs.knowledge.project import ResearchProject
 
-        project = ResearchProject(project_id="proj-happy")
-        project.ingest_directory()  # Empty ingest, creates state
-        project.understand()  # Empty understand, builds graph
+        # Honest readiness gate: an empty project is BLOCKED and cannot be
+        # approved; ingest one tiny artifact so the run gate is reachable.
+        doc = tmp_path / "note.txt"
+        doc.write_text("batch-3 training yielded 0.91 accuracy on epoch 12")
+
+        project = ResearchProject(project_id="proj-happy", storage_path=tmp_path / "store")
+        project.ingest_directory(tmp_path)
+        project.understand()
         project.check_readiness()
         project.approve_readiness(user_id="test-user")
         project.plan_research("Test research goal")
@@ -334,11 +339,15 @@ class TestProductionIntegration:
         assert loop.project_id == "proj-happy"
         assert loop.status in (LoopStatus.STOPPED, LoopStatus.ERROR)
 
-    def test_project_phase_transitions(self):
+    def test_project_phase_transitions(self, tmp_path):
         """Project phases must transition: READY → PLANNING → RESEARCHING → COMPLETED."""
         from umrs.knowledge.project import ProjectPhase, ResearchProject
 
-        project = ResearchProject(project_id="proj-phases")
+        doc = tmp_path / "note.txt"
+        doc.write_text("batch-3 training yielded 0.91 accuracy on epoch 12")
+
+        project = ResearchProject(project_id="proj-phases", storage_path=tmp_path / "store")
+        project.ingest_directory(tmp_path)
         project.understand()
         project.check_readiness()
         project.approve_readiness()
