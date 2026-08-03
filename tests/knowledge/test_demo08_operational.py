@@ -31,6 +31,15 @@ def _load_materialize_blank_project():
 materialize_blank_project = _load_materialize_blank_project()
 
 
+def _stamp_demo08_workflow(project: ResearchProject) -> None:
+    """Bind planned experiments to the Demo 08 registered workflow."""
+    plan = project.research_plan
+    if plan is None:
+        return
+    for exp in plan.experiments:
+        exp.metadata.setdefault("workflow_name", "demo08_yield_eval")
+
+
 def _demo08_project(tmp_path: Path) -> ResearchProject:
     fixture = materialize_blank_project(tmp_path / "blank")
     project = ResearchProject(
@@ -43,6 +52,7 @@ def _demo08_project(tmp_path: Path) -> ResearchProject:
     project.check_readiness()
     project.approve_readiness(user_id="test")
     project.plan_research("Link YieldPredictor to batch-3 lab yields")
+    _stamp_demo08_workflow(project)
     return project
 
 

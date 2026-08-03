@@ -11,6 +11,14 @@ from umrs.knowledge.loop import AutonomousResearchLoop, LoopPhase
 from umrs.knowledge.project import ProjectPhase, ResearchProject
 
 
+def _stamp_generic_workflow(project: ResearchProject, workflow_name: str = "generic_eval") -> None:
+    plan = project.research_plan
+    if plan is None:
+        return
+    for exp in plan.experiments:
+        exp.metadata.setdefault("workflow_name", workflow_name)
+
+
 def _approved_project(tmp_path: Path) -> ResearchProject:
     project = ResearchProject(
         project_id="sim-gate",
@@ -28,6 +36,7 @@ def _approved_project(tmp_path: Path) -> ResearchProject:
     project.check_readiness()
     project.approve_readiness(user_id="test")
     project.plan_research("Link yield model to lab data")
+    _stamp_generic_workflow(project, "demo08_yield_eval")
     return project
 
 

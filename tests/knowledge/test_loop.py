@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from umrs.knowledge.loop import (
     AutonomousResearchLoop,
     LoopIteration,
@@ -223,6 +225,48 @@ def test_loop_engine_run_loop_phases():
     # Final phase should be MEMORY_UPDATE
     assert iteration.phase == LoopPhase.MEMORY_UPDATE
     assert iteration.status == "completed"
+
+
+def test_memory_update_phase_registers_findings():
+    """MEMORY_UPDATE must write analysis + findings when a manager is injected."""
+    from umrs.knowledge.memory import MemoryEntryType, ScientificMemoryManager
+
+    manager = ScientificMemoryManager()
+    engine = AutonomousResearchLoop(simulated=True, memory_manager=manager)
+    loop = engine.start_loop("proj-mem", "goal", max_iterations=1)
+    engine.run(loop)
+
+    findings = manager.list_by_type(MemoryEntryType.ACCEPTED_FINDING, project_id="proj-mem")
+    analyses = manager.list_by_type(MemoryEntryType.ANALYSIS_RESULT, project_id="proj-mem")
+    assert len(findings) == 1
+    assert len(analyses) == 1
+    assert "Finding from iteration" in findings[0].content
+
+
+def test_resolve_workflow_name_requires_explicit_metadata():
+    from umrs.knowledge.planner import ResearchExperiment
+
+    with pytest.raises(RuntimeError, match="no experiment selected"):
+        AutonomousResearchLoop._resolve_workflow_name(None)
+
+    bare = ResearchExperiment(experiment_id="exp-1")
+    with pytest.raises(RuntimeError, match="workflow_name"):
+        AutonomousResearchLoop._resolve_workflow_name(bare)
+
+    stamped = ResearchExperiment(
+        experiment_id="exp-2",
+        metadata={"workflow_name": "demo08_yield_eval"},
+    )
+    assert AutonomousResearchLoop._resolve_workflow_name(stamped) == "demo08_yield_eval"
+
+
+def test_extract_evidence_figures_does_not_invent_batch3():
+    figures = AutonomousResearchLoop._extract_evidence_figures(
+        ["accuracy was 92% on the holdout set"],
+        {"metrics": {}},
+    )
+    assert "yield_pct" not in figures
+    assert "batch_id" not in figures
 
 
 # ── Convenience Function Tests ─────────────────────────────────────────────
