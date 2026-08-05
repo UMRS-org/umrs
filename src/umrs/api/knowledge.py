@@ -326,6 +326,37 @@ async def submit_knowledge_correction(req: CorrectionRequest) -> dict[str, Any]:
     return record.to_dict()
 
 
+@router.get("/graph")
+async def get_project_knowledge_graph(
+    project_id: str = Depends(get_project_id),
+    config: S3Config = Depends(get_s3_config),
+) -> dict[str, Any]:
+    """Project knowledge graph (nodes + typed edges) for the Studio/webview.
+
+    Smoke-free read: no mutation, no readiness gate. Node payload mirrors
+    link.KnowledgeNode shape; ``id`` aliases ``node_id`` so webview code can
+    treat nodes uniformly.
+    """
+    project = build_research_project(project_id, config)
+    graph = project.knowledge_graph
+    nodes = [{**node.to_dict(), "id": node.node_id} for node in graph.nodes.values()]
+    edges = [
+        {
+            **edge.to_dict(),
+            "from": edge.source_id,
+            "to": edge.target_id,
+            "label": edge.relation_type.value,
+        }
+        for edge in graph.edges
+    ]
+    return {
+        "project_id": project_id,
+        "phase": project.phase.value,
+        "nodes": nodes,
+        "edges": edges,
+    }
+
+
 @router.get("/readiness")
 async def get_research_readiness() -> dict[str, Any]:
     """Get the research readiness report."""
