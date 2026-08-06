@@ -36,6 +36,8 @@ from .pipelines import (
 from .provenance import router as provenance_router
 from .evidence import router as evidence_router
 from .experiment_registry import router as experiment_registry_router
+from .research_sessions import router as research_sessions_router
+from .research_sessions import set_session_store
 from .rag import router as rag_router
 from .reflective_memory import router as reflective_memory_router
 from .scientific_memory import router as scientific_memory_router
@@ -70,6 +72,8 @@ __all__ = [
     "policy_router",
     "pipelines_router",
     "provenance_router",
+    "research_sessions_router",
+    "set_session_store",
     "evidence_router",
     "experiment_registry_router",
     "rag_router",
