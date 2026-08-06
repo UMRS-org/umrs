@@ -76,14 +76,39 @@ class ResearchSession:
         }
 
 
+_SESSION_COLUMNS = [
+    "session_id",
+    "project_id",
+    "title",
+    "research_goal",
+    "status",
+    "authoritative_runtime",
+    "metadata",
+    "created_at",
+    "updated_at",
+    "archived_at",
+]
+
+
+def _row_get(row: Any, key: str, columns: list[str], default: Any = None) -> Any:
+    """Access one column from either a mapping row (sqlite3.Row/dict_row)
+    or a plain tuple from a default psycopg cursor, by position."""
+    try:
+        return row[key]
+    except TypeError:
+        if isinstance(row, tuple) and key in columns:
+            try:
+                return row[columns.index(key)]
+            except IndexError:
+                return default
+        return default
+    except (IndexError, KeyError):
+        return default
+
+
 def _row_to_session(row: Any) -> ResearchSession:
     def _get(key: str, default: Any = None) -> Any:
-        try:
-            return row[key]
-        except (IndexError, KeyError):
-            return default
-        except TypeError:
-            return default
+        return _row_get(row, key, _SESSION_COLUMNS, default)
 
     meta = _get("metadata") or "{}"
     if isinstance(meta, dict):
@@ -354,12 +379,12 @@ class SessionStore:
         return [_row_to_link(r) for r in cur.fetchall()]
 
 
+_LINK_COLUMNS = ["session_id", "loop_id", "venue", "loop_role", "attached_at"]
+
+
 def _row_to_link(row: Any) -> SessionLoopLink:
     def _get(key: str, default: Any = "") -> Any:
-        try:
-            return row[key]
-        except (IndexError, KeyError, TypeError):
-            return default
+        return _row_get(row, key, _LINK_COLUMNS, default)
 
     attached = _get("attached_at")
     return SessionLoopLink(

@@ -59,6 +59,42 @@ class TestSessionStore:
         assert s.get("sess-c").loops == []
         assert s.session_for_loop("loop-1") is None
 
+    def test_tuple_row_access_matches_psycopg_cursors(self):
+        """Postgres default cursor returns plain tuples — verify hydration works."""
+        from umrs.research_sessions.store import _row_to_link, _row_to_session
+
+        session_row = (
+            "sess-pg",
+            "proj-x",
+            "T",
+            "goal",
+            "active",
+            "umrs",
+            '{"origin": "api"}',
+            "2026-08-06",
+            "2026-08-06",
+            None,
+        )
+        sess = _row_to_session(session_row)
+        assert sess.session_id == "sess-pg"
+        assert sess.project_id == "proj-x"
+        assert sess.title == "T"
+        assert sess.metadata == {"origin": "api"}
+
+        link_row = ("sess-pg", "loop-9", "umrs", "auto", "2026-08-06")
+        link = _row_to_link(link_row)
+        assert link.session_id == "sess-pg"
+        assert link.loop_id == "loop-9"
+        assert link.venue == "umrs"
+
+    def test_map_row_still_works(self):
+        """sqlite3.Row rows still hydrate via key access."""
+        s = _store()
+        s.create(ResearchSession(session_id="sess-map", project_id="p1"))
+        stored = s.get("sess-map")
+        assert stored.session_id == "sess-map"
+        assert stored.project_id == "p1"
+
 
 def _client():
     set_session_store(_store())
