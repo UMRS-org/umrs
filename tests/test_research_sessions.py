@@ -104,7 +104,7 @@ def _client():
 
 
 class TestSessionRouter:
-    def test_crud_lifecycle(self):
+    def test_create_derives_title_and_creates(self):
         c = _client()
         r = c.post(
             "/umrs/research/sessions",
@@ -114,18 +114,24 @@ class TestSessionRouter:
         sess = r.json()["session"]
         assert sess["title"].startswith("MERMAID digital filter")
         assert sess["status"] == "active"
-        sid = sess["session_id"]
 
-        # idempotent create with pinned id
+    def test_idempotent_recreate_and_fetch(self):
+        c = _client()
+        sid = c.post(
+            "/umrs/research/sessions", json={"project_id": "p9", "research_goal": "x"}
+        ).json()["session"]["session_id"]
         r2 = c.post("/umrs/research/sessions", json={"project_id": "pX", "session_id": sid})
         assert r2.status_code == 201 and r2.json()["session"]["project_id"] == "p9"
-
         assert c.get(f"/umrs/research/sessions/{sid}").status_code == 200
         assert c.get("/umrs/research/sessions/sess-nope").status_code == 404
 
+    def test_patch_and_list_filters(self):
+        c = _client()
+        sid = c.post(
+            "/umrs/research/sessions", json={"project_id": "p9", "research_goal": "x"}
+        ).json()["session"]["session_id"]
         r4 = c.patch(f"/umrs/research/sessions/{sid}", json={"status": "paused"})
         assert r4.json()["session"]["status"] == "paused"
-
         listed = c.get("/umrs/research/sessions", params={"project_id": "p9"})
         assert listed.json()["count"] == 1
         filtered = c.get("/umrs/research/sessions", params={"project_id": "p9", "status": "active"})
