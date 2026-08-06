@@ -86,6 +86,15 @@ class StartLoopRequest(BaseModel):
             "auto-registered under that session (404 when the session is missing)."
         ),
     )
+    agentic: bool = Field(
+        False,
+        description=(
+            "Wave-9 agentic mode: each iteration is one bounded agent turn "
+            "(hypothesis/evidence/evaluation/next-step) on the site LLM, "
+            "matching the r4 LocalRuntime executor semantics. Runs outside the "
+            "engine's phased pipeline."
+        ),
+    )
     approved: bool = Field(
         False,
         description=(
@@ -248,6 +257,20 @@ async def start_loop(request: StartLoopRequest) -> StartLoopResponse:
                 exc,
             )
 
+    if request.agentic:
+        try:
+            from umrs.knowledge.agent_loop_runner import register as _register_runner
+            from umrs.knowledge.project import ResearchProject
+
+            project = ResearchProject(project_id=request.project_id)
+            _register_runner(
+                loop, executor=_agent_executor_for(project), store=_loop_store
+            )
+            loop.metadata["agent"] = "umrs-litellm"
+            _loop_store.save(loop)
+        except Exception as exc:  # noqa: BLE001 — agentic must not break start
+            logger.warning("agentic runner skipped for loop %s: %s", loop.loop_id, exc)
+
     return StartLoopResponse(
         loop_id=loop.loop_id,
         project_id=loop.project_id,
@@ -255,6 +278,13 @@ async def start_loop(request: StartLoopRequest) -> StartLoopResponse:
         phase=loop.phase.value,
         message=f"Loop {loop.loop_id} started for project {request.project_id}",
     )
+
+
+def _agent_executor_for(project: Any):
+    """Build the UMRS-side agentic iteration executor for one project."""
+    from umrs.knowledge.agent_loop_runner import default_executor_for_project
+
+    return default_executor_for_project(project)
 
 
 @router.get(
