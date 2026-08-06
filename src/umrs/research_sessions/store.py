@@ -106,15 +106,18 @@ def _row_get(row: Any, key: str, columns: list[str], default: Any = None) -> Any
         return default
 
 
+def _coerce_metadata(raw: Any) -> dict:
+    if isinstance(raw, dict):
+        return raw
+    if raw:
+        return json.loads(raw)
+    return {}
+
+
 def _row_to_session(row: Any) -> ResearchSession:
     def _get(key: str, default: Any = None) -> Any:
         return _row_get(row, key, _SESSION_COLUMNS, default)
 
-    meta = _get("metadata") or "{}"
-    if isinstance(meta, dict):
-        metadata = meta
-    else:
-        metadata = json.loads(meta or "{}")
     return ResearchSession(
         session_id=_get("session_id", ""),
         project_id=_get("project_id", ""),
@@ -122,7 +125,7 @@ def _row_to_session(row: Any) -> ResearchSession:
         research_goal=_get("research_goal") or "",
         status=_get("status") or "active",
         authoritative_runtime=_get("authoritative_runtime") or "umrs",
-        metadata=metadata,
+        metadata=_coerce_metadata(_get("metadata") or "{}"),
         created_at=str(_get("created_at") or ""),
         updated_at=str(_get("updated_at") or ""),
         archived_at=str(_get("archived_at")) if _get("archived_at") else None,
