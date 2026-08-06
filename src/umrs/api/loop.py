@@ -79,6 +79,13 @@ class StartLoopRequest(BaseModel):
     project_id: str = Field(..., description="Project ID")
     research_goal: str = Field(..., min_length=1, description="Research goal")
     max_iterations: int = Field(10, ge=1, le=100, description="Max iterations")
+    session_id: str = Field(
+        "",
+        description=(
+            "Optional ADR-025 research session id. When set, the new loop is "
+            "auto-registered under that session (404 when the session is missing)."
+        ),
+    )
     approved: bool = Field(
         False,
         description=(
@@ -201,7 +208,45 @@ async def start_loop(request: StartLoopRequest) -> StartLoopResponse:
         research_goal=request.research_goal,
         max_iterations=request.max_iterations,
     )
+    if request.session_id:
+        # Durable session linkage visible on loop status/list payloads.
+        loop.metadata.setdefault("session_id", request.session_id)
     _loop_store.save(loop)
+
+    if request.session_id:
+        # ADR-025 D3: auto-register loop membership under the given session.
+        try:
+            from umrs.api.research_sessions import get_session_store
+            from umrs.research_sessions import SessionLoopLink
+
+            store = get_session_store()
+            if store is None:
+                raise HTTPException(
+                    status_code=503,
+                    detail="Session store unavailable; cannot register loop under session",
+                )
+            if store.get(request.session_id) is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Session {request.session_id} not found",
+                )
+            store.attach_loop(
+                SessionLoopLink(
+                    session_id=request.session_id,
+                    loop_id=loop.loop_id,
+                    venue="umrs",
+                    loop_role="auto",
+                )
+            )
+        except HTTPException:
+            raise
+        except Exception as exc:  # noqa: BLE001 — session attach must not break loop start
+            logger.warning(
+                "session attach skipped for loop %s (session %s): %s",
+                loop.loop_id,
+                request.session_id,
+                exc,
+            )
 
     return StartLoopResponse(
         loop_id=loop.loop_id,

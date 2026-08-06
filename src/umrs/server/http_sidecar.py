@@ -174,6 +174,26 @@ def _init_governance_store(app, db_pool):
         logger.warning("Governance store unavailable — quota enforcement disabled")
 
 
+def _init_research_sessions_store(app, db_pool):
+    """Initialize the research-session store (ADR-025)."""
+    try:
+        from umrs.api.research_sessions import set_session_store
+        from umrs.research_sessions import ensure_schema
+        from umrs.research_sessions.store import SessionStore
+
+        sess_conn = db_pool.getconn()
+        ensure_schema(sess_conn)
+        sess_conn.commit()
+        app.state.umrs_research_sessions_conn = sess_conn
+        set_session_store(SessionStore(sess_conn))
+        logger.info("Research session store initialized for HTTP sidecar")
+    except Exception:
+        logger.warning(
+            "Research session store unavailable in HTTP sidecar — "
+            "/umrs/research/sessions/* will return 503"
+        )
+
+
 def _init_usage_pool(db_pool):
     """Wire the LLM usage recording pool."""
     try:
@@ -473,6 +493,7 @@ def _create_app():
         policy_router,
         provenance_router,
         reflective_memory_router,
+        research_sessions_router,
         scientific_memory_router,
         evidence_router,
         experiment_registry_router,
@@ -571,6 +592,7 @@ def _create_app():
     app.include_router(verification_router)
     app.include_router(vision_router)
     app.include_router(provenance_router)
+    app.include_router(research_sessions_router)
     app.include_router(traces_router)
     app.include_router(usage_router)
     app.include_router(workflows_router)
@@ -609,6 +631,7 @@ def _create_app():
         _init_mcp_store(app, db_pool)
         _init_audit_store(app, db_pool)
         _init_governance_store(app, db_pool)
+        _init_research_sessions_store(app, db_pool)
         _init_usage_pool(db_pool)
 
     app.get("/health")(_health)
