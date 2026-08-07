@@ -58,6 +58,30 @@ def _resolve_litellm_service_key() -> Optional[str]:
     )
 
 
+def _node_digest(node: Any) -> Dict[str, str]:
+    """Compact node row for the LLM prompt digest (#207)."""
+    node_type = getattr(node, "node_type", None)
+    return {
+        "id": str(getattr(node, "node_id", getattr(node, "id", "?"))),
+        "type": str(getattr(node_type, "value", node_type) or "knowledge"),
+        "name": str(getattr(node, "title", getattr(node, "name", "?"))),
+    }
+
+
+def _edge_digest(edge: Any) -> Optional[Dict[str, str]]:
+    """Compact edge row for the LLM prompt digest (#207)."""
+    source = getattr(edge, "source_id", None)
+    target = getattr(edge, "target_id", None)
+    if not isinstance(source, str) or not isinstance(target, str):
+        return None
+    rel = getattr(edge, "relation_type", None)
+    return {
+        "from": source,
+        "to": target,
+        "type": str(getattr(rel, "value", rel) or "related"),
+    }
+
+
 def _default_litellm_chat(
     messages: list[dict[str, Any]],
     *,
@@ -130,23 +154,19 @@ class UmrsAgentIterationExecutor:
         graph = getattr(self._project, "knowledge_graph", None)
         if graph is None:
             return {"nodes": [], "edges": [], "note": "knowledge graph unavailable"}
+        # #207: read public KnowledgeGraph.nodes/.edges — the previous private
+        # `_nodes` attr never existed, and edges were hardcoded [], so every
+        # loop silently ran with an empty graph digest.
         try:
-            nodes = list(getattr(graph, "_nodes", {}).values())
+            nodes = list(getattr(graph, "nodes", {}).values())
+            edge_rows = [
+                row
+                for row in (_edge_digest(e) for e in getattr(graph, "edges", []))
+                if row is not None
+            ]
         except Exception:  # noqa: BLE001
-            nodes = []
-        return {
-            "nodes": [
-                {
-                    "id": str(getattr(n, "id", getattr(n, "node_id", "?"))),
-                    "type": str(
-                        getattr(getattr(n, "node_type", None), "value", "knowledge")
-                    ),
-                    "name": str(getattr(n, "title", getattr(n, "name", "?"))),
-                }
-                for n in nodes
-            ],
-            "edges": [],
-        }
+            return {"nodes": [], "edges": [], "note": "graph traversal failed"}
+        return {"nodes": [_node_digest(n) for n in nodes], "edges": edge_rows}
 
     def __call__(
         self, loop_id: str, iteration_number: int, research_goal: str

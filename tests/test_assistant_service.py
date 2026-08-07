@@ -273,3 +273,70 @@ def test_assistant_service_defaults_to_loopback_bind():
     source = (repo_root / "src/umrs/api/assistant_service.py").read_text()
     assert 'os.getenv("ASSISTANT_BIND_HOST", "127.0.0.1")' in source
     assert 'host="0.0.0.0"' not in source
+
+
+# ---------------------------------------------------------------------------
+# #209: /v1/models must fail honestly when the upstream probe fails
+# ---------------------------------------------------------------------------
+
+
+class _BoomHttpClient:
+    def __init__(self, *_a, **_k):
+        pass
+
+    def __enter__(self):
+        raise ConnectionError("upstream refused")
+
+    def __exit__(self, *_a):
+        return False
+
+
+class _StatusHttpClient:
+    def __init__(self, status_code: int, payload: dict | None = None):
+        self._resp = _FakeResp(status_code, payload or {})
+
+    def __call__(self, *_a, **_k):
+        return self
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_a):
+        return False
+
+    def get(self, *_a, **_k):
+        return self._resp
+
+
+class _FakeResp:
+    def __init__(self, status_code: int, payload: dict):
+        self.status_code = status_code
+        self._payload = payload
+
+    def json(self):
+        return self._payload
+
+
+def test_list_models_503_when_upstream_unreachable(monkeypatch, client):
+    monkeypatch.setattr(svc.httpx, "Client", _BoomHttpClient)
+    resp = client.get("/v1/models")
+    assert resp.status_code == 503
+    error = resp.json()["error"]
+    assert error["degraded"] is True
+    assert "configured_default_model" in error
+    assert "upstream refused" in error["detail"]
+
+
+def test_list_models_503_when_upstream_not_200(monkeypatch, client):
+    monkeypatch.setattr(svc.httpx, "Client", _StatusHttpClient(500))
+    resp = client.get("/v1/models")
+    assert resp.status_code == 503
+    assert "500" in resp.json()["error"]["detail"]
+
+
+def test_list_models_passes_through_live_upstream(monkeypatch, client):
+    payload = {"object": "list", "data": [{"id": "qwen-live", "object": "model"}]}
+    monkeypatch.setattr(svc.httpx, "Client", _StatusHttpClient(200, payload))
+    resp = client.get("/v1/models")
+    assert resp.status_code == 200
+    assert resp.json()["data"][0]["id"] == "qwen-live"

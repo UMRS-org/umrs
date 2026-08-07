@@ -166,31 +166,36 @@ def _enforce_readiness_approval(request: StartLoopRequest) -> None:
     if not request.approved:
         return
 
-    project: ResearchProject | None = None
+    # #208: fail closed. Previously a construction error set project=None and
+    # skipped the gate, and a readiness-check error was swallowed — any
+    # transient failure bypassed the 403 and started a loop on an unapproved
+    # project with artifacts.
     try:
         project = ResearchProject(project_id=request.project_id)
-    except Exception:
-        project = None
+        readiness = project.check_readiness()
+        gate_applies = not readiness.user_approved
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"Readiness gate unavailable for project {request.project_id}: "
+                f"{exc}. Retry later; loops without a verifiable gate are denied "
+                "while approved=False is not explicitly set."
+            ),
+        ) from exc
 
-    if project is not None:
-        try:
-            readiness = project.check_readiness()
-            if not readiness.user_approved:
-                has_artifacts = bool(project.knowledge_store.list_artifacts())
-                if not has_artifacts:
-                    return  # Trust the client for fresh projects
-                raise HTTPException(
-                    status_code=403,
-                    detail=(
-                        f"Research readiness not approved for project "
-                        f"{request.project_id}. "
-                        f"Approve with: r4 project approve {request.project_id}"
-                    ),
-                )
-        except HTTPException:
-            raise
-        except Exception:
-            pass
+    if gate_applies and project is not None:
+        has_artifacts = bool(project.knowledge_store.list_artifacts())
+        if not has_artifacts:
+            return  # Trust the client for fresh projects
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"Research readiness not approved for project "
+                f"{request.project_id}. "
+                f"Approve with: r4 project approve {request.project_id}"
+            ),
+        )
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────
