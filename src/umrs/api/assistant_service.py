@@ -318,8 +318,14 @@ def manifest() -> dict[str, Any]:
 
 @app.get("/v1/models")
 def list_models() -> JSONResponse:
-    """Proxy the upstream model list; fall back to the default model name."""
+    """Proxy the upstream model list.
+
+    #209: on probe failure, return 503 with an error body instead of a 200
+    synthetic one-entry list — model pickers were caching a model that may
+    not be running as if it were live.
+    """
     config = _resolve_config()
+    probe_error: str | None = None
     try:
         with httpx.Client(timeout=5.0, trust_env=False) as client:
             resp = client.get(
@@ -328,13 +334,19 @@ def list_models() -> JSONResponse:
             )
         if resp.status_code == 200:
             return JSONResponse(content=resp.json())
-    except Exception:
-        pass
+        probe_error = f"upstream returned {resp.status_code}"
+    except Exception as exc:
+        probe_error = str(exc)
     return JSONResponse(
+        status_code=503,
         content={
-            "object": "list",
-            "data": [{"id": config.default_model, "object": "model"}],
-        }
+            "error": {
+                "message": "upstream model list unavailable",
+                "detail": probe_error,
+                "configured_default_model": config.default_model,
+                "degraded": True,
+            }
+        },
     )
 
 

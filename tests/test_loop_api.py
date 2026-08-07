@@ -139,18 +139,69 @@ class TestStartLoop:
         assert resp.status_code == 422
 
     def test_approved_flag_skips_check_on_fresh_project(self):
-        """Fresh project with no artifacts — trust the client."""
-        client = _make_app()
-        resp = client.post(
-            "/umrs/loops",
-            json={
-                "project_id": "fresh",
-                "research_goal": "Fresh",
-                "max_iterations": 2,
-                "approved": True,
-            },
+        """Fresh project (readiness not approved, zero artifacts) — trust the client."""
+        from unittest.mock import patch
+
+        from umrs.knowledge.readiness import (
+            ConfidenceLevel,
+            ReadinessLevel,
+            ResearchReadinessReport,
         )
-        assert resp.status_code == 201
+
+        fresh_report = ResearchReadinessReport(
+            project_id="fresh",
+            readiness_level=ReadinessLevel.PARTIALLY_READY,
+            confidence_level=ConfidenceLevel.MEDIUM,
+            issues=[],
+        )
+
+        client = _make_app()
+        with patch("umrs.api.loop.ResearchProject") as mock_cls:
+            mock_inst = mock_cls.return_value
+            mock_inst.check_readiness.return_value = fresh_report
+            mock_inst.knowledge_store.list_artifacts.return_value = []
+
+            resp = client.post(
+                "/umrs/loops",
+                json={
+                    "project_id": "fresh",
+                    "research_goal": "Fresh",
+                    "max_iterations": 2,
+                    "approved": True,
+                },
+            )
+            assert resp.status_code == 201
+
+
+class TestReadinessGateFailClosed:
+    """#208: gate-unavailable must deny (503), never pass the gate silently."""
+
+    _payload = {
+        "project_id": "proj-x",
+        "research_goal": "Gate test",
+        "max_iterations": 2,
+        "approved": True,
+    }
+
+    def test_project_construction_error_denies_with_503(self):
+        from unittest.mock import patch
+
+        client = _make_app()
+        with patch("umrs.api.loop.ResearchProject") as mock_cls:
+            mock_cls.side_effect = RuntimeError("store offline")
+            resp = client.post("/umrs/loops", json=self._payload)
+            assert resp.status_code == 503
+            assert "unavailable" in resp.json().get("detail", "").lower()
+
+    def test_readiness_check_error_denies_with_503(self):
+        from unittest.mock import patch
+
+        client = _make_app()
+        with patch("umrs.api.loop.ResearchProject") as mock_cls:
+            mock_inst = mock_cls.return_value
+            mock_inst.check_readiness.side_effect = RuntimeError("db timeout")
+            resp = client.post("/umrs/loops", json=self._payload)
+            assert resp.status_code == 503
 
 
 class TestListLoops:
