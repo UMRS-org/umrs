@@ -226,3 +226,22 @@ def test_invoke_llm_with_candidates_retries_and_marks_registry_usage(monkeypatch
         == "Recovered answer"
     )
     assert registry.used == ["job-good"]
+
+
+def test_resolve_llm_api_key_empty_when_unconfigured(monkeypatch):
+    """#211: no synthetic `sk-umrs-demo` default — unconfigured is honest ""."""
+    for env_name in ("UMRS_RAG_LLM_API_KEY", "VLLM_API_KEY", "LITELLM_MASTER_KEY"):
+        monkeypatch.delenv(env_name, raising=False)
+
+    class _NoKeySiteCfg:
+        class network:
+            litellm_master_key = ""
+
+    monkeypatch.setattr(rag_service, "get_site_config", lambda: _NoKeySiteCfg())
+
+    assert rag_service._resolve_llm_api_key() == ""
+
+
+def test_resolve_llm_api_key_env_precedence(monkeypatch):
+    monkeypatch.setenv("LITELLM_MASTER_KEY", "sk-live")
+    assert rag_service._resolve_llm_api_key() == "sk-live"

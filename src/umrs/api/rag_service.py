@@ -1,9 +1,12 @@
 """UMRS RAG FastAPI service."""
 
+import logging
 import os
 import re
 from dataclasses import dataclass
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
@@ -485,7 +488,13 @@ def _inject_site_env_defaults() -> None:
 
 
 def _resolve_llm_api_key() -> str:
-    """Resolve the API key used for OpenAI-compatible QA requests."""
+    """Resolve the API key used for OpenAI-compatible QA requests.
+
+    #211: an empty string means "no key configured" — callers already send
+    no Authorization header for empty keys. A synthetic ``sk-umrs-demo``
+    default previously made misconfigured deployments LOOK configured and
+    buried the failure in a downstream 401 far from the cause.
+    """
     _inject_site_env_defaults()
 
     for env_name in ("UMRS_RAG_LLM_API_KEY", "VLLM_API_KEY", "LITELLM_MASTER_KEY"):
@@ -500,7 +509,13 @@ def _resolve_llm_api_key() -> str:
     except Exception:
         pass
 
-    return "sk-umrs-demo"
+    logger.warning(
+        "RAG LLM API key is not configured (checked UMRS_RAG_LLM_API_KEY, "
+        "VLLM_API_KEY, LITELLM_MASTER_KEY, site network.litellm_master_key) — "
+        "QA requests will be sent without an Authorization header. "
+        "Set one of these if the upstream requires authentication."
+    )
+    return ""
 
 
 def _endpoint_sort_key(endpoint: RegisteredEndpoint) -> tuple[int, Any]:

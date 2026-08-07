@@ -377,21 +377,16 @@ class JobService:
     ) -> str:
         """
         Submit a batch embedding job.
-        """
-        spec = {
-            "input_path": input_path,
-            "output_path": output_path,
-            "embedding_model": embedding_model,
-        }
 
-        return self.submit_job(
-            project_id=project_id,
-            user_id=user_id,
-            job_type=JobType.EMBEDDING_BATCH,
-            spec=spec,
-            priority=0,
-            max_attempts=5,
-            restart_policy=RestartPolicy.ON_CRASH,
+        Raises:
+            NotImplementedError: the EMBEDDING_BATCH dispatch backend is not
+                wired on this deployment (#216). The REST job-create route
+                already rejects this type with 400; this guard keeps service
+                callers from creating a durable job that can never run.
+        """
+        raise NotImplementedError(
+            "Embedding-batch dispatch is not implemented (no durable backend). "
+            "Use index_build to build embeddings into the RAG index instead."
         )
 
     # =========================================================================

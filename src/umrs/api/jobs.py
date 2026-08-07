@@ -466,6 +466,11 @@ async def create_job(
                 f"Valid types: {[t.value for t in JobType]}",
             ) from None
 
+        # #216: reject types without a dispatch backend on the REST/scheduler
+        # path — otherwise a durable job is accepted and only explodes with
+        # "not yet implemented" at dispatch time.
+        _enforce_dispatchable_job_type(job_type)
+
         # Parse restart policy
         try:
             restart_policy = RestartPolicy(request.restart_policy)
@@ -496,18 +501,9 @@ async def create_job(
             ttl_seconds=request.ttl_seconds,
         )
         if request.fan_out_jobs:
-            try:
-                job_id = create_method(
-                    parent_job_type=job_type,
-                    parent_spec=spec,
-                    children=request.fan_out_jobs,
-                    **create_kwargs,
-                )
-            except (KeyError, ValueError) as exc:
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail=str(exc),
-                ) from exc
+            job_id = _create_fan_out_job(
+                store, request, job_type, spec, create_kwargs
+            )
             return JobCreateResponse(
                 job_id=job_id,
                 status="running",
@@ -547,6 +543,28 @@ async def create_job(
         ) from e
 
 
+def _create_fan_out_job(
+    store: JobStore,
+    request: JobCreateRequest,
+    job_type: JobType,
+    spec: dict[str, Any],
+    create_kwargs: dict[str, Any],
+) -> str:
+    """Create fan-out parent+children graph; map store errors to 422."""
+    try:
+        return store.create_fan_out_graph(
+            parent_job_type=job_type,
+            parent_spec=spec,
+            children=request.fan_out_jobs,
+            **create_kwargs,
+        )
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+
+
 def _parse_status_filter(status_filter: str | None) -> JobStatus | None:
     """Parse and validate a job status filter value."""
     if not status_filter:
@@ -558,6 +576,29 @@ def _parse_status_filter(status_filter: str | None) -> JobStatus | None:
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Invalid status: {status_filter}",
         ) from None
+
+
+# #216: job types accepted by JobType enum but with no dispatch backend on the
+# REST/scheduler path. Remove entries as backends land.
+_UNDISPATCHABLE_JOB_TYPES = {
+    JobType.EMBEDDING_BATCH,
+    JobType.PIPELINE_RUN,
+    JobType.KNOWLEDGE_EXPORT,
+}
+
+
+def _enforce_dispatchable_job_type(job_type: JobType) -> None:
+    """Reject unimplemented job types at submission (400) instead of burning a
+    durable job that only explodes with "not yet implemented" at dispatch (#216)."""
+    if job_type in _UNDISPATCHABLE_JOB_TYPES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"job_type '{job_type.value}' is not implemented on this "
+                "deployment (no durable dispatch backend). Remove from "
+                "_UNDISPATCHABLE_JOB_TYPES in api/jobs.py when the backend lands."
+            ),
+        )
 
 
 def _parse_job_type_filter(job_type: str | None) -> JobType | None:
