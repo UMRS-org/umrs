@@ -9,6 +9,8 @@ from typing import Any, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
+import dataclasses
+
 from umrs.api._asyncpg_pool import knowledge_asyncpg_pool
 from umrs.api.files import S3Config, get_project_id, get_s3_config
 from umrs.graph_reasoning import GraphNavigator
@@ -589,7 +591,8 @@ async def knowledge_status(
 
         pool = await knowledge_asyncpg_pool(request)
         store = KnowledgeStore(pool)
-        artifacts = await store.list_artifacts(project_id=project_id)
+        artifact_rows, _total = await store.list_artifacts(project_id=project_id)
+        artifacts = [dataclasses.asdict(a) for a in artifact_rows]
         active_count = sum(1 for a in artifacts if a.get("status") == "active")
 
         ver = VerificationStore(pool)
@@ -797,7 +800,8 @@ async def knowledge_readiness(
 
         pool = await knowledge_asyncpg_pool(request)
         store = KnowledgeStore(pool)
-        artifacts = await store.list_artifacts(project_id=project_id)
+        artifact_rows, _total = await store.list_artifacts(project_id=project_id)
+        artifacts = [dataclasses.asdict(a) for a in artifact_rows]
         active_count = sum(1 for a in artifacts if a.get("status") == "active")
 
         ver = VerificationStore(pool)
