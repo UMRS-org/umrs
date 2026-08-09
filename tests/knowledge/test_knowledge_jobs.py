@@ -387,12 +387,10 @@ class TestKnowledgeUnderstandBackend:
 
     @pytest.mark.asyncio
     async def test_parse_for_understand_python(self):
-        """Python source parsed correctly."""
-        fake_hash = hashlib.sha256(
-            b'"""Example."""\nclass Foo:\n    pass\ndef bar(): pass\n'
-        ).hexdigest()
+        """Python source parsed correctly from real content bytes."""
+        real_content = b'"""Example."""\nclass Foo:\n    pass\ndef bar(): pass\n'
 
-        result = _parse_for_understand("test-001", fake_hash, "code")
+        result = _parse_for_understand("test-001", real_content, "code")
         assert result is not None
         assert "modules" in result
         assert "classes" in result
@@ -400,21 +398,19 @@ class TestKnowledgeUnderstandBackend:
 
     @pytest.mark.asyncio
     async def test_parse_for_understand_cpp(self):
-        """C++ source parsed with regex fallback."""
-        fake_hash = hashlib.sha256(
-            b'int main() { return 0; }\nvoid foo() {}\n'
-        ).hexdigest()
+        """C++ source parsed with regex fallback from real content bytes."""
+        real_content = b'int main() { return 0; }\nvoid foo() {}\n'
 
-        result = _parse_for_understand("test-cpp", fake_hash, "cpp")
+        result = _parse_for_understand("test-cpp", real_content, "cpp")
         assert result is not None
         assert result["language"] == "cpp"
 
     @pytest.mark.asyncio
     async def test_parse_invalid(self):
-        """Invalid content returns None."""
-        _parse_for_understand("bad", "not-a-real-hash", "code")
-        # Will try to parse as Python — may succeed or fail
-        # But for truly invalid hash string, it encodes to bytes
+        """Truly invalid bytes are parse-rejected (returns None)."""
+        # Unparseable binary content must return None, never a fake IR.
+        result = _parse_for_understand("bad", b"\x00\x01\xff\xfe\xfb", "code")
+        assert result is None
 
     def test_build_summary_empty(self):
         """Empty parsed dict produces minimal summary."""
@@ -447,6 +443,9 @@ class TestKnowledgeUnderstandBackend:
         )
         with patch(
             "umrs.jobs.knowledge_adapters._get_pool", return_value=None
+        ), patch(
+            "umrs.jobs.knowledge_adapters._build_s3_client",
+            return_value=(None, "umrs-data"),
         ):
             backend = KnowledgeUnderstandBackend()
             await backend.submit_job(understand_job, sample_attempt)
@@ -478,6 +477,9 @@ class TestKnowledgeUnderstandBackend:
         mock_pool.wait_closed = MagicMock(return_value=asyncio.sleep(0))
 
         with patch("umrs.jobs.knowledge_adapters._get_pool", return_value=mock_pool), patch(
+            "umrs.jobs.knowledge_adapters._build_s3_client",
+            return_value=(None, "umrs-data"),
+        ), patch(
             "umrs.knowledge.store.KnowledgeStore"
         ) as MockStore:
             store_instance = MagicMock()

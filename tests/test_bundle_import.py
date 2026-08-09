@@ -314,6 +314,7 @@ def app(tmp_path, monkeypatch) -> FastAPI:
     app = FastAPI()
     app.include_router(restore_router)
     app.state.umrs_db_pool = _FakePool()
+    app.state.umrs_knowledge_asyncpg_pool = _FakePool()
     monkeypatch.delenv("UMRS_SECRET_KEY", raising=False)
     return app
 
