@@ -206,79 +206,110 @@ class AttemptMonitor:
             job = self.job_store.get_job(attempt.job_id)
 
             # Check status via backend with timeout guard
-            try:
-                result = await asyncio.wait_for(
-                    self.status_checker.check_status(attempt, job),
-                    timeout=self.status_check_timeout,
-                )
-            except asyncio.TimeoutError:
-                logger.warning(
-                    f"Status check timed out for attempt {attempt.attempt_id} "
-                    f"after {self.status_check_timeout}s"
-                )
-                METRICS.monitor_check("timeout")
-                # Track consecutive-timeout streaks for escalation (≥10 → degradation)
-                streak = self._timeout_streaks.get(attempt.attempt_id, 0) + 1
-                self._timeout_streaks[attempt.attempt_id] = streak
-                if streak >= 10:
-                    METRICS.degradation("monitor", 1)
-                    logger.error(
-                        f"Attempt {attempt.attempt_id}: {streak} consecutive "
-                        f"status-check timeouts — monitor degradation"
-                    )
-                return  # Skip this attempt; retry next cycle
+            result = await self._fetch_status(attempt, job)
+            if result is None:
+                self._record_unknown(attempt)
+                return
 
             # Update based on result
             if result.status == "succeeded":
-                self._timeout_streaks.pop(attempt.attempt_id, None)
-                self.job_store.mark_attempt_succeeded(
-                    attempt.attempt_id,
-                    commit=result.should_commit,
-                    metrics=result.metrics,
-                )
-                self._stats["attempts_succeeded"] += 1
-                METRICS.monitor_check("succeeded")
-                logger.info(f"Attempt {attempt.attempt_id} succeeded")
-
+                self._apply_success(attempt, result)
             elif result.status == "failed":
-                self._timeout_streaks.pop(attempt.attempt_id, None)
-                requeued = self.job_store.mark_attempt_failed(
-                    attempt.attempt_id,
-                    exit_reason=result.exit_reason or "unknown failure",
-                )
-                self._stats["attempts_failed"] += 1
-                METRICS.monitor_check("failed")
-                logger.warning(
-                    f"Attempt {attempt.attempt_id} failed: {result.exit_reason} "
-                    f"(requeued={requeued})"
-                )
-
+                self._apply_failure(attempt, result)
             elif result.status == "running":
-                self._timeout_streaks.pop(attempt.attempt_id, None)
-                # Update status detail if changed
-                if result.status_detail and attempt.status == AttemptStatus.SUBMITTED:
-                    self.job_store.mark_attempt_running(
-                        attempt.attempt_id,
-                        status_detail=result.status_detail,
-                    )
-                elif result.status_detail:
-                    self.job_store.update_attempt_status_detail(
-                        attempt.attempt_id,
-                        result.status_detail,
-                    )
-
-                # Update metrics if provided
-                if result.metrics:
-                    self.job_store.update_attempt_metrics(
-                        attempt.attempt_id,
-                        result.metrics,
-                    )
-
+                self._apply_running(attempt, result)
             # unknown status - no action, wait for next cycle
 
         except Exception as e:
             logger.error(
                 f"Error checking attempt {attempt.attempt_id}: {e}", exc_info=True
+            )
+
+    async def _fetch_status(self, attempt: JobAttempt, job) -> Any:
+        """Call the backend status checker with a timeout guard."""
+        try:
+            return await asyncio.wait_for(
+                self.status_checker.check_status(attempt, job),
+                timeout=self.status_check_timeout,
+            )
+        except asyncio.TimeoutError:
+            self._record_timeout(attempt)
+            return None
+
+    def _record_timeout(self, attempt: JobAttempt) -> None:
+        """Log + streak-track a status-check timeout."""
+        logger.warning(
+            f"Status check timed out for attempt {attempt.attempt_id} "
+            f"after {self.status_check_timeout}s"
+        )
+        METRICS.monitor_check("timeout")
+        # Track consecutive-timeout streaks for escalation (≥10 → degradation)
+        streak = self._timeout_streaks.get(attempt.attempt_id, 0) + 1
+        self._timeout_streaks[attempt.attempt_id] = streak
+        if streak >= 10:
+            METRICS.degradation("monitor", 1)
+            logger.error(
+                f"Attempt {attempt.attempt_id}: {streak} consecutive "
+                f"status-check timeouts — monitor degradation"
+            )
+
+    def _record_unknown(self, attempt: JobAttempt) -> None:
+        """Log + count the checker-returned-None (unknown execution) case.
+
+        Checker could not resolve this attempt's execution (e.g. execution
+        registry record missing after a restart). Skip without crashing and
+        without falsely marking failed; lost attempts belong to the reconciler.
+        """
+        self._stats["attempts_unknown"] = self._stats.get("attempts_unknown", 0) + 1
+        logger.warning(
+            f"Attempt {attempt.attempt_id} status unknown "
+            f"(checker returned None; execution record unavailable) — skipping this cycle"
+        )
+        METRICS.monitor_check("unknown")
+
+    def _apply_success(self, attempt: JobAttempt, result) -> None:
+        """Mark attempt succeeded + commit if requested."""
+        self._timeout_streaks.pop(attempt.attempt_id, None)
+        self.job_store.mark_attempt_succeeded(
+            attempt.attempt_id,
+            commit=result.should_commit,
+            metrics=result.metrics,
+        )
+        self._stats["attempts_succeeded"] += 1
+        METRICS.monitor_check("succeeded")
+        logger.info(f"Attempt {attempt.attempt_id} succeeded")
+
+    def _apply_failure(self, attempt: JobAttempt, result) -> None:
+        """Mark attempt failed (job store decides on requeue)."""
+        self._timeout_streaks.pop(attempt.attempt_id, None)
+        requeued = self.job_store.mark_attempt_failed(
+            attempt.attempt_id,
+            exit_reason=result.exit_reason or "unknown failure",
+        )
+        self._stats["attempts_failed"] += 1
+        METRICS.monitor_check("failed")
+        logger.warning(
+            f"Attempt {attempt.attempt_id} failed: {result.exit_reason} "
+            f"(requeued={requeued})"
+        )
+
+    def _apply_running(self, attempt: JobAttempt, result) -> None:
+        """Refresh status detail / metrics for an in-flight attempt."""
+        self._timeout_streaks.pop(attempt.attempt_id, None)
+        if result.status_detail and attempt.status == AttemptStatus.SUBMITTED:
+            self.job_store.mark_attempt_running(
+                attempt.attempt_id,
+                status_detail=result.status_detail,
+            )
+        elif result.status_detail:
+            self.job_store.update_attempt_status_detail(
+                attempt.attempt_id,
+                result.status_detail,
+            )
+        if result.metrics:
+            self.job_store.update_attempt_metrics(
+                attempt.attempt_id,
+                result.metrics,
             )
 
     @property
