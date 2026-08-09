@@ -15,6 +15,26 @@ import os
 from fastapi import HTTPException, Request
 
 
+def _resolve_knowledge_dsn() -> tuple[str, bool]:
+    """Resolve asyncpg DSN from env, mirroring the durable-jobs pool chain.
+
+    Returns (dsn, is_local). Precedence: UMRS_DATA_CATALOG_DB / DATABASE_URL
+    (full DSN), otherwise the same component vars the jobs pool uses
+    (DB_HOST/DB_PORT/UMRS_JOBS_DB/POSTGRES_*/DB_SUPERUSER*).
+    """
+    for var in ("UMRS_DATA_CATALOG_DB", "DATABASE_URL"):
+        dsn = os.environ.get(var, "")
+        if dsn:
+            return dsn, False
+    host = os.environ.get("DB_HOST", "127.0.0.1")
+    port = os.environ.get("DB_PORT", os.environ.get("POSTGRES_PORT", "5432"))
+    name = os.environ.get("UMRS_JOBS_DB", os.environ.get("POSTGRES_DB", "umrs_db"))
+    user = os.environ.get("DB_SUPERUSER", os.environ.get("POSTGRES_USER", "postgres"))
+    pw = os.environ.get("DB_SUPERUSER_PASSWORD", os.environ.get("POSTGRES_PASSWORD", "postgres"))
+    dsn = f"postgresql://{user}:{pw}@{host}:{port}/{name}"
+    return dsn, host in ("127.0.0.1", "localhost", "::1")
+
+
 async def knowledge_asyncpg_pool(request: Request):
     """Return the app-cached asyncpg pool, creating it on first use.
 
@@ -25,14 +45,17 @@ async def knowledge_asyncpg_pool(request: Request):
     if pool is not None:
         return pool
 
-    conn_str = os.environ.get("UMRS_DATA_CATALOG_DB") or os.environ.get("DATABASE_URL") or ""
-    if not conn_str:
+    dsn, is_local = _resolve_knowledge_dsn()
+    if not dsn:
         raise HTTPException(status_code=503, detail="Database unavailable (no DSN)")
     try:
         import asyncpg
     except ImportError as exc:
         raise HTTPException(status_code=503, detail="asyncpg unavailable in server install") from exc
 
-    pool = await asyncpg.create_pool(dsn=conn_str)
+    kwargs: dict = {"dsn": dsn}
+    if is_local:
+        kwargs["ssl"] = "disable"  # container-local PG has no TLS (jobs pool parity)
+    pool = await asyncpg.create_pool(**kwargs)
     request.app.state.umrs_knowledge_asyncpg_pool = pool
     return pool

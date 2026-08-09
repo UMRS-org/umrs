@@ -139,7 +139,7 @@ class ArtifactStore:
         if conditions:
             sql += " WHERE " + " AND ".join(conditions)
         sql += " ORDER BY created_at DESC"
-        sql +=  "LIMIT %s OFFSET %s"
+        sql += " LIMIT %s OFFSET %s"
         params.extend([query.limit, query.offset])
 
         with conn.cursor() as cur:
