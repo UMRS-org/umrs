@@ -143,6 +143,48 @@ def _get_pool() -> Any:
         return None
 
 
+def _build_s3_client(job_spec: dict[str, Any]) -> tuple[Any, str]:
+    """Build an S3 client from env (same config as the ingest backend).
+
+    Returns ``(client_or_None, bucket)`` — None client means S3 unavailable
+    and callers must fail the item explicitly (never fall back silently).
+    """
+    from botocore.config import Config as BotoConfig
+
+    bucket = job_spec.get("bucket", "umrs-data")
+    try:
+        client = boto3.client(
+            "s3",
+            endpoint_url=os.getenv("S3_ENDPOINT_URL", "http://localhost:9000"),
+            aws_access_key_id=os.getenv("S3_ACCESS_KEY", ""),
+            aws_secret_access_key=os.getenv("S3_SECRET_KEY", ""),
+            region_name=os.getenv("S3_REGION", "us-east-1"),
+            config=BotoConfig(signature_version="s3v4", s3={"addressing_style": "path"}),
+            use_ssl=os.getenv("S3_USE_SSL", "false").lower() == "true",
+        )
+        client.list_buckets()
+        return client, bucket
+    except Exception as exc:
+        logger.warning("S3 unavailable for understand fetch: %s", exc)
+        return None, bucket
+
+
+def _fetch_artifact_bytes(s3_client: Any, bucket: str, source_ref: str) -> Optional[bytes]:
+    """Download real artifact bytes from S3 by source_ref key.
+
+    Returns None when unreadable — callers record the failure explicitly;
+    we never substitute the content_hash hex string for content.
+    """
+    if s3_client is None or not source_ref:
+        return None
+    try:
+        obj = s3_client.get_object(Bucket=bucket, Key=source_ref)
+        return obj["Body"].read()
+    except Exception as exc:
+        logger.warning("S3 fetch failed for %s: %s", source_ref, exc)
+        return None
+
+
 # ── Backend Protocol ─────────────────────────────────────────────────────────
 
 from .monitor import BackendStatusChecker, AttemptCheckResult  # noqa: E402
@@ -267,6 +309,7 @@ class KnowledgeUnderstandBackend(OrchestratorBackend):
             details=f"project={project_id}",
         ).emit()
 
+        s3_client, s3_bucket = _build_s3_client(job.spec)
         pool = _get_pool()
         degraded = False
         degraded_reason = ""
@@ -283,6 +326,8 @@ class KnowledgeUnderstandBackend(OrchestratorBackend):
                 project_id,
                 sources,
                 pool,
+                s3_client,
+                s3_bucket,
             )
         finally:
             if pool is not None:
@@ -599,6 +644,8 @@ async def _run_understand(
     project_id: str,
     sources: list[dict[str, Any]],
     pool: Any,
+    s3_client: Any,
+    bucket: str,
 ) -> KnowledgeUnderstandResult:
     """Core understand loop: iterate artifacts, parse, build IR, upsert graph."""
     if pool is None:
@@ -660,8 +707,19 @@ async def _run_understand(
         except Exception:
             pass
 
+        # Fetch real artifact bytes — never parse the hash string
+        content = _fetch_artifact_bytes(s3_client, bucket, src.get("source_ref", ""))
+        if content is None:
+            result.failed_items.append(
+                {
+                    "artifact_id": artifact_id,
+                    "error": "artifact content unavailable (source_ref unreadable)",
+                }
+            )
+            continue
+
         # Parse artifact
-        parsed = _parse_for_understand(artifact_id, content_hash, kind)
+        parsed = _parse_for_understand(artifact_id, content, kind)
         if parsed is None:
             result.failed_items.append(
                 {
@@ -672,12 +730,11 @@ async def _run_understand(
             continue
 
         # Build KnowledgeIR
-        content_bytes = content_hash.encode() if content_hash else b""
         ir = build_knowledge_ir(
             project_id=project_id,
             artifact_id=artifact_id,
             artifact_type=kind,
-            content=content_bytes,
+            content=content,
             extracted=parsed,
             extractor_version=_KNOWLEDGE_EXTRACTOR_VERSION,
         )
@@ -742,10 +799,10 @@ async def _run_understand(
 
 def _parse_for_understand(
     artifact_id: str,
-    content_hash: str,
+    content: bytes,
     kind: str,
 ) -> Optional[dict[str, Any]]:
-    """Parse artifact for understanding. Returns extracted dict or None."""
+    """Parse real artifact bytes for understanding. Returns extracted dict or None."""
     from umrs.knowledge import parse_code
 
     ext_map = {
@@ -760,8 +817,7 @@ def _parse_for_understand(
     fake_name = f"{artifact_id}{ext}"
 
     try:
-        content_bytes = content_hash.encode("utf-8")
-        parsed = parse_code(fake_name, content_bytes)
+        parsed = parse_code(fake_name, content)
         return {
             "modules": parsed.modules,
             "classes": [c.name for c in parsed.classes],

@@ -41,9 +41,9 @@ class RestoreRequest(BaseModel):
 @router.post("/restore", response_model=dict[str, Any])
 async def restore_bundle(request: Request, body: RestoreRequest) -> dict[str, Any]:
     """K4: restore a .kb bundle with manifest verification."""
-    pool = getattr(request.app.state, "umrs_db_pool", None)
-    if pool is None:
-        raise HTTPException(status_code=503, detail="Database unavailable")
+    from umrs.api._asyncpg_pool import knowledge_asyncpg_pool
+
+    pool = await knowledge_asyncpg_pool(request)
 
     from umrs.knowledge.bundle_import import BundleFormatError, KnowledgeImportEngine
     from umrs.knowledge.store import KnowledgeStore

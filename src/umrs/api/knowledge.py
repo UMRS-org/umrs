@@ -9,6 +9,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
+from umrs.api._asyncpg_pool import knowledge_asyncpg_pool
 from umrs.api.files import S3Config, get_project_id, get_s3_config
 from umrs.graph_reasoning import GraphNavigator
 from umrs.jobs.models import JobType
@@ -357,6 +358,36 @@ async def get_project_knowledge_graph(
     }
 
 
+@router.get("/graph-pg", response_model=dict[str, Any])
+async def get_project_graph_pg(
+    request: Request,
+    project_id: str = Query(..., description="Project ID"),
+    node_limit: int = Query(1000, le=10000),
+    _get_project_id: str = Depends(get_project_id),
+) -> dict[str, Any]:
+    """Serve the durable Postgres knowledge graph (knowledge_nodes/edges).
+
+    Unlike ``GET /graph`` (project graph reconstructed per request), this
+    reads the durable store populated by KNOWLEDGE_UNDERSTAND durable jobs.
+    """
+    import dataclasses
+
+    from umrs.knowledge.store import KnowledgeStore
+
+    pool = await knowledge_asyncpg_pool(request)
+    store = KnowledgeStore(pool)
+    nodes = (await store.list_nodes(project_id))[:node_limit]
+    edges = (await store.list_edges(project_id))[:node_limit]
+    return {
+        "project_id": project_id,
+        "backend": "postgres",
+        "node_count": len(nodes),
+        "edge_count": len(edges),
+        "nodes": [dataclasses.asdict(n) for n in nodes],
+        "edges": [dataclasses.asdict(e) for e in edges],
+    }
+
+
 @router.get("/readiness")
 async def get_research_readiness() -> dict[str, Any]:
     """Get the research readiness report."""
@@ -514,18 +545,9 @@ def _approval_decision(
     return True, "approved"
 
 
-def _build_pool(request: Request):
-    """Return the shared app-level durable job DB pool for knowledge store access.
-
-    Reuses the pool built once in http_sidecar.py (``app.state.umrs_db_pool``)
-    instead of calling ``build_durable_job_db_pool_from_env()`` per request,
-    which used to open a brand-new connection pool on every call and leak it
-    (the old pool object was simply dropped without ``closeall()``).
-    """
-    pool = getattr(request.app.state, "umrs_db_pool", None)
-    if pool is None:
-        raise HTTPException(status_code=503, detail="Database unavailable")
-    return pool
+# NOTE: pool acquisition for knowledge stores lives in
+# umrs.api._asyncpg_pool.knowledge_asyncpg_pool — the shared ``umrs_db_pool``
+# is psycopg2 and MUST NOT be used with asyncpg stores (no acquire()).
 
 
 def _report_summary(r) -> dict[str, Any]:
@@ -565,7 +587,7 @@ async def knowledge_status(
     try:
         from umrs.knowledge.store import KnowledgeStore
 
-        pool = _build_pool(request)
+        pool = await knowledge_asyncpg_pool(request)
         store = KnowledgeStore(pool)
         artifacts = await store.list_artifacts(project_id=project_id)
         active_count = sum(1 for a in artifacts if a.get("status") == "active")
@@ -645,7 +667,7 @@ async def knowledge_findings(
 ) -> dict[str, Any]:
     """List verification findings with filters."""
     try:
-        pool = _build_pool(request)
+        pool = await knowledge_asyncpg_pool(request)
         ver = VerificationStore(pool)
 
         findings = await _list_findings_filtered(ver, report_id, status, severity)
@@ -664,7 +686,7 @@ async def transition_finding(
 ) -> dict[str, Any]:
     """Transition a finding status (acknowledged, resolved, waived)."""
     try:
-        pool = _build_pool(request)
+        pool = await knowledge_asyncpg_pool(request)
         ver = VerificationStore(pool)
 
         finding = await ver.transition_finding(
@@ -713,7 +735,7 @@ async def approve_knowledge(
     confidence_threshold = 0.8
 
     try:
-        pool = _build_pool(request)
+        pool = await knowledge_asyncpg_pool(request)
         ver = VerificationStore(pool)
         report = await ver.get_report(report_id)
 
@@ -773,7 +795,7 @@ async def knowledge_readiness(
     try:
         from umrs.knowledge.store import KnowledgeStore
 
-        pool = _build_pool(request)
+        pool = await knowledge_asyncpg_pool(request)
         store = KnowledgeStore(pool)
         artifacts = await store.list_artifacts(project_id=project_id)
         active_count = sum(1 for a in artifacts if a.get("status") == "active")
