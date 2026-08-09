@@ -212,6 +212,37 @@ def _header_str(value: Any) -> str | None:
     return value.strip() if isinstance(value, str) and value.strip() else None
 
 
+def _fire_post_upload_ingest(
+    s3_client: Any,
+    bucket: str,
+    object_key: str,
+    object_etag: str,
+    project_id: str,
+    x_user_id: str | None,
+    filename: str,
+) -> None:
+    """Fire the post-upload ingest trigger under a safe owner identity.
+
+    Rejects literal '-'/empty owner placeholders leaked by internal
+    forwarders so ingest never runs under bogus owners (user_files/-, s3cfg_-).
+    """
+    from umrs.data_catalog.triggers import trigger_post_upload_ingestion
+
+    owner = _header_str(x_user_id)
+    if owner is None or owner == "-":
+        owner = project_id
+
+    trigger_post_upload_ingestion(
+        s3_client,
+        bucket,
+        s3_key=object_key,
+        object_etag=object_etag,
+        project_id=project_id,
+        owner=owner,
+        filename=filename,
+    )
+
+
 def get_project_id(
     authorization: str | None = Header(None),
     x_verified_project_id: str | None = Header(None),
@@ -339,19 +370,7 @@ async def upload_file(
         ) from e
 
     object_etag = (put_response.get("ETag") or "").strip('"')
-    owner = _header_str(x_user_id) or project_id
-    from umrs.data_catalog.triggers import trigger_post_upload_ingestion
-
-    trigger_post_upload_ingestion(
-        s3_client,
-        bucket,
-        s3_key=object_key,
-        object_etag=object_etag,
-        project_id=project_id,
-        owner=owner,
-        filename=file.filename,
-    )
-
+    _fire_post_upload_ingest(s3_client, bucket, object_key, object_etag, project_id, x_user_id, file.filename)
     return UploadResponse(
         key=object_key,
         bucket=bucket,
