@@ -245,17 +245,16 @@ async def list_artifacts(
         # Reuse the shared app-level pool (built once in http_sidecar.py) —
         # do NOT call build_durable_job_db_pool_from_env() here, which opens
         # a brand-new connection pool on every request and leaks it.
+        import dataclasses
+
         from umrs.api._asyncpg_pool import knowledge_asyncpg_pool
 
         pool = await knowledge_asyncpg_pool(request)
         store = KnowledgeStore(pool)
-        # TODO: implement paged list_artifacts with filters
-        artifacts = await store.list_artifacts(project_id=project_id)
-
-        total = len(artifacts)
-        start = (page - 1) * page_size
-        end = start + page_size
-        page_artifacts = artifacts[start:end]
+        artifact_rows, total = await store.list_artifacts(
+            project_id=project_id, page=page, page_size=page_size
+        )
+        page_artifacts = [dataclasses.asdict(a) for a in artifact_rows]
 
         return ArtifactListResponse(
             artifacts=page_artifacts,
@@ -384,13 +383,13 @@ async def knowledge_readiness(
 
         pool = await knowledge_asyncpg_pool(request)
         store = KnowledgeStore(pool)
-        artifacts = await store.list_artifacts(project_id=project_id)
-        active_count = sum(1 for a in artifacts if a.get("status") == "active")
+        artifact_rows, _total = await store.list_artifacts(project_id=project_id)
+        active_count = sum(1 for a in artifact_rows if a.status == "active")
 
         # TODO: Add graph coverage and verification status
         return {
             "project_id": project_id,
-            "artifact_count": len(artifacts),
+            "artifact_count": len(artifact_rows),
             "active_artifacts": active_count,
             "readiness_score": round(min(1.0, active_count / max(1, active_count)), 2),
         }
