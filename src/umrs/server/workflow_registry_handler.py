@@ -34,7 +34,15 @@ _CATALOG_LOCK = threading.Lock()
 
 
 def _catalog_path() -> str:
-    """Return path to the JSON workflow catalog file."""
+    """Return path to the JSON workflow catalog file.
+
+    ``UMRS_WORKFLOW_STATE_DIR`` (set in umrs-front compose to a bind-mounted
+    dir) relocates the catalog off container tmpfs so registrations survive
+    restarts; default preserves the legacy config-dir location.
+    """
+    state_dir = os.environ.get("UMRS_WORKFLOW_STATE_DIR", "").strip()
+    if state_dir:
+        return os.path.join(state_dir, "workflow_catalog.json")
     return get_resolved_umrs_subdir("workflow_catalog.json")
 
 
@@ -679,7 +687,6 @@ def _handle_workflow_errors(client_id: str, payload_str: str) -> str:
     - Per-step error details for failed steps
     - Error log entries (if available)
     """
-    from umrs.server.workflow_execution_registry import get_execution_registry
 
     execution_id, payload = _parse_execution_id(payload_str)
     if not execution_id:

@@ -220,10 +220,15 @@ def handle_upload_workflow(client_id, zip_path, workflow_name):
     # stored ``source_path`` resolves correctly regardless of the
     # working directory of the process that later reads it (e.g.
     # the durable-job backend running in a different cwd than the
-    # UMRS server).
-    workflows_root = get_resolved_umrs_subdir(
-        get_default_tmp_subdir(), "user_workflows", client_id
-    )
+    # UMRS server). UMRS_WORKFLOW_STATE_DIR relocates extracted workflows
+    # to a durable bind-mounted dir on deployed servers.
+    state_dir = os.environ.get("UMRS_WORKFLOW_STATE_DIR", "").strip()
+    if state_dir:
+        workflows_root: str = os.path.join(state_dir, "extracted", client_id)
+    else:
+        workflows_root = get_resolved_umrs_subdir(
+            get_default_tmp_subdir(), "user_workflows", client_id
+        )
     dest_dir = os.path.realpath(os.path.join(workflows_root, workflow_name))
 
     try:
