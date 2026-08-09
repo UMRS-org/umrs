@@ -523,7 +523,7 @@ def _register_uploaded_workflow(
 )
 async def upload_workflow(
     file: UploadFile = File(...),
-    user_id: str = Form(...),
+    user_id: str | None = Form(None),
     workflow_name: str | None = Form(None),
     scope: str = Form("user"),
     x_user_id: str | None = Header(None),
