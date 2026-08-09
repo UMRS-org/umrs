@@ -143,6 +143,31 @@ def _get_pool() -> Any:
         return None
 
 
+def _resolve_s3_credentials() -> tuple[str, str]:
+    """Resolve S3 credentials: env first, then the platform admin s3cfg.
+
+    Deployed umrs-front containers carry only S3_SECRET_KEY (+ the mounted
+    admin s3cfg at ``UMRS_ADMIN_S3_CONFIGURATION_FILE``); S3_ACCESS_KEY is
+    absent, so job-side S3 clients must not fail to resolve.
+    Returns ``(access_key, secret_key)`` — empty strings when unresolvable.
+    """
+    access = os.getenv("S3_ACCESS_KEY", "")
+    secret = os.getenv("S3_SECRET_KEY", "")
+    if access and secret:
+        return access, secret
+    cfg_file = os.getenv("UMRS_ADMIN_S3_CONFIGURATION_FILE", "/etc/umrs/s3cfg")
+    try:
+        import configparser
+
+        p = configparser.ConfigParser()
+        p.read(cfg_file)
+        access = access or p.get("default", "access_key", fallback="")
+        secret = secret or p.get("default", "secret_key", fallback="")
+    except Exception as exc:
+        logger.warning("s3cfg credential resolution failed: %s", exc)
+    return access, secret
+
+
 def _build_s3_client(job_spec: dict[str, Any]) -> tuple[Any, str]:
     """Build an S3 client from env (same config as the ingest backend).
 
@@ -152,12 +177,13 @@ def _build_s3_client(job_spec: dict[str, Any]) -> tuple[Any, str]:
     from botocore.config import Config as BotoConfig
 
     bucket = job_spec.get("bucket", "umrs-data")
+    access_key, secret_key = _resolve_s3_credentials()
     try:
         client = boto3.client(
             "s3",
             endpoint_url=os.getenv("S3_ENDPOINT_URL", "http://localhost:9000"),
-            aws_access_key_id=os.getenv("S3_ACCESS_KEY", ""),
-            aws_secret_access_key=os.getenv("S3_SECRET_KEY", ""),
+            aws_access_key_id=access_key,
+            aws_secret_access_key=secret_key,
             region_name=os.getenv("S3_REGION", "us-east-1"),
             config=BotoConfig(signature_version="s3v4", s3={"addressing_style": "path"}),
             use_ssl=os.getenv("S3_USE_SSL", "false").lower() == "true",
@@ -205,15 +231,14 @@ class KnowledgeIngestBackend(OrchestratorBackend):
         return "knowledge_ingest"
 
     def _init_s3(self, job_spec: dict[str, Any]) -> None:
-        """Lazily initialize S3 client from env."""
+        """Lazily initialize S3 client from env/admin-s3cfg (see _resolve_s3_credentials)."""
         if self._s3_client is not None:
             return
         from botocore.config import Config as BotoConfig
 
         self._bucket = job_spec.get("bucket", "umrs-data")
         endpoint = os.getenv("S3_ENDPOINT_URL", "http://localhost:9000")
-        key = os.getenv("S3_ACCESS_KEY", "")
-        secret = os.getenv("S3_SECRET_KEY", "")
+        key, secret = _resolve_s3_credentials()
         use_ssl = os.getenv("S3_USE_SSL", "false").lower() == "true"
 
         try:
