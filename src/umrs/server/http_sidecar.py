@@ -71,6 +71,22 @@ def _build_db_pool(app):
         return None
 
 
+def _start_durable_runtime() -> None:
+    """Start the process-owned durable jobs runtime (best-effort).
+
+    ``start_durable_job_runtime_from_env()`` is a no-op when no orchestrator
+    backend (Slurm/K8s/Docker) is detected. Without this call the durable-job
+    dispatch scheduler never starts on this deployment and durable jobs
+    (workflow_run, knowledge_*, data_ingestion) queue forever.
+    """
+    try:
+        from umrs.server.durable_job_runtime import start_durable_job_runtime_from_env
+
+        start_durable_job_runtime_from_env()
+    except Exception:
+        logger.warning("Durable job runtime start skipped", exc_info=True)
+
+
 def _init_catalog_meta_store(db_pool):
     """Initialize the catalog metadata store."""
     from umrs.api.catalog_store import init_catalog_meta_store
@@ -530,6 +546,7 @@ def _create_app():
         logger.info("Janitor started via lifespan hook")
         if start_scheduler():
             logger.info("Scheduler service started via lifespan hook")
+        _start_durable_runtime()
         try:
             yield
         finally:
