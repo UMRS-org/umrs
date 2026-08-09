@@ -94,6 +94,7 @@ services:
       # provisioning a model by name is unaffected.
       UMRS_MODEL_DENYLIST: ${UMRS_RCCS_MODEL_DENYLIST:-GLM-5.1,Kimi-K2.6,DeepSeek-V4-Pro,DeepSeek-V4-Pro-128K,DeepSeek-V4-Pro-TEP}
       UMRS_CONFIG: /etc/umrs
+      UMRS_WORKFLOW_STATE_DIR: /var/lib/umrs-workflows
       UMRS_CERTIFICATION_MODE: ${UMRS_CERTIFICATION_MODE:-warn}
       UMRS_PREFLIGHT_MODE: ${UMRS_PREFLIGHT_MODE:-warn}
       UMRS_CONTROL_PORT: ${UMRS_RCCS_ZMQ_PORT:-50090}
@@ -131,6 +132,7 @@ services:
       - ../rccs-front/site.yaml:/etc/umrs/site.yaml:ro,z
       - ./conf_umrs_rccs.json:/etc/umrs/conf_umrs.json:z
       - ./user_files_rccs:/etc/umrs/user_files:z
+      - ./workflow_state_rccs:/var/lib/umrs-workflows:z
       - ./s3cfg:/etc/umrs/s3cfg:ro,z
       # SSH keys for RemoteSlurmBackend
       - ${HOME}/.ssh:/root/.ssh-host:ro,z
@@ -187,6 +189,7 @@ services:
       # discoverable via /v1/models. Operators can reinstate a curated list
       # by setting UMRS_AI4S_MODEL_ALLOWLIST in .env.
       UMRS_CONFIG: /etc/umrs
+      UMRS_WORKFLOW_STATE_DIR: /var/lib/umrs-workflows
       UMRS_CERTIFICATION_MODE: ${UMRS_CERTIFICATION_MODE:-warn}
       UMRS_PREFLIGHT_MODE: ${UMRS_PREFLIGHT_MODE:-warn}
       UMRS_CONTROL_PORT: ${UMRS_AI4S_ZMQ_PORT:-50100}
@@ -225,6 +228,7 @@ services:
       - ../ai4s/pool-ai4s.yaml:/etc/umrs/pool-ai4s.yaml:ro,z
       - ./conf_umrs_ai4s.json:/etc/umrs/conf_umrs.json:z
       - ./user_files_ai4s:/etc/umrs/user_files:z
+      - ./workflow_state_ai4s:/var/lib/umrs-workflows:z
       - ./s3cfg:/etc/umrs/s3cfg:ro,z
       - ${HOME}/.ssh:/root/.ssh-host:ro,z
       - ${HOME}/.config/umrs/curve-keys:/root/.config/umrs/curve-keys:ro,z
@@ -269,6 +273,7 @@ services:
       # instead of silently defaulting to 1 node / 1 GPU / 4096 context).
       UMRS_PROVISION_ROSTER: /etc/umrs/pool-bdrt-step.yaml
       UMRS_CONFIG: /etc/umrs
+      UMRS_WORKFLOW_STATE_DIR: /var/lib/umrs-workflows
       UMRS_CERTIFICATION_MODE: ${UMRS_CERTIFICATION_MODE:-warn}
       UMRS_PREFLIGHT_MODE: ${UMRS_PREFLIGHT_MODE:-warn}
       UMRS_CONTROL_PORT: ${UMRS_BDRT_ZMQ_PORT:-50110}
@@ -303,6 +308,7 @@ services:
       - ../bdrt/pool-bdrt-step.yaml:/etc/umrs/pool-bdrt-step.yaml:ro,z
       - ./conf_umrs_bdrt.json:/etc/umrs/conf_umrs.json:z
       - ./user_files_bdrt:/etc/umrs/user_files:z
+      - ./workflow_state_bdrt:/var/lib/umrs-workflows:z
       - ./s3cfg:/etc/umrs/s3cfg:ro,z
       # SSH keys for RemoteSlurmBackend
       - ${HOME}/.ssh:/root/.ssh-host:ro,z
@@ -343,6 +349,7 @@ services:
     environment:
       UMRS_SITE_CONFIG: /etc/umrs/site.yaml
       UMRS_CONFIG: /etc/umrs
+      UMRS_WORKFLOW_STATE_DIR: /var/lib/umrs-workflows
       UMRS_CERTIFICATION_MODE: ${UMRS_CERTIFICATION_MODE:-warn}
       UMRS_PREFLIGHT_MODE: ${UMRS_PREFLIGHT_MODE:-warn}
       UMRS_CONTROL_PORT: ${UMRS_OCTOPUS_ZMQ_PORT:-50120}
@@ -375,6 +382,7 @@ services:
       - ../octopus-front/site.yaml:/etc/umrs/site.yaml:ro,z
       - ./conf_umrs_octopus.json:/etc/umrs/conf_umrs.json:z
       - ./user_files_octopus:/etc/umrs/user_files:z
+      - ./workflow_state_octopus:/var/lib/umrs-workflows:z
       - ./s3cfg:/etc/umrs/s3cfg:ro,z
       - ${HOME}/.ssh:/root/.ssh-host:ro,z
       - ${HOME}/.config/umrs/curve-keys:/root/.config/umrs/curve-keys:ro,z

@@ -205,22 +205,27 @@ class DurableJobRuntime:
 def start_durable_job_runtime_from_env(
     timeout: float = 30.0,
 ) -> DurableJobRuntime | None:
-    """Best-effort bootstrap of the process-owned durable jobs runtime.
+    """Bootstrap the process-owned durable jobs runtime.
 
-    Returns None silently when no orchestrator backend is available (e.g.
-    laptop dev without Slurm/K8s/Docker). The durable job runtime is only
-    needed for LLM endpoint management — embedding models run via
-    LocalEmbeddingBackend and are unaffected.
+    The runtime hosts the durable-job dispatch scheduler for ALL job types
+    (workflow_run, data_ingestion, knowledge_*, endpoint provision, model
+    download) — not just LLM endpoint management. The backend factory
+    registers process-local backends regardless of the detected execution
+    target, so backend detection is ADvisory-only here: an UNKNOWN result
+    must NOT disable the runtime (umrs-front containers detect no local
+    Slurm/K8s/Docker yet still must dispatch workflow_run jobs).
+    Set ``UMRS_DISABLE_DURABLE_RUNTIME=1`` to explicitly opt out.
     """
-    from umrs.orchestrator.detection import BackendType, detect_backend
+    import os
+
+    if os.environ.get("UMRS_DISABLE_DURABLE_RUNTIME", "").lower() in ("1", "true", "yes"):
+        logger.info("Durable job runtime disabled via UMRS_DISABLE_DURABLE_RUNTIME")
+        return None
+
+    from umrs.orchestrator.detection import detect_backend
 
     detection = detect_backend()
-    if detection.backend == BackendType.UNKNOWN:
-        logger.debug(
-            "No orchestrator backend detected (no Slurm/K8s/Docker). "
-            "Durable job runtime disabled — embedding models unaffected."
-        )
-        return None
+    logger.info("Orchestrator backend detection: %s", detection.backend)
 
     try:
         db_pool = build_durable_job_db_pool_from_env()
