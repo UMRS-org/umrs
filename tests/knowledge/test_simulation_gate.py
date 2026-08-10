@@ -110,6 +110,59 @@ def test_run_research_failure_maps_to_failed_phase(tmp_path: Path) -> None:
     assert project.phase == ProjectPhase.FAILED
 
 
+def test_run_research_failed_workflow_status_maps_to_failed_phase(
+    tmp_path: Path,
+) -> None:
+    """Terminal workflow status=failed must not publish findings as COMPLETED."""
+    project = _approved_project(tmp_path)
+    port = FakeWorkflowExecutionPort(
+        wait_payload={
+            "execution_id": "exec-failed",
+            "status": "failed",
+            "durable_job_id": "job-failed",
+            "error": "SlurmStepExecutor requires a container image",
+        },
+        results_payload={
+            "execution_id": "exec-failed",
+            "status": "failed",
+            "durable_job_id": "job-failed",
+            "error": "SlurmStepExecutor requires a container image",
+            "outputs": {},
+            "metrics": {},
+            "artifacts": [],
+        },
+    )
+    project.set_workflow_port(port)
+    loop = project.run_research(max_iterations=1, simulate=False)
+    assert loop.status.value == "error"
+    assert project.phase == ProjectPhase.FAILED
+    assert loop.iterations == [] or all(
+        not (it.findings if hasattr(it, "findings") else []) for it in loop.iterations
+    )
+
+
+def test_execute_experiment_keeps_loop_project_id(tmp_path: Path) -> None:
+    """experiment.parameters must not overwrite the loop project_id."""
+    project = _approved_project(tmp_path)
+    # Poison plan experiment parameters with JWT/profile default.
+    assert project.research_plan is not None
+    for exp in project.research_plan.experiments:
+        exp.parameters = dict(exp.parameters or {})
+        exp.parameters["project_id"] = "default"
+
+    seen: list[dict] = []
+
+    class CapturePort(FakeWorkflowExecutionPort):
+        def trigger(self, workflow_name: str, params: dict) -> str:
+            seen.append(dict(params))
+            return super().trigger(workflow_name, params)
+
+    project.set_workflow_port(CapturePort())
+    project.run_research(max_iterations=1, simulate=False)
+    assert seen
+    assert seen[0].get("project_id") == "sim-gate"
+
+
 def test_retrieval_failure_fails_run_instead_of_publishing(tmp_path: Path) -> None:
     """A retrieval error must fail the run, not yield an unevidenced finding."""
     project = _approved_project(tmp_path)
