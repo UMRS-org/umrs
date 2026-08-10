@@ -15,6 +15,7 @@ import asyncio
 import hashlib
 import json
 import logging
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -282,7 +283,18 @@ class _FakeAsyncpgPool:
         pass
 
 
+def _open_pool_ctx(pool):  # noqa: ANN001, ANN202
+    """Return a context manager mimicking ka._open_pool yielding ``pool``."""
+
+    @asynccontextmanager
+    async def _ctx():
+        yield pool
+
+    return _ctx
+
+
 def test_collect_artifact_ids_loop_safe(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DB_HOST", "127.0.0.1")  # satisfy the collector DSN gate
     expected = [
         {
             "artifact_id": "wfart-x",
@@ -291,7 +303,7 @@ def test_collect_artifact_ids_loop_safe(monkeypatch: pytest.MonkeyPatch) -> None
             "source_ref": "s3://r4-data/jobs/j/attempt_1/k.json",
         }
     ]
-    monkeypatch.setattr(ka, "_get_pool", lambda: _FakeAsyncpgPool({"artifacts": expected}))
+    monkeypatch.setattr(ka, "_open_pool", _open_pool_ctx(_FakeAsyncpgPool({"artifacts": expected})))
     # knowledge_artifacts table read: make it return nothing extra.
     monkeypatch.setattr(ka, "_artifacts_from_store", _noop_store_rows)
 
@@ -319,6 +331,7 @@ def test_collect_artifact_ids_accepts_jsonb_string(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Regression: ad-hoc asyncpg pools return JSONB as str — must parse."""
+    monkeypatch.setenv("DB_HOST", "127.0.0.1")  # satisfy the collector DSN gate
     expected = [
         {
             "artifact_id": "wfart-jsonb",
@@ -329,8 +342,8 @@ def test_collect_artifact_ids_accepts_jsonb_string(
     ]
     monkeypatch.setattr(
         ka,
-        "_get_pool",
-        lambda: _FakeAsyncpgPool(json.dumps({"artifacts": expected})),
+        "_open_pool",
+        _open_pool_ctx(_FakeAsyncpgPool(json.dumps({"artifacts": expected}))),
     )
     monkeypatch.setattr(ka, "_artifacts_from_store", _noop_store_rows)
     job = SimpleNamespace(job_id="j-1", project_id="proj-1", commit_attempt_id="att-1")
@@ -362,6 +375,7 @@ def test_artifacts_from_attempt_metrics_malformed_row_no_crash() -> None:
 
 
 def test_list_project_artifact_sources_loop_safe(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DB_HOST", "127.0.0.1")  # satisfy the collector DSN gate
     row = SimpleNamespace(artifact_id="a1", content_hash="h", kind="s3_uri", source_ref="s3://b/k")
 
     class _Store:
@@ -371,7 +385,7 @@ def test_list_project_artifact_sources_loop_safe(monkeypatch: pytest.MonkeyPatch
         async def list_artifacts(self, _project_id: str) -> tuple[list, int]:
             return [row], 1
 
-    monkeypatch.setattr(ka, "_get_pool", lambda: _FakeAsyncpgPool(None))
+    monkeypatch.setattr(ka, "_open_pool", _open_pool_ctx(_FakeAsyncpgPool(None)))
     monkeypatch.setattr("umrs.knowledge.store.KnowledgeStore", _Store)
 
     async def _outer() -> list[dict]:

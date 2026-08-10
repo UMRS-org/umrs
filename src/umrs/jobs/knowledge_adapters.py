@@ -17,6 +17,7 @@ import logging
 import os
 import threading
 import uuid
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -247,6 +248,40 @@ def _get_pool() -> Any:
         return None
 
 
+@asynccontextmanager
+async def _open_pool() -> Any:
+    """Yield an initialized asyncpg pool bound to the caller's event loop.
+
+    asyncpg pools must be created — and fully consumed and closed — inside ONE
+    event loop: a pool built by the sync ``_get_pool()`` is never initialized,
+    so every fetch raises InterfaceError('pool is not initialized') (silently
+    swallowed by the collectors' guards).  All async consumers use this helper
+    and keep every DB operation inside its body.
+    """
+    pool = None
+    dsn = _resolve_knowledge_dsn()
+    if dsn:
+        try:
+            import asyncpg
+
+            pool = await asyncpg.create_pool(dsn=dsn)
+        except Exception as exc:
+            logger.warning("Knowledge asyncpg pool unavailable: %s", exc)
+            pool = None
+    try:
+        yield pool
+    finally:
+        if pool is not None:
+            try:
+                await pool.close()
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                await pool.wait_closed()
+            except Exception:  # noqa: BLE001
+                pass
+
+
 def _resolve_s3_credentials() -> tuple[str, str]:
     """Resolve S3 credentials: env first, then the platform admin s3cfg.
 
@@ -443,16 +478,15 @@ class KnowledgeUnderstandBackend(OrchestratorBackend):
         ).emit()
 
         s3_client, s3_bucket = _build_s3_client(job.spec)
-        pool = _get_pool()
         degraded = False
         degraded_reason = ""
 
-        if pool is None:
-            degraded_reason = "Postgres pool unavailable"
-            degraded = True
-            logger.warning("KnowledgeUnderstand degraded: %s", degraded_reason)
+        async with _open_pool() as pool:
+            if pool is None:
+                degraded_reason = "Postgres pool unavailable"
+                degraded = True
+                logger.warning("KnowledgeUnderstand degraded: %s", degraded_reason)
 
-        try:
             result = await _run_understand(
                 job,
                 attempt,
@@ -462,10 +496,6 @@ class KnowledgeUnderstandBackend(OrchestratorBackend):
                 s3_client,
                 s3_bucket,
             )
-        finally:
-            if pool is not None:
-                pool.close()
-                await pool.wait_closed()
 
         if degraded:
             result.degraded = True
@@ -701,29 +731,29 @@ def _store_artifacts_in_db_sync(
     artifact_ids: list[str],
 ) -> None:
     """Persist artifact metadata to Postgres (best-effort)."""
+    if not _resolve_knowledge_dsn():
+        return
     try:
-        pool = _get_pool()
-        if pool is None:
-            return
 
         async def _do() -> None:
             from umrs.knowledge.store import KnowledgeStore
 
-            store = KnowledgeStore(pool)
-            for aid in artifact_ids:
-                try:
-                    await store.insert_artifact(
-                        artifact_id=aid,
-                        content_hash="",
-                        kind="document",
-                        project_id=project_id,
-                    )
-                except Exception:
-                    pass
+            async with _open_pool() as pool:
+                if pool is None:
+                    return
+                store = KnowledgeStore(pool)
+                for aid in artifact_ids:
+                    try:
+                        await store.insert_artifact(
+                            artifact_id=aid,
+                            content_hash="",
+                            kind="document",
+                            project_id=project_id,
+                        )
+                    except Exception:
+                        pass
 
         _fire_coroutine(_do(), "persist_artifact_meta")
-        pool.close()
-        _fire_coroutine(pool.wait_closed(), "pool_close")
     except Exception:
         pass
 
@@ -1519,37 +1549,28 @@ def _collect_artifact_ids(job: Any) -> list[dict[str, Any]]:
     Returns a list of dicts with artifact_id, content_hash, kind, source_ref.
     """
     artifacts: list[dict[str, Any]] = []
+    if not _resolve_knowledge_dsn():
+        return artifacts
+
+    async def _collect() -> list[dict[str, Any]]:
+        async with _open_pool() as pool:
+            if pool is None:
+                return []
+            attempts = await _resolve_succeeded_attempts(pool, job)
+            results = await _artifacts_from_attempt_metrics(pool, attempts)
+            results.extend(await _artifacts_from_store(pool, job.project_id))
+            return results
 
     try:
-        pool = _get_pool()
-        if pool is None:
-            return artifacts
-
-        async def _collect() -> list[dict[str, Any]]:
-            try:
-                attempts = await _resolve_succeeded_attempts(pool, job)
-                results = await _artifacts_from_attempt_metrics(pool, attempts)
-                results.extend(await _artifacts_from_store(pool, job.project_id))
-                return results
-            finally:
-                try:
-                    await pool.close()
-                    await pool.wait_closed()
-                except Exception:
-                    pass
-
-        try:
-            collected = _run_coroutine_sync(_collect(), "collect-artifacts")
-            if collected:
-                artifacts = collected
-        except Exception as exc:
-            logger.warning(
-                "Artifact collection failed for job %s: %s",
-                getattr(job, "job_id", "?"),
-                exc,
-            )
-    except Exception:
-        pass
+        collected = _run_coroutine_sync(_collect(), "collect-artifacts")
+        if collected:
+            artifacts = collected
+    except Exception as exc:
+        logger.warning(
+            "Artifact collection failed for job %s: %s",
+            getattr(job, "job_id", "?"),
+            exc,
+        )
 
     return artifacts
 
@@ -1620,36 +1641,37 @@ def _store_artifact_provenance(
     step: str,
 ) -> None:
     """Store artifact metadata with provenance (best-effort)."""
-    store_pool = _get_pool()
-    if not store_pool:
+    if not _resolve_knowledge_dsn():
         return
     try:
         from umrs.knowledge.store import KnowledgeStore
 
-        store = KnowledgeStore(store_pool)
-
         async def _store_provenance():
-            for art in deduped:
-                try:
-                    aid = art.get("artifact_id", f"art-{uuid.uuid4().hex[:8]}")
-                    ch = art.get("content_hash", "") or art.get("sha256", "")
-                    kind = art.get("kind", "document")
-                    await store.insert_artifact(
-                        artifact_id=aid,
-                        content_hash=ch,
-                        kind=kind,
-                        project_id=project_id,
-                        metadata={
-                            "produced_by_job_id": job.job_id,
-                            "produced_by_attempt_id": attempt.attempt_id
-                            if hasattr(attempt, "attempt_id")
-                            else "",
-                            "workflow": workflow,
-                            "step": step,
-                        },
-                    )
-                except Exception:
-                    pass
+            async with _open_pool() as pool:
+                if pool is None:
+                    return
+                store = KnowledgeStore(pool)
+                for art in deduped:
+                    try:
+                        aid = art.get("artifact_id", f"art-{uuid.uuid4().hex[:8]}")
+                        ch = art.get("content_hash", "") or art.get("sha256", "")
+                        kind = art.get("kind", "document")
+                        await store.insert_artifact(
+                            artifact_id=aid,
+                            content_hash=ch,
+                            kind=kind,
+                            project_id=project_id,
+                            metadata={
+                                "produced_by_job_id": job.job_id,
+                                "produced_by_attempt_id": attempt.attempt_id
+                                if hasattr(attempt, "attempt_id")
+                                else "",
+                                "workflow": workflow,
+                                "step": step,
+                            },
+                        )
+                    except Exception:
+                        pass
 
         try:
             _fire_coroutine(_store_provenance(), "artifact_provenance")
@@ -1713,16 +1735,16 @@ def _enqueue_ingest_job(
 
 def _list_project_artifact_sources(project_id: str) -> list[dict[str, Any]]:
     """List all artifact sources for a project (best-effort)."""
-    store_pool = _get_pool()
-    if not store_pool:
+    if not _resolve_knowledge_dsn():
         return []
     try:
         from umrs.knowledge.store import KnowledgeStore
 
-        store = KnowledgeStore(store_pool)
-
-        async def _list_new():
-            try:
+        async def _list_new() -> list[dict[str, Any]]:
+            async with _open_pool() as pool:
+                if pool is None:
+                    return []
+                store = KnowledgeStore(pool)
                 arts, _ = await store.list_artifacts(project_id)
                 return [
                     {
@@ -1733,12 +1755,6 @@ def _list_project_artifact_sources(project_id: str) -> list[dict[str, Any]]:
                     }
                     for a in arts
                 ]
-            finally:
-                try:
-                    await store_pool.close()
-                    await store_pool.wait_closed()
-                except Exception:
-                    pass
 
         try:
             return _run_coroutine_sync(_list_new(), "list-artifact-sources") or []
@@ -1800,64 +1816,61 @@ def _create_produced_by_edges(
     step: str,
 ) -> None:
     """Create PRODUCED_BY edges in the knowledge graph (best-effort)."""
-    from umrs.knowledge.store import KnowledgeEdge, KnowledgeNode, KnowledgeStore
+    from umrs.knowledge.store import KnowledgeNode, KnowledgeStore
 
-    store_pool = _get_pool()
-    if not (store_pool and deduped):
+    if not (deduped and _resolve_knowledge_dsn()):
         return
     try:
-        store = KnowledgeStore(store_pool)
 
         async def _create_edges():
-            prod_entity_id = f"prod-job-{job.job_id}"
-            job_type = getattr(job, "job_type", "unknown")
-            # Create provenance node
-            await store.upsert_node(
-                KnowledgeNode(
-                    node_id=prod_entity_id,
-                    project_id=project_id,
-                    label=f"job:{job.job_id}",
-                    node_type="job",
-                    content={
-                        "job_id": job.job_id,
-                        "job_type": job_type.value
-                        if hasattr(job_type, "value")
-                        else job_type,
-                        "workflow": workflow,
-                        "step": step,
-                        "user_id": user_id,
-                    },
-                    content_hash=_sha256_hex(
-                        f"provenance-{job.job_id}-{workflow}-{step}".encode()
-                    ),
-                    source_ir="",
+            async with _open_pool() as pool:
+                if pool is None:
+                    return
+                store = KnowledgeStore(pool)
+                prod_entity_id = f"prod-job-{job.job_id}"
+                job_type = getattr(job, "job_type", "unknown")
+                job_type_value = (
+                    job_type.value if hasattr(job_type, "value") else job_type
                 )
-            )
-
-            # Create PRODUCED_BY edges
-            for art in deduped:
-                aid = art.get("artifact_id", "")
-                if not aid:
-                    continue
-                try:
-                    await store.upsert_edge(
-                        KnowledgeEdge(
-                            edge_id=f"edge-{aid}-produced_by-{job.job_id}",
-                            project_id=project_id,
-                            source_id=aid,
-                            target_id=prod_entity_id,
-                            relation_type="produced_by",
-                            content={
-                                "workflow": workflow,
-                                "step": step,
-                                "attempt_id": attempt.attempt_id
-                                if hasattr(attempt, "attempt_id")
-                                else "",
-                            },
-                        )
+                # Create provenance node
+                await store.upsert_node(
+                    KnowledgeNode(
+                        node_id=prod_entity_id,
+                        project_id=project_id,
+                        label=f"job:{job.job_id}",
+                        node_type="job",
+                        content={
+                            "job_id": job.job_id,
+                            "job_type": job_type_value,
+                            "workflow": workflow,
+                            "step": step,
+                            "user_id": user_id,
+                        },
+                        content_hash=_sha256_hex(
+                            f"provenance-{job.job_id}-{workflow}-{step}".encode()
+                        ),
+                        source_ir="",
                     )
-                except Exception:
-                    pass
+                )
+
+                # Create PRODUCED_BY edges
+                for art in deduped:
+                    aid = art.get("artifact_id", "")
+                    if not aid:
+                        continue
+                    try:
+                        await _upsert_produced_edge(
+                            store,
+                            aid,
+                            prod_entity_id,
+                            project_id,
+                            job,
+                            attempt,
+                            workflow,
+                            step,
+                        )
+                    except Exception:
+                        pass
 
         try:
             _fire_coroutine(_create_edges(), "produced_by_edges")
@@ -1865,6 +1878,37 @@ def _create_produced_by_edges(
             pass
     except Exception:
         pass
+
+
+async def _upsert_produced_edge(
+    store: Any,
+    aid: str,
+    prod_entity_id: str,
+    project_id: str,
+    job: Any,
+    attempt: Any,
+    workflow: str,
+    step: str,
+) -> None:
+    """Upsert one artifact → job produced_by edge (best-effort)."""
+    from umrs.knowledge.store import KnowledgeEdge
+
+    await store.upsert_edge(
+        KnowledgeEdge(
+            edge_id=f"edge-{aid}-produced_by-{job.job_id}",
+            project_id=project_id,
+            source_id=aid,
+            target_id=prod_entity_id,
+            relation_type="produced_by",
+            content={
+                "workflow": workflow,
+                "step": step,
+                "attempt_id": attempt.attempt_id
+                if hasattr(attempt, "attempt_id")
+                else "",
+            },
+        )
+    )
 
 
 def enqueue_knowledge_ingest(
@@ -1948,51 +1992,50 @@ def enqueue_ingest_failure(
     from umrs.knowledge.store import KnowledgeNode
 
     try:
-        store_pool = _get_pool()
-        if store_pool is None:
+        if not _resolve_knowledge_dsn():
             return
 
-        from umrs.knowledge.store import KnowledgeStore
-
-        store = KnowledgeStore(store_pool)
+        from umrs.knowledge.store import KnowledgeEdge, KnowledgeStore
 
         async def _log_failure() -> None:
             try:
                 fail_entity_id = f"fail-{job_id}-{attempt_no}"
-                await store.upsert_node(
-                    KnowledgeNode(
-                        node_id=fail_entity_id,
-                        project_id=project_id,
-                        label=f"job:{job_id} FAILED",
-                        node_type="job_failure",
-                        content={
-                            "job_id": job_id,
-                            "attempt_no": attempt_no,
-                            "exit_reason": exit_reason,
-                            "user_id": user_id,
-                        },
-                        content_hash=_sha256_hex(
-                            f"failure-{job_id}-{exit_reason}".encode()
-                        ),
-                        source_ir="",
-                    )
-                )
-                # Link the failed job to this failure node
-                try:
-                    from umrs.knowledge.store import KnowledgeEdge
-
-                    await store.upsert_edge(
-                        KnowledgeEdge(
-                            edge_id=f"edge-{job_id}-failure-{fail_entity_id}",
+                async with _open_pool() as pool:
+                    if pool is None:
+                        return
+                    store = KnowledgeStore(pool)
+                    await store.upsert_node(
+                        KnowledgeNode(
+                            node_id=fail_entity_id,
                             project_id=project_id,
-                            source_id=f"prod-job-{job_id}",
-                            target_id=fail_entity_id,
-                            relation_type="caused_by",
-                            content={"reason": exit_reason},
+                            label=f"job:{job_id} FAILED",
+                            node_type="job_failure",
+                            content={
+                                "job_id": job_id,
+                                "attempt_no": attempt_no,
+                                "exit_reason": exit_reason,
+                                "user_id": user_id,
+                            },
+                            content_hash=_sha256_hex(
+                                f"failure-{job_id}-{exit_reason}".encode()
+                            ),
+                            source_ir="",
                         )
                     )
-                except Exception:
-                    pass
+                    # Link the failed job to this failure node
+                    try:
+                        await store.upsert_edge(
+                            KnowledgeEdge(
+                                edge_id=f"edge-{job_id}-failure-{fail_entity_id}",
+                                project_id=project_id,
+                                source_id=f"prod-job-{job_id}",
+                                target_id=fail_entity_id,
+                                relation_type="caused_by",
+                                content={"reason": exit_reason},
+                            )
+                        )
+                    except Exception:
+                        pass
             except Exception:
                 pass
 
