@@ -13,6 +13,8 @@ import logging
 import uuid
 from typing import Any, Callable
 
+from psycopg2.extras import Json
+
 from umrs.artifact_registry.models import (
     Artifact,
     ArtifactLineageEdge,
@@ -20,7 +22,6 @@ from umrs.artifact_registry.models import (
 )
 
 logger = logging.getLogger(__name__)
-
 
 
 class ArtifactStoreError(Exception):
@@ -75,7 +76,7 @@ class ArtifactStore:
                         artifact.s3_key,
                         artifact.size_bytes,
                         artifact.checksum,
-                        artifact.metadata,
+                        Json(artifact.metadata),
                         artifact.execution_id,
                         artifact.workflow_id,
                         artifact.job_id,
@@ -95,9 +96,7 @@ class ArtifactStore:
         """Get an artifact by id.  Returns None if not found."""
         conn = self._get_conn()
         with conn.cursor() as cur:
-            cur.execute(
-                "SELECT * FROM artifacts WHERE id = %s", (str(artifact_id),)
-            )
+            cur.execute("SELECT * FROM artifacts WHERE id = %s", (str(artifact_id),))
             row = cur.fetchone()
             if row is None:
                 return None
@@ -147,9 +146,7 @@ class ArtifactStore:
             rows = cur.fetchall()
             return [Artifact.from_row(r) for r in rows]
 
-    def update_metadata(
-        self, artifact_id: uuid.UUID, patch: dict[str, Any]
-    ) -> None:
+    def update_metadata(self, artifact_id: uuid.UUID, patch: dict[str, Any]) -> None:
         """Merge patch dict into the artifact's metadata JSONB."""
         conn = self._get_conn()
         try:
@@ -247,9 +244,7 @@ class ArtifactStore:
         conn = self._get_conn()
         try:
             with conn.cursor() as cur:
-                cur.execute(
-                    "DELETE FROM artifacts WHERE id = %s", (str(artifact_id),)
-                )
+                cur.execute("DELETE FROM artifacts WHERE id = %s", (str(artifact_id),))
                 deleted = cur.rowcount > 0
                 conn.commit()
                 return deleted
