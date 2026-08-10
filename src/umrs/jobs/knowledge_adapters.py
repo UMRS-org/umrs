@@ -107,6 +107,29 @@ def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _fire_coroutine(coro: Any, label: str = "") -> None:
+    """Run a coroutine from sync code, respecting the ambient loop.
+
+    In a plain sync context, runs via asyncio.run(). Inside a running loop
+    (e.g. the JobService engine thread), schedules as a fire-and-forget task
+    instead of calling asyncio.run(), which would raise
+    "asyncio.run() cannot be called from a running event loop".
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        asyncio.run(coro)
+        return
+
+    async def _swallow() -> None:
+        try:
+            await coro
+        except Exception:
+            logger.debug("background task %s failed", label, exc_info=True)
+
+    asyncio.get_running_loop().create_task(_swallow())
+
+
 def _sha256_hex(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
@@ -613,9 +636,9 @@ def _store_artifacts_in_db_sync(
                 except Exception:
                     pass
 
-        asyncio.run(_do())
+        _fire_coroutine(_do(), "persist_artifact_meta")
         pool.close()
-        asyncio.run(pool.wait_closed())
+        _fire_coroutine(pool.wait_closed(), "pool_close")
     except Exception:
         pass
 
@@ -1505,7 +1528,7 @@ def _store_artifact_provenance(
                     pass
 
         try:
-            asyncio.run(_store_provenance())
+            _fire_coroutine(_store_provenance(), "artifact_provenance")
         except Exception:
             pass
     except Exception:
@@ -1701,7 +1724,7 @@ def _create_produced_by_edges(
                     pass
 
         try:
-            asyncio.run(_create_edges())
+            _fire_coroutine(_create_edges(), "produced_by_edges")
         except Exception:
             pass
     except Exception:
@@ -1838,7 +1861,7 @@ def enqueue_ingest_failure(
                 pass
 
         try:
-            asyncio.run(_log_failure())
+            _fire_coroutine(_log_failure(), "ingest_failure_log")
         except Exception:
             pass
     except Exception:
