@@ -1451,6 +1451,8 @@ def register_auto_ingest_callbacks(
 ) -> None:
     """Wire auto-ingest hooks into a JobStore instance."""
     global _auto_ingest_callback, _auto_ingest_failure_callback
+    _auto_ingest_callback = enqueue_auto_ingest
+    _auto_ingest_failure_callback = enqueue_auto_ingest_failure
 
     def _on_succeeded(job: Any, attempt: Any) -> None:
         _auto_ingest_callback(job, attempt)
