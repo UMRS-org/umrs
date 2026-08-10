@@ -22,6 +22,7 @@ current runner's tolerance for the registry being absent.
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import time
@@ -65,9 +66,58 @@ class DurableExecutionRecord(ExecutionRecord):
         self._fire_persist()
 
 
+_BLOB_TAG = "base64"
+
+
+def _encode_blobs(blobs: Any) -> dict[str, Any]:
+    """Encode byte blob values for JSON; non-dict/legacy values pass through."""
+    if not isinstance(blobs, dict):
+        return {}
+    out: dict[str, Any] = {}
+    for key, value in blobs.items():
+        if isinstance(value, (bytes, bytearray)):
+            out[key] = {
+                "_blob_encoding": _BLOB_TAG,
+                "data": base64.b64encode(bytes(value)).decode("ascii"),
+            }
+        elif isinstance(value, dict) and value.get("_blob_encoding") == _BLOB_TAG:
+            out[key] = value  # already encoded (idempotent)
+        else:
+            out[key] = value
+    return out
+
+
+def _decode_blobs(blobs: Any) -> dict[str, Any]:
+    """Decode base64 blob wrappers back to bytes; legacy values pass through."""
+    if not isinstance(blobs, dict):
+        return {}
+    out: dict[str, Any] = {}
+    for key, value in blobs.items():
+        if isinstance(value, dict) and value.get("_blob_encoding") == _BLOB_TAG:
+            try:
+                out[key] = base64.b64decode(value.get("data", ""))
+            except Exception:
+                out[key] = b""
+        else:
+            out[key] = value
+    return out
+
+
 def _record_json(record: ExecutionRecord) -> str:
-    """Canonical snapshot for durable storage."""
-    return json.dumps(record.to_dict(), default=str)
+    """Canonical snapshot for durable storage.
+
+    Includes ``results.blobs`` (base64-wrapped) so output bytes survive the
+    update→hydrate round trip: ``to_dict()`` intentionally omits ``results``,
+    but the durable workflow_run completion path must see step outputs even
+    when the checker resolves the record from Postgres instead of memory.
+    """
+    payload = record.to_dict()
+    results = dict(getattr(record, "results", None) or {})
+    if results:
+        results = dict(results)
+        results["blobs"] = _encode_blobs(results.get("blobs"))
+        payload["results"] = results
+    return json.dumps(payload, default=str)
 
 
 def _steps_from_payload(steps: Any) -> dict[str, StepProgress]:
@@ -106,7 +156,10 @@ def _record_from_payload(data: dict[str, Any]) -> DurableExecutionRecord:
         identity_provenance=str(data.get("identity_provenance", "unverified")),
     )
     record.steps = _steps_from_payload(data.get("steps"))
-    record.results = dict(data.get("results") or {})
+    results = dict(data.get("results") or {})
+    if "blobs" in results:
+        results["blobs"] = _decode_blobs(results.get("blobs"))
+    record.results = results
     record.artifacts = list(data.get("artifacts") or [])
     return record
 
