@@ -56,11 +56,18 @@ def _load_catalog() -> dict[str, Any]:
 
 
 def _save_catalog(catalog: dict[str, Any]) -> None:
-    """Save workflow catalog to JSON file."""
+    """Save workflow catalog to JSON file.
+
+    All four umrs-front cluster servers share one state dir; writes go
+    tmp-then-os.replace so the four process writers never truncate each
+    other's concurrent read.
+    """
     path = _catalog_path()
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
+    tmp_path = f"{path}.{os.getpid()}.tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
         json.dump(catalog, f, indent=2, ensure_ascii=False, default=str)
+    os.replace(tmp_path, path)
 
 
 def register_workflow(
