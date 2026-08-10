@@ -1455,6 +1455,22 @@ async def _resolve_succeeded_attempts(pool: Any, job: Any) -> list[Any]:
         return []
 
 
+def _parse_metrics_jsonb(value: Any) -> dict[str, Any]:
+    """Normalize a JSONB ``metrics`` value to a dict.
+
+    Ad-hoc asyncpg pools (no registered type codecs) return JSON/JSONB
+    columns as ``str``; app-layer pools return ``dict``.  Malformed values
+    return ``{}`` — callers treat them as empty, never as crash-worthy.
+    """
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            logger.warning("Malformed metrics JSON from job_attempts: %.80s", value)
+            return {}
+    return dict(value) if isinstance(value, dict) else {}
+
+
 async def _artifacts_from_attempt_metrics(
     pool: Any, attempts: list[Any]
 ) -> list[dict[str, Any]]:
@@ -1466,7 +1482,7 @@ async def _artifacts_from_attempt_metrics(
                 "SELECT metrics FROM job_attempts WHERE attempt_id = $1",
                 att_id,
             )
-            metrics = row if isinstance(row, dict) else {}
+            metrics = _parse_metrics_jsonb(row)
             for art in metrics.get("artifacts", []):
                 if isinstance(art, dict) and art.get("artifact_id"):
                     results.append(art)
