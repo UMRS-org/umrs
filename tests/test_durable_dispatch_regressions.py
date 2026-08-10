@@ -5,9 +5,10 @@ Covers:
 - UMRS_WORKFLOW_STATE_DIR relocates catalog + extracted workflows
 - files.py upload owner guard rejects '-' placeholder
 - knowledge_adapters._resolve_s3_credentials falls back to admin s3cfg
+- _fire_coroutine schedules safely inside/outside running loops
 - durable runtime bootstrap no longer dead-disabled on UNKNOWN detection
 """
-import os
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -88,3 +89,31 @@ class TestS3CredResolution:
         from umrs.jobs.knowledge_adapters import _resolve_s3_credentials
 
         assert _resolve_s3_credentials() == ("fileacc", "filesec")
+
+
+class TestFireCoroutine:
+    def test_sync_context_runs_coroutine(self):
+
+        from umrs.jobs.knowledge_adapters import _fire_coroutine
+
+        done: list[str] = []
+
+        async def _mark():
+            done.append("ran")
+
+        _fire_coroutine(_mark(), "t")
+        assert done == ["ran"]
+
+    @pytest.mark.asyncio
+    async def test_inside_running_loop_schedules_without_raise(self):
+        from umrs.jobs.knowledge_adapters import _fire_coroutine
+
+        done: list[str] = []
+
+        async def _mark():
+            done.append("ran")
+
+        # must NOT raise asyncio.run-event-loop RuntimeError
+        _fire_coroutine(_mark(), "t2")
+        await asyncio.sleep(0.05)  # let scheduled task complete
+        assert done == ["ran"]
