@@ -256,22 +256,32 @@ def _resolve_workflow_catalog_entry(
     workflow_name: str,
     client_id: str,
 ) -> dict[str, Any] | None:
-    """Resolve a workflow by caller-owned entry first, then shared system scope."""
+    """Resolve a workflow by caller-owned entry, then system, then any-name.
+
+    Scopes ("user"/"system") are advisory — durable-jobs run under varying
+    runtime identities (upload client, scheduler-side execution engine,
+    deployment umbrella). A registered workflow shall be resolvable by
+    everyone; otherwise different legacies of upload user vs execution user
+    resurface as spurious "not found in registry" errors deep in the chain.
+    """
     with _CATALOG_LOCK:
         catalog = _load_catalog()
 
     owned: dict[str, Any] | None = None
     system: dict[str, Any] | None = None
+    any_name: dict[str, Any] | None = None
     for workflow_entry in catalog.get("workflows", []):
         if workflow_entry.get("name") != workflow_name:
             continue
+        if any_name is None:
+            any_name = workflow_entry
         if workflow_entry.get("user_id") == client_id:
             owned = workflow_entry
             break
         if workflow_entry.get("scope") == "system" and system is None:
             system = workflow_entry
 
-    return owned or system
+    return owned or system or any_name
 
 
 def _launch_workflow_from_catalog(
