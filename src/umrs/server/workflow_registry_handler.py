@@ -364,6 +364,12 @@ def _submit_durable_workflow_run(
                     "execution_id": execution_id,
                     "params": params,
                     "source_path": source_path,
+                    # Auto-ingest (TASK-035): completed workflow outputs flow
+                    # into the knowledge pipeline. "step" "*" marks run-level
+                    # provenance (not a single named step).
+                    "ingest_results": True,
+                    "workflow": workflow_name,
+                    "step": "*",
                 },
                 "max_attempts": 4,
                 "restart_policy": "on_crash",
@@ -549,9 +555,7 @@ def _handle_workflow_status(client_id: str, payload_str: str) -> str:
     """Handle WORKFLOW_STATUS — show execution status for a workflow run."""
     execution_id, payload = _parse_execution_id(payload_str)
     if not execution_id:
-        return json.dumps(
-            {"status": "error", "message": "execution_id is required"}
-        )
+        return json.dumps({"status": "error", "message": "execution_id is required"})
 
     record, job, denied = _zmq_execution_access(client_id, payload, execution_id)
     if denied is not None:
@@ -560,9 +564,7 @@ def _handle_workflow_status(client_id: str, payload_str: str) -> str:
         return json.dumps(
             {
                 "status": "error",
-                "message": (
-                    f"No workflow execution exists with ID '{execution_id}'."
-                ),
+                "message": (f"No workflow execution exists with ID '{execution_id}'."),
             }
         )
     if record is not None:
@@ -588,9 +590,7 @@ def _handle_workflow_results(client_id: str, payload_str: str) -> str:
     """Handle WORKFLOW_RESULTS — fetch results for a completed workflow run."""
     execution_id, payload = _parse_execution_id(payload_str)
     if not execution_id:
-        return json.dumps(
-            {"status": "error", "message": "execution_id is required"}
-        )
+        return json.dumps({"status": "error", "message": "execution_id is required"})
 
     record, job, denied = _zmq_execution_access(client_id, payload, execution_id)
     if denied is not None:
@@ -599,9 +599,7 @@ def _handle_workflow_results(client_id: str, payload_str: str) -> str:
         return json.dumps(
             {
                 "status": "error",
-                "message": (
-                    f"No workflow execution exists with ID '{execution_id}'."
-                ),
+                "message": (f"No workflow execution exists with ID '{execution_id}'."),
             }
         )
     if record is None:
@@ -634,9 +632,7 @@ def _handle_workflow_cancel(client_id: str, payload_str: str) -> str:
 
     execution_id, payload = _parse_execution_id(payload_str)
     if not execution_id:
-        return json.dumps(
-            {"status": "error", "message": "execution_id is required"}
-        )
+        return json.dumps({"status": "error", "message": "execution_id is required"})
 
     record, job, denied = _zmq_execution_access(client_id, payload, execution_id)
     if denied is not None:
@@ -645,9 +641,7 @@ def _handle_workflow_cancel(client_id: str, payload_str: str) -> str:
         return json.dumps(
             {
                 "status": "error",
-                "message": (
-                    f"No workflow execution exists with ID '{execution_id}'."
-                ),
+                "message": (f"No workflow execution exists with ID '{execution_id}'."),
             }
         )
 
@@ -680,9 +674,7 @@ def _handle_workflow_cancel(client_id: str, payload_str: str) -> str:
         return json.dumps(
             {
                 "status": "error",
-                "message": (
-                    f"No workflow execution exists with ID '{execution_id}'."
-                ),
+                "message": (f"No workflow execution exists with ID '{execution_id}'."),
             }
         )
 
@@ -707,9 +699,7 @@ def _handle_workflow_errors(client_id: str, payload_str: str) -> str:
 
     execution_id, payload = _parse_execution_id(payload_str)
     if not execution_id:
-        return json.dumps(
-            {"status": "error", "message": "execution_id is required"}
-        )
+        return json.dumps({"status": "error", "message": "execution_id is required"})
 
     tail = 50
     if isinstance(payload, dict):
@@ -724,9 +714,7 @@ def _handle_workflow_errors(client_id: str, payload_str: str) -> str:
         return json.dumps(
             {
                 "status": "error",
-                "message": (
-                    f"No workflow execution exists with ID '{execution_id}'."
-                ),
+                "message": (f"No workflow execution exists with ID '{execution_id}'."),
             }
         )
 
@@ -774,9 +762,7 @@ def _handle_workflow_errors(client_id: str, payload_str: str) -> str:
     )
 
 
-def _handle_workflow_logs(
-    client_id: str, payload_str: str
-) -> str:
+def _handle_workflow_logs(client_id: str, payload_str: str) -> str:
     """Handle WORKFLOW_LOGS — stream execution logs for a workflow run.
 
     Returns a structured log timeline including:
@@ -790,9 +776,7 @@ def _handle_workflow_logs(
     """
     execution_id, payload = _parse_execution_id(payload_str)
     if not execution_id:
-        return json.dumps(
-            {"status": "error", "message": "execution_id is required"}
-        )
+        return json.dumps({"status": "error", "message": "execution_id is required"})
 
     tail = 200
     if isinstance(payload, dict):
@@ -807,9 +791,7 @@ def _handle_workflow_logs(
         return json.dumps(
             {
                 "status": "error",
-                "message": (
-                    f"No workflow execution exists with ID '{execution_id}'."
-                ),
+                "message": (f"No workflow execution exists with ID '{execution_id}'."),
             }
         )
     if record is None:
@@ -831,9 +813,7 @@ def _handle_workflow_logs(
     # Workflow lifecycle
     log_entries.append(
         {
-            "timestamp": datetime.fromtimestamp(
-                record.submitted_at
-            ).isoformat(),
+            "timestamp": datetime.fromtimestamp(record.submitted_at).isoformat(),
             "level": "INFO",
             "source": "workflow",
             "message": f"Workflow '{record.workflow_name}' submitted",
@@ -842,9 +822,7 @@ def _handle_workflow_logs(
     if record.started_at:
         log_entries.append(
             {
-                "timestamp": datetime.fromtimestamp(
-                    record.started_at
-                ).isoformat(),
+                "timestamp": datetime.fromtimestamp(record.started_at).isoformat(),
                 "level": "INFO",
                 "source": "workflow",
                 "message": "Workflow execution started",
@@ -853,9 +831,7 @@ def _handle_workflow_logs(
     if record.finished_at:
         log_entries.append(
             {
-                "timestamp": datetime.fromtimestamp(
-                    record.finished_at
-                ).isoformat(),
+                "timestamp": datetime.fromtimestamp(record.finished_at).isoformat(),
                 "level": "INFO" if record.status == "succeeded" else "ERROR",
                 "source": "workflow",
                 "message": f"Workflow finished with status '{record.status}'",
@@ -867,9 +843,7 @@ def _handle_workflow_logs(
         if step.started_at:
             log_entries.append(
                 {
-                    "timestamp": datetime.fromtimestamp(
-                        step.started_at
-                    ).isoformat(),
+                    "timestamp": datetime.fromtimestamp(step.started_at).isoformat(),
                     "level": "INFO",
                     "source": f"step:{step_name}",
                     "message": f"Step '{step_name}' started",
@@ -879,9 +853,7 @@ def _handle_workflow_logs(
             level = "ERROR" if step.status == "failed" else "INFO"
             log_entries.append(
                 {
-                    "timestamp": datetime.fromtimestamp(
-                        step.finished_at
-                    ).isoformat(),
+                    "timestamp": datetime.fromtimestamp(step.finished_at).isoformat(),
                     "level": level,
                     "source": f"step:{step_name}",
                     "message": (

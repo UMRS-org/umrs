@@ -15,6 +15,7 @@ import hashlib
 import json
 import logging
 import os
+import threading
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -130,6 +131,85 @@ def _fire_coroutine(coro: Any, label: str = "") -> None:
     asyncio.get_running_loop().create_task(_swallow())
 
 
+def _run_coroutine_sync(coro: Any, label: str = "") -> Any:
+    """Run a coroutine from sync code and return its result.
+
+    Without a running loop, uses ``asyncio.run`` (unchanged behaviour).
+    With a running loop (e.g. when the post-completion hook fires from the
+    JobService engine), executes the coroutine on a dedicated helper thread
+    with its own event loop — calling ``asyncio.run`` in the engine thread
+    would raise "asyncio.run() cannot be called from a running event loop".
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+
+    outcome: dict[str, Any] = {}
+
+    def _runner() -> None:
+        try:
+            outcome["value"] = asyncio.run(coro)
+        except Exception as exc:  # noqa: BLE001 — re-raised below
+            outcome["error"] = exc
+
+    worker = threading.Thread(target=_runner, name=f"krc-{label}"[:20], daemon=True)
+    worker.start()
+    worker.join(timeout=120)
+    if worker.is_alive():
+        raise RuntimeError(f"coroutine {label!r} timed out")
+    if "error" in outcome:
+        raise outcome["error"]
+    return outcome.get("value")
+
+
+def _resolve_knowledge_dsn() -> str:
+    """Resolve the knowledge PG DSN with durable-jobs-pool parity.
+
+    Precedence: UMRS_DATA_CATALOG_DB / DATABASE_URL (full DSN), otherwise the
+    component vars the jobs pool uses (DB_HOST/DB_PORT/UMRS_JOBS_DB/
+    POSTGRES_*/DB_SUPERUSER*).  Mirrors api._asyncpg_pool._resolve_knowledge_dsn;
+    duplicated locally because this module must not import from umrs.api.
+
+    Returns "" when no database configuration is present at all: the
+    component-var fallback requires at least one component env var, so
+    unconfigured environments keep the previous "no pool" degradation
+    semantics instead of fabricating a localhost DSN.
+    """
+    for var in ("UMRS_DATA_CATALOG_DB", "DATABASE_URL"):
+        dsn = os.getenv(var, "")
+        if dsn:
+            return dsn
+    component_vars = (
+        "DB_HOST",
+        "DB_PORT",
+        "UMRS_JOBS_DB",
+        "POSTGRES_PORT",
+        "POSTGRES_DB",
+        "DB_SUPERUSER",
+        "DB_SUPERUSER_PASSWORD",
+        "POSTGRES_USER",
+        "POSTGRES_PASSWORD",
+    )
+    if not any(os.getenv(var) for var in component_vars):
+        return ""
+    host = os.getenv("DB_HOST", "127.0.0.1")
+    port = os.getenv("DB_PORT", os.getenv("POSTGRES_PORT", "5432"))
+    name = os.getenv("UMRS_JOBS_DB", os.getenv("POSTGRES_DB", "umrs_db"))
+    user = os.getenv("DB_SUPERUSER", os.getenv("POSTGRES_USER", "postgres"))
+    password = os.getenv(
+        "DB_SUPERUSER_PASSWORD", os.getenv("POSTGRES_PASSWORD", "postgres")
+    )
+    return f"postgresql://{user}:{password}@{host}:{port}/{name}"
+
+
+def _resolve_bucket(job_spec: Optional[dict[str, Any]] = None) -> str:
+    """Resolve the data bucket: job spec > UMRS_DATA_S3_BUCKET > S3_BUCKET > default."""
+    if job_spec and job_spec.get("bucket"):
+        return str(job_spec["bucket"])
+    return os.getenv("UMRS_DATA_S3_BUCKET") or os.getenv("S3_BUCKET") or "umrs-data"
+
+
 def _sha256_hex(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
@@ -151,11 +231,12 @@ def _build_summary(parsed: dict[str, Any]) -> str:
 
 
 def _get_pool() -> Any:
-    """Get a Postgres asyncpg pool from env. Returns None if unavailable."""
-    conn_str = os.getenv(
-        "UMRS_DATA_CATALOG_DB",
-        os.getenv("DATABASE_URL", ""),
-    )
+    """Get a Postgres asyncpg pool from env. Returns None if unavailable.
+
+    Uses the full DSN chain (full-DSN vars, else component vars) so deployed
+    containers without DATABASE_URL still resolve the knowledge database.
+    """
+    conn_str = _resolve_knowledge_dsn()
     if not conn_str:
         return None
     try:
@@ -199,7 +280,7 @@ def _build_s3_client(job_spec: dict[str, Any]) -> tuple[Any, str]:
     """
     from botocore.config import Config as BotoConfig
 
-    bucket = job_spec.get("bucket", "umrs-data")
+    bucket = _resolve_bucket(job_spec)
     access_key, secret_key = _resolve_s3_credentials()
     try:
         client = boto3.client(
@@ -208,7 +289,9 @@ def _build_s3_client(job_spec: dict[str, Any]) -> tuple[Any, str]:
             aws_access_key_id=access_key,
             aws_secret_access_key=secret_key,
             region_name=os.getenv("S3_REGION", "us-east-1"),
-            config=BotoConfig(signature_version="s3v4", s3={"addressing_style": "path"}),
+            config=BotoConfig(
+                signature_version="s3v4", s3={"addressing_style": "path"}
+            ),
             use_ssl=os.getenv("S3_USE_SSL", "false").lower() == "true",
         )
         client.list_buckets()
@@ -218,7 +301,9 @@ def _build_s3_client(job_spec: dict[str, Any]) -> tuple[Any, str]:
         return None, bucket
 
 
-def _fetch_artifact_bytes(s3_client: Any, bucket: str, source_ref: str) -> Optional[bytes]:
+def _fetch_artifact_bytes(
+    s3_client: Any, bucket: str, source_ref: str
+) -> Optional[bytes]:
     """Download real artifact bytes from S3 by source_ref key.
 
     Returns None when unreadable — callers record the failure explicitly;
@@ -663,9 +748,14 @@ def _derive_a2l_link(
         store = get_store()
         pool = store._pool
         if pool:
+
             async def _persist() -> None:
                 await store.insert_knowledge_a2l_link(
-                    knowledge_artifact_id, a2l_artifact_id, job_id, attempt_id, edge_kind
+                    knowledge_artifact_id,
+                    a2l_artifact_id,
+                    job_id,
+                    attempt_id,
+                    edge_kind,
                 )
 
             asyncio.run(_persist())
@@ -840,7 +930,12 @@ async def _run_understand(
 
         # Best-effort: derive A2L link for UNDERSTAND step (ADR-017)
         if artifact_id:
-            _derive_a2l_link(artifact_id, a2l_artifact_id="", job_id=job.job_id, edge_kind="understand")
+            _derive_a2l_link(
+                artifact_id,
+                a2l_artifact_id="",
+                job_id=job.job_id,
+                edge_kind="understand",
+            )
 
     return result
 
@@ -1360,7 +1455,9 @@ async def _resolve_succeeded_attempts(pool: Any, job: Any) -> list[Any]:
         return []
 
 
-async def _artifacts_from_attempt_metrics(pool: Any, attempts: list[Any]) -> list[dict[str, Any]]:
+async def _artifacts_from_attempt_metrics(
+    pool: Any, attempts: list[Any]
+) -> list[dict[str, Any]]:
     """Extract artifact dicts recorded in attempt metrics."""
     results: list[dict[str, Any]] = []
     for att_id in attempts:
@@ -1413,17 +1510,28 @@ def _collect_artifact_ids(job: Any) -> list[dict[str, Any]]:
             return artifacts
 
         async def _collect() -> list[dict[str, Any]]:
-            attempts = await _resolve_succeeded_attempts(pool, job)
-            results = await _artifacts_from_attempt_metrics(pool, attempts)
-            results.extend(await _artifacts_from_store(pool, job.project_id))
-            return results
+            try:
+                attempts = await _resolve_succeeded_attempts(pool, job)
+                results = await _artifacts_from_attempt_metrics(pool, attempts)
+                results.extend(await _artifacts_from_store(pool, job.project_id))
+                return results
+            finally:
+                try:
+                    await pool.close()
+                    await pool.wait_closed()
+                except Exception:
+                    pass
 
         try:
-            artifacts = asyncio.run(_collect())
-            pool.close()
-            asyncio.run(pool.wait_closed())
-        except Exception:
-            pass
+            collected = _run_coroutine_sync(_collect(), "collect-artifacts")
+            if collected:
+                artifacts = collected
+        except Exception as exc:
+            logger.warning(
+                "Artifact collection failed for job %s: %s",
+                getattr(job, "job_id", "?"),
+                exc,
+            )
     except Exception:
         pass
 
@@ -1441,7 +1549,7 @@ def _dedup_artifacts(
     """
     deduped: list[dict[str, Any]] = []
     seen_hashes: set[str] = set()
-    bucket = os.getenv("UMRS_DATA_S3_BUCKET", "umrs-data")
+    bucket = _resolve_bucket()
 
     try:
         from umrs.knowledge.artifact_storage import ArtifactStorage
@@ -1598,20 +1706,32 @@ def _list_project_artifact_sources(project_id: str) -> list[dict[str, Any]]:
         store = KnowledgeStore(store_pool)
 
         async def _list_new():
-            arts, _ = await store.list_artifacts(project_id)
-            return [
-                {
-                    "artifact_id": a.artifact_id,
-                    "content_hash": a.content_hash,
-                    "kind": a.kind,
-                    "source_ref": a.source_ref,
-                }
-                for a in arts
-            ]
+            try:
+                arts, _ = await store.list_artifacts(project_id)
+                return [
+                    {
+                        "artifact_id": a.artifact_id,
+                        "content_hash": a.content_hash,
+                        "kind": a.kind,
+                        "source_ref": a.source_ref,
+                    }
+                    for a in arts
+                ]
+            finally:
+                try:
+                    await store_pool.close()
+                    await store_pool.wait_closed()
+                except Exception:
+                    pass
 
         try:
-            return asyncio.run(_list_new())
-        except Exception:
+            return _run_coroutine_sync(_list_new(), "list-artifact-sources") or []
+        except Exception as exc:
+            logger.warning(
+                "Artifact source listing failed for project %s: %s",
+                project_id,
+                exc,
+            )
             return []
     except Exception:
         return []
@@ -1888,7 +2008,9 @@ def _bridge_a2l_ref(artifact_id: str, content_hash: str, project_id: str) -> Non
         ref = bridge.resolve_a2l_hash(content_hash)
         if ref and ref.a2l_id:
             bridge.sync_a2l_ref(
-                type(ref)(artifact_id=artifact_id, a2l_hash=content_hash, a2l_id=ref.a2l_id)
+                type(ref)(
+                    artifact_id=artifact_id, a2l_hash=content_hash, a2l_id=ref.a2l_id
+                )
             )
             a2l_id = ref.a2l_id
         else:
@@ -1898,6 +2020,7 @@ def _bridge_a2l_ref(artifact_id: str, content_hash: str, project_id: str) -> Non
         store = get_store()
         pool = store._pool
         if pool:
+
             async def _persist() -> None:  # noqa: D103
                 await store.insert_a2l_ref(artifact_id, content_hash, a2l_id)
 
