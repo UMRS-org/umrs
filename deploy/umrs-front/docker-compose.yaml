@@ -133,7 +133,7 @@ services:
       - ../rccs-front/site.yaml:/etc/umrs/site.yaml:ro,z
       - ./conf_umrs_rccs.json:/etc/umrs/conf_umrs.json:z
       - ./user_files_rccs:/etc/umrs/user_files:z
-      - ./workflow_state_rccs:/var/lib/umrs-workflows:z
+      - ./workflow_state:/var/lib/umrs-workflows:z
       - ./s3cfg:/etc/umrs/s3cfg:ro,z
       # SSH keys for RemoteSlurmBackend
       - ${HOME}/.ssh:/root/.ssh-host:ro,z
@@ -230,7 +230,7 @@ services:
       - ../ai4s/pool-ai4s.yaml:/etc/umrs/pool-ai4s.yaml:ro,z
       - ./conf_umrs_ai4s.json:/etc/umrs/conf_umrs.json:z
       - ./user_files_ai4s:/etc/umrs/user_files:z
-      - ./workflow_state_ai4s:/var/lib/umrs-workflows:z
+      - ./workflow_state:/var/lib/umrs-workflows:z
       - ./s3cfg:/etc/umrs/s3cfg:ro,z
       - ${HOME}/.ssh:/root/.ssh-host:ro,z
       - ${HOME}/.config/umrs/curve-keys:/root/.config/umrs/curve-keys:ro,z
@@ -311,7 +311,7 @@ services:
       - ../bdrt/pool-bdrt-step.yaml:/etc/umrs/pool-bdrt-step.yaml:ro,z
       - ./conf_umrs_bdrt.json:/etc/umrs/conf_umrs.json:z
       - ./user_files_bdrt:/etc/umrs/user_files:z
-      - ./workflow_state_bdrt:/var/lib/umrs-workflows:z
+      - ./workflow_state:/var/lib/umrs-workflows:z
       - ./s3cfg:/etc/umrs/s3cfg:ro,z
       # SSH keys for RemoteSlurmBackend
       - ${HOME}/.ssh:/root/.ssh-host:ro,z
@@ -386,7 +386,7 @@ services:
       - ../octopus-front/site.yaml:/etc/umrs/site.yaml:ro,z
       - ./conf_umrs_octopus.json:/etc/umrs/conf_umrs.json:z
       - ./user_files_octopus:/etc/umrs/user_files:z
-      - ./workflow_state_octopus:/var/lib/umrs-workflows:z
+      - ./workflow_state:/var/lib/umrs-workflows:z
       - ./s3cfg:/etc/umrs/s3cfg:ro,z
       - ${HOME}/.ssh:/root/.ssh-host:ro,z
       - ${HOME}/.config/umrs/curve-keys:/root/.config/umrs/curve-keys:ro,z
