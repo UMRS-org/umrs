@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -312,6 +313,52 @@ def test_collect_artifact_ids_loop_safe(monkeypatch: pytest.MonkeyPatch) -> None
 
 async def _noop_store_rows(_pool: object, _project_id: str) -> list[dict]:
     return []
+
+
+def test_collect_artifact_ids_accepts_jsonb_string(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: ad-hoc asyncpg pools return JSONB as str — must parse."""
+    expected = [
+        {
+            "artifact_id": "wfart-jsonb",
+            "content_hash": "aa11bb22cc33",
+            "kind": "s3_uri",
+            "source_ref": "s3://r4-data/jobs/j-1/attempt_1/out.json",
+        }
+    ]
+    monkeypatch.setattr(
+        ka,
+        "_get_pool",
+        lambda: _FakeAsyncpgPool(json.dumps({"artifacts": expected})),
+    )
+    monkeypatch.setattr(ka, "_artifacts_from_store", _noop_store_rows)
+    job = SimpleNamespace(job_id="j-1", project_id="proj-1", commit_attempt_id="att-1")
+
+    sync_result = ka._collect_artifact_ids(job)
+    assert sync_result and sync_result[0]["artifact_id"] == "wfart-jsonb"
+
+    async def _outer() -> list[dict]:
+        return ka._collect_artifact_ids(job)
+
+    async_result = asyncio.run(_outer())
+    assert async_result[0]["content_hash"] == "aa11bb22cc33"
+
+
+def test_parse_metrics_jsonb_malformed_safe_and_logged(caplog: pytest.LogCaptureFixture) -> None:
+    """Malformed JSON: returns {} (no crash) and emits an observable warning."""
+    assert ka._parse_metrics_jsonb("{not valid json") == {}
+    assert ka._parse_metrics_jsonb(None) == {}
+    assert ka._parse_metrics_jsonb(3.5) == {}
+    with caplog.at_level(logging.WARNING, logger="umrs.jobs.knowledge_adapters"):
+        ka._parse_metrics_jsonb('{"broken": true')
+    assert any("Malformed metrics JSON" in r.message for r in caplog.records)
+
+
+def test_artifacts_from_attempt_metrics_malformed_row_no_crash() -> None:
+    pool = _FakeAsyncpgPool("{malformed")
+    out = asyncio.run(ka._artifacts_from_attempt_metrics(pool, ["att-1"]))
+    assert out == []
 
 
 def test_list_project_artifact_sources_loop_safe(monkeypatch: pytest.MonkeyPatch) -> None:
