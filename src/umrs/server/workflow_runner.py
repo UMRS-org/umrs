@@ -1058,14 +1058,42 @@ def _resolve_s3_client(
     return _InMemoryS3Client(record, state_lock=state_lock), "wf-runner"
 
 
+_EXECUTION_MODE_EXECUTOR = {
+    "in_process": "inproc",
+    "subprocess": "subprocess",
+    "slurm": "slurm",
+}
+
+
+def _executor_name_from_execution_mode(mode: Any) -> str | None:
+    """Map a workflow-level ``execution_mode`` to the step-executor name.
+
+    The workflow's declared mode is authoritative for its own steps: it must
+    not inherit the provisioning-level ``UMRS_STEP_EXECUTOR`` that
+    ``SiteConfig.inject_env()`` plants in the long-lived server process
+    (semantic collision — user runs failed at setup when the site kind is
+    ``slurm`` but the (in-process) workflow lacked an image).  Unknown or
+    absent modes keep the legacy env-based default.
+    """
+    if not isinstance(mode, str):
+        return None
+    return _EXECUTION_MODE_EXECUTOR.get(mode.strip().lower())
+
+
 def _resolve_runner_defaults(
-    router: StepRouter | None, executor: StepExecutor | None
+    router: StepRouter | None,
+    executor: StepExecutor | None,
+    name: str | None = None,
 ) -> tuple[StepRouter, StepExecutor]:
-    """Fill router/executor with defaults when not injected (tests inject)."""
+    """Fill router/executor with defaults when not injected (tests inject).
+
+    ``name`` is the workflow-authoritative executor name (from
+    ``execution_mode``); ``None`` preserves the env-derived selection.
+    """
     if router is None:
         router = build_default_router()
     if executor is None:
-        executor = build_step_executor()
+        executor = build_step_executor(name=name)
     return router, executor
 
 
@@ -1339,7 +1367,8 @@ def run_workflow_record(
         _emit_workflow_metric(record, executor, "succeeded")
         return
 
-    router, executor = _resolve_runner_defaults(router, executor)
+    worker = _executor_name_from_execution_mode(workflow_json.get("execution_mode"))
+    router, executor = _resolve_runner_defaults(router, executor, name=worker)
 
     try:
         levels, canonical_specs = _build_levels(steps_spec)
