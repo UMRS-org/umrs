@@ -737,6 +737,9 @@ class AutonomousResearchLoop:
             )
             params.update(dict(experiment.parameters or {}))
             params.setdefault("experiment_id", experiment.experiment_id)
+        # Experiment parameters must not override the loop's project context
+        # (Gateway verified headers / durable job project_id).
+        params["project_id"] = loop.project_id
 
         execution_id = self._workflow_port.trigger(workflow_name, params)
         self._in_flight_execution_id = execution_id
@@ -757,6 +760,20 @@ class AutonomousResearchLoop:
             raise RuntimeError(
                 "durable job backend required for real research mode "
                 "(durable_job_id missing from workflow response)"
+            )
+
+        status = str(
+            results_payload.get("status") or wait_payload.get("status") or ""
+        ).lower()
+        if status not in {"succeeded", "completed", "success"}:
+            err = (
+                results_payload.get("error")
+                or wait_payload.get("error")
+                or status
+                or "unknown"
+            )
+            raise RuntimeError(
+                f"workflow execution failed (status={status or 'unknown'}): {err}"
             )
 
         iteration.durable_job_id = str(durable_job_id)
