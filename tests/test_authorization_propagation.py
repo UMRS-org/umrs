@@ -376,13 +376,24 @@ class TestSlurmAttribution:
             )
 
         cmd = captured["cmd"]
-        # The command must survive POSIX shell tokenization without splitting
-        # the export value. Find the single token carrying the export list.
+        # NEW WIRE CONTRACT (M5): every emitted token is always inside the
+        # RCCS-proxy-safe charset. Space/comma-containing values are carried
+        # hex-encoded under <NAME>_HEX and decode back by the serve wrapper —
+        # never shell-quoted, since the proxy rejects " ' + characters.
         tokens = shlex.split(cmd)
         export_tokens = [t for t in tokens if t.startswith("--export=")]
         assert len(export_tokens) == 1, f"expected one --export token, got {export_tokens}"
         export = export_tokens[0]
-        assert "RIVAULT_PROFILES=harness vllm" in export
+        proxy_charset = set(
+            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 _./:=,%-"
+        )
+        assert set(export) <= proxy_charset
+        assert "RIVAULT_PROFILES_HEX" in export
+        interpolated = export.split("RIVAULT_PROFILES_HEX=", 1)[1].split(",", 1)[0]
+        from binascii import unhexlify
+
+        decoded = unhexlify(interpolated).decode()
+        assert decoded == "harness vllm"
         # No stray bare 'vllm,...' positional argument leaked into the command.
         assert not any(t.startswith("vllm,") for t in tokens)
 

@@ -31,6 +31,26 @@ for _b64_name in $(compgen -v | grep '_B64$' || true); do
 done
 unset _b64_name _orig_name _b64_value _decoded
 
+# ─── Decode hex-transported env values (RCCS-proxy-safe lane) ───────────────
+# The wrapper-job export wire has two traps: values with SPACES cannot be
+# shell-quoted on this flow (the RCCS per-user SSH proxy charset whitelist
+# rejects quotes), and `sbatch --export` is comma-delimited with no escaping.
+# The control plane therefore hex-encodes any such value into "<NAME>_HEX".
+# Hex is `[0-9a-f]` only, so the whole command line always satisfies the proxy
+# charset. Decode by mapping every byte pair to the corresponding \xNN escape
+# for `printf %b` (native bash, no child interpreters, no eval). A trailing
+# `{target}_B64` decode above is kept for backward compatibility.
+for _hex_name in $(compgen -v | grep -E '_HEX$' || true); do
+    _orig_name="${_hex_name%_HEX}"
+    _hex_value="${!_hex_name}"
+    if _esc="$(printf '%s' "$_hex_value" | sed 's/\(..\)/\\x\1/g' 2>/dev/null)" \
+        && _decoded="$(printf '%b' "$_esc" 2>/dev/null)"; then
+        export "${_orig_name}=${_decoded}"
+    fi
+    unset "$_hex_name"
+done
+unset _hex_name _orig_name _hex_value _esc _decoded
+
 load_site_env_defaults() {
     local python_bin
     local rendered_exports
