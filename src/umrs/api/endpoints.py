@@ -40,6 +40,48 @@ def _strict_auth_mode() -> bool:
     return os.environ.get("UMRS_AUTH_MODE", "mvp").strip().lower() == "strict"
 
 
+def _current_cluster_name() -> str:
+    """Cluster identity for provenance (env, then site config name)."""
+    env = os.environ.get("UMRS_CLUSTER", "").strip()
+    if env:
+        return env
+    try:
+        from ..orchestrator.site_config import load_site_config
+
+        return str(load_site_config().name)
+    except Exception:
+        return "unknown"
+
+
+def _enforce_recipe_policy(is_admin: bool, request: Any) -> None:
+    """Reject recipe/security-controlled request fields for non-admin callers.
+
+    Custom-model users keep full request shape; only two categories are
+    admin-only by architecture decision (no arbitrary image/env injection):
+      • env_vars — arbitrary environment injection
+      • container_image — arbitrary serving image selection
+    Mounts/executor/account policies stay with their existing validators.
+    """
+    if is_admin:
+        return
+    if getattr(request, "env_vars", None):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "env_vars require admin role (recipe-controlled channel); "
+                "use a curated recipe or ask an admin to add one"
+            ),
+        )
+    if getattr(request, "container_image", None):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "container_image override requires admin role "
+                "(recipe-controlled channel)"
+            ),
+        )
+
+
 def _raise_strict_project_auth_error() -> None:
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -481,7 +523,12 @@ async def _refresh_endpoint_readiness(
     readiness_path = endpoint.metadata.get("readiness_path")
 
     try:
-        is_ready, is_degraded, models, error = await get_readiness_poller().check_ready_detail(
+        (
+            is_ready,
+            is_degraded,
+            models,
+            error,
+        ) = await get_readiness_poller().check_ready_detail(
             endpoint.host,
             endpoint.port,
             probe_model=endpoint.metadata.get("served_model_name") or endpoint.model,
@@ -568,25 +615,26 @@ class EndpointResponse(BaseModel):
     max_model_len: int | None = None
     variant: str | None = None
 
-    model_config = ConfigDict(json_schema_extra={
-        "example": {
-            "project_id": "proj-123",
-            "model": "rivault-gpt-oss-static",
-            "job_id": "slurm-456",
-            "host": "compute-node-01",
-            "port": 11434,
-            "status": "ready",
-            "created_at": "2024-01-15T10:30:00Z",
-            "ready_at": "2024-01-15T10:31:00Z",
-            "last_used_at": "2024-01-15T10:35:00Z",
-            "expires_at": "2024-01-15T11:30:00Z",
-            "backend": "slurm",
-            "error_message": None,
-            "litellm_url": "http://compute-node-01:11434/v1",
-            "owner_type": "user",
-            "owner_id": None,
-            "tier": "user",
-            "detail": "starting container / loading model",
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "project_id": "proj-123",
+                "model": "rivault-gpt-oss-static",
+                "job_id": "slurm-456",
+                "host": "compute-node-01",
+                "port": 11434,
+                "status": "ready",
+                "created_at": "2024-01-15T10:30:00Z",
+                "ready_at": "2024-01-15T10:31:00Z",
+                "last_used_at": "2024-01-15T10:35:00Z",
+                "expires_at": "2024-01-15T11:30:00Z",
+                "backend": "slurm",
+                "error_message": None,
+                "litellm_url": "http://compute-node-01:11434/v1",
+                "owner_type": "user",
+                "owner_id": None,
+                "tier": "user",
+                "detail": "starting container / loading model",
                 "job_status": "starting",
             }
         }
@@ -1738,9 +1786,7 @@ async def proxy_endpoint_metrics(
         async with httpx.AsyncClient(timeout=10.0) as client:
             upstream = await client.get(target_url, headers=metrics_headers)
     except Exception as exc:  # noqa: BLE001 - best-effort proxy
-        logger.warning(
-            "Failed to fetch endpoint metrics from %s: %s", target_url, exc
-        )
+        logger.warning("Failed to fetch endpoint metrics from %s: %s", target_url, exc)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Failed to fetch endpoint metrics",
@@ -2100,6 +2146,7 @@ async def provision_endpoint(
             ),
         )
 
+    _enforce_recipe_policy(is_admin, request)
     env_vars: dict[str, str] = {}
     # Merge request-supplied env_vars first so they take precedence
     # over ServingProfile/roster defaults.
@@ -2235,39 +2282,49 @@ async def provision_endpoint(
     # it the request falls back to 1 node / 1 GPU and Slurm holds the job
     # PD (MaxMemPerLimit) forever. Roster values fill ONLY fields the caller
     # left at their defaults, so explicit API/CLI flags always win.
-    from ..orchestrator.provision_roster import resolve_model_provision_defaults
+    # Canonical recipe resolver (M3): the ServingPlan is the authoritative
+    # source of curated serving material. Legacy behavior is bitwise
+    # equivalent (proved by umrs/tests/test_serving_spec_golden_diff.py) —
+    # changing only the accessor from legacy defaults to the typed plan.
+    from ..orchestrator import serving_spec as _ss
+    from ..orchestrator.provision_roster import resolve_model_serving_spec
 
     effective_partition = request.partition
     effective_ttl_sec = request.ttl_sec
-    roster_defaults = resolve_model_provision_defaults(
-        request.model, variant=request.variant
+    serving_plan = resolve_model_serving_spec(
+        request.model,
+        request.variant,
+        site=_ss.SiteSpec(
+            cluster=_current_cluster_name(),
+            backend="slurm-remote",
+            partition=str(effective_partition or ""),
+        ),
+        project_id=effective_project_id,
+        owner_id=requesting_user or "",
+        storage_ref=resolved_model_path,
     )
-    if roster_defaults:
-        if effective_partition is None and roster_defaults.get("partition"):
-            effective_partition = str(roster_defaults["partition"])
-        roster_nodes = roster_defaults.get("node_count")
-        if effective_node_count == 1 and roster_nodes and int(roster_nodes) > 1:
-            effective_node_count = int(roster_nodes)
+    if serving_plan is not None:
+        if effective_partition is None and serving_plan.site.partition:
+            effective_partition = serving_plan.site.partition
+        if effective_node_count == 1 and serving_plan.runtime.nodes > 1:
+            effective_node_count = serving_plan.runtime.nodes
             env_vars.setdefault("SLURM_NODES", str(effective_node_count))
-        roster_gpus = roster_defaults.get("gpu_count")
-        if effective_gpu_count == 1 and roster_gpus and int(roster_gpus) > 1:
-            effective_gpu_count = int(roster_gpus)
-        roster_mml = roster_defaults.get("max_model_len")
-        if effective_max_model_len == 4096 and roster_mml:
-            effective_max_model_len = int(roster_mml)
+        if effective_gpu_count == 1 and serving_plan.runtime.gpus_per_node > 1:
+            effective_gpu_count = serving_plan.runtime.gpus_per_node
+        if effective_max_model_len == 4096 and serving_plan.engine.max_model_len:
+            effective_max_model_len = serving_plan.engine.max_model_len
             env_vars.setdefault("VLLM_MAX_MODEL_LEN", str(effective_max_model_len))
-        roster_strategy = roster_defaults.get("parallel_strategy")
-        if not effective_parallel_strategy and roster_strategy:
-            env_vars.setdefault("VLLM_PARALLEL_STRATEGY", str(roster_strategy).lower())
-        roster_ttl = roster_defaults.get("ttl_sec")
-        if request.ttl_sec == 3600 and roster_ttl is not None:
-            effective_ttl_sec = int(roster_ttl)
-        for _k, _v in (roster_defaults.get("env_vars") or {}).items():
+        if not effective_parallel_strategy and serving_plan.runtime.strategy != "tp_pp":
+            env_vars.setdefault("VLLM_PARALLEL_STRATEGY", serving_plan.runtime.strategy)
+        if request.ttl_sec == 3600 and serving_plan.ttl_sec is not None:
+            effective_ttl_sec = int(serving_plan.ttl_sec)
+        for _k, _v in (serving_plan.env or {}).items():
             env_vars.setdefault(str(_k), str(_v))
         logger.info(
-            "Applied pool-roster sizing for '%s': partition=%s nodes=%d gpus=%d "
+            "Resolved recipe for '%s' (plan=%s): partition=%s nodes=%d gpus=%d "
             "max_model_len=%d ttl_sec=%s",
             request.model,
+            serving_plan.plan_hash()[:12],
             effective_partition,
             effective_node_count,
             effective_gpu_count,
@@ -2305,6 +2362,10 @@ async def provision_endpoint(
         request_metadata["vision_task"] = str(vision_task)
     if output_format:
         request_metadata["output_format"] = str(output_format)
+    if serving_plan is not None:
+        request_metadata["serving_plan_hash"] = serving_plan.plan_hash()
+        request_metadata["serving_plan"] = serving_plan.to_plan_dict()
+        request_metadata["recipe_file"] = serving_plan.provenance.recipe_file
 
     if serving_backend == "bentoml" or service_kind == "bentoml_vision":
         env_vars.setdefault("VISION_REQUIRE_PRESIGNED_URLS", "true")
@@ -2530,6 +2591,7 @@ async def deprovision_endpoint(
 # ---------------------------------------------------------------------------
 # Admin route: programmatic location update (Task 6 Gap B)
 # ---------------------------------------------------------------------------
+
 
 class EndpointLocationUpdate(BaseModel):
     """Payload for PUT /umrs/endpoints/{job_id}/location."""
