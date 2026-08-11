@@ -1880,7 +1880,10 @@ def _create_produced_by_edges(
                         content_hash=_sha256_hex(
                             f"provenance-{job.job_id}-{workflow}-{step}".encode()
                         ),
-                        source_ir="",
+                        # NULL, not "": source_ir FKs into knowledge_ir and
+                        # an empty string matches no ir_id
+                        # (knowledge_nodes_source_ir_fkey).
+                        source_ir=None,
                     )
                 )
 
@@ -1958,7 +1961,8 @@ async def _upsert_artifact_nodes(
                     "step": step,
                 },
                 content_hash=_sha256_hex(f"artifact-node-{aid}".encode()),
-                source_ir="",
+                # NULL, not "" (knowledge_nodes_source_ir_fkey).
+                source_ir=None,
             )
         )
 
@@ -2101,7 +2105,7 @@ def enqueue_ingest_failure(
                             node_type="entity",
                             content={"job_id": job_id, "user_id": user_id},
                             content_hash=_sha256_hex(f"provenance-{job_id}".encode()),
-                            source_ir="",
+                            source_ir=None,
                         )
                     )
                     await store.upsert_node(
@@ -2119,7 +2123,7 @@ def enqueue_ingest_failure(
                             content_hash=_sha256_hex(
                                 f"failure-{job_id}-{exit_reason}".encode()
                             ),
-                            source_ir="",
+                            source_ir=None,
                         )
                     )
                     # Link the failed job to this failure node
