@@ -51,6 +51,48 @@ for _hex_name in $(compgen -v | grep -E '_HEX$' || true); do
 done
 unset _hex_name _orig_name _hex_value _esc _decoded
 
+# ─── Operator-declared vLLM source patches (M6, shared single/MN lane) ──────
+# Resolve `VLLM_PATCHES` (space-separated "src:target:sha256" triplets) ONCE,
+# before env.<uuid> is written, so every launch flavor gets consistent mounts:
+#   - single-node compose: VLLM_PATCH_SRC_VOLS / VLLM_PATCH_TGT_VOLS scalars
+#     interpolated by serve-model.yaml (first patch; recipes needing more than
+#     one target on the compose lane must extend the yaml mounts list),
+#   - multi-node Ray branch: every patch appended into _mn_vllm_args via the
+#     _VLLM_PATCH_MOUNTS array consumed below.
+# Each entry is sha256-verified on the control node, fail-closed.
+_VLLM_PATCH_MOUNTS=()
+_apply_vllm_patches() {
+    [[ -n "${VLLM_PATCHES:-}" ]] || return 0
+    local _p_src _p_tgt _p_sha _actual
+    for _patch_spec in ${VLLM_PATCHES}; do
+        IFS=':' read -r _p_src _p_tgt _p_sha <<<"${_patch_spec}"
+        if [[ -z "${_p_src}" || -z "${_p_tgt}" ]]; then
+            echo "[rivault] FAIL: malformed patch entry: ${_patch_spec} (need src:target:sha256)"; exit 1
+        fi
+        if [[ ! -f "${_p_src}" ]]; then
+            echo "[rivault] FAIL: patch source missing: ${_p_src}"; exit 1
+        fi
+        if [[ "${_p_tgt}" != /usr/local/lib/* && "${_p_tgt}" != /venv/* && "${_p_tgt}" != /opt/* ]]; then
+            echo "[rivault] FAIL: patch target outside allowed library roots: ${_p_tgt}"; exit 1
+        fi
+        if [[ "${_p_sha}" =~ ^[0-9a-f]{64}$ ]]; then
+            _actual="$(sha256sum "${_p_src}" 2>/dev/null | awk '{print $1}')"
+            if [[ "${_actual}" != "${_p_sha}" ]]; then
+                echo "[rivault] FAIL: sha256 mismatch for ${_p_src}: got ${_actual}, expected ${_p_sha}"; exit 1
+            fi
+        elif [[ -n "${_p_sha}" ]]; then
+            echo "[rivault] FAIL: invalid patch sha provided for ${_p_src}: ${_p_sha}"; exit 1
+        fi
+        echo "[rivault] Patch: verified ${_p_src} -> ${_p_tgt} (sha=${_p_sha})"
+        _VLLM_PATCH_MOUNTS+=( -v "${_p_src}:${_p_tgt}:ro" )
+        if [[ -z "${VLLM_PATCH_SRC_VOLS:-}" ]]; then
+            export VLLM_PATCH_SRC_VOLS="${_p_src}"
+            export VLLM_PATCH_TGT_VOLS="${_p_tgt}"
+        fi
+    done
+}
+_apply_vllm_patches
+
 load_site_env_defaults() {
     local python_bin
     local rendered_exports
@@ -450,6 +492,17 @@ VLLM_MAX_MODEL_LEN=${VLLM_MAX_MODEL_LEN:-4096}
 VLLM_TOOL_CALL_PARSER=${VLLM_TOOL_CALL_PARSER:-hermes}
 # Reasoning parser for models that emit thinking/reasoning content
 VLLM_REASONING_PARSER=${VLLM_REASONING_PARSER:-}
+# Language-model-only mode for hybrid checkpoints whose recipe skips the
+# vision tower (e.g. Qwen AgentWorld text lane on patched qwen3_5.py)
+VLLM_LANGUAGE_MODEL_ONLY=${VLLM_LANGUAGE_MODEL_ONLY:-}
+# Explicit KV cache size in bytes (skips vLLM free-memory probe)
+VLLM_KV_CACHE_MEMORY_BYTES=${VLLM_KV_CACHE_MEMORY_BYTES:-}
+# Decode batch size caps (throughput guardrails on memory-tight nodes)
+VLLM_MAX_NUM_SEQS=${VLLM_MAX_NUM_SEQS:-}
+VLLM_MAX_NUM_BATCHED_TOKENS=${VLLM_MAX_NUM_BATCHED_TOKENS:-}
+# Patch mounts for the single-node compose lane (absent = inert /dev/null stub)
+${VLLM_PATCH_SRC_VOLS:+VLLM_PATCH_SRC_VOLS=${VLLM_PATCH_SRC_VOLS}}
+${VLLM_PATCH_TGT_VOLS:+VLLM_PATCH_TGT_VOLS=${VLLM_PATCH_TGT_VOLS}}
 # Trust remote code from the model repository
 VLLM_TRUST_REMOTE_CODE=${VLLM_TRUST_REMOTE_CODE:-}
 # Opt-in eager mode (empty = run WITH CUDA graphs, higher decode throughput).
@@ -1655,34 +1708,11 @@ RAYEOF
     # bind-mounted into the runtime container(s), replacing in-image modules.
     # Sources must live on the shared, pre-staged fs (validated by the recipe
     # loader + path policy; provenance is logged per mount below).
-    if [[ -n "${VLLM_PATCHES:-}" ]]; then
-        for _patch_spec in ${VLLM_PATCHES}; do
-            IFS=':' read -r _patch_src _patch_tgt _patch_sha <<<"${_patch_spec}"
-            if [[ -z "${_patch_src}" || -z "${_patch_tgt}" ]]; then
-                echo "[rivault] FAIL: malformed patch entry: ${_patch_spec} (need src:target:sha256)"; exit 1
-            fi
-            if [[ ! -f "${_patch_src}" ]]; then
-                echo "[rivault] FAIL: patch source missing: ${_patch_src}"; exit 1
-            fi
-            if [[ "${_patch_tgt}" != /usr/local/lib/* && "${_patch_tgt}" != /venv/* && "${_patch_tgt}" != /opt/* ]]; then
-                echo "[rivault] FAIL: patch target outside allowed library roots: ${_patch_tgt}"; exit 1
-            fi
-            if [[ "${_patch_sha}" =~ ^[0-9a-f]{64}$ ]]; then
-                _actual_sha="$(sha256sum "${_patch_src}" 2>/dev/null | awk '{print $1}')"
-                if [[ "${_actual_sha}" != "${_patch_sha}" ]]; then
-                    echo "[rivault] FAIL: sha256 mismatch for ${_patch_src}: got ${_actual_sha}, expected ${_patch_sha}"; exit 1
-                fi
-            elif [[ -n "${_patch_sha}" ]]; then
-                echo "[rivault] FAIL: invalid patch sha provided for ${_patch_src}: ${_patch_sha}"
-                exit 1
-            fi
-            echo "[rivault] Patch: verified ${_patch_src} -> ${_patch_tgt} (sha=${_patch_sha})"
-            _mn_vllm_args+=( -v "${_patch_src}:${_patch_tgt}:ro" )
-            # Compose flavor (single-node, AgentWorld): expose the same mounts
-            # through two scalars interpolated by serve-model.yaml.
-            export VLLM_PATCH_SRC_VOLS="${_patch_src}"
-            export VLLM_PATCH_TGT_VOLS="${_patch_tgt}"
-        done
+    if ((${#_VLLM_PATCH_MOUNTS[@]})); then
+        # Resolved (and sha-verified) earlier by _apply_vllm_patches near the
+        # top of the script — shared between this MN branch and the single-node
+        # compose lane.
+        _mn_vllm_args+=( "${_VLLM_PATCH_MOUNTS[@]}" )
     fi
     if [[ -n "${_mn_s3host}" ]]; then
         _mn_vllm_args+=( --add-host "${_mn_s3host}:${_mn_priv}.${_mn_nginxout}" )
@@ -1707,7 +1737,7 @@ RAYEOF
         --env-file "./env.${uuid}" \
         "${_mn_vllm_args[@]}" \
         "${VLLM_IMAGE}" \
-        -c 'export PATH=/usr/local/bin:$PATH; python3 -m pip install -q --no-index --find-links /root/.cache/huggingface/ray_aarch64_env/wheels ray 2>&1 | grep -v "^$\|already\|Requirement" || python3 -m pip install -q ray; ray start --head --node-ip-address="'"${HEAD_IP}"'" --port="'"${RAY_PORT}"'" --num-gpus="'"${_gpus_per_node}"'" --object-store-memory=1073741824 --include-dashboard=false; echo "[vllm-head] Ray head started; waiting for '"${_want_gpus}"' GPUs..."; i=0; while [ $i -lt 120 ]; do g=$(ray status 2>/dev/null | grep -oE "[0-9.]+/[0-9.]+ GPU" | head -1 | sed "s@.*/@@; s@ GPU@@; s@[.].*@@"); [ "${g:-0}" = "'"${_want_gpus}"'" ] && break; sleep 5; i=$((i+1)); done; echo "[vllm-head] GPUs=${g:-0}; launching vLLM"; exec vllm serve "$VLLM_MODEL_REF" $VLLM_EXTRA_ARGS ${VLLM_SPECULATIVE_CONFIG:+--speculative-config "$VLLM_SPECULATIVE_CONFIG"} --served-model-name "$VLLM_SERVED_MODEL_NAME" --api-key "$VLLM_API_KEY" -tp "$VLLM_TP" -pp "$VLLM_PP" --distributed-executor-backend ray --host 0.0.0.0 --port 8000 --max-model-len "${VLLM_MAX_MODEL_LEN:-4096}" --gpu-memory-utilization "${VLLM_GPU_MEM_UTIL:-0.95}" ${VLLM_ENFORCE_EAGER:+--enforce-eager} --enable-auto-tool-choice --tool-call-parser "${VLLM_TOOL_CALL_PARSER:-hermes}" ${VLLM_REASONING_PARSER:+--reasoning-parser "$VLLM_REASONING_PARSER"}' \
+        -c 'export PATH=/usr/local/bin:$PATH; python3 -m pip install -q --no-index --find-links /root/.cache/huggingface/ray_aarch64_env/wheels ray 2>&1 | grep -v "^$\|already\|Requirement" || python3 -m pip install -q ray; ray start --head --node-ip-address="'"${HEAD_IP}"'" --port="'"${RAY_PORT}"'" --num-gpus="'"${_gpus_per_node}"'" --object-store-memory=1073741824 --include-dashboard=false; echo "[vllm-head] Ray head started; waiting for '"${_want_gpus}"' GPUs..."; i=0; while [ $i -lt 120 ]; do g=$(ray status 2>/dev/null | grep -oE "[0-9.]+/[0-9.]+ GPU" | head -1 | sed "s@.*/@@; s@ GPU@@; s@[.].*@@"); [ "${g:-0}" = "'"${_want_gpus}"'" ] && break; sleep 5; i=$((i+1)); done; echo "[vllm-head] GPUs=${g:-0}; launching vLLM"; exec vllm serve "$VLLM_MODEL_REF" $VLLM_EXTRA_ARGS ${VLLM_SPECULATIVE_CONFIG:+--speculative-config "$VLLM_SPECULATIVE_CONFIG"} --served-model-name "$VLLM_SERVED_MODEL_NAME" --api-key "$VLLM_API_KEY" -tp "$VLLM_TP" -pp "$VLLM_PP" --distributed-executor-backend ray --host 0.0.0.0 --port 8000 --max-model-len "${VLLM_MAX_MODEL_LEN:-4096}" --gpu-memory-utilization "${VLLM_GPU_MEM_UTIL:-0.95}" ${VLLM_LANGUAGE_MODEL_ONLY:+--language-model-only} ${VLLM_KV_CACHE_MEMORY_BYTES:+--kv-cache-memory-bytes "$VLLM_KV_CACHE_MEMORY_BYTES"} ${VLLM_MAX_NUM_SEQS:+--max-num-seqs "$VLLM_MAX_NUM_SEQS"} ${VLLM_MAX_NUM_BATCHED_TOKENS:+--max-num-batched-tokens "$VLLM_MAX_NUM_BATCHED_TOKENS"} ${VLLM_ENFORCE_EAGER:+--enforce-eager} --enable-auto-tool-choice --tool-call-parser "${VLLM_TOOL_CALL_PARSER:-hermes}" ${VLLM_REASONING_PARSER:+--reasoning-parser "$VLLM_REASONING_PARSER"}' \
         || { echo "[rivault] FATAL: failed to launch Ray head + vLLM container"; exit 1; }
     RAY_HEAD_PID=""
 
