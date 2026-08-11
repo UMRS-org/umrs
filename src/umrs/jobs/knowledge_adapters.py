@@ -257,6 +257,10 @@ async def _open_pool() -> Any:
     so every fetch raises InterfaceError('pool is not initialized') (silently
     swallowed by the collectors' guards).  All async consumers use this helper
     and keep every DB operation inside its body.
+
+    The pool is codec-aware: without codecs, asyncpg hands jsonb values out as
+    ``str`` and REJECTS dict parameters for jsonb columns (DataError),
+    which silently killed provenance/graph writes.
     """
     pool = None
     dsn = _resolve_knowledge_dsn()
@@ -264,7 +268,7 @@ async def _open_pool() -> Any:
         try:
             import asyncpg
 
-            pool = await asyncpg.create_pool(dsn=dsn)
+            pool = await asyncpg.create_pool(dsn=dsn, init=_init_json_codecs)
         except Exception as exc:
             logger.warning("Knowledge asyncpg pool unavailable: %s", exc)
             pool = None
@@ -280,6 +284,22 @@ async def _open_pool() -> Any:
                 await pool.wait_closed()
             except Exception:  # noqa: BLE001
                 pass
+
+
+async def _init_json_codecs(conn: Any) -> None:
+    """Register symmetric JSON/JSONB codecs on an ad-hoc pool connection.
+
+    ``dict`` values encode to JSON on write; jsonb values decode back to dict
+    on read. ``_parse_metrics_jsonb`` deliberately stays in place: it remains
+    the defensive fallback for pools/paths outside this helper.
+    """
+    for typename in ("json", "jsonb"):
+        await conn.set_type_codec(
+            typename,
+            encoder=json.dumps,
+            decoder=json.loads,
+            schema="pg_catalog",
+        )
 
 
 def _resolve_s3_credentials() -> tuple[str, str]:
