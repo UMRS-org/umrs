@@ -91,10 +91,11 @@ services:
       UMRS_SITE_CONFIG: /etc/umrs/site.yaml
       # Canonical site recipe catalog (M6 — one authoritative recipe source).
       UMRS_PROVISION_ROSTER: /etc/umrs/pool-rccs.yaml
-      # Sanctioned shared model tree for `r4 model stage` destination (the
-      # default /etc/umrs/models tripped the store path policy on this
-      # deployment — compute-visible shared root).
-      UMRS_MODEL_STAGING_ROOT: ${UMRS_MODEL_STAGING_ROOT_RCCS:-/lvs0/rccs-dmp/masaru.nagaso/umrs_models}
+      # NOTE: no UMRS_MODEL_STAGING_ROOT here. The front executor has no lustre
+      # mount — cluster-side staging (download on login node + r4 model register)
+      # is the sanctioned RCCS flow until cluster-side staging jobs exist (P3).
+      # A /lvs0 value would ghost-write into the container overlay: worse than
+      # the default policy 500, which fails loud.
       # Model-window visibility: RCCS serves everything EXCEPT the AI4S frontier
       # models (those run only on the GB200/AI4S cluster). Listing-only filter;
       # provisioning a model by name is unaffected.
