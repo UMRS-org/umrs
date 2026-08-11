@@ -198,6 +198,23 @@ def _engine_dict(e: EngineSpec) -> dict[str, Any]:
     return d
 
 
+def patches_to_env(patches: Sequence[PatchSpec]) -> dict[str, str]:
+    """Serialize PatchSpec entries for the launcher.
+
+    Wire format: space-separated ``src:target:sha256`` triplets in
+    ``VLLM_PATCHES``. Spaces force the M5 hex transport (naturally), so the
+    value is both mobile and provenance-safe; paths carry no spaces by the
+    recipe validator (targets are checked to be module paths at startup).
+    """
+    if not patches:
+        return {}
+    line = " ".join(f"{p.source}:{p.target}:{p.sha256}" for p in patches)
+    return {
+        "VLLM_PATCHES": line,
+        "VLLM_PATCHES_COUNT": str(len(patches)),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Recipe loading (stdlib + PyYAML — foundation-safe, matches provision_roster)
 # ---------------------------------------------------------------------------

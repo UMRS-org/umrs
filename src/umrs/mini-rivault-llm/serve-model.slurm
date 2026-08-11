@@ -1649,6 +1649,41 @@ RAYEOF
     if [[ -n "${VLLM_PATCH_LAGUNA_DFLASH:-}" ]]; then
         _mn_vllm_args+=( -v "${VLLM_PATCH_LAGUNA_DFLASH}:/usr/local/lib/python3.12/dist-packages/vllm/model_executor/models/laguna_dflash.py:ro" )
     fi
+    # Generalized operator-declared patches (M6): each entry of
+    #   VLLM_PATCHES="src:target:sha256 [src2:target2:sha256...]"
+    # is sha-verified on the CONTROL node (fail-closed) and then read-only
+    # bind-mounted into the runtime container(s), replacing in-image modules.
+    # Sources must live on the shared, pre-staged fs (validated by the recipe
+    # loader + path policy; provenance is logged per mount below).
+    if [[ -n "${VLLM_PATCHES:-}" ]]; then
+        for _patch_spec in ${VLLM_PATCHES}; do
+            IFS=':' read -r _patch_src _patch_tgt _patch_sha <<<"${_patch_spec}"
+            if [[ -z "${_patch_src}" || -z "${_patch_tgt}" ]]; then
+                echo "[rivault] FAIL: malformed patch entry: ${_patch_spec} (need src:target:sha256)"; exit 1
+            fi
+            if [[ ! -f "${_patch_src}" ]]; then
+                echo "[rivault] FAIL: patch source missing: ${_patch_src}"; exit 1
+            fi
+            if [[ "${_patch_tgt}" != /usr/local/lib/* && "${_patch_tgt}" != /venv/* && "${_patch_tgt}" != /opt/* ]]; then
+                echo "[rivault] FAIL: patch target outside allowed library roots: ${_patch_tgt}"; exit 1
+            fi
+            if [[ "${_patch_sha}" =~ ^[0-9a-f]{64}$ ]]; then
+                _actual_sha="$(sha256sum "${_patch_src}" 2>/dev/null | awk '{print $1}')"
+                if [[ "${_actual_sha}" != "${_patch_sha}" ]]; then
+                    echo "[rivault] FAIL: sha256 mismatch for ${_patch_src}: got ${_actual_sha}, expected ${_patch_sha}"; exit 1
+                fi
+            elif [[ -n "${_patch_sha}" ]]; then
+                echo "[rivault] FAIL: invalid patch sha provided for ${_patch_src}: ${_patch_sha}"
+                exit 1
+            fi
+            echo "[rivault] Patch: verified ${_patch_src} -> ${_patch_tgt} (sha=${_patch_sha})"
+            _mn_vllm_args+=( -v "${_patch_src}:${_patch_tgt}:ro" )
+            # Compose flavor (single-node, AgentWorld): expose the same mounts
+            # through two scalars interpolated by serve-model.yaml.
+            export VLLM_PATCH_SRC_VOLS="${_patch_src}"
+            export VLLM_PATCH_TGT_VOLS="${_patch_tgt}"
+        done
+    fi
     if [[ -n "${_mn_s3host}" ]]; then
         _mn_vllm_args+=( --add-host "${_mn_s3host}:${_mn_priv}.${_mn_nginxout}" )
     fi
