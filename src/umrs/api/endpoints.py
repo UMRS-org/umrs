@@ -2320,6 +2320,9 @@ async def provision_endpoint(
             effective_ttl_sec = int(serving_plan.ttl_sec)
         for _k, _v in (serving_plan.env or {}).items():
             env_vars.setdefault(str(_k), str(_v))
+        if serving_plan.patches:
+            for _k2, _v2 in _ss.patches_to_env(serving_plan.patches).items():
+                env_vars.setdefault(str(_k2), str(_v2))
         logger.info(
             "Resolved recipe for '%s' (plan=%s): partition=%s nodes=%d gpus=%d "
             "max_model_len=%d ttl_sec=%s",
