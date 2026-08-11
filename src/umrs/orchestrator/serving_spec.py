@@ -162,6 +162,7 @@ class ResolvedEndpointSpec:
     runtime: RuntimeSpec
     engine: EngineSpec
     patches: tuple[PatchSpec, ...] = ()
+    env: dict[str, str] = field(default_factory=dict)
     ttl_sec: int = 0
     readiness_timeout_sec: int = 3600
     provenance: ProvenanceSpec = field(
@@ -176,6 +177,7 @@ class ResolvedEndpointSpec:
             "runtime": vars(self.runtime),
             "engine": _engine_dict(self.engine),
             "patches": [vars(p) for p in self.patches],
+            "env": dict(self.env),
             "ttl_sec": self.ttl_sec,
             "readiness_timeout_sec": self.readiness_timeout_sec,
             "provenance": {
@@ -524,3 +526,211 @@ def _apply_tunable_fields(
     if "ttl_sec" in applied:
         spec = replace(spec, ttl_sec=int(applied["ttl_sec"]))
     return spec
+
+
+# ---------------------------------------------------------------------------
+# Legacy-roster compat (M2): build a ServingPlan from an existing pool entry
+# ---------------------------------------------------------------------------
+
+_MISSING = object()  # sentinel for absent engine keys in legacy rosters
+
+
+def _env_int(env: Mapping[str, Any], keys: tuple[str, ...]) -> int | None:
+    for k in keys:
+        v = env.get(k)
+        if v is not None and str(v).isdigit():
+            return int(str(v))
+    return None
+
+
+def _env_float(env: Mapping[str, Any], key: str) -> float | None:
+    v = env.get(key)
+    if v is None:
+        return None
+    try:
+        return float(str(v))
+    except ValueError:
+        return None
+
+
+def _env_json(env: Mapping[str, Any], key: str) -> dict[str, Any] | None:
+    v = env.get(key)
+    if not v:
+        return None
+    try:
+        data = json.loads(str(v))
+    except json.JSONDecodeError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _legacy_engine_block(entry: Mapping[str, Any], model: str) -> dict[str, Any]:
+    """Translate legacy `env_vars` into the typed engine block."""
+    env = entry.get("env_vars") or {}
+    block: dict[str, Any] = {}
+    if entry.get("max_model_len") is not None:
+        block["max_model_len"] = int(entry["max_model_len"])
+    else:
+        block["max_model_len"] = _env_int(env, ("VLLM_MAX_MODEL_LEN",)) or 4096
+    util = _env_float(env, "VLLM_GPU_MEM_UTIL")
+    if util is not None:
+        block["gpu_mem_util"] = util
+    else:
+        tol = entry.get("gpu_mem_util")
+        block["gpu_mem_util"] = float(tol) if isinstance(tol, (int, float)) else 0.9
+    _legacy_engine_numeric(env, block)
+    block["tokenizer"] = env.get("VLLM_TOKENIZER")
+    block["tool_call_parser"] = env.get("VLLM_TOOL_CALL_PARSER")
+    block["reasoning_parser"] = env.get("VLLM_REASONING_PARSER")
+    block["speculative_config"] = _env_json(env, "VLLM_SPECULATIVE_CONFIG")
+    lmo = str(env.get("VLLM_LANGUAGE_MODEL_ONLY", "")).lower()
+    block["language_model_only"] = lmo in {"1", "true", "yes"}
+    block["extra_args"] = env.get("VLLM_EXTRA_ARGS") or ""
+    return block
+
+
+def _legacy_engine_numeric(env: Mapping[str, Any], block: dict[str, Any]) -> None:
+    for key in ("VLLM_KV_CACHE_MEMORY_BYTES", "VLLM_KV_CACHE_BYTES"):
+        val = _env_int(env, (key,))
+        if val is not None:
+            block["kv_cache_memory_bytes"] = val
+            break
+    seqs = _env_int(env, ("VLLM_MAX_NUM_SEQS",))
+    if seqs is not None:
+        block["max_num_seqs"] = seqs
+    batched = _env_int(env, ("VLLM_MAX_NUM_BATCHED_TOKENS",))
+    if batched is not None:
+        block["max_num_batched_tokens"] = batched
+
+
+def _legacy_runtime(entry: Mapping[str, Any], env: Mapping[str, Any]) -> RuntimeSpec:
+    default_image = env.get("VLLM_DOCKER_IMAGE") or "docker.io/vllm/vllm-openai:latest"
+    tp = _env_int(env, ("VLLM_TENSOR_PARALLEL_SIZE", "VLLM_TP")) or int(
+        entry.get("gpu_count") or 1
+    )
+    return RuntimeSpec(
+        image=str(entry.get("image") or default_image),
+        nodes=int(entry.get("node_count") or 1),
+        gpus_per_node=int(entry.get("gpu_count") or 1),
+        tensor_parallel=tp,
+        pipeline_parallel=int(entry.get("pipeline_parallel") or 1),
+        strategy=str(entry.get("parallel_strategy") or "tp_pp"),
+    )
+
+
+def _legacy_model_spec(
+    entry: Mapping[str, Any], project_id: str, owner_id: str, storage_ref: str
+) -> ModelSpec:
+    model = str(entry["model"])
+    served = str(entry.get("served_model_name") or entry.get("name") or model)
+    ref = storage_ref or str(entry.get("path") or "")
+    return ModelSpec(
+        name=model,
+        served_name=served,
+        storage_ref=ref,
+        owner_id=owner_id,
+        project_id=project_id,
+    )
+
+
+def build_spec_from_legacy_entry(
+    entry: Mapping[str, Any],
+    *,
+    site: SiteSpec,
+    project_id: str,
+    owner_id: str,
+    storage_ref: str = "",
+) -> ResolvedEndpointSpec:
+    """Build a ServingPlan from a production `pool.yaml` entry as-is (M2)."""
+    model = str(entry["model"])
+    env = {str(k): str(v) for k, v in (entry.get("env_vars") or {}).items()}
+    engine, _dropped = build_engine_spec(
+        _legacy_engine_block(entry, model), f"legacy[{model}].env_vars"
+    )
+    return ResolvedEndpointSpec(
+        model=_legacy_model_spec(entry, project_id, owner_id, storage_ref),
+        site=site,
+        runtime=_legacy_runtime(entry, env),
+        engine=engine,
+        env=env,
+        ttl_sec=int(entry.get("ttl_sec") or 0),
+        readiness_timeout_sec=int(entry.get("timeout") or 3600),
+        provenance=ProvenanceSpec(
+            recipe_file=str(entry.get("_recipe_file") or "") or None,
+            recipe_hash=str(entry.get("_recipe_hash") or ""),
+            resolved_at="",
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Inversion (used by the golden-diff harness): plan → legacy defaults dict
+# ---------------------------------------------------------------------------
+
+
+def spec_to_legacy_defaults(spec: ResolvedEndpointSpec) -> dict[str, Any]:
+    """Recreate the OLD resolver's return shape from a plan (test-of-equivalence).
+
+    Legacy = field subset a caller expects from `resolve_model_provision_defaults`
+    through the pool rosters. The env union re-materialises engine-representable
+    keys so the bucket matches the original verbatim env content.
+    """
+    out: dict[str, Any] = {}
+    if spec.site.partition:
+        out["partition"] = spec.site.partition
+    out["node_count"] = spec.runtime.nodes
+    out["gpu_count"] = spec.runtime.gpus_per_node
+    out["max_model_len"] = spec.engine.max_model_len
+    out["ttl_sec"] = spec.ttl_sec
+    env: dict[str, str] = dict(spec.env)
+    _engine_to_env(spec, env)
+    if env:
+        out["env_vars"] = env
+    if spec.runtime.strategy != "tp_pp":
+        out["parallel_strategy"] = spec.runtime.strategy
+    return out
+
+
+def _engine_to_env(spec: ResolvedEndpointSpec, env: dict[str, str]) -> None:
+    env.setdefault("VLLM_TENSOR_PARALLEL_SIZE", str(spec.runtime.tensor_parallel))
+    env.setdefault("VLLM_GPU_MEM_UTIL", str(spec.engine.gpu_mem_util))
+    env.setdefault("VLLM_MAX_MODEL_LEN", str(spec.engine.max_model_len))
+    env.setdefault("VLLM_DOCKER_IMAGE", spec.runtime.image)
+    for key, val in _opt_engine_str_env(spec):
+        env.setdefault(key, val)
+    for key, val in _opt_engine_num_env(spec):
+        env.setdefault(key, val)
+
+
+def _opt_engine_str_env(spec: ResolvedEndpointSpec) -> list[tuple[str, str]]:
+    out: list[tuple[str, str]] = []
+    if spec.engine.tool_call_parser:
+        out.append(("VLLM_TOOL_CALL_PARSER", spec.engine.tool_call_parser))
+    if spec.engine.reasoning_parser:
+        out.append(("VLLM_REASONING_PARSER", spec.engine.reasoning_parser))
+    if spec.engine.tokenizer:
+        out.append(("VLLM_TOKENIZER", spec.engine.tokenizer))
+    if spec.engine.extra_args:
+        out.append(("VLLM_EXTRA_ARGS", " ".join(spec.engine.extra_args)))
+    if spec.engine.language_model_only:
+        out.append(("VLLM_LANGUAGE_MODEL_ONLY", "1"))
+    return out
+
+
+def _opt_engine_num_env(spec: ResolvedEndpointSpec) -> list[tuple[str, str]]:
+    out: list[tuple[str, str]] = []
+    if spec.engine.kv_cache_memory_bytes:
+        out.append(
+            ("VLLM_KV_CACHE_MEMORY_BYTES", str(spec.engine.kv_cache_memory_bytes))
+        )
+    if spec.engine.max_num_seqs:
+        out.append(("VLLM_MAX_NUM_SEQS", str(spec.engine.max_num_seqs)))
+    if spec.engine.max_num_batched_tokens:
+        out.append(
+            ("VLLM_MAX_NUM_BATCHED_TOKENS", str(spec.engine.max_num_batched_tokens))
+        )
+    if spec.engine.speculative_config:
+        out.append(
+            ("VLLM_SPECULATIVE_CONFIG", json.dumps(spec.engine.speculative_config))
+        )
+    return out

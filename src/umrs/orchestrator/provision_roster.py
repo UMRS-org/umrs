@@ -47,7 +47,20 @@ _ROSTER_FIELDS = (
 
 # Cache keyed by the resolved roster path tuple; invalidated when any file's
 # mtime changes so operators can edit the roster without restarting UMRS.
-_cache: dict[tuple[str, ...], tuple[tuple[float, ...], dict[tuple[str, str | None], dict[str, Any]]]] = {}
+_cache: dict[
+    tuple[str, ...],
+    tuple[tuple[float, ...], dict[tuple[str, str | None], dict[str, Any]]],
+] = {}
+
+
+def _file_hash(path: str) -> str:
+    """Stable recipe content hash (sha256 of file bytes) for provenance."""
+    import hashlib
+
+    try:
+        return hashlib.sha256(open(path, "rb").read()).hexdigest()
+    except OSError:
+        return ""
 
 
 def _roster_paths() -> list[str]:
@@ -57,33 +70,45 @@ def _roster_paths() -> list[str]:
     return [p for p in (part.strip() for part in raw.split(os.pathsep)) if p]
 
 
-def _parse_roster(path: str) -> list[dict[str, Any]]:
-    """Return the merged ``defaults``+``endpoints`` entries for one roster file."""
+def _read_yaml_mapping(path: str) -> dict[str, Any]:
     try:
         import yaml  # type: ignore
     except ImportError:
         logger.warning("PyYAML not installed; ignoring provision roster %s", path)
-        return []
+        return {}
     try:
         with open(path, encoding="utf-8") as fh:
             data = yaml.safe_load(fh) or {}
     except (OSError, yaml.YAMLError) as exc:  # type: ignore[attr-defined]
         logger.warning("Failed to read provision roster %s: %s", path, exc)
-        return []
+        return {}
     if not isinstance(data, dict):
         logger.warning("Provision roster %s is not a YAML mapping; ignoring", path)
-        return []
-    defaults = data.get("defaults") or {}
-    if not isinstance(defaults, dict):
-        defaults = {}
+        return {}
+    return data
+
+
+def _merge_entries(data: dict[str, Any]) -> list[dict[str, Any]]:
+    defaults = data.get("defaults")
+    defaults = defaults if isinstance(defaults, dict) else {}
     raw_entries = data.get("endpoints")
     if not isinstance(raw_entries, list):
         return []
-    merged: list[dict[str, Any]] = []
-    for entry in raw_entries:
-        if isinstance(entry, dict) and entry.get("model"):
-            merged.append({**defaults, **entry})
-    return merged
+    return [
+        {**defaults, **entry}
+        for entry in raw_entries
+        if isinstance(entry, dict) and entry.get("model")
+    ]
+
+
+def _entry_variant(entry: dict[str, Any]) -> str | None:
+    variant = entry.get("name")  # variant = pool YAML entry name
+    return variant if isinstance(variant, str) and variant else None
+
+
+def _parse_roster(path: str) -> list[dict[str, Any]]:
+    """Return the merged ``defaults``+``endpoints`` entries for one roster file."""
+    return _merge_entries(_read_yaml_mapping(path))
 
 
 def _build_index(paths: list[str]) -> dict[tuple[str, str | None], dict[str, Any]]:
@@ -100,21 +125,11 @@ def _build_index(paths: list[str]) -> dict[tuple[str, str | None], dict[str, Any
     for path in paths:
         for entry in _parse_roster(path):
             model = str(entry["model"])
-            variant = entry.get("name")  # variant = pool YAML entry name
-            if isinstance(variant, str) and variant:
-                variant = variant
-            else:
-                variant = None
+            variant = _entry_variant(entry)
             key = (model, variant)
             if key in index:
                 continue
-            defaults: dict[str, Any] = {}
-            for field in _ROSTER_FIELDS:
-                if field in entry and entry[field] is not None:
-                    defaults[field] = entry[field]
-            env_vars = entry.get("env_vars")
-            if isinstance(env_vars, dict) and env_vars:
-                defaults["env_vars"] = {str(k): str(v) for k, v in env_vars.items()}
+            defaults = _entry_defaults(entry, path)
             index[key] = defaults
             # The first entry for a model is also its *canonical* sizing, so a
             # provision that names only the model — `r4 endpoint up --model X`,
@@ -132,6 +147,24 @@ def _build_index(paths: list[str]) -> dict[tuple[str, str | None], dict[str, Any
             if variant is not None:
                 index.setdefault((model, None), defaults)
     return index
+
+
+def _entry_defaults(entry: dict[str, Any], path: str) -> dict[str, Any]:
+    """Build the outward defaults dict for one entry, embedding the full
+    recipe entry under "_full_entry" so the ServingPlan resolver sees
+    recipe-controlled material (path, patches, engine, mounts)."""
+    full_entry = dict(entry)
+    full_entry["_recipe_file"] = path
+    full_entry["_recipe_hash"] = _file_hash(path)
+    defaults: dict[str, Any] = {}
+    for field in _ROSTER_FIELDS:
+        if field in entry and entry[field] is not None:
+            defaults[field] = entry[field]
+    env_vars = entry.get("env_vars")
+    if isinstance(env_vars, dict) and env_vars:
+        defaults["env_vars"] = {str(k): str(v) for k, v in env_vars.items()}
+    defaults["_full_entry"] = full_entry
+    return defaults
 
 
 def _load_index() -> dict[tuple[str, str | None], dict[str, Any]]:
@@ -175,10 +208,39 @@ def resolve_model_provision_defaults(
     index = _load_index()
     # 1. Exact variant match
     entry = index.get((model, variant))
-    if entry:
-        return dict(entry)
-    # 2. Default variant fallback
-    entry = index.get((model, None))
-    if entry:
-        return dict(entry)
-    return None
+    if not entry:
+        # 2. Canonical variant fallback
+        entry = index.get((model, None))
+    if not entry:
+        return None
+    out = {k: v for k, v in entry.items() if k != "_full_entry"}
+    return out
+
+
+def resolve_model_serving_spec(
+    model: str,
+    variant: str | None = None,
+    *,
+    site: Any,
+    project_id: str = "default",
+    owner_id: str = "",
+    storage_ref: str = "",
+) -> Any:
+    """Resolve a roster recipe into a typed ServingPlan (M2 canonical entry).
+
+    Returns ``ResolvedEndpointSpec`` or ``None`` when no recipe matches.
+    """
+    from . import serving_spec
+
+    index = _load_index()
+    entry = index.get((model, variant)) or index.get((model, None))
+    if not entry:
+        return None
+    full = entry.get("_full_entry") or entry
+    return serving_spec.build_spec_from_legacy_entry(
+        full,
+        site=site,
+        project_id=project_id,
+        owner_id=owner_id,
+        storage_ref=storage_ref or str(full.get("path") or ""),
+    )
