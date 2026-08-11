@@ -12,7 +12,35 @@ slurm-proxy charset allowedlist) with two invariants:
 from __future__ import annotations
 
 import pytest
-from umrs.orchestrator.remote_slurm_backend import _hex_export_parts
+from umrs.orchestrator.remote_slurm_backend import (
+    RemoteSlurmBackend,
+    _hex_export_parts,
+)
+
+
+def test_remote_backend_overrides_status_methods():
+    """Regression: helper insertion must not close the class body early.
+
+    M5 inserted ``_hex_export_parts`` mid-class; every method defined after it
+    silently became unreachable code inside that function, and the class fell
+    back to the *local* SlurmBackend implementations (subprocess squeue) —
+    invisible until the first deployment without slurm CLIs in the image.
+    """
+    remote_mod = "umrs.orchestrator.remote_slurm_backend"
+    for name in (
+        "get_job_status",
+        "_query_slurm_job_status",
+        "_query_squeue_status",
+        "_query_sacct_status",
+        "_read_remote_job_info",
+        "cleanup",
+    ):
+        method = getattr(RemoteSlurmBackend, name, None)
+        assert method is not None, f"{name} missing on RemoteSlurmBackend"
+        assert method.__module__ == remote_mod, (
+            f"{name} resolved from {method.__module__}, expected override in {remote_mod}"
+        )
+
 
 PROXY_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 _./:=,%-")
 
