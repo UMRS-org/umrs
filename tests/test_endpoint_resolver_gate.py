@@ -1,0 +1,95 @@
+"""M3: recipe resolver policy gate + plan-driven sizing in provision flow."""
+
+from __future__ import annotations
+
+from types import SimpleNamespace
+
+import pytest
+from fastapi import HTTPException
+from umrs.api.endpoints import _current_cluster_name, _enforce_recipe_policy
+from umrs.orchestrator import provision_roster
+from umrs.orchestrator.serving_spec import ResolvedEndpointSpec, SiteSpec
+
+SITE = SiteSpec(cluster="rccs", backend="slurm-remote", partition="ng-dgx-m0")
+
+
+def test_enforce_recipe_policy_rejects_env_vars_for_non_admin():
+    request = SimpleNamespace(env_vars={"VLLM_EXTRA_ARGS": "--flakes"}, container_image=None)
+    with pytest.raises(HTTPException) as exc:
+        _enforce_recipe_policy(False, request)
+    assert exc.value.status_code == 403
+    assert "env_vars" in str(exc.value.detail)
+
+
+def test_enforce_recipe_policy_rejects_container_image_for_non_admin():
+    request = SimpleNamespace(env_vars=None, container_image="docker.io/not-curated/x:latest")
+    with pytest.raises(HTTPException) as exc:
+        _enforce_recipe_policy(False, request)
+    assert exc.value.status_code == 403
+    assert "container_image" in str(exc.value.detail)
+
+
+def test_enforce_recipe_policy_admits_admin_and_empty_request():
+    request = SimpleNamespace(
+        env_vars={"VLLM_EXTRA_ARGS": "--x"}, container_image="docker.io/x:latest"
+    )
+    _enforce_recipe_policy(True, request)
+    _enforce_recipe_policy(False, SimpleNamespace(env_vars=None, container_image=None))
+
+
+def test_cluster_name_is_deterministic_and_configurable(monkeypatch):
+    monkeypatch.setenv("UMRS_CLUSTER", "rccs")
+    assert _current_cluster_name() == "rccs"
+    monkeypatch.delenv("UMRS_CLUSTER")
+    name = _current_cluster_name()
+    assert isinstance(name, str) and name
+
+
+def test_plan_drives_sizing_for_curd_model(monkeypatch):
+    monkeypatch.setenv("UMRS_PROVISION_ROSTER", "umrs/deploy/rccs-front/pool-rccs-cloud.yaml")
+    provision_roster._cache.clear()
+    serving_plan = provision_roster.resolve_model_serving_spec(
+        "cyberagent/calm3-22b-chat",
+        None,
+        site=SITE,
+        project_id="proj-a",
+        owner_id="alice",
+        storage_ref="/lvs0/x/calm3-22b-chat",
+    )
+    assert isinstance(serving_plan, ResolvedEndpointSpec)
+    assert serving_plan.engine.max_model_len == 8192
+    assert serving_plan.model.project_id == "proj-a"
+    assert serving_plan.model.owner_id == "alice"
+    assert serving_plan.provenance.recipe_file.endswith("pool-rccs-cloud.yaml")
+    assert serving_plan.plan_hash()
+
+
+def test_custom_model_without_recipe_gets_none_and_generic_fallback():
+    plan = provision_roster.resolve_model_serving_spec(
+        "user-owned/custom-7b",
+        None,
+        site=SITE,
+        project_id="proj-c",
+        owner_id="bob",
+    )
+    assert plan is None  # constrained generic fallback is the caller's lane
+
+
+def test_legacy_resolver_still_matches_plan_for_curated():
+    import os
+
+    os.environ["UMRS_PROVISION_ROSTER"] = "umrs/deploy/rccs-front/pool-rccs-cloud.yaml"
+    provision_roster._cache.clear()
+    legacy = provision_roster.resolve_model_provision_defaults("cyberagent/calm3-22b-chat", None)
+    plan = provision_roster.resolve_model_serving_spec(
+        "cyberagent/calm3-22b-chat",
+        None,
+        site=SITE,
+        project_id="p",
+        owner_id="u",
+    )
+    assert legacy is not None and plan is not None
+    assert legacy["max_model_len"] == plan.engine.max_model_len
+    assert legacy.get("node_count", 1) == plan.runtime.nodes
+    assert legacy.get("gpu_count", 1) == plan.runtime.gpus_per_node
+    assert (legacy.get("env_vars") or {}) == dict(plan.env)
