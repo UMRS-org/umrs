@@ -287,9 +287,36 @@ def _verified_workflow_user(user_id: str | None, x_user_id: str | None) -> str:
 def _verified_workflow_params(
     params: dict[str, Any],
     x_verified_project_id: str | None,
+    x_verified_project_memberships: str | None = None,
+    x_verified_is_admin: str | None = None,
 ) -> dict[str, Any]:
     verified_project_id = _header_str(x_verified_project_id)
     resolved_params = dict(params)
+    declared_project_id = (
+        str(resolved_params.get("project_id") or "").strip()
+        if isinstance(resolved_params.get("project_id"), str)
+        else ""
+    )
+    if declared_project_id:
+        # Workflow-declared project_id is authoritative — but only when the
+        # caller is authorized for it (admin role, or the declared project is
+        # in the caller's verified membership set). Anything else is a loud
+        # 403, never a silent rewrite (Phase P0-1).
+        is_admin = _header_str(x_verified_is_admin) == "true"
+        memberships_raw = _header_str(x_verified_project_memberships) or ""
+        memberships = {
+            item.strip() for item in memberships_raw.split(",") if item.strip()
+        }
+        allowed = {p for p in (verified_project_id,) if p} | memberships
+        if not is_admin and verified_project_id and declared_project_id not in allowed:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    f"project_id '{declared_project_id}' is outside the "
+                    "caller's verified projects"
+                ),
+            )
+        return resolved_params
     if verified_project_id:
         resolved_params["project_id"] = verified_project_id
         return resolved_params
@@ -571,9 +598,16 @@ async def trigger_workflow(
     request: WorkflowTriggerRequest,
     x_user_id: str | None = Header(None),
     x_verified_project_id: str | None = Header(None),
+    x_verified_project_memberships: str | None = Header(None),
+    x_verified_is_admin: str | None = Header(None),
 ):
     user_id = _verified_workflow_user(request.user_id or "", x_user_id)
-    params = _verified_workflow_params(request.resolved_params(), x_verified_project_id)
+    params = _verified_workflow_params(
+        request.resolved_params(),
+        x_verified_project_id,
+        x_verified_project_memberships,
+        x_verified_is_admin,
+    )
     entry = _resolve_workflow_catalog_entry(workflow_name, user_id)
     if entry is None:
         raise HTTPException(
