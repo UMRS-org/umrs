@@ -152,6 +152,48 @@ def test_allowed_node_types_is_canonical_db_ontology() -> None:
     } == KnowledgeStore.ALLOWED_NODE_TYPES
 
 
+# ── Fix C: repeated ingestion is idempotent (no duplicate nodes/edges) ────────
+
+
+def test_repeated_produced_by_ingestion_is_idempotent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Real store upserts ON CONFLICT by node_id/edge_id — mirrors that
+    keyed semantics and proves a second ingest yields zero new rows."""
+    from umrs.knowledge.store import KnowledgeEdge
+
+    nodes: dict[str, KnowledgeNode] = {}
+    edges: dict[str, KnowledgeEdge] = {}
+
+    class _KeyedStore:
+        def __init__(self, _pool: object) -> None:
+            pass
+
+        async def upsert_node(self, node: KnowledgeNode) -> None:
+            nodes[node.node_id] = node  # ON CONFLICT (node_id) DO UPDATE
+
+        async def upsert_edge(self, edge: KnowledgeEdge) -> None:
+            edges[edge.edge_id] = edge
+
+    monkeypatch.setenv("DB_HOST", "127.0.0.1")
+    monkeypatch.setattr("umrs.knowledge.store.KnowledgeStore", _KeyedStore)
+    monkeypatch.setattr(ka, "_open_pool", lambda: _pool_ctx(object()))
+
+    for _round in (1, 2):
+        ka._create_produced_by_edges(
+            list(_DEDUPED), "default", "alice", _job(), _attempt(), "demo08_yield_eval", "*"
+        )
+
+    # Exactly one prod node, one artifact node, one produced_by edge.
+    assert len(nodes) == 2
+    assert set(nodes) == {"prod-job-job-x", "wfart-95c825952512cddb"}
+    assert len(edges) == 1
+    edge = next(iter(edges.values()))
+    assert edge.relation_type == "produced_by"
+    assert edge.source_id == "wfart-95c825952512cddb"
+    assert edge.target_id == "prod-job-job-x"
+
+
 # ── Fix B: UNDERSTAND receives descriptors even when the table is empty ──────
 
 

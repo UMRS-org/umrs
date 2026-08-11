@@ -127,7 +127,7 @@ def _fire_coroutine(coro: Any, label: str = "") -> None:
         try:
             await coro
         except Exception:
-            logger.debug("background task %s failed", label, exc_info=True)
+            logger.warning("background task %s failed", label, exc_info=True)
 
     asyncio.get_running_loop().create_task(_swallow())
 
@@ -1853,6 +1853,12 @@ def _create_produced_by_edges(
         async def _create_edges():
             async with _open_pool() as pool:
                 if pool is None:
+                    logger.warning(
+                        "produced_by edges skipped: knowledge pool unavailable "
+                        "job=%s artifacts=%d",
+                        job.job_id,
+                        len(deduped),
+                    )
                     return
                 store = KnowledgeStore(pool)
                 prod_entity_id = f"prod-job-{job.job_id}"
@@ -1910,15 +1916,32 @@ def _create_produced_by_edges(
                             workflow,
                             step,
                         )
-                    except Exception:
-                        pass
+                    except Exception as edge_exc:
+                        # Authorization constraint: never silently swallow a
+                        # graph write failure — context needed for audit.
+                        logger.warning(
+                            "produced_by edge write failed "
+                            "source_node=%s (artifact/entity) "
+                            "target_node=%s (job/entity) "
+                            "relation=produced_by error=%r",
+                            aid,
+                            prod_entity_id,
+                            edge_exc,
+                            exc_info=True,
+                        )
 
         try:
             _fire_coroutine(_create_edges(), "produced_by_edges")
         except Exception:
-            pass
+            logger.warning(
+                "produced_by edge scheduling failed job=%s workflow=%s step=%s",
+                job.job_id,
+                workflow,
+                step,
+                exc_info=True,
+            )
     except Exception:
-        pass
+        logger.warning("_create_produced_by_edges aborted", exc_info=True)
 
 
 async def _upsert_artifact_nodes(
@@ -2138,17 +2161,33 @@ def enqueue_ingest_failure(
                                 content={"reason": exit_reason},
                             )
                         )
-                    except Exception:
-                        pass
+                    except Exception as edge_exc:
+                        logger.warning(
+                            "caused_by edge write failed "
+                            "source_node=%s (job/entity) "
+                            "target_node=%s (failure/entity) "
+                            "relation=caused_by error=%r",
+                            f"prod-job-{job_id}",
+                            fail_entity_id,
+                            edge_exc,
+                            exc_info=True,
+                        )
             except Exception:
-                pass
+                logger.warning(
+                    "ingest failure graph write aborted job=%s attempt_no=%s",
+                    job_id,
+                    attempt_no,
+                    exc_info=True,
+                )
 
         try:
             _fire_coroutine(_log_failure(), "ingest_failure_log")
         except Exception:
-            pass
+            logger.warning(
+                "ingest failure log scheduling failed job=%s", job_id, exc_info=True
+            )
     except Exception:
-        pass
+        logger.warning("enqueue_ingest_failure aborted", exc_info=True)
 
 
 # ── A2L Bridge (ADR-017) ──────────────────────────────────────────────────
