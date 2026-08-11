@@ -94,6 +94,14 @@ class KnowledgeStore:
     Provides CRUD operations backed by migration 0055 tables.
     """
 
+    # Authoritative ontology for knowledge_nodes.node_type (matches the live
+    # DB CHECK constraint ``knowledge_nodes_node_type_check``). Semantic roles
+    # (job / job_failure / provenance) live in labels; the DB category is one
+    # of these values only.
+    ALLOWED_NODE_TYPES: frozenset[str] = frozenset(
+        {"class", "function", "file", "module", "concept", "entity", "relationship"}
+    )
+
     def __init__(self, pool) -> None:  # type: ignore[misc]  # asyncpg Pool
         """Initialize store with an asyncpg connection pool."""
         self._pool = pool

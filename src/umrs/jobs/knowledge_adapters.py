@@ -1793,11 +1793,19 @@ def _enqueue_understand_job(
     project_id: str,
     user_id: str,
     job: Any,
+    sources: list[dict[str, Any]] | None = None,
 ) -> str | None:
-    """Enqueue the KNOWLEDGE_UNDERSTAND job. Returns job ID or None."""
+    """Enqueue the KNOWLEDGE_UNDERSTAND job. Returns job ID or None.
+
+    ``sources`` carries the already-collected deduplicated descriptors (the
+    preferential source: concurrent provenance persistence must not race a
+    just-written table). Falls back to the project listing for callers that
+    did not collect descriptors first.
+    """
     from .models import JobType
 
-    sources = _list_project_artifact_sources(project_id)
+    if sources is None:
+        sources = _list_project_artifact_sources(project_id)
     if not sources:
         logger.info("No artifacts for KNOWLEDGE_UNDERSTAND: job=%s", job.job_id)
         return None
@@ -1852,13 +1860,16 @@ def _create_produced_by_edges(
                 job_type_value = (
                     job_type.value if hasattr(job_type, "value") else job_type
                 )
-                # Create provenance node
+                # Create provenance node. The semantic role stays in the
+                # label; node_type must be one of ALLOWED_NODE_TYPES
+                # ("entity" covers job/provenance roles) — anything else
+                # violates knowledge_nodes_node_type_check.
                 await store.upsert_node(
                     KnowledgeNode(
                         node_id=prod_entity_id,
                         project_id=project_id,
                         label=f"job:{job.job_id}",
-                        node_type="job",
+                        node_type="entity",
                         content={
                             "job_id": job.job_id,
                             "job_type": job_type_value,
@@ -1979,9 +1990,12 @@ def enqueue_knowledge_ingest(
     except Exception as exc:
         logger.warning("Failed to enqueue KNOWLEDGE_INGEST: %s", exc)
 
-    # 4. Enqueue KNOWLEDGE_UNDERSTAND job (always after ingest)
+    # 4. Enqueue KNOWLEDGE_UNDERSTAND job (always after ingest). The
+    # deduplicated descriptors are authoritative here: provenance persistence
+    # is concurrent and must not gate UNDERSTAND construction on a just-written
+    # table being visible (fire-and-forget ordering is not a contract).
     try:
-        us_job_id = _enqueue_understand_job(project_id, user_id, job)
+        us_job_id = _enqueue_understand_job(project_id, user_id, job, deduped)
         if us_job_id:
             enqueued.append(us_job_id)
     except Exception as exc:
@@ -2029,7 +2043,7 @@ def enqueue_ingest_failure(
                             node_id=fail_entity_id,
                             project_id=project_id,
                             label=f"job:{job_id} FAILED",
-                            node_type="job_failure",
+                            node_type="entity",
                             content={
                                 "job_id": job_id,
                                 "attempt_no": attempt_no,

@@ -120,15 +120,21 @@ def test_success_hook_produces_real_knowledge_ingest_submission(
     on_succeeded = store.callbacks["on_succeeded"]
     on_succeeded(_make_job(), SimpleNamespace(attempt_id="att-2b"))  # type: ignore[operator]
 
-    assert len(submissions) == 1
-    submission = submissions[0]
-    assert submission.job_type is JobType.KNOWLEDGE_INGEST  # type: ignore[attr-defined]
-    spec = submission.spec  # type: ignore[attr-defined]
+    from umrs.jobs.models import JobType as _JT
+
+    by_type = {s.job_type: s for s in submissions}  # type: ignore[attr-defined]
+    assert _JT.KNOWLEDGE_INGEST in by_type
+    spec = by_type[_JT.KNOWLEDGE_INGEST].spec  # type: ignore[attr-defined]
     assert spec["bucket"] == "r4-data"
     assert spec["project_id"] == "proj-2b"
     src = spec["sources"][0]
     assert src["content_hash"] == _DESCRIPTOR["content_hash"]
     assert src["uri"] == _DESCRIPTOR["source_ref"]
+    # The descriptor-based UNDERSTAND submission rides along (Phase 2H).
+    us = by_type.get(_JT.KNOWLEDGE_UNDERSTAND)
+    assert us is not None
+    assert us.spec["project_id"] == "proj-2b"  # type: ignore[attr-defined]
+    assert us.spec["sources"][0]["content_hash"] == _DESCRIPTOR["content_hash"]  # type: ignore[attr-defined]
 
 
 def test_failure_hook_wired(monkeypatch: pytest.MonkeyPatch) -> None:
