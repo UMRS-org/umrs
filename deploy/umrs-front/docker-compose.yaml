@@ -89,6 +89,12 @@ services:
     environment:
       # Cluster-specific overrides
       UMRS_SITE_CONFIG: /etc/umrs/site.yaml
+      # Canonical site recipe catalog (M6 — one authoritative recipe source).
+      UMRS_PROVISION_ROSTER: /etc/umrs/pool-rccs.yaml
+      # Sanctioned shared model tree for `r4 model stage` destination (the
+      # default /etc/umrs/models tripped the store path policy on this
+      # deployment — compute-visible shared root).
+      UMRS_MODEL_STAGING_ROOT: ${UMRS_MODEL_STAGING_ROOT_RCCS:-/lvs0/rccs-dmp/masaru.nagaso/umrs_models}
       # Model-window visibility: RCCS serves everything EXCEPT the AI4S frontier
       # models (those run only on the GB200/AI4S cluster). Listing-only filter;
       # provisioning a model by name is unaffected.
@@ -131,6 +137,7 @@ services:
       PYTHONUNBUFFERED: "1"
     volumes:
       - ../rccs-front/site.yaml:/etc/umrs/site.yaml:ro,z
+      - ../rccs/pool-rccs.yaml:/etc/umrs/pool-rccs.yaml:ro,z
       - ./conf_umrs_rccs.json:/etc/umrs/conf_umrs.json:z
       - ./user_files_rccs:/etc/umrs/user_files:z
       - ./workflow_state:/var/lib/umrs-workflows:z

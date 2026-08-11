@@ -669,6 +669,7 @@ def build_spec_from_legacy_entry(
         site=site,
         runtime=_legacy_runtime(entry, env),
         engine=engine,
+        patches=build_patch_specs(entry.get("patches") or [], f"legacy[{model}]"),
         env=env,
         ttl_sec=int(entry.get("ttl_sec") or 0),
         readiness_timeout_sec=int(entry.get("timeout") or 3600),
@@ -751,3 +752,17 @@ def _opt_engine_num_env(spec: ResolvedEndpointSpec) -> list[tuple[str, str]]:
             ("VLLM_SPECULATIVE_CONFIG", json.dumps(spec.engine.speculative_config))
         )
     return out
+
+
+def spec_env_vars(spec: ResolvedEndpointSpec) -> dict[str, str]:
+    """Authoritative env view: engine-materialized defaults + verbatim set.
+
+    Used by the provision handler's env propagation. Verbatim plan-env keys
+    stay untouched; engine fields materialize into the standard VLLM_* names
+    without overriding anything already present.
+    """
+    env = dict(spec.env)
+    _engine_to_env(spec, env)
+    if spec.runtime.strategy != "tp_pp":
+        env.setdefault("VLLM_PARALLEL_STRATEGY", spec.runtime.strategy)
+    return env
