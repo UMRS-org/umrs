@@ -86,6 +86,9 @@ def test_produced_by_node_is_entity_within_allowed_set(
         assert node.node_type in KnowledgeStore.ALLOWED_NODE_TYPES
         # Semantic role preserved in label, not DB ontology.
         assert node.label.startswith(("job:", "artifact:"))
+        # knowledge_nodes_source_ir_fkey: "" is not a knowledge_ir.ir_id;
+        # only NULL passes the FK for provenance/synthetic nodes.
+        assert node.source_ir is None
 
     # FK invariant: every emitted edge endpoint must reference an upserted node.
     from umrs.knowledge.store import KnowledgeEdge
@@ -123,6 +126,7 @@ def test_failure_node_is_entity_within_allowed_set(
     for node in failure_nodes:
         assert node.node_type == "entity"
         assert node.node_type in KnowledgeStore.ALLOWED_NODE_TYPES
+        assert node.source_ir is None  # knowledge_nodes_source_ir_fkey
 
     # FK invariant: caused_by edge endpoints must also reference upserted nodes.
     from umrs.knowledge.store import KnowledgeEdge
