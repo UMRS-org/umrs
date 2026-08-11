@@ -522,34 +522,6 @@ class RemoteSlurmBackend(SlurmBackend):
         args.append(f"--export={','.join(_hex_export_parts(env_overrides))}")
         return args
 
-
-_PROXY_PASSTHRU = frozenset(
-    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._:/%-"
-)
-
-
-def _hex_export_parts(env: dict[str, str]) -> list[str]:
-    """Build the comma-joined KEY=VALUE parts, hex-encoding unsafe values.
-
-    Two emission traps decide the encoding:
-      • sbatch-assembly is a plain ``" ".join`` — a value with a SPACE
-        would be tokenized; quotes were previously added but the RCCS
-        per-user SSH proxy whitelist (``[^a-zA-Z0-9\\ _./:=,%-]``) rejects
-        them,
-      • ``sbatch --export`` is comma-delimited — a comma in the value
-        silently truncates (base64's ``+`` was also proxy-blocked).
-    The hex alphabet (``0-9a-f``) is the lowest common denominator that both
-    layers tolerate, so values are now hex-encoded whenever they contain any
-    byte outside the passthru set (alnum + ``._:/%``), including spaces.
-    """
-    out = ["ALL"]
-    for k, v in env.items():
-        if v and all(c in _PROXY_PASSTHRU for c in v):
-            out.append(f"{k}={v}")
-        else:
-            out.append(f"{k}_HEX={v.encode().hex()}")
-    return out
-
     async def get_job_status(self, job_id: str) -> JobInfo:
         """Get status of a Slurm job via SSH."""
         # Try job info file first (read remotely).
@@ -914,3 +886,36 @@ def _hex_export_parts(env: dict[str, str]) -> list[str]:
         if self._ssh:
             await self._ssh.close()
             self._ssh = None
+
+
+_PROXY_PASSTHRU = frozenset(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._:/%-"
+)
+
+
+def _hex_export_parts(env: dict[str, str]) -> list[str]:
+    """Build the comma-joined KEY=VALUE parts, hex-encoding unsafe values.
+
+    Two emission traps decide the encoding:
+      • sbatch-assembly is a plain ``" ".join`` — a value with a SPACE
+        would be tokenized; quotes were previously added but the RCCS
+        per-user SSH proxy whitelist (``[^a-zA-Z0-9\\ _./:=,%-]``) rejects
+        them,
+      • ``sbatch --export`` is comma-delimited — a comma in the value
+        silently truncates (base64's ``+`` was also proxy-blocked).
+    The hex alphabet (``0-9a-f``) is the lowest common denominator that both
+    layers tolerate, so values are now hex-encoded whenever they contain any
+    byte outside the passthru set (alnum + ``._:/%``), including spaces.
+
+    NOTE: must live at module scope AFTER the class. Inserting this function
+    mid-class silently closes the class body and strands every following
+    method as unreachable code inside this function — discoverable only at
+    dispatch time (M5 regression, 2026-08-12).
+    """
+    out = ["ALL"]
+    for k, v in env.items():
+        if v and all(c in _PROXY_PASSTHRU for c in v):
+            out.append(f"{k}={v}")
+        else:
+            out.append(f"{k}_HEX={v.encode().hex()}")
+    return out
