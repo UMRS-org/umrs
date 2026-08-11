@@ -97,6 +97,7 @@ class KnowledgeStore:
     def __init__(self, pool) -> None:  # type: ignore[misc]  # asyncpg Pool
         """Initialize store with an asyncpg connection pool."""
         self._pool = pool
+
     async def insert_artifact(
         self,
         artifact_id: str,
@@ -125,7 +126,10 @@ class KnowledgeStore:
                 )
                 return False
 
-            ts = _utcnow()
+            # NOTE: knowledge_artifacts.created_at/updated_at are TEXT columns
+            # on live deployments (0064-shim migration shape). asyncpg rejects
+            # datetime values for them — persist as ISO-8601 strings.
+            ts = _utcnow().isoformat()
             await conn.execute(
                 """INSERT INTO knowledge_artifacts
                    (artifact_id, content_hash, kind, project_id, source_ref,
