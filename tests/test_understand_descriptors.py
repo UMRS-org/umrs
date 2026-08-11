@@ -85,7 +85,20 @@ def test_produced_by_node_is_entity_within_allowed_set(
         assert node.node_type == "entity"
         assert node.node_type in KnowledgeStore.ALLOWED_NODE_TYPES
         # Semantic role preserved in label, not DB ontology.
-        assert node.label.startswith("job:")
+        assert node.label.startswith(("job:", "artifact:"))
+
+    # FK invariant: every emitted edge endpoint must reference an upserted node.
+    from umrs.knowledge.store import KnowledgeEdge
+
+    node_ids = {n.node_id for n in produced_nodes}
+    assert any(aid in node_ids for aid in ("wfart-95c825952512cddb",)), (
+        "artifact node must be upserted before its edge"
+    )
+    edges = [e for e in CAPTURED if isinstance(e, KnowledgeEdge)]
+    assert edges
+    for edge in edges:
+        assert edge.source_id in node_ids, edge.source_id
+        assert edge.target_id in node_ids, edge.target_id
 
 
 def test_failure_node_is_entity_within_allowed_set(
@@ -110,6 +123,17 @@ def test_failure_node_is_entity_within_allowed_set(
     for node in failure_nodes:
         assert node.node_type == "entity"
         assert node.node_type in KnowledgeStore.ALLOWED_NODE_TYPES
+
+    # FK invariant: caused_by edge endpoints must also reference upserted nodes.
+    from umrs.knowledge.store import KnowledgeEdge
+
+    all_node_ids = {n.node_id for n in CAPTURED if isinstance(n, KnowledgeNode)}
+    assert "prod-job-job-x" in all_node_ids
+    edges = [e for e in CAPTURED if isinstance(e, KnowledgeEdge)]
+    assert edges
+    for edge in edges:
+        assert edge.source_id in all_node_ids, edge.source_id
+        assert edge.target_id in all_node_ids, edge.target_id
 
 
 def test_allowed_node_types_is_canonical_db_ontology() -> None:

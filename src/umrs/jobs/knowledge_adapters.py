@@ -1884,6 +1884,13 @@ def _create_produced_by_edges(
                     )
                 )
 
+                # Artifact nodes: edge endpoints must resolve in
+                # knowledge_nodes (FK knowledge_edges_source_id_fkey —
+                # artifacts live in knowledge_artifacts, a different table).
+                await _upsert_artifact_nodes(
+                    store, deduped, project_id, job, attempt, workflow, step
+                )
+
                 # Create PRODUCED_BY edges
                 for art in deduped:
                     aid = art.get("artifact_id", "")
@@ -1909,6 +1916,51 @@ def _create_produced_by_edges(
             pass
     except Exception:
         pass
+
+
+async def _upsert_artifact_nodes(
+    store: Any,
+    deduped: list[dict[str, Any]],
+    project_id: str,
+    job: Any,
+    attempt: Any,
+    workflow: str,
+    step: str,
+) -> None:
+    """Upsert artifact entity nodes so produced_by edge endpoints resolve.
+
+    ``knowledge_edges.source_id``/``target_id`` are FKs into
+    ``knowledge_nodes``; artifact ids alone (knowledge_artifacts rows) do NOT
+    satisfy that invariant. Each deduplicated artifact gets an ``entity``
+    node carrying its provenance linkage.
+    """
+    from umrs.knowledge.store import KnowledgeNode
+
+    for art in deduped:
+        aid = art.get("artifact_id", "")
+        if not aid:
+            continue
+        await store.upsert_node(
+            KnowledgeNode(
+                node_id=aid,
+                project_id=project_id,
+                label=f"artifact:{aid}",
+                node_type="entity",
+                content={
+                    "content_hash": art.get("content_hash", ""),
+                    "kind": art.get("kind", ""),
+                    "source_ref": art.get("source_ref", ""),
+                    "produced_by_job_id": job.job_id,
+                    "produced_by_attempt_id": attempt.attempt_id
+                    if hasattr(attempt, "attempt_id")
+                    else "",
+                    "workflow": workflow,
+                    "step": step,
+                },
+                content_hash=_sha256_hex(f"artifact-node-{aid}".encode()),
+                source_ir="",
+            )
+        )
 
 
 async def _upsert_produced_edge(
@@ -2038,6 +2090,20 @@ def enqueue_ingest_failure(
                     if pool is None:
                         return
                     store = KnowledgeStore(pool)
+                    # The caused_by edge references the produced-by job node;
+                    # upsert it first so the FK resolves (same invariant as
+                    # produced_by edges).
+                    await store.upsert_node(
+                        KnowledgeNode(
+                            node_id=f"prod-job-{job_id}",
+                            project_id=project_id,
+                            label=f"job:{job_id}",
+                            node_type="entity",
+                            content={"job_id": job_id, "user_id": user_id},
+                            content_hash=_sha256_hex(f"provenance-{job_id}".encode()),
+                            source_ir="",
+                        )
+                    )
                     await store.upsert_node(
                         KnowledgeNode(
                             node_id=fail_entity_id,
