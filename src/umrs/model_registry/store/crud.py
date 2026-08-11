@@ -496,11 +496,12 @@ class ModelStore:
     def delete_model(
         self,
         model_id: str,
-        ctx: AccessContext,
+        ctx: AccessContext | None = None,
     ) -> ModelEntry:
         """Delete a model catalog entry and return the deleted entry."""
         model = self.get_model(model_id)
-        self.acl.enforce_write(model, ctx)
+        if ctx:
+            self.acl.enforce_write(model, ctx)
 
         with self.conn.cursor() as cur:
             cur.execute(
