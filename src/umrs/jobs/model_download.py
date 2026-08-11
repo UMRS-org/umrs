@@ -206,6 +206,8 @@ class ModelDownloadBackend(OrchestratorBackend):
             # Auto-register on success (U-824)
             if progress.status == "completed":
                 await self._auto_register_model(ctx, progress)
+            else:
+                self._rollback_staged_model(ctx)
 
         except Exception as e:
             logger.exception(f"Download failed for {ctx.attempt_id}: {e}")
@@ -214,6 +216,39 @@ class ModelDownloadBackend(OrchestratorBackend):
             await self.download_registry.update_progress(
                 ctx.attempt_id,
                 ctx.progress,
+            )
+
+    def _rollback_staged_model(self, ctx: DownloadTaskContext) -> None:
+        """Remove the ``staging`` catalog entry for a failed/cancelled download.
+
+        Without this a failed attempt leaves a permanent ``staging`` row that
+        blocks re-registering the same model name (dedupe check) and misleads
+        users into thinking a download is still in flight.
+        """
+        try:
+            from umrs.model_registry.models import ModelScope, ModelStatus
+
+            metadata = ctx.metadata or {}
+            model_id = metadata.get("model_id")
+            model = None
+            if model_id:
+                model = self.model_store.get_model(model_id)
+            elif ctx.model_name and ctx.scope:
+                model = self.model_store.get_model_by_name(
+                    ctx.model_name,
+                    ModelScope(ctx.scope),
+                )
+            if model and model.status == ModelStatus.STAGING:
+                self.model_store.delete_model(model.model_id)
+                logger.info(
+                    "Rolled back staged model %s (%s) after download status %s",
+                    model.name,
+                    model.model_id,
+                    ctx.progress.status,
+                )
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning(
+                "Rollback of staged model for %s failed: %s", ctx.attempt_id, exc
             )
 
     async def _auto_register_model(

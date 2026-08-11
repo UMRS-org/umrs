@@ -145,7 +145,21 @@ async def _run_huggingface_snapshot(
     token: str | None,
     revision: str | None,
 ) -> None:
-    """Execute `snapshot_download` off the event loop."""
+    """Execute `snapshot_download` off the event loop.
+
+    Defaults to the plain-LFS HTTP path: hf-xet's background writer wedges on
+    some shared filesystems (observed: ``File reconstruction error: Internal
+    Writer Error: Background writer channel closed`` on UMRS-managed lustre).
+    Operators may opt back into xet with ``UMRS_HF_ENABLE_XET=1``.
+    """
+    import os
+
+    if os.environ.get("UMRS_HF_ENABLE_XET", "").strip().lower() not in (
+        "1",
+        "true",
+        "yes",
+    ):
+        os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
     await asyncio.get_event_loop().run_in_executor(
         None,
         lambda: deps.snapshot_download(

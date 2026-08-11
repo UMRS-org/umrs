@@ -19,7 +19,6 @@ from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
 from umrs.jobs.model_download import (
     DownloadProgress,
     DownloadSource,
@@ -38,7 +37,6 @@ from umrs.jobs.models import (
     generate_attempt_id,
     generate_job_id,
 )
-
 
 # =============================================================================
 # Fixtures
@@ -631,3 +629,166 @@ class TestAdaptersIntegration:
 
         with pytest.raises(RuntimeError, match="not configured"):
             factory(JobType.MODEL_DOWNLOAD)
+
+
+# =============================================================================
+# Staging rollback on failed/cancelled downloads (M6B)
+# =============================================================================
+
+
+class TestStagedModelRollback:
+    """Failed/cancelled downloads must not leave permanent staging rows."""
+
+    def _ctx(self, model_id="model-1") -> DownloadTaskContext:
+        return DownloadTaskContext(
+            job_id="job-rb",
+            attempt_id="att-rb",
+            source=DownloadSource.HUGGINGFACE,
+            source_id="Qwen/Qwen-AgentWorld-35B-A3B",
+            target_path="/models/Qwen-AgentWorld-35B-A3B",
+            model_name="Qwen-AgentWorld-35B-A3B",
+            scope="system",
+            owner_id=None,
+            metadata={"model_id": model_id},
+        )
+
+    def _staged_entry(self):
+        from umrs.model_registry.models import ModelStatus
+
+        entry = MagicMock()
+        entry.model_id = "model-1"
+        entry.name = "Qwen-AgentWorld-35B-A3B"
+        entry.status = ModelStatus.STAGING
+        return entry
+
+    def test_failed_download_deletes_staged_entry(self, mock_model_store, mock_path_validator):
+        backend = ModelDownloadBackend(
+            model_store=mock_model_store,
+            path_validator=mock_path_validator,
+            download_registry=DownloadTaskRegistry(),
+        )
+        ctx = self._ctx()
+        ctx.progress.status = "failed"
+        mock_model_store.get_model.return_value = self._staged_entry()
+
+        backend._rollback_staged_model(ctx)
+
+        mock_model_store.delete_model.assert_called_once_with("model-1")
+
+    def test_available_entry_is_not_rolled_back(self, mock_model_store, mock_path_validator):
+        from umrs.model_registry.models import ModelStatus
+
+        backend = ModelDownloadBackend(
+            model_store=mock_model_store,
+            path_validator=mock_path_validator,
+            download_registry=DownloadTaskRegistry(),
+        )
+        ctx = self._ctx()
+        ctx.progress.status = "interrupted"
+        entry = self._staged_entry()
+        entry.status = ModelStatus.AVAILABLE
+        mock_model_store.get_model.return_value = entry
+
+        backend._rollback_staged_model(ctx)
+
+        mock_model_store.delete_model.assert_not_called()
+
+    def test_fallback_lookup_by_name_and_scope(self, mock_model_store, mock_path_validator):
+        backend = ModelDownloadBackend(
+            model_store=mock_model_store,
+            path_validator=mock_path_validator,
+            download_registry=DownloadTaskRegistry(),
+        )
+        ctx = self._ctx(model_id=None)
+        ctx.metadata = {}
+        ctx.progress.status = "failed"
+        mock_model_store.get_model_by_name.return_value = self._staged_entry()
+
+        backend._rollback_staged_model(ctx)
+
+        mock_model_store.delete_model.assert_called_once_with("model-1")
+
+    def test_store_errors_are_swallowed(self, mock_model_store, mock_path_validator):
+        backend = ModelDownloadBackend(
+            model_store=mock_model_store,
+            path_validator=mock_path_validator,
+            download_registry=DownloadTaskRegistry(),
+        )
+        ctx = self._ctx()
+        ctx.progress.status = "failed"
+        mock_model_store.get_model.side_effect = RuntimeError("db down")
+
+        backend._rollback_staged_model(ctx)  # must not raise
+
+    @pytest.mark.asyncio
+    async def test_execute_download_rolls_back_on_failure(
+        self, mock_model_store, mock_path_validator, sample_job, sample_attempt
+    ):
+        backend = ModelDownloadBackend(
+            model_store=mock_model_store,
+            path_validator=mock_path_validator,
+            download_registry=DownloadTaskRegistry(),
+        )
+        ctx = backend._create_download_context(sample_job, sample_attempt)
+        mock_model_store.get_model_by_name.return_value = self._staged_entry()
+        failed = DownloadProgress(status="failed", error_message="writer closed")
+
+        with patch(
+            "umrs.jobs.model_download.download_from_huggingface",
+            new=AsyncMock(return_value=failed),
+        ):
+            await backend._execute_download(ctx)
+
+        mock_model_store.delete_model.assert_called_once_with("model-1")
+
+
+# =============================================================================
+# HF xet gating (M6B) — writer-channel fix default-off
+# =============================================================================
+
+
+class TestHfXetGating:
+    """Plain-LFS is the default; xet is operator opt-in."""
+
+    @pytest.mark.asyncio
+    async def test_xet_disabled_by_default(self, monkeypatch):
+        from umrs.jobs import model_download_sources as src
+
+        monkeypatch.delenv("UMRS_HF_ENABLE_XET", raising=False)
+        monkeypatch.delenv("HF_HUB_DISABLE_XET", raising=False)
+        deps = MagicMock()
+        monkeypatch.setattr(src, "_load_huggingface_deps", lambda: deps)
+
+        await src._run_huggingface_snapshot(
+            deps,
+            repo_id="Qwen/x",
+            target_path="/models/x",
+            token=None,
+            revision=None,
+        )
+
+        import os
+
+        assert os.environ.get("HF_HUB_DISABLE_XET") == "1"
+        deps.snapshot_download.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_xet_opt_in_keeps_xet(self, monkeypatch):
+        from umrs.jobs import model_download_sources as src
+
+        monkeypatch.setenv("UMRS_HF_ENABLE_XET", "1")
+        monkeypatch.delenv("HF_HUB_DISABLE_XET", raising=False)
+        deps = MagicMock()
+        monkeypatch.setattr(src, "_load_huggingface_deps", lambda: deps)
+
+        await src._run_huggingface_snapshot(
+            deps,
+            repo_id="Qwen/x",
+            target_path="/models/x",
+            token=None,
+            revision=None,
+        )
+
+        import os
+
+        assert "HF_HUB_DISABLE_XET" not in os.environ
