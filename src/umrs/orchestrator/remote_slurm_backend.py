@@ -27,7 +27,6 @@ Configuration in site.yaml::
 from __future__ import annotations
 
 import asyncio
-import base64
 import logging
 import os
 import re
@@ -481,10 +480,13 @@ class RemoteSlurmBackend(SlurmBackend):
         Slurm ``--export`` is a **comma-delimited** ``KEY=VALUE`` list with no
         escaping mechanism, so any value that itself contains a comma (e.g. the
         ``VLLM_SPECULATIVE_CONFIG`` JSON ``{"method":"dflash",...}``) is
-        silently truncated at its first comma on the compute node. Such values
-        are base64-encoded (the base64 alphabet has no commas) and emitted under
-        a ``<KEY>_B64`` name; the serve wrapper decodes every ``*_B64`` variable
-        back to its original name before any consumer reads it.
+        silently truncated at its first comma on the compute node. Encoding is
+        now a hex round-trip (``<KEY>_HEX``) — characters from the hexadecimal
+        alphabet only (``0-9a-f``), so the line passes the per-user SSH proxy's
+        charset whitelist, which rejected earlier comma-safe base64 ('+') and
+        any shell quoting ('\\'', '"'). The serve wrapper decodes every
+        ``*_HEX`` variable back to its original name, and keeps decoding the
+        legacy ``*_B64`` lane for backward compatibility.
         """
         env_overrides: dict[str, str] = {}
         if isinstance(requested_env, dict):
@@ -517,15 +519,36 @@ class RemoteSlurmBackend(SlurmBackend):
         if attribution_parts:
             args.append(f"--comment={','.join(attribution_parts)}")
 
-        export_parts = ["ALL"]
-        for k, v in env_overrides.items():
-            if "," in v:
-                encoded = base64.b64encode(v.encode()).decode()
-                export_parts.append(f"{k}_B64={encoded}")
-            else:
-                export_parts.append(f"{k}={v}")
-        args.append(shlex.quote(f"--export={','.join(export_parts)}"))
+        args.append(f"--export={','.join(_hex_export_parts(env_overrides))}")
         return args
+
+
+_PROXY_PASSTHRU = frozenset(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._:/%-"
+)
+
+
+def _hex_export_parts(env: dict[str, str]) -> list[str]:
+    """Build the comma-joined KEY=VALUE parts, hex-encoding unsafe values.
+
+    Two emission traps decide the encoding:
+      • sbatch-assembly is a plain ``" ".join`` — a value with a SPACE
+        would be tokenized; quotes were previously added but the RCCS
+        per-user SSH proxy whitelist (``[^a-zA-Z0-9\\ _./:=,%-]``) rejects
+        them,
+      • ``sbatch --export`` is comma-delimited — a comma in the value
+        silently truncates (base64's ``+`` was also proxy-blocked).
+    The hex alphabet (``0-9a-f``) is the lowest common denominator that both
+    layers tolerate, so values are now hex-encoded whenever they contain any
+    byte outside the passthru set (alnum + ``._:/%``), including spaces.
+    """
+    out = ["ALL"]
+    for k, v in env.items():
+        if v and all(c in _PROXY_PASSTHRU for c in v):
+            out.append(f"{k}={v}")
+        else:
+            out.append(f"{k}_HEX={v.encode().hex()}")
+    return out
 
     async def get_job_status(self, job_id: str) -> JobInfo:
         """Get status of a Slurm job via SSH."""
