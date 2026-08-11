@@ -1,0 +1,52 @@
+# Pool roster: RCCS — canonical site recipe catalog (unified serving M6).
+#
+# Activation: loaded by umrs-server-rccs via UMRS_PROVISION_ROSTER (compose
+# environment) and by convention as ${cluster_dir}/pool-${cluster}.yaml.
+# This file is the ONLY curated recipe for this cluster today —
+# previously-adjacent rosters (pool-rccs-3models/glm5/agents-a1) remain as
+# unactivated references until explicitly moved here.
+#
+# Usage:
+#   r4 endpoint up --model <name>           (recipe auto-resolved)
+#   r4 pool up umrs/deploy/rccs/pool-rccs.yaml
+
+pool: rccs
+defaults:
+  tier: system
+  ttl_sec: 0
+  timeout: 86400
+
+endpoints:
+  # Curated: Bonsai-8B-gb10 (control endpoint — preserved exactly)
+  - name: bonsai
+    model: Bonsai-8B-gb10
+    max_model_len: 8192
+    node_count: 1
+    gpu_count: 1
+
+  # Curated: Qwen AgentWorld 35B-A3B BF16 (HowToSpark GB10 recipe adapted
+  # to RCCS under M6 — one node, one GB10, no tensor parallelism, BF16
+  # pre-staged via `r4 model stage`).
+  - name: qwen-agentworld-35b-a3b
+    model: Qwen-AgentWorld-35B-A3B
+    partition: ng-dgx-m0
+    node_count: 1
+    gpu_count: 1
+    max_model_len: 262144
+    env_vars:
+      VLLM_DOCKER_IMAGE: "docker.io/vllm/vllm-openai:cu130-nightly-aarch64"
+      VLLM_GPU_MEM_UTIL: "0.78"
+      VLLM_KV_CACHE_MEMORY_BYTES: "8589934592"
+      VLLM_MAX_NUM_SEQS: "4"
+      VLLM_MAX_NUM_BATCHED_TOKENS: "8192"
+      VLLM_MAX_MODEL_LEN: "262144"
+      VLLM_LANGUAGE_MODEL_ONLY: "1"
+      # REQUIRED for this checkpoint: the stock qwen3_5.py unconditionally
+      # builds the 27-block vision tower but this release ships zero
+      # visual.* weights (loading dies with 113 uninitialized params).
+      # Guard must be active alongside VLLM_LANGUAGE_MODEL_ONLY=1.
+      VLLM_PATCH_QWEN3_5: "1"
+    patches:
+      - source: /lvs0/rccs-dmp/masaru.nagaso/umrs_models/patches/qwen3_5.py
+        target: /usr/local/lib/python3.12/dist-packages/vllm/model_executor/models/qwen3_5.py
+        sha256: d33dd6297eb137b2f6ae832105da473bcb6567049bef4ee7b63b68dc76b12f05

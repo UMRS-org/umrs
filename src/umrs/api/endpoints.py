@@ -2318,7 +2318,7 @@ async def provision_endpoint(
             env_vars.setdefault("VLLM_PARALLEL_STRATEGY", serving_plan.runtime.strategy)
         if request.ttl_sec == 3600 and serving_plan.ttl_sec is not None:
             effective_ttl_sec = int(serving_plan.ttl_sec)
-        for _k, _v in (serving_plan.env or {}).items():
+        for _k, _v in _ss.spec_env_vars(serving_plan).items():
             env_vars.setdefault(str(_k), str(_v))
         if serving_plan.patches:
             for _k2, _v2 in _ss.patches_to_env(serving_plan.patches).items():
