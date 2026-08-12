@@ -60,6 +60,10 @@ endpoints:
       # Guard must be active alongside VLLM_LANGUAGE_MODEL_ONLY=1.
       VLLM_PATCH_QWEN3_5: "1"
     patches:
-      - source: /lvs0/rccs-dmp/masaru.nagaso/umrs_models/patches/qwen3_5.py
+      # Patched FROM docker.io/vllm/vllm-openai:latest (image-version bound:
+      # the module layout differs across versions — the nightly-based patch
+      # referenced vllm.model_executor.layers.mamba.gdn_linear_attn which does
+      # not exist in `latest` and crashed registry inspection at engine init).
+      - source: /lvs0/rccs-dmp/masaru.nagaso/umrs_models/patches/qwen3_5-latest.py
         target: /usr/local/lib/python3.12/dist-packages/vllm/model_executor/models/qwen3_5.py
-        sha256: d33dd6297eb137b2f6ae832105da473bcb6567049bef4ee7b63b68dc76b12f05
+        sha256: fc5037687dfa26088eec7ba0a5c5f1c614f4b0cac3e4f309e73effff8adb2fe8
