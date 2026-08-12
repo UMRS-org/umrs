@@ -6,8 +6,7 @@ deployed automatically.
 
 The older `deploy_cfg.sh` helper is no longer part of the current branch.
 Today, configuration is usually installed by site-specific setup scripts such
-as `deploy/rccs-cloud/setup_client.sh`, `deploy/hpbd-atom/setup_client.sh`,
-or copied manually into `~/.config/umrs/`.
+as `deploy/rccs/setup_client.sh`, or copied manually into `~/.config/umrs/`.
 
 ## Typical Target Layout
 
@@ -57,6 +56,5 @@ install configs that match the deployment wrapper, tunnel, and site defaults.
 
 - [../../doc/umrs_overview.md](../../doc/umrs_overview.md)
 - [../../doc/multi_users.md](../../doc/multi_users.md)
-- [../../deploy/rccs-cloud/README.md](../../deploy/rccs-cloud/README.md)
-- [../../deploy/hpbd-atom/README.md](../../deploy/hpbd-atom/README.md)
+- [../../deploy/rccs-front/README.md](../../deploy/rccs-front/README.md)
 

@@ -2,7 +2,7 @@
 Site Configuration — declarative, per-site deployment settings.
 
 Replaces hardcoded paths, partition names, and GPU parameters with a single
-YAML file per deployment site (for example ``deploy/rccs-cloud/site.yaml`` or
+YAML file per deployment site (for example ``deploy/rccs/site.yaml`` or
 ``deploy/hpbd-atom/site.yaml``).
 
 Loading order (first found wins):
@@ -521,7 +521,9 @@ def _parse_raw(raw: dict[str, Any]) -> SiteConfig:
         storage=_dict_to_dataclass(StorageConfig, raw.get("storage", {})),
         network=_dict_to_dataclass(NetworkConfig, raw.get("network", {})),
         vllm=_dict_to_dataclass(VllmConfig, raw.get("vllm", {})),
-        step_executor=_dict_to_dataclass(StepExecutorConfig, raw.get("step_executor", {})),
+        step_executor=_dict_to_dataclass(
+            StepExecutorConfig, raw.get("step_executor", {})
+        ),
         database=_dict_to_dataclass(DatabaseConfig, raw.get("database", {})),
         partition_profiles=profiles,
         extra=raw.get("extra", {}),
