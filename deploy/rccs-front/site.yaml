@@ -47,6 +47,10 @@ runtime:
   compose_file: docker-compose.yml  # Local services only (Gateway, UMRS, Postgres, MinIO)
   profiles:
     - services
+    # Append the co-located LiteLLM DB container to harness provisions
+    # (_with_site_support_profiles): required for LITELLM_DATABASE_URL-backed
+    # model inventory/routing bookkeeping. Matches bdrt/site.yaml.
+    - litellm-db
   gpu_passthrough: auto
   cdi_spec: ""
   cgroup_manager: cgroupfs
