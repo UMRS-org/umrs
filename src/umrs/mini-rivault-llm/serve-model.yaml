@@ -140,12 +140,13 @@ services:
     networks:
       genai-private-net:
         ipv4_address: ${PRIV_IP1TO3:-10.0.0}.${LL_POSTGRES_IP4:-21}
-    #volumes:
-    #  - postgres_data:/var/lib/postgresql
-    tmpfs:
-      - /var/run/postgresql   # Note: we don't need persistency for our case
-    user: "0:0"   # Note: rootless podman needs this so the entrypoint can be exec'd
-    command: ["postgres", "-c", "unix_socket_directories=/var/run/postgresql"]  # keep bootstrap sockets inside container tmpfs under rootless podman
+    # Minimal proven-good spec (2026-08-12): this runtime cannot start the old
+    # "user 0:0 + cap_drop/userns_mode/tmpfs" shape — runc create dies with
+    # 'can't get final child's PID from pipe' (the userns_mode key is not
+    # honoured by podman-compose, so the container ends up in a private userns
+    # where the tmpfs/user combo cannot exec). The shape below matches the
+    # manually verified-working podman invocation on RCCS GB10 nodes.
+    command: ["postgres", "-c", "unix_socket_directories=/tmp"]
     environment:
       POSTGRES_USER: ${LITELLM_POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${LITELLM_POSTGRES_PASSWORD:-litellm}
@@ -154,15 +155,9 @@ services:
       PGTZ: ${GENAI_TZ:-Asia/Tokyo}
       CUDA_VISIBLE_DEVICES: ""
       HIP_VISIBLE_DEVICES: ""
-    # Healthchecks removed (2026-08-12): the pre-existing note already said
-    # healthcheck exec is broken on rootless podman; the full start path also
-    # dies (created container never reaches running: runc PID-pipe EOF), so
-    # ll-postgres never started and the LiteLLM migration step hung forever.
-    # depends_on already uses service_started; UMRS readiness poller owns the
-    # real readiness signal.
-    cap_drop: [ ALL ]
-    cap_add: [ sys_nice, setuid, setgid, chown, dac_override, fowner ]
-    userns_mode: "${RIVAULT_USERNS_MODE:-keep-id:uid=0,gid=0}"
+    # Healthchecks removed (2026-08-12): healthchecked containers cannot be
+    # created at all on this runtime (runc PID-pipe EOF). Readiness via the
+    # UMRS readiness poller + wrapper probes instead.
     deploy:
       mode: replicated
       replicas: ${POSTGRES_REPLICAS:-1}
