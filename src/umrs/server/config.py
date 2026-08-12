@@ -48,6 +48,17 @@ def get_rivault_remote_port():
 
         return get_site_config().network.litellm_port
     except Exception:
+        # Silent -1 → downstream tunnel arms fall back to port 4000 with no
+        # evidence of why the configured port was lost. Keep the fallback but
+        # make the degradation observable (audit: observability gap).
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "Site config unreadable while resolving rivault remote port; "
+            "returning RIVAULT_REMOTE_PORT=%d (downstream fallback applies)",
+            port,
+            exc_info=True,
+        )
         return port
 
 
