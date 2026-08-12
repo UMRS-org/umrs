@@ -165,3 +165,28 @@ def test_legacy_resolver_still_matches_plan_for_curated():
     assert legacy.get("node_count", 1) == plan.runtime.nodes
     assert legacy.get("gpu_count", 1) == plan.runtime.gpus_per_node
     assert (legacy.get("env_vars") or {}) == dict(plan.env)
+
+
+def test_non_single_serving_mode_gets_501_not_silent_success():
+    from umrs.api.endpoints import _enforce_serving_mode_supported
+
+    request = SimpleNamespace(serving_mode="multi-lora")
+    with pytest.raises(HTTPException) as exc:
+        _enforce_serving_mode_supported(request)
+    assert exc.value.status_code == 501
+    assert "multi-lora" in str(exc.value.detail)
+
+
+def test_co_located_serving_mode_gets_501():
+    from umrs.api.endpoints import _enforce_serving_mode_supported
+
+    with pytest.raises(HTTPException) as exc:
+        _enforce_serving_mode_supported(SimpleNamespace(serving_mode="co-located"))
+    assert exc.value.status_code == 501
+
+
+def test_single_serving_mode_passes_gate():
+    from umrs.api.endpoints import _enforce_serving_mode_supported
+
+    _enforce_serving_mode_supported(SimpleNamespace(serving_mode="single"))
+    _enforce_serving_mode_supported(SimpleNamespace(serving_mode=None))
