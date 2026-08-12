@@ -190,3 +190,25 @@ def test_single_serving_mode_passes_gate():
 
     _enforce_serving_mode_supported(SimpleNamespace(serving_mode="single"))
     _enforce_serving_mode_supported(SimpleNamespace(serving_mode=None))
+
+
+def test_serving_mode_gate_is_before_warm_shortcircuit():
+    """Live-verified bypass: with prefer_warm enabled and a ready endpoint
+    cached, a multi-lora request used to return the cached single-model
+    endpoint before reaching the 501 gate. Guard position is load-bearing:
+    _enforce_serving_mode_supported must run before the
+    '# Check for existing warm endpoint first' block in provision_endpoint."""
+    import inspect
+    import re
+
+    from umrs.api import endpoints as ep
+
+    src = inspect.getsource(ep.provision_endpoint)
+    gate_pos = src.find("_enforce_serving_mode_supported(request)")
+    warm_pos = src.find("Check for existing warm endpoint first")
+    assert gate_pos != -1 and warm_pos != -1
+    assert gate_pos < warm_pos, (
+        "serving_mode gate must precede the warm-endpoint short-circuit"
+    )
+    # And it must not appear twice.
+    assert len(re.findall(r"_enforce_serving_mode_supported\(request\)", src)) == 1

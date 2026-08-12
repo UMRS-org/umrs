@@ -2139,6 +2139,12 @@ async def provision_endpoint(
                 exc_info=True,
             )
 
+    # Honest-failure gate for unimplemented serving modes — MUST run
+    # before the warm-endpoint short-circuit below, otherwise a multi-lora
+    # request against an already-ready model silently returns the
+    # single-model warm endpoint (audited drift, live verification).
+    _enforce_serving_mode_supported(request)
+
     # Check for existing warm endpoint first
     if request.prefer_warm:
         existing = registry.get(
@@ -2216,7 +2222,6 @@ async def provision_endpoint(
         )
 
     _enforce_recipe_policy(is_admin, request)
-    _enforce_serving_mode_supported(request)
     env_vars: dict[str, str] = {}
     # Merge request-supplied env_vars first so they take precedence
     # over ServingProfile/roster defaults.
