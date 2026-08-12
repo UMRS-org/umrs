@@ -1926,6 +1926,7 @@ async def mark_endpoint_used(
 async def proxy_endpoint_metrics(
     job_id: str,
     project_id: str | None = Depends(_get_project_id_for_internal_scraper),
+    is_admin: bool = Depends(_caller_is_admin),
     registry: EndpointRegistry = Depends(get_registry),
 ) -> Response:
     """Proxy /metrics from the backing endpoint.
@@ -1933,7 +1934,18 @@ async def proxy_endpoint_metrics(
     The endpoint registry already tracks host/port.  Prometheus cannot reach
     the loopback-bound dynamic ports from its bridge network, so UMRS acts as
     an internal proxy and returns the raw exposition text.
+
+    The design-internal "unauthenticated scraper" is NOT honored in strict
+    mode (M10 finding): verifying LiteLLM bearer + host/port with no caller
+    identity at all let any sidecar-reachable client metrics-scope a tenant's
+    endpoint. Prometheus's own scrapes use the server-level /metrics route;
+    this proxy requires a resolved caller project — or admin.
     """
+    if project_id is None and _strict_auth_mode() and not is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Endpoint metrics proxy requires an authenticated project",
+        )
     endpoint = registry.get_by_job_id(job_id)
     if not endpoint:
         raise HTTPException(
