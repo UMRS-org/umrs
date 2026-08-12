@@ -72,7 +72,14 @@ services:
       - ll-postgres:${PRIV_IP1TO3:-10.0.0}.${LL_POSTGRES_IP4:-21}
       - vllm:${PRIV_IP1TO3:-10.0.0}.${VLLM_IP4:-22}
       #- mcpo:${PRIV_IP1TO3:-10.0.0}.${MCPO_IP4:-23}  # disabled — mcpo not in use
-    # user: "0:0" removed (2026-08-12): private-userns + user combo breaks runc exec.
+    # user: "0" REQUIRED (2026-08-12): litellm-non_root image defaults to
+    # nobody(65534); in the rootless private userns the bind-mounted
+    # /config.yaml appears root:root mode 644 → EACCES and the proxy dies.
+    # Root in the container reads it (user 0 → host user via keep-id mapping,
+    # and plain user=0 does NOT trip the runc EOF of the old user+cap+userns
+    # trio — user alone is not the crash factor, ll-postgres proves minimal
+    # specs start).
+    user: "0"
     volumes:
       - type: bind
         source: ./litellm_fs/config.yaml.${UUID:?}

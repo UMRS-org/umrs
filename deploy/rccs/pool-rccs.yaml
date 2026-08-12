@@ -38,13 +38,14 @@ endpoints:
     gpu_count: 1
     max_model_len: 262144
     env_vars:
-      VLLM_DOCKER_IMAGE: "docker.io/vllm/vllm-openai:cu130-nightly-aarch64"
+      # Adopt the stable RCCS GB10 lanes proven by pool-rccs-3models
+      # (Qwen3.6-35B-A3B-NVFP4): vllm-openai:latest + marlin MoE backend.
+      # cu130-nightly-aarch64's unified/MXFP4 attention path dies on GB10
+      # (jobs 270324/270340); batched_triton is not a valid choice in this
+      # image (jobs 270346).
+      VLLM_DOCKER_IMAGE: "docker.io/vllm/vllm-openai:latest"
       VLLM_GPU_MEM_UTIL: "0.78"
-      # MoE kernel lane on GB10: FlashInfer CUTLASS fused kernels are sm80-era
-      # and assert "GPU lacks the shared memory resources" on Blackwell
-      # (job 270324); plain TRITON dies on unified/MXFP4 kernels (job 270340).
-      # BATCHED_TRITON is the next portable lane on this arch.
-      VLLM_EXTRA_ARGS: "--moe-backend=batched_triton"
+      VLLM_EXTRA_ARGS: "--moe-backend=marlin"
       VLLM_KV_CACHE_MEMORY_BYTES: "8589934592"
       VLLM_MAX_NUM_SEQS: "4"
       VLLM_MAX_NUM_BATCHED_TOKENS: "8192"
