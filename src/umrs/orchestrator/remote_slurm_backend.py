@@ -21,7 +21,7 @@ Configuration in site.yaml::
       ssh_command_timeout: 30
       ssh_reverse_tunnels:
         - "127.0.0.1:9000:127.0.0.1:9000"
-      slurm_job_info_dir: /lvs0/rccs-dmp/masaru.nagaso/ai4s-platform/umrs/deploy/rccs-cloud
+      slurm_job_info_dir: /lvs0/rccs-dmp/masaru.nagaso/ai4s-platform/umrs/deploy/rccs
 """
 
 from __future__ import annotations

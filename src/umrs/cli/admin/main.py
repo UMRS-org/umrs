@@ -1919,7 +1919,7 @@ def _add_endpoint_parsers(endpoint_sub: argparse._SubParsersAction) -> None:
         description=(
             "Re-resolve host/port from the backend and re-probe readiness. "
             "Use this to recover endpoints stuck in PROVISIONING/STARTING "
-            "with host=\"pending\" after a _finalize_provision task died "
+            'with host="pending" after a _finalize_provision task died '
             "(e.g. UMRS restart)."
         ),
         epilog=(
@@ -1980,7 +1980,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="DIR",
         help=(
-            "Path to a deployment directory (e.g. umrs/deploy/rccs-cloud or "
+            "Path to a deployment directory (e.g. umrs/deploy/rccs or "
             "umrs/deploy/ai4s). Loads .env and site.yaml from that directory "
             "automatically, so you don't need to cd + source .env + export "
             "UMRS_SITE_CONFIG manually. Resolves --config from the same dir."
@@ -2121,12 +2121,12 @@ def _apply_deploy_dir(deploy_dir: str) -> None:
 
     This replaces the manual workflow::
 
-        cd /path/to/deploy/rccs-cloud
+        cd /path/to/deploy/rccs-front
         set -o allexport && source .env && set +o allexport
         export UMRS_SITE_CONFIG="$PWD/site.yaml"
         export PYTHONPATH="$(cd ../.. && pwd)/src${PYTHONPATH:+:$PYTHONPATH}"
 
-    with a single ``--deploy-dir /path/to/deploy/rccs-cloud`` flag.
+    with a single ``--deploy-dir /path/to/deploy/rccs-front`` flag.
     """
     import os
     from pathlib import Path
