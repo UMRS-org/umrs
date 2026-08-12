@@ -23,6 +23,10 @@ endpoints:
     max_model_len: 8192
     node_count: 1
     gpu_count: 1
+    env_vars:
+      # Co-located LiteLLM DB container (compose ll-postgres is a profile
+      # opt-in; without this the stack wedges at create).
+      RIVAULT_PROFILES: "harness vllm litellm-db"
 
   # Curated: Qwen AgentWorld 35B-A3B BF16 (HowToSpark GB10 recipe adapted
   # to RCCS under M6 — one node, one GB10, no tensor parallelism, BF16
@@ -41,6 +45,9 @@ endpoints:
       VLLM_MAX_NUM_BATCHED_TOKENS: "8192"
       VLLM_MAX_MODEL_LEN: "262144"
       VLLM_LANGUAGE_MODEL_ONLY: "1"
+      # Co-located LiteLLM DB container (compose ll-postgres is a profile
+      # opt-in; without this the stack wedges at create).
+      RIVAULT_PROFILES: "harness vllm litellm-db"
       # REQUIRED for this checkpoint: the stock qwen3_5.py unconditionally
       # builds the 27-block vision tower but this release ships zero
       # visual.* weights (loading dies with 113 uninitialized params).
