@@ -212,3 +212,23 @@ def test_serving_mode_gate_is_before_warm_shortcircuit():
     )
     # And it must not appear twice.
     assert len(re.findall(r"_enforce_serving_mode_supported\(request\)", src)) == 1
+
+
+def test_recipe_policy_gate_before_warm_and_dedupe_returns():
+    """The recipe-policy gate (admin-only env_vars/container_image → 403,
+    invalid partition → 400) must precede BOTH early-reuse returns:
+    warm-endpoint short-circuit AND already-provisioning dedupe 202.
+    Bypass shape == the previously-fixed serving-mode class (#18)."""
+    import inspect
+    import re
+
+    from umrs.api import endpoints as ep
+
+    src = inspect.getsource(ep.provision_endpoint)
+    sites = [m.start() for m in re.finditer(r"_enforce_recipe_policy", src)]
+    assert len(sites) == 1, f"single clean call site expected: {sites}"
+    gate_pos = sites[0]
+    warm_pos = src.find("Check for existing warm endpoint first")
+    dedupe_pos = src.find("# Check if there's already a provisioning endpoint")
+    assert gate_pos < warm_pos, "gate must precede warm reuse"
+    assert gate_pos < dedupe_pos, "gate must precede dedupe reuse"

@@ -2144,6 +2144,12 @@ async def provision_endpoint(
     # request against an already-ready model silently returns the
     # single-model warm endpoint (audited drift, live verification).
     _enforce_serving_mode_supported(request)
+    # Recipe policy + partition validation (audited drift, same class as the
+    # serving-mode gate above): a request carrying env_vars/container_image
+    # or an invalid partition used to slip through the warm-reuse and
+    # already-provisioning dedupe returns below, silently receiving a
+    # 200/202 it should have failed with. Fail fast before ANY reuse return.
+    _enforce_recipe_policy(is_admin, request)
 
     # Check for existing warm endpoint first
     if request.prefer_warm:
@@ -2221,7 +2227,6 @@ async def provision_endpoint(
             ),
         )
 
-    _enforce_recipe_policy(is_admin, request)
     env_vars: dict[str, str] = {}
     # Merge request-supplied env_vars first so they take precedence
     # over ServingProfile/roster defaults.
