@@ -183,9 +183,17 @@ class StepContext:
 
     Attributes:
         s3: A boto3-compatible S3 client (MinIO).
-        input_bucket: Bucket that contains the objects to process.
-        input_keys: S3 keys to process in this batch.
-        output_bucket: Bucket where outputs should be written.
+        input_bucket: Source/trigger bucket (inventory, videos, plans).
+            Always the workflow input bucket — never rewritten to a
+            parent step's output bucket.
+        input_keys: Upstream artifact keys (parent ``output_keys`` for
+            child steps; empty for root steps).
+        output_bucket: Bucket where this step writes outputs.
+        parent_output_bucket: Bucket that holds parent ``output_keys``
+            for the common ``{input_bucket}-output`` pattern. Empty for
+            root steps. Use :meth:`download_parent_bytes` / this field
+            for upstream artifacts; keep :meth:`download_bytes` for
+            source-bucket objects.
         config: Step-specific configuration from *workflow.json*.
         metadata: Mutable dict carried across steps for the same run.
             Note: under the parallel workflow runner (independent steps
@@ -205,6 +213,7 @@ class StepContext:
     metadata: dict[str, Any] = field(default_factory=dict)
     run_id: str = ""
     parent_results: dict[str, StepResult] = field(default_factory=dict)
+    parent_output_bucket: str = ""
 
     # ── Progress reporting ───────────────────────────────────────────────
 
@@ -226,8 +235,26 @@ class StepContext:
     # ── S3 download helpers ──────────────────────────────────────────────
 
     def download_bytes(self, key: str, bucket: str | None = None) -> bytes:
-        """Download an S3 object and return its raw bytes."""
+        """Download an S3 object and return its raw bytes.
+
+        Defaults to :attr:`input_bucket` (source/trigger objects).
+        """
         bkt = bucket or self.input_bucket
+        obj = self.s3.get_object(Bucket=bkt, Key=key)
+        return obj["Body"].read()
+
+    def download_parent_bytes(self, key: str, bucket: str | None = None) -> bytes:
+        """Download a parent-step artifact.
+
+        Defaults to :attr:`parent_output_bucket`, falling back to
+        :attr:`output_bucket` (the shared ``{input}-output`` pattern)
+        when the parent bucket was not set explicitly.
+        """
+        bkt = bucket or self.parent_output_bucket or self.output_bucket
+        if not bkt:
+            raise ValueError(
+                "No parent_output_bucket/output_bucket available for parent artifact download"
+            )
         obj = self.s3.get_object(Bucket=bkt, Key=key)
         return obj["Body"].read()
 

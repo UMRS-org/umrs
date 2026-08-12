@@ -433,3 +433,72 @@ def test_concurrent_blob_writes_do_not_lose_data(probe_module, tmp_path):
         full_key = f"wf-runner-output/writes/w{i}.json"
         assert full_key in blobs, f"missing blob for w{i}"
         assert blobs[full_key] == f"w{i}".encode()
+
+
+# ---------------------------------------------------------------------------
+# Parent output-bucket handoff (source bucket stays readable)
+# ---------------------------------------------------------------------------
+
+
+def test_child_downloads_parent_artifact_from_output_bucket(probe_module, tmp_path):
+    """Child keeps source input_bucket and reads parent keys via parent_output_bucket."""
+    captured: dict[str, Any] = {}
+
+    class Producer(Step):
+        name = "producer"
+
+        def run(self, ctx: StepContext) -> StepResult:
+            # Seed a source object into the input bucket (trigger-style).
+            ctx.s3.put_object(
+                Bucket=ctx.input_bucket,
+                Key="source/plan.csv",
+                Body=b"plan",
+            )
+            key = "outputs/producer/result.bin"
+            ctx.upload_bytes(key, b"from-parent")
+            return StepResult(output_keys=[key])
+
+    class Consumer(Step):
+        name = "consumer"
+
+        def run(self, ctx: StepContext) -> StepResult:
+            captured["input_bucket"] = ctx.input_bucket
+            captured["output_bucket"] = ctx.output_bucket
+            captured["parent_output_bucket"] = ctx.parent_output_bucket
+            captured["input_keys"] = list(ctx.input_keys)
+            # Source objects remain on input_bucket.
+            source = ctx.download_bytes("source/plan.csv")
+            # Parent artifacts live on parent_output_bucket.
+            parent = ctx.download_parent_bytes(ctx.input_keys[0])
+            captured["source"] = source
+            captured["parent"] = parent
+            return StepResult(extra={"ok": True})
+
+    probe_module.Producer = Producer  # type: ignore[attr-defined]
+    probe_module.Consumer = Consumer  # type: ignore[attr-defined]
+
+    registry = get_execution_registry()
+    record = registry.create(workflow_name="handoff", user_id="u")
+    run_workflow_record(
+        record,
+        source_path=str(tmp_path),
+        workflow_json={
+            "name": "handoff",
+            "steps": [
+                {"name": "producer", "entrypoint": _entry("Producer"), "depends_on": []},
+                {
+                    "name": "consumer",
+                    "entrypoint": _entry("Consumer"),
+                    "depends_on": ["producer"],
+                },
+            ],
+        },
+    )
+
+    assert record.status == "succeeded", record.error
+    assert captured["input_bucket"] == "wf-runner"
+    assert captured["output_bucket"] == "wf-runner-output"
+    assert captured["parent_output_bucket"] == "wf-runner-output"
+    assert captured["input_keys"] == ["outputs/producer/result.bin"]
+    assert captured["source"] == b"plan"
+    assert captured["parent"] == b"from-parent"

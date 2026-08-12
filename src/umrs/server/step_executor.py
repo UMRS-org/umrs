@@ -314,15 +314,7 @@ class SubprocessExecutor:
         # connection pool. ``parent_results`` may contain numpy
         # arrays — pickle handles those natively.
         s3_config = _serialise_s3_client_config(ctx.s3)
-        ctx_payload = {
-            "input_bucket": ctx.input_bucket,
-            "input_keys": list(ctx.input_keys),
-            "output_bucket": ctx.output_bucket,
-            "config": dict(ctx.config),
-            "metadata": dict(ctx.metadata),
-            "run_id": ctx.run_id,
-            "parent_results": dict(ctx.parent_results),
-        }
+        ctx_payload = _serialise_ctx_payload(ctx)
         payload = {
             "entrypoint": entrypoint,
             "config": dict(config),
@@ -410,6 +402,24 @@ def _serialise_s3_client_config(s3: Any) -> dict[str, Any]:
     return out
 
 
+def _serialise_ctx_payload(
+    ctx: StepContext,
+    *,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build the nested ``ctx`` dict shared by all container/subprocess executors."""
+    return {
+        "input_bucket": ctx.input_bucket,
+        "input_keys": list(ctx.input_keys),
+        "output_bucket": ctx.output_bucket,
+        "parent_output_bucket": getattr(ctx, "parent_output_bucket", "") or "",
+        "config": dict(ctx.config),
+        "metadata": dict(metadata if metadata is not None else ctx.metadata),
+        "run_id": ctx.run_id,
+        "parent_results": dict(ctx.parent_results),
+    }
+
+
 # ----------------------------------------------------------------------
 # Podman executor
 # ----------------------------------------------------------------------
@@ -492,15 +502,7 @@ class PodmanExecutor:
         }
 
         s3_config = _serialise_s3_client_config(ctx.s3)
-        ctx_payload = {
-            "input_bucket": ctx.input_bucket,
-            "input_keys": list(ctx.input_keys),
-            "output_bucket": ctx.output_bucket,
-            "config": dict(ctx.config),
-            "metadata": sanitised_metadata,
-            "run_id": ctx.run_id,
-            "parent_results": dict(ctx.parent_results),
-        }
+        ctx_payload = _serialise_ctx_payload(ctx, metadata=sanitised_metadata)
         payload = {
             "entrypoint": entrypoint,
             "config": dict(config),
@@ -1047,15 +1049,7 @@ class WorkerPoolExecutor:
         }
 
         s3_config = _serialise_s3_client_config(ctx.s3)
-        ctx_payload = {
-            "input_bucket": ctx.input_bucket,
-            "input_keys": list(ctx.input_keys),
-            "output_bucket": ctx.output_bucket,
-            "config": dict(ctx.config),
-            "metadata": sanitised_metadata,
-            "run_id": ctx.run_id,
-            "parent_results": dict(ctx.parent_results),
-        }
+        ctx_payload = _serialise_ctx_payload(ctx, metadata=sanitised_metadata)
         payload = {
             "entrypoint": entrypoint,
             "config": dict(config),
@@ -1645,15 +1639,7 @@ class RemotePoolExecutor:
         }
 
         s3_config = _serialise_s3_client_config(ctx.s3)
-        ctx_payload = {
-            "input_bucket": ctx.input_bucket,
-            "input_keys": list(ctx.input_keys),
-            "output_bucket": ctx.output_bucket,
-            "config": dict(ctx.config),
-            "metadata": sanitised_metadata,
-            "run_id": ctx.run_id,
-            "parent_results": dict(ctx.parent_results),
-        }
+        ctx_payload = _serialise_ctx_payload(ctx, metadata=sanitised_metadata)
         payload = {
             "entrypoint": entrypoint,
             "config": dict(config),
@@ -1929,15 +1915,7 @@ class RouterPoolExecutor:
         }
 
         s3_config = _serialise_s3_client_config(ctx.s3)
-        ctx_payload = {
-            "input_bucket": ctx.input_bucket,
-            "input_keys": list(ctx.input_keys),
-            "output_bucket": ctx.output_bucket,
-            "config": dict(ctx.config),
-            "metadata": sanitised_metadata,
-            "run_id": ctx.run_id,
-            "parent_results": dict(ctx.parent_results),
-        }
+        ctx_payload = _serialise_ctx_payload(ctx, metadata=sanitised_metadata)
 
         correlation_id = str(uuid.uuid4())
         payload = {
@@ -2030,12 +2008,12 @@ def build_step_executor(
     """Return the executor named by ``UMRS_STEP_EXECUTOR`` (or ``name``).
 
     Values:
-        ``inproc`` (default) → :class:`InProcessExecutor`
-        ``subprocess``       → :class:`SubprocessExecutor`
-        ``podman``           → :class:`PodmanExecutor`
-        ``pool``             → :class:`WorkerPoolExecutor`
-        ``remote``           → :class:`RemotePoolExecutor`
-        ``router``           → :class:`RouterPoolExecutor`
+        ``inproc`` (default) â†’ :class:`InProcessExecutor`
+        ``subprocess``       â†’ :class:`SubprocessExecutor`
+        ``podman``           â†’ :class:`PodmanExecutor`
+        ``pool``             â†’ :class:`WorkerPoolExecutor`
+        ``remote``           â†’ :class:`RemotePoolExecutor`
+        ``router``           â†’ :class:`RouterPoolExecutor`
 
     Unknown values fall back to ``inproc`` with a warning so a typo
     in deployment config doesn't crash the workflow runner.
