@@ -13,14 +13,20 @@ services:
     volumes:
       # Mount NVIDIA driver libraries so vLLM can detect the GPU.
       # Without these, vLLM fails with "Failed to infer device type".
-      # NOTE (2026-08-12): only the two user-mode driver libs are mounted.
-      # The previous whole-dir mount of /usr/lib/aarch64-linux-gnu SHADOWED the
-      # image's own toolchain libs (binutils 2.38-era libopcodes/libbfd), so
-      # every `as` (assembler) invocation inside the container died:
-      #   libopcodes-2.38-system.so: cannot open shared object file
-      # (host GB10 ships 2.42 only). Individual file binds never shadow.
+      # NOTE (2026-08-12): only individual libs are mounted. The previous
+      # whole-dir mount of /usr/lib/aarch64-linux-gnu SHADOWED the image's
+      # own toolchain libs (binutils 2.38-era libopcodes/libbfd), so every `as`
+      # invocation inside the container died
+      # (libopcodes-2.38-system.so: cannot open shared object file;
+      # host GB10 ships 2.42 only). Individual file binds never shadow.
       - /usr/lib/aarch64-linux-gnu/libcuda.so.1:/usr/lib/aarch64-linux-gnu/libcuda.so.1:ro
       - /usr/lib/aarch64-linux-gnu/libnvidia-ml.so.1:/usr/lib/aarch64-linux-gnu/libnvidia-ml.so.1:ro
+      # Torch/Triton JIT needs libnvidia-ptxjitcompiler; this image packs only
+      # the static archive (no .so), so "PTX JIT compiler library not found"
+      # died at engine init (job 270326). Host ships 580.173.02; bind it both
+      # under the SONAME and the unversioned dlopen name.
+      - /usr/lib/aarch64-linux-gnu/libnvidia-ptxjitcompiler.so.1:/usr/lib/aarch64-linux-gnu/libnvidia-ptxjitcompiler.so.1:ro
+      - /usr/lib/aarch64-linux-gnu/libnvidia-ptxjitcompiler.so.1:/usr/lib/aarch64-linux-gnu/libnvidia-ptxjitcompiler.so:ro
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
@@ -36,6 +42,8 @@ services:
     volumes:
       - /usr/lib/aarch64-linux-gnu/libcuda.so.1:/usr/lib/aarch64-linux-gnu/libcuda.so.1:ro
       - /usr/lib/aarch64-linux-gnu/libnvidia-ml.so.1:/usr/lib/aarch64-linux-gnu/libnvidia-ml.so.1:ro
+      - /usr/lib/aarch64-linux-gnu/libnvidia-ptxjitcompiler.so.1:/usr/lib/aarch64-linux-gnu/libnvidia-ptxjitcompiler.so.1:ro
+      - /usr/lib/aarch64-linux-gnu/libnvidia-ptxjitcompiler.so.1:/usr/lib/aarch64-linux-gnu/libnvidia-ptxjitcompiler.so:ro
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
