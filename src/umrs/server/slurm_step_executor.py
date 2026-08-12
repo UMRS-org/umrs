@@ -64,40 +64,22 @@ class SlurmStepExecutor(StepExecutor):
     """
 
     partition: str = field(
-        default_factory=lambda: os.environ.get(
-            "UMRS_SLURM_PARTITION", "gpu"
-        )
+        default_factory=lambda: os.environ.get("UMRS_SLURM_PARTITION", "gpu")
     )
     gpus: int = field(
-        default_factory=lambda: int(
-            os.environ.get("UMRS_SLURM_GPUS", "1")
-        )
+        default_factory=lambda: int(os.environ.get("UMRS_SLURM_GPUS", "1"))
     )
     cpus: int = field(
-        default_factory=lambda: int(
-            os.environ.get("UMRS_SLURM_CPUS", "8")
-        )
+        default_factory=lambda: int(os.environ.get("UMRS_SLURM_CPUS", "8"))
     )
-    memory: str = field(
-        default_factory=lambda: os.environ.get(
-            "UMRS_SLURM_MEM", "32G"
-        )
-    )
+    memory: str = field(default_factory=lambda: os.environ.get("UMRS_SLURM_MEM", "32G"))
     time_limit: str = field(
-        default_factory=lambda: os.environ.get(
-            "UMRS_SLURM_TIME", "01:00:00"
-        )
+        default_factory=lambda: os.environ.get("UMRS_SLURM_TIME", "01:00:00")
     )
     account: str = field(
-        default_factory=lambda: os.environ.get(
-            "UMRS_SLURM_ACCOUNT", ""
-        )
+        default_factory=lambda: os.environ.get("UMRS_SLURM_ACCOUNT", "")
     )
-    image: str = field(
-        default_factory=lambda: os.environ.get(
-            "UMRS_STEP_IMAGE", ""
-        )
-    )
+    image: str = field(default_factory=lambda: os.environ.get("UMRS_STEP_IMAGE", ""))
     timeout_seconds: int = field(
         default_factory=lambda: int(
             os.environ.get("UMRS_STEP_EXECUTOR_TIMEOUT", "3600")
@@ -267,9 +249,7 @@ class SlurmStepExecutor(StepExecutor):
 
         return "\n".join(lines)
 
-    def _submit_sbatch(
-        self, sbatch_path: str, workdir: str
-    ) -> str:
+    def _submit_sbatch(self, sbatch_path: str, workdir: str) -> str:
         """Submit the sbatch script and return the job ID."""
         cmd = ["sbatch", sbatch_path]
         logger.info("Submitting: %s", " ".join(cmd))
@@ -340,9 +320,7 @@ class SlurmStepExecutor(StepExecutor):
 
             elif status in ("FAILED", "CANCELLED", "TIMEOUT", "OUT_OF_MEMORY"):
                 # Read the Slurm error log for diagnostics
-                error_log = os.path.join(
-                    workdir, f"slurm-{job_id}.err"
-                )
+                error_log = os.path.join(workdir, f"slurm-{job_id}.err")
                 error_msg = ""
                 if os.path.isfile(error_log):
                     with open(error_log, "r") as f:
@@ -360,8 +338,7 @@ class SlurmStepExecutor(StepExecutor):
         # Timeout
         raise StepExecutionError(
             "worker",
-            f"Slurm job {job_id} timed out after "
-            f"{self.timeout_seconds}s",
+            f"Slurm job {job_id} timed out after {self.timeout_seconds}s",
         )
 
     def _check_job_status(self, job_id: str) -> str:
@@ -369,7 +346,8 @@ class SlurmStepExecutor(StepExecutor):
         # Try squeue first (for running/pending jobs)
         cmd = [
             "squeue",
-            "--job", job_id,
+            "--job",
+            job_id,
             "--format=%T",
             "--noheader",
         ]
@@ -381,8 +359,10 @@ class SlurmStepExecutor(StepExecutor):
                 timeout=15,
             )
             if result.returncode == 0 and result.stdout.strip():
-                # Job is still in queue
-                state = result.stdout.strip().upper()
+                # Job is still in queue. Normalize identically to the sacct
+                # branch below: array/het jobs emit one line per element —
+                # take the first line, then strip trailing info tokens.
+                state = result.stdout.strip().split("\n")[0].split()[0].upper()
                 # Map Slurm states to our simplified status
                 if state in ("PENDING", "CONFIGURING"):
                     return "PENDING"
@@ -396,7 +376,8 @@ class SlurmStepExecutor(StepExecutor):
         # Job not in squeue, check sacct for final state
         cmd = [
             "sacct",
-            "--job", job_id,
+            "--job",
+            job_id,
             "--format=State",
             "--noheader",
             "--parsable2",
