@@ -115,13 +115,10 @@ services:
       CUDA_VISIBLE_DEVICES: ""
       HIP_VISIBLE_DEVICES: ""
       CUSTOM_TIKTOKEN_CACHE_DIR: "/usr/lib/python3.13/site-packages/litellm/litellm_core_utils/tokenizers"  # Note: temp workaround for issue #19852
-    healthcheck:
-      test: [ "CMD-SHELL",
-              "wget --no-verbose --tries=1 http://localhost:4000/health/liveliness || exit 1" ]
-      interval: 10s
-      timeout: 10s
-      retries: 5
-      start_period: 20s
+    # Healthchecks removed (2026-08-12): podman on slurm-launched GB10 jobs has
+    # no per-job systemd unit channel, so any healthchecked container fails to
+    # start (runc: can't get final child's PID from pipe: EOF). Readiness stays
+    # with the UMRS readiness poller + wrapper curl probes (pre-existing path).
     cap_drop: [ ALL ]
     cap_add: [ sys_nice ]
     userns_mode: "${RIVAULT_USERNS_MODE:-keep-id:uid=0,gid=0}"
@@ -157,18 +154,12 @@ services:
       PGTZ: ${GENAI_TZ:-Asia/Tokyo}
       CUDA_VISIBLE_DEVICES: ""
       HIP_VISIBLE_DEVICES: ""
-    # R-2 (Phase 2k): healthchecks for service observability.
-    # Note: On rootless podman with userns_mode=host (RCCS), healthcheck exec
-    # is broken (runc "container does not exist"). depends_on uses
-    # service_started instead of service_healthy. Actual readiness is
-    # verified by the UMRS readiness poller.
-    healthcheck:
-      test: [ "CMD-SHELL",
-              "pg_isready -U postgres -h 127.0.0.1" ]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-      start_period: 10s
+    # Healthchecks removed (2026-08-12): the pre-existing note already said
+    # healthcheck exec is broken on rootless podman; the full start path also
+    # dies (created container never reaches running: runc PID-pipe EOF), so
+    # ll-postgres never started and the LiteLLM migration step hung forever.
+    # depends_on already uses service_started; UMRS readiness poller owns the
+    # real readiness signal.
     cap_drop: [ ALL ]
     cap_add: [ sys_nice, setuid, setgid, chown, dac_override, fowner ]
     userns_mode: "${RIVAULT_USERNS_MODE:-keep-id:uid=0,gid=0}"
@@ -326,17 +317,9 @@ services:
       # the base image is upgraded to >=0.20.
       PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
       TZ: ${GENAI_TZ:-Asia/Tokyo}
-    # R-2 (Phase 2k): vLLM liveness probe; uses /health on the default
-    # port 8000. start_period covers both model loading and enforce-eager
-    # compilation; 60 s is sufficient for bonsai/small models (≤8 B params)
-    # — raise via RIVAULT_VLLM_STARTUP_TIMEOUT_SEC for 70B+ deployments.
-    healthcheck:
-      test: [ "CMD-SHELL",
-              "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=5)\" || exit 1" ]
-      interval: 10s
-      timeout: 10s
-      retries: 5
-      start_period: 60s
+    # Healthchecks removed (2026-08-12): rootless podman on this runtime
+    # cannot start any healthchecked container (runc PID-pipe EOF at create).
+    # vLLM readiness = wrapper curl probe + UMRS readiness poller instead.
     cap_drop: [ ALL ]
     cap_add: [ sys_nice ]
     userns_mode: "${RIVAULT_USERNS_MODE:-keep-id:uid=0,gid=0}"
@@ -600,12 +583,8 @@ services:
       - minio-host:host-gateway
     depends_on:
       - nginx
-    healthcheck:
-      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:3000/readyz', timeout=5)\" || exit 1"]
-      start_period: 120s
-      interval: 30s
-      timeout: 10s
-      retries: 5
+    # Healthchecks removed (2026-08-12): runc cannot create healthchecked
+    # containers on this runtime (PID-pipe EOF). Readiness via UMRS poller.
     volumes:
       # SAM3 model weights
       - type: bind
