@@ -143,7 +143,11 @@ def _read_configured_profiles():
         if profiles:
             return profiles
     except Exception:
-        pass
+        logger.warning(
+            "Site config unreadable while resolving rivault profiles; "
+            "falling back to the hardcoded default profile set",
+            exc_info=True,
+        )
     return None
 
 
@@ -251,7 +255,9 @@ def release_backend_job(model_type_key):
                     stderr=subprocess.DEVNULL,
                     timeout=10,
                 )
-            logger.info(f"[lifecycle] Cancelled Slurm job {job_id} for '{model_type_key}'")
+            logger.info(
+                f"[lifecycle] Cancelled Slurm job {job_id} for '{model_type_key}'"
+            )
         except FileNotFoundError:
             logger.info(
                 f"[lifecycle] scancel not found — Slurm job {job_id} not cancelled (non-Slurm env?)"
@@ -327,6 +333,11 @@ def _get_site_config_if_available():
 
         return get_site_config()
     except Exception:
+        logger.warning(
+            "Site config import/resolution failed; downstream jobs may be "
+            "misdiagnosed (backend type unknown)",
+            exc_info=True,
+        )
         return None
 
 
@@ -606,7 +617,9 @@ def get_slurm_node(
     if error_file:
         error_file = error_file.replace("%j", str(job_id))
 
-    logger.info(f"Job {job_id} is running. Output will be in {output_file} and {error_file}")
+    logger.info(
+        f"Job {job_id} is running. Output will be in {output_file} and {error_file}"
+    )
 
     return output_file, error_file, job_id
 
@@ -644,8 +657,8 @@ def _remote_sbatch_args(site, sbatch_env, slurm_overrides=None):
         f"--error={job_info_dir}/slurm-%j.err",
     ]
 
-    partition = (
-        str(overrides.get("partition") or "").strip() or _first_site_partition(site)
+    partition = str(overrides.get("partition") or "").strip() or _first_site_partition(
+        site
     )
     if partition:
         args.append(f"--partition={partition}")
@@ -1168,7 +1181,9 @@ def launch_rivault_model(model_cfg):
     )
     job_profiles = _resolve_profiles_for_model(model_cfg)
     job_metadata = _job_capabilities_for_profiles(job_profiles)
-    logger.info(f"[rivault] resolved profiles for {model_cfg['model_type']}: {job_profiles}")
+    logger.info(
+        f"[rivault] resolved profiles for {model_cfg['model_type']}: {job_profiles}"
+    )
 
     # --- 0. Check cache / reuse running job ---
     cached_model, job_id = _check_cache_or_reuse_job(model_type_key, model_cfg)
