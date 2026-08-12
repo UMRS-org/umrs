@@ -256,3 +256,17 @@ def test_mutation_with_identity_always_permitted(monkeypatch):
     for mode in ("strict", "mvp"):
         monkeypatch.setenv("UMRS_AUTH_MODE", mode)
         ep._require_identity_for_mutation("proj-a", "Mark endpoint used")
+
+
+def test_cross_project_listing_denied_for_non_admin():
+    import inspect
+
+    from umrs.api import endpoints as ep
+
+    src = inspect.getsource(ep.list_endpoints)
+    assert "project_id is None and not is_admin" in src
+    assert "403" in src or "HTTP_403_FORBIDDEN" in src
+    # And the check must precede any registry access.
+    assert src.find("project_id is None and not is_admin") < src.find(
+        "registry.list_all"
+    )
