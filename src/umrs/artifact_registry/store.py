@@ -35,15 +35,49 @@ class ArtifactNotFoundError(ArtifactStoreError):
 class ArtifactStore:
     """Artifact Registry data access layer."""
 
-    def __init__(self, conn_factory: Callable[[], Any]) -> None:
+    def __init__(
+        self,
+        conn_factory: Callable[[], Any],
+        *,
+        conn_release: Callable[[Any], None] | None = None,
+    ) -> None:
         """Initialize the store.
 
         Args:
             conn_factory: callable that yields a database connection via
                 ``with conn_factory() as conn:`` (context manager) or returns
                 a raw connection for ``cur.execute()`` calls.
+            conn_release: optional callable returning a connection to its
+                pool (e.g. ``psycopg2.pool.ThreadedConnectionPool.putconn``).
+                The store leases every acquired connection and returns them
+                all in :meth:`close`. Previously the API-layer caller tried
+                to return the connection via ``pool.putconn(conn_factory())``
+                — acquiring a SECOND connection to return, leaking one per
+                request until ``pool exhausted`` 500s in production.
         """
         self._conn_factory = conn_factory
+        self._conn_release = conn_release
+        self._leased: list[Any] = []
+
+    def close(self) -> None:
+        """Release every leased connection (idempotent)."""
+        while self._leased:
+            conn = self._leased.pop()
+            try:
+                if self._conn_release is not None:
+                    self._conn_release(conn)
+                else:
+                    conn.close()
+            except Exception:
+                logger.warning(
+                    "Failed to release artifact-store connection", exc_info=True
+                )
+
+    def __enter__(self) -> "ArtifactStore":
+        return self
+
+    def __exit__(self, *_exc) -> None:
+        self.close()
 
     # -- public CRUD -----------------------------------------------------------
 
@@ -256,14 +290,7 @@ class ArtifactStore:
     # -- helpers ---------------------------------------------------------------
 
     def _get_conn(self):
-        """Acquire a connection from the factory.
-
-        The conn_factory signature is:  ``with conn_factory() as conn:``
-        or ``conn = conn_factory()``  depending on how it was registered.
-        We treat it as a direct factory here since the caller does not
-        use ``with`` in the artifact flow.
-        """
-        # Most callers pass a psycopg2 connection pool's getconn method
-        # or a wrapper that returns a live connection.
+        """Acquire a connection from the factory, tracked for release."""
         conn = self._conn_factory()
+        self._leased.append(conn)
         return conn

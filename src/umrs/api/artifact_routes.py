@@ -65,12 +65,11 @@ async def list_artifacts(
 
     conn_factory = job_store.db_pool.getconn
     try:
-        store = ArtifactStore(conn_factory)
+        store = ArtifactStore(conn_factory, conn_release=job_store.db_pool.putconn)
         results = store.list(query)
         return [_artifact_response(r) for r in results]
     finally:
-        if job_store.db_pool:
-            job_store.db_pool.putconn(conn_factory())
+        store.close()
 
 
 @router.post("")
@@ -85,12 +84,11 @@ async def register_artifact(artifact: Artifact) -> dict:
 
     conn_factory = job_store.db_pool.getconn
     try:
-        store = ArtifactStore(conn_factory)
+        store = ArtifactStore(conn_factory, conn_release=job_store.db_pool.putconn)
         created = store.create(artifact)
         return _artifact_response(created)
     finally:
-        if job_store.db_pool:
-            job_store.db_pool.putconn(conn_factory())
+        store.close()
 
 
 @router.get("/{artifact_id}")
@@ -113,7 +111,7 @@ async def get_artifact(artifact_id: str) -> dict:
 
     conn_factory = job_store.db_pool.getconn
     try:
-        store = ArtifactStore(conn_factory)
+        store = ArtifactStore(conn_factory, conn_release=job_store.db_pool.putconn)
         artifact = store.get(aid)
         if artifact is None:
             raise HTTPException(
@@ -122,8 +120,7 @@ async def get_artifact(artifact_id: str) -> dict:
             )
         return _artifact_response(artifact)
     finally:
-        if job_store.db_pool:
-            job_store.db_pool.putconn(conn_factory())
+        store.close()
 
 
 @router.get("/{artifact_id}/lineage")
@@ -149,7 +146,7 @@ async def get_lineage(
 
     conn_factory = job_store.db_pool.getconn
     try:
-        store = ArtifactStore(conn_factory)
+        store = ArtifactStore(conn_factory, conn_release=job_store.db_pool.putconn)
         edges = store.lineage(aid, depth=depth)
         return [
             {
@@ -160,8 +157,7 @@ async def get_lineage(
             for e in edges
         ]
     finally:
-        if job_store.db_pool:
-            job_store.db_pool.putconn(conn_factory())
+        store.close()
 
 
 @router.patch("/{artifact_id}/metadata")
@@ -187,7 +183,7 @@ async def update_metadata(
 
     conn_factory = job_store.db_pool.getconn
     try:
-        store = ArtifactStore(conn_factory)
+        store = ArtifactStore(conn_factory, conn_release=job_store.db_pool.putconn)
         try:
             store.update_metadata(aid, patch)
             return {"status": "ok"}
@@ -197,8 +193,7 @@ async def update_metadata(
                 detail=str(exc),
             ) from exc
     finally:
-        if job_store.db_pool:
-            job_store.db_pool.putconn(conn_factory())
+        store.close()
 
 
 @router.delete("/{artifact_id}", status_code=status.HTTP_200_OK)
@@ -221,9 +216,8 @@ async def delete_artifact(artifact_id: str) -> dict:
 
     conn_factory = job_store.db_pool.getconn
     try:
-        store = ArtifactStore(conn_factory)
+        store = ArtifactStore(conn_factory, conn_release=job_store.db_pool.putconn)
         deleted = store.delete(aid)
         return {"deleted": deleted}
     finally:
-        if job_store.db_pool:
-            job_store.db_pool.putconn(conn_factory())
+        store.close()
