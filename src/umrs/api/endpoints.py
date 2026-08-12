@@ -82,6 +82,29 @@ def _validate_partition_allowed(request_partition: str | None) -> None:
         )
 
 
+def _enforce_serving_mode_supported(request: Any) -> None:
+    """Reject serving modes the runtime can validate but never materialize.
+
+    ``multi-lora`` and ``co-located`` are part of the API contract
+    (shape-validated) but have ZERO runtime consumers: the serving pipeline
+    never emits a LoRA env var and never starts a second vLLM instance, so
+    accepting them reported a provisioning success while silently serving a
+    plain single model (audit: dead-input, high severity). Fail fast with 501
+    so agents and clients can distinguish "not yet implemented" from a 400
+    user error.
+    """
+    serving_mode = getattr(request, "serving_mode", "single") or "single"
+    if serving_mode != "single":
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail=(
+                f"serving_mode='{serving_mode}' is not yet implemented by the "
+                "serving runtime — the request is validated but no runtime "
+                "consumer materializes it. Provision with serving_mode='single'."
+            ),
+        )
+
+
 def _enforce_recipe_policy(is_admin: bool, request: Any) -> None:
     """Reject recipe/security-controlled request fields for non-admin callers.
 
@@ -2193,6 +2216,7 @@ async def provision_endpoint(
         )
 
     _enforce_recipe_policy(is_admin, request)
+    _enforce_serving_mode_supported(request)
     env_vars: dict[str, str] = {}
     # Merge request-supplied env_vars first so they take precedence
     # over ServingProfile/roster defaults.
