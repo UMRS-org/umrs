@@ -21,16 +21,37 @@ def _resolve_knowledge_dsn() -> tuple[str, bool]:
     Returns (dsn, is_local). Precedence: UMRS_DATA_CATALOG_DB / DATABASE_URL
     (full DSN), otherwise the same component vars the jobs pool uses
     (DB_HOST/DB_PORT/UMRS_JOBS_DB/POSTGRES_*/DB_SUPERUSER*).
+
+    Empty-config parity with ``jobs.knowledge_adapters._resolve_knowledge_dsn``:
+    returns ``("", False)`` when no DSN and no component var is present, so an
+    unconfigured environment hits the designed 503 ("no DSN") instead of
+    silently fabricating a localhost admin-DSN that connects to an ambient
+    postgres with default credentials.
     """
     for var in ("UMRS_DATA_CATALOG_DB", "DATABASE_URL"):
         dsn = os.environ.get(var, "")
         if dsn:
             return dsn, False
+    component_vars = (
+        "DB_HOST",
+        "DB_PORT",
+        "UMRS_JOBS_DB",
+        "POSTGRES_PORT",
+        "POSTGRES_DB",
+        "DB_SUPERUSER",
+        "DB_SUPERUSER_PASSWORD",
+        "POSTGRES_USER",
+        "POSTGRES_PASSWORD",
+    )
+    if not any(os.environ.get(var) for var in component_vars):
+        return "", False
     host = os.environ.get("DB_HOST", "127.0.0.1")
     port = os.environ.get("DB_PORT", os.environ.get("POSTGRES_PORT", "5432"))
     name = os.environ.get("UMRS_JOBS_DB", os.environ.get("POSTGRES_DB", "umrs_db"))
     user = os.environ.get("DB_SUPERUSER", os.environ.get("POSTGRES_USER", "postgres"))
-    pw = os.environ.get("DB_SUPERUSER_PASSWORD", os.environ.get("POSTGRES_PASSWORD", "postgres"))
+    pw = os.environ.get(
+        "DB_SUPERUSER_PASSWORD", os.environ.get("POSTGRES_PASSWORD", "postgres")
+    )
     dsn = f"postgresql://{user}:{pw}@{host}:{port}/{name}"
     return dsn, host in ("127.0.0.1", "localhost", "::1")
 
@@ -51,7 +72,9 @@ async def knowledge_asyncpg_pool(request: Request):
     try:
         import asyncpg
     except ImportError as exc:
-        raise HTTPException(status_code=503, detail="asyncpg unavailable in server install") from exc
+        raise HTTPException(
+            status_code=503, detail="asyncpg unavailable in server install"
+        ) from exc
 
     kwargs: dict = {"dsn": dsn}
     if is_local:
