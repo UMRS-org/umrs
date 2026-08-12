@@ -342,3 +342,34 @@ def test_store_error_never_falls_back_to_stale_json(monkeypatch, caplog):
 
     assert result is None
     assert any("authoritative store error" in r.getMessage() for r in caplog.records)
+
+
+def test_endpoint_metrics_proxy_strict_requires_identity(monkeypatch):
+    import inspect
+
+    import umrs.api.endpoints as endpoints
+
+    src = inspect.getsource(endpoints.proxy_endpoint_metrics)
+    assert "project_id is None and _strict_auth_mode() and not is_admin" in src
+    assert "401" in src or "HTTP_401_UNAUTHORIZED" in src
+    assert src.find("project_id is None and _strict_auth_mode()") < src.find(
+        "registry.get_by_job_id"
+    )
+
+
+def test_workflow_provenance_flag_requires_trusted_identity():
+    """The ZMQ-exposed handler must ignore a client-supplied _identity_verified
+    flag unless the dispatch was explicitly marked as a server-verified caller
+    (the HTTP trigger route after HMAC)."""
+    import inspect
+    import json
+
+    from umrs.server import workflow_registry_handler as h
+
+    src = inspect.getsource(h._handle_run_workflow)
+    assert "trusted_identity and bool(payload.get" in src
+    assert "trusted_identity" in inspect.getsource(h.handle_workflow_command)
+    # Default for untrusted callers remains False.
+    assert "trusted_identity: bool = False" in inspect.getsource(
+        h.handle_workflow_command
+    )

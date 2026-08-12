@@ -412,6 +412,8 @@ def _handle_run_workflow(
     client_id: str,
     payload_str: str,
     job_backend: DurableJobCommandBackend | None = None,
+    *,
+    trusted_identity: bool = False,
 ) -> str:
     """Trigger execution of a registered workflow.
 
@@ -434,7 +436,7 @@ def _handle_run_workflow(
             {"status": "error", "message": "workflow params must be an object"}
         )
 
-    identity_verified = bool(payload.get("_identity_verified"))
+    identity_verified = trusted_identity and bool(payload.get("_identity_verified"))
 
     try:
         source_path, _, step_count = _workflow_run_context(workflow_name, client_id)
@@ -482,10 +484,18 @@ def handle_workflow_command(
     client_id: str,
     payload_str: str,
     job_backend: DurableJobCommandBackend | None = None,
+    *,
+    trusted_identity: bool = False,
 ) -> str:
     """Dispatch a workflow registry command and return a JSON response string.
 
     Called from the server main loop when a LIST_WORKFLOWS command is received.
+
+    ``trusted_identity`` must be set ONLY by server-side callers that already
+    verified identity (the HTTP trigger route after HMAC signature validation).
+    For ZMQ-exposed commands the payload's ``_identity_verified`` flag is a
+    client-supplied claim and is ignored unless ``trusted_identity`` is set
+    (wave-4 audit fix).
     """
     from umrs.core.TaskCmdStatus import TaskCmd
 
@@ -493,7 +503,12 @@ def handle_workflow_command(
         if cmd == TaskCmd.LIST_WORKFLOWS:
             return _handle_list_workflows(client_id, payload_str)
         elif cmd == TaskCmd.RUN_WORKFLOW:
-            return _handle_run_workflow(client_id, payload_str, job_backend=job_backend)
+            return _handle_run_workflow(
+                client_id,
+                payload_str,
+                job_backend=job_backend,
+                trusted_identity=trusted_identity,
+            )
         elif cmd == TaskCmd.WORKFLOW_STATUS:
             return _handle_workflow_status(client_id, payload_str)
         elif cmd == TaskCmd.WORKFLOW_RESULTS:

@@ -633,6 +633,7 @@ async def trigger_workflow(
             }
         ),
         job_backend=job_backend,
+        trusted_identity=True,
     )
     return _parse_command_response(raw, action="trigger")
 
