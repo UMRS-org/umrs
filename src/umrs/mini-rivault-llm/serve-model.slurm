@@ -588,6 +588,12 @@ RIVAULT_OWNER_ID=${RIVAULT_OWNER_ID:-${PROJECT_ID:-unknown}}
 RIVAULT_PROFILES=${RIVAULT_PROFILES}
 # Additional compose profiles to activate (space-separated)
 RIVAULT_EXTRA_PROFILES=${RIVAULT_EXTRA_PROFILES:-}
+# Private per-job container network (external). Written explicitly because
+# podman-compose only expands ${RIVAULT_NETWORK_NAME} from THIS file — the
+# shell-exported var never reaches the yaml substitution, so a missing line
+# silently degrades the yaml's genai-private-net name to the literal default
+# (which does not exist, by design per-job).
+RIVAULT_NETWORK_NAME=${RIVAULT_NETWORK_NAME}
 
 # ─── 8. Container Runtime ────────────────────────────────────────────────────
 # Placeholder replaced by sed after network creation (actual subnet octet)
