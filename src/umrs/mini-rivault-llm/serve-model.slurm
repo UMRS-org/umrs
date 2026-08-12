@@ -2010,9 +2010,28 @@ fi
 # Keep job alive while containers are running; exit on idle timeout (safety net).
 # Slurm cancellation or an explicit signal should now run the cleanup trap
 # above so the compose stack is torn down promptly.
+
+# Publish endpoint location for the front's reconciler (2026-08-12 P1 fix):
+# the historical deployed wrapper variant wrote rivault-job-<slurmjob>.info on
+# the shared jobs dir; the canonical wrapper lost that writer — the front
+# reads this file to learn node:port:model-path and marks the endpoint
+# `starting -> ready`. Without it, provisions stall forever at `provisioning`.
 RIVAULT_JOB_TIMEOUT=${RIVAULT_JOB_TIMEOUT:-0}     # 0 = infinite; override via sbatch --export
 INTERVAL=${RIVAULT_JOB_POLL_INTERVAL:-5}
 ELAPSED=0
+_JOB_INFO_DIR_EFF="${JOB_INFO_DIR:-${RIVAULT_WRAPPER_DIR}/jobs}"
+if [[ -n "${SLURM_JOB_ID:-}" && -n "${_JOB_INFO_DIR_EFF}" && -d "${_JOB_INFO_DIR_EFF}" ]]; then
+    {
+        echo "RIVAULT_STATUS=running"
+        echo "RIVAULT_NODE=$(hostname -f 2>/dev/null || hostname)"
+        echo "RIVAULT_LITELLM_PORT=${NGINX_LITELLM_DOCKER_PORT}"
+        echo "RIVAULT_VLLM_PORT=8000"
+        echo "RIVAULT_MODEL_PATH=${VLLM_HOST_MODEL_PATH:-${VLLM_MODEL_PATH:-}}"
+    } > "${_JOB_INFO_DIR_EFF}/rivault-job-${SLURM_JOB_ID}.info.tmp" \
+        && mv "${_JOB_INFO_DIR_EFF}/rivault-job-${SLURM_JOB_ID}.info.tmp" \
+             "${_JOB_INFO_DIR_EFF}/rivault-job-${SLURM_JOB_ID}.info" \
+        && echo "[rivault] Published endpoint info file for job ${SLURM_JOB_ID}"
+fi
 echo "[rivault] Stack is up. Monitoring containers (timeout=${RIVAULT_JOB_TIMEOUT}s, infinite=${RIVAULT_JOB_TIMEOUT==0})..."
 while [ "$RIVAULT_JOB_TIMEOUT" -eq 0 ] || [ "$ELAPSED" -lt "$RIVAULT_JOB_TIMEOUT" ]; do
     if [[ -n "${RIVAULT_STOP_REQUEST_FILE}" && -f "${RIVAULT_STOP_REQUEST_FILE}" ]]; then
