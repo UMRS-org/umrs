@@ -1637,6 +1637,7 @@ async def get_active_endpoints(
 async def list_endpoints(
     project_id: str | None = Depends(get_project_id_optional),
     status_filter: str | None = Query(None, description="Comma-separated statuses"),
+    is_admin: bool = Depends(_caller_is_admin),
     registry: EndpointRegistry = Depends(get_registry),
 ) -> EndpointsListResponse:
     """List all endpoints, optionally filtered.
@@ -1645,6 +1646,15 @@ async def list_endpoints(
     ghost entries are pruned, same as the ``/active`` route.  This ensures
     ``r4 endpoint list --all`` never shows stale READY rows.
     """
+
+    # Cross-project dump is admin-only: anonymous or non-admin callers
+    # would otherwise enumerate every tenant's endpoints incl. host/port/
+    # litellm_url (audited: all-tenant registry dump with no admin gate).
+    if project_id is None and not is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Cross-project endpoint listing requires admin role",
+        )
 
     statuses = None
     if status_filter:
