@@ -2037,6 +2037,22 @@ async def provision_endpoint(
     effective_project_id = _resolve_provision_project_id(request, project_id)
     _enforce_provision_authorization(request, is_admin=is_admin)
 
+    # Server-side correlation trail: received before any heavy work so a
+    # client-side HTTP timeout still leaves a discoverable server-side record.
+    # Emit the same trace id on the failure path so operators can join the
+    # two log lines without needing a request-id middleware.
+    import uuid as _uuid
+
+    provision_trace_id: str = _uuid.uuid4().hex[:12]
+    logger.info(
+        "provision-receive trace=%s model=%s project=%s user=%s admin=%s",
+        provision_trace_id,
+        request.model,
+        effective_project_id,
+        requesting_user or "-",
+        is_admin,
+    )
+
     # Governance: quota check before provisioning
     from .governance import check_quota
 
@@ -2542,7 +2558,12 @@ async def provision_endpoint(
             )
 
     except Exception as e:
-        logger.exception(f"Provision failed: {e}")
+        logger.exception(
+            "provision-failed trace=%s model=%s: %s",
+            provision_trace_id,
+            request.model,
+            e,
+        )
         from .audit_events import emit_audit
 
         emit_audit(
@@ -2550,7 +2571,11 @@ async def provision_endpoint(
             user_id=requesting_user or "",
             project_id=effective_project_id,
             outcome="error",
-            details={"model": request.model, "error": str(e)},
+            details={
+                "model": request.model,
+                "error": str(e),
+                "trace": provision_trace_id,
+            },
         )
         return ProvisionResponse(
             status="failed",
