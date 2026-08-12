@@ -105,6 +105,45 @@ def _enforce_serving_mode_supported(request: Any) -> None:
         )
 
 
+def _authorize_model_entry_for_caller(
+    entry: dict[str, Any] | None,
+    user_id: str | None,
+    project_id: str | None,
+) -> None:
+    """Enforce model-catalog scope on provisioning.
+
+    The resolver looks up model entries with an admin catalog context
+    (mechanics resolution only); without this check, a caller who can *name*
+    someone else's user-/project-scope model could provision it (audit E).
+    Enforcement is complete-identity: with full identity available we deny
+    strict-scope mismatches (403). Legacy mvp deployments where identity is
+    absent keep previous behavior but at WARNING visibility, not silently.
+    """
+    if not entry:
+        return
+    scope = str(entry.get("scope") or "system")
+    if scope == "system":
+        return
+    if scope == "project" and project_id and entry.get("project_id") == project_id:
+        return
+    if scope == "user" and user_id and entry.get("owner_id") == user_id:
+        return
+    if user_id is None and project_id is None:
+        logger.warning(
+            "Model scope check degraded (no identity): %s scope=%s; allowing (mvp mode)",
+            entry.get("name"),
+            scope,
+        )
+        return
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail=(
+            f"Model '{entry.get('name')}' is {scope}-scope and not provisionable "
+            "by this caller"
+        ),
+    )
+
+
 def _enforce_recipe_policy(is_admin: bool, request: Any) -> None:
     """Reject recipe/security-controlled request fields for non-admin callers.
 
@@ -2244,6 +2283,11 @@ async def provision_endpoint(
     # Trigger new provisioning
     service = get_orchestration_service()
     model_entry = _resolve_registered_model_entry(request.model)
+    _authorize_model_entry_for_caller(
+        model_entry,
+        user_id=requesting_user,
+        project_id=effective_project_id,
+    )
     resolved_model_path = _resolve_requested_model_path(
         request.model,
         request.model_path,
