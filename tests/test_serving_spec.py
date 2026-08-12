@@ -224,3 +224,63 @@ def test_spec_is_frozen_typed_object(tmp_path):
 
     with pytest.raises(FrozenInstanceError):
         spec.engine = None  # type: ignore[misc]
+
+
+def test_rivault_job_timeout_promoted_from_entry_level(tmp_path):
+    """Legacy overrides: ``RIVAULT_JOB_TIMEOUT`` at entry/defaults level must
+    flow into the serving env channel (Bdrt rosters place it next to
+    ``timeout``, which the spec previously ignored)."""
+    from umrs.orchestrator.serving_spec import build_spec_from_legacy_entry
+
+    top_only = {
+        "model": "glm-5.2",
+        "path": "/models/glm-5.2",
+        "timeout": 172800,
+        "RIVAULT_JOB_TIMEOUT": "0",
+    }
+    spec_a = build_spec_from_legacy_entry(
+        dict(top_only, node_count=2, gpu_count=1, partition="spark-double"),
+        site=SITE_RCCS,
+        project_id="p",
+        owner_id="u",
+        storage_ref="/models/glm-5.2",
+    )
+    assert spec_a.env.get("RIVAULT_JOB_TIMEOUT") == "0"
+
+    # env_vars-home must win when both exist.
+    from_env = {
+        "model": "glm-5.2",
+        "path": "/models/glm-5.2",
+        "timeout": 172800,
+        "RIVAULT_JOB_TIMEOUT": "0",
+        "env_vars": {"RIVAULT_JOB_TIMEOUT": "82200"},
+        "node_count": 2,
+        "gpu_count": 1,
+        "partition": "spark-double",
+    }
+    spec_b = build_spec_from_legacy_entry(
+        from_env,
+        site=SITE_RCCS,
+        project_id="p",
+        owner_id="u",
+        storage_ref="/models/glm-5.2",
+    )
+    assert spec_b.env.get("RIVAULT_JOB_TIMEOUT") == "82200"
+
+    # Absent in both homes: stays absent (script default applies).
+    bare = {
+        "model": "glm-5.2",
+        "path": "/models/glm-5.2",
+        "timeout": 172800,
+        "node_count": 2,
+        "gpu_count": 1,
+        "partition": "spark-double",
+    }
+    spec_c = build_spec_from_legacy_entry(
+        bare,
+        site=SITE_RCCS,
+        project_id="p",
+        owner_id="u",
+        storage_ref="/models/glm-5.2",
+    )
+    assert "RIVAULT_JOB_TIMEOUT" not in spec_c.env
