@@ -650,6 +650,21 @@ def _legacy_model_spec(
     )
 
 
+def _legacy_env_vars(entry: Mapping[str, Any]) -> dict[str, str]:
+    """Materialize the legacy env-vars channel.
+
+    ``RIVAULT_JOB_TIMEOUT`` may be expressed at entry/defaults level
+    (roster defaults merge flat into entries); promote it into the env
+    channel so the serving script actually receives it. ``env_vars`` always
+    wins when both homes are present.
+    """
+    env = {str(k): str(v) for k, v in (entry.get("env_vars") or {}).items()}
+    job_timeout = entry.get("RIVAULT_JOB_TIMEOUT")
+    if job_timeout is not None:
+        env.setdefault("RIVAULT_JOB_TIMEOUT", str(job_timeout))
+    return env
+
+
 def build_spec_from_legacy_entry(
     entry: Mapping[str, Any],
     *,
@@ -660,14 +675,7 @@ def build_spec_from_legacy_entry(
 ) -> ResolvedEndpointSpec:
     """Build a ServingPlan from a production `pool.yaml` entry as-is (M2)."""
     model = str(entry["model"])
-    env = {str(k): str(v) for k, v in (entry.get("env_vars") or {}).items()}
-    # RIVAULT_JOB_TIMEOUT may be expressed at entry/defaults level (roster
-    # defaults merge flat into entries); promote it into the env channel so
-    # the serving script actually receives it. env_vars always wins when
-    # both homes are present.
-    job_timeout = entry.get("RIVAULT_JOB_TIMEOUT")
-    if job_timeout is not None:
-        env.setdefault("RIVAULT_JOB_TIMEOUT", str(job_timeout))
+    env = _legacy_env_vars(entry)
     engine, _dropped = build_engine_spec(
         _legacy_engine_block(entry, model), f"legacy[{model}].env_vars"
     )
