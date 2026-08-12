@@ -728,16 +728,22 @@ if [[ "${RIVAULT_WRAPPER_CLEANUP:-0}" != "1" ]] && \
     # 4. Migrate to rebuild internal state
     podman system migrate 2>/dev/null || true
     sleep 1
-    if podman info >/dev/null 2>&1; then
+    # Gate on the probe compose actually uses (filter+json); `podman info` can
+    # report ok while later list/create paths still race the paused graph
+    # (job 270430: recovered then 'invalid reference format').
+    if podman info >/dev/null 2>&1 && \
+       podman ps --filter "label=io.podman.compose.project=rivault-probe" --format json >/dev/null 2>&1; then
         echo "[rivault] Podman state recovered."
     else
-        echo "[rivault] ERROR: podman recovery failed — trying full reset..."
+        echo "[rivault] ERROR: podman recovery incomplete — trying full reset..."
         podman system reset --force 2>/dev/null || true
         sleep 2
-        if ! podman info >/dev/null 2>&1; then
+        if ! podman info >/dev/null 2>&1 || \
+           ! podman ps --filter "label=io.podman.compose.project=rivault-probe" --format json >/dev/null 2>&1; then
             echo "[rivault] FATAL: podman is unusable after full reset. Cannot proceed."
             exit 1
         fi
+        echo "[rivault] Podman state recovered after full reset."
     fi
 fi
 
