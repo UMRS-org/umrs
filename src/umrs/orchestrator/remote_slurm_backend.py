@@ -802,7 +802,14 @@ class RemoteSlurmBackend(SlurmBackend):
 
         for job_id in result.stdout.strip().split("\n"):
             job_id = job_id.strip()
-            if not job_id or any(j.job_id == job_id for j in jobs):
+            # Job ids are strictly numeric (array ids contain '_'). The remote
+            # squeue flavor that does not know the '%i' format prints its full
+            # usage help — historically those words flowed downstream as
+            # "stop-Usage: squeue [-A account]..." pickle files in the control
+            # dir. Filter defensively at the choke point (P3 hygiene fix).
+            if not re.fullmatch(r"\d+(?:_.+)?", job_id):
+                continue
+            if any(j.job_id == job_id for j in jobs):
                 continue
             job = await self.get_job_status(job_id)
             if status_filter is None or job.status in status_filter:

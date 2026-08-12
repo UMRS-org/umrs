@@ -42,6 +42,47 @@ def test_remote_backend_overrides_status_methods():
         )
 
 
+@pytest.mark.asyncio
+async def test_squeue_usage_text_never_flows_as_job_ids():
+    """Regression: squeue usage words can never become job ids again.
+
+    Before the numeric-only guard, a remote squeue that printed its full usage
+    help (unknown '%i' format string on mixed cluster flavors) had every usage
+    word forwarded as a job id, producing 'stop-Usage: squeue [-A account]...'
+    pollution in the remote control dir (live RCCS 2026-08-12).
+    """
+    import types
+    from unittest.mock import AsyncMock
+
+    usage_lines = (
+        "270373\n"
+        "Usage: squeue [-A account] [--clusters names] [-i seconds] [--job jobid]\n"
+        "      [--expand-patterns] [--json=data_parser] [--yaml=data_parser]\n"
+        "270437"
+    )
+
+    class _SSH:
+        def __init__(self, stdout):
+            self._stdout = stdout
+
+        async def run_remote(self, _command: str, **_kwargs):
+            return types.SimpleNamespace(stdout=self._stdout, stderr="", ok=True, returncode=0)
+
+    backend = RemoteSlurmBackend.__new__(RemoteSlurmBackend)
+    backend._get_ssh = AsyncMock(return_value=_SSH(usage_lines))
+    called: list[str] = []
+
+    async def fake_status(job_id):
+        called.append(job_id)
+        return types.SimpleNamespace(job_id=job_id, status="running")
+
+    backend.get_job_status = AsyncMock(side_effect=fake_status)
+
+    await backend._remote_append_squeue_jobs([], None)
+
+    assert called == ["270373", "270437"], called
+
+
 PROXY_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 _./:=,%-")
 
 
