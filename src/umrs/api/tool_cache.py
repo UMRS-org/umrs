@@ -92,7 +92,6 @@ async def lookup_cached_output(
     """Look up a cached output within the caller's project namespace."""
     store = _get_store()
     # Direct hash lookup (bypass re-hashing)
-    from umrs.jobs.tool_output_cache import _compute_inputs_hash
 
     entry = store.get(
         _namespaced(project_id, session_id),
