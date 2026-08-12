@@ -9,10 +9,8 @@ gated the cross-project cleanup to admin.
 from __future__ import annotations
 
 import pytest
-from fastapi import HTTPException
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
-from fastapi import FastAPI
-
 from umrs.api import tool_cache
 from umrs.api.files import get_project_id
 
