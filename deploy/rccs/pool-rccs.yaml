@@ -38,14 +38,15 @@ endpoints:
     gpu_count: 1
     max_model_len: 262144
     env_vars:
-      # Adopt the stable RCCS GB10 lanes proven by pool-rccs-3models
-      # (Qwen3.6-35B-A3B-NVFP4): vllm-openai:latest + marlin MoE backend.
-      # cu130-nightly-aarch64's unified/MXFP4 attention path dies on GB10
-      # (jobs 270324/270340); batched_triton is not a valid choice in this
-      # image (jobs 270346).
+      # Adopt the stable RCCS GB10 image lane proven by pool-rccs-3models
+      # (Qwen3.6-35B-A3B-NVFP4): vllm-openai:latest (the cu130-nightly
+      # variant dies on unified/MXFP4 attention — jobs 270324/270340).
+      # MoE lane is checkpoint-dependent: marlin only suits NVFP4 quant
+      # (rejected for unquantized MoE — job 270372). AgentWorld is BF16
+      # (unquantized) and the valid unquantized lane on this arch is triton.
       VLLM_DOCKER_IMAGE: "docker.io/vllm/vllm-openai:latest"
       VLLM_GPU_MEM_UTIL: "0.78"
-      VLLM_EXTRA_ARGS: "--moe-backend=marlin"
+      VLLM_EXTRA_ARGS: "--moe-backend=triton"
       VLLM_KV_CACHE_MEMORY_BYTES: "8589934592"
       VLLM_MAX_NUM_SEQS: "4"
       VLLM_MAX_NUM_BATCHED_TOKENS: "8192"
