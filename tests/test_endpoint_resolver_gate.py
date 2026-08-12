@@ -270,3 +270,48 @@ def test_cross_project_listing_denied_for_non_admin():
     assert src.find("project_id is None and not is_admin") < src.find(
         "registry.list_all"
     )
+
+
+def test_model_scope_project_denied_for_other_project():
+    from umrs.api.endpoints import _authorize_model_entry_for_caller
+
+    entry = {"name": "m", "scope": "project", "project_id": "proj-a"}
+    with pytest.raises(HTTPException) as exc:
+        _authorize_model_entry_for_caller(entry, user_id="alice", project_id="proj-b")
+    assert exc.value.status_code == 403
+
+
+def test_model_scope_project_allowed_in_matching_project():
+    from umrs.api.endpoints import _authorize_model_entry_for_caller
+
+    entry = {"name": "m", "scope": "project", "project_id": "proj-a"}
+    _authorize_model_entry_for_caller(entry, user_id="alice", project_id="proj-a")
+
+
+def test_model_scope_user_denied_for_other_user():
+    from umrs.api.endpoints import _authorize_model_entry_for_caller
+
+    entry = {"name": "m", "scope": "user", "owner_id": "alice"}
+    with pytest.raises(HTTPException) as exc:
+        _authorize_model_entry_for_caller(entry, user_id="bob", project_id="proj-a")
+    assert exc.value.status_code == 403
+
+
+def test_model_scope_system_always_allowed():
+    from umrs.api.endpoints import _authorize_model_entry_for_caller
+
+    _authorize_model_entry_for_caller(
+        {"name": "m", "scope": "system"}, user_id="bob", project_id="proj-a"
+    )
+    _authorize_model_entry_for_caller(None, user_id="bob", project_id="proj-a")
+
+
+def test_model_scope_degrades_warn_only_without_identity(caplog):
+    import logging
+
+    from umrs.api.endpoints import _authorize_model_entry_for_caller
+
+    entry = {"name": "m", "scope": "user", "owner_id": "alice"}
+    with caplog.at_level(logging.WARNING, logger="umrs.api.endpoints"):
+        _authorize_model_entry_for_caller(entry, user_id=None, project_id=None)
+    assert any("degraded" in r.getMessage() for r in caplog.records)
