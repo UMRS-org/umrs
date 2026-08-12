@@ -28,11 +28,7 @@ def _config_auto_register(site_cfg: dict) -> bool:
     Falls back to True (on by default) when the flag is absent.
     """
     try:
-        return bool(
-            site_cfg.get("artifact_registry", {}).get(
-                "auto_register", True
-            )
-        )
+        return bool(site_cfg.get("artifact_registry", {}).get("auto_register", True))
     except (TypeError, AttributeError):
         return True
 
@@ -63,8 +59,8 @@ def register_artifacts_on_success(
     if attempt.status != AttemptStatus.SUCCEEDED:
         return 0
 
+    store = ArtifactStore(conn_factory)
     try:
-        store = ArtifactStore(conn_factory)
         count = 0
 
         # Register job outputs as artifacts
@@ -105,15 +101,19 @@ def register_artifacts_on_success(
             try:
                 # Find parent artifact by URI prefix match
                 parent_artifacts = store.list(
-                    type("ArtifactQuery", (), {
-                        "artifact_type": None,
-                        "owner_id": job.user_id,
-                        "project_id": job.project_id,
-                        "execution_id": None,
-                        "name_prefix": None,
-                        "limit": 1000,
-                        "offset": 0,
-                    })()
+                    type(
+                        "ArtifactQuery",
+                        (),
+                        {
+                            "artifact_type": None,
+                            "owner_id": job.user_id,
+                            "project_id": job.project_id,
+                            "execution_id": None,
+                            "name_prefix": None,
+                            "limit": 1000,
+                            "offset": 0,
+                        },
+                    )()
                 )
                 for pa in parent_artifacts:
                     if pa.uri == input_uri:
@@ -135,6 +135,11 @@ def register_artifacts_on_success(
             exc,
         )
         return 0
+    finally:
+        # Release any leased connections — without this, a pool-backed
+        # factory here repeats the routes' exhaustion class. For psycopg2
+        # pooled connections, conn.close() returns the conn to the pool.
+        store.close()
 
 
 def _guess_type(uri: str) -> str:
