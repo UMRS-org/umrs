@@ -692,7 +692,13 @@ echo "[rivault]   gpu override: ${_GPU_OVERRIDE_FILE:-embedded default}"
 #
 # SKIP when running from the deploy wrapper — the wrapper already handles
 # cleanup before delegating here (RIVAULT_WRAPPER_CLEANUP=1 is set by it).
-if [[ "${RIVAULT_WRAPPER_CLEANUP:-0}" != "1" ]] && ! podman info >/dev/null 2>&1; then
+# NOTE (2026-08-12): `podman info` alone is NOT a reliable corruption probe —
+# nodes return ok for info while filtered-list / create paths still die with
+# "invalid internal status... pause process". Probe the exact compose-prone
+# list call instead; treat its failure as corruption requiring repair.
+if [[ "${RIVAULT_WRAPPER_CLEANUP:-0}" != "1" ]] && \
+   { ! podman info >/dev/null 2>&1 || \
+     ! podman ps --filter "label=io.podman.compose.project=rivault-probe" --format json >/dev/null 2>&1; }; then
     echo "[rivault] WARN: podman state corrupt — recovering..."
     _graph_parent="/var/tmp/podman_$(whoami)"
     # 1. Stop stale systemd scopes left by prior Slurm jobs
