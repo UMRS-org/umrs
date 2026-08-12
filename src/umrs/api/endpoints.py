@@ -312,6 +312,8 @@ def _resolve_authenticated_project_id(
     x_project_id: str | None,
     *,
     optional: bool = False,
+    x_verified_is_admin: str | None = None,
+    x_verified_hmac: str | None = None,
 ) -> str | None:
     strict = _strict_auth_mode()
     claims = _jwt_claims(authorization, required=False)
@@ -320,10 +322,22 @@ def _resolve_authenticated_project_id(
     requested_project_id = verified_project_id or _header_str(x_project_id)
 
     if strict and verified_project_id:
-        if verified_user_id:
+        from ._verified_headers import handshake_secret, verified_headers_trusted
+
+        # Live-PoC'd bypass class: plain-text verified headers carried no
+        # gateway-origin proof. Honor them only when the sign/verify secret
+        # validates over the FULL identity tuple including the admin flag.
+        trusted = verified_headers_trusted(
+            strict=strict,
+            secret=handshake_secret(),
+            presented_hmac=_header_str(x_verified_hmac),
+            user_id=verified_user_id,
+            project_id=verified_project_id,
+            is_admin=_header_bool(x_verified_is_admin),
+        )
+        if verified_user_id and trusted:
             return verified_project_id
-        # X-Verified-Project-ID without X-User-ID is a spoofed claim —
-        # only the gateway may set verified headers; reject without proof.
+        # Verified headers without a matching signature are a spoofed claim.
         _raise_strict_project_auth_error()
 
     if claims:
@@ -381,11 +395,27 @@ def _caller_is_admin(
     authorization: str | None = Header(None),
     x_user_id: str | None = Header(None),
     x_verified_is_admin: str | None = Header(None),
+    x_verified_project_id: str | None = Header(None),
+    x_verified_hmac: str | None = Header(None),
 ) -> bool:
     claims = _jwt_claims(authorization, required=False)
     if claims is not None:
         return _claim_is_admin(claims)
-    return _header_str(x_user_id) is not None and _header_bool(x_verified_is_admin)
+    header_admin = _header_bool(x_verified_is_admin)
+    if not header_admin:
+        # Non-admin callers only need base identity, which callers resolve
+        # via _resolve_authenticated_project_id.
+        return False
+    from ._verified_headers import handshake_secret, verify_admin_flag
+
+    return verify_admin_flag(
+        strict=_strict_auth_mode(),
+        secret=handshake_secret(),
+        presented_hmac=_header_str(x_verified_hmac),
+        user_id=_header_str(x_user_id),
+        project_id=_header_str(x_verified_project_id),
+        presented_is_admin=True,
+    )
 
 
 def _require_internal_endpoint_writer(
@@ -1079,6 +1109,8 @@ def get_project_id(
     x_user_id: str | None = Header(None),
     x_verified_project_id: str | None = Header(None),
     x_project_id: str | None = Header(None),
+    x_verified_is_admin: str | None = Header(None),
+    x_verified_hmac: str | None = Header(None),
 ) -> str:
     """
     Extract project_id from request headers.
@@ -1094,6 +1126,8 @@ def get_project_id(
         x_user_id,
         x_verified_project_id,
         x_project_id,
+        x_verified_is_admin=x_verified_is_admin,
+        x_verified_hmac=x_verified_hmac,
     )
     if project_id:
         return project_id
@@ -1109,6 +1143,8 @@ def get_project_id_optional(
     x_user_id: str | None = Header(None),
     x_verified_project_id: str | None = Header(None),
     x_project_id: str | None = Header(None),
+    x_verified_is_admin: str | None = Header(None),
+    x_verified_hmac: str | None = Header(None),
 ) -> str | None:
     """Get project_id if available, None otherwise (for admin endpoints)."""
     return _resolve_authenticated_project_id(
@@ -1117,6 +1153,8 @@ def get_project_id_optional(
         x_verified_project_id,
         x_project_id,
         optional=True,
+        x_verified_is_admin=x_verified_is_admin,
+        x_verified_hmac=x_verified_hmac,
     )
 
 

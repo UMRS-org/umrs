@@ -103,6 +103,7 @@ def get_caller_identity(
     x_user_id: str | None = Header(None),
     x_verified_project_id: str | None = Header(None),
     x_verified_is_admin: str | None = Header(None),
+    x_verified_hmac: str | None = Header(None),
 ) -> CallerIdentity:
     """Build caller identity from request params.
 
@@ -110,11 +111,28 @@ def get_caller_identity(
     ``is_admin`` is derived from the ``X-Verified-Is-Admin`` header
     when present; the query-param ``is_admin`` is only used in
     non-strict MVP/testing mode when no verified headers are sent.
+
+    Strict mode honors verified headers only with a valid gateway HMAC
+    signature (shared-secret class closure, live-spoof-proof).
     """
     verified_user_id = _header_str(x_user_id)
     verified_project_id = _header_str(x_verified_project_id)
     if verified_user_id and verified_project_id:
+        from ._verified_headers import handshake_secret, verified_headers_trusted
+
         admin = _header_str(x_verified_is_admin) in ("true", "1")
+        if not verified_headers_trusted(
+            strict=_strict_auth_mode(),
+            secret=handshake_secret(),
+            presented_hmac=_header_str(x_verified_hmac),
+            user_id=verified_user_id,
+            project_id=verified_project_id,
+            is_admin=admin,
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Gateway-verified identity signature rejected",
+            )
         return CallerIdentity(
             user_id=verified_user_id,
             project_id=verified_project_id,
@@ -501,9 +519,7 @@ async def create_job(
             ttl_seconds=request.ttl_seconds,
         )
         if request.fan_out_jobs:
-            job_id = _create_fan_out_job(
-                store, request, job_type, spec, create_kwargs
-            )
+            job_id = _create_fan_out_job(store, request, job_type, spec, create_kwargs)
             return JobCreateResponse(
                 job_id=job_id,
                 status="running",

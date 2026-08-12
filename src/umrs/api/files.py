@@ -212,6 +212,10 @@ def _header_str(value: Any) -> str | None:
     return value.strip() if isinstance(value, str) and value.strip() else None
 
 
+def _header_bool(value: Any) -> bool:
+    return isinstance(value, str) and value.strip().lower() in ("true", "1")
+
+
 def _fire_post_upload_ingest(
     s3_client: Any,
     bucket: str,
@@ -247,19 +251,39 @@ def get_project_id(
     authorization: str | None = Header(None),
     x_verified_project_id: str | None = Header(None),
     x_project_id: str | None = Header(None),
+    x_user_id: str | None = Header(None),
+    x_verified_is_admin: str | None = Header(None),
+    x_verified_hmac: str | None = Header(None),
 ) -> str:
     """
     Extract project_id from request headers.
 
     Production: Extract from JWT claims in Authorization header.
     MVP/Testing: Accept X-Project-ID header.
+
+    Strict mode: honor X-Verified-Project-ID ONLY with a valid gateway
+    signature over the full identity tuple (live-spoof class closed.
     """
     verified_project_id = _header_str(x_verified_project_id)
     if (
         os.environ.get("UMRS_AUTH_MODE", "mvp").strip().lower() == "strict"
         and verified_project_id
     ):
-        return verified_project_id
+        from ._verified_headers import handshake_secret, verified_headers_trusted
+
+        if verified_headers_trusted(
+            strict=True,
+            secret=handshake_secret(),
+            presented_hmac=_header_str(x_verified_hmac),
+            user_id=_header_str(x_user_id),
+            project_id=verified_project_id,
+            is_admin=_header_bool(x_verified_is_admin),
+        ):
+            return verified_project_id
+        raise HTTPException(
+            status_code=401,
+            detail="Verified project identity rejected (signature mismatch)",
+        )
     if os.environ.get("UMRS_AUTH_MODE", "mvp").strip().lower() == "strict":
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -370,7 +394,9 @@ async def upload_file(
         ) from e
 
     object_etag = (put_response.get("ETag") or "").strip('"')
-    _fire_post_upload_ingest(s3_client, bucket, object_key, object_etag, project_id, x_user_id, file.filename)
+    _fire_post_upload_ingest(
+        s3_client, bucket, object_key, object_etag, project_id, x_user_id, file.filename
+    )
     return UploadResponse(
         key=object_key,
         bucket=bucket,
@@ -859,7 +885,8 @@ async def check_download_status(
                         else None
                     ),
                     warnings=[not_ready_warning]
-                    if not status_result["ready"] and isinstance(not_ready_warning, dict)
+                    if not status_result["ready"]
+                    and isinstance(not_ready_warning, dict)
                     else None,
                     blocking=status_result.get("blocking", False),
                     retry_after=30 if not status_result["ready"] else None,
