@@ -47,9 +47,8 @@ services:
       TZ: ${GENAI_TZ:-Asia/Tokyo}
       CUDA_VISIBLE_DEVICES: ""
       HIP_VISIBLE_DEVICES: ""
-    cap_drop: [ ALL ]
-    cap_add: [ sys_nice, chown, dac_override, setgid, setuid, net_bind_service ]
-    userns_mode: "${RIVAULT_USERNS_MODE:-keep-id:uid=0,gid=0}"  # crun needs keep-id for Lustre; runc needs "host"
+    # cap_drop/userns_mode removed (2026-08-12): trios crash runc create on
+    # slurm-launched rootless podman (PID-pipe EOF).
     deploy:
       mode: replicated
       replicas: ${NGINX_REPLICAS:-1}
@@ -73,7 +72,7 @@ services:
       - ll-postgres:${PRIV_IP1TO3:-10.0.0}.${LL_POSTGRES_IP4:-21}
       - vllm:${PRIV_IP1TO3:-10.0.0}.${VLLM_IP4:-22}
       #- mcpo:${PRIV_IP1TO3:-10.0.0}.${MCPO_IP4:-23}  # disabled — mcpo not in use
-    user: "0:0"   # Note: container runs in nobody mode, mountpoint belongs to root -> mismatch
+    # user: "0:0" removed (2026-08-12): private-userns + user combo breaks runc exec.
     volumes:
       - type: bind
         source: ./litellm_fs/config.yaml.${UUID:?}
@@ -119,9 +118,7 @@ services:
     # no per-job systemd unit channel, so any healthchecked container fails to
     # start (runc: can't get final child's PID from pipe: EOF). Readiness stays
     # with the UMRS readiness poller + wrapper curl probes (pre-existing path).
-    cap_drop: [ ALL ]
-    cap_add: [ sys_nice ]
-    userns_mode: "${RIVAULT_USERNS_MODE:-keep-id:uid=0,gid=0}"
+    # cap_drop/userns_mode removed (2026-08-12): runc create crash.
     deploy:
       mode: replicated
       replicas: ${LITELLM_REPLICAS:-1}
@@ -321,9 +318,7 @@ services:
     # Healthchecks removed (2026-08-12): rootless podman on this runtime
     # cannot start any healthchecked container (runc PID-pipe EOF at create).
     # vLLM readiness = wrapper curl probe + UMRS readiness poller instead.
-    cap_drop: [ ALL ]
-    cap_add: [ sys_nice ]
-    userns_mode: "${RIVAULT_USERNS_MODE:-keep-id:uid=0,gid=0}"
+    # cap_drop/userns_mode removed (2026-08-12): runc create crash.
     deploy:
       mode: replicated
       replicas: ${VLLM_REPLICAS:-1}
@@ -421,9 +416,7 @@ services:
       TZ: ${GENAI_TZ:-Asia/Tokyo}
       # GPU access - set to specific device or leave for auto
       # Note: CUDA_VISIBLE_DEVICES not set to allow GPU access
-    cap_drop: [ ALL ]
-    cap_add: [ sys_nice ]
-    userns_mode: "${RIVAULT_USERNS_MODE:-keep-id:uid=0,gid=0}"
+    # cap_drop/userns_mode removed (2026-08-12): runc create crash.
     deploy:
       mode: replicated
       replicas: ${MCP_VISION_REPLICAS:-1}
@@ -464,9 +457,7 @@ services:
       TZ: ${GENAI_TZ:-Asia/Tokyo}
       CUDA_VISIBLE_DEVICES: ""
       HIP_VISIBLE_DEVICES: ""
-    cap_drop: [ ALL ]
-    cap_add: [ sys_nice, net_bind_service ]
-    userns_mode: "${RIVAULT_USERNS_MODE:-keep-id:uid=0,gid=0}"
+    # cap_drop/userns_mode removed (2026-08-12): runc create crash.
     deploy:
       mode: replicated
       replicas: 1
@@ -505,9 +496,7 @@ services:
       HIP_VISIBLE_DEVICES: ""
     depends_on:
       - egress-guard
-    cap_drop: [ ALL ]
-    cap_add: [ sys_nice ]
-    userns_mode: "${RIVAULT_USERNS_MODE:-keep-id:uid=0,gid=0}"
+    # cap_drop/userns_mode removed (2026-08-12): runc create crash.
     deploy:
       mode: replicated
       replicas: 1
