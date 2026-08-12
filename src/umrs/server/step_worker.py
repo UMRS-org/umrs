@@ -156,6 +156,7 @@ def _process_task(payload: dict[str, Any]) -> dict[str, Any]:
             input_bucket=ctx_data["input_bucket"],
             input_keys=ctx_data["input_keys"],
             output_bucket=ctx_data["output_bucket"],
+            parent_output_bucket=ctx_data.get("parent_output_bucket") or "",
             config=ctx_data["config"],
             metadata=ctx_data.get("metadata") or {},
             run_id=ctx_data.get("run_id") or "",

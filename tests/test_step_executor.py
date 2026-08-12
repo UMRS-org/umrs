@@ -152,10 +152,10 @@ def test_build_executor_subprocess(monkeypatch):
     assert isinstance(build_step_executor(), SubprocessExecutor)
 
 
-def test_build_executor_unknown_falls_back(monkeypatch):
+def test_build_executor_unknown_raises(monkeypatch):
     monkeypatch.setenv("UMRS_STEP_EXECUTOR", "no_such_backend")
-    # Must not raise; falls back to inproc with a logged warning.
-    assert isinstance(build_step_executor(), InProcessExecutor)
+    with pytest.raises(ValueError, match="Unsupported UMRS_STEP_EXECUTOR"):
+        build_step_executor()
 
 
 def test_build_executor_explicit_name_wins_over_env(monkeypatch):

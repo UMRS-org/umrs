@@ -34,7 +34,8 @@ from .planner import (
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_WORKFLOW_NAME = "demo08_yield_eval"
+_LEGACY_DEMO08_WORKFLOW_NAME = "demo08_yield_eval"
+# Kept for FakeWorkflowExecutionPort / docs. Real mode no longer falls back.
 _TOKEN_RE = re.compile(r"[a-z0-9]{3,}", re.IGNORECASE)
 # Demo 08 / lab yield figures commonly appear as "85.0" / "4.21" near batch-3.
 _BATCH3_YIELD_RE = re.compile(
@@ -723,23 +724,31 @@ class AutonomousResearchLoop:
                 "workflow execution port required for real mode"
             )
 
-        workflow_name = _DEFAULT_WORKFLOW_NAME
+        workflow_name = None
         params: dict[str, Any] = {
             "project_id": loop.project_id,
             "iteration": loop.current_iteration,
             "hypothesis_id": iteration.hypothesis_id,
         }
         if experiment is not None:
-            workflow_name = (
-                getattr(experiment, "workflow_name", None)
-                or (experiment.metadata or {}).get("workflow_name")
-                or _DEFAULT_WORKFLOW_NAME
-            )
+            workflow_name = getattr(experiment, "workflow_name", None) or (
+                experiment.metadata or {}
+            ).get("workflow_name")
             params.update(dict(experiment.parameters or {}))
             params.setdefault("experiment_id", experiment.experiment_id)
         # Experiment parameters must not override the loop's project context
         # (Gateway verified headers / durable job project_id).
         params["project_id"] = loop.project_id
+
+        if not workflow_name:
+            # Legacy/demo08 is allowed only when explicitly named on the
+            # experiment. Real mode must not silently fall back.
+            raise RuntimeError(
+                "real research mode requires experiment.metadata.workflow_name "
+                "(or experiment.workflow_name) set to a registered UMRS "
+                "workflow (e.g. video-ai-yolo, demo08_yield_eval); silent "
+                "demo08_yield_eval fallback is disabled"
+            )
 
         execution_id = self._workflow_port.trigger(workflow_name, params)
         self._in_flight_execution_id = execution_id
