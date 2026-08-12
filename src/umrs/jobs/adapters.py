@@ -253,12 +253,23 @@ def _check_active_certification(
 
 
 def _resolve_roster_defaults(model_name: str) -> dict[str, Any] | None:
-    """Load roster defaults from pool-ai4s.yaml (same as old path)."""
+    """Load roster defaults for ``model_name`` from the configured pool rosters.
+
+    Degrades to ``None`` when the roster is unavailable (e.g. missing files or
+    index load failure) — callers treat that as "no defaults". Previously the
+    failure was completely silent; now we log once at WARNING level with the
+    reason so operators can distinguish "no recipe" from "broken roster".
+    """
     try:
         from ..orchestrator.provision_roster import resolve_model_provision_defaults
 
         return resolve_model_provision_defaults(model_name)
     except Exception:
+        logger.warning(
+            "Roster defaults resolution failed for %s; treating as no-defaults",
+            model_name,
+            exc_info=True,
+        )
         return None
 
 
