@@ -1246,6 +1246,7 @@ def _resolve_served_model_name(
 
 def _resolve_registered_model_entry(model_name: str) -> dict[str, Any] | None:
     """Resolve a registered model entry from the authoritative UMRS catalog."""
+    store_unavailable = False
     try:
         from ..model_registry.store import AccessContext
         from .models import get_model_store
@@ -1265,10 +1266,27 @@ def _resolve_registered_model_entry(model_name: str) -> dict[str, Any] | None:
                 key=lambda entry: scope_order.get(str(entry.get("scope", "system")), 99)
             )
             return matches[0]
+    except ImportError:
+        # Legacy file-only deployments: no store package at all. The JSON
+        # fallback below is the intended substitute there.
+        pass
     except Exception as e:
-        logger.debug(
-            f"Failed to resolve model entry from model store for {model_name}: {e}"
+        # The authoritative store EXISTS but failed. Pre-fix this silently
+        # fell through to the deprecated JSON catalog at DEBUG visibility —
+        # a stale, wrong-scope entry could then feed _authorize_model_entry_
+        # for_caller. Never mask an authoritative-store error: log loud and
+        # return None (honest fail).
+        store_unavailable = True
+        logger.warning(
+            "Model store lookup failed for %s (authoritative store error, NOT falling back to JSON catalog): %s",
+            model_name,
+            e,
+            exc_info=True,
         )
+        return None
+
+    if store_unavailable:
+        return None
 
     try:
         from umrs.server.model_registry_handler import _load_catalog

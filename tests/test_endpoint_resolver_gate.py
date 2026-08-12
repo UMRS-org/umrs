@@ -315,3 +315,30 @@ def test_model_scope_degrades_warn_only_without_identity(caplog):
     with caplog.at_level(logging.WARNING, logger="umrs.api.endpoints"):
         _authorize_model_entry_for_caller(entry, user_id=None, project_id=None)
     assert any("degraded" in r.getMessage() for r in caplog.records)
+
+
+def test_store_error_never_falls_back_to_stale_json(monkeypatch, caplog):
+    """Pre-fix: authoritative store error quietly fell through to the
+    deprecated JSON catalog at DEBUG visibility, letting a stale wrong-scope
+    entry feed _authorize_model_entry_for_caller. Now: WARNING + None."""
+    import logging
+
+    import umrs.api.endpoints as endpoints
+    import umrs.api.models as api_models
+
+    monkeypatch.setattr(
+        api_models,
+        "get_model_store",
+        lambda: (_ for _ in ()).throw(RuntimeError("pool down")),
+    )
+    # Seed a poisoned stale JSON entry that WOULD match if the fallback ran.
+    monkeypatch.setattr(
+        "umrs.server.model_registry_handler._load_catalog",
+        lambda: {"models": [{"name": "pony-model", "scope": "system"}]},
+    )
+
+    with caplog.at_level(logging.WARNING, logger=endpoints.logger.name):
+        result = endpoints._resolve_registered_model_entry("pony-model")
+
+    assert result is None
+    assert any("authoritative store error" in r.getMessage() for r in caplog.records)
