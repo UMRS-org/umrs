@@ -2,7 +2,6 @@
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-
 from umrs.api import endpoints as endpoints_api
 from umrs.api.endpoints import router
 from umrs.orchestrator.endpoint_registry import EndpointRegistry, EndpointStatus, get_registry
@@ -316,6 +315,10 @@ def test_provision_endpoint_uses_gateway_project_header(monkeypatch):
 def test_provision_endpoint_strict_mode_requires_verified_project_header(monkeypatch):
     service = _StubOrchestrationService()
     monkeypatch.setenv("UMRS_AUTH_MODE", "strict")
+    monkeypatch.setenv("UMRS_HANDSHAKE_HMAC_SECRET", "t-secret")
+    from r4_contracts.handshake_hmac import sign_claims
+
+    signed_hmac = sign_claims("t-secret", "gateway-user", "verified-project", False)
     monkeypatch.setattr(
         endpoints_api,
         "_resolve_registered_model_entry",
@@ -346,6 +349,7 @@ def test_provision_endpoint_strict_mode_requires_verified_project_header(monkeyp
             headers={
                 "X-User-ID": "gateway-user",
                 "X-Verified-Project-ID": "verified-project",
+                "X-Verified-HMAC": signed_hmac,
             },
             json={"project_id": "body-project", "model": "qwen3-8b"},
         )
@@ -365,6 +369,9 @@ def test_provision_endpoint_strict_mode_requires_verified_project_header(monkeyp
 
 def test_strict_mode_verified_project_header_allows_projectless_oidc_token(monkeypatch):
     monkeypatch.setenv("UMRS_AUTH_MODE", "strict")
+    monkeypatch.setenv("UMRS_HANDSHAKE_HMAC_SECRET", "t-secret")
+    from r4_contracts.handshake_hmac import sign_claims
+
     monkeypatch.setattr(
         endpoints_api,
         "_jwt_claims",
@@ -376,6 +383,8 @@ def test_strict_mode_verified_project_header_allows_projectless_oidc_token(monke
         "241723",
         "verified-project",
         None,
+        x_verified_is_admin=None,
+        x_verified_hmac=sign_claims("t-secret", "241723", "verified-project", False),
     )
 
     assert project_id == "verified-project"

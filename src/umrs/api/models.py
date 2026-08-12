@@ -488,6 +488,7 @@ def get_access_context(
     x_verified_is_admin: str | None = Header(None),
     x_verified_project_memberships: str | None = Header(None),
     x_verified_project_id: str | None = Header(None),
+    x_verified_hmac: str | None = Header(None),
 ) -> AccessContext:
     """
     Build access context from Gateway-verified headers, falling back to
@@ -497,6 +498,9 @@ def get_access_context(
     ``X-User-ID``, ``X-Verified-Is-Admin``, and
     ``X-Verified-Project-Memberships`` / ``X-Verified-Project-ID`` headers
     set by the Gateway after JWT validation.
+
+    Strict mode honors verified headers only with a valid gateway HMAC
+    signature over the full identity tuple (live-spoof class closure).
     """
     header_user = (x_user_id or "").strip() or None
     header_admin = (x_verified_is_admin or "").strip()
@@ -507,7 +511,22 @@ def get_access_context(
     )
 
     if header_user:
+        from ._verified_headers import handshake_secret, verified_headers_trusted
+
         admin = header_admin in ("true", "1")
+        primary_project = (x_verified_project_id or "").strip() or None
+        if not verified_headers_trusted(
+            strict=_strict_auth_mode(),
+            secret=handshake_secret(),
+            presented_hmac=(x_verified_hmac or "").strip() or None,
+            user_id=header_user,
+            project_id=primary_project,
+            is_admin=admin,
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Gateway-verified identity signature rejected",
+            )
         memberships: set[str] = set()
         if header_memberships:
             memberships = {
