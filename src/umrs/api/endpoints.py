@@ -246,6 +246,26 @@ def _forbid_if_project_mismatch(
         )
 
 
+def _require_identity_for_mutation(project_id: str | None, action: str) -> None:
+    """Deny-by-default for mutating lifecycle calls in strict mode.
+
+    In strict mode, the optional project resolver returns ``None`` for an
+    unauthenticated/headerless caller, and ``_forbid_if_project_mismatch``
+    silently no-ops on ``None`` — the right semantic for read-only lookups
+    but catastrophically wrong for mutations (audited: unauthenticated
+    cross-project deprovision / TTL refresh). A mutating caller must either
+    present an identity or receive 401. Non-strict (mvp) deployments keep
+    their existing permissive behavior.
+    """
+    if project_id is None and _strict_auth_mode():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=(
+                f"{action} requires an authenticated project identity in strict mode"
+            ),
+        )
+
+
 def _resolve_authenticated_project_id(
     authorization: str | None,
     x_user_id: str | None,
@@ -1777,6 +1797,7 @@ async def mark_endpoint_used(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Endpoint not found: {job_id}",
         )
+    _require_identity_for_mutation(project_id, "Mark endpoint used")
     _forbid_if_project_mismatch(existing, project_id)
 
     endpoint = registry.mark_used(job_id)
@@ -2638,6 +2659,7 @@ async def deprovision_endpoint(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Endpoint not found: {job_id}",
         )
+    _require_identity_for_mutation(project_id, "Deprovision")
     _forbid_if_project_mismatch(endpoint, project_id)
 
     service = get_orchestration_service()

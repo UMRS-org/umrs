@@ -232,3 +232,27 @@ def test_recipe_policy_gate_before_warm_and_dedupe_returns():
     dedupe_pos = src.find("# Check if there's already a provisioning endpoint")
     assert gate_pos < warm_pos, "gate must precede warm reuse"
     assert gate_pos < dedupe_pos, "gate must precede dedupe reuse"
+
+
+def test_mutation_without_identity_denied_in_strict_mode(monkeypatch):
+    from umrs.api import endpoints as ep
+
+    monkeypatch.setenv("UMRS_AUTH_MODE", "strict")
+    with pytest.raises(HTTPException) as exc:
+        ep._require_identity_for_mutation(None, "Deprovision")
+    assert exc.value.status_code == 401
+
+
+def test_mutation_without_identity_permitted_in_mvp_mode(monkeypatch):
+    from umrs.api import endpoints as ep
+
+    monkeypatch.setenv("UMRS_AUTH_MODE", "mvp")
+    ep._require_identity_for_mutation(None, "Deprovision")
+
+
+def test_mutation_with_identity_always_permitted(monkeypatch):
+    from umrs.api import endpoints as ep
+
+    for mode in ("strict", "mvp"):
+        monkeypatch.setenv("UMRS_AUTH_MODE", mode)
+        ep._require_identity_for_mutation("proj-a", "Mark endpoint used")
