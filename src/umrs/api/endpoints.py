@@ -53,6 +53,35 @@ def _current_cluster_name() -> str:
         return "unknown"
 
 
+def _validate_partition_allowed(request_partition: str | None) -> None:
+    """Reject partitions outside this deployment's scheduler partition list.
+
+    The partition list is site-owned (``site.scheduler.partitions``); a caller
+    may run within any LISTED partition but never invent one (avoids silent
+    off-site placement and late sbatch-side failures).
+    """
+    part = (request_partition or "").strip()
+    if not part:
+        return
+    try:
+        from ..orchestrator.site_config import load_site_config
+
+        site = load_site_config()
+        allowed = [
+            p.strip() for p in (site.scheduler.partition or "").split(",") if p.strip()
+        ]
+    except Exception:
+        allowed = []
+    if allowed and part not in allowed:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"partition '{part}' not in this site's scheduler partitions "
+                f"({', '.join(allowed)})"
+            ),
+        )
+
+
 def _enforce_recipe_policy(is_admin: bool, request: Any) -> None:
     """Reject recipe/security-controlled request fields for non-admin callers.
 
@@ -62,6 +91,7 @@ def _enforce_recipe_policy(is_admin: bool, request: Any) -> None:
       • container_image — arbitrary serving image selection
     Mounts/executor/account policies stay with their existing validators.
     """
+    _validate_partition_allowed(getattr(request, "partition", None))
     if is_admin:
         return
     if getattr(request, "env_vars", None):
@@ -2303,6 +2333,13 @@ async def provision_endpoint(
         owner_id=requesting_user or "",
         storage_ref=resolved_model_path,
     )
+    # The typed plan is authoritative for CURATED models (recipes). A generic
+    # model has no curated plan — then the caller's explicit partition flag
+    # must win over the site default (legacy-identical semantics from the
+    # pre-M6 dispatcher where request.partition was honored). Otherwise a
+    # custom model on a heterogeneous cluster is silently re-homed to the
+    # partition defined by its unrelated recipe default (P1 regression class:
+    # job 270440 ignored the m1 flag and queued on m0).
     if serving_plan is not None:
         if effective_partition is None and serving_plan.site.partition:
             effective_partition = serving_plan.site.partition
