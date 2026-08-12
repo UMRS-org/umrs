@@ -144,9 +144,15 @@ services:
     # "user 0:0 + cap_drop/userns_mode/tmpfs" shape — runc create dies with
     # 'can't get final child's PID from pipe' (the userns_mode key is not
     # honoured by podman-compose, so the container ends up in a private userns
-    # where the tmpfs/user combo cannot exec). The shape below matches the
-    # manually verified-working podman invocation on RCCS GB10 nodes.
-    command: ["postgres", "-c", "unix_socket_directories=/tmp"]
+    # where the tmpfs/user combo cannot exec). BUT the pure tmpfs spec below is
+    # the manually verified working invocation.
+    # NOTE: bare /tmp is NOT sufficient as the socket dir: the postgres
+    # entrypoint drops privileges to uid 999 (postgres), which cannot write to
+    # this rootless container's /tmp ("Operation not permitted"). A tmpfs mount
+    # lands with world-writable perms and works (verified live).
+    tmpfs:
+      - /var/run/postgresql
+    command: ["postgres", "-c", "unix_socket_directories=/var/run/postgresql"]
     environment:
       POSTGRES_USER: ${LITELLM_POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${LITELLM_POSTGRES_PASSWORD:-litellm}
