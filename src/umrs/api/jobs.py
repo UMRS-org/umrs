@@ -158,22 +158,112 @@ def get_caller_identity(
     )
 
 
-def _resolve_job_create_identity(
-    request: "JobCreateRequest",
+def _enforce_job_scope_policy(
+    job_type: "JobType",
+    spec: dict[str, Any],
+    user_id: str,
+    project_id: str,
+    is_admin: bool,
+) -> None:
+    """Content-scope authorization for durable-job submission.
+
+    Pre-fix (M10 HIGH): create_job gated only on job_type dispatchability.
+    A MODEL_DOWNLOAD job with ``spec.scope="system"`` auto-registers the
+    downloaded model SYSTEM-scope with no ACL context at all, and provision
+    resolution sorts system scope first — one raw durable job poisoned the
+    tenant-wide model registry and re-homed incompatible-provision requests.
+    This guard applies the same rules as the direct ``stage_model`` route
+    so the durable path can no longer bypass them.
+
+    Debug/trace-dumpers (workers reading job state) out of scope here — this
+    covers job types with model-registry side effects only.
+    """
+    if job_type != JobType.MODEL_DOWNLOAD:
+        return
+    scope = str(spec.get("scope") or "user")
+    metadata = spec.get("metadata") or {}
+    if scope == "system":
+        _deny_unless(is_admin, "system-scope model registration requires admin role")
+        return
+    _check_scope_target(scope, metadata, user_id, project_id, is_admin)
+
+
+def _check_scope_target(
+    scope: str,
+    metadata: dict[str, Any],
+    user_id: str,
+    project_id: str,
+    is_admin: bool,
+) -> None:
+    """Validate project/user scope targets (keeps the gate ≤ 9 branches)."""
+    if scope == "project":
+        target = metadata.get("project_id") or project_id
+        _deny_unless(
+            target == project_id or is_admin,
+            "cannot register a project-scope model into another project",
+        )
+        return
+    _deny_unless(
+        not metadata.get("owner_id") or metadata["owner_id"] == user_id or is_admin,
+        "cannot register a user-scope model under another user",
+    )
+
+
+def _deny_unless(condition: bool, detail: str) -> None:
+    """Raise 403 for a violated scope rule (keeps call-sites above budget)."""
+    if not condition:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=detail)
+
+
+def _resolve_job_create_identity_primitive(
     x_user_id: str | None,
+    x_project_id_from_body: str | None,
+    x_user_id_from_body: str | None,
     x_verified_project_id: str | None,
-) -> tuple[str, str]:
+    x_verified_is_admin: str | None,
+    x_verified_hmac: str | None,
+) -> tuple[str, str, bool]:
+    """Strict-mode identity + admin tuple for durable-job submission.
+
+    Pre-fix this resolver trusted X-User-ID + X-Verified-Project-ID alone —
+    the same plain-header spoof class as wave-3's endpoints resolver (live
+    PoC exploited on create_job specifically). Verification via the shared
+    gateway HMAC handshake is MANDATORY in strict mode.
+    """
+    exists_identifier_handshake = _header_str(x_verified_hmac)
     verified_user_id = _header_str(x_user_id)
     verified_project_id = _header_str(x_verified_project_id)
-    if verified_user_id and verified_project_id:
-        return verified_project_id, verified_user_id
-
     if _strict_auth_mode():
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing Gateway-verified caller identity",
+        from ._verified_headers import handshake_secret, verified_headers_trusted
+
+        admin = _header_str(x_verified_is_admin) in ("true", "1")
+        trusted = verified_headers_trusted(
+            strict=True,
+            secret=handshake_secret(),
+            presented_hmac=exists_identifier_handshake,
+            user_id=verified_user_id,
+            project_id=verified_project_id,
+            is_admin=admin,
         )
-    return request.project_id, request.user_id
+        if not trusted:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Gateway-verified identity signature rejected",
+            )
+        return verified_project_id, verified_user_id, admin
+    if verified_user_id and verified_project_id:
+        admin = _header_str(x_verified_is_admin) in ("true", "1")
+        return verified_project_id, verified_user_id, admin
+    # mvp compatibility: fall back to the request body identity the way the
+    # pre-fix resolver did; strict mode never reaches here.
+    pid = x_project_id_from_body
+    uid = x_user_id_from_body
+    if pid and uid:
+        return pid, uid, False
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Missing Gateway-verified caller identity",
+    )
 
 
 # =============================================================================
@@ -466,6 +556,8 @@ async def create_job(
     request: JobCreateRequest,
     x_user_id: str | None = Header(None),
     x_verified_project_id: str | None = Header(None),
+    x_verified_is_admin: str | None = Header(None),
+    x_verified_hmac: str | None = Header(None),
     store: JobStore = Depends(get_job_store),
 ) -> JobCreateResponse:
     """
@@ -501,11 +593,15 @@ async def create_job(
 
         # Build spec dict
         spec = request.spec.model_dump(exclude_none=True)
-        project_id, user_id = _resolve_job_create_identity(
-            request,
+        project_id, user_id, is_admin = _resolve_job_create_identity_primitive(
             x_user_id,
+            request.project_id,
+            request.user_id,
             x_verified_project_id,
+            x_verified_is_admin,
+            x_verified_hmac,
         )
+        _enforce_job_scope_policy(job_type, spec, user_id, project_id, is_admin)
 
         create_method = (
             store.create_fan_out_graph if request.fan_out_jobs else store.create_job
