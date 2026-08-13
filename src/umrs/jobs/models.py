@@ -30,6 +30,7 @@ class JobType(Enum):
     KNOWLEDGE_UNDERSTAND = "knowledge_understand"  # Parse artifacts → KnowledgeIR
     KNOWLEDGE_VERIFY = "knowledge_verify"  # Run verifiers → confidence report
     KNOWLEDGE_EXPORT = "knowledge_export"  # Export knowledge bundle (.kb)
+    ENDPOINT_UPGRADE = "endpoint_upgrade"  # Rolling model-version flip (Q-13)
     # Note: CONTEXT_RETENTION and CONVERSATION_SUMMARIZE excluded from selective merge
 
 
@@ -69,6 +70,10 @@ DEFAULT_BACKOFFS: dict[JobType, dict[str, Any]] = {
     JobType.ENDPOINT_PROVISION: {
         "delays": [5, 10, 20],  # Fast retry
         "max_attempts": 3,
+    },
+    JobType.ENDPOINT_UPGRADE: {
+        "delays": [10, 30, 60],  # Upgrade: replacement provision → flip
+        "max_attempts": 2,  # Conservative: flip is non-idempotent
     },
     JobType.INDEX_BUILD: {
         "delays": [30, 60, 120],  # Slow retry

@@ -1357,6 +1357,15 @@ def create_backend_factory(
             path_validator=path_validator,
         )
 
+    from .upgrade import EndpointUpgradeBackend
+
+    endpoint_upgrade_backend = EndpointUpgradeBackend(
+        orchestrator=orchestrator,
+        registry=registry,
+        port_manager=port_manager,
+        user_store=user_store,
+    )
+
     knowledge_ingest_backend = KnowledgeIngestBackend()
     knowledge_understand_backend = KnowledgeUnderstandBackend()
     knowledge_verify_backend = KnowledgeVerifyBackend()
@@ -1364,6 +1373,8 @@ def create_backend_factory(
     def factory(job_type: JobType) -> OrchestratorBackend:
         if job_type == JobType.ENDPOINT_PROVISION:
             return endpoint_backend
+        elif job_type == JobType.ENDPOINT_UPGRADE:
+            return endpoint_upgrade_backend
         elif job_type == JobType.INDEX_BUILD:
             return index_backend
         elif job_type == JobType.DATA_INGESTION:
