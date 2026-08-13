@@ -637,6 +637,6 @@ endpoints:
       # "num_tokens > 64 (5 vs. 64)"). Patched file raises the constant to 80 so
       # the mixed prefill ships 79 tokens. Source = pristine file from this image
       # with the constant bumped (pristine copy: patches/flashinfer_sparse_mla_warmup.py.orig-16).
-      VLLM_PATCHES: "/home/mnagaso/patches/flashinfer_sparse_mla_warmup.py:/usr/local/lib/python3.12/dist-packages/vllm/model_executor/warmup/flashinfer_sparse_mla_warmup.py:7c45e0879b01672b4de041bc6e50cfd054a6f7f8a7f60c93993adc4c16d6830f"
+      VLLM_PATCHES: "/home/mnagaso/patches/flashinfer_sparse_mla_warmup.py:/usr/local/lib/python3.12/dist-packages/vllm/model_executor/warmup/flashinfer_sparse_mla_warmup.py:d51946fa1d0d3e2bdc2f9ef56d1f7557b883db409a3c10b182cb72755bcfd99a"
       # Single staged copy is enough: bdrt $HOME is shared NFS.
       RCCS_SKIP_CDI: "1"
