@@ -28,11 +28,28 @@ from umrs.server.workflow_registry_handler import (
 jobs_api = importlib.import_module("umrs.api.jobs")
 
 
-def _auth_headers(user: str = "alice", project: str = "project-a") -> dict[str, str]:
-    return {
+def _auth_headers(
+    user: str = "alice", project: str = "project-a", admin: bool = False
+) -> dict[str, str]:
+    """Gateway-equivalent signed identity headers.
+
+    Wave-6 F1 sealed workflow routes behind the HMAC trust gate under strict
+    mode; these tests exercise the strict paths, so emit the same headers the
+    real gateway sidecar would.
+    """
+    import os
+
+    from r4_contracts.handshake_hmac import sign_claims
+
+    secret = os.environ.get("UMRS_HANDSHAKE_HMAC_SECRET", "")
+    headers = {
         "X-User-ID": user,
         "X-Verified-Project-ID": project,
     }
+    if secret:
+        headers["X-Verified-Is-Admin"] = "true" if admin else "false"
+        headers["X-Verified-HMAC"] = sign_claims(secret, user, project, admin)
+    return headers
 
 
 @pytest.fixture
@@ -47,6 +64,12 @@ def _registry():
     reset_execution_registry_for_tests()
     yield
     reset_execution_registry_for_tests()
+
+
+@pytest.fixture(autouse=True)
+def _handshake_secret(monkeypatch):
+    monkeypatch.setenv("UMRS_HANDSHAKE_HMAC_SECRET", "test-secret")
+    yield
 
 
 @pytest.fixture

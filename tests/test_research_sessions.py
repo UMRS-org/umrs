@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from umrs.api.research_sessions import router, set_session_store
@@ -94,6 +95,15 @@ class TestSessionStore:
         stored = s.get("sess-map")
         assert stored.session_id == "sess-map"
         assert stored.project_id == "p1"
+
+
+@pytest.fixture(autouse=True)
+def _mvp_mode(monkeypatch):
+    # Wave-6: strict mode is the default; these suites test the anonymous
+    # mvp-mode contract. Signed-identity binding lives in
+    # test_wave6_caller_gate.py.
+    monkeypatch.setenv("UMRS_AUTH_MODE", "mvp")
+    yield
 
 
 def _client():

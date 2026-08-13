@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from umrs.scientific_memory import (
@@ -26,6 +26,8 @@ from umrs.scientific_memory import (
     MemoryEntryStatus,
     MemoryEntryType,
 )
+
+from ._verified_headers import CallerIdentity, get_caller
 
 logger = logging.getLogger(__name__)
 
@@ -53,16 +55,26 @@ def _get_store() -> InMemoryScientificMemoryStore:
 
 
 class AddEntryRequest(BaseModel):
-    project_id: str = Field(..., description="Project ID")
-    entry_type: str = Field("note", description="Entry type (generated_code, experiment_log, etc.)")
-    source: str = Field("system", description="Who created the entry (user, agent, system)")
+    project_id: str = Field(
+        "", description="Project ID (defaults to caller's verified project)"
+    )
+    entry_type: str = Field(
+        "note", description="Entry type (generated_code, experiment_log, etc.)"
+    )
+    source: str = Field(
+        "system", description="Who created the entry (user, agent, system)"
+    )
     content: str = Field("", description="Entry content")
     content_uri: str = Field("", description="S3 URI if content is large")
     summary: str = Field("", description="Short summary")
-    metadata: dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
+    metadata: dict[str, Any] = Field(
+        default_factory=dict, description="Additional metadata"
+    )
     tags: list[str] = Field(default_factory=list, description="Searchable tags")
     confidence: float = Field(0.0, description="Confidence score (0.0–1.0)")
-    references: list[str] = Field(default_factory=list, description="Other entry_ids this entry references")
+    references: list[str] = Field(
+        default_factory=list, description="Other entry_ids this entry references"
+    )
     created_by: str = Field("", description="Who created the entry")
 
 
@@ -97,7 +109,9 @@ class SearchResponse(BaseModel):
 
 
 class UpdateStatusRequest(BaseModel):
-    status: str = Field(..., description="New status (active, archived, deprecated, retracted)")
+    status: str = Field(
+        ..., description="New status (active, archived, deprecated, retracted)"
+    )
 
 
 class CountResponse(BaseModel):
@@ -114,8 +128,16 @@ class TimelineResponse(BaseModel):
 
 
 @router.post("/entries", response_model=EntryResponse)
-async def add_entry(req: AddEntryRequest) -> EntryResponse:
-    """Add a new memory entry."""
+async def add_entry(
+    req: AddEntryRequest,
+    caller: CallerIdentity | None = Depends(get_caller),
+) -> EntryResponse:
+    """Add a new memory entry.
+
+    Wave-6 F4: project + actor are pinned to the verified caller —
+    self-declared `created_by` forging another user is impossible when an
+    identity context is present.
+    """
     store = _get_store()
     try:
         entry_type = MemoryEntryType(req.entry_type)
@@ -124,8 +146,13 @@ async def add_entry(req: AddEntryRequest) -> EntryResponse:
             status_code=400,
             detail=f"Invalid entry type: {req.entry_type}",
         )
+    project_id = req.project_id
+    created_by = req.created_by
+    if caller is not None:
+        project_id = caller.bind_for_write(req.project_id)
+        created_by = caller.user_id
     entry = MemoryEntry(
-        project_id=req.project_id,
+        project_id=project_id,
         entry_type=entry_type,
         source=req.source,
         content=req.content,
@@ -135,7 +162,7 @@ async def add_entry(req: AddEntryRequest) -> EntryResponse:
         tags=req.tags,
         confidence=req.confidence,
         references=req.references,
-        created_by=req.created_by,
+        created_by=created_by,
     )
     entry_id = store.add(entry)
     entry = store.get(entry_id)
@@ -143,7 +170,10 @@ async def add_entry(req: AddEntryRequest) -> EntryResponse:
 
 
 @router.get("/entries/{entry_id}", response_model=EntryResponse)
-async def get_entry(entry_id: str) -> EntryResponse:
+async def get_entry(
+    entry_id: str,
+    caller: CallerIdentity | None = Depends(get_caller),
+) -> EntryResponse:
     """Get a memory entry by ID."""
     store = _get_store()
     entry = store.get(entry_id)
@@ -152,6 +182,8 @@ async def get_entry(entry_id: str) -> EntryResponse:
             status_code=404,
             detail=f"Entry {entry_id} not found",
         )
+    if caller is not None:
+        caller.assert_can_access(entry.project_id)
     return EntryResponse(**entry.to_dict())
 
 
@@ -162,9 +194,12 @@ async def list_entries(
     status: str | None = Query(None, description="Filter by status"),
     experiment_id: str | None = Query(None, description="Filter by experiment ID"),
     limit: int = Query(100, ge=1, le=1000),
+    caller: CallerIdentity | None = Depends(get_caller),
 ) -> EntryListResponse:
     """List memory entries with optional filters."""
     store = _get_store()
+    if caller is not None:
+        project_id = caller.scope_filter(project_id)
     # Parse filters
     etype: MemoryEntryType | None = None
     if entry_type:
@@ -205,9 +240,12 @@ async def search_entries(
     project_id: str | None = Query(None, description="Filter by project ID"),
     entry_type: str | None = Query(None, description="Filter by entry type"),
     limit: int = Query(20, ge=1, le=100),
+    caller: CallerIdentity | None = Depends(get_caller),
 ) -> SearchResponse:
     """Search memory entries by content, summary, or tags."""
     store = _get_store()
+    if caller is not None:
+        project_id = caller.scope_filter(project_id)
     etype: MemoryEntryType | None = None
     if entry_type:
         try:
@@ -235,9 +273,18 @@ async def search_entries(
 async def update_status(
     entry_id: str,
     req: UpdateStatusRequest,
+    caller: CallerIdentity | None = Depends(get_caller),
 ) -> dict[str, Any]:
     """Update the status of a memory entry."""
     store = _get_store()
+    if caller is not None:
+        existing = store.get(entry_id)
+        if existing is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Entry {entry_id} not found",
+            )
+        caller.assert_can_access(existing.project_id)
     try:
         status = MemoryEntryStatus(req.status)
     except ValueError:
@@ -259,9 +306,12 @@ async def count_entries(
     project_id: str | None = Query(None, description="Filter by project ID"),
     entry_type: str | None = Query(None, description="Filter by entry type"),
     status: str | None = Query(None, description="Filter by status"),
+    caller: CallerIdentity | None = Depends(get_caller),
 ) -> CountResponse:
     """Count memory entries with optional filters."""
     store = _get_store()
+    if caller is not None:
+        project_id = caller.scope_filter(project_id)
     etype: MemoryEntryType | None = None
     if entry_type:
         try:
@@ -293,9 +343,12 @@ async def count_entries(
 @router.get("/timeline", response_model=TimelineResponse)
 async def get_timeline(
     project_id: str = Query(..., description="Project ID"),
+    caller: CallerIdentity | None = Depends(get_caller),
 ) -> TimelineResponse:
     """Get a timeline of all entries for a project, sorted by created_at."""
     store = _get_store()
+    if caller is not None:
+        project_id = caller.scope_filter(project_id)
     entries = store.get_timeline(project_id)
     return TimelineResponse(
         project_id=project_id,
