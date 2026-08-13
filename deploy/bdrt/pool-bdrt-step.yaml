@@ -629,5 +629,6 @@ endpoints:
         --enable-prefix-caching
         --max-cudagraph-capture-size 12
         --compilation-config {"cudagraph_mode":"FULL_AND_PIECEWISE","custom_ops":["all"]}
+        --kernel-config {"enable_flashinfer_autotune": false}
       # Single staged copy is enough: bdrt $HOME is shared NFS.
       RCCS_SKIP_CDI: "1"
