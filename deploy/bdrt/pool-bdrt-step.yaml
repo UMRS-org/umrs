@@ -24,6 +24,8 @@ endpoints:
   #  35B MoE (3B active), NVFP4 (Blackwell-native 4-bit float). Fits 1× GB10.
   - name: qwen3.6-35b-a3b
     model: Qwen3.6-35B-A3B-NVFP4
+    aliases:
+      - qwen3.6-35b-a3b        # catalog slug used by registry rows/users
     tier: system
     node_count: 1
     partition: spark

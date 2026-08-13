@@ -146,6 +146,19 @@ def _build_index(paths: list[str]) -> dict[tuple[str, str | None], dict[str, Any
             # addressable for explicit `pool up`.
             if variant is not None:
                 index.setdefault((model, None), defaults)
+            # Per-entry ``aliases`` provision alternate model-name lookups to
+            # the same recipe. Needed when the catalog slug (registry row name
+            # used for provisioning) differs from the canonical recipe key,
+            # e.g. registry row ``qwen3.6-35b-a3b`` while the recipe is keyed
+            # ``Qwen3.6-35B-A3B-NVFP4``. Without it the request silently falls
+            # back to the default (wrong-image / 4k-ctx) plan exactly like the
+            # missing-(model,None) case above.
+            for alias in entry.get("aliases") or ():
+                if not isinstance(alias, str) or not alias.strip():
+                    continue
+                a = alias.strip()
+                index.setdefault((a, variant), defaults)
+                index.setdefault((a, None), defaults)
     return index
 
 
