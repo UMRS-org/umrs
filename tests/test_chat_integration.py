@@ -242,7 +242,7 @@ def test_rag_augmentation_hook_fires_in_chain(client, monkeypatch, received):
     assert received["messages"][0]["content"] == "INJECTED_CONTEXT"
 
 
-def test_models_chain_proxies_upstream_list(client):
+def test_models_chain_proxies_upstream_list(client, routed):
     resp = client.get("/umrs/chat/v1/models", headers=_HEADERS)
     assert resp.status_code == 200
     data = resp.json()

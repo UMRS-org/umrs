@@ -259,6 +259,7 @@ class TestJobTypes:
             "embedding_batch",
             "pipeline_run",
             "endpoint_provision",
+            "endpoint_upgrade",
             "model_download",
             "cleanup",
             "workflow_run",
