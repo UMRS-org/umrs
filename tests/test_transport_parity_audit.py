@@ -154,3 +154,117 @@ def test_audit_parity_p0_job_status_today_vacuous(spy):
     )
     assert not matches
     assert "ZERO audit rows" in why or "neither transport emitted" in why
+
+
+def _drive_http_file_upload(mvp_headers: dict[str, str]) -> None:
+    """Drive the HTTP file-upload route (files router, project-bound)."""
+    import io
+
+    from umrs.api.files import router
+
+    app = FastAPI()
+    app.include_router(router)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        files = {"file": ("f.txt", io.BytesIO(b"kb-e2e-file"), "text/plain")}
+        data = {"purpose": "uploads", "project_id": "proj-x"}
+        resp = client.post("/umrs/files/upload", files=files, data=data, headers=mvp_headers)
+    # In fully-fixtured harness without S3Config binding, the route will reject
+    # early (422/500/etc) — parity test is about audit rows, not successful
+    # upload. Assert gate response is a 4xx/5xx; the fact no emit_audit fired
+    # on any failure is the D-03-drift both sides share.
+    assert resp.status_code >= 400
+
+
+def _drive_zmq_file_upload() -> str:
+    """Drive the ZMQ TaskCmd.FILE handler (file_upload module)."""
+    from umrs.server.commands.file_upload import FileHandler
+
+    class _SpyHandler(FileHandler):
+        def handle(self, client_id: str, payload_str: str) -> str:
+            return super().handle(client_id, payload_str)
+
+    handler = _SpyHandler()
+    return handler.handle(
+        "proj-user",
+        json.dumps({"job_id": "job-spy-file", "purpose": "uploads", "content": "aGk="}),
+    )
+
+
+def test_audit_parity_p0_file_upload_today_shared_silence(spy):
+    """Q-04 D-03: file upload is audit-silent on both transports today.
+
+    The parity matrix implies every lifecycle mutation should emit a durable
+    audit row. Neither HTTP ``/umrs/files/upload`` nor the ZMQ FileHandler
+    under TaskCmd.FILE emits `emit_audit`. Register the gap rather than
+    paper over it; when the audit is wired on either side, this test must be
+    re-asserted via ``compare_rows`` and flipped to expect real parity.
+    """
+    from contextlib import suppress
+
+    with suppress(Exception):
+        _drive_http_file_upload({"X-Verified-Project-ID": "proj-x"})
+    with suppress(Exception):
+        _drive_zmq_file_upload()
+
+    matches, why = compare_rows(
+        spy.rows_for_event("file uploaded"),
+        spy.rows_for_event("file uploaded"),
+    )
+    assert not matches
+    assert "ZERO audit rows" in why or "neither transport emitted" in why, (
+        f"D-03 expected both transports silent for file upload; got: {why}"
+    )
+
+
+def _drive_http_chat_completion(mvp_headers: dict[str, str]) -> int:
+    """Drive the HTTP chat-completions route (chat proxy router)."""
+    from umrs.api.chat import router
+
+    app = FastAPI()
+    app.include_router(router)
+    body = {
+        "model": "rivault-gpt-oss-static",
+        "messages": [{"role": "user", "content": "hello"}],
+        "stream": False,
+    }
+    with TestClient(app, raise_server_exceptions=False) as client:
+        resp = client.post("/umrs/chat/v1/chat/completions", json=body, headers=mvp_headers)
+    return resp.status_code
+
+
+def _drive_zmq_chat_completion() -> None:
+    """ZMQ has no TaskCmd for chat — any audit event chain here is expected
+    to be intentionally absent (documented gap class)."""
+    from umrs.core.TaskCmdStatus import TaskCmd
+
+    # Enumerate: no CHAT-completion TaskCmd exists in the tile set.
+    assert not hasattr(TaskCmd, "CHAT_COMPLETION"), (
+        "chat must not have a ZMQ surface (chat route is HTTP-only by design)"
+    )
+
+
+def test_audit_parity_p0_chat_today_http_only_gap(spy):
+    """Q-04 D-02: chat carries no audit emission on either side.
+
+    HTTP ``/umrs/chat/v1/chat/completions`` is the only chat surface by
+    design (no TaskCmd.CHAT_*), and it does not call emit_audit. ZMQ
+    intentionally has no chat handler at all. Register the audit-console gap
+    both sides share; when chat audit is added (e.g. completion count,
+    per-request project binding), this test must be re-asserted via
+    compare_rows against the real side.
+    """
+    from contextlib import suppress
+
+    with suppress(Exception):
+        _drive_http_chat_completion({"X-Verified-Project-ID": "proj-x"})
+    with suppress(Exception):
+        _drive_zmq_chat_completion()
+
+    matches, why = compare_rows(
+        spy.rows_for_event("chat completion"),
+        spy.rows_for_event("chat completion"),
+    )
+    assert not matches
+    assert "ZERO audit rows" in why or "neither transport emitted" in why, (
+        f"D-02 expected HTTP chat silence with no ZMQ chat surface; got: {why}"
+    )
