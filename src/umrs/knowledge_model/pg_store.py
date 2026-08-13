@@ -38,6 +38,22 @@ _VER_COLUMNS = (
 _TOMB_COLUMNS = "object_id, object_type, deleted_at, deleted_by, deletion_reason"
 
 
+def _sanitize_pg_json(candidate: Any) -> Any:
+    """Replace NUL bytes (accepted by json.dumps but rejected by postgres
+    jsonb) with the unicode replacement char, recursively."""
+    if isinstance(candidate, str):
+        return candidate.replace("\x00", "\ufffd")
+    if isinstance(candidate, list):
+        return [_sanitize_pg_json(v) for v in candidate]
+    if isinstance(candidate, dict):
+        out: dict[Any, Any] = {}
+        for k, v in candidate.items():
+            key = k.replace("\x00", "\ufffd") if isinstance(k, str) else k
+            out[key] = _sanitize_pg_json(v)
+        return out
+    return candidate
+
+
 def _row_to_object(row: dict[str, Any]) -> KnowledgeObject:
     data = dict(row)
     for key in ("content", "metadata"):
@@ -107,11 +123,14 @@ class PgKnowledgeModelStore:
         created_by: str = "",
     ) -> str:
         """Create an object + initial version; raises Duplicate on conflict."""
+        # NUL-bytes are legal in JSON strings but postgres jsonb rejects them
+        # (`psycopg2.errors.UntranslatableCharacter`). Real payloads arrive via
+        # extracted knowledge from raw user uploads (live crash 2026-08-13).
         obj = KnowledgeObject(
             project_id=project_id,
             object_type=object_type,
-            content=content or {},
-            metadata=metadata or {},
+            content=_sanitize_pg_json(candidate=content or {}),
+            metadata=_sanitize_pg_json(candidate=metadata or {}),
             is_immutable=is_immutable,
             created_by=created_by,
         )
@@ -197,8 +216,8 @@ class PgKnowledgeModelStore:
                 "metadata = %s::jsonb, version = %s, updated_at = %s "
                 "WHERE object_id = %s",
                 (
-                    json.dumps(new_content),
-                    json.dumps(new_metadata),
+                    json.dumps(_sanitize_pg_json(new_content)),
+                    json.dumps(_sanitize_pg_json(new_metadata)),
                     new_version,
                     now,
                     object_id,
@@ -233,8 +252,8 @@ class PgKnowledgeModelStore:
                 f"ver-{uuid4().hex[:12]}",
                 object_id,
                 version,
-                json.dumps(content),
-                json.dumps(metadata),
+                json.dumps(_sanitize_pg_json(content)),
+                json.dumps(_sanitize_pg_json(metadata)),
                 created_at,
                 created_by,
             ),
