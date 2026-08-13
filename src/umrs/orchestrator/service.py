@@ -861,6 +861,263 @@ class OrchestrationService:
 
         return True
 
+    async def upgrade_endpoint(
+        self,
+        job_id: str,
+        new_model_path: str,
+        timeout_sec: int = 900,
+        on_progress: Callable[[str, Any], None] | None = None,
+    ) -> tuple[bool, str, str | None]:
+        """Rolling model-version upgrade: provision replacement, flip, retire.
+
+        Contract (Q-13 Phase 2):
+          - old endpoint MUST be preserved until new endpoint is READY
+            (rollback-on-health-fail: new deprovisioned, old untouched)
+          - on success, the registry record for *job_id* is updated so
+            callers continue to resolve to the new host:port after the flip;
+            the deprecated backend job is then torn down
+          - on any failure before the flip, the old endpoint remains running
+            and the new job is torn down (no ghost endpoint left behind)
+          - concurrency gate: one upgrade job per endpoint_id at a time
+            (registry metadata ``upgrade_in_flight`` key)
+
+        Args:
+            job_id: Job ID of the endpoint to flip.
+            new_model_path: New model path (must be registered in the
+                model store; validated upstream).
+            timeout_sec: Health-check budget until the new endpoint is
+                returned READY.
+
+        Returns:
+            (success, new_job_id, error_message) where ``new_job_id`` is the
+            fresh backend handle that now owns traffic when success is True,
+            otherwise None.
+        """
+        endpoint = self.registry.get_by_job_id(job_id)
+        if endpoint is None:
+            return False, None, f"endpoint not found: {job_id}"
+
+        if not new_model_path or not new_model_path.strip():
+            return False, None, "new_model_path is required"
+
+        if endpoint.metadata.get("upgrade_in_flight"):
+            return False, None, (
+                f"upgrade already in flight for {job_id}; "
+                "wait for the pending flip to converge"
+            )
+
+        request = self._request_from_endpoint(
+            endpoint,
+            new_model_path=new_model_path,
+            timeout_sec=timeout_sec,
+        )
+
+        self.registry.update_metadata(
+            job_id,
+            {
+                "upgrade_in_flight": True,
+                "upgrade_target_model_path": new_model_path,
+                "detail": f"upgrade: provisioning replacement for {new_model_path}",
+            },
+        )
+
+        try:
+            return await self._run_upgrade_flip(
+                job_id=job_id,
+                endpoint=endpoint,
+                request=request,
+                new_model_path=new_model_path,
+                on_progress=on_progress,
+            )
+        finally:
+            self.registry.update_metadata(job_id, {"upgrade_in_flight": None})
+
+    def _request_from_endpoint(
+        self,
+        endpoint: RegisteredEndpoint,
+        *,
+        new_model_path: str,
+        timeout_sec: int,
+    ) -> ProvisionRequest:
+        """Build the replacement provision spec from an existing endpoint.
+
+        Preserves: mounts, egress domains, environment, TTL model scope,
+        partition hint, tier, variant knob (suffixed so the pool YAML keeps
+        the upgrade rollout observable), and metadata s.t. the flip is
+        consistent with the old instance's runtime shape.
+        """
+        metadata = dict(endpoint.metadata or {})
+        # Variant knob — upgrade rollouts side-by-side with the old instance
+        # instead of being treated as a fresh pool definition.
+        variant = metadata.get("variant") or endpoint.variant or "default"
+        metadata["upgrade_source_job_id"] = endpoint.job_id
+        metadata["ttl_sec"] = metadata.get("ttl_sec", 3600)
+
+        request = ProvisionRequest(
+            project_id=endpoint.project_id,
+            model=str(metadata.get("model") or endpoint.model),
+            model_path=new_model_path,
+            ttl_sec=int(metadata.get("ttl_sec", 3600)),
+            gpu_count=int(metadata.get("gpu_count", 1)),
+            node_count=int(metadata.get("node_count", 1)),
+            max_model_len=int(metadata.get("max_model_len", 4096)),
+            tier=str(metadata.get("tier") or "user"),
+            mounts=dict(metadata.get("mounts") or {}),
+            egress_domains=list(metadata.get("egress_domains") or []),
+            prefer_warm=False,  # never reuse — we are launching the flip target
+            wait_for_ready=True,
+            env_vars=dict(metadata.get("env_vars") or {}),
+            metadata=metadata,
+            partition_override=metadata.get("partition_override"),
+            nodelist_hint=metadata.get("nodelist_hint"),
+            requesting_user=metadata.get("requesting_user"),
+            variant=f"{variant}-upgrade",
+        )
+        return request
+
+    async def _run_upgrade_flip(
+        self,
+        *,
+        job_id: str,
+        endpoint: RegisteredEndpoint,
+        request: ProvisionRequest,
+        new_model_path: str,
+        on_progress: Callable[[str, Any], None] | None = None,
+    ) -> tuple[bool, str, str | None]:
+        """Provision replacement → health-check → flip registry → retire old."""
+        if on_progress:
+            on_progress("provision_replacement", {"job_id": job_id, "model_path": request.model_path})
+
+        result = await self.provision(request, on_progress=on_progress)
+        if not result.success or result.endpoint is None:
+            # Health-fail pre-flip: report and preserve old endpoint.
+            if result.job_id:
+                await self._cancel_new_upgrade_attempt(
+                    new_job_id=result.job_id,
+                    reason="replacement provision failed",
+                )
+            return False, None, result.error or "replacement provision failed"
+
+        new_endpoint = result.endpoint
+        new_job_id = new_endpoint.job_id
+
+        # Sanity: the flip must carry the same project so cross-project
+        # promotion never happens through an upgrade hook.
+        if new_endpoint.project_id != endpoint.project_id:
+            await self._cancel_new_upgrade_attempt(
+                new_job_id=new_job_id,
+                reason="replacement resolved to a different project",
+            )
+            return False, None, (
+                f"replacement landed in wrong project ({new_endpoint.project_id})"
+            )
+
+        if on_progress:
+            on_progress("flip_registry", {"job_id": job_id, "new_job_id": new_job_id})
+
+        try:
+            self._flip_registry_record(
+                old=endpoint,
+                new=new_endpoint,
+                new_model_path=new_model_path,
+            )
+        except Exception as exc:
+            # Flip is the last irreversible action; on failure the new endpoint
+            # is healthy but the registry still points at the old one. Safely
+            # deprovision the new one so no zombie endpoint remains.
+            logger.exception("Upgrade flip failed for %s: %s", job_id, exc)
+            await self._cancel_new_upgrade_attempt(
+                new_job_id=new_job_id,
+                reason="registry flip failed",
+            )
+            return False, None, f"registry flip failed: {exc}"
+
+        if on_progress:
+            on_progress("retire_old", {"job_id": job_id})
+
+        # Retire the old backend job only after the registry now routes to
+        # the new endpoint. A failure here is not fatal: the old job will be
+        # picked up by the TTL/janitor cleanup path.
+        try:
+            await self.bridge_cleanup_with_registry(old=endpoint, new=new_endpoint)
+        except Exception:
+            logger.warning(
+                "Could not cleanly retire old job %s after upgrade; janitor "
+                "will collect it",
+                job_id,
+            )
+
+        return True, new_job_id, None
+
+    async def bridge_cleanup_with_registry(
+        self,
+        *,
+        old: RegisteredEndpoint,
+        new: RegisteredEndpoint,
+    ) -> None:
+        """Generic deferred retirement: teardown old ASYNCHRONOUSLY post-flip."""
+        try:
+            await self.deprovision(old.job_id, force=False)
+        except Exception as exc:
+            logger.warning("Deferred retirement of %s failed: %s", old.job_id, exc)
+
+    def _flip_registry_record(
+        self,
+        *,
+        old: RegisteredEndpoint,
+        new: RegisteredEndpoint,
+        new_model_path: str,
+    ) -> None:
+        """Point the registry record for ``old.job_id`` at the new backend.
+
+        The public route contract treats ``job_id`` as identity; after the
+        flip, callers resolving job_id land on the new host/port/location.
+        The new job_id itself stays resolvable to the same coordinates.
+        """
+        self.registry.update_location(
+            old.job_id,
+            host=new.host,
+            port=new.port,
+            metadata={
+                **(old.metadata or {}),
+                "model_path": new_model_path,
+                "upgrade_source_job_id": old.job_id,
+                "upgraded_at": new.created_at.isoformat(),
+                "detail": f"upgrade: {old.model} → {new_model_path}",
+            },
+        )
+        self.registry.update_metadata(
+            new.job_id,
+            {
+                **(new.metadata or {}),
+                "upgrade_source_job_id": old.job_id,
+                "model_path": new_model_path,
+            },
+        )
+        if old.metadata.get("served_model_name"):
+            self.registry.update_metadata(
+                new.job_id,
+                {"served_model_name": old.metadata["served_model_name"]},
+            )
+
+    async def _cancel_new_upgrade_attempt(
+        self,
+        *,
+        new_job_id: str,
+        reason: str,
+    ) -> None:
+        """Tear down a hot-but-unused replacement job.
+
+        Used when the upgrade fails *before* the registry flip: the new
+        endpoint never received traffic, so immediate deprovision is safe.
+        """
+        try:
+            await self.backend.cleanup(new_job_id, force=True)
+        except Exception:
+            logger.warning(
+                "Failed to tear down upgrade-replacement %s (%s)", new_job_id, reason
+            )
+
     async def refresh_endpoint(
         self,
         job_id: str,

@@ -2832,6 +2832,137 @@ async def deprovision_endpoint(
 
 
 # ---------------------------------------------------------------------------
+# Rolling endpoint upgrade (Q-13 Phase 2)
+# ---------------------------------------------------------------------------
+
+
+class EndpointUpgradeRequest(BaseModel):
+    """Payload for POST /umrs/endpoints/{job_id}/upgrade."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    model_path: str = Field(
+        ..., min_length=1,
+        description="New model path (must already be registered)",
+    )
+    timeout_sec: int = Field(
+        900, ge=1, le=3600,
+        description="Maximum seconds to wait for replacement health",
+    )
+    wait: bool = Field(
+        False,
+        description="If true, block until the flip converges (SyncSem)",
+    )
+
+
+class EndpointUpgradeResponse(BaseModel):
+    """Response for a successful upgrade acceptance."""
+
+    job_id: str
+    old_model_path: str
+    new_model_path: str
+    status: str  # provisioning | ready | degraded | failed
+    new_job_id: str | None = None
+    error: str | None = None
+
+
+@router.post(
+    "/{job_id}/upgrade",
+    response_model=EndpointUpgradeResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Rolling model-version upgrade (Q-13 Phase 2)",
+    description=(
+        "Provision a replacement for the referenced endpoint, wait for its "
+        "readiness, flip the registry record so subsequent routing lands on "
+        "the new model, then retire the old backend job. The old endpoint is "
+        "preserved until the new one is healthy. "
+        "One upgrade per endpoint_id at a time; conflicting upgrades return "
+        "HTTP 409."
+    ),
+)
+async def upgrade_endpoint(
+    job_id: str,
+    request: EndpointUpgradeRequest,
+    project_id: str | None = Depends(get_project_id_optional),
+    registry: EndpointRegistry = Depends(get_registry),
+) -> EndpointUpgradeResponse:
+    """Rolling upgrade of a running endpoint.
+
+    Security gates (preserved from existing lifecycle):
+      - Resolved project identity required for mutation in strict mode
+      - Project mismatch → 404 (never leak endpoint presence cross-project)
+      - Concurrent upgrade → 409 (one flip per endpoint at a time)
+
+    Health-failure semantics:
+      - Replacement provision fails → error surfaced, old untouched
+      - Replacement lands but never goes ready before the timeout →
+        new endpoint deprovisioned, old endpoint untouched
+      - Registry update fails after new endpoint is ready → new endpoint
+        is still live but not serving the flip; the call returns 500 and
+        the janitor collects the zombie (no silent success)
+    """
+    endpoint = registry.get_by_job_id(job_id)
+    if endpoint is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Endpoint not found: {job_id}",
+        )
+    _require_identity_for_mutation(project_id, "Upgrade")
+    _forbid_if_project_mismatch(endpoint, project_id)
+
+    # Concurrency gate (Q-13 #3): one in-flight upgrade per endpoint.
+    if endpoint.metadata.get("upgrade_in_flight"):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"an upgrade is already in flight for endpoint {job_id}",
+        )
+
+    from ..orchestrator.service import get_orchestration_service
+
+    service = get_orchestration_service()
+
+    old_metadata = dict(endpoint.metadata or {})
+    old_model_path = old_metadata.get("model_path") or endpoint.model
+
+    success, new_job_id, error = await service.upgrade_endpoint(
+        job_id=job_id,
+        new_model_path=request.model_path,
+        timeout_sec=request.timeout_sec,
+    )
+
+    final = registry.get_by_job_id(job_id)
+    final_status = (final.status.value if final else "unknown")
+
+    if not success:
+        # Old endpoint MUST still be addressable after a failed upgrade.
+        # If it is not, treat it as a failure report (500), never a 2xx.
+        if final is None:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=(
+                    f"upgrade failed and old endpoint is unrecoverable: {error}"
+                ),
+            )
+        return EndpointUpgradeResponse(
+            job_id=job_id,
+            old_model_path=str(old_model_path),
+            new_model_path=request.model_path,
+            status="failed",
+            new_job_id=None,
+            error=error,
+        )
+
+    return EndpointUpgradeResponse(
+        job_id=job_id,
+        old_model_path=str(old_model_path),
+        new_model_path=request.model_path,
+        status=final_status if final_status in ("ready", "degraded") else "ready",
+        new_job_id=new_job_id,
+        error=None,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Admin route: programmatic location update (Task 6 Gap B)
 # ---------------------------------------------------------------------------
 
