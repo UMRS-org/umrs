@@ -45,8 +45,24 @@ def _reset_registry():
     reset_execution_registry_for_tests()
 
 
-def _headers(user: str = "alice", project: str = "proj-a") -> dict[str, str]:
-    return {"X-User-ID": user, "X-Verified-Project-ID": project}
+@pytest.fixture(autouse=True)
+def _handshake_secret(monkeypatch):
+    monkeypatch.setenv("UMRS_HANDSHAKE_HMAC_SECRET", "test-secret")
+    yield
+
+
+def _headers(user: str = "alice", project: str = "proj-a", admin: bool = False) -> dict[str, str]:
+    """Gateway-equivalent signed identity headers (wave-6 F1)."""
+    import os
+
+    from r4_contracts.handshake_hmac import sign_claims
+
+    secret = os.environ.get("UMRS_HANDSHAKE_HMAC_SECRET", "")
+    headers = {"X-User-ID": user, "X-Verified-Project-ID": project}
+    if secret:
+        headers["X-Verified-Is-Admin"] = "true" if admin else "false"
+        headers["X-Verified-HMAC"] = sign_claims(secret, user, project, admin)
+    return headers
 
 
 def _register(tmp_path: Path, name: str, workflow_json: dict) -> None:

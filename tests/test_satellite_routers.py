@@ -1,15 +1,28 @@
-"""Satellite router durability tests — evidence + experiment registry HTTP."""
+"""Satellite router durability tests — evidence + experiment registry HTTP.
+
+These legacy suites exercise the router WITHOUT identity headers, i.e. the
+anonymous mvp-mode contract. Wave-6 tenant-binding behavior under signed
+identity is covered by test_wave6_caller_gate.py.
+"""
 
 from __future__ import annotations
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+
 from umrs.api.evidence import router
 from umrs.api.evidence import set_store as set_evidence_store
 from umrs.api.experiment_registry import router as exp_router
 from umrs.api.experiment_registry import set_registry
 from umrs.evidence import build_default_store
 from umrs.experiment_registry import build_default_store as build_registry
+
+
+@pytest.fixture(autouse=True)
+def _mvp_mode(monkeypatch):
+    monkeypatch.setenv("UMRS_AUTH_MODE", "mvp")
+    yield
 
 
 def _evidence_client(monkeypatch):

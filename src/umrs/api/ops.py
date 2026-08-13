@@ -20,6 +20,8 @@ from typing import Any
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
+from ._verified_headers import CallerIdentity, get_caller
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/umrs/ops", tags=["ops"])
@@ -873,12 +875,18 @@ async def audit_trace(
     until: float = Query(0.0, description="Unix timestamp upper bound"),
     limit: int = Query(50, ge=1, le=500, description="Maximum results"),
     _auth: None = Depends(require_authenticated),
+    caller: CallerIdentity | None = Depends(get_caller),
 ):
     """Query audit events for distributed trace reconstruction.
 
     Uses persistent Postgres store when available, falls back to in-memory
     ring buffer. Filter by request_id to see all operations in a single
     request chain. Use since/until for time-window queries.
+
+    Wave-6 F6: presence-only auth previously accepted unsigned headers and
+    the caller could pick any project filter. The project/actor scope is now
+    bound to the HMAC-verified caller identity when one is present: admins
+    keep the global view, everyone else sees only their own project.
     """
     from .audit_events import query_audit_events
 
@@ -890,7 +898,11 @@ async def audit_trace(
         until=until,
         limit=limit,
     )
-    # Apply project_id filter post-query (ring buffer doesn't support it natively)
+    # Apply project_id filter post-query (ring buffer doesn't support it natively).
+    # Wave-6 F6: non-admin verified callers are forced to their own project
+    # regardless of the requested filter (loud 403 on a foreign request).
+    if caller is not None and not caller.is_admin:
+        project_id = caller.scope_filter(project_id or None) or caller.project_id
     if project_id:
         events = [e for e in events if e.get("project_id") == project_id]
     return {

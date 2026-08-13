@@ -31,6 +31,12 @@ def client(app: FastAPI) -> TestClient:
 
 
 @pytest.fixture(autouse=True)
+def _handshake_secret(monkeypatch):
+    monkeypatch.setenv("UMRS_HANDSHAKE_HMAC_SECRET", "test-secret")
+    yield
+
+
+@pytest.fixture(autouse=True)
 def tmp_catalog(tmp_path):
     catalog_file = str(tmp_path / "workflow_catalog.json")
     with patch(
@@ -68,11 +74,23 @@ def _workflow_zip_bytes(name: str = "ct-analysis") -> bytes:
     return buffer.getvalue()
 
 
-def _auth_headers(user: str = "alice", project: str = "project-a") -> dict[str, str]:
-    return {
+def _auth_headers(
+    user: str = "alice", project: str = "project-a", admin: bool = False
+) -> dict[str, str]:
+    """Gateway-equivalent signed identity headers (wave-6 F1)."""
+    import os
+
+    from r4_contracts.handshake_hmac import sign_claims
+
+    secret = os.environ.get("UMRS_HANDSHAKE_HMAC_SECRET", "")
+    headers = {
         "X-User-ID": user,
         "X-Verified-Project-ID": project,
     }
+    if secret:
+        headers["X-Verified-Is-Admin"] = "true" if admin else "false"
+        headers["X-Verified-HMAC"] = sign_claims(secret, user, project, admin)
+    return headers
 
 
 def test_list_workflows_supports_filters(client, tmp_path):
@@ -173,10 +191,12 @@ def test_trigger_workflow_uses_verified_identity_in_strict_mode(client, tmp_path
         },
     )
 
-    # P0-1 contract change: an unauthorized workflow-declared project is
-    # rejected LOUDLY (403) — the old behavior silently rewrote it to the
-    # verified claim, which made legitimate project selection impossible.
-    assert response.status_code == 403
+    # Wave-6 F1: unsigned (un-HMAC-signed) verified headers are now rejected
+    # at the identity gate BEFORE project authorization — 401 strictly
+    # dominates the old 403. The 403 contract for signed callers whose
+    # declared project falls outside verified scope is covered by
+    # test_declared_project_rejected_outside_memberships.
+    assert response.status_code == 401
 
 
 def test_trigger_workflow_rejects_query_identity_in_strict_mode(client, monkeypatch):
@@ -207,8 +227,14 @@ def _register_ct(tmp_path):
     )
 
 
-def test_declared_project_wins_for_admin(client, tmp_path):
-    """Admin caller + declared project-B ≠ verified default → project-B lands."""
+def test_declared_project_wins_for_admin(client, tmp_path, monkeypatch):
+    """Admin caller + declared project-B ≠ verified default → project-B lands.
+
+    Wave-6 note: memberships/admin-declared project authority without HMAC
+    signatures is an mvp-mode contract; strict mode requires the signed
+    HMAC tuple (see test_workflows_hmac_gate.py).
+    """
+    monkeypatch.setenv("UMRS_AUTH_MODE", "mvp")
     _register_ct(tmp_path)
     response = client.post(
         "/umrs/workflows/ct-analysis/trigger",
@@ -225,7 +251,8 @@ def test_declared_project_wins_for_admin(client, tmp_path):
     assert record.params["project_id"] == "project-b"
 
 
-def test_declared_project_wins_within_memberships(client, tmp_path):
+def test_declared_project_wins_within_memberships(client, tmp_path, monkeypatch):
+    monkeypatch.setenv("UMRS_AUTH_MODE", "mvp")
     _register_ct(tmp_path)
     response = client.post(
         "/umrs/workflows/ct-analysis/trigger",
@@ -242,7 +269,8 @@ def test_declared_project_wins_within_memberships(client, tmp_path):
     assert record.params["project_id"] == "project-b"
 
 
-def test_declared_project_rejected_outside_memberships(client, tmp_path):
+def test_declared_project_rejected_outside_memberships(client, tmp_path, monkeypatch):
+    monkeypatch.setenv("UMRS_AUTH_MODE", "mvp")
     _register_ct(tmp_path)
     response = client.post(
         "/umrs/workflows/ct-analysis/trigger",

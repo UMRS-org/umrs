@@ -20,12 +20,25 @@ def test_endpoint_project_id_rejects_header_in_strict_mode(monkeypatch):
 
 
 def test_endpoint_project_id_accepts_verified_header_in_strict_mode(monkeypatch):
-    """Strict mode accepts the Gateway-issued verified project context."""
+    """Strict mode accepts the Gateway-issued verified project context.
+
+    Wave-3 note: acceptance requires the HMAC-signed identity tuple — plain
+    unsigned verified headers are rejected to block direct-sidecar spoofing.
+    """
+    from r4_contracts.handshake_hmac import sign_claims
     from umrs.api import endpoints
 
     monkeypatch.setenv("UMRS_AUTH_MODE", "strict")
+    monkeypatch.setenv("UMRS_HANDSHAKE_HMAC_SECRET", "test-secret")
 
-    assert endpoints.get_project_id(x_user_id="gateway", x_verified_project_id="project-a") == "project-a"
+    assert (
+        endpoints.get_project_id(
+            x_user_id="gateway",
+            x_verified_project_id="project-a",
+            x_verified_hmac=sign_claims("test-secret", "gateway", "project-a", False),
+        )
+        == "project-a"
+    )
 
 
 def test_endpoint_optional_project_id_returns_none_in_strict_mode(monkeypatch):
@@ -52,11 +65,20 @@ def test_files_project_id_rejects_bearer_default_in_strict_mode(monkeypatch):
 
 def test_files_project_id_accepts_verified_header_in_strict_mode(monkeypatch):
     """Strict mode accepts verified project context for file APIs."""
+    from r4_contracts.handshake_hmac import sign_claims
     from umrs.api import files
 
     monkeypatch.setenv("UMRS_AUTH_MODE", "strict")
+    monkeypatch.setenv("UMRS_HANDSHAKE_HMAC_SECRET", "test-secret")
 
-    assert files.get_project_id(x_verified_project_id="project-a") == "project-a"
+    assert (
+        files.get_project_id(
+            x_user_id="gateway",
+            x_verified_project_id="project-a",
+            x_verified_hmac=sign_claims("test-secret", "gateway", "project-a", False),
+        )
+        == "project-a"
+    )
 
 
 def test_mvp_project_id_header_still_supported_by_default(monkeypatch):

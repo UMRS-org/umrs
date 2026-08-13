@@ -284,6 +284,59 @@ def _verified_workflow_user(user_id: str | None, x_user_id: str | None) -> str:
     return user_id.strip()
 
 
+def _declared_workflow_project(resolved_params: dict[str, Any]) -> str:
+    value = resolved_params.get("project_id")
+    if isinstance(value, str):
+        return value.strip()
+    return ""
+
+
+def _checked_membership_set(
+    x_verified_project_memberships: str | None,
+) -> set[str]:
+    """Caller membership set honored for cross-project authorization.
+
+    Wave-6 F1b: the memberships header is NOT part of the v1 HMAC signature
+    tuple — an attacker with any one valid gateway session (or none at all
+    behind the sidecar port in strict mode) could forge
+    ``X-Verified-Project-Memberships`` and claim victim-project scope. Under
+    strict mode only the HMAC-covered primary project (or admin) may
+    authorize a foreign declared project_id. Memberships-based authorization
+    stays available in non-strict (mvp) mode until the handshake tuple is
+    extended to v2.
+    """
+    if _strict_auth_mode():
+        return set()
+    memberships_raw = _header_str(x_verified_project_memberships) or ""
+    return {item.strip() for item in memberships_raw.split(",") if item.strip()}
+
+
+def _authorize_declared_workflow_project(
+    declared_project_id: str,
+    verified_project_id: str | None,
+    x_verified_project_memberships: str | None,
+    x_verified_is_admin: str | None,
+) -> None:
+    """Workflow-declared project_id is authoritative — but only when the
+    caller is authorized for it (admin role, or the declared project is in
+    the caller's verified membership set). Anything else is a loud 403,
+    never a silent rewrite (Phase P0-1).
+    """
+    is_admin = _header_str(x_verified_is_admin) == "true"
+    allowed = {p for p in (verified_project_id,) if p}
+    allowed |= _checked_membership_set(x_verified_project_memberships)
+    if is_admin or not verified_project_id:
+        return
+    if declared_project_id not in allowed:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                f"project_id '{declared_project_id}' is outside the "
+                "caller's verified projects"
+            ),
+        )
+
+
 def _verified_workflow_params(
     params: dict[str, Any],
     x_verified_project_id: str | None,
@@ -292,30 +345,14 @@ def _verified_workflow_params(
 ) -> dict[str, Any]:
     verified_project_id = _header_str(x_verified_project_id)
     resolved_params = dict(params)
-    declared_project_id = (
-        str(resolved_params.get("project_id") or "").strip()
-        if isinstance(resolved_params.get("project_id"), str)
-        else ""
-    )
+    declared_project_id = _declared_workflow_project(resolved_params)
     if declared_project_id:
-        # Workflow-declared project_id is authoritative — but only when the
-        # caller is authorized for it (admin role, or the declared project is
-        # in the caller's verified membership set). Anything else is a loud
-        # 403, never a silent rewrite (Phase P0-1).
-        is_admin = _header_str(x_verified_is_admin) == "true"
-        memberships_raw = _header_str(x_verified_project_memberships) or ""
-        memberships = {
-            item.strip() for item in memberships_raw.split(",") if item.strip()
-        }
-        allowed = {p for p in (verified_project_id,) if p} | memberships
-        if not is_admin and verified_project_id and declared_project_id not in allowed:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=(
-                    f"project_id '{declared_project_id}' is outside the "
-                    "caller's verified projects"
-                ),
-            )
+        _authorize_declared_workflow_project(
+            declared_project_id,
+            verified_project_id,
+            x_verified_project_memberships,
+            x_verified_is_admin,
+        )
         return resolved_params
     if verified_project_id:
         resolved_params["project_id"] = verified_project_id
@@ -331,13 +368,39 @@ def _verified_workflow_params(
 def _require_verified_workflow_identity(
     x_user_id: str | None,
     x_verified_project_id: str | None,
+    x_verified_is_admin: str | None = None,
+    x_verified_hmac: str | None = None,
 ) -> None:
-    if _header_str(x_user_id) and _header_str(x_verified_project_id):
+    """Strict-mode workflow identity gate.
+
+    Wave-6 F1: this resolver previously passed on presence alone — any raw
+    `X-User-ID` + `X-Verified-Project-ID` headers were trusted against strict,
+    bypassing the signature requirement every other sealed resolver uses. Now:
+    presence alone is insufficient in strict mode; the request must carry a
+    valid gateway HMAC over the complete identity tuple.
+    """
+    if not (_header_str(x_user_id) and _header_str(x_verified_project_id)):
+        if _strict_auth_mode():
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Missing Gateway-verified workflow identity",
+            )
         return
-    if _strict_auth_mode():
+    if not _strict_auth_mode():
+        return
+    from ._verified_headers import handshake_secret, verified_headers_trusted
+
+    if not verified_headers_trusted(
+        strict=True,
+        secret=handshake_secret(),
+        presented_hmac=_header_str(x_verified_hmac),
+        user_id=_header_str(x_user_id),
+        project_id=_header_str(x_verified_project_id),
+        is_admin=_header_str(x_verified_is_admin) == "true",
+    ):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing Gateway-verified workflow identity",
+            detail="Gateway-verified identity signature rejected",
         )
 
 
@@ -396,8 +459,12 @@ async def list_workflows(
     user_id: str | None = Query(None, description="Optional owner filter"),
     x_user_id: str | None = Header(None),
     x_verified_project_id: str | None = Header(None),
+    x_verified_is_admin: str | None = Header(None),
+    x_verified_hmac: str | None = Header(None),
 ):
-    _require_verified_workflow_identity(x_user_id, x_verified_project_id)
+    _require_verified_workflow_identity(
+        x_user_id, x_verified_project_id, x_verified_is_admin, x_verified_hmac
+    )
     resolved_user_id = _header_str(x_user_id) or user_id
     payload = {
         key: value
@@ -429,9 +496,13 @@ async def list_workflow_triggers(
     workflow_name: str,
     x_user_id: str | None = Header(None),
     x_verified_project_id: str | None = Header(None),
+    x_verified_is_admin: str | None = Header(None),
+    x_verified_hmac: str | None = Header(None),
 ):
     """W4: return the workflow's declared event trigger subscriptions."""
-    _require_verified_workflow_identity(x_user_id, x_verified_project_id)
+    _require_verified_workflow_identity(
+        x_user_id, x_verified_project_id, x_verified_is_admin, x_verified_hmac
+    )
     caller = _header_str(x_user_id) or ""
     entry = _resolve_workflow_catalog_entry(workflow_name, caller)
     if entry is None:
@@ -452,9 +523,13 @@ async def describe_workflow(
     workflow_name: str,
     x_user_id: str | None = Header(None),
     x_verified_project_id: str | None = Header(None),
+    x_verified_is_admin: str | None = Header(None),
+    x_verified_hmac: str | None = Header(None),
 ):
     """Return declared parameter schema and metadata for a workflow."""
-    _require_verified_workflow_identity(x_user_id, x_verified_project_id)
+    _require_verified_workflow_identity(
+        x_user_id, x_verified_project_id, x_verified_is_admin, x_verified_hmac
+    )
     caller = _header_str(x_user_id) or ""
     entry = _resolve_workflow_catalog_entry(workflow_name, caller)
     if entry is None:
@@ -555,8 +630,12 @@ async def upload_workflow(
     scope: str = Form("user"),
     x_user_id: str | None = Header(None),
     x_verified_project_id: str | None = Header(None),
+    x_verified_is_admin: str | None = Header(None),
+    x_verified_hmac: str | None = Header(None),
 ):
-    _require_verified_workflow_identity(x_user_id, x_verified_project_id)
+    _require_verified_workflow_identity(
+        x_user_id, x_verified_project_id, x_verified_is_admin, x_verified_hmac
+    )
     resolved_user_id = _verified_workflow_user(user_id, x_user_id)
 
     project_id = x_verified_project_id or ""
@@ -600,7 +679,11 @@ async def trigger_workflow(
     x_verified_project_id: str | None = Header(None),
     x_verified_project_memberships: str | None = Header(None),
     x_verified_is_admin: str | None = Header(None),
+    x_verified_hmac: str | None = Header(None),
 ):
+    _require_verified_workflow_identity(
+        x_user_id, x_verified_project_id, x_verified_is_admin, x_verified_hmac
+    )
     user_id = _verified_workflow_user(request.user_id or "", x_user_id)
     params = _verified_workflow_params(
         request.resolved_params(),
@@ -619,9 +702,24 @@ async def trigger_workflow(
     _validate_params_against_schema(params, schema)
     store = get_optional_job_store()
     job_backend = DurableJobCommandBackend(store) if store is not None else None
+    # Wave-6 F1: identity only marked verified when presence AND (strict mode,
+    # when active) HMAC trust was established. The mouth-to-mouth mark stays
+    # False for legacy unsigned paths so the durable layer never uprates a
+    # forged tuple into `gateway_verified` truth.
     identity_verified = bool(
         _header_str(x_user_id) and _header_str(x_verified_project_id)
     )
+    if identity_verified and _strict_auth_mode():
+        from ._verified_headers import handshake_secret, verified_headers_trusted
+
+        identity_verified = verified_headers_trusted(
+            strict=True,
+            secret=handshake_secret(),
+            presented_hmac=_header_str(x_verified_hmac),
+            user_id=_header_str(x_user_id),
+            project_id=_header_str(x_verified_project_id),
+            is_admin=_header_str(x_verified_is_admin) == "true",
+        )
     raw = handle_workflow_command(
         TaskCmd.RUN_WORKFLOW,
         user_id,

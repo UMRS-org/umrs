@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from umrs.evidence import (
@@ -17,6 +17,8 @@ from umrs.evidence import (
     EvidenceSourceType,
     EvidenceStatus,
 )
+
+from ._verified_headers import CallerIdentity, get_caller
 
 logger = logging.getLogger(__name__)
 
@@ -69,9 +71,15 @@ def _to_response(e: Evidence) -> dict[str, Any]:
 
 
 @router.post("", summary="Register evidence against a claim")
-def create_evidence(req: CreateEvidenceRequest):
+def create_evidence(
+    req: CreateEvidenceRequest,
+    caller: CallerIdentity | None = Depends(get_caller),
+):
+    project_id = req.project_id
+    if caller is not None:
+        project_id = caller.bind_for_write(req.project_id)
     evidence = Evidence(
-        project_id=req.project_id,
+        project_id=project_id,
         claim_id=req.claim_id,
         source_type=EvidenceSourceType(req.source_type),
         source_id=req.source_id,
@@ -89,7 +97,10 @@ def count_evidence(
     project_id: str | None = Query(None),
     source_type: str | None = Query(None),
     status: str | None = Query(None),
+    caller: CallerIdentity | None = Depends(get_caller),
 ):
+    if caller is not None:
+        project_id = caller.scope_filter(project_id)
     s_type = EvidenceSourceType(source_type) if source_type else None
     s_status = EvidenceStatus(status) if status else None
     return {
@@ -101,23 +112,38 @@ def count_evidence(
 
 @router.get("/search", summary="Full-text search over evidence content/citation")
 def search_evidence(
-    query: str, project_id: str | None = None, limit: int = Query(20, ge=1, le=100)
+    query: str,
+    project_id: str | None = None,
+    limit: int = Query(20, ge=1, le=100),
+    caller: CallerIdentity | None = Depends(get_caller),
 ):
+    if caller is not None:
+        project_id = caller.scope_filter(project_id)
     entries = _get_store().search_evidence(query, project_id=project_id, limit=limit)
     return {"evidence": [_to_response(e) for e in entries]}
 
 
 @router.get("/claims/{claim_id}", summary="All evidence for a claim")
-def evidence_for_claim(claim_id: str):
+def evidence_for_claim(
+    claim_id: str,
+    caller: CallerIdentity | None = Depends(get_caller),
+):
     entries = _get_store().get_evidence_for_claim(claim_id)
+    if caller is not None and not caller.is_admin:
+        entries = [e for e in entries if e.project_id == caller.project_id]
     return {"evidence": [_to_response(e) for e in entries]}
 
 
 @router.get("/{evidence_id}", summary="View single evidence item")
-def get_evidence(evidence_id: str):
+def get_evidence(
+    evidence_id: str,
+    caller: CallerIdentity | None = Depends(get_caller),
+):
     entry = _get_store().get_evidence(evidence_id)
     if entry is None:
         raise HTTPException(status_code=404, detail=f"Evidence {evidence_id} not found")
+    if caller is not None:
+        caller.assert_can_access(entry.project_id)
     return _to_response(entry)
 
 
@@ -128,7 +154,10 @@ def list_evidence(
     status: str | None = Query(None),
     claim_id: str | None = Query(None),
     limit: int = Query(100, ge=1, le=500),
+    caller: CallerIdentity | None = Depends(get_caller),
 ):
+    if caller is not None:
+        project_id = caller.scope_filter(project_id)
     s_type = EvidenceSourceType(source_type) if source_type else None
     s_status = EvidenceStatus(status) if status else None
     entries = _get_store().list_evidence(
@@ -142,7 +171,18 @@ def list_evidence(
 
 
 @router.put("/{evidence_id}/status", summary="Retract or change evidence status")
-def update_status(evidence_id: str, req: UpdateStatusRequest):
+def update_status(
+    evidence_id: str,
+    req: UpdateStatusRequest,
+    caller: CallerIdentity | None = Depends(get_caller),
+):
+    if caller is not None:
+        existing = _get_store().get_evidence(evidence_id)
+        if existing is None:
+            raise HTTPException(
+                status_code=404, detail=f"Evidence {evidence_id} not found"
+            )
+        caller.assert_can_access(existing.project_id)
     found = _get_store().update_status(evidence_id, EvidenceStatus(req.status.lower()))
     if not found:
         raise HTTPException(status_code=404, detail=f"Evidence {evidence_id} not found")

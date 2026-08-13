@@ -15,11 +15,13 @@ import logging
 import secrets
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from umrs.research_sessions import ResearchSession, SessionLoopLink
 from umrs.research_sessions.store import SessionStore
+
+from ._verified_headers import CallerIdentity, get_caller
 
 logger = logging.getLogger(__name__)
 
@@ -102,20 +104,29 @@ def _derive_title(goal: str) -> str:
 
 
 @router.post("", response_model=SessionResponse, status_code=201)
-async def create_session(request: CreateSessionRequest) -> SessionResponse:
+async def create_session(
+    request: CreateSessionRequest,
+    caller: CallerIdentity | None = Depends(get_caller),
+) -> SessionResponse:
     """Create a research session (idempotent when client pins session_id)."""
     store = _require_store()
 
+    project_id = request.project_id
+    if caller is not None:
+        project_id = caller.bind_for_write(request.project_id)
     session_id = request.session_id or _new_session_id()
     existing = store.get(session_id)
     if existing is not None:
-        # Idempotent create: same session_id → return the stored session.
+        # Idempotent create: same session_id → return the stored session, but
+        # only when the caller may actually see it (wave-6 F5).
+        if caller is not None:
+            caller.assert_can_access(existing.project_id)
         return SessionResponse(session=existing.to_dict())
 
     title = request.title.strip() or _derive_title(request.research_goal)
     session = ResearchSession(
         session_id=session_id,
-        project_id=request.project_id,
+        project_id=project_id,
         title=title,
         research_goal=request.research_goal,
         authoritative_runtime=request.authoritative_runtime,
@@ -129,9 +140,12 @@ async def create_session(request: CreateSessionRequest) -> SessionResponse:
 async def list_sessions(
     project_id: str | None = Query(None),
     status: str | None = Query(None),
+    caller: CallerIdentity | None = Depends(get_caller),
 ) -> ListSessionsResponse:
     """List sessions, optionally filtered by project and/or status."""
     store = _require_store()
+    if caller is not None:
+        project_id = caller.scope_filter(project_id)
     sessions = store.list(project_id=project_id, status=status)
     return ListSessionsResponse(
         sessions=[s.to_dict() for s in sessions], count=len(sessions)
@@ -139,21 +153,35 @@ async def list_sessions(
 
 
 @router.get("/{session_id}", response_model=SessionResponse)
-async def get_session(session_id: str) -> SessionResponse:
+async def get_session(
+    session_id: str,
+    caller: CallerIdentity | None = Depends(get_caller),
+) -> SessionResponse:
     """Fetch one session with its loop links."""
     store = _require_store()
     session = store.get(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+    if caller is not None:
+        caller.assert_can_access(session.project_id)
     return SessionResponse(session=session.to_dict())
 
 
 @router.patch("/{session_id}", response_model=SessionResponse)
 async def update_session(
-    session_id: str, request: UpdateSessionRequest
+    session_id: str,
+    request: UpdateSessionRequest,
+    caller: CallerIdentity | None = Depends(get_caller),
 ) -> SessionResponse:
     """Update title / status / metadata. Status transitions log a marker."""
     store = _require_store()
+    if caller is not None:
+        existing = store.get(session_id)
+        if existing is None:
+            raise HTTPException(
+                status_code=404, detail=f"Session {session_id} not found"
+            )
+        caller.assert_can_access(existing.project_id)
     session = store.update(
         session_id,
         title=request.title,
@@ -172,11 +200,18 @@ async def update_session(
 
 
 @router.post("/{session_id}/loops", status_code=201)
-async def attach_loop(session_id: str, request: AttachLoopRequest) -> dict[str, Any]:
+async def attach_loop(
+    session_id: str,
+    request: AttachLoopRequest,
+    caller: CallerIdentity | None = Depends(get_caller),
+) -> dict[str, Any]:
     """Register a loop under a session (also used by loop start auto-register)."""
     store = _require_store()
-    if store.get(session_id) is None:
+    existing = store.get(session_id)
+    if existing is None:
         raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+    if caller is not None:
+        caller.assert_can_access(existing.project_id)
 
     link = SessionLoopLink(
         session_id=session_id,
@@ -189,11 +224,17 @@ async def attach_loop(session_id: str, request: AttachLoopRequest) -> dict[str, 
 
 
 @router.get("/{session_id}/loops", response_model=ListLoopsResponse)
-async def list_session_loops(session_id: str) -> ListLoopsResponse:
+async def list_session_loops(
+    session_id: str,
+    caller: CallerIdentity | None = Depends(get_caller),
+) -> ListLoopsResponse:
     """List the loops attached to a session."""
     store = _require_store()
-    if store.get(session_id) is None:
+    existing = store.get(session_id)
+    if existing is None:
         raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+    if caller is not None:
+        caller.assert_can_access(existing.project_id)
     loops = store.list_loops(session_id)
     return ListLoopsResponse(
         session_id=session_id, loops=[lnk.to_dict() for lnk in loops], count=len(loops)
@@ -201,10 +242,17 @@ async def list_session_loops(session_id: str) -> ListLoopsResponse:
 
 
 @router.delete("/{session_id}/loops/{loop_id}")
-async def detach_loop(session_id: str, loop_id: str) -> dict[str, Any]:
+async def detach_loop(
+    session_id: str,
+    loop_id: str,
+    caller: CallerIdentity | None = Depends(get_caller),
+) -> dict[str, Any]:
     """Remove a loop from a session (loop itself is NOT stopped)."""
     store = _require_store()
-    if store.get(session_id) is None:
+    existing = store.get(session_id)
+    if existing is None:
         raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+    if caller is not None:
+        caller.assert_can_access(existing.project_id)
     store.detach_loop(session_id, loop_id)
     return {"session_id": session_id, "loop_id": loop_id, "detached": True}
