@@ -176,3 +176,18 @@ class TestUpgradeRoute:
         with TestClient(test_app) as client:
             r = _upgrade(client, "job-001", payload={"model_path":"/models/new","mystery":True})
         assert r.status_code == 422
+
+
+class TestWireShape:
+    """Route must stay mount-compatible with the NGINX /gw/endpoints wire."""
+
+    def test_upgrade_route_path_at_or_below_endpoints_prefix(self):
+        from umrs.api import endpoints as e
+
+        matches = [
+            r for r in e.router.routes
+            if getattr(r, "path", "") == "/umrs/endpoints/{job_id}/upgrade"
+        ]
+        assert len(matches) == 1
+        methods = set(matches[0].methods)
+        assert "POST" in methods
