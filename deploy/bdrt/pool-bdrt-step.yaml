@@ -597,14 +597,14 @@ endpoints:
     tier: system
     node_count: 2
     partition: spark-double
-    max_model_len: 256000
+    max_model_len: 1048576
     env_vars:
       VLLM_HOST_MODEL_PATH: "/home/mnagaso/umrs_models/hub/models--deepseek-ai--DeepSeek-V4-Flash-0731/snapshots"
       VLLM_PATH_TO_HUGGINGFACE: "/home/mnagaso/umrs_models"
       VLLM_MODEL: "deepseek-ai/DeepSeek-V4-Flash-0731"
       # VLLM_TOKENIZER intentionally UNSET — same HF-cache symlink layout
       # reasoning as the preview entry; tokenizer loads from --model dir.
-      VLLM_MAX_MODEL_LEN: "256000"
+      VLLM_MAX_MODEL_LEN: "1048576"
       VLLM_GPU_MEM_UTIL: "0.825"
       VLLM_TP: "2"
       VLLM_TENSOR_PARALLEL_SIZE: "2"
