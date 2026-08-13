@@ -731,7 +731,11 @@ async def trigger_workflow(
             }
         ),
         job_backend=job_backend,
-        trusted_identity=True,
+        # Wave-6 F1: the durable trust bridge reflects the verified flag,
+        # never hardcoded True. Under strict mode + missing/invalid HMAC,
+        # `_identity_verified` is False, so this no longer uprates a forged
+        # tuple into `gateway_verified` truth downstream.
+        trusted_identity=identity_verified,
     )
     return _parse_command_response(raw, action="trigger")
 
