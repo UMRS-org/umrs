@@ -630,5 +630,13 @@ endpoints:
         --max-cudagraph-capture-size 12
         --compilation-config {"cudagraph_mode":"FULL_AND_PIECEWISE","custom_ops":["all"]}
         --kernel-config {"enable_flashinfer_autotune":false}
+      # GB10 cap-120 sparse-MLA warmup raise: the re-spun v0.26.0 image adds
+      # deepseek_v4_sparse_mla_attention_warmup whose mixed prefill is hard-capped
+      # at 16 tokens but the SM120 prefill kernel ICHECK requires >64 → every
+      # DeepSeek-V4 sparse-MLA bring-up dies at warmup (jobs 3428/3432, EngineCore
+      # "num_tokens > 64 (5 vs. 64)"). Patched file raises the constant to 80 so
+      # the mixed prefill ships 79 tokens. Source = pristine file from this image
+      # with the constant bumped (pristine copy: patches/flashinfer_sparse_mla_warmup.py.orig-16).
+      VLLM_PATCHES: "/home/mnagaso/patches/flashinfer_sparse_mla_warmup.py:/usr/local/lib/python3.12/dist-packages/vllm/model_executor/warmup/flashinfer_sparse_mla_warmup.py:7c45e0879b01672b4de041bc6e50cfd054a6f7f8a7f60c93993adc4c16d6830f"
       # Single staged copy is enough: bdrt $HOME is shared NFS.
       RCCS_SKIP_CDI: "1"
