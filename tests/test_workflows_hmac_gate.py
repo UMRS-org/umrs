@@ -111,3 +111,42 @@ class TestWorkflowsHandlersCarryHmac:
             sig = inspect.signature(handler)
             assert "x_verified_hmac" in sig.parameters, name
             assert "x_verified_is_admin" in sig.parameters, name
+
+
+class TestTrustedIdentityBridgeConsistency:
+    """The ZMQ/Durable bridge trust marker must reflect `_identity_verified`.
+
+    Before wave-6 F1 closure the trigger route fixed ``trusted_identity=True``
+    unconditionally, uprating any identity tuple (even when strict-mode HMAC
+    validation had rejected it) into ``gateway_verified`` truth downstream.
+    """
+
+    def test_source_binds_trusted_identity_to_verified_flag(self) -> None:
+        import inspect
+
+        src = inspect.getsource(workflows.trigger_workflow)
+        assert "trusted_identity=identity_verified" in src
+        assert "trusted_identity=True" not in src
+
+    def test_identity_verified_false_when_strict_rejects(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Strict mode + forged HMAC ⇒ ``identity_verified`` computes False.
+
+        This is the boolean that now feeds ``trusted_identity``; the forged
+        tuple must not flow to the durable bridge as verified truth.
+        """
+        secret = _secret_env(monkeypatch)
+        from umrs.api._verified_headers import handshake_secret
+        from umrs.api._verified_headers import verified_headers_trusted
+
+        forged = sign_claims("wrong-secret", "victim", "victim-project", False)
+        assert handshake_secret() == secret
+        assert not verified_headers_trusted(
+            strict=True,
+            secret=secret,
+            presented_hmac=forged,
+            user_id="victim",
+            project_id="victim-project",
+            is_admin=False,
+        )
