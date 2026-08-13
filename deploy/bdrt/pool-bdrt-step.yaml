@@ -577,12 +577,15 @@ endpoints:
   #  .shared_experts.down_proj, so the stock image is CORRECT — no
   #  VLLM_PATCH_* bind-mount needed. Verified against tag v0.26.0 source.
   #
-  #  k=3+probabilistic, NOT k=5: the cudagraph capture ladder with
-  #  --max-cudagraph-capture-size 8 yields sizes [1,2,4,8]; spec decode
-  #  requires a captured size that is a multiple of (k+1). k=3 → 4 ✓
-  #  (multiples of 4), k=5 → 6 ✗ -> engine init "No valid cudagraph
-  #  sizes". Keep --max-num-seqs 10 (>= capture 8). Raise later to k=5
-  #  only with max-num-seqs 12 (or explicit capture sizes).
+  #  k=5 + max-num-seqs 12 + capture-size 12 — NOT k=3. Two runtime
+  #  constraints BOTH bind (jobs 3423/3426, 2026-08-13, first live runs):
+  #  ① Pydantic SpeculativeConfig validation HARD-REJECTS k<5 at engine
+  #    init: "DSpark requires num_speculative_tokens >= dspark_block_size
+  #    (5); got 3. Smaller values produce incorrect output." — the k=3
+  #    choice was tree-level only (08-03 queue never ran, so never seen).
+  #  ② cudagraph capture ladder must contain a multiple of (k+1)=6;
+  #    capture [1,2,4,8] has none. With max-num-seqs 12 + capture-size 12
+  #    the ladder reaches 12 (6 | 12 ✓). NOT capture 8/seqs 10.
   #  draft_sample_method probabilistic per the 2026-07-03 garble fix —
   #  greedy draft provokes cold-start garbage under concurrency.
   #
@@ -617,14 +620,14 @@ endpoints:
       VLLM_TRUST_REMOTE_CODE: "1"
       # DSpark (no MTP head in 0731). JSON goes through the base64
       # sbatch --export hop like the other comma-bearing values.
-      VLLM_SPECULATIVE_CONFIG: '{"method":"dspark","num_speculative_tokens":3,"draft_sample_method":"probabilistic"}'
+      VLLM_SPECULATIVE_CONFIG: '{"method":"dspark","num_speculative_tokens":5,"draft_sample_method":"probabilistic"}'
       VLLM_EXTRA_ARGS: >-
-        --max-num-seqs 10
+        --max-num-seqs 12
         --max-num-batched-tokens 6144
         --tokenizer-mode deepseek_v4
         --kv-cache-dtype fp8
         --enable-prefix-caching
-        --max-cudagraph-capture-size 8
+        --max-cudagraph-capture-size 12
         --compilation-config {"cudagraph_mode":"FULL_AND_PIECEWISE","custom_ops":["all"]}
       # Single staged copy is enough: bdrt $HOME is shared NFS.
       RCCS_SKIP_CDI: "1"
