@@ -618,9 +618,14 @@ endpoints:
       VLLM_TOOL_CALL_PARSER: "deepseek_v4"
       VLLM_REASONING_PARSER: "deepseek_v4"
       VLLM_TRUST_REMOTE_CODE: "1"
-      # DSpark (no MTP head in 0731). JSON goes through the base64
-      # sbatch --export hop like the other comma-bearing values.
-      VLLM_SPECULATIVE_CONFIG: '{"method":"dspark","num_speculative_tokens":5,"draft_sample_method":"probabilistic"}'
+      # DSpark DEACTIVATED 2026-08-13 on the re-spun v0.26.0 image: every
+      # dspark-related kernel stage dies on GB10 (cap-120) with the same
+      # flashinfer ICHECK 'num_tokens > 64 (5 vs. 64)':
+      #   3428: autotune path, 3432: warmup fallback, 3436: same at 80-token
+      #       warmup, 3437: speculator.capture(). So — spec decode OFF here
+      #       until upstream/flashinfer fix. Target side (prefill/decode w/o
+      #       spec) is DSV-safe.
+      # VLLM_SPECULATIVE_CONFIG: '{"method":"dspark","num_speculative_tokens":5,"draft_sample_method":"probabilistic"}'
       VLLM_EXTRA_ARGS: >-
         --max-num-seqs 12
         --max-num-batched-tokens 6144
