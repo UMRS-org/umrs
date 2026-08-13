@@ -317,7 +317,7 @@ def manifest() -> dict[str, Any]:
 
 
 @app.get("/v1/models")
-def list_models() -> JSONResponse:
+async def list_models() -> JSONResponse:
     """Proxy the upstream model list.
 
     #209: on probe failure, return 503 with an error body instead of a 200
@@ -327,8 +327,8 @@ def list_models() -> JSONResponse:
     config = _resolve_config()
     probe_error: str | None = None
     try:
-        with httpx.Client(timeout=5.0, trust_env=False) as client:
-            resp = client.get(
+        async with httpx.AsyncClient(timeout=5.0, trust_env=False) as client:
+            resp = await client.get(
                 f"{config.upstream_base_url}/models",
                 headers=_auth_headers(config.upstream_api_key),
             )
