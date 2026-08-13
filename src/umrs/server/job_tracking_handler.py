@@ -194,7 +194,7 @@ class DurableJobCommandBackend:
             return None
 
         try:
-            from umrs.admin.user_store import UserStore, UserStoreError
+            from umrs.admin.user_store import UserStore
 
             store = UserStore()
             if not store.exists(client_id):
@@ -205,6 +205,7 @@ class DurableJobCommandBackend:
             site_name: str | None = None
             try:
                 from umrs.orchestrator.site_config import load_site_config
+
                 site_name = load_site_config().name
             except Exception:
                 pass
@@ -518,6 +519,28 @@ def handle_job_command(
     Returns:
         JSON string to send back to client via ZMQ
     """
+    try:
+        from umrs.server.correlation import correlation_scope
+
+        try:
+            _payload = json.loads(payload_str) if payload_str else {}
+        except json.JSONDecodeError:
+            _payload = {}
+        with correlation_scope(
+            (_payload or {}).get("_request_id")
+            or (_payload or {}).get("_correlation_id")
+        ):
+            return _handle_job_command_scoped(cmd, client_id, payload_str, backend)
+    except Exception as e:
+        logger.exception("Error handling job command %s", cmd)
+        METRICS.bridge_event(_BRIDGE_NAME, "error")
+        return json.dumps({"status": "error", "message": str(e)})
+
+
+def _handle_job_command_scoped(
+    cmd, client_id, payload_str, backend
+):  # pragma: no cover - factored from handle_job_command
+    """Command dispatch under a fresh correlation scope (Q-05/G-001)."""
     try:
         if backend is None:
             logger.error("Received %s but durable job backend is unavailable", cmd)

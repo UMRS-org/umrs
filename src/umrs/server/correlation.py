@@ -42,6 +42,41 @@ def get_request_id() -> str:
     return _request_id_ctx.get()
 
 
+# ---------------------------------------------------------------------------
+# ZMQ-side correlation scope (Q-05 / G-001)
+# ---------------------------------------------------------------------------
+
+
+def set_request_id(request_id: str):
+    """Install a request-scoped correlation ID; returns the contextvar token."""
+    return _request_id_ctx.set(request_id)
+
+
+def reset_request_id(token) -> None:
+    """Restore the previous correlation context after an operation ends."""
+    _request_id_ctx.reset(token)
+
+
+from contextlib import contextmanager  # noqa: E402
+
+
+@contextmanager
+def correlation_scope(raw_correlation_id: str | None = None):
+    """Correlation scope for non-HTTP handlers (ZMQ commands).
+
+    Precedence matches the HTTP middleware when the caller carries a valid
+    ``X-Request-ID`` in the payload (``_request_id`` or ``_correlation_id``
+    key); otherwise we generate a fresh UUID4. Reset on exit so long-lived
+    server loops never leak correlation across commands (G-001).
+    """
+    rid = (raw_correlation_id or "").strip() or str(uuid.uuid4())
+    token = set_request_id(rid)
+    try:
+        yield rid
+    finally:
+        reset_request_id(token)
+
+
 class CorrelationIDMiddleware(BaseHTTPMiddleware):
     """Extract or generate a correlation ID and propagate it."""
 

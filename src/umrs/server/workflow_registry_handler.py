@@ -497,6 +497,29 @@ def handle_workflow_command(
     client-supplied claim and is ignored unless ``trusted_identity`` is set
     (wave-4 audit fix).
     """
+    from umrs.server.correlation import correlation_scope
+
+    try:
+        _payload = json.loads(payload_str) if payload_str else {}
+    except json.JSONDecodeError:
+        _payload = {}
+
+    with correlation_scope(
+        (_payload or {}).get("_request_id") or (_payload or {}).get("_correlation_id")
+    ):
+        return _dispatch_workflow_command(
+            cmd, client_id, payload_str, job_backend, trusted_identity
+        )
+
+
+def _dispatch_workflow_command(
+    cmd,
+    client_id,
+    payload_str,
+    job_backend,
+    trusted_identity,
+):  # pragma: no cover - factored from handle_workflow_command body
+    """Command dispatch under a fresh correlation scope (Q-05/G-001)."""
     from umrs.core.TaskCmdStatus import TaskCmd
 
     try:
