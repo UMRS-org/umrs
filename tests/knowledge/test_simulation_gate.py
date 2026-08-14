@@ -31,6 +31,14 @@ def _approved_project(tmp_path: Path) -> ResearchProject:
     return project
 
 
+def _stamp_legacy_demo08(project: ResearchProject) -> None:
+    """Explicitly name demo08 on planned experiments (legacy real-mode fixture)."""
+    assert project.research_plan is not None
+    for exp in project.research_plan.experiments:
+        exp.metadata = dict(exp.metadata or {})
+        exp.metadata.setdefault("workflow_name", "demo08_yield_eval")
+
+
 def test_run_research_real_mode_requires_workflow_port(tmp_path: Path) -> None:
     """Real mode without a port fails with a clear error (not the old refusal)."""
     project = _approved_project(tmp_path)
@@ -69,6 +77,7 @@ def test_loop_engine_simulated_flag_propagates() -> None:
 def test_project_run_findings_trace_to_real_records(tmp_path: Path) -> None:
     """Real mode with FakeWorkflowExecutionPort emits provenance + durable_job_id."""
     project = _approved_project(tmp_path)
+    _stamp_legacy_demo08(project)
     port = FakeWorkflowExecutionPort(durable_job_id="job-demo08-durable")
     project.set_workflow_port(port)
 
@@ -99,6 +108,7 @@ def test_project_run_findings_trace_to_real_records(tmp_path: Path) -> None:
 def test_run_research_failure_maps_to_failed_phase(tmp_path: Path) -> None:
     """Workflow failures must not report project COMPLETED."""
     project = _approved_project(tmp_path)
+    _stamp_legacy_demo08(project)
 
     class BoomPort(FakeWorkflowExecutionPort):
         def trigger(self, workflow_name: str, params: dict) -> str:
@@ -115,6 +125,7 @@ def test_run_research_failed_workflow_status_maps_to_failed_phase(
 ) -> None:
     """Terminal workflow status=failed must not publish findings as COMPLETED."""
     project = _approved_project(tmp_path)
+    _stamp_legacy_demo08(project)
     port = FakeWorkflowExecutionPort(
         wait_payload={
             "execution_id": "exec-failed",
@@ -144,6 +155,7 @@ def test_run_research_failed_workflow_status_maps_to_failed_phase(
 def test_execute_experiment_keeps_loop_project_id(tmp_path: Path) -> None:
     """experiment.parameters must not overwrite the loop project_id."""
     project = _approved_project(tmp_path)
+    _stamp_legacy_demo08(project)
     # Poison plan experiment parameters with JWT/profile default.
     assert project.research_plan is not None
     for exp in project.research_plan.experiments:
@@ -163,9 +175,20 @@ def test_execute_experiment_keeps_loop_project_id(tmp_path: Path) -> None:
     assert seen[0].get("project_id") == "sim-gate"
 
 
+def test_real_mode_requires_explicit_workflow_name(tmp_path: Path) -> None:
+    """Missing metadata.workflow_name must fail before triggering."""
+    project = _approved_project(tmp_path)
+    project.set_workflow_port(FakeWorkflowExecutionPort())
+    loop = project.run_research(max_iterations=1, simulate=False)
+    assert loop.status.value == "error"
+    assert "workflow_name" in loop.metadata.get("error", "")
+    assert project.phase == ProjectPhase.FAILED
+
+
 def test_retrieval_failure_fails_run_instead_of_publishing(tmp_path: Path) -> None:
     """A retrieval error must fail the run, not yield an unevidenced finding."""
     project = _approved_project(tmp_path)
+    _stamp_legacy_demo08(project)
     project.set_workflow_port(FakeWorkflowExecutionPort())
 
     class BrokenStore:
@@ -190,6 +213,7 @@ def test_retrieval_failure_fails_run_instead_of_publishing(tmp_path: Path) -> No
 def test_real_mode_refuses_unevidenced_finding(tmp_path: Path) -> None:
     """Empty retrieval is not an error, but it must not produce a finding."""
     project = _approved_project(tmp_path)
+    _stamp_legacy_demo08(project)
     project.set_workflow_port(FakeWorkflowExecutionPort())
 
     class EmptyStore:
