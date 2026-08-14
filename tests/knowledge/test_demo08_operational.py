@@ -43,6 +43,10 @@ def _demo08_project(tmp_path: Path) -> ResearchProject:
     project.check_readiness()
     project.approve_readiness(user_id="test")
     project.plan_research("Link YieldPredictor to batch-3 lab yields")
+    assert project.research_plan is not None
+    for exp in project.research_plan.experiments:
+        exp.metadata = dict(exp.metadata or {})
+        exp.metadata["workflow_name"] = "demo08_yield_eval"
     return project
 
 

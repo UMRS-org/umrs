@@ -267,9 +267,13 @@ def execute_dag(
 
         ctx = StepContext(
             s3=s3,
-            input_bucket=current_bucket,
+            # Always keep the workflow source bucket for trigger objects
+            # (inventory / videos / plans). Parent artifacts are addressed
+            # via parent_output_bucket + input_keys.
+            input_bucket=input_bucket,
             input_keys=current_keys,
             output_bucket=step_out_bucket,
+            parent_output_bucket=(current_bucket if parents else ""),
             config=spec.config,
             metadata=shared_metadata,
             run_id=run_id,

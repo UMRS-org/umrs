@@ -246,9 +246,13 @@ class UserWorkflowRunner:
 
             ctx = StepContext(
                 s3=s3,
-                input_bucket=current_bucket,
+                # Always retain the workflow source bucket for trigger objects.
+                input_bucket=input_bucket,
                 input_keys=current_keys,
                 output_bucket=step_output_bucket,
+                parent_output_bucket=(
+                    current_bucket if current_bucket != input_bucket else ""
+                ),
                 config=spec.config,
                 metadata=shared_metadata,
                 run_id=run_id,

@@ -918,6 +918,11 @@ def _execute_step(
         input_bucket=bucket,
         input_keys=upstream_keys,
         output_bucket=bucket + "-output",
+        # Keep source input_bucket for trigger objects; parent artifacts
+        # live in the shared output bucket (common {input}-output pattern).
+        parent_output_bucket=(bucket + "-output") if upstream_keys or (
+            spec.get("depends_on") or []
+        ) else "",
         config=config,
         metadata=metadata,
         run_id=record.execution_id,
@@ -1350,9 +1355,10 @@ def run_workflow_record(
     env vars, which preserves today's behaviour for tests.
 
     ``executor`` is the per-step execution backend (Slice 8). When
-    ``None`` it is built from ``UMRS_STEP_EXECUTOR`` (default
-    ``inproc``). Tests inject a custom executor to assert isolation
-    semantics without spawning real subprocesses.
+    ``None`` it is built from ``UMRS_STEP_EXECUTOR`` (deployment override),
+    else the workflow manifest ``execution_mode``, else ``inproc``. Tests
+    inject a custom executor to assert isolation semantics without
+    spawning real subprocesses.
     """
     record.update(status="running", started_at=time.time())
     _prepare_source_path(source_path)

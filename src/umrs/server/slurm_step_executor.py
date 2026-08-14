@@ -6,13 +6,16 @@ to a GPU compute node, which runs the step inside a podman container.
 
 Flow:
     1. Serialize step entrypoint, config, and StepContext to ``input.pkl``
+       using the same nested ``ctx`` payload as PodmanExecutor (includes
+       ``parent_results`` / ``input_keys`` for multi-step DAGs)
     2. Generate an sbatch script that:
        - Allocates GPU resources on a compute node
-       - Runs ``podman run --rm --gpus all -v <workdir>:/work <image>``
-         ``python -m umrs.server.step_worker /work/input.pkl /work/output.pkl``
+       - Runs ``podman run`` with ``UMRS_STEP_INPUT`` / ``UMRS_STEP_OUTPUT``
+         pointing at the bind-mounted pickle files
+       - Invokes ``python -m umrs.server.step_worker``
     3. Submit via ``sbatch``
     4. Poll ``squeue`` for completion
-    5. Read ``output.pkl`` and return the :class:`StepResult`
+    5. Read ``output.pkl`` reply dict and return the :class:`StepResult`
 
 The executor is selected by setting ``UMRS_STEP_EXECUTOR=slurm``.
 """
@@ -34,10 +37,14 @@ from umrs.pipeline_sdk.step import Step, StepContext, StepResult
 from .step_executor import (
     EXECUTOR_GPU_METADATA_KEY,
     EXECUTOR_IMAGE_METADATA_KEY,
+    EXECUTOR_PAYLOAD_S3_METADATA_KEY,
     StepExecutionError,
     StepExecutor,
+    _PAYLOAD_MAX_BYTES,
     _drive_lifecycle,
     _load_step_class,
+    _serialise_ctx_payload,
+    _serialise_s3_client_config,
 )
 
 logger = logging.getLogger(__name__)
@@ -109,23 +116,39 @@ class SlurmStepExecutor(StepExecutor):
         )
 
         try:
-            # Serialize the step payload
+            # Serialize the step payload — must match step_worker / PodmanExecutor
+            # nested ``ctx`` shape (including parent_results) so multi-step
+            # DAGs can hand off via input_keys and parent_results.
             input_path = os.path.join(workdir, "input.pkl")
             output_path = os.path.join(workdir, "output.pkl")
 
+            _INTERNAL_KEYS = {
+                EXECUTOR_IMAGE_METADATA_KEY,
+                EXECUTOR_PAYLOAD_S3_METADATA_KEY,
+                EXECUTOR_GPU_METADATA_KEY,
+            }
+            sanitised_metadata = {
+                k: v for k, v in ctx.metadata.items() if k not in _INTERNAL_KEYS
+            }
+            ctx_payload = _serialise_ctx_payload(ctx, metadata=sanitised_metadata)
             payload = {
                 "entrypoint": entrypoint,
-                "config": config,
-                "ctx_input_bucket": ctx.input_bucket,
-                "ctx_input_keys": ctx.input_keys,
-                "ctx_output_bucket": ctx.output_bucket,
-                "ctx_config": ctx.config,
-                "ctx_metadata": ctx.metadata,
-                "ctx_run_id": ctx.run_id,
+                "config": dict(config),
+                "ctx": ctx_payload,
+                "s3_config": _serialise_s3_client_config(ctx.s3),
             }
 
+            payload_blob = pickle.dumps(payload)
+            if len(payload_blob) > _PAYLOAD_MAX_BYTES:
+                raise StepExecutionError(
+                    "setup",
+                    f"payload size {len(payload_blob)} bytes exceeds hard cap "
+                    f"({_PAYLOAD_MAX_BYTES} bytes); refactor the step to "
+                    "pass large data via S3 keys, not parent_results",
+                )
+
             with open(input_path, "wb") as f:
-                pickle.dump(payload, f)
+                f.write(payload_blob)
 
             # Generate the sbatch script
             sbatch_script = self._generate_sbatch_script(
@@ -201,15 +224,20 @@ class SlurmStepExecutor(StepExecutor):
         ctx: StepContext,
     ) -> str:
         """Generate the sbatch script for the Slurm job."""
-        # Determine if GPU is needed
+        # Determine if GPU is needed (metadata hint → env default).
         gpu_hint = ctx.metadata.get(EXECUTOR_GPU_METADATA_KEY)
-        needs_gpu = gpu_hint if gpu_hint is not None else False
+        if gpu_hint is None:
+            needs_gpu = os.environ.get("UMRS_STEP_GPU", "0").strip() == "1"
+        else:
+            needs_gpu = bool(gpu_hint)
+
+        time_limit = self._format_time_limit(self.timeout_seconds) or self.time_limit
 
         # Build sbatch directives
         lines = ["#!/bin/bash"]
-        lines.append(f"#SBATCH --job-name=umrs-step")
+        lines.append("#SBATCH --job-name=umrs-step")
         lines.append(f"#SBATCH --partition={self.partition}")
-        lines.append(f"#SBATCH --time={self.time_limit}")
+        lines.append(f"#SBATCH --time={time_limit}")
         lines.append(f"#SBATCH --cpus-per-task={self.cpus}")
         lines.append(f"#SBATCH --mem={self.memory}")
         lines.append(f"#SBATCH --output={workdir}/slurm-%j.out")
@@ -223,31 +251,80 @@ class SlurmStepExecutor(StepExecutor):
 
         lines.append("")
         lines.append("set -e")
-        lines.append(f'echo "Starting step at $(date)"')
+        lines.append('echo "Starting step at $(date)"')
         lines.append(f'echo "Workdir: {workdir}"')
         lines.append(f'echo "Image: {image}"')
         lines.append("")
 
-        # Build the podman run command
-        gpu_flag = "--gpus all" if needs_gpu else ""
         input_rel = os.path.relpath(input_path, workdir)
         output_rel = os.path.relpath(output_path, workdir)
+        network = os.environ.get("UMRS_STEP_PODMAN_NETWORK", "host").strip() or "host"
+        s3_config = _serialise_s3_client_config(ctx.s3)
 
-        podman_cmd = (
-            f"podman run --rm "
-            f"-v {workdir}:/work "
-            f"{gpu_flag} "
-            f"{image} "
-            f"python -m umrs.server.step_worker "
-            f"/work/{input_rel} /work/{output_rel}"
+        # Prefer env-var file transport (same as PodmanExecutor). argv paths
+        # alone are ignored by step_worker.main() unless UMRS_STEP_* is set.
+        parts = [
+            "podman",
+            "run",
+            "--rm",
+            f"--network={shlex.quote(network)}",
+            "-v",
+            f"{shlex.quote(workdir)}:/work",
+            "-e",
+            f"UMRS_STEP_INPUT=/work/{input_rel}",
+            "-e",
+            f"UMRS_STEP_OUTPUT=/work/{output_rel}",
+        ]
+        if needs_gpu:
+            # Match PodmanExecutor device CDI form (site-dependent).
+            parts.extend(["--device", "nvidia.com/gpu=all"])
+
+        endpoint = s3_config.get("endpoint_url") or os.environ.get("MINIO_ENDPOINT")
+        if endpoint:
+            parts.extend(["-e", f"MINIO_ENDPOINT={endpoint}"])
+        region = s3_config.get("region_name") or os.environ.get("AWS_REGION")
+        if region:
+            parts.extend(["-e", f"AWS_REGION={region}"])
+        for cred_var in (
+            "AWS_ACCESS_KEY_ID",
+            "AWS_SECRET_ACCESS_KEY",
+            "AWS_SESSION_TOKEN",
+        ):
+            val = os.environ.get(cred_var)
+            if val:
+                parts.extend(["-e", f"{cred_var}={val}"])
+
+        parts.extend(
+            [
+                shlex.quote(image),
+                "python",
+                "-m",
+                "umrs.server.step_worker",
+            ]
         )
+        podman_cmd = " ".join(parts)
 
         lines.append(f'echo "Running: {podman_cmd}"')
         lines.append(podman_cmd)
-        lines.append(f'echo "Step completed at $(date)"')
+        lines.append('echo "Step completed at $(date)"')
         lines.append("")
 
         return "\n".join(lines)
+
+    @staticmethod
+    def _format_time_limit(timeout_seconds: float | int | None) -> str | None:
+        """Convert timeout seconds to Slurm ``HH:MM:SS`` when usable."""
+        if timeout_seconds is None:
+            return None
+        try:
+            total = int(timeout_seconds)
+        except (TypeError, ValueError):
+            return None
+        if total <= 0:
+            return None
+        hours, rem = divmod(total, 3600)
+        minutes, seconds = divmod(rem, 60)
+        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
     def _submit_sbatch(self, sbatch_path: str, workdir: str) -> str:
         """Submit the sbatch script and return the job ID."""
@@ -304,12 +381,32 @@ class SlurmStepExecutor(StepExecutor):
                     )
 
                 with open(output_path, "rb") as f:
-                    result = pickle.load(f)
+                    reply = pickle.load(f)
 
-                if not isinstance(result, StepResult):
+                # step_worker returns {"status": "ok", "result": StepResult}
+                # (or an error dict). Accept a bare StepResult for older
+                # payloads.
+                if isinstance(reply, StepResult):
+                    result = reply
+                elif isinstance(reply, dict):
+                    status = reply.get("status")
+                    if status == "ok":
+                        result = reply.get("result")
+                        if not isinstance(result, StepResult):
+                            raise StepExecutionError(
+                                "worker",
+                                f"ok reply missing StepResult, got "
+                                f"{type(result).__name__}",
+                            )
+                    else:
+                        phase = str(reply.get("phase") or "worker")
+                        message = str(reply.get("message") or reply)
+                        raise StepExecutionError(phase, message)
+                else:
                     raise StepExecutionError(
                         "worker",
-                        f"Expected StepResult, got {type(result).__name__}",
+                        f"Expected StepResult or reply dict, got "
+                        f"{type(reply).__name__}",
                     )
 
                 logger.info(

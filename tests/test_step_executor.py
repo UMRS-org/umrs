@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import os
 import pickle
+import sys
 import textwrap
+import types
 
 import pytest
 
@@ -36,6 +38,12 @@ class _OkStep(Step):
 
     def run(self, ctx: StepContext) -> StepResult:  # noqa: D401
         return StepResult(extra={"hello": ctx.config.get("greeting", "world")})
+
+
+_TEST_STEP_MODULE = "_slice8_test_steps"
+_STEP_MODULE = types.ModuleType(_TEST_STEP_MODULE)
+_STEP_MODULE._OkStep = _OkStep  # type: ignore[attr-defined]
+sys.modules[_TEST_STEP_MODULE] = _STEP_MODULE
 
 
 class _SetupFailStep(Step):
@@ -333,7 +341,7 @@ def test_runner_uses_supplied_executor(monkeypatch):
             "steps": [
                 {
                     "name": "only",
-                    "entrypoint": f"{__name__}:_OkStep",
+                    "entrypoint": f"{_TEST_STEP_MODULE}:_OkStep",
                     "config": {"greeting": "via-executor"},
                 },
             ],
@@ -345,5 +353,5 @@ def test_runner_uses_supplied_executor(monkeypatch):
     assert record.status == "succeeded", record.error
     assert len(calls) == 1
     entrypoint, cfg, _run_id = calls[0]
-    assert entrypoint == f"{__name__}:_OkStep"
+    assert entrypoint == f"{_TEST_STEP_MODULE}:_OkStep"
     assert cfg["greeting"] == "via-executor"
