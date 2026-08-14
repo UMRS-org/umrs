@@ -19,14 +19,12 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from umrs.api.files import get_project_id
 from umrs.knowledge_graph_api import (
     InMemoryKnowledgeGraph,
-    KnowledgeEdge,
-    KnowledgeNode,
     RelationType,
 )
 
@@ -68,6 +66,10 @@ class AddNodeRequest(BaseModel):
     node_type: str = Field(..., description="Node type (paper, code, hypothesis, etc.)")
     title: str = Field("", description="Human-readable title")
     metadata: dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
+    proposal_id: str | None = Field(
+        default=None,
+        description="Approved graph-extension proposal — required for agent actors",
+    )
 
 
 class AddEdgeRequest(BaseModel):
@@ -77,6 +79,10 @@ class AddEdgeRequest(BaseModel):
     weight: float = Field(1.0, description="Edge weight")
     confidence: float = Field(1.0, description="Confidence score (0.0–1.0)")
     metadata: dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
+    proposal_id: str | None = Field(
+        default=None,
+        description="Approved graph-extension proposal — required for agent actors",
+    )
 
 
 class NodeResponse(BaseModel):
@@ -116,12 +122,30 @@ def _resolve_graph(project_id: str = Depends(get_project_id)) -> InMemoryKnowled
 # ── Routes ────────────────────────────────────────────────────────────────
 
 
+def _guard_direct_write(
+    request: Request, project_id: str | None, proposal_id: str | None
+) -> None:
+    """0069 agent-mutation guard for direct node/edge writes."""
+    from umrs.api._knowledge_mutation_guard import (
+        enforce_graph_mutation_authorization,
+    )
+    from umrs.knowledge.graph_registry import default_graph_id
+
+    target = default_graph_id(project_id or "default")
+    enforce_graph_mutation_authorization(
+        request, target_graph_id=target, proposal_id=proposal_id
+    )
+
+
 @router.post("/nodes", response_model=NodeResponse)
 async def add_node(
     req: AddNodeRequest,
+    request: Request,
+    project_id: str | None = Depends(get_project_id),
     graph: InMemoryKnowledgeGraph = Depends(_resolve_graph),
 ) -> NodeResponse:
     """Add a node to the knowledge graph."""
+    _guard_direct_write(request, project_id, req.proposal_id)
     graph.add_node(
         node_id=req.node_id,
         node_type=req.node_type,
@@ -135,9 +159,12 @@ async def add_node(
 @router.post("/edges")
 async def add_edge(
     req: AddEdgeRequest,
+    request: Request,
+    project_id: str | None = Depends(get_project_id),
     graph: InMemoryKnowledgeGraph = Depends(_resolve_graph),
 ) -> dict[str, Any]:
     """Add an edge to the knowledge graph."""
+    _guard_direct_write(request, project_id, req.proposal_id)
     try:
         relation_type = RelationType(req.relation_type)
     except ValueError:

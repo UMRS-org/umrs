@@ -18,6 +18,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Optional
 
+from .graph_registry import default_graph_id
+
 logger = logging.getLogger(__name__)
 
 # Schema version — must match migration 0055_knowledge_store.sql
@@ -62,7 +64,12 @@ class KnowledgeIRRow:
 
 @dataclass(frozen=True)
 class KnowledgeNode:
-    """Row from knowledge_nodes table."""
+    """Row from knowledge_nodes table.
+
+    ``graph_id`` scopes the node to one registered knowledge graph
+    (migration 0069). Legacy rows carry ``''`` and are treated as members
+    of their project's default graph at read time.
+    """
 
     node_id: str
     project_id: str
@@ -73,11 +80,12 @@ class KnowledgeNode:
     source_ir: Optional[str] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+    graph_id: str = ""
 
 
 @dataclass(frozen=True)
 class KnowledgeEdge:
-    """Row from knowledge_edges table."""
+    """Row from knowledge_edges table (graph-scoped since migration 0069)."""
 
     edge_id: str
     project_id: str
@@ -86,6 +94,7 @@ class KnowledgeEdge:
     relation_type: str
     content: dict[str, Any] = field(default_factory=dict)
     created_at: Optional[datetime] = None
+    graph_id: str = ""
 
 
 class KnowledgeStore:
@@ -196,14 +205,14 @@ class KnowledgeStore:
         self,
         node: KnowledgeNode,
     ) -> None:
-        """Upsert a knowledge graph node."""
+        """Upsert a knowledge graph node (graph-scoped; first-write wins graph)."""
         async with self._pool.acquire() as conn:
             ts = _utcnow()
             await conn.execute(
                 """INSERT INTO knowledge_nodes
                    (node_id, project_id, label, node_type, content, content_hash,
-                    source_ir, created_at, updated_at)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                    source_ir, created_at, updated_at, graph_id)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
                    ON CONFLICT (node_id) DO UPDATE
                    SET content = $5, content_hash = $6, source_ir = $7, updated_at = $9""",
                 node.node_id,
@@ -215,18 +224,20 @@ class KnowledgeStore:
                 node.source_ir,
                 node.created_at or ts,
                 ts,
+                node.graph_id,
             )
 
     async def upsert_edge(
         self,
         edge: KnowledgeEdge,
     ) -> None:
-        """Upsert a knowledge graph edge."""
+        """Upsert a knowledge graph edge (graph-scoped)."""
         async with self._pool.acquire() as conn:
             await conn.execute(
                 """INSERT INTO knowledge_edges
-                   (edge_id, project_id, source_id, target_id, relation_type, content)
-                   VALUES ($1, $2, $3, $4, $5, $6)
+                   (edge_id, project_id, source_id, target_id, relation_type, content,
+                    graph_id)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7)
                    ON CONFLICT (edge_id) DO UPDATE
                    SET content = $6""",
                 edge.edge_id,
@@ -235,19 +246,44 @@ class KnowledgeStore:
                 edge.target_id,
                 edge.relation_type,
                 edge.content,
+                edge.graph_id,
             )
 
     async def truncate_nodes(
         self,
         project_id: str,
         source_ir: Optional[str] = None,
+        graph_id: Optional[str] = None,
     ) -> int:
-        """Delete nodes, optionally filtered by project + source_ir.
+        """Delete nodes, optionally filtered by project + source_ir + graph.
 
-        Returns number of rows deleted.
+        When ``graph_id`` is given, legacy rows (``graph_id = ''``) are
+        included only when the truncated graph is the project's default
+        graph. Returns number of rows deleted.
         """
         async with self._pool.acquire() as conn:
-            if source_ir:
+            if graph_id is not None:
+                is_default = graph_id == default_graph_id(project_id)
+                if source_ir:
+                    result = await conn.execute(
+                        "DELETE FROM knowledge_nodes "
+                        "WHERE project_id = $1 AND source_ir = $2 "
+                        "AND (graph_id = $3 OR (graph_id = '' AND $4))",
+                        project_id,
+                        source_ir,
+                        graph_id,
+                        is_default,
+                    )
+                else:
+                    result = await conn.execute(
+                        "DELETE FROM knowledge_nodes "
+                        "WHERE project_id = $1 "
+                        "AND (graph_id = $2 OR (graph_id = '' AND $3))",
+                        project_id,
+                        graph_id,
+                        is_default,
+                    )
+            elif source_ir:
                 result = await conn.execute(
                     "DELETE FROM knowledge_nodes WHERE project_id = $1 AND source_ir = $2",
                     project_id,
@@ -264,37 +300,43 @@ class KnowledgeStore:
         self,
         source_id: Optional[str] = None,
         target_id: Optional[str] = None,
+        *,
+        project_id: Optional[str] = None,
+        graph_id: Optional[str] = None,
     ) -> int:
-        """Delete edges, optionally filtered by source or target node.
+        """Delete edges with optional source/target/project/graph filters.
 
         Returns number of rows deleted.
 
         Without filters: deletes ALL edges (full truncate for recompile).
         With source_id: deletes edges where source node is removed.
         With target_id: deletes edges where target node is removed.
+        With graph_id (requires project_id): graph-scoped delete with the
+        legacy '' fallback when truncating the project's default graph.
         """
+        conditions: list[str] = []
+        params: list[Any] = []
+        if graph_id is not None:
+            if project_id is None:
+                raise ValueError("project_id is required when graph_id is given")
+            is_default = graph_id == default_graph_id(project_id)
+            params.extend([graph_id, is_default])
+            conditions.append(f"(graph_id = ${len(params)-1} OR (graph_id = '' AND ${len(params)}))")
+        if project_id is not None:
+            params.append(project_id)
+            conditions.append(f"project_id = ${len(params)}")
+        if source_id is not None:
+            params.append(source_id)
+            conditions.append(f"source_id = ${len(params)}")
+        if target_id is not None:
+            params.append(target_id)
+            conditions.append(f"target_id = ${len(params)}")
+        where = " AND ".join(conditions) if conditions else "TRUE"
         async with self._pool.acquire() as conn:
-            if source_id and target_id:
-                result = await conn.execute(
-                    "DELETE FROM knowledge_edges WHERE source_id = $1 AND target_id = $2",
-                    source_id,
-                    target_id,
-                )
-            elif source_id:
-                result = await conn.execute(
-                    "DELETE FROM knowledge_edges WHERE source_id = $1",
-                    source_id,
-                )
-            elif target_id:
-                result = await conn.execute(
-                    "DELETE FROM knowledge_edges WHERE target_id = $1",
-                    target_id,
-                )
-            else:
-                # Full truncate: delete all edges for recompile
-                result = await conn.execute(
-                    "DELETE FROM knowledge_edges",
-                )
+            result = await conn.execute(
+                f"DELETE FROM knowledge_edges WHERE {where}",
+                *params,
+            )
             return int(result.split()[-1])
 
     async def list_artifacts(
@@ -435,33 +477,54 @@ class KnowledgeStore:
     async def list_nodes(
         self,
         project_id: str,
+        graph_id: Optional[str] = None,
     ) -> list[KnowledgeNode]:
-        """Return all nodes for a project."""
+        """Return all nodes for a project, optionally one graph only.
+
+        Graph filtering uses the legacy fallback: rows with ``graph_id = ''``
+        count as members of the project's default graph.
+        """
+        params: list[Any] = [project_id]
+        graph_clause = ""
+        if graph_id is not None:
+            is_default = graph_id == default_graph_id(project_id)
+            params.extend([graph_id, is_default])
+            graph_clause = " AND (graph_id = $2 OR (graph_id = '' AND $3))"
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
-                """SELECT node_id, project_id, label, node_type,
+                f"""SELECT node_id, project_id, label, node_type,
                           content, content_hash, source_ir,
-                          created_at, updated_at
+                          created_at, updated_at, graph_id
                    FROM knowledge_nodes
-                   WHERE project_id = $1
+                   WHERE project_id = $1{graph_clause}
                    ORDER BY created_at""",
-                project_id,
+                *params,
             )
             return [KnowledgeNode(**dict(r)) for r in rows]
 
     async def list_edges(
         self,
         project_id: str,
+        graph_id: Optional[str] = None,
     ) -> list[KnowledgeEdge]:
-        """Return all edges for a project."""
+        """Return all edges for a project, optionally one graph only.
+
+        Same legacy '' fallback as :meth:`list_nodes`.
+        """
+        params: list[Any] = [project_id]
+        graph_clause = ""
+        if graph_id is not None:
+            is_default = graph_id == default_graph_id(project_id)
+            params.extend([graph_id, is_default])
+            graph_clause = " AND (graph_id = $2 OR (graph_id = '' AND $3))"
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
-                """SELECT edge_id, project_id, source_id, target_id,
-                          relation_type, content, created_at
+                f"""SELECT edge_id, project_id, source_id, target_id,
+                          relation_type, content, created_at, graph_id
                    FROM knowledge_edges
-                   WHERE project_id = $1
+                   WHERE project_id = $1{graph_clause}
                    ORDER BY created_at""",
-                project_id,
+                *params,
             )
             return [KnowledgeEdge(**dict(r)) for r in rows]
 

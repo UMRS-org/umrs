@@ -24,6 +24,7 @@ from typing import Any, Optional, Protocol, runtime_checkable
 
 from umrs.metrics import METRICS
 
+from .graph_registry import default_graph_id
 from .ir import KnowledgeIR
 from .store import KnowledgeEdge, KnowledgeIRRow, KnowledgeNode, KnowledgeStore
 
@@ -99,6 +100,7 @@ class PgGraphSink:
         store: Optional[KnowledgeStore] = None,
         project_id: Optional[str] = None,
         ir_ids: Optional[list[str]] = None,
+        graph_id: Optional[str] = None,
     ) -> int:
         """Truncate and recompile the Postgres knowledge graph.
 
@@ -106,6 +108,8 @@ class PgGraphSink:
             store: KnowledgeStore (defaults to the one from __init__).
             project_id: Project scope (defaults to the one from __init__).
             ir_ids: IR ids to load (defaults to the list from __init__).
+            graph_id: Target graph (defaults to the project's deterministic
+                default graph — no registry lookup needed on the write path).
 
         Returns:
             Number of nodes created/upserted.
@@ -114,28 +118,9 @@ class PgGraphSink:
         outcome = "ok"
         nodes_written = 0
         try:
-            store = store or self._store
-            if project_id is None or ir_ids is None:
-                raise ValueError("project_id and ir_ids are required for generate()")
-
-            # 1. Truncate derived nodes/edges for the project
-            await store.truncate_nodes(project_id)
-            await store.truncate_edges()
-
-            # 2. Load canonical IRs by id
-            irs = await store.list_ir_by_ids(ir_ids)
-            if not irs:
-                logger.info(
-                    "No IRs found for project %s — no nodes created", project_id
-                )
-                return 0
-
-            # 3. Extract nodes/edges from IRs
-            for ir in irs:
-                await self._upsert_node(store, ir, project_id)
-                nodes_written += 1
-                await self._upsert_edges(store, ir, project_id)
-
+            store = self._resolve_store(store, project_id, ir_ids)
+            gid = graph_id or default_graph_id(project_id)
+            nodes_written = await self._regenerate(store, project_id, gid, ir_ids)
             return nodes_written
         except Exception:
             outcome = "error"
@@ -149,11 +134,49 @@ class PgGraphSink:
             except Exception:  # noqa: BLE001
                 pass
 
+    def _resolve_store(
+        self,
+        store: Optional[KnowledgeStore],
+        project_id: Optional[str],
+        ir_ids: Optional[list[str]],
+    ) -> KnowledgeStore:
+        """Validate generate() inputs and resolve the store."""
+        if project_id is None or ir_ids is None:
+            raise ValueError("project_id and ir_ids are required for generate()")
+        return store or self._store
+
+    async def _regenerate(
+        self,
+        store: KnowledgeStore,
+        project_id: str,
+        graph_id: str,
+        ir_ids: list[str],
+    ) -> int:
+        """Truncate graph-scope rows and recompile nodes/edges from IRs."""
+        # 1. Truncate derived nodes/edges for the graph
+        await store.truncate_nodes(project_id, graph_id=graph_id)
+        await store.truncate_edges(project_id=project_id, graph_id=graph_id)
+
+        # 2. Load canonical IRs by id
+        irs = await store.list_ir_by_ids(ir_ids)
+        if not irs:
+            logger.info("No IRs found for project %s — no nodes created", project_id)
+            return 0
+
+        # 3. Extract nodes/edges from IRs
+        nodes_written = 0
+        for ir in irs:
+            await self._upsert_node(store, ir, project_id, graph_id)
+            nodes_written += 1
+            await self._upsert_edges(store, ir, project_id, graph_id)
+        return nodes_written
+
     async def _upsert_node(
         self,
         store: KnowledgeStore,
         ir: KnowledgeIRRow,
         project_id: str,
+        graph_id: str,
     ) -> None:
         """Create and upsert a single knowledge-graph node from one IR."""
         content = ir.content or {}
@@ -177,6 +200,7 @@ class PgGraphSink:
             },
             content_hash=_content_hash_for_node(ir, node_type, label),
             source_ir=ir.ir_id,
+            graph_id=graph_id,
         )
         await store.upsert_node(node)
 
@@ -185,6 +209,7 @@ class PgGraphSink:
         store: KnowledgeStore,
         ir: KnowledgeIRRow,
         project_id: str,
+        graph_id: str,
     ) -> None:
         """Create and upsert edges from one IR's extracted knowledge."""
         node_id = _node_id_from_ir(ir)
@@ -200,6 +225,7 @@ class PgGraphSink:
                 target_id=_node_id_for_dep(dep_name, ""),
                 relation_type="depends_on",
                 content={"dep_name": dep_name, "ir_id": ir.ir_id},
+                graph_id=graph_id,
             )
             await store.upsert_edge(edge)
 
@@ -212,6 +238,7 @@ class PgGraphSink:
                 target_id=_node_id_for_dep(citation, "paper"),
                 relation_type="cites",
                 content={"citation": citation, "ir_id": ir.ir_id},
+                graph_id=graph_id,
             )
             await store.upsert_edge(edge)
 
@@ -224,6 +251,7 @@ class PgGraphSink:
                 target_id=_algo_node_id(algo),
                 relation_type="implements",
                 content={"algorithm": algo, "ir_id": ir.ir_id},
+                graph_id=graph_id,
             )
             await store.upsert_edge(edge)
 

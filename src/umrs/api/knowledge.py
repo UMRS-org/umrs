@@ -73,6 +73,17 @@ class UnderstandResponse(BaseModel):
     coverage_score: float
 
 
+class UnderstandRequest(BaseModel):
+    """Optional body — agent-originated understand requires a proposal."""
+
+    proposal_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Approved graph-extension proposal id — required for agent actors"
+        ),
+    )
+
+
 class VerifyRequest(BaseModel):
     question: str = Field(..., min_length=1, description="Verification question")
 
@@ -374,8 +385,13 @@ async def get_project_graph_pg(
     """
     import dataclasses
 
+    from umrs.knowledge.graph_registry import GraphRegistryStore
     from umrs.knowledge.store import KnowledgeStore
 
+    sync_pool = getattr(request.app.state, "umrs_db_pool", None)
+    if sync_pool is not None:
+        # Materialize the default graph so legacy projects appear in the registry.
+        GraphRegistryStore(sync_pool).ensure_default_graph(project_id)
     pool = await knowledge_asyncpg_pool(request)
     store = KnowledgeStore(pool)
     nodes = (await store.list_nodes(project_id))[:node_limit]
@@ -415,10 +431,33 @@ async def submit_approval(req: ApprovalRequest) -> dict[str, Any]:
 
 @router.post("/understand", response_model=UnderstandResponse)
 async def understand_project(
+    request: Request,
+    body: Optional[UnderstandRequest] = None,
     project_id: str = Depends(get_project_id),
     config: S3Config = Depends(get_s3_config),
 ) -> UnderstandResponse:
-    """Extract structured knowledge and build the project knowledge graph."""
+    """Extract structured knowledge and build the project knowledge graph.
+
+    Agent-originated calls (x-r4-actor: agent) require an approved
+    graph-extension proposal targeting the project's default graph (0069).
+    The default graph is materialized so existing projects appear in the
+    registry without manual migration.
+    """
+    from umrs.api._knowledge_mutation_guard import (
+        enforce_graph_mutation_authorization,
+        mark_proposal_executed,
+        request_actor,
+        request_session_id,
+    )
+    from umrs.knowledge.graph_registry import GraphRegistryStore, default_graph_id
+
+    proposal_id = body.proposal_id if body else None
+    enforce_graph_mutation_authorization(
+        request,
+        target_graph_id=default_graph_id(project_id),
+        proposal_id=proposal_id,
+    )
+
     project = build_research_project(project_id, config)
     try:
         project.understand()
@@ -429,6 +468,18 @@ async def understand_project(
     from umrs.api.knowledge_graph import register_project_graph
 
     register_project_graph(project_id, project.umrs_knowledge_graph.graph)
+
+    pool = getattr(request.app.state, "umrs_db_pool", None)
+    if pool is not None:
+        GraphRegistryStore(pool).ensure_default_graph(project_id)
+    mark_proposal_executed(
+        request,
+        proposal_id,
+        actor=request_actor(request),
+        session_id=request_session_id(request),
+        operation="understand",
+        extra={"project_id": project_id},
+    )
 
     artifacts = project.knowledge_store.list_artifacts()
     coverage_score = (
