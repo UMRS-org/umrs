@@ -218,7 +218,7 @@ def inject_context_into_messages(
 # =============================================================================
 
 
-def retrieve_context(
+async def retrieve_context(
     config: AssistantConfig,
     query: str,
     *,
@@ -237,8 +237,8 @@ def retrieve_context(
         payload["xp_name"] = project_id
 
     try:
-        with httpx.Client(timeout=10.0, trust_env=False) as client:
-            resp = client.post(f"{config.rag_url}/rag/search", json=payload)
+        async with httpx.AsyncClient(timeout=10.0, trust_env=False) as client:
+            resp = await client.post(f"{config.rag_url}/rag/search", json=payload)
         if resp.status_code != 200:
             return []
         results = resp.json().get("results", [])
@@ -255,7 +255,7 @@ def retrieve_context(
     return sources
 
 
-def augment_messages(
+async def augment_messages(
     config: AssistantConfig,
     messages: list[dict[str, Any]],
     *,
@@ -267,7 +267,7 @@ def augment_messages(
     query = extract_last_user_query(messages)
     if not query:
         return messages
-    sources = retrieve_context(
+    sources = await retrieve_context(
         config, query, project_id=project_id, top_k=top_k, threshold=threshold
     )
     return inject_context_into_messages(messages, build_context_block(sources))
@@ -367,7 +367,7 @@ async def chat_completions(request: Request) -> Any:
 
     messages = body.get("messages") or []
     if rag_enabled and isinstance(messages, list) and messages:
-        body["messages"] = augment_messages(
+        body["messages"] = await augment_messages(
             config, messages, project_id=project_id, top_k=top_k, threshold=threshold
         )
 

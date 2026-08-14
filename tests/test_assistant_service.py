@@ -130,14 +130,13 @@ def test_config_prefers_litellm_master_key(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_augment_messages_injects_when_sources_returned(monkeypatch):
-    monkeypatch.setattr(
-        svc,
-        "retrieve_context",
-        lambda *_a, **_k: [{"content": "knowledge", "metadata": {}}],
-    )
+async def test_augment_messages_injects_when_sources_returned(monkeypatch):
+    async def _fake_retrieve(*_a, **_k):
+        return [{"content": "knowledge", "metadata": {}}]
+
+    monkeypatch.setattr(svc, "retrieve_context", _fake_retrieve)
     config = svc._resolve_config()
-    out = svc.augment_messages(
+    out = await svc.augment_messages(
         config,
         [{"role": "user", "content": "hi"}],
         project_id="p1",
@@ -148,19 +147,25 @@ def test_augment_messages_injects_when_sources_returned(monkeypatch):
     assert "knowledge" in out[0]["content"]
 
 
-def test_augment_messages_passthrough_when_no_sources(monkeypatch):
-    monkeypatch.setattr(svc, "retrieve_context", lambda *_a, **_k: [])
+async def test_augment_messages_passthrough_when_no_sources(monkeypatch):
+    async def _fake_retrieve(*_a, **_k):
+        return []
+
+    monkeypatch.setattr(svc, "retrieve_context", _fake_retrieve)
     config = svc._resolve_config()
     messages = [{"role": "user", "content": "hi"}]
     assert (
-        svc.augment_messages(config, messages, project_id=None, top_k=3, threshold=0.7) == messages
+        await svc.augment_messages(
+            config, messages, project_id=None, top_k=3, threshold=0.7
+        )
+        == messages
     )
 
 
-def test_augment_messages_passthrough_when_no_query(monkeypatch):
+async def test_augment_messages_passthrough_when_no_query(monkeypatch):
     called = {"n": 0}
 
-    def _spy(*a, **k):
+    async def _spy(*_a, **_k):
         called["n"] += 1
         return []
 
@@ -168,7 +173,8 @@ def test_augment_messages_passthrough_when_no_query(monkeypatch):
     config = svc._resolve_config()
     messages = [{"role": "system", "content": "s"}]
     assert (
-        svc.augment_messages(config, messages, project_id="p", top_k=3, threshold=0.7) == messages
+        await svc.augment_messages(config, messages, project_id="p", top_k=3, threshold=0.7)
+        == messages
     )
     assert called["n"] == 0
 
@@ -219,7 +225,11 @@ def test_chat_completions_strips_extensions_and_forwards(monkeypatch, client):
             return FakeResp()
 
     monkeypatch.setattr(svc.httpx, "AsyncClient", FakeAsyncClient)
-    monkeypatch.setattr(svc, "retrieve_context", lambda *_a, **_k: [])
+
+    async def _fake_retrieve(*_a, **_k):
+        return []
+
+    monkeypatch.setattr(svc, "retrieve_context", _fake_retrieve)
 
     resp = client.post(
         "/v1/chat/completions",
@@ -254,7 +264,11 @@ def test_chat_completions_upstream_failure_returns_502(monkeypatch, client):
             raise RuntimeError("boom")
 
     monkeypatch.setattr(svc.httpx, "AsyncClient", FailingClient)
-    monkeypatch.setattr(svc, "retrieve_context", lambda *_a, **_k: [])
+
+    async def _fake_retrieve(*_a, **_k):
+        return []
+
+    monkeypatch.setattr(svc, "retrieve_context", _fake_retrieve)
 
     resp = client.post(
         "/v1/chat/completions",
@@ -284,31 +298,31 @@ class _BoomHttpClient:
     def __init__(self, *_a, **_k):
         pass
 
-    def __enter__(self):
+    async def __aenter__(self):
         raise ConnectionError("upstream refused")
 
-    def __exit__(self, *_a):
+    async def __aexit__(self, *_a):
         return False
 
 
 class _StatusHttpClient:
     def __init__(self, status_code: int, payload: dict | None = None):
-        self._resp = _FakeResp(status_code, payload or {})
+        self._resp = FakeResp(status_code, payload or {})
 
     def __call__(self, *_a, **_k):
         return self
 
-    def __enter__(self):
+    async def __aenter__(self):
         return self
 
-    def __exit__(self, *_a):
+    async def __aexit__(self, *_a):
         return False
 
-    def get(self, *_a, **_k):
+    async def get(self, *_a, **_k):
         return self._resp
 
 
-class _FakeResp:
+class FakeResp:
     def __init__(self, status_code: int, payload: dict):
         self.status_code = status_code
         self._payload = payload
@@ -318,7 +332,7 @@ class _FakeResp:
 
 
 def test_list_models_503_when_upstream_unreachable(monkeypatch, client):
-    monkeypatch.setattr(svc.httpx, "Client", _BoomHttpClient)
+    monkeypatch.setattr(svc.httpx, "AsyncClient", _BoomHttpClient)
     resp = client.get("/v1/models")
     assert resp.status_code == 503
     error = resp.json()["error"]
@@ -328,7 +342,7 @@ def test_list_models_503_when_upstream_unreachable(monkeypatch, client):
 
 
 def test_list_models_503_when_upstream_not_200(monkeypatch, client):
-    monkeypatch.setattr(svc.httpx, "Client", _StatusHttpClient(500))
+    monkeypatch.setattr(svc.httpx, "AsyncClient", _StatusHttpClient(500))
     resp = client.get("/v1/models")
     assert resp.status_code == 503
     assert "500" in resp.json()["error"]["detail"]
@@ -336,7 +350,7 @@ def test_list_models_503_when_upstream_not_200(monkeypatch, client):
 
 def test_list_models_passes_through_live_upstream(monkeypatch, client):
     payload = {"object": "list", "data": [{"id": "qwen-live", "object": "model"}]}
-    monkeypatch.setattr(svc.httpx, "Client", _StatusHttpClient(200, payload))
+    monkeypatch.setattr(svc.httpx, "AsyncClient", _StatusHttpClient(200, payload))
     resp = client.get("/v1/models")
     assert resp.status_code == 200
     assert resp.json()["data"][0]["id"] == "qwen-live"
