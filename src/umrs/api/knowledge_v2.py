@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 
 from umrs.api.files import S3Config, get_project_id, get_s3_config
 from umrs.jobs.models import JobType
+from umrs.knowledge.graph_registry import default_graph_id
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +36,22 @@ class IngestRequest(BaseModel):
     project_id: Optional[str] = Field(None, description="Project ID override")
     allow_domains: Optional[list[str]] = Field(
         None, description="Domain allowlist for remote sources"
+    )
+    proposal_id: Optional[str] = Field(
+        None,
+        description=(
+            "Approved graph-extension proposal id — required when the caller "
+            "is an agent (x-r4-actor: agent); human-initiated calls omit it"
+        ),
+    )
+    graph_id: Optional[str] = Field(
+        None,
+        description=(
+            "Target knowledge graph (id or name) for this ingest. When absent, "
+            "knowledge lands in the project's default graph. Named graphs must "
+            "exist and be active; their registry entry may carry a different "
+            "or no project association for shared graphs."
+        ),
     )
 
 
@@ -185,16 +202,54 @@ class EmitWorkflowRequest(BaseModel):
 # -- Routes --
 
 
+def _resolve_ingest_target(
+    request: Request, project_id: str, graph_ref: Optional[str]
+) -> str:
+    """Resolve the ingest target graph (default: the project's default graph).
+
+    Raises 400 for unknown archived/missing named graphs (a typo must never
+    silently reinterpret into the default graph).
+    """
+    from umrs.knowledge.graph_registry import GraphRegistryStore
+
+    if not graph_ref:
+        return default_graph_id(project_id)
+    pool = getattr(request.app.state, "umrs_db_pool", None)
+    if pool is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Graph registry requires the database (named-graph target)",
+        )
+    graph = GraphRegistryStore(pool).resolve_graph(graph_ref)
+    if graph is None:
+        raise HTTPException(
+            status_code=400, detail=f"Unknown target graph {graph_ref!r}"
+        )
+    if graph.status != "active":
+        raise HTTPException(
+            status_code=400, detail=f"Graph {graph_ref!r} is {graph.status}"
+        )
+    return graph.graph_id
+
+
 @router.post("/ingest")
 async def trigger_ingest(
     body: IngestRequest,
+    request: Request,
     project_id: str = Depends(get_project_id),
 ) -> dict[str, Any]:
     """Trigger a KNOWLEDGE_INGEST durable job.
 
     Accepts source specs, optionally with allow_domains for remote sources.
-    Returns job_id for tracking.
+    Returns job_id for tracking. Agent-originated ingests require an approved
+    graph-extension proposal (0069 mutation guard).
     """
+    from umrs.api._knowledge_mutation_guard import (
+        enforce_graph_mutation_authorization,
+        mark_proposal_executed,
+        request_actor,
+        request_session_id,
+    )
     from umrs.server.durable_job_runtime import get_runtime
 
     runtime = get_runtime()
@@ -202,6 +257,13 @@ async def trigger_ingest(
         raise HTTPException(
             status_code=503, detail="UMRS durable job runtime not available"
         )
+
+    target_graph_id = _resolve_ingest_target(request, project_id, body.graph_id)
+    enforce_graph_mutation_authorization(
+        request,
+        target_graph_id=target_graph_id,
+        proposal_id=body.proposal_id,
+    )
 
     sources = body.sources if body.sources else []
     allow_domains = body.allow_domains if body.allow_domains else []
@@ -211,6 +273,10 @@ async def trigger_ingest(
         "allow_domains": allow_domains,
         "project_id": project_id,
     }
+    if body.proposal_id:
+        spec["proposal_id"] = body.proposal_id
+    if body.graph_id:
+        spec["graph_id"] = target_graph_id
 
     try:
         job_id = await runtime.submit_job_sync(
@@ -219,6 +285,14 @@ async def trigger_ingest(
             spec=spec,
         )
         logger.info("Knowledge ingest queued: %s", job_id)
+        mark_proposal_executed(
+            request,
+            body.proposal_id,
+            actor=request_actor(request),
+            session_id=request_session_id(request),
+            operation="knowledge_ingest",
+            extra={"job_id": job_id},
+        )
         return {
             "job_id": job_id,
             "job_type": JobType.KNOWLEDGE_INGEST.value,
@@ -269,6 +343,51 @@ async def list_artifacts(
         raise HTTPException(status_code=500, detail=str(exc))
 
 
+def _lint_source(checks: list, source: str, file_path: str) -> list[dict[str, Any]]:
+    """Run every lint check over one source blob."""
+    findings: list[dict[str, Any]] = []
+    for check in checks:
+        findings.extend(check(source, file_path))
+    return findings
+
+
+def _lint_request_checks() -> list:
+    """Lazily import the lint checks (keeps module import cheap)."""
+    from umrs.knowledge.lint_engine import (
+        check_complexity,
+        check_docstrings,
+        check_import_boundary,
+        check_syntax,
+        check_unused_variables,
+    )
+
+    return [
+        check_syntax,
+        check_complexity,
+        check_unused_variables,
+        check_import_boundary,
+        check_docstrings,
+    ]
+
+
+def _collect_lint_findings(body: LintRequest) -> list[dict[str, Any]]:
+    """Run lint checks over the request payload (source_code or files)."""
+    checks = _lint_request_checks()
+    findings: list[dict[str, Any]] = []
+    if body.source_code:
+        for file_path, source in body.source_code.items():
+            findings.extend(_lint_source(checks, source, file_path))
+        return findings
+    for file_path in body.files or []:
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                source = f.read()
+            findings.extend(_lint_source(checks, source, file_path))
+        except OSError:
+            pass
+    return findings
+
+
 @router.post("/lint")
 async def run_lint(
     body: LintRequest,
@@ -280,36 +399,7 @@ async def run_lint(
     Returns structured findings.
     """
     try:
-        from umrs.knowledge.lint_engine import (
-            check_complexity,
-            check_docstrings,
-            check_import_boundary,
-            check_syntax,
-            check_unused_variables,
-        )
-
-        all_findings: list[dict[str, Any]] = []
-
-        if body.source_code:
-            for file_path, source in body.source_code.items():
-                all_findings.extend(check_syntax(source, file_path))
-                all_findings.extend(check_complexity(source, file_path))
-                all_findings.extend(check_unused_variables(source, file_path))
-                all_findings.extend(check_import_boundary(source, file_path))
-                all_findings.extend(check_docstrings(source, file_path))
-        elif body.files:
-            for file_path in body.files:
-                try:
-                    with open(file_path, "r", encoding="utf-8") as f:
-                        source = f.read()
-                    all_findings.extend(check_syntax(source, file_path))
-                    all_findings.extend(check_complexity(source, file_path))
-                    all_findings.extend(check_unused_variables(source, file_path))
-                    all_findings.extend(check_import_boundary(source, file_path))
-                    all_findings.extend(check_docstrings(source, file_path))
-                except OSError:
-                    pass
-
+        all_findings = _collect_lint_findings(body)
         blocking = sum(1 for f in all_findings if f["severity"] == "BLOCKING")
         warnings = sum(1 for f in all_findings if f["severity"] == "WARNING")
         info = sum(1 for f in all_findings if f["severity"] == "INFO")

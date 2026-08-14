@@ -947,8 +947,13 @@ async def _run_understand(
 
         result.ir_ids.append(ir.ir_id)
 
-        # Build and upsert graph nodes/edges
-        nodes = _build_nodes(artifact_id, ir.ir_id, parsed, project_id)
+        # Build and upsert graph nodes/edges (into the target graph: the
+        # requesting named graph when the ingest ran with graph_id in spec,
+        # otherwise the project's default graph)
+        target_graph_id = str(job.spec.get("graph_id") or "")
+        nodes = _build_nodes(
+            artifact_id, ir.ir_id, parsed, project_id, graph_id=target_graph_id
+        )
         edges = _build_edges(nodes)
 
         try:
@@ -1027,18 +1032,34 @@ def _parse_for_understand(
         return None
 
 
+def _node_id_scope(project_id: str, graph_id: str) -> str:
+    """Id prefix for named graphs (default graph keeps legacy node ids)."""
+    from umrs.knowledge.graph_registry import default_graph_id
+
+    if not graph_id or graph_id == default_graph_id(project_id):
+        return ""
+    return f"{graph_id}-"
+
+
 def _build_nodes(
     artifact_id: str,
     ir_id: str,
     parsed: dict[str, Any],
     project_id: str,
+    graph_id: str = "",
 ) -> list:  # list[KnowledgeNode]
-    """Build KnowledgeNode entries from parsed code output."""
+    """Build KnowledgeNode entries from parsed code output.
+
+    When ``graph_id`` targets a NAMED graph (not the project default), node
+    ids are prefixed with it so one artifact can live in multiple graphs
+    without node_id collisions.
+    """
     from umrs.knowledge.store import KnowledgeNode
 
+    scope = _node_id_scope(project_id, graph_id)
     nodes: list = []
 
-    file_id = f"node-file-{artifact_id}"
+    file_id = f"node-file-{scope}{artifact_id}"
     nodes.append(
         KnowledgeNode(
             node_id=file_id,
@@ -1046,13 +1067,14 @@ def _build_nodes(
             label=artifact_id,
             node_type="file",
             content={"artifact_id": artifact_id, "ir_id": ir_id},
-            content_hash=_sha256_hex(f"file-{artifact_id}".encode()),
+            content_hash=_sha256_hex(f"file-{scope}{artifact_id}".encode()),
             source_ir=ir_id,
+            graph_id=graph_id,
         )
     )
 
     for cls_name in parsed.get("classes", []):
-        nid = f"node-class-{cls_name}-{artifact_id}"
+        nid = f"node-class-{scope}{cls_name}-{artifact_id}"
         nodes.append(
             KnowledgeNode(
                 node_id=nid,
@@ -1060,13 +1082,14 @@ def _build_nodes(
                 label=cls_name,
                 node_type="class",
                 content={"artifact_id": artifact_id, "parent": file_id},
-                content_hash=_sha256_hex(f"class-{cls_name}-{artifact_id}".encode()),
+                content_hash=_sha256_hex(f"class-{scope}{cls_name}-{artifact_id}".encode()),
                 source_ir=ir_id,
+                graph_id=graph_id,
             )
         )
 
     for fn_name in parsed.get("functions", []):
-        nid = f"node-fn-{fn_name}-{artifact_id}"
+        nid = f"node-fn-{scope}{fn_name}-{artifact_id}"
         nodes.append(
             KnowledgeNode(
                 node_id=nid,
@@ -1074,8 +1097,9 @@ def _build_nodes(
                 label=fn_name,
                 node_type="function",
                 content={"artifact_id": artifact_id},
-                content_hash=_sha256_hex(f"fn-{fn_name}-{artifact_id}".encode()),
+                content_hash=_sha256_hex(f"fn-{scope}{fn_name}-{artifact_id}".encode()),
                 source_ir=ir_id,
+                graph_id=graph_id,
             )
         )
 
@@ -1099,6 +1123,7 @@ def _build_edges(nodes: list) -> list:  # list[KnowledgeEdge]
                             target_id=node.node_id,
                             relation_type="contains",
                             content={"role": "parent"},
+                            graph_id=node.graph_id,
                         )
                     )
         elif node.node_type == "function":
@@ -1112,6 +1137,7 @@ def _build_edges(nodes: list) -> list:  # list[KnowledgeEdge]
                             target_id=node.node_id,
                             relation_type="defines",
                             content={"role": "method"},
+                            graph_id=node.graph_id,
                         )
                     )
                     break
@@ -1821,6 +1847,9 @@ def _enqueue_understand_job(
                 "sources": sources,
                 "project_id": project_id,
                 "parent_job_id": job.job_id,
+                # Named-graph ingestion (0069): the parent ingest's target graph
+                # (absent ⇒ default project graph)
+                "graph_id": job.spec.get("graph_id", ""),
             },
             priority=job.priority,
             max_attempts=3,
@@ -1849,6 +1878,8 @@ def _create_produced_by_edges(
     if not (deduped and _resolve_knowledge_dsn()):
         return
     try:
+        # Named-graph ingestion (0069): provenance goes to the target graph.
+        graph_id = str(job.spec.get("graph_id") or "")
 
         async def _create_edges():
             async with _open_pool() as pool:
@@ -1876,6 +1907,7 @@ def _create_produced_by_edges(
                         project_id=project_id,
                         label=f"job:{job.job_id}",
                         node_type="entity",
+                        graph_id=graph_id,
                         content={
                             "job_id": job.job_id,
                             "job_type": job_type_value,
@@ -1897,7 +1929,8 @@ def _create_produced_by_edges(
                 # knowledge_nodes (FK knowledge_edges_source_id_fkey —
                 # artifacts live in knowledge_artifacts, a different table).
                 await _upsert_artifact_nodes(
-                    store, deduped, project_id, job, attempt, workflow, step
+                    store, deduped, project_id, job, attempt, workflow, step,
+                    graph_id=graph_id,
                 )
 
                 # Create PRODUCED_BY edges
@@ -1915,6 +1948,7 @@ def _create_produced_by_edges(
                             attempt,
                             workflow,
                             step,
+                            graph_id=graph_id,
                         )
                     except Exception as edge_exc:
                         # Authorization constraint: never silently swallow a
@@ -1952,6 +1986,7 @@ async def _upsert_artifact_nodes(
     attempt: Any,
     workflow: str,
     step: str,
+    graph_id: str = "",
 ) -> None:
     """Upsert artifact entity nodes so produced_by edge endpoints resolve.
 
@@ -1986,6 +2021,7 @@ async def _upsert_artifact_nodes(
                 content_hash=_sha256_hex(f"artifact-node-{aid}".encode()),
                 # NULL, not "" (knowledge_nodes_source_ir_fkey).
                 source_ir=None,
+                graph_id=graph_id,
             )
         )
 
@@ -1999,6 +2035,7 @@ async def _upsert_produced_edge(
     attempt: Any,
     workflow: str,
     step: str,
+    graph_id: str = "",
 ) -> None:
     """Upsert one artifact → job produced_by edge (best-effort)."""
     from umrs.knowledge.store import KnowledgeEdge
@@ -2010,6 +2047,7 @@ async def _upsert_produced_edge(
             source_id=aid,
             target_id=prod_entity_id,
             relation_type="produced_by",
+            graph_id=graph_id,
             content={
                 "workflow": workflow,
                 "step": step,
