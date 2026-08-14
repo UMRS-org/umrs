@@ -223,7 +223,7 @@ def test_streaming_fails_open_when_assistant_unreachable(client, routed):
 def test_rag_augmentation_hook_fires_in_chain(client, monkeypatch, received):
     sentinel = {"role": "system", "content": "INJECTED_CONTEXT"}
 
-    def _fake_augment(_config, messages, **_kwargs):
+    async def _fake_augment(_config, messages, **_kwargs):
         return [sentinel, *messages]
 
     monkeypatch.setattr(assistant_mod, "augment_messages", _fake_augment)
