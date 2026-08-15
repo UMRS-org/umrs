@@ -1,0 +1,155 @@
+"""Mutation-guard hardening tests (0069, Phase 5 re-audit).
+
+Two agent bypass paths closed:
+  - POST /umrs/knowledge/restore wrote persistent graph content with no
+    proposal requirement for agent actors
+  - POST/PATCH /umrs/knowledge/graphs accepted agent actors (graph spam /
+    archive abuse) — registry lifecycle is human-only now
+"""
+
+from __future__ import annotations
+
+import json
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+from fake_pg_pool import FakePool
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+from umrs.api.bundle_restore import router as restore_router
+from umrs.api.knowledge_graphs import router as graphs_router
+from umrs.knowledge.graph_registry import default_graph_id
+
+
+def _proposal_row(**overrides):
+    row = {
+        "proposal_id": "gp-1",
+        "target_graph_id": default_graph_id("proj-a"),
+        "reason": "gap",
+        "missing_information": [],
+        "source_artifacts": [],
+        "proposed_operations": [],
+        "created_by": "agent",
+        "session_id": "s-1",
+        "status": "pending",
+        "decided_by": "",
+        "decided_at": None,
+        "execution": None,
+        "created_at": None,
+        "updated_at": None,
+    }
+    row.update(overrides)
+    return row
+
+
+def _engine():
+    engine = MagicMock()
+    engine.import_project = AsyncMock(return_value=SimpleNamespace(to_dict=lambda: {"nodes": 1}))
+    return engine
+
+
+def _restore_client(monkeypatch, script, engine):
+    app = FastAPI()
+    app.include_router(restore_router)
+    app.state.umrs_db_pool = FakePool(script)
+
+    import umrs.api._asyncpg_pool as pool_mod
+    import umrs.knowledge.bundle_import as bundle_import
+
+    monkeypatch.setattr(pool_mod, "knowledge_asyncpg_pool", AsyncMock(return_value=object()))
+    monkeypatch.setattr(bundle_import, "KnowledgeImportEngine", lambda **_kwargs: engine)
+    return TestClient(app, raise_server_exceptions=False), app.state.umrs_db_pool
+
+
+@pytest.fixture
+def bundle_dir(tmp_path):
+    (tmp_path / "manifest.json").write_text(json.dumps({"project_id": "proj-a"}))
+    return str(tmp_path)
+
+
+class TestRestoreGuard:
+    def test_agent_restore_without_proposal_is_409(self, monkeypatch, bundle_dir):
+        engine = _engine()
+        client, _ = _restore_client(monkeypatch, [], engine)
+        resp = client.post(
+            "/umrs/knowledge/restore",
+            json={"bundle_dir": bundle_dir},
+            headers={"x-r4-actor": "agent", "x-r4-session-id": "s-1"},
+        )
+        assert resp.status_code == 409
+        assert resp.json()["detail"]["error"] == "proposal_required"
+        engine.import_project.assert_not_called()
+
+    def test_agent_restore_target_mismatch_is_409(self, monkeypatch, bundle_dir):
+        engine = _engine()
+        client, _ = _restore_client(
+            monkeypatch,
+            [_proposal_row(status="approved", target_graph_id="g-other")],
+            engine,
+        )
+        resp = client.post(
+            "/umrs/knowledge/restore",
+            json={"bundle_dir": bundle_dir, "proposal_id": "gp-1"},
+            headers={"x-r4-actor": "agent"},
+        )
+        assert resp.status_code == 409
+        assert resp.json()["detail"]["error"] == "proposal_target_mismatch"
+        engine.import_project.assert_not_called()
+
+    def test_agent_restore_approved_executes_with_provenance(self, monkeypatch, bundle_dir):
+        engine = _engine()
+        client, pool = _restore_client(
+            monkeypatch,
+            [
+                _proposal_row(status="approved"),  # guard: get_proposal
+                None,  # mark_executed: update
+                _proposal_row(status="executed"),  # mark_executed: re-read
+            ],
+            engine,
+        )
+        resp = client.post(
+            "/umrs/knowledge/restore",
+            json={"bundle_dir": bundle_dir, "proposal_id": "gp-1"},
+            headers={"x-r4-actor": "agent", "x-r4-session-id": "s-1"},
+        )
+        assert resp.status_code == 200, resp.text
+        engine.import_project.assert_awaited_once()
+        assert "status = 'executed'" in pool.record[1][0]
+
+    def test_human_restore_unchanged(self, monkeypatch, bundle_dir):
+        engine = _engine()
+        client, _ = _restore_client(monkeypatch, [], engine)
+        resp = client.post("/umrs/knowledge/restore", json={"bundle_dir": bundle_dir})
+        assert resp.status_code == 200, resp.text
+        engine.import_project.assert_awaited_once()
+
+
+def _graph_client(script):
+    app = FastAPI()
+    app.include_router(graphs_router)
+    app.state.umrs_db_pool = FakePool(script)
+    return TestClient(app), app.state.umrs_db_pool
+
+
+class TestRegistryWriteGuard:
+    def test_agent_create_is_403(self):
+        client, _ = _graph_client([])
+        resp = client.post(
+            "/umrs/knowledge/graphs",
+            json={"name": "spam-graph"},
+            params={"caller_user_id": "alice", "caller_project_id": "proj-a"},
+            headers={"x-r4-actor": "agent"},
+        )
+        assert resp.status_code == 403
+        assert resp.json()["detail"]["error"] == "registry_write_forbidden_for_agent"
+
+    def test_agent_update_and_archive_is_403(self):
+        client, _ = _graph_client([])
+        resp = client.patch(
+            "/umrs/knowledge/graphs/g-abc",
+            json={"status": "archived"},
+            headers={"x-r4-actor": "agent"},
+        )
+        assert resp.status_code == 403
+        assert resp.json()["detail"]["error"] == "registry_write_forbidden_for_agent"
