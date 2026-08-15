@@ -9,6 +9,7 @@ import threading
 import time
 from concurrent.futures import TimeoutError as FutureTimeoutError
 
+from umrs.jobs.models import JobType
 from umrs.metrics import METRICS
 from umrs.orchestrator.durable import DurableOrchestrationService
 from umrs.server.job_tracking_handler import (
@@ -63,6 +64,28 @@ class DurableJobRuntime:
         if self._command_backend is None:
             raise RuntimeError("DurableJobRuntime not started")
         return self._command_backend
+
+    async def submit_job_sync(
+        self,
+        *,
+        job_type: JobType,
+        project_id: str,
+        spec: dict,
+        user_id: str = "",
+    ) -> str:
+        """Submit a durable job from async HTTP handlers (compatibility shim).
+
+        The knowledge ingest/export routes call this exact signature. The
+        orchestration service is synchronous, so the submission runs in the
+        default executor to keep the event loop unblocked.
+        """
+        return await asyncio.to_thread(
+            self._service.submit_job,
+            job_type=job_type,
+            project_id=project_id,
+            user_id=user_id,
+            spec=spec,
+        )
 
     def start(self, timeout: float = 30.0) -> DurableJobCommandBackend:
         with self._lock:
@@ -218,7 +241,11 @@ def start_durable_job_runtime_from_env(
     """
     import os
 
-    if os.environ.get("UMRS_DISABLE_DURABLE_RUNTIME", "").lower() in ("1", "true", "yes"):
+    if os.environ.get("UMRS_DISABLE_DURABLE_RUNTIME", "").lower() in (
+        "1",
+        "true",
+        "yes",
+    ):
         logger.info("Durable job runtime disabled via UMRS_DISABLE_DURABLE_RUNTIME")
         return None
 
