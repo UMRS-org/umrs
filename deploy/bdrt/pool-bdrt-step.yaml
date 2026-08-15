@@ -64,6 +64,60 @@ endpoints:
         --enable-prefix-caching
 
 
+  # ── Qwen3.8-27B-NVFP4 (single node → spark) ─────────────────────────
+  #  27B DENSE (SwiGLU, no experts) NVFP4 in compressed-tensors format
+  #  (dynamic 4-bit weights/activations; 8-bit groups for sensitive modules),
+  #  multimodal (vision tower). Source recipe:
+  #  github.com/MiaAI-Lab/Qwen3.8-27B-DGX-Spark-RTX-6000 (vLLM ≥0.25.0 required;
+  #  nightly-aarch64 currently ships v0.27.x).
+  #  GB10/SM121 path notes: the checkpoint carries a calibrated FP8
+  #  kv_cache_scheme — vLLM "auto" applies it (2× KV memory savings); FP8 KV on
+  #  sm_121 forces --attention-backend triton_attn (FA2 cannot serve FP8 KV).
+  #  YaRN 1M ctx via --hf-overrides rope_parameters (factor 4.0 over native
+  #  262,144). unsloth ships MTP drafter weights (model_mtp.safetensors);
+  #  spec decode k=2 per recipe — kept ON, with the deepseek-cap-120 crash family
+  #  explicitly out of scope here (no DSV4 sparse-MLA backend involved; if the
+  #  first bring-up dies at any drafter stage, drop this spec block wholesale).
+  - name: qwen3.8-27b-nvfp4
+    model: Qwen3.8-27B-NVFP4
+    aliases:
+      - qwen38-27b-nvfp4
+      - unsloth/Qwen3.8-27B-NVFP4
+    tier: system
+    node_count: 1
+    partition: spark
+    max_model_len: 1000000
+    env_vars:
+      VLLM_HOST_MODEL_PATH: "/home/mnagaso/umrs_models/hub/models--unsloth--Qwen3.8-27B-NVFP4/snapshots"
+      VLLM_PATH_TO_HUGGINGFACE: "/home/mnagaso/umrs_models"
+      VLLM_MODEL: "unsloth/Qwen3.8-27B-NVFP4"
+      VLLM_TOKENIZER: "unsloth/Qwen3.8-27B-NVFP4"
+      VLLM_GPU_MEM_UTIL: "0.84"
+      VLLM_MAX_NUM_SEQS: "4"
+      VLLM_TOOL_CALL_PARSER: "qwen3_coder"
+      VLLM_REASONING_PARSER: "qwen3"
+      VLLM_TRUST_REMOTE_CODE: "1"
+      VLLM_FLOAT32_MATMUL_PRECISION: "high"
+      CUTE_DSL_ARCH: "sm_121a"
+      VLLM_ALLOW_LONG_MAX_MODEL_LEN: "1"
+      VLLM_MAX_MODEL_LEN: "1000000"
+      VLLM_DOCKER_IMAGE: "docker.io/vllm/vllm-openai:nightly-aarch64"
+      VLLM_SPECULATIVE_CONFIG: '{"method":"mtp","num_speculative_tokens":2}'
+      RCCS_SKIP_CDI: "1"
+      VLLM_EXTRA_ARGS: >-
+        --quantization compressed-tensors
+        --attention-backend triton_attn
+        --hf-overrides {"text_config":{"rope_parameters":{"mrope_interleaved":true,"mrope_section":[11,11,10],"rope_type":"yarn","rope_theta":10000000,"partial_rotary_factor":0.25,"factor":4.0,"original_max_position_embeddings":262144}}}
+        --max-num-batched-tokens 8192
+        --enable-chunked-prefill
+        --enable-prefix-caching
+        --skip-mm-profiling
+        --tool-call-parser qwen3_coder
+        --enable-auto-tool-choice
+        --media-io-kwargs {"video":{"num_frames":-1}}
+      CONTAINERS_STORAGE_CONF: "/home/mnagaso/.config/containers/storage-native.conf"
+
+
   # ── Step-3.7-Flash-148B (2 nodes → edge-double) ─────────────────────
   #  148B MoE, NVFP4 quantized (base: stepfun-ai/Step-3.7-Flash-NVFP4).
   #  ~50-60 GB active GPU mem per node → requires 2× GB10, TP=2.
