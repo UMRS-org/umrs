@@ -11,11 +11,21 @@ a durable-job variant can layer on later without changing the engine.
 
 from __future__ import annotations
 
+import json
 import os
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
+
+from umrs.knowledge.graph_registry import default_graph_id
+
+from ._knowledge_mutation_guard import (
+    enforce_graph_mutation_authorization,
+    mark_proposal_executed,
+    request_actor,
+    request_session_id,
+)
 
 router = APIRouter(prefix="/umrs/knowledge", tags=["knowledge-restore"])
 
@@ -36,12 +46,51 @@ class RestoreRequest(BaseModel):
         default=True,
         description="Verify manifest hash + HMAC before restoring (needs UMRS_SECRET_KEY)",
     )
+    proposal_id: str | None = Field(
+        default=None,
+        description="Approved graph-extension proposal (required for agent actors, 0069)",
+    )
+
+
+def _resolve_target_project(body: RestoreRequest) -> str:
+    """Project whose default graph the restore mutates (explicit retarget wins)."""
+    if body.project_id:
+        return body.project_id
+    manifest_path = os.path.join(body.bundle_dir, "manifest.json")
+    try:
+        with open(manifest_path, encoding="utf-8") as handle:
+            manifest = json.load(handle)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"cannot resolve restore target: unreadable manifest ({exc})",
+        ) from exc
+    project = manifest.get("project_id")
+    if not project:
+        raise HTTPException(
+            status_code=400,
+            detail="bundle manifest has no project_id — pass project_id explicitly",
+        )
+    return str(project)
 
 
 @router.post("/restore", response_model=dict[str, Any])
 async def restore_bundle(request: Request, body: RestoreRequest) -> dict[str, Any]:
-    """K4: restore a .kb bundle with manifest verification."""
+    """K4: restore a .kb bundle with manifest verification.
+
+    Restores write persistent graph content, so agent actors
+    (``x-r4-actor: agent``) need an approved graph-extension proposal
+    targeting the target project's default graph (0069 guard); human
+    restores keep the pre-existing behavior.
+    """
     from umrs.api._asyncpg_pool import knowledge_asyncpg_pool
+
+    actor = request_actor(request)
+    if actor == "agent":
+        target = default_graph_id(_resolve_target_project(body))
+        enforce_graph_mutation_authorization(
+            request, target_graph_id=target, proposal_id=body.proposal_id
+        )
 
     pool = await knowledge_asyncpg_pool(request)
 
@@ -60,5 +109,14 @@ async def restore_bundle(request: Request, body: RestoreRequest) -> dict[str, An
         )
     except BundleFormatError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if actor == "agent":
+        mark_proposal_executed(
+            request,
+            body.proposal_id,
+            actor=actor,
+            session_id=request_session_id(request),
+            operation="knowledge_restore",
+        )
 
     return {"status": "ok", "restore": result.to_dict()}

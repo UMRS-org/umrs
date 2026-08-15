@@ -101,6 +101,30 @@ def enforce_graph_mutation_authorization(
         )
 
 
+def enforce_registry_write_authorization(request: Request) -> None:
+    """Forbid agent-originated graph-registry writes (create/update/archive).
+
+    Graph lifecycle is a human decision: proposals must reference existing
+    graphs, so the proposal flow cannot authorize creation; and an archived
+    graph would silently drop it from selection. Agents extend graphs through
+    proposals — a human creates or archives them.
+    """
+    if request_actor(request) != AGENT_ACTOR:
+        return
+    raise HTTPException(
+        status_code=403,
+        detail={
+            "error": "registry_write_forbidden_for_agent",
+            "message": (
+                "Agents may not create, update, or archive knowledge graphs. "
+                "Propose changes via "
+                "POST /umrs/knowledge/graphs/{graph_id}/proposals — a human "
+                "decides; a human manages graph lifecycle."
+            ),
+        },
+    )
+
+
 def mark_proposal_executed(
     request: Request,
     proposal_id: Optional[str],

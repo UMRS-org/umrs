@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field
 
 from umrs.knowledge.graph_registry import GRAPH_STATUSES, GraphRegistryStore
 
+from ._knowledge_mutation_guard import enforce_registry_write_authorization
 from .jobs import CallerIdentity, get_caller_identity
 
 logger = logging.getLogger(__name__)
@@ -87,6 +88,7 @@ async def create_graph(
     identity: CallerIdentity = Depends(get_caller_identity),
 ) -> dict[str, Any]:
     """Create a named, independent knowledge graph."""
+    enforce_registry_write_authorization(request)
     registry = _registry(request)
     graph = registry.create_graph(
         body.name,
@@ -118,6 +120,7 @@ async def update_graph(
     request: Request,
 ) -> dict[str, Any]:
     """Update metadata or lifecycle status. Archiving is the only 'delete'."""
+    enforce_registry_write_authorization(request)
     registry = _registry(request)
     if registry.get_graph(graph_id) is None:
         raise HTTPException(status_code=404, detail=f"Graph {graph_id} not found")
