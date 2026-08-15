@@ -18,6 +18,11 @@ objects. The graph supports:
 Note: This is a new API-level module (`knowledge_graph_api`) that provides
 the public interface for the knowledge graph. The existing `knowledge_graph/`
 module contains the skeletal implementation.
+
+DEPRECATED (ADR-026, 2026-08-15): the ``sat_kg_*`` tables and this API face
+are retained for read-compatibility and the latent team-engine consumer only.
+New knowledge-graph work uses the canonical store (``umrs.knowledge`` +
+knowledge graph registry, migration 0069). Do not extend this module.
 """
 
 from __future__ import annotations
