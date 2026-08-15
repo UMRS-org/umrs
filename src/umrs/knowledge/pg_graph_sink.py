@@ -20,12 +20,13 @@ import hashlib
 import logging
 import time
 from dataclasses import dataclass
-from typing import Any, Optional, Protocol, runtime_checkable
+from typing import Any, Mapping, Optional, Protocol, runtime_checkable
 
 from umrs.metrics import METRICS
 
 from .graph_registry import default_graph_id
 from .ir import KnowledgeIR
+from .ontology import Ontology, ontology_for_graph, validate_graph_payload
 from .store import KnowledgeEdge, KnowledgeIRRow, KnowledgeNode, KnowledgeStore
 
 logger = logging.getLogger(__name__)
@@ -101,6 +102,7 @@ class PgGraphSink:
         project_id: Optional[str] = None,
         ir_ids: Optional[list[str]] = None,
         graph_id: Optional[str] = None,
+        graph: Optional[Mapping[str, Any]] = None,
     ) -> int:
         """Truncate and recompile the Postgres knowledge graph.
 
@@ -110,6 +112,10 @@ class PgGraphSink:
             ir_ids: IR ids to load (defaults to the list from __init__).
             graph_id: Target graph (defaults to the project's deterministic
                 default graph — no registry lookup needed on the write path).
+            graph: Registry row / meta mapping for the target graph. Determines
+                the binding ontology (ontology_for_graph); absent ⇒
+                DEFAULT_ONTOLOGY. The compiled payload is validated against it
+                BEFORE any rows are truncated.
 
         Returns:
             Number of nodes created/upserted.
@@ -120,7 +126,10 @@ class PgGraphSink:
         try:
             store = self._resolve_store(store, project_id, ir_ids)
             gid = graph_id or default_graph_id(project_id)
-            nodes_written = await self._regenerate(store, project_id, gid, ir_ids)
+            ontology = ontology_for_graph(graph)
+            nodes_written = await self._regenerate(
+                store, project_id, gid, ir_ids, ontology
+            )
             return nodes_written
         except Exception:
             outcome = "error"
@@ -151,19 +160,30 @@ class PgGraphSink:
         project_id: str,
         graph_id: str,
         ir_ids: list[str],
+        ontology: Ontology,
     ) -> int:
-        """Truncate graph-scope rows and recompile nodes/edges from IRs."""
-        # 1. Truncate derived nodes/edges for the graph
+        """Truncate graph-scope rows and recompile nodes/edges from IRs.
+
+        IRs are loaded and ontology-validated BEFORE truncation: a failed or
+        invalid compile leaves the existing graph rows intact. An empty IR
+        list preserves the legacy clear-graph behavior (truncate, write 0).
+        """
+        # 1. Load canonical IRs by id
+        irs = await store.list_ir_by_ids(ir_ids)
+
+        # 2. Ontology check — fail fast, existing graph untouched on violation
+        if irs:
+            _validate_against_ontology(ontology, irs)
+
+        # 3. Truncate derived nodes/edges for the graph
         await store.truncate_nodes(project_id, graph_id=graph_id)
         await store.truncate_edges(project_id=project_id, graph_id=graph_id)
 
-        # 2. Load canonical IRs by id
-        irs = await store.list_ir_by_ids(ir_ids)
         if not irs:
             logger.info("No IRs found for project %s — no nodes created", project_id)
             return 0
 
-        # 3. Extract nodes/edges from IRs
+        # 4. Extract nodes/edges from IRs
         nodes_written = 0
         for ir in irs:
             await self._upsert_node(store, ir, project_id, graph_id)
@@ -254,6 +274,32 @@ class PgGraphSink:
                 graph_id=graph_id,
             )
             await store.upsert_edge(edge)
+
+
+# ── Ontology validation ─────────────────────────────────────────────────────
+
+# extracted-content key → canonical relation produced by the extraction loops
+_EXTRACTION_RELATIONS: tuple[tuple[str, str], ...] = (
+    ("dependencies", "depends_on"),
+    ("citations", "cites"),
+    ("algorithms", "implements"),
+)
+
+
+def _validate_against_ontology(ontology: Ontology, irs: list[KnowledgeIRRow]) -> None:
+    """Fail fast when the compiled payload violates the graph's ontology."""
+    node_types: list[str] = []
+    relation_types: list[str] = []
+    for ir in irs:
+        content = ir.content or {}
+        extracted = content.get("extracted", {}) or {}
+        node_types.append(_classify_type(content.get("artifact_type", ""), extracted))
+        relation_types.extend(
+            relation for key, relation in _EXTRACTION_RELATIONS if extracted.get(key)
+        )
+    validate_graph_payload(
+        ontology, node_types=node_types, relation_types=relation_types
+    )
 
 
 # ── Deterministic id generators ────────────────────────────────────────────
