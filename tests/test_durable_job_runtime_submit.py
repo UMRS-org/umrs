@@ -11,6 +11,8 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import MagicMock
 
+from umrs.jobs.service import JobType
+from umrs.orchestrator.durable import DurableOrchestrationService
 from umrs.server.durable_job_runtime import DurableJobRuntime
 
 
@@ -52,3 +54,30 @@ def test_submit_job_sync_custom_user_id():
     )
 
     assert service.submit_job.call_args.kwargs["user_id"] == "alice"
+
+
+def test_orchestration_service_submit_job_alias():
+    """Regression for live 500: shim delegates to
+    ``DurableOrchestrationService.submit_job`` — the alias must exist and
+    forward to ``JobService.submit_job`` with ``enqueue=True``.
+    """
+    service = DurableOrchestrationService.__new__(DurableOrchestrationService)
+    job_service = MagicMock()
+    job_service.submit_job.return_value = "job-99"
+    service._job_service = job_service
+
+    job_id = service.submit_job(
+        job_type=JobType.KNOWLEDGE_INGEST,
+        project_id="proj-a",
+        spec={"sources": [{"kind": "local_file", "uri": "/data/x.json"}]},
+        user_id="alice",
+    )
+
+    assert job_id == "job-99"
+    job_service.submit_job.assert_called_once_with(
+        project_id="proj-a",
+        user_id="alice",
+        job_type=JobType.KNOWLEDGE_INGEST,
+        spec={"sources": [{"kind": "local_file", "uri": "/data/x.json"}]},
+        enqueue=True,
+    )
