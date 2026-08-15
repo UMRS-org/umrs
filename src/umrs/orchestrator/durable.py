@@ -336,6 +336,23 @@ class DurableOrchestrationService:
 
         return job_id
 
+    def submit_job(
+        self,
+        *,
+        job_type: JobType,
+        project_id: str,
+        spec: dict,
+        user_id: str = "",
+    ) -> str:
+        """Submit a durable job (sync facade used by DurableJobRuntime.submit_job_sync)."""
+        return self._job_service.submit_job(
+            project_id=project_id,
+            user_id=user_id,
+            job_type=job_type,
+            spec=spec,
+            enqueue=True,
+        )
+
     def get_job(self, job_id: str):
         """
         Get job by ID.
