@@ -459,7 +459,7 @@ class KnowledgeIngestBackend(OrchestratorBackend):
             _write_result(attempt, result)
             return f"knowledge_ingest|mode=degraded|project={project_id}"
 
-        result_str = _run_ingest_sync(
+        result_str, success_descs = _run_ingest_sync(
             job,
             attempt,
             self._s3_client,
@@ -472,12 +472,17 @@ class KnowledgeIngestBackend(OrchestratorBackend):
         # Chain KNOWLEDGE_UNDERSTAND so API-triggered ingests become queryable
         # without a manual understand call (mirrors the auto-ingest hook).
         # The child job inherits spec.graph_id — named-graph targets stay named.
+        # CRITICAL: pass the acquisition descriptors explicitly. The artifact-
+        # row insert is fire-and-forget; re-listing right here raced ahead of
+        # the commit in production and produced understand jobs with stale,
+        # empty source lists (verified live: ir_ids=0 on every chained job).
         # Best-effort: a chain failure must never fail the acquisition attempt.
         try:
             _enqueue_understand_job(
                 project_id,
                 getattr(job, "user_id", "") or "",
                 job,
+                sources=success_descs,
             )
         except Exception as exc:  # defensive — chain must never break ingest
             logger.warning("KNOWLEDGE_UNDERSTAND chain enqueue failed: %s", exc)
@@ -558,7 +563,7 @@ def _run_ingest_sync(
     source_refs: list[dict[str, Any]],
     project_id: str,
     allow_domains: Optional[list[str]],
-) -> str:
+) -> tuple[str, list[dict[str, Any]]]:
     from umrs.knowledge.sources import SourceResolver
     from umrs.knowledge.artifact_storage import ArtifactStorage
 
@@ -688,10 +693,11 @@ def _run_ingest_sync(
 
     _write_result(attempt, result)
 
-    return (
+    result_str = (
         f"knowledge_ingest|project={project_id}|"
         f"artifacts={len(success_ids)}|failed={len(result.failed_items)}"
     )
+    return result_str, success_descs
 
 
 def _put_file_sync(
