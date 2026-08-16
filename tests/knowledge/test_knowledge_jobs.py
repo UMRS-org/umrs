@@ -225,6 +225,29 @@ class TestKnowledgeIngestBackend:
             backend._init_s3({"bucket": "test-bucket"})
             assert backend._s3_client is None
 
+    def test_init_s3_bucket_env_fallback(self, monkeypatch):
+        """No spec bucket must fall back to UMRS_DATA_S3_BUCKET/S3_BUCKET env.
+
+        (Regression: the old hardcoded 'umrs-data' default failed with
+        NoSuchBucket on live deployments where only r4-data exists.)
+        """
+        fake = _make_fake_s3()
+        monkeypatch.setenv("S3_BUCKET", "r4-data")
+        monkeypatch.delenv("UMRS_DATA_S3_BUCKET", raising=False)
+        with patch("boto3.client", return_value=fake):
+            backend = KnowledgeIngestBackend()
+            backend._init_s3({})
+            assert backend._bucket == "r4-data"
+
+    def test_init_s3_explicit_spec_bucket_wins(self, monkeypatch):
+        """Explicit spec bucket overrides env."""
+        fake = _make_fake_s3()
+        monkeypatch.setenv("S3_BUCKET", "r4-data")
+        with patch("boto3.client", return_value=fake):
+            backend = KnowledgeIngestBackend()
+            backend._init_s3({"bucket": "explicit-bucket"})
+            assert backend._bucket == "explicit-bucket"
+
     @pytest.mark.asyncio
     async def test_submit_requires_sources(self, sample_job, sample_attempt):
         """Jobs with empty sources list must fail."""
