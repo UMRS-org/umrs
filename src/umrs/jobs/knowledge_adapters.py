@@ -837,10 +837,15 @@ def _store_artifacts_in_db_sync(
     project_id: str,
     artifact_descs: list[dict[str, Any]],
 ) -> None:
-    """Persist artifact metadata to Postgres (best-effort).
+    """Persist artifact metadata to Postgres (synchronous best-effort).
 
     Descriptors must carry content_hash + source_ref (S3 key) + kind — the
     chained KNOWLEDGE_UNDERSTAND job fetches and parses bytes via these.
+
+    MUST be synchronous: knowledge_ir.artifact_id has an FK to
+    knowledge_artifacts. A fire-and-forget insert raced the chained
+    understand job in production — FK violation, swallowed as a "likely
+    duplicate" IR insert, and content never became graph nodes.
     """
     if not _resolve_knowledge_dsn():
         return
@@ -865,7 +870,7 @@ def _store_artifacts_in_db_sync(
                     except Exception:
                         pass
 
-        _fire_coroutine(_do(), "persist_artifact_meta")
+        _run_coroutine_sync(_do(), "persist_artifact_meta")
     except Exception:
         pass
 
