@@ -561,6 +561,7 @@ def _run_ingest_sync(
 
     result = KnowledgeIngestResult()
     success_ids: list[str] = []
+    success_descs: list[dict[str, Any]] = []
 
     for src_spec in source_refs:
         source_kind = src_spec.get("kind", "local_file")
@@ -596,6 +597,7 @@ def _run_ingest_sync(
                     artifact_id,
                     result,
                     success_ids,
+                    success_descs,
                 )
             elif resolved.kind == "local_dir":
                 for rf in resolved.files:
@@ -612,10 +614,19 @@ def _run_ingest_sync(
                         aid,
                         result,
                         success_ids,
+                        success_descs,
                     )
             elif resolved.kind == "s3_uri":
                 # S3 reference — register without copy
                 success_ids.append(artifact_id)
+                success_descs.append(
+                    {
+                        "artifact_id": artifact_id,
+                        "content_hash": "",
+                        "kind": resolved.kind,
+                        "source_ref": uri,
+                    }
+                )
                 result.artifact_ids.append(artifact_id)
                 KnowledgeEvent(
                     event_type="create",
@@ -635,6 +646,7 @@ def _run_ingest_sync(
                     artifact_id,
                     result,
                     success_ids,
+                    success_descs,
                 )
             else:
                 result.failed_items.append(
@@ -653,8 +665,10 @@ def _run_ingest_sync(
                 }
             )
 
-    # Store artifact metadata in Postgres (best-effort)
-    _store_artifacts_in_db_sync(project_id, success_ids)
+    # Store artifact metadata in Postgres (best-effort). Full descriptors
+    # (content_hash + source_ref S3 key + kind) are required by the chained
+    # KNOWLEDGE_UNDERSTAND job — bare artifact_ids are skipped at parse time.
+    _store_artifacts_in_db_sync(project_id, success_descs)
 
     KnowledgeEvent(
         event_type="ingest" if not result.failed_items else "fail",
@@ -680,6 +694,7 @@ def _put_file_sync(
     artifact_id: str,
     result: KnowledgeIngestResult,
     success_ids: list[str],
+    success_descs: list[dict[str, Any]],
 ) -> None:
     """Read file and put to S3."""
     try:
@@ -691,6 +706,16 @@ def _put_file_sync(
 
     content_hash, size_bytes, _ = storage.put_artifact(project_id, content)
     success_ids.append(artifact_id)
+    success_descs.append(
+        {
+            "artifact_id": artifact_id,
+            "content_hash": content_hash,
+            "kind": _artifact_kind_for_path(file_path),
+            # source_ref must be the S3 key: knowledge_understand fetches
+            # bytes via ArtifactStorage.key-style lookups by source_ref.
+            "source_ref": storage.key(project_id, content_hash),
+        }
+    )
     result.artifact_ids.append(artifact_id)
 
     # Best-effort: bridge to A2L identity space (ADR-017)
@@ -715,6 +740,7 @@ def _fetch_and_store_remote(
     artifact_id: str,
     result: KnowledgeIngestResult,
     success_ids: list[str],
+    success_descs: list[dict[str, Any]],
 ) -> None:
     """Fetch remote content (http_url / git_repo), scan, store to S3."""
     from umrs.knowledge.egress_fetch import fetch_url
@@ -746,6 +772,15 @@ def _fetch_and_store_remote(
 
     content_hash, size_bytes, _ = storage.put_artifact(project_id, fetch.content)
     success_ids.append(artifact_id)
+    success_descs.append(
+        {
+            "artifact_id": artifact_id,
+            "content_hash": content_hash,
+            # Remote-scraped research content is overwhelmingly prose/markdown.
+            "kind": "document",
+            "source_ref": storage.key(project_id, content_hash),
+        }
+    )
     result.artifact_ids.append(artifact_id)
 
     # Best-effort: bridge to A2L identity space (ADR-017)
@@ -761,11 +796,37 @@ def _fetch_and_store_remote(
     ).emit()
 
 
+_ARTIFACT_KIND_BY_SUFFIX = {
+    ".py": "code",
+    ".pyi": "code",
+    ".cpp": "cpp",
+    ".cc": "cpp",
+    ".cxx": "cpp",
+    ".hpp": "cpp",
+    ".hh": "cpp",
+    ".h": "cpp",
+    ".cu": "cuda",
+    ".cuh": "cuda",
+    ".json": "schema",
+    ".yaml": "schema",
+    ".yml": "schema",
+}
+
+
+def _artifact_kind_for_path(path: str) -> str:
+    """Heuristic artifact kind for parser extension selection (default: document)."""
+    return _ARTIFACT_KIND_BY_SUFFIX.get(Path(path).suffix.lower(), "document")
+
+
 def _store_artifacts_in_db_sync(
     project_id: str,
-    artifact_ids: list[str],
+    artifact_descs: list[dict[str, Any]],
 ) -> None:
-    """Persist artifact metadata to Postgres (best-effort)."""
+    """Persist artifact metadata to Postgres (best-effort).
+
+    Descriptors must carry content_hash + source_ref (S3 key) + kind — the
+    chained KNOWLEDGE_UNDERSTAND job fetches and parses bytes via these.
+    """
     if not _resolve_knowledge_dsn():
         return
     try:
@@ -777,13 +838,14 @@ def _store_artifacts_in_db_sync(
                 if pool is None:
                     return
                 store = KnowledgeStore(pool)
-                for aid in artifact_ids:
+                for desc in artifact_descs:
                     try:
                         await store.insert_artifact(
-                            artifact_id=aid,
-                            content_hash="",
-                            kind="document",
+                            artifact_id=desc["artifact_id"],
+                            content_hash=desc.get("content_hash", ""),
+                            kind=desc.get("kind", "document"),
                             project_id=project_id,
+                            source_ref=desc.get("source_ref", ""),
                         )
                     except Exception:
                         pass

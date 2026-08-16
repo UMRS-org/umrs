@@ -343,6 +343,49 @@ class TestKnowledgeIngestBackend:
         assert "artifacts=1" in result
 
     @pytest.mark.asyncio
+    async def test_ingest_registers_full_artifact_metadata(self, sample_job, tmp_py_file):
+        """Knowledge_artifacts rows must carry hash + S3-key source_ref + kind.
+
+        The chained KNOWLEDGE_UNDERSTAND job fetches bytes via
+        ArtifactStorage.key-style source_ref — ids alone get skipped.
+        """
+        sample_attempt = JobAttempt(
+            attempt_id=generate_attempt_id(),
+            job_id=sample_job.job_id,
+            attempt_no=1,
+            backend="compose",
+            status=AttemptStatus.CREATED,
+            backend_ref="",
+            metrics={},
+        )
+        sample_job.spec["sources"] = [{"kind": "local_file", "uri": tmp_py_file}]
+        sample_job.spec["bucket"] = "test-bucket"
+
+        fake_s3 = _make_fake_s3()
+        captured: list[tuple[str, list]] = []
+
+        def _capture_store(project_id: str, descs: list[dict]) -> None:
+            captured.append((project_id, descs))
+
+        with patch("boto3.client", return_value=fake_s3), patch(
+            "umrs.jobs.knowledge_adapters._store_artifacts_in_db_sync",
+            side_effect=_capture_store,
+        ):
+            backend = KnowledgeIngestBackend()
+            result = await backend.submit_job(sample_job, sample_attempt)
+
+        assert "artifacts=1" in result
+        project_id, descs = captured[0]
+        assert project_id == sample_job.project_id
+        assert len(descs) == 1
+        desc = descs[0]
+        assert desc["content_hash"]
+        assert desc["kind"] == "code"  # .py suffix heuristic
+        expected_key = f"projects/{sample_job.project_id}/knowledge/artifacts/{desc['content_hash']}"
+        assert desc["source_ref"] == expected_key
+        assert desc["artifact_id"].startswith("art-")
+
+    @pytest.mark.asyncio
     async def test_ingest_local_dir(self, sample_job, tmp_dir_with_files):
         """Ingest a directory of files."""
         sample_attempt = JobAttempt(
