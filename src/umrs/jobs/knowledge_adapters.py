@@ -1051,6 +1051,7 @@ async def _run_understand(
         nodes = _build_nodes(
             artifact_id, ir.ir_id, parsed, project_id, graph_id=target_graph_id
         )
+        nodes = _with_excerpt(nodes, kind, content)
         edges = _build_edges(nodes)
 
         try:
@@ -1136,6 +1137,31 @@ def _node_id_scope(project_id: str, graph_id: str) -> str:
     if not graph_id or graph_id == default_graph_id(project_id):
         return ""
     return f"{graph_id}-"
+
+
+_PROSE_KINDS = {"document", "schema", "catalog"}
+_EXCERPT_MAX = 2000
+
+
+def _with_excerpt(nodes: list, kind: str, content: bytes) -> list:
+    """Attach a bounded text excerpt to the file node for prose artifacts.
+
+    Structure nodes (classes/functions/kernels) are code-oriented; document
+    text has no structured representation — without an excerpt, prose phrases
+    are simply not present in graph content and the K3 ILIKE query can never
+    find the document. Code artifacts keep metadata-only file nodes.
+    """
+    if kind not in _PROSE_KINDS or not nodes:
+        return nodes
+    excerpt = content.decode("utf-8", errors="replace")[:_EXCERPT_MAX].strip()
+    if excerpt:
+        import dataclasses
+
+        nodes = [
+            dataclasses.replace(nodes[0], content={**nodes[0].content, "excerpt": excerpt}),
+            *nodes[1:],
+        ]
+    return nodes
 
 
 def _build_nodes(
