@@ -28,6 +28,7 @@ from umrs.jobs.knowledge_adapters import (
     KnowledgeUnderstandResult,
     _build_summary,
     _parse_for_understand,
+    _with_excerpt,
 )
 from umrs.jobs.models import (
     AttemptStatus,
@@ -834,3 +835,47 @@ class TestDegradedMode:
         metadata = json.loads(sample_attempt.metrics["result"])
         assert metadata["degraded"] is True
         assert metadata["ir_ids"] == []
+
+
+class TestWithExcerpt:
+    """_with_excerpt: bounded prose text lands on the file node only."""
+
+    def _file_node(self):
+        from umrs.knowledge.store import KnowledgeNode
+
+        return KnowledgeNode(
+            node_id="node-file-g-x-art-1",
+            project_id="p",
+            label="art-1",
+            node_type="file",
+            content={"artifact_id": "art-1", "ir_id": "ir-1"},
+            content_hash="x",
+            source_ir="ir-1",
+            graph_id="g-x",
+        )
+
+    def test_prose_kind_attaches_excerpt(self):
+        node = self._file_node()
+        nodes = _with_excerpt([node], "document", b"# hello\n\nFACT: kgaccept-zz body.\n")
+        assert "excerpt" in nodes[0].content
+        assert "kgaccept-zz" in nodes[0].content["excerpt"]
+        assert nodes[0].content["artifact_id"] == "art-1"
+
+    def test_code_kind_keeps_metadata_only(self):
+        node = self._file_node()
+        nodes = _with_excerpt([node], "code", b"def f(): pass\n")
+        assert "excerpt" not in nodes[0].content
+
+    def test_excerpt_is_bounded(self):
+        node = self._file_node()
+        big = ("x" * 5000).encode()
+        nodes = _with_excerpt([node], "document", big)
+        assert len(nodes[0].content["excerpt"]) <= 2000
+
+    def test_empty_nodes_list_safe(self):
+        assert _with_excerpt([], "document", b"abc") == []
+
+    def test_binary_content_decodes_lossy(self):
+        node = self._file_node()
+        nodes = _with_excerpt([node], "document", b"\xff\xfeabc")
+        assert "excerpt" in nodes[0].content
