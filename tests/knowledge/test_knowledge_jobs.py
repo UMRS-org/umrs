@@ -10,7 +10,6 @@ Covers:
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 from unittest.mock import MagicMock, patch
 
@@ -284,6 +283,64 @@ class TestKnowledgeIngestBackend:
         metadata = json.loads(sample_attempt.metrics["result"])
         assert len(metadata["artifact_ids"]) == 1
         assert len(metadata["failed_items"]) == 0
+
+    @pytest.mark.asyncio
+    async def test_submit_chains_understand(self, sample_job, tmp_py_file):
+        """API-triggered ingest enqueues KNOWLEDGE_UNDERSTAND (graph_id propagate)."""
+        sample_attempt = JobAttempt(
+            attempt_id=generate_attempt_id(),
+            job_id=sample_job.job_id,
+            attempt_no=1,
+            backend="compose",
+            status=AttemptStatus.CREATED,
+            backend_ref="",
+            metrics={},
+        )
+        sample_job.spec["sources"] = [{"kind": "local_file", "uri": tmp_py_file}]
+        sample_job.spec["bucket"] = "test-bucket"
+        sample_job.spec["graph_id"] = "g-named-1"
+
+        fake_s3 = _make_fake_s3()
+
+        with patch("boto3.client", return_value=fake_s3), patch(
+            "umrs.jobs.knowledge_adapters._enqueue_understand_job",
+            return_value="job-understand-1",
+        ) as chain:
+            backend = KnowledgeIngestBackend()
+            await backend.submit_job(sample_job, sample_attempt)
+
+        chain.assert_called_once()
+        project_id, user_id, parent_job = chain.call_args.args
+        assert project_id == sample_job.project_id
+        assert user_id == sample_job.user_id
+        assert parent_job is sample_job
+        assert parent_job.spec["graph_id"] == "g-named-1"
+
+    @pytest.mark.asyncio
+    async def test_submit_chain_failure_is_best_effort(self, sample_job, tmp_py_file):
+        """A broken understand-chain enqueue must not fail the acquisition attempt."""
+        sample_attempt = JobAttempt(
+            attempt_id=generate_attempt_id(),
+            job_id=sample_job.job_id,
+            attempt_no=1,
+            backend="compose",
+            status=AttemptStatus.CREATED,
+            backend_ref="",
+            metrics={},
+        )
+        sample_job.spec["sources"] = [{"kind": "local_file", "uri": tmp_py_file}]
+        sample_job.spec["bucket"] = "test-bucket"
+
+        fake_s3 = _make_fake_s3()
+
+        with patch("boto3.client", return_value=fake_s3), patch(
+            "umrs.jobs.knowledge_adapters._enqueue_understand_job",
+            side_effect=RuntimeError("db down"),
+        ):
+            backend = KnowledgeIngestBackend()
+            result = await backend.submit_job(sample_job, sample_attempt)
+
+        assert "artifacts=1" in result
 
     @pytest.mark.asyncio
     async def test_ingest_local_dir(self, sample_job, tmp_dir_with_files):

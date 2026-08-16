@@ -456,7 +456,7 @@ class KnowledgeIngestBackend(OrchestratorBackend):
             _write_result(attempt, result)
             return f"knowledge_ingest|mode=degraded|project={project_id}"
 
-        return _run_ingest_sync(
+        result_str = _run_ingest_sync(
             job,
             attempt,
             self._s3_client,
@@ -465,6 +465,21 @@ class KnowledgeIngestBackend(OrchestratorBackend):
             project_id,
             allow_domains,
         )
+
+        # Chain KNOWLEDGE_UNDERSTAND so API-triggered ingests become queryable
+        # without a manual understand call (mirrors the auto-ingest hook).
+        # The child job inherits spec.graph_id — named-graph targets stay named.
+        # Best-effort: a chain failure must never fail the acquisition attempt.
+        try:
+            _enqueue_understand_job(
+                project_id,
+                getattr(job, "user_id", "") or "",
+                job,
+            )
+        except Exception as exc:  # defensive — chain must never break ingest
+            logger.warning("KNOWLEDGE_UNDERSTAND chain enqueue failed: %s", exc)
+
+        return result_str
 
 
 # ── KnowledgeUnderstandBackend ───────────────────────────────────────────────
