@@ -399,7 +399,10 @@ class KnowledgeIngestBackend(OrchestratorBackend):
             return
         from botocore.config import Config as BotoConfig
 
-        self._bucket = job_spec.get("bucket", "umrs-data")
+        # Shared resolution: spec > UMRS_DATA_S3_BUCKET > S3_BUCKET > default.
+        # (The old hardcoded "umrs-data" default wrote to a bucket that does
+        # not exist on live deployments — every put_object failed NoSuchBucket.)
+        self._bucket = _resolve_bucket(job_spec)
         endpoint = os.getenv("S3_ENDPOINT_URL", "http://localhost:9000")
         key, secret = _resolve_s3_credentials()
         use_ssl = os.getenv("S3_USE_SSL", "false").lower() == "true"
@@ -657,6 +660,12 @@ def _run_ingest_sync(
                 )
 
         except Exception as exc:
+            logger.warning(
+                "knowledge_ingest source failed: kind=%s uri=%s error=%s",
+                source_kind,
+                uri,
+                exc,
+            )
             result.failed_items.append(
                 {
                     "source": source_kind,
