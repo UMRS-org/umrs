@@ -31,6 +31,7 @@ class JobType(Enum):
     KNOWLEDGE_VERIFY = "knowledge_verify"  # Run verifiers → confidence report
     KNOWLEDGE_EXPORT = "knowledge_export"  # Export knowledge bundle (.kb)
     ENDPOINT_UPGRADE = "endpoint_upgrade"  # Rolling model-version flip (Q-13)
+    COMPANION_WORKER = "companion_worker"  # Durable per-user Companion venue (T3a)
     # Note: CONTEXT_RETENTION and CONVERSATION_SUMMARIZE excluded from selective merge
 
 
@@ -118,6 +119,13 @@ DEFAULT_BACKOFFS: dict[JobType, dict[str, Any]] = {
     JobType.KNOWLEDGE_EXPORT: {
         "delays": [30, 60, 120],
         "max_attempts": 3,
+    },
+    # Companion worker is a supervised long-lived venue: bounded restarts
+    # with slow backoff, not infinite respawn (design doc T3 §4). Delays in
+    # seconds mirror the idle-TTL loop so reconnect churn doesn't beat up minio.
+    JobType.COMPANION_WORKER: {
+        "delays": [30, 60, 300, 600],
+        "max_attempts": 6,
     },
     # Note: CONTEXT_RETENTION and CONVERSATION_SUMMARIZE backoffs excluded
 }

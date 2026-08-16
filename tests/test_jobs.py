@@ -268,6 +268,7 @@ class TestJobTypes:
             "knowledge_understand",
             "knowledge_verify",
             "knowledge_export",
+            "companion_worker",
         ]
         actual = [t.value for t in JobType]
         assert set(expected) == set(actual)
