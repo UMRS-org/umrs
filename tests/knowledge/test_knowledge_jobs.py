@@ -340,6 +340,49 @@ class TestKnowledgeIngestBackend:
         assert parent_job.spec["graph_id"] == "g-named-1"
 
     @pytest.mark.asyncio
+    async def test_chain_gets_acquisition_descriptors_without_db(
+        self, sample_job, tmp_py_file
+    ):
+        """Regression: chained understand receives desc inline (DB listing race).
+
+        Production evidence: the artifact insert is fire-and-forget, so the
+        enqueue-time re-listing raced ahead of the commit and understand jobs
+        ran with stale/empty source lists (ir_ids=0 on every chain). The chain
+        must receive sources=... inline, with no dependency on the DB listing.
+        """
+        sample_attempt = JobAttempt(
+            attempt_id=generate_attempt_id(),
+            job_id=sample_job.job_id,
+            attempt_no=1,
+            backend="compose",
+            status=AttemptStatus.CREATED,
+            backend_ref="",
+            metrics={},
+        )
+        sample_job.spec["sources"] = [{"kind": "local_file", "uri": tmp_py_file}]
+        sample_job.spec["bucket"] = "test-bucket"
+
+        fake_s3 = _make_fake_s3()
+
+        with patch("boto3.client", return_value=fake_s3), patch(
+            "umrs.jobs.knowledge_adapters._list_project_artifact_sources",
+            return_value=[],  # simulate the racing-empty DB listing
+        ), patch(
+            "umrs.jobs.knowledge_adapters._enqueue_understand_job",
+            return_value="job-understand-1",
+        ) as chain:
+            backend = KnowledgeIngestBackend()
+            await backend.submit_job(sample_job, sample_attempt)
+
+        chain.assert_called_once()
+        sources = chain.call_args.kwargs["sources"]
+        assert len(sources) == 1
+        desc = sources[0]
+        assert desc["content_hash"]
+        assert desc["kind"] == "code"
+        assert desc["source_ref"].startswith("projects/test-project/knowledge/artifacts/")
+
+    @pytest.mark.asyncio
     async def test_submit_chain_failure_is_best_effort(self, sample_job, tmp_py_file):
         """A broken understand-chain enqueue must not fail the acquisition attempt."""
         sample_attempt = JobAttempt(
