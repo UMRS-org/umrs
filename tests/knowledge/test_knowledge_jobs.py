@@ -409,6 +409,52 @@ class TestKnowledgeIngestBackend:
         assert "artifacts=1" in result
 
     @pytest.mark.asyncio
+    async def test_artifact_persist_runs_sync_before_chain(self, sample_job, tmp_py_file):
+        """FK guard: artifact rows commit before the understand job is enqueued.
+
+        knowledge_ir.artifact_id has an FK to knowledge_artifacts. The old
+        fire-and-forget persist raced the chain enqueue — FK violations on
+        every live chain, masked as duplicate IR inserts.
+        """
+        sample_attempt = JobAttempt(
+            attempt_id=generate_attempt_id(),
+            job_id=sample_job.job_id,
+            attempt_no=1,
+            backend="compose",
+            status=AttemptStatus.CREATED,
+            backend_ref="",
+            metrics={},
+        )
+        sample_job.spec["sources"] = [{"kind": "local_file", "uri": tmp_py_file}]
+        sample_job.spec["bucket"] = "test-bucket"
+
+        fake_s3 = _make_fake_s3()
+        events: list[str] = []
+
+        def _mark_persist(coro, label: str = ""):
+            events.append(label or "krc")
+            return None
+
+        def _mark_enqueue(*_args, **_kwargs):
+            events.append("enqueue-understand")
+            return "job-understand-1"
+
+        with patch("boto3.client", return_value=fake_s3), patch(
+            "umrs.jobs.knowledge_adapters._resolve_knowledge_dsn",
+            return_value="postgresql://unit:test@127.0.0.1/umrs_test",
+        ), patch(
+            "umrs.jobs.knowledge_adapters._run_coroutine_sync",
+            side_effect=_mark_persist,
+        ), patch(
+            "umrs.jobs.knowledge_adapters._enqueue_understand_job",
+            side_effect=_mark_enqueue,
+        ):
+            backend = KnowledgeIngestBackend()
+            await backend.submit_job(sample_job, sample_attempt)
+
+        assert events.index("persist_artifact_meta") < events.index("enqueue-understand")
+
+    @pytest.mark.asyncio
     async def test_ingest_registers_full_artifact_metadata(self, sample_job, tmp_py_file):
         """Knowledge_artifacts rows must carry hash + S3-key source_ref + kind.
 
