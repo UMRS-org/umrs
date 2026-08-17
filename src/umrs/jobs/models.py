@@ -32,6 +32,9 @@ class JobType(Enum):
     KNOWLEDGE_EXPORT = "knowledge_export"  # Export knowledge bundle (.kb)
     ENDPOINT_UPGRADE = "endpoint_upgrade"  # Rolling model-version flip (Q-13)
     COMPANION_WORKER = "companion_worker"  # Durable per-user Companion venue (T3a)
+    KNOWLEDGE_REINDEX = (
+        "knowledge_reindex"  # Re-embed stale artifacts (S10 pattern; INDEX_BUILD seam)
+    )
     # Note: CONTEXT_RETENTION and CONVERSATION_SUMMARIZE excluded from selective merge
 
 
@@ -110,6 +113,10 @@ DEFAULT_BACKOFFS: dict[JobType, dict[str, Any]] = {
     },
     JobType.KNOWLEDGE_UNDERSTAND: {
         "delays": [30, 60, 120],
+        "max_attempts": 3,
+    },
+    JobType.KNOWLEDGE_REINDEX: {
+        "delays": [60, 120, 240],  # Re-index is expensive; few, slow retries
         "max_attempts": 3,
     },
     JobType.KNOWLEDGE_VERIFY: {
