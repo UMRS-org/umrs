@@ -65,6 +65,13 @@ class JanitorConfig:
     enable_engine_probe: bool = True
     engine_probe_degrade_after: int = 3
     engine_probe_timeout_sec: int = 8
+    # Warm-up grace: skip probing READY endpoints younger than this. Without
+    # it the 3-cycles-under-5-min window wins over the 12-20 min rivault
+    # bring-up (loading model over NFS), and the probe flips READY → DEGRADED
+    # *on healthy warming engines* — a false positive that scares the same
+    # surfaces the probe was meant to protect. Recovery for DEGRADED rows is
+    # ALWAYS allowed regardless of age (probe success flips them back to true).
+    engine_probe_grace_sec: int = 1200
 
     # Auto-extend TTL for endpoints whose backend jobs are still alive.
     # When enabled, each janitor cycle checks READY endpoints near expiry
@@ -99,6 +106,7 @@ class JanitorConfig:
                 1, int(os.getenv("JANITOR_PROBE_DEGRADE_AFTER", "3"))
             ),
             engine_probe_timeout_sec=int(os.getenv("JANITOR_PROBE_TIMEOUT_SEC", "8")),
+            engine_probe_grace_sec=int(os.getenv("JANITOR_PROBE_GRACE_SEC", "1200")),
             enable_ttl_auto_extend=os.getenv(
                 "JANITOR_ENABLE_TTL_AUTO_EXTEND", "true"
             ).lower()
@@ -367,6 +375,8 @@ class Janitor:
         """
         degraded = 0
         recovered = 0
+        now = datetime.utcnow()
+        grace = timedelta(seconds=self.config.engine_probe_grace_sec)
         endpoints = self.registry.list_all(
             status_filter=[EndpointStatus.READY, EndpointStatus.DEGRADED],
         )
@@ -384,6 +394,17 @@ class Janitor:
                 continue
             port = getattr(endpoint, "port", None)
             if not port:
+                continue
+            # Warm-up grace: a READY row that is still older than the probe is
+            # structurally blind to loading-model time. Never degrade it here —
+            # the boot-time reconciler owns warmup truth; this loop owns the
+            # long-tail drift after grace.
+            created = getattr(endpoint, "created_at", None)
+            if (
+                endpoint.status == EndpointStatus.READY
+                and created is not None
+                and (now - created) < grace
+            ):
                 continue
 
             probe_kind = str(

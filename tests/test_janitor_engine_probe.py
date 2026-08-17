@@ -72,6 +72,9 @@ class _JanitorProbeHarness:
             "enable_engine_probe": True,
             "engine_probe_degrade_after": 3,
             "engine_probe_timeout_sec": 5,
+            # Default grace off so the classic READY→DEGRADED threshold tests
+            # exercise the cycle immediately; the grace-aware tests override.
+            "engine_probe_grace_sec": 0,
         }
         base.update(config_kwargs)
         config = JanitorConfig(**base)
@@ -224,3 +227,57 @@ class TestJanitorEngineProbe:
         assert (d1, d2, d3) == (0, 0, 1)
         assert poller.calls >= 1
         assert harness.registry.get_by_job_id("job-t").status == EndpointStatus.DEGRADED
+
+
+class TestJanitorEngineProbeGrace:
+    """Warm-up grace: a READY row younger than grace is never probed, so the
+    probe can't degrade a still-loading engine (rivault bring-up ~12-20 min
+    while the cycle cadence is 60 s)."""
+
+    async def test_warmup_ready_endpoints_are_not_probed(self, _patch_poller):
+        poller = _ScriptedPoller({13000: [(False, False, [], "loading") ] * 3})
+        harness = _JanitorProbeHarness(poller, engine_probe_grace_sec=3600)
+        _patch_poller["poller"] = poller
+        _register_ready(harness.registry, "job-warm")
+
+        (d, r) = await harness.probe()
+        assert (d, r) == (0, 0)
+        assert poller.calls == []
+        assert harness.registry.get_by_job_id("job-warm").status == EndpointStatus.READY
+
+    async def test_degraded_rows_are_probed_regardless_of_age(self, _patch_poller):
+        port = 13001
+        script = {port: [(True, False, ["probe-model"], "")]}
+        poller = _ScriptedPoller(script)
+        harness = _JanitorProbeHarness(poller, engine_probe_grace_sec=3600)
+        _patch_poller["poller"] = poller
+        registry = harness.registry
+        _register_ready(registry, "job-d", port=port)
+        registry.mark_degraded("job-d")
+
+        (d, r) = await harness.probe()
+        assert (d, r) == (0, 1)
+        assert registry.get_by_job_id("job-d").status == EndpointStatus.READY
+
+    async def test_post_grace_endpoints_are_probed(self, _patch_poller):
+        """A READY row past the grace window accepts the probe normally."""
+        from datetime import timedelta
+
+        port = 13002
+        script = {port: [(False, False, [], "want fail")]*3}
+        poller = _ScriptedPoller(script)
+        harness = _JanitorProbeHarness(
+            poller, engine_probe_grace_sec=3600, engine_probe_degrade_after=2
+        )
+        _patch_poller["poller"] = poller
+        registry = harness.registry
+        _register_ready(registry, "job-old", port=port)
+        endpoint0 = registry.get_by_job_id("job-old")
+        # simulate an endpoint 2h old by backdating its created_at
+        endpoint0.created_at = endpoint0.created_at - timedelta(hours=2)
+
+        await harness.probe()
+        (d2, _) = await harness.probe()
+        assert d2 == 1
+        assert endpoint0.status == EndpointStatus.DEGRADED
+        assert [c[1] for c in poller.calls] == [port, port]
