@@ -35,6 +35,7 @@ from umrs.jobs.companion_worker import (
     WorkerExhausted,
     WorkerNotFound,
 )
+from umrs.jobs.companion_turn_executor import kick as kick_turn_executor
 from umrs.jobs.companion_worker_supervisor import AtCapacity
 
 from .workflows import _require_verified_workflow_identity
@@ -108,6 +109,14 @@ class TurnBeginRequest(BaseModel):
     registry_key: str
     message: str
     session_id: Optional[str] = None
+    mode: Optional[str] = Field(
+        default=None,
+        description=(
+            "Permission mode captured per attempt: 'ask' (default) or 'auto'. "
+            "Tool-grain enforcement lands with the agentic executor; the "
+            "surface stores it today so clients code against one shape."
+        ),
+    )
     request_token: Optional[str] = Field(
         default=None,
         description=(
@@ -128,6 +137,8 @@ class TurnRowResponse(BaseModel):
     request_token: str
     state: str
     committed_response_ref: Optional[str] = None
+    response_content: Optional[str] = None
+    mode: str = "ask"
     parent_attempt_id: Optional[str] = None
     research_session_id: Optional[str] = None
 
@@ -169,6 +180,8 @@ def _attempt_to_response(attempt) -> TurnRowResponse:
         request_token=attempt.request_token,
         state=attempt.state,
         committed_response_ref=attempt.committed_response_ref,
+        response_content=attempt.response_content,
+        mode=attempt.mode,
         parent_attempt_id=attempt.parent_attempt_id,
         research_session_id=attempt.research_session_id,
     )
@@ -179,6 +192,29 @@ def _enforce_ownership(row: dict, x_user_id: str) -> None:
     owner = str(row.get("owner_user_id") or "")
     if x_user_id and owner and owner != x_user_id:
         raise HTTPException(status_code=401, detail="worker ownership mismatch")
+
+
+def _validated_mode(raw: Optional[str]) -> str:
+    """Permission mode is captured per attempt ('ask' | 'auto')."""
+    mode = (raw or "ask").strip().lower()
+    if mode not in ("ask", "auto"):
+        raise HTTPException(status_code=422, detail=f"invalid mode: {mode!r}")
+    return mode
+
+
+def _kick_turn(
+    turns: CompanionTurnAttemptRegistry, attempt_id: str, request: Request
+) -> None:
+    """T3c: execute the roundtrip in-sidecar (fail-soft — rows stay reattachable).
+
+    The registry is the exactly-once authority; SSE reads the same row for
+    replay (ADR-028). The chat function resolves from app state only in tests.
+    """
+    try:
+        chat = getattr(request.app.state, "companion_turn_chat", None)
+        kick_turn_executor(turns, attempt_id, app=request.app, chat=chat)
+    except Exception:
+        logger.warning("turn executor kick failed for %s", attempt_id)
 
 
 _MAX_SSE_POLL_SEC = 25.0
@@ -203,7 +239,7 @@ async def _sse_events(
             yield f"data: {json.dumps({'type': 'attempt_not_found', 'attempt_id': attempt_id})}\n\n"
             return
         if attempt.state == "committed":
-            yield f"data: {json.dumps({'type': 'result', 'committed_response_ref': attempt.committed_response_ref})}\n\n"
+            yield f"data: {json.dumps({'type': 'result', 'committed_response_ref': attempt.committed_response_ref, 'content': attempt.response_content})}\n\n"
             yield "data: [DONE]\n\n"
             return
         if attempt.state == "failed":
@@ -266,6 +302,7 @@ async def begin_turn_attempt(
         raise HTTPException(status_code=404, detail="worker not found")
     _enforce_ownership(row, x_user_id)
     token = (body.request_token or "").strip() or f"rt-{secrets.token_hex(8)}"
+    mode = _validated_mode(body.mode)
     try:
         attempt = turns.begin(
             job_id=str(row.get("job_id") or ""),
@@ -275,11 +312,13 @@ async def begin_turn_attempt(
             user_message=body.message,
             parent_attempt_id=body.parent_attempt_id,
             research_session_id=body.research_session_id,
+            mode=mode,
         )
-        return TurnAcceptedResponse(attempt_id=attempt.attempt_id, state=attempt.state)
     except Exception as exc:
         logger.exception("begin_turn_attempt failed")
         raise _http_error_from(exc) from exc
+    _kick_turn(turns, attempt.attempt_id, request)
+    return TurnAcceptedResponse(attempt_id=attempt.attempt_id, state=attempt.state)
 
 
 @router.get("/turns/{attempt_id}")

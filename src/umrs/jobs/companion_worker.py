@@ -343,7 +343,13 @@ class TurnAttemptNotFound(KeyError):
 
 @dataclass(frozen=True)
 class TurnAttempt:
-    """One companion turn attempt row as the bridge to the identity contract."""
+    """One companion turn attempt row as the bridge to the identity contract.
+
+    T3c content plane (migration 0074): the venue persists what it
+    executes — ``user_message`` (the m5 hash alone could not be
+    executed), ``response_content`` (ADR-028 replay body), and the
+    per-attempt permission ``mode`` ('ask' | 'auto').
+    """
 
     attempt_id: str
     job_id: str
@@ -355,6 +361,9 @@ class TurnAttempt:
     committed_response_ref: Optional[str]
     parent_attempt_id: Optional[str]
     research_session_id: Optional[str]
+    user_message: str = ""
+    response_content: Optional[str] = None
+    mode: str = "ask"
 
     @classmethod
     def from_row(cls, row: dict) -> "TurnAttempt":
@@ -369,6 +378,9 @@ class TurnAttempt:
             committed_response_ref=row.get("committed_response_ref"),
             parent_attempt_id=row.get("parent_attempt_id"),
             research_session_id=row.get("research_session_id"),
+            user_message=str(row.get("user_message") or ""),
+            response_content=row.get("response_content"),
+            mode=str(row.get("mode") or "ask"),
         )
 
 
@@ -410,12 +422,16 @@ class CompanionTurnAttemptRegistry:
         with self._conn() as conn:
             yield conn.cursor(cursor_factory=RealDictCursor)
 
+    _SELECT_COLS = (
+        "attempt_id, job_id, registry_key, session_id, request_token, "
+        "user_message_hash, state, committed_response_ref, parent_attempt_id, "
+        "research_session_id, user_message, response_content, mode"
+    )
+
     def get(self, attempt_id: str) -> Optional[TurnAttempt]:
         with self._cursor() as cur:
             cur.execute(
-                "SELECT attempt_id, job_id, registry_key, session_id, request_token, "
-                "user_message_hash, state, committed_response_ref, parent_attempt_id, "
-                "research_session_id FROM companion_turns WHERE attempt_id = %s",
+                f"SELECT {self._SELECT_COLS} FROM companion_turns WHERE attempt_id = %s",
                 (attempt_id,),
             )
             row = cur.fetchone()
@@ -437,6 +453,7 @@ class CompanionTurnAttemptRegistry:
         user_message: str,
         parent_attempt_id: Optional[str] = None,
         research_session_id: Optional[str] = None,
+        mode: str = "ask",
     ) -> TurnAttempt:
         """start or reuse the attempt row for a request token (idempotent).
 
@@ -450,8 +467,9 @@ class CompanionTurnAttemptRegistry:
             cur.execute(
                 "INSERT INTO companion_turns "
                 "(attempt_id, job_id, registry_key, session_id, request_token, "
-                " user_message_hash, state, parent_attempt_id, research_session_id) "
-                "VALUES (%s, %s, %s, %s, %s, %s, 'in_flight', %s, %s) "
+                " user_message_hash, state, parent_attempt_id, research_session_id, "
+                " user_message, mode) "
+                "VALUES (%s, %s, %s, %s, %s, %s, 'in_flight', %s, %s, %s, %s) "
                 "ON CONFLICT (registry_key, request_token) DO NOTHING",
                 (
                     attempt_id,
@@ -462,13 +480,13 @@ class CompanionTurnAttemptRegistry:
                     user_attempt_token_hash(user_message),
                     parent_attempt_id,
                     research_session_id,
+                    user_message,
+                    mode,
                 ),
             )
         with self._cursor() as cur:
             cur.execute(
-                "SELECT attempt_id, job_id, registry_key, session_id, request_token, "
-                "user_message_hash, state, committed_response_ref, parent_attempt_id, "
-                "research_session_id FROM companion_turns "
+                f"SELECT {self._SELECT_COLS} FROM companion_turns "
                 "WHERE registry_key = %s AND request_token = %s",
                 (registry_key, request_token),
             )
@@ -477,15 +495,22 @@ class CompanionTurnAttemptRegistry:
             raise TurnAttemptNotFound(request_token)
         return TurnAttempt.from_row(row)
 
-    def complete(self, attempt_id: str, *, committed_response_ref: str) -> None:
+    def complete(
+        self,
+        attempt_id: str,
+        *,
+        committed_response_ref: str,
+        response_content: Optional[str] = None,
+    ) -> None:
         """Commit the buffered response exactly-once; idempotent per attempt."""
         with self._cursor() as cur:
             cur.execute(
                 "UPDATE companion_turns "
                 "SET state = 'committed', committed_response_ref = %s, "
+                "    response_content = COALESCE(%s, response_content), "
                 "    updated_at = now() "
                 "WHERE attempt_id = %s AND state = 'in_flight'",
-                (committed_response_ref, attempt_id),
+                (committed_response_ref, response_content, attempt_id),
             )
 
     def fail(self, attempt_id: str) -> None:
@@ -501,9 +526,7 @@ class CompanionTurnAttemptRegistry:
         """Recent attempts in replay order (newest first)."""
         with self._cursor() as cur:
             cur.execute(
-                "SELECT attempt_id, job_id, registry_key, session_id, request_token, "
-                "user_message_hash, state, committed_response_ref, parent_attempt_id, "
-                "research_session_id FROM companion_turns "
+                f"SELECT {self._SELECT_COLS} FROM companion_turns "
                 "WHERE registry_key = %s ORDER BY created_at DESC LIMIT %s",
                 (registry_key, limit),
             )

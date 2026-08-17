@@ -189,6 +189,59 @@ class TestApprovalSurface:
         assert resp.json()["decision"] == "once"
 
 
+class TestTurnRoundtripSurface:
+    """T3c: mode capture, executor kickoff seam, and replay content shape."""
+
+    def test_begin_rejects_invalid_mode(self):
+        client = _app(FakePool([_worker_row()]))
+        resp = client.post(
+            "/umrs/companion/chat",
+            headers=HEADERS,
+            json={"registry_key": "alice@default", "message": "hi", "mode": "yolo"},
+        )
+        assert resp.status_code == 422
+
+    def test_begin_accepts_mode_and_kicks_executor(self):
+        pool = FakePool([_worker_row(), None, _turn_row(mode="auto")])
+        client = _app(pool)
+        client.app.state.companion_turn_chat = lambda *_a, **_k: "pong"
+        resp = client.post(
+            "/umrs/companion/chat",
+            headers=HEADERS,
+            json={"registry_key": "alice@default", "message": "ping", "mode": "auto"},
+        )
+        assert resp.status_code == 202
+        insert_params = next(
+            p for s, p in pool.record if s.startswith("INSERT INTO companion_turns")
+        )
+        assert "ping" in insert_params
+        assert "auto" in insert_params
+
+    def test_committed_turn_stream_carries_response_content(self):
+        client = _app(
+            FakePool(
+                [
+                    _turn_row(
+                        state="committed",
+                        committed_response_ref="attempt:at-1",
+                        response_content="the answer",
+                    )
+                ]
+            )
+        )
+        resp = client.get("/umrs/companion/turns/at-1/events", headers=HEADERS)
+        assert '"type": "result"' in resp.text
+        assert "the answer" in resp.text
+        assert "[DONE]" in resp.text
+
+    def test_turn_row_response_includes_content_and_mode(self):
+        client = _app(FakePool([_turn_row(mode="auto", response_content="body")]))
+        resp = client.get("/umrs/companion/turns/at-1", headers=HEADERS)
+        assert resp.status_code == 200
+        assert resp.json()["mode"] == "auto"
+        assert resp.json()["response_content"] == "body"
+
+
 # Ownership enforcement stays full-strength (covered in TestWorkerRoutes:
 # cross-user ownership read => 401 via _enforce_ownership, independent of
 # the sidecar header gate which is exercised by production strict mode).
