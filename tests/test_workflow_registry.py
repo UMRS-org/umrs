@@ -86,6 +86,19 @@ class TestRegisterWorkflow:
         assert result["workflow"]["name"] == "wf1"
         assert len(result["workflow"]["steps"]) == 2
 
+    def test_rejects_unsupported_scope(self):
+        result = register_workflow(
+            workflow_name="wf1",
+            version="1.0",
+            user_id="alice",
+            source_path="/tmp/wf1",
+            workflow_json=_sample_workflow_json(),
+            scope="project",
+        )
+        assert result["status"] == "error"
+        assert "user" in result["message"]
+        assert "system" in result["message"]
+
     def test_duplicate_update(self):
         wf = _sample_workflow_json(description="v1")
         register_workflow("wf1", "1.0", "alice", "/tmp/wf1", wf)

@@ -147,3 +147,38 @@ class TestCallerAdmin:
         assert not endpoints._caller_is_admin(
             None, "alice", "true", x_verified_project_id="proj-a", x_verified_hmac=mac2
         )
+
+
+class TestWorkflowAuthorClaim:
+    def test_v2_author_tamper_rejected(self, monkeypatch):
+        from fastapi import HTTPException
+        from r4_contracts.handshake_hmac import sign_claims_v2
+        from umrs.api._verified_headers import resolve_caller
+
+        monkeypatch.setenv("UMRS_AUTH_MODE", "strict")
+        monkeypatch.setenv("UMRS_HANDSHAKE_HMAC_SECRET", "test-secret")
+        mac = sign_claims_v2("test-secret", "alice", "proj-a", False, False)
+        with pytest.raises(HTTPException) as exc:
+            resolve_caller("alice", "proj-a", "false", mac, "true")
+        assert exc.value.status_code == 401
+
+    def test_v2_author_accepted(self, monkeypatch):
+        from r4_contracts.handshake_hmac import sign_claims_v2
+        from umrs.api._verified_headers import resolve_caller
+
+        monkeypatch.setenv("UMRS_AUTH_MODE", "strict")
+        monkeypatch.setenv("UMRS_HANDSHAKE_HMAC_SECRET", "test-secret")
+        mac = sign_claims_v2("test-secret", "alice", "proj-a", False, True)
+        identity = resolve_caller("alice", "proj-a", "false", mac, "true")
+        assert identity is not None
+        assert identity.is_workflow_author is True
+
+    def test_v1_does_not_grant_author(self, monkeypatch):
+        from umrs.api._verified_headers import resolve_caller
+
+        monkeypatch.setenv("UMRS_AUTH_MODE", "strict")
+        monkeypatch.setenv("UMRS_HANDSHAKE_HMAC_SECRET", "test-secret")
+        mac = sign_claims("test-secret", "alice", "proj-a", False)
+        identity = resolve_caller("alice", "proj-a", "false", mac, "true")
+        assert identity is not None
+        assert identity.is_workflow_author is False

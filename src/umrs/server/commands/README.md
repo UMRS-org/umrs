@@ -127,7 +127,7 @@ send a reply:
 |-------|-----------------|-------------|
 | `str` | `RECOMPUTE`, `UPDATE`, `CHECK`, `RELOAD` | The payload **is** the `client_id`. |
 | `(client_id, data, zmq_sender_id)` | `MODEL_*`, `JOB_*`, `WAIT_OUTPUT`, `EXPORT_EMBEDDINGS` | Three-tuple; `zmq_sender_id` is used to route the ZeroMQ reply back to the right client. |
-| `(client_id, files, ...)` | `FILE`, `ENROLL_USER`, `UPLOAD_WORKFLOW` | Tuple with a file list. |
+| `(client_id, files, ...)` | `FILE`, `ENROLL_USER`, `UPLOAD_WORKFLOW` (rejected; use Gateway HTTP) | Tuple with a file list. |
 
 The `CommandRegistry` extracts `client_id` automatically for authorization.
 The handler is responsible for unpacking the rest of the payload.

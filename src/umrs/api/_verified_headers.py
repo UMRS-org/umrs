@@ -20,7 +20,7 @@ from dataclasses import dataclass
 
 from fastapi import Header, HTTPException
 
-from r4_contracts.handshake_hmac import ENV_VAR, verify_claims
+from r4_contracts.handshake_hmac import ENV_VAR, presented_version, verify_presented
 
 
 def handshake_secret() -> str | None:
@@ -36,6 +36,7 @@ def verified_headers_trusted(
     user_id: str | None,
     project_id: str | None,
     is_admin: bool,
+    is_workflow_author: bool = False,
 ) -> bool:
     """Decide whether ``X-Verified-*`` identity may be honored this request.
 
@@ -44,10 +45,7 @@ def verified_headers_trusted(
     Missing/absent secret in strict mode always denies: verified headers are
     treated as if a non-gateway caller set them.
 
-    Note: is_admin defaults to False for the signature when deriving the
-    base trust tuple; consumers that require the admin flag must verify
-    it separatively via ``verify_admin_flag`` so that flipping the flag
-    invalidates the signature.
+    v1 signatures ignore ``is_workflow_author``. v2 signatures include it.
     """
     if not strict:
         return True
@@ -55,7 +53,14 @@ def verified_headers_trusted(
     pid = (project_id or "").strip()
     if not uid or not pid:
         return False
-    return verify_claims(secret, presented_hmac, uid, pid, is_admin)
+    return verify_presented(
+        secret,
+        presented_hmac,
+        uid,
+        pid,
+        is_admin,
+        is_workflow_author,
+    )
 
 
 def verify_admin_flag(
@@ -66,13 +71,15 @@ def verify_admin_flag(
     user_id: str | None,
     project_id: str | None,
     presented_is_admin: bool,
+    presented_is_workflow_author: bool = False,
 ) -> bool:
     """Validate that an admin-claiming header set is signed for admin=TRUE.
 
     The base trust gate above uses the ASKED-FOR is_admin value, which
     would not catch a forged admin flag. For the admin path specifically we
     verify the signature with the caller's ASKED admin flag so a tampered
-    ``X-Verified-Is-Admin: true`` rejects.
+    ``X-Verified-Is-Admin: true`` rejects. v2 signatures also cover the
+    presented workflow-author bit.
     """
     return verified_headers_trusted(
         strict=strict,
@@ -81,6 +88,7 @@ def verify_admin_flag(
         user_id=user_id,
         project_id=project_id,
         is_admin=presented_is_admin,
+        is_workflow_author=presented_is_workflow_author,
     )
 
 
@@ -105,6 +113,7 @@ class CallerIdentity:
     user_id: str
     project_id: str
     is_admin: bool = False
+    is_workflow_author: bool = False
 
     def scope_filter(self, requested: str | None) -> str | None:
         """Binds an optional project filter for LIST/READ queries.
@@ -175,6 +184,7 @@ def _signature_ok(
     pid: str,
     x_verified_is_admin: str | None,
     x_verified_hmac: str | None,
+    x_verified_workflow_author: str | None = None,
 ) -> bool:
     """HMAC trust decision for a present identity tuple."""
     return verified_headers_trusted(
@@ -184,6 +194,7 @@ def _signature_ok(
         user_id=uid,
         project_id=pid,
         is_admin=(x_verified_is_admin or "").strip() == "true",
+        is_workflow_author=(x_verified_workflow_author or "").strip().lower() == "true",
     )
 
 
@@ -192,6 +203,7 @@ def resolve_caller(
     x_verified_project_id: str | None,
     x_verified_is_admin: str | None,
     x_verified_hmac: str | None,
+    x_verified_workflow_author: str | None = None,
 ) -> CallerIdentity | None:
     """Core resolution shared by the dependency + direct callers.
 
@@ -204,15 +216,25 @@ def resolve_caller(
     strict = _strict_mode_env()
     if not uid or not pid:
         return _missing_caller(strict)
-    if not _signature_ok(strict, uid, pid, x_verified_is_admin, x_verified_hmac):
+    if not _signature_ok(
+        strict,
+        uid,
+        pid,
+        x_verified_is_admin,
+        x_verified_hmac,
+        x_verified_workflow_author,
+    ):
         raise HTTPException(
             status_code=401,
             detail="Gateway-verified identity signature rejected",
         )
+    presented_author = (x_verified_workflow_author or "").strip().lower() == "true"
+    hmac_version = presented_version((x_verified_hmac or "").strip() or None)
     return CallerIdentity(
         user_id=uid,
         project_id=pid,
         is_admin=(x_verified_is_admin or "").strip() == "true",
+        is_workflow_author=presented_author and hmac_version == "2",
     )
 
 
@@ -221,10 +243,15 @@ def get_caller(
     x_verified_project_id: str | None = Header(None),
     x_verified_is_admin: str | None = Header(None),
     x_verified_hmac: str | None = Header(None),
+    x_verified_workflow_author: str | None = Header(None),
 ) -> CallerIdentity | None:
     """FastAPI dependency: trust-gated caller for tenant-bound routers."""
     return resolve_caller(
-        x_user_id, x_verified_project_id, x_verified_is_admin, x_verified_hmac
+        x_user_id,
+        x_verified_project_id,
+        x_verified_is_admin,
+        x_verified_hmac,
+        x_verified_workflow_author,
     )
 
 
@@ -233,13 +260,18 @@ def get_verified_caller(
     x_verified_project_id: str | None = Header(None),
     x_verified_is_admin: str | None = Header(None),
     x_verified_hmac: str | None = Header(None),
+    x_verified_workflow_author: str | None = Header(None),
 ) -> CallerIdentity:
     """FastAPI dependency: caller identity is REQUIRED (even in mvp mode).
 
     Use on mutation routes where an anonymous write is never acceptable.
     """
     caller = resolve_caller(
-        x_user_id, x_verified_project_id, x_verified_is_admin, x_verified_hmac
+        x_user_id,
+        x_verified_project_id,
+        x_verified_is_admin,
+        x_verified_hmac,
+        x_verified_workflow_author,
     )
     if caller is None:
         raise HTTPException(

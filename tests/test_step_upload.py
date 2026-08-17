@@ -254,3 +254,36 @@ class TestWorkflowDefinitionUploaded:
         out = wf.to_dict()
         assert out["source"]["type"] == "uploaded"
         assert out["source"]["path"] == "/tmp/wf"
+
+
+class TestZmqUploadDeprecated:
+    def test_handler_rejects_upload_workflow(self):
+        import importlib.util
+        import sys
+        import types
+        from pathlib import Path
+
+        from umrs.core.TaskCmdStatus import TaskStatus
+
+        cmd_dir = (
+            Path(__file__).resolve().parents[1] / "src" / "umrs" / "server" / "commands"
+        )
+        pkg = types.ModuleType("umrs.server.commands")
+        pkg.__path__ = [str(cmd_dir)]
+        pkg.__package__ = "umrs.server.commands"
+        sys.modules["umrs.server.commands"] = pkg
+        spec = importlib.util.spec_from_file_location(
+            "umrs.server.commands.upload_workflow",
+            cmd_dir / "upload_workflow.py",
+        )
+        module = importlib.util.module_from_spec(spec)
+        sys.modules["umrs.server.commands.upload_workflow"] = module
+        spec.loader.exec_module(module)  # type: ignore[union-attr]
+        statuses = []
+        module.UploadWorkflowHandler().execute(
+            payload=("alice", ["/tmp/a.zip"], "wf"),
+            update_status=statuses.append,
+            ctx=None,
+            task_id=1,
+        )
+        assert statuses == [TaskStatus.ERROR]

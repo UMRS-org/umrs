@@ -31,6 +31,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _CATALOG_LOCK = threading.Lock()
+ALLOWED_WORKFLOW_SCOPES = frozenset({"user", "system"})
 
 
 def _catalog_path() -> str:
@@ -96,6 +97,11 @@ def register_workflow(
     Returns:
         Dict with "status" ("ok" or "error") and details.
     """
+    if scope not in ALLOWED_WORKFLOW_SCOPES:
+        return {
+            "status": "error",
+            "message": "scope must be 'user' or 'system'",
+        }
     # Extract step metadata from workflow_json
     steps_meta: list[dict[str, str]] = []
     for step in workflow_json.get("steps", []):
