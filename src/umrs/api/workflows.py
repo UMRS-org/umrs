@@ -404,6 +404,58 @@ def _require_verified_workflow_identity(
         )
 
 
+def _enforce_workflow_upload_role(
+    *,
+    scope: str,
+    actor: str,
+    project_id: str,
+    is_admin: bool,
+    presented_author: str | None,
+    presented_author_hmac: str | None,
+) -> None:
+    """ADR-027 role gate on workflow uploads, audited either way.
+
+    - ``scope=system`` requires admin (aligning with ModelScope/SkillScope).
+    - Any other upload requires a trusted ``workflow_author`` claim or admin.
+    - Claim trust is fail-closed: the wf signature (own basis) must verify;
+      an unsigned or forged author header reads as not-author.
+
+    Enforcement applies when the request carries a verified identity (the
+    strict production path) or strict mode is active; the header-less compat
+    path keeps legacy behavior (the compat deployments carry no role
+    carrier yet and would otherwise soft-lock uploads).
+    """
+    from ._verified_headers import handshake_secret, workflow_author_trusted
+    from .audit_events import emit_audit
+
+    def _deny(reason: str) -> None:
+        emit_audit(
+            "workflow_upload",
+            actor=actor,
+            project_id=project_id,
+            outcome="denied",
+            scope=scope,
+            details={"reason": reason},
+        )
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=reason)
+
+    headers_present = bool(actor and project_id)
+    if not (_strict_auth_mode() or headers_present):
+        return
+    if scope == "system" and not is_admin:
+        _deny("system scope requires admin")
+    author_ok = workflow_author_trusted(
+        strict=_strict_auth_mode(),
+        secret=handshake_secret(),
+        presented_author=presented_author,
+        presented_author_hmac=presented_author_hmac,
+        user_id=actor,
+        project_id=project_id,
+    )
+    if not (author_ok or is_admin):
+        _deny("workflow uploads require the workflow_author role (or admin)")
+
+
 def _workflow_job_status(job_status: JobStatus) -> str:
     return workflow_job_status(job_status)
 
@@ -631,10 +683,20 @@ async def upload_workflow(
     x_user_id: str | None = Header(None),
     x_verified_project_id: str | None = Header(None),
     x_verified_is_admin: str | None = Header(None),
+    x_verified_workflow_author: str | None = Header(None),
+    x_verified_workflow_author_hmac: str | None = Header(None),
     x_verified_hmac: str | None = Header(None),
 ):
     _require_verified_workflow_identity(
         x_user_id, x_verified_project_id, x_verified_is_admin, x_verified_hmac
+    )
+    _enforce_workflow_upload_role(
+        scope=scope,
+        actor=_header_str(x_user_id),
+        project_id=_header_str(x_verified_project_id),
+        is_admin=_header_str(x_verified_is_admin) == "true",
+        presented_author=x_verified_workflow_author,
+        presented_author_hmac=x_verified_workflow_author_hmac,
     )
     resolved_user_id = _verified_workflow_user(user_id, x_user_id)
 
@@ -661,6 +723,16 @@ async def upload_workflow(
         workflow_json=workflow_json,
         scope=scope,
         project_id=project_id,
+    )
+    from .audit_events import emit_audit
+
+    emit_audit(
+        "workflow_upload",
+        actor=resolved_user_id,
+        project_id=project_id,
+        outcome="success",
+        scope=scope,
+        details={"workflow": resolved_workflow_name, "version": version},
     )
     return WorkflowUploadResponse(
         status="ok",
