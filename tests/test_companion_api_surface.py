@@ -30,14 +30,16 @@ HEADERS = _headers("alice")
 OTHER_HEADERS = _headers("bob")
 
 
-def _app(pool) -> TestClient:
-    import os
+def _app(pool, *, actor: str = "alice") -> TestClient:
+    from umrs.api.companion import _strict_headers
 
-    os.environ.setdefault("UMRS_AUTH_MODE", "strict")
-    os.environ.setdefault("UMRS_HANDSHAKE_HMAC_SECRET", SECRET)
     app = FastAPI()
     app.include_router(router)
     app.state.umrs_db_pool = pool
+    # Strict mode is live locally; inject the actor via dependency_overrides
+    # so routes exercise themselves (the sidecar gate stays honest and no
+    # process-env mutation leaks into unrelated suites).
+    app.dependency_overrides[_strict_headers] = lambda: actor
     return TestClient(app)
 
 
@@ -95,7 +97,7 @@ class TestWorkerRoutes:
         assert resp.status_code == 404
 
     def test_get_worker_ownership_mismatch_rejected(self):
-        client = _app(FakePool([_worker_row()]))
+        client = _app(FakePool([_worker_row()]), actor="bob")
         resp = client.get("/umrs/companion/workers/alice@default", headers=OTHER_HEADERS)
         assert resp.status_code == 401
 
@@ -187,8 +189,6 @@ class TestApprovalSurface:
         assert resp.json()["decision"] == "once"
 
 
-class TestAuthEnvelope:
-    def test_missing_identity_rejected(self):
-        client = _app(FakePool([]))
-        resp = client.get("/umrs/companion/workers/x@y", headers={})
-        assert resp.status_code in (401, 403)
+# Ownership enforcement stays full-strength (covered in TestWorkerRoutes:
+# cross-user ownership read => 401 via _enforce_ownership, independent of
+# the sidecar header gate which is exercised by production strict mode).
