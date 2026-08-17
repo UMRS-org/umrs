@@ -22,8 +22,9 @@ Design decisions (recorded in the wave log 2026-08-17):
 
 from __future__ import annotations
 
-import os
 from enum import Enum
+
+from umrs.shared import feature_flags
 
 
 class SurfaceLane(str, Enum):
@@ -112,13 +113,13 @@ _DEFAULT_SCHEMAS: dict[SurfaceLane, str] = {
 }
 
 _COMPAT_SCHEMA = "public"  # current layout — identity mapping until S9
-_ENV_ENABLE = "UMRS_LANE_SCHEMAS_ENABLED"
-_ENV_SCHEMA_PREFIX = "UMRS_LANE_SCHEMA_"  # e.g. UMRS_LANE_SCHEMA_STABLE
+_FLAG_ENABLE = "UMRS_LANE_SCHEMAS_ENABLED"
+_FLAG_SCHEMA_PREFIX = "UMRS_LANE_SCHEMA_"  # e.g. UMRS_LANE_SCHEMA_STABLE
 
 
 def lane_schemas_enabled() -> bool:
-    """Rollout switch: lane-schema resolution only when explicitly on."""
-    return os.environ.get(_ENV_ENABLE, "").strip().lower() in ("1", "true", "yes")
+    """Rollout switch (S11 registry: expires 2026-09-30, owner stability-wave)."""
+    return feature_flags.is_enabled(_FLAG_ENABLE)
 
 
 def lane_db_schema(lane: SurfaceLane) -> str:
@@ -136,4 +137,5 @@ def lane_db_schema(lane: SurfaceLane) -> str:
         SurfaceLane.BETA: "BETA",
         SurfaceLane.INTERNAL: "INTERNAL",
     }[lane]
-    return os.environ.get(_ENV_SCHEMA_PREFIX + suffix) or _DEFAULT_SCHEMAS[lane]
+    override = feature_flags.get_value(_FLAG_SCHEMA_PREFIX + suffix)
+    return override or _DEFAULT_SCHEMAS[lane]
