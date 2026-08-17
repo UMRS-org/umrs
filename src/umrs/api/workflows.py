@@ -370,6 +370,7 @@ def _require_verified_workflow_identity(
     x_verified_project_id: str | None,
     x_verified_is_admin: str | None = None,
     x_verified_hmac: str | None = None,
+    x_verified_workflow_author: str | None = None,
 ) -> None:
     """Strict-mode workflow identity gate.
 
@@ -397,11 +398,43 @@ def _require_verified_workflow_identity(
         user_id=_header_str(x_user_id),
         project_id=_header_str(x_verified_project_id),
         is_admin=_header_str(x_verified_is_admin) == "true",
+        is_workflow_author=_header_str(x_verified_workflow_author) == "true",
     ):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Gateway-verified identity signature rejected",
         )
+
+
+def _resolve_workflow_caller(
+    x_user_id: str | None,
+    x_verified_project_id: str | None,
+    x_verified_is_admin: str | None,
+    x_verified_hmac: str | None,
+    x_verified_workflow_author: str | None,
+):
+    from ._verified_headers import resolve_caller
+
+    _require_verified_workflow_identity(
+        x_user_id,
+        x_verified_project_id,
+        x_verified_is_admin,
+        x_verified_hmac,
+        x_verified_workflow_author,
+    )
+    identity = resolve_caller(
+        x_user_id,
+        x_verified_project_id,
+        x_verified_is_admin,
+        x_verified_hmac,
+        x_verified_workflow_author,
+    )
+    if identity is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing Gateway-verified caller identity",
+        )
+    return identity
 
 
 def _workflow_job_status(job_status: JobStatus) -> str:
@@ -461,9 +494,14 @@ async def list_workflows(
     x_verified_project_id: str | None = Header(None),
     x_verified_is_admin: str | None = Header(None),
     x_verified_hmac: str | None = Header(None),
+    x_verified_workflow_author: str | None = Header(None),
 ):
     _require_verified_workflow_identity(
-        x_user_id, x_verified_project_id, x_verified_is_admin, x_verified_hmac
+        x_user_id,
+        x_verified_project_id,
+        x_verified_is_admin,
+        x_verified_hmac,
+        x_verified_workflow_author,
     )
     resolved_user_id = _header_str(x_user_id) or user_id
     payload = {
@@ -483,6 +521,27 @@ async def list_workflows(
     return _parse_command_response(raw, action="list")
 
 
+@router.get("/capabilities")
+async def workflow_capabilities(
+    x_user_id: str | None = Header(None),
+    x_verified_project_id: str | None = Header(None),
+    x_verified_is_admin: str | None = Header(None),
+    x_verified_hmac: str | None = Header(None),
+    x_verified_workflow_author: str | None = Header(None),
+):
+    """Read-only effective UMRS workflow capabilities for the verified caller."""
+    from .workflow_capability import capabilities_payload
+
+    identity = _resolve_workflow_caller(
+        x_user_id,
+        x_verified_project_id,
+        x_verified_is_admin,
+        x_verified_hmac,
+        x_verified_workflow_author,
+    )
+    return capabilities_payload(identity)
+
+
 class GateDecisionRequest(BaseModel):
     """Manual gate approval decision (W5)."""
 
@@ -498,10 +557,15 @@ async def list_workflow_triggers(
     x_verified_project_id: str | None = Header(None),
     x_verified_is_admin: str | None = Header(None),
     x_verified_hmac: str | None = Header(None),
+    x_verified_workflow_author: str | None = Header(None),
 ):
     """W4: return the workflow's declared event trigger subscriptions."""
     _require_verified_workflow_identity(
-        x_user_id, x_verified_project_id, x_verified_is_admin, x_verified_hmac
+        x_user_id,
+        x_verified_project_id,
+        x_verified_is_admin,
+        x_verified_hmac,
+        x_verified_workflow_author,
     )
     caller = _header_str(x_user_id) or ""
     entry = _resolve_workflow_catalog_entry(workflow_name, caller)
@@ -525,10 +589,15 @@ async def describe_workflow(
     x_verified_project_id: str | None = Header(None),
     x_verified_is_admin: str | None = Header(None),
     x_verified_hmac: str | None = Header(None),
+    x_verified_workflow_author: str | None = Header(None),
 ):
     """Return declared parameter schema and metadata for a workflow."""
     _require_verified_workflow_identity(
-        x_user_id, x_verified_project_id, x_verified_is_admin, x_verified_hmac
+        x_user_id,
+        x_verified_project_id,
+        x_verified_is_admin,
+        x_verified_hmac,
+        x_verified_workflow_author,
     )
     caller = _header_str(x_user_id) or ""
     entry = _resolve_workflow_catalog_entry(workflow_name, caller)
@@ -632,10 +701,18 @@ async def upload_workflow(
     x_verified_project_id: str | None = Header(None),
     x_verified_is_admin: str | None = Header(None),
     x_verified_hmac: str | None = Header(None),
+    x_verified_workflow_author: str | None = Header(None),
 ):
-    _require_verified_workflow_identity(
-        x_user_id, x_verified_project_id, x_verified_is_admin, x_verified_hmac
+    from .workflow_capability import authorize_workflow_upload
+
+    identity = _resolve_workflow_caller(
+        x_user_id,
+        x_verified_project_id,
+        x_verified_is_admin,
+        x_verified_hmac,
+        x_verified_workflow_author,
     )
+    authorize_workflow_upload(identity, scope)
     resolved_user_id = _verified_workflow_user(user_id, x_user_id)
 
     project_id = x_verified_project_id or ""
@@ -680,9 +757,14 @@ async def trigger_workflow(
     x_verified_project_memberships: str | None = Header(None),
     x_verified_is_admin: str | None = Header(None),
     x_verified_hmac: str | None = Header(None),
+    x_verified_workflow_author: str | None = Header(None),
 ):
     _require_verified_workflow_identity(
-        x_user_id, x_verified_project_id, x_verified_is_admin, x_verified_hmac
+        x_user_id,
+        x_verified_project_id,
+        x_verified_is_admin,
+        x_verified_hmac,
+        x_verified_workflow_author,
     )
     user_id = _verified_workflow_user(request.user_id or "", x_user_id)
     params = _verified_workflow_params(
@@ -719,6 +801,7 @@ async def trigger_workflow(
             user_id=_header_str(x_user_id),
             project_id=_header_str(x_verified_project_id),
             is_admin=_header_str(x_verified_is_admin) == "true",
+            is_workflow_author=_header_str(x_verified_workflow_author) == "true",
         )
     raw = handle_workflow_command(
         TaskCmd.RUN_WORKFLOW,

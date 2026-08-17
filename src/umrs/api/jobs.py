@@ -104,6 +104,7 @@ def get_caller_identity(
     x_verified_project_id: str | None = Header(None),
     x_verified_is_admin: str | None = Header(None),
     x_verified_hmac: str | None = Header(None),
+    x_verified_workflow_author: str | None = Header(None),
 ) -> CallerIdentity:
     """Build caller identity from request params.
 
@@ -121,6 +122,7 @@ def get_caller_identity(
         from ._verified_headers import handshake_secret, verified_headers_trusted
 
         admin = _header_str(x_verified_is_admin) in ("true", "1")
+        author = _header_str(x_verified_workflow_author) in ("true", "1")
         if not verified_headers_trusted(
             strict=_strict_auth_mode(),
             secret=handshake_secret(),
@@ -128,6 +130,7 @@ def get_caller_identity(
             user_id=verified_user_id,
             project_id=verified_project_id,
             is_admin=admin,
+            is_workflow_author=author,
         ):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -222,6 +225,7 @@ def _resolve_job_create_identity_primitive(
     x_verified_project_id: str | None,
     x_verified_is_admin: str | None,
     x_verified_hmac: str | None,
+    x_verified_workflow_author: str | None = None,
 ) -> tuple[str, str, bool]:
     """Strict-mode identity + admin tuple for durable-job submission.
 
@@ -237,6 +241,7 @@ def _resolve_job_create_identity_primitive(
         from ._verified_headers import handshake_secret, verified_headers_trusted
 
         admin = _header_str(x_verified_is_admin) in ("true", "1")
+        author = _header_str(x_verified_workflow_author) in ("true", "1")
         trusted = verified_headers_trusted(
             strict=True,
             secret=handshake_secret(),
@@ -244,6 +249,7 @@ def _resolve_job_create_identity_primitive(
             user_id=verified_user_id,
             project_id=verified_project_id,
             is_admin=admin,
+            is_workflow_author=author,
         )
         if not trusted:
             raise HTTPException(
@@ -558,6 +564,7 @@ async def create_job(
     x_verified_project_id: str | None = Header(None),
     x_verified_is_admin: str | None = Header(None),
     x_verified_hmac: str | None = Header(None),
+    x_verified_workflow_author: str | None = Header(None),
     store: JobStore = Depends(get_job_store),
 ) -> JobCreateResponse:
     """
@@ -600,6 +607,7 @@ async def create_job(
             x_verified_project_id,
             x_verified_is_admin,
             x_verified_hmac,
+            x_verified_workflow_author,
         )
         _enforce_job_scope_policy(job_type, spec, user_id, project_id, is_admin)
 

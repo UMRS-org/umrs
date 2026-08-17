@@ -68,8 +68,9 @@ USER_ALLOWED_COMMANDS: set[str] = frozenset(
         "JOB_SUBMIT",
         "JOB_CANCEL",
         "JOB_LIST",
-        "UPLOAD_WORKFLOW",
         "LIST_WORKFLOWS",
+        # UPLOAD_WORKFLOW is rejected for every ZMQ caller; uploads go through
+        # Gateway HTTP so UMRS can enforce HMAC-covered workflow_author/admin.
         "RUN_WORKFLOW",
         "WORKFLOW_STATUS",
         "WORKFLOW_RESULTS",

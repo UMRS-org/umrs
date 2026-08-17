@@ -489,6 +489,7 @@ def get_access_context(
     x_verified_project_memberships: str | None = Header(None),
     x_verified_project_id: str | None = Header(None),
     x_verified_hmac: str | None = Header(None),
+    x_verified_workflow_author: str | None = Header(None),
 ) -> AccessContext:
     """
     Build access context from Gateway-verified headers, falling back to
@@ -522,6 +523,8 @@ def get_access_context(
             user_id=header_user,
             project_id=primary_project,
             is_admin=admin,
+            is_workflow_author=(x_verified_workflow_author or "").strip().lower()
+            in ("true", "1"),
         ):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,

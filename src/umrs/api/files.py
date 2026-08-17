@@ -254,6 +254,7 @@ def get_project_id(
     x_user_id: str | None = Header(None),
     x_verified_is_admin: str | None = Header(None),
     x_verified_hmac: str | None = Header(None),
+    x_verified_workflow_author: str | None = Header(None),
 ) -> str:
     """
     Extract project_id from request headers.
@@ -278,6 +279,7 @@ def get_project_id(
             user_id=_header_str(x_user_id),
             project_id=verified_project_id,
             is_admin=_header_bool(x_verified_is_admin),
+            is_workflow_author=_header_bool(x_verified_workflow_author),
         ):
             return verified_project_id
         raise HTTPException(

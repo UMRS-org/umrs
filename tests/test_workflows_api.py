@@ -75,21 +75,32 @@ def _workflow_zip_bytes(name: str = "ct-analysis") -> bytes:
 
 
 def _auth_headers(
-    user: str = "alice", project: str = "project-a", admin: bool = False
+    user: str = "alice",
+    project: str = "project-a",
+    admin: bool = False,
+    *,
+    workflow_author: bool = False,
+    hmac_version: int = 1,
 ) -> dict[str, str]:
     """Gateway-equivalent signed identity headers (wave-6 F1)."""
     import os
 
-    from r4_contracts.handshake_hmac import sign_claims
+    from r4_contracts.handshake_hmac import sign_claims, sign_claims_v2
 
     secret = os.environ.get("UMRS_HANDSHAKE_HMAC_SECRET", "")
     headers = {
         "X-User-ID": user,
         "X-Verified-Project-ID": project,
+        "X-Verified-Is-Admin": "true" if admin else "false",
+        "X-Verified-Workflow-Author": "true" if workflow_author else "false",
     }
     if secret:
-        headers["X-Verified-Is-Admin"] = "true" if admin else "false"
-        headers["X-Verified-HMAC"] = sign_claims(secret, user, project, admin)
+        if hmac_version == 2 or workflow_author:
+            headers["X-Verified-HMAC"] = sign_claims_v2(
+                secret, user, project, admin, workflow_author
+            )
+        else:
+            headers["X-Verified-HMAC"] = sign_claims(secret, user, project, admin)
     return headers
 
 
@@ -310,7 +321,7 @@ def test_trigger_missing_workflow_returns_404(client):
 
 
 def test_upload_workflow_registers_and_returns_accepted(client):
-    headers = _auth_headers("alice", "project-a")
+    headers = _auth_headers("alice", "project-a", workflow_author=True)
     response = client.post(
         "/umrs/workflows/upload",
         headers=headers,
@@ -333,7 +344,7 @@ def test_upload_workflow_registers_and_returns_accepted(client):
 def test_upload_workflow_rejects_invalid_archive(client):
     response = client.post(
         "/umrs/workflows/upload",
-        headers=_auth_headers("alice", "project-a"),
+        headers=_auth_headers("alice", "project-a", workflow_author=True),
         data={"user_id": "alice", "workflow_name": "broken-workflow"},
         files={"file": ("broken.zip", b"not-a-zip", "application/zip")},
     )
@@ -393,3 +404,29 @@ def test_trigger_workflow_rejects_missing_required_params(client, tmp_path):
     detail = response.json()["detail"]
     assert detail["code"] == "workflow_parameters_invalid"
     assert "bucket" in detail["missing"]
+
+
+def test_workflow_capabilities_reports_author_scopes(client):
+    response = client.get(
+        "/umrs/workflows/capabilities",
+        headers=_auth_headers("alice", "project-a", workflow_author=True),
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["available"] is True
+    assert data["is_workflow_author"] is True
+    assert data["is_admin"] is False
+    assert data["authorized_scopes"] == ["user"]
+    assert data["operations"]["upload"]["user"] is True
+    assert data["operations"]["upload"]["system"] is False
+
+
+def test_workflow_capabilities_reports_admin_scopes(client):
+    response = client.get(
+        "/umrs/workflows/capabilities",
+        headers=_auth_headers("root", "system", admin=True, hmac_version=2),
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["is_admin"] is True
+    assert data["authorized_scopes"] == ["user", "system"]

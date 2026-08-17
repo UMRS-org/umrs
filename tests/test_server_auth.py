@@ -283,7 +283,6 @@ class TestCommandCoverage:
         "JOB_SUBMIT",
         "JOB_CANCEL",
         "JOB_LIST",
-        "UPLOAD_WORKFLOW",
         "LIST_WORKFLOWS",
         "RUN_WORKFLOW",
         "WORKFLOW_STATUS",

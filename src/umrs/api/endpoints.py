@@ -314,6 +314,7 @@ def _resolve_authenticated_project_id(
     optional: bool = False,
     x_verified_is_admin: str | None = None,
     x_verified_hmac: str | None = None,
+    x_verified_workflow_author: str | None = None,
 ) -> str | None:
     strict = _strict_auth_mode()
     claims = _jwt_claims(authorization, required=False)
@@ -334,6 +335,7 @@ def _resolve_authenticated_project_id(
             user_id=verified_user_id,
             project_id=verified_project_id,
             is_admin=_header_bool(x_verified_is_admin),
+            is_workflow_author=_header_bool(x_verified_workflow_author),
         )
         if verified_user_id and trusted:
             return verified_project_id
@@ -397,6 +399,7 @@ def _caller_is_admin(
     x_verified_is_admin: str | None = Header(None),
     x_verified_project_id: str | None = Header(None),
     x_verified_hmac: str | None = Header(None),
+    x_verified_workflow_author: str | None = Header(None),
 ) -> bool:
     claims = _jwt_claims(authorization, required=False)
     if claims is not None:
@@ -415,6 +418,7 @@ def _caller_is_admin(
         user_id=_header_str(x_user_id),
         project_id=_header_str(x_verified_project_id),
         presented_is_admin=True,
+        presented_is_workflow_author=_header_bool(x_verified_workflow_author),
     )
 
 
@@ -1111,6 +1115,7 @@ def get_project_id(
     x_project_id: str | None = Header(None),
     x_verified_is_admin: str | None = Header(None),
     x_verified_hmac: str | None = Header(None),
+    x_verified_workflow_author: str | None = Header(None),
 ) -> str:
     """
     Extract project_id from request headers.
@@ -1128,6 +1133,7 @@ def get_project_id(
         x_project_id,
         x_verified_is_admin=x_verified_is_admin,
         x_verified_hmac=x_verified_hmac,
+        x_verified_workflow_author=x_verified_workflow_author,
     )
     if project_id:
         return project_id
@@ -1145,6 +1151,7 @@ def get_project_id_optional(
     x_project_id: str | None = Header(None),
     x_verified_is_admin: str | None = Header(None),
     x_verified_hmac: str | None = Header(None),
+    x_verified_workflow_author: str | None = Header(None),
 ) -> str | None:
     """Get project_id if available, None otherwise (for admin endpoints)."""
     return _resolve_authenticated_project_id(
@@ -1155,6 +1162,7 @@ def get_project_id_optional(
         optional=True,
         x_verified_is_admin=x_verified_is_admin,
         x_verified_hmac=x_verified_hmac,
+        x_verified_workflow_author=x_verified_workflow_author,
     )
 
 
