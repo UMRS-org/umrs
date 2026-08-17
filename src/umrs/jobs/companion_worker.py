@@ -332,3 +332,180 @@ class CompanionWorkerManager:
                 (idle_seconds,),
             )
             return len(cur.fetchall())
+
+
+# ── Turn-attempt registry (T3b m2/m3, ADR-028) ──────────────────────────────
+
+
+class TurnAttemptNotFound(KeyError):
+    """attempt_id unknown to the turn registry."""
+
+
+@dataclass(frozen=True)
+class TurnAttempt:
+    """One companion turn attempt row as the bridge to the identity contract."""
+
+    attempt_id: str
+    job_id: str
+    registry_key: str
+    session_id: str
+    request_token: str
+    user_message_hash: str
+    state: str
+    committed_response_ref: Optional[str]
+    parent_attempt_id: Optional[str]
+    research_session_id: Optional[str]
+
+    @classmethod
+    def from_row(cls, row: dict) -> "TurnAttempt":
+        return cls(
+            attempt_id=str(row["attempt_id"]),
+            job_id=str(row.get("job_id") or ""),
+            registry_key=str(row["registry_key"]),
+            session_id=str(row.get("session_id") or ""),
+            request_token=str(row.get("request_token") or ""),
+            user_message_hash=str(row.get("user_message_hash") or ""),
+            state=str(row.get("state") or "in_flight"),
+            committed_response_ref=row.get("committed_response_ref"),
+            parent_attempt_id=row.get("parent_attempt_id"),
+            research_session_id=row.get("research_session_id"),
+        )
+
+
+def user_attempt_token_hash(message: str) -> str:
+    """Deterministic content hash for a turn's user input; empty-safe."""
+    return hashlib.sha256(message.strip().encode("utf-8")).hexdigest()[:16]
+
+
+def generate_attempt_id() -> str:
+    """Platform attempt identifier; compact, URL-safe."""
+    return f"at-{secrets.token_hex(6)}"
+
+
+class CompanionTurnAttemptRegistry:
+    """Turn-attempt authority: begin/complete/fail/get under ADR-028 semantics.
+
+    Exactly-once semantics: begin inserts ON CONFLICT DO NOTHING and returns
+    the present row; complete marks only 'in_flight' (a failure or commit is
+    terminal); fail marks only 'in_flight'. Re-issuing a committed request
+    returns the committed row without a second commit.
+    """
+
+    def __init__(self, db_pool: Any) -> None:
+        self._pool = db_pool
+
+    @contextmanager
+    def _conn(self) -> Iterator[Any]:
+        conn = self._pool.getconn()
+        try:
+            with conn:
+                yield conn
+        finally:
+            self._pool.putconn(conn)
+
+    @contextmanager
+    def _cursor(self) -> Iterator[Any]:
+        from psycopg2.extras import RealDictCursor
+
+        with self._conn() as conn:
+            yield conn.cursor(cursor_factory=RealDictCursor)
+
+    def get(self, attempt_id: str) -> Optional[TurnAttempt]:
+        with self._cursor() as cur:
+            cur.execute(
+                "SELECT attempt_id, job_id, registry_key, session_id, request_token, "
+                "user_message_hash, state, committed_response_ref, parent_attempt_id, "
+                "research_session_id FROM companion_turns WHERE attempt_id = %s",
+                (attempt_id,),
+            )
+            row = cur.fetchone()
+        return TurnAttempt.from_row(row) if row else None
+
+    def _required(self, attempt_id: str) -> TurnAttempt:
+        attempt = self.get(attempt_id)
+        if attempt is None:
+            raise TurnAttemptNotFound(attempt_id)
+        return attempt
+
+    def begin(
+        self,
+        *,
+        job_id: str,
+        registry_key: str,
+        session_id: str,
+        request_token: str,
+        user_message: str,
+        parent_attempt_id: Optional[str] = None,
+        research_session_id: Optional[str] = None,
+    ) -> TurnAttempt:
+        """start or reuse the attempt row for a request token (idempotent).
+
+        A re-issue over an existing (committed or in-flight) request token
+        returns the existing row; a failed request is not restarted by begin —
+        callers create a REATTEMPT (parent_attempt_id pointing at the failed
+        row), which yields a fresh attempt with a new request token.
+        """
+        attempt_id = generate_attempt_id()
+        with self._cursor() as cur:
+            cur.execute(
+                "INSERT INTO companion_turns "
+                "(attempt_id, job_id, registry_key, session_id, request_token, "
+                " user_message_hash, state, parent_attempt_id, research_session_id) "
+                "VALUES (%s, %s, %s, %s, %s, %s, 'in_flight', %s, %s) "
+                "ON CONFLICT (registry_key, request_token) DO NOTHING",
+                (
+                    attempt_id,
+                    job_id,
+                    registry_key,
+                    session_id,
+                    request_token,
+                    user_attempt_token_hash(user_message),
+                    parent_attempt_id,
+                    research_session_id,
+                ),
+            )
+        with self._cursor() as cur:
+            cur.execute(
+                "SELECT attempt_id, job_id, registry_key, session_id, request_token, "
+                "user_message_hash, state, committed_response_ref, parent_attempt_id, "
+                "research_session_id FROM companion_turns "
+                "WHERE registry_key = %s AND request_token = %s",
+                (registry_key, request_token),
+            )
+            row = cur.fetchone()
+        if row is None:  # pragma: no cover -
+            raise TurnAttemptNotFound(request_token)
+        return TurnAttempt.from_row(row)
+
+    def complete(self, attempt_id: str, *, committed_response_ref: str) -> None:
+        """Commit the buffered response exactly-once; idempotent per attempt."""
+        with self._cursor() as cur:
+            cur.execute(
+                "UPDATE companion_turns "
+                "SET state = 'committed', committed_response_ref = %s, "
+                "    updated_at = now() "
+                "WHERE attempt_id = %s AND state = 'in_flight'",
+                (committed_response_ref, attempt_id),
+            )
+
+    def fail(self, attempt_id: str) -> None:
+        """Mark an attempt failed; exactly-once (already-committed no-ops)."""
+        with self._cursor() as cur:
+            cur.execute(
+                "UPDATE companion_turns SET state = 'failed', updated_at = now() "
+                "WHERE attempt_id = %s AND state = 'in_flight'",
+                (attempt_id,),
+            )
+
+    def list_recent(self, registry_key: str, *, limit: int = 50) -> list[TurnAttempt]:
+        """Recent attempts in replay order (newest first)."""
+        with self._cursor() as cur:
+            cur.execute(
+                "SELECT attempt_id, job_id, registry_key, session_id, request_token, "
+                "user_message_hash, state, committed_response_ref, parent_attempt_id, "
+                "research_session_id FROM companion_turns "
+                "WHERE registry_key = %s ORDER BY created_at DESC LIMIT %s",
+                (registry_key, limit),
+            )
+            rows = cur.fetchall()
+        return [TurnAttempt.from_row(row) for row in rows]

@@ -239,3 +239,102 @@ class TestLostWorkerScenario:
         assert issue.token == "tok-fixed-1"
         with pytest.raises(WorkerExhausted):
             mgr.resolve(SPEC_A, "tok-fixed-1")
+
+
+# ── Turn-attempt registry (T3b m2/m3, ADR-028) ──────────────────────────────
+
+from umrs.jobs.companion_worker import (  # noqa: E402
+    CompanionTurnAttemptRegistry,
+    TurnAttemptNotFound,
+    user_attempt_token_hash,
+)
+
+
+def _turn_row(**overrides):
+    row = {
+        "attempt_id": "at-1",
+        "job_id": "job-w1",
+        "registry_key": "alice@default",
+        "session_id": "s-1",
+        "request_token": "rt-1",
+        "user_message_hash": user_attempt_token_hash("hello"),
+        "state": "in_flight",
+        "committed_response_ref": None,
+        "parent_attempt_id": None,
+        "research_session_id": None,
+    }
+    row.update(overrides)
+    return row
+
+
+class TestTurnAttemptRegistry:
+    def _registry(self, script):
+        return CompanionTurnAttemptRegistry(FakePool(list(script)))
+
+    def test_begin_creates_in_flight_attempt(self):
+        registry = self._registry([None, _turn_row()])
+        attempt = registry.begin(
+            job_id="job-w1",
+            registry_key="alice@default",
+            session_id="s-1",
+            request_token="rt-1",
+            user_message="hello",
+        )
+        assert attempt.state == "in_flight"
+        assert attempt.request_token == "rt-1"
+        assert attempt.user_message_hash == user_attempt_token_hash("hello")
+
+    def test_begin_is_idempotent_by_request_token(self):
+        # Second begin over the same token returns the existing row (INSERT
+        # ON CONFLICT DO NOTHING — SELECT sees the pre-existing row).
+        registry = self._registry([None, _turn_row()])
+        first = registry.begin(
+            job_id="job-w1",
+            registry_key="alice@default",
+            session_id="s-1",
+            request_token="rt-1",
+            user_message="hello",
+        )
+        registry2 = self._registry([None, _turn_row(attempt_id="at-1")])
+        second = registry2.begin(
+            job_id="job-w1",
+            registry_key="alice@default",
+            session_id="s-1",
+            request_token="rt-1",
+            user_message="hello",
+        )
+        assert second.attempt_id == first.attempt_id
+
+    def test_complete_commits_exactly_once(self):
+        registry = self._registry(
+            [None, _turn_row(state="committed", committed_response_ref="resp-id-1")]
+        )
+        registry.complete("at-1", committed_response_ref="resp-id-1")
+        attempt = registry.get("at-1")
+        assert attempt is not None
+        assert attempt.state == "committed"
+        assert attempt.committed_response_ref == "resp-id-1"
+        sql = registry._pool.record[0][0]
+        assert "AND state = 'in_flight'" in sql
+
+    def test_fail_marks_only_in_flight(self):
+        registry = self._registry([None])
+        registry.fail("at-1")
+        sql = registry._pool.record[0][0]
+        assert "AND state = 'in_flight'" in sql
+
+    def test_get_missing_raises_not_found(self):
+        registry = self._registry([None])
+        with pytest.raises(TurnAttemptNotFound):
+            registry._required("at-missing")
+
+    def test_list_recent_yields_replay_order(self):
+        rows = [_turn_row(attempt_id="at-2"), _turn_row(attempt_id="at-1")]
+        registry = self._registry([rows])
+        recent = registry.list_recent("alice@default", limit=10)
+        assert [a.attempt_id for a in recent] == ["at-2", "at-1"]
+
+    def test_hash_is_deterministic_and_trimmed(self):
+        h = user_attempt_token_hash("  padded  content ")
+        assert user_attempt_token_hash("padded  content") == h
+        assert len(h) == 16
