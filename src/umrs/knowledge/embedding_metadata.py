@@ -73,18 +73,23 @@ def stamp_embeddings_current(
     artifact_ids: Sequence[str],
     *,
     model: str,
-    dim: int,
+    dim: int | None = None,
     embedded_at: str | None = None,
 ) -> int:
-    """Mark a completed batch's artifacts current. Returns updated count."""
+    """Mark a completed batch's artifacts current. Returns updated count.
+
+    ``dim`` may be None (unknown/not recorded); when given it must be
+    positive (the column stores NULL otherwise — never a silent 0).
+    """
     ids = [str(a).strip() for a in artifact_ids if str(a).strip()]
     if not ids:
         return 0
     model = str(model or "").strip()
     if not model:
         raise EmbeddingMetadataError("model must be non-empty")
-    if int(dim) <= 0:
-        raise EmbeddingMetadataError("dim must be positive")
+    if dim is not None and int(dim) <= 0:
+        raise EmbeddingMetadataError("dim must be positive when given")
+    dim_value = None if dim is None else int(dim)
     ts = embedded_at or datetime.now(timezone.utc).isoformat()
     cur = conn.cursor()
     cur.execute(
@@ -92,7 +97,7 @@ def stamp_embeddings_current(
         "SET embedding_model = %s, embedding_dim = %s, embedded_at = %s, "
         "embedding_status = 'current', updated_at = %s "
         "WHERE artifact_id = ANY(%s)",
-        (model, int(dim), ts, ts, ids),
+        (model, dim_value, ts, ts, ids),
     )
     return int(getattr(cur, "rowcount", 0) or 0)
 

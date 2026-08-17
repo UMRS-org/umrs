@@ -269,6 +269,7 @@ class TestJobTypes:
             "knowledge_verify",
             "knowledge_export",
             "companion_worker",
+            "knowledge_reindex",
         ]
         actual = [t.value for t in JobType]
         assert set(expected) == set(actual)
@@ -424,8 +425,9 @@ class TestCallerIdentity:
 
     def test_verified_headers_override_query_identity_in_strict_mode(self, monkeypatch):
         """Strict mode trusts Gateway-issued headers instead of query identity."""
-        from r4_contracts.handshake_hmac import sign_claims
         from umrs.api.jobs import get_caller_identity
+
+        from r4_contracts.handshake_hmac import sign_claims
 
         monkeypatch.setenv("UMRS_AUTH_MODE", "strict")
         monkeypatch.setenv("UMRS_HANDSHAKE_HMAC_SECRET", "t")
