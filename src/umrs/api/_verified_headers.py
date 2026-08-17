@@ -20,7 +20,11 @@ from dataclasses import dataclass
 
 from fastapi import Header, HTTPException
 
-from r4_contracts.handshake_hmac import ENV_VAR, verify_claims
+from r4_contracts.handshake_hmac import (
+    ENV_VAR,
+    verify_claims,
+    verify_workflow_author_claim,
+)
 
 
 def handshake_secret() -> str | None:
@@ -56,6 +60,33 @@ def verified_headers_trusted(
     if not uid or not pid:
         return False
     return verify_claims(secret, presented_hmac, uid, pid, is_admin)
+
+
+def workflow_author_trusted(
+    *,
+    strict: bool,
+    secret: str | None,
+    presented_author: str | None,
+    presented_author_hmac: str | None,
+    user_id: str | None,
+    project_id: str | None,
+) -> bool:
+    """ADR-027: whether the presented workflow-author claim is trusted.
+
+    Fail-closed: strict mode requires a valid wf-claim signature; absent
+    headers never mint author claims. Non-strict (compat) mode trusts the
+    presented flag as-is (the compat deployments carry no sig carrier).
+    """
+    if not strict:
+        return (presented_author or "").strip().lower() == "true"
+    author = (presented_author or "").strip().lower() == "true"
+    return verify_workflow_author_claim(
+        secret,
+        presented_author_hmac,
+        (user_id or "").strip(),
+        (project_id or "").strip(),
+        author=author,
+    )
 
 
 def verify_admin_flag(
