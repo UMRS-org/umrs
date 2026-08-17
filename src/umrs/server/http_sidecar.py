@@ -619,6 +619,11 @@ def _create_app():
     app.include_router(workflows_router)
     app.include_router(zmq_sessions_router)
     app.include_router(web_dashboard_router)
+    # Wave T3b m5: venue companion HTTP surface (registry + turn-attempt
+    # surface; deployment path is behind /gw/companion/* via NGINX sidecar).
+    from umrs.api.companion import router as companion_router
+
+    app.include_router(companion_router)
     # Previously-dormant satellite routers (now durable when DB env present).
     app.include_router(scientific_memory_router)
     app.include_router(reflective_memory_router)
