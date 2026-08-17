@@ -19,51 +19,12 @@ from __future__ import annotations
 import pytest
 from fastapi.routing import APIRoute
 
-# ── premise tables ─────────────────────────────────────────────────────────
+# FAMILY_LANES lives in the S5 lane-registry authority (umrs.shared.lanes);
+# these premises assert the mounted table against the registry, never a
+# second copy. SurfaceLane is a str-Enum, so lane literals compare clean.
+from umrs.shared.lanes import FAMILY_LANES
 
-# Family key = first path segment after ``/umrs``. This map is the recorded
-# union of the S1 inventory and the S2/S3 classification; it must match the
-# assembled route table exactly (no missing, no undeclared families).
-FAMILY_LANES: dict[str, str] = {
-    # S2/S3-classified lanes
-    "endpoints": "v1-stable",
-    "models": "v1-stable",
-    "llm": "v1-stable",
-    "knowledge": "v1beta",
-    "knowledge-graph": "v1beta",
-    "k2": "v1beta",
-    "loops": "v1beta",
-    "research": "v1beta",
-    "ops": "internal",
-    "skills": "internal",
-    "zmq": "internal",
-    # Mounted, no lane decision recorded yet — S5 must place each of these.
-    "a2l": "unclassified",
-    "artifacts": "unclassified",
-    "catalog": "unclassified",
-    "chat": "unclassified",
-    "companion": "unclassified",
-    "components": "unclassified",
-    "egress": "unclassified",
-    "evidence": "unclassified",
-    "experiment-registry": "unclassified",
-    "files": "unclassified",
-    "jobs": "unclassified",
-    "mcp": "unclassified",
-    "pipelines": "unclassified",
-    "provenance": "unclassified",
-    "rag": "unclassified",
-    "rag-profiles": "unclassified",
-    "reflective-memory": "unclassified",
-    "scientific-memory": "unclassified",
-    "traces": "unclassified",
-    "uploads": "unclassified",
-    "usage": "unclassified",
-    "verification": "unclassified",
-    "vision": "unclassified",
-    "web": "unclassified",
-    "workflows": "unclassified",
-}
+# ── premise tables ─────────────────────────────────────────────────────────
 
 # Routers that exist in the source tree but are NOT mounted in the HTTP
 # sidecar (verified against umrs.server.http_sidecar._create_app). Keeping
