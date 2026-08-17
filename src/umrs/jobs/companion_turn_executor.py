@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Optional
 
 logger = logging.getLogger(__name__)
@@ -38,6 +39,56 @@ DEFAULT_MODEL = "rivault-gpt-oss-static"
 DEFAULT_LITELLM_URL = "http://127.0.0.1:11434"
 
 ChatFn = Callable[..., str]
+
+
+@dataclass(frozen=True)
+class ChatTarget:
+    """Resolved chat upstream: real endpoint (base_url + served model name)."""
+
+    base_url: str
+    model: str
+
+
+def resolve_chat_target(
+    model: str, *, project_id: str = "default"
+) -> ChatTarget | None:
+    """Registry-first chat target resolution (T3c follow-up).
+
+    Route through the platform's own endpoint selection — READY/DEGRADED
+    endpoints on the cluster — instead of the site-LiteLLM static alias
+    (absent on this deployment: T5's live-roundtrip blocker). Returns None
+    on any registry failure so kick() can fall back to the static chain
+    (UMRS_COMPANION_LITELLM_URL → UMRS_AGENT_LITELLM_URL → default).
+    """
+    try:
+        from umrs.orchestrator.endpoint_registry import get_registry
+
+        registry = get_registry()
+        endpoint = registry.select_endpoint(
+            project_id, model, strategy="least_connections"
+        )
+        if endpoint is None:
+            return None
+        base_url = (getattr(endpoint, "litellm_url", "") or "").rstrip("/")
+        if not base_url:
+            return None
+        metadata = getattr(endpoint, "metadata", {}) or {}
+        served = metadata.get("served_model_name") or model
+        return ChatTarget(base_url=base_url, model=served)
+    except Exception:
+        logger.debug(
+            "companion chat target: registry resolution skipped", exc_info=True
+        )
+        return None
+
+
+def project_from_registry_key(registry_key: str) -> str:
+    """Extract project from '<user>@<project>' registry key (default-safe)."""
+    if "@" in registry_key:
+        project = registry_key.split("@", 1)[1].strip()
+        if project:
+            return project
+    return "default"
 
 
 def _default_chat() -> ChatFn:
@@ -108,15 +159,30 @@ def kick(
     chat: Optional[ChatFn] = None,
     model: Optional[str] = None,
     base_url: Optional[str] = None,
+    registry_key: str = "",
 ) -> asyncio.Task:
-    """Schedule the roundtrip for one accepted attempt (fire-and-pin)."""
+    """Schedule the roundtrip for one accepted attempt (fire-and-pin).
+
+    Target order: (1) registry-resolved live endpoint, (2) explicit
+    model/base_url args, (3) UMRS_COMPANION_* env, (4) UMRS_AGENT_* env,
+    (5) static default. Order (1) is what unblocks live roundtrips on
+    cluster deployments where no site LiteLLM listens locally.
+    """
+    resolved_model = model or resolve_model()
+    resolved_base = base_url or resolve_base_url()
+    if base_url is None:
+        target = resolve_chat_target(
+            resolved_model, project_id=project_from_registry_key(registry_key)
+        )
+        if target is not None:
+            resolved_model, resolved_base = target.model, target.base_url
     task = asyncio.ensure_future(
         execute_turn(
             turns,
             attempt_id,
             chat=chat or _default_chat(),
-            model=model or resolve_model(),
-            base_url=base_url or resolve_base_url(),
+            model=resolved_model,
+            base_url=resolved_base,
         )
     )
     if app is not None:

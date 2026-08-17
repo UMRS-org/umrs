@@ -241,6 +241,19 @@ class TestTurnRoundtripSurface:
         assert resp.json()["mode"] == "auto"
         assert resp.json()["response_content"] == "body"
 
+    def test_stale_in_flight_attempt_reaped_at_stream_open(self, monkeypatch):
+        from umrs.api import companion as api_companion
+
+        monkeypatch.setattr(
+            api_companion.CompanionTurnAttemptRegistry,
+            "fail_if_stale",
+            lambda *_a, **_k: True,
+        )
+        client = _app(FakePool([_turn_row(state="in_flight")]))
+        resp = client.get("/umrs/companion/turns/at-1/events", headers=HEADERS)
+        assert "stale_reaped" in resp.text
+        assert '"type": "attempt_failed"' in resp.text
+
 
 # Ownership enforcement stays full-strength (covered in TestWorkerRoutes:
 # cross-user ownership read => 401 via _enforce_ownership, independent of
