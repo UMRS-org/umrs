@@ -1370,6 +1370,10 @@ def create_backend_factory(
     knowledge_understand_backend = KnowledgeUnderstandBackend()
     knowledge_verify_backend = KnowledgeVerifyBackend()
 
+    from .reindex import KnowledgeReindexBackend
+
+    knowledge_reindex_backend = KnowledgeReindexBackend()
+
     def factory(job_type: JobType) -> OrchestratorBackend:
         if job_type == JobType.ENDPOINT_PROVISION:
             return endpoint_backend
@@ -1396,6 +1400,8 @@ def create_backend_factory(
             return knowledge_understand_backend
         elif job_type == JobType.KNOWLEDGE_VERIFY:
             return knowledge_verify_backend
+        elif job_type == JobType.KNOWLEDGE_REINDEX:
+            return knowledge_reindex_backend
         else:
             raise ValueError(f"Unsupported job type: {job_type}")
 
@@ -1456,6 +1462,10 @@ def create_status_checker(
     checker.register(JobType.KNOWLEDGE_INGEST, KnowledgeIngestStatusChecker())
     checker.register(JobType.KNOWLEDGE_UNDERSTAND, KnowledgeUnderstandStatusChecker())
     checker.register(JobType.KNOWLEDGE_VERIFY, KnowledgeVerifyStatusChecker())
+
+    from .reindex import KnowledgeReindexStatusChecker
+
+    checker.register(JobType.KNOWLEDGE_REINDEX, KnowledgeReindexStatusChecker())
 
     return checker
 

@@ -135,11 +135,19 @@ def _validate_data_ingestion_spec(spec: dict[str, Any]) -> None:
         raise ValueError("data_ingestion spec.object_etag must be a string")
 
 
+def _validate_knowledge_reindex_spec(spec: dict[str, Any]) -> None:
+    """ADR flourish aside: submit-time contract for the S10 re-index pattern."""
+    from umrs.jobs.reindex import validate_knowledge_reindex_spec as _validate
+
+    _validate(spec)
+
+
 _JOB_SPEC_VALIDATORS = {
     JobType.INDEX_BUILD: _validate_index_build_spec,
     JobType.WORKFLOW_RUN: _validate_workflow_run_spec,
     JobType.CLEANUP: _validate_cleanup_spec,
     JobType.DATA_INGESTION: _validate_data_ingestion_spec,
+    JobType.KNOWLEDGE_REINDEX: _validate_knowledge_reindex_spec,
 }
 
 
