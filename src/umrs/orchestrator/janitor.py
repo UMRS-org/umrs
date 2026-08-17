@@ -54,6 +54,18 @@ class JanitorConfig:
     enable_stuck_cleanup: bool = True
     enable_liveness_cleanup: bool = True
 
+    # R-HC1: READY-side engine probe. The backend job-status check (ghost
+    # pruning) only sees Slurm allocation state; a rivault allocation can
+    # outlive its own engine stack (vllm/litellm exits) for days while the
+    # registry keeps the endpoint listed as READY and every chat via its
+    # gateway 502s. Each janitor cycle probes READY/DEGRADED endpoints'
+    # engine readiness at host:port and flips READY → DEGRADED after
+    # ``engine_probe_degrade_after`` consecutive failures (and back on
+    # recovery), so list surfaces carry ground truth.
+    enable_engine_probe: bool = True
+    engine_probe_degrade_after: int = 3
+    engine_probe_timeout_sec: int = 8
+
     # Auto-extend TTL for endpoints whose backend jobs are still alive.
     # When enabled, each janitor cycle checks READY endpoints near expiry
     # and extends their expires_at by ttl_auto_extend_sec if the backend
@@ -81,6 +93,12 @@ class JanitorConfig:
             == "true",
             enable_liveness_cleanup=os.getenv("JANITOR_ENABLE_LIVENESS", "true").lower()
             == "true",
+            enable_engine_probe=os.getenv("JANITOR_ENABLE_ENGINE_PROBE", "true").lower()
+            == "true",
+            engine_probe_degrade_after=max(
+                1, int(os.getenv("JANITOR_PROBE_DEGRADE_AFTER", "3"))
+            ),
+            engine_probe_timeout_sec=int(os.getenv("JANITOR_PROBE_TIMEOUT_SEC", "8")),
             enable_ttl_auto_extend=os.getenv(
                 "JANITOR_ENABLE_TTL_AUTO_EXTEND", "true"
             ).lower()
@@ -101,6 +119,8 @@ class CleanupResult:
     stuck_cleaned: int = 0
     orphans_cleaned: int = 0
     ghosts_pruned: int = 0
+    engines_degraded: int = 0
+    engines_recovered: int = 0
     errors: list[str] = None
 
     def __post_init__(self):
@@ -125,6 +145,8 @@ class CleanupResult:
             "stuck_cleaned": self.stuck_cleaned,
             "orphans_cleaned": self.orphans_cleaned,
             "ghosts_pruned": self.ghosts_pruned,
+            "engines_degraded": self.engines_degraded,
+            "engines_recovered": self.engines_recovered,
             "total_cleaned": self.total_cleaned,
             "errors": self.errors,
         }
@@ -153,6 +175,10 @@ class Janitor:
         self._running = False
         self._cleanup_callbacks: list[Callable[[str], None]] = []
         self._known_jobs: set[str] = set()  # For orphan detection
+        # R-HC1: in-memory consecutive engine-probe failure counter per job.
+        # Persistence is intentionally in-memory: a missed restart resets to
+        # READY-trust, and the boot reconciler owns start-of-process truth.
+        self._probe_failures: dict[str, int] = {}
 
     @property
     def registry(self) -> EndpointRegistry:
@@ -227,6 +253,11 @@ class Janitor:
     async def _cleanup(self) -> CleanupResult:
         """Run all cleanup tasks."""
         result = CleanupResult()
+
+        if self.config.enable_engine_probe:
+            probe_result = await self._probe_ready_engines()
+            result.engines_degraded = probe_result[0]
+            result.engines_recovered = probe_result[1]
 
         if self.config.enable_liveness_cleanup:
             liveness_result = await self._cleanup_ghost_ready()
@@ -310,6 +341,127 @@ class Janitor:
                 break
 
         return pruned
+
+    async def _probe_ready_engines(self) -> tuple[int, int]:
+        """Probe READY/DEGRADED endpoint engines for ground-truth health (R-HC1).
+
+        Slurm job-status liveness (ghost pruning above) cannot see a rivault
+        allocation whose vllm/litellm stack exited underneath it — the
+        registry would list READY for days while every chat 502s. Each cycle
+        this probes ``http://{endpoint.host}:{endpoint.port}`` once per
+        READY/DEGRADED endpoint with the deployment's readiness semantics:
+
+        - ``is_ready``           → READY (or READY recovery from DEGRADED),
+          failure counter reset.
+        - ``is_degraded``        → weak signal: reachable but unhealthy;
+          counted as a failure with the probe detail kept in metadata.
+        - unreachable/any error  → counted as a failure (best-effort).
+
+        READY flips to DEGRADED only after ``engine_probe_degrade_after``
+        consecutive failures (avoids flakiness on one-off probe faults);
+        DEGRADED flips back to READY immediately on any successful probe.
+        Rows reporting ``host="pending"`` are skipped (no engine yet).
+
+        Returns:
+            ``(degraded_count, recovered_count)`` for this cycle.
+        """
+        degraded = 0
+        recovered = 0
+        endpoints = self.registry.list_all(
+            status_filter=[EndpointStatus.READY, EndpointStatus.DEGRADED],
+        )
+        if not endpoints:
+            return (0, 0)
+
+        from .readiness import get_readiness_poller
+
+        poller = get_readiness_poller()
+        timeout = max(1, self.config.engine_probe_timeout_sec)
+
+        for endpoint in endpoints:
+            host = str(getattr(endpoint, "host", "") or "")
+            if not host or host == "pending":
+                continue
+            port = getattr(endpoint, "port", None)
+            if not port:
+                continue
+
+            probe_kind = str(
+                (endpoint.metadata or {}).get("readiness_probe") or "models"
+            )
+            probe_path_raw = (endpoint.metadata or {}).get("readiness_path")
+            probe_path = str(probe_path_raw) if probe_path_raw else None
+
+            try:
+                is_ready, is_degraded_probe, models, error = await asyncio.wait_for(
+                    poller.check_ready_detail(
+                        host,
+                        int(port),
+                        probe_model=endpoint.model,
+                        probe_kind=probe_kind,
+                        probe_path=probe_path,
+                    ),
+                    timeout=timeout,
+                )
+            except Exception as exc:  # noqa: BLE001 - probe must never kill the loop
+                is_ready, is_degraded_probe, models, error = (
+                    False,
+                    False,
+                    [],
+                    f"probe_error: {type(exc).__name__}: {exc}",
+                )
+
+            if is_ready:
+                self._probe_failures.pop(endpoint.job_id, None)
+                if endpoint.status == EndpointStatus.DEGRADED:
+                    self.registry.mark_ready(endpoint.job_id)
+                    self.registry.update_metadata(
+                        endpoint.job_id,
+                        {
+                            "detail": "probe: recovered — engine healthy",
+                            "readiness_error": None,
+                            "readiness_models": models,
+                        },
+                    )
+                    recovered += 1
+                    logger.warning(
+                        "Engine probe recovery: %s/%s (job_id=%s) DEGRADED → READY",
+                        endpoint.project_id,
+                        endpoint.model,
+                        endpoint.job_id,
+                    )
+                continue
+
+            failures = self._probe_failures.get(endpoint.job_id, 0) + 1
+            self._probe_failures[endpoint.job_id] = failures
+            if failures < self.config.engine_probe_degrade_after:
+                continue
+
+            if endpoint.status != EndpointStatus.DEGRADED:
+                self.registry.mark_degraded(endpoint.job_id)
+                degraded += 1
+                logger.warning(
+                    "Engine probe degradation: %s/%s (job_id=%s) READY → DEGRADED "
+                    "after %d consecutive failures (%s)",
+                    endpoint.project_id,
+                    endpoint.model,
+                    endpoint.job_id,
+                    failures,
+                    error or "unreachable",
+                )
+            self.registry.update_metadata(
+                endpoint.job_id,
+                {
+                    "detail": (
+                        "degraded: engine probe failed "
+                        f"({failures} consecutive; {error or 'unreachable'})"
+                    ),
+                    "readiness_error": str(error or "unreachable")[:200],
+                    "readiness_models": models,
+                },
+            )
+
+        return (degraded, recovered)
 
     async def _auto_extend_ttl(self) -> int:
         """Extend TTL for READY endpoints whose backend jobs are still alive.
