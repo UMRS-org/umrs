@@ -123,42 +123,15 @@ class CompanionWorkerSupervisor:
         manager_row = self._manager.get(key)
         if manager_row and manager_row.get("state") == "draining":
             raise WorkerSpawnError(f"worker {key} is draining (restart budget spent)")
-        active_now = sum(1 for w in self._workers.values() if w.process.poll() is None)
-        if active_now >= self._config.max_workers:
+        if self.at_capacity():
             raise AtCapacity(f"worker cap {self._config.max_workers} reached")
-
         row = manager_row or self._manager.register_active(spec, job_id=job_id)
         attempt_index = int(row.get("attempt_index") or 0)
 
-        workdir = self._config.workers_root / secrets.token_hex(4)
-        workdir.mkdir(mode=0o700, parents=True, exist_ok=True)
-        os.chmod(workdir, 0o700)
+        workdir = self._prepare_workdir()
         socket_path = self._socket_path(workdir)
-
-        env = os.environ.copy()
-        env.update(
-            {
-                "R4_COMPANION_WORKER": "1",
-                "R4_COMPANION_REGISTRY_KEY": key,
-                "R4_COMPANION_PROJECT_ID": spec.project_id,
-                "R4_COMPANION_OWNER_USER_ID": spec.owner_user_id,
-                "R4_COMPANION_SOCKET_PATH": str(socket_path),
-                "R4_COMPANION_BEAT_SEC": str(self._config.beat_interval_sec),
-                "R4_COMPANION_JOB_ID": job_id,
-            }
-        )
-        try:
-            process = subprocess.Popen(
-                list(self._config.command_template),
-                env=env,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                start_new_session=True,
-            )
-        except OSError as exc:  # pragma: no cover — defensive seam
-            shutil.rmtree(workdir, ignore_errors=True)
-            raise WorkerSpawnError(str(exc)) from exc
+        env = self._build_env(spec, socket_path, job_id)
+        process = self._launch(env, workdir)
 
         instance = _WorkerInstance(
             registry_key=key,
@@ -173,6 +146,45 @@ class CompanionWorkerSupervisor:
         self._workers[key] = instance
         self._start_beat_listener(instance)
         return instance
+
+    def _prepare_workdir(self) -> Path:
+        """Per-worker workdir with 0700 permissions (socket/control plane dir)."""
+        workdir = self._config.workers_root / secrets.token_hex(4)
+        workdir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(workdir, 0o700)
+        return workdir
+
+    def _build_env(
+        self, spec: CompanionWorkerSpec, socket_path: Path, job_id: str
+    ) -> dict[str, str]:
+        """Worker environment contract: companion keys only, no auth material."""
+        env = os.environ.copy()
+        env.update(
+            {
+                "R4_COMPANION_WORKER": "1",
+                "R4_COMPANION_REGISTRY_KEY": spec.registry_key(),
+                "R4_COMPANION_PROJECT_ID": spec.project_id,
+                "R4_COMPANION_OWNER_USER_ID": spec.owner_user_id,
+                "R4_COMPANION_SOCKET_PATH": str(socket_path),
+                "R4_COMPANION_BEAT_SEC": str(self._config.beat_interval_sec),
+                "R4_COMPANION_JOB_ID": job_id,
+            }
+        )
+        return env
+
+    def _launch(self, env: dict[str, str], workdir: Path) -> subprocess.Popen:
+        try:
+            return subprocess.Popen(
+                list(self._config.command_template),
+                env=env,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        except OSError as exc:  # pragma: no cover — defensive seam
+            shutil.rmtree(workdir, ignore_errors=True)
+            raise WorkerSpawnError(str(exc)) from exc
 
     # -- heartbeat plumbing (push model, one mechanism) -----------------------
 
