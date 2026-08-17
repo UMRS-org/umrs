@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import secrets
 from typing import Any, Iterator, Optional
 
@@ -203,7 +204,11 @@ def _validated_mode(raw: Optional[str]) -> str:
 
 
 def _kick_turn(
-    turns: CompanionTurnAttemptRegistry, attempt_id: str, request: Request
+    turns: CompanionTurnAttemptRegistry,
+    attempt_id: str,
+    request: Request,
+    *,
+    registry_key: str = "",
 ) -> None:
     """T3c: execute the roundtrip in-sidecar (fail-soft — rows stay reattachable).
 
@@ -212,12 +217,22 @@ def _kick_turn(
     """
     try:
         chat = getattr(request.app.state, "companion_turn_chat", None)
-        kick_turn_executor(turns, attempt_id, app=request.app, chat=chat)
+        kick_turn_executor(
+            turns, attempt_id, app=request.app, chat=chat, registry_key=registry_key
+        )
     except Exception:
         logger.warning("turn executor kick failed for %s", attempt_id)
 
 
 _MAX_SSE_POLL_SEC = 25.0
+
+
+def _stale_ttl_seconds() -> int:
+    """Reaper TTL for in_flight attempts (T3c follow-up; env-overridable)."""
+    try:
+        return max(30, int(os.environ.get("UMRS_COMPANION_TURN_STALE_TTL_SEC", "300")))
+    except ValueError:
+        return 300
 
 
 async def _sse_events(
@@ -230,13 +245,23 @@ async def _sse_events(
     - in_flight → poll the attempt row briefly until it terminalizes.
 
     Note: re-executing never happens — the stream replays the same attempt
-    buffer.
+    buffer. Attempts orphaned past the reaper TTL (sidecar reload) are
+    lazily failed on read so clients never poll forever.
     """
     started = asyncio.get_event_loop().time()
     while True:
         attempt = registry.get(attempt_id)
         if attempt is None:
             yield f"data: {json.dumps({'type': 'attempt_not_found', 'attempt_id': attempt_id})}\n\n"
+            return
+        # Reap once when an OPEN stream surfaces a stale in_flight attempt
+        # (sidecar reload orphan): fail terminally instead of polling
+        # forever; live attempts unaffected (UPDATE matches nothing when
+        # fresh) and terminal states never touch the reaper.
+        if attempt.state == "in_flight" and registry.fail_if_stale(
+            attempt_id, _stale_ttl_seconds()
+        ):
+            yield f"data: {json.dumps({'type': 'attempt_failed', 'attempt_id': attempt_id, 'reason': 'stale_reaped'})}\n\n"
             return
         if attempt.state == "committed":
             yield f"data: {json.dumps({'type': 'result', 'committed_response_ref': attempt.committed_response_ref, 'content': attempt.response_content})}\n\n"
@@ -317,7 +342,7 @@ async def begin_turn_attempt(
     except Exception as exc:
         logger.exception("begin_turn_attempt failed")
         raise _http_error_from(exc) from exc
-    _kick_turn(turns, attempt.attempt_id, request)
+    _kick_turn(turns, attempt.attempt_id, request, registry_key=body.registry_key)
     return TurnAcceptedResponse(attempt_id=attempt.attempt_id, state=attempt.state)
 
 

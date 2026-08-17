@@ -522,6 +522,23 @@ class CompanionTurnAttemptRegistry:
                 (attempt_id,),
             )
 
+    def fail_if_stale(self, attempt_id: str, ttl_seconds: int) -> bool:
+        """Fail an in_flight attempt older than ``ttl_seconds`` (the reaper).
+
+        Attempts orphaned by a sidecar reload would otherwise poll as
+        in_flight forever (T3c follow-up). Idempotent — a committed or
+        already-failed attempt never matches the WHERE guard. Returns True
+        only when the row was actually reaped.
+        """
+        with self._cursor() as cur:
+            cur.execute(
+                "UPDATE companion_turns SET state = 'failed', updated_at = now() "
+                "WHERE attempt_id = %s AND state = 'in_flight' "
+                "AND updated_at < now() - make_interval(secs => %s)",
+                (attempt_id, int(ttl_seconds)),
+            )
+            return getattr(cur, "rowcount", 0) > 0
+
     def list_recent(self, registry_key: str, *, limit: int = 50) -> list[TurnAttempt]:
         """Recent attempts in replay order (newest first)."""
         with self._cursor() as cur:
