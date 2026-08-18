@@ -1740,23 +1740,32 @@ RAYEOF
     # Sequence inside the container: install Ray → start Ray head (daemonized,
     # no --block) → wait for every GPU (head + workers) to register → exec
     # `vllm serve` as a Ray driver on the local node.
-    echo "[rivault] Starting Ray head + co-located vLLM on ${HEAD_NODE} (${HEAD_IP})..."
-    podman rm -f rivault-vllm-mn >/dev/null 2>&1 || true
-    # --security-opt seccomp=unconfined: the default podman seccomp profile
-    # blocks a syscall Ray's native _raylet.so extension needs during module
-    # init on GB10 (Grace aarch64) — without this, even `python3 -c "import ray"`
-    # segfaults (SIGSEGV/exit 139), so `ray start --head` silently never binds
-    # its GCS port (confirmed via reproduction 2026-07-20).
-    podman run -d --name rivault-vllm-mn --network host --shm-size=4g \
-        --security-opt seccomp=unconfined \
-        --entrypoint /bin/sh \
-        -e "LD_LIBRARY_PATH=/usr/lib/aarch64-linux-gnu" \
-        -e "TRITON_LIBCUDA_PATH=/usr/lib/aarch64-linux-gnu" \
-        --env-file "./env.${uuid}" \
-        "${_mn_vllm_args[@]}" \
-        "${VLLM_IMAGE}" \
-        -c 'export PATH=/usr/local/bin:$PATH; python3 -m pip install -q --no-index --find-links /root/.cache/huggingface/ray_aarch64_env/wheels ray 2>&1 | grep -v "^$\|already\|Requirement" || python3 -m pip install -q ray; ray start --head --node-ip-address="'"${HEAD_IP}"'" --port="'"${RAY_PORT}"'" --num-gpus="'"${_gpus_per_node}"'" --object-store-memory=1073741824 --include-dashboard=false; echo "[vllm-head] Ray head started; waiting for '"${_want_gpus}"' GPUs..."; i=0; while [ $i -lt 120 ]; do g=$(ray status 2>/dev/null | grep -oE "[0-9.]+/[0-9.]+ GPU" | head -1 | sed "s@.*/@@; s@ GPU@@; s@[.].*@@"); [ "${g:-0}" = "'"${_want_gpus}"'" ] && break; sleep 5; i=$((i+1)); done; echo "[vllm-head] GPUs=${g:-0}; launching vLLM"; exec vllm serve "$VLLM_MODEL_REF" $VLLM_EXTRA_ARGS ${VLLM_SPECULATIVE_CONFIG:+--speculative-config "$VLLM_SPECULATIVE_CONFIG"} --served-model-name "$VLLM_SERVED_MODEL_NAME" --api-key "$VLLM_API_KEY" -tp "$VLLM_TP" -pp "$VLLM_PP" --distributed-executor-backend ray --host 0.0.0.0 --port 8000 --max-model-len "${VLLM_MAX_MODEL_LEN:-4096}" --gpu-memory-utilization "${VLLM_GPU_MEM_UTIL:-0.95}" ${VLLM_LANGUAGE_MODEL_ONLY:+--language-model-only} ${VLLM_KV_CACHE_MEMORY_BYTES:+--kv-cache-memory-bytes "$VLLM_KV_CACHE_MEMORY_BYTES"} ${VLLM_MAX_NUM_SEQS:+--max-num-seqs "$VLLM_MAX_NUM_SEQS"} ${VLLM_MAX_NUM_BATCHED_TOKENS:+--max-num-batched-tokens "$VLLM_MAX_NUM_BATCHED_TOKENS"} ${VLLM_ENFORCE_EAGER:+--enforce-eager} --enable-auto-tool-choice --tool-call-parser "${VLLM_TOOL_CALL_PARSER:-hermes}" ${VLLM_REASONING_PARSER:+--reasoning-parser "$VLLM_REASONING_PARSER"}' \
-        || { echo "[rivault] FATAL: failed to launch Ray head + vLLM container"; exit 1; }
+    # Functionized so the monitor loop can rerun the exact same launch when the
+    # engine wedges mid-job (`podman start` is NOT usable: rootless bind-mount
+    # mountpoint leftovers make start fail with "directory not empty", so the
+    # wedge recovery path is rm + recreate — same command as the initial one).
+    _launch_engine_mn() {
+        echo "[rivault] Starting Ray head + co-located vLLM on ${HEAD_NODE} (${HEAD_IP})..."
+        podman rm -f rivault-vllm-mn >/dev/null 2>&1 || true
+        # --security-opt seccomp=unconfined: the default podman seccomp profile
+        # blocks a syscall Ray's native _raylet.so extension needs during module
+        # init on GB10 (Grace aarch64) — without this, even `python3 -c "import ray"`
+        # segfaults (SIGSEGV/exit 139), so `ray start --head` silently never binds
+        # its GCS port (confirmed via reproduction 2026-07-20).
+        podman run -d --name rivault-vllm-mn --network host --shm-size=4g \
+            --security-opt seccomp=unconfined \
+            --entrypoint /bin/sh \
+            -e "LD_LIBRARY_PATH=/usr/lib/aarch64-linux-gnu" \
+            -e "TRITON_LIBCUDA_PATH=/usr/lib/aarch64-linux-gnu" \
+            --env-file "./env.${uuid}" \
+            "${_mn_vllm_args[@]}" \
+            "${VLLM_IMAGE}" \
+            -c 'export PATH=/usr/local/bin:$PATH; python3 -m pip install -q --no-index --find-links /root/.cache/huggingface/ray_aarch64_env/wheels ray 2>&1 | grep -v "^$\|already\|Requirement" || python3 -m pip install -q ray; ray start --head --node-ip-address="'"${HEAD_IP}"'" --port="'"${RAY_PORT}"'" --num-gpus="'"${_gpus_per_node}"'" --object-store-memory=1073741824 --include-dashboard=false; echo "[vllm-head] Ray head started; waiting for '"${_want_gpus}"' GPUs..."; i=0; while [ $i -lt 120 ]; do g=$(ray status 2>/dev/null | grep -oE "[0-9.]+/[0-9.]+ GPU" | head -1 | sed "s@.*/@@; s@ GPU@@; s@[.].*@@"); [ "${g:-0}" = "'"${_want_gpus}"'" ] && break; sleep 5; i=$((i+1)); done; echo "[vllm-head] GPUs=${g:-0}; launching vLLM"; exec vllm serve "$VLLM_MODEL_REF" $VLLM_EXTRA_ARGS ${VLLM_SPECULATIVE_CONFIG:+--speculative-config "$VLLM_SPECULATIVE_CONFIG"} --served-model-name "$VLLM_SERVED_MODEL_NAME" --api-key "$VLLM_API_KEY" -tp "$VLLM_TP" -pp "$VLLM_PP" --distributed-executor-backend ray --host 0.0.0.0 --port 8000 --max-model-len "${VLLM_MAX_MODEL_LEN:-4096}" --gpu-memory-utilization "${VLLM_GPU_MEM_UTIL:-0.95}" ${VLLM_LANGUAGE_MODEL_ONLY:+--language-model-only} ${VLLM_KV_CACHE_MEMORY_BYTES:+--kv-cache-memory-bytes "$VLLM_KV_CACHE_MEMORY_BYTES"} ${VLLM_MAX_NUM_SEQS:+--max-num-seqs "$VLLM_MAX_NUM_SEQS"} ${VLLM_MAX_NUM_BATCHED_TOKENS:+--max-num-batched-tokens "$VLLM_MAX_NUM_BATCHED_TOKENS"} ${VLLM_ENFORCE_EAGER:+--enforce-eager} --enable-auto-tool-choice --tool-call-parser "${VLLM_TOOL_CALL_PARSER:-hermes}" ${VLLM_REASONING_PARSER:+--reasoning-parser "$VLLM_REASONING_PARSER"}'
+    }
+    if ! _launch_engine_mn; then
+        echo "[rivault] FATAL: failed to launch Ray head + vLLM container"
+        exit 1
+    fi
     RAY_HEAD_PID=""
 
     # Wait for the Ray head GCS to accept connections. Use a host-side TCP probe
@@ -2050,11 +2059,12 @@ echo "[rivault] Stack is up. Monitoring containers (timeout=${RIVAULT_JOB_TIMEOU
 # can exit cleanly (exit 0) on EngineDeadError-style RPC timeouts in vLLM
 # while litellm/nginx/postgres stay alive. Without a respawn the whole
 # registration ends up zombie-red until an operator reprovisions (12-20 min).
-# Monitor level: detect the engine stopped, `podman start` it (a real restart
-# — new PID on the head; the sibling containers reconnect via the private
-# network when the engine comes back), bounded to RIVAULT_ENGINE_RESPAWN_MAX
-# so a persistently fatal engine doesn't restart-storm. Exit 125 when the
-# budget is exhausted so the durable retry layer retakes a fresh allocation.
+# Monitor level: detect the engine stopped, then rm + recreate it via the same
+# launch path as the initial bring-up (`podman start` does not work here —
+# rootless bind-mount mountpoint leftovers fail with "directory not empty"),
+# bounded to RIVAULT_ENGINE_RESPAWN_MAX so a persistently fatal engine doesn't
+# restart-storm. Exit 125 when the budget is exhausted so the durable retry
+# layer retakes a fresh allocation.
 RIVAULT_ENGINE_RESPAWN_MAX=${RIVAULT_ENGINE_RESPAWN_MAX:-3}
 RIVAULT_ENGINE_RESPAWN_SLEEP_SEC=${RIVAULT_ENGINE_RESPAWN_SLEEP_SEC:-30}
 _ENGINE_RESPAWNS=0
@@ -2069,6 +2079,26 @@ _engine_is_dead() {
     local name="$1"
     [ -z "$name" ] && return 1
     podman container inspect "$name" --format '{{.State.Status}}' 2>/dev/null | grep -qE "^exited$"
+}
+# rm + recreate the engine container. `podman start` is NOT an option: rootless
+# bind-mount mountpoint leftovers inside the overlay make start fail with
+# "directory not empty" (verified live on job 3545 / spark-3). Recreate uses the
+# same launch path as the initial stack bring-up, so the image/binds/env are
+# identical; sibling sidecars (postgres/litellm/nginx/coredns) stay up and
+# reconnect. Multi-node: rerun the functionized head launch; single-node: ask
+# podman-compose to recreate only the vllm service.
+_engine_recreate() {
+    local name="$1"
+    podman rm -f "$name" >/dev/null 2>&1 || true
+    if [ "$name" = "rivault-vllm-mn" ]; then
+        _launch_engine_mn
+    else
+        podman-compose --project-name "${RIVAULT_COMPOSE_PROJECT}" --in-pod false \
+            --env-file "./env.${uuid}" \
+            --file "./serve-model.yaml" ${GPUoverride[@]} \
+            ${_profile_flags} \
+            up --detach --no-deps vllm
+    fi
 }
 while [ "$RIVAULT_JOB_TIMEOUT" -eq 0 ] || [ "$ELAPSED" -lt "$RIVAULT_JOB_TIMEOUT" ]; do
     if [[ -n "${RIVAULT_STOP_REQUEST_FILE}" && -f "${RIVAULT_STOP_REQUEST_FILE}" ]]; then
@@ -2090,8 +2120,10 @@ while [ "$RIVAULT_JOB_TIMEOUT" -eq 0 ] || [ "$ELAPSED" -lt "$RIVAULT_JOB_TIMEOUT
             echo "[rivault] Engine dead ($_engine exit=${_exit}); respawn " \
                 "${_ENGINE_RESPAWNS}/${RIVAULT_ENGINE_RESPAWN_MAX}, sleeps ${RIVAULT_ENGINE_RESPAWN_SLEEP_SEC}s"
             sleep "$RIVAULT_ENGINE_RESPAWN_SLEEP_SEC"
-            if podman start "$_engine" 2>&1; then
-                echo "[rivault] Engine respawn OK ($_engine started; litellm/nginx reconnects next requests)"
+            echo "[rivault] post-mortem for dead engine ${_engine}:"
+            podman logs --tail 25 "$_engine" 2>&1 | sed 's/^/[rivault]   /' || true
+            if _engine_recreate "$_engine" 2>&1; then
+                echo "[rivault] Engine respawn OK ($_engine recreated; model reload in background)"
             else
                 echo "[rivault] Engine respawn FAILED ($_engine); counting anyway"
             fi
