@@ -20,8 +20,20 @@ defaults:
   RIVAULT_JOB_TIMEOUT: "0"   # infinite monitor loop — BDRT has no Slurm timelimit
 
 endpoints:
-  # ── Qwen3.6-35B-A3B-NVFP4 (single node → spark) ──────────────────────
+  # ── Qwen3.6-35B-A3B-NVFP4 (single node → spark, pinned dgx-spark-1) ───
   #  35B MoE (3B active), NVFP4 (Blackwell-native 4-bit float). Fits 1× GB10.
+  #
+  # node-pin: pies grepped on cluster convention (dgx-spark-1 = node whose 4
+  # GPUs stay dedicated to single-NVFP4 stacks). `nodelist` forwards to the
+  # provision API / launcher as #SBATCH --nodelist=... .
+  #
+  # node-health note (2026-08-19): dgx-spark-1 (spark-atom-1) currently has
+  # rootless-podman drift — its /run/user/<uid> runtime dir is never created
+  # and `podman ps` fails with "default OCI runtime runc not found" REGARDLESS
+  # of XDG_RUNTIME_DIR. The compose bring-up still works, only the launcher's
+  # monitor loop misreads the stack as dead (rc=125 x3 => teardown). Requires
+  # the monitor-tolerance overrides below; revert them when the node is
+  # rebooted (needs admin; flagged 2026-07-28, still pending).
   - name: qwen3.6-35b-a3b
     model: Qwen3.6-35B-A3B-NVFP4
     aliases:
@@ -29,8 +41,14 @@ endpoints:
     tier: system
     node_count: 1
     partition: spark
+    nodelist: dgx-spark-1    # -> #SBATCH --nodelist=dgx-spark-1 (API-supported)
     max_model_len: 262144
     env_vars:
+      # atom-1 monitor-drift overrides: never tear the stack down on podman
+      # client rc=125, and never respawn the engine on the same false signal.
+      XDG_RUNTIME_DIR: "/tmp/xdg-umrs-q36"
+      RIVAULT_ENGINE_ZERO_STREAK_TOLERANCE: "1000000"
+      RIVAULT_ENGINE_RESPAWN_MAX: "0"
       VLLM_HOST_MODEL_PATH: "/home/mnagaso/umrs_models/hub/models--nvidia--Qwen3.6-35B-A3B-NVFP4/snapshots"
       VLLM_PATH_TO_HUGGINGFACE: "/home/mnagaso/umrs_models"
       VLLM_MODEL: "nvidia/Qwen3.6-35B-A3B-NVFP4"
