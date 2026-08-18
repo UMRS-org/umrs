@@ -108,6 +108,35 @@ def test_legacy_entry_roundtrips_through_serving_plan(roster_path, monkeypatch):
         assert spec_shape["ttl_sec"] == legacy_shape["ttl_sec"]
 
 
+def test_recipe_partition_lifted_when_request_has_none(monkeypatch):
+    """Live bdrt regression (deepseek-v4-flash-0731, 2026-08-18): bare
+    `r4 endpoint up` passes site.partition="" — the plan must then take the
+    recipe's partition, exactly like the legacy resolver's _ROSTER_FIELDS
+    lift. Before the fix the typed path dropped it, so every bare provision
+    defaulted to the site default partition (spark) and multi-node jobs
+    sat PD PartitionNodeLimit forever."""
+    roster = "umrs/deploy/bdrt/pool-bdrt-step.yaml"
+    monkeypatch.setenv("UMRS_PROVISION_ROSTER", roster)
+    provision_roster._cache.clear()
+
+    legacy = provision_roster.resolve_model_provision_defaults(
+        "deepseek-v4-flash-0731", None
+    )
+    assert legacy is not None
+    assert legacy.get("partition") == "edge-double"
+
+    spec = provision_roster.resolve_model_serving_spec(
+        "deepseek-v4-flash-0731",
+        None,
+        site=SiteSpec(cluster="bdrt", backend="slurm-remote", partition=""),
+    )
+    assert spec is not None
+    assert spec.site.partition == "edge-double", (
+        "recipe partition must survive into the plan when the request "
+        "carries no explicit partition"
+    )
+
+
 def test_resolver_serving_spec_returns_typed_plan(monkeypatch):
     monkeypatch.setenv("UMRS_PROVISION_ROSTER", "umrs/deploy/rccs-front/pool-rccs-cloud.yaml")
     provision_roster._cache.clear()

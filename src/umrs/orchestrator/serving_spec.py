@@ -676,6 +676,19 @@ def build_spec_from_legacy_entry(
     """Build a ServingPlan from a production `pool.yaml` entry as-is (M2)."""
     model = str(entry["model"])
     env = _legacy_env_vars(entry)
+    # Roster partition is recipe material: lift it into the plan site. The
+    # caller passes site.partition="" when the API request carries no explicit
+    # partition, so without this line a recipe's `partition:` silently
+    # evaporated and every provision defaulted to the site default partition
+    # (live bdrt regression: deepseek-v4-flash-0731's edge-double recipe
+    # submitted --partition=spark --nodes=2 → PD PartitionNodeLimit forever).
+    # Legacy bitwise equivalence: resolve_model_provision_defaults lifts
+    # entry["partition"] through _ROSTER_FIELDS; the typed path must match.
+    # Explicit request partitions still win — endpoints.py only applies
+    # plan.site.partition when request.partition is None.
+    entry_partition = str(entry.get("partition") or "").strip()
+    if entry_partition and not (site.partition or "").strip():
+        site = replace(site, partition=entry_partition)
     engine, _dropped = build_engine_spec(
         _legacy_engine_block(entry, model), f"legacy[{model}].env_vars"
     )
