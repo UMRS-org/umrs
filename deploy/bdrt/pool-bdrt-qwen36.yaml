@@ -1,0 +1,45 @@
+# Pool roster: bdrt qwen3.6-35b-a3b — single-model bring-up
+#
+# Usage:
+#   r4 source use bdrt && r4 pool up umrs/deploy/bdrt/pool-bdrt-qwen36.yaml
+#
+# Mirror of the qwen entry in pool-bdrt-step.yaml for targeted recovery (e.g.
+# 2026-08-19 node-slot shuffle where only this model needed reprovisioning).
+# Keep env pack in sync with pool-bdrt-step.yaml.
+
+pool: bdrt-qwen36
+defaults:
+  source: bdrt
+  tier: system
+  ttl_sec: 0
+  timeout: 172800
+  RIVAULT_JOB_TIMEOUT: "0"
+
+endpoints:
+  - name: qwen3.6-35b-a3b
+    model: Qwen3.6-35B-A3B-NVFP4
+    aliases:
+      - qwen3.6-35b-a3b
+    tier: system
+    node_count: 1
+    partition: spark
+    nodelist: dgx-spark-1
+    max_model_len: 262144
+    env_vars:
+      # atom-1 monitor-drift overrides (see pool-bdrt-step.yaml node-health note)
+      XDG_RUNTIME_DIR: "/tmp/xdg-umrs-q36"
+      RIVAULT_ENGINE_ZERO_STREAK_TOLERANCE: "1000000"
+      RIVAULT_ENGINE_RESPAWN_MAX: "0"
+      VLLM_HOST_MODEL_PATH: "/home/mnagaso/umrs_models/hub/models--nvidia--Qwen3.6-35B-A3B-NVFP4/snapshots"
+      VLLM_PATH_TO_HUGGINGFACE: "/home/mnagaso/umrs_models"
+      VLLM_MODEL: "nvidia/Qwen3.6-35B-A3B-NVFP4"
+      VLLM_TOKENIZER: "nvidia/Qwen3.6-35B-A3B-NVFP4"
+      VLLM_GPU_MEM_UTIL: "0.78"
+      VLLM_MAX_NUM_SEQS: "4"
+      VLLM_TOOL_CALL_PARSER: "qwen3_xml"
+      VLLM_REASONING_PARSER: "qwen3"
+      VLLM_TRUST_REMOTE_CODE: "1"
+      VLLM_ENFORCE_EAGER: "1"
+      VLLM_MAX_MODEL_LEN: "262144"
+      VLLM_MOE_BACKEND: "marlin"
+      VLLM_DOCKER_IMAGE: "docker.io/vllm/vllm-openai:latest"
