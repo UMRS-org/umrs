@@ -2100,15 +2100,36 @@ _engine_recreate() {
             up --detach --no-deps vllm
     fi
 }
+_ENG_STOP_STREAK=${RIVAULT_ENGINE_ZERO_STREAK_TOLERANCE:-3}
+_ZERO_STREAK=0
 while [ "$RIVAULT_JOB_TIMEOUT" -eq 0 ] || [ "$ELAPSED" -lt "$RIVAULT_JOB_TIMEOUT" ]; do
     if [[ -n "${RIVAULT_STOP_REQUEST_FILE}" && -f "${RIVAULT_STOP_REQUEST_FILE}" ]]; then
         echo "[rivault] Graceful stop requested via ${RIVAULT_STOP_REQUEST_FILE}. Exiting monitor loop."
         exit 0
     fi
-    RUNNING=$(podman ps -q --filter "network=${RIVAULT_NETWORK_NAME}" 2>/dev/null | wc -l)
+    # Transient podman/storage stalls on the spark nodes can make a single
+    # `podman ps` return empty/fail with rc!=0 even though every rivault
+    # container is healthy (live evidence: jobs 3571/3572/3574 — litellm was
+    # still answering 200 ~40s before the launcher's cleanup ripped the WHOLE
+    # stack on ONE zero sample). Require consecutive zero-samples before
+    # declaring the stack dead, and log the raw result on every failure so the
+    # postmortem shows the actual podman-side error.
+    _psout=$(podman ps -q --filter "network=${RIVAULT_NETWORK_NAME}" 2>&1); _psrc=$?
+    if [ "$_psrc" -eq 0 ]; then
+        RUNNING=$(echo "$_psout" | grep -v '^$' | wc -l)
+    else
+        RUNNING=0
+    fi
     if [ "$RUNNING" -eq 0 ]; then
-        echo "[rivault] All containers stopped. Exiting."
-        break
+        _ZERO_STREAK=$(( _ZERO_STREAK + 1 ))
+        echo "[rivault] monitor: podman ps returned zero containers " \
+            "(streak ${_ZERO_STREAK}/${_ENG_STOP_STREAK}, rc=${_psrc}): ${_psout:0:300}"
+        if [ "$_ZERO_STREAK" -ge "$_ENG_STOP_STREAK" ]; then
+            echo "[rivault] All containers stopped. Exiting."
+            break
+        fi
+    else
+        _ZERO_STREAK=0
     fi
     # Engine-death check + bounded respawn. Skip when the launcher is already
     # mid-teardown via an external kill (stop-request path is checked above).
