@@ -2045,6 +2045,31 @@ if [[ -n "${SLURM_JOB_ID:-}" && -n "${_JOB_INFO_DIR_EFF}" && -d "${_JOB_INFO_DIR
         && echo "[rivault] Published endpoint info file for job ${SLURM_JOB_ID}"
 fi
 echo "[rivault] Stack is up. Monitoring containers (timeout=${RIVAULT_JOB_TIMEOUT}s, infinite=${RIVAULT_JOB_TIMEOUT==0})..."
+# Engine-death respawn (wedge-class recovery):
+# The engine container (multi-node head: rivault-vllm-mn; single-node: rivault-<jid>_vllm_1)
+# can exit cleanly (exit 0) on EngineDeadError-style RPC timeouts in vLLM
+# while litellm/nginx/postgres stay alive. Without a respawn the whole
+# registration ends up zombie-red until an operator reprovisions (12-20 min).
+# Monitor level: detect the engine stopped, `podman start` it (a real restart
+# — new PID on the head; the sibling containers reconnect via the private
+# network when the engine comes back), bounded to RIVAULT_ENGINE_RESPAWN_MAX
+# so a persistently fatal engine doesn't restart-storm. Exit 125 when the
+# budget is exhausted so the durable retry layer retakes a fresh allocation.
+RIVAULT_ENGINE_RESPAWN_MAX=${RIVAULT_ENGINE_RESPAWN_MAX:-3}
+RIVAULT_ENGINE_RESPAWN_SLEEP_SEC=${RIVAULT_ENGINE_RESPAWN_SLEEP_SEC:-30}
+_ENGINE_RESPAWNS=0
+_engine_container_name() {
+    if podman container exists rivault-vllm-mn 2>/dev/null; then
+        echo "rivault-vllm-mn"
+    elif podman container exists "rivault-${SLURM_JOB_ID}_vllm_1" 2>/dev/null; then
+        echo "rivault-${SLURM_JOB_ID}_vllm_1"
+    fi
+}
+_engine_is_dead() {
+    local name="$1"
+    [ -z "$name" ] && return 1
+    podman container inspect "$name" --format '{{.State.Status}}' 2>/dev/null | grep -qE "^exited$"
+}
 while [ "$RIVAULT_JOB_TIMEOUT" -eq 0 ] || [ "$ELAPSED" -lt "$RIVAULT_JOB_TIMEOUT" ]; do
     if [[ -n "${RIVAULT_STOP_REQUEST_FILE}" && -f "${RIVAULT_STOP_REQUEST_FILE}" ]]; then
         echo "[rivault] Graceful stop requested via ${RIVAULT_STOP_REQUEST_FILE}. Exiting monitor loop."
@@ -2054,6 +2079,26 @@ while [ "$RIVAULT_JOB_TIMEOUT" -eq 0 ] || [ "$ELAPSED" -lt "$RIVAULT_JOB_TIMEOUT
     if [ "$RUNNING" -eq 0 ]; then
         echo "[rivault] All containers stopped. Exiting."
         break
+    fi
+    # Engine-death check + bounded respawn. Skip when the launcher is already
+    # mid-teardown via an external kill (stop-request path is checked above).
+    _engine="$(_engine_container_name)"
+    if [ -n "$_engine" ] && _engine_is_dead "$_engine"; then
+        if [ "$_ENGINE_RESPAWNS" -lt "$RIVAULT_ENGINE_RESPAWN_MAX" ]; then
+            _ENGINE_RESPAWNS=$(( _ENGINE_RESPAWNS + 1 ))
+            _exit=$(podman container inspect "$_engine" --format '{{.State.ExitCode}}' 2>/dev/null || echo "?")
+            echo "[rivault] Engine dead ($_engine exit=${_exit}); respawn " \
+                "${_ENGINE_RESPAWNS}/${RIVAULT_ENGINE_RESPAWN_MAX}, sleeps ${RIVAULT_ENGINE_RESPAWN_SLEEP_SEC}s"
+            sleep "$RIVAULT_ENGINE_RESPAWN_SLEEP_SEC"
+            if podman start "$_engine" 2>&1; then
+                echo "[rivault] Engine respawn OK ($_engine started; litellm/nginx reconnects next requests)"
+            else
+                echo "[rivault] Engine respawn FAILED ($_engine); counting anyway"
+            fi
+        else
+            echo "[rivault] Engine budget exhausted (${RIVAULT_ENGINE_RESPAWN_MAX} respawns); tearing down stack"
+            exit 125
+        fi
     fi
     sleep "$INTERVAL"
     ELAPSED=$(( ELAPSED + INTERVAL ))
