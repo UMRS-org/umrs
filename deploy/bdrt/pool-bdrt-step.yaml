@@ -57,6 +57,12 @@ endpoints:
       VLLM_MOE_BACKEND: "marlin"
       VLLM_DOCKER_IMAGE: "docker.io/vllm/vllm-openai:latest"
       RCCS_SKIP_CDI: "1"
+      # fuse-overlayfs on dgx-spark-1 is corrupt (ENODATA at bind-mount time —
+      # recurrence of the 2026-07-28 class, confirmed 2026-08-18 by busybox
+      # smoke). Native kernel overlay works on every node; shield this entry so
+      # a landing on the broken node still comes up (same workaround already on
+      # the deepseek-0731 and qwen3.8 roster entries).
+      CONTAINERS_STORAGE_CONF: "/home/mnagaso/.config/containers/storage-native.conf"
       VLLM_EXTRA_ARGS: >-
         --kv-cache-dtype fp8
         --attention-backend flashinfer
