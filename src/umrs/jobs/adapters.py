@@ -1402,6 +1402,10 @@ def create_backend_factory(
             return knowledge_verify_backend
         elif job_type == JobType.KNOWLEDGE_REINDEX:
             return knowledge_reindex_backend
+        elif job_type == JobType.COMPANION_WORKER:
+            from .companion_worker_backend import CompanionWorkerBackend
+
+            return CompanionWorkerBackend()
         else:
             raise ValueError(f"Unsupported job type: {job_type}")
 
@@ -1466,6 +1470,10 @@ def create_status_checker(
     from .reindex import KnowledgeReindexStatusChecker
 
     checker.register(JobType.KNOWLEDGE_REINDEX, KnowledgeReindexStatusChecker())
+
+    from .companion_worker_backend import CompanionWorkerStatusChecker
+
+    checker.register(JobType.COMPANION_WORKER, CompanionWorkerStatusChecker())
 
     return checker
 

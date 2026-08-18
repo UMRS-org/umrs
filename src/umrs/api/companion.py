@@ -93,7 +93,27 @@ def _strict_headers(
 class WorkerRegisterRequest(BaseModel):
     owner_user_id: str
     project_id: str
-    job_id: str
+    job_id: Optional[str] = None
+
+
+async def _submit_companion_job(request: Request, owner: str, project: str) -> str:
+    """Submit the venue's companion_worker durable job (real jobs row the
+    companion_turns FK references). Test-injectable via app.state."""
+    submitter = getattr(request.app.state, "companion_job_submitter", None)
+    if submitter is not None:
+        return await submitter(owner, project)
+    from umrs.server.durable_job_runtime import get_runtime
+
+    runtime = get_runtime()
+    if runtime is None:
+        raise HTTPException(status_code=503, detail="durable job runtime unavailable")
+    from umrs.jobs.models import JobType
+
+    return await runtime.submit_job_sync(
+        job_type=JobType.COMPANION_WORKER,
+        project_id=project,
+        spec={"registry_key": f"{owner}@{project}"},
+    )
 
 
 class WorkerRowResponse(BaseModel):
@@ -294,7 +314,10 @@ async def register_worker(
         {"owner_user_id": body.owner_user_id}, x_user_id or body.owner_user_id
     )
     try:
-        row = managers.register_active(spec, job_id=body.job_id)
+        job_id = body.job_id or await _submit_companion_job(
+            request, body.owner_user_id, body.project_id
+        )
+        row = managers.register_active(spec, job_id=job_id)
         return _worker_row_to_response(row)
     except Exception as exc:
         logger.exception("register_worker failed")

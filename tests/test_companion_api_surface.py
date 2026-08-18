@@ -91,6 +91,25 @@ class TestWorkerRoutes:
         assert resp.json()["registry_key"] == "alice@default"
         assert resp.json()["state"] == "active"
 
+    def test_register_worker_submits_venue_job_when_job_id_omitted(self):
+        pool = FakePool([None, _worker_row(job_id="job-cw-1")])
+        client = _app(pool)
+        submitted: list[tuple] = []
+
+        async def _submitter(owner: str, project: str) -> str:
+            submitted.append((owner, project))
+            return "job-cw-1"
+
+        client.app.state.companion_job_submitter = _submitter
+        resp = client.post(
+            "/umrs/companion/workers",
+            headers=HEADERS,
+            json={"owner_user_id": "alice", "project_id": "default"},
+        )
+        assert resp.status_code == 201
+        assert resp.json()["job_id"] == "job-cw-1"
+        assert submitted == [("alice", "default")]
+
     def test_get_worker_404(self):
         client = _app(FakePool([None]))
         resp = client.get("/umrs/companion/workers/ghost@default", headers=HEADERS)
