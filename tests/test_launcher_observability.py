@@ -16,6 +16,10 @@ import logging
 def test_profiles_degradation_logs(monkeypatch, caplog):
     import umrs.server.rivault_launcher as rl
 
+    # Isolate from possible RIVAULT_PROFILES leakage across the suite:
+    # a set env short-circuits the site-config read under test.
+    monkeypatch.delenv("RIVAULT_PROFILES", raising=False)
+
     def _boom():
         raise FileNotFoundError("/etc/umrs/site.yaml unreadable")
 

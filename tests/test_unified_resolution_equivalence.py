@@ -8,6 +8,8 @@ frontend, not a second interpretation of servings.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from umrs.orchestrator import provision_roster
 from umrs.orchestrator.serving_spec import (
@@ -18,7 +20,11 @@ from umrs.orchestrator.serving_spec import (
 
 SITE = SiteSpec(cluster="rccs", backend="slurm-remote", partition="ng-dgx-m0")
 MODEL = "cyberagent/calm3-22b-chat"
-ROSTER = "umrs/deploy/rccs-front/pool-rccs-cloud.yaml"
+
+# Test-file anchored roster path (cwd-independent: CI runs with cwd=umrs).
+ROSTER = str(
+    Path(__file__).resolve().parents[1] / "deploy" / "rccs-front" / "pool-rccs-cloud.yaml"
+)
 
 
 @pytest.fixture(autouse=True)

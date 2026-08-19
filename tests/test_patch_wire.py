@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from umrs.orchestrator.serving_spec import PatchSpec, patches_to_env
 
 QW = PatchSpec(
     source="/lvs0/rccs-dmp/masaru.nagaso/umrs_models/patches/qwen3_5.py",
     target="/usr/local/lib/python3.12/dist-packages/vllm/model_executor/models/qwen3_5.py",
     sha256="9" * 64,
+)
+
+# Test-file anchored template dir (cwd-independent: CI runs with cwd=umrs).
+_MINI_RIVAULT_DIR = (
+    Path(__file__).resolve().parents[1] / "src" / "umrs" / "mini-rivault-llm"
 )
 
 
@@ -59,9 +66,8 @@ def test_shared_patch_resolver_is_called_before_env_write():
     import pathlib
     import re
 
-    slurm = pathlib.Path("umrs/src/umrs/mini-rivault-llm/serve-model.slurm").read_text(
-        encoding="utf-8"
-    )
+    template = _MINI_RIVAULT_DIR / "serve-model.slurm"
+    slurm = template.read_text(encoding="utf-8")
     fn_pos = slurm.index("_apply_vllm_patches()")
     call_pos = slurm.index("\n_apply_vllm_patches\n")
     heredoc_pos = slurm.index('cat <<EOF > "./env.${uuid}"')
@@ -73,14 +79,8 @@ def test_shared_patch_resolver_is_called_before_env_write():
 
 def test_engine_flag_lanes_wired_in_both_launch_paths():
     """Typed engine flags must reach every `vllm serve` invocation."""
-    import pathlib
-
-    slurm = pathlib.Path("umrs/src/umrs/mini-rivault-llm/serve-model.slurm").read_text(
-        encoding="utf-8"
-    )
-    yaml = pathlib.Path("umrs/src/umrs/mini-rivault-llm/serve-model.yaml").read_text(
-        encoding="utf-8"
-    )
+    slurm = (_MINI_RIVAULT_DIR / "serve-model.slurm").read_text(encoding="utf-8")
+    yaml = (_MINI_RIVAULT_DIR / "serve-model.yaml").read_text(encoding="utf-8")
     for lane in (
         "VLLM_LANGUAGE_MODEL_ONLY",
         "VLLM_KV_CACHE_MEMORY_BYTES",
