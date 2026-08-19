@@ -310,7 +310,8 @@ def test_trigger_missing_workflow_returns_404(client):
 
 
 def test_upload_workflow_registers_and_returns_accepted(client):
-    headers = _auth_headers("alice", "project-a")
+    # ADR-027 role gate: uploads require workflow_author claim or admin.
+    headers = _auth_headers("alice", "project-a", admin=True)
     response = client.post(
         "/umrs/workflows/upload",
         headers=headers,
@@ -331,9 +332,10 @@ def test_upload_workflow_registers_and_returns_accepted(client):
 
 
 def test_upload_workflow_rejects_invalid_archive(client):
+    # ADR-027 role gate: uploads require workflow_author claim or admin.
     response = client.post(
         "/umrs/workflows/upload",
-        headers=_auth_headers("alice", "project-a"),
+        headers=_auth_headers("alice", "project-a", admin=True),
         data={"user_id": "alice", "workflow_name": "broken-workflow"},
         files={"file": ("broken.zip", b"not-a-zip", "application/zip")},
     )

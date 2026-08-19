@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -11,6 +13,11 @@ from umrs.orchestrator import provision_roster
 from umrs.orchestrator.serving_spec import ResolvedEndpointSpec, SiteSpec
 
 SITE = SiteSpec(cluster="rccs", backend="slurm-remote", partition="ng-dgx-m0")
+
+# Test-file anchored roster path (cwd-independent: CI runs with cwd=umrs).
+_RCCS_ROSTER = str(
+    Path(__file__).resolve().parents[1] / "deploy" / "rccs-front" / "pool-rccs-cloud.yaml"
+)
 
 
 def test_enforce_recipe_policy_rejects_env_vars_for_non_admin():
@@ -46,7 +53,7 @@ def test_cluster_name_is_deterministic_and_configurable(monkeypatch):
 
 
 def test_plan_drives_sizing_for_curd_model(monkeypatch):
-    monkeypatch.setenv("UMRS_PROVISION_ROSTER", "umrs/deploy/rccs-front/pool-rccs-cloud.yaml")
+    monkeypatch.setenv("UMRS_PROVISION_ROSTER", _RCCS_ROSTER)
     provision_roster._cache.clear()
     serving_plan = provision_roster.resolve_model_serving_spec(
         "cyberagent/calm3-22b-chat",
@@ -148,9 +155,7 @@ def test_unknown_config_degrades_to_noop_for_partition():
 
 
 def test_legacy_resolver_still_matches_plan_for_curated():
-    import os
-
-    os.environ["UMRS_PROVISION_ROSTER"] = "umrs/deploy/rccs-front/pool-rccs-cloud.yaml"
+    os.environ["UMRS_PROVISION_ROSTER"] = _RCCS_ROSTER
     provision_roster._cache.clear()
     legacy = provision_roster.resolve_model_provision_defaults("cyberagent/calm3-22b-chat", None)
     plan = provision_roster.resolve_model_serving_spec(

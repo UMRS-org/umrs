@@ -10,6 +10,8 @@ because legacy never carried `_full_entry`).
 from __future__ import annotations
 
 import glob
+import os
+from pathlib import Path
 
 import pytest
 from umrs.orchestrator import provision_roster
@@ -19,8 +21,20 @@ from umrs.orchestrator.serving_spec import (
     spec_to_legacy_defaults,
 )
 
+# Anchor on the test file, not the cwd: pytest can run with
+# working-directory=umrs (CI) or the parent repo root (repo-local).
+_UMRS_ROOT = Path(__file__).resolve().parents[1]
+_DEPLOY_ROOT = _UMRS_ROOT / "deploy"
+
+
+def _roster(*parts: str) -> str:
+    """Absolute path to one roster YAML under umrs/deploy/."""
+    return str(_DEPLOY_ROOT.joinpath(*parts))
+
+
+_ALL_ROSTERS_GLOB = os.path.join(_DEPLOY_ROOT, "**", "pool*.yaml")
 ALL_ROSTERS = sorted(
-    p for p in glob.glob("umrs/deploy/**/pool*.yaml", recursive=True) if "/templates/" not in p
+    p for p in glob.glob(_ALL_ROSTERS_GLOB, recursive=True) if "/templates/" not in p
 )
 assert ALL_ROSTERS, "expected at least one production roster"
 
@@ -37,7 +51,7 @@ _FILLERS = {
 
 
 def _site_for(path: str) -> SiteSpec:
-    site_dir = str(path).split("umrs/deploy/")[1].split("/")[0]
+    site_dir = Path(path).relative_to(_DEPLOY_ROOT).parts[0]
     partition = "unknown"
     return SiteSpec(cluster=site_dir, backend="slurm-remote", partition=partition)
 
@@ -115,7 +129,7 @@ def test_recipe_partition_lifted_when_request_has_none(monkeypatch):
     lift. Before the fix the typed path dropped it, so every bare provision
     defaulted to the site default partition (spark) and multi-node jobs
     sat PD PartitionNodeLimit forever."""
-    roster = "umrs/deploy/bdrt/pool-bdrt-step.yaml"
+    roster = _roster("bdrt", "pool-bdrt-step.yaml")
     monkeypatch.setenv("UMRS_PROVISION_ROSTER", roster)
     provision_roster._cache.clear()
 
@@ -138,7 +152,9 @@ def test_recipe_partition_lifted_when_request_has_none(monkeypatch):
 
 
 def test_resolver_serving_spec_returns_typed_plan(monkeypatch):
-    monkeypatch.setenv("UMRS_PROVISION_ROSTER", "umrs/deploy/rccs-front/pool-rccs-cloud.yaml")
+    monkeypatch.setenv(
+        "UMRS_PROVISION_ROSTER", _roster("rccs-front", "pool-rccs-cloud.yaml")
+    )
     provision_roster._cache.clear()
     spec = provision_roster.resolve_model_serving_spec(
         "cyberagent/calm3-22b-chat",
@@ -155,7 +171,9 @@ def test_resolver_serving_spec_returns_typed_plan(monkeypatch):
 
 def test_legacy_public_shape_is_unchanged(monkeypatch):
     # Existing service callers expect this return shape — no new keys.
-    monkeypatch.setenv("UMRS_PROVISION_ROSTER", "umrs/deploy/rccs-front/pool-rccs-cloud.yaml")
+    monkeypatch.setenv(
+        "UMRS_PROVISION_ROSTER", _roster("rccs-front", "pool-rccs-cloud.yaml")
+    )
     provision_roster._cache.clear()
     defaults = provision_roster.resolve_model_provision_defaults("cyberagent/calm3-22b-chat", None)
     assert defaults is not None
@@ -164,7 +182,7 @@ def test_legacy_public_shape_is_unchanged(monkeypatch):
 
 
 def test_production_roster_variants_resolve_distinct_plans(monkeypatch):
-    for path in ("umrs/deploy/bdrt/pool-bdrt-step.yaml",):
+    for path in (_roster("bdrt", "pool-bdrt-step.yaml"),):
         monkeypatch.setenv("UMRS_PROVISION_ROSTER", path)
         provision_roster._cache.clear()
         from umrs.orchestrator.serving_spec import load_roster_recipes
