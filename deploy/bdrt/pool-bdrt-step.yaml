@@ -698,13 +698,14 @@ endpoints:
       VLLM_TOOL_CALL_PARSER: "deepseek_v4"
       VLLM_REASONING_PARSER: "deepseek_v4"
       VLLM_TRUST_REMOTE_CODE: "1"
-      # EngineDeadError wedges (job 3616, 2026-08-19): 3x 'RPC call to
-      # sample_tokens timed out' in 2h under vscode load — EngineCore→worker
-      # RPC exceeds the ~10s default when a step stalls (RoCE TP2 / P-core
-      # starvation / long prefill). 60s tolerance + prefill cap + async
-      # scheduling per the community DSpark recipe (issue #27). Respawn
-      # budget (3) was exhausted; next wedge would have stayed dead.
-      VLLM_RPC_TIMEOUT: "60000"
+      # EngineDeadError wedges (jobs 3616/3617, 2026-08-19): 'RPC call to
+      # sample_tokens timed out' repeatedly under vscode load. Verdict:
+      # prefill-cap + async-scheduling (3617) did NOT stop it; VLLM_RPC_TIMEOUT
+      # is silently DROPPED by serve-model.slurm's fixed env-file template
+      # (only whitelisted vars reach MN containers) — do not re-add here.
+      # Remaining suspect matching the documented GB10 fleet hazard (GLM-5.2
+      # job 3056): cross-node TP2 cudagraph replay deadlock → EAGER below.
+      VLLM_ENFORCE_EAGER: "1"
       # DSpark DEACTIVATED 2026-08-13 on the re-spun v0.26.0 image: every
       # dspark-related kernel stage dies on GB10 (cap-120) with the same
       # flashinfer ICHECK 'num_tokens > 64 (5 vs. 64)':
@@ -721,8 +722,6 @@ endpoints:
         --tokenizer-mode deepseek_v4
         --kv-cache-dtype fp8
         --enable-prefix-caching
-        --max-cudagraph-capture-size 12
-        --compilation-config {"cudagraph_mode":"FULL_AND_PIECEWISE","custom_ops":["all"]}
         --kernel-config {"enable_flashinfer_autotune":false}
       # GB10 cap-120 sparse-MLA warmup raise: the re-spun v0.26.0 image adds
       # deepseek_v4_sparse_mla_attention_warmup whose mixed prefill is hard-capped
