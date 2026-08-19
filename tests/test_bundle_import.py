@@ -320,7 +320,23 @@ def app(tmp_path, monkeypatch) -> FastAPI:
 
 
 class TestRestoreRoute:
-    def test_503_without_pool(self):
+    def test_503_without_pool(self, monkeypatch):
+        # Hermetic "no DSN" state: the DSN resolver builds a component DSN
+        # from POSTGRES_* / DB_* env when present (CI sets them deliberately).
+        for var in (
+            "UMRS_DATA_CATALOG_DB",
+            "DATABASE_URL",
+            "DB_HOST",
+            "DB_PORT",
+            "UMRS_JOBS_DB",
+            "POSTGRES_PORT",
+            "POSTGRES_DB",
+            "DB_SUPERUSER",
+            "DB_SUPERUSER_PASSWORD",
+            "POSTGRES_USER",
+            "POSTGRES_PASSWORD",
+        ):
+            monkeypatch.delenv(var, raising=False)
         bare = FastAPI()
         bare.include_router(restore_router)
         client = TestClient(bare)
