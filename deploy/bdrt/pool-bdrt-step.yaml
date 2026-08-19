@@ -698,6 +698,13 @@ endpoints:
       VLLM_TOOL_CALL_PARSER: "deepseek_v4"
       VLLM_REASONING_PARSER: "deepseek_v4"
       VLLM_TRUST_REMOTE_CODE: "1"
+      # EngineDeadError wedges (job 3616, 2026-08-19): 3x 'RPC call to
+      # sample_tokens timed out' in 2h under vscode load — EngineCore→worker
+      # RPC exceeds the ~10s default when a step stalls (RoCE TP2 / P-core
+      # starvation / long prefill). 60s tolerance + prefill cap + async
+      # scheduling per the community DSpark recipe (issue #27). Respawn
+      # budget (3) was exhausted; next wedge would have stayed dead.
+      VLLM_RPC_TIMEOUT: "60000"
       # DSpark DEACTIVATED 2026-08-13 on the re-spun v0.26.0 image: every
       # dspark-related kernel stage dies on GB10 (cap-120) with the same
       # flashinfer ICHECK 'num_tokens > 64 (5 vs. 64)':
@@ -709,6 +716,8 @@ endpoints:
       VLLM_EXTRA_ARGS: >-
         --max-num-seqs 12
         --max-num-batched-tokens 6144
+        --long-prefill-token-threshold 1024
+        --async-scheduling
         --tokenizer-mode deepseek_v4
         --kv-cache-dtype fp8
         --enable-prefix-caching
