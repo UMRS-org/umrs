@@ -43,6 +43,22 @@ def default_graph_id(project_id: str) -> str:
     return "g-" + hashlib.sha256(f"project:{project_id}".encode()).hexdigest()[:16]
 
 
+def graph_id_is_default(graph_id: str, project_id: Optional[str]) -> bool:
+    """True when ``graph_id`` is the deterministic default for ``project_id``."""
+    if not project_id:
+        return False
+    return graph_id == default_graph_id(project_id)
+
+
+def _iso(value: Any) -> Optional[str]:
+    """Serialize a datetime-ish column value; None/str pass through safely."""
+    if value is None:
+        return None
+    if hasattr(value, "isoformat"):
+        return str(value.isoformat())
+    return str(value)
+
+
 def _row_to_graph(row: dict[str, Any]) -> "KnowledgeGraphMeta":
     data = dict(row)
     for key in ("provenance",):
@@ -233,6 +249,76 @@ class GraphRegistryStore(_SyncPoolStore):
             )
             row = cur.fetchone()
         return _row_to_graph(row) if row else None
+
+    def graph_content(
+        self,
+        graph_id: str,
+        *,
+        node_limit: int = 200,
+        edge_limit: int = 400,
+    ) -> dict[str, Any]:
+        """Bounded node+edge read for one registered graph (visualization).
+
+        Legacy fallback: rows with ``graph_id = ''`` count as members of the
+        owning project's default graph (same rule KnowledgeStore.list_nodes
+        applies), so default graphs of pre-0069 projects still render.
+        """
+        meta = self.resolve_graph(graph_id)
+        if meta is None:
+            raise KeyError(f"Graph {graph_id} not found")
+        legacy_default = bool(
+            meta.project_id and graph_id_is_default(meta.graph_id, meta.project_id)
+        )
+        with self._cursor() as cur:
+            cur.execute(
+                "SELECT node_id, project_id, label, node_type, created_at, graph_id "
+                "FROM knowledge_nodes "
+                "WHERE graph_id = %s OR (%s AND graph_id = '' AND project_id = %s) "
+                "ORDER BY created_at DESC LIMIT %s",
+                (graph_id, legacy_default, meta.project_id, node_limit),
+            )
+            node_rows = cur.fetchall()
+            cur.execute(
+                "SELECT edge_id, source_id, target_id, relation_type, created_at, graph_id "
+                "FROM knowledge_edges "
+                "WHERE graph_id = %s OR (%s AND graph_id = '' AND project_id = %s) "
+                "ORDER BY created_at DESC LIMIT %s",
+                (graph_id, legacy_default, meta.project_id, edge_limit),
+            )
+            edge_rows = cur.fetchall()
+        nodes = [
+            {
+                "id": str(row["node_id"]),
+                "node_id": str(row["node_id"]),
+                "name": str(row.get("label") or row["node_id"]),
+                "label": str(row.get("label") or row["node_id"]),
+                "type": str(row.get("node_type") or "knowledge"),
+                "project_id": str(row.get("project_id") or ""),
+                "graph_id": str(row.get("graph_id") or ""),
+                "created_at": _iso(row.get("created_at")),
+            }
+            for row in node_rows
+        ]
+        edges = [
+            {
+                "from": str(row["source_id"]),
+                "to": str(row["target_id"]),
+                "label": str(row.get("relation_type") or "related"),
+                "type": str(row.get("relation_type") or "related"),
+                "graph_id": str(row.get("graph_id") or ""),
+                "created_at": _iso(row.get("created_at")),
+            }
+            for row in edge_rows
+        ]
+        return {
+            "graph_id": meta.graph_id,
+            "name": meta.name,
+            "kind": meta.kind,
+            "project_id": meta.project_id,
+            "nodes": nodes,
+            "edges": edges,
+            "truncated": len(node_rows) == node_limit,
+        }
 
     def list_graphs(
         self,
