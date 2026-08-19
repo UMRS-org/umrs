@@ -119,6 +119,103 @@ class TestGraphRegistryApi:
         assert resp.status_code == 400
 
 
+class TestGraphContentApi:
+    def _node_row(self, **overrides):
+        row = {
+            "node_id": "n1",
+            "project_id": "proj-a",
+            "label": "hypothesis-1",
+            "node_type": "hypothesis",
+            "graph_id": "g-abc",
+            "created_at": None,
+        }
+        row.update(overrides)
+        return row
+
+    def _edge_row(self, **overrides):
+        row = {
+            "edge_id": "e1",
+            "source_id": "n1",
+            "target_id": "n2",
+            "relation_type": "supports",
+            "graph_id": "g-abc",
+            "created_at": None,
+        }
+        row.update(overrides)
+        return row
+
+    def test_content_200_webview_shape(self):
+        script = [
+            _graph_row(),
+            [self._node_row(), self._node_row(node_id="n2", label="finding-1", node_type="finding")],
+            [self._edge_row()],
+        ]
+        client, _ = _client(script)
+        resp = client.get("/umrs/knowledge/graphs/g-abc/content")
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["graph_id"] == "g-abc"
+        assert body["name"] == "experiment-history"
+        assert body["truncated"] is False
+        assert [n["id"] for n in body["nodes"]] == ["n1", "n2"]
+        assert body["nodes"][0]["type"] == "hypothesis"
+        assert body["nodes"][0]["name"] == "hypothesis-1"
+        assert body["edges"] == [
+            {
+                "from": "n1",
+                "to": "n2",
+                "label": "supports",
+                "type": "supports",
+                "graph_id": "g-abc",
+                "created_at": None,
+            }
+        ]
+
+    def test_content_default_graph_legacy_fallback(self):
+        default_id = default_graph_id("proj-a")
+        script = [
+            _graph_row(graph_id=default_id),
+            [self._node_row(graph_id="")],
+            [],
+        ]
+        client, pool = _client(script)
+        resp = client.get(f"/umrs/knowledge/graphs/{default_id}/content")
+        assert resp.status_code == 200, resp.text
+        node_sql, node_params = pool.record[1]
+        assert "graph_id = '' AND project_id = %s" in node_sql
+        assert node_params[1] is True
+        assert node_params[2] == "proj-a"
+
+    def test_content_non_default_no_legacy_fallback(self):
+        client, pool = _client([
+            _graph_row(graph_id="g-custom"),
+            [],
+            [],
+        ])
+        resp = client.get("/umrs/knowledge/graphs/g-custom/content")
+        assert resp.status_code == 200, resp.text
+        _, node_params = pool.record[1]
+        assert node_params[1] is False
+        assert resp.json()["nodes"] == []
+
+    def test_content_unknown_graph_404(self):
+        client, _ = _client([None, None])
+        resp = client.get("/umrs/knowledge/graphs/g-nope/content")
+        assert resp.status_code == 404
+
+    def test_content_resolves_by_name(self):
+        script = [
+            None,
+            _graph_row(),
+            [self._node_row()],
+            [],
+        ]
+        client, _ = _client(script)
+        resp = client.get("/umrs/knowledge/graphs/experiment-history/content")
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["graph_id"] == "g-abc"
+
+
 class TestProposalApi:
     def test_create_proposal_requires_existing_graph(self):
         client, _ = _client([None, None])

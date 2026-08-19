@@ -113,6 +113,29 @@ async def get_graph(graph_id: str, request: Request) -> dict[str, Any]:
     return graph.to_dict()
 
 
+@router.get("/{graph_id}/content")
+async def get_graph_content(
+    graph_id: str,
+    request: Request,
+    node_limit: int = Query(200, ge=1, le=1000),
+    edge_limit: int = Query(400, ge=1, le=2000),
+) -> dict[str, Any]:
+    """Bounded nodes+edges for one registered graph (webview visualization).
+
+    Read-only; no mutation guard. ``graph_id`` may be an id or exact name
+    (same resolution as the detail route). 404 when the graph is unknown.
+    """
+    registry = _registry(request)
+    try:
+        return registry.graph_content(
+            graph_id, node_limit=node_limit, edge_limit=edge_limit
+        )
+    except KeyError:
+        raise HTTPException(
+            status_code=404, detail=f"Graph {graph_id} not found"
+        ) from None
+
+
 @router.patch("/{graph_id}")
 async def update_graph(
     graph_id: str,
