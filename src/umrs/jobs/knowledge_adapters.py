@@ -1114,6 +1114,13 @@ def _parse_for_understand(
 
     try:
         parsed = parse_code(fake_name, content)
+        if parsed.error:
+            # parse_code is fail-soft: Null-byte/undecodable sources surface
+            # as ``result.error`` (Python 3.11+ raises SyntaxError for null
+            # bytes; older Pythons raise ValueError through the outer path).
+            # Either way the understand flow treats it as parse-rejected.
+            logger.debug("Parse rejected for %s: %s", artifact_id, parsed.error)
+            return None
         return {
             "modules": parsed.modules,
             "classes": [c.name for c in parsed.classes],
