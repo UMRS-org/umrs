@@ -654,8 +654,12 @@ class TestKnowledgeUnderstandBackend:
             backend_ref="",
             metrics={},
         )
+        # Mock the real no-DSN control point: _open_pool yields None when
+        # _resolve_knowledge_dsn() is empty. Patching the sync _get_pool had
+        # no effect — async consumers resolve through _open_pool directly.
         with patch(
-            "umrs.jobs.knowledge_adapters._get_pool", return_value=None
+            "umrs.jobs.knowledge_adapters._resolve_knowledge_dsn",
+            return_value="",
         ), patch(
             "umrs.jobs.knowledge_adapters._build_s3_client",
             return_value=(None, "umrs-data"),
@@ -828,7 +832,10 @@ class TestDegradedMode:
             backend_ref="",
             metrics={},
         )
-        with patch("umrs.jobs.knowledge_adapters._get_pool", return_value=None):
+        with patch(
+            "umrs.jobs.knowledge_adapters._resolve_knowledge_dsn",
+            return_value="",
+        ):
             backend = KnowledgeUnderstandBackend()
             await backend.submit_job(understand_job, sample_attempt)
 
