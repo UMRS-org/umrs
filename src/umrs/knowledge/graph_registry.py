@@ -269,56 +269,46 @@ class GraphRegistryStore(_SyncPoolStore):
         legacy_default = bool(
             meta.project_id and graph_id_is_default(meta.graph_id, meta.project_id)
         )
+        node_rows = self._content_nodes(graph_id, legacy_default, meta.project_id, node_limit)
+        edge_rows = self._content_edges(graph_id, legacy_default, meta.project_id, edge_limit)
+        return {
+            "graph_id": meta.graph_id,
+            "name": meta.name,
+            "kind": meta.kind,
+            "project_id": meta.project_id,
+            "owner_id": meta.owner_id,
+            "nodes": [_content_node_dict(row) for row in node_rows],
+            "edges": [_content_edge_dict(row) for row in edge_rows],
+            "truncated": len(node_rows) == node_limit,
+        }
+
+    def _content_nodes(
+        self, graph_id: str, legacy_default: bool, project_id: Optional[str], limit: int
+    ) -> list[Any]:
+        """Graph-scope (+ legacy default-fallback) node rows for graph_content."""
         with self._cursor() as cur:
             cur.execute(
                 "SELECT node_id, project_id, label, node_type, created_at, graph_id "
                 "FROM knowledge_nodes "
                 "WHERE graph_id = %s OR (%s AND graph_id = '' AND project_id = %s) "
                 "ORDER BY created_at DESC LIMIT %s",
-                (graph_id, legacy_default, meta.project_id, node_limit),
+                (graph_id, legacy_default, project_id, limit),
             )
-            node_rows = cur.fetchall()
+            return cur.fetchall()
+
+    def _content_edges(
+        self, graph_id: str, legacy_default: bool, project_id: Optional[str], limit: int
+    ) -> list[Any]:
+        """Graph-scope (+ legacy default-fallback) edge rows for graph_content."""
+        with self._cursor() as cur:
             cur.execute(
                 "SELECT edge_id, source_id, target_id, relation_type, created_at, graph_id "
                 "FROM knowledge_edges "
                 "WHERE graph_id = %s OR (%s AND graph_id = '' AND project_id = %s) "
                 "ORDER BY created_at DESC LIMIT %s",
-                (graph_id, legacy_default, meta.project_id, edge_limit),
+                (graph_id, legacy_default, project_id, limit),
             )
-            edge_rows = cur.fetchall()
-        nodes = [
-            {
-                "id": str(row["node_id"]),
-                "node_id": str(row["node_id"]),
-                "name": str(row.get("label") or row["node_id"]),
-                "label": str(row.get("label") or row["node_id"]),
-                "type": str(row.get("node_type") or "knowledge"),
-                "project_id": str(row.get("project_id") or ""),
-                "graph_id": str(row.get("graph_id") or ""),
-                "created_at": _iso(row.get("created_at")),
-            }
-            for row in node_rows
-        ]
-        edges = [
-            {
-                "from": str(row["source_id"]),
-                "to": str(row["target_id"]),
-                "label": str(row.get("relation_type") or "related"),
-                "type": str(row.get("relation_type") or "related"),
-                "graph_id": str(row.get("graph_id") or ""),
-                "created_at": _iso(row.get("created_at")),
-            }
-            for row in edge_rows
-        ]
-        return {
-            "graph_id": meta.graph_id,
-            "name": meta.name,
-            "kind": meta.kind,
-            "project_id": meta.project_id,
-            "nodes": nodes,
-            "edges": edges,
-            "truncated": len(node_rows) == node_limit,
-        }
+            return cur.fetchall()
 
     def list_graphs(
         self,
@@ -532,3 +522,29 @@ class ProposalStore(_SyncPoolStore):
                 (json.dumps(execution), proposal_id),
             )
             return self._get(cur, proposal_id)
+
+
+def _content_node_dict(row: Any) -> dict[str, Any]:
+    """Wire-shape node for graph_content (id/name/type aliases + provenance)."""
+    return {
+        "id": str(row["node_id"]),
+        "node_id": str(row["node_id"]),
+        "name": str(row.get("label") or row["node_id"]),
+        "label": str(row.get("label") or row["node_id"]),
+        "type": str(row.get("node_type") or "knowledge"),
+        "project_id": str(row.get("project_id") or ""),
+        "graph_id": str(row.get("graph_id") or ""),
+        "created_at": _iso(row.get("created_at")),
+    }
+
+
+def _content_edge_dict(row: Any) -> dict[str, Any]:
+    """Wire-shape edge for graph_content (from/to/label/type aliases)."""
+    return {
+        "from": str(row["source_id"]),
+        "to": str(row["target_id"]),
+        "label": str(row.get("relation_type") or "related"),
+        "type": str(row.get("relation_type") or "related"),
+        "graph_id": str(row.get("graph_id") or ""),
+        "created_at": _iso(row.get("created_at")),
+    }

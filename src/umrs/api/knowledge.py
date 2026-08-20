@@ -405,7 +405,7 @@ async def get_project_knowledge_graph(
     request: Request,
     project_id: str = Depends(get_project_id),
     config: S3Config = Depends(get_s3_config),
-) -> dict[str, Any]:
+) -> dict[str, Any]:  # noqa: PLR0912 — branchy by design (union of two stores)
     """Project knowledge graph (nodes + typed edges) for the Studio/webview.
 
     Union of two sources: the RC1 in-memory project graph (reconstructed per
@@ -413,6 +413,18 @@ async def get_project_knowledge_graph(
     KNOWLEDGE_UNDERSTAND durable jobs populate. RC1 rows win on node_id
     collisions (richer local metadata). Smoke-free read: no readiness gate.
     """
+    from umrs.api._scope_identity import request_caller_scope
+    from umrs.knowledge.access_scope import project_readable as _scope_readable
+
+    if not _scope_readable(project_id, request_caller_scope(request)):
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "scope_denied",
+                "message": "Project is outside the caller's access tier.",
+            },
+        )
+
     project = build_research_project(project_id, config)
     graph = project.knowledge_graph
     nodes: dict[str, dict[str, Any]] = {
@@ -458,6 +470,17 @@ async def get_project_graph_pg(
     Unlike ``GET /graph`` (project graph reconstructed per request), this
     reads the durable store populated by KNOWLEDGE_UNDERSTAND durable jobs.
     """
+    from umrs.api._scope_identity import request_caller_scope
+    from umrs.knowledge.access_scope import project_readable as _scope_readable
+
+    if not _scope_readable(project_id, request_caller_scope(request)):
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "scope_denied",
+                "message": "Project is outside the caller's access tier.",
+            },
+        )
     import dataclasses
 
     from umrs.knowledge.graph_registry import GraphRegistryStore
