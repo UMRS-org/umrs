@@ -18,10 +18,26 @@ from pydantic import BaseModel, Field
 from umrs.api.catalog_store import CatalogStoreUnavailable, get_catalog_meta_store
 from umrs.api.files import S3Config, get_project_id, get_s3_config
 from umrs.data_catalog.query import read_catalog_object, search_catalog
+from umrs.knowledge.access_scope import CallerScope, project_readable
+
+from ._scope_identity import get_caller_scope
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/umrs/catalog", tags=["catalog"])
+
+
+def _enforce_catalog_scope(caller: CallerScope, project_id: str) -> None:
+    """Three-tier boundary: system (all) / project (members) / user (owner)."""
+    if project_readable(project_id, caller):
+        return
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail={
+            "error": "scope_denied",
+            "message": "Project is outside the caller's access tier.",
+        },
+    )
 
 
 def _require_catalog_meta_store():
@@ -86,8 +102,10 @@ async def catalog_search(
     tag: str | None = Query(None, description="Filter rows containing this tag"),
     prefix: str | None = Query(None, description="Filter s3_key prefix within project"),
     project_id: str = Depends(get_project_id),
+    caller: CallerScope = Depends(get_caller_scope),
 ) -> CatalogSearchResponse:
     """Grep catalog metadata scoped to the caller's project."""
+    _enforce_catalog_scope(caller, project_id)
     if not q.strip() and not any([modality, state, tag, prefix]):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -141,8 +159,10 @@ async def catalog_read(
     ),
     project_id: str = Depends(get_project_id),
     config: S3Config = Depends(get_s3_config),
+    caller: CallerScope = Depends(get_caller_scope),
 ) -> CatalogReadResponse:
     """Read catalog object bytes or extracted document text with project ACL."""
+    _enforce_catalog_scope(caller, project_id)
     if source not in {"auto", "raw", "extracted"}:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -188,8 +208,10 @@ async def catalog_read(
 )
 async def catalog_stats(
     project_id: str = Depends(get_project_id),
+    caller: CallerScope = Depends(get_caller_scope),
 ) -> CatalogStatsResponse:
     """Return aggregate catalog stats for a project (replaces S3 manifest)."""
+    _enforce_catalog_scope(caller, project_id)
     meta_store = _require_catalog_meta_store()
     stats = meta_store.project_stats(project_id)
     return CatalogStatsResponse(

@@ -19,9 +19,16 @@ from typing import Any, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
+from umrs.knowledge.access_scope import (
+    CallerScope,
+    graph_readable,
+    graph_writable,
+    project_writable,
+)
 from umrs.knowledge.graph_registry import GRAPH_STATUSES, GraphRegistryStore
 
 from ._knowledge_mutation_guard import enforce_registry_write_authorization
+from ._scope_identity import get_caller_scope
 from .jobs import CallerIdentity, get_caller_identity
 
 logger = logging.getLogger(__name__)
@@ -78,7 +85,15 @@ async def list_graphs(
             graphs = [g for g in graphs if g.status == status]
     else:
         graphs = registry.list_graphs(project_id=project_id, status=status, limit=limit)
-    return {"graphs": [g.to_dict() for g in graphs], "total": len(graphs)}
+    scope = get_caller_scope(request)
+    visible = [
+        g
+        for g in graphs
+        if graph_readable(
+            kind=g.kind, project_id=g.project_id, owner_id=g.owner_id, caller=scope
+        )
+    ]
+    return {"graphs": [g.to_dict() for g in visible], "total": len(visible)}
 
 
 @router.post("", status_code=201)
@@ -87,14 +102,45 @@ async def create_graph(
     request: Request,
     identity: CallerIdentity = Depends(get_caller_identity),
 ) -> dict[str, Any]:
-    """Create a named, independent knowledge graph."""
+    """Create a named, independent knowledge graph.
+
+    Three-tier boundary: system graphs are admin-only; user/personal graphs
+    are normalized to the caller's personal namespace; project-like graphs
+    require the caller to belong to the target project.
+    """
     enforce_registry_write_authorization(request)
     registry = _registry(request)
+    scope = CallerScope(
+        user_id=identity.user_id or "",
+        project_id=identity.project_id or "",
+        is_admin=identity.is_admin,
+    )
+    project_id = body.project_id
+    if not graph_writable(
+        kind=body.kind,
+        project_id=project_id if project_id is not None else scope.project_id,
+        owner_id=scope.user_id,
+        caller=scope,
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "scope_denied",
+                "message": (
+                    f"Cannot create a '{body.kind}' graph in this namespace — "
+                    "system graphs are admin-only, project graphs require "
+                    "project membership, personal graphs are owner-only."
+                ),
+            },
+        )
+    kind_reduced = (body.kind or "").strip().lower()
+    if kind_reduced in ("user", "personal"):
+        project_id = None  # owner-only graphs are not project-bound
     graph = registry.create_graph(
         body.name,
         description=body.description,
         owner_id=identity.user_id or "",
-        project_id=body.project_id,
+        project_id=project_id,
         kind=body.kind,
         ontology_id=body.ontology_id,
         ontology_version=body.ontology_version,
@@ -108,7 +154,10 @@ async def get_graph(graph_id: str, request: Request) -> dict[str, Any]:
     """Fetch one graph by id (or resolve by exact name)."""
     registry = _registry(request)
     graph = registry.resolve_graph(graph_id)
-    if graph is None:
+    scope = get_caller_scope(request)
+    if graph is None or not graph_readable(
+        kind=graph.kind, project_id=graph.project_id, owner_id=graph.owner_id, caller=scope
+    ):
         raise HTTPException(status_code=404, detail=f"Graph {graph_id} not found")
     return graph.to_dict()
 
@@ -123,17 +172,27 @@ async def get_graph_content(
     """Bounded nodes+edges for one registered graph (webview visualization).
 
     Read-only; no mutation guard. ``graph_id`` may be an id or exact name
-    (same resolution as the detail route). 404 when the graph is unknown.
+    (same resolution as the detail route). 404 when the graph is unknown
+    or outside the caller's tier (existence is not disclosed).
     """
     registry = _registry(request)
     try:
-        return registry.graph_content(
+        content = registry.graph_content(
             graph_id, node_limit=node_limit, edge_limit=edge_limit
         )
     except KeyError:
         raise HTTPException(
             status_code=404, detail=f"Graph {graph_id} not found"
         ) from None
+    scope = get_caller_scope(request)
+    if not graph_readable(
+        kind=str(content.get("kind") or ""),
+        project_id=content.get("project_id") if isinstance(content.get("project_id"), str) else None,
+        owner_id=str(content.get("owner_id") or ""),
+        caller=scope,
+    ):
+        raise HTTPException(status_code=404, detail=f"Graph {graph_id} not found")
+    return content
 
 
 @router.patch("/{graph_id}")
@@ -142,11 +201,30 @@ async def update_graph(
     body: UpdateGraphRequest,
     request: Request,
 ) -> dict[str, Any]:
-    """Update metadata or lifecycle status. Archiving is the only 'delete'."""
+    """Update metadata or lifecycle status. Archiving is the only 'delete'.
+
+    Tier rule: system graphs are admin-managed, user graphs owner-only,
+    project graphs archive-able by project members.
+    """
     enforce_registry_write_authorization(request)
     registry = _registry(request)
-    if registry.get_graph(graph_id) is None:
+    existing = registry.get_graph(graph_id)
+    if existing is None:
         raise HTTPException(status_code=404, detail=f"Graph {graph_id} not found")
+    scope = get_caller_scope(request)
+    if not graph_writable(
+        kind=existing.kind,
+        project_id=existing.project_id,
+        owner_id=existing.owner_id,
+        caller=scope,
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "scope_denied",
+                "message": "Graph lifecycle is outside the caller's access tier.",
+            },
+        )
     if body.status is not None:
         if body.status not in GRAPH_STATUSES:
             raise HTTPException(
