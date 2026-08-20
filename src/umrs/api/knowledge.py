@@ -340,34 +340,109 @@ async def submit_knowledge_correction(req: CorrectionRequest) -> dict[str, Any]:
     return record.to_dict()
 
 
+def _durable_node_payload(node: Any) -> dict[str, Any]:
+    """KnowledgeStore row → Studio/webview node shape (id/type/label aliases)."""
+    content = node.content if isinstance(node.content, dict) else {}
+    label = node.label or node.node_id
+    return {
+        "id": node.node_id,
+        "node_id": node.node_id,
+        "name": label,
+        "label": label,
+        "title": label,
+        "type": node.node_type,
+        "node_type": node.node_type,
+        "graph_id": node.graph_id,
+        "created_at": node.created_at.isoformat() if node.created_at else None,
+        "metadata": content,
+    }
+
+
+def _durable_edge_payload(edge: Any) -> dict[str, Any]:
+    """KnowledgeStore row → Studio/webview edge shape (from/to/label aliases)."""
+    return {
+        "edge_id": edge.edge_id,
+        "source_id": edge.source_id,
+        "target_id": edge.target_id,
+        "relation_type": edge.relation_type,
+        "from": edge.source_id,
+        "to": edge.target_id,
+        "label": edge.relation_type,
+        "created_at": edge.created_at.isoformat() if edge.created_at else None,
+    }
+
+
+async def _durable_graph_rows(
+    request: Request,
+    project_id: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Durable Postgres graph rows for the project; empty when unavailable.
+
+    KNOWLEDGE_INGEST/KNOWLEDGE_UNDERSTAND durable jobs write here — without
+    this union the Studio graph stayed blind to everything ingest produced.
+    """
+    from umrs.knowledge.graph_registry import GraphRegistryStore
+    from umrs.knowledge.store import KnowledgeStore
+
+    sync_pool = getattr(request.app.state, "umrs_db_pool", None)
+    if sync_pool is not None:
+        # Materialize the default graph so legacy projects appear in the registry.
+        GraphRegistryStore(sync_pool).ensure_default_graph(project_id)
+    pool = await knowledge_asyncpg_pool(request)
+    if pool is None:
+        return [], []
+    store = KnowledgeStore(pool)
+    nodes = (await store.list_nodes(project_id))[:4000]
+    edges = (await store.list_edges(project_id))[:8000]
+    return (
+        [_durable_node_payload(node) for node in nodes],
+        [_durable_edge_payload(edge) for edge in edges],
+    )
+
+
 @router.get("/graph")
 async def get_project_knowledge_graph(
+    request: Request,
     project_id: str = Depends(get_project_id),
     config: S3Config = Depends(get_s3_config),
 ) -> dict[str, Any]:
     """Project knowledge graph (nodes + typed edges) for the Studio/webview.
 
-    Smoke-free read: no mutation, no readiness gate. Node payload mirrors
-    link.KnowledgeNode shape; ``id`` aliases ``node_id`` so webview code can
-    treat nodes uniformly.
+    Union of two sources: the RC1 in-memory project graph (reconstructed per
+    request) and the durable Postgres store that KNOWLEDGE_INGEST /
+    KNOWLEDGE_UNDERSTAND durable jobs populate. RC1 rows win on node_id
+    collisions (richer local metadata). Smoke-free read: no readiness gate.
     """
     project = build_research_project(project_id, config)
     graph = project.knowledge_graph
-    nodes = [{**node.to_dict(), "id": node.node_id} for node in graph.nodes.values()]
-    edges = [
-        {
+    nodes: dict[str, dict[str, Any]] = {
+        node.node_id: {**node.to_dict(), "id": node.node_id}
+        for node in graph.nodes.values()
+    }
+    edges: dict[tuple[str, str, str], dict[str, Any]] = {
+        (edge.source_id, edge.target_id, edge.relation_type.value): {
             **edge.to_dict(),
             "from": edge.source_id,
             "to": edge.target_id,
             "label": edge.relation_type.value,
         }
         for edge in graph.edges
-    ]
+    }
+    try:
+        durable_nodes, durable_edges = await _durable_graph_rows(request, project_id)
+    except Exception as exc:  # noqa: BLE001 — read-only union; degrade to RC1 view
+        logger.warning("durable graph union failed for %s: %s", project_id, exc)
+        durable_nodes, durable_edges = [], []
+    for node in durable_nodes:
+        nodes.setdefault(node["id"], node)
+    for edge in durable_edges:
+        key = (edge["from"], edge["to"], edge["label"])
+        edges.setdefault(key, edge)
     return {
         "project_id": project_id,
         "phase": project.phase.value,
-        "nodes": nodes,
-        "edges": edges,
+        "nodes": list(nodes.values()),
+        "edges": list(edges.values()),
     }
 
 
