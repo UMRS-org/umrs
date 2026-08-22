@@ -212,6 +212,8 @@ class TestKnowledgeMutationGuard:
                 json={"node_id": "n-1", "node_type": "concept"},
                 headers={"X-Project-ID": "proj-a", "x-r4-actor": "agent"},
             )
-            assert resp.status_code == 409, resp.text
+            # R5 tail: sat facade retired — gate now 410s before mutation
+            # guard runs; canonical path lives on /umrs/knowledge/graph.
+            assert resp.status_code == 410, resp.text
         finally:
             _project_graphs.pop("proj-a", None)
