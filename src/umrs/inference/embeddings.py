@@ -1,4 +1,12 @@
 #!/usr/bin/python3
+"""Batch embedding compute pipeline (R6.1 ownership boundary, 2026-08-23).
+
+This module is the ONLY owner of batch/S3 object embedding compute:
+model-driven (EmbeddingModel interface), S3 data I/O, DB persistence.
+It is NOT the query-time retrieval embedder — live on the frontend, see
+``umrs.api.rag_service.PrefixedSentenceTransformerEmbeddings`` (sync ST
+client, different process and latency class). Not to be merged (R6.1).
+"""
 # import psycopg2
 import json
 import os
