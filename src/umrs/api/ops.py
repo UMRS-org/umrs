@@ -143,6 +143,9 @@ def require_ops_admin(
             detail="Missing Gateway-verified caller identity",
         )
 
+    from ._identity import warn_legacy_params_once
+
+    warn_legacy_params_once("ops.require_ops_admin")
     # MVP/test mode: check query-param is_admin
     if not is_admin:
         raise HTTPException(
@@ -175,6 +178,9 @@ def require_authenticated(
             detail="Missing Gateway-verified caller identity",
         )
 
+    from ._identity import warn_legacy_params_once
+
+    warn_legacy_params_once("ops.require_authenticated")
     # MVP/test mode: accept if any caller identity is provided
     if caller_user_id:
         return
@@ -340,21 +346,88 @@ def ops_topology(
     response_model=OpsTimelineResponse,
     summary="Job-attempt timeline",
 )
-def ops_timeline(
-    window_minutes: int = Query(
-        60, ge=1, le=1440, description="Look-back window in minutes"
-    ),
-    limit: int = Query(100, ge=1, le=500),
-    _admin: None = Depends(require_ops_admin),
-    store=Depends(lambda: _lazy_get_optional_job_store()),
-) -> dict[str, Any]:
-    """Return a timeline of recent job/attempt events (admin-only)."""
+def _enum_value(value: Any) -> Any:
+    """Return ``.value`` when the object looks like an enum, else the value."""
+    return value.value if hasattr(value, "value") else value
+
+
+def _job_created_event(job: Any, cutoff: datetime) -> dict[str, Any] | None:
+    """Job creation event entry, or None when outside the window."""
+    if job.created_at and job.created_at >= cutoff:
+        return {
+            "timestamp": job.created_at.isoformat(),
+            "job_id": job.job_id,
+            "job_type": _enum_value(job.job_type),
+            "event": "created",
+            "detail": f"status={_enum_value(job.status)}",
+        }
+    return None
+
+
+def _attempt_events(job: Any, attempts: Any, cutoff: datetime) -> list[dict[str, Any]]:
+    """Attempt start/end event entries within the window."""
     events: list[dict[str, Any]] = []
+    jt = _enum_value(job.job_type)
 
-    if store is None:
-        return {"events": [], "total": 0, "window_minutes": window_minutes}
+    for att in attempts:
+        started_event = _attempt_started_event(job, jt, att, cutoff)
+        if started_event:
+            events.append(started_event)
 
-    cutoff = datetime.utcnow() - timedelta(minutes=window_minutes)
+        ended_event = _attempt_ended_event(job, jt, att, cutoff)
+        if ended_event:
+            events.append(ended_event)
+
+    return events
+
+
+def _attempt_started_event(
+    job: Any, jt: Any, att: Any, cutoff: datetime
+) -> dict[str, Any] | None:
+    """Attempt start event entry, or None when outside the window."""
+    if att.started_at and att.started_at >= cutoff:
+        return {
+            "timestamp": att.started_at.isoformat(),
+            "job_id": job.job_id,
+            "job_type": jt,
+            "event": "attempt_started",
+            "attempt_id": att.attempt_id,
+            "attempt_no": att.attempt_no,
+            "backend": att.backend,
+            "detail": att.status_detail or "",
+        }
+    return None
+
+
+def _attempt_ended_event(
+    job: Any, jt: Any, att: Any, cutoff: datetime
+) -> dict[str, Any] | None:
+    """Attempt end event entry, or None when outside the window."""
+    if att.ended_at and att.ended_at >= cutoff:
+        att_status = _enum_value(att.status)
+        event_type = (
+            "succeeded"
+            if att_status == "succeeded"
+            else ("lost" if att_status == "lost" else "failed")
+        )
+        return {
+            "timestamp": att.ended_at.isoformat(),
+            "job_id": job.job_id,
+            "job_type": jt,
+            "event": event_type,
+            "attempt_id": att.attempt_id,
+            "attempt_no": att.attempt_no,
+            "backend": att.backend,
+            "detail": att.exit_reason or "",
+        }
+    return None
+
+
+def _collect_timeline_events(
+    store: Any, cutoff: datetime, limit: int
+) -> list[dict[str, Any]]:
+    """Gather job/attempt events from the job store (best effort)."""
+    events: list[dict[str, Any]] = []
 
     try:
         # Get recently updated jobs
@@ -364,69 +437,34 @@ def ops_timeline(
             if job.updated_at and job.updated_at < cutoff:
                 continue
 
-            # Job creation event
-            if job.created_at and job.created_at >= cutoff:
-                events.append(
-                    {
-                        "timestamp": job.created_at.isoformat(),
-                        "job_id": job.job_id,
-                        "job_type": job.job_type.value
-                        if hasattr(job.job_type, "value")
-                        else str(job.job_type),
-                        "event": "created",
-                        "detail": f"status={job.status.value if hasattr(job.status, 'value') else job.status}",
-                    }
-                )
+            created_event = _job_created_event(job, cutoff)
+            if created_event:
+                events.append(created_event)
 
             # Attempt events
             attempts = store.get_attempts_for_job(job.job_id)
-            for att in attempts:
-                jt = (
-                    job.job_type.value
-                    if hasattr(job.job_type, "value")
-                    else str(job.job_type)
-                )
-
-                if att.started_at and att.started_at >= cutoff:
-                    events.append(
-                        {
-                            "timestamp": att.started_at.isoformat(),
-                            "job_id": job.job_id,
-                            "job_type": jt,
-                            "event": "attempt_started",
-                            "attempt_id": att.attempt_id,
-                            "attempt_no": att.attempt_no,
-                            "backend": att.backend,
-                            "detail": att.status_detail or "",
-                        }
-                    )
-
-                if att.ended_at and att.ended_at >= cutoff:
-                    att_status = (
-                        att.status.value
-                        if hasattr(att.status, "value")
-                        else str(att.status)
-                    )
-                    event_type = (
-                        "succeeded"
-                        if att_status == "succeeded"
-                        else ("lost" if att_status == "lost" else "failed")
-                    )
-                    events.append(
-                        {
-                            "timestamp": att.ended_at.isoformat(),
-                            "job_id": job.job_id,
-                            "job_type": jt,
-                            "event": event_type,
-                            "attempt_id": att.attempt_id,
-                            "attempt_no": att.attempt_no,
-                            "backend": att.backend,
-                            "detail": att.exit_reason or "",
-                        }
-                    )
+            events.extend(_attempt_events(job, attempts, cutoff))
 
     except Exception as exc:
         logger.warning("Failed to build timeline: %s", exc)
+
+    return events
+
+
+def ops_timeline(
+    window_minutes: int = Query(
+        60, ge=1, le=1440, description="Look-back window in minutes"
+    ),
+    limit: int = Query(100, ge=1, le=500),
+    _admin: None = Depends(require_ops_admin),
+    store=Depends(lambda: _lazy_get_optional_job_store()),
+) -> dict[str, Any]:
+    """Return a timeline of recent job/attempt events (admin-only)."""
+    if store is None:
+        return {"events": [], "total": 0, "window_minutes": window_minutes}
+
+    cutoff = datetime.utcnow() - timedelta(minutes=window_minutes)
+    events = _collect_timeline_events(store, cutoff, limit)
 
     # Sort by timestamp descending
     events.sort(key=lambda e: e["timestamp"], reverse=True)
@@ -528,23 +566,7 @@ def ops_connect_info(
         or ("127.0.0.1" if tunnel_mode else "0.0.0.0")
     )
 
-    # Data port range: explicit env or default based on control port
-    data_range_env = os.environ.get("UMRS_DATA_PORT_RANGE")
-    data_base_env = os.environ.get("UMRS_DATA_BASE_PORT")
-    data_port_env = os.environ.get("UMRS_DATA_PORT")
-
-    if data_range_env:
-        dr = parse_data_port_range(data_range_env)
-        data_start, data_end = dr.start, dr.end
-    elif data_base_env:
-        data_start = int(data_base_env)
-        data_end = data_start + 7
-    elif data_port_env:
-        data_start = int(data_port_env)
-        data_end = data_start
-    else:
-        data_start = control_port + 1
-        data_end = control_port + 8
+    data_start, data_end = _resolve_data_port_range(parse_data_port_range, control_port)
 
     result: dict[str, Any] = {
         "zmq": {
@@ -556,6 +578,13 @@ def ops_connect_info(
         },
     }
 
+    _add_connect_info_extras(result, x_user_id)
+
+    return result
+
+
+def _add_connect_info_extras(result: dict[str, Any], x_user_id: str | None) -> None:
+    """Add service URLs and per-user S3 credentials to connect-info result."""
     # Include service URLs when configured (allows clients to discover
     # the correct MinIO/RAG endpoint instead of guessing from the host).
     minio_url = os.environ.get("UMRS_MINIO_URL") or os.environ.get("MINIO_ENDPOINT")
@@ -573,7 +602,25 @@ def ops_connect_info(
         if s3cfg:
             result["s3cfg_content"] = s3cfg
 
-    return result
+
+def _resolve_data_port_range(
+    parse_data_port_range: Any, control_port: int
+) -> tuple[int, int]:
+    """Data port range: explicit env or default based on control port."""
+    data_range_env = os.environ.get("UMRS_DATA_PORT_RANGE")
+    data_base_env = os.environ.get("UMRS_DATA_BASE_PORT")
+    data_port_env = os.environ.get("UMRS_DATA_PORT")
+
+    if data_range_env:
+        dr = parse_data_port_range(data_range_env)
+        return dr.start, dr.end
+    if data_base_env:
+        data_start = int(data_base_env)
+        return data_start, data_start + 7
+    if data_port_env:
+        data_start = int(data_port_env)
+        return data_start, data_start
+    return control_port + 1, control_port + 8
 
 
 def _read_user_s3cfg(username: str) -> str | None:
@@ -1131,41 +1178,11 @@ async def governance_orphans(
 
     Compares governance ownership records against live registries.
     """
-    expected = os.environ.get("UMRS_ADMIN_TOKEN", "")
-    if not expected or admin_token != expected:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, detail="Admin token required"
-        )
-
-    from .governance import get_governance_store
-
-    store = get_governance_store()
-    if store is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Governance store not initialized",
-        )
+    _check_governance_admin(admin_token)
+    store = _governance_store_or_503()
 
     # Gather known live IDs from the relevant registry
-    known_ids: list[str] = []
-    if resource_type == "endpoints":
-        try:
-            from .endpoints import get_registry
-
-            registry = get_registry()
-            all_endpoints = registry.list_all()
-            known_ids = [ep.job_id for ep in all_endpoints]
-        except Exception:
-            logger.warning("Cannot enumerate live endpoints for orphan check")
-    elif resource_type == "mcp_servers":
-        try:
-            from .mcp import _get_store as _get_mcp_store
-
-            mcp_store = _get_mcp_store()
-            servers = mcp_store.list_servers()
-            known_ids = [s.server_id for s in servers]
-        except Exception:
-            logger.warning("Cannot enumerate live MCP servers for orphan check")
+    known_ids = _find_live_ids(resource_type, "orphan check")
 
     orphans = store.find_orphans(resource_type, known_ids)
     return {"resource_type": resource_type, "orphans": orphans, "count": len(orphans)}
@@ -1181,40 +1198,10 @@ async def governance_cleanup_orphans(
     Compares governance ownership records against live registries,
     then deletes stale entries. Emits audit event for the cleanup.
     """
-    expected = os.environ.get("UMRS_ADMIN_TOKEN", "")
-    if not expected or admin_token != expected:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, detail="Admin token required"
-        )
+    _check_governance_admin(admin_token)
+    store = _governance_store_or_503()
 
-    from .governance import get_governance_store
-
-    store = get_governance_store()
-    if store is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Governance store not initialized",
-        )
-
-    known_ids: list[str] = []
-    if resource_type == "endpoints":
-        try:
-            from .endpoints import get_registry
-
-            registry = get_registry()
-            all_endpoints = registry.list_all()
-            known_ids = [ep.job_id for ep in all_endpoints]
-        except Exception:
-            logger.warning("Cannot enumerate live endpoints for orphan cleanup")
-    elif resource_type == "mcp_servers":
-        try:
-            from .mcp import _get_store as _get_mcp_store
-
-            mcp_store = _get_mcp_store()
-            servers = mcp_store.list_servers()
-            known_ids = [s.server_id for s in servers]
-        except Exception:
-            logger.warning("Cannot enumerate live MCP servers for orphan cleanup")
+    known_ids = _find_live_ids(resource_type, "orphan cleanup")
 
     deleted = store.cleanup_orphans(resource_type, known_ids)
 
@@ -1232,9 +1219,90 @@ async def governance_cleanup_orphans(
     return {"resource_type": resource_type, "deleted": deleted}
 
 
+def _find_live_ids(resource_type: str, context: str) -> list[str]:
+    """Gather known live IDs from the relevant registry (best effort)."""
+    known_ids: list[str] = []
+    if resource_type == "endpoints":
+        try:
+            from .endpoints import get_registry
+
+            registry = get_registry()
+            all_endpoints = registry.list_all()
+            known_ids = [ep.job_id for ep in all_endpoints]
+        except Exception:
+            logger.warning("Cannot enumerate live endpoints for %s", context)
+    elif resource_type == "mcp_servers":
+        try:
+            from .mcp import _get_store as _get_mcp_store
+
+            mcp_store = _get_mcp_store()
+            servers = mcp_store.list_servers()
+            known_ids = [s.server_id for s in servers]
+        except Exception:
+            logger.warning("Cannot enumerate live MCP servers for %s", context)
+    return known_ids
+
+
+def _check_governance_admin(admin_token: str) -> None:
+    """Raise 403 unless the presented admin token matches the environment."""
+    expected = os.environ.get("UMRS_ADMIN_TOKEN", "")
+    if not expected or admin_token != expected:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Admin token required"
+        )
+
+
+def _governance_store_or_503():
+    """Return the governance store or raise 503 when uninitialized."""
+    from .governance import get_governance_store
+
+    store = get_governance_store()
+    if store is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Governance store not initialized",
+        )
+    return store
+
+
 # ---------------------------------------------------------------------------
 # Resource sharing
 # ---------------------------------------------------------------------------
+
+
+def _validate_share_params(granted_to_type: str, access_level: str) -> None:
+    """Validate share parameters (raises 422 on invalid values)."""
+    if granted_to_type not in ("user", "group"):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="granted_to_type must be 'user' or 'group'",
+        )
+    if access_level not in ("read", "write"):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="access_level must be 'read' or 'write'",
+        )
+
+
+def _require_owner_or_admin(
+    store: Any,
+    resource_type: str,
+    resource_id: str,
+    user_id: str,
+    admin_token: str,
+    action: str,
+) -> None:
+    """Authorization: resource owner or admin (admin token from env)."""
+    expected_admin = os.environ.get("UMRS_ADMIN_TOKEN", "")
+    is_admin = bool(expected_admin and admin_token == expected_admin)
+
+    if not is_admin:
+        owner = store.get_owner(resource_type, resource_id)
+        if not owner or owner.get("owner_id") != user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Only the resource owner or admin can {action}",
+            )
 
 
 @router.post("/governance/shares")
@@ -1261,28 +1329,12 @@ async def governance_create_share(
             detail="Governance store not initialized",
         )
 
-    if granted_to_type not in ("user", "group"):
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="granted_to_type must be 'user' or 'group'",
-        )
-    if access_level not in ("read", "write"):
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="access_level must be 'read' or 'write'",
-        )
+    _validate_share_params(granted_to_type, access_level)
 
     # Authorization: owner or admin
-    expected_admin = os.environ.get("UMRS_ADMIN_TOKEN", "")
-    is_admin = bool(expected_admin and admin_token == expected_admin)
-
-    if not is_admin:
-        owner = store.get_owner(resource_type, resource_id)
-        if not owner or owner.get("owner_id") != user_id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Only the resource owner or admin can create shares",
-            )
+    _require_owner_or_admin(
+        store, resource_type, resource_id, user_id, admin_token, "create shares"
+    )
 
     share = store.create_share(
         resource_type,
@@ -1419,11 +1471,7 @@ async def governance_analytics(
     Returns a summary suitable for dashboards and operational monitoring.
     Requires admin authentication.
     """
-    expected = os.environ.get("UMRS_ADMIN_TOKEN", "")
-    if not expected or admin_token != expected:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, detail="Admin token required"
-        )
+    _check_governance_admin(admin_token)
 
     from .governance import get_governance_store
     from .audit_events import query_audit_events
@@ -1439,57 +1487,73 @@ async def governance_analytics(
     # Quota utilization across projects
     store = get_governance_store()
     if store is not None:
-        cur = store.conn.cursor()
-        try:
-            if project_id:
-                cur.execute(
-                    "SELECT project_id, resource_type, max_count, current_count, warn_count "
-                    "FROM resource_quotas WHERE project_id = %s ORDER BY resource_type",
-                    (project_id,),
-                )
-            else:
-                cur.execute(
-                    "SELECT project_id, resource_type, max_count, current_count, warn_count "
-                    "FROM resource_quotas ORDER BY project_id, resource_type"
-                )
-            for row in cur.fetchall():
-                pct = (row[3] / row[2] * 100) if row[2] > 0 else 0
-                analytics["quota_utilization"].append(
-                    {
-                        "project_id": row[0],
-                        "resource_type": row[1],
-                        "max_count": row[2],
-                        "current_count": row[3],
-                        "warn_count": row[4],
-                        "utilization_pct": round(pct, 1),
-                    }
-                )
-        except Exception:
-            store.conn.rollback()
-        finally:
-            cur.close()
+        _analytics_quota_utilization(store, project_id, analytics)
+        _analytics_resource_counts(store, project_id, analytics)
 
-        # Resource counts by type
-        cur2 = store.conn.cursor()
-        try:
-            if project_id:
-                cur2.execute(
-                    "SELECT resource_type, COUNT(*) FROM resource_ownership "
-                    "WHERE project_id = %s GROUP BY resource_type ORDER BY resource_type",
-                    (project_id,),
-                )
-            else:
-                cur2.execute(
-                    "SELECT resource_type, COUNT(*) FROM resource_ownership "
-                    "GROUP BY resource_type ORDER BY resource_type"
-                )
-            analytics["resource_counts"] = {row[0]: row[1] for row in cur2.fetchall()}
-        except Exception:
-            store.conn.rollback()
-        finally:
-            cur2.close()
+    _analytics_events(query_audit_events, project_id, since, analytics)
 
-    # Governance event distribution from audit trail
+    return analytics
+
+
+def _analytics_quota_utilization(store: Any, project_id: str, analytics: dict) -> None:
+    """Quota utilization across projects (best-effort SQL)."""
+    cur = store.conn.cursor()
+    try:
+        if project_id:
+            cur.execute(
+                "SELECT project_id, resource_type, max_count, current_count, warn_count "
+                "FROM resource_quotas WHERE project_id = %s ORDER BY resource_type",
+                (project_id,),
+            )
+        else:
+            cur.execute(
+                "SELECT project_id, resource_type, max_count, current_count, warn_count "
+                "FROM resource_quotas ORDER BY project_id, resource_type"
+            )
+        for row in cur.fetchall():
+            pct = (row[3] / row[2] * 100) if row[2] > 0 else 0
+            analytics["quota_utilization"].append(
+                {
+                    "project_id": row[0],
+                    "resource_type": row[1],
+                    "max_count": row[2],
+                    "current_count": row[3],
+                    "warn_count": row[4],
+                    "utilization_pct": round(pct, 1),
+                }
+            )
+    except Exception:
+        store.conn.rollback()
+    finally:
+        cur.close()
+
+
+def _analytics_resource_counts(store: Any, project_id: str, analytics: dict) -> None:
+    """Resource counts by type (best-effort SQL)."""
+    cur2 = store.conn.cursor()
+    try:
+        if project_id:
+            cur2.execute(
+                "SELECT resource_type, COUNT(*) FROM resource_ownership "
+                "WHERE project_id = %s GROUP BY resource_type ORDER BY resource_type",
+                (project_id,),
+            )
+        else:
+            cur2.execute(
+                "SELECT resource_type, COUNT(*) FROM resource_ownership "
+                "GROUP BY resource_type ORDER BY resource_type"
+            )
+        analytics["resource_counts"] = {row[0]: row[1] for row in cur2.fetchall()}
+    except Exception:
+        store.conn.rollback()
+    finally:
+        cur2.close()
+
+
+def _analytics_events(
+    query_audit_events: Any, project_id: str, since: float, analytics: dict
+) -> None:
+    """Governance event distribution plus recent denials/warnings."""
     gov_events = query_audit_events(
         event="governance.",
         since=since,
@@ -1511,8 +1575,6 @@ async def governance_analytics(
     analytics["recent_warnings"] = [
         e for e in gov_events if e.get("event") == "governance.quota_warning"
     ][:20]
-
-    return analytics
 
 
 # ---------------------------------------------------------------------------

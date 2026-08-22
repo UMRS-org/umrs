@@ -208,114 +208,55 @@ class TestPipelineAPI:
 
 
 class TestRAGProfileAPI:
-    """Tests for RAG Profile CRUD API (X-002)."""
+    """RAG profile routes are retired (R3, drift remediation 2026-08-22):
+    every /umrs/rag-profiles verb now returns 410 with descriptive detail.
+    """
 
-    def test_create_rag_profile_minimal(self, client):
-        """Create RAG profile with minimal config."""
+    def test_create_rag_profile_retired(self, client):
         response = client.post(
             "/umrs/rag-profiles",
             json={"name": "test-profile"},
             headers={"X-User-Id": "user1", "X-Project-Id": "project1"},
         )
-        assert response.status_code == 201
-        data = response.json()
-        assert data["name"] == "test-profile"
-        assert data["profile_id"].startswith("rag-")
+        assert response.status_code == 410
+        assert "retired" in response.json()["detail"].lower()
 
-    def test_create_rag_profile_full(self, client):
-        """Create RAG profile with full configuration."""
+    def test_create_rag_profile_full_also_retired(self, client):
         response = client.post(
             "/umrs/rag-profiles",
-            json={
-                "name": "full-profile",
-                "description": "Test RAG profile",
-                "search_type": "hybrid",
-                "vector_weight": 0.8,
-                "keyword_weight": 0.2,
-                "top_k_retrieval": 30,
-                "reranker": {
-                    "model_name": "BAAI/bge-reranker-base",
-                    "top_k": 10,
-                },
-                "max_context_tokens": 8192,
-                "temperature": 0.7,
-            },
+            json={"name": "full-profile", "search_type": "hybrid"},
             headers={"X-User-Id": "user1", "X-Project-Id": "project1"},
         )
-        assert response.status_code == 201
-        data = response.json()
-        assert data["search_type"] == "hybrid"
-        assert data["vector_weight"] == 0.8
-        assert data["reranker"]["model_name"] == "BAAI/bge-reranker-base"
+        assert response.status_code == 410
 
-    def test_list_rag_profiles(self, client):
-        """List RAG profiles for a project."""
-        client.post(
-            "/umrs/rag-profiles",
-            json={"name": "profile-1"},
-            headers={"X-User-Id": "user1", "X-Project-Id": "project1"},
-        )
-        client.post(
-            "/umrs/rag-profiles",
-            json={"name": "profile-2"},
-            headers={"X-User-Id": "user1", "X-Project-Id": "project1"},
-        )
-
+    def test_list_rag_profiles_retired(self, client):
         response = client.get(
             "/umrs/rag-profiles",
             headers={"X-User-Id": "user1", "X-Project-Id": "project1"},
         )
-        assert response.status_code == 200
-        assert len(response.json()) == 2
+        assert response.status_code == 410
 
-    def test_get_rag_profile(self, client):
-        """Get single RAG profile."""
-        create_response = client.post(
-            "/umrs/rag-profiles",
-            json={"name": "get-test"},
-            headers={"X-User-Id": "user1", "X-Project-Id": "project1"},
-        )
-        profile_id = create_response.json()["profile_id"]
-
+    def test_get_rag_profile_retired(self, client):
         response = client.get(
-            f"/umrs/rag-profiles/{profile_id}",
+            "/umrs/rag-profiles/rag-1",
             headers={"X-User-Id": "user1", "X-Project-Id": "project1"},
         )
-        assert response.status_code == 200
-        assert response.json()["name"] == "get-test"
+        assert response.status_code == 410
 
-    def test_update_rag_profile(self, client):
-        """Update RAG profile."""
-        create_response = client.post(
-            "/umrs/rag-profiles",
-            json={"name": "update-test", "temperature": 0.5},
-            headers={"X-User-Id": "user1", "X-Project-Id": "project1"},
-        )
-        profile_id = create_response.json()["profile_id"]
-
+    def test_update_rag_profile_retired(self, client):
         response = client.patch(
-            f"/umrs/rag-profiles/{profile_id}",
-            json={"temperature": 0.8, "vector_weight": 0.9},
+            "/umrs/rag-profiles/rag-1",
+            json={"temperature": 0.8},
             headers={"X-User-Id": "user1", "X-Project-Id": "project1"},
         )
-        assert response.status_code == 200
-        assert response.json()["temperature"] == 0.8
-        assert response.json()["vector_weight"] == 0.9
+        assert response.status_code == 410
 
-    def test_delete_rag_profile(self, client):
-        """Delete RAG profile."""
-        create_response = client.post(
-            "/umrs/rag-profiles",
-            json={"name": "delete-test"},
-            headers={"X-User-Id": "user1", "X-Project-Id": "project1"},
-        )
-        profile_id = create_response.json()["profile_id"]
-
+    def test_delete_rag_profile_retired(self, client):
         response = client.delete(
-            f"/umrs/rag-profiles/{profile_id}",
+            "/umrs/rag-profiles/rag-1",
             headers={"X-User-Id": "user1", "X-Project-Id": "project1"},
         )
-        assert response.status_code == 204
+        assert response.status_code == 410
 
 
 class TestComponentRegistryAPI:

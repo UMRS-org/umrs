@@ -156,7 +156,10 @@ async def get_graph(graph_id: str, request: Request) -> dict[str, Any]:
     graph = registry.resolve_graph(graph_id)
     scope = get_caller_scope(request)
     if graph is None or not graph_readable(
-        kind=graph.kind, project_id=graph.project_id, owner_id=graph.owner_id, caller=scope
+        kind=graph.kind,
+        project_id=graph.project_id,
+        owner_id=graph.owner_id,
+        caller=scope,
     ):
         raise HTTPException(status_code=404, detail=f"Graph {graph_id} not found")
     return graph.to_dict()
@@ -187,7 +190,9 @@ async def get_graph_content(
     scope = get_caller_scope(request)
     if not graph_readable(
         kind=str(content.get("kind") or ""),
-        project_id=content.get("project_id") if isinstance(content.get("project_id"), str) else None,
+        project_id=content.get("project_id")
+        if isinstance(content.get("project_id"), str)
+        else None,
         owner_id=str(content.get("owner_id") or ""),
         caller=scope,
     ):

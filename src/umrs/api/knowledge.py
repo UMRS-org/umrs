@@ -288,18 +288,37 @@ def _build_object_detail_response(detail: ObjectDetail) -> dict[str, Any]:
     ).model_dump()
 
 
+def _explorer_caller(request: Request) -> Any:
+    """Fail-closed scope entry gate for M3.5 Explorer routes (R2, 2026-08-22).
+
+    Explorer controllers are module-global (no per-project namespace), so the
+    three-tier predicates cannot be applied per-object; the convergent gate is
+    strict-mode authentication (401 when unauthenticated) with mvp parity
+    (anonymous callers allowed). Returns the resolved scope for logging.
+    """
+    from umrs.api._scope_identity import request_caller_scope
+
+    scope = request_caller_scope(request)
+    if scope.anonymous:
+        logger.debug("explorer route used by anonymous caller (mvp mode)")
+    return scope
+
+
 @router.get("/dashboard")
-async def get_knowledge_dashboard() -> dict[str, Any]:
+async def get_knowledge_dashboard(request: Request) -> dict[str, Any]:
     """Get project knowledge summary for the M3.5 dashboard."""
+    _explorer_caller(request)
     return _dashboard_controller.get_knowledge_summary().to_dict()
 
 
 @router.get("/objects")
 async def list_knowledge_objects(
+    request: Request,
     object_type: str | None = Query(None, description="Filter by object type"),
     limit: int = Query(100, ge=1, le=1000),
 ) -> list[dict[str, Any]]:
     """List scientific objects for the M3.5 Knowledge Explorer."""
+    _explorer_caller(request)
     return [
         obj.to_dict()
         for obj in _dashboard_controller.list_objects(
@@ -310,8 +329,11 @@ async def list_knowledge_objects(
 
 
 @router.get("/objects/{object_id}", response_model=ObjectDetailResponse)
-async def get_knowledge_object(object_id: str) -> ObjectDetailResponse:
+async def get_knowledge_object(
+    object_id: str, request: Request
+) -> ObjectDetailResponse:
     """Get detailed view of a scientific object."""
+    _explorer_caller(request)
     detail = _dashboard_controller.get_object_detail(object_id)
     if detail is None:
         raise HTTPException(status_code=404, detail=f"Object {object_id} not found")
@@ -319,8 +341,9 @@ async def get_knowledge_object(object_id: str) -> ObjectDetailResponse:
 
 
 @router.get("/graph/{object_id}/neighbors")
-async def get_graph_neighbors(object_id: str) -> list[dict[str, Any]]:
+async def get_graph_neighbors(object_id: str, request: Request) -> list[dict[str, Any]]:
     """Get graph neighbors for a scientific object."""
+    _explorer_caller(request)
     edges = list(_m35_knowledge_graph.get_outgoing(object_id)) + list(
         _m35_knowledge_graph.get_incoming(object_id)
     )
@@ -328,8 +351,11 @@ async def get_graph_neighbors(object_id: str) -> list[dict[str, Any]]:
 
 
 @router.post("/correction")
-async def submit_knowledge_correction(req: CorrectionRequest) -> dict[str, Any]:
-    """Record a human knowledge correction."""
+async def submit_knowledge_correction(
+    req: CorrectionRequest, request: Request
+) -> dict[str, Any]:
+    """Record a human knowledge correction (write-gated: R2 scope)."""
+    _explorer_caller(request)
     record = _correction_controller.correct(
         correction_type=req.correction_type,
         corrected_by=req.corrected_by,
@@ -405,13 +431,21 @@ async def get_project_knowledge_graph(
     request: Request,
     project_id: str = Depends(get_project_id),
     config: S3Config = Depends(get_s3_config),
+    durable_only: bool = Query(
+        False,
+        description=(
+            "Authoritative view: durable Postgres rows only (delegates to the "
+            "/graph-pg path). Default False = union view."
+        ),
+    ),
 ) -> dict[str, Any]:  # noqa: PLR0912 — branchy by design (union of two stores)
     """Project knowledge graph (nodes + typed edges) for the Studio/webview.
 
-    Union of two sources: the RC1 in-memory project graph (reconstructed per
-    request) and the durable Postgres store that KNOWLEDGE_INGEST /
-    KNOWLEDGE_UNDERSTAND durable jobs populate. RC1 rows win on node_id
-    collisions (richer local metadata). Smoke-free read: no readiness gate.
+    Union of two sources (default): the RC1 in-memory project graph
+    (reconstructed per request) and the durable Postgres store that
+    KNOWLEDGE_INGEST / KNOWLEDGE_UNDERSTAND durable jobs populate. RC1 rows
+    win on node_id collisions (richer local metadata). Smoke-free read.
+    ``durable_only=true`` returns durable rows only (``/graph-pg`` parity).
     """
     from umrs.api._scope_identity import request_caller_scope
     from umrs.knowledge.access_scope import project_readable as _scope_readable
@@ -445,6 +479,13 @@ async def get_project_knowledge_graph(
     except Exception as exc:  # noqa: BLE001 — read-only union; degrade to RC1 view
         logger.warning("durable graph union failed for %s: %s", project_id, exc)
         durable_nodes, durable_edges = [], []
+    if durable_only:
+        return {
+            "project_id": project_id,
+            "backend": "postgres",
+            "nodes": durable_nodes,
+            "edges": durable_edges,
+        }
     for node in durable_nodes:
         nodes.setdefault(node["id"], node)
     for edge in durable_edges:
@@ -505,14 +546,16 @@ async def get_project_graph_pg(
 
 
 @router.get("/readiness")
-async def get_research_readiness() -> dict[str, Any]:
+async def get_research_readiness(request: Request) -> dict[str, Any]:
     """Get the research readiness report."""
+    _explorer_caller(request)
     return _readiness_controller.evaluate_readiness().to_dict()
 
 
 @router.post("/approval")
-async def submit_approval(req: ApprovalRequest) -> dict[str, Any]:
-    """Approve or reject autonomous research."""
+async def submit_approval(req: ApprovalRequest, request: Request) -> dict[str, Any]:
+    """Approve or reject autonomous research (write-gated: R2 scope)."""
+    _explorer_caller(request)
     if req.approved:
         report = _readiness_controller.evaluate_readiness()
         record = _readiness_controller.approve(

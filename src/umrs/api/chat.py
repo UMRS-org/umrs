@@ -116,28 +116,11 @@ def _build_upstream_headers(
 def _get_caller_identity(request: Request) -> tuple[str, str]:
     """Extract user_id and project_id from request headers.
 
-    These are set by the NGINX auth sidecar via ``auth_request_set``.
+    Canonical tier chain in ``umrs.api._identity`` (R1).
     """
-    user_id = request.headers.get("x-user-id", "")
-    verified_project_id = request.headers.get("x-verified-project-id", "").strip()
-    project_id = verified_project_id or request.headers.get("x-project-id", "").strip()
+    from ._identity import verified_identity
 
-    if (
-        not verified_project_id
-        and os.environ.get("UMRS_AUTH_MODE", "mvp").strip().lower() == "strict"
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing X-Verified-Project-ID header (Gateway must set this)",
-        )
-
-    if not project_id:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing X-Project-ID header (auth sidecar must set this)",
-        )
-
-    return user_id, project_id
+    return verified_identity(request, require_project=True)
 
 
 def _parse_body(body: bytes) -> dict:

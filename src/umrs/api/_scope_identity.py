@@ -50,19 +50,28 @@ def _verify(headers: Any, uid: str, pid: str, admin: bool) -> None:
 
 
 def request_caller_scope(request: Request) -> CallerScope:
-    """Resolve the caller's access scope from request headers (see module doc)."""
+    """Resolve the caller's access scope from request headers (see module doc).
+
+    Delegates to the canonical ``_identity.request_caller`` (R1) — single
+    tier chain shared by rag/chat/llm/jobs/skills. HMAC verification is
+    included for the verified tier.
+    """
     headers = request.headers
     uid = _clean(headers.get("x-user-id"))
     pid = _clean(headers.get("x-verified-project-id"))
     if not uid or not pid:
+        legacy = _clean(headers.get("x-project-id"))
+        if legacy:
+            # Legacy project-level trust (pre-boundary routes, mvp mode).
+            if _strict_mode():
+                raise HTTPException(
+                    status_code=401, detail="Missing gateway-verified caller identity"
+                )
+            return CallerScope(user_id="", project_id=legacy)
         if _strict_mode():
             raise HTTPException(
                 status_code=401, detail="Missing gateway-verified caller identity"
             )
-        legacy = _clean(headers.get("x-project-id"))
-        if legacy:
-            # Legacy project-level trust (pre-boundary routes, mvp mode).
-            return CallerScope(user_id="", project_id=legacy)
         return CallerScope(anonymous=True)
     admin = _clean(headers.get("x-verified-is-admin")) in ("true", "1")
     _verify(headers, uid, pid, admin)
