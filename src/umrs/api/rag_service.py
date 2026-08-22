@@ -414,7 +414,18 @@ app = FastAPI(title="UMRS RAG Service", version="0.1.0")
 
 
 class PrefixedSentenceTransformerEmbeddings(SentenceTransformerEmbeddings):
-    """SentenceTransformerEmbeddings with automatic E5 query/document prefixes.
+    """Query-time text embedder for retrieval (R6.1 ownership boundary).
+
+    R6.1 convergence decision (2026-08-23): three embedder surfaces exist,
+    with distinct non-overlapping jobs — this class is the ONLY query-time
+    text embedder (retrieval path, sync ST client on the frontend host).
+    ``umrs.inference.embeddings`` owns batch/S3 object embedding compute
+    (runtime pipeline); ``umrs.embeddings_api`` owns storage only
+    (protocol + pg/in-memory stores, no model clients). Do not fold this
+    wrapper into the batch pipeline: different process, latency class,
+    and model lifecycle.
+
+    SentenceTransformerEmbeddings with automatic E5 query/document prefixes.
 
     E5 models require 'query: ' prefix for search queries and 'passage: '
     prefix for documents.  This wrapper applies the correct prefix
