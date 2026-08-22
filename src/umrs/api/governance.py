@@ -11,7 +11,6 @@ policy (who can create what, approval flows) will build on top.
 from __future__ import annotations
 
 import logging
-import time
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -905,6 +904,36 @@ def get_governance_store() -> GovernanceStore | None:
 # ---------------------------------------------------------------------------
 
 
+def guard_ingest(
+    project_id: str,
+    source_kind: str,
+    *,
+    user_id: str,
+    details: dict[str, Any],
+) -> None:
+    """Unified ingest governance (R6.4): quota check + audit trail.
+
+    Single entry point for every 'put knowledge into the platform' path
+    (rag upload, durable KNOWLEDGE_INGEST jobs). Quota is keyed on the
+    shared 'rag_documents' family (existing resource_type — relabeling
+    would lose accumulated quota state).
+    """
+    import logging as _log
+
+    check_quota(project_id, "rag_documents")
+    from .audit_events import emit_audit
+
+    emit_audit(
+        f"ingest.{source_kind}",
+        user_id=user_id,
+        project_id=project_id,
+        details=details,
+    )
+    _log.getLogger(__name__).debug(
+        "guard_ingest: kind=%s project=%s user=%s", source_kind, project_id, user_id
+    )
+
+
 def check_quota(project_id: str, resource_type: str) -> None:
     """Check if the project is within quota for resource_type.
 
@@ -947,7 +976,6 @@ def check_quota(project_id: str, resource_type: str) -> None:
         emit_audit(
             "governance.quota_exceeded",
             project_id=project_id,
-            outcome="denied",
             details={
                 "resource_type": resource_type,
                 "current": quota["current_count"],

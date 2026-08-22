@@ -6,160 +6,30 @@ import spacy
 from charset_normalizer import from_path
 from sentence_transformers import SentenceTransformer
 from transformers import AutoTokenizer
-from utils import compute_md5
+
+# Canonical chunking lives in umrs.shared.utils (drift R6.2, 2026-08-23):
+# the two previous local reimplementations were byte-for-byte near-dupes.
+from umrs.shared.utils import chunk_text_by_max_tokens as _canonical_chunk_by_max_tokens
+from umrs.shared.utils import compute_md5
+
+
+def _with_length(chunks: list[dict]) -> list[dict]:
+    """Preserve this script's historic ``length`` field (= end - start)."""
+    for chunk in chunks:
+        chunk["length"] = chunk["end"] - chunk["start"]
+    return chunks
 
 
 def chunk_text_with_offsets(text: str, tokenizer, max_tokens: int, nlp) -> list[dict]:
-    """
-    Split a large text into smaller chunks based on sentences and token count,
-    while preserving the exact character offsets (start/end) of each chunk
-    relative to the original text.
-
-    Parameters:
-    - text: the full input text (already decoded as string)
-    - tokenizer: a HuggingFace tokenizer compatible with the embedding model
-    - max_tokens: maximum number of tokens per chunk
-    - nlp: a spaCy language model for sentence segmentation
-
-    Returns:
-    - A list of dictionaries, each containing:
-        - text: the chunk text
-        - start: start character position in the original text
-        - end: end character position in the original text
-        - length: character length of the chunk
-        - md5: md5 checksum of the chunk
-    """
-    doc = nlp(text)
-    chunks = []
-
-    for sent in doc.sents:
-        sentence_text = sent.text.strip()
-        if not sentence_text:
-            continue
-
-        # Tokenize the sentence and get the mapping between tokens and character offsets
-        encoding = tokenizer(
-            sentence_text, return_offsets_mapping=True, add_special_tokens=False
-        )
-        input_ids = encoding["input_ids"]
-        offsets = encoding["offset_mapping"]
-
-        if len(input_ids) <= max_tokens:
-            # If the sentence fits in the limit, use it directly
-            start = sent.start_char
-            end = sent.end_char
-            chunks.append(
-                {
-                    "text": sentence_text,
-                    "start": start,
-                    "end": end,
-                    "length": end - start,
-                    "md5": compute_md5(sentence_text),
-                }
-            )
-        else:
-            # Otherwise, split the sentence into subchunks of max_tokens
-            for i in range(0, len(input_ids), max_tokens):
-                input_ids[i : i + max_tokens]
-                sub_offsets = offsets[i : i + max_tokens]
-
-                # Get the character range covered by the token span
-                sub_start = sub_offsets[0][0]
-                sub_end = sub_offsets[-1][1]
-
-                # Extract the substring using the token offset range
-                sub_text = sentence_text[sub_start:sub_end].strip()
-                global_start = sent.start_char + sub_start
-                global_end = sent.start_char + sub_end
-
-                if sub_text:
-                    chunks.append(
-                        {
-                            "text": sub_text,
-                            "start": global_start,
-                            "end": global_end,
-                            "length": global_end - global_start,
-                            "md5": compute_md5(sub_text),
-                        }
-                    )
-
-    return chunks
+    """Canonical chunking with this script's per-chunk ``length`` field."""
+    return _with_length(
+        _canonical_chunk_by_max_tokens(nlp(text), tokenizer, max_tokens)
+    )
 
 
 def chunk_text_by_max_tokens(doc, tokenizer, max_tokens: int) -> list[dict]:
-    """
-    Split a large text into smaller chunks based on sentences and token count,
-    while preserving the exact character offsets (start/end) of each chunk
-    relative to the original text.
-
-    Parameters:
-    - doc: a text segmented by spaCy using 'nlp' function
-    - tokenizer: a HuggingFace tokenizer compatible with the embedding model
-    - max_tokens: maximum number of tokens per chunk
-
-    Returns:
-    - A list of dictionaries, each containing:
-        - text: the chunk text
-        - start: start character position in the original text
-        - end: end character position in the original text
-        - length: character length of the chunk
-        - md5: md5 checksum of the chunk
-    """
-    chunks = []
-
-    for sent in doc.sents:
-        sentence_text = sent.text.strip()
-        if not sentence_text:
-            continue
-
-        # Tokenize the sentence and get the mapping between tokens and character offsets
-        encoding = tokenizer(
-            sentence_text, return_offsets_mapping=True, add_special_tokens=False
-        )
-        input_ids = encoding["input_ids"]
-        offsets = encoding["offset_mapping"]
-
-        if len(input_ids) <= max_tokens:
-            # If the sentence fits in the limit, use it directly
-            start = sent.start_char
-            end = sent.end_char
-            chunks.append(
-                {
-                    "text": sentence_text,
-                    "start": start,
-                    "end": end,
-                    "length": end - start,
-                    "md5": compute_md5(sentence_text),
-                }
-            )
-        else:
-            # Otherwise, split the sentence into subchunks of max_tokens
-            print("Splitings...")
-            for i in range(0, len(input_ids), max_tokens):
-                input_ids[i : i + max_tokens]
-                sub_offsets = offsets[i : i + max_tokens]
-
-                # Get the character range covered by the token span
-                sub_start = sub_offsets[0][0]
-                sub_end = sub_offsets[-1][1]
-
-                # Extract the substring using the token offset range
-                sub_text = sentence_text[sub_start:sub_end].strip()
-                global_start = sent.start_char + sub_start
-                global_end = sent.start_char + sub_end
-
-                if sub_text:
-                    chunks.append(
-                        {
-                            "text": sub_text,
-                            "start": global_start,
-                            "end": global_end,
-                            "length": global_end - global_start,
-                            "md5": compute_md5(sub_text),
-                        }
-                    )
-
-    return chunks
+    """Canonical chunking with this script's per-chunk ``length`` field."""
+    return _with_length(_canonical_chunk_by_max_tokens(doc, tokenizer, max_tokens))
 
 
 # Modèle utilisé
