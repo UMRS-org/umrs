@@ -1339,6 +1339,9 @@ class GatewayUploadResponse(BaseModel):
     filename: str
     status: str
     chunks: int = 0
+    # ADR-027 P1a: persisted chunk rows (s3_object/span/md5/excerpt) so the
+    # caller (UMRS rag proxy) can mint canonical knowledge chunk nodes.
+    chunk_details: list[dict[str, Any]] = Field(default_factory=list)
 
 
 def _legacy_table_fallback() -> bool:
@@ -1500,6 +1503,99 @@ def _chunk_and_embed(text: str) -> tuple[list[dict[str, Any]], list[Any]]:
     return chunks, EMBEDDINGS.embed_documents(prefixed_texts)
 
 
+def _insert_one_chunk(
+    cur,
+    *,
+    table_name: str,
+    has_content: bool,
+    has_embedding: bool,
+    s3_object: str,
+    emb: Any,
+    date_str: str,
+    time_str: str,
+    file_checksum: str,
+    model_name: str | None,
+    chunk_text: str,
+    chunk_start: int,
+    chunk_end: int,
+    chunk_md5: str,
+) -> None:
+    """Upsert one chunk row; column shape depends on table schema."""
+    from psycopg2 import sql as psql
+
+    if has_embedding and has_content:
+        insert_sql = psql.SQL(
+            """
+            INSERT INTO {table} (
+                s3_object, embedding, date, time, checksum, model,
+                _content, chunk_start, chunk_end, chunk_md5
+            ) VALUES (%s, %s::vector, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (s3_object, chunk_start) DO UPDATE SET
+                embedding = EXCLUDED.embedding,
+                _content = EXCLUDED._content,
+                chunk_end = EXCLUDED.chunk_end,
+                chunk_md5 = EXCLUDED.chunk_md5,
+                date = EXCLUDED.date,
+                time = EXCLUDED.time
+            """
+        ).format(table=psql.Identifier(table_name))
+        cur.execute(
+            insert_sql,
+            (
+                s3_object,
+                emb,
+                date_str,
+                time_str,
+                file_checksum,
+                model_name or "unknown",
+                chunk_text,
+                chunk_start,
+                chunk_end,
+                chunk_md5,
+            ),
+        )
+    elif has_embedding:
+        insert_sql = psql.SQL(
+            """
+            INSERT INTO {table} (
+                s3_object, embedding, date, time, checksum, model
+            ) VALUES (%s, %s::vector, %s, %s, %s, %s)
+            ON CONFLICT (s3_object) DO UPDATE SET
+                embedding = EXCLUDED.embedding,
+                date = EXCLUDED.date,
+                time = EXCLUDED.time
+            """
+        ).format(table=psql.Identifier(table_name))
+        cur.execute(
+            insert_sql,
+            (
+                s3_object,
+                emb,
+                date_str,
+                time_str,
+                file_checksum,
+                model_name or "unknown",
+            ),
+        )
+
+
+def _inserted_row(
+    s3_object: str,
+    chunk_start: int,
+    chunk_end: int,
+    chunk_md5: str,
+    chunk_text: str,
+) -> dict[str, Any]:
+    """One inserted chunk row as chunk-detail metadata (ADR-027 P1a)."""
+    return {
+        "s3_object": s3_object,
+        "chunk_start": chunk_start,
+        "chunk_end": chunk_end,
+        "chunk_md5": chunk_md5,
+        "excerpt": (chunk_text or "")[:300],
+    }
+
+
 def _persist_chunks(
     entry: dict[str, Any],
     *,
@@ -1510,12 +1606,15 @@ def _persist_chunks(
     date_str: str,
     time_str: str,
     model_name: str | None,
-) -> None:
-    """Insert chunk rows (with embeddings) into the resolved pgvector table."""
-    from psycopg2 import sql as psql
+) -> list[dict[str, Any]]:
+    """Insert chunk rows (with embeddings) into the resolved pgvector table.
 
+    Returns the inserted chunk rows (s3_object/span/md5/excerpt) for callers
+    that mint canonical knowledge nodes from uploads (ADR-027 P1a).
+    """
     from umrs.shared.utils import compute_md5
 
+    inserted: list[dict[str, Any]] = []
     data_base = entry["data_base"]
     table_name = entry["table_name"]
     db_pool = data_base.db_pool
@@ -1532,59 +1631,27 @@ def _persist_chunks(
             chunk_end = chunk["end"]
             chunk_md5 = chunk.get("md5") or compute_md5(chunk_text)
 
-            if has_embedding and has_content:
-                insert_sql = psql.SQL(
-                    """
-                    INSERT INTO {table} (
-                        s3_object, embedding, date, time, checksum, model,
-                        _content, chunk_start, chunk_end, chunk_md5
-                    ) VALUES (%s, %s::vector, %s, %s, %s, %s, %s, %s, %s, %s)
-                    ON CONFLICT (s3_object, chunk_start) DO UPDATE SET
-                        embedding = EXCLUDED.embedding,
-                        _content = EXCLUDED._content,
-                        chunk_end = EXCLUDED.chunk_end,
-                        chunk_md5 = EXCLUDED.chunk_md5,
-                        date = EXCLUDED.date,
-                        time = EXCLUDED.time
-                    """
-                ).format(table=psql.Identifier(table_name))
-                cur.execute(
-                    insert_sql,
-                    (
-                        s3_object,
-                        emb,
-                        date_str,
-                        time_str,
-                        file_checksum,
-                        model_name or "unknown",
-                        chunk_text,
-                        chunk_start,
-                        chunk_end,
-                        chunk_md5,
-                    ),
-                )
-            elif has_embedding:
-                insert_sql = psql.SQL(
-                    """
-                    INSERT INTO {table} (
-                        s3_object, embedding, date, time, checksum, model
-                    ) VALUES (%s, %s::vector, %s, %s, %s, %s)
-                    ON CONFLICT (s3_object) DO UPDATE SET
-                        embedding = EXCLUDED.embedding,
-                        date = EXCLUDED.date,
-                        time = EXCLUDED.time
-                    """
-                ).format(table=psql.Identifier(table_name))
-                cur.execute(
-                    insert_sql,
-                    (
-                        s3_object,
-                        emb,
-                        date_str,
-                        time_str,
-                        file_checksum,
-                        model_name or "unknown",
-                    ),
+            _insert_one_chunk(
+                cur,
+                table_name=table_name,
+                has_content=has_content,
+                has_embedding=has_embedding,
+                s3_object=s3_object,
+                emb=emb,
+                date_str=date_str,
+                time_str=time_str,
+                file_checksum=file_checksum,
+                model_name=model_name,
+                chunk_text=chunk_text,
+                chunk_start=chunk_start,
+                chunk_end=chunk_end,
+                chunk_md5=chunk_md5,
+            )
+            if has_embedding:
+                inserted.append(
+                    _inserted_row(
+                        s3_object, chunk_start, chunk_end, chunk_md5, chunk_text
+                    )
                 )
 
         conn.commit()
@@ -1594,6 +1661,8 @@ def _persist_chunks(
         raise HTTPException(status_code=500, detail=f"Database insertion failed: {exc}")
     finally:
         db_pool.putconn(conn)
+
+    return inserted
 
 
 @app.post("/rag/upload", response_model=GatewayUploadResponse)
@@ -1619,7 +1688,7 @@ async def rag_upload(
     chunks, embeddings = _chunk_and_embed(text)
 
     bucket_alias = entry.get("bucket_alias", "uploads")
-    _persist_chunks(
+    inserted = _persist_chunks(
         entry,
         s3_base=f"{bucket_alias}/{file.filename}",
         chunks=chunks,
@@ -1635,6 +1704,7 @@ async def rag_upload(
         filename=file.filename or "",
         status="indexed",
         chunks=len(chunks),
+        chunk_details=inserted,
     )
 
 
