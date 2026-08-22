@@ -151,6 +151,53 @@ def _parse_variant_from_model(model: str) -> tuple[str, str | None]:
     return model, None
 
 
+def _list_ready_endpoints(
+    registry: EndpointRegistry, project_id: str
+) -> list[RegisteredEndpoint]:
+    """List READY/DEGRADED endpoints for the project."""
+    return registry.list_all(
+        project_id=project_id,
+        status_filter=[EndpointStatus.READY, EndpointStatus.DEGRADED],
+    )
+
+
+def _variant_suffixed_fallback(
+    registry: EndpointRegistry, project_id: str, model: str
+) -> RegisteredEndpoint | None:
+    """Match variant-suffixed model names from the picker.
+
+    The model picker constructs ids like ``GLM-5.2-FP8-pd`` by
+    suffixing the served model name with the endpoint's variant.
+    We reverse this: find an endpoint whose variant-suffixed name
+    matches the requested model.
+    """
+    for ep in _list_ready_endpoints(registry, project_id):
+        served = ep.metadata.get("served_model_name") or _resolve_served_model_name(
+            ep.model
+        )
+        if ep.variant:
+            for candidate in (
+                f"{served}-{ep.variant}",
+                f"{ep.model}-{ep.variant}",
+            ):
+                if candidate == model:
+                    return ep
+    return None
+
+
+def _served_model_fallback(
+    registry: EndpointRegistry, project_id: str, model: str, base_model: str
+) -> RegisteredEndpoint | None:
+    """Last resort: scan by served_model_name (R-15 fallback)."""
+    for ep in _list_ready_endpoints(registry, project_id):
+        served = ep.metadata.get("served_model_name") or _resolve_served_model_name(
+            ep.model
+        )
+        if served == model or served == base_model:
+            return ep
+    return None
+
+
 def _discover_endpoint(
     registry: EndpointRegistry,
     project_id: str,
@@ -181,53 +228,13 @@ def _discover_endpoint(
         )
 
     if not endpoint:
-        # Fallback: match variant-suffixed model names from the picker.
-        # The model picker constructs ids like ``GLM-5.2-FP8-pd`` by
-        # suffixing the served model name with the endpoint's variant.
-        # We reverse this: find an endpoint whose variant-suffixed name
-        # matches the requested model.
-        all_eps = registry.list_all(
-            project_id=project_id,
-            status_filter=[EndpointStatus.READY, EndpointStatus.DEGRADED],
-        )
-        for ep in all_eps:
-            served = ep.metadata.get("served_model_name") or _resolve_served_model_name(
-                ep.model
-            )
-            if ep.variant:
-                for candidate in (
-                    f"{served}-{ep.variant}",
-                    f"{ep.model}-{ep.variant}",
-                ):
-                    if candidate == model:
-                        endpoint = ep
-                        break
-            if endpoint:
-                break
+        endpoint = _variant_suffixed_fallback(registry, project_id, model)
 
     if not endpoint:
-        # Last resort: scan by served_model_name (R-15 fallback)
-        all_eps = registry.list_all(
-            project_id=project_id,
-            status_filter=[EndpointStatus.READY, EndpointStatus.DEGRADED],
-        )
-        for ep in all_eps:
-            served = ep.metadata.get("served_model_name") or _resolve_served_model_name(
-                ep.model
-            )
-            if served == model or served == base_model:
-                endpoint = ep
-                break
+        endpoint = _served_model_fallback(registry, project_id, model, base_model)
 
     if not endpoint:
-        # Pool YAML entry names are stored in variant (e.g. glm-5.2-v2).
-        all_eps = registry.list_all(
-            project_id=project_id,
-            status_filter=[EndpointStatus.READY, EndpointStatus.DEGRADED],
-        )
-        variant_matches = [ep for ep in all_eps if ep.variant == model]
-        if variant_matches:
-            endpoint = min(variant_matches, key=lambda ep: ep.active_requests)
+        endpoint = _variant_pool_match(registry, project_id, model)
 
     if not endpoint:
         raise HTTPException(
@@ -306,28 +313,13 @@ _PROXY_TIMEOUT = httpx.Timeout(
 )
 
 
-async def _proxy_streaming(
+async def _open_stream(
     request: Request,
     upstream_url: str,
     headers: dict[str, str],
     body: bytes,
-    usage_record: UsageRecord | None = None,
-    timer: ProxyTimer | None = None,
-    registry: EndpointRegistry | None = None,
-    job_id: str | None = None,
-) -> StreamingResponse:
-    """Stream upstream response to the caller.
-
-    The httpx client must stay open until the generator is fully consumed
-    by the ASGI server, so we close it in the generator's ``finally``.
-    When *usage_record* is provided, the last few SSE chunks are
-    inspected for a ``usage`` block and the record is persisted
-    fire-and-forget after the stream ends.
-
-    When *registry* and *job_id* are provided, ``decrement_requests``
-    is called in the generator's ``finally`` block to accurately track
-    load for the entire streaming duration.
-    """
+) -> tuple[httpx.AsyncClient, httpx.Response]:
+    """Build and send the upstream streaming request (504/502-mapped)."""
     client = httpx.AsyncClient(timeout=_PROXY_TIMEOUT)
     try:
         req = client.build_request(
@@ -351,6 +343,32 @@ async def _proxy_streaming(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Failed to connect to upstream service",
         ) from exc
+    return client, response
+
+
+async def _proxy_streaming(
+    request: Request,
+    upstream_url: str,
+    headers: dict[str, str],
+    body: bytes,
+    usage_record: UsageRecord | None = None,
+    timer: ProxyTimer | None = None,
+    registry: EndpointRegistry | None = None,
+    job_id: str | None = None,
+) -> StreamingResponse:
+    """Stream upstream response to the caller.
+
+    The httpx client must stay open until the generator is fully consumed
+    by the ASGI server, so we close it in the generator's ``finally``.
+    When *usage_record* is provided, the last few SSE chunks are
+    inspected for a ``usage`` block and the record is persisted
+    fire-and-forget after the stream ends.
+
+    When *registry* and *job_id* are provided, ``decrement_requests``
+    is called in the generator's ``finally`` block to accurately track
+    load for the entire streaming duration.
+    """
+    client, response = await _open_stream(request, upstream_url, headers, body)
 
     # Keep the last few chunks for usage extraction (streaming).
     # Only the tail matters — the final SSE event carries ``usage``.
@@ -470,27 +488,9 @@ async def _proxy_to_litellm(
 
     # Build usage record for billing
     timer = ProxyTimer()
-    usage_record: UsageRecord | None = None
-    if _usage_db_pool is not None:
-        # Resolve endpoint tier from metadata
-        ep_tier = (
-            endpoint.metadata.get("tier") or endpoint.metadata.get("owner_type") or ""
-        )
-        # Requested model name (before rewrite)
-        req_model = ""
-        body_json = _json_body(body)
-        if body_json:
-            req_model = body_json.get("model", "")
-        usage_record = UsageRecord(
-            request_id=get_request_id(),
-            user_id=user_id,
-            project_id=project_id,
-            model=req_model or endpoint.model,
-            served_model=_upstream_model_name(endpoint),
-            endpoint_job_id=endpoint.job_id,
-            endpoint_tier=str(ep_tier),
-            is_streaming=is_streaming,
-        )
+    usage_record = _build_usage_record(
+        body, endpoint, user_id, project_id, is_streaming
+    )
 
     if registry:
         registry.increment_requests(endpoint.job_id)
@@ -520,6 +520,35 @@ async def _proxy_to_litellm(
             registry.decrement_requests(endpoint.job_id)
 
 
+def _build_usage_record(
+    body: bytes,
+    endpoint: RegisteredEndpoint,
+    user_id: str,
+    project_id: str,
+    is_streaming: bool,
+) -> UsageRecord | None:
+    """Build a usage record for billing when a DB pool is available."""
+    if _usage_db_pool is None:
+        return None
+    # Resolve endpoint tier from metadata
+    ep_tier = endpoint.metadata.get("tier") or endpoint.metadata.get("owner_type") or ""
+    # Requested model name (before rewrite)
+    req_model = ""
+    body_json = _json_body(body)
+    if body_json:
+        req_model = body_json.get("model", "")
+    return UsageRecord(
+        request_id=get_request_id(),
+        user_id=user_id,
+        project_id=project_id,
+        model=req_model or endpoint.model,
+        served_model=_upstream_model_name(endpoint),
+        endpoint_job_id=endpoint.job_id,
+        endpoint_tier=str(ep_tier),
+        is_streaming=is_streaming,
+    )
+
+
 def _extract_model(body: dict) -> str:
     """Extract model name from request body."""
     model = body.get("model")
@@ -533,27 +562,27 @@ def _extract_model(body: dict) -> str:
 
 def _get_caller_identity(request: Request) -> tuple[str, str]:
     """
-    Extract user_id and project_id from request headers.
+    Extract user_id and project_id from request headers (canonical, R1).
 
     These are set by the NGINX auth sidecar via auth_request_set.
     """
-    user_id = request.headers.get("x-user-id", "")
-    verified_project_id = request.headers.get("x-verified-project-id", "").strip()
-    project_id = verified_project_id or request.headers.get("x-project-id", "").strip()
-    if (
-        not verified_project_id
-        and os.environ.get("UMRS_AUTH_MODE", "mvp").strip().lower() == "strict"
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing X-Verified-Project-ID header (Gateway must set this)",
-        )
-    if not project_id:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing X-Project-ID header (auth sidecar must set this)",
-        )
-    return user_id, project_id
+    from ._identity import verified_identity
+
+    return verified_identity(request, require_project=True)
+
+
+def _variant_pool_match(
+    registry: EndpointRegistry, project_id: str, model: str
+) -> RegisteredEndpoint | None:
+    """Pool YAML entry names are stored in variant (e.g. glm-5.2-v2)."""
+    all_eps = registry.list_all(
+        project_id=project_id,
+        status_filter=[EndpointStatus.READY, EndpointStatus.DEGRADED],
+    )
+    variant_matches = [ep for ep in all_eps if ep.variant == model]
+    if variant_matches:
+        return min(variant_matches, key=lambda ep: ep.active_requests)
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -706,6 +735,30 @@ async def _fetch_endpoint_models(endpoint: RegisteredEndpoint) -> list[dict]:
     return [entry for entry in data if isinstance(entry, dict) and entry.get("id")]
 
 
+def _merge_model_entries(
+    endpoints: list,
+    results: list[list[dict]],
+) -> dict[str, dict]:
+    """Deduplicate per-endpoint model entries by dedup key.
+
+    When an endpoint has a variant (e.g. ``pd``, ``128k``), the variant
+    is appended to the model id so each deployment variant appears as a
+    separate entry in the model picker.  Without this, the picker shows
+    only one entry for all variants (e.g. only one ``GLM-5.2-FP8`` for
+    both ``-pd`` and non-``-pd`` deployments).
+    """
+    merged: dict[str, dict] = {}
+    for ep, entries in zip(endpoints, results):
+        for entry in entries:
+            if not entry.get("id") and not ep.model:
+                continue
+            normalized, dedup_key = _normalize_model_list_entry(entry, ep)
+            if not dedup_key:
+                continue
+            merged.setdefault(dedup_key, normalized)
+    return merged
+
+
 @router.get("/v1/models")
 async def list_models(
     request: Request,
@@ -730,21 +783,7 @@ async def list_models(
 
     results = await asyncio.gather(*(_fetch_endpoint_models(ep) for ep in endpoints))
 
-    # Deduplicate by model id.  When an endpoint has a variant (e.g.
-    # ``pd``, ``128k``), the variant is appended to the model id so
-    # each deployment variant appears as a separate entry in the
-    # model picker.  Without this, the picker shows only one entry
-    # for all variants (e.g. only one ``GLM-5.2-FP8`` for both ``-pd``
-    # and non-``-pd`` deployments).
-    merged: dict[str, dict] = {}
-    for ep, entries in zip(endpoints, results):
-        for entry in entries:
-            if not entry.get("id") and not ep.model:
-                continue
-            normalized, dedup_key = _normalize_model_list_entry(entry, ep)
-            if not dedup_key:
-                continue
-            merged.setdefault(dedup_key, normalized)
+    merged = _merge_model_entries(endpoints, results)
 
     # Apply deployment-scoped visibility (e.g. frontier-only on AI4S).
     from .model_visibility import is_model_visible

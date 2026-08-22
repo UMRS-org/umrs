@@ -98,16 +98,9 @@ class PipelineStore:
         status_filter: PipelineStatus | None = None,
     ) -> list[PipelineDefinition]:
         """List pipelines with optional filters."""
-        result = list(self._pipelines.values())
-
-        if project_id:
-            result = [p for p in result if p.project_id == project_id]
-        if owner_id:
-            result = [p for p in result if p.owner_id == owner_id]
-        if status_filter:
-            result = [p for p in result if p.status == status_filter]
-
-        return result
+        return _filter_store_items(
+            self._pipelines.values(), project_id, owner_id, status_filter
+        )
 
     def update_pipeline(
         self,
@@ -167,16 +160,9 @@ class PipelineStore:
         status_filter: PipelineStatus | None = None,
     ) -> list[RAGProfile]:
         """List RAG profiles with optional filters."""
-        result = list(self._rag_profiles.values())
-
-        if project_id:
-            result = [p for p in result if p.project_id == project_id]
-        if owner_id:
-            result = [p for p in result if p.owner_id == owner_id]
-        if status_filter:
-            result = [p for p in result if p.status == status_filter]
-
-        return result
+        return _filter_store_items(
+            self._rag_profiles.values(), project_id, owner_id, status_filter
+        )
 
     def update_rag_profile(
         self,
@@ -202,6 +188,32 @@ class PipelineStore:
             del self._rag_profiles[profile_id]
             return True
         return False
+
+
+def _store_item_matches(
+    item,
+    project_id: str | None,
+    owner_id: str | None,
+    status_filter: PipelineStatus | None,
+) -> bool:
+    """Predicate for store-item listing (project/owner/status)."""
+    if project_id and item.project_id != project_id:
+        return False
+    if owner_id and item.owner_id != owner_id:
+        return False
+    return not (status_filter and item.status != status_filter)
+
+
+def _filter_store_items(
+    items,
+    project_id: str | None,
+    owner_id: str | None,
+    status_filter: PipelineStatus | None,
+) -> list:
+    """Shared store-item filtering (project, owner, status)."""
+    return [
+        p for p in items if _store_item_matches(p, project_id, owner_id, status_filter)
+    ]
 
 
 # Global store instance
@@ -275,22 +287,24 @@ class PipelineCreateRequest(BaseModel):
         None, description="Metadata fields to extract"
     )
 
-    model_config = ConfigDict(json_schema_extra={
-        "example": {
-            "name": "my-custom-pipeline",
-            "description": "Custom pipeline for scientific papers",
-            "chunker": {
-                "chunker_type": "sentence",
-                "chunk_size": 5,
-                "chunk_overlap": 1,
-            },
-            "embedder": {
-                "model_name": "BAAI/bge-base-en-v1.5",
-                "dimension": 768,
-            },
-            "supported_extensions": [".pdf", ".txt", ".md"],
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "name": "my-custom-pipeline",
+                "description": "Custom pipeline for scientific papers",
+                "chunker": {
+                    "chunker_type": "sentence",
+                    "chunk_size": 5,
+                    "chunk_overlap": 1,
+                },
+                "embedder": {
+                    "model_name": "BAAI/bge-base-en-v1.5",
+                    "dimension": 768,
+                },
+                "supported_extensions": [".pdf", ".txt", ".md"],
+            }
         }
-    })
+    )
 
 
 class PipelineUpdateRequest(BaseModel):
@@ -370,21 +384,23 @@ class RAGProfileCreateRequest(BaseModel):
     description: str | None = Field(None, max_length=1000, description="Description")
     is_default: bool = Field(False, description="Set as default for project")
 
-    model_config = ConfigDict(json_schema_extra={
-        "example": {
-            "name": "scientific-qa",
-            "description": "RAG profile for scientific Q&A",
-            "search_type": "hybrid",
-            "vector_weight": 0.8,
-            "keyword_weight": 0.2,
-            "top_k_retrieval": 30,
-            "reranker": {
-                "model_name": "BAAI/bge-reranker-base",
-                "top_k": 10,
-            },
-            "max_context_tokens": 8192,
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "name": "scientific-qa",
+                "description": "RAG profile for scientific Q&A",
+                "search_type": "hybrid",
+                "vector_weight": 0.8,
+                "keyword_weight": 0.2,
+                "top_k_retrieval": 30,
+                "reranker": {
+                    "model_name": "BAAI/bge-reranker-base",
+                    "top_k": 10,
+                },
+                "max_context_tokens": 8192,
+            }
         }
-    })
+    )
 
 
 class RAGProfileUpdateRequest(BaseModel):
@@ -576,29 +592,10 @@ async def create_pipeline(
         pass  # governance not active
 
     # Validate components
-    validator = get_component_validator()
-    if request.chunker:
-        errors = validator.validate_chunker(request.chunker.chunker_type)
-        if errors:
-            raise HTTPException(status_code=400, detail=errors[0])
-    if request.embedder:
-        errors = validator.validate_embedder(request.embedder.model_name)
-        if errors:
-            raise HTTPException(status_code=400, detail=errors[0])
+    _validate_pipeline_components(request)
 
-    pipeline = PipelineDefinition.create(
-        name=request.name,
-        project_id=project_id,
-        owner_id=user_id,
-        chunker=chunker_request_to_spec(request.chunker),
-        embedder=embedder_request_to_spec(request.embedder),
-        description=request.description,
-        is_default=request.is_default,
-        supported_extensions=request.supported_extensions
-        or [".txt", ".md", ".pdf", ".html", ".json"],
-        extract_metadata=request.extract_metadata,
-        metadata_fields=request.metadata_fields
-        or ["title", "author", "date", "source"],
+    pipeline = _pipeline_definition_from_request(
+        request, user_id=user_id, project_id=project_id
     )
 
     try:
@@ -675,23 +672,7 @@ async def update_pipeline(
     if pipeline.project_id != project_id:
         raise HTTPException(status_code=403, detail="Access denied to this pipeline")
 
-    # Build updates dict
-    updates = {}
-    if request.name is not None:
-        updates["name"] = request.name
-    if request.description is not None:
-        updates["description"] = request.description
-    if request.status is not None:
-        updates["status"] = PipelineStatus(request.status)
-    if request.is_default is not None:
-        updates["is_default"] = request.is_default
-    if request.chunker is not None:
-        updates["chunker"] = chunker_request_to_spec(request.chunker)
-    if request.embedder is not None:
-        updates["embedder"] = embedder_request_to_spec(request.embedder)
-    if request.supported_extensions is not None:
-        updates["supported_extensions"] = request.supported_extensions
-
+    updates = _pipeline_updates(request)
     pipeline = store.update_pipeline(pipeline_id, updates)
     return pipeline_to_response(pipeline)
 
@@ -723,9 +704,85 @@ async def delete_pipeline(
     logger.info(f"Deleted pipeline {pipeline_id}")
 
 
+def _validate_pipeline_components(request: PipelineCreateRequest) -> None:
+    """Validate chunker/embedder specs against the component registry."""
+    validator = get_component_validator()
+    if request.chunker:
+        errors = validator.validate_chunker(request.chunker.chunker_type)
+        if errors:
+            raise HTTPException(status_code=400, detail=errors[0])
+    if request.embedder:
+        errors = validator.validate_embedder(request.embedder.model_name)
+        if errors:
+            raise HTTPException(status_code=400, detail=errors[0])
+
+
+def _pipeline_definition_from_request(
+    request: PipelineCreateRequest,
+    *,
+    user_id: str,
+    project_id: str,
+) -> PipelineDefinition:
+    """Build a PipelineDefinition from a create request."""
+    return PipelineDefinition.create(
+        name=request.name,
+        project_id=project_id,
+        owner_id=user_id,
+        chunker=chunker_request_to_spec(request.chunker),
+        embedder=embedder_request_to_spec(request.embedder),
+        description=request.description,
+        is_default=request.is_default,
+        supported_extensions=request.supported_extensions
+        or [".txt", ".md", ".pdf", ".html", ".json"],
+        extract_metadata=request.extract_metadata,
+        metadata_fields=request.metadata_fields
+        or ["title", "author", "date", "source"],
+    )
+
+
+def _pipeline_updates(request: PipelineUpdateRequest) -> dict[str, Any]:
+    """Collect non-None update fields (converted specs where applicable)."""
+    updates: dict[str, Any] = {}
+    for attr, value in (
+        ("name", request.name),
+        ("description", request.description),
+        ("supported_extensions", request.supported_extensions),
+    ):
+        if value is not None:
+            updates[attr] = value
+    if request.status is not None:
+        updates["status"] = PipelineStatus(request.status)
+    if request.is_default is not None:
+        updates["is_default"] = request.is_default
+    if request.chunker is not None:
+        updates["chunker"] = chunker_request_to_spec(request.chunker)
+    if request.embedder is not None:
+        updates["embedder"] = embedder_request_to_spec(request.embedder)
+    return updates
+
+
 # =============================================================================
-# RAG Profile Endpoints (X-002)
+# RAG Profile Endpoints (X-002) — RETIRED (R3, 2026-08-22)
 # =============================================================================
+
+
+def _rag_profiles_gone() -> None:
+    """rag-profiles CRUD retired (owner decision 2026-08-22).
+
+    Profiles persisted to an ephemeral in-memory store, were never read at
+    runtime, and raged nothing — retirement returns 410 Gone instead of a
+    deceptive 2xx on a dead store. Router removal scheduled for the next
+    release.
+    """
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail=(
+            "rag-profiles CRUD is retired: profiles were ephemeral "
+            "(in-memory), never consulted at ingest/search time, and are not "
+            "part of the runtime path. Use site config for retrieval tuning; "
+            "this router family is removed in the next release."
+        ),
+    )
 
 
 @router.post(
@@ -748,6 +805,7 @@ async def create_rag_profile(
     - Context assembly parameters
     - LLM integration settings
     """
+    _rag_profiles_gone()
     user_id, project_id = extract_user_project(x_user_id, x_project_id)
 
     # Governance quota check
@@ -814,6 +872,7 @@ async def list_rag_profiles(
     store: PipelineStore = Depends(get_pipeline_store),
 ) -> list[RAGProfileResponse]:
     """List RAG profiles for the current project."""
+    _rag_profiles_gone()
     user_id, project_id = extract_user_project(x_user_id, x_project_id)
 
     status_enum = PipelineStatus(status_filter) if status_filter else None
@@ -830,6 +889,7 @@ async def get_rag_profile(
     store: PipelineStore = Depends(get_pipeline_store),
 ) -> RAGProfileResponse:
     """Get RAG profile by ID."""
+    _rag_profiles_gone()
     user_id, project_id = extract_user_project(x_user_id, x_project_id)
 
     profile = store.get_rag_profile(profile_id)
@@ -853,6 +913,7 @@ async def update_rag_profile(
     store: PipelineStore = Depends(get_pipeline_store),
 ) -> RAGProfileResponse:
     """Update RAG profile."""
+    _rag_profiles_gone()
     user_id, project_id = extract_user_project(x_user_id, x_project_id)
 
     profile = store.get_rag_profile(profile_id)
@@ -864,35 +925,42 @@ async def update_rag_profile(
     if profile.project_id != project_id:
         raise HTTPException(status_code=403, detail="Access denied to this profile")
 
-    # Build updates dict
-    updates = {}
-    if request.name is not None:
-        updates["name"] = request.name
-    if request.description is not None:
-        updates["description"] = request.description
-    if request.status is not None:
-        updates["status"] = PipelineStatus(request.status)
-    if request.is_default is not None:
-        updates["is_default"] = request.is_default
-    if request.search_type is not None:
-        updates["search_type"] = request.search_type
-    if request.vector_weight is not None:
-        updates["vector_weight"] = request.vector_weight
-    if request.keyword_weight is not None:
-        updates["keyword_weight"] = request.keyword_weight
-    if request.top_k_retrieval is not None:
-        updates["top_k_retrieval"] = request.top_k_retrieval
-    if request.reranker is not None:
-        updates["reranker"] = reranker_request_to_spec(request.reranker)
-    if request.max_context_tokens is not None:
-        updates["max_context_tokens"] = request.max_context_tokens
-    if request.default_model is not None:
-        updates["default_model"] = request.default_model
-    if request.temperature is not None:
-        updates["temperature"] = request.temperature
+    updates = _rag_profile_updates_from_request(request)
 
     profile = store.update_rag_profile(profile_id, updates)
     return rag_profile_to_response(profile)
+
+
+_RAG_PROFILE_UPDATE_FIELD_SPECS = (
+    ("name", "plain"),
+    ("description", "plain"),
+    ("status", "enum"),
+    ("is_default", "plain"),
+    ("search_type", "plain"),
+    ("vector_weight", "plain"),
+    ("keyword_weight", "plain"),
+    ("top_k_retrieval", "plain"),
+    ("reranker", "spec"),
+    ("max_context_tokens", "plain"),
+    ("default_model", "plain"),
+    ("temperature", "plain"),
+)
+
+
+def _rag_profile_updates_from_request(request: RAGProfileUpdateRequest) -> dict:
+    """Build the updates dict from a RAGProfileUpdateRequest."""
+    updates = {}
+    for attr, kind in _RAG_PROFILE_UPDATE_FIELD_SPECS:
+        value = getattr(request, attr)
+        if value is None:
+            continue
+        if kind == "enum":
+            updates[attr] = PipelineStatus(value)
+        elif kind == "spec":
+            updates[attr] = reranker_request_to_spec(value)
+        else:
+            updates[attr] = value
+    return updates
 
 
 @router.delete("/rag-profiles/{profile_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -903,6 +971,7 @@ async def delete_rag_profile(
     store: PipelineStore = Depends(get_pipeline_store),
 ) -> None:
     """Delete RAG profile."""
+    _rag_profiles_gone()
     user_id, project_id = extract_user_project(x_user_id, x_project_id)
 
     profile = store.get_rag_profile(profile_id)

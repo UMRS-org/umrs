@@ -93,6 +93,16 @@ class CallerIdentity:
             return True
         return job.project_id == self.project_id and job.user_id == self.user_id
 
+    @property
+    def is_anonymous(self) -> bool:
+        """No verified project identity (anonymous scope, R1 parity)."""
+        return not bool(self.project_id)
+
+    @property
+    def personal_project(self) -> str:
+        """Personal three-tier namespace (``user:<uid>``, R1 parity)."""
+        return f"user:{self.user_id}"
+
 
 def get_caller_identity(
     caller_user_id: str | None = Query(None, description="Caller's user ID"),
@@ -145,6 +155,9 @@ def get_caller_identity(
             detail="Missing Gateway-verified caller identity",
         )
 
+    from ._identity import warn_legacy_params_once
+
+    warn_legacy_params_once("jobs.get_caller_identity")
     if not caller_user_id or not caller_project_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

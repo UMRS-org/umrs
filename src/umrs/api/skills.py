@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 
 from umrs.skills import RegisteredSkill, SkillManifest, SkillRegistry, SkillScope
@@ -139,27 +138,20 @@ class _CallerIdentity(BaseModel):
 
 
 def _caller_identity(
+    request: Request,
     x_user_id: str = Header(default=""),
     x_project_id: str = Header(default=""),
     x_verified_project_id: str = Header(default=""),
     x_verified_is_admin: str = Header(default="false"),
 ) -> _CallerIdentity:
-    project_id = (x_verified_project_id or x_project_id or "").strip()
-    strict = os.environ.get("UMRS_AUTH_MODE", "mvp").strip().lower() == "strict"
-    if strict and not x_verified_project_id.strip():
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing X-Verified-Project-ID header (Gateway must set this)",
-        )
-    if not project_id:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing X-Project-ID header (auth sidecar must set this)",
-        )
+    """Canonical tier chain (R1) → skills identity dataclass."""
+    from ._identity import request_identity
+
+    identity = request_identity(request, require_project=True)
     return _CallerIdentity(
-        user_id=x_user_id.strip(),
-        project_id=project_id,
-        is_admin=x_verified_is_admin.strip().lower() in ("1", "true", "yes"),
+        user_id=identity.user_id,
+        project_id=identity.project_id,
+        is_admin=identity.is_admin,
     )
 
 

@@ -121,6 +121,60 @@ class _FakeStore:
         self.edges.append(edge)
 
 
+def _mk_chunk_details(n: int, name: str = "big.txt") -> list[dict]:
+    return [
+        {
+            "s3_object": f"uploads/{name}#chunk{i}",
+            "excerpt": f"chunk {i}",
+            "chunk_md5": f"m{i}",
+        }
+        for i in range(n)
+    ]
+
+
+def _assert_minted_graph(store) -> None:
+    """Shape assertions for a 1-doc + 100-chunk mint result."""
+    _assert_doc_topology(store)
+    _assert_edges_and_graph(store)
+
+
+def _assert_doc_topology(store) -> None:
+    assert len(store.artifacts) == 1
+    assert len(store.nodes) == 101
+    _assert_doc_nodes(store)
+    _assert_chunk_nodes(store)
+
+
+def _assert_doc_nodes(store) -> None:
+    doc_nodes = [n for n in store.nodes if n.node_type == "file"]
+    assert [n.node_id for n in doc_nodes] == ["ragdoc-doc-big"]
+    assert doc_nodes[0].content["document_id"] == "doc-big"
+
+
+def _assert_chunk_nodes(store) -> None:
+    chunk_nodes = [n for n in store.nodes if n.node_type == "entity"]
+    assert chunk_nodes[0].content["document_id"] == "doc-big"
+    assert chunk_nodes[99].content["chunk_index"] == 99
+
+
+def _assert_edges_and_graph(store) -> None:
+    from umrs.knowledge.graph_registry import default_graph_id
+
+    assert len(store.edges) == 100
+    assert _part_of_to_doc(store.edges, "ragdoc-doc-big")
+    assert _same_default_graph(store.nodes, "test-project", default_graph_id)
+
+
+def _part_of_to_doc(edges, doc_id: str) -> bool:
+    part_of = all(e.relation_type == "part_of" for e in edges)
+    targets = all(e.target_id == doc_id for e in edges)
+    return part_of and targets
+
+
+def _same_default_graph(nodes, project: str, default_graph_id) -> bool:
+    return all(n.graph_id == default_graph_id(project) for n in nodes)
+
+
 async def test_mint_caps_at_100_chunks(monkeypatch):
     store_holder: dict = {}
 
@@ -135,14 +189,6 @@ async def test_mint_caps_at_100_chunks(monkeypatch):
     monkeypatch.setattr("umrs.api._asyncpg_pool.knowledge_asyncpg_pool", fake_pool)
     monkeypatch.setattr("umrs.knowledge.store.KnowledgeStore", FactoryStore)
 
-    details = [
-        {
-            "s3_object": f"uploads/big.txt#chunk{i}",
-            "excerpt": f"chunk {i}",
-            "chunk_md5": f"m{i}",
-        }
-        for i in range(150)
-    ]
     minted = await rag_module._mint_knowledge_nodes(
         request=None,
         user_id="u1",
@@ -150,25 +196,8 @@ async def test_mint_caps_at_100_chunks(monkeypatch):
         document_id="doc-big",
         filename="big.txt",
         mime_type="text/plain",
-        chunk_details=details,
+        chunk_details=_mk_chunk_details(150),
     )
 
     assert minted == 100
-    store = store_holder["store"]
-    assert len(store.artifacts) == 1
-    # 1 document node + 100 chunk nodes
-    assert len(store.nodes) == 101
-    doc_nodes = [n for n in store.nodes if n.node_type == "file"]
-    assert [n.node_id for n in doc_nodes] == ["ragdoc-doc-big"]
-    assert doc_nodes[0].content["document_id"] == "doc-big"
-    chunk_nodes = [n for n in store.nodes if n.node_type == "entity"]
-    assert chunk_nodes[0].content["document_id"] == "doc-big"
-    assert chunk_nodes[99].content["chunk_index"] == 99
-    # 100 part_of edges chunk -> document
-    assert len(store.edges) == 100
-    assert all(e.relation_type == "part_of" for e in store.edges)
-    assert all(e.target_id == "ragdoc-doc-big" for e in store.edges)
-    # graph scoping: default graph for the project
-    from umrs.knowledge.graph_registry import default_graph_id
-
-    assert all(n.graph_id == default_graph_id("test-project") for n in store.nodes)
+    _assert_minted_graph(store_holder["store"])

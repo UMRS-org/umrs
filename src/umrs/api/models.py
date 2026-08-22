@@ -476,6 +476,79 @@ def _strict_auth_mode() -> bool:
     return os.environ.get("UMRS_AUTH_MODE", "mvp").strip().lower() == "strict"
 
 
+def _context_from_verified_headers(
+    header_user: str,
+    header_admin: str,
+    header_memberships: str | None,
+    x_verified_project_id: str | None,
+    x_verified_hmac: str | None,
+) -> AccessContext:
+    """Build access context from Gateway-verified headers (strict path)."""
+    from ._verified_headers import handshake_secret, verified_headers_trusted
+
+    admin = header_admin in ("true", "1")
+    primary_project = (x_verified_project_id or "").strip() or None
+    if not verified_headers_trusted(
+        strict=_strict_auth_mode(),
+        secret=handshake_secret(),
+        presented_hmac=(x_verified_hmac or "").strip() or None,
+        user_id=header_user,
+        project_id=primary_project,
+        is_admin=admin,
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Gateway-verified identity signature rejected",
+        )
+    memberships: set[str] = set()
+    if header_memberships:
+        memberships = {p.strip() for p in header_memberships.split(",") if p.strip()}
+    return AccessContext(
+        user_id=header_user,
+        is_admin=admin,
+        project_memberships=memberships,
+    )
+
+
+def _normalized_verified_headers(
+    x_user_id: str | None,
+    x_verified_is_admin: str | None,
+    x_verified_project_memberships: str | None,
+    x_verified_project_id: str | None,
+) -> tuple[str | None, str, str | None]:
+    """Normalize the raw verified header values from the request."""
+    header_user = (x_user_id or "").strip() or None
+    header_admin = (x_verified_is_admin or "").strip()
+    header_memberships = (
+        (x_verified_project_memberships or "").strip()
+        or (x_verified_project_id or "").strip()
+        or None
+    )
+    return header_user, header_admin, header_memberships
+
+
+def _legacy_query_context(
+    user_id: str,
+    is_admin: bool,
+    project_memberships: str | None,
+) -> AccessContext:
+    """MVP / testing fallback — build access context from query params."""
+    from ._identity import warn_legacy_params_once
+
+    warn_legacy_params_once("models.get_access_context")
+    memberships_set: set[str] = set()
+    if project_memberships:
+        memberships_set = {
+            p.strip() for p in project_memberships.split(",") if p.strip()
+        }
+
+    return AccessContext(
+        user_id=user_id,
+        is_admin=is_admin,
+        project_memberships=memberships_set,
+    )
+
+
 def get_access_context(
     user_id: str = Query("", description="User ID (legacy, ignored in strict mode)"),
     is_admin: bool = Query(
@@ -502,40 +575,20 @@ def get_access_context(
     Strict mode honors verified headers only with a valid gateway HMAC
     signature over the full identity tuple (live-spoof class closure).
     """
-    header_user = (x_user_id or "").strip() or None
-    header_admin = (x_verified_is_admin or "").strip()
-    header_memberships = (
-        (x_verified_project_memberships or "").strip()
-        or (x_verified_project_id or "").strip()
-        or None
+    header_user, header_admin, header_memberships = _normalized_verified_headers(
+        x_user_id,
+        x_verified_is_admin,
+        x_verified_project_memberships,
+        x_verified_project_id,
     )
 
     if header_user:
-        from ._verified_headers import handshake_secret, verified_headers_trusted
-
-        admin = header_admin in ("true", "1")
-        primary_project = (x_verified_project_id or "").strip() or None
-        if not verified_headers_trusted(
-            strict=_strict_auth_mode(),
-            secret=handshake_secret(),
-            presented_hmac=(x_verified_hmac or "").strip() or None,
-            user_id=header_user,
-            project_id=primary_project,
-            is_admin=admin,
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Gateway-verified identity signature rejected",
-            )
-        memberships: set[str] = set()
-        if header_memberships:
-            memberships = {
-                p.strip() for p in header_memberships.split(",") if p.strip()
-            }
-        return AccessContext(
-            user_id=header_user,
-            is_admin=admin,
-            project_memberships=memberships,
+        return _context_from_verified_headers(
+            header_user,
+            header_admin,
+            header_memberships,
+            x_verified_project_id,
+            x_verified_hmac,
         )
 
     if _strict_auth_mode():
@@ -544,18 +597,7 @@ def get_access_context(
             detail="Missing Gateway-verified caller identity for model access",
         )
 
-    # MVP / testing fallback — use query params
-    memberships_set: set[str] = set()
-    if project_memberships:
-        memberships_set = {
-            p.strip() for p in project_memberships.split(",") if p.strip()
-        }
-
-    return AccessContext(
-        user_id=user_id,
-        is_admin=is_admin,
-        project_memberships=memberships_set,
-    )
+    return _legacy_query_context(user_id, is_admin, project_memberships)
 
 
 def serving_profile_from_request(
@@ -782,6 +824,15 @@ async def get_model(
         ) from e
 
 
+def _check_model_creation_quota(project_id: str | None) -> None:
+    """Governance quota check (before creation)."""
+    project_id_for_quota = project_id or ""
+    if project_id_for_quota:
+        from .governance import check_quota as _check_model_quota
+
+        _check_model_quota(project_id_for_quota, "models")
+
+
 @router.post("", response_model=ModelResponse, status_code=status.HTTP_201_CREATED)
 async def create_model(
     request: ModelCreateRequest,
@@ -804,12 +855,7 @@ async def create_model(
         if scope == ModelScope.SYSTEM:
             owner_id = None
 
-        # Governance quota check (before creation)
-        project_id_for_quota = request.project_id or ""
-        if project_id_for_quota:
-            from .governance import check_quota as _check_model_quota
-
-            _check_model_quota(project_id_for_quota, "models")
+        _check_model_creation_quota(request.project_id)
 
         model = store.create_model(
             name=request.name,
@@ -868,6 +914,34 @@ async def create_model(
         ) from e
 
 
+def _validate_stage_scope(scope: ModelScope, request, ctx: AccessContext) -> None:
+    """Validate stage request scope permissions (raises HTTPException)."""
+    if scope == ModelScope.SYSTEM and not ctx.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin role required to stage system models",
+        )
+
+    if (
+        scope == ModelScope.PROJECT
+        and request.project_id not in ctx.project_memberships
+    ):
+        if not ctx.is_admin:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Not a member of project {request.project_id}",
+            )
+
+
+def _stage_storage_ref(scope: ModelScope, request, ctx: AccessContext) -> str:
+    """Compute target storage path based on scope."""
+    if scope == ModelScope.SYSTEM:
+        return os.path.join(get_resolved_model_staging_root(), request.name)
+    if scope == ModelScope.PROJECT:
+        return f"/shared/projects/{request.project_id}/models/{request.name}"
+    return f"/shared/users/{ctx.user_id}/models/{request.name}"
+
+
 @router.post(
     "/stage", response_model=ModelStageResponse, status_code=status.HTTP_202_ACCEPTED
 )
@@ -893,30 +967,8 @@ async def stage_model(
     try:
         scope = ModelScope(request.scope)
 
-        # Validate scope permissions
-        if scope == ModelScope.SYSTEM and not ctx.is_admin:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Admin role required to stage system models",
-            )
-
-        if (
-            scope == ModelScope.PROJECT
-            and request.project_id not in ctx.project_memberships
-        ):
-            if not ctx.is_admin:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail=f"Not a member of project {request.project_id}",
-                )
-
-        # Compute target storage path based on scope
-        if scope == ModelScope.SYSTEM:
-            storage_ref = os.path.join(get_resolved_model_staging_root(), request.name)
-        elif scope == ModelScope.PROJECT:
-            storage_ref = f"/shared/projects/{request.project_id}/models/{request.name}"
-        else:  # USER
-            storage_ref = f"/shared/users/{ctx.user_id}/models/{request.name}"
+        _validate_stage_scope(scope, request, ctx)
+        storage_ref = _stage_storage_ref(scope, request, ctx)
 
         # Create model entry with staging status
         serving_profile = serving_profile_from_request(request.serving_profile)
@@ -1133,22 +1185,7 @@ async def detect_model_capabilities(
             message=f"No config files found at {model.storage_ref}",
         )
 
-    merged = model.capabilities
-    if detected.supports_vision:
-        merged.supports_vision = True
-    if detected.supports_tool_calling:
-        merged.supports_tool_calling = True
-    if detected.supports_structured_output:
-        merged.supports_structured_output = True
-    if detected.max_output_tokens is not None and merged.max_output_tokens is None:
-        merged.max_output_tokens = detected.max_output_tokens
-    if (
-        detected.max_position_embeddings is not None
-        and merged.max_position_embeddings is None
-    ):
-        merged.max_position_embeddings = detected.max_position_embeddings
-    if detected.model_family and not merged.model_family:
-        merged.model_family = detected.model_family
+    merged = _merge_detected_capabilities(model.capabilities, detected)
 
     detected_dict = merged.to_dict()
 
@@ -1178,6 +1215,46 @@ async def detect_model_capabilities(
     )
 
 
+def _merge_detected_capabilities(merged, detected):
+    """Merge detected capabilities into the model's existing capabilities."""
+    for attr in (
+        "supports_vision",
+        "supports_tool_calling",
+        "supports_structured_output",
+    ):
+        if getattr(detected, attr):
+            setattr(merged, attr, True)
+    for attr in ("max_output_tokens", "max_position_embeddings", "model_family"):
+        if getattr(detected, attr) and not getattr(merged, attr):
+            setattr(merged, attr, getattr(detected, attr))
+    return merged
+
+
+def _parse_ssh_detection_stdout(stdout: str) -> dict[str, dict]:
+    """Parse record-separated SSH output: \\x1e<filename>\\x1e\\n<content>\\x1f."""
+    import json
+
+    files = {"config.json", "tokenizer_config.json", "generation_config.json"}
+    parsed: dict[str, dict] = {}
+    records = stdout.split("\x1f")
+    for record in records:
+        record = record.strip("\n")
+        if not record or not record.startswith("\x1e"):
+            continue
+        rest = record[1:]
+        sep_idx = rest.find("\x1e")
+        if sep_idx == -1:
+            continue
+        fname = rest[:sep_idx].strip()
+        content = rest[sep_idx + 1 :].lstrip("\n")
+        if fname in files and content:
+            try:
+                parsed[fname] = json.loads(content)
+            except json.JSONDecodeError:
+                pass
+    return parsed
+
+
 async def _detect_via_ssh(model) -> Any:
     """Read model config files via SSH ControlMaster and detect capabilities.
 
@@ -1186,8 +1263,6 @@ async def _detect_via_ssh(model) -> Any:
 
     Returns ModelCapabilities if detection succeeded, None otherwise.
     """
-    import json
-
     from ..model_registry.detect import detect_capabilities_from_files
 
     ssh = await _get_ssh_control_manager()
@@ -1216,29 +1291,7 @@ async def _detect_via_ssh(model) -> Any:
         logger.debug("SSH detection failed for %s: %s", model.name, result.stderr)
         return None
 
-    # Parse record-separated output: \x1e<filename>\x1e\n<content>\x1f
-    config: dict[str, Any] | None = None
-    tok_config: dict[str, Any] | None = None
-    gen_config: dict[str, Any] | None = None
-
-    files = {"config.json", "tokenizer_config.json", "generation_config.json"}
-    parsed: dict[str, dict] = {}
-    records = result.stdout.split("\x1f")
-    for record in records:
-        record = record.strip("\n")
-        if not record or not record.startswith("\x1e"):
-            continue
-        rest = record[1:]
-        sep_idx = rest.find("\x1e")
-        if sep_idx == -1:
-            continue
-        fname = rest[:sep_idx].strip()
-        content = rest[sep_idx + 1 :].lstrip("\n")
-        if fname in files and content:
-            try:
-                parsed[fname] = json.loads(content)
-            except json.JSONDecodeError:
-                pass
+    parsed = _parse_ssh_detection_stdout(result.stdout)
 
     config = parsed.get("config.json")
     tok_config = parsed.get("tokenizer_config.json")
@@ -1288,6 +1341,31 @@ class ModelPublishRequest(BaseModel):
     )
 
 
+def _check_publish_allowed(source_model, request: "ModelPublishRequest", ctx) -> None:
+    """Validate publish request (raises HTTPException on denial)."""
+    if source_model.scope != ModelScope.USER:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Only user-scoped models can be published to project scope",
+        )
+
+    if not ctx.is_admin and source_model.owner_id != ctx.user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only the model owner can publish it",
+        )
+
+    if (
+        not ctx.is_admin
+        and request.target_project_id not in ctx.project_memberships
+        and request.target_project_id not in ctx.admin_project_ids
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"User is not a member of project '{request.target_project_id}'",
+        )
+
+
 @router.post(
     "/{model_id}/publish",
     response_model=ModelResponse,
@@ -1303,27 +1381,7 @@ async def publish_model(
     try:
         source_model = store.get_model(model_id, ctx)
 
-        if source_model.scope != ModelScope.USER:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Only user-scoped models can be published to project scope",
-            )
-
-        if not ctx.is_admin and source_model.owner_id != ctx.user_id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Only the model owner can publish it",
-            )
-
-        if (
-            not ctx.is_admin
-            and request.target_project_id not in ctx.project_memberships
-            and request.target_project_id not in ctx.admin_project_ids
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"User is not a member of project '{request.target_project_id}'",
-            )
+        _check_publish_allowed(source_model, request, ctx)
 
         published_name = request.new_name or source_model.name
         published_model = store.create_model(
@@ -1581,6 +1639,45 @@ async def create_system_model(
         ) from e
 
 
+def _check_download_target_scope(store, model_name: str, request, ctx) -> None:
+    """Validate policy access and target scope for model download."""
+    if request.project_id:
+        allowed, reason = store.check_policy_access(model_name, request.project_id)
+        if not allowed:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=reason,
+            )
+
+    target_scope = ModelScope(request.target_scope)
+    if target_scope == ModelScope.SYSTEM:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Cannot download to system scope. Use project or user scope.",
+        )
+
+    if target_scope == ModelScope.PROJECT:
+        if not request.project_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="project_id required for project scope",
+            )
+        if request.project_id not in ctx.project_memberships and not ctx.is_admin:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Not a member of project {request.project_id}",
+            )
+
+
+def _download_target_storage_ref(
+    target_scope: ModelScope, target_name: str, request, ctx
+) -> str:
+    """Compute target storage path for a downloaded model copy."""
+    if target_scope == ModelScope.PROJECT:
+        return f"/shared/projects/{request.project_id}/models/{target_name}"
+    return f"/shared/users/{ctx.user_id}/models/{target_name}"
+
+
 @router.post(
     "/{model_name}/download",
     response_model=ModelDownloadResponse,
@@ -1614,39 +1711,14 @@ async def download_model_to_user_space(
             ctx=ctx,
         )
 
-        # Check policy access
-        if request.project_id:
-            allowed, reason = store.check_policy_access(model_name, request.project_id)
-            if not allowed:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail=reason,
-                )
+        # Check policy access and target scope permissions
+        _check_download_target_scope(store, model_name, request, ctx)
 
         target_scope = ModelScope(request.target_scope)
         target_name = request.custom_name or f"{model_name}-copy"
-
-        # Validate target scope permissions
-        if target_scope == ModelScope.SYSTEM:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Cannot download to system scope. Use project or user scope.",
-            )
-
-        if target_scope == ModelScope.PROJECT:
-            if not request.project_id:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="project_id required for project scope",
-                )
-            if request.project_id not in ctx.project_memberships and not ctx.is_admin:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail=f"Not a member of project {request.project_id}",
-                )
-            storage_ref = f"/shared/projects/{request.project_id}/models/{target_name}"
-        else:  # USER
-            storage_ref = f"/shared/users/{ctx.user_id}/models/{target_name}"
+        storage_ref = _download_target_storage_ref(
+            target_scope, target_name, request, ctx
+        )
 
         target_model = store.create_model(
             name=target_name,
