@@ -69,3 +69,41 @@ def test_component_localhost_flags_local(monkeypatch):
     dsn, is_local = _asyncpg_pool._resolve_knowledge_dsn()
     assert dsn
     assert is_local is True
+
+
+def test_pool_created_with_json_codecs(monkeypatch):
+    """Codec parity: pool must register JSON codecs or dict params break."""
+
+    async def run():
+        import types
+
+        from fastapi import FastAPI, Request
+
+        from umrs.api import _asyncpg_pool as pool_mod
+
+        app = FastAPI()
+        request = Request(scope={"type": "http", "app": app, "headers": []})
+        monkeypatch.setenv("DATABASE_URL", "postgresql://a:b@h:5433/kdb")
+
+        captured: dict = {}
+
+        class _FakePool:
+            pass
+
+        async def fake_create_pool(**kwargs):
+            captured.update(kwargs)
+            return _FakePool()
+
+        fake_asyncpg = types.SimpleNamespace(create_pool=fake_create_pool)
+        import sys
+
+        monkeypatch.setitem(sys.modules, "asyncpg", fake_asyncpg)
+
+        pool = await pool_mod.knowledge_asyncpg_pool(request)
+        assert pool is not None
+        assert captured["init"] is pool_mod._init_json_codecs
+        assert captured["dsn"] == "postgresql://a:b@h:5433/kdb"
+
+    import anyio
+
+    anyio.run(run)

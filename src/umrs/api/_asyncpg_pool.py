@@ -8,11 +8,29 @@ jobs) and must not be passed to those stores — doing so surfaces as
 
 The pool is created once from the platform DSN, cached on ``app.state``
 (``umrs_knowledge_asyncpg_pool``), and reused across requests.
+
+Codec parity with ``jobs.knowledge_adapters._open_pool``: without symmetric
+JSON/JSONB codecs, asyncpg rejects dict parameters for jsonb columns
+(DataError) — this silently killed knowledge writes done through this pool
+(ADR-027 P1a minting on rag upload is the first write consumer).
 """
 
+import json
 import os
+from typing import Any
 
 from fastapi import HTTPException, Request
+
+
+async def _init_json_codecs(conn: Any) -> None:
+    """Register symmetric JSON/JSONB codecs (dict encode/decode)."""
+    for typename in ("json", "jsonb"):
+        await conn.set_type_codec(
+            typename,
+            encoder=json.dumps,
+            decoder=json.loads,
+            schema="pg_catalog",
+        )
 
 
 def _resolve_knowledge_dsn() -> tuple[str, bool]:
@@ -76,7 +94,7 @@ async def knowledge_asyncpg_pool(request: Request):
             status_code=503, detail="asyncpg unavailable in server install"
         ) from exc
 
-    kwargs: dict = {"dsn": dsn}
+    kwargs: dict = {"dsn": dsn, "init": _init_json_codecs}
     if is_local:
         kwargs["ssl"] = "disable"  # container-local PG has no TLS (jobs pool parity)
     pool = await asyncpg.create_pool(**kwargs)
