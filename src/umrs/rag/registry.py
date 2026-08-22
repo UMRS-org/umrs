@@ -9,6 +9,13 @@ Provides:
 
 These registries define the supported options and can be extended
 via plugins for custom implementations.
+
+Current runtime reach (R6.3, 2026-08-23): these registries feed ONLY the
+read-only catalog surface ``GET /umrs/components/{chunkers|embedders|rerankers}``
+(via ``umrs.api.pipelines``). RAG ingestion and query in ``rag_service`` never
+consume them, and the retired ``/umrs/rag-profiles*`` CRUD (410 after wave-1
+R3) was the only other consumer — treat these as catalog/test-seed data,
+not as execution-affecting configuration.
 """
 
 from __future__ import annotations

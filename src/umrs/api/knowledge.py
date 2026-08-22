@@ -1053,6 +1053,7 @@ async def knowledge_readiness(
 @router.post("/export", response_model=dict[str, Any])
 async def export_knowledge(
     body: ExportRequest,
+    request: Request,
     _get_project_id: str = Depends(get_project_id),
 ) -> dict[str, Any]:
     """Trigger knowledge bundle export (.kb format)."""
@@ -1069,6 +1070,16 @@ async def export_knowledge(
         spec: dict[str, Any] = {
             "project_id": body.project_id,
         }
+
+        # Unified ingest governance (R6.4).
+        from .governance import guard_ingest
+
+        guard_ingest(
+            body.project_id,
+            "knowledge.export",
+            user_id=request.headers.get("x-user-id", ""),
+            details={"kind": "export"},
+        )
 
         job_id = await runtime.submit_job_sync(
             job_type=JobType.KNOWLEDGE_INGEST,

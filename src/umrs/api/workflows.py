@@ -96,6 +96,14 @@ class WorkflowTriggerRequest(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _accept_legacy_aliases(cls, data: Any) -> Any:
+        """Legacy 'params' alias for 'parameters' (R6.7a, deprecated 2026-08-23).
+
+        No-op back-compat accept: emits a once-per-process deprecation
+        warning; removal is scheduled for two releases out (R1 pattern).
+        """
+        from ._identity import warn_legacy_params_once
+
+        warn_legacy_params_once("workflows.params_alias")
         if not isinstance(data, dict):
             return data
         if "parameters" not in data and isinstance(data.get("params"), dict):

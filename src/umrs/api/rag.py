@@ -435,15 +435,22 @@ async def upload_document(
     """Upload a document for RAG indexing."""
     _user_id, project_id = _require_rag_scope(request, write=True)
 
-    # Governance quota check
+    # Unified ingest governance (R6.4): quota + audit via guard_ingest.
+    # Legacy behaviour preserved: quota denial (HTTPException) propagates,
+    # governance-inactive passes.
     try:
-        from .governance import check_quota
+        from .governance import guard_ingest
 
-        check_quota(project_id, "rag_documents")
+        guard_ingest(
+            project_id,
+            "rag.upload",
+            user_id=_user_id,
+            details={"filename": getattr(file, "filename", "")},
+        )
     except Exception as exc:
         if hasattr(exc, "status_code"):
             raise
-        pass  # governance not active
+        logger.debug("governance not active for rag upload: %s", exc)
 
     if not file.filename:
         raise HTTPException(status_code=400, detail="Filename required")

@@ -268,6 +268,20 @@ async def trigger_ingest(
     sources = body.sources if body.sources else []
     allow_domains = body.allow_domains if body.allow_domains else []
 
+    # Unified ingest governance (R6.4): quota + audit before job submit.
+    from umrs.api.governance import guard_ingest
+
+    guard_ingest(
+        project_id,
+        "knowledge.ingest",
+        user_id=request.headers.get("x-user-id", ""),
+        details={
+            "sources": len(sources),
+            "graph_id": target_graph_id,
+            "allow_domains": allow_domains,
+        },
+    )
+
     spec: dict[str, Any] = {
         "sources": sources,
         "allow_domains": allow_domains,
