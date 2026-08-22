@@ -636,8 +636,10 @@ def _read_user_s3cfg(username: str) -> str | None:
        by ``_prune_stale_user_files_s3cfg``)
     3. ``<configure_file_dir>/user_files/s3cfg_<username>``  (legacy
        provisioning fallback)
-    4. ``<configure_file_dir>/s3cfg_<username>``
-    5. ``<umrs_config_dir>/s3cfg_<username>``
+
+    Bare-root fallbacks (``<cfg_dir>/s3cfg_<username>`` without the
+    ``user_files`` segment) were retired 2026-08-23 — zero live files
+    existed on data0 and no writer ever produced them.
 
     Returns ``None`` if no file is found.
     """
@@ -649,25 +651,21 @@ def _read_user_s3cfg(username: str) -> str | None:
         os.path.expanduser(f"~/.config/umrs/s3cfg_{username}"),
     )
 
-    # Priority 2-3: UMRS_CONFIG mirrors
+    # Priority 2: UMRS_CONFIG mirror
     umrs_config_dir = os.environ.get("UMRS_CONFIG", "")
     if umrs_config_dir:
         umrs_config_dir = os.path.expanduser(umrs_config_dir)
         candidates.append(
             os.path.join(umrs_config_dir, "user_files", f"s3cfg_{username}"),
         )
-        candidates.append(
-            os.path.join(umrs_config_dir, f"s3cfg_{username}"),
-        )
 
-    # Priority 4-5: Legacy provisioning fallback paths
+    # Priority 3: Legacy provisioning fallback
     configure_file = os.environ.get("UMRS_CONFIGURE_FILE", "")
     if configure_file:
         cfg_dir = os.path.dirname(os.path.expanduser(configure_file))
         candidates.append(
             os.path.join(cfg_dir, "user_files", f"s3cfg_{username}"),
         )
-        candidates.append(os.path.join(cfg_dir, f"s3cfg_{username}"))
 
     for path in candidates:
         if os.path.isfile(path):

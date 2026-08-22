@@ -19,7 +19,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 
 from umrs.api.files import get_project_id
@@ -30,7 +30,28 @@ from umrs.knowledge_graph_api import (
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/umrs/knowledge-graph", tags=["knowledge-graph"])
+
+def _sat_router_retired() -> None:
+    """ADR-026 execution: the sat_kg facade is retired (R5 tail, 2026-08-23).
+
+    Every /umrs/knowledge-graph/* route now 410s and points to the canonical
+    multigraph. Tables and module stay intact for read-compat/migration hooks.
+    """
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail=(
+            "The sat_kg graph facade is retired (ADR-026 / R5, 2026-08-23). "
+            "Use the canonical multigraph: /umrs/knowledge/graph, "
+            "/umrs/knowledge/graphs, or client.knowledge / r4 knowledge *."
+        ),
+    )
+
+
+router = APIRouter(
+    prefix="/umrs/knowledge-graph",
+    tags=["knowledge-graph"],
+    dependencies=[Depends(_sat_router_retired)],
+)
 
 # Graph instances — injected at startup or populated by POST /umrs/knowledge/understand
 _graph: InMemoryKnowledgeGraph | None = None
@@ -65,7 +86,9 @@ class AddNodeRequest(BaseModel):
     node_id: str = Field(..., description="Node ID (typically an object_id)")
     node_type: str = Field(..., description="Node type (paper, code, hypothesis, etc.)")
     title: str = Field("", description="Human-readable title")
-    metadata: dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
+    metadata: dict[str, Any] = Field(
+        default_factory=dict, description="Additional metadata"
+    )
     proposal_id: str | None = Field(
         default=None,
         description="Approved graph-extension proposal — required for agent actors",
@@ -75,10 +98,14 @@ class AddNodeRequest(BaseModel):
 class AddEdgeRequest(BaseModel):
     source_id: str = Field(..., description="Source node ID")
     target_id: str = Field(..., description="Target node ID")
-    relation_type: str = Field(..., description="Relation type (cites, implements, uses, etc.)")
+    relation_type: str = Field(
+        ..., description="Relation type (cites, implements, uses, etc.)"
+    )
     weight: float = Field(1.0, description="Edge weight")
     confidence: float = Field(1.0, description="Confidence score (0.0–1.0)")
-    metadata: dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
+    metadata: dict[str, Any] = Field(
+        default_factory=dict, description="Additional metadata"
+    )
     proposal_id: str | None = Field(
         default=None,
         description="Approved graph-extension proposal — required for agent actors",

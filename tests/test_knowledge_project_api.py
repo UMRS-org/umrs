@@ -147,6 +147,7 @@ def test_http_verify_returns_answer(knowledge_client):
 
 
 def test_http_graph_query_after_understand(knowledge_client):
+    """sat facade retired (R5 tail): old query 410s; canonical add works."""
     knowledge_client.post(
         "/umrs/knowledge/understand",
         headers={"X-Project-ID": "proj-http"},
@@ -156,7 +157,10 @@ def test_http_graph_query_after_understand(knowledge_client):
         "/umrs/knowledge-graph/query",
         headers={"X-Project-ID": "proj-http"},
     )
+    assert response.status_code == 410
 
-    assert response.status_code == 200
-    body = response.json()
-    assert body["total"] >= 1
+    canonical = knowledge_client.get(
+        "/umrs/knowledge/graph",
+        headers={"X-Project-ID": "proj-http"},
+    )
+    assert canonical.status_code != 404
