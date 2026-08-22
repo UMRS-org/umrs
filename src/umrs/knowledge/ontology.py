@@ -128,28 +128,40 @@ def ontology_for_graph(graph: Optional[Mapping[str, Any]]) -> Ontology:
                 f"(current: {DEFAULT_ONTOLOGY.version!r})"
             )
         return DEFAULT_ONTOLOGY
-    provenance = graph.get("provenance")
-    inline = graph.get("ontology") or (
-        provenance.get("ontology") if isinstance(provenance, Mapping) else None
-    )
-    if isinstance(inline, Mapping):
-        custom = ontology_from_dict(inline)
-        if custom.ontology_id != ontology_id:
-            raise ValueError(
-                f"graph references ontology {ontology_id!r} but the inline "
-                f"ontology is {custom.ontology_id!r}"
-            )
-        if version is not None and custom.version != str(version):
-            raise ValueError(
-                f"graph pins ontology {ontology_id!r} v{version!r} but the "
-                f"inline ontology is v{custom.version!r}"
-            )
+    custom = _inline_ontology(graph, ontology_id, version)
+    if custom is not None:
         return custom
     raise ValueError(
         f"unknown ontology {ontology_id!r} referenced by graph "
         f"{graph.get('graph_id', '?')!r} — register it inline in graph provenance "
         "or use 'r4-default'"
     )
+
+
+def _inline_ontology(
+    graph: Mapping[str, Any],
+    ontology_id: Any,
+    version: Any,
+) -> Ontology | None:
+    """Resolve an inline-registered ontology with strict consistency checks."""
+    provenance = graph.get("provenance")
+    inline = graph.get("ontology") or (
+        provenance.get("ontology") if isinstance(provenance, Mapping) else None
+    )
+    if not isinstance(inline, Mapping):
+        return None
+    custom = ontology_from_dict(inline)
+    if custom.ontology_id != ontology_id:
+        raise ValueError(
+            f"graph references ontology {ontology_id!r} but the inline "
+            f"ontology is {custom.ontology_id!r}"
+        )
+    if version is not None and custom.version != str(version):
+        raise ValueError(
+            f"graph pins ontology {ontology_id!r} v{version!r} but the "
+            f"inline ontology is v{custom.version!r}"
+        )
+    return custom
 
 
 def validate_graph_payload(
@@ -178,3 +190,85 @@ __all__ = [
     "ontology_from_dict",
     "validate_graph_payload",
 ]
+
+
+# ── sat_kg → canonical relation mapping (ADR-026 exit path) ─────────────
+#
+# Per ADR-026, migrating a consumer from the deprecated ``sat_kg_*`` tables
+# must NOT adopt sat's 25-relation enum wholesale; it maps onto the
+# canonical vocabulary (+ ontology extension). This table is the single
+# source for that projection.
+#
+# Shape: sat RelationType enum name → (canonical_relation_type, inverse).
+# ``inverse=True`` means the canonical store keeps the edge in the opposite
+# direction (semantics-preserving). Rows whose canonical target collapses
+# two sat relations must keep the original in ``content["sat_relation"]``.
+
+SAT_RELATION_MAP: dict[str, tuple[str, bool]] = {
+    # pass-through (canonical base vocabulary)
+    "CITES": ("cites", False),
+    "IMPLEMENTS": ("implements", False),
+    "DEPENDS_ON": ("depends_on", False),
+    # evidence — ontology extension group 1
+    "SUPPORTS": ("supports", False),
+    "CONTRADICTS": ("contradicts", False),
+    "EVIDENCE_FOR": ("supports", False),  # collapse; keep sat_relation
+    "EVIDENCE_AGAINST": ("contradicts", False),  # collapse; keep sat_relation
+    "REFUTES": ("refutes", False),
+    # research flow — ontology extension group 2
+    "VERIFIES": ("verifies", False),
+    "ASSUMES": ("assumes", False),
+    "ANSWERS": ("answers", False),
+    "ANSWERED_BY": ("answers", True),
+    # derivation — ontology extension group 3
+    "PRODUCES": ("produces", False),
+    "PRODUCED_BY": ("produces", True),
+    "DERIVES_FROM": ("derives_from", False),
+    # citation/docs — ontology extension group 4
+    "REFERENCES": ("references", False),
+    "REFERENCED_BY": ("references", True),
+    "DESCRIBES": ("describes", False),
+    "DESCRIBED_BY": ("describes", True),
+    "IMPLEMENTED_BY": ("implements", True),
+    # composition — ontology extension group 5
+    "PART_OF": ("part_of", False),
+    "CONTAINS": ("contains", False),
+    "USES": ("uses", False),
+    # generic fallback
+    "RELATED_TO": ("related_to", False),
+}
+
+# Canonical types added by the sat migration (ADR-026 exit-path vocab).
+# Consumers may bind graphs to an ontology whose relation_types include
+# CANONICAL_RELATION_TYPES ∪ this set.
+SAT_CANONICAL_RELATION_TYPES: frozenset[str] = frozenset(
+    rel for _name, (rel, _inv) in SAT_RELATION_MAP.items()
+)
+
+# Collapse set: sat relations whose canonical target is shared with
+# another sat relation and therefore must record `content["sat_relation"]`.
+_SAT_COLLAPSE_SOURCES: frozenset[str] = frozenset({"EVIDENCE_FOR", "EVIDENCE_AGAINST"})
+
+
+def canonical_relation(sat_relation_name: str) -> tuple[str, bool]:
+    """Project a sat relation name onto its canonical (relation, inverse).
+
+    Unknown names fall back to ``related_to`` (non-inverse), mirroring the
+    correction controller's existing RELATED_TO fallback behavior.
+    """
+    return SAT_RELATION_MAP.get(sat_relation_name, ("related_to", False))
+
+
+def sat_relation_preserves_original(sat_relation_name: str) -> bool:
+    """True when the original sat name must be kept in content['sat_relation']."""
+    return sat_relation_name in _SAT_COLLAPSE_SOURCES
+
+
+def canonical_to_sat(relation_type: str, sat_relation: str | None) -> str:
+    """Project canonical relation back to the sat enum name for the view."""
+    if sat_relation:
+        return sat_relation.upper()
+    for name, (canonical, _inv) in SAT_RELATION_MAP.items():
+        if canonical == relation_type:
+            return name
+    return "RELATED_TO"

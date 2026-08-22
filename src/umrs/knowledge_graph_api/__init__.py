@@ -28,6 +28,9 @@ knowledge graph registry, migration 0069). Do not extend this module.
 from __future__ import annotations
 
 import logging
+import os
+import sys
+import warnings
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -35,6 +38,18 @@ from typing import Any
 from uuid import uuid4
 
 logger = logging.getLogger(__name__)
+
+# ADR-026 import-time deprecation hook: loud in production (FutureWarning
+# displays by default), silent under pytest and when explicitly quiesced.
+if os.environ.get("UMRS_SAT_KG_QUIET") != "1" and "pytest" not in sys.modules:
+    warnings.warn(
+        "umrs.knowledge_graph_api (sat_kg_* tables) is DEPRECATED per ADR-026. "
+        "New knowledge-graph work must use the canonical store "
+        "(umrs.knowledge.store + graph registry, migration 0069). "
+        "Set UMRS_SAT_KG_QUIET=1 to silence.",
+        FutureWarning,
+        stacklevel=2,
+    )
 
 __all__ = [
     "RelationType",

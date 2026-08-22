@@ -41,9 +41,6 @@ from umrs.knowledge_graph_api import (
     KnowledgeNode,
     RelationType,
 )
-from umrs.knowledge_graph_api import (
-    build_default_graph as _build_default_knowledge_graph,
-)
 from umrs.knowledge_model import (
     InMemoryKnowledgeModelStore,
     KnowledgeObject,
@@ -291,8 +288,12 @@ class UMRSKnowledgeGraphAdapter:
     """
 
     def __init__(self, graph: InMemoryKnowledgeGraph | None = None) -> None:
-        # Default backend via satellite factory (PG when available).
-        self._graph = graph or _build_default_knowledge_graph()
+        # ADR-026 migration: canonical-backed view (durable when resolvable).
+        if graph is None:
+            from .canonical_graph_view import default_view
+
+            graph = default_view()
+        self._graph = graph
 
     @property
     def graph(self) -> InMemoryKnowledgeGraph:

@@ -15,6 +15,9 @@ from umrs.api._asyncpg_pool import knowledge_asyncpg_pool
 from umrs.api.files import S3Config, get_project_id, get_s3_config
 from umrs.graph_reasoning import GraphNavigator
 from umrs.jobs.models import JobType
+from umrs.knowledge.canonical_graph_view import (
+    default_view as _canonical_default_view,
+)
 from umrs.knowledge.knowledge_correction_controller import (
     KnowledgeCorrectionController,
 )
@@ -25,7 +28,7 @@ from umrs.knowledge.knowledge_dashboard_controller import (
 from umrs.knowledge.project import ProjectPhase, ResearchProject
 from umrs.knowledge.research_readiness_controller import ResearchReadinessController
 from umrs.knowledge.verification_store import VerificationStore
-from umrs.knowledge_graph_api import InMemoryKnowledgeGraph, KnowledgeEdge
+from umrs.knowledge_graph_api import KnowledgeEdge
 from umrs.knowledge_model import InMemoryKnowledgeModelStore
 from umrs.scientific_memory import InMemoryScientificMemoryStore
 from umrs.scientific_reasoning_engine import ScientificReasoningEngine
@@ -173,10 +176,27 @@ async def post_external_search(req: ExternalSearchRequest):
 # inject Postgres-backed stores via set_* hooks; this wiring exposes the
 # controllers through the HTTP sidecar so the TUI can reach them.
 _m35_knowledge_model = InMemoryKnowledgeModelStore()
-_m35_knowledge_graph = InMemoryKnowledgeGraph()
+
+# ADR-026 migration: the shared m35 graph is a canonical-backed view with
+# project '' root (memory-only until a request attaches the shared pool).
+_m35_knowledge_graph = _canonical_default_view(project_id="default")
 _m35_scientific_memory = InMemoryScientificMemoryStore()
 _m35_navigator = GraphNavigator(graph=_m35_knowledge_graph)
 _m35_reasoning_engine = ScientificReasoningEngine(navigator=_m35_navigator)
+
+
+async def _m35_maybe_refresh(request) -> None:
+    """Attach the shared pool on first request and reload canonical rows."""
+    pool = getattr(getattr(request, "app", None), "state", None)
+    pool = getattr(pool, "umrs_knowledge_asyncpg_pool", None)
+    if pool is None:
+        return
+    from ..knowledge.store import KnowledgeStore as _KS
+
+    if _m35_knowledge_graph._store is None:
+        _m35_knowledge_graph._store = _KS(pool)
+    await _m35_knowledge_graph.refresh()
+
 
 _dashboard_controller = KnowledgeDashboardController(
     knowledge_model=_m35_knowledge_model,
@@ -288,7 +308,7 @@ def _build_object_detail_response(detail: ObjectDetail) -> dict[str, Any]:
     ).model_dump()
 
 
-def _explorer_caller(request: Request) -> Any:
+async def _explorer_caller(request: Request) -> Any:
     """Fail-closed scope entry gate for M3.5 Explorer routes (R2, 2026-08-22).
 
     Explorer controllers are module-global (no per-project namespace), so the
@@ -301,13 +321,17 @@ def _explorer_caller(request: Request) -> Any:
     scope = request_caller_scope(request)
     if scope.anonymous:
         logger.debug("explorer route used by anonymous caller (mvp mode)")
+    try:
+        await _m35_maybe_refresh(request)
+    except Exception:
+        logger.debug("m35 refresh skipped", exc_info=True)
     return scope
 
 
 @router.get("/dashboard")
 async def get_knowledge_dashboard(request: Request) -> dict[str, Any]:
     """Get project knowledge summary for the M3.5 dashboard."""
-    _explorer_caller(request)
+    await _explorer_caller(request)
     return _dashboard_controller.get_knowledge_summary().to_dict()
 
 
@@ -318,7 +342,7 @@ async def list_knowledge_objects(
     limit: int = Query(100, ge=1, le=1000),
 ) -> list[dict[str, Any]]:
     """List scientific objects for the M3.5 Knowledge Explorer."""
-    _explorer_caller(request)
+    await _explorer_caller(request)
     return [
         obj.to_dict()
         for obj in _dashboard_controller.list_objects(
@@ -333,7 +357,7 @@ async def get_knowledge_object(
     object_id: str, request: Request
 ) -> ObjectDetailResponse:
     """Get detailed view of a scientific object."""
-    _explorer_caller(request)
+    await _explorer_caller(request)
     detail = _dashboard_controller.get_object_detail(object_id)
     if detail is None:
         raise HTTPException(status_code=404, detail=f"Object {object_id} not found")
@@ -343,7 +367,7 @@ async def get_knowledge_object(
 @router.get("/graph/{object_id}/neighbors")
 async def get_graph_neighbors(object_id: str, request: Request) -> list[dict[str, Any]]:
     """Get graph neighbors for a scientific object."""
-    _explorer_caller(request)
+    await _explorer_caller(request)
     edges = list(_m35_knowledge_graph.get_outgoing(object_id)) + list(
         _m35_knowledge_graph.get_incoming(object_id)
     )
@@ -355,7 +379,7 @@ async def submit_knowledge_correction(
     req: CorrectionRequest, request: Request
 ) -> dict[str, Any]:
     """Record a human knowledge correction (write-gated: R2 scope)."""
-    _explorer_caller(request)
+    await _explorer_caller(request)
     record = _correction_controller.correct(
         correction_type=req.correction_type,
         corrected_by=req.corrected_by,
@@ -548,14 +572,14 @@ async def get_project_graph_pg(
 @router.get("/readiness")
 async def get_research_readiness(request: Request) -> dict[str, Any]:
     """Get the research readiness report."""
-    _explorer_caller(request)
+    await _explorer_caller(request)
     return _readiness_controller.evaluate_readiness().to_dict()
 
 
 @router.post("/approval")
 async def submit_approval(req: ApprovalRequest, request: Request) -> dict[str, Any]:
     """Approve or reject autonomous research (write-gated: R2 scope)."""
-    _explorer_caller(request)
+    await _explorer_caller(request)
     if req.approved:
         report = _readiness_controller.evaluate_readiness()
         record = _readiness_controller.approve(
