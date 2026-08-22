@@ -42,9 +42,12 @@ services:
     # (~1 per experience across the roster) was pinned against the 100 ceiling
     # and any transient connection (e.g. a config reload) exhausted the pool
     # with "remaining connection slots are reserved for non-replication
-    # superuser connections". 200 gives headroom for the current roster; revisit
-    # (or move to pgbouncer / lazy per-experience pools) as the roster grows.
-    command: postgres -c "listen_addresses=*" -c "unix_socket_directories=" -c "max_connections=200"
+    # superuser connections". 200 was raised based on per-experience sizing.
+    # 2026-08-23: 4 UMRS server pools (~50 conns each) + api asyncpg pool now
+    # permanently hold ~200 — minting/pool acquisition failed with "sorry, too
+    # many clients already". 500 = 4 pools + api + growth headroom; if pools
+    # shrink (or pgbouncer lands), this can drop.
+    command: postgres -c "listen_addresses=*" -c "unix_socket_directories=" -c "max_connections=500"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-umrs} -h 127.0.0.1"]
       interval: 5s
