@@ -19,6 +19,11 @@ import httpx
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
 from pydantic import BaseModel, Field
 
+from umrs.knowledge.access_scope import (
+    CallerScope,
+    project_readable,
+    project_writable,
+)
 from umrs.orchestrator.endpoint_registry import (
     EndpointRegistry,
     EndpointStatus,
@@ -132,6 +137,38 @@ def _get_caller_identity(request: Request) -> tuple[str, str]:
     return user_id, project_id
 
 
+def _require_rag_scope(
+    request: Request,
+    target_project: str | None = None,
+    *,
+    write: bool = False,
+) -> tuple[str, str]:
+    """Identity + three-tier scope predicate for rag proxy routes (ADR-027 P0).
+
+    Returns (user_id, verified_project_id). target_project defaults to the
+    verified project. Reads use project_readable; writes use
+    project_writable. Effects vs the legacy equality check: admin bypass,
+    'system' corpus readable by any verified caller (writable by admin
+    only), and 'user:<uid>' namespaces enforced owner-only.
+    """
+    user_id, project_id = _get_caller_identity(request)
+    admin = request.headers.get("x-verified-is-admin", "").strip().lower() in (
+        "true",
+        "1",
+    )
+    caller = CallerScope(user_id=user_id, project_id=project_id, is_admin=admin)
+    target = project_id if not target_project else target_project
+    allowed = (
+        project_writable(target, caller) if write else project_readable(target, caller)
+    )
+    if not allowed:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Access denied: no {'write' if write else 'read'} scope for '{target}'",
+        )
+    return user_id, project_id
+
+
 def _discover_rag_endpoint(
     registry: EndpointRegistry,
     project_id: str,
@@ -187,13 +224,9 @@ async def query_rag(
 
     Discovers active mini-rivault endpoint, forwards to RAG service.
     """
-    _user_id, project_id = _get_caller_identity(request)
-
-    if request_body.project_id != project_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Access denied: project_id mismatch",
-        )
+    _user_id, project_id = _require_rag_scope(
+        request, request_body.project_id, write=False
+    )
 
     rag_base = _discover_rag_endpoint(registry, project_id)
     rag_url = f"{rag_base}/rag/query"
@@ -241,7 +274,7 @@ async def upload_document(
     registry: EndpointRegistry = Depends(get_registry),
 ):
     """Upload a document for RAG indexing."""
-    _user_id, project_id = _get_caller_identity(request)
+    _user_id, project_id = _require_rag_scope(request, write=True)
 
     # Governance quota check
     try:
@@ -328,7 +361,7 @@ async def list_documents(
     registry: EndpointRegistry = Depends(get_registry),
 ):
     """List all documents in a project."""
-    _user_id, project_id = _get_caller_identity(request)
+    _user_id, project_id = _require_rag_scope(request, write=False)
 
     rag_base = _discover_rag_endpoint(registry, project_id)
     rag_url = f"{rag_base}/rag/documents"
@@ -369,7 +402,7 @@ async def delete_document(
     registry: EndpointRegistry = Depends(get_registry),
 ):
     """Delete a document from the project."""
-    _user_id, project_id = _get_caller_identity(request)
+    _user_id, project_id = _require_rag_scope(request, write=True)
 
     rag_base = _discover_rag_endpoint(registry, project_id)
     rag_url = f"{rag_base}/rag/documents/{document_id}"
@@ -408,7 +441,7 @@ async def get_document(
     registry: EndpointRegistry = Depends(get_registry),
 ):
     """Get document metadata."""
-    _user_id, project_id = _get_caller_identity(request)
+    _user_id, project_id = _require_rag_scope(request, write=False)
 
     rag_base = _discover_rag_endpoint(registry, project_id)
     rag_url = f"{rag_base}/rag/documents/{document_id}"
@@ -448,7 +481,7 @@ async def rag_stats(
     registry: EndpointRegistry = Depends(get_registry),
 ):
     """Get RAG corpus statistics for the current project."""
-    _user_id, project_id = _get_caller_identity(request)
+    _user_id, project_id = _require_rag_scope(request, write=False)
 
     rag_base = _discover_rag_endpoint(registry, project_id)
     rag_url = f"{rag_base}/rag/stats"
