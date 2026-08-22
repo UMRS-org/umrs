@@ -3,6 +3,7 @@
 import logging
 import os
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -215,6 +216,26 @@ def _model_name_from_entry(model: Any) -> str | None:
     return None
 
 
+def _entry_matches(
+    entry: dict[str, Any],
+    *,
+    user: str | None,
+    xp_name: str | None,
+    bucket_alias: str | None,
+    modality: str | None,
+) -> bool:
+    """Match one db_model_store entry against retriever filters."""
+    if user and entry.get("s3_username") != user:
+        return False
+    if xp_name and entry.get("xp_name") != xp_name:
+        return False
+    if bucket_alias and entry.get("bucket_alias") != bucket_alias:
+        return False
+    if modality and entry.get("modality_name") != modality:
+        return False
+    return bool(entry.get("store_embeddings_flag", False))
+
+
 class UMRSPgVectorRetriever(BaseRetriever):
     """LangChain-compatible retriever over UMRS pgvector tables.
 
@@ -241,19 +262,17 @@ class UMRSPgVectorRetriever(BaseRetriever):
         keep SQL simpler. This can be generalized later.
         """
 
-        matches: list[dict[str, Any]] = []
-        for _path, entry in self.db_model_store.items():
-            if self.user and entry.get("s3_username") != self.user:
-                continue
-            if self.xp_name and entry.get("xp_name") != self.xp_name:
-                continue
-            if self.bucket_alias and entry.get("bucket_alias") != self.bucket_alias:
-                continue
-            if self.modality and entry.get("modality_name") != self.modality:
-                continue
-            if not entry.get("store_embeddings_flag", False):
-                continue
-            matches.append(entry)
+        matches: list[dict[str, Any]] = [
+            entry
+            for _path, entry in self.db_model_store.items()
+            if _entry_matches(
+                entry,
+                user=self.user,
+                xp_name=self.xp_name,
+                bucket_alias=self.bucket_alias,
+                modality=self.modality,
+            )
+        ]
 
         if not matches:
             raise ValueError(
@@ -455,26 +474,35 @@ def _strip_reasoning_blocks(text: str) -> str:
     return stripped
 
 
+def _strip_numbering(line: str) -> str:
+    if line and line[0].isdigit() and "." in line:
+        return line.split(".", 1)[1].strip()
+    return line
+
+
+def _strip_outer_quotes(line: str) -> str:
+    if line[0] == line[-1] and line[0] in {'"', "'"}:
+        return line[1:-1].strip()
+    return line
+
+
+def _clean_rewrite_line(line: str) -> str:
+    """Normalize one rewrite-output line ('' means skip it)."""
+    line = line.strip()
+    if not line:
+        return ""
+    line = _strip_numbering(line)
+    if line.startswith(("- ", "* ")):
+        line = line[2:].strip()
+    return _strip_outer_quotes(line)
+
+
 def _extract_rewritten_queries(raw_text: str, fallback_query: str) -> list[str]:
     """Turn LLM rewrite output into concrete search queries."""
     cleaned = _strip_reasoning_blocks(raw_text)
-    candidates: list[str] = []
-
-    for line in cleaned.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        if line[0].isdigit() and "." in line:
-            line = line.split(".", 1)[1].strip()
-        if line.startswith(("- ", "* ")):
-            line = line[2:].strip()
-        if (line.startswith('"') and line.endswith('"')) or (
-            line.startswith("'") and line.endswith("'")
-        ):
-            line = line[1:-1].strip()
-        if line:
-            candidates.append(line)
-
+    candidates = [
+        query for line in cleaned.splitlines() if (query := _clean_rewrite_line(line))
+    ]
     return candidates or [fallback_query]
 
 
@@ -622,6 +650,47 @@ def _probeable_registry_endpoints(
     ]
 
 
+def _collect_registry_candidates(
+    endpoints: list[RegisteredEndpoint],
+    *,
+    matches_desired: bool,
+    desired_model: str,
+    known_ingestion_models: set[str],
+    api_key: str,
+    source: str,
+    add_candidate: Callable[[ResolvedLLMEndpoint], None],
+) -> None:
+    """Add candidates from one registry slice (exact match or fallback)."""
+    matched = sorted(
+        [
+            endpoint
+            for endpoint in endpoints
+            if (endpoint.model == desired_model) == matches_desired
+        ],
+        key=_endpoint_sort_key,
+        reverse=True,
+    )
+    for endpoint in matched:
+        if not _endpoint_supports_openai(endpoint):
+            continue
+        base_url, candidate_models = _build_registry_candidate_models(
+            endpoint,
+            desired_model,
+            known_ingestion_models,
+            api_key,
+        )
+        for model_name in candidate_models:
+            add_candidate(
+                ResolvedLLMEndpoint(
+                    model_name=model_name,
+                    base_url=base_url,
+                    api_key=api_key,
+                    source=source,
+                    job_id=endpoint.job_id,
+                )
+            )
+
+
 def _build_llm_candidates() -> list[ResolvedLLMEndpoint]:
     """Build an ordered list of QA LLM candidates.
 
@@ -674,122 +743,47 @@ def _build_llm_candidates() -> list[ResolvedLLMEndpoint]:
     ]
     transitional_registry_endpoints = _probeable_registry_endpoints(registry_endpoints)
 
-    exact_matches = sorted(
-        [
-            endpoint
-            for endpoint in usable_registry_endpoints
-            if endpoint.model == desired_model
-        ],
-        key=_endpoint_sort_key,
-        reverse=True,
-    )
-    for endpoint in exact_matches:
-        if not _endpoint_supports_openai(endpoint):
-            continue
-        base_url, candidate_models = _build_registry_candidate_models(
-            endpoint,
-            desired_model,
-            set(),
-            api_key,
-        )
-        for model_name in candidate_models:
-            add_candidate(
-                ResolvedLLMEndpoint(
-                    model_name=model_name,
-                    base_url=base_url,
-                    api_key=api_key,
-                    source="registry-exact",
-                    job_id=endpoint.job_id,
-                )
-            )
-
     known_ingestion_models = set(_detect_ingestion_models_from_config(DB_MODEL_STORE))
-    fallback_endpoints = sorted(
-        [
-            endpoint
-            for endpoint in usable_registry_endpoints
-            if endpoint.model != desired_model
-        ],
-        key=_endpoint_sort_key,
-        reverse=True,
-    )
-    for endpoint in fallback_endpoints:
-        if not _endpoint_supports_openai(endpoint):
-            continue
-        base_url, candidate_models = _build_registry_candidate_models(
-            endpoint,
-            desired_model,
-            known_ingestion_models,
-            api_key,
-        )
-        for model_name in candidate_models:
-            add_candidate(
-                ResolvedLLMEndpoint(
-                    model_name=model_name,
-                    base_url=base_url,
-                    api_key=api_key,
-                    source="registry-fallback",
-                    job_id=endpoint.job_id,
-                )
-            )
 
-    stale_exact_matches = sorted(
-        [
-            endpoint
-            for endpoint in transitional_registry_endpoints
-            if endpoint.model == desired_model
-        ],
-        key=_endpoint_sort_key,
-        reverse=True,
+    _collect_registry_candidates(
+        usable_registry_endpoints,
+        matches_desired=True,
+        desired_model=desired_model,
+        known_ingestion_models=set(),
+        api_key=api_key,
+        source="registry-exact",
+        add_candidate=add_candidate,
     )
-    for endpoint in stale_exact_matches:
-        if not _endpoint_supports_openai(endpoint):
-            continue
-        base_url, candidate_models = _build_registry_candidate_models(
-            endpoint,
-            desired_model,
-            set(),
-            api_key,
-        )
-        for model_name in candidate_models:
-            add_candidate(
-                ResolvedLLMEndpoint(
-                    model_name=model_name,
-                    base_url=base_url,
-                    api_key=api_key,
-                    source="registry-stale-exact",
-                    job_id=endpoint.job_id,
-                )
-            )
 
-    stale_fallback_endpoints = sorted(
-        [
-            endpoint
-            for endpoint in transitional_registry_endpoints
-            if endpoint.model != desired_model
-        ],
-        key=_endpoint_sort_key,
-        reverse=True,
+    _collect_registry_candidates(
+        usable_registry_endpoints,
+        matches_desired=False,
+        desired_model=desired_model,
+        known_ingestion_models=known_ingestion_models,
+        api_key=api_key,
+        source="registry-fallback",
+        add_candidate=add_candidate,
     )
-    for endpoint in stale_fallback_endpoints:
-        if not _endpoint_supports_openai(endpoint):
-            continue
-        base_url, candidate_models = _build_registry_candidate_models(
-            endpoint,
-            desired_model,
-            known_ingestion_models,
-            api_key,
-        )
-        for model_name in candidate_models:
-            add_candidate(
-                ResolvedLLMEndpoint(
-                    model_name=model_name,
-                    base_url=base_url,
-                    api_key=api_key,
-                    source="registry-stale-fallback",
-                    job_id=endpoint.job_id,
-                )
-            )
+
+    _collect_registry_candidates(
+        transitional_registry_endpoints,
+        matches_desired=True,
+        desired_model=desired_model,
+        known_ingestion_models=set(),
+        api_key=api_key,
+        source="registry-stale-exact",
+        add_candidate=add_candidate,
+    )
+
+    _collect_registry_candidates(
+        transitional_registry_endpoints,
+        matches_desired=False,
+        desired_model=desired_model,
+        known_ingestion_models=known_ingestion_models,
+        api_key=api_key,
+        source="registry-stale-fallback",
+        add_candidate=add_candidate,
+    )
 
     if not explicit_base_url:
         default_base_url = "http://localhost:8000/v1"
@@ -891,21 +885,16 @@ def startup_event() -> None:
     RERANKER = CrossEncoderReranker(model_name=reranker_model, device=reranker_device)
 
 
-@app.post("/rag/search", response_model=RAGSearchResponse)
-def rag_search(payload: RAGSearchRequest) -> RAGSearchResponse:
-    if EMBEDDINGS is None:
-        raise HTTPException(
-            status_code=500, detail="Embeddings backend not initialized"
-        )
+def _fetch_k_for(payload: RAGSearchRequest) -> int:
+    """Fetch multiplier so hybrid/rerank stages have enough candidates."""
+    if payload.search_method == "hybrid" or payload.enable_reranking:
+        return payload.top_k * 3
+    return payload.top_k
 
+
+def _build_retriever(payload: RAGSearchRequest, fetch_k: int) -> UMRSPgVectorRetriever:
     try:
-        # Fetch more candidates when using hybrid or reranking so the
-        # second-stage ranker has enough material to work with.
-        fetch_k = payload.top_k
-        if payload.search_method == "hybrid" or payload.enable_reranking:
-            fetch_k = payload.top_k * 3
-
-        retriever = UMRSPgVectorRetriever(
+        return UMRSPgVectorRetriever(
             db_model_store=DB_MODEL_STORE,
             embeddings=EMBEDDINGS,
             user=payload.user,
@@ -914,54 +903,109 @@ def rag_search(payload: RAGSearchRequest) -> RAGSearchResponse:
             modality=payload.modality,
             top_k=fetch_k,
         )
-        docs = retriever.get_relevant_documents(payload.query)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _retrieve_documents(payload: RAGSearchRequest) -> list[Document]:
+    """Retrieve documents matching the search request (400/500-mapped)."""
+    retriever = _build_retriever(payload, _fetch_k_for(payload))
+    try:
+        return retriever.get_relevant_documents(payload.query)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:  # pragma: no cover - defensive
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-    results: list[RAGSearchResultItem] = []
 
-    if payload.search_method == "hybrid" and HYBRID_SEARCHER is not None and docs:
-        # Build candidate tuples for hybrid search.
-        # BM25 + RRF fusion on the retrieved candidate pool
-        hybrid_results = HYBRID_SEARCHER.search(
-            query=payload.query,
-            documents=[
-                (
-                    str(doc.metadata.get("id", i)),
-                    doc.page_content,
-                    _cosine_score(doc.metadata.get("distance")),
-                )
-                for i, doc in enumerate(docs)
-            ],
-            top_k=fetch_k,
-        )
+def _docs_by_id(docs: list[Document]) -> dict[str, Document]:
+    return {str(doc.metadata.get("id", i)): doc for i, doc in enumerate(docs)}
 
-        # Optionally rerank
-        if payload.enable_reranking and RERANKER is not None:
-            hybrid_results = RERANKER.rerank(
-                query=payload.query,
-                results=hybrid_results,
-                top_k=payload.top_k,
+
+def _scores_meta(sr: SearchResult, meta: dict[str, Any]) -> dict[str, Any]:
+    """Attach available per-stage scores to a result's metadata copy."""
+    meta["hybrid_score"] = sr.score
+    if sr.bm25_score is not None:
+        meta["bm25_score"] = sr.bm25_score
+    if sr.vector_score is not None:
+        meta["vector_score"] = sr.vector_score
+    if sr.rerank_score is not None:
+        meta["rerank_score"] = sr.rerank_score
+    return meta
+
+
+def _hybrid_search_items(
+    payload: RAGSearchRequest,
+    docs: list[Document],
+) -> list[RAGSearchResultItem]:
+    """BM25 + vector RRF fusion branch of /rag/search (optional rerank)."""
+    hybrid_results = HYBRID_SEARCHER.search(
+        query=payload.query,
+        documents=[
+            (
+                str(doc.metadata.get("id", i)),
+                doc.page_content,
+                _cosine_score(doc.metadata.get("distance")),
             )
-        else:
-            hybrid_results = hybrid_results[: payload.top_k]
+            for i, doc in enumerate(docs)
+        ],
+        top_k=_fetch_k_for(payload),
+    )
 
-        # Map back to response items; use the doc metadata from the original
-        # retrieval for full context.
-        doc_by_id = {str(doc.metadata.get("id", i)): doc for i, doc in enumerate(docs)}
-        for sr in hybrid_results:
-            orig_doc = doc_by_id.get(sr.document_id)
-            meta = dict(orig_doc.metadata) if orig_doc else {}
-            meta["hybrid_score"] = sr.score
-            if sr.bm25_score is not None:
-                meta["bm25_score"] = sr.bm25_score
-            if sr.vector_score is not None:
-                meta["vector_score"] = sr.vector_score
-            if sr.rerank_score is not None:
-                meta["rerank_score"] = sr.rerank_score
-            results.append(
+    # Optionally rerank
+    if payload.enable_reranking and RERANKER is not None:
+        hybrid_results = RERANKER.rerank(
+            query=payload.query,
+            results=hybrid_results,
+            top_k=payload.top_k,
+        )
+    else:
+        hybrid_results = hybrid_results[: payload.top_k]
+
+    # Map back to response items, enriching with original doc metadata.
+    doc_by_id = _docs_by_id(docs)
+    items: list[RAGSearchResultItem] = []
+    for sr in hybrid_results:
+        orig_doc = doc_by_id.get(sr.document_id)
+        meta = dict(orig_doc.metadata) if orig_doc else {}
+        meta = _scores_meta(sr, meta)
+        items.append(
+            RAGSearchResultItem(
+                id=int(meta.get("id", 0)),
+                score=sr.rerank_score if sr.rerank_score is not None else sr.score,
+                content=sr.content,
+                metadata=meta,
+            )
+        )
+    return items
+
+
+def _vector_search_items(
+    payload: RAGSearchRequest,
+    docs: list[Document],
+) -> list[RAGSearchResultItem]:
+    """Pure pgvector cosine branch of /rag/search (optional rerank)."""
+    if payload.enable_reranking and RERANKER is not None and docs:
+        search_results = [
+            SearchResult(
+                document_id=str(doc.metadata.get("id", i)),
+                chunk_id=str(doc.metadata.get("id", i)),
+                content=doc.page_content,
+                score=_cosine_score(doc.metadata.get("distance")),
+                metadata=dict(doc.metadata),
+            )
+            for i, doc in enumerate(docs)
+        ]
+        reranked = RERANKER.rerank(
+            query=payload.query,
+            results=search_results,
+            top_k=payload.top_k,
+        )
+        items: list[RAGSearchResultItem] = []
+        for sr in reranked:
+            meta = sr.metadata
+            meta["rerank_score"] = sr.rerank_score
+            items.append(
                 RAGSearchResultItem(
                     id=int(meta.get("id", 0)),
                     score=sr.rerank_score if sr.rerank_score is not None else sr.score,
@@ -969,52 +1013,232 @@ def rag_search(payload: RAGSearchRequest) -> RAGSearchResponse:
                     metadata=meta,
                 )
             )
-    else:
-        # Pure vector search (default path)
-        if payload.enable_reranking and RERANKER is not None and docs:
-            search_results = [
-                SearchResult(
-                    document_id=str(doc.metadata.get("id", i)),
-                    chunk_id=str(doc.metadata.get("id", i)),
-                    content=doc.page_content,
-                    score=_cosine_score(doc.metadata.get("distance")),
-                    metadata=dict(doc.metadata),
-                )
-                for i, doc in enumerate(docs)
-            ]
-            reranked = RERANKER.rerank(
-                query=payload.query,
-                results=search_results,
-                top_k=payload.top_k,
+        return items
+    items = []
+    for doc in docs[: payload.top_k]:
+        meta = dict(doc.metadata)
+        row_id = int(meta.get("id", 0))
+        score = _cosine_score(meta.get("distance"))
+        items.append(
+            RAGSearchResultItem(
+                id=row_id,
+                score=score,
+                content=doc.page_content,
+                metadata=meta,
             )
-            for sr in reranked:
-                meta = sr.metadata
-                meta["rerank_score"] = sr.rerank_score
-                results.append(
-                    RAGSearchResultItem(
-                        id=int(meta.get("id", 0)),
-                        score=sr.rerank_score
-                        if sr.rerank_score is not None
-                        else sr.score,
-                        content=sr.content,
-                        metadata=meta,
-                    )
-                )
-        else:
-            for doc in docs[: payload.top_k]:
-                meta = dict(doc.metadata)
-                row_id = int(meta.get("id", 0))
-                score = _cosine_score(meta.get("distance"))
-                results.append(
-                    RAGSearchResultItem(
-                        id=row_id,
-                        score=score,
-                        content=doc.page_content,
-                        metadata=meta,
-                    )
-                )
+        )
+    return items
 
+
+@app.post("/rag/search", response_model=RAGSearchResponse)
+def rag_search(payload: RAGSearchRequest) -> RAGSearchResponse:
+    if EMBEDDINGS is None:
+        raise HTTPException(
+            status_code=500, detail="Embeddings backend not initialized"
+        )
+
+    docs = _retrieve_documents(payload)
+    if payload.search_method == "hybrid" and HYBRID_SEARCHER is not None and docs:
+        results = _hybrid_search_items(payload, docs)
+    else:
+        results = _vector_search_items(payload, docs)
     return RAGSearchResponse(results=results)
+
+
+def _rewrite_query(
+    payload: RAGQARequest,
+    llm_candidates: list[ResolvedLLMEndpoint],
+) -> tuple[list[str], ResolvedLLMEndpoint | None]:
+    """Optional LLM query rewrite (fail-soft to the raw query)."""
+    if not payload.enable_query_rewrite:
+        return [payload.query], None
+    system_prompt = (
+        "You are a search assistant. Given a user's question, "
+        "produce 1-3 short, concrete search queries that would "
+        "retrieve the most relevant documents from a vector "
+        "database. Return them as a numbered list, one per line."
+    )
+    msgs = [
+        SystemMessage(content=system_prompt),
+        HumanMessage(
+            content=("User question: " + payload.query + "\nGenerate search queries:")
+        ),
+    ]
+    preferred: ResolvedLLMEndpoint | None = None
+    try:
+        rewrite_resp, preferred = _invoke_llm_with_candidates(msgs, llm_candidates)
+        text = _response_text(rewrite_resp)
+    except Exception:
+        # Fail-soft if the LLM is temporarily unavailable; fall back to
+        # using the original user query for retrieval.
+        text = payload.query
+    return _extract_rewritten_queries(str(text), payload.query), preferred
+
+
+def _retrieve_or_404(
+    retriever: UMRSPgVectorRetriever,
+    queries: list[str],
+) -> list[Document]:
+    """Retrieve documents for all (sub-)queries; fail-soft per query."""
+    all_docs: list[Document] = []
+    for q in queries:
+        try:
+            all_docs.extend(retriever.get_relevant_documents(q))
+        except Exception:
+            # Fail-soft on individual sub-query errors
+            continue
+    if not all_docs:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "No documents retrieved for the given query and filters. "
+                "Check user/xp_name/bucket_alias/modality."
+            ),
+        )
+    return all_docs
+
+
+def _dedupe_docs(all_docs: list[Document]) -> list[Document]:
+    """Dedupe by id+chunk_md5, keeping the best-scoring copy."""
+    by_key: dict[str, Document] = {}
+    for doc in all_docs:
+        meta = doc.metadata or {}
+        key = "::".join([str(meta.get("id")), str(meta.get("chunk_md5"))])
+        score = _cosine_score(meta.get("distance"))
+        existing = by_key.get(key)
+        if existing is None:
+            by_key[key] = doc
+            continue
+        existing_score = _cosine_score((existing.metadata or {}).get("distance"))
+        if score > existing_score:
+            by_key[key] = doc
+    return list(by_key.values())
+
+
+def _apply_hybrid_rank(payload: RAGQARequest, docs: list[Document]) -> list[Document]:
+    """BM25 + vector RRF fusion reordering of the candidate pool."""
+    hybrid_results = HYBRID_SEARCHER.search(
+        query=payload.query,
+        documents=[
+            (
+                str(doc.metadata.get("id", i)),
+                doc.page_content,
+                _cosine_score((doc.metadata or {}).get("distance")),
+            )
+            for i, doc in enumerate(docs)
+        ],
+        top_k=len(docs),
+    )
+    doc_by_id = _docs_by_id(docs)
+    return [
+        doc_by_id[sr.document_id]
+        for sr in hybrid_results
+        if sr.document_id in doc_by_id
+    ]
+
+
+def _apply_rerank(
+    query: str,
+    docs: list[Document],
+    top_k: int,
+) -> list[Document]:
+    """Cross-encoder rerank reordering of the candidate pool."""
+    search_results = [
+        SearchResult(
+            document_id=str(doc.metadata.get("id", i)),
+            chunk_id=str(doc.metadata.get("id", i)),
+            content=doc.page_content,
+            score=_cosine_score(doc.metadata.get("distance")),
+            metadata=dict(doc.metadata),
+        )
+        for i, doc in enumerate(docs)
+    ]
+    reranked = RERANKER.rerank(query=query, results=search_results, top_k=top_k)
+    doc_by_id = _docs_by_id(docs)
+    return [doc_by_id[sr.document_id] for sr in reranked if sr.document_id in doc_by_id]
+
+
+def _order_docs(payload: RAGQARequest, unique_docs: list[Document]) -> list[Document]:
+    """Score-sort, then optional hybrid fusion + rerank reordering."""
+    unique_docs.sort(
+        key=lambda doc: _cosine_score((doc.metadata or {}).get("distance")),
+        reverse=True,
+    )
+    if (
+        payload.search_method == "hybrid"
+        and HYBRID_SEARCHER is not None
+        and unique_docs
+    ):
+        unique_docs = _apply_hybrid_rank(payload, unique_docs)
+    if payload.enable_reranking and RERANKER is not None and unique_docs:
+        unique_docs = _apply_rerank(
+            payload.query, unique_docs, payload.max_context_chunks
+        )
+    return unique_docs
+
+
+def _build_answer_messages(
+    payload: RAGQARequest,
+    top_docs: list[Document],
+) -> list[Any]:
+    """Grounded-answer chat messages built from retrieved contexts."""
+    default_system = (
+        "You are a helpful assistant answering questions over a "
+        "vector database. Use only the provided context snippets. "
+        "If the answer is not contained in the context, say that "
+        "you do not know instead of inventing information."
+    )
+    context_blocks: list[str] = []
+    for i, doc in enumerate(top_docs, start=1):
+        meta = doc.metadata or {}
+        header = (
+            f"[Chunk {i}] user={meta.get('user')} xp={meta.get('xp_name')} "
+            f"bucket={meta.get('bucket_alias')} s3_object={meta.get('s3_object')}"
+        )
+        body = doc.page_content or ""
+        context_blocks.append(header + "\n" + body)
+    context_text = "\n\n".join(context_blocks)
+    return [
+        SystemMessage(content=payload.system_prompt or default_system),
+        HumanMessage(
+            content=(
+                "Question: "
+                + payload.query
+                + "\n\nContext:\n"
+                + context_text
+                + "\n\nAnswer based only on this context."
+            )
+        ),
+    ]
+
+
+def _answer_candidates(
+    llm_candidates: list[ResolvedLLMEndpoint],
+    preferred: ResolvedLLMEndpoint | None,
+) -> list[ResolvedLLMEndpoint]:
+    if preferred is None:
+        return llm_candidates
+    return [preferred] + [
+        candidate for candidate in llm_candidates if candidate != preferred
+    ]
+
+
+def _response_contexts(top_docs: list[Document]) -> list[RAGSearchResultItem]:
+    """Build response contexts using the same schema as /rag/search."""
+    results: list[RAGSearchResultItem] = []
+    for doc in top_docs:
+        meta = dict(doc.metadata or {})
+        row_id = int(meta.get("id", 0))
+        score = _cosine_score(meta.get("distance"))
+        results.append(
+            RAGSearchResultItem(
+                id=row_id,
+                score=score,
+                content=doc.page_content or "",
+                metadata=meta,
+            )
+        )
+    return results
 
 
 @app.post("/rag/qa", response_model=RAGQAResponse)
@@ -1029,205 +1253,23 @@ def rag_qa(payload: RAGQARequest) -> RAGQAResponse:
     3. Deduplicate and rank chunks.
     4. Ask the LLM to answer using only the retrieved context.
     """
-
     if EMBEDDINGS is None:
         raise HTTPException(
             status_code=500, detail="Embeddings backend not initialized"
         )
     llm_candidates = _build_llm_candidates()
-
-    try:
-        # Fetch more candidates when hybrid or reranking is requested
-        fetch_k = payload.top_k
-        if payload.search_method == "hybrid" or payload.enable_reranking:
-            fetch_k = payload.top_k * 3
-
-        retriever = UMRSPgVectorRetriever(
-            db_model_store=DB_MODEL_STORE,
-            embeddings=EMBEDDINGS,
-            user=payload.user,
-            xp_name=payload.xp_name,
-            bucket_alias=payload.bucket_alias,
-            modality=payload.modality,
-            top_k=fetch_k,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    # Step 1: optional query rewrite into focused sub-queries
-    rewritten_queries: list[str]
-    preferred_candidate: ResolvedLLMEndpoint | None = None
-    if payload.enable_query_rewrite:
-        system_prompt = (
-            "You are a search assistant. Given a user's question, "
-            "produce 1-3 short, concrete search queries that would "
-            "retrieve the most relevant documents from a vector "
-            "database. Return them as a numbered list, one per line."
-        )
-        msgs = [
-            SystemMessage(content=system_prompt),
-            HumanMessage(
-                content=(
-                    "User question: " + payload.query + "\nGenerate search queries:"
-                )
-            ),
-        ]
-
-        try:
-            rewrite_resp, preferred_candidate = _invoke_llm_with_candidates(
-                msgs,
-                llm_candidates,
-            )
-            text = _response_text(rewrite_resp)
-        except Exception:
-            # Fail-soft if the LLM is temporarily unavailable; fall back to
-            # using the original user query for retrieval.
-            text = payload.query
-        rewritten_queries = _extract_rewritten_queries(str(text), payload.query)
-    else:
-        rewritten_queries = [payload.query]
-
-    # Step 2: retrieve documents for each sub-query
-    all_docs: list[Document] = []
-    for q in rewritten_queries:
-        try:
-            all_docs.extend(retriever.get_relevant_documents(q))
-        except Exception:
-            # Fail-soft on individual sub-query errors
-            continue
-
-    if not all_docs:
-        raise HTTPException(
-            status_code=404,
-            detail=(
-                "No documents retrieved for the given query and filters. "
-                "Check user/xp_name/bucket_alias/modality."
-            ),
-        )
-
-    # Step 3: deduplicate + keep best by score
-    by_key: dict[str, Document] = {}
-    for doc in all_docs:
-        meta = doc.metadata or {}
-        key_parts = [str(meta.get("id")), str(meta.get("chunk_md5"))]
-        key = "::".join(key_parts)
-        score = _cosine_score(meta.get("distance"))
-        existing = by_key.get(key)
-        if existing is None:
-            by_key[key] = doc
-        else:
-            existing_score = _cosine_score((existing.metadata or {}).get("distance"))
-            if score > existing_score:
-                by_key[key] = doc
-
-    unique_docs = list(by_key.values())
-
-    # Sort by score descending and keep the top N
-    def _score(doc: Document) -> float:
-        return _cosine_score((doc.metadata or {}).get("distance"))
-
-    unique_docs.sort(key=_score, reverse=True)
-
-    # Optional: apply hybrid BM25+RRF fusion on the candidate pool
-    if (
-        payload.search_method == "hybrid"
-        and HYBRID_SEARCHER is not None
-        and unique_docs
-    ):
-        hybrid_results = HYBRID_SEARCHER.search(
-            query=payload.query,
-            documents=[
-                (
-                    str(doc.metadata.get("id", i)),
-                    doc.page_content,
-                    _cosine_score((doc.metadata or {}).get("distance")),
-                )
-                for i, doc in enumerate(unique_docs)
-            ],
-            top_k=len(unique_docs),
-        )
-        # Re-order unique_docs by hybrid score
-        doc_by_id = {
-            str(doc.metadata.get("id", i)): doc for i, doc in enumerate(unique_docs)
-        }
-        unique_docs = [
-            doc_by_id[sr.document_id]
-            for sr in hybrid_results
-            if sr.document_id in doc_by_id
-        ]
-
-    # Optional: cross-encoder reranking
-    if payload.enable_reranking and RERANKER is not None and unique_docs:
-        search_results = [
-            SearchResult(
-                document_id=str(doc.metadata.get("id", i)),
-                chunk_id=str(doc.metadata.get("id", i)),
-                content=doc.page_content,
-                score=_cosine_score(doc.metadata.get("distance")),
-                metadata=dict(doc.metadata),
-            )
-            for i, doc in enumerate(unique_docs)
-        ]
-        reranked = RERANKER.rerank(
-            query=payload.query,
-            results=search_results,
-            top_k=payload.max_context_chunks,
-        )
-        # Rebuild unique_docs in reranked order
-        doc_by_id = {
-            str(doc.metadata.get("id", i)): doc for i, doc in enumerate(unique_docs)
-        }
-        unique_docs = [
-            doc_by_id[sr.document_id] for sr in reranked if sr.document_id in doc_by_id
-        ]
-
-    top_docs = unique_docs[: payload.max_context_chunks]
-
-    # Step 4: ask LLM to answer using only retrieved context
-    default_system = (
-        "You are a helpful assistant answering questions over a "
-        "vector database. Use only the provided context snippets. "
-        "If the answer is not contained in the context, say that "
-        "you do not know instead of inventing information."
-    )
-    system_prompt = payload.system_prompt or default_system
-
-    context_blocks: list[str] = []
-    for i, doc in enumerate(top_docs, start=1):
-        meta = doc.metadata or {}
-        header = (
-            f"[Chunk {i}] user={meta.get('user')} xp={meta.get('xp_name')} "
-            f"bucket={meta.get('bucket_alias')} s3_object={meta.get('s3_object')}"
-        )
-        body = doc.page_content or ""
-        context_blocks.append(header + "\n" + body)
-
-    context_text = "\n\n".join(context_blocks)
-    answer_messages = [
-        SystemMessage(content=system_prompt),
-        HumanMessage(
-            content=(
-                "Question: "
-                + payload.query
-                + "\n\nContext:\n"
-                + context_text
-                + "\n\nAnswer based only on this context."
-            )
-        ),
+    retriever = _build_retriever(payload, _fetch_k_for(payload))
+    rewritten_queries, preferred = _rewrite_query(payload, llm_candidates)
+    all_docs = _retrieve_or_404(retriever, rewritten_queries)
+    top_docs = _order_docs(payload, _dedupe_docs(all_docs))[
+        : payload.max_context_chunks
     ]
-
-    answer_candidates = llm_candidates
-    if preferred_candidate is not None:
-        answer_candidates = [preferred_candidate] + [
-            candidate
-            for candidate in llm_candidates
-            if candidate != preferred_candidate
-        ]
+    answer_messages = _build_answer_messages(payload, top_docs)
 
     try:
         answer_resp, _ = _invoke_llm_with_candidates(
             answer_messages,
-            answer_candidates,
+            _answer_candidates(llm_candidates, preferred),
         )
         answer_text = _strip_reasoning_blocks(_response_text(answer_resp))
     except Exception as exc:
@@ -1239,24 +1281,9 @@ def rag_qa(payload: RAGQARequest) -> RAGQAResponse:
             + f"{type(exc).__name__}: {exc}"
         )
 
-    # Build response contexts using the same schema as /rag/search
-    results: list[RAGSearchResultItem] = []
-    for doc in top_docs:
-        meta = dict(doc.metadata or {})
-        row_id = int(meta.get("id", 0))
-        score = _cosine_score(meta.get("distance"))
-        results.append(
-            RAGSearchResultItem(
-                id=row_id,
-                score=score,
-                content=doc.page_content or "",
-                metadata=meta,
-            )
-        )
-
     return RAGQAResponse(
         answer=answer_text,
-        contexts=results,
+        contexts=_response_contexts(top_docs),
         rewritten_queries=rewritten_queries,
     )
 
@@ -1314,6 +1341,57 @@ class GatewayUploadResponse(BaseModel):
     chunks: int = 0
 
 
+def _legacy_table_fallback() -> bool:
+    """Deprecated any-table fallback for unmapped projects (ADR-027 P0).
+
+    Off by default; set UMRS_RAG_LEGACY_TABLE_FALLBACK=true to restore the
+    pre-ADR-027 behavior for one release.
+    """
+    return os.environ.get("UMRS_RAG_LEGACY_TABLE_FALLBACK", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+
+
+def _no_index_detail(project_id: str) -> str:
+    return (
+        f"No RAG index for project '{project_id}'. Provision an "
+        "embedding-enabled store for this project (or set "
+        "UMRS_RAG_LEGACY_TABLE_FALLBACK=true for legacy behavior)."
+    )
+
+
+def _resolve_xp_for_project(project_id: str) -> str | None:
+    """Strict project→experience mapping for retrieval (fail-closed).
+
+    Returns the xp_name to scope retrieval when the project maps to an
+    embedding-enabled store; None only for empty project_id or when the
+    deprecated legacy fallback is enabled. Raises 404 otherwise — an
+    unmapped project must never silently read another project's table.
+    """
+    if not project_id:
+        return None
+    for _path, entry in DB_MODEL_STORE.items():
+        if entry.get("xp_name") == project_id and entry.get(
+            "store_embeddings_flag", False
+        ):
+            return project_id
+    if _legacy_table_fallback():
+        return None
+    raise HTTPException(status_code=404, detail=_no_index_detail(project_id))
+
+
+def _resolve_entry_for_upload(project_id: str) -> dict[str, Any] | None:
+    """Resolve the embedding store entry for an upload (fail-closed)."""
+    for _path, entry in DB_MODEL_STORE.items():
+        if entry.get("xp_name") == project_id and entry.get(
+            "store_embeddings_flag", False
+        ):
+            return entry
+    return None
+
+
 @app.post("/rag/query", response_model=GatewayQueryResponse)
 def rag_query(payload: GatewayQueryRequest) -> GatewayQueryResponse:
     """Gateway-compatible RAG query endpoint.
@@ -1325,15 +1403,10 @@ def rag_query(payload: GatewayQueryRequest) -> GatewayQueryResponse:
             status_code=500, detail="Embeddings backend not initialized"
         )
 
-    # Map Gateway request to internal format
-    # Resolve xp_name: use project_id if it matches a known experience,
-    # otherwise leave it as None to use the first embedding-enabled entry.
-    resolved_xp = None
-    if DB_MODEL_STORE:
-        for _p, entry in DB_MODEL_STORE.items():
-            if entry.get("xp_name") == payload.project_id:
-                resolved_xp = payload.project_id
-                break
+    # Map Gateway request to internal format.
+    # Strict project → experience mapping (ADR-027 P0): an unmapped project
+    # fails closed with 404 instead of falling back to an arbitrary table.
+    resolved_xp = _resolve_xp_for_project(payload.project_id)
 
     internal_request = RAGQARequest(
         query=payload.query,
@@ -1370,23 +1443,8 @@ def rag_query(payload: GatewayQueryRequest) -> GatewayQueryResponse:
     )
 
 
-@app.post("/rag/upload", response_model=GatewayUploadResponse)
-async def rag_upload(
-    file: UploadFile = File(...),
-    project_id: str = Form(...),
-) -> GatewayUploadResponse:
-    """Upload a document for RAG indexing.
-
-    The document is processed, chunked, embedded, and indexed into pgvector.
-    """
-    import hashlib
-    import uuid
-    from datetime import datetime
-
-    from psycopg2 import sql as psql
-
-    from umrs.shared.utils import _chunk_text_without_nlp, compute_md5
-
+async def _read_upload_text(file: UploadFile) -> tuple[bytes, str]:
+    """Validate upload basics; return (raw_bytes, decoded_text)."""
     if not file.filename:
         raise HTTPException(status_code=400, detail="Filename required")
     if EMBEDDINGS is None:
@@ -1394,7 +1452,6 @@ async def rag_upload(
     if not DB_MODEL_STORE:
         raise HTTPException(status_code=500, detail="RAG store not configured")
 
-    # Read file content
     raw_content = await file.read()
     try:
         text = raw_content.decode("utf-8")
@@ -1403,61 +1460,64 @@ async def rag_upload(
             status_code=400,
             detail="Only UTF-8 text files are supported for now.",
         )
-
     if not text.strip():
         raise HTTPException(status_code=400, detail="Uploaded file is empty")
+    return raw_content, text
 
-    # Resolve target table from DB_MODEL_STORE using project_id as xp_name
-    entry = None
-    for _path, e in DB_MODEL_STORE.items():
-        if e.get("xp_name") == project_id and e.get("store_embeddings_flag", False):
-            entry = e
-            break
-    # Fallback: match any entry with embeddings enabled
-    if entry is None:
-        for _path, e in DB_MODEL_STORE.items():
-            if e.get("store_embeddings_flag", False):
-                entry = e
-                break
-    if entry is None:
-        raise HTTPException(
-            status_code=500,
-            detail="No embedding-enabled table found in configuration.",
-        )
 
-    data_base = entry["data_base"]
-    table_name = entry["table_name"]
-    bucket_alias = entry.get("bucket_alias", "uploads")
+def _select_upload_target(project_id: str) -> dict[str, Any]:
+    """Strict project → table resolution; deprecated fallback behind env."""
+    entry = _resolve_entry_for_upload(project_id)
+    if entry is not None:
+        return entry
+    if not _legacy_table_fallback():
+        raise HTTPException(status_code=404, detail=_no_index_detail(project_id))
+    for _path, candidate in DB_MODEL_STORE.items():
+        if candidate.get("store_embeddings_flag", False):
+            return candidate
+    raise HTTPException(
+        status_code=500,
+        detail="No embedding-enabled table found in configuration.",
+    )
 
-    # Generate document ID
-    content_hash = hashlib.sha256(raw_content).hexdigest()[:12]
-    document_id = f"doc-{content_hash}-{uuid.uuid4().hex[:8]}"
 
-    # Chunk the text (simple token-based chunking without spaCy dependency)
+def _chunk_and_embed(text: str) -> tuple[list[dict[str, Any]], list[Any]]:
+    """Chunk text (no spaCy) and embed every chunk."""
+    from umrs.shared.utils import _chunk_text_without_nlp
+
     try:
         tokenizer = EMBEDDINGS.client.tokenizer
     except AttributeError:
         tokenizer = None
     max_tokens = int(os.getenv("UMRS_RAG_CHUNK_MAX_TOKENS", "256"))
     chunks = _chunk_text_without_nlp(text, tokenizer=tokenizer, max_tokens=max_tokens)
-
     if not chunks:
         raise HTTPException(status_code=400, detail="No chunks produced from document")
 
-    # Compute embeddings for all chunks
     chunk_texts = [c["text"] for c in chunks]
-    from umrs.shared.utils import add_document_prefix
-
     model_name = getattr(EMBEDDINGS, "model_name", None)
     prefixed_texts = add_document_prefix(chunk_texts, model_name)
-    embeddings = EMBEDDINGS.embed_documents(prefixed_texts)
+    return chunks, EMBEDDINGS.embed_documents(prefixed_texts)
 
-    # Insert into pgvector
-    s3_base = f"{bucket_alias}/{file.filename}"
-    date_str = datetime.today().strftime("%Y-%m-%d")
-    time_str = datetime.now().strftime("%H:%M:%S")
-    file_checksum = hashlib.md5(raw_content).hexdigest()
 
+def _persist_chunks(
+    entry: dict[str, Any],
+    *,
+    s3_base: str,
+    chunks: list[dict[str, Any]],
+    embeddings: list[Any],
+    file_checksum: str,
+    date_str: str,
+    time_str: str,
+    model_name: str | None,
+) -> None:
+    """Insert chunk rows (with embeddings) into the resolved pgvector table."""
+    from psycopg2 import sql as psql
+
+    from umrs.shared.utils import compute_md5
+
+    data_base = entry["data_base"]
+    table_name = entry["table_name"]
     db_pool = data_base.db_pool
     conn = db_pool.getconn()
     try:
@@ -1534,6 +1594,41 @@ async def rag_upload(
         raise HTTPException(status_code=500, detail=f"Database insertion failed: {exc}")
     finally:
         db_pool.putconn(conn)
+
+
+@app.post("/rag/upload", response_model=GatewayUploadResponse)
+async def rag_upload(
+    file: UploadFile = File(...),
+    project_id: str = Form(...),
+) -> GatewayUploadResponse:
+    """Upload a document for RAG indexing.
+
+    The document is processed, chunked, embedded, and indexed into pgvector.
+    """
+    import hashlib
+    import uuid
+    from datetime import datetime
+
+    raw_content, text = await _read_upload_text(file)
+    entry = _select_upload_target(project_id)
+
+    # Generate document ID
+    content_hash = hashlib.sha256(raw_content).hexdigest()[:12]
+    document_id = f"doc-{content_hash}-{uuid.uuid4().hex[:8]}"
+
+    chunks, embeddings = _chunk_and_embed(text)
+
+    bucket_alias = entry.get("bucket_alias", "uploads")
+    _persist_chunks(
+        entry,
+        s3_base=f"{bucket_alias}/{file.filename}",
+        chunks=chunks,
+        embeddings=embeddings,
+        file_checksum=hashlib.md5(raw_content).hexdigest(),
+        date_str=datetime.today().strftime("%Y-%m-%d"),
+        time_str=datetime.now().strftime("%H:%M:%S"),
+        model_name=getattr(EMBEDDINGS, "model_name", None),
+    )
 
     return GatewayUploadResponse(
         document_id=document_id,
