@@ -109,6 +109,7 @@ class UploadResponse(BaseModel):
     filename: str
     status: str
     chunks: int = 0
+    knowledge_nodes_minted: int | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -167,6 +168,178 @@ def _require_rag_scope(
             detail=f"Access denied: no {'write' if write else 'read'} scope for '{target}'",
         )
     return user_id, project_id
+
+
+# ADR-027 P1a: cap knowledge minting per upload (guard against giant docs).
+_KNOWLEDGE_NODE_CAP = 100
+
+
+async def _upload_success(
+    request: Request,
+    *,
+    result: dict[str, Any],
+    filename: str,
+    mime_type: str,
+    user_id: str,
+    project_id: str,
+) -> UploadResponse:
+    """Governance record + knowledge minting + response for a good upload."""
+    from .audit_events import emit_audit
+    from .governance import record_resource_created
+
+    emit_audit(
+        "rag.upload",
+        user_id=user_id,
+        project_id=project_id,
+        details={
+            "filename": filename,
+            "document_id": result.get("document_id", ""),
+            "chunks": result.get("chunks", 0),
+        },
+    )
+    record_resource_created(
+        "rag_documents",
+        result.get("document_id", filename or "unknown"),
+        user_id,
+        project_id=project_id,
+    )
+
+    # ADR-027 P1a: mint canonical knowledge nodes (never fails upload).
+    minted = await _mint_knowledge_nodes_best_effort(
+        request,
+        user_id=user_id,
+        project_id=project_id,
+        document_id=result.get("document_id", ""),
+        filename=filename,
+        mime_type=mime_type,
+        chunk_details=result.get("chunk_details") or [],
+    )
+    return UploadResponse(
+        document_id=result.get("document_id", ""),
+        filename=filename,
+        status="success",
+        chunks=result.get("chunks", 0),
+        knowledge_nodes_minted=minted,
+    )
+
+
+async def _mint_knowledge_nodes(
+    request: Request,
+    *,
+    user_id: str,
+    project_id: str,
+    document_id: str,
+    filename: str,
+    mime_type: str,
+    chunk_details: list[dict[str, Any]],
+) -> int:
+    """Mint canonical document + chunk nodes for a rag upload.
+
+    ADR-027 P1a: uploaded documents become visible to the canonical
+    knowledge graph / research loops, instead of living only in the rag
+    corpus (closes the G4 feedback gap for the upload path).
+    """
+    import hashlib
+
+    from umrs.knowledge.graph_registry import default_graph_id
+    from umrs.knowledge.store import KnowledgeEdge, KnowledgeNode, KnowledgeStore
+
+    from ._asyncpg_pool import knowledge_asyncpg_pool
+
+    pool = await knowledge_asyncpg_pool(request)
+    store = KnowledgeStore(pool)
+    gid = default_graph_id(project_id)
+
+    doc_node_id = f"ragdoc-{document_id}"
+    content_hash = hashlib.sha256(
+        f"{document_id}:{filename}".encode("utf-8")
+    ).hexdigest()[:16]
+    artifact_id = f"artifact-rag-{document_id}"
+    await store.insert_artifact(
+        artifact_id,
+        content_hash,
+        "document",
+        project_id,
+        source_ref=f"rag://{document_id}",
+        mime_type=mime_type,
+        metadata={
+            "origin": "rag.upload",
+            "owner_id": user_id,
+            "filename": filename,
+            "document_id": document_id,
+        },
+    )
+    await store.upsert_node(
+        KnowledgeNode(
+            node_id=doc_node_id,
+            project_id=project_id,
+            label=filename,
+            node_type="file",
+            content={
+                "kind": "document",
+                "document_id": document_id,
+                "filename": filename,
+                "origin": "rag.upload",
+                "owner_id": user_id,
+                "artifact_id": artifact_id,
+            },
+            content_hash=content_hash,
+            graph_id=gid,
+        )
+    )
+    minted = 0
+    for i, detail in enumerate(chunk_details[:_KNOWLEDGE_NODE_CAP]):
+        chunk_id = f"{doc_node_id}-chunk{i}"
+        await store.upsert_node(
+            KnowledgeNode(
+                node_id=chunk_id,
+                project_id=project_id,
+                label=f"chunk {i} of {filename}",
+                node_type="entity",
+                content={
+                    "kind": "chunk",
+                    "document_id": document_id,
+                    "chunk_index": i,
+                    "s3_object": detail.get("s3_object"),
+                    "chunk_start": detail.get("chunk_start"),
+                    "chunk_end": detail.get("chunk_end"),
+                    "chunk_md5": detail.get("chunk_md5"),
+                    "excerpt": str(detail.get("excerpt") or "")[:300],
+                    "origin": "rag.upload",
+                },
+                content_hash=str(detail.get("chunk_md5") or ""),
+                graph_id=gid,
+            )
+        )
+        await store.upsert_edge(
+            KnowledgeEdge(
+                edge_id=f"{chunk_id}-part-of",
+                project_id=project_id,
+                source_id=chunk_id,
+                target_id=doc_node_id,
+                relation_type="part_of",
+                content={"kind": "part_of", "origin": "rag.upload"},
+                graph_id=gid,
+            )
+        )
+        minted += 1
+    return minted
+
+
+async def _mint_knowledge_nodes_best_effort(
+    request: Request,
+    **kwargs: Any,
+) -> int:
+    """Knowledge minting must never fail an otherwise-successful upload."""
+    try:
+        return await _mint_knowledge_nodes(request, **kwargs)
+    except Exception as exc:  # noqa: BLE001 — additive enrichment, fail-soft
+        logger.warning(
+            "knowledge node minting skipped for %s: %s",
+            kwargs.get("document_id"),
+            exc,
+        )
+        return 0
 
 
 def _discover_rag_endpoint(
@@ -320,34 +493,13 @@ async def upload_document(
                 )
 
             result = response.json()
-            from .audit_events import emit_audit
-
-            emit_audit(
-                "rag.upload",
+            return await _upload_success(
+                request,
+                result=result,
+                filename=file.filename or "",
+                mime_type=file.content_type or "",
                 user_id=_user_id,
                 project_id=project_id,
-                details={
-                    "filename": file.filename,
-                    "document_id": result.get("document_id", ""),
-                    "chunks": result.get("chunks", 0),
-                },
-            )
-
-            # Governance tracking
-            from .governance import record_resource_created
-
-            record_resource_created(
-                "rag_documents",
-                result.get("document_id", file.filename or "unknown"),
-                _user_id,
-                project_id=project_id,
-            )
-
-            return UploadResponse(
-                document_id=result.get("document_id", ""),
-                filename=file.filename,
-                status="success",
-                chunks=result.get("chunks", 0),
             )
 
     except httpx.RequestError as e:
