@@ -127,9 +127,10 @@ def test_refine_missing_parent_raises(lifecycle):
 
 
 def test_closed_loop_defaults_in_memory_without_db(monkeypatch):
+    """ADR-026: default is the canonical view, mirror-only when no store resolves."""
     from umrs.closed_loop_learning import ClosedLoopLearning
     from umrs.hypothesis_lifecycle import HypothesisLifecycle
-    from umrs.knowledge_graph_api import InMemoryKnowledgeGraph
+    from umrs.knowledge.canonical_graph_view import CanonicalGraphView
     from umrs.scientific_memory import InMemoryScientificMemoryStore
 
     monkeypatch.delenv("DB_HOST", raising=False)
@@ -139,14 +140,16 @@ def test_closed_loop_defaults_in_memory_without_db(monkeypatch):
     monkeypatch.delenv("UMRS_HYPOTHESIS_LIFECYCLE_STORE_BACKEND", raising=False)
     loop = ClosedLoopLearning()
     assert isinstance(loop._memory, InMemoryScientificMemoryStore)
-    assert isinstance(loop._graph, InMemoryKnowledgeGraph)
+    assert isinstance(loop._graph, CanonicalGraphView)
+    assert loop._graph._store is None
     assert isinstance(loop._hypothesis_lifecycle, HypothesisLifecycle)
 
 
 def test_closed_loop_honors_explicit_memory_backend(monkeypatch):
+    """Explicit 'memory' backend still mirrors-only via the canonical view."""
     from umrs.closed_loop_learning import ClosedLoopLearning
     from umrs.hypothesis_lifecycle import HypothesisLifecycle
-    from umrs.knowledge_graph_api import InMemoryKnowledgeGraph
+    from umrs.knowledge.canonical_graph_view import CanonicalGraphView
     from umrs.scientific_memory import InMemoryScientificMemoryStore
 
     monkeypatch.setenv("UMRS_SCIENTIFIC_MEMORY_STORE_BACKEND", "memory")
@@ -154,5 +157,5 @@ def test_closed_loop_honors_explicit_memory_backend(monkeypatch):
     monkeypatch.setenv("UMRS_HYPOTHESIS_LIFECYCLE_STORE_BACKEND", "memory")
     loop = ClosedLoopLearning()
     assert isinstance(loop._memory, InMemoryScientificMemoryStore)
-    assert isinstance(loop._graph, InMemoryKnowledgeGraph)
+    assert isinstance(loop._graph, CanonicalGraphView)
     assert isinstance(loop._hypothesis_lifecycle, HypothesisLifecycle)

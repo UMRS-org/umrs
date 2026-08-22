@@ -153,9 +153,11 @@ class ClosedLoopLearning:
         reasoning_engine: ScientificReasoningEngine | None = None,
     ) -> None:
         if knowledge_graph is None:
-            from umrs.knowledge_graph_api import build_default_graph
+            from umrs.knowledge.canonical_graph_view import default_view
 
-            knowledge_graph = build_default_graph()
+            # ADR-026 migration: default to the canonical-backed view
+            # (durable when the knowledge DSN resolves, mirror-only otherwise).
+            knowledge_graph = default_view()
         if scientific_memory is None:
             from umrs.scientific_memory import build_default_store
 

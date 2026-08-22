@@ -122,11 +122,7 @@ def _authorize_model_entry_for_caller(
     if not entry:
         return
     scope = str(entry.get("scope") or "system")
-    if scope == "system":
-        return
-    if scope == "project" and project_id and entry.get("project_id") == project_id:
-        return
-    if scope == "user" and user_id and entry.get("owner_id") == user_id:
+    if _scope_matches(entry, scope, user_id, project_id):
         return
     if user_id is None and project_id is None:
         logger.warning(
@@ -142,6 +138,22 @@ def _authorize_model_entry_for_caller(
             "by this caller"
         ),
     )
+
+
+def _scope_matches(
+    entry: dict[str, Any],
+    scope: str,
+    user_id: str | None,
+    project_id: str | None,
+) -> bool:
+    """Exact-scope matching rule for a catalog entry vs caller identity."""
+    if scope == "system":
+        return True
+    if scope == "project":
+        return bool(project_id) and entry.get("project_id") == project_id
+    if scope == "user":
+        return bool(user_id) and entry.get("owner_id") == user_id
+    return False
 
 
 def _enforce_recipe_policy(is_admin: bool, request: Any) -> None:
@@ -375,10 +387,20 @@ def _legacy_project_id(
     *,
     optional: bool,
 ) -> str | None:
+    """MVP-only fallback (deferred R1c): raw header and silent default-project.
+
+    Deprecated: strict mode never reaches this resolver — callers land here
+    only in mvp. Emit one deprecation warning per process; removal is
+    scheduled for the next release.
+    """
+    from ._identity import warn_legacy_params_once
+
     project_id = _header_str(x_project_id)
     if project_id:
+        warn_legacy_params_once("endpoints.legacy_x_project_id")
         return project_id
     if authorization and authorization.startswith("Bearer "):
+        warn_legacy_params_once("endpoints.legacy_bearer_default_project")
         if optional:
             return "default-project"
         logger.warning("JWT project_id extraction not implemented, using default")
@@ -683,6 +705,20 @@ async def _refresh_endpoint_readiness(
         )
         return endpoint
 
+    return _apply_readiness_state(
+        registry, endpoint, is_ready, is_degraded, models, error
+    )
+
+
+def _apply_readiness_state(
+    registry: EndpointRegistry,
+    endpoint: Any,
+    is_ready: bool,
+    is_degraded: bool,
+    models: Any,
+    error: Any,
+) -> Any:
+    """Record probe outcome in registry metadata; return refreshed endpoint."""
     if is_ready:
         registry.update_metadata(
             endpoint.job_id,
@@ -1003,6 +1039,12 @@ class ProvisionRequest(BaseModel):
 
     @model_validator(mode="after")
     def _validate_multi_model(self) -> "ProvisionRequest":
+        self._validate_models_list()
+        self._validate_serving_enums()
+        self._validate_serving_mode_combinations()
+        return self
+
+    def _validate_models_list(self) -> None:
         # Normalize/validate models[]
         if self.models is None:
             self.models = [self.model]
@@ -1013,6 +1055,11 @@ class ProvisionRequest(BaseModel):
         if self.models[0] != self.model:
             raise ValueError("models[0] must equal model")
 
+    def _validate_serving_enums(self) -> None:
+        self._validate_backend_enums()
+        self._validate_caller_enums()
+
+    def _validate_backend_enums(self) -> None:
         if self.serving_mode not in ("single", "multi-lora", "co-located"):
             raise ValueError(
                 "serving_mode must be one of: single, multi-lora, co-located"
@@ -1030,26 +1077,34 @@ class ProvisionRequest(BaseModel):
             raise ValueError(
                 "readiness_probe must be one of: models, chat, http, bentoml"
             )
+
+    def _validate_caller_enums(self) -> None:
         if self.tier not in ("system", "project", "user"):
             raise ValueError("tier must be one of: system, project, user")
         if self.reasoning is not None and self.reasoning not in ("auto", "on", "off"):
             raise ValueError("reasoning must be one of: auto, on, off")
-        if self.serving_mode == "single" and len(self.models) != 1:
+
+    def _validate_serving_mode_combinations(self) -> None:
+        self._validate_model_count_for_mode()
+        self._validate_lora_combination()
+
+    def _validate_model_count_for_mode(self) -> None:
+        if self.serving_mode == "single" and len(self.models or []) != 1:
             raise ValueError("serving_mode=single requires exactly one model")
-        if self.serving_mode == "co-located" and len(self.models) < 2:
+        if self.serving_mode == "co-located" and len(self.models or []) < 2:
             raise ValueError("serving_mode=co-located requires at least 2 models")
 
+    def _validate_lora_combination(self) -> None:
         if self.loras:
             if self.serving_mode != "multi-lora":
                 raise ValueError("loras requires serving_mode=multi-lora")
-            if len(self.models) != 1:
+            if len(self.models or []) != 1:
                 raise ValueError("multi-lora requires exactly one base model")
             names = [lora.name for lora in self.loras]
             if len(set(names)) != len(names):
                 raise ValueError("LoRA names must be unique")
         elif self.serving_mode == "multi-lora":
             raise ValueError("serving_mode=multi-lora requires a non-empty loras list")
-        return self
 
 
 class ProvisionResponse(BaseModel):
@@ -1244,50 +1299,35 @@ def _resolve_served_model_name(
     return model_name
 
 
-def _resolve_registered_model_entry(model_name: str) -> dict[str, Any] | None:
-    """Resolve a registered model entry from the authoritative UMRS catalog."""
-    store_unavailable = False
-    try:
-        from ..model_registry.store import AccessContext
-        from .models import get_model_store
+_SCOPE_ORDER = {"system": 0, "project": 1, "user": 2}
 
-        store = get_model_store()
-        matches = [
-            entry.to_dict()
-            for entry in store.list_models(
-                AccessContext(user_id="", is_admin=True),
-                limit=500,
-            )
-            if entry.name == model_name
-        ]
-        if matches:
-            scope_order = {"system": 0, "project": 1, "user": 2}
-            matches.sort(
-                key=lambda entry: scope_order.get(str(entry.get("scope", "system")), 99)
-            )
-            return matches[0]
-    except ImportError:
-        # Legacy file-only deployments: no store package at all. The JSON
-        # fallback below is the intended substitute there.
-        pass
-    except Exception as e:
-        # The authoritative store EXISTS but failed. Pre-fix this silently
-        # fell through to the deprecated JSON catalog at DEBUG visibility —
-        # a stale, wrong-scope entry could then feed _authorize_model_entry_
-        # for_caller. Never mask an authoritative-store error: log loud and
-        # return None (honest fail).
-        store_unavailable = True
-        logger.warning(
-            "Model store lookup failed for %s (authoritative store error, NOT falling back to JSON catalog): %s",
-            model_name,
-            e,
-            exc_info=True,
+
+def _pick_first_by_scope(matches: list[dict[str, Any]]) -> dict[str, Any] | None:
+    if not matches:
+        return None
+    matches.sort(
+        key=lambda entry: _SCOPE_ORDER.get(str(entry.get("scope", "system")), 99)
+    )
+    return matches[0]
+
+
+def _entry_from_store(model_name: str) -> dict[str, Any] | None:
+    from ..model_registry.store import AccessContext
+    from .models import get_model_store
+
+    store = get_model_store()
+    matches = [
+        entry.to_dict()
+        for entry in store.list_models(
+            AccessContext(user_id="", is_admin=True),
+            limit=500,
         )
-        return None
+        if entry.name == model_name
+    ]
+    return _pick_first_by_scope(matches)
 
-    if store_unavailable:
-        return None
 
+def _entry_from_json_catalog(model_name: str) -> dict[str, Any] | None:
     try:
         from umrs.server.model_registry_handler import _load_catalog
 
@@ -1296,17 +1336,31 @@ def _resolve_registered_model_entry(model_name: str) -> dict[str, Any] | None:
             for entry in _load_catalog().get("models", [])
             if entry.get("name") == model_name
         ]
-        if not matches:
-            return None
-
-        scope_order = {"system": 0, "project": 1, "user": 2}
-        matches.sort(
-            key=lambda entry: scope_order.get(str(entry.get("scope", "system")), 99)
-        )
-        return matches[0]
+        return _pick_first_by_scope(matches)
     except Exception as e:
         logger.debug(f"Failed to resolve model entry for {model_name}: {e}")
     return None
+
+
+def _resolve_registered_model_entry(model_name: str) -> dict[str, Any] | None:
+    """Resolve a registered model entry from the authoritative UMRS catalog."""
+    try:
+        return _entry_from_store(model_name)
+    except ImportError:
+        # Legacy file-only deployments: no store package at all. The JSON
+        # fallback below is the intended substitute there.
+        pass
+    except Exception as e:
+        # The authoritative store EXISTS but failed. Never mask an
+        # authoritative-store error: log loud and return None (honest fail).
+        logger.warning(
+            "Model store lookup failed for %s (authoritative store error, NOT falling back to JSON catalog): %s",
+            model_name,
+            e,
+            exc_info=True,
+        )
+        return None
+    return _entry_from_json_catalog(model_name)
 
 
 def _resolve_requested_model_path(
@@ -1671,35 +1725,21 @@ async def get_active_endpoints(
 
     # If specific model requested, try to get that endpoint
     if not _is_all_models_query(normalized_model):
-        endpoint = registry.get(project_id, normalized_model, prefer_warm=True)
-        if not endpoint:
-            # Try matching by served_model_name in metadata
-            all_eps = registry.list_all(
-                project_id=project_id,
-                status_filter=[EndpointStatus.READY, EndpointStatus.DEGRADED],
-            )
-            for ep in all_eps:
-                served = ep.metadata.get("served_model_name")
-                if not served:
-                    served = _resolve_served_model_name(ep.model)
-                if served == normalized_model:
-                    endpoint = ep
-                    break
-        if endpoint:
-            live = await _filter_live_ready_endpoints(registry, [endpoint])
-            if not live:
-                return EndpointsListResponse(endpoints=[], total=0)
-            endpoint = live[0]
-            ep_dict = _enrich_endpoint_response(endpoint.to_dict())
-            if not _endpoint_passes_capability_filter(
-                ep_dict, capability_tags, normalized_model_type
-            ):
-                return EndpointsListResponse(endpoints=[], total=0)
-            return EndpointsListResponse(
-                endpoints=[EndpointResponse(**ep_dict)],
-                total=1,
-            )
-        return EndpointsListResponse(endpoints=[], total=0)
+        endpoint = _find_named_ready(registry, project_id, normalized_model)
+        if endpoint is None:
+            return EndpointsListResponse(endpoints=[], total=0)
+        live = await _filter_live_ready_endpoints(registry, [endpoint])
+        if not live:
+            return EndpointsListResponse(endpoints=[], total=0)
+        ep_dict = _enrich_endpoint_response(live[0].to_dict())
+        if not _endpoint_passes_capability_filter(
+            ep_dict, capability_tags, normalized_model_type
+        ):
+            return EndpointsListResponse(endpoints=[], total=0)
+        return EndpointsListResponse(
+            endpoints=[EndpointResponse(**ep_dict)],
+            total=1,
+        )
 
     # List all ready endpoints for the project
     endpoints = registry.list_all(
@@ -1707,7 +1747,33 @@ async def get_active_endpoints(
         status_filter=[EndpointStatus.READY, EndpointStatus.DEGRADED],
     )
     endpoints = await _filter_live_ready_endpoints(registry, endpoints)
+    return _active_list_response(endpoints, capability_tags, normalized_model_type)
 
+
+def _find_named_ready(
+    registry: EndpointRegistry, project_id: str, normalized_model: str
+):
+    """Resolve single ready/DEGRADED endpoint by model or served name."""
+    endpoint = registry.get(project_id, normalized_model, prefer_warm=True)
+    if endpoint is not None:
+        return endpoint
+    # Try matching by served_model_name in metadata
+    all_eps = registry.list_all(
+        project_id=project_id,
+        status_filter=[EndpointStatus.READY, EndpointStatus.DEGRADED],
+    )
+    for ep in all_eps:
+        served = ep.metadata.get("served_model_name")
+        if not served:
+            served = _resolve_served_model_name(ep.model)
+        if served == normalized_model:
+            return ep
+    return None
+
+
+def _active_list_response(
+    endpoints, capability_tags, normalized_model_type
+) -> EndpointsListResponse:
     enriched = [_enrich_endpoint_response(e.to_dict()) for e in endpoints]
     filtered = [
         ep
@@ -1716,7 +1782,6 @@ async def get_active_endpoints(
             ep, capability_tags, normalized_model_type
         )
     ]
-
     return EndpointsListResponse(
         endpoints=[EndpointResponse(**e) for e in filtered],
         total=len(filtered),
@@ -1751,39 +1816,46 @@ async def list_endpoints(
             detail="Cross-project endpoint listing requires admin role",
         )
 
-    statuses = None
-    if status_filter:
-        try:
-            statuses = [EndpointStatus(s.strip()) for s in status_filter.split(",")]
-        except ValueError as e:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid status filter: {e}",
-            ) from e
-
+    statuses = _parse_status_filter(status_filter)
     endpoints = registry.list_all(project_id=project_id, status_filter=statuses)
 
     # F-012: Prune ghost READY/DEGRADED endpoints at list time so the
     # user-facing ``r4 endpoint list`` output is always honest.
+    endpoints = await _prune_ghost_ready(registry, endpoints)
+    return EndpointsListResponse(
+        endpoints=[EndpointResponse(**e.to_dict()) for e in endpoints],
+        total=len(endpoints),
+    )
+
+
+def _parse_status_filter(status_filter: str | None) -> list[EndpointStatus] | None:
+    if not status_filter:
+        return None
+    try:
+        return [EndpointStatus(s.strip()) for s in status_filter.split(",")]
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid status filter: {e}",
+        ) from e
+
+
+async def _prune_ghost_ready(registry: EndpointRegistry, endpoints: list) -> list:
     ready_eps = [
         e
         for e in endpoints
         if e.status in (EndpointStatus.READY, EndpointStatus.DEGRADED)
     ]
-    if ready_eps:
-        live_ready = await _filter_live_ready_endpoints(registry, ready_eps)
-        live_job_ids = {e.job_id for e in live_ready}
-        endpoints = [
-            e
-            for e in endpoints
-            if e.status not in (EndpointStatus.READY, EndpointStatus.DEGRADED)
-            or e.job_id in live_job_ids
-        ]
-
-    return EndpointsListResponse(
-        endpoints=[EndpointResponse(**e.to_dict()) for e in endpoints],
-        total=len(endpoints),
-    )
+    if not ready_eps:
+        return endpoints
+    live_ready = await _filter_live_ready_endpoints(registry, ready_eps)
+    live_job_ids = {e.job_id for e in live_ready}
+    return [
+        e
+        for e in endpoints
+        if e.status not in (EndpointStatus.READY, EndpointStatus.DEGRADED)
+        or e.job_id in live_job_ids
+    ]
 
 
 @router.post(
@@ -1915,6 +1987,33 @@ async def mark_endpoint_used(
     return EndpointResponse(**endpoint.to_dict())
 
 
+def _metrics_headers() -> dict[str, str]:
+    """LiteLLM bearer for /metrics when configured (best-effort)."""
+    try:
+        from ..orchestrator.site_config import get_site_config
+
+        _key = get_site_config().network.litellm_master_key
+        if _key:
+            return {"Authorization": f"Bearer {_key}"}
+    except Exception:  # noqa: BLE001 - best-effort; continue without auth
+        pass
+    return {}
+
+
+async def _fetch_upstream_metrics(
+    target_url: str, metrics_headers: dict[str, str]
+) -> httpx.Response:
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            return await client.get(target_url, headers=metrics_headers)
+    except Exception as exc:  # noqa: BLE001 - best-effort proxy
+        logger.warning("Failed to fetch endpoint metrics from %s: %s", target_url, exc)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Failed to fetch endpoint metrics",
+        ) from exc
+
+
 @router.get(
     "/{job_id}/metrics",
     summary="Proxy endpoint /metrics for Prometheus scraping",
@@ -1963,25 +2062,7 @@ async def proxy_endpoint_metrics(
     target_url = f"http://{endpoint.host}:{endpoint.port}/metrics"
     # Pass LiteLLM master key if configured — LiteLLM protects /metrics with
     # bearer auth.  Fetched from site config so it matches the running stack.
-    metrics_headers: dict[str, str] = {}
-    try:
-        from ..orchestrator.site_config import get_site_config
-
-        _key = get_site_config().network.litellm_master_key
-        if _key:
-            metrics_headers["Authorization"] = f"Bearer {_key}"
-    except Exception:  # noqa: BLE001 - best-effort; continue without auth
-        pass
-
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            upstream = await client.get(target_url, headers=metrics_headers)
-    except Exception as exc:  # noqa: BLE001 - best-effort proxy
-        logger.warning("Failed to fetch endpoint metrics from %s: %s", target_url, exc)
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Failed to fetch endpoint metrics",
-        ) from exc
+    upstream = await _fetch_upstream_metrics(target_url, _metrics_headers())
 
     if upstream.status_code != status.HTTP_200_OK:
         raise HTTPException(
@@ -2101,30 +2182,29 @@ async def health_check(
             )
 
     # Determine overall status
-    total = len(all_endpoints)
-    if total == 0:
-        overall_status = "healthy"
-        message = "No endpoints registered"
-    elif unhealthy == 0:
-        overall_status = "healthy"
-        message = None
-    elif unhealthy < total:
-        overall_status = "degraded"
-        message = f"{unhealthy} endpoint(s) unhealthy"
-    else:
-        overall_status = "unhealthy"
-        message = "All endpoints unhealthy"
-
+    overall_status, message = _overall_health(
+        total=len(all_endpoints), unhealthy=unhealthy
+    )
     return HealthResponse(
         status=overall_status,
         registry_ok=True,
-        total_endpoints=total,
+        total_endpoints=len(all_endpoints),
         healthy_endpoints=healthy,
         unhealthy_endpoints=unhealthy,
         provisioning_endpoints=provisioning,
         endpoints=endpoint_details if include_details else [],
         message=message,
     )
+
+
+def _overall_health(*, total: int, unhealthy: int) -> tuple[str, str | None]:
+    if total == 0:
+        return "healthy", "No endpoints registered"
+    if unhealthy == 0:
+        return "healthy", None
+    if unhealthy < total:
+        return "degraded", f"{unhealthy} endpoint(s) unhealthy"
+    return "unhealthy", "All endpoints unhealthy"
 
 
 @router.get(
@@ -2150,6 +2230,555 @@ async def get_endpoint(
     endpoint = await _refresh_endpoint_readiness(registry, endpoint)
 
     return EndpointResponse(**endpoint.to_dict())
+
+
+def _merge_request_env(request, env_vars: dict) -> None:
+    """Request-supplied env_vars take precedence over catalog/roster defaults."""
+    for _k, _v in (request.env_vars or {}).items():
+        env_vars[str(_k)] = str(_v)
+
+
+def _resolve_serving_scalars(request, model_entry) -> dict:
+    """Straight-line resolver chain over catalog/profile/request defaults."""
+    serving_profile = _serving_profile(model_entry)
+    serving_backend = _resolve_serving_backend(
+        request.model,
+        model_entry=model_entry,
+        explicit=request.serving_backend,
+    )
+    service_kind = _resolve_service_kind(
+        request.model,
+        model_entry=model_entry,
+        serving_backend=serving_backend,
+        explicit=request.service_kind,
+    )
+    readiness_probe = _resolve_readiness_probe_mode(
+        request.model,
+        model_entry=model_entry,
+        serving_backend=serving_backend,
+        explicit=request.readiness_probe,
+    )
+    return {
+        "model_type": _resolve_model_type(request.model, model_entry),
+        "serving_backend": serving_backend,
+        "service_kind": service_kind,
+        "launch_profiles": _resolve_launch_profiles(
+            request.model,
+            model_entry=model_entry,
+            serving_backend=serving_backend,
+            explicit=request.launch_profiles,
+            co_locate_vllm=request.co_locate_vllm,
+        ),
+        "readiness_probe": readiness_probe,
+        "readiness_path": _resolve_readiness_path(
+            request.model,
+            model_entry=model_entry,
+            serving_backend=serving_backend,
+            service_kind=service_kind,
+            readiness_probe=readiness_probe,
+            explicit=request.readiness_path,
+        ),
+        "serving_profile": serving_profile,
+        "container_image": request.container_image
+        or serving_profile.get("container_image"),
+        "service_port": request.service_port or serving_profile.get("service_port"),
+        "invoke_base_path": request.invoke_base_path
+        or serving_profile.get("invoke_base_path"),
+        "vision_adapter": request.vision_adapter
+        or serving_profile.get("vision_adapter"),
+        "vision_task": request.vision_task or serving_profile.get("vision_task"),
+        "output_format": request.output_format or serving_profile.get("output_format"),
+    }
+
+
+def _env_setdefault_gt1(
+    serving_profile: dict, env_vars: dict, key: str, env_name: str
+) -> None:
+    v = serving_profile.get(key)
+    if v and int(v) > 1:
+        env_vars.setdefault(env_name, str(v))
+
+
+def _env_setdefault_present(
+    serving_profile: dict, env_vars: dict, key: str, env_name: str
+) -> None:
+    v = serving_profile.get(key)
+    if v:
+        env_vars.setdefault(env_name, str(v))
+
+
+def _apply_profile_vllm_env(serving_profile: dict, env_vars: dict) -> None:
+    """Wire ServingProfile vLLM parameters as env-var defaults."""
+    _env_setdefault_gt1(serving_profile, env_vars, "tensor_parallel_size", "VLLM_TP")
+    _env_setdefault_present(
+        serving_profile, env_vars, "gpu_memory_utilization", "VLLM_GPU_MEM_UTIL"
+    )
+    profile_dtype = serving_profile.get("dtype")
+    if profile_dtype and profile_dtype != "auto":
+        env_vars.setdefault("VLLM_DTYPE", str(profile_dtype))
+    _env_setdefault_present(
+        serving_profile, env_vars, "quantization", "VLLM_QUANTIZATION"
+    )
+    _env_setdefault_present(
+        serving_profile, env_vars, "max_model_len", "VLLM_MAX_MODEL_LEN"
+    )
+    _env_setdefault_gt1(serving_profile, env_vars, "pipeline_parallel_size", "VLLM_PP")
+
+
+def _apply_reasoning_env(request, env_vars: dict) -> None:
+    """Reasoning-parser control: 'off' disables, 'on' forces native parser."""
+    if request.reasoning == "off":
+        env_vars["VLLM_REASONING_PARSER"] = "none"
+    elif request.reasoning == "on":
+        _forced_parser = _derive_reasoning_parser(request.model)
+        if _forced_parser:
+            env_vars["VLLM_REASONING_PARSER"] = _forced_parser
+
+
+def _recommended_gpu(request, serving_profile: dict) -> int:
+    profile_gpu_count = serving_profile.get("recommended_gpu_count")
+    if request.gpu_count == 1 and profile_gpu_count and int(profile_gpu_count) > 1:
+        logger.info(
+            "Using recommended_gpu_count=%d from model catalog for '%s'",
+            int(profile_gpu_count),
+            request.model,
+        )
+        return int(profile_gpu_count)
+    return request.gpu_count
+
+
+def _recommended_nodes(request, serving_profile: dict, env_vars: dict) -> int:
+    profile_node_count = serving_profile.get("recommended_node_count")
+    effective_node_count = request.node_count
+    if request.node_count == 1 and profile_node_count and int(profile_node_count) > 1:
+        effective_node_count = int(profile_node_count)
+        logger.info(
+            "Using recommended_node_count=%d from model catalog for '%s'",
+            effective_node_count,
+            request.model,
+        )
+    if effective_node_count > 1:
+        env_vars.setdefault("SLURM_NODES", str(effective_node_count))
+    return effective_node_count
+
+
+def _effective_strategy(request, serving_profile: dict, env_vars: dict) -> str | None:
+    strategy = request.parallel_strategy or serving_profile.get("parallel_strategy")
+    if strategy:
+        env_vars.setdefault("VLLM_PARALLEL_STRATEGY", str(strategy).lower())
+    return strategy
+
+
+def _compute_resource_overrides(request, serving_profile: dict, env_vars: dict) -> dict:
+    """GPU/nodes/max-len/strategy overrides honoring request-level defaults."""
+    profile_max_model_len = serving_profile.get("max_model_len")
+    effective_max_model_len = request.max_model_len
+    if request.max_model_len == 4096 and profile_max_model_len:
+        effective_max_model_len = int(profile_max_model_len)
+    effective_parallel_strategy = _effective_strategy(
+        request, serving_profile, env_vars
+    )
+    _apply_reasoning_env(request, env_vars)
+    return {
+        "gpu": _recommended_gpu(request, serving_profile),
+        "max_len": effective_max_model_len,
+        "node": _recommended_nodes(request, serving_profile, env_vars),
+        "parallel": effective_parallel_strategy,
+        "profile_max_model_len": profile_max_model_len,
+    }
+
+
+def _scale_partition_nodes(eff: dict, serving_plan, env_vars: dict) -> None:
+    if eff["partition"] is None and serving_plan.site.partition:
+        eff["partition"] = serving_plan.site.partition
+    if eff["node"] == 1 and serving_plan.runtime.nodes > 1:
+        eff["node"] = serving_plan.runtime.nodes
+        env_vars.setdefault("SLURM_NODES", str(eff["node"]))
+
+
+def _scale_gpu_len(eff: dict, serving_plan, env_vars: dict) -> None:
+    if eff["gpu"] == 1 and serving_plan.runtime.gpus_per_node > 1:
+        eff["gpu"] = serving_plan.runtime.gpus_per_node
+    if eff["max_len"] == 4096 and serving_plan.engine.max_model_len:
+        eff["max_len"] = serving_plan.engine.max_model_len
+        env_vars.setdefault("VLLM_MAX_MODEL_LEN", str(eff["max_len"]))
+    if not eff["parallel"] and serving_plan.runtime.strategy != "tp_pp":
+        env_vars.setdefault("VLLM_PARALLEL_STRATEGY", serving_plan.runtime.strategy)
+
+
+def _plan_apply_scaling(eff: dict, serving_plan, env_vars: dict) -> None:
+    """Plan scaling override for request-default partition/nodes/gpus/len/strategy."""
+    _scale_partition_nodes(eff, serving_plan, env_vars)
+    _scale_gpu_len(eff, serving_plan, env_vars)
+
+
+def _plan_apply_env(ss, serving_plan, env_vars: dict) -> None:
+    for _k, _v in ss.spec_env_vars(serving_plan).items():
+        env_vars.setdefault(str(_k), str(_v))
+    if serving_plan.patches:
+        for _k2, _v2 in ss.patches_to_env(serving_plan.patches).items():
+            env_vars.setdefault(str(_k2), str(_v2))
+
+
+def _maybe_apply_serving_plan(request, serving_plan, ss, env_vars, **eff) -> dict:
+    """Apply plan overrides only when a curated plan was resolved."""
+    if serving_plan is None:
+        return eff
+    return _apply_serving_plan(request, serving_plan, ss, env_vars, **eff)
+
+
+def _apply_serving_plan(request, serving_plan, ss, env_vars, **eff) -> dict:
+    """Apply curated serving-plan overrides (request defaults only)."""
+    _plan_apply_scaling(eff, serving_plan, env_vars)
+    if request.ttl_sec == 3600 and serving_plan.ttl_sec is not None:
+        eff["ttl_sec"] = int(serving_plan.ttl_sec)
+    _plan_apply_env(ss, serving_plan, env_vars)
+    logger.info(
+        "Resolved recipe for '%s' (plan=%s): partition=%s nodes=%d gpus=%d "
+        "max_model_len=%d ttl_sec=%s",
+        request.model,
+        serving_plan.plan_hash()[:12],
+        eff["partition"],
+        eff["node"],
+        eff["gpu"],
+        eff["max_len"],
+        eff["ttl_sec"],
+    )
+    return eff
+
+
+def _optional_metadata_fields(
+    metadata: dict,
+    request,
+    env_vars: dict,
+    *,
+    launch_profiles,
+    readiness_path,
+    service_port,
+    invoke_base_path,
+    container_image,
+    vision_adapter,
+    vision_task,
+    output_format,
+    serving_plan,
+) -> None:
+    """Optional metadata fields (set only when truthy) exactly as before."""
+    _metadata_profiles_and_plan(metadata, launch_profiles, env_vars, serving_plan)
+    if readiness_path:
+        metadata["readiness_path"] = readiness_path
+    if service_port:
+        metadata["service_port"] = int(service_port)
+    if invoke_base_path:
+        metadata["invoke_base_path"] = str(invoke_base_path)
+    if container_image:
+        metadata["container_image"] = str(container_image)
+    if vision_adapter:
+        metadata["vision_adapter"] = str(vision_adapter)
+    if vision_task:
+        metadata["vision_task"] = str(vision_task)
+    if output_format:
+        metadata["output_format"] = str(output_format)
+
+
+def _metadata_profiles_and_plan(
+    metadata: dict, launch_profiles, env_vars: dict, serving_plan
+) -> None:
+    """launch_profiles + serving-plan metadata fields with env extras."""
+    if launch_profiles:
+        metadata["launch_profiles"] = launch_profiles
+        # Use RIVAULT_EXTRA_PROFILES so the Slurm wrapper appends these
+        # profiles to its default set ("harness vllm").
+        existing_extra = env_vars.get("RIVAULT_EXTRA_PROFILES", "")
+        all_extras = _dedupe_profiles(existing_extra, launch_profiles)
+        if all_extras:
+            env_vars["RIVAULT_EXTRA_PROFILES"] = " ".join(all_extras)
+    if serving_plan is not None:
+        metadata["serving_plan_hash"] = serving_plan.plan_hash()
+        metadata["serving_plan"] = serving_plan.to_plan_dict()
+        metadata["recipe_file"] = serving_plan.provenance.recipe_file
+
+
+def _apply_vision_env(
+    serving_backend, service_kind, env_vars: dict, container_image
+) -> None:
+    if serving_backend == "bentoml" or service_kind == "bentoml_vision":
+        env_vars.setdefault("VISION_REQUIRE_PRESIGNED_URLS", "true")
+        env_vars.setdefault("TRANSFORMERS_OFFLINE", "1")
+        env_vars.setdefault("HF_HUB_OFFLINE", "1")
+        if container_image:
+            env_vars.setdefault("BENTOML_VISION_IMAGE", str(container_image))
+
+
+def _apply_served_name_env(
+    request, model_entry, metadata: dict, env_vars: dict
+) -> str | None:
+    served_model_name = _resolve_served_model_name(
+        request.model,
+        model_entry=model_entry,
+    )
+    if served_model_name and served_model_name != request.model:
+        metadata["served_model_name"] = served_model_name
+        env_vars["VLLM_SERVED_MODEL_NAME"] = served_model_name
+    # Multi-model fields (forwarded via metadata so orchestrator backends
+    # can read them without a service-layer schema change yet).
+    metadata["serving_mode"] = request.serving_mode
+    metadata["models"] = list(request.models or [request.model])
+    if request.loras:
+        metadata["loras"] = [
+            {"name": lora.name, "source": lora.source} for lora in request.loras
+        ]
+    return served_model_name
+
+
+def _record_endpoint_created(requesting_user, project_id, request, job_id) -> None:
+    from .audit_events import emit_audit
+    from .governance import record_resource_created
+
+    emit_audit(
+        "endpoint.created",
+        user_id=requesting_user or "",
+        project_id=project_id,
+        details={"model": request.model, "tier": request.tier, "job_id": job_id},
+    )
+    record_resource_created(
+        "endpoints",
+        job_id,
+        requesting_user or "",
+        project_id=project_id,
+        tier=request.tier,
+        metadata={"model": request.model},
+    )
+
+
+def _accepted_provisioning_response(
+    request,
+    requesting_user,
+    project_id,
+    result,
+    emit_audit,
+    record_resource_created,
+):
+    """202+Retry-After path when provisioning started but is not yet ready."""
+    from fastapi.responses import JSONResponse
+
+    emit_audit(
+        "endpoint.provisioning",
+        user_id=requesting_user or "",
+        project_id=project_id,
+        details={
+            "model": request.model,
+            "tier": request.tier,
+            "job_id": result.job_id,
+        },
+    )
+    record_resource_created(
+        "endpoints",
+        result.job_id,
+        requesting_user or "",
+        project_id=project_id,
+        tier=request.tier,
+        metadata={"model": request.model},
+    )
+    response = ProvisionResponse(
+        status="provisioning",
+        job_id=result.job_id,
+        retry_after=30,
+    )
+    return JSONResponse(
+        content=response.model_dump(),
+        status_code=status.HTTP_202_ACCEPTED,
+        headers={"Retry-After": "30"},
+    )
+
+
+async def _finalize_provision(
+    service,
+    service_request,
+    request,
+    requesting_user,
+    effective_project_id,
+    provision_trace_id,
+):
+    """Call provision and translate the result (audit/record per branch)."""
+    from .audit_events import emit_audit
+    from .governance import record_resource_created
+
+    try:
+        result = await service.provision(service_request)
+        if result.success and result.endpoint and result.endpoint.is_usable:
+            # Ready immediately (unlikely for real provisioning)
+            _record_endpoint_created(
+                requesting_user, effective_project_id, request, result.job_id
+            )
+            return ProvisionResponse(
+                status="ready",
+                job_id=result.job_id,
+                endpoint=EndpointResponse(**result.endpoint.to_dict())
+                if result.endpoint
+                else None,
+            )
+        elif result.success:
+            return _accepted_provisioning_response(
+                request,
+                requesting_user,
+                effective_project_id,
+                result,
+                emit_audit,
+                record_resource_created,
+            )
+        else:
+            emit_audit(
+                "endpoint.provision_failed",
+                user_id=requesting_user or "",
+                project_id=effective_project_id,
+                outcome="error",
+                details={"model": request.model, "error": result.error},
+            )
+            return ProvisionResponse(
+                status="failed",
+                job_id=result.job_id,
+                error=result.error,
+            )
+    except Exception as e:
+        logger.exception(
+            "provision-failed trace=%s model=%s: %s",
+            provision_trace_id,
+            request.model,
+            e,
+        )
+        emit_audit(
+            "endpoint.provision_failed",
+            user_id=requesting_user or "",
+            project_id=effective_project_id,
+            outcome="error",
+            details={
+                "model": request.model,
+                "error": str(e),
+                "trace": provision_trace_id,
+            },
+        )
+        return ProvisionResponse(
+            status="failed",
+            error=str(e),
+        )
+
+
+def _check_requesting_user_gate(requesting_user: str) -> None:
+    """Validate the requesting user exists and (optionally) has a Slurm account."""
+    try:
+        from ..admin.user_store import UserStore, UserStoreError
+
+        _user_store = UserStore()
+        _user_record = _user_store.resolve_user(requesting_user)
+        if _user_record.disabled:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"User '{_user_record.username}' is disabled.",
+            )
+        _require_slurm_account(_user_record, requesting_user)
+    except HTTPException:
+        raise
+    except UserStoreError as _use:
+        # User record not found in the store — reject rather than proceed.
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"User '{requesting_user}' is not registered. "
+            "Ask an admin to run: "
+            f"umrs-server admin user add {requesting_user}",
+        ) from _use
+    except Exception:
+        # User store infrastructure failure (I/O error, corrupt file, etc.).
+        # Log and proceed to avoid blocking provisioning when the store is
+        # temporarily unreachable (e.g. NFS hiccup in development).
+        logger.warning(
+            "User store unavailable while verifying user %s; proceeding without validation",
+            requesting_user,
+            exc_info=True,
+        )
+
+
+def _require_slurm_account(user_record, requesting_user: str) -> None:
+    _site_name: str | None = None
+    _require_acct: bool = False
+    try:
+        from ..orchestrator.site_config import load_site_config as _load_sc
+
+        _sc = _load_sc()
+        _site_name = _sc.name
+        _require_acct = getattr(_sc.scheduler, "require_user_slurm_account", False)
+    except FileNotFoundError:
+        pass
+    if not _require_acct:
+        return
+    if user_record.resolve_slurm_account(_site_name):
+        return
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail=(
+            f"User '{user_record.username}' has no Slurm account configured. "
+            "Ask an admin to run: "
+            f"umrs-server admin user set-slurm-account {user_record.username} <account>"
+        ),
+    )
+
+
+async def _try_warm_reuse(registry, service, project_id: str, request):
+    """Prefer-warm short-circuit: ready endpoint with live backend or None."""
+    if not request.prefer_warm:
+        return None
+    existing = registry.get(
+        project_id,
+        request.model,
+        prefer_warm=True,
+        min_ttl_sec=60,
+        variant=request.variant,
+    )
+    if not (existing and existing.is_usable):
+        return None
+    # Verify the backend job is actually still alive before handing the
+    # cached endpoint back (registry can be stale → ghost endpoints).
+    if await _is_backend_job_alive(service, existing.job_id):
+        return ProvisionResponse(
+            status="ready",
+            job_id=existing.job_id,
+            endpoint=EndpointResponse(**existing.to_dict()),
+        )
+    logger.warning(
+        "Stale warm endpoint detected for %s/%s (job_id=%s, variant=%s); "
+        "marking failed and provisioning fresh",
+        project_id,
+        request.model,
+        existing.job_id,
+        request.variant,
+    )
+    registry.mark_failed(
+        existing.job_id,
+        "stale registry entry: backend job no longer alive",
+    )
+    return None
+
+
+def _dedupe_in_flight(registry, project_id: str, request):
+    """202 + Retry-After when the same (model, variant) is already provisioning."""
+    from fastapi.responses import JSONResponse
+
+    provisioning = registry.list_all(
+        project_id=project_id,
+        status_filter=[EndpointStatus.PENDING, EndpointStatus.PROVISIONING],
+    )
+    for ep in provisioning:
+        if ep.model == request.model and ep.variant == request.variant:
+            response = ProvisionResponse(
+                status="provisioning",
+                job_id=ep.job_id,
+                retry_after=30,  # Check again in 30 seconds
+            )
+            return JSONResponse(
+                content=response.model_dump(),
+                status_code=status.HTTP_202_ACCEPTED,
+                headers={"Retry-After": "30"},
+            )
+    return None
 
 
 # =============================================================================
@@ -2186,8 +2815,6 @@ async def provision_endpoint(
     registry: EndpointRegistry = Depends(get_registry),
 ):
     """Provision a new endpoint or return existing one."""
-    from fastapi.responses import JSONResponse
-
     from ..orchestrator.service import (
         ProvisionRequest as ServiceProvisionRequest,
     )
@@ -2224,58 +2851,7 @@ async def provision_endpoint(
     # default) users without a per-user Slurm account can still submit jobs
     # — the backend falls back to the site's master Slurm account.
     if requesting_user:
-        try:
-            from ..admin.user_store import UserStore, UserStoreError
-
-            _user_store = UserStore()
-            _user_record = _user_store.resolve_user(requesting_user)
-            if _user_record.disabled:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail=f"User '{_user_record.username}' is disabled.",
-                )
-            _site_name: str | None = None
-            _require_acct: bool = False
-            try:
-                from ..orchestrator.site_config import load_site_config as _load_sc
-
-                _sc = _load_sc()
-                _site_name = _sc.name
-                _require_acct = getattr(
-                    _sc.scheduler, "require_user_slurm_account", False
-                )
-            except FileNotFoundError:
-                pass
-            if _require_acct:
-                _acct = _user_record.resolve_slurm_account(_site_name)
-                if not _acct:
-                    raise HTTPException(
-                        status_code=status.HTTP_403_FORBIDDEN,
-                        detail=(
-                            f"User '{_user_record.username}' has no Slurm account configured. "
-                            "Ask an admin to run: "
-                            f"umrs-server admin user set-slurm-account {_user_record.username} <account>"
-                        ),
-                    )
-        except HTTPException:
-            raise
-        except UserStoreError as _use:
-            # User record not found in the store — reject rather than proceed.
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"User '{requesting_user}' is not registered. "
-                "Ask an admin to run: "
-                f"umrs-server admin user add {requesting_user}",
-            ) from _use
-        except Exception:
-            # User store infrastructure failure (I/O error, corrupt file, etc.).
-            # Log and proceed to avoid blocking provisioning when the store is
-            # temporarily unreachable (e.g. NFS hiccup in development).
-            logger.warning(
-                "User store unavailable while verifying user %s; proceeding without validation",
-                requesting_user,
-                exc_info=True,
-            )
+        _check_requesting_user_gate(requesting_user)
 
     # Honest-failure gate for unimplemented serving modes — MUST run
     # before the warm-endpoint short-circuit below, otherwise a multi-lora
@@ -2290,63 +2866,19 @@ async def provision_endpoint(
     _enforce_recipe_policy(is_admin, request)
 
     # Check for existing warm endpoint first
-    if request.prefer_warm:
-        existing = registry.get(
-            effective_project_id,
-            request.model,
-            prefer_warm=True,
-            min_ttl_sec=60,
-            variant=request.variant,
-        )
-        if existing and existing.is_usable:
-            # Verify the backend job is actually still alive before
-            # handing the cached endpoint back to the caller. The registry
-            # caches the last-known status; if the underlying Slurm/K8s
-            # job has terminated since (walltime, manual cancel, crash),
-            # `is_usable` would still return True and we would return a
-            # ghost endpoint that no longer responds. Probe the backend
-            # and demote stale entries before reusing.
-            service = get_orchestration_service()
-            if await _is_backend_job_alive(service, existing.job_id):
-                return ProvisionResponse(
-                    status="ready",
-                    job_id=existing.job_id,
-                    endpoint=EndpointResponse(**existing.to_dict()),
-                )
-            logger.warning(
-                "Stale warm endpoint detected for %s/%s (job_id=%s, variant=%s); "
-                "marking failed and provisioning fresh",
-                effective_project_id,
-                request.model,
-                existing.job_id,
-                request.variant,
-            )
-            registry.mark_failed(
-                existing.job_id,
-                "stale registry entry: backend job no longer alive",
-            )
+    warm = await _try_warm_reuse(
+        registry, get_orchestration_service(), effective_project_id, request
+    )
+    if warm is not None:
+        return warm
 
     # Check if there's already a provisioning endpoint for this
     # project/model/variant combination. Multiple endpoints for the
     # same model are allowed when they have different variants, so
     # we only block on exact (model, variant) match.
-    provisioning = registry.list_all(
-        project_id=effective_project_id,
-        status_filter=[EndpointStatus.PENDING, EndpointStatus.PROVISIONING],
-    )
-    for ep in provisioning:
-        if ep.model == request.model and ep.variant == request.variant:
-            # Already provisioning this exact variant - return 202 with Retry-After
-            response = ProvisionResponse(
-                status="provisioning",
-                job_id=ep.job_id,
-                retry_after=30,  # Check again in 30 seconds
-            )
-            return JSONResponse(
-                content=response.model_dump(),
-                status_code=status.HTTP_202_ACCEPTED,
-                headers={"Retry-After": "30"},
-            )
+    dup = _dedupe_in_flight(registry, effective_project_id, request)
+    if dup is not None:
+        return dup
 
     # Trigger new provisioning
     service = get_orchestration_service()
@@ -2373,129 +2905,32 @@ async def provision_endpoint(
     env_vars: dict[str, str] = {}
     # Merge request-supplied env_vars first so they take precedence
     # over ServingProfile/roster defaults.
-    for _k, _v in (request.env_vars or {}).items():
-        env_vars[str(_k)] = str(_v)
-    model_type = _resolve_model_type(request.model, model_entry)
-    serving_backend = _resolve_serving_backend(
-        request.model,
-        model_entry=model_entry,
-        explicit=request.serving_backend,
-    )
-    service_kind = _resolve_service_kind(
-        request.model,
-        model_entry=model_entry,
-        serving_backend=serving_backend,
-        explicit=request.service_kind,
-    )
-    launch_profiles = _resolve_launch_profiles(
-        request.model,
-        model_entry=model_entry,
-        serving_backend=serving_backend,
-        explicit=request.launch_profiles,
-        co_locate_vllm=request.co_locate_vllm,
-    )
-    readiness_probe = _resolve_readiness_probe_mode(
-        request.model,
-        model_entry=model_entry,
-        serving_backend=serving_backend,
-        explicit=request.readiness_probe,
-    )
-    readiness_path = _resolve_readiness_path(
-        request.model,
-        model_entry=model_entry,
-        serving_backend=serving_backend,
-        service_kind=service_kind,
-        readiness_probe=readiness_probe,
-        explicit=request.readiness_path,
-    )
-    serving_profile = _serving_profile(model_entry)
-    container_image = request.container_image or serving_profile.get("container_image")
-    service_port = request.service_port or serving_profile.get("service_port")
-    invoke_base_path = request.invoke_base_path or serving_profile.get(
-        "invoke_base_path"
-    )
-    vision_adapter = request.vision_adapter or serving_profile.get("vision_adapter")
-    vision_task = request.vision_task or serving_profile.get("vision_task")
-    output_format = request.output_format or serving_profile.get("output_format")
+    _merge_request_env(request, env_vars)
+    scalars = _resolve_serving_scalars(request, model_entry)
+    model_type = scalars["model_type"]
+    serving_backend = scalars["serving_backend"]
+    service_kind = scalars["service_kind"]
+    launch_profiles = scalars["launch_profiles"]
+    readiness_probe = scalars["readiness_probe"]
+    readiness_path = scalars["readiness_path"]
+    serving_profile = scalars["serving_profile"]
+    container_image = scalars["container_image"]
+    service_port = scalars["service_port"]
+    invoke_base_path = scalars["invoke_base_path"]
+    vision_adapter = scalars["vision_adapter"]
+    vision_task = scalars["vision_task"]
+    output_format = scalars["output_format"]
 
     # Wire ServingProfile vLLM parameters as env-var defaults.
-    # API request fields take precedence; ServingProfile fills in catalog values.
-    profile_tp = serving_profile.get("tensor_parallel_size")
-    if profile_tp and int(profile_tp) > 1:
-        env_vars.setdefault("VLLM_TP", str(profile_tp))
-    profile_gpu_util = serving_profile.get("gpu_memory_utilization")
-    if profile_gpu_util:
-        env_vars.setdefault("VLLM_GPU_MEM_UTIL", str(profile_gpu_util))
-    profile_dtype = serving_profile.get("dtype")
-    if profile_dtype and profile_dtype != "auto":
-        env_vars.setdefault("VLLM_DTYPE", str(profile_dtype))
-    profile_quantization = serving_profile.get("quantization")
-    if profile_quantization:
-        env_vars.setdefault("VLLM_QUANTIZATION", str(profile_quantization))
-    profile_max_model_len = serving_profile.get("max_model_len")
-    if profile_max_model_len:
-        env_vars.setdefault("VLLM_MAX_MODEL_LEN", str(profile_max_model_len))
+    _apply_profile_vllm_env(serving_profile, env_vars)
 
-    # Apply recommended_gpu_count from ServingProfile when the API request
-    # uses the default value (1).  This lets the model catalog specify GPU
-    # requirements without every caller needing to set gpu_count explicitly.
-    profile_gpu_count = serving_profile.get("recommended_gpu_count")
-    effective_gpu_count = request.gpu_count
-    if request.gpu_count == 1 and profile_gpu_count and int(profile_gpu_count) > 1:
-        effective_gpu_count = int(profile_gpu_count)
-        logger.info(
-            "Using recommended_gpu_count=%d from model catalog for '%s'",
-            effective_gpu_count,
-            request.model,
-        )
-
-    # Apply recommended max_model_len from ServingProfile when the API request
-    # uses the default value (4096).
-    effective_max_model_len = request.max_model_len
-    if request.max_model_len == 4096 and profile_max_model_len:
-        effective_max_model_len = int(profile_max_model_len)
-
-    # Pipeline parallelism (multi-node): forward from ServingProfile → VLLM_PP env.
-    profile_pp = serving_profile.get("pipeline_parallel_size")
-    if profile_pp and int(profile_pp) > 1:
-        env_vars.setdefault("VLLM_PP", str(profile_pp))
-
-    # Multi-node parallelism strategy (tp_pp default | tep). API request field
-    # takes precedence; ServingProfile supplies a catalog default. Forwarded to
-    # serve.slurm via VLLM_PARALLEL_STRATEGY (opt-in; tp_pp is unchanged behaviour).
-    effective_parallel_strategy = request.parallel_strategy or serving_profile.get(
-        "parallel_strategy"
-    )
-    if effective_parallel_strategy:
-        env_vars.setdefault(
-            "VLLM_PARALLEL_STRATEGY", str(effective_parallel_strategy).lower()
-        )
-
-    # Reasoning-parser control (auto | on | off). 'auto' (default) lets
-    # serve.slurm derive the parser from the model name. 'off' disables it via
-    # the 'none' sentinel (serve.slurm clears VLLM_REASONING_PARSER). 'on'
-    # forces the model's native parser so a thinking model still splits its
-    # <think> block even if shell-side auto-derivation is disabled site-wide.
-    if request.reasoning == "off":
-        env_vars["VLLM_REASONING_PARSER"] = "none"
-    elif request.reasoning == "on":
-        _forced_parser = _derive_reasoning_parser(request.model)
-        if _forced_parser:
-            env_vars["VLLM_REASONING_PARSER"] = _forced_parser
-
-    # Apply recommended_node_count from ServingProfile when the API request
-    # uses the default value (1).
-    profile_node_count = serving_profile.get("recommended_node_count")
-    effective_node_count = request.node_count
-    if request.node_count == 1 and profile_node_count and int(profile_node_count) > 1:
-        effective_node_count = int(profile_node_count)
-        logger.info(
-            "Using recommended_node_count=%d from model catalog for '%s'",
-            effective_node_count,
-            request.model,
-        )
-    if effective_node_count > 1:
-        env_vars.setdefault("SLURM_NODES", str(effective_node_count))
+    # Resource overrides (GPU/nodes/max-len/strategy/reasoning) with catalog
+    # defaults applied only while the request carries field defaults.
+    eff = _compute_resource_overrides(request, serving_profile, env_vars)
+    effective_gpu_count = eff["gpu"]
+    effective_max_model_len = eff["max_len"]
+    effective_node_count = eff["node"]
+    effective_parallel_strategy = eff["parallel"]
 
     # Per-gateway pool-roster sizing defaults. When this deployment publishes a
     # pool roster (UMRS_PROVISION_ROSTER), use it to size single-endpoint
@@ -2533,37 +2968,23 @@ async def provision_endpoint(
     # custom model on a heterogeneous cluster is silently re-homed to the
     # partition defined by its unrelated recipe default (P1 regression class:
     # job 270440 ignored the m1 flag and queued on m0).
-    if serving_plan is not None:
-        if effective_partition is None and serving_plan.site.partition:
-            effective_partition = serving_plan.site.partition
-        if effective_node_count == 1 and serving_plan.runtime.nodes > 1:
-            effective_node_count = serving_plan.runtime.nodes
-            env_vars.setdefault("SLURM_NODES", str(effective_node_count))
-        if effective_gpu_count == 1 and serving_plan.runtime.gpus_per_node > 1:
-            effective_gpu_count = serving_plan.runtime.gpus_per_node
-        if effective_max_model_len == 4096 and serving_plan.engine.max_model_len:
-            effective_max_model_len = serving_plan.engine.max_model_len
-            env_vars.setdefault("VLLM_MAX_MODEL_LEN", str(effective_max_model_len))
-        if not effective_parallel_strategy and serving_plan.runtime.strategy != "tp_pp":
-            env_vars.setdefault("VLLM_PARALLEL_STRATEGY", serving_plan.runtime.strategy)
-        if request.ttl_sec == 3600 and serving_plan.ttl_sec is not None:
-            effective_ttl_sec = int(serving_plan.ttl_sec)
-        for _k, _v in _ss.spec_env_vars(serving_plan).items():
-            env_vars.setdefault(str(_k), str(_v))
-        if serving_plan.patches:
-            for _k2, _v2 in _ss.patches_to_env(serving_plan.patches).items():
-                env_vars.setdefault(str(_k2), str(_v2))
-        logger.info(
-            "Resolved recipe for '%s' (plan=%s): partition=%s nodes=%d gpus=%d "
-            "max_model_len=%d ttl_sec=%s",
-            request.model,
-            serving_plan.plan_hash()[:12],
-            effective_partition,
-            effective_node_count,
-            effective_gpu_count,
-            effective_max_model_len,
-            effective_ttl_sec,
-        )
+    eff = _maybe_apply_serving_plan(
+        request,
+        serving_plan,
+        _ss,
+        env_vars,
+        partition=effective_partition,
+        ttl_sec=effective_ttl_sec,
+        gpu=effective_gpu_count,
+        node=effective_node_count,
+        max_len=effective_max_model_len,
+        parallel=effective_parallel_strategy,
+    )
+    effective_partition = eff["partition"]
+    effective_ttl_sec = eff["ttl_sec"]
+    effective_gpu_count = eff["gpu"]
+    effective_node_count = eff["node"]
+    effective_max_model_len = eff["max_len"]
 
     request_metadata: dict[str, Any] = {
         "model_type": model_type,
@@ -2571,61 +2992,25 @@ async def provision_endpoint(
         "service_kind": service_kind,
         "readiness_probe": readiness_probe,
     }
-    if launch_profiles:
-        request_metadata["launch_profiles"] = launch_profiles
-        # Use RIVAULT_EXTRA_PROFILES so the Slurm wrapper appends these
-        # profiles to its default set ("harness vllm").  Setting
-        # RIVAULT_PROFILES directly would override the defaults and
-        # prevent vLLM from launching.
-        existing_extra = env_vars.get("RIVAULT_EXTRA_PROFILES", "")
-        all_extras = _dedupe_profiles(existing_extra, launch_profiles)
-        if all_extras:
-            env_vars["RIVAULT_EXTRA_PROFILES"] = " ".join(all_extras)
-    if readiness_path:
-        request_metadata["readiness_path"] = readiness_path
-    if service_port:
-        request_metadata["service_port"] = int(service_port)
-    if invoke_base_path:
-        request_metadata["invoke_base_path"] = str(invoke_base_path)
-    if container_image:
-        request_metadata["container_image"] = str(container_image)
-    if vision_adapter:
-        request_metadata["vision_adapter"] = str(vision_adapter)
-    if vision_task:
-        request_metadata["vision_task"] = str(vision_task)
-    if output_format:
-        request_metadata["output_format"] = str(output_format)
-    if serving_plan is not None:
-        request_metadata["serving_plan_hash"] = serving_plan.plan_hash()
-        request_metadata["serving_plan"] = serving_plan.to_plan_dict()
-        request_metadata["recipe_file"] = serving_plan.provenance.recipe_file
-
-    if serving_backend == "bentoml" or service_kind == "bentoml_vision":
-        env_vars.setdefault("VISION_REQUIRE_PRESIGNED_URLS", "true")
-        env_vars.setdefault("TRANSFORMERS_OFFLINE", "1")
-        env_vars.setdefault("HF_HUB_OFFLINE", "1")
-        if container_image:
-            env_vars.setdefault("BENTOML_VISION_IMAGE", str(container_image))
+    _optional_metadata_fields(
+        request_metadata,
+        request,
+        env_vars,
+        launch_profiles=launch_profiles,
+        readiness_path=readiness_path,
+        service_port=service_port,
+        invoke_base_path=invoke_base_path,
+        container_image=container_image,
+        vision_adapter=vision_adapter,
+        vision_task=vision_task,
+        output_format=output_format,
+        serving_plan=serving_plan,
+    )
+    _apply_vision_env(serving_backend, service_kind, env_vars, container_image)
 
     request_metadata.setdefault("owner_type", request.tier)
     request_metadata.setdefault("tier", request_metadata["owner_type"])
-    served_model_name = _resolve_served_model_name(
-        request.model,
-        model_entry=model_entry,
-    )
-    if served_model_name and served_model_name != request.model:
-        request_metadata["served_model_name"] = served_model_name
-        env_vars["VLLM_SERVED_MODEL_NAME"] = served_model_name
-
-    # Multi-model fields (forwarded via metadata so orchestrator backends
-    # can read them without a service-layer schema change yet). Phase 3
-    # will surface these as first-class ProvisionRequest fields.
-    request_metadata["serving_mode"] = request.serving_mode
-    request_metadata["models"] = list(request.models or [request.model])
-    if request.loras:
-        request_metadata["loras"] = [
-            {"name": lora.name, "source": lora.source} for lora in request.loras
-        ]
+    _apply_served_name_env(request, model_entry, request_metadata, env_vars)
 
     # Create provision request
     service_request = ServiceProvisionRequest(
@@ -2650,114 +3035,14 @@ async def provision_endpoint(
         variant=request.variant,
     )
 
-    try:
-        result = await service.provision(service_request)
-
-        if result.success and result.endpoint and result.endpoint.is_usable:
-            # Ready immediately (unlikely for real provisioning)
-            from .audit_events import emit_audit
-
-            emit_audit(
-                "endpoint.created",
-                user_id=requesting_user or "",
-                project_id=effective_project_id,
-                details={
-                    "model": request.model,
-                    "tier": request.tier,
-                    "job_id": result.job_id,
-                },
-            )
-            from .governance import record_resource_created
-
-            record_resource_created(
-                "endpoints",
-                result.job_id,
-                requesting_user or "",
-                project_id=effective_project_id,
-                tier=request.tier,
-                metadata={"model": request.model},
-            )
-            return ProvisionResponse(
-                status="ready",
-                job_id=result.job_id,
-                endpoint=EndpointResponse(**result.endpoint.to_dict())
-                if result.endpoint
-                else None,
-            )
-        elif result.success:
-            # Provisioning started
-            from .audit_events import emit_audit
-
-            emit_audit(
-                "endpoint.provisioning",
-                user_id=requesting_user or "",
-                project_id=effective_project_id,
-                details={
-                    "model": request.model,
-                    "tier": request.tier,
-                    "job_id": result.job_id,
-                },
-            )
-            from .governance import record_resource_created
-
-            record_resource_created(
-                "endpoints",
-                result.job_id,
-                requesting_user or "",
-                project_id=effective_project_id,
-                tier=request.tier,
-                metadata={"model": request.model},
-            )
-            response = ProvisionResponse(
-                status="provisioning",
-                job_id=result.job_id,
-                retry_after=30,
-            )
-            return JSONResponse(
-                content=response.model_dump(),
-                status_code=status.HTTP_202_ACCEPTED,
-                headers={"Retry-After": "30"},
-            )
-        else:
-            from .audit_events import emit_audit
-
-            emit_audit(
-                "endpoint.provision_failed",
-                user_id=requesting_user or "",
-                project_id=effective_project_id,
-                outcome="error",
-                details={"model": request.model, "error": result.error},
-            )
-            return ProvisionResponse(
-                status="failed",
-                job_id=result.job_id,
-                error=result.error,
-            )
-
-    except Exception as e:
-        logger.exception(
-            "provision-failed trace=%s model=%s: %s",
-            provision_trace_id,
-            request.model,
-            e,
-        )
-        from .audit_events import emit_audit
-
-        emit_audit(
-            "endpoint.provision_failed",
-            user_id=requesting_user or "",
-            project_id=effective_project_id,
-            outcome="error",
-            details={
-                "model": request.model,
-                "error": str(e),
-                "trace": provision_trace_id,
-            },
-        )
-        return ProvisionResponse(
-            status="failed",
-            error=str(e),
-        )
+    return await _finalize_provision(
+        service,
+        service_request,
+        request,
+        requesting_user,
+        effective_project_id,
+        provision_trace_id,
+    )
 
 
 @router.delete(
@@ -2842,11 +3127,14 @@ class EndpointUpgradeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     model_path: str = Field(
-        ..., min_length=1,
+        ...,
+        min_length=1,
         description="New model path (must already be registered)",
     )
     timeout_sec: int = Field(
-        900, ge=1, le=3600,
+        900,
+        ge=1,
+        le=3600,
         description="Maximum seconds to wait for replacement health",
     )
     wait: bool = Field(
@@ -2931,7 +3219,7 @@ async def upgrade_endpoint(
     )
 
     final = registry.get_by_job_id(job_id)
-    final_status = (final.status.value if final else "unknown")
+    final_status = final.status.value if final else "unknown"
 
     if not success:
         # Old endpoint MUST still be addressable after a failed upgrade.
@@ -2939,9 +3227,7 @@ async def upgrade_endpoint(
         if final is None:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=(
-                    f"upgrade failed and old endpoint is unrecoverable: {error}"
-                ),
+                detail=(f"upgrade failed and old endpoint is unrecoverable: {error}"),
             )
         return EndpointUpgradeResponse(
             job_id=job_id,

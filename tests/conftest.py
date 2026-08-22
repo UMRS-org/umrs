@@ -3,9 +3,13 @@ Pytest configuration and fixtures for UMRS tests.
 """
 
 import os
-from typing import Generator
+from collections.abc import Generator
 
 import pytest
+
+# Belt-and-braces: the ADR-026 sat_kg import hook already detects pytest via
+# sys.modules; keep the env flag for embedded/interpreter runners.
+os.environ.setdefault("UMRS_SAT_KG_QUIET", "1")
 
 # Demo/onboarding files that wrap argparse at module scope: collecting them
 # at test time makes pytest's argument parser abort with SystemExit — see the
