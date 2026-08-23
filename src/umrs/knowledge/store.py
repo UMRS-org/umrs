@@ -754,7 +754,13 @@ class KnowledgeStore:
         model_name: str,
         limit: int = 20,
     ) -> list[tuple[str, float]]:
-        """Cosine-nearest canonical nodes (project + model scoped)."""
+        """Cosine-nearest canonical nodes (project + model scoped).
+
+        Exact scan ORDER BY ``embedding <=> :v`` — no ANN index on the
+        untyped-dimension column (requires fixed dim). Expected table size at
+        this stage (chunk-capped uploads) is small; a typed shadow column +
+        hnsw index is the follow-up when a canonical model is pinned (0075
+        notes)."""
         sql = """
             SELECT e.node_id, e.embedding <=> $4::vector AS distance
               FROM knowledge_node_embeddings e
