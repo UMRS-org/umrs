@@ -8,12 +8,15 @@ never minted into canonical nodes, so the md5-join backfill
 first step: derive canonical artifact + document node + chunk nodes +
 part_of edges + migration-0075 embeddings DIRECTLY from the legacy table.
 
-Document identity: Gen1 tables carry no document_id — synthesized as the
-md5 of ``s3_object`` (the only stable per-document key). Chunk order comes
-from ``chunk_start`` (fallback: ``id``). All writes reuse the executor mint
-SQL shapes (``rag_upload_mint`` helpers) with origin
-``rag.legacy-canonize`` for provenance, and are upsert-shaped, so the
-runner is idempotent and safe to re-run.
+Document identity: Gen1 tables carry no document_id, and their
+``s3_object`` is PER-CHUNK (either ``path/name.py#chunk<i>`` or an
+md5-named object per chunk — both shapes surveyed live 2026-08-23).
+The universal per-document key is ``checksum`` (fallback: fragment-
+stripped s3_object); chunk order comes from ``chunk_start`` (fallback:
+row ``id``). All writes reuse the executor mint SQL shapes
+(``rag_upload_mint`` helpers) with origin ``rag.legacy-canonize`` for
+provenance, and are upsert-shaped, so the runner is idempotent and
+safe to re-run.
 
 Usage (dry-run first, then --apply)::
 
@@ -43,20 +46,26 @@ logger = logging.getLogger("umrs.knowledge.legacy_corpus_canonize")
 ORIGIN = "rag.legacy-canonize"
 
 _SELECT_ROWS_SQL = """
-SELECT s3_object, chunk_start, chunk_end, chunk_md5, model, embedding, _content
+SELECT s3_object, checksum, chunk_start, chunk_end, chunk_md5, model, embedding, _content
 FROM {table}
 WHERE s3_object IS NOT NULL AND chunk_md5 IS NOT NULL AND chunk_md5 <> ''
   AND embedding IS NOT NULL AND model IS NOT NULL
-ORDER BY s3_object, chunk_start NULLS LAST, id
+ORDER BY checksum, chunk_start NULLS LAST, id
 """
 
 
-def _legacy_document_id(s3_object: str) -> str:
-    return hashlib.md5(s3_object.encode("utf-8")).hexdigest()  # noqa: S324 — id scheme, not security
+def _strip_fragment(s3_object: str) -> str:
+    """Per-chunk uris carry `#chunk<i>` — strip to the document path."""
+    return s3_object.split("#", 1)[0]
 
 
-def _doc_label(s3_object: str) -> str:
-    return s3_object.rsplit("/", 1)[-1] or s3_object
+def _legacy_document_id(doc_key: str) -> str:
+    """doc_key = document checksum (or fragment-stripped s3_object fallback)."""
+    return hashlib.md5(doc_key.encode("utf-8")).hexdigest()  # noqa: S324 — id scheme, not security
+
+
+def _doc_label(doc_uri: str) -> str:
+    return doc_uri.rsplit("/", 1)[-1] or doc_uri
 
 
 def _as_float_list(raw: Any) -> list[float]:
@@ -65,15 +74,21 @@ def _as_float_list(raw: Any) -> list[float]:
     return [float(v) for v in raw]
 
 
-def read_corpus(source_pool: Any, table: str) -> dict[str, list[dict[str, Any]]]:
-    """Group legacy rows per s3_object, chunk-ordered."""
-    docs: dict[str, list[dict[str, Any]]] = {}
+def read_corpus(source_pool: Any, table: str) -> dict[str, dict[str, Any]]:
+    """Group legacy rows per document (checksum key), chunk-ordered.
+
+    Returns {doc_key: {"uri": doc uri, "rows": [chunk dicts, ordered]}}.
+    """
+    docs: dict[str, dict[str, Any]] = {}
     conn = source_pool.getconn()
     try:
         with conn.cursor() as cur:
             cur.execute(_SELECT_ROWS_SQL.format(table=table))
-            for s3_object, start, end, md5, model, emb, content in cur.fetchall():
-                docs.setdefault(s3_object, []).append(
+            for s3_object, checksum, start, end, md5, model, emb, content in cur.fetchall():
+                doc_uri = _strip_fragment(s3_object)
+                key = checksum or doc_uri
+                entry = docs.setdefault(key, {"uri": doc_uri, "rows": []})
+                entry["rows"].append(
                     {
                         "chunk_start": start,
                         "chunk_end": end,
@@ -81,6 +96,7 @@ def read_corpus(source_pool: Any, table: str) -> dict[str, list[dict[str, Any]]]
                         "model": model,
                         "embedding": _as_float_list(emb),
                         "content": content,
+                        "s3_chunk": s3_object,
                     }
                 )
         return docs
@@ -91,16 +107,17 @@ def read_corpus(source_pool: Any, table: str) -> dict[str, list[dict[str, Any]]]
 def canonize_document(
     canonical_conn: Any,
     *,
-    s3_object: str,
+    doc_key: str,
+    doc_uri: str,
     chunk_rows: list[dict[str, Any]],
     project_id: str,
     max_per_doc: int,
 ) -> int:
     """Mint one legacy document; returns chunk-node count."""
-    document_id = f"legacy-{_legacy_document_id(s3_object)}"
+    document_id = f"legacy-{_legacy_document_id(doc_key)}"
     doc_node_id = f"ragdoc-{document_id}"
     gid = default_graph_id(project_id)
-    filename = _doc_label(s3_object)
+    filename = _doc_label(doc_uri)
     content_hash = hashlib.sha256(f"{document_id}:{filename}".encode("utf-8")).hexdigest()[:16]
     artifact_id = f"artifact-rag-{document_id}"
     with canonical_conn.cursor() as cur:
@@ -113,7 +130,7 @@ def canonize_document(
             filename=filename,
             mime_type="application/octet-stream",
             origin=ORIGIN,
-            extra_node_content={"s3_object": s3_object},
+            extra_node_content={"s3_object": doc_uri},
         )
         _upsert_node(
             cur,
@@ -127,7 +144,7 @@ def canonize_document(
                 "filename": filename,
                 "origin": ORIGIN,
                 "artifact_id": artifact_id,
-                "s3_object": s3_object,
+                "s3_object": doc_uri,
             },
             content_hash=content_hash,
             graph_id=gid,
@@ -148,6 +165,7 @@ def canonize_document(
                     "chunk_start": row["chunk_start"],
                     "chunk_end": row["chunk_end"],
                     "chunk_md5": row["chunk_md5"],
+                    "s3_chunk": row["s3_chunk"],
                     "origin": ORIGIN,
                 },
                 content_hash=row["chunk_md5"],
@@ -190,23 +208,24 @@ def main(argv: list[str] | None = None) -> int:
     canonical_pool = _build_pool(args.dsn)
     try:
         docs = read_corpus(source_pool, args.table)
-        total_chunks = sum(len(rows) for rows in docs.values())
+        total_chunks = sum(len(entry["rows"]) for entry in docs.values())
         print(f"plan: {len(docs)} documents, {total_chunks} chunks (project={args.project_id})")
         if args.verbose:
-            for s3_object, rows in docs.items():
-                print(f"  {s3_object}: {len(rows)} chunks")
+            for entry in docs.values():
+                print(f"  {entry['uri']}: {len(entry['rows'])} chunks")
         if not args.apply:
             print("dry-run: pass --apply to write")
             return 0
         written_docs = 0
         written_chunks = 0
-        for s3_object, rows in docs.items():
+        for doc_key, entry in docs.items():
             conn = canonical_pool.getconn()
             try:
                 written_chunks += canonize_document(
                     conn,
-                    s3_object=s3_object,
-                    chunk_rows=rows,
+                    doc_key=doc_key,
+                    doc_uri=entry["uri"],
+                    chunk_rows=entry["rows"],
                     project_id=args.project_id,
                     max_per_doc=args.max_per_doc,
                 )
