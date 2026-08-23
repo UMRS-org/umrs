@@ -49,7 +49,8 @@ class _Pool:
 
 
 def _run(coro):
-    return asyncio.get_event_loop().run_until_complete(coro)
+    """Fresh loop per call — safe under pytest-asyncio's auto mode."""
+    return asyncio.new_event_loop().run_until_complete(coro)
 
 
 def test_upsert_node_embedding_emits_cast_and_conflict():

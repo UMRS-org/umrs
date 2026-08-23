@@ -35,6 +35,10 @@ from umrs.server.provisioning import ServerCfg, configure_user
 from umrs.shared.config import (
     get_resolved_json_server_path,
 )
+
+# ADR-027 G5/P1b: executor-side canonical mint. Imported at module level but
+# every call path is best-effort (never fails an upload).
+from umrs.knowledge.rag_upload_mint import mint_rag_upload as _mint_canonical_upload
 from umrs.shared.utils import add_document_prefix, add_query_prefix
 
 
@@ -1590,6 +1594,41 @@ def _insert_one_chunk(
         )
 
 
+def _mint_upload_canonical_best_effort(
+    *,
+    project_id: str,
+    document_id: str,
+    filename: str,
+    mime_type: str,
+    chunks: list[dict[str, Any]],
+    embeddings: list[Any],
+) -> int:
+    """Mint canonical nodes + node-keyed vectors for one upload (G5 wave 3).
+
+    Owner (G1'): the upload executor. Never raises — uploads must succeed
+    even when the canonical graph/mint is unavailable.
+    """
+    try:
+        from umrs.shared.pg import get_default_sync_pool, pg_configured_from_env
+
+        model_name = getattr(EMBEDDINGS, "model_name", None)
+        if not pg_configured_from_env() or not model_name:
+            return 0
+        return _mint_canonical_upload(
+            get_default_sync_pool(),
+            project_id=project_id,
+            document_id=document_id,
+            filename=filename,
+            mime_type=mime_type,
+            chunks=chunks,
+            embeddings=embeddings,
+            model_name=model_name,
+        )
+    except Exception as exc:  # noqa: BLE001 — minting must never fail uploads
+        logger.warning("canonical mint skipped for %s: %s", document_id, exc)
+        return 0
+
+
 def _inserted_row(
     s3_object: str,
     chunk_start: int,
@@ -1708,6 +1747,18 @@ async def rag_upload(
         date_str=datetime.today().strftime("%Y-%m-%d"),
         time_str=datetime.now().strftime("%H:%M:%S"),
         model_name=getattr(EMBEDDINGS, "model_name", None),
+    )
+
+    # ADR-027 G5 wave 3 (G1'): the executor owns the canonical mint incl.
+    # node-keyed vectors — best-effort, never fails an upload. The proxy's
+    # P1a mint stays for one release; ids are identical (upsert-shaped).
+    _mint_upload_canonical_best_effort(
+        project_id=project_id,
+        document_id=document_id,
+        filename=file.filename or "",
+        mime_type=file.content_type or "",
+        chunks=chunks,
+        embeddings=embeddings,
     )
 
     return GatewayUploadResponse(
