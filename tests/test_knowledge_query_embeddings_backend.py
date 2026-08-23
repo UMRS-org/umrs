@@ -146,3 +146,59 @@ def test_build_unified_search_marks_embeddings_wired():
     _, wired2, unwired2 = _build_unified_search(_StubStore(), None, "no pool", None, "probe failed")
     assert "embeddings" not in wired2
     assert unwired2["embeddings"] == "probe failed"
+
+
+_SIM_ROWS = [
+    (
+        "ragdoc-doc-1-chunk0",
+        "intfloat/e5-base-v2",
+        768,
+        datetime(2026, 8, 23, tzinfo=timezone.utc),
+        "chunk 0 of scan.h5",
+        "spring8",
+        0.05,  # nearest: cosine distance
+    ),
+    (
+        "ragdoc-doc-2-chunk3",
+        "intfloat/e5-base-v2",
+        768,
+        datetime(2026, 8, 22, tzinfo=timezone.utc),
+        "chunk 3 of run.md",
+        "spring8",
+        0.40,
+    ),
+]
+
+
+def test_similarity_lane_ranks_by_distance_and_scores_similarity():
+    pool = _Pool(lambda _sql, _params: _SIM_ROWS)
+    backend = _EmbeddingsSearchBackend(pool)
+    hits = backend.search_embeddings(
+        "",
+        project_id="spring8",
+        limit=5,
+        query_embedding=[0.1] * 768,
+    )
+    assert [h["metadata"]["lane"] for h in hits] == ["similarity", "similarity"]
+    assert hits[0]["score"] > hits[1]["score"]
+    assert hits[0]["score"] == 1.0 - 0.05
+    assert hits[1]["metadata"]["distance"] == 0.40
+
+
+def test_similarity_lane_sql_uses_cosine_operator_and_literal():
+    pool = _Pool(lambda _sql, _params: _SIM_ROWS)
+    backend = _EmbeddingsSearchBackend(pool)
+    backend.search_embeddings("", project_id="spring8", query_embedding=[1.0, 2.0])
+    sql, params = pool._conn._cur.queries[0]
+    assert "<=> %s::vector" in sql
+    assert "ORDER BY distance ASC" in sql
+    assert params[0] == "[1.0,2.0]"
+    assert params[1] == "spring8"
+
+
+def test_no_vector_keeps_table_reader_lane():
+    pool = _Pool(lambda _sql, _params: _ROWS)
+    backend = _EmbeddingsSearchBackend(pool)
+    hits = backend.search_embeddings("e5", project_id="spring8")
+    assert all(h["metadata"]["lane"] == "table-reader" for h in hits)
+    assert "ORDER BY e.created_at DESC" in pool._conn._cur.queries[0][0]

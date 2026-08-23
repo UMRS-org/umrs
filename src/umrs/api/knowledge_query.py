@@ -204,13 +204,22 @@ def _split_csv(raw: Optional[str]) -> list[str]:
 class _EmbeddingsSearchBackend:
     """``search_api`` EmbeddingsSearchable port over migration-0075 rows.
 
-    Table-reader lane (ADR-027 P2 wave 2): exposes the canonical node-
-    vector rows as honest hits — model/dim/content hash + the owning node —
-    filtered by the query against node identity and model name, ranked by
-    recency. The similarity lane (query-time embedder + ORDER BY <=>) is
-    deliberately NOT faked: it requires an owner-pinned query embedder
-    (P3+ decision, blocked on the canonical-model pin). Hits carry
-    ``metadata.lane = "table-reader"`` so consumers can tell.
+    Two honest lanes (hits carry ``metadata.lane``):
+
+    - ``table-reader`` (default): exposes the canonical node-vector rows
+      as honest hits — model/dim/content hash + the owning node — filtered
+      by the query against node identity and model name, recency-ranked.
+    - ``similarity`` (P3, 2026-08-23): real cosine ANN ranking when the
+      caller supplies a PRE-COMPUTED ``query_embedding``. Query-time text
+      embedding stays owned by
+      ``umrs.api.rag_service.PrefixedSentenceTransformerEmbeddings``
+      (R6.1 boundary) — this facade never loads a model; it only ranks
+      vectors. Scale note: exact scan (`<=>`) is fine well past the
+      current corpus size; the typed-shadow-column + HNSW migration is
+      the documented follow-up when rows cross ~100k.
+
+    No mock/fake fallback is ever synthesized: without a query vector the
+    lane stays table-reader.
     """
 
     def __init__(self, pool: Any) -> None:
@@ -222,7 +231,10 @@ class _EmbeddingsSearchBackend:
         *,
         project_id: Optional[str] = None,
         limit: int = 20,
+        query_embedding: Optional[list[float]] = None,
     ) -> list[dict[str, Any]]:
+        if query_embedding:
+            return self._similarity_hits(query_embedding, project_id=project_id, limit=limit)
         pattern = f"%{query}%"
         with self._pool.getconn() as conn:
             try:
@@ -242,20 +254,53 @@ class _EmbeddingsSearchBackend:
                 self._pool.putconn(conn)
         return [self._hit(row) for row in rows]
 
+    def _similarity_hits(
+        self,
+        query_embedding: list[float],
+        *,
+        project_id: Optional[str],
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        """Cosine-distance ANN over 0075 rows using a pre-computed vector."""
+        qv = "[" + ",".join(repr(float(v)) for v in query_embedding) + "]"
+        with self._pool.getconn() as conn:
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT e.node_id, e.model_name, e.dimension, e.created_at, "
+                        "n.label, n.project_id, (e.embedding <=> %s::vector) AS distance "
+                        "FROM knowledge_node_embeddings e "
+                        "JOIN knowledge_nodes n ON n.node_id = e.node_id "
+                        "WHERE n.project_id = %s "
+                        "ORDER BY distance ASC LIMIT %s",
+                        (qv, project_id, limit),
+                    )
+                    rows = cur.fetchall()
+            finally:
+                self._pool.putconn(conn)
+        return [self._hit(row) for row in rows]
+
     @staticmethod
     def _hit(row: tuple) -> dict[str, Any]:
-        node_id, model_name, dimension, _created, label, project_id = row
+        node_id, model_name, dimension, _created, label, project_id = row[:6]
+        if len(row) > 6:  # similarity lane: cosine distance in position 7
+            distance = float(row[6])
+            score, lane = max(0.0, 1.0 - distance), "similarity"
+            extra = {"distance": distance}
+        else:
+            score, lane, extra = 0.5, "table-reader", {}
         return {
             "title": label or node_id,
             "content": f"vector row for {node_id} ({model_name}, {dimension}d)",
-            "score": 0.5,
+            "score": score,
             "source_id": node_id,
             "source_type": "knowledge_node_embedding",
             "metadata": {
                 "model_name": model_name,
                 "dimension": dimension,
                 "project_id": project_id,
-                "lane": "table-reader",
+                "lane": lane,
+                **extra,
             },
         }
 
