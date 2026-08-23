@@ -40,6 +40,8 @@ def _upsert_artifact(
     document_id: str,
     filename: str,
     mime_type: str,
+    origin: str = "rag.upload",
+    extra_node_content: dict[str, Any] | None = None,
 ) -> None:
     import json
 
@@ -63,9 +65,10 @@ def _upsert_artifact(
             mime_type,
             json.dumps(
                 {
-                    "origin": "rag.upload",
+                    "origin": origin,
                     "filename": filename,
                     "document_id": document_id,
+                    **(extra_node_content or {}),
                 }
             ),
             ts,
@@ -116,7 +119,13 @@ def _upsert_node(
 
 
 def _upsert_part_of_edge(
-    cur: Any, *, chunk_id: str, doc_node_id: str, project_id: str, graph_id: str
+    cur: Any,
+    *,
+    chunk_id: str,
+    doc_node_id: str,
+    project_id: str,
+    graph_id: str,
+    origin: str = "rag.upload",
 ) -> None:
     import json
 
@@ -133,9 +142,9 @@ def _upsert_part_of_edge(
             project_id,
             chunk_id,
             doc_node_id,
-            json.dumps({"kind": "part_of", "origin": "rag.upload"}),
+            json.dumps({"kind": "part_of", "origin": origin}),
             graph_id,
-            json.dumps({"kind": "part_of", "origin": "rag.upload"}),
+            json.dumps({"kind": "part_of", "origin": origin}),
         ),
     )
 
