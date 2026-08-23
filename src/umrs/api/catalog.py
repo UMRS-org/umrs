@@ -12,11 +12,12 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 
 from umrs.api.catalog_store import CatalogStoreUnavailable, get_catalog_meta_store
 from umrs.api.files import S3Config, get_project_id, get_s3_config
+from umrs.data_catalog.links import hydrate_links
 from umrs.data_catalog.query import read_catalog_object, search_catalog
 from umrs.knowledge.access_scope import CallerScope, project_readable
 
@@ -50,6 +51,15 @@ def _require_catalog_meta_store():
         ) from exc
 
 
+class CatalogLinksResponse(BaseModel):
+    """ADR-031 plane reads, hydrated server-side per catalogue row."""
+
+    document_id: str
+    link_method: str  # "s3_object" | "filename"
+    chunk_nodes: int = 0
+    vector_rows: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class CatalogEntryResponse(BaseModel):
     s3_key: str
     state: str
@@ -62,6 +72,7 @@ class CatalogEntryResponse(BaseModel):
     filename_signals: list[str] = Field(default_factory=list)
     extracted_text_ref: str | None = None
     relevance_score: float = 0.0
+    links: CatalogLinksResponse | None = None
 
 
 class CatalogSearchResponse(BaseModel):
@@ -80,6 +91,7 @@ class CatalogReadResponse(BaseModel):
     read_source: str = "raw"
     extracted_text_ref: str | None = None
     meta: dict[str, Any] = Field(default_factory=dict)
+    links: CatalogLinksResponse | None = None
 
 
 class CatalogStatsResponse(BaseModel):
@@ -95,6 +107,7 @@ class CatalogStatsResponse(BaseModel):
     summary="Search the data catalog",
 )
 async def catalog_search(
+    request: Request,
     q: str = Query("", description="Search query (optional when filters are set)"),
     limit: int = Query(20, ge=1, le=100),
     modality: str | None = Query(None, description="Filter by detected_modality"),
@@ -122,6 +135,7 @@ async def catalog_search(
         tag=tag,
         prefix=prefix,
     )
+    pool = getattr(request.app.state, "umrs_db_pool", None)
     return CatalogSearchResponse(
         query=q,
         project_id=project_id,
@@ -138,6 +152,7 @@ async def catalog_search(
                 filename_signals=hit.meta.filename_signals,
                 extracted_text_ref=hit.meta.extracted_text_ref,
                 relevance_score=hit.score,
+                links=hydrate_links(pool, project_id=project_id, s3_key=hit.meta.s3_key),
             )
             for hit in hits
         ],
@@ -150,6 +165,7 @@ async def catalog_search(
     summary="Read a catalog object (byte-bounded)",
 )
 async def catalog_read(
+    request: Request,
     s3_key: str = Query(..., description="S3 object key"),
     offset: int = Query(0, ge=0),
     length: int = Query(1_048_576, ge=1, le=10_485_760),
@@ -198,6 +214,8 @@ async def catalog_read(
             detail="Failed to read catalog object",
         ) from exc
 
+    pool = getattr(request.app.state, "umrs_db_pool", None)
+    payload["links"] = hydrate_links(pool, project_id=project_id, s3_key=s3_key)
     return CatalogReadResponse(**payload)
 
 
