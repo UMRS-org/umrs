@@ -321,7 +321,9 @@ class KnowledgeStore:
                 raise ValueError("project_id is required when graph_id is given")
             is_default = graph_id == default_graph_id(project_id)
             params.extend([graph_id, is_default])
-            conditions.append(f"(graph_id = ${len(params)-1} OR (graph_id = '' AND ${len(params)}))")
+            conditions.append(
+                f"(graph_id = ${len(params) - 1} OR (graph_id = '' AND ${len(params)}))"
+            )
         if project_id is not None:
             params.append(project_id)
             conditions.append(f"project_id = ${len(params)}")
@@ -701,6 +703,76 @@ class KnowledgeStore:
                 page_size,
             )
             return [dict(r) for r in rows], total
+
+    # ── Node-keyed embeddings (ADR-027 G5 / P1b, migration 0075) ────────
+    #
+    # Additive foundation for the P2 facade switch: these rows are the
+    # canonical graph's own vectors — NOT the per-project rag chunk tables
+    # (Gen1) and NOT memory_vectors (context memory). R6.1 ownership assigns
+    # the write path later; the storage contract lands here first so both
+    # candidate writers can adopt it without a further schema change.
+
+    @staticmethod
+    def _vector_literal(embedding: list[float]) -> str:
+        """pgvector text form '[f1,f2,...]' — cast server-side ($n::vector)."""
+        return "[" + ",".join(repr(float(v)) for v in embedding) + "]"
+
+    async def upsert_node_embedding(
+        self,
+        node_id: str,
+        model_name: str,
+        embedding: list[float],
+        *,
+        content_hash: str = "",
+    ) -> None:
+        """Insert or refresh the node-keyed vector row for one model."""
+        sql = """
+            INSERT INTO knowledge_node_embeddings
+                (node_id, model_name, dimension, embedding, content_hash)
+            VALUES ($1, $2, $3, $4::vector, $5)
+            ON CONFLICT (node_id, model_name) DO UPDATE SET
+                dimension    = EXCLUDED.dimension,
+                embedding    = EXCLUDED.embedding,
+                content_hash = EXCLUDED.content_hash,
+                updated_at   = now()
+            """
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                sql,
+                node_id,
+                model_name,
+                len(embedding),
+                self._vector_literal(embedding),
+                content_hash,
+            )
+
+    async def nearest_node_ids(
+        self,
+        embedding: list[float],
+        *,
+        project_id: str,
+        model_name: str,
+        limit: int = 20,
+    ) -> list[tuple[str, float]]:
+        """Cosine-nearest canonical nodes (project + model scoped)."""
+        sql = """
+            SELECT e.node_id, e.embedding <=> $4::vector AS distance
+              FROM knowledge_node_embeddings e
+              JOIN knowledge_nodes n ON n.node_id = e.node_id
+             WHERE e.model_name = $1
+               AND n.project_id = $2
+             ORDER BY distance ASC
+             LIMIT $3
+            """
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                sql,
+                model_name,
+                project_id,
+                limit,
+                self._vector_literal(embedding),
+            )
+            return [(str(r["node_id"]), float(r["distance"])) for r in rows]
 
     # ── Knowledge↔A2L Links ──────────────────────────────────────────────
 
