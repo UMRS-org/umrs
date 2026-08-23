@@ -201,10 +201,92 @@ def _split_csv(raw: Optional[str]) -> list[str]:
     return [t.strip() for t in raw.split(",") if t.strip()]
 
 
+class _EmbeddingsSearchBackend:
+    """``search_api`` EmbeddingsSearchable port over migration-0075 rows.
+
+    Table-reader lane (ADR-027 P2 wave 2): exposes the canonical node-
+    vector rows as honest hits — model/dim/content hash + the owning node —
+    filtered by the query against node identity and model name, ranked by
+    recency. The similarity lane (query-time embedder + ORDER BY <=>) is
+    deliberately NOT faked: it requires an owner-pinned query embedder
+    (P3+ decision, blocked on the canonical-model pin). Hits carry
+    ``metadata.lane = "table-reader"`` so consumers can tell.
+    """
+
+    def __init__(self, pool: Any) -> None:
+        self._pool = pool
+
+    def search_embeddings(
+        self,
+        query: str,
+        *,
+        project_id: Optional[str] = None,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        pattern = f"%{query}%"
+        with self._pool.getconn() as conn:
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT e.node_id, e.model_name, e.dimension, e.created_at, "
+                        "n.label, n.project_id "
+                        "FROM knowledge_node_embeddings e "
+                        "JOIN knowledge_nodes n ON n.node_id = e.node_id "
+                        "WHERE n.project_id = %s "
+                        "AND (e.model_name ILIKE %s OR n.label ILIKE %s OR e.node_id ILIKE %s) "
+                        "ORDER BY e.created_at DESC LIMIT %s",
+                        (project_id, pattern, pattern, pattern, limit),
+                    )
+                    rows = cur.fetchall()
+            finally:
+                self._pool.putconn(conn)
+        return [self._hit(row) for row in rows]
+
+    @staticmethod
+    def _hit(row: tuple) -> dict[str, Any]:
+        node_id, model_name, dimension, _created, label, project_id = row
+        return {
+            "title": label or node_id,
+            "content": f"vector row for {node_id} ({model_name}, {dimension}d)",
+            "score": 0.5,
+            "source_id": node_id,
+            "source_type": "knowledge_node_embedding",
+            "metadata": {
+                "model_name": model_name,
+                "dimension": dimension,
+                "project_id": project_id,
+                "lane": "table-reader",
+            },
+        }
+
+
+def _embeddings_backend_for(pool: Any) -> tuple[Optional[_EmbeddingsSearchBackend], Optional[str]]:
+    """Wire the 0075 backend iff the table exists; honesty reason otherwise."""
+    if pool is None:
+        return None, "embeddings search requires the database"
+    try:
+        with pool.getconn() as conn:
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT to_regclass('knowledge_node_embeddings')")
+                    found = cur.fetchone()
+                present = bool(found and found[0])
+            finally:
+                pool.putconn(conn)
+    except Exception as exc:  # noqa: BLE001 — honesty over hard failure
+        logger.warning("0075 probe failed, embeddings backend unwired: %s", exc)
+        return None, "embeddings search unavailable (table probe failed)"
+    if not present:
+        return None, "embeddings search unavailable (migration 0075 not applied)"
+    return _EmbeddingsSearchBackend(pool), None
+
+
 def _build_unified_search(
     meta_store: Any,
     graph_backend: Optional[_GraphSearchBackend],
     graph_unavailable_reason: Optional[str],
+    embeddings_backend: Optional[_EmbeddingsSearchBackend] = None,
+    embeddings_unavailable_reason: Optional[str] = None,
 ) -> tuple[UnifiedSearch, list[str], dict[str, str]]:
     """Compose pluggable backends.
 
@@ -218,6 +300,12 @@ def _build_unified_search(
         wired.append("knowledge_graph")
     else:
         unwired["knowledge_graph"] = graph_unavailable_reason or "unavailable"
+    if embeddings_backend is not None:
+        kwargs["embeddings"] = embeddings_backend
+        unwired.pop("embeddings", None)
+        wired.append("embeddings")
+    elif embeddings_unavailable_reason is not None:
+        unwired["embeddings"] = embeddings_unavailable_reason
     return UnifiedSearch(**kwargs), wired, unwired
 
 
@@ -279,7 +367,10 @@ def query_knowledge(
     backend, reason, selected, excluded = _graph_backend_for(
         pool, resolved_project, graphs, exclude_graphs
     )
-    search, wired, unwired = _build_unified_search(meta_store, backend, reason)
+    emb_backend, emb_reason = _embeddings_backend_for(pool)
+    search, wired, unwired = _build_unified_search(
+        meta_store, backend, reason, emb_backend, emb_reason
+    )
     results = search.search(
         q,
         scope=_parse_scope(scope),

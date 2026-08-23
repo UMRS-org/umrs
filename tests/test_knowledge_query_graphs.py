@@ -70,6 +70,7 @@ class TestGraphBackendWiring:
             [
                 None,  # ensure_default insert
                 _graph_row(graph_id=default_id, name="proj-a"),  # ensure re-read
+                None,  # 0075 regclass probe (embeddings unwired here)
                 [("node:ir-9", "proj-a", "FWI notes", "concept", {}, "g-legacy")],
             ]
         )
@@ -79,7 +80,9 @@ class TestGraphBackendWiring:
         assert "knowledge_graph" in payload["wired_backends"]
         assert payload["selected_graphs"] == [default_id]
         assert payload["unavailable_backends"] == {
-            "embeddings": "query-embedding generation requires the embedding service",
+            # P2 wave 2: 0075 probe drives two honest states for the
+            # embeddings backend (missing migration here via FakePool).
+            "embeddings": "embeddings search unavailable (migration 0075 not applied)",
             "rag": "RAG search requires a deployed mini-rivault instance",
         }
 
@@ -88,6 +91,7 @@ class TestGraphBackendWiring:
             [
                 None,  # resolve 'experiment-history': by id
                 _graph_row(),  # resolve: by name
+                None,  # 0075 regclass probe (embeddings unwired here)
                 [_NODE],  # graph search rows
             ]
         )
@@ -103,7 +107,7 @@ class TestGraphBackendWiring:
         assert hit["metadata"]["node_type"] == "class"
         assert hit["source_type"] == "knowledge_graph_node"
         # SQL scoped to the resolved graph id
-        search_sql, params = pool.record[2]
+        search_sql, params = pool.record[3]
         assert "graph_id = ANY" in search_sql
         assert params[0] == ["g-exp"]
 
@@ -113,6 +117,7 @@ class TestGraphBackendWiring:
             [
                 None,
                 _graph_row(graph_id=default_id, name="proj-a"),
+                None,  # 0075 regclass probe (embeddings unwired here)
                 [("node:ir-2", "proj-a", "FWI paper", "concept", {}, "")],
             ]
         )
@@ -121,7 +126,7 @@ class TestGraphBackendWiring:
         hit = resp.json()["query"]["results"][0]
         # Legacy '' row attributed to the default graph
         assert hit["metadata"]["graph_id"] == default_id
-        search_sql, params = pool.record[2]
+        search_sql, params = pool.record[3]
         assert "graph_id = '' AND project_id = ANY" in search_sql
         assert params[1] == ["proj-a"]
 
