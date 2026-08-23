@@ -795,6 +795,59 @@ def _readiness_from_latest(latest: dict[str, Any]) -> tuple[str, float]:
     return "insufficient", confidence
 
 
+def _reconcile_payload(report: Any, *, sample_limit: int) -> dict[str, Any]:
+    """Reconciliation report → API dict (kept async-free for unit tests)."""
+    assets = sorted(report.assets, key=lambda a: (a.state, a.document_id))[:sample_limit]
+    return {
+        "project_id": report.project_id,
+        "catalogue_available": report.catalogue_available,
+        "counts": report.counts,
+        "orphaned_vector_rows": len(report.orphaned_vectors),
+        "orphaned_chunk_nodes": len(report.orphaned_chunks),
+        "assets_sampled": len(assets),
+        "assets": [
+            {
+                "document_id": asset.document_id,
+                "state": asset.state,
+                "reasons": asset.reasons,
+                "chunk_nodes": asset.chunk_count,
+                "has_catalogue": asset.has_catalogue,
+                "has_embeddings": asset.has_embeddings,
+            }
+            for asset in assets
+        ],
+    }
+
+
+@router.get("/reconcile", response_model=dict[str, Any])
+async def knowledge_reconcile(
+    request: Request,
+    sample: int = Query(50, ge=0, le=500),
+    project_id: str = Depends(get_project_id),
+) -> dict[str, Any]:
+    """ADE-031 plane reconciliation/checker (normative §Operational enforcement).
+
+    Read-only scan over the catalogue/canonical/vector planes for the
+    project. Output is the checker's authoritative consistency state: UI
+    surfaces are read-side projections consuming this payload only.
+    """
+    await _explorer_caller(request)
+    pool = getattr(request.app.state, "umrs_db_pool", None)
+    if pool is None:
+        raise HTTPException(
+            status_code=503,
+            detail="reconciliation requires the shared umrs_db pool",
+        )
+    from umrs.knowledge.plane_reconciler import scan_project
+
+    try:
+        report = scan_project(pool, project_id)
+    except Exception as exc:
+        logger.exception("plane reconciliation failed for %s", project_id)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return _reconcile_payload(report, sample_limit=sample)
+
+
 @router.get("/status", response_model=dict[str, Any])
 async def knowledge_status(
     request: Request,
