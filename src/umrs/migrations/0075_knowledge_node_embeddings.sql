@@ -25,8 +25,12 @@ COMMENT ON TABLE knowledge_node_embeddings IS
     'Node-keyed pgvector rows for canonical knowledge_nodes (ADR-027 G5 / P1b). '
     'Additive foundation for the P2 facade switch; write-path owner pending G1''';
 
-CREATE INDEX IF NOT EXISTS idx_node_embeddings_hnsw
-    ON knowledge_node_embeddings USING hnsw (embedding vector_cosine_ops);
-
+-- NOTE on indexing: pgvector ANN indexes (hnsw/ivfflat) require a FIXED-
+-- dimension vector column ("column does not have dimensions" — confirmed on
+-- the deployed pg15/pgvector build 2026-08-23). Models in play differ in dim
+-- (E5≈1024, hash fallback=384), so the column stays untyped and nearest-node
+-- queries run exact cosine scans ORDER BY embedding <=> :v. When/if a single
+-- canonical model is pinned by the P2 decision, add a per-model typed shadow
+-- column + hnsw index in a follow-up migration.
 CREATE INDEX IF NOT EXISTS idx_node_embeddings_model
     ON knowledge_node_embeddings (model_name);
