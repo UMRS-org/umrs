@@ -16,10 +16,11 @@ from umrs.knowledge.legacy_corpus_canonize import (
 )
 
 _CORPUS_ROWS = [
-    # s3_object, chunk_start, chunk_end, chunk_md5, model, embedding, _content
-    ("s3://bucket/docA.txt", 0, 100, "md5-a0", "intfloat/e5-base-v2", "[0.1,0.2]", "alpha chunk zero"),
-    ("s3://bucket/docA.txt", 100, 200, "md5-a1", "intfloat/e5-base-v2", "[0.3,0.4]", "alpha chunk one"),
-    ("s3://bucket/docB.txt", 0, 50, "md5-b0", "intfloat/e5-base-v2", "[0.9,0.9]", "beta chunk zero"),
+    # s3_object, checksum, chunk_start, chunk_end, chunk_md5, model, embedding, _content
+    # checksum = per-DOCUMENT key (live survey: doc identity), s3_object is per-chunk
+    ("s3://bucket/docA.txt#chunk0", "sumA", 0, 100, "md5-a0", "intfloat/e5-base-v2", "[0.1,0.2]", "alpha chunk zero"),
+    ("s3://bucket/docA.txt#chunk1", "sumA", 100, 200, "md5-a1", "intfloat/e5-base-v2", "[0.3,0.4]", "alpha chunk one"),
+    ("s3://bucket/9f8e7d.txt", "sumB", 0, 50, "md5-b0", "intfloat/e5-base-v2", "[0.9,0.9]", "beta chunk zero"),
 ]
 
 
@@ -68,37 +69,42 @@ class _Pool:
         pass
 
 
-def test_read_corpus_groups_by_s3_object():
+def test_read_corpus_groups_by_checksum_key():
     pool = _Pool(_Conn(rows=_CORPUS_ROWS))
     docs = read_corpus(pool, "text")
-    assert sorted(docs) == ["s3://bucket/docA.txt", "s3://bucket/docB.txt"]
-    assert len(docs["s3://bucket/docA.txt"]) == 2
-    first = docs["s3://bucket/docA.txt"][0]
+    assert sorted(docs) == ["sumA", "sumB"]
+    doc_a = docs["sumA"]
+    assert doc_a["uri"] == "s3://bucket/docA.txt"  # fragment stripped
+    assert len(doc_a["rows"]) == 2
+    first = doc_a["rows"][0]
     assert first["chunk_md5"] == "md5-a0"
     assert first["embedding"] == [0.1, 0.2]
-    assert "ORDER BY s3_object" in _SELECT_ROWS_SQL
+    assert first["s3_chunk"] == "s3://bucket/docA.txt#chunk0"
+    assert "ORDER BY checksum" in _SELECT_ROWS_SQL
 
 
-def _doc_rows(s3_object: str) -> list[dict]:
-    """Materialize read_corpus's dict rows for one fake document."""
+def _doc(doc_key: str) -> dict:
+    """Materialize read_corpus's grouped entry for one fake document."""
     pool = _Pool(_Conn(rows=_CORPUS_ROWS))
-    return read_corpus(pool, "text")[s3_object]
+    return read_corpus(pool, "text")[doc_key]
 
 
 def test_canonize_document_mints_mint_shaped_rows_with_legacy_provenance():
     capture: list = []
     conn = _Conn(capture=capture)
+    entry = _doc("sumA")
     minted = canonize_document(
         conn,
-        s3_object="s3://bucket/docA.txt",
-        chunk_rows=_doc_rows("s3://bucket/docA.txt"),
+        doc_key="sumA",
+        doc_uri=entry["uri"],
+        chunk_rows=entry["rows"],
         project_id="default",
         max_per_doc=500,
     )
     assert minted == 2
     wrote = [sql for sql, _ in capture]
 
-    doc_id = f"legacy-{_legacy_document_id('s3://bucket/docA.txt')}"
+    doc_id = "legacy-" + _legacy_document_id("sumA")
     assert any("knowledge_artifacts" in sql for sql in wrote)
     node_inserts = [p for sql, p in capture if "knowledge_nodes" in sql and "INSERT" in sql]
     node_ids = {p[0] for p in node_inserts}
@@ -113,6 +119,10 @@ def test_canonize_document_mints_mint_shaped_rows_with_legacy_provenance():
     doc_content = json.loads(doc_params[4])
     assert doc_content["origin"] == "rag.legacy-canonize"
     assert doc_content["s3_object"] == "s3://bucket/docA.txt"
+
+    chunk_params = next(p for sql, p in capture if "knowledge_nodes" in sql and p[0] == f"ragdoc-{doc_id}-chunk0")
+    chunk_content = json.loads(chunk_params[4])
+    assert chunk_content["s3_chunk"] == "s3://bucket/docA.txt#chunk0"
 
     edge_params = next(p for sql, p in capture if "knowledge_edges" in sql)
     edge_content = json.loads(edge_params[4])
@@ -131,8 +141,9 @@ def test_max_per_doc_caps_chunks():
     conn = _Conn(capture=capture)
     minted = canonize_document(
         conn,
-        s3_object="s3://bucket/docA.txt",
-        chunk_rows=_doc_rows("s3://bucket/docA.txt"),
+        doc_key="sumA",
+        doc_uri="s3://bucket/docA.txt",
+        chunk_rows=_doc("sumA")["rows"],
         project_id="default",
         max_per_doc=1,
     )
