@@ -28,6 +28,10 @@ class JobType(Enum):
     DATA_INGESTION = "data_ingestion"  # Catalog + text extract after upload
     KNOWLEDGE_INGEST = "knowledge_ingest"  # Ingest sources → S3 artifacts
     KNOWLEDGE_UNDERSTAND = "knowledge_understand"  # Parse artifacts → KnowledgeIR
+    # Chunk artifact text → canonical chunk nodes + knowledge_node_embeddings
+    # vectors (audit B3 — the durable-ingest lane previously produced no
+    # embeddings, leaving the vector retrieval plane permanently blind).
+    KNOWLEDGE_EMBED = "knowledge_embed"
     KNOWLEDGE_VERIFY = "knowledge_verify"  # Run verifiers → confidence report
     KNOWLEDGE_EXPORT = "knowledge_export"  # Export knowledge bundle (.kb)
     ENDPOINT_UPGRADE = "endpoint_upgrade"  # Rolling model-version flip (Q-13)
@@ -112,6 +116,10 @@ DEFAULT_BACKOFFS: dict[JobType, dict[str, Any]] = {
         "max_attempts": 3,
     },
     JobType.KNOWLEDGE_UNDERSTAND: {
+        "delays": [30, 60, 120],
+        "max_attempts": 3,
+    },
+    JobType.KNOWLEDGE_EMBED: {
         "delays": [30, 60, 120],
         "max_attempts": 3,
     },

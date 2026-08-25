@@ -23,16 +23,20 @@ def client():
 
 @pytest.fixture(autouse=True)
 def _clear_auth_mode(monkeypatch):
+    # Default mode is strict since B12; the "mvp parity" tests below opt in
+    # to the legacy permissive mode explicitly.
     monkeypatch.delenv("UMRS_AUTH_MODE", raising=False)
     yield
 
 
 class TestReadRoutes:
-    def test_mvp_anonymous_allowed(self, client):
+    def test_mvp_anonymous_allowed(self, client, monkeypatch):
+        monkeypatch.setenv("UMRS_AUTH_MODE", "mvp")
         resp = client.get("/umrs/knowledge/objects")
         assert resp.status_code in (200, 404, 500)
 
-    def test_mvp_verified_allowed(self, client):
+    def test_mvp_verified_allowed(self, client, monkeypatch):
+        monkeypatch.setenv("UMRS_AUTH_MODE", "mvp")
         resp = client.get(
             "/umrs/knowledge/dashboard",
             headers={"x-user-id": "u1", "x-verified-project-id": "lab1"},

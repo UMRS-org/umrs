@@ -103,6 +103,17 @@ class KnowledgeUnderstandResult:
     degraded_reason: str = ""
 
 
+@dataclass
+class KnowledgeEmbedResult:
+    """Result of a KNOWLEDGE_EMBED job attempt."""
+
+    nodes_embedded: int = 0
+    skipped: int = 0  # artifacts with no decodable text
+    failed_items: list[dict[str, Any]] = field(default_factory=list)
+    degraded: bool = False
+    degraded_reason: str = ""
+
+
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 
@@ -546,6 +557,19 @@ class KnowledgeUnderstandBackend(OrchestratorBackend):
             result.degraded_reason = degraded_reason
 
         _write_result(attempt, result)
+
+        # Chain the embedding stage (audit B3): graph nodes alone are blind to
+        # the vector plane. Best-effort — the embed job degrades cleanly when
+        # no site embedder is configured.
+        if sources:
+            try:
+                _enqueue_embed_job(project_id, job.user_id or "", job, sources)
+            except Exception:  # noqa: BLE001 — chaining must not fail understand
+                logger.warning(
+                    "KNOWLEDGE_EMBED enqueue failed for job=%s",
+                    job.job_id,
+                    exc_info=True,
+                )
 
         return (
             f"knowledge_understand|project={project_id}|"
@@ -1691,8 +1715,22 @@ def _write_result(attempt: JobAttempt, result: Any) -> None:
 # ── Status Checkers ──────────────────────────────────────────────────────────
 
 
+def _knowledge_ref_counts(ref: str, key: str) -> int:
+    """Parse `key=N` out of a `type|k=v|k=v` backend_ref (0 when absent)."""
+    for part in ref.split("|")[1:]:
+        if part.startswith(f"{key}="):
+            value = part.split("=", 1)[1]
+            return int(value) if value.isdigit() else 0
+    return 0
+
+
 class KnowledgeIngestStatusChecker(BackendStatusChecker):
-    """Status checker for synchronous knowledge-ingest jobs."""
+    """Status checker for synchronous knowledge-ingest jobs.
+
+    Honesty rule (audit B7): an attempt where every source failed is a
+    failure, not a success — the legacy prefix-only mapping reported
+    ``failed=N`` jobs as ``succeeded`` while nothing was ingested.
+    """
 
     @property
     def job_type(self) -> JobType:
@@ -1705,7 +1743,14 @@ class KnowledgeIngestStatusChecker(BackendStatusChecker):
     ) -> AttemptCheckResult:
         if not attempt.backend_ref:
             return AttemptCheckResult.failed("No backend reference")
-        if attempt.backend_ref.startswith("knowledge_ingest|"):
+        ref = attempt.backend_ref
+        if ref.startswith("knowledge_ingest|"):
+            artifacts = _knowledge_ref_counts(ref, "artifacts")
+            failed = _knowledge_ref_counts(ref, "failed")
+            if artifacts == 0 and failed > 0:
+                return AttemptCheckResult.failed(
+                    f"ingest: all {failed} source(s) failed, 0 artifacts stored"
+                )
             return AttemptCheckResult.succeeded(metrics={"verified_after_submit": True})
         return AttemptCheckResult.failed("Unexpected backend reference")
 
@@ -1724,9 +1769,313 @@ class KnowledgeUnderstandStatusChecker(BackendStatusChecker):
     ) -> AttemptCheckResult:
         if not attempt.backend_ref:
             return AttemptCheckResult.failed("No backend reference")
-        if attempt.backend_ref.startswith("knowledge_understand|"):
+        ref = attempt.backend_ref
+        if ref.startswith("knowledge_understand|"):
+            ir_ids = _knowledge_ref_counts(ref, "ir_ids")
+            already = _knowledge_ref_counts(ref, "already")
+            failed = _knowledge_ref_counts(ref, "fail")
+            if ir_ids == 0 and already == 0 and failed > 0:
+                return AttemptCheckResult.failed(
+                    f"understand: all {failed} artifact(s) failed, no IR produced"
+                )
             return AttemptCheckResult.succeeded(metrics={"verified_after_submit": True})
         return AttemptCheckResult.failed("Unexpected backend reference")
+
+
+class KnowledgeEmbedStatusChecker(BackendStatusChecker):
+    """Status checker for synchronous knowledge-embed jobs.
+
+    ``mode=degraded`` refs (no embedder configured / pool unavailable) are
+    documented no-ops: embed is an opt-in stage, so the attempt succeeds.
+    Genuine failures (0 embedded with failing artifacts) fail honestly.
+    """
+
+    @property
+    def job_type(self) -> JobType:
+        return JobType.KNOWLEDGE_EMBED
+
+    async def check_status(
+        self,
+        attempt: JobAttempt,
+        job: Job,
+    ) -> AttemptCheckResult:
+        if not attempt.backend_ref:
+            return AttemptCheckResult.failed("No backend reference")
+        ref = attempt.backend_ref
+        if ref.startswith("knowledge_embed|"):
+            if "mode=degraded" in ref:
+                return AttemptCheckResult.succeeded(
+                    metrics={"verified_after_submit": True, "degraded": True}
+                )
+            embedded = _knowledge_ref_counts(ref, "embedded")
+            failed = _knowledge_ref_counts(ref, "failed")
+            if embedded == 0 and failed > 0:
+                return AttemptCheckResult.failed(
+                    f"embed: all {failed} artifact(s) failed, 0 vectors written"
+                )
+            return AttemptCheckResult.succeeded(metrics={"verified_after_submit": True})
+        return AttemptCheckResult.failed("Unexpected backend reference")
+
+
+# ── KnowledgeEmbedBackend ──────────────────────────────────────────────────────
+#
+# Audit B3 (2026-08-25): the durable ingest lane produced graph nodes but never
+# embeddings — knowledge_node_embeddings existed (0075) with zero writers from
+# the KNOWLEDGE_INGEST → KNOWLEDGE_UNDERSTAND chain, leaving the vector plane
+# permanently blind to fresh ingestion. This backend closes the gap:
+# artifact bytes → chunks → canonical chunk nodes (part_of the file node) →
+# one vector row per chunk node.
+#
+# Offline invariant: the embedder is a pre-staged local SentenceTransformer
+# directory named by UMRS_KNOWLEDGE_EMBED_MODEL. Names are never resolved via
+# the network — without a pre-staged path the job completes as a documented
+# degraded no-op (graph content is unaffected; embedding is opt-in per site).
+
+_NODE_EMBED_MODEL_ENV = "UMRS_KNOWLEDGE_EMBED_MODEL"
+_NODE_EMBED_CHUNK_TOKENS_ENV = "UMRS_KNOWLEDGE_EMBED_CHUNK_TOKENS"
+_NODE_EMBED_MAX_CHUNKS_ENV = "UMRS_KNOWLEDGE_EMBED_MAX_CHUNKS"
+
+_node_embedder: Any = None
+_node_embedder_unavailable: bool = False
+
+
+def _get_node_embedder() -> Any:
+    """Resolve the site-local node embedder, or None when not pre-staged.
+
+    Only local directories are accepted: model downloads at runtime are
+    forbidden by the platform offline rule, so a bare HF id fails closed.
+    """
+    global _node_embedder, _node_embedder_unavailable
+    if _node_embedder is not None:
+        return _node_embedder
+    if _node_embedder_unavailable:
+        return None
+    model_path = os.environ.get(_NODE_EMBED_MODEL_ENV, "").strip()
+    if not model_path:
+        return None
+    if not os.path.isdir(model_path):
+        logger.warning(
+            "%s=%r is not a pre-staged model directory — node embedding "
+            "disabled (runtime model downloads are forbidden)",
+            _NODE_EMBED_MODEL_ENV,
+            model_path,
+        )
+        _node_embedder_unavailable = True
+        return None
+    try:
+        from langchain_community.embeddings import SentenceTransformerEmbeddings
+
+        _node_embedder = SentenceTransformerEmbeddings(model_name=model_path)
+    except Exception as exc:  # noqa: BLE001 — degrade, never crash the chain
+        logger.warning("node embedder init failed (%s): %s", model_path, exc)
+        _node_embedder_unavailable = True
+        return None
+    return _node_embedder
+
+
+def _reset_node_embedder_for_tests() -> None:
+    """Test hook: drop the cached embedder/unavailable flag between cases."""
+    global _node_embedder, _node_embedder_unavailable
+    _node_embedder = None
+    _node_embedder_unavailable = False
+
+
+async def _embed_one_artifact(
+    store: Any,
+    src: dict[str, Any],
+    project_id: str,
+    graph_id: str,
+    embedder: Any,
+    s3_client: Any,
+    bucket: str,
+    result: KnowledgeEmbedResult,
+) -> None:
+    """Chunk one artifact's text and write chunk nodes + vector rows."""
+    from umrs.knowledge.store import KnowledgeEdge, KnowledgeNode
+    from umrs.shared.utils import _chunk_text_without_nlp, add_document_prefix
+
+    artifact_id = src.get("artifact_id", "")
+    if not artifact_id:
+        result.failed_items.append({"artifact_id": "", "error": "missing artifact_id"})
+        return
+
+    content = _fetch_artifact_bytes(s3_client, bucket, src.get("source_ref", ""))
+    if content is None:
+        result.failed_items.append(
+            {"artifact_id": artifact_id, "error": "artifact content unavailable"}
+        )
+        return
+    text = content.decode("utf-8", errors="ignore").strip()
+    if not text:
+        result.skipped += 1
+        return
+
+    tokenizer = getattr(getattr(embedder, "client", None), "tokenizer", None)
+    max_tokens = int(os.environ.get(_NODE_EMBED_CHUNK_TOKENS_ENV, "256"))
+    chunks = _chunk_text_without_nlp(text, tokenizer=tokenizer, max_tokens=max_tokens)
+    if not chunks:
+        result.skipped += 1
+        return
+
+    model_name = os.environ.get(_NODE_EMBED_MODEL_ENV, "").strip()
+    chunk_texts = [c["text"] for c in chunks]
+    vectors = embedder.embed_documents(add_document_prefix(chunk_texts, model_name))
+
+    scope = _node_id_scope(project_id, graph_id)
+    file_node_id = f"node-file-{scope}{artifact_id}"
+    cap = int(os.environ.get(_NODE_EMBED_MAX_CHUNKS_ENV, "128"))
+    written = 0
+    for i, (chunk, vector) in enumerate(zip(chunks, vectors)):
+        if i >= cap:
+            break
+        chunk_id = f"node-chunk-{scope}{artifact_id}-{i}"
+        chunk_md5 = hashlib.md5(chunk["text"].encode("utf-8")).hexdigest()
+        await store.upsert_node(
+            KnowledgeNode(
+                node_id=chunk_id,
+                project_id=project_id,
+                label=f"chunk {i} of {artifact_id}",
+                node_type="entity",
+                content={
+                    "kind": "chunk",
+                    "artifact_id": artifact_id,
+                    "chunk_index": i,
+                    "chunk_start": chunk.get("start"),
+                    "chunk_end": chunk.get("end"),
+                    "chunk_md5": chunk_md5,
+                    "excerpt": chunk["text"][:500],
+                    "origin": "knowledge_embed",
+                },
+                content_hash=chunk_md5,
+                graph_id=graph_id,
+            )
+        )
+        await store.upsert_edge(
+            KnowledgeEdge(
+                edge_id=f"edge-{chunk_id}-part-of-{file_node_id}",
+                project_id=project_id,
+                source_id=chunk_id,
+                target_id=file_node_id,
+                relation_type="part_of",
+                content={"kind": "part_of", "origin": "knowledge_embed"},
+                graph_id=graph_id,
+            )
+        )
+        await store.upsert_node_embedding(
+            chunk_id,
+            model_name,
+            vector,
+            content_hash=chunk_md5,
+        )
+        written += 1
+    result.nodes_embedded += written
+
+
+class KnowledgeEmbedBackend(OrchestratorBackend):
+    """Chunk artifact text → canonical chunk nodes + node vectors (B3)."""
+
+    @property
+    def backend_name(self) -> str:
+        return "knowledge_embed"
+
+    async def submit_job(
+        self,
+        job: Job,
+        attempt: JobAttempt,
+    ) -> str:
+        project_id = job.spec.get("project_id", job.project_id)
+        sources: list[dict[str, Any]] = job.spec.get("sources", [])
+        graph_id = str(job.spec.get("graph_id") or "")
+
+        result = KnowledgeEmbedResult()
+        embedder = _get_node_embedder()
+        if embedder is None:
+            reason = f"no embedder (set {_NODE_EMBED_MODEL_ENV} to a pre-staged model dir)"
+            logger.info("knowledge_embed degraded (no-op): %s", reason)
+            result.degraded = True
+            result.degraded_reason = reason
+            _write_result(attempt, result)
+            return f"knowledge_embed|mode=degraded|reason=no_embedder|project={project_id}"
+
+        s3_client, s3_bucket = _build_s3_client(job.spec)
+
+        from umrs.knowledge.store import KnowledgeStore
+
+        async with _open_pool() as pool:
+            if pool is None:
+                logger.warning("knowledge_embed degraded: Postgres pool unavailable")
+                result.degraded = True
+                result.degraded_reason = "Postgres pool unavailable"
+                _write_result(attempt, result)
+                return f"knowledge_embed|mode=degraded|reason=no_pool|project={project_id}"
+
+            store = KnowledgeStore(pool)
+            for src in sources:
+                try:
+                    await _embed_one_artifact(
+                        store,
+                        src,
+                        project_id,
+                        graph_id,
+                        embedder,
+                        s3_client,
+                        s3_bucket,
+                        result,
+                    )
+                except Exception as exc:  # noqa: BLE001 — per-artifact isolation
+                    logger.error("embed failed for %s: %s", src.get("artifact_id"), exc)
+                    result.failed_items.append(
+                        {"artifact_id": src.get("artifact_id", ""), "error": str(exc)}
+                    )
+
+        _write_result(attempt, result)
+        return (
+            f"knowledge_embed|project={project_id}|"
+            f"embedded={result.nodes_embedded}|skipped={result.skipped}|"
+            f"failed={len(result.failed_items)}"
+        )
+
+
+def _enqueue_embed_job(
+    project_id: str,
+    user_id: str,
+    job: Any,
+    sources: list[dict[str, Any]],
+) -> str | None:
+    """Enqueue the KNOWLEDGE_EMBED job chained to a completed understand.
+
+    Mirrors _enqueue_understand_job: the descriptors travelled with the
+    parent spec, so the embed stage re-processes exactly the artifacts the
+    understand stage touched — never a whole-project re-list.
+    """
+    from .models import JobType
+
+    if not sources:
+        return None
+
+    from .service import JobSubmission, get_job_service
+
+    embed_job_id = get_job_service().submit_job(
+        JobSubmission(
+            project_id=project_id,
+            user_id=user_id,
+            job_type=JobType.KNOWLEDGE_EMBED,
+            spec={
+                "sources": sources,
+                "project_id": project_id,
+                "parent_job_id": job.job_id,
+                "graph_id": job.spec.get("graph_id", ""),
+            },
+            priority=job.priority,
+            max_attempts=3,
+        ),
+    )
+    logger.info(
+        "Enqueued KNOWLEDGE_EMBED: job=%s artifacts=%d",
+        embed_job_id,
+        len(sources),
+    )
+    return embed_job_id
 
 
 # ── KnowledgeVerifyBackend ────────────────────────────────────────────────────

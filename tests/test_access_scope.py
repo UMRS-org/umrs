@@ -138,20 +138,21 @@ class TestScopeIdentityResolution:
     def test_mvp_legacy_project_header(self, monkeypatch):
         from umrs.api import _scope_identity as si
 
-        monkeypatch.delenv("UMRS_AUTH_MODE", raising=False)
+        # mvp is an explicit dev opt-in since B12 (strict default)
+        monkeypatch.setenv("UMRS_AUTH_MODE", "mvp")
         scope = si.request_caller_scope(self._request({"x-project-id": "proj-a"}))
         assert scope == LEGACY
 
     def test_mvp_no_headers_is_anonymous(self, monkeypatch):
         from umrs.api import _scope_identity as si
 
-        monkeypatch.delenv("UMRS_AUTH_MODE", raising=False)
+        monkeypatch.setenv("UMRS_AUTH_MODE", "mvp")
         assert si.request_caller_scope(self._request({})) == ANON
 
     def test_mvp_verified_tuple_skips_hmac_but_keeps_scope(self, monkeypatch):
         from umrs.api import _scope_identity as si
 
-        monkeypatch.delenv("UMRS_AUTH_MODE", raising=False)
+        monkeypatch.setenv("UMRS_AUTH_MODE", "mvp")
         req = self._request(
             {
                 "x-user-id": "alice",

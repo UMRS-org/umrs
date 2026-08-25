@@ -3,12 +3,40 @@
 from __future__ import annotations
 
 import io
+import sys
+
 import pytest
 
 from umrs.data_catalog.query import read_catalog_object, search_catalog
 from umrs.data_catalog.schema import CatalogObjectMeta, CatalogState
 
 from catalog_store_fake import FakeCatalogMetaStore
+
+
+@pytest.fixture(autouse=True, scope="module")
+def _restore_sys_modules():
+    """Undo the manually injected module stubs after this file's tests.
+
+    ``_catalog_api_deps`` registers ``sys.modules['umrs.api.catalog*']`` (and
+    historically a bare ``umrs.api`` stub) via importlib — without a restore,
+    those entries poison any later test module that imports ``umrs.api.*``
+    (cross-file contamination seen in the 2026-08-26 audit run).
+    """
+    sentinel = object()
+    keys = (
+        "umrs",
+        "umrs.api",
+        "umrs.api.files",
+        "umrs.api.catalog_store",
+        "umrs.api.catalog",
+    )
+    before = {k: sys.modules.get(k, sentinel) for k in keys}
+    yield
+    for k, prior in before.items():
+        if prior is sentinel:
+            sys.modules.pop(k, None)
+        else:
+            sys.modules[k] = prior
 
 
 def _meta(
@@ -183,8 +211,17 @@ def _catalog_api_deps():
         spec.loader.exec_module(module)
         return module
 
-    sys.modules.setdefault("umrs", types.ModuleType("umrs"))
-    sys.modules.setdefault("umrs.api", types.ModuleType("umrs.api"))
+    # Prefer REAL parent packages so relative imports inside the manually
+    # loaded modules resolve (``from ._scope_identity import ...``). Bare stubs
+    # are kept only as a fallback for minimal-display environments that truly
+    # lack the package — and even then the module-scoped restore fixture above
+    # removes them afterwards.
+    try:
+        import umrs  # noqa: F401
+        import umrs.api  # noqa: F401
+    except ImportError:
+        sys.modules.setdefault("umrs", types.ModuleType("umrs"))
+        sys.modules.setdefault("umrs.api", types.ModuleType("umrs.api"))
     files_module = _load_module("umrs.api.files", api_dir / "files.py")
     catalog_store_module = _load_module("umrs.api.catalog_store", api_dir / "catalog_store.py")
     catalog_module = _load_module("umrs.api.catalog", api_dir / "catalog.py")

@@ -266,6 +266,7 @@ class TestJobTypes:
             "data_ingestion",
             "knowledge_ingest",
             "knowledge_understand",
+            "knowledge_embed",
             "knowledge_verify",
             "knowledge_export",
             "companion_worker",

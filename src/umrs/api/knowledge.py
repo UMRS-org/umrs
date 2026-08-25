@@ -93,13 +93,41 @@ class VerifyRequest(BaseModel):
 
 @router.get("/search")
 async def search_knowledge(
+    request: Request,
     query: str = Query(..., description="Search query"),
     scope: str = Query("project", description="Search scope: project|experiment|user"),
     project_id: str | None = Query(None),
     namespaces: str | None = Query(None, description="Comma-separated namespace names"),
     limit: int = Query(20, ge=1, le=100),
 ):
-    """Search across knowledge namespaces with source attribution."""
+    """Search across knowledge namespaces with source attribution.
+
+    Project binding is mandatory (audit B10): this endpoint previously had
+    no identity dependency at all — omitting ``project_id`` searched every
+    project's memory_items. Anonymous or unscoped calls fail closed.
+    """
+    from umrs.api._scope_identity import request_caller_scope
+    from umrs.knowledge.access_scope import project_readable as _scope_readable
+
+    caller = request_caller_scope(request)
+    effective_project = project_id or caller.project_id
+    if not effective_project:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "scope_required",
+                "message": "knowledge/search requires a project scope (authenticated or explicit).",
+            },
+        )
+    if not _scope_readable(effective_project, caller):
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "scope_denied",
+                "message": "Project is outside the caller's access tier.",
+            },
+        )
+
     engine = _get_engine()
     ns_list = (
         [n.strip() for n in namespaces.split(",") if n.strip()] if namespaces else None
@@ -107,7 +135,7 @@ async def search_knowledge(
     result = engine.search(
         query=query,
         scope=scope,
-        project_id=project_id,
+        project_id=effective_project,
         namespaces=ns_list,
         limit=limit,
     )

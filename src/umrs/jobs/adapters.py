@@ -1343,6 +1343,7 @@ def create_backend_factory(
     workflow_run_backend = WorkflowRunBackend()
 
     from .knowledge_adapters import (
+        KnowledgeEmbedBackend,
         KnowledgeIngestBackend,
         KnowledgeUnderstandBackend,
         KnowledgeVerifyBackend,
@@ -1368,6 +1369,7 @@ def create_backend_factory(
 
     knowledge_ingest_backend = KnowledgeIngestBackend()
     knowledge_understand_backend = KnowledgeUnderstandBackend()
+    knowledge_embed_backend = KnowledgeEmbedBackend()
     knowledge_verify_backend = KnowledgeVerifyBackend()
 
     from .reindex import KnowledgeReindexBackend
@@ -1398,6 +1400,8 @@ def create_backend_factory(
             return knowledge_ingest_backend
         elif job_type == JobType.KNOWLEDGE_UNDERSTAND:
             return knowledge_understand_backend
+        elif job_type == JobType.KNOWLEDGE_EMBED:
+            return knowledge_embed_backend
         elif job_type == JobType.KNOWLEDGE_VERIFY:
             return knowledge_verify_backend
         elif job_type == JobType.KNOWLEDGE_REINDEX:
@@ -1458,6 +1462,7 @@ def create_status_checker(
         checker.register(JobType.MODEL_DOWNLOAD, ModelDownloadStatusChecker())
 
     from .knowledge_adapters import (
+        KnowledgeEmbedStatusChecker,
         KnowledgeIngestStatusChecker,
         KnowledgeUnderstandStatusChecker,
         KnowledgeVerifyStatusChecker,
@@ -1465,6 +1470,7 @@ def create_status_checker(
 
     checker.register(JobType.KNOWLEDGE_INGEST, KnowledgeIngestStatusChecker())
     checker.register(JobType.KNOWLEDGE_UNDERSTAND, KnowledgeUnderstandStatusChecker())
+    checker.register(JobType.KNOWLEDGE_EMBED, KnowledgeEmbedStatusChecker())
     checker.register(JobType.KNOWLEDGE_VERIFY, KnowledgeVerifyStatusChecker())
 
     from .reindex import KnowledgeReindexStatusChecker
