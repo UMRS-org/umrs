@@ -139,6 +139,12 @@ services:
       # Durable-path readiness poller budget (default 300s). Must also cover
       # the multi-minute weight load + CUDA graph capture of large models.
       RIVAULT_READINESS_TIMEOUT_SEC: ${RIVAULT_READINESS_TIMEOUT_SEC:-2400}
+      # KNOWLEDGE_EMBED lane (audit B3 activation): pre-staged local
+      # SentenceTransformer dir. The backend fails closed to a degraded no-op
+      # when unset — a live path here turns chunked node embeddings on for
+      # the durable ingest → understand → embed chain (offline rule: never
+      # an HF id, only this host path).
+      UMRS_KNOWLEDGE_EMBED_MODEL: ${UMRS_RCCS_KNOWLEDGE_EMBED_MODEL:-/models/e5-base-v2}
       PYTHONUNBUFFERED: "1"
     volumes:
       - ../rccs-front/site.yaml:/etc/umrs/site.yaml:ro,z
@@ -147,6 +153,9 @@ services:
       - ./user_files_rccs:/etc/umrs/user_files:z
       - ./workflow_state:/var/lib/umrs-workflows:z
       - ./s3cfg:/etc/umrs/s3cfg:ro,z
+      # Pre-staged node embedder for KNOWLEDGE_EMBED (read-only; populated
+      # from the host HF cache snapshot at deploy time)
+      - ./models:/models:ro,z
       # SSH keys for RemoteSlurmBackend
       - ${HOME}/.ssh:/root/.ssh-host:ro,z
       # CURVE session keys (when ZMQ auth enabled)

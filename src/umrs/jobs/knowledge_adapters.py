@@ -63,7 +63,7 @@ class KnowledgeEvent:
             )
 
     def emit(self) -> "KnowledgeEvent":
-        """Log and return self for chaining."""
+        """Log and return self for chaining; also feed the SSE project feed."""
         payload = {"event": self.event_type, "job_id": self.job_id}
         if self.artifact_id:
             payload["artifact_id"] = self.artifact_id
@@ -74,6 +74,16 @@ class KnowledgeEvent:
         if self.details:
             payload["details"] = self.details
         logger.info("KnowledgeEvent [%s]: %s", self.event_type, payload)
+        # SSE producer (was unwired — audit follow-up): project-scoped fan-out
+        # when the embedding backend set its project context; skips silently
+        # otherwise (fail closed). events_sse imports this module at top
+        # level, so the import here must stay runtime-local.
+        try:
+            from umrs.knowledge import events_sse
+
+            events_sse.emit(self)
+        except Exception:  # noqa: BLE001 — SSE must never break a job
+            pass
         return self
 
 
@@ -450,6 +460,31 @@ class KnowledgeIngestBackend(OrchestratorBackend):
 
         project_id = job.spec.get("project_id", job.project_id)
         allow_domains = job.spec.get("allow_domains")
+        _sse_token = None
+        try:  # SSE project attribution for every event in this attempt
+            from umrs.knowledge import events_sse
+
+            _sse_token = events_sse.set_project_ctx(project_id)
+        except Exception:  # noqa: BLE001 — SSE context is best-effort
+            pass
+        try:
+            return await self._submit_ingest(
+                job, attempt, source_refs, project_id, allow_domains
+            )
+        finally:
+            if _sse_token is not None:
+                from umrs.knowledge import events_sse
+
+                events_sse.reset_project_ctx(_sse_token)
+
+    async def _submit_ingest(
+        self,
+        job: Job,
+        attempt: JobAttempt,
+        source_refs: list[dict[str, Any]],
+        project_id: str,
+        allow_domains: Optional[list[str]],
+    ) -> str:
 
         KnowledgeEvent(
             event_type="create",
@@ -522,7 +557,27 @@ class KnowledgeUnderstandBackend(OrchestratorBackend):
     ) -> str:
         project_id = self._project_id or job.spec.get("project_id", job.project_id)
         self._project_id = project_id
+        _sse_token = None
+        try:  # SSE project attribution for every event in this attempt
+            from umrs.knowledge import events_sse
 
+            _sse_token = events_sse.set_project_ctx(project_id)
+        except Exception:  # noqa: BLE001 — SSE context is best-effort
+            pass
+        try:
+            return await self._submit_understand(job, attempt, project_id)
+        finally:
+            if _sse_token is not None:
+                from umrs.knowledge import events_sse
+
+                events_sse.reset_project_ctx(_sse_token)
+
+    async def _submit_understand(
+        self,
+        job: Job,
+        attempt: JobAttempt,
+        project_id: str,
+    ) -> str:
         sources: list[dict[str, Any]] = job.spec.get("sources", [])
         KnowledgeEvent(
             event_type="create",
@@ -1984,6 +2039,27 @@ class KnowledgeEmbedBackend(OrchestratorBackend):
         attempt: JobAttempt,
     ) -> str:
         project_id = job.spec.get("project_id", job.project_id)
+        _sse_token = None
+        try:  # SSE project attribution for every attempt event
+            from umrs.knowledge import events_sse
+
+            _sse_token = events_sse.set_project_ctx(project_id)
+        except Exception:  # noqa: BLE001 — SSE context is best-effort
+            pass
+        try:
+            return await self._submit_embed(job, attempt, project_id)
+        finally:
+            if _sse_token is not None:
+                from umrs.knowledge import events_sse
+
+                events_sse.reset_project_ctx(_sse_token)
+
+    async def _submit_embed(
+        self,
+        job: Job,
+        attempt: JobAttempt,
+        project_id: str,
+    ) -> str:
         sources: list[dict[str, Any]] = job.spec.get("sources", [])
         graph_id = str(job.spec.get("graph_id") or "")
 
