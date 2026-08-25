@@ -7,6 +7,7 @@ and knowledge modules.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import logging
 import os
@@ -88,14 +89,47 @@ class BroadcastEvent:
     event_type: str
     data: dict[str, Any]
     event_id: str
+    project_id: str = ""
 
 
 _broadcast_queue: asyncio.Queue[BroadcastEvent] = asyncio.Queue(maxsize=5000)
 _broadcast_handler: asyncio.Task | None = None
 
+# Project attribution for events emitted deep inside job helpers: backends
+# set this contextvar at submit time so every KnowledgeEvent within the
+# attempt inherits the correct project (no signature threading).
+_project_ctx: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "sse_project_ctx", default=""
+)
+
+
+def set_project_ctx(project_id: str) -> contextvars.Token:
+    """Bind the current execution context to a project for SSE attribution."""
+    return _project_ctx.set(project_id)
+
+
+def reset_project_ctx(token: contextvars.Token) -> None:
+    """Undo set_project_ctx (required in finally blocks)."""
+    _project_ctx.reset(token)
+
+
+def _target_clients(bevent: BroadcastEvent) -> list[tuple[str, dict[str, Any]]]:
+    """Clients that may receive this event (project-scoped fan-out).
+
+    Events carry a project; clients only see events for THEIR project
+    (cross-project delivery was the latent leak once the producer was
+    wired). Unattributed events go to nobody — they are dropped at emit().
+    Caller must hold _client_lock.
+    """
+    return [
+        (cid, info)
+        for cid, info in _clients.items()
+        if info.get("project") == bevent.project_id
+    ]
+
 
 async def _broadcast_loop() -> None:
-    """Drain the broadcast queue and fan out to all client queues."""
+    """Drain the broadcast queue and fan out to same-project client queues."""
     logger.info("SSE broadcast loop started")
     try:
         while True:
@@ -103,7 +137,7 @@ async def _broadcast_loop() -> None:
             delivered: int = 0
             dropped: int = 0
             async with _client_lock:
-                for cid, info in _clients.items():
+                for cid, info in _target_clients(bevent):
                     try:
                         qsize = info["queue"].qsize()
                         if qsize < 100:  # drop if queue is full
@@ -128,17 +162,26 @@ def _start_broadcast_loop() -> None:
         _broadcast_handler = asyncio.create_task(_broadcast_loop())
 
 
-def emit(event: KnowledgeEvent) -> None:
-    """Public API: broadcast a KnowledgeEvent to all SSE clients.
+def emit(event: KnowledgeEvent, project_id: str = "") -> None:
+    """Public API: broadcast a KnowledgeEvent to same-project SSE clients.
 
-    Mirrors the event.emit() logging but also fans out to SSE queues.
+    Project attribution order: explicit argument > event.project_id (when
+    present) > the backend's project contextvar. Unattributed events are
+    dropped — fail closed rather than fan out across projects. When nobody
+    is listening the queue never fills up.
     """
-    data = asdict(event)
+    project = project_id or getattr(event, "project_id", "") or _project_ctx.get()
+    if not project:
+        return
+    if not _clients:
+        return  # no listeners — nothing to do, queue never grows
+    data = {**asdict(event), "project_id": project}
     event_id = str(uuid.uuid4())[:8]
     bevent = BroadcastEvent(
         event_type=event.event_type,
         data=data,
         event_id=event_id,
+        project_id=project,
     )
     try:
         _broadcast_queue.put_nowait(bevent)

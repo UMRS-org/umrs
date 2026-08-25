@@ -22,7 +22,7 @@ import urllib.parse
 from typing import Any
 
 import aiohttp
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 
 from ..mcp.store import (
@@ -238,17 +238,40 @@ _MCP_MAX_RETRIES = int(os.getenv("MCP_MAX_RETRIES", "3"))
 # =============================================================================
 
 
+def _caller_scope(request):
+    """Caller scope (strict default); mvp anonymous stays legacy-permissive."""
+    from umrs.api._scope_identity import request_caller_scope
+
+    return request_caller_scope(request)
+
+
+def _server_visible(srv, project_id: str, unrestricted: bool) -> bool:
+    """Read visibility (audit B9): global (unscoped) servers for everyone,
+    project-bound servers only for that project; admins/anonymous bypass."""
+    if unrestricted:
+        return True
+    bound = (getattr(srv, "project_id", None) or "").strip()
+    return bound == "" or bound == project_id
+
+
 @router.get("/servers", response_model=list[ServerResponse])
 async def list_servers(
+    request: Request,
     project_id: str | None = Query(None, description="Filter by project"),
     status_filter: str | None = Query(
         None, alias="status", description="Filter by status"
     ),
 ) -> list[ServerResponse]:
-    """List all registered MCP servers."""
+    """List registered MCP servers, scoped to the caller's project."""
+    scope = _caller_scope(request)
+    unrestricted = scope.is_admin or scope.anonymous
     store = _get_store()
     servers = store.list_servers(project_id=project_id, status_filter=status_filter)
-    return [_server_to_response(s) for s in servers]
+    return [
+        _server_to_response(s)
+        for s in servers
+        if _server_visible(s, scope.project_id, unrestricted)
+    ]
 
 
 @router.post(
@@ -306,8 +329,10 @@ async def register_server(
 
 
 @router.get("/servers/{server_id_or_name}", response_model=ServerResponse)
-async def get_server(server_id_or_name: str) -> ServerResponse:
-    """Get an MCP server by ID or name."""
+async def get_server(request: Request, server_id_or_name: str) -> ServerResponse:
+    """Get an MCP server by ID or name (404-hides servers outside scope)."""
+    scope = _caller_scope(request)
+    unrestricted = scope.is_admin or scope.anonymous
     store = _get_store()
     try:
         if server_id_or_name.startswith("mcp-"):
@@ -319,6 +344,11 @@ async def get_server(server_id_or_name: str) -> ServerResponse:
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Server not found: {server_id_or_name}",
         ) from None
+    if not _server_visible(server, scope.project_id, unrestricted):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Server not found: {server_id_or_name}",
+        )
     return _server_to_response(server)
 
 
@@ -354,10 +384,18 @@ async def unregister_server(server_id_or_name: str) -> dict[str, str]:
 
 @router.get("/tools", response_model=list[ToolResponse])
 async def list_tools(
+    request: Request,
     server: str | None = Query(None, description="Filter by server name"),
 ) -> list[ToolResponse]:
-    """List all tools across registered MCP servers."""
+    """List tools across registered MCP servers visible to the caller."""
+    scope = _caller_scope(request)
+    unrestricted = scope.is_admin or scope.anonymous
     store = _get_store()
+    visible_names = {
+        s.name
+        for s in store.list_servers()
+        if _server_visible(s, scope.project_id, unrestricted)
+    }
     tools = store.list_tools(server_name=server)
     return [
         ToolResponse(
@@ -367,6 +405,7 @@ async def list_tools(
             server=t["server"],
         )
         for t in tools
+        if t["server"] in visible_names
     ]
 
 
