@@ -252,6 +252,24 @@ async def trigger_ingest(
     )
     from umrs.server.durable_job_runtime import get_runtime
 
+    if body.project_id and body.project_id != project_id:
+        # Fail loud instead of silently writing into the verified (JWT)
+        # project — the historic silent-override was an audit P1: the UI
+        # showed the selected project while data landed elsewhere.
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "project_mismatch",
+                "message": (
+                    f"Requested project {body.project_id!r} does not match the "
+                    f"authenticated project {project_id!r}. Re-login with a "
+                    "project-scoped token or omit the override."
+                ),
+                "requested_project_id": body.project_id,
+                "verified_project_id": project_id,
+            },
+        )
+
     runtime = get_runtime()
     if runtime is None:
         raise HTTPException(
@@ -286,11 +304,13 @@ async def trigger_ingest(
         "sources": sources,
         "allow_domains": allow_domains,
         "project_id": project_id,
+        # Always carry the resolved target graph: without it the understand
+        # chain tagged nodes graph_id='' (shadow graph), making fresh
+        # ingestion invisible to knowledge/query — audit B2.
+        "graph_id": target_graph_id,
     }
     if body.proposal_id:
         spec["proposal_id"] = body.proposal_id
-    if body.graph_id:
-        spec["graph_id"] = target_graph_id
 
     try:
         job_id = await runtime.submit_job_sync(

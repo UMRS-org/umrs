@@ -266,7 +266,8 @@ def get_project_id(
     """
     verified_project_id = _header_str(x_verified_project_id)
     if (
-        os.environ.get("UMRS_AUTH_MODE", "mvp").strip().lower() == "strict"
+        # Default strict (audit B12): mvp is an explicit dev opt-in.
+        os.environ.get("UMRS_AUTH_MODE", "strict").strip().lower() == "strict"
         and verified_project_id
     ):
         from ._verified_headers import handshake_secret, verified_headers_trusted
@@ -284,7 +285,8 @@ def get_project_id(
             status_code=401,
             detail="Verified project identity rejected (signature mismatch)",
         )
-    if os.environ.get("UMRS_AUTH_MODE", "mvp").strip().lower() == "strict":
+    # Default strict (audit B12): mvp is an explicit dev opt-in.
+    if os.environ.get("UMRS_AUTH_MODE", "strict").strip().lower() == "strict":
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=(

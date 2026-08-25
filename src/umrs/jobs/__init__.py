@@ -25,6 +25,9 @@ from .adapters import (
 from .data_ingestion import DataIngestionBackend
 from .data_ingestion import DataIngestionStatusChecker
 from .knowledge_adapters import (
+    KnowledgeEmbedBackend,
+    KnowledgeEmbedResult,
+    KnowledgeEmbedStatusChecker,
     KnowledgeEvent,
     KnowledgeIngestBackend,
     KnowledgeIngestResult,
@@ -129,6 +132,9 @@ __all__ = [
     "KnowledgeUnderstandBackend",
     "KnowledgeUnderstandResult",
     "KnowledgeUnderstandStatusChecker",
+    "KnowledgeEmbedBackend",
+    "KnowledgeEmbedResult",
+    "KnowledgeEmbedStatusChecker",
     "KnowledgeEvent",
     "WorkflowRunBackend",
     "create_backend_factory",

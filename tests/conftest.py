@@ -11,6 +11,13 @@ import pytest
 # sys.modules; keep the env flag for embedded/interpreter runners.
 os.environ.setdefault("UMRS_SAT_KG_QUIET", "1")
 
+# Auth mode (audit B12): the UMRS DEFAULT is strict — an unconfigured process
+# must not run wide open. The test suite, however, was written against the
+# historic mvp default (anonymous TestClient requests, unsigned verified
+# headers), so tests run under an explicitly declared mvp baseline; strict-
+# mode cases opt in per-test via monkeypatch.setenv("UMRS_AUTH_MODE", "strict").
+os.environ.setdefault("UMRS_AUTH_MODE", "mvp")
+
 # Demo/onboarding files that wrap argparse at module scope: collecting them
 # at test time makes pytest's argument parser abort with SystemExit — see the
 # `usage: __main__.py [-h] [-c CONFIG]` INTERNALERROR in full-suite runs.

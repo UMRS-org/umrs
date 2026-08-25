@@ -136,8 +136,8 @@ def require_ops_admin(
             )
         return
 
-    # Strict mode: reject if no verified headers
-    if os.environ.get("UMRS_AUTH_MODE", "mvp").strip().lower() == "strict":
+    # Strict mode (the audit B12 default): reject if no verified headers
+    if os.environ.get("UMRS_AUTH_MODE", "strict").strip().lower() == "strict":
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Missing Gateway-verified caller identity",
@@ -171,8 +171,8 @@ def require_authenticated(
     if x_user_id and x_verified_project_id:
         return
 
-    # Strict mode: reject if no verified headers
-    if os.environ.get("UMRS_AUTH_MODE", "mvp").strip().lower() == "strict":
+    # Strict mode (the audit B12 default): reject if no verified headers
+    if os.environ.get("UMRS_AUTH_MODE", "strict").strip().lower() == "strict":
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Missing Gateway-verified caller identity",

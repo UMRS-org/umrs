@@ -473,7 +473,9 @@ class PolicyCheckResponse(BaseModel):
 
 
 def _strict_auth_mode() -> bool:
-    return os.environ.get("UMRS_AUTH_MODE", "mvp").strip().lower() == "strict"
+    # Default strict (audit B12): mvp is an explicit dev opt-in, never the
+    # silent default — an unconfigured process must not run wide open.
+    return os.environ.get("UMRS_AUTH_MODE", "strict").strip().lower() == "strict"
 
 
 def _context_from_verified_headers(

@@ -93,6 +93,9 @@ def client(store, s3, monkeypatch) -> TestClient:
     import umrs.api.intake_uploads as mod
     import umrs.data_catalog.triggers as triggers_mod
 
+    # mvp is an explicit dev opt-in since B12 (strict is the default); these
+    # tests exercise the mvp verified-header path without HMAC signing.
+    monkeypatch.setenv("UMRS_AUTH_MODE", "mvp")
     monkeypatch.setattr(mod, "_store", store)
     monkeypatch.setattr(
         mod,

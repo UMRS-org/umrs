@@ -128,14 +128,19 @@ class KnowledgeStore:
     ) -> bool:
         """Insert or update artifact metadata.
 
-        Returns True if inserted (new), False if deduped (already existed with same hash).
+        Returns True if inserted (new), False if deduped (already existed
+        with same hash). Dedup is per-project (audit B8): a bare global
+        content_hash probe caused identical bytes ingested into a second
+        project to produce no artifact row — the chained understand then
+        FK-failed in silence while the job reported success.
         """
         async with self._pool.acquire() as conn:
             existing = await conn.fetchval(
                 """SELECT artifact_id FROM knowledge_artifacts
-                   WHERE content_hash = $1 AND status = 'active'
+                   WHERE content_hash = $1 AND project_id = $2 AND status = 'active'
                    LIMIT 1""",
                 content_hash,
+                project_id,
             )
             if existing:
                 logger.debug(

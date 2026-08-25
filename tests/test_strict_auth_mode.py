@@ -81,11 +81,25 @@ def test_files_project_id_accepts_verified_header_in_strict_mode(monkeypatch):
     )
 
 
-def test_mvp_project_id_header_still_supported_by_default(monkeypatch):
-    """Development mode keeps the existing explicit-header behavior."""
-    from umrs.api import endpoints, files
+def test_strict_mode_is_the_default(monkeypatch):
+    """Unset UMRS_AUTH_MODE means strict (audit B12) — an unconfigured
+    process must not silently run in the permissive mvp trust mode."""
+    from umrs.api import endpoints
 
     monkeypatch.delenv("UMRS_AUTH_MODE", raising=False)
+
+    with pytest.raises(HTTPException) as exc_info:
+        endpoints.get_project_id(x_project_id="project-a")
+
+    assert exc_info.value.status_code == 401
+
+
+def test_mvp_project_id_header_supported_when_explicitly_enabled(monkeypatch):
+    """Development mode keeps the explicit-header behavior — but only when
+    UMRS_AUTH_MODE=mvp is set deliberately (B12 opt-in)."""
+    from umrs.api import endpoints, files
+
+    monkeypatch.setenv("UMRS_AUTH_MODE", "mvp")
 
     assert endpoints.get_project_id(x_project_id="project-a") == "project-a"
     assert files.get_project_id(x_project_id="project-a") == "project-a"
