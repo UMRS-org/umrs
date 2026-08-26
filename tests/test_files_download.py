@@ -91,3 +91,56 @@ async def test_download_404_on_missing_file():
             config=cfg,  # type: ignore[arg-type]
         )
     assert "404" in str(exc.value) or "File not found" in str(exc.value)
+
+
+@pytest.mark.asyncio
+async def test_download_output_bucket_raw_key_roundtrip():
+    """Workflow artifacts live at bucket root (no project namespace)."""
+    from umrs.api.files import download_file_stream
+
+    payload = b"col1\tcol2\n1\t2\n"
+    cfg = _FakeS3Config(_FakeS3(payload, content_type="text/tab-separated-values"))
+
+    resp = await download_file_stream(
+        path="results/motion_events.tsv",
+        bucket="r4-data-output",
+        project_id="default",
+        config=cfg,  # type: ignore[arg-type]
+    )
+    parts = [c async for c in resp.body_iterator]
+    assert b"".join(parts) == payload
+    # no "default/" prefix on cross-bucket reads
+    assert cfg._s3.calls[0][1] == {
+        "Bucket": "r4-data-output",
+        "Key": "results/motion_events.tsv",
+    }
+
+
+@pytest.mark.asyncio
+async def test_download_bucket_not_in_allowlist_forbidden():
+    from umrs.api.files import download_file_stream
+
+    cfg = _FakeS3Config(_FakeS3(b"x"))
+    with pytest.raises(Exception) as exc:
+        await download_file_stream(
+            path="results/x.json",
+            bucket="unrelated-bucket",
+            project_id="default",
+            config=cfg,  # type: ignore[arg-type]
+        )
+    assert "403" in str(exc.value) or "allowlist" in str(exc.value)
+
+
+@pytest.mark.asyncio
+async def test_download_output_bucket_traversal_rejected():
+    from umrs.api.files import download_file_stream
+
+    cfg = _FakeS3Config(_FakeS3(b"x"))
+    with pytest.raises(Exception) as exc:
+        await download_file_stream(
+            path="../../etc/passwd",
+            bucket="r4-data-output",
+            project_id="default",
+            config=cfg,  # type: ignore[arg-type]
+        )
+    assert "400" in str(exc.value) or "traversal" in str(exc.value)
