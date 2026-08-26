@@ -246,6 +246,9 @@ services:
       # Durable-path readiness poller budget (default 300s). Must also cover
       # the multi-minute weight load + CUDA graph capture of large models.
       RIVAULT_READINESS_TIMEOUT_SEC: ${RIVAULT_READINESS_TIMEOUT_SEC:-2400}
+      # KNOWLEDGE_EMBED lane (audit B3 activation): pre-staged local
+      # SentenceTransformer dir — degraded no-op when unset (umrs/a75d909).
+      UMRS_KNOWLEDGE_EMBED_MODEL: ${UMRS_AI4S_KNOWLEDGE_EMBED_MODEL:-/models/e5-base-v2}
       PYTHONUNBUFFERED: "1"
     volumes:
       - ../ai4s/site.yaml:/etc/umrs/site.yaml:ro,z
@@ -254,6 +257,8 @@ services:
       - ./user_files_ai4s:/etc/umrs/user_files:z
       - ./workflow_state:/var/lib/umrs-workflows:z
       - ./s3cfg:/etc/umrs/s3cfg:ro,z
+      # Pre-staged node embedder for KNOWLEDGE_EMBED (read-only)
+      - ./models:/models:ro,z
       - ${HOME}/.ssh:/root/.ssh-host:ro,z
       - ${HOME}/.config/umrs/curve-keys:/root/.config/umrs/curve-keys:ro,z
       # Shared config volume (same MinIO → same credentials)
@@ -327,6 +332,9 @@ services:
       UMRS_ZMQ_CURVE_SERVER_SECRET_KEY_FILE: /root/.config/umrs/curve-keys/server/server.key_secret
       RIVAULT_STARTUP_TIMEOUT_SEC: ${RIVAULT_STARTUP_TIMEOUT_SEC:-2400}
       RIVAULT_READINESS_TIMEOUT_SEC: ${RIVAULT_READINESS_TIMEOUT_SEC:-2400}
+      # KNOWLEDGE_EMBED lane (audit B3 activation): pre-staged local
+      # SentenceTransformer dir — degraded no-op when unset (umrs/a75d909).
+      UMRS_KNOWLEDGE_EMBED_MODEL: ${UMRS_BDRT_KNOWLEDGE_EMBED_MODEL:-/models/e5-base-v2}
       PYTHONUNBUFFERED: "1"
     volumes:
       - ../bdrt-front/site.yaml:/etc/umrs/site.yaml:ro,z
@@ -336,6 +344,8 @@ services:
       - ./user_files_bdrt:/etc/umrs/user_files:z
       - ./workflow_state:/var/lib/umrs-workflows:z
       - ./s3cfg:/etc/umrs/s3cfg:ro,z
+      # Pre-staged node embedder for KNOWLEDGE_EMBED (read-only)
+      - ./models:/models:ro,z
       # SSH keys for RemoteSlurmBackend
       - ${HOME}/.ssh:/root/.ssh-host:ro,z
       # CURVE session keys (when ZMQ auth enabled)
@@ -405,6 +415,9 @@ services:
       UMRS_ZMQ_CURVE_SERVER_SECRET_KEY_FILE: /root/.config/umrs/curve-keys/server/server.key_secret
       RIVAULT_STARTUP_TIMEOUT_SEC: ${RIVAULT_STARTUP_TIMEOUT_SEC:-2400}
       RIVAULT_READINESS_TIMEOUT_SEC: ${RIVAULT_READINESS_TIMEOUT_SEC:-2400}
+      # KNOWLEDGE_EMBED lane (audit B3 activation): pre-staged local
+      # SentenceTransformer dir — degraded no-op when unset (umrs/a75d909).
+      UMRS_KNOWLEDGE_EMBED_MODEL: ${UMRS_OCTOPUS_KNOWLEDGE_EMBED_MODEL:-/models/e5-base-v2}
       PYTHONUNBUFFERED: "1"
     volumes:
       - ../octopus-front/site.yaml:/etc/umrs/site.yaml:ro,z
@@ -412,6 +425,8 @@ services:
       - ./user_files_octopus:/etc/umrs/user_files:z
       - ./workflow_state:/var/lib/umrs-workflows:z
       - ./s3cfg:/etc/umrs/s3cfg:ro,z
+      # Pre-staged node embedder for KNOWLEDGE_EMBED (read-only)
+      - ./models:/models:ro,z
       - ${HOME}/.ssh:/root/.ssh-host:ro,z
       - ${HOME}/.config/umrs/curve-keys:/root/.config/umrs/curve-keys:ro,z
       - umrs_config:/root/.config/umrs

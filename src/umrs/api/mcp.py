@@ -57,6 +57,39 @@ _BLOCKED_HOSTNAMES = {
 _MCP_URL_ALLOWLIST = os.getenv("MCP_URL_ALLOWLIST", "").strip()
 
 
+def _ip_in_allowlist(addr, hostname: str) -> bool:
+    """True when the IP (or hostname) is explicitly allowlisted."""
+    if not _MCP_URL_ALLOWLIST:
+        return False
+    for entry in _MCP_URL_ALLOWLIST.split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        try:
+            if addr in ipaddress.ip_network(entry, strict=False):
+                return True
+        except ValueError:
+            if entry == hostname:
+                return True
+    return False
+
+
+def _check_blocked_ip(hostname: str) -> None:
+    """Raise 422 when the hostname parses as an IP inside a blocked range."""
+    try:
+        addr = ipaddress.ip_address(hostname)
+    except ValueError:
+        return  # Not an IP address — hostname checked against blocklist only
+    if _ip_in_allowlist(addr, hostname):
+        return
+    for network in _BLOCKED_NETWORKS:
+        if addr in network:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"MCP server URL resolves to a blocked network ({network}): {hostname}",
+            )
+
+
 def _validate_mcp_url(url: str) -> None:
     """
     Validate MCP server URL to prevent SSRF attacks.
@@ -77,7 +110,6 @@ def _validate_mcp_url(url: str) -> None:
             detail=f"Invalid URL format: {url}",
         )
 
-    # Scheme check
     if parsed.scheme not in ("http", "https"):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -91,38 +123,13 @@ def _validate_mcp_url(url: str) -> None:
             detail="MCP server URL must include a hostname",
         )
 
-    # Check blocked hostnames
     if hostname.lower() in _BLOCKED_HOSTNAMES:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"MCP server URL hostname is blocked (metadata endpoint): {hostname}",
         )
 
-    # Check if hostname is an IP address and validate against blocked ranges
-    try:
-        addr = ipaddress.ip_address(hostname)
-        # Check allowlist first
-        if _MCP_URL_ALLOWLIST:
-            for entry in _MCP_URL_ALLOWLIST.split(","):
-                entry = entry.strip()
-                if not entry:
-                    continue
-                try:
-                    if addr in ipaddress.ip_network(entry, strict=False):
-                        return  # Explicitly allowed
-                except ValueError:
-                    if entry == hostname:
-                        return  # Hostname match in allowlist
-
-        for network in _BLOCKED_NETWORKS:
-            if addr in network:
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail=f"MCP server URL resolves to a blocked network ({network}): {hostname}",
-                )
-    except ValueError:
-        # Not an IP address — it's a hostname, check blocklist only
-        pass
+    _check_blocked_ip(hostname)
 
 
 logger = logging.getLogger(__name__)
@@ -274,17 +281,66 @@ async def list_servers(
     ]
 
 
+def _enforce_registration_scope(
+    request: Request, req: ServerRegistrationRequest
+) -> ServerRegistrationRequest:
+    """Mutation scoping (audit B9 write-path): verified non-admin callers may
+    only register servers for their own project; an empty project_id claims
+    the caller project rather than the global namespace. Admins and the
+    legacy mvp-anonymous path keep full freedom."""
+    scope = _caller_scope(request)
+    if scope.is_admin or scope.anonymous:
+        return req
+    requested = (req.project_id or "").strip()
+    if requested and requested != scope.project_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "error": "scope_denied",
+                "message": (
+                    f"Cannot register MCP servers for project "
+                    f"{requested!r}; your project is {scope.project_id!r}."
+                ),
+            },
+        )
+    if not requested:
+        return req.model_copy(update={"project_id": scope.project_id})
+    return req
+
+
+def _record_registration_audit(server, req: ServerRegistrationRequest) -> None:
+    """Audit + resource registry emission for a completed registration."""
+    from .audit_events import emit_audit
+    from .governance import record_resource_created
+
+    emit_audit(
+        "mcp.registered",
+        project_id=req.project_id or "",
+        details={"name": req.name, "url": req.url, "server_id": server.server_id},
+    )
+    record_resource_created(
+        "mcp_servers",
+        server.server_id,
+        "",
+        project_id=req.project_id or "",
+        metadata={"name": req.name, "url": req.url},
+    )
+
+
 @router.post(
     "/servers", status_code=status.HTTP_201_CREATED, response_model=ServerResponse
 )
 async def register_server(
     req: ServerRegistrationRequest,
+    request: Request,
 ) -> ServerResponse:
     """
     Register or update an MCP server.
 
     If a server with the same name exists, it is updated (upsert).
     """
+    req = _enforce_registration_scope(request, req)
+
     # SSRF protection: validate URL before storing
     _validate_mcp_url(req.url)
 
@@ -307,23 +363,7 @@ async def register_server(
         project_id=req.project_id,
     )
     logger.info("Registered MCP server: %s (id=%s)", server.name, server.server_id)
-
-    from .audit_events import emit_audit
-
-    emit_audit(
-        "mcp.registered",
-        project_id=req.project_id or "",
-        details={"name": req.name, "url": req.url, "server_id": server.server_id},
-    )
-    from .governance import record_resource_created
-
-    record_resource_created(
-        "mcp_servers",
-        server.server_id,
-        "",
-        project_id=req.project_id or "",
-        metadata={"name": req.name, "url": req.url},
-    )
+    _record_registration_audit(server, req)
 
     return _server_to_response(server)
 
@@ -352,10 +392,39 @@ async def get_server(request: Request, server_id_or_name: str) -> ServerResponse
     return _server_to_response(server)
 
 
+def _enforce_unregister_scope(store, request: Request, server_id_or_name: str) -> None:
+    """Non-admin verified callers may only delete servers bound to their own
+    project; global servers are admin-only (B9 write-path)."""
+    scope = _caller_scope(request)
+    if scope.is_admin or scope.anonymous:
+        return
+    try:
+        if server_id_or_name.startswith("mcp-"):
+            server = store.get_server(server_id_or_name)
+        else:
+            server = store.get_server_by_name(server_id_or_name)
+    except MCPServerNotFoundError:
+        return
+    bound = (getattr(server, "project_id", None) or "").strip()
+    if bound != scope.project_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "error": "scope_denied",
+                "message": (
+                    "Only your own project's MCP servers can be "
+                    "unregistered; global servers are admin-only."
+                ),
+            },
+        )
+
+
 @router.delete("/servers/{server_id_or_name}")
-async def unregister_server(server_id_or_name: str) -> dict[str, str]:
+async def unregister_server(request: Request, server_id_or_name: str) -> dict[str, str]:
     """Unregister an MCP server by ID or name."""
     store = _get_store()
+    _enforce_unregister_scope(store, request, server_id_or_name)
+
     if server_id_or_name.startswith("mcp-"):
         deleted = store.unregister_server_by_id(server_id_or_name)
     else:
@@ -593,6 +662,41 @@ async def _parse_tool_response(
     raise _MCPProxyError(f"HTTP {response.status}: {text}")
 
 
+def _tool_call_headers() -> dict[str, str]:
+    """JSON content type + correlation ID propagation (best-effort)."""
+    headers: dict[str, str] = {"Content-Type": "application/json"}
+    try:
+        from umrs.server.correlation import get_request_id
+
+        rid = get_request_id()
+        if rid:
+            headers["X-Request-ID"] = rid
+    except Exception:
+        pass
+    return headers
+
+
+async def _post_tool_call_once(
+    session_timeout: aiohttp.ClientTimeout,
+    url: str,
+    payload: dict[str, Any],
+    tool_name: str,
+) -> "tuple[str, Any]":
+    """One proxy attempt.
+
+    Returns ("ok", result) when the tool call succeeded, ("retry", None) for
+    a retryable HTTP error. Raises _MCPProxyError on hard failures.
+    """
+    async with aiohttp.ClientSession(timeout=session_timeout) as session:
+        async with session.post(
+            url, json=payload, headers=_tool_call_headers()
+        ) as response:
+            result = await _parse_tool_response(response, tool_name)
+            if result is not None:
+                return ("ok", result)
+            return ("retry", response.status)
+
+
 async def _proxy_tool_call(
     server_url: str,
     transport: str,
@@ -618,40 +722,23 @@ async def _proxy_tool_call(
         "id": 1,
     }
     timeout = aiohttp.ClientTimeout(total=_MCP_PROXY_TIMEOUT)
+    last_status: Any = "unknown"
 
     for attempt in range(_MCP_MAX_RETRIES):
+        last = attempt >= _MCP_MAX_RETRIES - 1
         try:
-            # Propagate correlation ID to MCP server
-            call_headers: dict[str, str] = {"Content-Type": "application/json"}
-            try:
-                from umrs.server.correlation import get_request_id
-
-                rid = get_request_id()
-                if rid:
-                    call_headers["X-Request-ID"] = rid
-            except Exception:
-                pass
-
-            async with (
-                aiohttp.ClientSession(timeout=timeout) as session,
-                session.post(
-                    url,
-                    json=payload,
-                    headers=call_headers,
-                ) as response,
-            ):
-                result = await _parse_tool_response(response, tool_name)
-                if result is not None:
-                    return result
-                if attempt < _MCP_MAX_RETRIES - 1:
-                    await asyncio.sleep(2**attempt)
-                    continue
-                raise _MCPProxyError(f"HTTP {response.status} after retries")
-
+            outcome, info = await _post_tool_call_once(timeout, url, payload, tool_name)
         except aiohttp.ClientError as e:
-            if attempt < _MCP_MAX_RETRIES - 1:
+            if not last:
                 await asyncio.sleep(2**attempt)
                 continue
             raise _MCPProxyError(f"Connection error: {e}") from e
+        if outcome == "ok":
+            return info
+        last_status = info
+        if not last:
+            await asyncio.sleep(2**attempt)
+            continue
+        raise _MCPProxyError(f"HTTP {last_status} after retries")
 
     raise _MCPProxyError("Max retries exceeded")
