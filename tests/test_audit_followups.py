@@ -254,3 +254,116 @@ class TestMCPServerScoping:
 
         resp = TestClient(self.app).get(f"{MCP_PREFIX}/servers")
         assert resp.status_code == 401
+
+
+class TestMCPMutationScoping:
+    """B9 write-path: registration/deletion obey the caller's project."""
+
+    @pytest.fixture(autouse=True)
+    def _store(self, monkeypatch):
+        servers = [
+            _mcp_server("mcp-global", "default-rag", None),
+            _mcp_server("mcp-a", "proj-a-tools", "proj-a"),
+            _mcp_server("mcp-b", "proj-b-tools", "proj-b"),
+        ]
+        store = _FakeMCPStore(servers)
+        app, self.mod = _build_mcp_app(store)
+        monkeypatch.setattr(self.mod, "_get_store", lambda: store)
+        self.app = app
+        self.store = store
+        yield
+
+    def test_registration_for_other_project_denied(self, monkeypatch):
+        monkeypatch.setenv("UMRS_AUTH_MODE", "mvp")
+        from fastapi.testclient import TestClient
+
+        resp = TestClient(self.app).post(
+            f"{MCP_PREFIX}/servers",
+            json={
+                "name": "hijack",
+                "url": "http://x.local:9",
+                "tools": [],
+                "project_id": "proj-b",
+            },
+            headers={"X-Project-ID": "proj-a"},
+        )
+        assert resp.status_code == 403
+        assert resp.json()["detail"]["error"] == "scope_denied"
+
+    def test_blank_project_claims_caller_project_not_global(self, monkeypatch):
+        monkeypatch.setenv("UMRS_AUTH_MODE", "mvp")
+        from fastapi.testclient import TestClient
+
+        registered: dict = {}
+
+        class _CapStore(_FakeMCPStore):
+            def register_server(self, **kwargs):
+                registered.update(kwargs)
+                return _mcp_server("mcp-new", kwargs["name"], kwargs.get("project_id"))
+
+        store = _CapStore([])
+        app, mod = _build_mcp_app(store)
+        monkeypatch.setattr(mod, "_get_store", lambda: store)
+        resp = TestClient(app).post(
+            f"{MCP_PREFIX}/servers",
+            json={"name": "mine", "url": "http://mine.local:9", "tools": []},
+            headers={"X-Project-ID": "proj-a"},
+        )
+        assert resp.status_code == 201
+        assert registered["project_id"] == "proj-a"
+
+    def test_admin_registers_global(self, monkeypatch):
+        monkeypatch.setenv("UMRS_AUTH_MODE", "strict")
+        monkeypatch.setenv("UMRS_HANDSHAKE_HMAC_SECRET", "sec")
+        from r4_contracts.handshake_hmac import sign_claims
+        from fastapi.testclient import TestClient
+
+        class _CapStore(_FakeMCPStore):
+            def register_server(self, **kwargs):
+                return _mcp_server("mcp-new", kwargs["name"], kwargs.get("project_id"))
+
+        store = _CapStore([])
+        app, mod = _build_mcp_app(store)
+        monkeypatch.setattr(mod, "_get_store", lambda: store)
+        resp = TestClient(app).post(
+            f"{MCP_PREFIX}/servers",
+            json={"name": "global-one", "url": "http://g.local:9", "tools": []},
+            headers={
+                "X-User-ID": "root",
+                "X-Verified-Project-ID": "ops",
+                "X-Verified-Is-Admin": "true",
+                "X-Verified-HMAC": sign_claims("sec", "root", "ops", True),
+            },
+        )
+        assert resp.status_code == 201
+
+    def test_unregistration_of_foreign_project_denied(self, monkeypatch):
+        monkeypatch.setenv("UMRS_AUTH_MODE", "mvp")
+        from fastapi.testclient import TestClient
+
+        store = self.store
+        store.unregister_server = lambda name: True  # noqa: ARG005
+        resp = TestClient(self.app).delete(
+            f"{MCP_PREFIX}/servers/proj-b-tools", headers={"X-Project-ID": "proj-a"}
+        )
+        assert resp.status_code == 403
+
+    def test_unregistration_of_own_project_allowed(self, monkeypatch):
+        monkeypatch.setenv("UMRS_AUTH_MODE", "mvp")
+        from fastapi.testclient import TestClient
+
+        self.store.unregister_server = lambda name: True
+        resp = TestClient(self.app).delete(
+            f"{MCP_PREFIX}/servers/proj-a-tools", headers={"X-Project-ID": "proj-a"}
+        )
+        assert resp.status_code == 200
+
+    def test_global_server_delete_requires_admin(self, monkeypatch):
+        monkeypatch.setenv("UMRS_AUTH_MODE", "mvp")
+        from fastapi.testclient import TestClient
+
+        self.store.unregister_server = lambda name: True
+        resp = TestClient(self.app).delete(
+            f"{MCP_PREFIX}/servers/default-rag", headers={"X-Project-ID": "proj-a"}
+        )
+        assert resp.status_code == 403
