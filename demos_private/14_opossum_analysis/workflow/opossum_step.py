@@ -68,17 +68,23 @@ def vfr2cfr(file_path: Path, frame_rate: int = 5) -> Path:
 
 # ── Datetime extraction from filename (from real pipeline) ──────────────────
 
-def get_datetime_from_filename(filename: str) -> datetime:
+def get_datetime_from_filename(filename: str) -> datetime | None:
     """Extract recording timestamp from trail-camera filename.
 
     Supports:
       - New cameras (TS-WPTCAM2): 20230916_121705.mp4
       - Old cameras (QWATCH TS-NS310W): Record-2023-04-16_00-00-02.avi
+
+    Returns None for filenames outside the recognised production patterns
+    (foreign keys in the shared bucket must not crash camera discovery).
     """
     date_str = filename.replace("Record-", "")
     date_str = date_str.replace(".mp4", "").replace(".avi", "")
     date_str = date_str.replace("-", "")
-    return datetime.strptime(date_str, "%Y%m%d_%H%M%S")
+    try:
+        return datetime.strptime(date_str, "%Y%m%d_%H%M%S")
+    except ValueError:
+        return None
 
 
 # ── Checkpoint utils (incremental tracking) ────────────────────────────────
@@ -309,7 +315,15 @@ class OpossumAnalyzeStep(Step):
 
         Returns local paths, or None if camera should be skipped.
         """
-        video_keys.sort(key=lambda k: get_datetime_from_filename(os.path.basename(k)))
+        # Only keys matching recognised production patterns participate;
+        # foreign keys in the shared bucket are ignored (no crash on sort).
+        stamped = [
+            (dt, k)
+            for k in video_keys
+            if (dt := get_datetime_from_filename(os.path.basename(k))) is not None
+        ]
+        stamped.sort()
+        video_keys = [k for _, k in stamped]
 
         checkpoint_path = tmp / "checkpoints" / f"last_target_{camera_name}.txt"
         last_processed = _read_checkpoint(checkpoint_path)

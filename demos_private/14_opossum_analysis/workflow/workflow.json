@@ -1,35 +1,39 @@
 {
-    "name": "opossum-analysis",
-    "version": "2.0",
-    "description": "GPU-accelerated video motion detection using frame-difference analysis. Mirrors production opossum pipeline: VFR-to-CFR conversion, multi-camera grouping, incremental checkpointing, per-pair TSV output.",
-    "source": {
-        "type": "uploaded",
-        "path": "."
-    },
-    "requirements": ["opencv-python-headless", "numpy"],
-    "auto_trigger": true,
-    "resources": {
-        "gpu_count": 0,
-        "cpu_limit": "8",
-        "memory_limit": "16Gi",
-        "timeout_seconds": 7200
-    },
-    "steps": [
-        {
-            "name": "opossum_analyze",
-            "entrypoint": "opossum_step_live:OpossumAnalyzeStep",
-            "config": {
-                "distance_threshold": 0.05,
-                "time_threshold": 15
-            },
-            "routing_hints": {
-                "image": "opossum-analysis:latest",
-                "gpu": true
-            }
-        }
-    ],
-    "output": {
-        "return_type": "file",
-        "embedding_vector_size": 0
+  "name": "opossum-analysis",
+  "version": "2.0",
+  "description": "GPU-accelerated video motion detection using frame-difference analysis. Mirrors production opossum pipeline: VFR-to-CFR conversion, multi-camera grouping, incremental checkpointing, per-pair TSV output.",
+  "source": {
+    "type": "uploaded",
+    "path": "."
+  },
+  "requirements": [
+    "opencv-python-headless",
+    "numpy"
+  ],
+  "auto_trigger": true,
+  "resources": {
+    "gpu_count": 0,
+    "cpu_limit": "8",
+    "memory_limit": "16Gi",
+    "timeout_seconds": 7200
+  },
+  "steps": [
+    {
+      "name": "opossum_analyze",
+      "entrypoint": "opossum_step_live:OpossumAnalyzeStep",
+      "config": {
+        "distance_threshold": 0.05,
+        "time_threshold": 15
+      },
+      "routing_hints": {
+        "image": "opossum-analysis:latest",
+        "gpu": true
+      }
     }
+  ],
+  "output": {
+    "return_type": "file",
+    "embedding_vector_size": 0
+  },
+  "execution_mode": "in_process"
 }

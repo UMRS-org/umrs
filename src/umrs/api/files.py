@@ -727,31 +727,51 @@ async def delete_file(
         ) from e
 
 
-@router.get(
-    "/download/{path:path}",
-    summary="Stream a file from project storage (Phase-2l: no presigned URL exposure)",
-    description=(
-        "Stream the contents of an S3 object to the caller. The platform "
-        "performs the S3 request internally (Phase 2l); never exposes "
-        "presigned URLs to external clients."
-    ),
-)
-async def download_file_stream(
-    path: str,
-    bucket: str | None = Query(
-        None, description="Bucket name (defaults to configured bucket)"
-    ),
-    project_id: str = Depends(get_project_id),
-    config: S3Config = Depends(get_s3_config),
-):
-    """Stream an S3 object stored in the caller's project namespace."""
+def _cross_bucket_allowlist(config: S3Config) -> set[str]:
+    """Buckets a caller may read without project namespace enforcement.
+
+    Upload bucket is per-project namespaced; workflow artifacts live in the
+    paired ``<input>-output`` bucket with an internal layout (``runs/…``,
+    ``results/…``). Additional allowed buckets via
+    ``S3_DOWNLOAD_EXTRA_BUCKETS`` (comma separated).
+    """
+    allowed = {config.bucket, f"{config.bucket}-output"}
+    extra = os.getenv("S3_DOWNLOAD_EXTRA_BUCKETS", "")
+    allowed.update(b.strip() for b in extra.split(",") if b.strip())
+    return allowed
+
+
+def _resolve_download_key(path: str, bucket_name: str, project_id: str, config: S3Config) -> str:
+    """Resolve caller key (project-namespaced for upload bucket; raw for
+    cross-bucket artifact reads) with traversal guard everywhere."""
+    if bucket_name == config.bucket:
+        return validate_key(path, project_id)
+    # Cross-bucket reads (workflow artifact plane) use the bucket's own
+    # layout; still reject traversal but do not re-namespace.
+    key = path.strip("/")
+    if ".." in key.split("/"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid key: path traversal not allowed",
+        )
+    return key
+
+
+def _iter_body(obj, chunk_size: int = 8 * 1024 * 1024):
+    """Stream S3 body chunks; close when done."""
+    stream = obj["Body"]
+    try:
+        while chunk := stream.read(chunk_size):
+            yield chunk
+    finally:
+        stream.close()
+
+
+def _stream_object(s3_client, bucket_name: str, key: str):
+    """Fetch object header + body; map S3 errors to HTTP codes."""
     from fastapi.responses import StreamingResponse
 
-    key = validate_key(path, project_id)
-    bucket_name = bucket or config.bucket
-
     try:
-        s3_client = config.get_client()
         try:
             head = s3_client.head_object(Bucket=bucket_name, Key=key)
         except ClientError as e:
@@ -772,24 +792,40 @@ async def download_file_stream(
     content_type = head.get("ContentType") or "application/octet-stream"
     size = head.get("ContentLength")
     filename = key.rsplit("/", 1)[-1] if "/" in key else key
-
-    def body_iter():
-        stream = obj["Body"]
-        try:
-            while chunk := stream.read(8 * 1024 * 1024):
-                yield chunk
-        finally:
-            stream.close()
-
     headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
     if size is not None:
         headers["Content-Length"] = str(size)
-
     return StreamingResponse(
-        body_iter(),
-        media_type=content_type,
-        headers=headers,
+        _iter_body(obj), media_type=content_type, headers=headers
     )
+
+
+@router.get(
+    "/download/{path:path}",
+    summary="Stream a file from project storage (Phase-2l: no presigned URL exposure)",
+    description=(
+        "Stream the contents of an S3 object to the caller. The platform "
+        "performs the S3 request internally (Phase 2l); never exposes "
+        "presigned URLs to external clients."
+    ),
+)
+async def download_file_stream(
+    path: str,
+    bucket: str | None = Query(
+        None, description="Bucket name (defaults to configured bucket)"
+    ),
+    project_id: str = Depends(get_project_id),
+    config: S3Config = Depends(get_s3_config),
+):
+    """Stream an S3 object stored in the caller's project namespace."""
+    bucket_name = bucket or config.bucket
+    if bucket_name not in _cross_bucket_allowlist(config):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Bucket not in download allowlist: {bucket_name}",
+        )
+    key = _resolve_download_key(path, bucket_name, project_id, config)
+    return _stream_object(config.get_client(), bucket_name, key)
 
 
 @router.post(
