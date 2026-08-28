@@ -9,6 +9,7 @@ Note: Context/memory routers excluded from selective merge.
 """
 
 from .a2l import router as a2l_router
+from .a2l_ledger import router as a2l_ledger_router
 from .artifact_routes import router as artifact_router
 from .bundle_restore import router as bundle_restore_router
 from .catalog import router as catalog_router
@@ -52,6 +53,7 @@ from .zmq_sessions import router as zmq_sessions_router
 
 __all__ = [
     "a2l_router",
+    "a2l_ledger_router",
     "artifact_router",
     "bundle_restore_router",
     "catalog_router",

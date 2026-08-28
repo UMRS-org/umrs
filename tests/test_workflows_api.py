@@ -395,3 +395,210 @@ def test_trigger_workflow_rejects_missing_required_params(client, tmp_path):
     detail = response.json()["detail"]
     assert detail["code"] == "workflow_parameters_invalid"
     assert "bucket" in detail["missing"]
+
+
+def _register(client_workflow_json, tmp_path, *, name, user, scope="user"):
+    workflow_dir = tmp_path / f"{user}-{name}"
+    workflow_dir.mkdir(exist_ok=True)
+    (workflow_dir / "workflow.json").write_text(json.dumps(client_workflow_json))
+    register_workflow(
+        workflow_name=name,
+        version="1.0",
+        user_id=user,
+        source_path=str(workflow_dir),
+        workflow_json=client_workflow_json,
+        scope=scope,
+    )
+
+
+def test_delete_workflow_owner_can_delete(client, tmp_path):
+    _register(_workflow_json("ct-analysis"), tmp_path, name="ct-analysis", user="alice")
+
+    deleted = client.delete(
+        "/umrs/workflows/ct-analysis",
+        headers=_auth_headers("alice", "project-a"),
+    )
+    assert deleted.status_code == 200
+    assert deleted.json()["removed"] == 1
+
+    gone = client.get(
+        "/umrs/workflows/ct-analysis",
+        headers=_auth_headers("alice", "project-a"),
+    )
+    assert gone.status_code == 404
+
+
+def test_delete_workflow_missing_returns_404(client):
+    response = client.delete(
+        "/umrs/workflows/no-such-workflow",
+        headers=_auth_headers("alice", "project-a"),
+    )
+    assert response.status_code == 404
+
+
+def test_delete_workflow_non_owner_forbidden(client, tmp_path):
+    _register(_workflow_json("ct-analysis"), tmp_path, name="ct-analysis", user="alice")
+
+    response = client.delete(
+        "/umrs/workflows/ct-analysis",
+        headers=_auth_headers("bob", "project-a"),
+    )
+    assert response.status_code == 403
+    # Owner's registration survives the attempt.
+    still_there = client.get(
+        "/umrs/workflows/ct-analysis",
+        headers=_auth_headers("alice", "project-a"),
+    )
+    assert still_there.status_code == 200
+
+
+def test_delete_workflow_admin_may_delete_other_users_workflow(client, tmp_path):
+    _register(_workflow_json("ct-analysis"), tmp_path, name="ct-analysis", user="alice")
+
+    response = client.delete(
+        "/umrs/workflows/ct-analysis",
+        headers=_auth_headers("admin", "project-a", admin=True),
+    )
+    assert response.status_code == 200
+    assert response.json()["removed"] == 1
+
+
+def test_delete_workflow_system_scope_requires_admin(client, tmp_path):
+    _register(
+        _workflow_json("shared-wf"), tmp_path,
+        name="shared-wf", user="bob", scope="system",
+    )
+
+    # Non-admin cannot delete system workflows, even authenticated.
+    forbidden = client.delete(
+        "/umrs/workflows/shared-wf",
+        headers=_auth_headers("alice", "project-a"),
+    )
+    assert forbidden.status_code == 403
+
+    # Admin can.
+    allowed = client.delete(
+        "/umrs/workflows/shared-wf",
+        headers=_auth_headers("admin", "project-a", admin=True),
+    )
+    assert allowed.status_code == 200
+
+
+# ── Run definitions (persisted invocation templates) ─────────────────────────
+
+
+@pytest.fixture(autouse=True)
+def tmp_definitions(tmp_path):
+    definitions_file = str(tmp_path / "run_definition_catalog.json")
+    with patch(
+        "umrs.server.run_definition_registry._definitions_path",
+        return_value=definitions_file,
+    ):
+        yield definitions_file
+
+
+def _save_def(client, headers, name="nightly-seg", workflow="ct-analysis", params=None):
+    return client.put(
+        "/umrs/workflows/run-definitions",
+        headers=headers,
+        json={
+            "name": name,
+            "workflow_name": workflow,
+            "params": params if params is not None else {"bucket": "b1"},
+            "description": "nightly replay",
+        },
+    )
+
+
+def test_run_definition_roundtrip(client, tmp_path):
+    _register(_workflow_json("ct-analysis", with_required_bucket=True), tmp_path,
+              name="ct-analysis", user="alice")
+
+    saved = _save_def(client, _auth_headers("alice", "project-a"))
+    assert saved.status_code == 200
+    assert saved.json()["definition"]["workflow_name"] == "ct-analysis"
+
+    listed = client.get(
+        "/umrs/workflows/run-definitions",
+        headers=_auth_headers("alice", "project-a"),
+    )
+    assert listed.status_code == 200
+    assert listed.json()["count"] == 1
+
+    got = client.get(
+        "/umrs/workflows/run-definitions/nightly-seg",
+        headers=_auth_headers("alice", "project-a"),
+    )
+    assert got.status_code == 200
+    assert got.json()["definition"]["params"] == {"bucket": "b1"}
+
+
+def test_run_definition_rejects_unregistered_workflow(client):
+    response = _save_def(client, _auth_headers("alice", "project-a"), workflow="ghost-wf")
+    assert response.status_code == 404
+    assert "registered workflow" in response.json()["detail"]
+
+
+def test_run_definition_is_owner_visible_only(client, tmp_path):
+    _register(_workflow_json("ct-analysis"), tmp_path, name="ct-analysis", user="alice")
+    _save_def(client, _auth_headers("alice", "project-a"))
+
+    # Non-owner does not see it (hidden existence).
+    not_found = client.get(
+        "/umrs/workflows/run-definitions/nightly-seg",
+        headers=_auth_headers("bob", "project-a"),
+    )
+    assert not_found.status_code == 404
+
+    # Owner list excludes others; admin list is global.
+    bob_list = client.get(
+        "/umrs/workflows/run-definitions",
+        headers=_auth_headers("bob", "project-a"),
+    )
+    assert bob_list.json()["count"] == 0
+    admin_list = client.get(
+        "/umrs/workflows/run-definitions",
+        headers=_auth_headers("admin", "project-a", admin=True),
+    )
+    assert admin_list.json()["count"] == 1
+
+
+def test_run_definition_delete_owner_and_admin(client, tmp_path):
+    _register(_workflow_json("ct-analysis"), tmp_path, name="ct-analysis", user="alice")
+    _save_def(client, _auth_headers("alice", "project-a"), name="def-one")
+    _save_def(client, _auth_headers("alice", "project-a"), name="def-two")
+
+    deleted = client.delete(
+        "/umrs/workflows/run-definitions/def-one",
+        headers=_auth_headers("alice", "project-a"),
+    )
+    assert deleted.status_code == 200
+
+    admin_deleted = client.delete(
+        "/umrs/workflows/run-definitions/def-two",
+        headers=_auth_headers("admin", "project-a", admin=True),
+    )
+    assert admin_deleted.status_code == 200
+
+    listed = client.get(
+        "/umrs/workflows/run-definitions",
+        headers=_auth_headers("alice", "project-a"),
+    )
+    assert listed.json()["count"] == 0
+
+
+def test_run_definition_trigger_replays_exact_params(client, tmp_path):
+    _register(_workflow_json("ct-analysis", with_required_bucket=True), tmp_path,
+              name="ct-analysis", user="alice")
+    _save_def(client, _auth_headers("alice", "project-a"), params={"bucket": "b1"})
+
+    # Trigger must succeed with the stored params even though the request body
+    # carries none — prove the replay path supplies them.
+    triggered = client.post(
+        "/umrs/workflows/run-definitions/nightly-seg/trigger",
+        headers=_auth_headers("alice", "project-a"),
+    )
+    assert triggered.status_code in (200, 201, 202)
+    payload = triggered.json()
+    assert payload.get("status") == "ok"
+    assert payload.get("execution_id") or payload.get("result", {}).get("execution_id")

@@ -58,11 +58,92 @@ def configure_loop_store(pool: Any) -> None:
     )
 
 
+def configure_loop_store_sync(dsn: str) -> bool:
+    """Upgrade to psycopg2-backed persistence (works from any thread).
+
+    Same semantics as configure_loop_store but the connection is psycopg2:
+    loop facades must be callable from the REST event loop and from runner
+    threads; asyncpg pools are not loop-portable.
+    Returns True when the sync pool backed store is now active.
+    """
+    global _loop_store
+    import psycopg2
+
+    conn = psycopg2.connect(dsn)
+    incoming = LoopStore.sync_pg(conn)
+    for live in _loop_store.list_all():
+        try:
+            incoming.save(live)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("loop migration on boot skipped %s: %s", live.loop_id, exc)
+    _loop_store = incoming
+    logger.info(
+        "loop store upgraded to sync Postgres (%d loops carried)",
+        len(_loop_store.list_all()),
+    )
+    return True
+
+
+def reregister_loop_drivers() -> int:
+    """Restart rehydration: re-spawn drivers for RUNNING loops in the store.
+
+    Driver kind from loop.metadata: ``agent`` marker → agent runner; a
+    ``driver=engine`` marker (or neither — legacy engine loops) → engine
+    runner. Called from the http sidecar lifespan after recorder wiring and
+    store upgrade so durable loops actually resume across restarts (before,
+    only the docstring claimed this).
+    """
+    from umrs.knowledge import agent_loop_runner, engine_loop_runner
+
+    resumed = 0
+    for loop in _loop_store.list_all():
+        if loop.status not in (LoopStatus.RUNNING, LoopStatus.PAUSED):
+            continue
+        try:
+            if loop.metadata.get("agent"):
+                from umrs.knowledge.project import ResearchProject
+
+                project = ResearchProject(project_id=loop.project_id)
+                agent_loop_runner.register(
+                    loop, executor=_agent_executor_for(project), store=_loop_store
+                )
+            else:
+                engine_loop_runner.register(
+                    loop,
+                    engine_factory=_engine_factory_from(_get_engine()),
+                    store=_loop_store,
+                )
+            resumed += 1
+        except Exception as exc:  # noqa: BLE001 — one loop must not block boot
+            logger.warning(
+                "loop driver re-registration failed for %s: %s", loop.loop_id, exc
+            )
+    if resumed:
+        logger.info("re-registered %d loop driver(s) after restart", resumed)
+    return resumed
+
+
 def _get_engine() -> AutonomousResearchLoop:
     global _loop_engine
     if _loop_engine is None:
-        _loop_engine = AutonomousResearchLoop()
+        _loop_engine = AutonomousResearchLoop(workflow_port=_default_workflow_port())
     return _loop_engine
+
+
+def _default_workflow_port():
+    """UMRS-side workflow port when a durable job store is available.
+
+    Returns None without a store: the engine then fails closed in real mode
+    (used to silently produce fake RUNNING-not-driven behavior; now the
+    runner surfaces the honest error on the loop record)."""
+    from umrs.api.jobs import get_optional_job_store
+
+    store = get_optional_job_store()
+    if store is None:
+        return None
+    from umrs.knowledge.umrs_workflow_port import UmrsWorkflowExecutionPort
+
+    return UmrsWorkflowExecutionPort(store)
 
 
 def get_loop(loop_id: str) -> ResearchLoop:
@@ -101,6 +182,14 @@ class StartLoopRequest(BaseModel):
             "Readiness approval flag. When True the server validates that "
             "the project's readiness report has been approved by a human "
             "before starting the loop."
+        ),
+    )
+    mode: str = Field(
+        "auto",
+        description=(
+            "Tool-grain permission mode: 'auto' (default) triggers workflows "
+            "immediately; 'ask' parks each trigger for a decision via the "
+            "approvals route. Mirrors the companion turn-attempt vocabulary."
         ),
     )
 
@@ -222,6 +311,12 @@ async def start_loop(request: StartLoopRequest) -> StartLoopResponse:
         research_goal=request.research_goal,
         max_iterations=request.max_iterations,
     )
+    loop.metadata["mode"] = "ask" if request.mode == "ask" else "auto"
+    # Snapshot the just-started state for the response: the memory store
+    # shares this object with the driver thread, which may complete the loop
+    # before this endpoint returns — the POST must still report "started".
+    status_at_start = loop.status.value
+    phase_at_start = loop.phase.value
     if request.session_id:
         # Durable session linkage visible on loop status/list payloads.
         loop.metadata.setdefault("session_id", request.session_id)
@@ -275,12 +370,29 @@ async def start_loop(request: StartLoopRequest) -> StartLoopResponse:
             _loop_store.save(loop)
         except Exception as exc:  # noqa: BLE001 — agentic must not break start
             logger.warning("agentic runner skipped for loop %s: %s", loop.loop_id, exc)
+    else:
+        # Non-agentic: the server drives the phased engine itself (daemon
+        # thread, store-checkpointed, store-polled for pause/stop). Before
+        # this, the loop was created RUNNING but only a client driving
+        # engine.run could advance it — REST-started loops never iterated.
+        try:
+            from umrs.knowledge import engine_loop_runner as _engine_runner
+
+            _engine_runner.register(
+                loop,
+                engine_factory=_engine_factory_from(engine),
+                store=_loop_store,
+            )
+            loop.metadata["driver"] = "engine"
+            _loop_store.save(loop)
+        except Exception as exc:  # noqa: BLE001 — driver must not break start
+            logger.warning("engine runner skipped for loop %s: %s", loop.loop_id, exc)
 
     return StartLoopResponse(
         loop_id=loop.loop_id,
         project_id=loop.project_id,
-        status=loop.status.value,
-        phase=loop.phase.value,
+        status=status_at_start,
+        phase=phase_at_start,
         message=f"Loop {loop.loop_id} started for project {request.project_id}",
     )
 
@@ -290,6 +402,25 @@ def _agent_executor_for(project: Any):
     from umrs.knowledge.agent_loop_runner import default_executor_for_project
 
     return default_executor_for_project(project)
+
+
+def _engine_factory_from(engine: AutonomousResearchLoop):
+    """Fresh engine per loop mirroring the app engine's wiring.
+
+    The module-global engine is only used for plan construction (planner is
+    stateless); the runner gets its own instance so cancels never cross
+    loops (one shared ``_cancel_requested`` flag would bleed across them).
+    """
+
+    def _make() -> AutonomousResearchLoop:
+        return AutonomousResearchLoop(
+            simulated=engine.simulated,
+            workflow_port=getattr(engine, "_workflow_port", None),
+            knowledge_store=getattr(engine, "_knowledge_store", None),
+            graph_navigator=getattr(engine, "_graph_navigator", None),
+        )
+
+    return _make
 
 
 @router.get(
@@ -348,6 +479,14 @@ async def list_iterations(
     iterations = loop.iterations
     if phase:
         iterations = [i for i in iterations if i.phase.value == phase]
+
+    def _finding_text(f: Any) -> str:
+        # Engine findings are dataclasses (statement+confidence); companions
+        # write plain strings. Serialize honestly to text for the wire model.
+        if isinstance(f, str):
+            return f
+        return getattr(f, "statement", str(f))
+
     return [
         IterationResponse(
             iteration_id=i.iteration_id,
@@ -359,7 +498,7 @@ async def list_iterations(
             experiment_id=i.experiment_id,
             analysis=i.analysis,
             evaluation=i.evaluation,
-            findings=i.findings,
+            findings=[_finding_text(f) for f in i.findings],
             status=i.status,
         )
         for i in iterations[-limit:]
@@ -375,6 +514,13 @@ async def stop_loop(loop_id: str) -> StopLoopResponse:
     loop = get_loop(loop_id)
     loop.status = LoopStatus.STOPPED
     loop.completed_at = datetime.now(timezone.utc).isoformat()
+    _loop_store.save(loop)  # PG-backed stores only persist via save()
+    # Stop any live drivers promptly (store poll would catch up anyway).
+    from umrs.knowledge.agent_loop_runner import gracefully_stop as _stop_agent
+    from umrs.knowledge.engine_loop_runner import gracefully_stop as _stop_engine
+
+    _stop_agent(loop_id)
+    _stop_engine(loop_id)
     return StopLoopResponse(
         loop_id=loop_id,
         status=loop.status.value,
@@ -390,6 +536,7 @@ async def stop_loop(loop_id: str) -> StopLoopResponse:
 async def pause_loop(loop_id: str) -> StopLoopResponse:
     loop = get_loop(loop_id)
     loop.status = LoopStatus.PAUSED
+    _loop_store.save(loop)  # PG-backed stores only persist via save()
     return StopLoopResponse(
         loop_id=loop_id,
         status=loop.status.value,
@@ -411,6 +558,7 @@ async def resume_loop(loop_id: str) -> StartLoopResponse:
             detail=f"Cannot resume loop in status {loop.status.value}; only paused loops can be resumed",
         )
     loop.status = LoopStatus.RUNNING
+    _loop_store.save(loop)  # PG-backed stores only persist via save()
     return StartLoopResponse(
         loop_id=loop_id,
         project_id=loop.project_id,
@@ -422,5 +570,16 @@ async def resume_loop(loop_id: str) -> StartLoopResponse:
 
 def clear_loop_store() -> None:
     """Test utility — wipes the loop store. Memory mode only; pool-backed
-    store requires explicit per-loop deletes."""
+    store requires explicit per-loop deletes.
+
+    Also aborts live drivers: a zombie runner polling a cleared store sees
+    its loop vanish and re-saves it on exit — polluting the next test.
+    """
+    try:
+        from umrs.knowledge import agent_loop_runner, engine_loop_runner
+
+        agent_loop_runner.stop_all()
+        engine_loop_runner.stop_all()
+    except Exception:  # noqa: BLE001 — reset must never raise
+        logger.debug("runner sweep during store clear failed", exc_info=True)
     _loop_store.clear()

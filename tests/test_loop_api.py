@@ -28,9 +28,19 @@ def _try_fastapi():
 
 @pytest.fixture(autouse=True)
 def _clean_loop_store():
+    from umrs.api import loop as loop_api
     from umrs.api.loop import clear_loop_store
+    from umrs.knowledge.loop import AutonomousResearchLoop
+
     clear_loop_store()
+    # Server-side driver (engine runner) advances REST-started loops. Use a
+    # simulated engine so test loops complete deterministically; real mode
+    # needs a workflow port + per-experiment workflow_name (covered by the
+    # engine tests, not this API-surface suite).
+    previous_engine = loop_api._loop_engine
+    loop_api._loop_engine = AutonomousResearchLoop(simulated=True)
     yield
+    loop_api._loop_engine = previous_engine
     clear_loop_store()
 
 
@@ -232,7 +242,8 @@ class TestLoopStatus:
         assert resp.status_code == 200
         body = resp.json()
         assert body["loop_id"] == lid
-        assert body["status"] == "running"
+        # Server drives loops now: a fast fake port may already have finished.
+        assert body["status"] in ("running", "completed", "stopped")
 
     def test_not_found(self):
         client = _make_app()

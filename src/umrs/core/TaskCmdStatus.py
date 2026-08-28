@@ -31,6 +31,7 @@ class TaskCmd:
     # Workflow registry commands
     LIST_WORKFLOWS = "LIST_WORKFLOWS"  # list registered workflows
     RUN_WORKFLOW = "RUN_WORKFLOW"  # trigger execution of a registered workflow
+    UNREGISTER_WORKFLOW = "UNREGISTER_WORKFLOW"  # delete a registered workflow
     # Workflow execution commands (unified under `workflow` subcommand)
     WORKFLOW_STATUS = "WORKFLOW_STATUS"  # show execution status for a workflow run
     WORKFLOW_RESULTS = "WORKFLOW_RESULTS"  # fetch results for a completed workflow run

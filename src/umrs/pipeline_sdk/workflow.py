@@ -199,6 +199,11 @@ class StepSpec:
     model: str | None = None  # symbolic model alias (e.g. "vlm-large")
     lora: str | None = None  # adapter name (passthrough)
     model_type: str | None = None  # "llm" | "vision" | "embedding"
+    # Container image for this step's runtime (Singularity .sif path or
+    # registry ref). Empty = the runtime wrapper picks its default. Owning
+    # the image at the model layer lets a workflow pin per-step environments
+    # (HPC pre-staged images) instead of smuggling them through config dicts.
+    image: str = ""
     routing_hints: dict[str, Any] = field(default_factory=dict)
 
     def validate(self) -> None:
@@ -208,6 +213,10 @@ class StepSpec:
             raise ValueError(
                 f"Step '{self.name}': entrypoint must be 'module:ClassName', "
                 f"got '{self.entrypoint}'"
+            )
+        if not isinstance(self.image, str):
+            raise ValueError(
+                f"Step '{self.name}': image must be a string, got {type(self.image).__name__}"
             )
         self._validate_requires()
         self._validate_model_type()
@@ -279,6 +288,8 @@ class StepSpec:
             d["lora"] = self.lora
         if self.model_type is not None:
             d["model_type"] = self.model_type
+        if self.image:
+            d["image"] = self.image
         if self.routing_hints:
             d["routing_hints"] = dict(self.routing_hints)
         return d
@@ -299,6 +310,7 @@ class StepSpec:
             model=data.get("model"),
             lora=data.get("lora"),
             model_type=data.get("model_type"),
+            image=data.get("image", ""),
             routing_hints=dict(data.get("routing_hints") or {}),
         )
 
