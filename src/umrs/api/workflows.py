@@ -42,6 +42,7 @@ from ..server.workflow_registry_handler import (
     _resolve_workflow_catalog_entry,
     handle_workflow_command,
     register_workflow,
+    unregister_workflow,
 )
 from .jobs import CallerIdentity, get_caller_identity, get_optional_job_store
 from .workflow_auth import (
@@ -551,6 +552,191 @@ class GateDecisionRequest(BaseModel):
     comment: str | None = Field(default=None, max_length=2000)
 
 
+# ---------------------------------------------------------------------------
+# Run definitions — persisted named invocation templates (replay without LLM)
+# ---------------------------------------------------------------------------
+
+
+class RunDefinitionRequest(BaseModel):
+    """Create/update a run definition."""
+
+    name: str = Field(..., min_length=1, max_length=128)
+    workflow_name: str = Field(..., min_length=1)
+    params: dict[str, Any] = Field(default_factory=dict)
+    description: str = ""
+
+
+def _resolve_definition_for_caller(
+    name: str, caller: str, is_admin: bool
+) -> dict[str, Any]:
+    """Owner-first, then admin-any: admins see any definition by name."""
+    from ..server.run_definition_registry import get_definition
+
+    record = get_definition(name, caller)
+    if record is not None:
+        return record
+    if is_admin:
+        for candidate in _all_definitions():
+            if candidate.get("name") == name:
+                return candidate
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail=f"Run definition '{name}' not found",
+    )
+
+
+def _all_definitions() -> list[dict[str, Any]]:
+    from ..server.run_definition_registry import list_definitions
+
+    return list_definitions()
+
+
+@router.put("/run-definitions")
+async def save_run_definition(
+    request: RunDefinitionRequest,
+    x_user_id: str | None = Header(None),
+    x_verified_project_id: str | None = Header(None),
+    x_verified_is_admin: str | None = Header(None),
+    x_verified_hmac: str | None = Header(None),
+):
+    _require_verified_workflow_identity(
+        x_user_id, x_verified_project_id, x_verified_is_admin, x_verified_hmac
+    )
+    from r4_contracts.workflows import RunDefinitionRecord
+
+    from ..server.run_definition_registry import save_definition
+
+    caller = _header_str(x_user_id) or ""
+    workflow_entry = _resolve_workflow_catalog_entry(request.workflow_name, caller)
+    if workflow_entry is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=(
+                f"Workflow '{request.workflow_name}' not found; "
+                "run definitions must reference a registered workflow"
+            ),
+        )
+    try:
+        record_dict = save_definition(
+            name=request.name,
+            workflow_name=request.workflow_name,
+            params=request.params,
+            user_id=caller,
+            project_id=_header_str(x_verified_project_id) or "",
+            description=request.description,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "status": "ok",
+        "definition": RunDefinitionRecord.from_dict(record_dict).to_dict(),
+    }
+
+
+@router.get("/run-definitions")
+async def list_run_definitions(
+    x_user_id: str | None = Header(None),
+    x_verified_project_id: str | None = Header(None),
+    x_verified_is_admin: str | None = Header(None),
+    x_verified_hmac: str | None = Header(None),
+):
+    _require_verified_workflow_identity(
+        x_user_id, x_verified_project_id, x_verified_is_admin, x_verified_hmac
+    )
+    from ..server.run_definition_registry import list_definitions
+
+    caller = _header_str(x_user_id) or ""
+    is_admin = _header_str(x_verified_is_admin) == "true"
+    # Params may embed sensitive invocation details: owner-scoped by default,
+    # admins list everything.
+    records = list_definitions(None if is_admin else caller)
+    return {"status": "ok", "count": len(records), "definitions": records}
+
+
+@router.get("/run-definitions/{name}")
+async def get_run_definition(
+    name: str,
+    x_user_id: str | None = Header(None),
+    x_verified_project_id: str | None = Header(None),
+    x_verified_is_admin: str | None = Header(None),
+    x_verified_hmac: str | None = Header(None),
+):
+    _require_verified_workflow_identity(
+        x_user_id, x_verified_project_id, x_verified_is_admin, x_verified_hmac
+    )
+    caller = _header_str(x_user_id) or ""
+    record = _resolve_definition_for_caller(
+        name, caller, _header_str(x_verified_is_admin) == "true"
+    )
+    return {"status": "ok", "definition": record}
+
+
+@router.delete("/run-definitions/{name}")
+async def delete_run_definition(
+    name: str,
+    x_user_id: str | None = Header(None),
+    x_verified_project_id: str | None = Header(None),
+    x_verified_is_admin: str | None = Header(None),
+    x_verified_hmac: str | None = Header(None),
+):
+    _require_verified_workflow_identity(
+        x_user_id, x_verified_project_id, x_verified_is_admin, x_verified_hmac
+    )
+    from ..server.run_definition_registry import delete_definition
+
+    caller = _header_str(x_user_id) or ""
+    is_admin = _header_str(x_verified_is_admin) == "true"
+    record = _resolve_definition_for_caller(name, caller, is_admin)
+    owner = str(record.get("user_id", ""))
+    # delete_definition is owner-scoped; admins deleting another user's
+    # definition delete under the record's owner identity.
+    victim = owner if is_admin else caller
+    removed = delete_definition(name, victim)
+    if removed == 0:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Run definition '{name}' not found",
+        )
+    return {
+        "status": "ok",
+        "name": name,
+        "message": f"Run definition '{name}' deleted",
+    }
+
+
+@router.post("/run-definitions/{name}/trigger")
+async def trigger_run_definition(
+    name: str,
+    x_user_id: str | None = Header(None),
+    x_verified_project_id: str | None = Header(None),
+    x_verified_project_memberships: str | None = Header(None),
+    x_verified_is_admin: str | None = Header(None),
+    x_verified_hmac: str | None = Header(None),
+):
+    """Replay one persisted (workflow_name, params) — exact same inputs.
+
+    No param overrides are accepted on purpose: a run definition is the
+    reproducibility record; overriding would defeat it.
+    """
+    caller = _header_str(x_user_id) or ""
+    record = _resolve_definition_for_caller(
+        name, caller, _header_str(x_verified_is_admin) == "true"
+    )
+    request = WorkflowTriggerRequest(
+        user_id=str(record.get("user_id") or caller),
+        params=dict(record.get("params") or {}),
+    )
+    return await trigger_workflow(
+        workflow_name=str(record["workflow_name"]),
+        request=request,
+        x_user_id=x_user_id,
+        x_verified_project_id=x_verified_project_id,
+        x_verified_project_memberships=x_verified_project_memberships,
+        x_verified_is_admin=x_verified_is_admin,
+        x_verified_hmac=x_verified_hmac,
+    )
+
+
 @router.get("/{workflow_name}/triggers")
 async def list_workflow_triggers(
     workflow_name: str,
@@ -575,6 +761,70 @@ async def list_workflow_triggers(
         "status": "ok",
         "workflow_name": workflow_name,
         "triggers": workflow_json.get("triggers", []),
+    }
+
+
+@router.delete("/{workflow_name}")
+async def delete_workflow(
+    workflow_name: str,
+    x_user_id: str | None = Header(None),
+    x_verified_project_id: str | None = Header(None),
+    x_verified_is_admin: str | None = Header(None),
+    x_verified_hmac: str | None = Header(None),
+):
+    """Delete a registered workflow.
+
+    Authorization: caller must OWN the registration, unless the verified
+    caller is an admin. System-scope workflows always require admin — a
+    shared workflow must never be deletable by an arbitrary project member.
+    Governance ledger (ownership + quota) is updated best-effort.
+    """
+    _require_verified_workflow_identity(
+        x_user_id, x_verified_project_id, x_verified_is_admin, x_verified_hmac
+    )
+    caller = _header_str(x_user_id) or ""
+    is_admin = _header_str(x_verified_is_admin) == "true"
+
+    entry = _resolve_workflow_catalog_entry(workflow_name, caller)
+    if entry is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Workflow '{workflow_name}' not found",
+        )
+    owner = str(entry.get("user_id", ""))
+    scope = str(entry.get("scope", "user"))
+    if scope == "system" and not is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only admins may delete system workflows",
+        )
+    if owner and owner != caller and not is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Workflow '{workflow_name}' is owned by another user",
+        )
+
+    result = unregister_workflow(
+        workflow_name,
+        user_id=owner,
+        scope=scope,
+    )
+    if result["removed"] == 0:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Workflow '{workflow_name}' not found",
+        )
+
+    from .governance import record_resource_deleted
+
+    record_resource_deleted(
+        "workflows", workflow_name, project_id=_header_str(x_verified_project_id) or ""
+    )
+    return {
+        "status": "ok",
+        "workflow_name": workflow_name,
+        "removed": result["removed"],
+        "message": f"Workflow '{workflow_name}' deleted",
     }
 
 
@@ -1021,4 +1271,24 @@ async def approve_execution_gate(
         )
 
     linked_job = _get_job_for_record(store, record) if job is None else job
+
+    # ADR-034 Phase 2: conserve the HITL verdict (best-effort, never blocks).
+    try:
+        from umrs.a2l.recorder import get_recorder
+
+        await get_recorder().record_decision(
+            decided_by=approver,
+            decision="gate_approved" if request.approved else "gate_rejected",
+            rationale=request.comment or "",
+            job_id=getattr(linked_job, "job_id", "") if linked_job else "",
+            payload={
+                "kind": "gate_verdict",
+                "execution_id": execution_id,
+                "step_name": step_name,
+                "workflow_name": getattr(record, "workflow_name", ""),
+            },
+        )
+    except Exception:  # noqa: BLE001 — conservation is degradable
+        logger.warning("a2l gate decision conservation failed", exc_info=True)
+
     return {"status": "ok", "execution": _execution_payload(updated, linked_job)}

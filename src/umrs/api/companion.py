@@ -410,11 +410,9 @@ async def list_pending_approvals(
     if registry_key:
         row = managers.get(registry_key)
         _enforce_ownership(row or {}, x_user_id)
-    # Pending-approval rows are an attempt-grain event — the chat-side
-    # implementation (next milestone) will populate this from the turn
-    # attempt buffer. The route exists so clients code against a stable
-    # surface (never a 501 from an unplanned path when T3c lands).
-    return ApprovalsPendingResponse(pending=[])
+    from umrs.knowledge import tool_approvals
+
+    return ApprovalsPendingResponse(pending=tool_approvals.pending())
 
 
 @router.post("/approvals/{approval_id}/decision")
@@ -425,11 +423,36 @@ async def record_approval_decision(
     x_user_id: str = Depends(_strict_headers),
 ) -> dict:
     _managers(request)  # contract check: surface exists, owner pinned
-    # Turn-grain approval persistence lands with the chat roundtrip; the
-    # surface returns a typed in-flight marker today so clients connect to
-    # the eventual end state instead of inventing their own 501-keyed path.
+    # Tool-grain approval registry (ADR-028): loop drivers park on these
+    # intents; the decision unblocks them. ``always`` additionally flips the
+    # owning loop into ``mode=auto`` so it stops gating from then on.
+    from umrs.knowledge import tool_approvals
+
+    try:
+        record = tool_approvals.decide(approval_id, body.decision, decided_by=x_user_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    if body.decision == "always":
+        try:
+            from umrs.api.loop import _loop_store
+
+            loop = _loop_store.get(record["loop_id"])
+            if loop is not None:
+                loop.metadata["mode"] = "auto"
+                _loop_store.save(loop)
+        except Exception:  # noqa: BLE001 — mode flip is best-effort
+            logger.warning(
+                "always-decision mode flip failed for loop %s",
+                record.get("loop_id"),
+                exc_info=True,
+            )
+
     return {
         "approval_id": approval_id,
         "decision": body.decision,
-        "status": "surface_ready",
+        "status": record["status"],
+        "loop_id": record.get("loop_id", ""),
     }

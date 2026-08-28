@@ -80,6 +80,9 @@ class WorkflowRunStatusChecker:
             artifacts = _persist_run_artifacts(record=record, job=job, attempt=attempt)
             if artifacts:
                 metrics["artifacts"] = artifacts
+                await _record_run_artifacts(
+                    job=job, attempt=attempt, artifacts=artifacts, record=record
+                )
             return AttemptCheckResult.succeeded(metrics=metrics, commit=True)
         if status == "failed":
             return AttemptCheckResult.failed(data.get("error") or "workflow failed")
@@ -108,6 +111,42 @@ def cancel_workflow_execution_for_job(job: Job) -> None:
     from umrs.server.workflow_execution_registry import get_execution_registry
 
     get_execution_registry().cancel(execution_id.strip())
+
+
+async def _record_run_artifacts(
+    *,
+    job: Job,
+    attempt: JobAttempt,
+    artifacts: list[dict[str, Any]],
+    record: Any,
+) -> None:
+    """Conserve successful run artifacts in the a2l ledger (ADR-034).
+
+    Fire-and-forget: the active recorder (Null when unconfigured) degrades
+    silently; workflow success itself is never gated on conservation.
+    """
+    from umrs.a2l.recorder import get_recorder
+
+    recorder = get_recorder()
+    for item in artifacts:
+        uri = item.get("source_ref")
+        digest = item.get("content_hash")
+        if not uri or not digest:
+            continue
+        await recorder.record_attempt_artifact(
+            job_id=job.job_id,
+            attempt_id=attempt.attempt_id,
+            artifact_uri=uri,
+            artifact_type="workflow_result",
+            user_id=job.user_id or getattr(record, "user_id", "") or "unknown",
+            content_hash=digest,
+            project_id=job.project_id or None,
+            metadata={
+                "name": item.get("name", ""),
+                "size_bytes": item.get("size_bytes", 0),
+                "registry_id": item.get("registry_id", ""),
+            },
+        )
 
 
 # ── Attempt-scoped artifact persistence ─────────────────────────────────────

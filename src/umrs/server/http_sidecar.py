@@ -486,6 +486,7 @@ def _create_app():
     configure_structured_logging()
 
     from umrs.api import (
+        a2l_ledger_router,
         a2l_router,
         artifact_router,
         bundle_restore_router,
@@ -544,6 +545,50 @@ def _create_app():
         from umrs.orchestrator.janitor import start_janitor, stop_janitor
         from umrs.scheduler.service import start_scheduler, stop_scheduler
 
+        # ADR-034 Phase 2: wire the process-global a2l conservation recorder.
+        # Pool creation is eager here so the same pool is reused by the
+        # lazy knowledge pool dependency (same app.state key).
+        try:
+            from umrs.a2l.recorder import StoreA2lRecorder, configure_recorder
+            from umrs.a2l.store import init_store as init_a2l_store
+            from umrs.api._asyncpg_pool import _init_json_codecs, _resolve_knowledge_dsn
+
+            dsn, is_local = _resolve_knowledge_dsn()
+            if dsn:
+                import asyncpg
+
+                kwargs: dict = {"dsn": dsn, "init": _init_json_codecs}
+                if is_local:
+                    kwargs["ssl"] = "disable"  # jobs pool parity
+                pool = await asyncpg.create_pool(**kwargs)
+                application.state.umrs_knowledge_asyncpg_pool = pool
+                configure_recorder(StoreA2lRecorder(init_a2l_store(pool)))
+                logger.info("a2l conservation recorder wired (ADR-034)")
+            else:
+                logger.info("a2l conservation recorder: no DSN — Null recorder")
+        except Exception:  # noqa: BLE001 — conservation is degradable
+            logger.warning(
+                "a2l recorder init failed — conservation disabled", exc_info=True
+            )
+
+        # Durable loops: upgrade to psycopg2 persistence + rehydrate drivers
+        # for runs that were RUNNING/PAUSED when the process last stopped.
+        # Independent of the a2l pool (psycopg2 for thread safety).
+        try:
+            from umrs.api._asyncpg_pool import _resolve_knowledge_dsn
+
+            dsn_sync, _ = _resolve_knowledge_dsn()
+            if dsn_sync:
+                from umrs.api.loop import (
+                    configure_loop_store_sync,
+                    reregister_loop_drivers,
+                )
+
+                configure_loop_store_sync(dsn_sync)
+                reregister_loop_drivers()
+        except Exception:  # noqa: BLE001 — loops must never block boot
+            logger.warning("loop store upgrade/re-registration failed", exc_info=True)
+
         start_janitor()
         logger.info("Janitor started via lifespan hook")
         if start_scheduler():
@@ -585,6 +630,7 @@ def _create_app():
 
     app.include_router(catalog_router)
     app.include_router(a2l_router)
+    app.include_router(a2l_ledger_router)
     app.include_router(artifact_router)
     app.include_router(bundle_restore_router)
     app.include_router(chat_router)

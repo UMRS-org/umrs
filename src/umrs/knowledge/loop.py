@@ -105,7 +105,7 @@ class LoopIteration:
     evaluation: str = ""
     findings: list[Finding] = field(default_factory=list)
     retrieval_record_ids: list[str] = field(default_factory=list)
-    status: str = "pending"          # pending | running | completed | failed
+    status: str = "pending"  # pending | running | completed | failed
     simulated: bool = False
 
     def to_record(self) -> LoopIterationRecord:
@@ -114,7 +114,9 @@ class LoopIteration:
             iteration_id=self.iteration_id,
             loop_id=self.loop_id,
             iteration_number=self.iteration_number,
-            phase=self.phase.value if isinstance(self.phase, LoopPhase) else str(self.phase),
+            phase=self.phase.value
+            if isinstance(self.phase, LoopPhase)
+            else str(self.phase),
             hypothesis_id=self.hypothesis_id,
             hypothesis=self.hypothesis,
             experiment_id=self.experiment_id,
@@ -720,9 +722,7 @@ class AutonomousResearchLoop:
         experiment: Any | None,
     ) -> None:
         if self._workflow_port is None:
-            raise RuntimeError(
-                "workflow execution port required for real mode"
-            )
+            raise RuntimeError("workflow execution port required for real mode")
 
         workflow_name = None
         params: dict[str, Any] = {
@@ -750,6 +750,22 @@ class AutonomousResearchLoop:
                 "demo08_yield_eval fallback is disabled"
             )
 
+        # Tool-grain enforcement: an 'ask'-mode loop gates each workflow
+        # trigger through the approvals registry (injected by the driver).
+        gate = getattr(self, "_approval_gate", None)
+        if gate is not None and not gate(
+            {
+                "kind": "workflow_trigger",
+                "workflow_name": workflow_name,
+                "params": dict(params),
+                "iteration": loop.current_iteration,
+            }
+        ):
+            raise RuntimeError(
+                "operator rejected or cancelled the tool-grain action "
+                f"(workflow_trigger '{workflow_name}')"
+            )
+
         execution_id = self._workflow_port.trigger(workflow_name, params)
         self._in_flight_execution_id = execution_id
         iteration.workflow_run_id = execution_id
@@ -761,9 +777,8 @@ class AutonomousResearchLoop:
         results_payload = self._workflow_port.results(execution_id)
         self._in_flight_execution_id = None
 
-        durable_job_id = (
-            wait_payload.get("durable_job_id")
-            or results_payload.get("durable_job_id")
+        durable_job_id = wait_payload.get("durable_job_id") or results_payload.get(
+            "durable_job_id"
         )
         if not durable_job_id:
             raise RuntimeError(
@@ -801,7 +816,9 @@ class AutonomousResearchLoop:
         loop.total_experiments_run += 1
 
     @staticmethod
-    def _extract_evidence_figures(excerpts: list[str], results: dict[str, Any]) -> dict[str, Any]:
+    def _extract_evidence_figures(
+        excerpts: list[str], results: dict[str, Any]
+    ) -> dict[str, Any]:
         """Pull Demo 08-style yield / CO2 figures from evidence or workflow metrics."""
         figures: dict[str, Any] = {}
         metrics = (results or {}).get("metrics") or {}
@@ -897,6 +914,7 @@ class AutonomousResearchLoop:
 def _generate_id() -> str:
     """Generate a unique ID."""
     import uuid
+
     return uuid.uuid4().hex[:12]
 
 
@@ -932,7 +950,11 @@ def _artifact_excerpt(artifact: dict[str, Any]) -> str:
     text = text.strip()
     if text:
         return text[:240]
-    summary = artifact.get("summary") or artifact.get("filename") or artifact.get("artifact_id")
+    summary = (
+        artifact.get("summary")
+        or artifact.get("filename")
+        or artifact.get("artifact_id")
+    )
     return str(summary or "")[:240]
 
 

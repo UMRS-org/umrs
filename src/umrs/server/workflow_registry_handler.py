@@ -161,6 +161,49 @@ def register_workflow(
     }
 
 
+def unregister_workflow(
+    workflow_name: str,
+    *,
+    user_id: str,
+    scope: str | None = None,
+) -> dict[str, Any]:
+    """Remove a workflow registration from the catalog.
+
+    Deletes exactly the entries that match ``(name, user_id, scope?)`` —
+    ownership is decided by the caller (REST layer checks admin OR owner;
+    system scope requires admin), this function enforces the match.
+
+    Returns ``{"status": "ok", "removed": n}``; ``removed == 0`` when no
+    matching registration exists (caller maps to 404).
+    """
+    with _CATALOG_LOCK:
+        catalog = _load_catalog()
+        keep: list[dict[str, Any]] = []
+        removed = 0
+        for entry in catalog.get("workflows", []):
+            if (
+                entry.get("name") == workflow_name
+                and entry.get("user_id") == user_id
+                and (scope is None or entry.get("scope", "user") == scope)
+            ):
+                removed += 1
+                continue
+            keep.append(entry)
+        if removed:
+            catalog["workflows"] = keep
+            _save_catalog(catalog)
+
+    if removed:
+        logger.info(
+            "Unregistered workflow: %s (user=%s, scope=%s, removed=%d)",
+            workflow_name,
+            user_id,
+            scope or "*",
+            removed,
+        )
+    return {"status": "ok", "removed": removed}
+
+
 def _handle_list_workflows(client_id: str, payload_str: str) -> str:
     """List registered workflows, optionally filtered by scope or user.
 
@@ -200,6 +243,34 @@ def _handle_list_workflows(client_id: str, payload_str: str) -> str:
         },
         default=str,
     )
+
+
+def _handle_unregister_workflow(client_id: str, payload_str: str) -> str:
+    """ZMQ command path mirroring the REST DELETE.
+
+    Payload JSON:
+      - name (required): workflow name
+      - scope (optional): only delete entries with this scope
+
+    Authorization (admin/owner) is enforced by the authenticated caller
+    identity that reaches this handler — same trust as REGISTER/UPLOAD.
+    """
+    try:
+        payload = json.loads(payload_str) if payload_str else {}
+    except json.JSONDecodeError as exc:
+        return json.dumps({"status": "error", "message": f"invalid JSON: {exc}"})
+
+    name = str(payload.get("name", "")).strip()
+    if not name:
+        return json.dumps({"status": "error", "message": "name is required"})
+    result = unregister_workflow(
+        name,
+        user_id=client_id,
+        scope=payload.get("scope") if isinstance(payload, dict) else None,
+    )
+    if result["removed"] == 0:
+        return json.dumps({"status": "error", "message": f"Workflow '{name}' not found"})
+    return json.dumps(result)
 
 
 def _workflow_identity_provenance(
@@ -542,6 +613,8 @@ def _dispatch_workflow_command(
             return _handle_workflow_errors(client_id, payload_str)
         elif cmd == TaskCmd.WORKFLOW_LOGS:
             return _handle_workflow_logs(client_id, payload_str)
+        elif cmd == TaskCmd.UNREGISTER_WORKFLOW:
+            return _handle_unregister_workflow(client_id, payload_str)
         else:
             return json.dumps(
                 {

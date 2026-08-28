@@ -5,6 +5,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -191,21 +192,58 @@ class TestTurnEvents:
 
 
 class TestApprovalSurface:
+    @pytest.fixture(autouse=True)
+    def _clean_tool_approvals(self):
+        from umrs.knowledge import tool_approvals
+
+        tool_approvals.clear_all()
+        yield
+        tool_approvals.clear_all()
+
     def test_pending_approvals_scaffold_is_empty(self):
         client = _app(FakePool([]))
         resp = client.get("/umrs/companion/approvals/pending", headers=HEADERS)
         assert resp.status_code == 200
         assert resp.json() == {"pending": []}
 
-    def test_decision_scaffold_echoes_status(self):
+    def test_decision_roundtrip_records_intent(self):
+        """Real registry contract (ADR-028): gate intent → decision unblocks."""
+        from umrs.knowledge import tool_approvals
+
+        tool_approvals.request_approval(
+            "loop-x", 1, {"kind": "workflow_trigger"}, approval_id="ap-1"
+        )
         client = _app(FakePool([]))
         resp = client.post(
             "/umrs/companion/approvals/ap-1/decision",
             headers=HEADERS,
             json={"decision": "once"},
         )
+        assert resp.status_code == 200
         assert resp.json()["approval_id"] == "ap-1"
         assert resp.json()["decision"] == "once"
+        assert resp.json()["status"] == "approved"
+        assert resp.json()["loop_id"] == "loop-x"
+
+    def test_decision_unknown_approval_404s(self):
+        client = _app(FakePool([]))
+        resp = client.post(
+            "/umrs/companion/approvals/ap-missing/decision",
+            headers=HEADERS,
+            json={"decision": "once"},
+        )
+        assert resp.status_code == 404
+
+    def test_pending_surfaces_registered_intents(self):
+        from umrs.knowledge import tool_approvals
+
+        tool_approvals.request_approval(
+            "loop-y", 1, {"kind": "workflow_trigger"}, approval_id="ap-2"
+        )
+        client = _app(FakePool([]))
+        resp = client.get("/umrs/companion/approvals/pending", headers=HEADERS)
+        assert resp.status_code == 200
+        assert resp.json()["pending"][0]["id"] == "ap-2"
 
 
 class TestTurnRoundtripSurface:

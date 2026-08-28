@@ -229,6 +229,28 @@ def gracefully_stop(loop_id: str) -> None:
         runner.abort()
 
 
+def stop_all(timeout_seconds: float = 5.0) -> None:
+    """Abort every live runner, join it, then clear the registry.
+
+    Joining matters: an aborted-but-still-finishing thread writes its final
+    checkpoint into the store — which races the test/store reset that
+    typically follows stop_all (resurrected loops in the next test).
+    """
+    with _LOCK:
+        runners = list(_RUNNERS.values())
+    for runner in runners:
+        if runner.is_alive():
+            runner.abort()
+    deadline = time.monotonic() + timeout_seconds
+    for runner in runners:
+        if runner.is_alive():
+            runner.join(timeout=max(0.0, deadline - time.monotonic()))
+    with _LOCK:
+        for runner in runners:
+            if not runner.is_alive():
+                _RUNNERS.pop(runner._loop.loop_id, None)
+
+
 def default_executor_for_project(project: Any, model: Optional[str] = None):
     """Default agent executor factory (knowledge-graph-liteLLM wiring)."""
     return UmrsAgentIterationExecutor(project, model=model)

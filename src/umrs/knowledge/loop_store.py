@@ -85,15 +85,28 @@ def _row_to_iteration(row: Any) -> LoopIteration:
 
 
 class LoopStore:
-    """Postgres-backed loop store with in-memory fallback mode."""
+    """Postgres-backed loop store with in-memory fallback mode.
 
-    def __init__(self, pool: Any | None) -> None:
+    Two pool modes:
+    - asyncpg pool (``pool``) — needs an event loop via the sync facade.
+    - psycopg2 connection (``sync_pool``) — fully synchronous; safe from any
+      thread (runner/driver threads included; asyncpg pools are not
+      loop-portable and crash outside their creating event loop).
+    """
+
+    def __init__(self, pool: Any | None, sync_pool: Any | None = None) -> None:
         self._pool = pool
+        self._sync_pool = sync_pool
         self._memory: dict[str, ResearchLoop] = {}
 
     @property
     def is_memory(self) -> bool:
-        return self._pool is None
+        return self._pool is None and self._sync_pool is None
+
+    @classmethod
+    def sync_pg(cls, conn: Any) -> "LoopStore":
+        """Sync psycopg2-backed store (thread-safe, no event loop required)."""
+        return cls(pool=None, sync_pool=conn)
 
     # -- async pool ops ---------------------------------------------------- #
 
@@ -210,23 +223,167 @@ class LoopStore:
 
     # -- public interface --------------------------------------------------- #
 
+    # -- sync psycopg2 ops (runner/driver threads) ------------------------ #
+
+    def _save_sync(self, loop: ResearchLoop) -> None:
+        from psycopg2.extras import Json
+
+        with self._sync_pool.cursor() as cur:
+            cur.execute(
+                """INSERT INTO research_loops
+                   (loop_id, project_id, research_goal, status, phase,
+                    max_iterations, current_iteration, plan,
+                    total_hypotheses_tested, total_experiments_run,
+                    total_findings, success_rate,
+                    created_at, started_at, completed_at, updated_at, metadata)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,now(),%s)
+                   ON CONFLICT (loop_id) DO UPDATE SET
+                       status = EXCLUDED.status,
+                       phase = EXCLUDED.phase,
+                       current_iteration = EXCLUDED.current_iteration,
+                       plan = EXCLUDED.plan,
+                       total_hypotheses_tested = EXCLUDED.total_hypotheses_tested,
+                       total_experiments_run = EXCLUDED.total_experiments_run,
+                       total_findings = EXCLUDED.total_findings,
+                       success_rate = EXCLUDED.success_rate,
+                       completed_at = EXCLUDED.completed_at,
+                       updated_at = now(),
+                       metadata = EXCLUDED.metadata""",
+                (
+                    loop.loop_id,
+                    loop.project_id,
+                    loop.research_goal,
+                    loop.status.value,
+                    loop.phase.value,
+                    loop.max_iterations,
+                    loop.current_iteration,
+                    Json(loop.plan.to_dict() if loop.plan else None),
+                    loop.total_hypotheses_tested,
+                    loop.total_experiments_run,
+                    loop.total_findings,
+                    loop.success_rate,
+                    loop.created_at,
+                    loop.started_at or None,
+                    loop.completed_at or None,
+                    Json(loop.metadata),
+                ),
+            )
+            cur.execute(
+                "DELETE FROM research_loop_iterations WHERE loop_id = %s",
+                (loop.loop_id,),
+            )
+            for it in loop.iterations:
+                cur.execute(
+                    """INSERT INTO research_loop_iterations
+                       (iteration_id, loop_id, iteration_number, phase,
+                        started_at, completed_at, hypothesis, experiment_id,
+                        results, analysis, evaluation, findings, status)
+                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                    (
+                        it.iteration_id,
+                        it.loop_id,
+                        it.iteration_number,
+                        it.phase.value,
+                        it.started_at or None,
+                        it.completed_at or None,
+                        it.hypothesis,
+                        it.experiment_id,
+                        Json(it.results),
+                        it.analysis,
+                        it.evaluation,
+                        Json(it.findings),
+                        it.status,
+                    ),
+                )
+        self._sync_pool.commit()
+
+    def _get_sync(self, loop_id: str) -> ResearchLoop | None:
+        from psycopg2.extras import RealDictCursor
+
+        with self._sync_pool.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                "SELECT * FROM research_loops WHERE loop_id = %s",
+                (loop_id,),
+            )
+            row = cur.fetchone()
+            if row is None:
+                return None
+            loop = _row_to_loop(self._jsonify(row))
+            cur.execute(
+                "SELECT * FROM research_loop_iterations WHERE loop_id = %s"
+                " ORDER BY iteration_number",
+                (loop_id,),
+            )
+            loop.iterations = [
+                _row_to_iteration(self._jsonify(r)) for r in cur.fetchall()
+            ]
+            return loop
+
+    @staticmethod
+    def _jsonify(row: Any) -> Any:
+        """psycopg2 RealDictCursor jsonb fields arrive already parsed."""
+        for key in ("plan", "metadata", "results", "findings"):
+            if key in row and isinstance(row[key], (dict, list)):
+                row[key] = json.dumps(row[key])
+        return row
+
+    def _list_all_sync(self) -> list[ResearchLoop]:
+        from psycopg2.extras import RealDictCursor
+
+        with self._sync_pool.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT loop_id FROM research_loops ORDER BY updated_at DESC")
+            ids = [r["loop_id"] for r in cur.fetchall()]
+        out = []
+        for loop_id in ids:
+            loop = self._get_sync(loop_id)
+            if loop is not None:
+                out.append(loop)
+        return out
+
+    def _delete_sync(self, loop_id: str) -> None:
+        with self._sync_pool.cursor() as cur:
+            cur.execute(
+                "DELETE FROM research_loop_iterations WHERE loop_id = %s",
+                (loop_id,),
+            )
+            cur.execute("DELETE FROM research_loops WHERE loop_id = %s", (loop_id,))
+        self._sync_pool.commit()
+
+    def _clear_sync(self) -> None:
+        with self._sync_pool.cursor() as cur:
+            cur.execute("DELETE FROM research_loop_iterations")
+            cur.execute("DELETE FROM research_loops")
+        self._sync_pool.commit()
+
+    # -- public sync facades ------------------------------------------------ #
+
     def save(self, loop: ResearchLoop) -> None:
+        if self._sync_pool is not None:
+            self._save_sync(loop)
+            return
         if self._pool is None:
             self._memory[loop.loop_id] = loop
         else:
             self._run(self._save_pg(loop))
 
     def get(self, loop_id: str) -> ResearchLoop | None:
+        if self._sync_pool is not None:
+            return self._get_sync(loop_id)
         if self._pool is None:
             return self._memory.get(loop_id)
         return self._run(self._get_pg(loop_id))
 
     def list_all(self) -> list[ResearchLoop]:
+        if self._sync_pool is not None:
+            return self._list_all_sync()
         if self._pool is None:
             return list(self._memory.values())
         return self._run(self._list_all_pg())
 
     def delete(self, loop_id: str) -> None:
+        if self._sync_pool is not None:
+            self._delete_sync(loop_id)
+            return
         if self._pool is None:
             self._memory.pop(loop_id, None)
         else:
@@ -234,6 +391,9 @@ class LoopStore:
 
     def clear(self) -> None:
         """Test utility: memory wipe, or full-table wipe when pool-backed."""
+        if self._sync_pool is not None:
+            self._clear_sync()
+            return
         if self._pool is None:
             self._memory.clear()
         else:
