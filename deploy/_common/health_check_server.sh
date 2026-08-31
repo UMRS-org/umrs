@@ -38,9 +38,25 @@ check_zmq_ready() {
     fi
 
     "$VENV_PYTHON" - <<'PY' >/dev/null 2>&1
+import os
+import socket
+
+port = int(os.environ.get("UMRS_CONTROL_PORT", "5555") or "5555")
+auth = (os.environ.get("UMRS_ZMQ_AUTH_TYPE", "none") or "none").lower()
+
+if auth in ("curve", "session"):
+    # CURVE-protected control planes reject anonymous handshakes via ZAP by
+    # design — only a TCP-listener check makes sense without credentials.
+    s = socket.socket()
+    s.settimeout(2.0)
+    try:
+        raise SystemExit(0 if s.connect_ex(("127.0.0.1", port)) == 0 else 1)
+    finally:
+        s.close()
+
 from umrs.core.MessageQueue import MessageQueue
 
-mq = MessageQueue(role="client", queue_type="control", server_ip="127.0.0.1")
+mq = MessageQueue(role="client", queue_type="control", server_ip="127.0.0.1", port=port)
 try:
     raise SystemExit(0 if mq.is_server_ready(timeout_ms=5000) else 1)
 finally:
@@ -205,12 +221,18 @@ else
 fi
 
 # ─── ZMQ ports (umrs-server) ───
-check "ZMQ control plane responds on 5555" check_zmq_ready
-# Port 5556 (data plane) opens on demand when a client connects — warn only
-if nc -z 127.0.0.1 5556 2>/dev/null; then
-    ok "ZMQ data port 5556 listening"
+_control_port="${UMRS_CONTROL_PORT:-5555}"
+_data_probe_port="${UMRS_DATA_BASE_PORT:-5556}"
+# UMRS_DATA_PORT_RANGE form is "start:end" — probe the first port of the range.
+case "${UMRS_DATA_PORT_RANGE:-}" in
+    *:*) _data_probe_port="${UMRS_DATA_PORT_RANGE%%:*}" ;;
+esac
+check "ZMQ control plane responds on ${_control_port}" check_zmq_ready
+# Data-plane sockets open on demand when a client connects — warn only
+if nc -z 127.0.0.1 "${_data_probe_port}" 2>/dev/null; then
+    ok "ZMQ data port ${_data_probe_port} listening"
 else
-    warn "ZMQ data port 5556 not open (opens on first client connection)"
+    warn "ZMQ data port ${_data_probe_port} not open (opens on first client connection)"
 fi
 
 # ─── Server logs: no recent errors ──────────────────────────────────────────
