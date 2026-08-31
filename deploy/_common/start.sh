@@ -76,9 +76,26 @@ check_zmq_ready() {
     fi
 
     "${VENV_DIR}/bin/python" - <<'PY' >/dev/null 2>&1
+import os
+import socket
+
+port = int(os.environ.get("UMRS_CONTROL_PORT", "5555") or "5555")
+auth = (os.environ.get("UMRS_ZMQ_AUTH_TYPE", "none") or "none").lower()
+
+if auth in ("curve", "session"):
+    # CURVE-protected control planes reject anonymous handshakes via ZAP by
+    # design, so MessageQueue.is_server_ready can never succeed without
+    # credentials. A bound TCP listener is the correct readiness signal here.
+    s = socket.socket()
+    s.settimeout(2.0)
+    try:
+        raise SystemExit(0 if s.connect_ex(("127.0.0.1", port)) == 0 else 1)
+    finally:
+        s.close()
+
 from umrs.core.MessageQueue import MessageQueue
 
-mq = MessageQueue(role="client", queue_type="control", server_ip="127.0.0.1")
+mq = MessageQueue(role="client", queue_type="control", server_ip="127.0.0.1", port=port)
 try:
     raise SystemExit(0 if mq.is_server_ready(timeout_ms=2000) else 1)
 finally:
