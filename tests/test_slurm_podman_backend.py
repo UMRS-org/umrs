@@ -564,3 +564,43 @@ class TestHealthCheck:
 
         assert result["healthy"] is False
         assert "missing" in result["message"].lower()
+
+
+# =============================================================================
+# Regression — JOB_INFO_DIR propagation (orphan fix, 2026-08-31)
+# =============================================================================
+
+
+class TestJobInfoDirPropagation:
+    def test_submit_sets_job_info_dir_by_default(self, backend):
+        """Without an explicit override, JOB_INFO_DIR must land in the sbatch
+        env pointing at the backend's output dir — otherwise serve-model.slurm
+        falls back to ${WRAPPER_DIR}/jobs on the ephemeral staged copy and the
+        60s orphan reaper marks every valid sbatch as orphaned."""
+        mock_proc = AsyncMock()
+        mock_proc.communicate.return_value = (b"12345\n", b"")
+        mock_proc.returncode = 0
+
+        with patch("asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
+            _run(backend.submit_job(model_path="/models/test"))
+
+        env = mock_exec.call_args.kwargs["env"]
+        assert env["JOB_INFO_DIR"] == str(backend._output_dir)
+
+    def test_caller_override_wins(self, backend):
+        """An explicit JOB_INFO_DIR override must always win over the default
+        (relative missions with custom write targets)."""
+        mock_proc = AsyncMock()
+        mock_proc.communicate.return_value = (b"12345\n", b"")
+        mock_proc.returncode = 0
+
+        with patch("asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
+            _run(
+                backend.submit_job(
+                    model_path="/models/test",
+                    env={"JOB_INFO_DIR": "/custom/info-dir"},
+                )
+            )
+
+        env = mock_exec.call_args.kwargs["env"]
+        assert env["JOB_INFO_DIR"] == "/custom/info-dir"

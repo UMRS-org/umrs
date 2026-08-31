@@ -319,6 +319,16 @@ class SlurmPodmanBackend(OrchestratorBackend):
             env_overrides["SLURM_PARTITION"] = selected_partition
         env_overrides["UMRS_JOB_TTL_SECONDS"] = str(ttl_seconds or 0)
         env_overrides.setdefault("RIVAULT_CONTROL_DIR", str(self._control_dir))
+        # Orphan-registration contract (2026-08-31, giovaldi/ slurm-sandbox):
+        # serve-model.slurm falls back to ${WRAPPER_DIR:-staged-copy}/jobs when
+        # JOB_INFO_DIR is absent — inside Slurm's staged copy dir that lands on
+        # the ephemeral spool, so the job never registers in this backend's
+        # output directory and every sbatch-valid submission is marked orphan
+        # at the 60s reaper pass regardless of what the Slurm job does next.
+        # The gen1 launcher already propagates this env (rivault_launcher.py);
+        # the durable podman path got it only via accidental os.environ bleed.
+        # Additive: setdefault only — explicit caller overrides always win.
+        env_overrides.setdefault("JOB_INFO_DIR", str(self._output_dir))
         env_overrides.update(
             {
                 key: str(value)

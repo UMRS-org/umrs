@@ -690,6 +690,10 @@ def _remote_sbatch_args(site, sbatch_env, slurm_overrides=None):
     env_overrides = dict(sbatch_env or {})
     wrapper_script = _remote_wrapper_script(site)
     env_overrides.setdefault("RIVAULT_WRAPPER_DIR", os.path.dirname(wrapper_script))
+    # Precedence audit (2026-08-31): this default must stay aligned with the
+    # durable slurm-podman backend's default (its resolved _output_dir). Both
+    # paths converge on deployment-log durables, never on Slurm's staged-copy
+    # spool fallback.
     env_overrides.setdefault("JOB_INFO_DIR", job_info_dir)
     env_overrides.setdefault("RIVAULT_CONTROL_DIR", f"{job_info_dir}/control")
 
