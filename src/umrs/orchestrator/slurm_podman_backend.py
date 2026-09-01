@@ -389,12 +389,15 @@ class SlurmPodmanBackend(OrchestratorBackend):
                 self._map_slurm_state(sacct_state) if sacct_state else JobStatus.UNKNOWN
             )
 
-        # If running, try to resolve the node from the Slurm output
-        if (
-            status in (JobStatus.STARTING, JobStatus.RUNNING, JobStatus.READY)
-            and not node
-        ):
-            node = await self._node_from_output(job_id)
+        # If running, try to resolve the node from the Slurm output.
+        # The wrapper's own "Running on node: <fqdn>" line is the ground
+        # truth: Slurm's NodeName tokens are not necessarily resolvable on
+        # this site (bdrt: dgx-spark-N has no DNS), while the job's actual
+        # hostname is what the service listens on.
+        if status in (JobStatus.STARTING, JobStatus.RUNNING, JobStatus.READY):
+            resolved_node = await self._node_from_output(job_id)
+            if resolved_node:
+                node = resolved_node
 
         endpoint = None
         if node and status in (JobStatus.STARTING, JobStatus.RUNNING, JobStatus.READY):
@@ -718,24 +721,31 @@ class SlurmPodmanBackend(OrchestratorBackend):
         return lines[0].strip() if lines and lines[0].strip() else None
 
     async def _node_from_output(self, job_id: str) -> str | None:
-        """Try to extract the compute-node hostname from the job output file."""
+        """Try to extract the compute-node hostname from the job output files.
+
+        The wrapper prints both forms; prefer the fully-qualified "Running on
+        node:" line because short names are only resolvable when the node's
+        search domain happens to match.
+        """
         candidate_paths = (
             self._output_dir / f"slurm-{job_id}.out",
+            self._output_dir / f"slurm-{job_id}.err",
             self._output_dir / f"job-{job_id}.out",
+            self._output_dir / f"job-{job_id}.err",
         )
-        for out_path in candidate_paths:
-            if not out_path.exists():
-                continue
-            try:
-                text = out_path.read_text(errors="replace")
-            except OSError:
-                continue
-
-            for pattern in (
-                r"Fully qualified name:\s+(\S+)",
-                r"Running on node:\s+(\S+)",
-                r"Node:\s+(\S+)",
-            ):
+        patterns = (
+            r"Running on node:\s+(\S+)",
+            r"Fully qualified name:\s+(\S+)",
+            r"Node:\s+(\S+)",
+        )
+        for pattern in patterns:
+            for out_path in candidate_paths:
+                if not out_path.exists():
+                    continue
+                try:
+                    text = out_path.read_text(errors="replace")
+                except OSError:
+                    continue
                 match = re.search(pattern, text)
                 if match:
                     return match.group(1)

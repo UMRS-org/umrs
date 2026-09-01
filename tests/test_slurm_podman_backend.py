@@ -511,6 +511,42 @@ class TestNodeFromOutput:
         node = _run(backend._node_from_output("123"))
         assert node == "compute-42"
 
+    def test_prefers_fqdn_running_on_node_over_short_name(self, backend, output_dir):
+        """The wrapper prints both a FQDN line and a short name; the fqdn must
+        win because short names only resolve in the site's search domain."""
+        (output_dir / "slurm-124.out").write_text(
+            "Allocated nodes: dgx-spark-0\n"
+            "Running on node: spark-atom-0.r-ccs10.riken.jp\n"
+            "Fully qualified name: spark-atom-0\n"
+        )
+        node = _run(backend._node_from_output("124"))
+        assert node == "spark-atom-0.r-ccs10.riken.jp"
+
+    def test_reads_err_file_as_well(self, backend, output_dir):
+        """Job header lands in both .out and .err streams of the wrapper."""
+        (output_dir / "slurm-125.err").write_text(
+            "Running on node: spark-atom-1.r-ccs10.riken.jp\n"
+        )
+        node = _run(backend._node_from_output("125"))
+        assert node == "spark-atom-1.r-ccs10.riken.jp"
+
+    def test_status_prefers_output_node_over_squeue_token(self, backend, output_dir):
+        """Regression (bdrt): squeue reports dgx-spark-0 (no DNS on the login
+        node); the wrapper's FQDN must replace it for the endpoint probe."""
+        (output_dir / "slurm-12345.out").write_text(
+            "Allocated nodes: dgx-spark-0\n"
+            "Running on node: spark-atom-0.r-ccs10.riken.jp\n"
+        )
+        mock_proc = AsyncMock()
+        mock_proc.communicate.return_value = (b"dgx-spark-0 RUNNING\n", b"")
+        mock_proc.returncode = 0
+
+        with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+            job = _run(backend.get_job_status("12345"))
+
+        assert job.endpoint is not None
+        assert job.endpoint.node == "spark-atom-0.r-ccs10.riken.jp"
+
     def test_returns_none_if_no_file(self, backend):
         node = _run(backend._node_from_output("999"))
         assert node is None
