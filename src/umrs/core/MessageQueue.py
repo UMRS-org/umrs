@@ -748,6 +748,7 @@ class MessageQueue:
         TaskCmd.WORKFLOW_RESULTS:  "_parse_json_payload",
         TaskCmd.WORKFLOW_CANCEL:   "_parse_json_payload",
         TaskCmd.WORKFLOW_ERRORS:   "_parse_json_payload",
+        TaskCmd.WORKFLOW_EXECUTIONS: "_parse_json_payload",
         TaskCmd.JOB_SUBMIT:        "_parse_json_payload",
         TaskCmd.JOB_CANCEL:        "_parse_json_payload",
         TaskCmd.JOB_LIST:          "_parse_json_payload",

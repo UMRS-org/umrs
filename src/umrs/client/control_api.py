@@ -302,6 +302,24 @@ class UMRSControlAPI:
         payload = json.dumps({"execution_id": execution_id})
         return self._request_json(TaskCmd.WORKFLOW_STATUS, payload)
 
+    def workflow_executions(
+        self,
+        *,
+        user: str | None = None,
+        status: str | None = None,
+        project_id: str | None = None,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        """List workflow execution ids (own scope; --user/--status filters)."""
+        payload: dict[str, Any] = {"limit": limit}
+        if user:
+            payload["user_id"] = user
+        if status:
+            payload["status"] = status
+        if project_id:
+            payload["project_id"] = project_id
+        return self._request_json(TaskCmd.WORKFLOW_EXECUTIONS, json.dumps(payload))
+
     def workflow_results(self, execution_id: str) -> dict[str, Any]:
         """Fetch results for a completed workflow run."""
         payload = json.dumps({"execution_id": execution_id})

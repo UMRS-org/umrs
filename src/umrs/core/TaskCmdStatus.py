@@ -38,6 +38,7 @@ class TaskCmd:
     WORKFLOW_CANCEL = "WORKFLOW_CANCEL"  # cancel a running workflow execution
     WORKFLOW_ERRORS = "WORKFLOW_ERRORS"  # show error logs for a failed workflow execution
     WORKFLOW_LOGS = "WORKFLOW_LOGS"  # stream execution logs for a workflow run
+    WORKFLOW_EXECUTIONS = "WORKFLOW_EXECUTIONS"  # list workflow execution ids (own scope or admin)
     # Admin enrollment
     ENROLL_USER = "ENROLL_USER"  # admin-only: register a new user
     # Bootstrap context

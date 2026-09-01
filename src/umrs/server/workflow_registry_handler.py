@@ -605,6 +605,8 @@ def _dispatch_workflow_command(
             )
         elif cmd == TaskCmd.WORKFLOW_STATUS:
             return _handle_workflow_status(client_id, payload_str)
+        elif cmd == TaskCmd.WORKFLOW_EXECUTIONS:
+            return _handle_workflow_executions(client_id, payload_str)
         elif cmd == TaskCmd.WORKFLOW_RESULTS:
             return _handle_workflow_results(client_id, payload_str)
         elif cmd == TaskCmd.WORKFLOW_CANCEL:
@@ -660,6 +662,95 @@ def _zmq_execution_access(
     if denied is not None:
         return record, job, denied
     return record, job, None
+
+
+def _handle_workflow_executions(client_id: str, payload_str: str) -> str:
+    """Handle WORKFLOW_EXECUTIONS — list workflow execution ids.
+
+    Source of truth: the in-process execution registry — executions
+    submitted since UMRS start. Durable jobs owned by the scheduler
+    (job-store rows) are listed separately under ``umrs job list``.
+
+    Visibility uses the same per-record ACL as WORKFLOW_STATUS
+    (can_access_execution): records with ``unverified`` provenance are
+    invisible even to their owner (fail-closed); records carrying a
+    ``project_id`` show only to callers whose payload claims the same
+    project — pass the same ``project_id`` the status path receives.
+    The ZMQ rail has no admin promotion today, so admins on the HTTP rail
+    should use the REST layer instead.
+
+    Payload JSON (all optional):
+      - user_id: str  — owner filter (admins only; regular users are always
+        pinned to their own scope)
+      - status: str   — exact status filter (submitted|running|succeeded|failed|cancelled)
+      - project_id: str — caller project context (visibility depends on it)
+      - limit: int    — max rows, newest first (default 50, max 500)
+    """
+    try:
+        payload = json.loads(payload_str) if payload_str and payload_str.strip() else {}
+    except json.JSONDecodeError:
+        payload = None
+    if not isinstance(payload, dict):
+        return json.dumps({"status": "error", "message": "invalid JSON payload"})
+
+    from umrs.api.workflow_auth import can_access_execution, zmq_caller_from_payload
+    from umrs.server.workflow_execution_registry import get_execution_registry
+
+    caller = zmq_caller_from_payload(client_id, payload)
+    limit = payload.get("limit")
+    if not isinstance(limit, int) or limit < 1 or limit > 500:
+        limit = 50
+    status_filter = payload.get("status")
+    if isinstance(status_filter, str):
+        status_filter = status_filter.strip().lower() or None
+    else:
+        status_filter = None
+    # Regular users are pinned to their own scope. Admins may ask for a
+    # specific owner or leave it unset for a system-wide listing.
+    user_filter = payload.get("user_id")
+    if not caller.is_admin:
+        user_filter = caller.user_id
+
+    registry = get_execution_registry()
+    records = registry.list(user_id=user_filter if isinstance(user_filter, str) and user_filter else None)
+
+    visible = []
+    for record in records:
+        if not can_access_execution(
+            caller.user_id,
+            caller.project_id,
+            is_admin=caller.is_admin,
+            caller_project_provenance=caller.project_provenance,
+            record=record,
+        ):
+            continue
+        if status_filter and record.status.lower() != status_filter:
+            continue
+        steps = list(record.steps.values())
+        done = sum(1 for s in steps if s.status in ("succeeded", "failed", "skipped"))
+        visible.append(
+            {
+                "execution_id": record.execution_id,
+                "workflow_name": record.workflow_name,
+                "user_id": record.user_id,
+                "status": record.status,
+                "progress": record.progress,
+                "submitted_at": record.submitted_at,
+                "started_at": record.started_at,
+                "finished_at": record.finished_at,
+                "error": record.error,
+                "steps_done": done,
+                "steps_total": len(steps),
+                "durable_job_id": record.durable_job_id,
+            }
+        )
+        if len(visible) >= limit:
+            break
+
+    return json.dumps(
+        {"status": "ok", "count": len(visible), "executions": visible},
+        default=str,
+    )
 
 
 def _handle_workflow_status(client_id: str, payload_str: str) -> str:
