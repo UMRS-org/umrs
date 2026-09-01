@@ -4495,6 +4495,13 @@ def _action_workflow(ctx):
             )
         elif wf_action == "status":
             parsed = api.workflow_status(args.execution_id)
+        elif wf_action == "executions":
+            parsed = api.workflow_executions(
+                user=args.user,
+                status=args.status,
+                project_id=getattr(args, "project_id", None),
+                limit=args.limit,
+            )
         elif wf_action == "results":
             parsed = api.workflow_results(args.execution_id)
         elif wf_action == "cancel":
@@ -4525,6 +4532,8 @@ def _action_workflow(ctx):
                     _print_workflow_list(parsed)
                 elif wf_action == "status":
                     _print_workflow_status(parsed)
+                elif wf_action == "executions":
+                    _print_workflow_executions(parsed)
                 elif wf_action == "results":
                     _print_workflow_results(parsed)
                 elif wf_action == "cancel":
@@ -4616,6 +4625,34 @@ def _print_workflow_status(parsed: dict) -> None:
             )
             if s.get("error"):
                 print(f"      {_red(s['error'])}")
+
+
+def _print_workflow_executions(parsed: dict) -> None:
+    """Pretty-print the ``workflow executions`` response."""
+    rows = parsed.get("executions", [])
+    print(_section("Workflow Executions"))
+    if not rows:
+        print(f"  {_dim('No executions in scope.')}")
+        return
+    for row in rows:
+        status = str(row.get("status", "?"))
+        marker = (
+            _green("✓")
+            if status == "succeeded"
+            else _red("✗")
+            if status == "failed"
+            else _dim("■") if status == "cancelled" else _dim("▶")
+        )
+        wid = str(row.get("execution_id", "?"))
+        name = str(row.get("workflow_name", "?"))
+        user = str(row.get("user_id", "?"))
+        steps = f"{row.get('steps_done', 0)}/{row.get('steps_total', 0)}"
+        progress = f"{float(row.get('progress', 0.0)):.0%}"
+        print(f"  {marker} {wid}  {name}  {status:10s}  steps {steps}  {progress:>4s}  {_dim(user)}")
+        if row.get("error"):
+            print(f"      {_red(row['error'])}")
+    count = int(parsed.get("count", len(rows)))
+    print(f"  {_dim(f'({count} shown, newest first)')}")
 
 
 def _print_workflow_results(parsed: dict) -> None:

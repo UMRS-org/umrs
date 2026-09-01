@@ -362,6 +362,40 @@ def configure_workflow_status_parser(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("execution_id", help="Execution ID to inspect")
 
 
+def configure_workflow_executions_parser(parser: argparse.ArgumentParser) -> None:
+    """Parser for ``workflow executions`` — list workflow execution ids.
+
+    Reads the in-process registry (executions submitted since UMRS start).
+    Durable scheduler jobs are under ``umrs job list`` instead."""
+    parser.add_argument(
+        "--user",
+        default=None,
+        help="Owner filter (admins; regular users see their own scope)",
+    )
+    parser.add_argument(
+        "--status",
+        default=None,
+        choices=("submitted", "running", "succeeded", "failed", "cancelled"),
+        help="Filter by execution status",
+    )
+    parser.add_argument(
+        "--project",
+        "--project-id",
+        dest="project_id",
+        default=None,
+        help=(
+            "Caller project context — executions are only visible when this "
+            "matches the execution's project (same rule as workflow status)"
+        ),
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=50,
+        help="Max executions shown, newest first (1–500, default 50)",
+    )
+
+
 def configure_workflow_results_parser(parser: argparse.ArgumentParser) -> None:
     """Parser for ``workflow results`` — fetch results."""
     parser.add_argument("execution_id", help="Execution ID to fetch results for")
@@ -502,6 +536,10 @@ def build_control_command_parser(
     # workflow status
     workflow_status = workflow_subparsers.add_parser("status", add_help=add_help)
     configure_workflow_status_parser(workflow_status)
+
+    # workflow executions
+    workflow_executions = workflow_subparsers.add_parser("executions", add_help=add_help)
+    configure_workflow_executions_parser(workflow_executions)
 
     # workflow results
     workflow_results = workflow_subparsers.add_parser("results", add_help=add_help)
@@ -667,6 +705,7 @@ __all__ = [
     "configure_model_register_parser",
     "configure_ping_parser",
     "configure_status_parser",
+    "configure_workflow_executions_parser",
     "configure_workflow_list_parser",
     "configure_workflow_run_parser",
     "configure_workflow_upload_parser",

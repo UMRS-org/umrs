@@ -380,6 +380,7 @@ class UMRSTask:
             TaskCmd.WORKFLOW_RESULTS,
             TaskCmd.WORKFLOW_CANCEL,
             TaskCmd.WORKFLOW_ERRORS,
+            TaskCmd.WORKFLOW_EXECUTIONS,
             TaskCmd.WORKFLOW_LOGS,
         ):
             logger.info(f"We do not create task_id for {cmd=}")

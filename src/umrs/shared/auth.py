@@ -76,6 +76,7 @@ USER_ALLOWED_COMMANDS: set[str] = frozenset(
         "WORKFLOW_CANCEL",
         "WORKFLOW_ERRORS",
         "WORKFLOW_LOGS",
+        "WORKFLOW_EXECUTIONS",
         "UPDATE",  # Update embeddings across configured buckets (only client files)
         "CHECK",  # Global consistency check across all users' buckets (only client files)
         "RECOMPUTE",  # Recompute embeddings across user's own buckets

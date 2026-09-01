@@ -27,6 +27,7 @@ from .workflow_commands import (
     RunWorkflowHandler,
     WorkflowCancelHandler,
     WorkflowErrorsHandler,
+    WorkflowExecutionsHandler,
     WorkflowResultsHandler,
     WorkflowStatusHandler,
 )
@@ -75,6 +76,7 @@ def build_registry() -> CommandRegistry:
     r.register(TaskCmd.LIST_WORKFLOWS, ListWorkflowsHandler())
     r.register(TaskCmd.RUN_WORKFLOW, RunWorkflowHandler())
     r.register(TaskCmd.WORKFLOW_STATUS, WorkflowStatusHandler())
+    r.register(TaskCmd.WORKFLOW_EXECUTIONS, WorkflowExecutionsHandler())
     r.register(TaskCmd.WORKFLOW_RESULTS, WorkflowResultsHandler())
     r.register(TaskCmd.WORKFLOW_CANCEL, WorkflowCancelHandler())
     r.register(TaskCmd.WORKFLOW_ERRORS, WorkflowErrorsHandler())

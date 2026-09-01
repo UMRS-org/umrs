@@ -73,6 +73,20 @@ class WorkflowStatusHandler(CommandHandler):
         update_status(TaskStatus.COMPLETED)
 
 
+class WorkflowExecutionsHandler(CommandHandler):
+    """Handle WORKFLOW_EXECUTIONS — list workflow execution ids for the caller."""
+
+    def execute(self, payload: Any, update_status: StatusCallback, ctx: HandlerContext, task_id: int) -> None:
+        client_id, payload_str, zmq_sender_id = payload
+        response_json = handle_workflow_command(
+            "WORKFLOW_EXECUTIONS",
+            client_id,
+            payload_str,
+        )
+        _send_reply(ctx, zmq_sender_id, response_json, "WORKFLOW_EXECUTIONS")
+        update_status(TaskStatus.COMPLETED)
+
+
 class WorkflowResultsHandler(CommandHandler):
     """Handle WORKFLOW_RESULTS — fetch results for a completed workflow run."""
 
