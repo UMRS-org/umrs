@@ -15,10 +15,12 @@ from __future__ import annotations
 import logging
 from typing import Any, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from umrs.asset_index import build_asset_index
+
+from ._scope_identity import get_caller_scope
 
 logger = logging.getLogger(__name__)
 
@@ -84,12 +86,22 @@ def _gather_stores() -> dict[str, Any]:
 async def snapshot(
     kinds: Optional[str] = Query(None, description="comma-separated kind filter"),
     project_id: Optional[str] = Query(None),
+    caller: Any = Depends(get_caller_scope),
 ) -> AssetSnapshotResponse:
-    """Cross-subsystem asset index snapshot (read-model, F4)."""
+    """Cross-subsystem asset index snapshot (read-model, F4).
+
+    Callers see only rows for scopes they inhabit (system + verified project
+    + own user rows); group rows are admin-only until a group-membership
+    authority exists — fail closed, never silent leakage.
+    """
     stores = _gather_stores()
     kind_list = [k.strip() for k in kinds.split(",") if k.strip()] if kinds else None
+    # Non-admin project filter is bound to the caller's verified project.
+    bound_project = project_id if getattr(caller, "is_admin", False) else (
+        getattr(caller, "project_id", "") or project_id
+    )
     rows, warnings = build_asset_index(
-        project_id=project_id,
+        project_id=bound_project,
         kinds=kind_list,
         artifact_store=stores.get("artifact_store"),
         model_store=stores.get("model_store"),
@@ -97,6 +109,7 @@ async def snapshot(
         session_store=stores.get("session_store"),
         loop_store=stores.get("loop_store"),
         job_store=stores.get("job_store"),
+        caller=caller,
     )
     return AssetSnapshotResponse(
         rows=[r.to_dict() for r in rows],
@@ -106,8 +119,12 @@ async def snapshot(
 
 
 @router.get("/{kind}/{asset_id}", response_model=AssetRowResponse)
-async def get_asset(kind: str, asset_id: str) -> AssetRowResponse:
-    """Fetch one asset row by kind+id."""
+async def get_asset(
+    kind: str,
+    asset_id: str,
+    caller: Any = Depends(get_caller_scope),
+) -> AssetRowResponse:
+    """Fetch one asset row by kind+id (caller-filtered)."""
     stores = _gather_stores()
     rows, warnings = build_asset_index(
         kinds=[kind],
@@ -117,6 +134,7 @@ async def get_asset(kind: str, asset_id: str) -> AssetRowResponse:
         session_store=stores.get("session_store"),
         loop_store=stores.get("loop_store"),
         job_store=stores.get("job_store"),
+        caller=caller,
     )
     for row in rows:
         if row.asset_id == asset_id:

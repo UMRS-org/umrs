@@ -34,18 +34,54 @@ class IndexWarning:
         return {"kind": self.kind, "reason": self.reason}
 
 
+# ── caller visibility (read-side authorization, Review F3/F4) ───────────────
+
+
+def _visible_by_claim(claim: Any, caller: Any) -> bool:
+    """Visibility of a parsed scope claim (fail closed for unknown kinds)."""
+    if claim.kind == "system":
+        return True
+    if claim.kind == "project":
+        return bool(getattr(caller, "project_id", "")) and claim.id == caller.project_id
+    if claim.kind == "user":
+        return bool(getattr(caller, "user_id", "")) and claim.id == caller.user_id
+    return False
+
+
+def _visible_row(row: AssetRow, caller: Any | None) -> bool:
+    """Whether a caller may see this row.
+
+    caller is a knowledge.access_scope.CallerScope (or None=model all-visible
+    for in-process consumers). Non-admin callers see system rows, project
+    rows of their verified project, and own user rows; group rows are hidden
+    for non-admins until a group-membership authority exists (fail closed).
+    """
+    if caller is None or getattr(caller, "is_admin", False):
+        return True
+    if not row.scope:
+        return False
+    try:
+        from umrs.shared.scope_grammar import parse as parse_scope
+
+        return _visible_by_claim(parse_scope(row.scope, allow_legacy=True), caller)
+    except Exception:
+        return False
+
+
 def _scope_of(*, scope: str | None = None, project_id: str | None = None,
               owner: str | None = None) -> str:
-    """Derive the canonical scope string for a row.
+    """Derive the canonical scope string for a row (umrs.shared.scope_grammar).
 
     Subsystem rows carry different owner markers; this collapses to the
     canonical grammar (system / project:<id> / group:<id> / user:<id>).
     """
     if scope:
-        if scope in ("system",):
-            return scope
-        if scope.startswith(("project:", "group:", "user:")):
-            return scope
+        from umrs.shared.scope_grammar import ScopeError, parse as parse_scope
+
+        try:
+            return str(parse_scope(scope, allow_legacy=True))
+        except ScopeError:
+            pass
     if project_id:
         return f"project:{project_id}"
     if owner:
@@ -252,12 +288,16 @@ def build_asset_index(
     loop_store: Any = None,
     job_store: Any = None,
     model_ctx: Any = None,
+    caller: Any = None,
 ) -> tuple[list[AssetRow], list[IndexWarning]]:
     """Compose the cross-subsystem asset index.
 
     Every store is optional; a missing optional store simply yields no rows
     of its kind (NOT a warning — absent store ≠ failed store). A store that
     raises produces an IndexWarning and a row gap, never a raised error.
+
+    ``caller`` scopes the result: rows invisible to the caller are filtered
+    (see ``_visible_row``). ``None`` = in-process consumer, no filtering.
     """
     warnings: list[IndexWarning] = []
     stores = {
@@ -269,7 +309,7 @@ def build_asset_index(
         "job": job_store,
     }
     if model_ctx is None and model_store is not None:
-        model_ctx = model_access_context()
+        model_ctx = model_access_context(caller=caller)
     builders: dict[str, Callable[[], list[AssetRow]]] = {
         "artifact": lambda: _collect_artifacts(artifact_store, project_id),
         "model": lambda: _collect_models(model_store, model_ctx),
@@ -285,13 +325,23 @@ def build_asset_index(
         if builder is None or stores.get(kind) is None:
             continue
         rows.extend(_collect(kind, builder, warnings))
-    return rows, warnings
+    return [row for row in rows if _visible_row(row, caller)], warnings
 
 
-# Model collectors need an AccessContext (strict store) — build one here so
-# the router doesn't repeat the enum plumbing.
-def model_access_context(user_id: str = "__asset_index__") -> Any:
-    """System-visibility context for read-model fanout (no elevated writes)."""
+# Model collectors need an AccessContext (strict store). It derives from the
+# CALLER (never synthetic-admin in the HTTP path): in-process consumers pass
+# no caller and get the full-visibility in-process context.
+def model_access_context(
+    user_id: str = "__asset_index__", caller: Any = None
+) -> Any:
+    """AccessContext for read-model fanout mirroring the caller's visibility."""
     from umrs.model_registry.store.acl import AccessContext
 
-    return AccessContext(user_id=user_id, is_admin=True)
+    if caller is None:
+        return AccessContext(user_id=user_id, is_admin=True)
+    return AccessContext(
+        user_id=getattr(caller, "user_id", "") or user_id,
+        is_admin=bool(getattr(caller, "is_admin", False)),
+        project_memberships={getattr(caller, "project_id", "")}
+        - {""},
+    )
