@@ -210,6 +210,43 @@ def _init_research_sessions_store(app, db_pool):
         )
 
 
+def _init_deep_stores(app, db_pool):
+    """Pool-backed durable stores that live behind one umbrella call.
+
+    Kept in a helper to hold ``_create_app`` under the McCabe gate (9).
+    Order matters for boot logs only; each init is independently fallible.
+    """
+    _init_job_store(db_pool)
+    _init_catalog_meta_store(db_pool)
+    _init_model_store(app, db_pool)
+    _init_mcp_store(app, db_pool)
+    _init_audit_store(app, db_pool)
+    _init_governance_store(app, db_pool)
+    _init_research_sessions_store(app, db_pool)
+    _init_companion_trust_store(app, db_pool)
+    _init_usage_pool(db_pool)
+
+
+def _init_companion_trust_store(app, db_pool):
+    """Initialize the companion trust allowlist store (wave T3c, ADR-035)."""
+    try:
+        from umrs.api.companion import set_trust_store
+        from umrs.companion_trust import ensure_schema
+        from umrs.companion_trust.store import TrustAllowlistStore
+
+        trust_conn = db_pool.getconn()
+        ensure_schema(trust_conn)
+        trust_conn.commit()
+        app.state.umrs_companion_trust_conn = trust_conn
+        set_trust_store(TrustAllowlistStore(trust_conn))
+        logger.info("Companion trust store initialized for HTTP sidecar")
+    except Exception:
+        logger.warning(
+            "Companion trust store unavailable in HTTP sidecar — "
+            "/umrs/companion/trust* will return 503"
+        )
+
+
 def _init_usage_pool(db_pool):
     """Wire the LLM usage recording pool."""
     try:
@@ -472,6 +509,72 @@ async def _readiness(request: Request):
     return result
 
 
+async def _wire_a2l_recorder(application) -> None:
+    """ADR-034 Phase 2: wire the process-global a2l conservation recorder.
+
+    Pool creation is eager here so the same pool is reused by the lazy
+    knowledge pool dependency (same app.state key).
+    """
+    from umrs.api._asyncpg_pool import _init_json_codecs, _resolve_knowledge_dsn
+
+    try:
+        from umrs.a2l.recorder import StoreA2lRecorder, configure_recorder
+        from umrs.a2l.store import init_store as init_a2l_store
+
+        dsn, is_local = _resolve_knowledge_dsn()
+        if dsn:
+            import asyncpg
+
+            kwargs: dict = {"dsn": dsn, "init": _init_json_codecs}
+            if is_local:
+                kwargs["ssl"] = "disable"  # jobs pool parity
+            pool = await asyncpg.create_pool(**kwargs)
+            application.state.umrs_knowledge_asyncpg_pool = pool
+            configure_recorder(StoreA2lRecorder(init_a2l_store(pool)))
+            logger.info("a2l conservation recorder wired (ADR-034)")
+        else:
+            logger.info("a2l conservation recorder: no DSN — Null recorder")
+    except Exception:  # noqa: BLE001 — conservation is degradable
+        logger.warning(
+            "a2l recorder init failed — conservation disabled", exc_info=True
+        )
+
+
+def _upgrade_loop_store() -> None:
+    """Durable loops: upgrade to psycopg2 persistence + rehydrate drivers
+    for runs that were RUNNING/PAUSED when the process last stopped.
+    Independent of the a2l pool (psycopg2 for thread safety).
+    """
+    from umrs.api._asyncpg_pool import _resolve_knowledge_dsn
+
+    try:
+        dsn_sync, _ = _resolve_knowledge_dsn()
+        if dsn_sync:
+            from umrs.api.loop import (
+                configure_loop_store_sync,
+                reregister_loop_drivers,
+            )
+
+            configure_loop_store_sync(dsn_sync)
+            reregister_loop_drivers()
+    except Exception:  # noqa: BLE001 — loops must never block boot
+        logger.warning("loop store upgrade/re-registration failed", exc_info=True)
+
+
+def _tag_metrics_source() -> None:
+    """Tag all LLM metrics with the operational source (site name)."""
+    try:
+        from umrs.orchestrator.site_config import load_site_config
+        from umrs.metrics import METRICS
+
+        METRICS.set_source(load_site_config().name)
+        logger.info("LLM metrics source tagged: %s", METRICS._source)  # noqa: SLF001
+    except Exception:
+        logger.debug(
+            "No site config available — LLM metrics will have empty source"
+        )
+
+
 def _create_app():
     """Create a minimal FastAPI app mounting the Gateway-facing UMRS routers."""
     from contextlib import asynccontextmanager
@@ -531,63 +634,12 @@ def _create_app():
 
     @asynccontextmanager
     async def _lifespan(application: FastAPI):
-        # Tag all LLM metrics with the operational source (site name).
-        try:
-            from umrs.orchestrator.site_config import load_site_config
-            from umrs.metrics import METRICS
-
-            METRICS.set_source(load_site_config().name)
-            logger.info("LLM metrics source tagged: %s", METRICS._source)  # noqa: SLF001
-        except Exception:
-            logger.debug(
-                "No site config available — LLM metrics will have empty source"
-            )
+        _tag_metrics_source()
         from umrs.orchestrator.janitor import start_janitor, stop_janitor
         from umrs.scheduler.service import start_scheduler, stop_scheduler
 
-        # ADR-034 Phase 2: wire the process-global a2l conservation recorder.
-        # Pool creation is eager here so the same pool is reused by the
-        # lazy knowledge pool dependency (same app.state key).
-        try:
-            from umrs.a2l.recorder import StoreA2lRecorder, configure_recorder
-            from umrs.a2l.store import init_store as init_a2l_store
-            from umrs.api._asyncpg_pool import _init_json_codecs, _resolve_knowledge_dsn
-
-            dsn, is_local = _resolve_knowledge_dsn()
-            if dsn:
-                import asyncpg
-
-                kwargs: dict = {"dsn": dsn, "init": _init_json_codecs}
-                if is_local:
-                    kwargs["ssl"] = "disable"  # jobs pool parity
-                pool = await asyncpg.create_pool(**kwargs)
-                application.state.umrs_knowledge_asyncpg_pool = pool
-                configure_recorder(StoreA2lRecorder(init_a2l_store(pool)))
-                logger.info("a2l conservation recorder wired (ADR-034)")
-            else:
-                logger.info("a2l conservation recorder: no DSN — Null recorder")
-        except Exception:  # noqa: BLE001 — conservation is degradable
-            logger.warning(
-                "a2l recorder init failed — conservation disabled", exc_info=True
-            )
-
-        # Durable loops: upgrade to psycopg2 persistence + rehydrate drivers
-        # for runs that were RUNNING/PAUSED when the process last stopped.
-        # Independent of the a2l pool (psycopg2 for thread safety).
-        try:
-            from umrs.api._asyncpg_pool import _resolve_knowledge_dsn
-
-            dsn_sync, _ = _resolve_knowledge_dsn()
-            if dsn_sync:
-                from umrs.api.loop import (
-                    configure_loop_store_sync,
-                    reregister_loop_drivers,
-                )
-
-                configure_loop_store_sync(dsn_sync)
-                reregister_loop_drivers()
-        except Exception:  # noqa: BLE001 — loops must never block boot
-            logger.warning("loop store upgrade/re-registration failed", exc_info=True)
+        await _wire_a2l_recorder(application)
+        _upgrade_loop_store()
 
         start_janitor()
         logger.info("Janitor started via lifespan hook")
@@ -697,14 +749,7 @@ def _create_app():
 
     db_pool = _build_db_pool(app)
     if db_pool is not None:
-        _init_job_store(db_pool)
-        _init_catalog_meta_store(db_pool)
-        _init_model_store(app, db_pool)
-        _init_mcp_store(app, db_pool)
-        _init_audit_store(app, db_pool)
-        _init_governance_store(app, db_pool)
-        _init_research_sessions_store(app, db_pool)
-        _init_usage_pool(db_pool)
+        _init_deep_stores(app, db_pool)
 
     app.get("/health")(_health)
     app.get("/metrics")(_metrics)

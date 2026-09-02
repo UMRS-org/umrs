@@ -45,6 +45,24 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/umrs/companion", tags=["companion"])
 
+# Per-user-scope TRUST allowlist (wave T3c): module-level store handle, set
+# at sidecar boot the same way the research-session store is.
+_trust_store = None
+
+
+def set_trust_store(store) -> None:
+    global _trust_store
+    _trust_store = store
+
+
+def _require_trust_store():
+    if _trust_store is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Companion trust store unavailable (no DB pool configured)",
+        )
+    return _trust_store
+
 # ── typed error mapping ─────────────────────────────────────────────────────
 
 
@@ -170,6 +188,32 @@ class ApprovalDecisionRequest(BaseModel):
 
 class ApprovalsPendingResponse(BaseModel):
     pending: list[dict[str, Any]] = []
+
+
+class TrustGrantRequest(BaseModel):
+    tool_name: str = Field(..., min_length=1)
+    scope: str = Field("global", min_length=1)
+    ttl_sec: int = Field(1800, ge=60, le=86400)
+
+
+class TrustListResponse(BaseModel):
+    rows: list[dict[str, Any]] = []
+    count: int = 0
+
+
+def _validated_scope(raw: str) -> str:
+    """Scope grammar: global | project:<id> | session:<id>."""
+    scope = raw.strip()
+    if scope == "global":
+        return scope
+    if scope.startswith("project:") and len(scope) > len("project:"):
+        return scope
+    if scope.startswith("session:") and len(scope) > len("session:"):
+        return scope
+    raise HTTPException(
+        status_code=422,
+        detail=f"invalid trust scope (want global|project:<id>|session:<id>): {raw!r}",
+    )
 
 
 class TurnAcceptedResponse(BaseModel):
@@ -456,3 +500,68 @@ async def record_approval_decision(
         "status": record["status"],
         "loop_id": record.get("loop_id", ""),
     }
+
+
+# ── per-user-scope TRUST allowlist (wave T3c, ADR-035) ───────────────────────
+
+
+@router.get("/trust", response_model=TrustListResponse)
+async def list_trust_rows(
+    scope: Optional[str] = None,
+    x_user_id: str = Depends(_strict_headers),
+) -> TrustListResponse:
+    """List the caller's unexpired allowlist rows (owner-pinned)."""
+    store = _require_trust_store()
+    resolved = _validated_scope(scope) if scope else None
+    rows = store.list(x_user_id, scope=resolved)
+    return TrustListResponse(rows=[r.to_dict() for r in rows], count=len(rows))
+
+
+@router.put("/trust", status_code=status.HTTP_201_CREATED)
+async def grant_trust_row(
+    body: TrustGrantRequest,
+    x_user_id: str = Depends(_strict_headers),
+) -> dict:
+    """Grant/refresh a trust row for the caller (owner-pinned, TTL-capped)."""
+    store = _require_trust_store()
+    scope = _validated_scope(body.scope)
+    row = store.grant(
+        x_user_id, body.tool_name, scope=scope, ttl_sec=body.ttl_sec, created_by=x_user_id
+    )
+    return row.to_dict()
+
+
+@router.get("/trust/check")
+async def check_trust_row(
+    tool_name: str,
+    scope: Optional[str] = None,
+    x_user_id: str = Depends(_strict_headers),
+) -> dict:
+    """Autopilot consult: is this tool allowlisted NOW for the caller+scope?
+
+    Returns ``{"allowed": bool, "expires_at": ...}``. The companion calls this
+    instead of trusting its own process-global TRUST mode.
+    """
+    store = _require_trust_store()
+    resolved = _validated_scope(scope) if scope else "global"
+    row = store.check(x_user_id, tool_name, scope=resolved)
+    if row is None and resolved != "global":
+        row = store.check(x_user_id, tool_name, scope="global")
+    return {
+        "allowed": row is not None,
+        "scope": (row.scope if row else resolved),
+        "expires_at": (row.expires_at if row else ""),
+    }
+
+
+@router.delete("/trust/{tool_name}", status_code=status.HTTP_204_NO_CONTENT)
+async def revoke_trust_row(
+    tool_name: str,
+    scope: Optional[str] = None,
+    x_user_id: str = Depends(_strict_headers),
+) -> None:
+    """Revoke a trust row (owner-pinned)."""
+    store = _require_trust_store()
+    resolved = _validated_scope(scope) if scope else "global"
+    store.revoke(x_user_id, tool_name, scope=resolved)
+    return None
