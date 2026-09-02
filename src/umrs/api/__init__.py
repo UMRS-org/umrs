@@ -27,6 +27,7 @@ from .knowledge_proposals import router as knowledge_proposals_router
 from .knowledge_query import router as knowledge_query_router
 from .knowledge_v2 import router as knowledge_v2_router
 from .llm import router as llm_router
+from .assets import router as assets_router
 from .loop import router as loops_router
 from .mcp import router as mcp_router
 from .models import policy_router
@@ -55,6 +56,7 @@ __all__ = [
     "a2l_router",
     "a2l_ledger_router",
     "artifact_router",
+    "assets_router",
     "bundle_restore_router",
     "catalog_router",
     "chat_router",

@@ -592,6 +592,7 @@ def _create_app():
         a2l_ledger_router,
         a2l_router,
         artifact_router,
+        assets_router,
         bundle_restore_router,
         catalog_router,
         chat_router,
@@ -684,6 +685,7 @@ def _create_app():
     app.include_router(a2l_router)
     app.include_router(a2l_ledger_router)
     app.include_router(artifact_router)
+    app.include_router(assets_router)
     app.include_router(bundle_restore_router)
     app.include_router(chat_router)
     app.include_router(egress_audit_router)
