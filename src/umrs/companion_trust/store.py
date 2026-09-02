@@ -20,9 +20,20 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import dataclass
 
+from umrs.shared.scope_grammar import parse_lenient
+
 from .schema import CREATE_TRUST_TABLE
 
 DEFAULT_TTL_SEC = 1800  # 30 min — mirrors R4_PERMISSION_APPROVAL_TTL default
+
+
+def _norm_scope(raw: str | None) -> str:
+    """Normalize legacy scope aliases ('global' → 'system') at the store
+    boundary so old rows stay readable while new writes are canonical."""
+    try:
+        return str(parse_lenient(raw))
+    except Exception:
+        return "system"
 
 
 def _sqliteify(sql: str) -> str:
@@ -90,7 +101,7 @@ def _row_to_trust(row) -> TrustRow:
 
     return TrustRow(
         user_id=_get("user_id", ""),
-        scope=_get("scope", "global"),
+        scope=_norm_scope(_get("scope", "system")),
         tool_name=_get("tool_name", ""),
         expires_at=str(_get("expires_at") or ""),
         created_at=str(_get("created_at") or ""),
@@ -148,11 +159,12 @@ class TrustAllowlistStore:
         self,
         user_id: str,
         tool_name: str,
-        scope: str = "global",
+        scope: str = "system",
         ttl_sec: int = DEFAULT_TTL_SEC,
         created_by: str = "",
     ) -> TrustRow:
         """Upsert an allowlist row, refreshing its expiry."""
+        scope = _norm_scope(scope)
         conn = self._borrow()
         try:
             cur = conn.cursor()
@@ -192,8 +204,9 @@ class TrustAllowlistStore:
         finally:
             self._return(conn)
 
-    def check(self, user_id: str, tool_name: str, scope: str = "global") -> TrustRow | None:
+    def check(self, user_id: str, tool_name: str, scope: str = "system") -> TrustRow | None:
         """Return the row when present AND unexpired; lazy-GC expired rows."""
+        scope = _norm_scope(scope)
         row = self._fetch(user_id, scope, tool_name)
         if row is None:
             return None
@@ -204,6 +217,8 @@ class TrustAllowlistStore:
 
     def list(self, user_id: str, scope: str | None = None) -> list[TrustRow]:
         """Unexpired rows for the user, optionally scope-filtered."""
+        if scope is not None:
+            scope = _norm_scope(scope)
         conn = self._borrow()
         try:
             cur = conn.cursor()
@@ -219,8 +234,9 @@ class TrustAllowlistStore:
         finally:
             self._return(conn)
 
-    def revoke(self, user_id: str, tool_name: str, scope: str = "global") -> bool:
+    def revoke(self, user_id: str, tool_name: str, scope: str = "system") -> bool:
         """Delete a row. Returns True when a row existed."""
+        scope = _norm_scope(scope)
         conn = self._borrow()
         try:
             cur = conn.cursor()

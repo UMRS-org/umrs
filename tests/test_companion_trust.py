@@ -29,7 +29,7 @@ class TestTrustStore:
         row = store.check("alice", "shell_exec")
         assert row is not None
         assert row.user_id == "alice"
-        assert row.scope == "global"
+        assert row.scope == "system"
 
     def test_check_unknown_tool_is_none(self, store: TrustAllowlistStore):
         store.grant("alice", "shell_exec")
@@ -49,7 +49,7 @@ class TestTrustStore:
         store.grant("alice", "shell_exec", scope="project:p1")
         assert store.check("alice", "shell_exec", scope="project:p1") is not None
         assert store.check("alice", "shell_exec", scope="project:p2") is None
-        assert store.check("alice", "shell_exec", scope="global") is None
+        assert store.check("alice", "shell_exec", scope="system") is None
 
     def test_expired_row_is_garbage_collected(self, store: TrustAllowlistStore):
         # 60s is the floor for grant()... but sqlite lets us write a past row
@@ -74,8 +74,8 @@ class TestTrustStore:
         store.grant("alice", "alpha")
         store.grant("alice", "beta", scope="project:p1")
         assert len(store.list("alice")) == 2
-        assert len(store.list("alice", scope="global")) == 1
-        assert store.list("alice", scope="global")[0].tool_name == "alpha"
+        assert len(store.list("alice", scope="system")) == 1
+        assert store.list("alice", scope="system")[0].tool_name == "alpha"
 
     def test_default_ttl_named(self):
         assert DEFAULT_TTL_SEC == 1800
@@ -85,20 +85,42 @@ class TestTrustRouter:
     def test_grant_then_check_via_http(self, api: TestClient):
         r = api.put(
             "/umrs/companion/trust",
-            json={"tool_name": "shell_exec", "scope": "global", "ttl_sec": 600},
+            json={"tool_name": "shell_exec", "scope": "system", "ttl_sec": 600},
         )
         assert r.status_code == 201, r.text
         c = api.get("/umrs/companion/trust/check", params={"tool_name": "shell_exec"})
         assert c.status_code == 200
         assert c.json()["allowed"] is True
 
-    def test_check_falls_back_to_global_scope(self, api: TestClient):
+    def test_check_falls_back_to_system_scope(self, api: TestClient):
         api.put("/umrs/companion/trust", json={"tool_name": "shell_exec"})
         c = api.get(
             "/umrs/companion/trust/check",
             params={"tool_name": "shell_exec", "scope": "project:p1"},
         )
         assert c.json()["allowed"] is True
+
+    def test_legacy_global_scope_rejected_on_write(self, api: TestClient):
+        r = api.put(
+            "/umrs/companion/trust",
+            json={"tool_name": "shell_exec", "scope": "global"},
+        )
+        assert r.status_code == 422
+
+    def test_project_scope_write_requires_verified_project(self, api: TestClient):
+        """Scope-write authorization: caller's verified project must match."""
+        r = api.put(
+            "/umrs/companion/trust",
+            json={"tool_name": "shell_exec", "scope": "project:p1"},
+        )
+        assert r.status_code == 403
+
+    def test_group_scope_write_rejected_until_membership_authority(self, api: TestClient):
+        r = api.put(
+            "/umrs/companion/trust",
+            json={"tool_name": "shell_exec", "scope": "group:lab-ml"},
+        )
+        assert r.status_code == 422
 
     def test_check_denies_unknown_tool(self, api: TestClient):
         c = api.get("/umrs/companion/trust/check", params={"tool_name": "nope"})
@@ -109,7 +131,7 @@ class TestTrustRouter:
         api.put("/umrs/companion/trust", json={"tool_name": "shell_exec"})
         api.put(
             "/umrs/companion/trust",
-            json={"tool_name": "hpc_submit", "scope": "project:p1"},
+            json={"tool_name": "hpc_submit", "scope": "session:s1"},
         )
         ls = api.get("/umrs/companion/trust")
         assert ls.status_code == 200

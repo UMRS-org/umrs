@@ -38,6 +38,8 @@ from umrs.jobs.companion_worker import (
 )
 from umrs.jobs.companion_turn_executor import kick as kick_turn_executor
 from umrs.jobs.companion_worker_supervisor import AtCapacity
+from umrs.shared.scope_grammar import ScopeError, fallback_chain
+from umrs.shared.scope_grammar import parse as parse_scope
 
 from .workflows import _require_verified_workflow_identity
 
@@ -103,6 +105,19 @@ def _strict_headers(
         x_user_id, x_verified_project_id, x_verified_is_admin, x_verified_hmac
     )
     return (x_user_id or "").strip()
+
+
+def _strict_caller(
+    x_user_id: str | None = Header(None),
+    x_verified_project_id: str | None = Header(None),
+    x_verified_is_admin: str | None = Header(None),
+    x_verified_hmac: str | None = Header(None),
+) -> dict[str, str]:
+    """Gate + return (user_id, project_id) for scope-authorizing routes."""
+    uid = _strict_headers(
+        x_user_id, x_verified_project_id, x_verified_is_admin, x_verified_hmac
+    )
+    return {"user_id": uid, "project_id": (x_verified_project_id or "").strip()}
 
 
 # ── request/response models ──────────────────────────────────────────────────
@@ -192,7 +207,7 @@ class ApprovalsPendingResponse(BaseModel):
 
 class TrustGrantRequest(BaseModel):
     tool_name: str = Field(..., min_length=1)
-    scope: str = Field("global", min_length=1)
+    scope: str = Field("system", min_length=1)
     ttl_sec: int = Field(1800, ge=60, le=86400)
 
 
@@ -202,18 +217,46 @@ class TrustListResponse(BaseModel):
 
 
 def _validated_scope(raw: str) -> str:
-    """Scope grammar: global | project:<id> | session:<id>."""
-    scope = raw.strip()
-    if scope == "global":
-        return scope
-    if scope.startswith("project:") and len(scope) > len("project:"):
-        return scope
-    if scope.startswith("session:") and len(scope) > len("session:"):
-        return scope
-    raise HTTPException(
-        status_code=422,
-        detail=f"invalid trust scope (want global|project:<id>|session:<id>): {raw!r}",
-    )
+    """Canonical scope grammar (umrs.shared.scope_grammar). Legacy 'global'
+    is REJECTED on this write path — callers must pass 'system'."""
+    try:
+        return str(parse_scope(raw, allow_legacy=False))
+    except ScopeError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+def _authorize_scope_write(scope: str, x_user_id: str, caller_project: str) -> None:
+    """Scope-write authorization (matrix row: companion trust).
+
+    Rows are always user-pinned, but scope strings claim a domain and must
+    not be mintable for domains the caller doesn't inhabit:
+    - project:<pid>  → pid must be the caller's verified project
+    - group:<gid>    → no group-membership authority exists yet → 422
+    - user:<uid>     → uid must equal the caller
+    - session:<sid>  → allowed (caller-pinned rows)
+    - system         → allowed (per-user blanket, still user-pinned)
+    """
+    claim = parse_scope(scope)
+    if claim.kind == "project":
+        if caller_project and claim.id == caller_project:
+            return
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"cannot grant trust scoped to project {claim.id!r} — not the "
+                "caller's verified project"
+            ),
+        )
+    if claim.kind == "group":
+        raise HTTPException(
+            status_code=422,
+            detail="group-scoped trust is not writable yet (no group membership authority)",
+        )
+    if claim.kind == "user" and claim.id != x_user_id:
+        raise HTTPException(
+            status_code=403,
+            detail=f"cannot grant trust scoped to user {claim.id!r} — not the caller",
+        )
 
 
 class TurnAcceptedResponse(BaseModel):
@@ -520,13 +563,19 @@ async def list_trust_rows(
 @router.put("/trust", status_code=status.HTTP_201_CREATED)
 async def grant_trust_row(
     body: TrustGrantRequest,
-    x_user_id: str = Depends(_strict_headers),
+    caller: dict = Depends(_strict_caller),
 ) -> dict:
-    """Grant/refresh a trust row for the caller (owner-pinned, TTL-capped)."""
+    """Grant/refresh a trust row for the caller (owner-pinned, TTL-capped,
+    scope-write authorized against the verified caller identity)."""
     store = _require_trust_store()
     scope = _validated_scope(body.scope)
+    _authorize_scope_write(scope, caller["user_id"], caller["project_id"])
     row = store.grant(
-        x_user_id, body.tool_name, scope=scope, ttl_sec=body.ttl_sec, created_by=x_user_id
+        caller["user_id"],
+        body.tool_name,
+        scope=scope,
+        ttl_sec=body.ttl_sec,
+        created_by=caller["user_id"],
     )
     return row.to_dict()
 
@@ -543,10 +592,14 @@ async def check_trust_row(
     instead of trusting its own process-global TRUST mode.
     """
     store = _require_trust_store()
-    resolved = _validated_scope(scope) if scope else "global"
-    row = store.check(x_user_id, tool_name, scope=resolved)
-    if row is None and resolved != "global":
-        row = store.check(x_user_id, tool_name, scope="global")
+    resolved = _validated_scope(scope) if scope else "system"
+    row = None
+    # Precedence walk: session > project > group > user > system (one module,
+    # one chain — see umrs.shared.scope_grammar).
+    for candidate in fallback_chain(resolved):
+        row = store.check(x_user_id, tool_name, scope=candidate)
+        if row is not None:
+            break
     return {
         "allowed": row is not None,
         "scope": (row.scope if row else resolved),
@@ -562,6 +615,6 @@ async def revoke_trust_row(
 ) -> None:
     """Revoke a trust row (owner-pinned)."""
     store = _require_trust_store()
-    resolved = _validated_scope(scope) if scope else "global"
+    resolved = _validated_scope(scope) if scope else "system"
     store.revoke(x_user_id, tool_name, scope=resolved)
     return None

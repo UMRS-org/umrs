@@ -134,10 +134,51 @@ class TestFanout:
         assert set(KINDS) == {"artifact", "model", "mcp_server", "research_session", "loop", "job"}
 
 
+class TestCallerVisibility:
+    """Read-side authorization: rows invisible to a caller are filtered."""
+
+    def _caller(self, **over):
+        fields = dict(user_id="alice", project_id="p1", is_admin=False, anonymous=False)
+        fields.update(over)
+        return SimpleNamespace(**fields)
+
+    def _rows(self):
+        return [
+            AssetRow(kind="artifact", asset_id="sys", scope="system", status="ok"),
+            AssetRow(kind="artifact", asset_id="mine", scope="project:p1", status="ok"),
+            AssetRow(kind="artifact", asset_id="theirs", scope="project:p2", status="ok"),
+            AssetRow(kind="artifact", asset_id="own", scope="user:alice", status="ok"),
+            AssetRow(kind="artifact", asset_id="notown", scope="user:bob", status="ok"),
+            AssetRow(kind="artifact", asset_id="grp", scope="group:lab", status="ok"),
+        ]
+
+    def _run(self, caller, rows):
+        from umrs.asset_index.fanout import _visible_row
+
+        return [r.asset_id for r in rows if _visible_row(r, caller)]
+
+    def test_non_admin_sees_own_scopes_only(self):
+        assert self._run(self._caller(), self._rows()) == ["sys", "mine", "own"]
+
+    def test_admin_sees_everything(self):
+        assert len(self._run(self._caller(is_admin=True), self._rows())) == 6
+
+    def test_none_caller_is_in_process_full_visibility(self):
+        assert len(self._run(None, self._rows())) == 6
+
+    def test_group_rows_hidden_for_non_admins(self):
+        assert "grp" not in self._run(self._caller(), self._rows())
+
+    def test_bad_scope_strings_fail_closed(self):
+        rows = [AssetRow(kind="artifact", asset_id="x", scope="cosmic", status="ok")]
+        assert self._run(self._caller(), rows) == []
+
+
 class TestAssetsRouter:
     @pytest.fixture()
     def api(self, monkeypatch):
         from umrs.api import assets as assets_api
+        from umrs.api._scope_identity import get_caller_scope
 
         art = _artifact()
         monkeypatch.setattr(
@@ -145,6 +186,9 @@ class TestAssetsRouter:
         )
         app = FastAPI()
         app.include_router(assets_router)
+        app.dependency_overrides[get_caller_scope] = lambda: SimpleNamespace(
+            user_id="alice", project_id="p1", is_admin=False, anonymous=False
+        )
         return TestClient(app), art
 
     def test_snapshot_returns_rows(self, api):
