@@ -31,7 +31,8 @@ CLASSIFIED_FIXED: dict[str, SurfaceLane] = {
 }
 
 # S5's placement list — families deliberately awaiting a lane decision.
-UNCLASSIFIED_COUNT = 25
+# +1 2026-09-02: "assets" (asset index read-model, Review F4 / ADR-035 wave)
+UNCLASSIFIED_COUNT = 26
 
 
 # ── registry integrity ──────────────────────────────────────────────────────

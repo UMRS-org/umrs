@@ -57,6 +57,7 @@ FAMILY_LANES: dict[str, SurfaceLane] = {
     # Mounted, no lane decision recorded yet — S5's placement list.
     "a2l": SurfaceLane.UNCLASSIFIED,
     "artifacts": SurfaceLane.UNCLASSIFIED,
+    "assets": SurfaceLane.UNCLASSIFIED,
     "catalog": SurfaceLane.UNCLASSIFIED,
     "chat": SurfaceLane.UNCLASSIFIED,
     "companion": SurfaceLane.UNCLASSIFIED,
