@@ -1,3 +1,5 @@
+> **ARCHIVED 2026-09-03 (superseded)** — superseded by [DEMO_AUDIT_REPORT_2026-07-02.md](DEMO_AUDIT_REPORT_2026-07-02.md).
+
 # UMRS Demo Suite — Validation & Remediation Report
 **Date:** 2026-06-19
 **Investigator:** GitHub Copilot

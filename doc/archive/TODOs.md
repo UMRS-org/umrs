@@ -1,3 +1,5 @@
+> **ARCHIVED 2026-09-03 (stale)** — unmaintained since 2026-03-18; describes pre-integration UMRS-core. Current: `MERGE_CONSTITUTION.md` + parent repo planning docs. Do NOT treat as live backlog.
+
 # TODO list
 
 ## Completed (recent)

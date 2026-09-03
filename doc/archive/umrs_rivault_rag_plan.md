@@ -1,3 +1,5 @@
+> **ARCHIVED 2026-09-03 (stale)** — internal_genAI/openwebui/ragflow mock-replacement plan abandoned. Current RAG path: `docs/R4-UMRS-PLATFORM-OVERVIEW.md` §3.7.
+
 # UMRS × RiVault × internal_genAI – RAG Integration Plan
 # demos/slurm-dev: Integration Alignment
 

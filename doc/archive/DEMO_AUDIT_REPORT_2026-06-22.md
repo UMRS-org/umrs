@@ -1,3 +1,5 @@
+> **ARCHIVED 2026-09-03 (superseded)** — superseded by [DEMO_AUDIT_REPORT_2026-07-02.md](DEMO_AUDIT_REPORT_2026-07-02.md).
+
 # Demo Suite Audit Report
 **Date:** 2026-06-22
 **Investigator:** GitHub Copilot

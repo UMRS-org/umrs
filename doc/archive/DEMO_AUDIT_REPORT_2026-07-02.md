@@ -1,3 +1,5 @@
+> **ARCHIVED 2026-09-03 (done)** — final comprehensive audit (38 demos PASS, fixes landed). Record only.
+
 # UMRS Demo Suite — Comprehensive Audit Report
 
 **Date:** 2026-07-02
