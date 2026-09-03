@@ -81,6 +81,53 @@ class TestTrustStore:
         assert DEFAULT_TTL_SEC == 1800
 
 
+class TestSessionArchiveCascade:
+    """ADR-035 item-8: lifecycle consequences of a server-owned object are
+    enforced where the object lives — tombstone + revoke + audit, one tx."""
+
+    def test_archive_session_revokes_grants_and_audits(self, store: TrustAllowlistStore):
+        store.grant("alice", "shell_exec", scope="session:s-1")
+        store.grant("alice", "hpc_submit", scope="session:s-1")
+        store.grant("alice", "keep_me", scope="system")
+        store.grant("bob", "shell_exec", scope="session:s-1")
+        revoked = store.archive_session("s-1", archived_by="alice")
+        assert {(r["tool_name"]) for r in revoked} == {"shell_exec", "hpc_submit"}
+        # grants in the session scope are gone (all owners — session is dead)
+        assert store.check("alice", "shell_exec", scope="session:s-1") is None
+        assert store.check("bob", "shell_exec", scope="session:s-1") is None
+        # system-scope grant untouched
+        assert store.check("alice", "keep_me", scope="system") is not None
+
+    def test_archive_writes_one_audit_row_per_grant(self, store: TrustAllowlistStore):
+        store.grant("alice", "shell_exec", scope="session:s-2")
+        store.grant("alice", "hpc_submit", scope="session:s-2")
+        store.archive_session("s-2", archived_by="alice")
+        rows = store._conn.execute(
+            "SELECT session_id, user_id, tool_name, reason FROM companion_trust_revoke_log"
+        ).fetchall()
+        assert len(rows) == 2
+        assert {r["reason"] for r in rows} == {"session_archived"}
+        assert {r["session_id"] for r in rows} == {"s-2"}
+
+    def test_archive_session_tombstone_written(self, store: TrustAllowlistStore):
+        store.archive_session("s-3", archived_by="alice")
+        row = store._conn.execute(
+            "SELECT session_id, archived_by FROM companion_session_archives WHERE session_id = 's-3'"
+        ).fetchone()
+        assert row is not None
+        assert row["archived_by"] == "alice"
+
+    def test_archive_is_idempotent(self, store: TrustAllowlistStore):
+        store.grant("alice", "shell_exec", scope="session:s-4")
+        first = store.archive_session("s-4")
+        second = store.archive_session("s-4")
+        assert len(first) == 1
+        assert second == []
+
+    def test_archive_empty_session_is_clean_noop(self, store: TrustAllowlistStore):
+        assert store.archive_session("never-granted") == []
+
+
 class TestTrustRouter:
     def test_grant_then_check_via_http(self, api: TestClient):
         r = api.put(

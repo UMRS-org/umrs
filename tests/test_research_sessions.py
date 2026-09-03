@@ -113,6 +113,14 @@ def _client():
     return TestClient(app)
 
 
+def _client_with_session_store(store):
+    """TestClient bound to a caller-provided store (shared-DB cascade tests)."""
+    set_session_store(store)
+    app = FastAPI()
+    app.include_router(router)
+    return TestClient(app)
+
+
 class TestSessionRouter:
     def test_create_derives_title_and_creates(self):
         c = _client()
@@ -146,6 +154,153 @@ class TestSessionRouter:
         assert listed.json()["count"] == 1
         filtered = c.get("/umrs/research/sessions", params={"project_id": "p9", "status": "active"})
         assert filtered.json()["count"] == 0
+
+    def test_patch_archive_cascades_trust_revoke(self):
+        """ADR-035 item-8: status=archived routes through the same-tx
+        archive — session row + session-scope trust revoke commit together."""
+        import sqlite3
+
+        from umrs.api.companion import set_trust_store
+        from umrs.companion_trust.store import TrustAllowlistStore
+
+        # Same-transaction cascade needs ONE database: production shares the
+        # Postgres pool; the test shares one sqlite connection.
+        shared = sqlite3.connect(":memory:", check_same_thread=False)
+        trust = TrustAllowlistStore(conn=shared)
+        set_trust_store(trust)
+        sessions = SessionStore(conn=shared)
+        c = _client_with_session_store(sessions)
+        sid = (
+            c.post("/umrs/research/sessions", json={"project_id": "p9", "research_goal": "x"})
+            .json()["session"]["session_id"]
+        )
+        trust.grant("alice", "shell_exec", scope=f"session:{sid}")
+        trust.grant("alice", "keep", scope="system")
+        r = c.patch(f"/umrs/research/sessions/{sid}", json={"status": "archived"})
+        assert r.status_code == 200
+        assert r.json()["session"]["status"] == "archived"
+        # session-scope grant died WITH the archive (same transaction);
+        # system-scope grant untouched.
+        assert trust.check("alice", "shell_exec", scope=f"session:{sid}") is None
+        assert trust.check("alice", "keep", scope="system") is not None
+        # one audit row per revoked grant, reason=session_archived
+        audit = shared.execute(
+            "SELECT session_id, tool_name, reason FROM companion_trust_revoke_log"
+        ).fetchall()
+        assert len(audit) == 1
+        assert audit[0]["reason"] == "session_archived"
+        assert audit[0]["session_id"] == sid
+
+    def test_patch_archive_with_other_fields_cascades_too(self):
+        import sqlite3
+
+        from umrs.api.companion import set_trust_store
+        from umrs.companion_trust.store import TrustAllowlistStore
+
+        shared = sqlite3.connect(":memory:", check_same_thread=False)
+        trust = TrustAllowlistStore(conn=shared)
+        set_trust_store(trust)
+        sessions = SessionStore(conn=shared)
+        set_session_store(sessions)
+        c = _client_with_session_store(sessions)
+        sid = (
+            c.post("/umrs/research/sessions", json={"project_id": "p9", "research_goal": "x"})
+            .json()["session"]["session_id"]
+        )
+        trust.grant("alice", "shell_exec", scope=f"session:{sid}")
+        r = c.patch(
+            f"/umrs/research/sessions/{sid}",
+            json={"status": "archived", "title": "Final title"},
+        )
+        assert r.status_code == 200
+        body = r.json()["session"]
+        assert body["status"] == "archived" and body["title"] == "Final title"
+        assert trust.check("alice", "shell_exec", scope=f"session:{sid}") is None
+        # tombstone written by the same cascade (read-side refuse relies on it)
+        tomb = shared.execute(
+            "SELECT session_id FROM companion_session_archives WHERE session_id = ?",
+            (sid,),
+        ).fetchone()
+        assert tomb is not None
+
+    def test_archive_rollback_when_cascade_fails(self):
+        """Atomicity: failure between update and revoke → NEITHER lands.
+
+        The tombstone and the status update must not outlive a failed
+        cascade; the grant must survive (rollback restores pre-tx state).
+        """
+        import sqlite3
+        from unittest.mock import patch
+
+        from umrs.api.companion import set_trust_store
+        from umrs.companion_trust.store import TrustAllowlistStore
+
+        shared = sqlite3.connect(":memory:", check_same_thread=False)
+        trust = TrustAllowlistStore(conn=shared)
+        set_trust_store(trust)
+        sessions = SessionStore(conn=shared)
+        set_session_store(sessions)
+        c = _client_with_session_store(sessions)
+        sid = (
+            c.post("/umrs/research/sessions", json={"project_id": "p9", "research_goal": "x"})
+            .json()["session"]["session_id"]
+        )
+        trust.grant("alice", "shell_exec", scope=f"session:{sid}")
+
+        with patch.object(
+            TrustAllowlistStore,
+            "revoke_session_scope_conn",
+            side_effect=sqlite3.OperationalError("injected cascade failure"),
+        ):
+            r = c.patch(f"/umrs/research/sessions/{sid}", json={"status": "archived"})
+        # handler maps sqlite/exec errors to 500 entirely; assert no
+        # partial commit happened:
+        assert r.status_code == 500
+        got = shared.execute(
+            "SELECT status FROM research_sessions WHERE session_id = ?", (sid,)
+        ).fetchone()
+        assert got is not None and got[0] != "archived"
+        assert (
+            shared.execute(
+                "SELECT COUNT(*) FROM companion_session_archives WHERE session_id = ?",
+                (sid,),
+            ).fetchone()[0]
+            == 0
+        )
+        # grant is intact — the cascade did not silently kill it
+        assert trust.check("alice", "shell_exec", scope=f"session:{sid}") is not None
+
+    def test_grant_after_archive_is_410(self):
+        """Tombstone consulted from BOTH directions: grants minted against
+        the archived session must be refused with 410 (not write-succeed)."""
+        import sqlite3
+
+        from umrs.api.companion import router as companion_router, set_trust_store
+        from umrs.companion_trust.store import TrustAllowlistStore
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        shared = sqlite3.connect(":memory:", check_same_thread=False)
+        trust = TrustAllowlistStore(conn=shared)
+        set_trust_store(trust)
+        sessions = SessionStore(conn=shared)
+        set_session_store(sessions)
+        c = _client_with_session_store(sessions)
+        sid = (
+            c.post("/umrs/research/sessions", json={"project_id": "p9", "research_goal": "x"})
+            .json()["session"]["session_id"]
+        )
+        r = c.patch(f"/umrs/research/sessions/{sid}", json={"status": "archived"})
+        assert r.status_code == 200
+
+        app = FastAPI()
+        app.include_router(companion_router)
+        cc = TestClient(app)
+        g = cc.put(
+            "/umrs/companion/trust",
+            json={"tool_name": "shell_exec", "scope": f"session:{sid}", "ttl_sec": 600},
+        )
+        assert g.status_code == 410
 
     def test_loop_attach_detach(self):
         c = _client()
