@@ -733,3 +733,73 @@ endpoints:
       VLLM_PATCHES: "/home/mnagaso/patches/flashinfer_sparse_mla_warmup.py:/usr/local/lib/python3.12/dist-packages/vllm/model_executor/warmup/flashinfer_sparse_mla_warmup.py:d51946fa1d0d3e2bdc2f9ef56d1f7557b883db409a3c10b182cb72755bcfd99a"
       # Single staged copy is enough: bdrt $HOME is shared NFS.
       RCCS_SKIP_CDI: "1"
+
+  # ── GLM-5.3-Flash NVFP4 (2 nodes → edge-double) ────────────────────
+  #  Successor slot for deepseek-v4-flash-0731 (replace-in-place, same
+  #  2× GB10 / TP=2 edge-double topology). Recipe:
+  #  github.com/MiaAI-Lab/GLM-5.3-Flash-NVFP4-Dual-DGX-Spark (2026-09):
+  #  Ray TP=2 (wrapper-native multi-node path), marlin MoE + eager
+  #  (GB10-known-good), MTP-4 spec, fp8_e4m3 KV, 262k ctx, multimodal.
+  #
+  #  Weights: LibertAIDAI/GLM-5.3-Flash-NVFP4 @ caca4e6a (~181 GiB, 120
+  #  shards). Glm5NextProcessor.from_pretrained() opens
+  #  processor_config.json CWD-relative → the wrapper must pass the
+  #  resolved SNAPSHOT DIR (VLLM_HOST_MODEL_PATH convention as
+  #  Qwen3.8/0731), never a bare repo id.
+  #
+  #  Image: ghcr.io/miaai-lab/glm53-flash-spark:mm-ray-v1 (arm64; kernel
+  #  glm53-flash-sm121:v8 = SM90 sparse-MLA + FA2 NoPE path + Ray 2.58 +
+  #  MM env; anon-pullable on GHCR). NOT the EXL3 overlay image —
+  #  different quant class.
+  #  chat_template.jinja inside the snapshot was refreshed from HF main
+  #  (emit_image/emit_video) — the cached snapshot ships an older one.
+  #
+  #  GPU_MEM_UTIL 0.84 is load-bearing: 0.90 fails the GB10 free-mem
+  #  check, 0.86 UMA-OOMed the recipe kit during API MM warmup.
+  - name: glm-5.3-flash
+    model: glm-5.3-flash
+    aliases:
+      - glm-5.3-flash-nvfp4
+      - GLM-5.3-Flash-NVFP4
+    tier: system
+    node_count: 2
+    partition: edge-double
+    max_model_len: 262144
+    env_vars:
+      VLLM_HOST_MODEL_PATH: "/home/mnagaso/umrs_models/hub/models--LibertAIDAI--GLM-5.3-Flash-NVFP4/snapshots"
+      VLLM_PATH_TO_HUGGINGFACE: "/home/mnagaso/umrs_models"
+      VLLM_MODEL: "LibertAIDAI/GLM-5.3-Flash-NVFP4"
+      VLLM_MAX_MODEL_LEN: "262144"
+      VLLM_GPU_MEM_UTIL: "0.84"
+      VLLM_MAX_NUM_SEQS: "8"
+      VLLM_TP: "2"
+      VLLM_TENSOR_PARALLEL_SIZE: "2"
+      NCCL_SOCKET_IFNAME: "enp1s0f1np1"
+      NCCL_IB_GID_INDEX: "3"
+      RAY_memory_monitor_refresh_ms: "0"
+      RIVAULT_MN_MEMORY_CAP: "110g"
+      MAX_JOBS: "4"
+      # Native kernel overlay (fuse-overlayfs breakage class on spark nodes).
+      CONTAINERS_STORAGE_CONF: "/home/mnagaso/.config/containers/storage-native.conf"
+      VLLM_DOCKER_IMAGE: "ghcr.io/miaai-lab/glm53-flash-spark:mm-ray-v1"
+      VLLM_TOOL_CALL_PARSER: "glm47"
+      VLLM_REASONING_PARSER: "glm45"
+      VLLM_TRUST_REMOTE_CODE: "1"
+      VLLM_MOE_BACKEND: "marlin"
+      VLLM_ENFORCE_EAGER: "1"
+      # SM121 kernel/arch pins from the recipe (re-assert image envs).
+      TORCH_CUDA_ARCH_LIST: "12.1a"
+      FLASHINFER_CUDA_ARCH_LIST: "12.1a"
+      FLASHINFER_DISABLE_VERSION_CHECK: "1"
+      PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
+      # MTP-4 per recipe (checkpoint's own MTP head; no external drafter).
+      VLLM_SPECULATIVE_CONFIG: '{"method":"mtp","num_speculative_tokens":4}'
+      VLLM_EXTRA_ARGS: >-
+        --kv-cache-dtype fp8_e4m3
+        --block-size 2304
+        --enable-auto-tool-choice
+        --limit-mm-per-prompt {"image":4,"video":1}
+        --skip-mm-profiling
+        --chat-template /home/mnagaso/umrs_models/hub/models--LibertAIDAI--GLM-5.3-Flash-NVFP4/snapshots/caca4e6a4ebbd66f159d3d2fc256683fd6e27177/chat_template.jinja
+      # Single staged copy is enough: bdrt $HOME is shared NFS.
+      RCCS_SKIP_CDI: "1"
