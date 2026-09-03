@@ -6,7 +6,6 @@
       "modality_name": "image",
       "slurm": {
         "partition": "ng-dgx-m3",
-        "reservation": "nagaso_m3-15_0721",
         "nodelist": "ng-dgx-m3-15"
       },
       "task": "segmentation",
