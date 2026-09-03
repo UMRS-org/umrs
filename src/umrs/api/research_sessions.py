@@ -25,6 +25,18 @@ from ._verified_headers import CallerIdentity, get_caller
 
 logger = logging.getLogger(__name__)
 
+# DB error club for cascade-rollback surfaces (matches store dialects).
+import sqlite3 as _sqlite3
+
+_DB_ERROR_TYPES: list[type[Exception]] = [_sqlite3.Error]
+try:
+    import psycopg as _psycopg
+
+    _DB_ERROR_TYPES.append(_psycopg.Error)
+except ImportError:  # pragma: no cover - sqlite-only environments
+    pass
+_DB_ERROR_TYPES = tuple(_DB_ERROR_TYPES)
+
 router = APIRouter(prefix="/umrs/research/sessions", tags=["research-sessions"])
 
 _store: SessionStore | None = None
@@ -182,12 +194,40 @@ async def update_session(
                 status_code=404, detail=f"Session {session_id} not found"
             )
         caller.assert_can_access(existing.project_id)
-    session = store.update(
-        session_id,
-        title=request.title,
-        status=request.status,
-        metadata=request.metadata,
-    )
+
+    # ADR-035 item-8 cascade: status=archived routes through the
+    # same-transaction archive (session row + session-scope trust revoke +
+    # per-grant audit commit together, or not at all). Any other field
+    # updates ride along first.
+    archiving = request.status == "archived"
+    if archiving:
+        if request.title is not None or request.metadata is not None:
+            store.update(
+                session_id,
+                title=request.title,
+                status=None,
+                metadata=request.metadata,
+            )
+        from .companion import get_trust_store
+
+        try:
+            session = store.archive_with_trust_cascade(session_id, get_trust_store())
+        except _DB_ERROR_TYPES as exc:
+            # Cascade failed AFTER session update was staged — the store's
+            # own except-path rolls back, but clients need a clean 500, not
+            # a raw DB exception leaking through FastAPI's default handler.
+            logger.exception("archive cascade failed for %s", session_id)
+            raise HTTPException(
+                status_code=500,
+                detail=f"archive cascade failed, transaction rolled back: {exc}",
+            ) from exc
+    else:
+        session = store.update(
+            session_id,
+            title=request.title,
+            status=request.status,
+            metadata=request.metadata,
+        )
     if session is None:
         raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
     logger.info(

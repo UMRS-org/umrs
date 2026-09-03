@@ -36,6 +36,7 @@ from umrs.jobs.companion_worker import (
     WorkerExhausted,
     WorkerNotFound,
 )
+from umrs.companion_trust.store import SessionArchivedError
 from umrs.jobs.companion_turn_executor import kick as kick_turn_executor
 from umrs.jobs.companion_worker_supervisor import AtCapacity
 from umrs.shared.scope_grammar import ScopeError, fallback_chain
@@ -57,6 +58,11 @@ def set_trust_store(store) -> None:
     _trust_store = store
 
 
+def get_trust_store():
+    """Trust store accessor for lifecycle cascades (research_sessions archive)."""
+    return _trust_store
+
+
 def _require_trust_store():
     if _trust_store is None:
         raise HTTPException(
@@ -64,6 +70,7 @@ def _require_trust_store():
             detail="Companion trust store unavailable (no DB pool configured)",
         )
     return _trust_store
+
 
 # ── typed error mapping ─────────────────────────────────────────────────────
 
@@ -78,6 +85,8 @@ def _http_error_from(exc: Exception) -> HTTPException:
         return HTTPException(status_code=410, detail=str(exc))
     if isinstance(exc, InvalidResumeToken):
         return HTTPException(status_code=401, detail=str(exc))
+    if isinstance(exc, SessionArchivedError):
+        return HTTPException(status_code=410, detail=str(exc))
     if isinstance(exc, AtCapacity):
         return HTTPException(status_code=429, detail=str(exc))
     if isinstance(exc, HTTPException):
@@ -570,13 +579,18 @@ async def grant_trust_row(
     store = _require_trust_store()
     scope = _validated_scope(body.scope)
     _authorize_scope_write(scope, caller["user_id"], caller["project_id"])
-    row = store.grant(
-        caller["user_id"],
-        body.tool_name,
-        scope=scope,
-        ttl_sec=body.ttl_sec,
-        created_by=caller["user_id"],
-    )
+    try:
+        row = store.grant(
+            caller["user_id"],
+            body.tool_name,
+            scope=scope,
+            ttl_sec=body.ttl_sec,
+            created_by=caller["user_id"],
+        )
+    except SessionArchivedError as exc:
+        # Gone: once the tombstone exists, late grant attempts must fail
+        # closed (410) — the archived session's scopes are terminal.
+        raise HTTPException(status_code=410, detail=str(exc)) from exc
     return row.to_dict()
 
 
@@ -618,3 +632,26 @@ async def revoke_trust_row(
     resolved = _validated_scope(scope) if scope else "system"
     store.revoke(x_user_id, tool_name, scope=resolved)
     return None
+
+
+@router.post("/sessions/{session_id}/archive")
+async def archive_companion_session(
+    session_id: str,
+    caller: dict = Depends(_strict_caller),
+) -> dict:
+    """Archive a companion session — tombstone + session-scope trust revoke
+    + one audit row per revoked grant, ONE transaction (schema v2).
+
+    This IS the client `session archive` lifecycle hook: bridge, CLI, and
+    ACP converge here so the cascade is enforced where the trust rows live,
+    never in whichever client triggered the archive. A separate bulk-revoke
+    verb (if ever added) stays an explicit user action, NOT part of archive.
+    """
+    store = _require_trust_store()
+    revoked = store.archive_session(session_id, archived_by=caller["user_id"])
+    return {
+        "session_id": session_id,
+        "archived": True,
+        "revoked_grants": revoked,
+        "revoked_count": len(revoked),
+    }

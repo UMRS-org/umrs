@@ -295,6 +295,57 @@ class SessionStore:
             self._return(conn)
         return self.get(session_id)
 
+    def archive_with_trust_cascade(
+        self, session_id: str, trust_store: Any
+    ) -> ResearchSession | None:
+        """Archive a session AND revoke its session-scope trust rows in ONE
+        transaction (borrow → update → cascade on the same conn → commit).
+
+        ADR-035 item-8: lifecycle consequences of a server-owned object are
+        enforced where the object lives. A crash between archive and revoke
+        would leave live grants on a dead session — exactly the state this
+        exists to prevent, hence the shared commit.
+        """
+        conn = self._borrow()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                self._q(
+                    "UPDATE research_sessions SET status = %s, "
+                    "archived_at = now(), updated_at = now() "
+                    "WHERE session_id = %s"
+                ),
+                ("archived", session_id),
+            )
+            if trust_store is not None:
+                # Tombstone INSIDE the same transaction — check() consults
+                # companion_session_archives, so every archive channel
+                # (bridge/CLI/ACP endpoint + this PATCH hook) must write it.
+                # ON CONFLICT no-op: channels may race; first tombstone wins.
+                tomb_sql = (
+                    "INSERT OR IGNORE INTO companion_session_archives "
+                    "(session_id, archived_by) VALUES (?, ?)"
+                    if self._sqlite
+                    else "INSERT INTO companion_session_archives (session_id, archived_by) "
+                    "VALUES (%s, %s) ON CONFLICT (session_id) DO NOTHING"
+                )
+                cur.execute(tomb_sql, (session_id, "research-sessions.patch"))
+                trust_store.revoke_session_scope_conn(conn, session_id)
+            if self._sqlite:
+                self._commit(conn)
+            else:
+                conn.commit()
+        except Exception:
+            # One transaction or not at all: anything between update and
+            # revoke must not leave a live grant on a dead session (and
+            # vice versa). Both DBs keep a pending transaction open on
+            # raise without an explicit rollback.
+            conn.rollback()
+            raise
+        finally:
+            self._return(conn)
+        return self.get(session_id)
+
     def attach_loop(self, link: SessionLoopLink) -> None:
         conn = self._borrow()
         try:
