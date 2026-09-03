@@ -800,6 +800,10 @@ endpoints:
         --enable-auto-tool-choice
         --limit-mm-per-prompt {"image":4,"video":1}
         --skip-mm-profiling
-        --chat-template /home/mnagaso/umrs_models/hub/models--LibertAIDAI--GLM-5.3-Flash-NVFP4/snapshots/caca4e6a4ebbd66f159d3d2fc256683fd6e27177/chat_template.jinja
+      # NO --chat-template here: host paths are not visible inside the
+      # vLLM container (HF cache maps to /root/.cache/huggingface; job
+      # 4315 died "appears path-like, but doesn't exist"). vLLM auto-loads
+      # <model_dir>/chat_template.jinja, and the staged snapshot already
+      # carries the refreshed emit_image/emit_video template from HF main.
       # Single staged copy is enough: bdrt $HOME is shared NFS.
       RCCS_SKIP_CDI: "1"
