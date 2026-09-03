@@ -1,3 +1,5 @@
+> **ARCHIVED 2026-09-03 (stale)** — unintegrated survey dump; never landed in the product docs.
+
 ## Automatic data pipelining in science using AI models
 
 There are several tools similar to UMRS that focus on **automatic data pipelining in science using AI models** or workflow automation frameworks that can orchestrate AI/ML pipelines effectively:

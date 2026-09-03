@@ -1,3 +1,5 @@
+> **ARCHIVED 2026-09-03 (stale)** — predates CURVE sessions + Gateway mediation. Current transport invariants: parent `CONSTITUTION.md` + `.github/instructions/mutation-safety.instructions.md`.
+
 ## UMRS Communication Architecture (ZeroMQ-only)
 ### Overview
 Removed POSIX and SYSV queue mechanisms entirely to unify communication via **ZeroMQ**.

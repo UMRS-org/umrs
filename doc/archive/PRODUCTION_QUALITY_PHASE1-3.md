@@ -1,3 +1,5 @@
+> **ARCHIVED 2026-09-03 (done)** — completion summary (doctor/discovery/demo-runner shipped).
+
 # UMRS Production Quality — Phase 1-3 Implementation
 
 ## Overview

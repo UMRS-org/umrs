@@ -1,3 +1,5 @@
+> **ARCHIVED 2026-09-03 (superseded)** — based on retired `feature/user-defined-workflows` topology. Canonical merge policy: `MERGE_CONSTITUTION.md`.
+
 # UMRS Branch Sync Checklist
 
 ## Branch Topology

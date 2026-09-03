@@ -1,3 +1,5 @@
+> **ARCHIVED 2026-09-03 (done)** — 12-phase initiative delivered; completion record: [PRODUCTION_QUALITY_PHASE1-3.md](PRODUCTION_QUALITY_PHASE1-3.md).
+
 # UMRS Production Quality Initiative
 
 **Status**: In Progress

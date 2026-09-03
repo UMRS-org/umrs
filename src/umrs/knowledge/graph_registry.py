@@ -1,7 +1,7 @@
 """Knowledge graph registry + graph-extension proposals (sync, psycopg2).
 
 Phase 1/3 of the multi-graph capability
-(docs/knowledge-graph-convergence-2026-08-14.md).
+(docs/history/knowledge-graph-convergence-2026-08-14.md).
 
 This module holds the *registry* (first-class graph identity) and the
 *proposal* gate (staged, approval-required graph extensions). Storage
