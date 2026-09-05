@@ -78,17 +78,28 @@ class _FlakyExecutor:
 
 
 class _SlowExecutor:
-    """Sleeps ``sleep_s`` per call — used to trip the soft deadline."""
+    """Sleeps ``sleep_s`` per call — used to trip the soft deadline.
 
-    def __init__(self, sleep_s: float) -> None:
+    ``track_completion`` (round-6 flake fix): records whether the slow
+    working piece actually ran to completion. The deadline test asserts its
+    NEGATIVE — a deadline breach marks failure before completion and the
+    late result is discarded, deterministically and without a wall-clock
+    budget to flake under suite load.
+    """
+
+    def __init__(self, sleep_s: float, track_completion: bool = False) -> None:
         self._sleep_s = sleep_s
         self.calls = 0
         self.seen: list[tuple[str, str, str]] = []
+        self._track = track_completion
+        self.completed = False
 
     def execute(self, *, entrypoint, config, ctx):
         self.calls += 1
         self.seen.append((entrypoint, config.get("step_name", ""), ctx.run_id))
         time.sleep(self._sleep_s)
+        if self._track:
+            self.completed = True
         return StepResult(output_keys=["bucket/out.json"])
 
 
@@ -182,7 +193,14 @@ class TestRunnerRetry:
 
 class TestRunnerDeadline:
     def test_timeout_marks_step_failed_fast(self, tmp_path):
-        executor = _SlowExecutor(sleep_s=1.0)
+        # Deterministic under suite load (r6 flake fix): the deadline breach
+        # must occur BEFORE the step's own long sleep completes, and the late
+        # result must be discarded. The absolute elapsed budget went flaky
+        # in parallel suites (observed 1.57s against the old 0.9s budget —
+        # threadpool startup + GIL scheduling pushing a 0.1s deadline past
+        # its own timeout). Comparing against the step's own sleep duration
+        # is the structurally-robust property the test means to assert.
+        executor = _SlowExecutor(sleep_s=5.0, track_completion=True)
         registry = get_execution_registry()
         record = registry.create(workflow_name="policy-test", user_id="alice", params={})
         # Time ONLY the runner call — the registry's one-off pool resolution
@@ -202,7 +220,8 @@ class TestRunnerDeadline:
         elapsed = time.monotonic() - started
         assert record.status == "failed"
         assert "exceeded deadline" in (record.steps["s"].error or "")
-        assert elapsed < 0.9  # failed at the deadline, not after step completion
+        assert not executor.completed  # late result discarded (advisory timeout)
+        assert elapsed < 5.0  # breached during the step's own sleep, not after
 
     def test_timeout_is_retriable(self, tmp_path):
         executor = _SlowExecutor(sleep_s=1.0)
