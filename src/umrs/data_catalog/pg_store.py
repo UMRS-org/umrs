@@ -22,6 +22,19 @@ def _dict_cursor(conn):
     return conn.cursor(cursor_factory=RealDictCursor)
 
 
+def _like_literal(value: str) -> str:
+    """Escape LIKE metacharacters in a literal used inside a LIKE pattern.
+
+    Project ids and prefixes are literal text: an ``_`` in a project id must
+    not act as a single-char wildcard (``my_proj/%`` used to also match
+    ``myXproj/…`` rows at the SQL layer). The python-side ``allowed()``
+    filter still re-checks visibility, but the over-match distorted the
+    bounded candidate window (``_MAX_SEARCH_CANDIDATES``) and wasted rows.
+    Postgres LIKE default escape character is backslash.
+    """
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 # Upper bound on rows pulled from Postgres before Python-side scoring. Without
 # this, a broad WHERE match (or the no-FTS-hit fallback) loads every row for
 # a project into process memory before `limit` is applied in Python.
@@ -208,11 +221,11 @@ class CatalogMetaStore:
         clauses = [
             "(project_id = %s OR s3_key LIKE %s)",
         ]
-        params: list[Any] = [project_id, f"{project_id}/%"]
+        params: list[Any] = [project_id, f"{_like_literal(project_id)}/%"]
 
         if prefix is not None:
             clauses.append("s3_key LIKE %s")
-            params.append(f"{normalized_prefix}%")
+            params.append(f"{_like_literal(normalized_prefix)}%")
 
         if not include_pending:
             clauses.append("state != 'pending'")
@@ -265,7 +278,7 @@ class CatalogMetaStore:
             "(project_id = %s OR s3_key LIKE %s)",
             "state != 'error'",
         ]
-        params: list[Any] = [project_id, f"{project_id}/%"]
+        params: list[Any] = [project_id, f"{_like_literal(project_id)}/%"]
 
         if modality:
             clauses.append("detected_modality = %s")
@@ -279,7 +292,7 @@ class CatalogMetaStore:
         if prefix:
             normalized = prefix if prefix.endswith("/") else f"{prefix}/"
             clauses.append("s3_key LIKE %s")
-            params.append(f"{normalized}%")
+            params.append(f"{_like_literal(normalized)}%")
 
         ts_query = " & ".join(_escape_ts_token(t) for t in tokens if t)
         fts_clause = ""
@@ -410,7 +423,7 @@ class CatalogMetaStore:
                 GROUP BY state, detected_modality
                 ORDER BY state, detected_modality
                 """,
-                (project_id, f"{project_id}/%"),
+                (project_id, f"{_like_literal(project_id)}/%"),
             )
             rows = cur.fetchall()
 
@@ -440,7 +453,7 @@ class CatalogMetaStore:
                 SELECT s3_key FROM catalog_objects
                 WHERE project_id = %s OR s3_key LIKE %s
                 """,
-                (project_id, f"{project_id}/%"),
+                (project_id, f"{_like_literal(project_id)}/%"),
             )
             return [row[0] for row in cur.fetchall()]
 

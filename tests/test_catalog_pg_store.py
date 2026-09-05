@@ -121,3 +121,15 @@ def test_backfill_parses_legacy_sidecar():
         store.upsert(loaded, "proj-1")
 
     assert store.get("proj-1", "proj-1/uploads/legacy.csv") is not None
+
+
+def test_like_literal_escapes_wildcards():
+    """Project ids/prefixes must be literal in LIKE patterns: an ``_`` in a
+    project id used to act as a single-char wildcard and over-match foreign
+    rows at the SQL layer (review minor: pg_store catalog visibility)."""
+    from umrs.data_catalog.pg_store import _like_literal
+
+    assert _like_literal("my_proj") == "my\\_proj"
+    assert _like_literal("50%") == "50\\%"
+    assert _like_literal("a\\b") == "a\\\\b"
+    assert _like_literal("plain") == "plain"
