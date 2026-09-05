@@ -309,11 +309,17 @@ def get_project_id(
     )
 
 
-def validate_key(key: str, project_id: str) -> str:
+def validate_key(key: str, project_id: str, *, warn_on_rename: bool = False) -> str:
     """
     Validate and normalize S3 key.
 
     Ensures key is within project namespace and safe from path traversal.
+    Keys outside the caller's namespace are silently re-namespaced into it
+    (fail-closed: the read/write then targets the caller's own namespace and
+    404s instead of leaking another project's object). ``warn_on_rename``
+    surfaces that re-namespacing on client-supplied read paths, where a
+    foreign-looking key almost always means client misconfiguration —
+    the error handling on those paths would otherwise chase a phantom 404.
     """
     # Normalize key
     key = key.strip("/")
@@ -328,6 +334,14 @@ def validate_key(key: str, project_id: str) -> str:
     # Check if key is already namespaced
     if key.startswith(f"{project_id}/"):
         return key
+
+    if warn_on_rename and "/" in key:
+        logger.warning(
+            "validate_key re-namespacing foreign-looking key into project "
+            "%r (fail-closed namespacing; likely client misconfiguration): %r",
+            project_id,
+            key[:120],
+        )
 
     # Namespace the key
     return f"{project_id}/{key}"
@@ -537,7 +551,7 @@ async def _generate_presigned_url_impl(
     if request.operation == PresignedOperation.DOWNLOAD and request.job_id:
         await _await_download_readiness(request)
 
-    key = validate_key(request.key, project_id)
+    key = validate_key(request.key, project_id, warn_on_rename=True)
     bucket = request.bucket or config.bucket
     ttl_sec = min(request.ttl_sec or config.default_ttl, config.max_ttl)
 
@@ -646,7 +660,7 @@ async def get_file_metadata(
     """Get file metadata."""
 
     # Validate and namespace the key
-    key = validate_key(file_id, project_id)
+    key = validate_key(file_id, project_id, warn_on_rename=True)
     bucket_name = bucket or config.bucket
 
     try:
@@ -694,7 +708,7 @@ async def delete_file(
 ) -> None:
     """Delete a file."""
 
-    key = validate_key(file_id, project_id)
+    key = validate_key(file_id, project_id, warn_on_rename=True)
     bucket_name = bucket or config.bucket
 
     try:
@@ -745,7 +759,7 @@ def _resolve_download_key(path: str, bucket_name: str, project_id: str, config: 
     """Resolve caller key (project-namespaced for upload bucket; raw for
     cross-bucket artifact reads) with traversal guard everywhere."""
     if bucket_name == config.bucket:
-        return validate_key(path, project_id)
+        return validate_key(path, project_id, warn_on_rename=True)
     # Cross-bucket reads (workflow artifact plane) use the bucket's own
     # layout; still reject traversal but do not re-namespace.
     key = path.strip("/")
@@ -848,7 +862,7 @@ async def check_files_exist(
         s3_client = config.get_client()
 
         for key in keys:
-            namespaced_key = validate_key(key, project_id)
+            namespaced_key = validate_key(key, project_id, warn_on_rename=True)
             try:
                 s3_client.head_object(Bucket=bucket_name, Key=namespaced_key)
                 results[key] = True
