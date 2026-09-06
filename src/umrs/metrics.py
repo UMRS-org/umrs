@@ -196,6 +196,21 @@ class UMRSMetrics:
             "Monitor attempt check outcomes",
             ["outcome"],
         )
+        # -- WP-12: per-attempt phase spans (G-P11-1 / G-P1-4) --------------
+        # queue_wait = created → running; wall = created → terminal end.
+        # Labels stay authority-bounded on purpose (never job/attempt ids —
+        # unbounded cardinality); the job/attempt-level span lives under
+        # attempts.metrics['timing'] in Postgres.
+        self._attempt_phase = _histogram(
+            "umrs_attempt_phase_seconds",
+            "Wall-clock seconds one attempt spent in a phase (queue_wait, wall)",
+            ["authority", "phase"],
+        )
+        self._loop_iteration = _histogram(
+            "umrs_loop_iteration_seconds",
+            "Wall-clock seconds one research-loop iteration took",
+            ["engine"],
+        )
 
         # -- Phase 5A: Bridge health -----------------------------------
         self._bridge_events = _counter(
@@ -393,6 +408,16 @@ class UMRSMetrics:
 
     def reconciler_duration(self, seconds: float, outcome: str = "ok") -> None:
         self._reconciler_duration.labels(outcome=outcome).observe(seconds)
+
+    # -- Attempt phase spans (WP-12) -----------------------------------
+
+    def attempt_phase_seconds(self, authority: str, phase: str, seconds: float) -> None:
+        """Observe seconds one attempt spent in ``phase`` (queue_wait|wall)."""
+        self._attempt_phase.labels(authority=authority, phase=phase).observe(seconds)
+
+    def loop_iteration_seconds(self, engine: str, seconds: float) -> None:
+        """Observe seconds one loop iteration took (simulated|real engine)."""
+        self._loop_iteration.labels(engine=engine).observe(seconds)
 
     # -- Reconciler latency ------------------------------------------------
 
