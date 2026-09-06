@@ -1,4 +1,4 @@
-"""Durable research-loop store backed by Postgres (migration 0058).
+"""Durable research-loop store backed by Postgres (migrations 0058 + 0082).
 
 Drop-in replacement for the in-memory ``_loop_store`` in ``umrs.api.loop``.
 Falls back to a pure in-memory dict when no pool is provided so unit tests and
@@ -64,6 +64,20 @@ _F_KEYS = (
 )
 
 
+def _findings_json(findings: list[Any]) -> list[Any]:
+    """Findings are ``Finding`` dataclasses (engine) or dicts (reloaded rows)."""
+    return [f.to_dict() if hasattr(f, "to_dict") else f for f in findings]
+
+
+def _row_json(row: Any, key: str, default: str) -> str:
+    """JSON column text, tolerant of rows predating the column (0082)."""
+    try:
+        value = row[key]
+    except (KeyError, IndexError):
+        return default
+    return value or default
+
+
 def _row_to_iteration(row: Any) -> LoopIteration:
     base = {k: row[k] for k in _F_KEYS}
     for k in (
@@ -81,6 +95,7 @@ def _row_to_iteration(row: Any) -> LoopIteration:
         phase=LoopPhase(row["phase"]),
         results=json.loads(row["results"] or "{}"),
         findings=json.loads(row["findings"] or "[]"),
+        artifact_ids=list(json.loads(_row_json(row, "artifact_ids", "[]"))),
     )
 
 
@@ -157,8 +172,9 @@ class LoopStore:
                     """INSERT INTO research_loop_iterations
                        (iteration_id, loop_id, iteration_number, phase,
                         started_at, completed_at, hypothesis, experiment_id,
-                        results, analysis, evaluation, findings, status)
-                       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)""",
+                        results, analysis, evaluation, findings, status,
+                        artifact_ids)
+                       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)""",
                     it.iteration_id,
                     it.loop_id,
                     it.iteration_number,
@@ -170,8 +186,9 @@ class LoopStore:
                     json.dumps(it.results),
                     it.analysis,
                     it.evaluation,
-                    json.dumps(it.findings),
+                    json.dumps(_findings_json(it.findings)),
                     it.status,
+                    json.dumps(list(it.artifact_ids)),
                 )
 
     async def _get_pg(self, loop_id: str) -> ResearchLoop | None:
@@ -277,8 +294,9 @@ class LoopStore:
                     """INSERT INTO research_loop_iterations
                        (iteration_id, loop_id, iteration_number, phase,
                         started_at, completed_at, hypothesis, experiment_id,
-                        results, analysis, evaluation, findings, status)
-                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                        results, analysis, evaluation, findings, status,
+                        artifact_ids)
+                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
                     (
                         it.iteration_id,
                         it.loop_id,
@@ -291,8 +309,9 @@ class LoopStore:
                         Json(it.results),
                         it.analysis,
                         it.evaluation,
-                        Json(it.findings),
+                        Json(_findings_json(it.findings)),
                         it.status,
+                        Json(list(it.artifact_ids)),
                     ),
                 )
         self._sync_pool.commit()
@@ -322,7 +341,7 @@ class LoopStore:
     @staticmethod
     def _jsonify(row: Any) -> Any:
         """psycopg2 RealDictCursor jsonb fields arrive already parsed."""
-        for key in ("plan", "metadata", "results", "findings"):
+        for key in ("plan", "metadata", "results", "findings", "artifact_ids"):
             if key in row and isinstance(row[key], (dict, list)):
                 row[key] = json.dumps(row[key])
         return row

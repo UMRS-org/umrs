@@ -27,11 +27,12 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
-from .loop import AutonomousResearchLoop, LoopStatus, ResearchLoop
+from .loop import AutonomousResearchLoop, LoopIteration, LoopStatus, ResearchLoop
 
 logger = logging.getLogger(__name__)
 
 EngineFactory = Callable[[], AutonomousResearchLoop]
+IterationHook = Callable[[ResearchLoop, LoopIteration], None]
 
 
 class EngineLoopRunner(threading.Thread):
@@ -49,12 +50,14 @@ class EngineLoopRunner(threading.Thread):
         engine_factory: EngineFactory,
         store: Any,
         poll_seconds: float = 0.5,
+        on_iteration: Optional[IterationHook] = None,
     ) -> None:
         super().__init__(name=f"engine-loop-{loop.loop_id}", daemon=True)
         self._loop = loop
         self._engine_factory = engine_factory
         self._store = store
         self._poll_seconds = poll_seconds
+        self._on_iteration = on_iteration
         self._abort = threading.Event()
 
     def abort(self) -> None:
@@ -108,24 +111,32 @@ class EngineLoopRunner(threading.Thread):
         """Ask-mode action gate: request approval, park until decided.
 
         auto-mode returns True immediately (current behavior). On rejection
-        or driver abort returns False; the engine raises on False. Pending
-        intents live in-process; a restarted loop re-requests under the same
-        id from its metadata marker (tool_approvals.request_approval is
-        idempotent under approval_id).
+        or driver abort returns False; the engine raises on False. Intents
+        live in the durable approval inbox (ADR-036 (a)) keyed by the loop
+        owner + hosting job/attempt; a restarted loop re-requests under the
+        same id from its metadata marker and finds any decision recorded
+        while it was down (request_approval is idempotent under approval_id).
         """
+
+        def _request(action: dict, approval_id: Optional[str]) -> dict:
+            from . import tool_approvals
+
+            return tool_approvals.request_approval(
+                loop.loop_id,
+                int(action.get("iteration", 0)),
+                action,
+                approval_id=approval_id,
+                user_id=str(loop.metadata.get("owner_user_id") or ""),
+                job_id=str(loop.metadata.get("durable_job_id") or ""),
+                attempt_id=str(loop.metadata.get("attempt_id") or ""),
+            )
 
         def _gate(action: dict) -> bool:
             if loop.metadata.get("mode", "auto") != "ask":
                 return True
             from . import tool_approvals
 
-            approval_id = loop.metadata.get("awaiting_approval") or None
-            record = tool_approvals.request_approval(
-                loop.loop_id,
-                int(action.get("iteration", 0)),
-                action,
-                approval_id=approval_id,
-            )
+            record = _request(action, loop.metadata.get("awaiting_approval") or None)
             loop.metadata["awaiting_approval"] = record["id"]
             self._store.save(loop)
             logger.info(
@@ -139,12 +150,7 @@ class EngineLoopRunner(threading.Thread):
                     return False
                 current = tool_approvals.get(record["id"])
                 if current is None:
-                    current = tool_approvals.request_approval(
-                        loop.loop_id,
-                        int(action.get("iteration", 0)),
-                        action,
-                        approval_id=record["id"],
-                    )
+                    current = _request(action, record["id"])
                 status = current.get("status")
                 if status == "approved":
                     loop.metadata.pop("awaiting_approval", None)
@@ -160,15 +166,30 @@ class EngineLoopRunner(threading.Thread):
 
     # -- drive --------------------------------------------------------------
 
+    def _checkpoint(self, loop: ResearchLoop, iteration: LoopIteration) -> None:
+        """Engine iteration hook: persist, then run the hosting-side hook.
+
+        The hook (loop_hosting: durable-job checkpoint + finding minting)
+        is best-effort — it may enrich the iteration and re-save, but it
+        never breaks the loop's own persistence.
+        """
+        self._store.save(loop)
+        if self._on_iteration is None:
+            return
+        try:
+            self._on_iteration(loop, iteration)
+        except Exception as exc:  # noqa: BLE001 — hosting hook must not kill the loop
+            logger.warning("iteration hook failed for %s: %s", loop.loop_id, exc)
+
     def drive(self, loop: ResearchLoop) -> ResearchLoop:
         engine = self._engine_factory()
 
         # Checkpoint the live record after each engine iteration.
-        engine._iteration_hook = lambda _it: self._store.save(loop)  # noqa: SLF001
+        engine._iteration_hook = lambda it: self._checkpoint(loop, it)  # noqa: SLF001
         # Cooperative cancel/pause via the store poll.
         engine._cancel_check = self._cancel_check  # noqa: SLF001
         # Tool-grain gate: ask-mode loops park at each workflow trigger until
-        # a decision lands in the approvals registry (ADR-028).
+        # a decision lands in the durable approval inbox (ADR-036 (a)).
         engine._approval_gate = self._make_approval_gate(loop)  # noqa: SLF001
 
         result = engine.run(loop)
@@ -194,6 +215,7 @@ def register(
     engine_factory: EngineFactory,
     store: Any,
     poll_seconds: float = 0.5,
+    on_iteration: Optional[IterationHook] = None,
 ) -> EngineLoopRunner:
     """Spawn a daemon engine runner for ``loop``. Idempotent when alive."""
     with _LOCK:
@@ -201,7 +223,11 @@ def register(
         if existing is not None and existing.is_alive():
             return existing
         runner = EngineLoopRunner(
-            loop, engine_factory=engine_factory, store=store, poll_seconds=poll_seconds
+            loop,
+            engine_factory=engine_factory,
+            store=store,
+            poll_seconds=poll_seconds,
+            on_iteration=on_iteration,
         )
         _RUNNERS[loop.loop_id] = runner
     runner.start()

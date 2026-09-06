@@ -10,7 +10,7 @@ An AssetRow is a pointer INTO a subsystem store, not a copy:
                group:<id> / user:<id>) derived per subsystem
     status     lifecycle string as reported by the subsystem, verbatim
     lineage    edges derived from existing relations (artifact→parent,
-               job→artifacts, session→loops) — see fanout.py
+               job→artifacts, session→loops, loop→artifacts) — see fanout.py
     portable   whether the asset may leave its scope via .kb export /
                bundle restore (INV-13); set per kind, not per row
 """
@@ -51,7 +51,7 @@ class AssetLineageEdge:
     from_id: str
     to_kind: str
     to_id: str
-    relation: str  # derived_from | executed_by | contains | registered_by
+    relation: str  # derived_from | executed_by | contains | registered_by | produced
 
     def to_dict(self) -> dict[str, Any]:
         return {

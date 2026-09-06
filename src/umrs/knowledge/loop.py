@@ -105,6 +105,10 @@ class LoopIteration:
     evaluation: str = ""
     findings: list[Finding] = field(default_factory=list)
     retrieval_record_ids: list[str] = field(default_factory=list)
+    # Artifact ids this iteration produced (knowledge artifacts minted from
+    # its findings, workflow outputs) — the asset index derives the
+    # loop → artifact lineage edge from them (ADR-036 D4, WP-05).
+    artifact_ids: list[str] = field(default_factory=list)
     status: str = "pending"  # pending | running | completed | failed
     simulated: bool = False
 
@@ -124,6 +128,7 @@ class LoopIteration:
             durable_job_id=self.durable_job_id,
             retrieval_record_ids=list(self.retrieval_record_ids),
             findings=list(self.findings),
+            artifact_ids=list(self.artifact_ids),
             results=dict(self.results),
             analysis=self.analysis,
             evaluation=self.evaluation,

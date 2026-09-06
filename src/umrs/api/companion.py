@@ -5,7 +5,8 @@ Routes under ``/umrs/companion`` (deployed as ``/gw/companion/*`` behind NGINX
 
 - worker lifecycle surface over the 0070 registry (register/read),
 - turn-attempt surface over the 0071 registry (begin/read/idempotent sse),
-- pending-approval scaffold (typed, body lands with the live chat roundtrip),
+- pending-approval inbox over durable rows (ADR-036 (a), WP-05): owner-scoped
+  list + terminal decisions that parked loop drivers consume,
 - ownership pinning: a registry row is reachable only by its owner_user_id
   (401 on mismatch), token ≠ auth ≠ liveness holds end-to-end.
 
@@ -212,6 +213,8 @@ class ApprovalDecisionRequest(BaseModel):
 
 class ApprovalsPendingResponse(BaseModel):
     pending: list[dict[str, Any]] = []
+    # Where the inbox lives: postgres (durable) | sqlite | process (ADR-036 (a)).
+    durability: str = "process"
 
 
 class TrustGrantRequest(BaseModel):
@@ -493,7 +496,7 @@ async def stream_turn_events(
     )
 
 
-# ── pending approvals (scaffold, typed, surface-complete) ────────────────────
+# ── pending approvals — durable inbox (ADR-036 (a), WP-05) ───────────────────
 
 
 @router.get("/approvals/pending")
@@ -501,29 +504,91 @@ async def list_pending_approvals(
     request: Request,
     x_user_id: str = Depends(_strict_headers),
 ) -> ApprovalsPendingResponse:
-    managers, _ = _managers(request)
+    """Pending tool-grain intents visible to the caller.
+
+    Owner-scoped: rows of loops the caller owns plus ownerless rows (loops
+    started without a gateway identity). ``?loop_id=`` narrows to one loop;
+    ``?registry_key=`` keeps the venue-ownership check of the m5 contract.
+    """
     registry_key = request.query_params.get("registry_key")
     if registry_key:
+        managers, _ = _managers(request)
         row = managers.get(registry_key)
         _enforce_ownership(row or {}, x_user_id)
     from umrs.knowledge import tool_approvals
 
-    return ApprovalsPendingResponse(pending=tool_approvals.pending())
+    return ApprovalsPendingResponse(
+        pending=tool_approvals.pending(
+            loop_id=request.query_params.get("loop_id") or None,
+            user_id=x_user_id,
+        ),
+        durability=tool_approvals.durability(),
+    )
+
+
+def _enforce_approval_ownership(record: dict, x_user_id: str) -> None:
+    """An approval intent is decidable only by the loop owner (ownerless: anyone)."""
+    owner = str(record.get("user_id") or "")
+    if owner and owner != x_user_id:
+        raise HTTPException(status_code=401, detail="approval ownership mismatch")
+
+
+def _flip_loop_to_auto(loop_id: str) -> None:
+    try:
+        from umrs.api.loop import _loop_store
+
+        loop = _loop_store.get(loop_id)
+        if loop is not None:
+            loop.metadata["mode"] = "auto"
+            _loop_store.save(loop)
+    except Exception:  # noqa: BLE001 — mode flip is best-effort
+        logger.warning("always-decision mode flip failed for loop %s", loop_id, exc_info=True)
+
+
+def _mint_session_trust(loop_id: str, action: dict, x_user_id: str) -> None:
+    """ADR-036 §3: ``always`` mints a durable ``session:<loop_id>`` trust row."""
+    if _trust_store is None:
+        return
+    tool_name = str(action.get("workflow_name") or action.get("kind") or "workflow_trigger")
+    try:
+        _trust_store.grant(
+            x_user_id, tool_name, scope=f"session:{loop_id}", created_by=x_user_id
+        )
+    except Exception:  # noqa: BLE001 — trust row is the durable shadow, not the gate
+        logger.warning("always-decision trust grant failed for loop %s", loop_id, exc_info=True)
+
+
+def _apply_always_decision(record: dict, x_user_id: str) -> None:
+    """``always``: flip the loop to auto AND mint a session-scope trust row.
+
+    Both best-effort (ADR-036 §3): the decision itself is already durable.
+    """
+    loop_id = str(record.get("loop_id") or "")
+    if not loop_id:
+        return
+    _flip_loop_to_auto(loop_id)
+    _mint_session_trust(loop_id, record.get("action") or {}, x_user_id)
 
 
 @router.post("/approvals/{approval_id}/decision")
 async def record_approval_decision(
     approval_id: str,
     body: ApprovalDecisionRequest,
-    request: Request,
     x_user_id: str = Depends(_strict_headers),
 ) -> dict:
-    _managers(request)  # contract check: surface exists, owner pinned
-    # Tool-grain approval registry (ADR-028): loop drivers park on these
-    # intents; the decision unblocks them. ``always`` additionally flips the
-    # owning loop into ``mode=auto`` so it stops gating from then on.
+    """Decide one pending intent (durable inbox; loop drivers park on these).
+
+    ``once``/``always`` unblock the parked loop; ``no`` makes its gate fail.
+    ``always`` additionally flips the owning loop into ``mode=auto`` and
+    mints a ``session:<loop_id>`` trust row. 404 unknown, 401 not the
+    owner, 409 already decided.
+    """
     from umrs.knowledge import tool_approvals
 
+    existing = tool_approvals.get(approval_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail=f"approval not found: {approval_id}")
+    _enforce_approval_ownership(existing, x_user_id)
     try:
         record = tool_approvals.decide(approval_id, body.decision, decided_by=x_user_id)
     except KeyError as exc:
@@ -532,25 +597,14 @@ async def record_approval_decision(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     if body.decision == "always":
-        try:
-            from umrs.api.loop import _loop_store
-
-            loop = _loop_store.get(record["loop_id"])
-            if loop is not None:
-                loop.metadata["mode"] = "auto"
-                _loop_store.save(loop)
-        except Exception:  # noqa: BLE001 — mode flip is best-effort
-            logger.warning(
-                "always-decision mode flip failed for loop %s",
-                record.get("loop_id"),
-                exc_info=True,
-            )
+        _apply_always_decision(record, x_user_id)
 
     return {
         "approval_id": approval_id,
         "decision": body.decision,
         "status": record["status"],
         "loop_id": record.get("loop_id", ""),
+        "durability": tool_approvals.durability(),
     }
 
 

@@ -240,11 +240,28 @@ def _init_companion_trust_store(app, db_pool):
         app.state.umrs_companion_trust_conn = trust_conn
         set_trust_store(TrustAllowlistStore(trust_conn))
         logger.info("Companion trust store initialized for HTTP sidecar")
+        _init_approval_inbox(trust_conn)
     except Exception:
         logger.warning(
             "Companion trust store unavailable in HTTP sidecar — "
-            "/umrs/companion/trust* will return 503"
+            "/umrs/companion/trust* will return 503; approval inbox stays process-local"
         )
+
+
+def _init_approval_inbox(trust_conn) -> None:
+    """Durable approval inbox (ADR-036 (a), WP-05) on the trust connection.
+
+    Failure leaves the process-local inbox in place — visible as
+    ``durability: process`` on the approvals route, never silent.
+    """
+    try:
+        from umrs.companion_trust.approval_inbox import ApprovalInboxStore
+        from umrs.knowledge import tool_approvals
+
+        tool_approvals.configure(ApprovalInboxStore(trust_conn))
+        logger.info("Companion approval inbox initialized (postgres)")
+    except Exception:
+        logger.warning("Approval inbox unavailable — staying process-local", exc_info=True)
 
 
 def _init_usage_pool(db_pool):
@@ -541,8 +558,7 @@ async def _wire_a2l_recorder(application) -> None:
 
 
 def _upgrade_loop_store() -> None:
-    """Durable loops: upgrade to psycopg2 persistence + rehydrate drivers
-    for runs that were RUNNING/PAUSED when the process last stopped.
+    """Durable loops: upgrade to psycopg2 persistence.
     Independent of the a2l pool (psycopg2 for thread safety).
     """
     from umrs.api._asyncpg_pool import _resolve_knowledge_dsn
@@ -550,15 +566,26 @@ def _upgrade_loop_store() -> None:
     try:
         dsn_sync, _ = _resolve_knowledge_dsn()
         if dsn_sync:
-            from umrs.api.loop import (
-                configure_loop_store_sync,
-                reregister_loop_drivers,
-            )
+            from umrs.api.loop import configure_loop_store_sync
 
             configure_loop_store_sync(dsn_sync)
-            reregister_loop_drivers()
     except Exception:  # noqa: BLE001 — loops must never block boot
-        logger.warning("loop store upgrade/re-registration failed", exc_info=True)
+        logger.warning("loop store upgrade failed", exc_info=True)
+
+
+def _rehydrate_loop_drivers() -> None:
+    """Re-spawn drivers for loops RUNNING/PAUSED at the last shutdown.
+
+    Runs AFTER the durable runtime start (ADR-036 D1): job-hosted loops are
+    resumed by reconciler → scheduler → loop_hosting.host, thread-hosted
+    ones here; without a runtime, job-hosted loops fall back to threads.
+    """
+    try:
+        from umrs.api.loop import reregister_loop_drivers
+
+        reregister_loop_drivers()
+    except Exception:  # noqa: BLE001 — loops must never block boot
+        logger.warning("loop driver re-registration failed", exc_info=True)
 
 
 def _tag_metrics_source() -> None:
@@ -648,6 +675,7 @@ def _create_app():
         if start_scheduler():
             logger.info("Scheduler service started via lifespan hook")
         _start_durable_runtime()
+        _rehydrate_loop_drivers()
         try:
             yield
         finally:

@@ -271,6 +271,7 @@ class TestJobTypes:
             "knowledge_export",
             "companion_worker",
             "knowledge_reindex",
+            "research_loop_job",
         ]
         actual = [t.value for t in JobType]
         assert set(expected) == set(actual)
@@ -287,27 +288,29 @@ class TestJobTypes:
 
 
 class TestSchemaGeneration:
-    """Test database schema SQL generation."""
+    """Test database schema SQL generation (basic sanity of the DDL strings)."""
 
-    def test_schema_sql_valid(self):
-        """Verify schema SQL is syntactically correct."""
-        from umrs.jobs.schema import (
-            CREATE_ATTEMPTS_TABLE,
-            CREATE_INDEXES,
-            CREATE_JOB_LOCKS_TABLE,
-            CREATE_JOBS_TABLE,
-        )
+    def test_jobs_table_sql(self):
+        from umrs.jobs.schema import CREATE_JOBS_TABLE
 
-        # Basic sanity checks - SQL should contain expected elements
         assert "CREATE TABLE IF NOT EXISTS jobs" in CREATE_JOBS_TABLE
         assert "job_id VARCHAR(64) PRIMARY KEY" in CREATE_JOBS_TABLE
         assert "spec JSONB NOT NULL" in CREATE_JOBS_TABLE
 
+    def test_attempts_table_sql(self):
+        from umrs.jobs.schema import CREATE_ATTEMPTS_TABLE
+
         assert "CREATE TABLE IF NOT EXISTS job_attempts" in CREATE_ATTEMPTS_TABLE
         assert "REFERENCES jobs(job_id)" in CREATE_ATTEMPTS_TABLE
 
+    def test_job_locks_table_sql(self):
+        from umrs.jobs.schema import CREATE_JOB_LOCKS_TABLE
+
         assert "CREATE INDEX IF NOT EXISTS idx_job_locks_expires" in CREATE_JOB_LOCKS_TABLE
         assert "WHERE expires_at < NOW()" not in CREATE_JOB_LOCKS_TABLE
+
+    def test_indexes_sql(self):
+        from umrs.jobs.schema import CREATE_INDEXES
 
         assert "CREATE INDEX IF NOT EXISTS" in CREATE_INDEXES
         assert "idx_jobs_scheduler" in CREATE_INDEXES
