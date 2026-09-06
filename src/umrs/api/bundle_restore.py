@@ -46,6 +46,10 @@ class RestoreRequest(BaseModel):
         default=True,
         description="Verify manifest hash + HMAC before restoring (needs UMRS_SECRET_KEY)",
     )
+    allow_unsigned: bool = Field(
+        default=False,
+        description="Restore an unsigned/unverifiable bundle anyway (explicit opt-out)",
+    )
     proposal_id: str | None = Field(
         default=None,
         description="Approved graph-extension proposal (required for agent actors, 0069)",
@@ -106,6 +110,7 @@ async def restore_bundle(request: Request, body: RestoreRequest) -> dict[str, An
             body.bundle_dir,
             target_project_id=body.project_id,
             verify=body.verify,
+            allow_unsigned=body.allow_unsigned,
         )
     except BundleFormatError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
