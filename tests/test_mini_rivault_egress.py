@@ -1,12 +1,13 @@
 """Static guards for mini-RiVault EgressGuard wiring."""
 
+import os
+import socket
+import subprocess
 from pathlib import Path
 
 import yaml
-
 from umrs.orchestrator.base import OrchestratorConfig
 from umrs.orchestrator.kubernetes_backend import KubernetesBackend
-
 
 ROOT = Path(__file__).resolve().parents[2]
 UMRS_ROOT = ROOT / "umrs"
@@ -14,6 +15,7 @@ MINI_RIVAULT = UMRS_ROOT / "src" / "umrs" / "mini-rivault-llm"
 SERVE_MODEL = MINI_RIVAULT / "serve-model.yaml"
 SERVE_MODEL_SLURM = MINI_RIVAULT / "serve-model.slurm"
 OUT_NGINX = MINI_RIVAULT / "nginx_fs" / "out-nginx.conf"
+ASSERT_OFFLINE = MINI_RIVAULT / "assert-offline.sh"
 E2E_COMPOSE = ROOT / "docker-compose.e2e.yaml"
 
 
@@ -156,3 +158,79 @@ def test_kubernetes_network_policy_allows_site_cidrs_only_when_configured(monkey
 
     assert {"ipBlock": {"cidr": "10.100.0.0/16"}} in peers
     assert {"ipBlock": {"cidr": "10.101.0.0/16"}} in peers
+
+
+# ---------------------------------------------------------------------------
+# assert-offline.sh is executed, not just read (G-P5-4, ADR-040)
+# ---------------------------------------------------------------------------
+
+
+def _run_assert_offline(**env_overrides: str) -> subprocess.CompletedProcess:
+    env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin")}
+    env.update(env_overrides)
+    return subprocess.run(
+        ["bash", str(ASSERT_OFFLINE)],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+
+
+def _closed_local_port() -> int:
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+_OFFLINE_ENV = {"TRANSFORMERS_OFFLINE": "1", "HF_HUB_OFFLINE": "1"}
+
+
+def test_assert_offline_fails_when_offline_env_missing():
+    proc = _run_assert_offline(HF_HUB_OFFLINE="1")  # TRANSFORMERS_OFFLINE unset
+    assert proc.returncode == 1
+    assert "FAIL: TRANSFORMERS_OFFLINE" in proc.stdout
+
+
+def test_assert_offline_fails_when_proxy_var_set():
+    proc = _run_assert_offline(**_OFFLINE_ENV, HTTPS_PROXY="http://egress-guard:8888")
+    assert proc.returncode == 1
+    assert "FAIL: HTTPS_PROXY is set" in proc.stdout
+
+
+def test_assert_offline_passes_with_offline_env_and_no_probe():
+    proc = _run_assert_offline(**_OFFLINE_ENV)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "OK: All offline invariants satisfied." in proc.stdout
+    assert "direct egress" not in proc.stdout  # the probe is opt-in
+
+
+def test_assert_offline_probe_ok_when_direct_connect_is_refused():
+    port = _closed_local_port()  # nothing listens here
+    proc = _run_assert_offline(
+        **_OFFLINE_ENV,
+        OFFLINE_PROBE="1",
+        OFFLINE_PROBE_HOST="127.0.0.1",
+        OFFLINE_PROBE_PORT=str(port),
+        OFFLINE_PROBE_TIMEOUT_SEC="2",
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert f"OK: direct egress to 127.0.0.1:{port} is blocked" in proc.stdout
+
+
+def test_assert_offline_probe_fails_when_direct_connect_succeeds():
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        port = listener.getsockname()[1]
+        proc = _run_assert_offline(
+            **_OFFLINE_ENV,
+            OFFLINE_PROBE="1",
+            OFFLINE_PROBE_HOST="127.0.0.1",
+            OFFLINE_PROBE_PORT=str(port),
+            OFFLINE_PROBE_TIMEOUT_SEC="2",
+        )
+    assert proc.returncode == 1
+    assert f"FAIL: direct egress to 127.0.0.1:{port} SUCCEEDED" in proc.stdout
+    assert "Refusing to start inference" in proc.stdout
