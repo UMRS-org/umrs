@@ -173,8 +173,11 @@ class KnowledgeExportEngine:
         table_counts["a2l_refs"] = (len(ref_rows), "a2l_refs.jsonl")
 
         # 8. Build manifest (r4-kb v1.2 — ADR-032 amendment 2026-09)
+        skills, mcp_configs = await self._resolve_context_references(project_id)
         embedding_pin = await self._resolve_embedding_pin(project_id)
-        self._manifest = self._build_manifest(project_id, table_counts, embedding_pin)
+        self._manifest = self._build_manifest(
+            project_id, table_counts, embedding_pin, skills, mcp_configs
+        )
         await writer.write_manifest(self._manifest)
 
         # 8. Compute hash & signature
@@ -405,6 +408,8 @@ class KnowledgeExportEngine:
         project_id: str,
         table_counts: dict[str, tuple[int, str]],
         embedding_pin: dict[str, Any],
+        skills: list[dict[str, Any]] | None = None,
+        mcp_configs: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """Assemble the r4-kb v1.2 manifest (ADR-032 amendment 2026-09)."""
         return {
@@ -415,14 +420,60 @@ class KnowledgeExportEngine:
             "generator_version": _read_umrs_version(),
             "exported_at": datetime.now(timezone.utc).isoformat(),
             "unsigned": not bool(self._secret_key),
-            "skills": [],
-            "mcp_configs": [],
+            "skills": skills or [],
+            "mcp_configs": mcp_configs or [],
+            "collision_policy": "abort",
+            "provenance_canonical": False,
+            "reconciliation_snapshot": None,
             "embedding": embedding_pin,
             "tables": {
                 name: {"count": count, "file": filename}
                 for name, (count, filename) in table_counts.items()
             },
         }
+
+    async def _resolve_context_references(
+        self, project_id: str
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """By-reference skills + MCP configs (ratified bundle contract).
+
+        Best-effort, never crashes the export: empty lists when the
+        registries are unreachable.
+        """
+        skill_rows = await self._fetch_refs(
+            "SELECT name, version, scope FROM skills "
+            "WHERE scope = 'system' OR (scope = 'project' AND project_id = $1)",
+            project_id,
+        )
+        mcp_rows = await self._fetch_refs(
+            "SELECT server_id, name, version FROM mcp_servers "
+            "WHERE project_id = $1 OR project_id IS NULL",
+            project_id,
+        )
+        skills = [
+            {
+                "ref": f"{r.get('scope', 'user')}:{r.get('name', '')}",
+                "version_pin": str(r.get("version") or ""),
+                "scope": str(r.get("scope") or ""),
+            }
+            for r in skill_rows
+        ]
+        mcp_configs = [
+            {
+                "ref": str(r.get("name") or r.get("server_id") or ""),
+                "version_pin": str(r.get("version") or ""),
+            }
+            for r in mcp_rows
+        ]
+        return skills, mcp_configs
+
+    async def _fetch_refs(self, query: str, project_id: str) -> list[dict[str, Any]]:
+        """Run one by-reference registry query; [] on any failure."""
+        try:
+            rows = await self._store._pool.fetch(query, project_id)  # type: ignore[union-attr]
+            return [dict(r) for r in rows]
+        except Exception:  # noqa: BLE001 — best-effort manifest metadata
+            return []
 
     async def _resolve_embedding_pin(self, project_id: str) -> dict[str, Any]:
         """Resolve the vector-pipeline trust pin (best-effort, never crashes)."""
