@@ -1344,6 +1344,7 @@ def create_backend_factory(
 
     from .knowledge_adapters import (
         KnowledgeEmbedBackend,
+        KnowledgeExportBackend,
         KnowledgeIngestBackend,
         KnowledgeUnderstandBackend,
         KnowledgeVerifyBackend,
@@ -1371,6 +1372,7 @@ def create_backend_factory(
     knowledge_understand_backend = KnowledgeUnderstandBackend()
     knowledge_embed_backend = KnowledgeEmbedBackend()
     knowledge_verify_backend = KnowledgeVerifyBackend()
+    knowledge_export_backend = KnowledgeExportBackend()
 
     from .reindex import KnowledgeReindexBackend
 
@@ -1406,6 +1408,8 @@ def create_backend_factory(
             return knowledge_verify_backend
         elif job_type == JobType.KNOWLEDGE_REINDEX:
             return knowledge_reindex_backend
+        elif job_type == JobType.KNOWLEDGE_EXPORT:
+            return knowledge_export_backend
         elif job_type == JobType.COMPANION_WORKER:
             from .companion_worker_backend import CompanionWorkerBackend
 
@@ -1463,6 +1467,7 @@ def create_status_checker(
 
     from .knowledge_adapters import (
         KnowledgeEmbedStatusChecker,
+        KnowledgeExportStatusChecker,
         KnowledgeIngestStatusChecker,
         KnowledgeUnderstandStatusChecker,
         KnowledgeVerifyStatusChecker,
@@ -1472,6 +1477,7 @@ def create_status_checker(
     checker.register(JobType.KNOWLEDGE_UNDERSTAND, KnowledgeUnderstandStatusChecker())
     checker.register(JobType.KNOWLEDGE_EMBED, KnowledgeEmbedStatusChecker())
     checker.register(JobType.KNOWLEDGE_VERIFY, KnowledgeVerifyStatusChecker())
+    checker.register(JobType.KNOWLEDGE_EXPORT, KnowledgeExportStatusChecker())
 
     from .reindex import KnowledgeReindexStatusChecker
 

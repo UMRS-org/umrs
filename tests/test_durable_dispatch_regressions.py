@@ -117,3 +117,47 @@ class TestFireCoroutine:
         _fire_coroutine(_mark(), "t2")
         await asyncio.sleep(0.05)  # let scheduled task complete
         assert done == ["ran"]
+
+
+class TestKnowledgeExportDispatch:
+    """G-P2-7 wiring pins: KNOWLEDGE_EXPORT is dispatchable end to end."""
+
+    def test_factory_dispatches_export_backend(self):
+        from umrs.jobs.adapters import create_backend_factory
+        from umrs.jobs.knowledge_adapters import KnowledgeExportBackend
+        from umrs.jobs.models import JobType
+
+        factory = create_backend_factory(
+            orchestrator=MagicMock(),
+            registry=MagicMock(),
+            port_manager=MagicMock(),
+        )
+        backend = factory(JobType.KNOWLEDGE_EXPORT)
+        assert isinstance(backend, KnowledgeExportBackend)
+        assert backend.backend_name == "knowledge_export"
+
+    def test_export_not_in_undispatchable_set(self):
+        from umrs.api.jobs import _UNDISPATCHABLE_JOB_TYPES
+        from umrs.jobs.models import JobType
+
+        assert JobType.KNOWLEDGE_EXPORT not in _UNDISPATCHABLE_JOB_TYPES
+        assert JobType.EMBEDDING_BATCH in _UNDISPATCHABLE_JOB_TYPES
+
+    def test_export_accepted_by_dispatch_guard(self):
+        from umrs.api.jobs import _enforce_dispatchable_job_type
+        from umrs.jobs.models import JobType
+
+        _enforce_dispatchable_job_type(JobType.KNOWLEDGE_EXPORT)  # must not raise
+
+    def test_status_checker_registered(self):
+        from umrs.jobs.adapters import create_status_checker
+        from umrs.jobs.models import JobType
+        from umrs.jobs.monitor import CompositeStatusChecker
+
+        checker = create_status_checker(
+            readiness_poller=MagicMock(),
+            registry=MagicMock(),
+        )
+        assert isinstance(checker, CompositeStatusChecker)
+        inner = getattr(checker, "_checkers", None) or getattr(checker, "checkers", {})
+        assert JobType.KNOWLEDGE_EXPORT in inner

@@ -43,9 +43,59 @@ logger = logging.getLogger(__name__)
 _HMAC_ALGORITHM = "sha256"
 _SIGNATURE_FILENAME = "signature.sig"
 _PAGE_SIZE = 500
+_BUNDLE_FORMAT = "r4-kb"
+_BUNDLE_VERSION = "1.2"
+_GENERATOR_NAME = "umrs"
 
 # Default embedding vector cursor (pgvector stores as text, use id as cursor)
 _DEFAULT_EMBEDDING_CURSOR = "0"
+
+
+class BundleIntegrityError(RuntimeError):
+    """Raised when integrity requirements for an export cannot be met."""
+
+
+def _read_umrs_version() -> str:
+    """Installed umrs package version, or "unknown" when not installed."""
+    from importlib.metadata import PackageNotFoundError
+    from importlib.metadata import version as pkg_version
+
+    try:
+        return pkg_version("umrs")
+    except PackageNotFoundError:
+        return "unknown"
+
+
+def _pin(
+    *,
+    model: str,
+    model_path: str,
+    revision: str,
+    dimensions: int,
+    pending: bool = False,
+) -> dict[str, Any]:
+    """Embedding trust pin block (ADR-032 amendment 2026-09)."""
+    return {
+        "model": model,
+        "model_path": model_path,
+        "revision": revision,
+        "dimensions": dimensions,
+        "distance": "cosine",
+        "normalization": "unknown",
+        "pending": pending,
+    }
+
+
+def _pending_pin() -> dict[str, Any]:
+    """Pin emitted when the vector pipeline cannot be identified honestly."""
+    return _pin(model="", model_path="", revision="", dimensions=0, pending=True)
+
+
+def _model_basename(model_path: str) -> str:
+    """Canonical-ish name from a pre-staged path (falls back to the value)."""
+    if not model_path:
+        return ""
+    return model_path.rstrip("/").rsplit("/", 1)[-1]
 
 
 # ── Result DTO ─────────────────────────────────────────────────────────────────
@@ -83,10 +133,14 @@ class KnowledgeExportEngine:
         store: KnowledgeStore,
         output_dir: Path,
         secret_key: str = "",
+        allow_unsigned: bool = False,
+        populate_embedding_pin: bool = True,
     ) -> None:
         self._store = store
         self._output_dir = output_dir
         self._secret_key = secret_key
+        self._allow_unsigned = allow_unsigned
+        self._populate_embedding_pin = populate_embedding_pin
         self._manifest: dict[str, Any] = {}
 
     async def export_project(
@@ -98,123 +152,29 @@ class KnowledgeExportEngine:
         Returns a result with counts and integrity hash/signature.
         """
         start = time.monotonic()
+        if not self._secret_key and not self._allow_unsigned:
+            raise BundleIntegrityError(
+                "bundle signing key is not configured (UMRS_SECRET_KEY); refusing "
+                "to produce an unsigned bundle — configure the key or pass "
+                "allow_unsigned=True"
+            )
+        if not self._secret_key:
+            logger.warning(
+                "PRODUCING UNSIGNED BUNDLE for project=%s (allow_unsigned opt-out)",
+                project_id,
+            )
         logger.info("Starting knowledge export for project=%s", project_id)
 
         writer = ExportBundleWriter(self._output_dir / project_id)
 
-        # 1. Artifacts
-        artifacts, artifact_total = await self._store.list_artifacts(
-            project_id=project_id,
-            status="active",
-            page=1,
-            page_size=_PAGE_SIZE,
-        )
-        artifact_rows = [self._serialize_artifact(a) for a in artifacts]
-        await writer.write_artifacts(artifact_rows)
-        logger.info(
-            "Exported %d/%d artifacts for project=%s",
-            len(artifact_rows),
-            artifact_total,
-            project_id,
-        )
+        table_counts = await self._dump_core_tables(project_id, writer)
+        link_rows, ref_rows = await self._dump_a2l_tables(project_id, writer)
+        table_counts["a2l_links"] = (len(link_rows), "a2l_links.jsonl")
+        table_counts["a2l_refs"] = (len(ref_rows), "a2l_refs.jsonl")
 
-        # 2. IRs as documents
-        irs = await self._store.list_irs(project_id=project_id)
-        doc_rows = [self._serialize_ir(ir) for ir in irs]
-        await writer.write_documents(doc_rows)
-        logger.info(
-            "Exported %d IR documents for project=%s", len(doc_rows), project_id
-        )
-
-        # 3. Graph nodes
-        nodes = await self._store.list_nodes(project_id=project_id)
-        node_rows = [self._serialize_node(n) for n in nodes]
-        await writer.write_nodes(node_rows)
-        logger.info("Exported %d nodes for project=%s", len(node_rows), project_id)
-
-        # 4. Graph edges
-        edges = await self._store.list_edges(project_id=project_id)
-        edge_rows = [self._serialize_edge(e) for e in edges]
-        await writer.write_edges(edge_rows)
-        logger.info("Exported %d edges for project=%s", len(edge_rows), project_id)
-
-        # 5. Embeddings (paged cursor from memory_vectors)
-        emb_rows, emb_total = await self._list_embeddings_paged(
-            store=self._store,
-            project_id=project_id,
-            cursor=_DEFAULT_EMBEDDING_CURSOR,
-            page_size=_PAGE_SIZE,
-        )
-        await writer.write_embeddings(emb_rows)
-        logger.info(
-            "Exported %d/%d embeddings for project=%s",
-            len(emb_rows),
-            emb_total,
-            project_id,
-        )
-
-        # 6. Catalog (from catalog_store or memory_vectors)
-        cat_rows = await self._list_catalog(project_id=project_id)
-        await writer.write_catalog(cat_rows)
-        logger.info(
-            "Exported %d catalog entries for project=%s", len(cat_rows), project_id
-        )
-
-        # 7a. Knowledge↔A2L links (ADR-017 / TASK-052)
-        try:
-            a2l_link_rows = await self._store._pool.fetch(  # type: ignore[union-attr]
-                "SELECT * FROM knowledge_a2l_links WHERE knowledge_artifact_id IN "
-                "(SELECT id FROM knowledge_artifacts WHERE project_id = $1)"
-                " ORDER BY derived_at",
-                project_id,
-            )
-            link_rows = [dict(r) for r in a2l_link_rows]
-            await writer.write_a2l_links(link_rows)
-            logger.info(
-                "Exported %d knowledge↔A2L links for project=%s",
-                len(link_rows),
-                project_id,
-            )
-        except Exception:
-            link_rows = []
-            logger.warning("knowledge_a2l_links unavailable for project=%s", project_id)
-
-        # 7b. A2L artifact refs (ADR-017 / TASK-052)
-        try:
-            a2l_ref_rows = await self._store._pool.fetch(  # type: ignore[union-attr]
-                "SELECT * FROM a2l_artifact_refs WHERE artifact_id IN "
-                "(SELECT id FROM knowledge_artifacts WHERE project_id = $1)"
-                " ORDER BY synced_at",
-                project_id,
-            )
-            ref_rows = [dict(r) for r in a2l_ref_rows]
-            await writer.write_a2l_refs(ref_rows)
-            logger.info(
-                "Exported %d A2L artifact refs for project=%s",
-                len(ref_rows),
-                project_id,
-            )
-        except Exception:
-            ref_rows = []
-            logger.warning("a2l_artifact_refs unavailable for project=%s", project_id)
-
-        # 8. Build manifest
-        self._manifest = {
-            "format": "r4-kb",
-            "version": "1.1",
-            "project_id": project_id,
-            "exported_at": datetime.now(timezone.utc).isoformat(),
-            "tables": {
-                "artifacts": {"count": artifact_total, "file": "artifacts.jsonl"},
-                "documents": {"count": len(doc_rows), "file": "documents.jsonl"},
-                "nodes": {"count": len(node_rows), "file": "nodes.jsonl"},
-                "edges": {"count": len(edge_rows), "file": "edges.jsonl"},
-                "embeddings": {"count": emb_total, "file": "embeddings.jsonl"},
-                "catalog": {"count": len(cat_rows), "file": "catalog.jsonl"},
-                "a2l_links": {"count": len(link_rows), "file": "a2l_links.jsonl"},
-                "a2l_refs": {"count": len(ref_rows), "file": "a2l_refs.jsonl"},
-            },
-        }
+        # 8. Build manifest (r4-kb v1.2 — ADR-032 amendment 2026-09)
+        embedding_pin = await self._resolve_embedding_pin(project_id)
+        self._manifest = self._build_manifest(project_id, table_counts, embedding_pin)
         await writer.write_manifest(self._manifest)
 
         # 8. Compute hash & signature
@@ -232,23 +192,23 @@ class KnowledgeExportEngine:
             "Knowledge export completed: project=%s time=%.2fs artifacts=%d docs=%d nodes=%d edges=%d embeds=%d catalog=%d",
             project_id,
             elapsed,
-            artifact_total,
-            len(doc_rows),
-            len(node_rows),
-            len(edge_rows),
-            emb_total,
-            len(cat_rows),
+            table_counts["artifacts"][0],
+            table_counts["documents"][0],
+            table_counts["nodes"][0],
+            table_counts["edges"][0],
+            table_counts["embeddings"][0],
+            table_counts["catalog"][0],
         )
 
         return KnowledgeExportResult(
             bundle_path=str(self._output_dir / project_id),
             project_id=project_id,
-            artifact_count=artifact_total,
-            document_count=len(doc_rows),
-            node_count=len(node_rows),
-            edge_count=len(edge_rows),
-            embedding_count=emb_total,
-            catalog_count=len(cat_rows),
+            artifact_count=table_counts["artifacts"][0],
+            document_count=table_counts["documents"][0],
+            node_count=table_counts["nodes"][0],
+            edge_count=table_counts["edges"][0],
+            embedding_count=table_counts["embeddings"][0],
+            catalog_count=table_counts["catalog"][0],
             manifest_hash=manifest_hash,
             signature=signature,
         )
@@ -314,6 +274,120 @@ class KnowledgeExportEngine:
             row["created_at"] = edge.created_at.isoformat()
         return row
 
+    async def _dump_core_tables(
+        self, project_id: str, writer: ExportBundleWriter
+    ) -> dict[str, tuple[int, str]]:
+        """Write artifacts/documents/nodes/edges/embeddings/catalog tables."""
+        artifacts, artifact_total = await self._store.list_artifacts(
+            project_id=project_id,
+            status="active",
+            page=1,
+            page_size=_PAGE_SIZE,
+        )
+        artifact_rows = [self._serialize_artifact(a) for a in artifacts]
+        await writer.write_artifacts(artifact_rows)
+        logger.info(
+            "Exported %d/%d artifacts for project=%s",
+            len(artifact_rows),
+            artifact_total,
+            project_id,
+        )
+
+        irs = await self._store.list_irs(project_id=project_id)
+        doc_rows = [self._serialize_ir(ir) for ir in irs]
+        await writer.write_documents(doc_rows)
+        logger.info(
+            "Exported %d IR documents for project=%s", len(doc_rows), project_id
+        )
+
+        nodes = await self._store.list_nodes(project_id=project_id)
+        node_rows = [self._serialize_node(n) for n in nodes]
+        await writer.write_nodes(node_rows)
+        logger.info("Exported %d nodes for project=%s", len(node_rows), project_id)
+
+        edges = await self._store.list_edges(project_id=project_id)
+        edge_rows = [self._serialize_edge(e) for e in edges]
+        await writer.write_edges(edge_rows)
+        logger.info("Exported %d edges for project=%s", len(edge_rows), project_id)
+
+        emb_rows, emb_total = await self._list_embeddings_paged(
+            store=self._store,
+            project_id=project_id,
+            cursor=_DEFAULT_EMBEDDING_CURSOR,
+            page_size=_PAGE_SIZE,
+        )
+        await writer.write_embeddings(emb_rows)
+        logger.info(
+            "Exported %d/%d embeddings for project=%s",
+            len(emb_rows),
+            emb_total,
+            project_id,
+        )
+
+        cat_rows = await self._list_catalog(project_id=project_id)
+        await writer.write_catalog(cat_rows)
+        logger.info(
+            "Exported %d catalog entries for project=%s", len(cat_rows), project_id
+        )
+
+        return {
+            "artifacts": (artifact_total, "artifacts.jsonl"),
+            "documents": (len(doc_rows), "documents.jsonl"),
+            "nodes": (len(node_rows), "nodes.jsonl"),
+            "edges": (len(edge_rows), "edges.jsonl"),
+            "embeddings": (emb_total, "embeddings.jsonl"),
+            "catalog": (len(cat_rows), "catalog.jsonl"),
+        }
+
+    async def _dump_a2l_tables(
+        self, project_id: str, writer: ExportBundleWriter
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Write A2L lineage tables (best-effort; empty on missing tables)."""
+        link_rows = await self._fetch_optional_rows(
+            writer,
+            write="a2l_links",
+            query=(
+                "SELECT * FROM knowledge_a2l_links WHERE knowledge_artifact_id IN "
+                "(SELECT id FROM knowledge_artifacts WHERE project_id = $1) "
+                "ORDER BY derived_at"
+            ),
+            project_id=project_id,
+            table_what="knowledge_a2l_links",
+        )
+        ref_rows = await self._fetch_optional_rows(
+            writer,
+            write="a2l_refs",
+            query=(
+                "SELECT * FROM a2l_artifact_refs WHERE artifact_id IN "
+                "(SELECT id FROM knowledge_artifacts WHERE project_id = $1) "
+                "ORDER BY synced_at"
+            ),
+            project_id=project_id,
+            table_what="a2l_artifact_refs",
+        )
+        return link_rows, ref_rows
+
+    async def _fetch_optional_rows(
+        self,
+        writer: ExportBundleWriter,
+        *,
+        write: str,
+        query: str,
+        project_id: str,
+        table_what: str,
+    ) -> list[dict[str, Any]]:
+        """Fetch an optional A2L table; warn-and-empty on failure."""
+        try:
+            rows = await self._store._pool.fetch(query, project_id)  # type: ignore[union-attr]
+            out = [dict(r) for r in rows]
+            write_one = getattr(writer, f"write_{write}")
+            await write_one(out)
+            logger.info("Exported %d %s for project=%s", len(out), write, project_id)
+            return out
+        except Exception:
+            logger.warning("%s unavailable for project=%s", table_what, project_id)
+            return []
+
     def _sign_manifest(self, manifest_bytes: bytes) -> str:
         """HMAC-SHA256 signature of manifest content."""
         if not self._secret_key:
@@ -323,6 +397,86 @@ class KnowledgeExportEngine:
             manifest_bytes,
             hashlib.sha256,
         ).hexdigest()
+
+    # ── Manifest (v1.2) ─────────────��─────────────────────────────────────────
+
+    def _build_manifest(
+        self,
+        project_id: str,
+        table_counts: dict[str, tuple[int, str]],
+        embedding_pin: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Assemble the r4-kb v1.2 manifest (ADR-032 amendment 2026-09)."""
+        return {
+            "format": _BUNDLE_FORMAT,
+            "version": _BUNDLE_VERSION,
+            "project_id": project_id,
+            "generator": _GENERATOR_NAME,
+            "generator_version": _read_umrs_version(),
+            "exported_at": datetime.now(timezone.utc).isoformat(),
+            "unsigned": not bool(self._secret_key),
+            "skills": [],
+            "mcp_configs": [],
+            "embedding": embedding_pin,
+            "tables": {
+                name: {"count": count, "file": filename}
+                for name, (count, filename) in table_counts.items()
+            },
+        }
+
+    async def _resolve_embedding_pin(self, project_id: str) -> dict[str, Any]:
+        """Resolve the vector-pipeline trust pin (best-effort, never crashes)."""
+        if not self._populate_embedding_pin:
+            return _pending_pin()
+        pin = await self._pin_from_memory_vectors(project_id)
+        if pin is None:
+            pin = await self._pin_from_node_embeddings(project_id)
+        return pin if pin is not None else _pending_pin()
+
+    async def _pin_from_memory_vectors(self, project_id: str) -> dict[str, Any] | None:
+        """Pin from the newest non-'default' memory_vectors lineage row (0041)."""
+        try:
+            row = await self._store._pool.fetchrow(  # type: ignore[union-attr]
+                "SELECT model, model_path, model_version, embedding_dimension "
+                "FROM memory_vectors WHERE project_id = $1 "
+                "AND model IS NOT NULL AND model <> 'default' "
+                "ORDER BY created_at DESC LIMIT 1",
+                project_id,
+            )
+            if row is None:
+                return None
+            return _pin(
+                model=str(row["model"] or ""),
+                model_path=str(row["model_path"] or ""),
+                revision=str(row["model_version"] or ""),
+                dimensions=int(row["embedding_dimension"] or 0),
+            )
+        except Exception:  # noqa: BLE001 — pin is best-effort metadata
+            return None
+
+    async def _pin_from_node_embeddings(self, project_id: str) -> dict[str, Any] | None:
+        """Pin by aggregating knowledge_node_embeddings (0075) of this project's nodes."""
+        try:
+            row = await self._store._pool.fetchrow(  # type: ignore[union-attr]
+                "SELECT kne.model_name, kne.dimension, COUNT(*) AS n "
+                "FROM knowledge_node_embeddings kne "
+                "JOIN knowledge_nodes kn ON kn.node_id = kne.node_id "
+                "WHERE kn.project_id = $1 "
+                "GROUP BY kne.model_name, kne.dimension "
+                "ORDER BY n DESC LIMIT 1",
+                project_id,
+            )
+            if row is None:
+                return None
+            model_path = str(row["model_name"] or "")
+            return _pin(
+                model=_model_basename(model_path),
+                model_path=model_path,
+                revision="",
+                dimensions=int(row["dimension"] or 0),
+            )
+        except Exception:  # noqa: BLE001 — pin is best-effort metadata
+            return None
 
     # ── Paged embedding fetch ─────────────────────────────────────────────────
 

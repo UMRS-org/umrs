@@ -710,7 +710,6 @@ def _parse_status_filter(status_filter: str | None) -> JobStatus | None:
 _UNDISPATCHABLE_JOB_TYPES = {
     JobType.EMBEDDING_BATCH,
     JobType.PIPELINE_RUN,
-    JobType.KNOWLEDGE_EXPORT,
 }
 
 
