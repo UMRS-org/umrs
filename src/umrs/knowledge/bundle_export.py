@@ -175,8 +175,14 @@ class KnowledgeExportEngine:
         # 8. Build manifest (r4-kb v1.2 — ADR-032 amendment 2026-09)
         skills, mcp_configs = await self._resolve_context_references(project_id)
         embedding_pin = await self._resolve_embedding_pin(project_id)
+        reconciliation_snapshot = self._resolve_reconciliation_snapshot(project_id)
         self._manifest = self._build_manifest(
-            project_id, table_counts, embedding_pin, skills, mcp_configs
+            project_id,
+            table_counts,
+            embedding_pin,
+            skills,
+            mcp_configs,
+            reconciliation_snapshot,
         )
         await writer.write_manifest(self._manifest)
 
@@ -410,6 +416,7 @@ class KnowledgeExportEngine:
         embedding_pin: dict[str, Any],
         skills: list[dict[str, Any]] | None = None,
         mcp_configs: list[dict[str, Any]] | None = None,
+        reconciliation_snapshot: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Assemble the r4-kb v1.2 manifest (ADR-032 amendment 2026-09)."""
         return {
@@ -424,13 +431,23 @@ class KnowledgeExportEngine:
             "mcp_configs": mcp_configs or [],
             "collision_policy": "abort",
             "provenance_canonical": False,
-            "reconciliation_snapshot": None,
+            "reconciliation_snapshot": reconciliation_snapshot,
             "embedding": embedding_pin,
             "tables": {
                 name: {"count": count, "file": filename}
                 for name, (count, filename) in table_counts.items()
             },
         }
+
+    def _resolve_reconciliation_snapshot(self, project_id: str) -> dict[str, Any] | None:
+        """Best-effort reconciliation snapshot summary (WP-18 attach leg)."""
+        try:
+            from .reconcile_snapshot import summarize_reconcile_snapshot
+
+            return summarize_reconcile_snapshot(project_id)
+        except Exception as exc:  # noqa: BLE001 - snapshot is best-effort metadata
+            logger.warning("reconciliation snapshot skipped for %s: %s", project_id, exc)
+            return None
 
     async def _resolve_context_references(
         self, project_id: str

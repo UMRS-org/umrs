@@ -311,14 +311,17 @@ class TestRestoreFlow:
 
 
 class _ConflictConn(_FakeConn):
-    """FakeConn that resolves content_hash lookups from a seeded map."""
+    """FakeConn that resolves identity lookups from a seeded map."""
 
-    async def fetchval(self, sql, *params):
+    async def fetchrow(self, sql, *params):
         parent = self._parent
         if not hasattr(parent, "existing_hashes"):
             return None
         table = sql.split("FROM ", 1)[1].split(" ", 1)[0]
-        return parent.existing_hashes.get(f"{table}:{params[0]}")
+        existing = parent.existing_hashes.get(f"{table}:{params[0]}")
+        if existing is None:
+            return None
+        return {"content_hash": existing, "kind": "document", "label": "L", "size_bytes": 1}
 
 
 class _ConflictPool(_FakePool):
@@ -341,14 +344,19 @@ class TestCollisionAbort:
     async def test_artifact_hash_conflict_aborts(self, tmp_path):
         bundle = _write_bundle(tmp_path)
         engine = self._engine({"knowledge_artifacts:art-0": "different-hash-00000000"})
-        with pytest.raises(BundleFormatError, match="knowledge_artifacts/art-0"):
+        with pytest.raises(BundleFormatError) as excinfo:
             await engine.import_project(bundle, allow_unsigned=True)
+        msg = str(excinfo.value)
+        assert '"knowledge_artifacts"' in msg and '"art-0"' in msg
+        assert "different-hash-00000000"[:12] in msg
 
     async def test_node_hash_conflict_aborts(self, tmp_path):
         bundle = _write_bundle(tmp_path)
         engine = self._engine({"knowledge_nodes:node-1": "other-hash-11111111"})
-        with pytest.raises(BundleFormatError, match="knowledge_nodes/node-1"):
+        with pytest.raises(BundleFormatError) as excinfo:
             await engine.import_project(bundle, allow_unsigned=True)
+        assert '"knowledge_nodes"' in str(excinfo.value)
+        assert '"node-1"' in str(excinfo.value)
 
     async def test_same_hash_identity_skips_and_restores_rest(self, tmp_path):
         bundle = _write_bundle(tmp_path)
@@ -425,6 +433,29 @@ class TestCrossStoreRoundTrip:
         assert result_b.verified is True
         assert store_b.artifacts and store_b.artifacts[0]["artifact_id"] == "a1"
         assert any(n.node_id == "n1" for n in store_b.nodes)
+
+
+class _RaiseConn(_FakeConn):
+    async def fetchrow(self, _sql, *_params):
+        raise RuntimeError("pool probe exploded")
+
+
+class _RaisePool(_FakePool):
+    def acquire(self):
+        return _RaiseConn(self)
+
+
+class TestCollisionDegradationMarker:
+    """Degraded identity lookup is operator-visible (WP-18 review item)."""
+
+    async def test_degraded_lookup_marks_result(self, tmp_path):
+        bundle = _write_bundle(tmp_path)
+        store = _FakeStore()
+        store._pool = _RaisePool()
+        engine = KnowledgeImportEngine(store=store)
+        result = await engine.import_project(bundle, allow_unsigned=True)
+        assert result.collision_checks_degraded == 2  # artifacts + nodes, per table
+        assert result.to_dict()["collision_checks_degraded"] == 2
 
 
 class TestUnsignedPolicy:

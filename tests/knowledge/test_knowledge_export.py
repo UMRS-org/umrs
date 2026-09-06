@@ -601,6 +601,62 @@ class TestGtwop2ReferencesAndMarkers:
         assert manifest["reconciliation_snapshot"] is None
 
 
+# ── Reconciliation Snapshot Attach (WP-18 / ADR-032 #5 attach leg) ────────────
+
+
+class TestReconcileSnapshotAttach:
+    @pytest.mark.asyncio
+    async def test_snapshot_embedded_when_summary_available(
+        self, tmp_bundle_dir: Path, fake_store, monkeypatch
+    ) -> None:
+        payload = {
+            "captured_at": "2026-09-06T00:00:00+00:00",
+            "states": {"COMPLETE": 3, "EMBEDDING_PENDING": 1, "PARTIAL": 0, "ORPHANED": 0},
+            "assets_total": 4,
+            "catalogue_available": True,
+            "digest": "a" * 64,
+        }
+        monkeypatch.setattr(
+            "umrs.knowledge.reconcile_snapshot.summarize_reconcile_snapshot",
+            lambda _pid, **_: payload,
+        )
+        engine = KnowledgeExportEngine(
+            store=fake_store,
+            output_dir=tmp_bundle_dir.parent,
+            secret_key="k",
+        )
+        with (
+            patch.object(engine, "_list_embeddings_paged") as mock_emb,
+            patch.object(engine, "_list_catalog") as mock_cat,
+        ):
+            mock_emb.return_value = ([], 0)
+            mock_cat.return_value = []
+            await engine.export_project("test-project")
+        manifest = json.loads((tmp_bundle_dir / "manifest.json").read_text())
+        assert manifest["reconciliation_snapshot"] == payload
+
+    @pytest.mark.asyncio
+    async def test_snapshot_null_when_summary_unavailable(
+        self, tmp_bundle_dir: Path, fake_store, monkeypatch
+    ) -> None:
+        monkeypatch.delenv("UMRS_DB_URL", raising=False)
+        monkeypatch.delenv("DATABASE_URL", raising=False)
+        engine = KnowledgeExportEngine(
+            store=fake_store,
+            output_dir=tmp_bundle_dir.parent,
+            secret_key="k",
+        )
+        with (
+            patch.object(engine, "_list_embeddings_paged") as mock_emb,
+            patch.object(engine, "_list_catalog") as mock_cat,
+        ):
+            mock_emb.return_value = ([], 0)
+            mock_cat.return_value = []
+            await engine.export_project("test-project")
+        manifest = json.loads((tmp_bundle_dir / "manifest.json").read_text())
+        assert manifest["reconciliation_snapshot"] is None
+
+
 # ── Bundle Format Tests ──────────────────────────────────────────────────────
 
 
