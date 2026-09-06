@@ -531,11 +531,20 @@ def _loop_owner(
     """Gateway-verified owner of a loop being started ("" when no identity).
 
     When identity headers are present they must verify like every other
-    sealed route (401 on a bad signature in strict mode); absent headers
-    keep the historical ownerless loop (direct sidecar callers, mvp mode) —
-    its approvals stay visible to any authenticated caller, as before.
+    sealed route (401 on a bad signature in strict mode). Absent headers are
+    accepted only outside strict mode (direct sidecar callers, mvp dev): in
+    strict mode a start without identity is a 401 (WP-08 — an ownerless
+    durable approval inbox would let any caller decide the loop's tool
+    grants). mvp keeps the historical ownerless loop.
     """
     if not (x_user_id or "").strip():
+        from umrs.api._scope_identity import _strict_mode
+
+        if _strict_mode():
+            raise HTTPException(
+                status_code=401,
+                detail="loop start requires gateway-verified identity in strict mode",
+            )
         return ""
     from umrs.api.workflows import _require_verified_workflow_identity
 
