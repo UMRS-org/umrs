@@ -137,16 +137,16 @@ def _durable_inbox(tmp_path):
 
 def test_gate_requests_carry_owner_job_and_attempt():
     loop = _loop("ask")
-    loop.metadata.update(
-        owner_user_id="alice", durable_job_id="job-7", attempt_id="att-7"
-    )
+    loop.metadata.update(owner_user_id="alice", durable_job_id="job-7", attempt_id="att-7")
     gate = _gate_for(loop, _MemStore(loop))
     thread = threading.Thread(target=lambda: gate(ACTION), daemon=True)
     thread.start()
     time.sleep(0.05)
     record = tool_approvals.pending(user_id="alice")[0]
     assert (record["user_id"], record["job_id"], record["attempt_id"]) == (
-        "alice", "job-7", "att-7",
+        "alice",
+        "job-7",
+        "att-7",
     )
     assert tool_approvals.pending(user_id="bob") == []
     tool_approvals.decide(record["id"], "once", "alice")
@@ -189,3 +189,50 @@ def test_restart_reads_recorded_decision_without_reasking(_durable_inbox):
     assert resumed_gate(ACTION) is True  # no park, no thread needed
     assert "awaiting_approval" not in loop.metadata
     assert tool_approvals.pending() == []
+
+
+# ── WP-07 live finding: a stop while parked is a cancellation, not an error ──
+
+
+def _real_engine_loop():
+    from umrs.knowledge.execution_port import FakeWorkflowExecutionPort
+    from umrs.knowledge.loop import AutonomousResearchLoop
+    from umrs.knowledge.planner import ResearchExperiment
+
+    engine = AutonomousResearchLoop(simulated=False, workflow_port=FakeWorkflowExecutionPort())
+    loop = ResearchLoop(
+        loop_id="loop-park",
+        project_id="p",
+        research_goal="g",
+        status=LoopStatus.RUNNING,
+        phase=LoopPhase.EXPERIMENT_EXECUTION,
+        max_iterations=1,
+        current_iteration=1,
+        metadata={"mode": "ask", "workflow_name": "wf-a"},
+    )
+    experiment = ResearchExperiment(experiment_id="e1")
+    return engine, loop, experiment
+
+
+def test_stop_while_parked_cancels_instead_of_erroring():
+    from umrs.knowledge.loop import LoopIteration
+
+    engine, loop, experiment = _real_engine_loop()
+    engine._approval_gate = lambda _action: False  # noqa: SLF001 — driver abort/stop path
+    engine._cancel_check = lambda: True  # noqa: SLF001 — the store says STOPPED
+    iteration = LoopIteration(iteration_id="it", loop_id=loop.loop_id, iteration_number=1)
+    engine._execute_experiment(loop, iteration, experiment)  # noqa: SLF001
+    assert loop.status == LoopStatus.STOPPED
+    assert loop.phase == LoopPhase.CANCELLED
+    assert iteration.status == "cancelled"
+    assert "error" not in loop.metadata
+
+
+def test_rejection_without_stop_is_an_error():
+    from umrs.knowledge.loop import LoopIteration
+
+    engine, loop, experiment = _real_engine_loop()
+    engine._approval_gate = lambda _action: False  # noqa: SLF001 — decided "no"
+    iteration = LoopIteration(iteration_id="it", loop_id=loop.loop_id, iteration_number=1)
+    with pytest.raises(RuntimeError, match="operator rejected"):
+        engine._execute_experiment(loop, iteration, experiment)  # noqa: SLF001

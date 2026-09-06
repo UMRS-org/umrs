@@ -189,6 +189,30 @@ class TestHosting:
         assert rows[-1].progress == 1.0
         assert rows[-1].state_inline["loop_id"] == resumed.loop_id
 
+    def test_resume_redoes_the_interrupted_iteration(self):
+        """Live finding (WP-07): a loop killed mid-iteration must redo it, not skip it."""
+        store = LoopStore.memory()
+        loop = _loop("loop-mid", done=1, max_iterations=2)
+        loop.current_iteration = (
+            2  # iteration 2 had started (checkpointed mid-flight) when the process died
+        )
+        loop.metadata.update(
+            hosting="job", durable_job_id="job-1", attempt_id="att-1", awaiting_approval="appr-x"
+        )
+        store.save(loop)
+        _wire(store)
+        assert (
+            loop_hosting.rewind_interrupted_iteration(_loop("x", done=2)) is None
+        )  # nothing to rewind
+        loop_hosting.host(loop.loop_id, job_id="job-1", attempt_id="att-2")
+        _wait_finished(loop.loop_id)
+        resumed = store.get(loop.loop_id)
+        assert resumed.metadata["resume_rewind"] == {"from": 2, "to": 1}
+        assert resumed.metadata["awaiting_approval"] == "appr-x"  # marker kept for the re-run gate
+        assert [it.iteration_number for it in resumed.iterations] == [1, 2]
+        assert resumed.iterations[0].iteration_id == "it-old-1"
+        assert resumed.status == LoopStatus.STOPPED and resumed.phase == LoopPhase.COMPLETED
+
     def test_terminal_loop_is_not_redriven(self):
         store = LoopStore.memory()
         stopped = _loop("loop-done", status=LoopStatus.STOPPED, done=4)

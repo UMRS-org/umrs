@@ -144,6 +144,27 @@ def iteration_hook(
 # ── hosting ─────────────────────────────────────────────────────────────────
 
 
+def rewind_interrupted_iteration(loop: ResearchLoop) -> dict[str, int] | None:
+    """Make a resumed loop redo the iteration that was in flight when it died.
+
+    The engine increments ``current_iteration`` when an iteration *starts* and
+    the record is checkpointed mid-iteration (approval park, post-trigger), so
+    a loop killed mid-iteration comes back with ``current_iteration`` one past
+    its persisted iterations — and would resume as if that iteration had
+    completed (live finding, WP-07: a mid-wait loop resumed straight to
+    "completed" with zero iterations). Rewind to the persisted count; the
+    ``awaiting_approval`` marker is kept so a re-run gate re-requests the same
+    durable intent (already decided → continues; pending → parks again).
+    """
+    persisted = len(loop.iterations)
+    if loop.current_iteration <= persisted:
+        return None
+    rewind = {"from": loop.current_iteration, "to": persisted}
+    loop.current_iteration = persisted
+    loop.metadata["resume_rewind"] = rewind
+    return rewind
+
+
 def _register_driver(
     loop: ResearchLoop, store: Any, *, job_id: str, attempt_id: str
 ) -> str:
@@ -178,6 +199,7 @@ def host(loop_id: str, *, job_id: str, attempt_id: str) -> str:
         raise LookupError(f"research loop not found: {loop_id}")
     if loop.status in (LoopStatus.STOPPED, LoopStatus.ERROR):
         return "terminal"
+    rewind_interrupted_iteration(loop)
     loop.metadata["hosting"] = HOSTING_JOB
     loop.metadata["durable_job_id"] = job_id
     loop.metadata["attempt_id"] = attempt_id
@@ -228,5 +250,6 @@ __all__ = [
     "host",
     "is_configured",
     "iteration_hook",
+    "rewind_interrupted_iteration",
     "snapshot",
 ]

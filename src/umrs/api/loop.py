@@ -175,9 +175,13 @@ def _rehost_on_thread(loop: ResearchLoop) -> None:
     """Re-spawn the in-process driver for one RUNNING/PAUSED loop."""
     from umrs.knowledge import agent_loop_runner, engine_loop_runner
 
+    rewound = loop_hosting.rewind_interrupted_iteration(loop)
     if loop.metadata.get("hosting") == loop_hosting.HOSTING_JOB:
         loop.metadata["hosting"] = loop_hosting.HOSTING_THREAD
-        loop.metadata["hosting_note"] = "durable runtime unavailable at boot; thread-hosted"
+        loop.metadata["hosting_note"] = (
+            "durable runtime unavailable at boot; thread-hosted"
+        )
+    if rewound or loop.metadata.get("hosting") == loop_hosting.HOSTING_THREAD:
         _loop_store.save(loop)
     if loop.metadata.get("agent"):
         project = ResearchProject(project_id=loop.project_id)
@@ -262,6 +266,15 @@ class StartLoopRequest(BaseModel):
             "approvals route. Mirrors the companion turn-attempt vocabulary."
         ),
     )
+    workflow_name: str = Field(
+        "",
+        description=(
+            "Registered UMRS workflow every real-mode experiment runs (G-P1-3). "
+            "Empty → resolved from the registry: exactly one registered workflow "
+            "is used automatically; none or several fail closed at start (400) "
+            "listing the candidates. Discover names with `r4 workflow list`."
+        ),
+    )
 
 
 class LoopStatusResponse(BaseModel):
@@ -301,6 +314,8 @@ class StartLoopResponse(BaseModel):
     status: str
     phase: str
     message: str
+    # Workflow the loop's experiments run ("" for simulated/agentic loops).
+    workflow_name: str = ""
 
 
 class StopLoopResponse(BaseModel):
@@ -355,6 +370,153 @@ def _enforce_readiness_approval(request: StartLoopRequest) -> None:
                 f"Approve with: r4 project approve {request.project_id}"
             ),
         )
+
+
+# ── Workflow resolution (G-P1-3, WP-07) ─────────────────────────────────────
+
+_WORKFLOW_DISCOVERY_HINT = (
+    "Discover registered workflows with `r4 workflow list` (workflow_list tool) "
+    "and pass workflow_name at loop start; register one with `r4 workflow upload`."
+)
+
+
+def _registered_workflow_names(owner: str) -> list[str]:
+    """Names of registered UMRS workflows the loop owner may run.
+
+    In-process catalog read (the same handler the REST listing uses).
+    System-scope workflows are visible to everyone; user-scope ones only to
+    their owner. An ownerless loop (no gateway identity) sees all of them.
+    """
+    import json as _json
+
+    from umrs.core.TaskCmdStatus import TaskCmd
+    from umrs.server.workflow_registry_handler import handle_workflow_command
+
+    data = _json.loads(
+        handle_workflow_command(TaskCmd.LIST_WORKFLOWS, owner or "_", "")
+    )
+    if data.get("status") == "error":
+        raise RuntimeError(str(data.get("message") or "workflow catalog error"))
+    entries = [e for e in (data.get("workflows") or []) if _workflow_visible(e, owner)]
+    return sorted({str(e.get("name")).strip() for e in entries})
+
+
+def _workflow_visible(entry: dict[str, Any], owner: str) -> bool:
+    if not str(entry.get("name") or "").strip():
+        return False
+    if not owner or entry.get("scope", "user") == "system":
+        return True
+    return str(entry.get("user_id") or "") == owner
+
+
+def _experiment_workflow(experiment: Any) -> str:
+    return str(
+        getattr(experiment, "workflow_name", None)
+        or (getattr(experiment, "metadata", None) or {}).get("workflow_name")
+        or ""
+    )
+
+
+def _plan_workflow(loop: ResearchLoop) -> str | None:
+    """The plan's own workflow when every experiment already names one."""
+    experiments = list(loop.plan.experiments) if loop.plan else []
+    if experiments and all(_experiment_workflow(e) for e in experiments):
+        return _experiment_workflow(experiments[0])
+    return None
+
+
+def _catalog_candidates(requested: str, owner: str) -> list[str] | None:
+    """Registered names, or None when the catalog is unreachable but a name was given."""
+    try:
+        return _registered_workflow_names(owner)
+    except Exception as exc:  # reported as 503, never hidden
+        if requested:
+            logger.warning(
+                "workflow catalog unavailable; trusting requested name: %s", exc
+            )
+            return None
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"Workflow catalog unavailable ({exc}); pass workflow_name explicitly "
+                "or retry once the registry is reachable."
+            ),
+        ) from exc
+
+
+def _pick_workflow(requested: str, candidates: list[str] | None) -> tuple[str, str]:
+    """(name, source) or a 400 that names the candidates and the next step."""
+    if requested:
+        if candidates is not None and requested not in candidates:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"workflow_name '{requested}' is not a registered UMRS workflow "
+                    f"(registered: {candidates or 'none'}). {_WORKFLOW_DISCOVERY_HINT}"
+                ),
+            )
+        return requested, (
+            "request" if candidates is not None else "request-unverified"
+        )
+    names = candidates or []
+    if len(names) == 1:
+        return names[0], "single-registered-default"
+    if not names:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Real-mode loops run each experiment as a registered UMRS workflow "
+                f"and none is registered for this caller. {_WORKFLOW_DISCOVERY_HINT}"
+            ),
+        )
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            f"Several workflows are registered ({names}); pass workflow_name to "
+            f"choose one. {_WORKFLOW_DISCOVERY_HINT}"
+        ),
+    )
+
+
+def _resolve_loop_workflow(
+    request: StartLoopRequest,
+    engine: AutonomousResearchLoop,
+    loop: ResearchLoop,
+    owner: str,
+) -> str:
+    """Pick the registered workflow the loop's experiments run (G-P1-3).
+
+    Simulated engines and agentic loops run no workflows. A plan whose
+    experiments all name a workflow keeps it. Otherwise an explicit
+    ``workflow_name`` is validated against the catalog, and with none given
+    exactly one registered workflow is used automatically — zero or several
+    fail closed here (400, candidates named) instead of a RUNNING loop dying
+    at its first iteration with a registry-identifier error. The choice is
+    written on the loop (``metadata.workflow_name`` + ``workflow_resolution``)
+    and onto every experiment lacking one.
+    """
+    if engine.simulated or request.agentic:
+        return ""
+    planned = _plan_workflow(loop)
+    if planned is not None:
+        loop.metadata["workflow_resolution"] = {
+            "workflow_name": planned,
+            "source": "plan",
+        }
+        return planned
+    requested = (request.workflow_name or "").strip()
+    candidates = _catalog_candidates(requested, owner)
+    name, source = _pick_workflow(requested, candidates)
+    for experiment in list(loop.plan.experiments) if loop.plan else []:
+        if not _experiment_workflow(experiment):
+            experiment.metadata["workflow_name"] = name
+    loop.metadata["workflow_name"] = name
+    loop.metadata["workflow_resolution"] = {
+        "workflow_name": name,
+        "source": source,
+        "candidates": list(candidates or [])[:20],
+    }
+    return name
 
 
 # ── Owner identity (ADR-036 (a): approvals are answerable by the loop owner) ─
@@ -419,6 +581,7 @@ async def start_loop(
     loop.metadata["mode"] = "ask" if request.mode == "ask" else "auto"
     if owner:
         loop.metadata["owner_user_id"] = owner
+    workflow_name = _resolve_loop_workflow(request, engine, loop, owner)
     # Snapshot the just-started state for the response: the memory store
     # shares this object with the driver thread, which may complete the loop
     # before this endpoint returns — the POST must still report "started".
@@ -440,6 +603,7 @@ async def start_loop(
         status=status_at_start,
         phase=phase_at_start,
         message=f"Loop {loop.loop_id} started for project {request.project_id}",
+        workflow_name=workflow_name,
     )
 
 
@@ -484,7 +648,11 @@ def _attach_loop_to_session(loop: ResearchLoop, session_id: str) -> None:
 
 
 async def _host_loop(
-    http_request: Request, loop: ResearchLoop, engine: AutonomousResearchLoop, *, agentic: bool
+    http_request: Request,
+    loop: ResearchLoop,
+    engine: AutonomousResearchLoop,
+    *,
+    agentic: bool,
 ) -> None:
     """Durable-job hosting when a runtime exists, else the in-process driver."""
     job_id = await _submit_loop_job(http_request, loop, agentic=agentic)
@@ -526,12 +694,16 @@ async def _submit_loop_job(
             spec={"loop_id": loop.loop_id, "driver": "agent" if agentic else "engine"},
         )
     except Exception as exc:  # noqa: BLE001 — hosting fallback, recorded on the loop
-        logger.warning("research_loop_job submission failed for %s: %s", loop.loop_id, exc)
+        logger.warning(
+            "research_loop_job submission failed for %s: %s", loop.loop_id, exc
+        )
         loop.metadata["hosting_note"] = f"job submission failed: {str(exc)[:160]}"
         return None
 
 
-def _host_on_thread(loop: ResearchLoop, engine: AutonomousResearchLoop, *, agentic: bool) -> None:
+def _host_on_thread(
+    loop: ResearchLoop, engine: AutonomousResearchLoop, *, agentic: bool
+) -> None:
     """In-process driver (no durable runtime): agent runner or phased engine.
 
     Non-agentic: the server drives the phased engine itself (daemon thread,
@@ -750,6 +922,6 @@ def clear_loop_store() -> None:
 
         agent_loop_runner.stop_all()
         engine_loop_runner.stop_all()
-    except Exception:  # noqa: BLE001 — reset must never raise
+    except Exception:  # reset must never raise
         logger.debug("runner sweep during store clear failed", exc_info=True)
     _loop_store.clear()
