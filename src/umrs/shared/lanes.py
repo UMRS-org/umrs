@@ -51,6 +51,8 @@ FAMILY_LANES: dict[str, SurfaceLane] = {
     "k2": SurfaceLane.BETA,
     "loops": SurfaceLane.BETA,
     "research": SurfaceLane.BETA,
+    # ADR-041 asset grants (WP-06) — user-facing v1beta, same lane as loops.
+    "grants": SurfaceLane.BETA,
     "ops": SurfaceLane.INTERNAL,
     "skills": SurfaceLane.INTERNAL,
     "zmq": SurfaceLane.INTERNAL,

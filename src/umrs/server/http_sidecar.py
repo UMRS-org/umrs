@@ -388,8 +388,8 @@ async def _health(request: Request):
 
 async def _metrics():
     """Prometheus metrics endpoint."""
-    from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
     from fastapi.responses import Response
+    from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
     return Response(
         content=generate_latest(),
@@ -551,7 +551,7 @@ async def _wire_a2l_recorder(application) -> None:
             logger.info("a2l conservation recorder wired (ADR-034)")
         else:
             logger.info("a2l conservation recorder: no DSN — Null recorder")
-    except Exception:  # noqa: BLE001 — conservation is degradable
+    except Exception:
         logger.warning(
             "a2l recorder init failed — conservation disabled", exc_info=True
         )
@@ -569,7 +569,7 @@ def _upgrade_loop_store() -> None:
             from umrs.api.loop import configure_loop_store_sync
 
             configure_loop_store_sync(dsn_sync)
-    except Exception:  # noqa: BLE001 — loops must never block boot
+    except Exception:
         logger.warning("loop store upgrade failed", exc_info=True)
 
 
@@ -584,18 +584,18 @@ def _rehydrate_loop_drivers() -> None:
         from umrs.api.loop import reregister_loop_drivers
 
         reregister_loop_drivers()
-    except Exception:  # noqa: BLE001 — loops must never block boot
+    except Exception:
         logger.warning("loop driver re-registration failed", exc_info=True)
 
 
 def _tag_metrics_source() -> None:
     """Tag all LLM metrics with the operational source (site name)."""
     try:
-        from umrs.orchestrator.site_config import load_site_config
         from umrs.metrics import METRICS
+        from umrs.orchestrator.site_config import load_site_config
 
         METRICS.set_source(load_site_config().name)
-        logger.info("LLM metrics source tagged: %s", METRICS._source)  # noqa: SLF001
+        logger.info("LLM metrics source tagged: %s", METRICS._source)
     except Exception:
         logger.debug(
             "No site config available — LLM metrics will have empty source"
@@ -610,7 +610,6 @@ def _create_app():
 
     from umrs.api.knowledge_v2 import router as knowledge_v2_router
     from umrs.knowledge.events_sse import router as events_sse_router
-
     from umrs.server.structured_logging import configure_structured_logging
 
     configure_structured_logging()
@@ -626,7 +625,10 @@ def _create_app():
         companion_sessions_router,
         egress_audit_router,
         endpoints_router,
+        evidence_router,
+        experiment_registry_router,
         files_router,
+        grants_router,
         intake_uploads_router,
         jobs_router,
         knowledge_graph_router,
@@ -643,12 +645,10 @@ def _create_app():
         pipelines_router,
         policy_router,
         provenance_router,
+        rag_router,
         reflective_memory_router,
         research_sessions_router,
         scientific_memory_router,
-        evidence_router,
-        experiment_registry_router,
-        rag_router,
         skills_router,
         traces_router,
         usage_router,
@@ -701,6 +701,7 @@ def _create_app():
     # Structured error responses: all HTTPException responses include
     # error_id and request_id for distributed tracing and automation.
     from fastapi import HTTPException as _HTTPException
+
     from umrs.api.error_responses import (
         structured_http_exception_handler,
         structured_warning_exception_handler,
@@ -719,6 +720,7 @@ def _create_app():
     app.include_router(chat_router)
     app.include_router(companion_sessions_router)
     app.include_router(egress_audit_router)
+    app.include_router(grants_router)
     app.include_router(endpoints_router)
     app.include_router(files_router)
     app.include_router(intake_uploads_router)
@@ -776,7 +778,7 @@ def _create_app():
     ):
         try:
             starter(builder())
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.warning("%s satellite store init failed", name, exc_info=True)
 
     db_pool = _build_db_pool(app)

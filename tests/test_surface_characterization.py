@@ -165,6 +165,7 @@ def test_lane_assignments_match_record(app):
         "k2": "v1beta",
         "loops": "v1beta",
         "research": "v1beta",
+        "grants": "v1beta",
         "ops": "internal",
         "skills": "internal",
         "zmq": "internal",

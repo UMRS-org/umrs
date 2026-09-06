@@ -1,11 +1,27 @@
-"""Access control enforcement for model operations (U-803)."""
+"""Access control enforcement for model operations (U-803).
+
+Fetch-path authorization (ADR-041): when the static scope tier denies a
+read, an optional grant reader is consulted — a live, version-matching,
+unexpired asset grant authorizes the read. Writes are never grant-authorized
+(ownership stays with the static tier); no grant reader attached behaves
+exactly as the legacy static ladder (fail-closed default is unchanged).
+"""
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 
 from ..models import ModelEntry, ModelScope
 from .errors import PermissionDeniedError
+
+if TYPE_CHECKING:  # avoids a hard import; grants stays a soft dependency
+    from umrs.grants import AssetGrant
+
+# (asset_kind, asset_id) -> live grants for that asset ([] when none/unwired)
+GrantReader = Callable[[str, str], "list[AssetGrant]"]
 
 
 @dataclass
@@ -32,7 +48,41 @@ class ACLEnforcer:
     - System models: readable by all, writable by admins only
     - Project models: readable/writable by project members
     - User models: readable/writable by owner only
+    - Any scope: readable with a live matching asset grant (ADR-041)
     """
+
+    def __init__(self, grant_reader: GrantReader | None = None) -> None:
+        self._grant_reader = grant_reader
+
+    def _grant_allows(self, model: ModelEntry, ctx: AccessContext) -> bool:
+        """True when a live grant authorizes this read (deny path only)."""
+        if self._grant_reader is None:
+            return False
+        from umrs.grants import grant_authorizes
+
+        now = datetime.now(timezone.utc)
+        grants = self._grant_reader("model", model.model_id)
+        for grant in grants:
+            if grant_authorizes(
+                grant,
+                asset_kind="model",
+                asset_id=model.model_id,
+                user_id=ctx.user_id,
+                project_id="",
+                now=now,
+            ):
+                return True
+            for project_id in ctx.project_memberships:
+                if grant_authorizes(
+                    grant,
+                    asset_kind="model",
+                    asset_id=model.model_id,
+                    user_id=ctx.user_id,
+                    project_id=project_id,
+                    now=now,
+                ):
+                    return True
+        return False
 
     def can_read(self, model: ModelEntry, ctx: AccessContext) -> bool:
         """Check if user can read/use a model."""
@@ -41,9 +91,13 @@ class ACLEnforcer:
         if model.scope == ModelScope.SYSTEM:
             return True
         if model.scope == ModelScope.PROJECT:
-            return model.project_id in ctx.project_memberships
+            if model.project_id in ctx.project_memberships:
+                return True
+            return self._grant_allows(model, ctx)
         if model.scope == ModelScope.USER:
-            return model.owner_id == ctx.user_id
+            if model.owner_id == ctx.user_id:
+                return True
+            return self._grant_allows(model, ctx)
         return False
 
     def can_write(self, model: ModelEntry, ctx: AccessContext) -> bool:

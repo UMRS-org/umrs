@@ -49,7 +49,7 @@ class CallerScope:
     anonymous: bool = False
 
     @classmethod
-    def from_identity(cls, identity: object | None) -> "CallerScope":
+    def from_identity(cls, identity: object | None) -> CallerScope:
         """Adapt a verified-headers CallerIdentity (or None = anonymous)."""
         if identity is None:
             return cls(anonymous=True)
@@ -100,18 +100,20 @@ def graph_readable(
 ) -> bool:
     """May the caller read one knowledge graph?
 
-    - system graphs → readable by everyone (shared public layer)
-    - user/personal graphs → owner only
-    - project-like kinds → project namespace rule
+    Delegates to the single grammar ladder (ADR-041) — semantics unchanged:
+    system graphs read by everyone, personal graphs owner-only, project-like
+    kinds follow the project namespace rule.
     """
-    if caller.is_admin or caller.anonymous:
-        return True
-    reduced = (kind or "").strip().lower()
-    if reduced in _SYSTEM_KINDS:
-        return True
-    if reduced in _USER_KINDS:
-        return bool(owner_id) and owner_id == caller.user_id
-    return project_readable(project_id or "", caller)
+    from umrs.shared.scope_grammar import normalize_asset_scope, scope_readable
+
+    ref = normalize_asset_scope(kind, owner_id=owner_id, project_id=project_id or "")
+    return scope_readable(
+        ref,
+        user_id=caller.user_id,
+        project_id=caller.project_id,
+        is_admin=caller.is_admin,
+        anonymous=caller.anonymous,
+    )
 
 
 def graph_writable(
@@ -119,15 +121,18 @@ def graph_writable(
 ) -> bool:
     """May the caller update/archive one knowledge graph?
 
-    Lifecycle is admin for system graphs, owner for personal graphs,
-    project members for project graphs. Agent-originated writes stay
-    blocked separately by the registry mutation guard.
+    Delegates to the single grammar ladder (ADR-041) — semantics unchanged:
+    system graphs admin-only, personal graphs owner-only, project kinds
+    member-only; the ``system`` namespace stays admin-managed. Agent-write
+    blocking stays with the registry mutation guard.
     """
-    if caller.is_admin or caller.anonymous:
-        return True
-    reduced = (kind or "").strip().lower()
-    if reduced in _SYSTEM_KINDS:
-        return False
-    if reduced in _USER_KINDS:
-        return bool(owner_id) and owner_id == caller.user_id
-    return project_writable(project_id or "", caller)
+    from umrs.shared.scope_grammar import normalize_asset_scope, scope_writable
+
+    ref = normalize_asset_scope(kind, owner_id=owner_id, project_id=project_id or "")
+    return scope_writable(
+        ref,
+        user_id=caller.user_id,
+        project_id=caller.project_id,
+        is_admin=caller.is_admin,
+        anonymous=caller.anonymous,
+    )
