@@ -596,6 +596,7 @@ def _create_app():
         bundle_restore_router,
         catalog_router,
         chat_router,
+        companion_sessions_router,
         egress_audit_router,
         endpoints_router,
         files_router,
@@ -688,6 +689,7 @@ def _create_app():
     app.include_router(assets_router)
     app.include_router(bundle_restore_router)
     app.include_router(chat_router)
+    app.include_router(companion_sessions_router)
     app.include_router(egress_audit_router)
     app.include_router(endpoints_router)
     app.include_router(files_router)

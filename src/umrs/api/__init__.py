@@ -12,6 +12,7 @@ from .a2l import router as a2l_router
 from .a2l_ledger import router as a2l_ledger_router
 from .artifact_routes import router as artifact_router
 from .bundle_restore import router as bundle_restore_router
+from .companion_sessions import router as companion_sessions_router
 from .catalog import router as catalog_router
 from .chat import router as chat_router
 from .egress_audit import router as egress_audit_router
@@ -58,6 +59,7 @@ __all__ = [
     "artifact_router",
     "assets_router",
     "bundle_restore_router",
+    "companion_sessions_router",
     "catalog_router",
     "chat_router",
     "egress_audit_router",
