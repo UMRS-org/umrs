@@ -71,6 +71,7 @@ class TestGraphBackendWiring:
                 None,  # ensure_default insert
                 _graph_row(graph_id=default_id, name="proj-a"),  # ensure re-read
                 None,  # 0075 regclass probe (embeddings unwired here)
+                None,  # WP-15: knowledge_nodes regclass probe (rag unwired here)
                 [("node:ir-9", "proj-a", "FWI notes", "concept", {}, "g-legacy")],
             ]
         )
@@ -83,7 +84,10 @@ class TestGraphBackendWiring:
             # P2 wave 2: 0075 probe drives two honest states for the
             # embeddings backend (missing migration here via FakePool).
             "embeddings": "embeddings search unavailable (migration 0075 not applied)",
-            "rag": "RAG search requires a deployed mini-rivault instance",
+            # WP-15: the rag scope is wired over the central corpus; absent
+            # knowledge_nodes it names the corpus honestly (never the
+            # endpoint-coupled corpus as the default truth).
+            "rag": "central knowledge corpus unavailable (knowledge nodes not present)",
         }
 
     def test_explicit_graph_selection_carries_provenance(self):
@@ -92,6 +96,7 @@ class TestGraphBackendWiring:
                 None,  # resolve 'experiment-history': by id
                 _graph_row(),  # resolve: by name
                 None,  # 0075 regclass probe (embeddings unwired here)
+                None,  # WP-15: knowledge_nodes regclass probe (rag unwired here)
                 [_NODE],  # graph search rows
             ]
         )
@@ -107,7 +112,7 @@ class TestGraphBackendWiring:
         assert hit["metadata"]["node_type"] == "class"
         assert hit["source_type"] == "knowledge_graph_node"
         # SQL scoped to the resolved graph id
-        search_sql, params = pool.record[3]
+        search_sql, params = pool.record[4]
         assert "graph_id = ANY" in search_sql
         assert params[0] == ["g-exp"]
 
@@ -118,6 +123,7 @@ class TestGraphBackendWiring:
                 None,
                 _graph_row(graph_id=default_id, name="proj-a"),
                 None,  # 0075 regclass probe (embeddings unwired here)
+                None,  # WP-15: knowledge_nodes regclass probe (rag unwired here)
                 [("node:ir-2", "proj-a", "FWI paper", "concept", {}, "")],
             ]
         )
@@ -126,7 +132,7 @@ class TestGraphBackendWiring:
         hit = resp.json()["query"]["results"][0]
         # Legacy '' row attributed to the default graph
         assert hit["metadata"]["graph_id"] == default_id
-        search_sql, params = pool.record[3]
+        search_sql, params = pool.record[4]
         assert "graph_id = '' AND project_id = ANY" in search_sql
         assert params[1] == ["proj-a"]
 
