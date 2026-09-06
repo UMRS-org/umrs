@@ -70,6 +70,7 @@ class KnowledgeImportResult:
     duration_seconds: float = 0.0
     unsigned: bool = False
     embedding_pin: bool = False
+    collision_checks_degraded: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -89,6 +90,7 @@ class KnowledgeImportResult:
             "duration_seconds": self.duration_seconds,
             "unsigned": self.unsigned,
             "embedding_pin": self.embedding_pin,
+            "collision_checks_degraded": self.collision_checks_degraded,
         }
 
 
@@ -178,6 +180,25 @@ async def _restore_jsonl_rows(
     return restored, skipped
 
 
+def _row_summary(row: dict[str, Any], existing_hash: str) -> dict[str, Any]:
+    """Deterministic identity summary of an existing row for abort diffs."""
+    return {
+        "content_hash": existing_hash[:12],
+        "kind": str(row.get("kind") or ""),
+        "label": str(row.get("label") or ""),
+        "size_bytes": int(row.get("size_bytes") or 0),
+    }
+
+
+def _diff_message(diff: dict[str, Any] | None) -> str:
+    """Deterministic abort message for an identity collision (ADR-032 #4)."""
+    return (
+        "knowledge identity collision — import aborted per ADR-032 #4 "
+        "(re-import aborted safely; resolve the mismatch and retry): "
+        + json.dumps(diff or {}, sort_keys=True)
+    )
+
+
 def _read_stored_signature(bundle_path: Path) -> str:
     """Signature carrier for the signed-marker decision.
 
@@ -198,6 +219,8 @@ class KnowledgeImportEngine:
     def __init__(self, *, store: Any, secret_key: str = "") -> None:
         self._store = store
         self._secret_key = secret_key
+        self._collision_degraded: int = 0
+        self._degraded_seen: set[str] = set()
 
     async def import_project(
         self,
@@ -249,6 +272,7 @@ class KnowledgeImportEngine:
         ) = await self._restore_a2l(bundle_path, target)
 
         result.duration_seconds = time.monotonic() - t0
+        result.collision_checks_degraded = self._collision_degraded
         logger.info(
             "Knowledge import completed: project=%s artifacts=%d docs=%d "
             "nodes=%d edges=%d skipped=%d verified=%s",
@@ -330,18 +354,14 @@ class KnowledgeImportEngine:
         if not path.exists():
             return restored, skipped
         for row in _iter_rows(path):
-            outcome = await self._collision_decision(
+            outcome, diff = await self._collision_decision(
                 table, id_column, str(row[row_id_key]), str(row.get("content_hash") or "")
             )
             if outcome == "skip":
                 skipped += 1
                 continue
             if outcome == "abort":
-                raise BundleFormatError(
-                    f"knowledge identity collision: {table}/{row[row_id_key]}: existing "
-                    f"row has a different content_hash — import aborted per ADR-032 #4 "
-                    "(deterministic diff pending upgrade; no rows re-written)"
-                )
+                raise BundleFormatError(_diff_message(diff))
             try:
                 ok = await insert(row)
             except (KeyError, TypeError, ValueError):
@@ -355,22 +375,54 @@ class KnowledgeImportEngine:
 
     async def _collision_decision(
         self, table: str, id_column: str, row_id: str, new_hash: str
-    ) -> str:
-        """Resolve skip/insert/abort for one identity row (best-effort)."""
+    ) -> tuple[str, dict[str, Any] | None]:
+        """Resolve skip/insert/abort (+ deterministic diff) for one identity row.
+
+        When the identity lookup itself is unavailable, the run continues
+        idempotently but is marked ``collision_checks_degraded`` so the
+        operator learns identity verification was bypassed (WP-18).
+        """
         pool = self._pool()
         if pool is None or not new_hash:
-            return "insert"
+            return "insert", None
         try:
             async with pool.acquire() as conn:
-                existing = await conn.fetchval(
-                    f"SELECT content_hash FROM {table} WHERE {id_column} = $1",
+                row = await conn.fetchrow(
+                    f"SELECT * FROM {table} WHERE {id_column} = $1",
                     row_id,
                 )
-        except Exception:  # noqa: BLE001 — untreated databases fall back to inserts
-            return "insert"
-        if existing is None:
-            return "insert"
-        return "skip" if str(existing) == new_hash else "abort"
+        except Exception as exc:  # noqa: BLE001
+            self._note_degraded(table, str(exc))
+            return "insert", None
+        if row is None:
+            return "insert", None
+        row_d = dict(row) if not isinstance(row, dict) else row
+        if "content_hash" not in row_d:
+            self._note_degraded(table, "identity row lookup returned no content_hash")
+            return "insert", None
+        existing_hash = str(row_d.get("content_hash") or "")
+        if existing_hash == new_hash:
+            return "skip", None
+        diff = {
+            "table": table,
+            "id": row_id,
+            "existing": _row_summary(row_d, existing_hash),
+            "incoming_hash": new_hash[:12],
+        }
+        return "abort", diff
+
+    def _note_degraded(self, table: str, reason: str) -> None:
+        """Mark one table's collision check as degraded (once per run)."""
+        if table in self._degraded_seen:
+            return
+        self._degraded_seen.add(table)
+        self._collision_degraded += 1
+        logger.warning(
+            "collision checks degraded for %s — import proceeding idempotently "
+            "(existing rows not verified against bundle): %s",
+            table,
+            reason,
+        )
 
     async def _restore_documents(
         self, bundle_path: Path, project_id: str
@@ -387,18 +439,14 @@ class KnowledgeImportEngine:
         if not path.exists():
             return count
         for row in _iter_rows(path):
-            outcome = await self._collision_decision(
+            outcome, diff = await self._collision_decision(
                 "knowledge_nodes",
                 "node_id",
                 str(row["node_id"]),
                 str(row.get("content_hash") or ""),
             )
             if outcome == "abort":
-                raise BundleFormatError(
-                    f"knowledge identity collision: knowledge_nodes/{row['node_id']}: "
-                    "existing row has a different content_hash — import aborted "
-                    "per ADR-032 #4"
-                )
+                raise BundleFormatError(_diff_message(diff))
             if outcome == "skip":
                 continue
             try:
