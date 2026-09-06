@@ -50,15 +50,19 @@ class Scope:
     id: str = ""
 
     def __str__(self) -> str:
-        return self.kind if self.kind == "system" or not self.id else f"{self.kind}:{self.id}"
+        return (
+            self.kind
+            if self.kind == "system" or not self.id
+            else f"{self.kind}:{self.id}"
+        )
 
-    def parent(self) -> "Scope | None":
+    def parent(self) -> Scope | None:
         """Next-broader scope in the precedence chain, or None at 'system'."""
         if self.kind == "system":
             return None
         return Scope(kind="system")
 
-    def fallback_chain(self) -> list["Scope"]:
+    def fallback_chain(self) -> list[Scope]:
         """Most-specific-first chain ending at system (never empty)."""
         chain: list[Scope] = [self]
         current = self
@@ -86,7 +90,7 @@ def parse(raw: str, *, allow_legacy: bool = False) -> Scope:
         )
     for prefix in PREFIX_SCOPES:
         if text.startswith(prefix) and len(text) > len(prefix):
-            return Scope(kind=prefix[:-1], id=text[len(prefix):])
+            return Scope(kind=prefix[:-1], id=text[len(prefix) :])
     raise ScopeError(
         f"invalid scope {text!r} — want system | project:<id> | group:<id> | user:<id> | session:<id>"
     )
@@ -110,3 +114,110 @@ def is_descendant_of(child: str, parent: str) -> bool:
         return parse_lenient(parent) in parse_lenient(child).fallback_chain()
     except ScopeError:
         return False
+
+
+# ---------------------------------------------------------------------------
+# Authorization ladder (ADR-041, P10-C1) — one ladder for every asset type
+#
+# The label grammar above names trust/asset-tag consumers. Asset *records*
+# (model rows, knowledge graphs, endpoints) carry their scope as an
+# (representation, owner_id, project_id) triple — the divergence G-P10-2
+# records. ``normalize_asset_scope`` maps every representation into one
+# ``AssetScope`` and the two predicates below are the ONLY read/write ladder;
+# asset stores delegate here instead of re-inventing tier checks.
+# ---------------------------------------------------------------------------
+
+SYSTEM_NAMESPACE = "system"
+USER_NAMESPACE_PREFIX = "user:"
+
+_ASSET_SYSTEM_KINDS = {"system"}
+_ASSET_USER_KINDS = {"user", "personal"}
+
+
+@dataclass(frozen=True)
+class AssetScope:
+    """Normalized scope of one asset record."""
+
+    kind: str  # system | project | user
+    owner_id: str = ""
+    project_id: str = ""
+
+
+def normalize_asset_scope(
+    representation: str,
+    *,
+    owner_id: str = "",
+    project_id: str = "",
+) -> AssetScope:
+    """Map an asset-specific scope representation into the grammar.
+
+    Accepted representations (case-insensitive): ``system`` → system;
+    ``user`` / ``personal`` → user; everything else (``project``, ``research``,
+    ``group``, ``team``, …) → project. Mirrors the label grammar's kinds.
+    """
+    reduced = (representation or "").strip().lower()
+    if reduced in _ASSET_SYSTEM_KINDS:
+        kind = "system"
+    elif reduced in _ASSET_USER_KINDS:
+        kind = "user"
+    else:
+        kind = "project"
+    return AssetScope(kind=kind, owner_id=owner_id, project_id=project_id)
+
+
+def scope_readable(
+    ref: AssetScope,
+    *,
+    user_id: str,
+    project_id: str,
+    is_admin: bool = False,
+    anonymous: bool = False,
+) -> bool:
+    """May the caller read an asset with this scope? (single ladder)
+
+    A project-scoped asset with no owning project is a global project row:
+    readable by any authenticated caller (the knowledge-side rule; model
+    scope invariants ensure project models always name a project, so the
+    branches coincide for model-grant checks). The ``system`` namespace is
+    shared-readable; a ``user:<uid>`` namespace is that user's alone (the
+    label grammar's user scope).
+    """
+    if is_admin or anonymous:
+        return True
+    if ref.kind == "system":
+        return True
+    if ref.kind == "user":
+        return bool(ref.owner_id) and ref.owner_id == user_id
+    if not ref.project_id:
+        return True  # global project row, any authenticated tier
+    if ref.project_id == SYSTEM_NAMESPACE:
+        return True  # shared system namespace
+    if ref.project_id.startswith(USER_NAMESPACE_PREFIX):
+        return ref.project_id == f"{USER_NAMESPACE_PREFIX}{user_id}"
+    return ref.project_id == project_id
+
+
+def scope_writable(
+    ref: AssetScope,
+    *,
+    user_id: str,
+    project_id: str,
+    is_admin: bool = False,
+    anonymous: bool = False,
+) -> bool:
+    """May the caller modify an asset with this scope? (single ladder)
+
+    The ``system`` kind and the ``system`` project namespace are both
+    admin-managed: no verified project membership grants write there.
+    """
+    if is_admin or anonymous:
+        return True
+    if ref.kind == "system":
+        return False
+    if ref.kind == "user":
+        return bool(ref.owner_id) and ref.owner_id == user_id
+    if not ref.project_id or ref.project_id == SYSTEM_NAMESPACE:
+        return False
+    if ref.project_id.startswith(USER_NAMESPACE_PREFIX):
+        return ref.project_id == f"{USER_NAMESPACE_PREFIX}{user_id}"
+    return ref.project_id == project_id
