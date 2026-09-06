@@ -852,8 +852,71 @@ class JobStore:
             logger.info(f"Attempt {attempt_id} succeeded (commit={commit})")
             METRICS.job_completed("durable")
 
+            # P7a: persist this attempt's execution manifest (best-effort)
+            self._persist_attempt_manifest(attempt_id, job_id)
+
             # Invoke post-success hook (best-effort, non-blocking)
             self._invoke_post_success(attempt_id, job_id)
+
+    def _persist_attempt_manifest(self, attempt_id: str, job_id: str) -> None:
+        """P7a: assemble + persist this attempt's ExecutionManifest (G-P7-1).
+
+        Merged under attempts.metrics['manifest'] (no schema change);
+        best-effort by design — a manifest failure never blocks the
+        attempt's terminal state.
+        """
+        try:
+            job = self.get_job(job_id)
+            attempts = self.get_attempts_for_job(job_id)
+            from .manifest import execution_manifest
+            from .provenance import build_provenance
+
+            spec = job.spec or {}
+            manifest = execution_manifest(
+                provenance=build_provenance(job, attempts).to_dict(),
+                trigger=str(spec.get("trigger") or "api"),
+                pipeline_name=str(spec.get("workflow_name") or ""),
+            )
+            with self._get_conn() as conn, conn.cursor() as cur:
+                cur.execute(
+                    """UPDATE job_attempts
+                       SET metrics = COALESCE(metrics, '{}')::jsonb || %s::jsonb
+                       WHERE attempt_id = %s""",
+                    (json.dumps({"manifest": manifest}), attempt_id),
+                )
+        except Exception:
+            logger.exception("manifest persistence failed for attempt %s", attempt_id)
+
+    def get_attempt_manifest(self, attempt_id: str) -> dict[str, Any] | None:
+        """Persisted ExecutionManifest for one attempt (None when unset)."""
+        with (
+            self._get_conn() as conn,
+            conn.cursor(cursor_factory=RealDictCursor) as cur,
+        ):
+            cur.execute(
+                "SELECT metrics ->> 'manifest' AS manifest FROM job_attempts WHERE attempt_id = %s",
+                (attempt_id,),
+            )
+            row = cur.fetchone()
+        if not row or row["manifest"] is None:
+            return None
+        manifest = row["manifest"]
+        return manifest if isinstance(manifest, dict) else json.loads(manifest)
+
+    def get_latest_attempt_manifest(self, job_id: str) -> dict[str, Any] | None:
+        """Persisted manifest for one job (commit attempt preferred, else newest)."""
+        job = self.get_job(job_id)
+        attempts = self.get_attempts_for_job(job_id)
+        ordered = sorted(
+            attempts,
+            key=lambda a: (a.attempt_id != job.commit_attempt_id, a.attempt_no),
+            reverse=True,
+        )
+        for attempt in ordered:
+            manifest = self.get_attempt_manifest(attempt.attempt_id)
+            if manifest:
+                return manifest
+        return None
 
     def _invoke_post_success(self, attempt_id: str, job_id: str) -> None:
         """Best-effort post-success hook dispatch."""
@@ -977,6 +1040,9 @@ class JobStore:
                 self._reconcile_fan_out_parent(conn, job_id)
 
             conn.commit()
+
+            # P7a: persist manifest for the failed attempt (best-effort)
+            self._persist_attempt_manifest(attempt_id, job_id)
 
             # Invoke post-failure hook when job itself failed (no retry).
             if not requeued and self._post_failure_callback:

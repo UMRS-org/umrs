@@ -836,6 +836,65 @@ async def get_job(
         ) from None
 
 
+@router.get(
+    "/{job_id}/manifest",
+    summary="Get the latest execution manifest for a job",
+    description=(
+        "P7a: the execution manifest persisted at attempt completion "
+        "(environment, code version, provenance). Commit attempt preferred."
+    ),
+)
+async def get_job_manifest(
+    job_id: str,
+    caller: CallerIdentity = Depends(get_caller_identity),
+    store: JobStore = Depends(get_job_store),
+) -> dict[str, Any]:
+    """Latest ExecutionManifest for one job (404 when none is persisted yet)."""
+    try:
+        job = store.get_job(job_id)
+    except JobNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Job not found: {job_id}",
+        ) from None
+    _enforce_job_access(caller, job, action="read")
+    manifest = store.get_latest_attempt_manifest(job_id)
+    if manifest is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No execution manifest persisted for job {job_id} yet "
+            "(recorded at attempt completion)",
+        )
+    return {"job_id": job_id, "manifest": manifest}
+
+
+@router.get(
+    "/{job_id}/manifests",
+    summary="List per-attempt execution manifests for a job",
+    description="P7a: manifests persisted per attempt (subset may be empty for older attempts).",
+)
+async def list_job_manifests(
+    job_id: str,
+    caller: CallerIdentity = Depends(get_caller_identity),
+    store: JobStore = Depends(get_job_store),
+) -> dict[str, Any]:
+    """Per-attempt manifests for one job (older attempts pre-manifest = omitted)."""
+    try:
+        job = store.get_job(job_id)
+    except JobNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Job not found: {job_id}",
+        ) from None
+    _enforce_job_access(caller, job, action="read")
+    manifests = []
+    for attempt in store.get_attempts_for_job(job_id):
+        manifest = store.get_attempt_manifest(attempt.attempt_id)
+        if manifest is not None:
+            manifests.append({"attempt_id": attempt.attempt_id, "manifest": manifest})
+    return {"job_id": job_id, "manifests": manifests, "count": len(manifests)}
+
+
 @router.post(
     "/{job_id}/cancel",
     response_model=JobActionResponse,
@@ -880,6 +939,74 @@ async def cancel_job(
             status_code=status.HTTP_409_CONFLICT,
             detail=str(e),
         ) from e
+
+
+def _drift_window(store: JobStore, job_id: str) -> dict[str, Any]:
+    """Drift honesty (P7b): recorded vs current code version.
+
+    Pinned when the prior attempt's manifest carries a code SHA (P7a);
+    otherwise the drift window is declared undeclared, never hidden.
+    """
+    recorded: str = ""
+    latest = store.get_latest_attempt_manifest(job_id)
+    if latest:
+        versions = latest.get("code_versions") or []
+        if versions:
+            recorded = str(versions[0].get("commit_sha") or "")
+    from ..jobs.manifest import code_version_ref
+
+    current = code_version_ref().get("commit_sha") or ""
+    pinned = bool(recorded)
+    return {
+        "pinned": pinned,
+        "same_code": (recorded == current) if pinned else None,
+        "recorded_code_sha": recorded or None,
+        "current_code_sha": current or None,
+        "note": (
+            ""
+            if pinned
+            else "prior attempt carries no recorded code version — drift window undeclared"
+        ),
+    }
+
+
+@router.post(
+    "/{job_id}/reproduce",
+    summary="Reproduce a job (executor-backed replay, P7b)",
+    description=(
+        "Executor-backed replay: requeues the job's spec so the durable runtime "
+        "executes it again with the SAME inputs, and reports the drift window "
+        "(recorded vs current code version) honestly."
+    ),
+)
+async def reproduce_job(
+    job_id: str,
+    caller: CallerIdentity = Depends(get_caller_identity),
+    store: JobStore = Depends(get_job_store),
+) -> dict[str, Any]:
+    """Reproduce (replay) one job through the durable runtime (G-P7-2)."""
+    try:
+        job = store.get_job(job_id)
+    except JobNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Job not found: {job_id}",
+        ) from None
+    _enforce_job_access(caller, job, action="reproduce")
+    drift = _drift_window(store, job_id)
+    try:
+        store.retry_job(job_id)
+    except InvalidTransitionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        ) from exc
+    return {
+        "job_id": job_id,
+        "action": "reproduce",
+        "success": True,
+        "message": "job requeued; the durable runtime will execute it with the same spec",
+        "drift": drift,
+    }
 
 
 @router.post(
