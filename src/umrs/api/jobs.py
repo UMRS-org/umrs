@@ -10,7 +10,7 @@ Provides:
 """
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 import os
 from dataclasses import dataclass
 from typing import Any
@@ -968,6 +968,144 @@ def _drift_window(store: JobStore, job_id: str) -> dict[str, Any]:
             else "prior attempt carries no recorded code version — drift window undeclared"
         ),
     }
+
+
+# ---------------------------------------------------------------------------
+# Attempt-scoped short-lived S3 credentials (WP-11, G-P5-3)
+# ---------------------------------------------------------------------------
+
+
+def _attempt_for_job(store: JobStore, job_id: str, attempt_id: str) -> Any:
+    """Resolve one attempt belonging to the job (404 when absent)."""
+    for attempt in store.get_attempts_for_job(job_id):
+        if attempt.attempt_id == attempt_id:
+            return attempt
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail=f"Attempt not found on job {job_id}: {attempt_id}",
+    )
+
+
+def _load_or_mint_credentials(
+    store: JobStore, job_id: str, attempt_id: str, attempt_no: int
+) -> dict[str, Any]:
+    """Existing live record, else mint + persist a new one (idempotent)."""
+    from ..jobs.attempt_credentials import (
+        AttemptCredentials,
+        DEFAULT_ATTEMPT_TTL_SEC,
+        mint_attempt_credentials,
+    )
+
+    existing = store.get_attempt_credentials(attempt_id)
+    if existing:
+        record = AttemptCredentials.from_dict(existing)
+        try:
+            expires = datetime.fromisoformat(record.expires_at)
+            if expires.tzinfo is None:
+                expires = expires.replace(tzinfo=timezone.utc)
+            if datetime.now(timezone.utc) < expires:
+                return record.to_dict()
+        except ValueError:
+            pass  # malformed expiry → re-mint
+    record = mint_attempt_credentials(
+        job_id, attempt_id, attempt_no, ttl_sec=DEFAULT_ATTEMPT_TTL_SEC
+    )
+    store.record_attempt_credentials(attempt_id, record.to_dict())
+    return record.to_dict()
+
+
+@router.post(
+    "/{job_id}/attempts/{attempt_id}/credentials",
+    summary="Mint attempt-scoped S3 credentials (WP-11)",
+    description=(
+        "Attempt-keyed short-lived credential record: key-space scoped to "
+        "jobs/<job_id>/attempt_<n>/, short TTL, auditable mint trail. No secret "
+        "material is stored. Round 1 = scoped presign + mint trail; STS round 2."
+    ),
+)
+async def mint_attempt_credentials_route(
+    job_id: str,
+    attempt_id: str,
+    caller: CallerIdentity = Depends(get_caller_identity),
+    store: JobStore = Depends(get_job_store),
+) -> dict[str, Any]:
+    """Mint (idempotent) the attempt's credential record."""
+    try:
+        job = store.get_job(job_id)
+    except JobNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Job not found: {job_id}",
+        ) from None
+    _enforce_job_access(caller, job, action="mint credentials")
+    attempt = _attempt_for_job(store, job_id, attempt_id)
+    record = _load_or_mint_credentials(store, job_id, attempt_id, attempt.attempt_no)
+    return {"status": "minted", "credentials": record}
+
+
+class AttemptPresignBody(BaseModel):
+    """Request for an attempt-scoped presigned URL."""
+
+    key: str = Field(min_length=1, max_length=1024)
+    method: str = Field(default="get", pattern="^(get|put)$")
+    ttl_sec: int | None = None
+
+
+@router.post(
+    "/{job_id}/attempts/{attempt_id}/presign",
+    summary="Attempt-scoped presigned URL (WP-11)",
+    description=(
+        "Presigns GET/PUT ONLY for keys under the attempt's recorded scope "
+        "(403 outside). TTL is bounded by the minted credential TTL "
+        "(default 900s — not the ambient one-hour flat TTL)."
+    ),
+)
+async def presign_for_attempt(
+    job_id: str,
+    attempt_id: str,
+    body: AttemptPresignBody,
+    caller: CallerIdentity = Depends(get_caller_identity),
+    store: JobStore = Depends(get_job_store),
+) -> dict[str, Any]:
+    """Attempt-scoped presign; refuses outside the recorded prefix/expiry."""
+    from ..jobs.attempt_credentials import AttemptCredentials, key_in_scope
+
+    try:
+        job = store.get_job(job_id)
+    except JobNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Job not found: {job_id}",
+        ) from None
+    _enforce_job_access(caller, job, action="presign")
+    _attempt_for_job(store, job_id, attempt_id)
+
+    raw = store.get_attempt_credentials(attempt_id)
+    if not raw:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="No attempt credentials minted yet — POST .../credentials first",
+        )
+    record = AttemptCredentials.from_dict(raw)
+    key = body.key.lstrip("/")
+    if not key_in_scope(key, record):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="key outside attempt scope or credentials expired",
+        )
+
+    ttl = min(body.ttl_sec or record.ttl_sec, record.ttl_sec)
+    from .files import get_s3_config
+
+    config = get_s3_config()
+    client = config.get_client()
+    from ..shared.storage.s3_presign import generate_presigned_get, generate_presigned_put
+
+    if body.method == "get":
+        url = generate_presigned_get(client, config.bucket, key, ttl=ttl)
+    else:
+        url = generate_presigned_put(client, config.bucket, key, ttl=ttl)
+    return {"url": url, "method": body.method, "expires_in_sec": ttl, "scope": list(record.scope_prefixes)}
 
 
 @router.post(

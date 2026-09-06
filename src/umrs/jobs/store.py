@@ -918,6 +918,35 @@ class JobStore:
                 return manifest
         return None
 
+    def record_attempt_credentials(self, attempt_id: str, credentials: dict[str, Any]) -> None:
+        """WP-11: persist an attempt-scoped credential record (metrics slot).
+
+        Never stores secret material — only scope, TTL and expiry.
+        """
+        with self._get_conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                """UPDATE job_attempts
+                   SET metrics = COALESCE(metrics, '{}')::jsonb || %s::jsonb
+                   WHERE attempt_id = %s""",
+                (json.dumps({"credentials": credentials}), attempt_id),
+            )
+
+    def get_attempt_credentials(self, attempt_id: str) -> dict[str, Any] | None:
+        """The persisted credential record for one attempt (None when unset)."""
+        with (
+            self._get_conn() as conn,
+            conn.cursor(cursor_factory=RealDictCursor) as cur,
+        ):
+            cur.execute(
+                "SELECT metrics ->> 'credentials' AS credentials FROM job_attempts WHERE attempt_id = %s",
+                (attempt_id,),
+            )
+            row = cur.fetchone()
+        if not row or row["credentials"] is None:
+            return None
+        creds = row["credentials"]
+        return creds if isinstance(creds, dict) else json.loads(creds)
+
     def _invoke_post_success(self, attempt_id: str, job_id: str) -> None:
         """Best-effort post-success hook dispatch."""
         if self._post_success_callback is None:
