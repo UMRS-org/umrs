@@ -458,3 +458,32 @@ class TestParseRaw:
         cfg = _parse_raw({"scheduler": {"partition": "xgpu"}})
         assert cfg.scheduler.partition == "xgpu"
         assert cfg.scheduler.gpus == 1  # default preserved
+
+
+class TestEgressProxyImage:
+    """ADR-040: the site declares the in-stack egress proxy image (or nothing)."""
+
+    def test_network_env_exports_declared_image_only(self):
+        from umrs.orchestrator import site_config as sc
+
+        assert "EGRESS_GUARD_IMAGE" not in sc._network_env(NetworkConfig())
+        env = sc._network_env(NetworkConfig(egress_proxy_image="localhost/r4-mcp:2026.09"))
+        assert env["EGRESS_GUARD_IMAGE"] == "localhost/r4-mcp:2026.09"
+
+    def test_yaml_key_is_loaded(self, tmp_path):
+        path = tmp_path / "site.yaml"
+        path.write_text(
+            textwrap.dedent(
+                """
+                network:
+                  egress_proxy_image: registry.example.org/r4-mcp@sha256:abc
+                """
+            )
+        )
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("EGRESS_GUARD_IMAGE", None)
+            cfg = load_site_config(str(path))
+        assert cfg.network.egress_proxy_image == "registry.example.org/r4-mcp@sha256:abc"
+
+    def test_default_is_empty_meaning_no_proxy_declared(self):
+        assert NetworkConfig().egress_proxy_image == ""

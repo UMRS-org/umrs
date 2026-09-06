@@ -28,7 +28,11 @@ from ..orchestrator.endpoint_registry import (
     EndpointStatus,
     get_registry,
 )
-from ..orchestrator.endpoint_mounts import validate_mount_source
+from ..orchestrator.endpoint_mounts import (
+    egress_reasons,
+    require_egress_proxy_image,
+    validate_mount_source,
+)
 from ..orchestrator.readiness import get_readiness_poller
 from ..shared.auth import JWTError, resolve_jwt_secret, validate_jwt
 
@@ -1462,6 +1466,21 @@ def _dedupe_profiles(existing: str, new_profiles: list[str]) -> list[str]:
         if p and p not in result:
             result.append(p)
     return result
+
+
+def _require_egress_proxy_for_request(request: ProvisionRequest) -> None:
+    """ADR-040 D4: refuse egress-requiring provisions when no proxy image is declared."""
+    mounts = request.mounts
+    reasons = egress_reasons(
+        mcp_mounts=bool(mounts and mounts.mcp_servers),
+        egress_domains=[str(d).strip() for d in (request.egress_domains or []) if str(d).strip()],
+    )
+    if not reasons:
+        return
+    try:
+        require_egress_proxy_image(reasons)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
 
 def _active_site_profiles() -> list[str]:
@@ -3013,6 +3032,8 @@ async def provision_endpoint(
     request_metadata.setdefault("owner_type", request.tier)
     request_metadata.setdefault("tier", request_metadata["owner_type"])
     _apply_served_name_env(request, model_entry, request_metadata, env_vars)
+
+    _require_egress_proxy_for_request(request)
 
     # Create provision request
     service_request = ServiceProvisionRequest(
