@@ -778,6 +778,9 @@ class JobStore:
                 )
             conn.commit()
 
+        # WP-12: record the queue_wait phase span (best-effort)
+        self._record_attempt_timing(attempt_id, "running", datetime.utcnow())
+
     def mark_attempt_succeeded(
         self,
         attempt_id: str,
@@ -855,8 +858,43 @@ class JobStore:
             # P7a: persist this attempt's execution manifest (best-effort)
             self._persist_attempt_manifest(attempt_id, job_id)
 
+            # WP-12: record the wall phase span (best-effort)
+            self._record_attempt_timing(attempt_id, "ended", now)
+
             # Invoke post-success hook (best-effort, non-blocking)
             self._invoke_post_success(attempt_id, job_id)
+
+    def _record_attempt_timing(self, attempt_id: str, phase: str, when: datetime) -> None:
+        """WP-12: record one attempt phase span (best-effort; never blocks).
+
+        Computes the phase milliseconds from the attempt row's started_at,
+        observes the histogram (authority-bounded labels), and persists the
+        phase record under attempts.metrics['timing'] — surfaced through
+        GET /umrs/jobs/{id} attempts.
+        """
+        try:
+            from .timing import attempt_phases
+
+            attempt = self.get_attempt(attempt_id)
+            fields = attempt_phases(
+                started_at=attempt.started_at, transitioned_at=when, phase=phase
+            )
+            fields = {k: v for k, v in fields.items() if v is not None}
+            if not fields:
+                return
+            for field_name, ms in fields.items():
+                METRICS.attempt_phase_seconds(
+                    attempt.backend, field_name.removesuffix("_ms"), ms / 1000
+                )
+            with self._get_conn() as conn, conn.cursor() as cur:
+                cur.execute(
+                    """UPDATE job_attempts
+                       SET metrics = COALESCE(metrics, '{}')::jsonb || %s::jsonb
+                       WHERE attempt_id = %s""",
+                    (json.dumps({"timing": fields}), attempt_id),
+                )
+        except Exception:
+            logger.exception("attempt timing persistence failed for %s (phase=%s)", attempt_id, phase)
 
     def _persist_attempt_manifest(self, attempt_id: str, job_id: str) -> None:
         """P7a: assemble + persist this attempt's ExecutionManifest (G-P7-1).
@@ -1069,6 +1107,9 @@ class JobStore:
                 self._reconcile_fan_out_parent(conn, job_id)
 
             conn.commit()
+
+            # WP-12: record the wall phase span (best-effort)
+            self._record_attempt_timing(attempt_id, "ended", now)
 
             # P7a: persist manifest for the failed attempt (best-effort)
             self._persist_attempt_manifest(attempt_id, job_id)

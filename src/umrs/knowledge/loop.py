@@ -562,6 +562,17 @@ class AutonomousResearchLoop:
         # Complete iteration
         iteration.completed_at = datetime.now(timezone.utc).isoformat()
         iteration.status = "completed"
+        # WP-12: per-iteration wall-clock span — observable (engine label)
+        # and recorded on the iteration's results for the loop detail view.
+        from umrs.jobs.timing import duration_ms
+        from umrs.metrics import METRICS
+
+        iteration_ms = duration_ms(iteration.started_at, iteration.completed_at)
+        if iteration_ms is not None:
+            iteration.results["timing_ms"] = iteration_ms
+            METRICS.loop_iteration_seconds(
+                "simulated" if self._simulated else "real", iteration_ms / 1000
+            )
         loop.iterations.append(iteration)
         loop.updated_at = datetime.now(timezone.utc).isoformat()
         self._checkpoint(iteration)
