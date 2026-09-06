@@ -32,6 +32,61 @@ DEFAULT_DENIED_SOURCE_PREFIXES = (
     "/sys",
     "/var/run",
 )
+EGRESS_PROXY_REFUSAL = (
+    "egress requested ({why}) but this site declares no egress proxy image "
+    "(site.yaml network.egress_proxy_image / EGRESS_GUARD_IMAGE); refusing per ADR-040 D4"
+)
+
+
+def egress_proxy_image() -> str:
+    """Site-declared image for the in-stack egress proxy ('' = none declared)."""
+    value = os.environ.get("EGRESS_GUARD_IMAGE", "").strip()
+    if value:
+        return value
+    # get_site_config() falls back to env-only defaults when site.yaml is absent;
+    # a malformed site.yaml raises, which is the right outcome for a provision.
+    from .site_config import get_site_config
+
+    return str(get_site_config().network.egress_proxy_image or "").strip()
+
+
+def egress_reasons(*, mcp_mounts: bool, egress_domains: list[str]) -> list[str]:
+    """Why a provision needs the ``egress`` profile (empty when it does not)."""
+    reasons: list[str] = []
+    if mcp_mounts:
+        reasons.append("custom MCP mounts")
+    if egress_domains:
+        reasons.append("egress_domains=" + ",".join(egress_domains))
+    return reasons
+
+
+def require_egress_proxy_image(reasons: list[str]) -> str:
+    """Return the site's proxy image or raise ``ValueError`` (ADR-040 D4 refusal)."""
+    image = egress_proxy_image()
+    if not image:
+        raise ValueError(EGRESS_PROXY_REFUSAL.format(why="; ".join(reasons)))
+    return image
+
+
+def _apply_rag_mounts(
+    env: dict[str, str], extra_profiles: list[str], normalized_mounts: dict[str, Any]
+) -> None:
+    project_data = normalized_mounts.get("project_data")
+    rag_index = normalized_mounts.get("rag_index")
+    if project_data:
+        extra_profiles.append("rag")
+        env["PROJECT_DATA_PATH"] = project_data["source"]
+    if rag_index:
+        extra_profiles.append("rag")
+        env["RAG_INDEX_PATH"] = rag_index["source"]
+
+
+def _apply_egress_proxy(
+    env: dict[str, str], *, mcp_mounts: bool, domains: list[str]
+) -> None:
+    reasons = egress_reasons(mcp_mounts=mcp_mounts, egress_domains=domains)
+    if reasons:
+        env["EGRESS_GUARD_IMAGE"] = require_egress_proxy_image(reasons)
 
 
 def build_mount_environment(
@@ -54,19 +109,13 @@ def build_mount_environment(
         extra_profiles.extend(["custom-mcp", "egress"])
         env.update(_mcp_mount_env(mcp_mounts))
 
-    project_data = normalized_mounts.get("project_data")
-    rag_index = normalized_mounts.get("rag_index")
-    if project_data:
-        extra_profiles.append("rag")
-        env["PROJECT_DATA_PATH"] = project_data["source"]
-    if rag_index:
-        extra_profiles.append("rag")
-        env["RAG_INDEX_PATH"] = rag_index["source"]
+    _apply_rag_mounts(env, extra_profiles, normalized_mounts)
 
     if domains:
         extra_profiles.append("egress")
         env["EGRESS_DOMAIN_ALLOWLIST"] = ",".join(domains)
         metadata["egress_domains"] = domains
+    _apply_egress_proxy(env, mcp_mounts=bool(mcp_mounts), domains=domains)
 
     if extra_profiles:
         env["RIVAULT_EXTRA_PROFILES"] = " ".join(_dedupe(extra_profiles))

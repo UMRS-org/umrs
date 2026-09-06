@@ -135,6 +135,7 @@ class NetworkConfig:
     port_strategy: str = "static_range"  # static_range | registry_lock
     egress_proxy_url: str = ""  # Forward proxy URL for mini-rivault egress
     egress_no_proxy: str = ""  # Comma-separated internal hosts bypassing proxy
+    egress_proxy_image: str = ""  # In-stack egress-guard image (ADR-040); empty = none declared -> egress refused
 
 
 @dataclass
@@ -365,6 +366,8 @@ def _network_env(network: NetworkConfig) -> dict[str, str]:
         env["EGRESS_GUARD_PROXY_URL"] = network.egress_proxy_url
     if network.egress_no_proxy:
         env["RIVAULT_NO_PROXY"] = network.egress_no_proxy
+    if network.egress_proxy_image:
+        env["EGRESS_GUARD_IMAGE"] = network.egress_proxy_image
     return env
 
 
@@ -578,6 +581,7 @@ def default_site_config() -> SiteConfig:
         os.getenv("EGRESS_GUARD_PROXY_URL", ""),
     )
     cfg.network.egress_no_proxy = os.getenv("RIVAULT_NO_PROXY", "")
+    cfg.network.egress_proxy_image = os.getenv("EGRESS_GUARD_IMAGE", "")
 
     # vLLM
     cfg.vllm.model = os.getenv("VLLM_MODEL", "intfloat/e5-base-v2")
