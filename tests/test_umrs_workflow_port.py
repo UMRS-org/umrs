@@ -151,3 +151,21 @@ def test_results_unknown_execution(store):
     port = UmrsWorkflowExecutionPort(store)
     with _patch_registry(_FakeRegistry()):
         assert port.results("exec-ghost")["status"] == "unknown"
+
+
+def test_trigger_enqueues_the_created_job():
+    """WP-07 live finding: create_job leaves PLANNED; the scheduler claims QUEUED only.
+
+    Without the enqueue every server-driven real-mode loop blocked in wait().
+    """
+    from unittest.mock import MagicMock
+
+    from umrs.knowledge.umrs_workflow_port import UmrsWorkflowExecutionPort
+
+    store = MagicMock()
+    store.create_job.return_value = "job-1"
+    port = UmrsWorkflowExecutionPort(store)
+    execution_id = port.trigger("demo08_yield_eval", {"project_id": "p", "iteration": 1})
+    assert execution_id.startswith("exec-")
+    store.create_job.assert_called_once()
+    store.enqueue_job.assert_called_once_with("job-1")
