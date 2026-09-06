@@ -528,6 +528,79 @@ class TestKnowledgeExportStatusChecker:
         assert result.status == "failed"
 
 
+# ── References + Manifest Markers (WP-17 / G-P2-2) ────────────────────────────
+
+
+class _RefsStore:
+    """Minimal store for reference-population tests (async + pool present)."""
+
+    def __init__(self) -> None:
+        self._pool = _RefsPool()
+
+    async def list_artifacts(self, **_kw):
+        return ([], 0)
+
+    async def list_irs(self, project_id):
+        return []
+
+    async def list_nodes(self, project_id):
+        return []
+
+    async def list_edges(self, project_id):
+        return []
+
+
+class _RefsPool:
+    async def fetch(self, query, *_args):
+        if "FROM skills" in query:
+            return [{"name": "science-run", "version": "1.2.0", "scope": "project"}]
+        if "FROM mcp_servers" in query:
+            return [{"server_id": "s1", "name": "lab-mcp", "version": "0.3.0"}]
+        return []
+
+    def acquire(self):
+        return _RefsConn()
+
+
+class _RefsConn:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_a):
+        return False
+
+    async def fetchrow(self, *_a):
+        return {"count": 0}
+
+    async def fetch(self, *_a):
+        return []
+
+
+class TestGtwop2ReferencesAndMarkers:
+    @pytest.mark.asyncio
+    async def test_manifest_populates_references_and_declares_markers(
+        self, tmp_bundle_dir: Path
+    ) -> None:
+        """G-P2-2 partial: skills/MCP by reference + declarative markers."""
+        engine = KnowledgeExportEngine(
+            store=_RefsStore(),
+            output_dir=tmp_bundle_dir.parent,
+            secret_key="k",
+        )
+        result = await engine.export_project("test-project")
+        assert result.signature
+        manifest = json.loads((tmp_bundle_dir / "manifest.json").read_text())
+        assert manifest["skills"] == [
+            {"ref": "project:science-run", "version_pin": "1.2.0", "scope": "project"}
+        ]
+        assert manifest["mcp_configs"] == [
+            {"ref": "lab-mcp", "version_pin": "0.3.0"}
+        ]
+        assert manifest["collision_policy"] == "abort"
+        assert manifest["provenance_canonical"] is False
+        assert manifest["reconciliation_snapshot"] is None
+
+
 # ── Bundle Format Tests ──────────────────────────────────────────────────────
 
 

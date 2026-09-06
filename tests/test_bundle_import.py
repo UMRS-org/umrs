@@ -11,6 +11,8 @@ import hashlib
 import hmac
 import json
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi import FastAPI
@@ -306,6 +308,123 @@ class TestRestoreFlow:
         engine = KnowledgeImportEngine(store=_FakeStore(), secret_key=_SECRET)
         result = await engine.import_project(bundle)
         assert result.verified is True
+
+
+class _ConflictConn(_FakeConn):
+    """FakeConn that resolves content_hash lookups from a seeded map."""
+
+    async def fetchval(self, sql, *params):
+        parent = self._parent
+        if not hasattr(parent, "existing_hashes"):
+            return None
+        table = sql.split("FROM ", 1)[1].split(" ", 1)[0]
+        return parent.existing_hashes.get(f"{table}:{params[0]}")
+
+
+class _ConflictPool(_FakePool):
+    def __init__(self, existing: dict) -> None:
+        super().__init__()
+        self.existing_hashes = existing
+
+    def acquire(self):
+        return _ConflictConn(self)
+
+
+class TestCollisionAbort:
+    """ADR-032 #4 (WP-17): same identity + different content_hash aborts."""
+
+    def _engine(self, hash_map: dict) -> KnowledgeImportEngine:
+        store = _FakeStore()
+        store._pool = _ConflictPool(hash_map)
+        return KnowledgeImportEngine(store=store)
+
+    async def test_artifact_hash_conflict_aborts(self, tmp_path):
+        bundle = _write_bundle(tmp_path)
+        engine = self._engine({"knowledge_artifacts:art-0": "different-hash-00000000"})
+        with pytest.raises(BundleFormatError, match="knowledge_artifacts/art-0"):
+            await engine.import_project(bundle, allow_unsigned=True)
+
+    async def test_node_hash_conflict_aborts(self, tmp_path):
+        bundle = _write_bundle(tmp_path)
+        engine = self._engine({"knowledge_nodes:node-1": "other-hash-11111111"})
+        with pytest.raises(BundleFormatError, match="knowledge_nodes/node-1"):
+            await engine.import_project(bundle, allow_unsigned=True)
+
+    async def test_same_hash_identity_skips_and_restores_rest(self, tmp_path):
+        bundle = _write_bundle(tmp_path)
+        store = _FakeStore()
+        store._pool = _ConflictPool({"knowledge_artifacts:art-0": "hash-0"})
+        engine = KnowledgeImportEngine(store=store)
+        result = await engine.import_project(bundle, allow_unsigned=True)
+        assert result.artifact_count == 1  # art-0 skipped, art-1 restored
+        assert len(store.artifacts) == 1
+        assert store.artifacts[0]["content_hash"] == "hash-1"
+
+
+class TestCrossStoreRoundTrip:
+    """G-P2-6 (this round's leg): export from store A → import into store B.
+
+    Engine-level cross-store round-trip; a live two-site probe is queued in
+    Phase-2 live checks.
+    """
+
+    async def test_export_from_a_then_import_into_b(self, tmp_path):
+        from umrs.knowledge.bundle_export import KnowledgeExportEngine
+
+        store_a = MagicMock()
+        store_a.list_artifacts = AsyncMock(
+            return_value=(
+                [
+                    SimpleNamespace(
+                        artifact_id="a1",
+                        content_hash="h1",
+                        kind="document",
+                        project_id="x",
+                        source_ref="s",
+                        size_bytes=1,
+                        mime_type="text/plain",
+                        status="active",
+                        metadata={},
+                        created_at=None,
+                        updated_at=None,
+                    )
+                ],
+                1,
+            )
+        )
+        store_a.list_irs = AsyncMock(return_value=[])
+        store_a.list_nodes = AsyncMock(
+            return_value=[
+                SimpleNamespace(
+                    node_id="n1",
+                    project_id="x",
+                    label="L",
+                    node_type="concept",
+                    content={},
+                    content_hash="nh1",
+                    source_ir="",
+                    graph_id="g",
+                    created_at=None,
+                    updated_at=None,
+                )
+            ]
+        )
+        store_a.list_edges = AsyncMock(return_value=[])
+
+        exporter = KnowledgeExportEngine(
+            store=store_a, output_dir=tmp_path, secret_key=_SECRET, allow_unsigned=False
+        )
+        result_a = await exporter.export_project("x")
+        assert result_a.signature
+
+        store_b = _FakeStore()
+        store_b._pool = _ConflictPool({})
+        importer = KnowledgeImportEngine(store=store_b, secret_key=_SECRET)
+        result_b = await importer.import_project(tmp_path / "x", allow_unsigned=False)
+
+        assert result_b.verified is True
+        assert store_b.artifacts and store_b.artifacts[0]["artifact_id"] == "a1"
+        assert any(n.node_id == "n1" for n in store_b.nodes)
 
 
 class TestUnsignedPolicy:

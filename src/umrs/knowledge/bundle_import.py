@@ -302,12 +302,75 @@ class KnowledgeImportEngine:
     async def _restore_artifacts(
         self, bundle_path: Path, project_id: str
     ) -> tuple[int, int]:
-        return await _restore_jsonl_rows(
+        return await self._restore_identity_table(
             bundle_path / _TABLE_FILES["artifacts"],
-            lambda row: self._store.insert_artifact(
+            table="knowledge_artifacts",
+            id_column="artifact_id",
+            row_id_key="artifact_id",
+            insert=lambda row: self._store.insert_artifact(
                 **_artifact_kwargs(row, project_id)
             ),
         )
+
+    async def _restore_identity_table(
+        self,
+        path: Path,
+        *,
+        table: str,
+        id_column: str,
+        row_id_key: str,
+        insert: Any,
+    ) -> tuple[int, int]:
+        """Restore identity-bearing rows with ADR-032 #4 collision-abort.
+
+        Same identity + same content_hash → skip (idempotent rerun).
+        Same identity + different content_hash → abort with deterministic diff.
+        """
+        restored = skipped = 0
+        if not path.exists():
+            return restored, skipped
+        for row in _iter_rows(path):
+            outcome = await self._collision_decision(
+                table, id_column, str(row[row_id_key]), str(row.get("content_hash") or "")
+            )
+            if outcome == "skip":
+                skipped += 1
+                continue
+            if outcome == "abort":
+                raise BundleFormatError(
+                    f"knowledge identity collision: {table}/{row[row_id_key]}: existing "
+                    f"row has a different content_hash — import aborted per ADR-032 #4 "
+                    "(deterministic diff pending upgrade; no rows re-written)"
+                )
+            try:
+                ok = await insert(row)
+            except (KeyError, TypeError, ValueError):
+                skipped += 1
+                continue
+            if ok:
+                restored += 1
+            else:
+                skipped += 1
+        return restored, skipped
+
+    async def _collision_decision(
+        self, table: str, id_column: str, row_id: str, new_hash: str
+    ) -> str:
+        """Resolve skip/insert/abort for one identity row (best-effort)."""
+        pool = self._pool()
+        if pool is None or not new_hash:
+            return "insert"
+        try:
+            async with pool.acquire() as conn:
+                existing = await conn.fetchval(
+                    f"SELECT content_hash FROM {table} WHERE {id_column} = $1",
+                    row_id,
+                )
+        except Exception:  # noqa: BLE001 — untreated databases fall back to inserts
+            return "insert"
+        if existing is None:
+            return "insert"
+        return "skip" if str(existing) == new_hash else "abort"
 
     async def _restore_documents(
         self, bundle_path: Path, project_id: str
@@ -324,6 +387,20 @@ class KnowledgeImportEngine:
         if not path.exists():
             return count
         for row in _iter_rows(path):
+            outcome = await self._collision_decision(
+                "knowledge_nodes",
+                "node_id",
+                str(row["node_id"]),
+                str(row.get("content_hash") or ""),
+            )
+            if outcome == "abort":
+                raise BundleFormatError(
+                    f"knowledge identity collision: knowledge_nodes/{row['node_id']}: "
+                    "existing row has a different content_hash — import aborted "
+                    "per ADR-032 #4"
+                )
+            if outcome == "skip":
+                continue
             try:
                 await self._store.upsert_node(self._node_from_row(row, project_id))
                 count += 1
