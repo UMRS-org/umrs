@@ -115,3 +115,33 @@ class TestDriverReregistration:
             side_effect=AssertionError("register must not be called"),
         ):
             assert loop_api.reregister_loop_drivers() == 0
+
+
+def test_sync_save_serializes_finding_dataclasses_and_artifact_ids() -> None:
+    """Engine findings are dataclasses; the sync store must JSON them (WP-05 fix)."""
+    from r4_contracts.research import Finding
+
+    from umrs.knowledge.loop import LoopIteration, LoopPhase
+
+    loop = _loop()
+    iteration = LoopIteration(
+        iteration_id="it-f", loop_id=loop.loop_id, iteration_number=1,
+        phase=LoopPhase.MEMORY_UPDATE, status="completed",
+        findings=[Finding(finding_id="finding-1", statement="real", confidence=0.7)],
+        artifact_ids=["finding-1"],
+    )
+    loop.iterations.append(iteration)
+    conn = _FakeConn()
+    LoopStore.sync_pg(conn).save(loop)
+    inserts = [q for q in conn.calls if "INSERT INTO research_loop_iterations" in q[0]]
+    assert len(inserts) == 1
+    params = inserts[0][1]
+    findings_param, artifact_param = params[11], params[13]
+    assert findings_param.adapted == [
+        {
+            "finding_id": "finding-1", "hypothesis_id": "", "statement": "real",
+            "evidence_refs": [], "workflow_run_id": "", "durable_job_id": None,
+            "confidence": 0.7, "simulated": False,
+        }
+    ]
+    assert artifact_param.adapted == ["finding-1"]

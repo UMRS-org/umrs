@@ -1,36 +1,58 @@
-"""Pending tool-grain approvals for loop-driven action gates (ADR-028).
+"""Tool-grain approval inbox facade for loop-driven action gates (ADR-036 (a)).
 
-In-memory registry of approval intents created when a driven loop wants to
-perform a tool-grain action (today: a workflow trigger inside a real-mode
-research loop) while running under ``mode=ask``. The engine driver parks on
-these; the companion approvals route (``POST /approvals/{id}/decision``)
-flips their state.
+The process holds ONE :class:`~umrs.companion_trust.approval_inbox.ApprovalInboxStore`;
+the engine driver parks on its rows, the companion approvals routes
+(``GET /approvals/pending``, ``POST /approvals/{id}/decision``) read and flip
+them, and the sidecar installs the Postgres-backed store at boot via
+:func:`configure`. Until configured, the facade runs on a process-local
+sqlite store and says so (``durability() == "process"``) — never silently.
 
 Design contract:
-- Approval intent = exactly one tool-grain action per (loop, iteration).
+- Approval intent = exactly one tool-grain action per (loop, iteration),
+  keyed by ``approval_id`` and carrying the loop owner + job/attempt.
 - Decisions: ``once``/``always`` → approved, ``no`` → rejected. ``always``
-  additionally flips the loop's ``metadata.mode`` to ``auto`` at the route
-  layer (the loop stops gating from then on).
-- Durability is deliberately thin (this module is process state): on
-  restart, a parked loop still carries ``metadata.awaiting_approval``; its
-  gate rebuilds the intent under the same id — see ``request_approval``'s
-  idempotent ``approval_id=`` path.
+  additionally flips the loop's ``metadata.mode`` to ``auto`` and mints a
+  session-scope trust row at the route layer.
+- Restart: a parked loop carries ``metadata.awaiting_approval``; its gate
+  re-requests under the same id and finds the durable row — including a
+  decision recorded while the process was down (no re-ask).
 """
 
 from __future__ import annotations
 
 import threading
-from datetime import datetime, timezone
 from typing import Any
-from uuid import uuid4
+
+from umrs.companion_trust.approval_inbox import (
+    APPROVED_DECISIONS,
+    REJECTED_DECISIONS,
+    VALID_DECISIONS,
+    ApprovalInboxStore,
+)
 
 _LOCK = threading.Lock()
-_PENDING: dict[str, dict[str, Any]] = {}
+_STORE: ApprovalInboxStore | None = None
 
-# Decision vocabulary (kept identical to the companion route contract).
-APPROVED_DECISIONS = frozenset({"once", "always"})
-REJECTED_DECISIONS = frozenset({"no"})
-VALID_DECISIONS = APPROVED_DECISIONS | REJECTED_DECISIONS
+
+def configure(store: ApprovalInboxStore | None) -> None:
+    """Install the process inbox (sidecar boot); ``None`` resets to process-local."""
+    global _STORE
+    with _LOCK:
+        _STORE = store
+
+
+def get_store() -> ApprovalInboxStore:
+    """The process inbox — a process-local sqlite store until configured."""
+    global _STORE
+    with _LOCK:
+        if _STORE is None:
+            _STORE = ApprovalInboxStore()
+        return _STORE
+
+
+def durability() -> str:
+    """``postgres`` | ``sqlite`` | ``process`` — surfaced on the approvals route."""
+    return get_store().durability
 
 
 def request_approval(
@@ -39,62 +61,52 @@ def request_approval(
     action: dict[str, Any],
     *,
     approval_id: str | None = None,
+    user_id: str = "",
+    job_id: str = "",
+    attempt_id: str = "",
 ) -> dict[str, Any]:
-    """Register an approval intent (idempotent when approval_id is given).
-
-    Re-registering an existing intent (rehydration after restart, or a
-    double gate call) returns the existing record unchanged unless it was
-    already decided — decided records are terminal.
-    """
-    with _LOCK:
-        if approval_id and approval_id in _PENDING:
-            return dict(_PENDING[approval_id])
-        now = datetime.now(timezone.utc).isoformat()
-        record = {
-            "id": approval_id or f"appr-{uuid4().hex[:12]}",
-            "loop_id": loop_id,
-            "iteration": iteration,
-            "action": dict(action),
-            "status": "pending",
-            "decided_by": "",
-            "decided_at": "",
-            "created_at": now,
-        }
-        _PENDING[record["id"]] = record
-        return dict(record)
+    """Register an approval intent (idempotent when approval_id is given)."""
+    return get_store().request(
+        loop_id,
+        iteration,
+        action,
+        approval_id=approval_id,
+        user_id=user_id,
+        job_id=job_id,
+        attempt_id=attempt_id,
+    )
 
 
 def get(approval_id: str) -> dict[str, Any] | None:
-    with _LOCK:
-        record = _PENDING.get(approval_id)
-        return dict(record) if record else None
+    return get_store().get(approval_id)
 
 
-def pending(*, loop_id: str | None = None) -> list[dict[str, Any]]:
-    with _LOCK:
-        rows = [r for r in _PENDING.values() if r["status"] == "pending"]
-        if loop_id:
-            rows = [r for r in rows if r["loop_id"] == loop_id]
-        return [dict(r) for r in rows]
+def pending(
+    *, loop_id: str | None = None, user_id: str | None = None
+) -> list[dict[str, Any]]:
+    return get_store().pending(loop_id=loop_id, user_id=user_id)
 
 
 def decide(approval_id: str, decision: str, decided_by: str) -> dict[str, Any]:
     """Flip a pending intent to approved/rejected. Terminal transitions only."""
-    if decision not in VALID_DECISIONS:
-        raise ValueError(f"decision must be one of {sorted(VALID_DECISIONS)}")
-    with _LOCK:
-        record = _PENDING.get(approval_id)
-        if record is None:
-            raise KeyError(f"approval not found: {approval_id}")
-        if record["status"] != "pending":
-            raise ValueError(f"approval {approval_id} already decided")
-        record["status"] = "approved" if decision in APPROVED_DECISIONS else "rejected"
-        record["decided_by"] = decided_by
-        record["decided_at"] = datetime.now(timezone.utc).isoformat()
-        return dict(record)
+    return get_store().decide(approval_id, decision, decided_by)
 
 
 def clear_all() -> None:
-    """Test utility: wipe all intents."""
-    with _LOCK:
-        _PENDING.clear()
+    """Test utility: wipe all intents in the current store."""
+    get_store().clear_all()
+
+
+__all__ = [
+    "APPROVED_DECISIONS",
+    "REJECTED_DECISIONS",
+    "VALID_DECISIONS",
+    "clear_all",
+    "configure",
+    "decide",
+    "durability",
+    "get",
+    "get_store",
+    "pending",
+    "request_approval",
+]

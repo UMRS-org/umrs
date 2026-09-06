@@ -309,3 +309,86 @@ class TestLoopControl:
         lid = start.json()["loop_id"]
         resp = client.post(f"/umrs/loops/{lid}/resume")
         assert resp.status_code == 400
+
+
+class TestHosting:
+    """ADR-036 D1 (WP-05): job hosting when a durable runtime exists, thread otherwise."""
+
+    def test_job_hosting_records_job_and_spawns_no_thread(self):
+        from umrs.knowledge import engine_loop_runner
+
+        client = _make_app()
+        seen: list[dict] = []
+
+        async def _submitter(loop):
+            seen.append({"loop_id": loop.loop_id, "mode": loop.metadata.get("mode")})
+            return "job-hosted-1"
+
+        client.app.state.loop_job_submitter = _submitter
+        resp = client.post(
+            "/umrs/loops",
+            json={"project_id": "proj-h", "research_goal": "host me", "max_iterations": 2, "mode": "ask"},
+        )
+        assert resp.status_code == 201
+        loop_id = resp.json()["loop_id"]
+        assert seen == [{"loop_id": loop_id, "mode": "ask"}]
+        meta = client.get(f"/umrs/loops/{loop_id}").json()["metadata"]
+        assert meta["hosting"] == "job"
+        assert meta["durable_job_id"] == "job-hosted-1"
+        assert engine_loop_runner.get(loop_id) is None  # the job backend drives it, not the route
+
+    def test_no_runtime_falls_back_to_thread_hosting(self):
+        client = _make_app()
+        resp = client.post("/umrs/loops", json={"project_id": "proj-t", "research_goal": "thread me"})
+        assert resp.status_code == 201
+        meta = client.get(f"/umrs/loops/{resp.json()['loop_id']}").json()["metadata"]
+        assert meta["hosting"] == "thread"
+        assert meta["driver"] == "engine"
+
+    def test_submission_failure_falls_back_and_is_recorded(self):
+        client = _make_app()
+
+        async def _boom(loop):  # noqa: ARG001
+            raise RuntimeError("runtime exploded")
+
+        client.app.state.loop_job_submitter = _boom
+        resp = client.post("/umrs/loops", json={"project_id": "proj-f", "research_goal": "fallback"})
+        meta = client.get(f"/umrs/loops/{resp.json()['loop_id']}").json()["metadata"]
+        assert meta["hosting"] == "thread"
+        assert "runtime exploded" in meta["hosting_note"]
+
+
+class TestOwnerIdentity:
+    """ADR-036 (a): the loop owner is pinned from the gateway-verified identity."""
+
+    def test_owner_pinned_from_verified_headers(self):
+        client = _make_app()
+        resp = client.post(
+            "/umrs/loops",
+            json={"project_id": "proj-o", "research_goal": "own me"},
+            headers={"X-User-ID": "alice", "X-Verified-Project-ID": "proj-o"},
+        )
+        assert resp.status_code == 201
+        meta = client.get(f"/umrs/loops/{resp.json()['loop_id']}").json()["metadata"]
+        assert meta["owner_user_id"] == "alice"
+
+    def test_no_identity_keeps_ownerless_loop(self):
+        client = _make_app()
+        resp = client.post("/umrs/loops", json={"project_id": "proj-o", "research_goal": "anon"})
+        meta = client.get(f"/umrs/loops/{resp.json()['loop_id']}").json()["metadata"]
+        assert "owner_user_id" not in meta
+
+    def test_strict_mode_rejects_forged_identity(self, monkeypatch):
+        monkeypatch.setenv("UMRS_AUTH_MODE", "strict")
+        monkeypatch.setenv("UMRS_HANDSHAKE_HMAC_SECRET", "s3cret")
+        client = _make_app()
+        resp = client.post(
+            "/umrs/loops",
+            json={"project_id": "proj-o", "research_goal": "forged"},
+            headers={
+                "X-User-ID": "mallory",
+                "X-Verified-Project-ID": "proj-o",
+                "X-Verified-HMAC": "not-a-valid-signature",
+            },
+        )
+        assert resp.status_code == 401

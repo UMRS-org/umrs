@@ -1,11 +1,14 @@
-"""Schema for the companion trust allowlist (ADR-035 follow-on).
+"""Schema for the companion trust component (ADR-035 follow-on, ADR-036 (a)).
 
-One table:
+Tables:
 
-- companion_trust_allowlist: (user_id, scope, tool_name) → expiry
+- companion_trust_allowlist: (user_id, scope, tool_name) → expiry (v1)
+- companion_session_archives + companion_trust_revoke_log: lifecycle cascade (v2)
+- companion_approval_inbox: durable tool-grain approval intents + decisions
+  for server-hosted research loops (v3, migration 0081, WP-05)
 
-New component — no existing schema bumped. Mirrors 0066/0071 one-line
-COMMENT style. Sqlite translation handled by the store's ``_sqliteify``.
+Mirrors 0066/0071 one-line COMMENT style. Sqlite translation handled by the
+stores' ``_sqliteify``.
 """
 
 from __future__ import annotations
@@ -14,7 +17,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-COMPANION_TRUST_SCHEMA_VERSION = 2
+COMPANION_TRUST_SCHEMA_VERSION = 3
 
 CREATE_TRUST_TABLE = """
 CREATE TABLE IF NOT EXISTS companion_trust_allowlist (
@@ -70,6 +73,37 @@ COMMENT ON TABLE companion_trust_revoke_log IS
     'Audit of session-lifecycle trust revocations (one row per revoked grant).';
 """
 
+# v3 (2026-09-07, WP-05): durable approval inbox — ADR-036 amendment (a).
+# Same component as the allowlist (the ADR's substrate), dedicated table: an
+# approval is a per-action intent with a payload and a terminal decision, not
+# a (user, scope, tool) allowlist row. Mirrors migration 0081 verbatim.
+CREATE_APPROVAL_INBOX_TABLE = """
+CREATE TABLE IF NOT EXISTS companion_approval_inbox (
+    approval_id  TEXT        PRIMARY KEY,
+    loop_id      TEXT        NOT NULL,
+    iteration    INTEGER     NOT NULL DEFAULT 0,
+    user_id      TEXT        NOT NULL DEFAULT '',
+    job_id       TEXT        NOT NULL DEFAULT '',
+    attempt_id   TEXT        NOT NULL DEFAULT '',
+    action       JSONB       NOT NULL DEFAULT '{}',
+    status       TEXT        NOT NULL DEFAULT 'pending'
+                 CHECK (status IN ('pending', 'approved', 'rejected')),
+    decision     TEXT        NOT NULL DEFAULT '',
+    decided_by   TEXT        NOT NULL DEFAULT '',
+    decided_at   TIMESTAMPTZ,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_companion_approval_inbox_pending
+    ON companion_approval_inbox(status, user_id, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_companion_approval_inbox_loop
+    ON companion_approval_inbox(loop_id, iteration);
+
+COMMENT ON TABLE companion_approval_inbox IS
+    'Durable tool-grain approval intents + decisions for server-hosted research loops (ADR-036 (a)).';
+"""
+
 CREATE_SCHEMA_VERSION_TABLE = """
 CREATE TABLE IF NOT EXISTS schema_versions (
     component VARCHAR(64) PRIMARY KEY,
@@ -107,6 +141,7 @@ def ensure_schema(conn) -> bool:
         cur.execute(CREATE_TRUST_TABLE)
         cur.execute(CREATE_SESSION_ARCHIVE_TABLE)
         cur.execute(CREATE_REVOKE_LOG_TABLE)
+        cur.execute(CREATE_APPROVAL_INBOX_TABLE)
         cur.execute(
             """
             INSERT INTO schema_versions (component, version)
@@ -127,6 +162,7 @@ def drop_schema(conn, confirm: bool = False) -> None:
     if not confirm:
         raise ValueError("Must set confirm=True to drop schema")
     with conn.cursor() as cur:
+        cur.execute("DROP TABLE IF EXISTS companion_approval_inbox CASCADE")
         cur.execute("DROP TABLE IF EXISTS companion_trust_revoke_log CASCADE")
         cur.execute("DROP TABLE IF EXISTS companion_session_archives CASCADE")
         cur.execute("DROP TABLE IF EXISTS companion_trust_allowlist CASCADE")
