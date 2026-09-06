@@ -31,6 +31,43 @@ for var in http_proxy HTTP_PROXY https_proxy HTTPS_PROXY no_proxy NO_PROXY; do
     fi
 done
 
+# 4. Runtime probe (ADR-040, opt-in): a DIRECT TCP connect to a public host
+#    must FAIL inside an offline inference container. Env/proxy variables only
+#    describe intent; this observes the network. Opt-in with OFFLINE_PROBE=1
+#    until the HPC e2e leg (tests/run_hpc_tests.sh --slurm-egress-smoke) has
+#    run on every venue; then the default flips to on.
+_offline_probe_connects() {
+    # exit 0 = connected (egress OPEN), exit 1 = refused/unreachable (offline)
+    local host="$1" port="$2" tmo="$3"
+    if command -v python3 >/dev/null 2>&1; then
+        python3 - "$host" "$port" "$tmo" <<'PY'
+import socket
+import sys
+
+host, port, tmo = sys.argv[1], int(sys.argv[2]), float(sys.argv[3])
+try:
+    with socket.create_connection((host, port), timeout=tmo):
+        sys.exit(0)
+except OSError:
+    sys.exit(1)
+PY
+        return $?
+    fi
+    timeout "$tmo" bash -c "exec 3<>/dev/tcp/${host}/${port}" 2>/dev/null
+}
+
+if [ "${OFFLINE_PROBE:-0}" = "1" ]; then
+    _probe_host="${OFFLINE_PROBE_HOST:-example.com}"
+    _probe_port="${OFFLINE_PROBE_PORT:-443}"
+    _probe_timeout="${OFFLINE_PROBE_TIMEOUT_SEC:-3}"
+    if _offline_probe_connects "$_probe_host" "$_probe_port" "$_probe_timeout"; then
+        echo "FAIL: direct egress to ${_probe_host}:${_probe_port} SUCCEEDED — container is not offline"
+        FAILED=1
+    else
+        echo "OK: direct egress to ${_probe_host}:${_probe_port} is blocked"
+    fi
+fi
+
 if [ "$FAILED" -ne 0 ]; then
     echo "---"
     echo "FAIL: One or more offline invariants violated. Refusing to start inference."
