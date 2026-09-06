@@ -436,12 +436,16 @@ services:
 ##          cpus: "0.1"
 ##          memory: "128M"
 
-  # EgressGuard: Controlled egress proxy for MCP servers
-  # Only enabled for project/user tier instances that need external access
+  # EgressGuard: allowlisting forward proxy for MCP servers (ADR-040).
+  # Ships in the platform's own r4-mcp image (python -m r4_mcp.egress_guard);
+  # no external image. Started only for jobs that request egress
+  # (egress_domains / custom MCP mounts -> 'egress' profile). Fail-closed:
+  # an empty EGRESS_DOMAIN_ALLOWLIST denies every destination. The full
+  # image reference is computed in the per-job env file by serve-model.slurm.
   egress-guard:
     profiles: [ egress ]
-    image: ghcr.io/riken-rccs/egress-guard:${EGRESS_GUARD_DOCKER_TAG:-latest}
-    command: --port ${EGRESS_PROXY_PORT:-8888}
+    image: ${EGRESS_GUARD_IMAGE:-localhost/r4-mcp:latest}
+    command: python -m r4_mcp.egress_guard --port ${EGRESS_PROXY_PORT:-8888}
     networks:
       genai-private-net:
         ipv4_address: ${PRIV_IP1TO3:-10.0.0}.${EGRESS_GUARD_IP4:-30}

@@ -234,3 +234,25 @@ def test_assert_offline_probe_fails_when_direct_connect_succeeds():
     assert proc.returncode == 1
     assert f"FAIL: direct egress to 127.0.0.1:{port} SUCCEEDED" in proc.stdout
     assert "Refusing to start inference" in proc.stdout
+
+
+# ---------------------------------------------------------------------------
+# ADR-040 D4/D5 wiring: in-repo proxy image + launch refusal
+# ---------------------------------------------------------------------------
+
+
+def test_egress_guard_service_ships_in_the_r4_mcp_image():
+    services = yaml.safe_load(SERVE_MODEL.read_text())["services"]
+    guard = services["egress-guard"]
+    assert guard["profiles"] == ["egress"]
+    assert guard["image"].startswith("${EGRESS_GUARD_IMAGE:-localhost/r4-mcp:")
+    assert "ghcr.io" not in guard["image"]
+    assert "python -m r4_mcp.egress_guard" in guard["command"]
+
+
+def test_slurm_wrapper_refuses_egress_profile_without_present_image():
+    text = SERVE_MODEL_SLURM.read_text()
+    assert "EGRESS_GUARD_IMAGE=${EGRESS_GUARD_IMAGE:-localhost/r4-mcp:" in text
+    assert "ADR-040 D4" in text
+    assert "podman image exists" in text
+    assert "refusing to launch" in text
