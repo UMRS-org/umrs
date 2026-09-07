@@ -42,6 +42,12 @@ runtime:
   cdi_spec: /var/run/cdi/nvidia.yaml
   cgroup_manager: cgroupfs
   storage_root: ""                       # auto-set to /var/tmp/podman_$USER/storage
+  # ADR-045 D3 (2026-09-07): `podman save` archives that compute nodes load when
+  # an image is absent from their node-local store and no registry serves it
+  # (<name>-<tag>-<arch>.tar, produced by deploy/rccs/stage_images.sh). Without
+  # this the declared egress-guard image localhost/r4-mcp:latest can never
+  # reach a compute node (node-local stores, no registry route).
+  image_archive_dir: /lvs0/dne1/rccs-dmp/${USER}/umrs_models/images
   # vision_stack: jens                   # uncomment to use Jens's VisionFrontend stack (tmp/jens_stack/internal_genAI/)
 
 storage:
@@ -68,6 +74,11 @@ network:
   # on podman-compute Slurm nodes; presence/pullability of THIS string is the
   # declared precondition for any egress_domains endpoint (else: refuse 400).
   egress_proxy_image: localhost/r4-mcp:latest
+  # ADR-045 D2 (2026-09-07): each job's private /24 is taken from this pool,
+  # walked from a job-id-derived offset (254 subnets), after the wrapper has
+  # reaped the networks of jobs that no longer exist. Replaces the three fixed
+  # candidates that three crashed jobs exhausted (WP-01 round 3 blocker).
+  private_subnet_pool: 172.16.0.0/16
 
 vllm:
   model: intfloat/e5-base-v2

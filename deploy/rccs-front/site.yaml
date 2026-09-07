@@ -55,6 +55,10 @@ runtime:
   cdi_spec: ""
   cgroup_manager: cgroupfs
   storage_root: ""
+  # Compute-side venue knobs (ADR-045: runtime.image_archive_dir,
+  # network.private_subnet_pool) live in ../rccs/site.yaml — the file the
+  # compute shim hands to the wrapper. This overlay could `extends:` that file
+  # once the umrs-front compose mounts it alongside (follow-up in ADR-045).
 
 storage:
   model_cache_dir: ""  # No local model cache — models on Lustre (login+compute only)
