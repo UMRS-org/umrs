@@ -131,7 +131,7 @@ def test_kubernetes_job_manifest_exports_egress_proxy_env():
     assert env["no_proxy"] == env["NO_PROXY"]
 
 
-def test_kubernetes_network_policy_defaults_to_dns_and_egress_guard(monkeypatch):
+def _default_network_policy(monkeypatch):
     monkeypatch.delenv("K8S_EGRESS_ALLOWED_CIDRS", raising=False)
     backend = KubernetesBackend(
         OrchestratorConfig(
@@ -141,11 +141,19 @@ def test_kubernetes_network_policy_defaults_to_dns_and_egress_guard(monkeypatch)
     policy = backend._build_network_policy("mini-rivault-test", "rivault-test")
     egress_rules = policy["spec"]["egress"]
     peers = [peer for rule in egress_rules for peer in rule.get("to", [])]
+    return policy, egress_rules, peers
 
+
+def test_kubernetes_network_policy_defaults_to_dns_and_egress_guard_ports(monkeypatch):
+    policy, egress_rules, _peers = _default_network_policy(monkeypatch)
     assert policy["spec"]["policyTypes"] == ["Egress"]
     assert {"protocol": "UDP", "port": 53} in egress_rules[0]["ports"]
     assert {"protocol": "TCP", "port": 53} in egress_rules[0]["ports"]
     assert egress_rules[1]["ports"] == [{"protocol": "TCP", "port": 18888}]
+
+
+def test_kubernetes_network_policy_default_peers_are_the_guard_only(monkeypatch):
+    _policy, _rules, peers = _default_network_policy(monkeypatch)
     assert {"podSelector": {"matchLabels": {"app.kubernetes.io/name": "egress-guard"}}} in peers
     assert {"podSelector": {"matchLabels": {"app": "egress-guard"}}} in peers
     assert not any("ipBlock" in peer for peer in peers)
@@ -254,5 +262,9 @@ def test_slurm_wrapper_refuses_egress_profile_without_present_image():
     text = SERVE_MODEL_SLURM.read_text()
     assert "EGRESS_GUARD_IMAGE=${EGRESS_GUARD_IMAGE:-localhost/r4-mcp:" in text
     assert "ADR-040 D4" in text
-    assert "podman image exists" in text
     assert "refusing to launch" in text
+    # ADR-045 D3: presence is established through the staging contract
+    # (node store -> shared-filesystem archive -> pull) in venue.sh.
+    assert 'rivault_ensure_image "${_egress_guard_image}" "${RIVAULT_IMAGE_ARCHIVE_DIR:-}"' in text
+    venue = (SERVE_MODEL_SLURM.parent / "venue.sh").read_text()
+    assert "podman image exists" in venue and "podman load -i" in venue and "podman pull" in venue
