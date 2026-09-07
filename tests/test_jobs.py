@@ -272,6 +272,7 @@ class TestJobTypes:
             "companion_worker",
             "knowledge_reindex",
             "research_loop_job",
+            "vision_infer",
         ]
         actual = [t.value for t in JobType]
         assert set(expected) == set(actual)
