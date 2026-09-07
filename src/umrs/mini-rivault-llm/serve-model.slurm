@@ -442,6 +442,16 @@ else
 fi
 _rivault_https_proxy="${RIVAULT_HTTPS_PROXY:-${_rivault_http_proxy}}"
 
+# Egress-guard audit log bind source must exist and be user-writable; the
+# compose default /var/log/egress-guard is not creatable by rootless podman
+# on compute nodes (statfs failure -> whole stack aborts). Per-job default,
+# logged so support can find the audit trail for a given job. This must run
+# in the SHELL (not the env heredoc) so the directory actually gets created.
+EGRESS_AUDIT_LOG_PATH=${EGRESS_AUDIT_LOG_PATH:-/tmp/egress-audit-${SLURM_JOB_ID:-$uuid}}
+export EGRESS_AUDIT_LOG_PATH
+mkdir -p "${EGRESS_AUDIT_LOG_PATH}" || { echo "[rivault] FATAL: cannot create EGRESS_AUDIT_LOG_PATH='${EGRESS_AUDIT_LOG_PATH}'"; exit 1; }
+echo "[rivault] egress audit log dir: ${EGRESS_AUDIT_LOG_PATH}"
+
 cat <<EOF > "./env.${uuid}"
 # ═══════════════════════════════════════════════════════════════════════════════
 # Mini-RiVault environment file — generated per-job (UUID=${uuid})
@@ -497,7 +507,13 @@ VLLM_DOCKER_TAG=${VLLM_DOCKER_TAG:-v0.20.0}
 # parser cannot handle ${X:-${Y:-z}}).  The image line in
 # serve-model.yaml can then use the simple form:
 #     image: ${VLLM_DOCKER_IMAGE:-docker.io/vllm/vllm-openai:v0.20.0}
-VLLM_DOCKER_IMAGE=${VLLM_DOCKER_IMAGE:-docker.io/vllm/vllm-openai:${VLLM_DOCKER_TAG}}
+# NOTE: ${VLLM_DOCKER_TAG} needs its own default HERE: this line is inside
+# the env heredoc, where assignments are text only — the VLLM_DOCKER_TAG
+# DEFAULT above is never applied to the shell value unless the tag was
+# exported into the wrapper env (rosters/path exports). Without the inner
+# default the ref renders as `.../vllm-openai:` (missing tag) and
+# podman-compose fails with "invalid reference format".
+VLLM_DOCKER_IMAGE=${VLLM_DOCKER_IMAGE:-docker.io/vllm/vllm-openai:${VLLM_DOCKER_TAG:-v0.20.0}}
 # Fraction of GPU memory vLLM is allowed to use for KV-cache
 VLLM_GPU_MEM_UTIL=${VLLM_GPU_MEM_UTIL:-0.95}
 # Maximum context length (vLLM --max-model-len). Injected into the job env by
@@ -599,6 +615,10 @@ EGRESS_DOMAIN_ALLOWLIST=${EGRESS_DOMAIN_ALLOWLIST:-}
 # In-stack egress-guard image (ADR-040): computed here so the compose file
 # keeps the simple ${EGRESS_GUARD_IMAGE:-...} form (no nested substitution).
 EGRESS_GUARD_IMAGE=${EGRESS_GUARD_IMAGE:-localhost/r4-mcp:${MCP_CUSTOM_DOCKER_TAG:-latest}}
+# Audit bind source for the egress-guard service (matches the shell-side
+# default created before this heredoc; /var/log/egress-guard is not
+# creatable by rootless podman on compute nodes).
+EGRESS_AUDIT_LOG_PATH=${EGRESS_AUDIT_LOG_PATH:-/tmp/egress-audit-${SLURM_JOB_ID:-$uuid}}
 
 # ─── 7. Multi-Tenancy & Instance Identity ────────────────────────────────────
 # Deployment tier: system | project | user (controls isolation policy)
