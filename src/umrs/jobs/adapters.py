@@ -1414,6 +1414,10 @@ def create_backend_factory(
             from .companion_worker_backend import CompanionWorkerBackend
 
             return CompanionWorkerBackend()
+        elif job_type == JobType.RESEARCH_LOOP:
+            from .research_loop_backend import ResearchLoopBackend
+
+            return ResearchLoopBackend()
         else:
             raise ValueError(f"Unsupported job type: {job_type}")
 
@@ -1486,6 +1490,10 @@ def create_status_checker(
     from .companion_worker_backend import CompanionWorkerStatusChecker
 
     checker.register(JobType.COMPANION_WORKER, CompanionWorkerStatusChecker())
+
+    from .research_loop_backend import ResearchLoopStatusChecker
+
+    checker.register(JobType.RESEARCH_LOOP, ResearchLoopStatusChecker())
 
     return checker
 

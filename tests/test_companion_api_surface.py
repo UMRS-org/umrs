@@ -200,11 +200,13 @@ class TestApprovalSurface:
         yield
         tool_approvals.clear_all()
 
-    def test_pending_approvals_scaffold_is_empty(self):
+    def test_pending_approvals_empty_reports_durability(self):
         client = _app(FakePool([]))
         resp = client.get("/umrs/companion/approvals/pending", headers=HEADERS)
         assert resp.status_code == 200
-        assert resp.json() == {"pending": []}
+        assert resp.json()["pending"] == []
+        # Unconfigured process → the inbox says so (ADR-036 (a) honesty rule).
+        assert resp.json()["durability"] == "process"
 
     def test_decision_roundtrip_records_intent(self):
         """Real registry contract (ADR-028): gate intent → decision unblocks."""

@@ -105,6 +105,10 @@ class LoopIteration:
     evaluation: str = ""
     findings: list[Finding] = field(default_factory=list)
     retrieval_record_ids: list[str] = field(default_factory=list)
+    # Artifact ids this iteration produced (knowledge artifacts minted from
+    # its findings, workflow outputs) — the asset index derives the
+    # loop → artifact lineage edge from them (ADR-036 D4, WP-05).
+    artifact_ids: list[str] = field(default_factory=list)
     status: str = "pending"  # pending | running | completed | failed
     simulated: bool = False
 
@@ -124,6 +128,7 @@ class LoopIteration:
             durable_job_id=self.durable_job_id,
             retrieval_record_ids=list(self.retrieval_record_ids),
             findings=list(self.findings),
+            artifact_ids=list(self.artifact_ids),
             results=dict(self.results),
             analysis=self.analysis,
             evaluation=self.evaluation,
@@ -557,6 +562,17 @@ class AutonomousResearchLoop:
         # Complete iteration
         iteration.completed_at = datetime.now(timezone.utc).isoformat()
         iteration.status = "completed"
+        # WP-12: per-iteration wall-clock span — observable (engine label)
+        # and recorded on the iteration's results for the loop detail view.
+        from umrs.jobs.timing import duration_ms
+        from umrs.metrics import METRICS
+
+        iteration_ms = duration_ms(iteration.started_at, iteration.completed_at)
+        if iteration_ms is not None:
+            iteration.results["timing_ms"] = iteration_ms
+            METRICS.loop_iteration_seconds(
+                "simulated" if self._simulated else "real", iteration_ms / 1000
+            )
         loop.iterations.append(iteration)
         loop.updated_at = datetime.now(timezone.utc).isoformat()
         self._checkpoint(iteration)
@@ -739,15 +755,18 @@ class AutonomousResearchLoop:
         # Experiment parameters must not override the loop's project context
         # (Gateway verified headers / durable job project_id).
         params["project_id"] = loop.project_id
+        # Loop-level default (resolved at loop start from the registry or the
+        # caller's workflow_name — G-P1-3); experiments may still override.
+        workflow_name = workflow_name or loop.metadata.get("workflow_name")
 
         if not workflow_name:
-            # Legacy/demo08 is allowed only when explicitly named on the
-            # experiment. Real mode must not silently fall back.
+            # Real mode must not silently fall back to a demo workflow.
             raise RuntimeError(
                 "real research mode requires experiment.metadata.workflow_name "
-                "(or experiment.workflow_name) set to a registered UMRS "
-                "workflow (e.g. video-ai-yolo, demo08_yield_eval); silent "
-                "demo08_yield_eval fallback is disabled"
+                "(or experiment.workflow_name / the loop's workflow_name) set to "
+                "a registered UMRS workflow; pass workflow_name at loop start — "
+                "UMRS uses the single registered workflow automatically and lists "
+                "candidates otherwise (discover with `r4 workflow list`)"
             )
 
         # Tool-grain enforcement: an 'ask'-mode loop gates each workflow
@@ -761,10 +780,8 @@ class AutonomousResearchLoop:
                 "iteration": loop.current_iteration,
             }
         ):
-            raise RuntimeError(
-                "operator rejected or cancelled the tool-grain action "
-                f"(workflow_trigger '{workflow_name}')"
-            )
+            self._gate_denied(loop, iteration, workflow_name)
+            return
 
         execution_id = self._workflow_port.trigger(workflow_name, params)
         self._in_flight_execution_id = execution_id
@@ -814,6 +831,23 @@ class AutonomousResearchLoop:
             "artifacts": results_payload.get("artifacts") or [],
         }
         loop.total_experiments_run += 1
+
+    def _gate_denied(
+        self, loop: ResearchLoop, iteration: LoopIteration, workflow_name: str
+    ) -> None:
+        """A False gate is a cancellation when stop/abort was requested, else a rejection.
+
+        Live finding (WP-07): stopping a loop parked at its gate used to end
+        the loop in ERROR ("operator rejected or cancelled"), which its hosting
+        job then recorded as failed. Stop is a cancellation; only a decided
+        "no" is a rejection.
+        """
+        if self._should_cancel() or loop.status != LoopStatus.RUNNING:
+            self._apply_cancel(loop, iteration)
+            return
+        raise RuntimeError(
+            f"operator rejected the tool-grain action (workflow_trigger '{workflow_name}')"
+        )
 
     @staticmethod
     def _extract_evidence_figures(

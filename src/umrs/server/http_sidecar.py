@@ -240,11 +240,28 @@ def _init_companion_trust_store(app, db_pool):
         app.state.umrs_companion_trust_conn = trust_conn
         set_trust_store(TrustAllowlistStore(trust_conn))
         logger.info("Companion trust store initialized for HTTP sidecar")
+        _init_approval_inbox(trust_conn)
     except Exception:
         logger.warning(
             "Companion trust store unavailable in HTTP sidecar — "
-            "/umrs/companion/trust* will return 503"
+            "/umrs/companion/trust* will return 503; approval inbox stays process-local"
         )
+
+
+def _init_approval_inbox(trust_conn) -> None:
+    """Durable approval inbox (ADR-036 (a), WP-05) on the trust connection.
+
+    Failure leaves the process-local inbox in place — visible as
+    ``durability: process`` on the approvals route, never silent.
+    """
+    try:
+        from umrs.companion_trust.approval_inbox import ApprovalInboxStore
+        from umrs.knowledge import tool_approvals
+
+        tool_approvals.configure(ApprovalInboxStore(trust_conn))
+        logger.info("Companion approval inbox initialized (postgres)")
+    except Exception:
+        logger.warning("Approval inbox unavailable — staying process-local", exc_info=True)
 
 
 def _init_usage_pool(db_pool):
@@ -371,8 +388,8 @@ async def _health(request: Request):
 
 async def _metrics():
     """Prometheus metrics endpoint."""
-    from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
     from fastapi.responses import Response
+    from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
     return Response(
         content=generate_latest(),
@@ -534,15 +551,14 @@ async def _wire_a2l_recorder(application) -> None:
             logger.info("a2l conservation recorder wired (ADR-034)")
         else:
             logger.info("a2l conservation recorder: no DSN — Null recorder")
-    except Exception:  # noqa: BLE001 — conservation is degradable
+    except Exception:
         logger.warning(
             "a2l recorder init failed — conservation disabled", exc_info=True
         )
 
 
 def _upgrade_loop_store() -> None:
-    """Durable loops: upgrade to psycopg2 persistence + rehydrate drivers
-    for runs that were RUNNING/PAUSED when the process last stopped.
+    """Durable loops: upgrade to psycopg2 persistence.
     Independent of the a2l pool (psycopg2 for thread safety).
     """
     from umrs.api._asyncpg_pool import _resolve_knowledge_dsn
@@ -550,25 +566,36 @@ def _upgrade_loop_store() -> None:
     try:
         dsn_sync, _ = _resolve_knowledge_dsn()
         if dsn_sync:
-            from umrs.api.loop import (
-                configure_loop_store_sync,
-                reregister_loop_drivers,
-            )
+            from umrs.api.loop import configure_loop_store_sync
 
             configure_loop_store_sync(dsn_sync)
-            reregister_loop_drivers()
-    except Exception:  # noqa: BLE001 — loops must never block boot
-        logger.warning("loop store upgrade/re-registration failed", exc_info=True)
+    except Exception:
+        logger.warning("loop store upgrade failed", exc_info=True)
+
+
+def _rehydrate_loop_drivers() -> None:
+    """Re-spawn drivers for loops RUNNING/PAUSED at the last shutdown.
+
+    Runs AFTER the durable runtime start (ADR-036 D1): job-hosted loops are
+    resumed by reconciler → scheduler → loop_hosting.host, thread-hosted
+    ones here; without a runtime, job-hosted loops fall back to threads.
+    """
+    try:
+        from umrs.api.loop import reregister_loop_drivers
+
+        reregister_loop_drivers()
+    except Exception:
+        logger.warning("loop driver re-registration failed", exc_info=True)
 
 
 def _tag_metrics_source() -> None:
     """Tag all LLM metrics with the operational source (site name)."""
     try:
-        from umrs.orchestrator.site_config import load_site_config
         from umrs.metrics import METRICS
+        from umrs.orchestrator.site_config import load_site_config
 
         METRICS.set_source(load_site_config().name)
-        logger.info("LLM metrics source tagged: %s", METRICS._source)  # noqa: SLF001
+        logger.info("LLM metrics source tagged: %s", METRICS._source)
     except Exception:
         logger.debug(
             "No site config available — LLM metrics will have empty source"
@@ -583,7 +610,6 @@ def _create_app():
 
     from umrs.api.knowledge_v2 import router as knowledge_v2_router
     from umrs.knowledge.events_sse import router as events_sse_router
-
     from umrs.server.structured_logging import configure_structured_logging
 
     configure_structured_logging()
@@ -596,9 +622,13 @@ def _create_app():
         bundle_restore_router,
         catalog_router,
         chat_router,
+        companion_sessions_router,
         egress_audit_router,
         endpoints_router,
+        evidence_router,
+        experiment_registry_router,
         files_router,
+        grants_router,
         intake_uploads_router,
         jobs_router,
         knowledge_graph_router,
@@ -615,12 +645,10 @@ def _create_app():
         pipelines_router,
         policy_router,
         provenance_router,
+        rag_router,
         reflective_memory_router,
         research_sessions_router,
         scientific_memory_router,
-        evidence_router,
-        experiment_registry_router,
-        rag_router,
         skills_router,
         traces_router,
         usage_router,
@@ -647,6 +675,7 @@ def _create_app():
         if start_scheduler():
             logger.info("Scheduler service started via lifespan hook")
         _start_durable_runtime()
+        _rehydrate_loop_drivers()
         try:
             yield
         finally:
@@ -672,6 +701,7 @@ def _create_app():
     # Structured error responses: all HTTPException responses include
     # error_id and request_id for distributed tracing and automation.
     from fastapi import HTTPException as _HTTPException
+
     from umrs.api.error_responses import (
         structured_http_exception_handler,
         structured_warning_exception_handler,
@@ -688,7 +718,9 @@ def _create_app():
     app.include_router(assets_router)
     app.include_router(bundle_restore_router)
     app.include_router(chat_router)
+    app.include_router(companion_sessions_router)
     app.include_router(egress_audit_router)
+    app.include_router(grants_router)
     app.include_router(endpoints_router)
     app.include_router(files_router)
     app.include_router(intake_uploads_router)
@@ -746,7 +778,7 @@ def _create_app():
     ):
         try:
             starter(builder())
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.warning("%s satellite store init failed", name, exc_info=True)
 
     db_pool = _build_db_pool(app)

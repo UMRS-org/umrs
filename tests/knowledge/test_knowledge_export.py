@@ -528,6 +528,135 @@ class TestKnowledgeExportStatusChecker:
         assert result.status == "failed"
 
 
+# ── References + Manifest Markers (WP-17 / G-P2-2) ────────────────────────────
+
+
+class _RefsStore:
+    """Minimal store for reference-population tests (async + pool present)."""
+
+    def __init__(self) -> None:
+        self._pool = _RefsPool()
+
+    async def list_artifacts(self, **_kw):
+        return ([], 0)
+
+    async def list_irs(self, project_id):
+        return []
+
+    async def list_nodes(self, project_id):
+        return []
+
+    async def list_edges(self, project_id):
+        return []
+
+
+class _RefsPool:
+    async def fetch(self, query, *_args):
+        if "FROM skills" in query:
+            return [{"name": "science-run", "version": "1.2.0", "scope": "project"}]
+        if "FROM mcp_servers" in query:
+            return [{"server_id": "s1", "name": "lab-mcp", "version": "0.3.0"}]
+        return []
+
+    def acquire(self):
+        return _RefsConn()
+
+
+class _RefsConn:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_a):
+        return False
+
+    async def fetchrow(self, *_a):
+        return {"count": 0}
+
+    async def fetch(self, *_a):
+        return []
+
+
+class TestGtwop2ReferencesAndMarkers:
+    @pytest.mark.asyncio
+    async def test_manifest_populates_references_and_declares_markers(
+        self, tmp_bundle_dir: Path
+    ) -> None:
+        """G-P2-2 partial: skills/MCP by reference + declarative markers."""
+        engine = KnowledgeExportEngine(
+            store=_RefsStore(),
+            output_dir=tmp_bundle_dir.parent,
+            secret_key="k",
+        )
+        result = await engine.export_project("test-project")
+        assert result.signature
+        manifest = json.loads((tmp_bundle_dir / "manifest.json").read_text())
+        assert manifest["skills"] == [
+            {"ref": "project:science-run", "version_pin": "1.2.0", "scope": "project"}
+        ]
+        assert manifest["mcp_configs"] == [
+            {"ref": "lab-mcp", "version_pin": "0.3.0"}
+        ]
+        assert manifest["collision_policy"] == "abort"
+        assert manifest["provenance_canonical"] is False
+        assert manifest["reconciliation_snapshot"] is None
+
+
+# ── Reconciliation Snapshot Attach (WP-18 / ADR-032 #5 attach leg) ────────────
+
+
+class TestReconcileSnapshotAttach:
+    @pytest.mark.asyncio
+    async def test_snapshot_embedded_when_summary_available(
+        self, tmp_bundle_dir: Path, fake_store, monkeypatch
+    ) -> None:
+        payload = {
+            "captured_at": "2026-09-06T00:00:00+00:00",
+            "states": {"COMPLETE": 3, "EMBEDDING_PENDING": 1, "PARTIAL": 0, "ORPHANED": 0},
+            "assets_total": 4,
+            "catalogue_available": True,
+            "digest": "a" * 64,
+        }
+        monkeypatch.setattr(
+            "umrs.knowledge.reconcile_snapshot.summarize_reconcile_snapshot",
+            lambda _pid, **_: payload,
+        )
+        engine = KnowledgeExportEngine(
+            store=fake_store,
+            output_dir=tmp_bundle_dir.parent,
+            secret_key="k",
+        )
+        with (
+            patch.object(engine, "_list_embeddings_paged") as mock_emb,
+            patch.object(engine, "_list_catalog") as mock_cat,
+        ):
+            mock_emb.return_value = ([], 0)
+            mock_cat.return_value = []
+            await engine.export_project("test-project")
+        manifest = json.loads((tmp_bundle_dir / "manifest.json").read_text())
+        assert manifest["reconciliation_snapshot"] == payload
+
+    @pytest.mark.asyncio
+    async def test_snapshot_null_when_summary_unavailable(
+        self, tmp_bundle_dir: Path, fake_store, monkeypatch
+    ) -> None:
+        monkeypatch.delenv("UMRS_DB_URL", raising=False)
+        monkeypatch.delenv("DATABASE_URL", raising=False)
+        engine = KnowledgeExportEngine(
+            store=fake_store,
+            output_dir=tmp_bundle_dir.parent,
+            secret_key="k",
+        )
+        with (
+            patch.object(engine, "_list_embeddings_paged") as mock_emb,
+            patch.object(engine, "_list_catalog") as mock_cat,
+        ):
+            mock_emb.return_value = ([], 0)
+            mock_cat.return_value = []
+            await engine.export_project("test-project")
+        manifest = json.loads((tmp_bundle_dir / "manifest.json").read_text())
+        assert manifest["reconciliation_snapshot"] is None
+
+
 # ── Bundle Format Tests ──────────────────────────────────────────────────────
 
 

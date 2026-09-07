@@ -36,9 +36,16 @@ class JobType(Enum):
     KNOWLEDGE_EXPORT = "knowledge_export"  # Export knowledge bundle (.kb)
     ENDPOINT_UPGRADE = "endpoint_upgrade"  # Rolling model-version flip (Q-13)
     COMPANION_WORKER = "companion_worker"  # Durable per-user Companion venue (T3a)
+    # Server-hosted autonomous research loop (ADR-036 D1): one job per loop,
+    # attempt = one hosted run; iterations checkpoint into the loop store.
+    RESEARCH_LOOP = "research_loop_job"
     KNOWLEDGE_REINDEX = (
         "knowledge_reindex"  # Re-embed stale artifacts (S10 pattern; INDEX_BUILD seam)
     )
+    # Vision inference calls wrapped request-driven (G-P4-2 / WP-09, ADR-044):
+    # one durable job per /vision/infer/submit execution, attempt transitions
+    # driven by the HTTP handlers (never scheduler-requeued — NEVER policy).
+    VISION_INFER = "vision_infer"
     # Note: CONTEXT_RETENTION and CONVERSATION_SUMMARIZE excluded from selective merge
 
 
@@ -75,6 +82,10 @@ class RestartPolicy(Enum):
 
 # Default backoff settings per job type
 DEFAULT_BACKOFFS: dict[JobType, dict[str, Any]] = {
+    JobType.VISION_INFER: {
+        "delays": [30, 60, 120],  # never requeued (NEVER policy); table entry required
+        "max_attempts": 1,
+    },
     JobType.ENDPOINT_PROVISION: {
         "delays": [5, 10, 20],  # Fast retry
         "max_attempts": 3,
@@ -141,6 +152,13 @@ DEFAULT_BACKOFFS: dict[JobType, dict[str, Any]] = {
     JobType.COMPANION_WORKER: {
         "delays": [30, 60, 300, 600],
         "max_attempts": 6,
+    },
+    # Research loop: a LOST attempt resumes the campaign at its last
+    # iteration checkpoint (ADR-036 (b)) — retries are cheap, so short
+    # delays and few tries; ERROR loops are terminal (not re-driven).
+    JobType.RESEARCH_LOOP: {
+        "delays": [5, 30, 60],
+        "max_attempts": 4,
     },
     # Note: CONTEXT_RETENTION and CONVERSATION_SUMMARIZE backoffs excluded
 }

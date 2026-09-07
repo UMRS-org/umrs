@@ -31,6 +31,14 @@ logger = logging.getLogger(__name__)
 _TERMINAL = {"succeeded", "failed", "cancelled"}
 
 
+def _first(*values, default):
+    """First truthy value, else ``default`` (keeps result assembly flat)."""
+    for value in values:
+        if value:
+            return value
+    return default
+
+
 class UmrsWorkflowExecutionPort(WorkflowExecutionPort):
     """WorkflowExecutionPort backed by JobStore + execution registry."""
 
@@ -62,6 +70,11 @@ class UmrsWorkflowExecutionPort(WorkflowExecutionPort):
             # crashed attempt is expected, so retry semantics stay explicit.
             max_attempts=1,
         )
+        # create_job leaves the row PLANNED; the scheduler only claims QUEUED
+        # jobs (JobService.submit_job enqueues right after creating). Live
+        # finding (WP-07 walkthrough): without this every server-driven
+        # real-mode loop blocked forever in wait() on a job nobody ran.
+        self._store.enqueue_job(job_id)
         self._jobs[execution_id] = job_id
         logger.info(
             "research loop workflow triggered: %s → job %s (exec %s)",
@@ -104,16 +117,17 @@ class UmrsWorkflowExecutionPort(WorkflowExecutionPort):
         if record is None:
             return {"execution_id": execution_id, "status": "unknown"}
         data = record.to_dict()
-        results = data.get("results") or {}
-        payload = {
+        results = _first(data.get("results"), default={})
+        return {
             "status": data.get("status"),
-            "outputs": results.get("outputs") or data.get("outputs") or {},
-            "metrics": results.get("metrics") or {},
-            "artifacts": data.get("artifacts") or results.get("artifacts") or [],
-            "error": data.get("error") or results.get("error") or "",
+            "outputs": _first(results.get("outputs"), data.get("outputs"), default={}),
+            "metrics": _first(results.get("metrics"), default={}),
+            "artifacts": _first(
+                data.get("artifacts"), results.get("artifacts"), default=[]
+            ),
+            "error": _first(data.get("error"), results.get("error"), default=""),
             "durable_job_id": self._jobs.get(execution_id, ""),
         }
-        return payload
 
     def cancel(self, execution_id: str) -> dict:
         from umrs.jobs.workflow_run import cancel_workflow_execution_for_job

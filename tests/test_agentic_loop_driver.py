@@ -168,11 +168,14 @@ class TestApiStartWiring:
         assert recorded["project_id"] == "proj-ag"
         assert recorded["store"] is not None
 
-    def test_start_loop_default_no_runner(self):
+    def test_start_loop_default_no_runner(self, monkeypatch):
         import umrs.api.loop as loop_mod
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
 
+        # The module engine is real-mode here: since WP-07 (G-P1-3) a phased loop
+        # resolves its workflow at start — one registered workflow is the default.
+        monkeypatch.setattr(loop_mod, "_registered_workflow_names", lambda owner: ["wf-only"])
         app = FastAPI()
         app.include_router(loop_mod.router)
         client = TestClient(app)
@@ -186,6 +189,7 @@ class TestApiStartWiring:
             },
         )
         assert r.status_code == 201, r.text
+        assert r.json()["workflow_name"] == "wf-only"
 
 
 class TestUmrsAgentIterationExecutor:

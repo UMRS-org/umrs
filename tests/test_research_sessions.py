@@ -170,10 +170,9 @@ class TestSessionRouter:
         set_trust_store(trust)
         sessions = SessionStore(conn=shared)
         c = _client_with_session_store(sessions)
-        sid = (
-            c.post("/umrs/research/sessions", json={"project_id": "p9", "research_goal": "x"})
-            .json()["session"]["session_id"]
-        )
+        sid = c.post(
+            "/umrs/research/sessions", json={"project_id": "p9", "research_goal": "x"}
+        ).json()["session"]["session_id"]
         trust.grant("alice", "shell_exec", scope=f"session:{sid}")
         trust.grant("alice", "keep", scope="system")
         r = c.patch(f"/umrs/research/sessions/{sid}", json={"status": "archived"})
@@ -203,10 +202,9 @@ class TestSessionRouter:
         sessions = SessionStore(conn=shared)
         set_session_store(sessions)
         c = _client_with_session_store(sessions)
-        sid = (
-            c.post("/umrs/research/sessions", json={"project_id": "p9", "research_goal": "x"})
-            .json()["session"]["session_id"]
-        )
+        sid = c.post(
+            "/umrs/research/sessions", json={"project_id": "p9", "research_goal": "x"}
+        ).json()["session"]["session_id"]
         trust.grant("alice", "shell_exec", scope=f"session:{sid}")
         r = c.patch(
             f"/umrs/research/sessions/{sid}",
@@ -241,10 +239,9 @@ class TestSessionRouter:
         sessions = SessionStore(conn=shared)
         set_session_store(sessions)
         c = _client_with_session_store(sessions)
-        sid = (
-            c.post("/umrs/research/sessions", json={"project_id": "p9", "research_goal": "x"})
-            .json()["session"]["session_id"]
-        )
+        sid = c.post(
+            "/umrs/research/sessions", json={"project_id": "p9", "research_goal": "x"}
+        ).json()["session"]["session_id"]
         trust.grant("alice", "shell_exec", scope=f"session:{sid}")
 
         with patch.object(
@@ -286,10 +283,9 @@ class TestSessionRouter:
         sessions = SessionStore(conn=shared)
         set_session_store(sessions)
         c = _client_with_session_store(sessions)
-        sid = (
-            c.post("/umrs/research/sessions", json={"project_id": "p9", "research_goal": "x"})
-            .json()["session"]["session_id"]
-        )
+        sid = c.post(
+            "/umrs/research/sessions", json={"project_id": "p9", "research_goal": "x"}
+        ).json()["session"]["session_id"]
         r = c.patch(f"/umrs/research/sessions/{sid}", json={"status": "archived"})
         assert r.status_code == 200
 
@@ -322,6 +318,14 @@ class TestSessionRouter:
 
 
 class TestLoopAutoRegister:
+    @pytest.fixture(autouse=True)
+    def _one_registered_workflow(self, monkeypatch):
+        # The module engine is real-mode: since WP-07 a phased loop resolves its
+        # workflow at start (one registered workflow → automatic default).
+        import umrs.api.loop as loop_mod
+
+        monkeypatch.setattr(loop_mod, "_registered_workflow_names", lambda owner: ["wf-only"])
+
     def test_start_loop_registers_under_session(self):
         import contextlib
 

@@ -113,6 +113,10 @@ services:
       UMRS_HTTP_PORT: ${UMRS_RCCS_PORT:-8000}
       UMRS_HTTP_HOST: ${UMRS_HTTP_HOST:-0.0.0.0}
       DB_HOST: "127.0.0.1"
+      # ADR-034 rollout 2026-09-07 (G-P4-4): durable-job authority is the
+      # SHARED umrs_db for every umrs-front cluster — explicit, never the
+      # resolution default. Per-cluster DBs stay registry-only.
+      UMRS_JOBS_DB: ${UMRS_JOBS_DB:-umrs_db}
       DB_PORT: ${POSTGRES_PORT:-5432}
       DB_SUPERUSER: ${POSTGRES_USER:-umrs}
       DB_SUPERUSER_PASSWORD: ${POSTGRES_PASSWORD}
@@ -220,6 +224,10 @@ services:
       UMRS_HTTP_PORT: ${UMRS_AI4S_PORT:-8002}
       UMRS_HTTP_HOST: ${UMRS_HTTP_HOST:-0.0.0.0}
       DB_HOST: "127.0.0.1"
+      # ADR-034 rollout 2026-09-07 (G-P4-4): durable-job authority is the
+      # SHARED umrs_db for every umrs-front cluster — explicit, never the
+      # resolution default. Per-cluster DBs stay registry-only.
+      UMRS_JOBS_DB: ${UMRS_JOBS_DB:-umrs_db}
       DB_PORT: ${POSTGRES_PORT:-5432}
       DB_SUPERUSER: ${POSTGRES_USER:-umrs}
       DB_SUPERUSER_PASSWORD: ${POSTGRES_PASSWORD}
@@ -311,6 +319,10 @@ services:
       UMRS_HTTP_PORT: ${UMRS_BDRT_PORT:-8004}
       UMRS_HTTP_HOST: ${UMRS_HTTP_HOST:-0.0.0.0}
       DB_HOST: "127.0.0.1"
+      # ADR-034 rollout 2026-09-07 (G-P4-4): durable-job authority is the
+      # SHARED umrs_db for every umrs-front cluster — explicit, never the
+      # resolution default. Per-cluster DBs stay registry-only.
+      UMRS_JOBS_DB: ${UMRS_JOBS_DB:-umrs_db}
       DB_PORT: ${POSTGRES_PORT:-5432}
       DB_SUPERUSER: ${POSTGRES_USER:-umrs}
       DB_SUPERUSER_PASSWORD: ${POSTGRES_PASSWORD}
@@ -394,6 +406,10 @@ services:
       UMRS_HTTP_PORT: ${UMRS_OCTOPUS_PORT:-8006}
       UMRS_HTTP_HOST: ${UMRS_HTTP_HOST:-0.0.0.0}
       DB_HOST: "127.0.0.1"
+      # ADR-034 rollout 2026-09-07 (G-P4-4): durable-job authority is the
+      # SHARED umrs_db for every umrs-front cluster — explicit, never the
+      # resolution default. Per-cluster DBs stay registry-only.
+      UMRS_JOBS_DB: ${UMRS_JOBS_DB:-umrs_db}
       DB_PORT: ${POSTGRES_PORT:-5432}
       DB_SUPERUSER: ${POSTGRES_USER:-umrs}
       DB_SUPERUSER_PASSWORD: ${POSTGRES_PASSWORD}

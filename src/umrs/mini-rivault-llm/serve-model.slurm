@@ -576,6 +576,9 @@ https_proxy=${https_proxy:-${_rivault_https_proxy}}
 no_proxy=${no_proxy:-${RIVAULT_NO_PROXY:-localhost,127.0.0.1,::1,litellm,vllm,ll-postgres,coredns,nginx,egress-guard}}
 # Comma-separated domains allowed through egress-guard (empty = fully offline)
 EGRESS_DOMAIN_ALLOWLIST=${EGRESS_DOMAIN_ALLOWLIST:-}
+# In-stack egress-guard image (ADR-040): computed here so the compose file
+# keeps the simple ${EGRESS_GUARD_IMAGE:-...} form (no nested substitution).
+EGRESS_GUARD_IMAGE=${EGRESS_GUARD_IMAGE:-localhost/r4-mcp:${MCP_CUSTOM_DOCKER_TAG:-latest}}
 
 # ─── 7. Multi-Tenancy & Instance Identity ────────────────────────────────────
 # Deployment tier: system | project | user (controls isolation policy)
@@ -966,6 +969,19 @@ _profile_flags=""
 for _p in $RIVAULT_PROFILES; do
 	_profile_flags="${_profile_flags} --profile ${_p}"
 done
+
+# ADR-040 D4: the egress profile must never start without a present proxy
+# image. Refuse the launch here with a named error instead of bringing up a
+# stack whose proxy service is silently absent.
+if [[ " ${RIVAULT_PROFILES} " == *" egress "* ]]; then
+    _egress_guard_image="${EGRESS_GUARD_IMAGE:-localhost/r4-mcp:${MCP_CUSTOM_DOCKER_TAG:-latest}}"
+    if command -v podman >/dev/null 2>&1 && ! podman image exists "${_egress_guard_image}" 2>/dev/null; then
+        podman pull "${_egress_guard_image}" >/dev/null 2>&1 || {
+            echo "[rivault] FATAL: egress profile requested but egress-guard image '${_egress_guard_image}' is not present on this node and cannot be pulled (ADR-040 D4); refusing to launch"
+            exit 1
+        }
+    fi
+fi
 
 _cleanup_started=0
 RIVAULT_CONTROL_DIR="${RIVAULT_CONTROL_DIR:-}"

@@ -10,10 +10,12 @@ import logging
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel, Field
 
+from umrs.api import vision_durable
 from umrs.api.files import S3Config, get_project_id, get_s3_config, validate_key
+from umrs.api.files import _header_str
 from umrs.orchestrator.endpoint_registry import (
     EndpointRegistry,
     EndpointStatus,
@@ -71,6 +73,8 @@ class VisionSubmitResponse(BaseModel):
     adapter: str
     task: dict[str, Any]
     outputs: list[VisionOutputArtifact] = Field(default_factory=list)
+    # WP-09 (ADR-044): durable attribution row for this call — additive.
+    job_id: str | None = None
 
 
 def _parse_s3_uri(image_uri: str, project_id: str, config: S3Config) -> tuple[str, str]:
@@ -232,8 +236,10 @@ def _response_from_downstream(response: httpx.Response) -> Response:
 @router.post("/infer/submit", response_model=VisionSubmitResponse)
 async def submit_inference(
     request: VisionInferSubmitRequest,
+    http_request: Request,
     x_verified_project_id: str | None = Header(None),
     x_project_id: str | None = Header(None),
+    x_user_id: str | None = Header(None),
     registry: EndpointRegistry = Depends(get_registry),
     config: S3Config = Depends(get_s3_config),
 ) -> VisionSubmitResponse:
@@ -244,6 +250,8 @@ async def submit_inference(
         endpoint_id=request.endpoint_id,
         model=request.model,
     )
+    durable_store = vision_durable.store_for(http_request)
+    durable_job, durable_attempt = None, None
     adapter = _adapter_name(request, endpoint)
     input_bucket, input_key = _parse_s3_uri(request.image_uri, project_id, config)
     ttl_sec = min(request.ttl_sec or config.default_ttl, config.max_ttl)
@@ -273,13 +281,33 @@ async def submit_inference(
         "presigned_input_url": input_url,
         "presigned_output_urls": output_urls,
     }
-    response = await _request_endpoint(
-        endpoint, "POST", "/infer/submit", json_payload=payload
+    durable_job, durable_attempt = vision_durable.admit(
+        durable_store,
+        project_id=project_id,
+        user_id=_header_str(x_user_id) or "unknown",
+        spec={
+            "endpoint_job_id": endpoint.job_id,
+            "endpoint_model": endpoint.model,
+            "adapter": adapter,
+            "input": f"s3://{input_bucket}/{input_key}",
+            "output_bucket": output_bucket,
+        },
     )
+    try:
+        response = await _request_endpoint(
+            endpoint, "POST", "/infer/submit", json_payload=payload
+        )
+    except Exception as exc:
+        vision_durable.terminal(durable_store, durable_attempt, "failed", reason=str(exc))
+        raise
     try:
         task = response.json()
     except ValueError:
         task = {"raw": response.text}
+    if response.status_code >= 400:
+        vision_durable.terminal(
+            durable_store, durable_attempt, "failed", reason=f"http {response.status_code}"
+        )
 
     registry.mark_used(endpoint.job_id)
     return VisionSubmitResponse(
@@ -288,14 +316,17 @@ async def submit_inference(
         adapter=adapter,
         task=task,
         outputs=outputs,
+        job_id=durable_job,
     )
 
 
 @router.get("/infer/status")
 async def get_inference_status(
+    http_request: Request,
     task_id: str = Query(...),
     model: str | None = Query(None),
     endpoint_id: str | None = Query(None),
+    job_id: str | None = Query(None),
     project_id: str = Depends(get_project_id),
     registry: EndpointRegistry = Depends(get_registry),
 ) -> Response:
@@ -305,7 +336,35 @@ async def get_inference_status(
     response = await _request_endpoint(
         endpoint, "GET", "/infer/status", params={"task_id": task_id}
     )
+    _record_status_transition(http_request, job_id, response)
     return _response_from_downstream(response)
+
+
+def _record_status_transition(http_request: Request, job_id: str | None, response: httpx.Response) -> None:
+    """WP-09: best-effort attempt-terminal transition on a terminal poll."""
+    if not job_id:
+        return
+    store = vision_durable.store_for(http_request)
+    if store is None:
+        return
+    try:
+        job = store.get_job(job_id)
+        attempt_id = job.active_attempt_id
+    except Exception:  # noqa: BLE001
+        attempt_id = None
+    if attempt_id is None:
+        return
+    state = ""
+    try:
+        state = str(response.json().get("status") or "").lower()
+    except ValueError:
+        return
+    if state in ("completed", "success", "done", "succeeded"):
+        vision_durable.terminal(store, attempt_id, "succeeded")
+    elif state in ("failed", "error"):
+        vision_durable.terminal(store, attempt_id, "failed", reason=f"downstream status {state}")
+    elif state in ("cancelled", "canceled"):
+        vision_durable.cancel(store, job_id, reason="downstream_cancelled")
 
 
 @router.get("/infer/get")
@@ -328,9 +387,11 @@ async def get_inference_result(
 
 @router.post("/infer/cancel")
 async def cancel_inference(
+    http_request: Request,
     task_id: str = Query(...),
     model: str | None = Query(None),
     endpoint_id: str | None = Query(None),
+    job_id: str | None = Query(None),
     project_id: str = Depends(get_project_id),
     registry: EndpointRegistry = Depends(get_registry),
 ) -> Response:
@@ -339,5 +400,8 @@ async def cancel_inference(
     )
     response = await _request_endpoint(
         endpoint, "POST", "/infer/cancel", params={"task_id": task_id}
+    )
+    vision_durable.cancel(
+        vision_durable.store_for(http_request), job_id, reason="user_cancelled"
     )
     return _response_from_downstream(response)

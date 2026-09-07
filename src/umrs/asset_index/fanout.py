@@ -10,6 +10,8 @@ Lineage derivation per Review F4 (edges come from existing relations):
 - artifact → parent artifact: artifact_registry lineage table
 - job → artifacts: artifacts carry execution_id
 - research_session → loops: session membership links
+- loop → artifacts: loop iterations record produced artifact ids
+  (ADR-036 D4, WP-05 — finding artifacts + workflow outputs)
 """
 
 from __future__ import annotations
@@ -220,27 +222,65 @@ def _collect_sessions(store: Any, project_id: str | None) -> list[AssetRow]:
     return rows
 
 
-def _loop_row(loop: Any) -> AssetRow:
+def _loop_artifact_edges(loop: Any) -> list[AssetLineageEdge]:
+    """``loop --produced--> artifact`` for every artifact id its iterations recorded."""
+    loop_id = str(getattr(loop, "loop_id", ""))
+    seen: set[str] = set()
+    edges: list[AssetLineageEdge] = []
+    for iteration in getattr(loop, "iterations", None) or []:
+        for artifact_id in getattr(iteration, "artifact_ids", None) or []:
+            aid = str(artifact_id)
+            if not aid or aid in seen:
+                continue
+            seen.add(aid)
+            edges.append(
+                AssetLineageEdge(
+                    from_kind="loop",
+                    from_id=loop_id,
+                    to_kind="artifact",
+                    to_id=aid,
+                    relation="produced",
+                )
+            )
+    return edges
+
+
+def _loop_session_edges(loop: Any) -> list[AssetLineageEdge]:
     sid = str(getattr(loop, "research_session_id", "") or "")
-    edges: tuple[AssetLineageEdge, ...] = ()
-    if sid:
-        edges = (
-            AssetLineageEdge(
-                from_kind="loop",
-                from_id=str(getattr(loop, "loop_id", "")),
-                to_kind="research_session",
-                to_id=sid,
-                relation="registered_by",
-            ),
+    if not sid:
+        return []
+    return [
+        AssetLineageEdge(
+            from_kind="loop",
+            from_id=str(getattr(loop, "loop_id", "")),
+            to_kind="research_session",
+            to_id=sid,
+            relation="registered_by",
         )
+    ]
+
+
+def _loop_metadata(loop: Any) -> dict[str, str]:
+    meta = getattr(loop, "metadata", None)
+    meta = meta if isinstance(meta, dict) else {}
+    return {
+        "venue": str(getattr(loop, "venue", "") or ""),
+        "hosting": str(meta.get("hosting") or ""),
+        "durable_job_id": str(meta.get("durable_job_id") or ""),
+    }
+
+
+def _loop_row(loop: Any) -> AssetRow:
+    status = getattr(loop, "status", "")
+    goal = getattr(loop, "research_goal", "") or getattr(loop, "goal", "") or ""
     return AssetRow(
         kind="loop",
         asset_id=str(getattr(loop, "loop_id", "")),
         scope=_scope_of(project_id=str(getattr(loop, "project_id", "") or "") or None),
-        status=str(getattr(loop, "status", "") or "unknown"),
-        title=str(getattr(loop, "research_goal", "") or getattr(loop, "goal", "") or "")[:64],
-        lineage=edges,
-        metadata={"venue": str(getattr(loop, "venue", "") or "")},
+        status=str(getattr(status, "value", status) or "unknown"),
+        title=str(goal)[:64],
+        lineage=tuple(_loop_session_edges(loop) + _loop_artifact_edges(loop)),
+        metadata=_loop_metadata(loop),
     )
 
 
