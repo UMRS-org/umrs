@@ -511,8 +511,11 @@ VLLM_DOCKER_TAG=${VLLM_DOCKER_TAG:-v0.20.0}
 # the env heredoc, where assignments are text only — the VLLM_DOCKER_TAG
 # DEFAULT above is never applied to the shell value unless the tag was
 # exported into the wrapper env (rosters/path exports). Without the inner
-# default the ref renders as `.../vllm-openai:` (missing tag) and
-# podman-compose fails with "invalid reference format".
+# default the ref renders with an EMPTY tag (image:...vllm-openai:... no
+# tag) and podman-compose fails with "invalid reference format".
+# (Do NOT put backquoted example text in this comment — this file is an
+# UNQUOTED heredoc and backticks would be evaluated as command substitution
+# on EVERY job run, spewing bogus errors from the .err log.)
 VLLM_DOCKER_IMAGE=${VLLM_DOCKER_IMAGE:-docker.io/vllm/vllm-openai:${VLLM_DOCKER_TAG:-v0.20.0}}
 # Fraction of GPU memory vLLM is allowed to use for KV-cache
 VLLM_GPU_MEM_UTIL=${VLLM_GPU_MEM_UTIL:-0.95}
