@@ -439,6 +439,8 @@ def test_provision_endpoint_forwards_mounts_to_service(monkeypatch):
         lambda: service,
     )
 
+    monkeypatch.setenv("EGRESS_GUARD_IMAGE", "localhost/r4-mcp:test")  # site declares a proxy
+
     app = FastAPI()
     app.include_router(router)
     app.dependency_overrides[get_registry] = _new_registry
@@ -562,3 +564,48 @@ def test_get_endpoint_refreshes_starting_endpoint_when_ready(monkeypatch):
             "probe_path": None,
         }
     ]
+
+
+def test_provision_endpoint_refuses_egress_without_declared_proxy_image(monkeypatch):
+    """ADR-040 D4: egress_domains / custom MCP mounts need a site-declared proxy image."""
+    from umrs.orchestrator.site_config import SiteConfig
+
+    service = _StubOrchestrationService()
+    monkeypatch.setattr(
+        endpoints_api,
+        "_resolve_registered_model_entry",
+        lambda _model_name: {
+            "storage_ref": "/shared/models/qwen3-8b",
+            "huggingface_id": "Qwen/Qwen3-8B",
+            "model_type": "llm",
+        },
+    )
+    monkeypatch.setattr(
+        "umrs.orchestrator.service.get_orchestration_service",
+        lambda: service,
+    )
+    monkeypatch.delenv("EGRESS_GUARD_IMAGE", raising=False)
+    monkeypatch.setattr(
+        "umrs.orchestrator.site_config.get_site_config", lambda _path=None: SiteConfig()
+    )
+
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_registry] = _new_registry
+
+    body = {
+        "project_id": "project-a",
+        "model": "qwen3-8b",
+        "tier": "project",
+        "egress_domains": ["api.example.com"],
+    }
+    with TestClient(app) as client:
+        response = client.post("/umrs/endpoints/provision", json=body)
+
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert "refusing per ADR-040 D4" in detail
+    assert "egress_domains=api.example.com" in detail
+    assert service.requests == []  # refused before any provisioning work

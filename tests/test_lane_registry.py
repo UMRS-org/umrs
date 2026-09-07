@@ -25,6 +25,7 @@ CLASSIFIED_FIXED: dict[str, SurfaceLane] = {
     "k2": SurfaceLane.BETA,
     "loops": SurfaceLane.BETA,
     "research": SurfaceLane.BETA,
+    "grants": SurfaceLane.BETA,
     "ops": SurfaceLane.INTERNAL,
     "skills": SurfaceLane.INTERNAL,
     "zmq": SurfaceLane.INTERNAL,

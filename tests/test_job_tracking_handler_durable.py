@@ -325,3 +325,56 @@ def test_build_durable_job_db_pool_reads_env(monkeypatch):
         "port": "15432",
         "sslmode": "disable",
     }
+
+
+class _FakeAdminCursorForDefault:
+    def execute(self, _sql, params=None):
+        pass
+
+    def fetchone(self):
+        return None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+
+class _FakeAdminConnectionForDefault:
+    def __init__(self):
+        self.autocommit = False
+
+    def cursor(self):
+        return _FakeAdminCursorForDefault()
+
+    def close(self):
+        pass
+
+
+def test_durable_jobs_default_db_is_umrs_db(monkeypatch):
+    """G-P4-4 / ADR-034 rollout 2026-09-07: absent UMRS_JOBS_DB (and
+    POSTGRES_DB), the durable-job authority resolves to the SHARED 'umrs_db'.
+    The umrs-front compose pins UMRS_JOBS_DB=umrs_db explicitly so this
+    default is never load-bearing — but if it changes, every cluster's jobs
+    silently re-target. Pin it."""
+    pool_kwargs: dict = {}
+    sentinel_pool = object()
+
+    for var in ("UMRS_JOBS_DB", "POSTGRES_DB"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr(
+        job_tracking_handler.psycopg2,
+        "connect",
+        lambda **kw: _FakeAdminConnectionForDefault(),
+    )
+    monkeypatch.setattr(
+        job_tracking_handler.pg_pool,
+        "ThreadedConnectionPool",
+        lambda **kw: (pool_kwargs.update(kw), sentinel_pool)[1],
+    )
+
+    pool = job_tracking_handler.build_durable_job_db_pool_from_env()
+
+    assert pool is sentinel_pool
+    assert pool_kwargs["dbname"] == "umrs_db"

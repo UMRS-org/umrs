@@ -778,6 +778,9 @@ class JobStore:
                 )
             conn.commit()
 
+        # WP-12: record the queue_wait phase span (best-effort)
+        self._record_attempt_timing(attempt_id, "running", datetime.utcnow())
+
     def mark_attempt_succeeded(
         self,
         attempt_id: str,
@@ -852,8 +855,135 @@ class JobStore:
             logger.info(f"Attempt {attempt_id} succeeded (commit={commit})")
             METRICS.job_completed("durable")
 
+            # P7a: persist this attempt's execution manifest (best-effort)
+            self._persist_attempt_manifest(attempt_id, job_id)
+
+            # WP-12: record the wall phase span (best-effort)
+            self._record_attempt_timing(attempt_id, "ended", now)
+
             # Invoke post-success hook (best-effort, non-blocking)
             self._invoke_post_success(attempt_id, job_id)
+
+    def _record_attempt_timing(self, attempt_id: str, phase: str, when: datetime) -> None:
+        """WP-12: record one attempt phase span (best-effort; never blocks).
+
+        Computes the phase milliseconds from the attempt row's started_at,
+        observes the histogram (authority-bounded labels), and persists the
+        phase record under attempts.metrics['timing'] — surfaced through
+        GET /umrs/jobs/{id} attempts.
+        """
+        try:
+            from .timing import attempt_phases
+
+            attempt = self.get_attempt(attempt_id)
+            fields = attempt_phases(
+                started_at=attempt.started_at, transitioned_at=when, phase=phase
+            )
+            fields = {k: v for k, v in fields.items() if v is not None}
+            if not fields:
+                return
+            for field_name, ms in fields.items():
+                METRICS.attempt_phase_seconds(
+                    attempt.backend, field_name.removesuffix("_ms"), ms / 1000
+                )
+            with self._get_conn() as conn, conn.cursor() as cur:
+                cur.execute(
+                    """UPDATE job_attempts
+                       SET metrics = COALESCE(metrics, '{}')::jsonb || %s::jsonb
+                       WHERE attempt_id = %s""",
+                    (json.dumps({"timing": fields}), attempt_id),
+                )
+        except Exception:
+            logger.exception("attempt timing persistence failed for %s (phase=%s)", attempt_id, phase)
+
+    def _persist_attempt_manifest(self, attempt_id: str, job_id: str) -> None:
+        """P7a: assemble + persist this attempt's ExecutionManifest (G-P7-1).
+
+        Merged under attempts.metrics['manifest'] (no schema change);
+        best-effort by design — a manifest failure never blocks the
+        attempt's terminal state.
+        """
+        try:
+            job = self.get_job(job_id)
+            attempts = self.get_attempts_for_job(job_id)
+            from .manifest import execution_manifest
+            from .provenance import build_provenance
+
+            spec = job.spec or {}
+            manifest = execution_manifest(
+                provenance=build_provenance(job, attempts).to_dict(),
+                trigger=str(spec.get("trigger") or "api"),
+                pipeline_name=str(spec.get("workflow_name") or ""),
+            )
+            with self._get_conn() as conn, conn.cursor() as cur:
+                cur.execute(
+                    """UPDATE job_attempts
+                       SET metrics = COALESCE(metrics, '{}')::jsonb || %s::jsonb
+                       WHERE attempt_id = %s""",
+                    (json.dumps({"manifest": manifest}), attempt_id),
+                )
+        except Exception:
+            logger.exception("manifest persistence failed for attempt %s", attempt_id)
+
+    def get_attempt_manifest(self, attempt_id: str) -> dict[str, Any] | None:
+        """Persisted ExecutionManifest for one attempt (None when unset)."""
+        with (
+            self._get_conn() as conn,
+            conn.cursor(cursor_factory=RealDictCursor) as cur,
+        ):
+            cur.execute(
+                "SELECT metrics ->> 'manifest' AS manifest FROM job_attempts WHERE attempt_id = %s",
+                (attempt_id,),
+            )
+            row = cur.fetchone()
+        if not row or row["manifest"] is None:
+            return None
+        manifest = row["manifest"]
+        return manifest if isinstance(manifest, dict) else json.loads(manifest)
+
+    def get_latest_attempt_manifest(self, job_id: str) -> dict[str, Any] | None:
+        """Persisted manifest for one job (commit attempt preferred, else newest)."""
+        job = self.get_job(job_id)
+        attempts = self.get_attempts_for_job(job_id)
+        ordered = sorted(
+            attempts,
+            key=lambda a: (a.attempt_id != job.commit_attempt_id, a.attempt_no),
+            reverse=True,
+        )
+        for attempt in ordered:
+            manifest = self.get_attempt_manifest(attempt.attempt_id)
+            if manifest:
+                return manifest
+        return None
+
+    def record_attempt_credentials(self, attempt_id: str, credentials: dict[str, Any]) -> None:
+        """WP-11: persist an attempt-scoped credential record (metrics slot).
+
+        Never stores secret material — only scope, TTL and expiry.
+        """
+        with self._get_conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                """UPDATE job_attempts
+                   SET metrics = COALESCE(metrics, '{}')::jsonb || %s::jsonb
+                   WHERE attempt_id = %s""",
+                (json.dumps({"credentials": credentials}), attempt_id),
+            )
+
+    def get_attempt_credentials(self, attempt_id: str) -> dict[str, Any] | None:
+        """The persisted credential record for one attempt (None when unset)."""
+        with (
+            self._get_conn() as conn,
+            conn.cursor(cursor_factory=RealDictCursor) as cur,
+        ):
+            cur.execute(
+                "SELECT metrics ->> 'credentials' AS credentials FROM job_attempts WHERE attempt_id = %s",
+                (attempt_id,),
+            )
+            row = cur.fetchone()
+        if not row or row["credentials"] is None:
+            return None
+        creds = row["credentials"]
+        return creds if isinstance(creds, dict) else json.loads(creds)
 
     def _invoke_post_success(self, attempt_id: str, job_id: str) -> None:
         """Best-effort post-success hook dispatch."""
@@ -977,6 +1107,12 @@ class JobStore:
                 self._reconcile_fan_out_parent(conn, job_id)
 
             conn.commit()
+
+            # WP-12: record the wall phase span (best-effort)
+            self._record_attempt_timing(attempt_id, "ended", now)
+
+            # P7a: persist manifest for the failed attempt (best-effort)
+            self._persist_attempt_manifest(attempt_id, job_id)
 
             # Invoke post-failure hook when job itself failed (no retry).
             if not requeued and self._post_failure_callback:

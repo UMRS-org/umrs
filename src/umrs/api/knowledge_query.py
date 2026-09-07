@@ -10,6 +10,11 @@ are not wired yet (knowledge graph, embeddings, RAG) are reported in
 ``unavailable_backends`` with reasons instead of silently returning
 empty results — the response is honest about coverage.
 
+WP-15 (2026-09-07, ADR-027 P1b facade leg): the ``rag`` scope is now
+wired over the NODE-KEYED central corpus (knowledge_nodes + 0075
+embeddings) — never the endpoint-coupled mini-RiVault corpus. Hits
+carry ``metadata.corpus_venue: central-pg`` so callers see the venue.
+
 Existing subsystem routes stay untouched (aliases per K3 guardrail).
 """
 
@@ -34,7 +39,7 @@ _VALID_SCOPES = {scope.value for scope in SearchScope}
 
 _UNWIRED_BACKENDS: dict[str, str] = {
     "embeddings": "query-embedding generation requires the embedding service",
-    "rag": "RAG search requires a deployed mini-rivault instance",
+    "rag": "central knowledge corpus unavailable (knowledge nodes not present)",
 }
 
 
@@ -326,12 +331,118 @@ def _embeddings_backend_for(pool: Any) -> tuple[Optional[_EmbeddingsSearchBacken
     return _EmbeddingsSearchBackend(pool), None
 
 
+def _node_snippet(content_text: str, content_hash: str) -> str:
+    """Snippet for a corpus hit: first text-ish JSONB value, else a ref line.
+
+    Never fabricates content — when the parsed payload has no text field,
+    the hit keeps an honest pointer to the content hash.
+    """
+    try:
+        import json as _json
+
+        parsed = _json.loads(content_text) if content_text else {}
+    except (ValueError, TypeError):
+        parsed = {}
+    if isinstance(parsed, dict):
+        for key in ("text", "preview", "chunk", "excerpt", "summary"):
+            value = parsed.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()[:240]
+    if content_text and not content_text.startswith("{"):
+        return content_text[:240]
+    return f"(content ref: {content_hash[:16]}…)" if content_hash else "(no snippet)"
+
+
+class _RAGSearchBackend:
+    """``search_api`` RAGSearchable port over the node-keyed central corpus.
+
+    ADR-027 P1b facade leg (WP-15): the ``rag`` scope answers from
+    ``knowledge_nodes`` in central Postgres — the corpus the upload/intake
+    paths mint into — instead of requiring a deployed mini-RiVault
+    endpoint. The mini-RiVault corpus stays owned by ``rag_service``
+    (endpoint lifecycle); this facade never proxies there and never
+    fabricates its semantics: hits are corpus nodes, recency-ranked,
+    fixed honest score (no relevance model — same convention as the
+    embeddings table-reader lane), with ``metadata.corpus_venue`` naming
+    the venue.
+    """
+
+    def __init__(self, pool: Any) -> None:
+        self._pool = pool
+
+    def search_rag(
+        self,
+        query: str,
+        *,
+        project_id: Optional[str] = None,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        pattern = f"%{query}%"
+        with self._pool.getconn() as conn:
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT n.node_id, n.label, n.node_type, n.content::text, "
+                        "n.content_hash, n.updated_at "
+                        "FROM knowledge_nodes n "
+                        "WHERE n.project_id = %s "
+                        "AND (n.label ILIKE %s OR n.node_type ILIKE %s "
+                        "OR n.content::text ILIKE %s) "
+                        "ORDER BY n.updated_at DESC LIMIT %s",
+                        (project_id, pattern, pattern, pattern, limit),
+                    )
+                    rows = cur.fetchall()
+            finally:
+                self._pool.putconn(conn)
+        return [self._hit(row) for row in rows]
+
+    @staticmethod
+    def _hit(row: tuple) -> dict[str, Any]:
+        node_id, label, node_type, content_text, content_hash, _updated = row[:6]
+        return {
+            "title": label or node_id,
+            "content": _node_snippet(content_text or "", content_hash or ""),
+            "score": 0.5,
+            "source_id": node_id,
+            "source_type": "knowledge_corpus_node",
+            "metadata": {
+                "node_type": node_type,
+                "lane": "central-corpus",
+                "corpus_venue": "central-pg",
+                "content_hash": content_hash,
+            },
+        }
+
+
+def _rag_backend_for(pool: Any) -> tuple[Optional[_RAGSearchBackend], Optional[str]]:
+    """Wire the central-corpus RAG backend iff knowledge_nodes exists."""
+    if pool is None:
+        return None, "RAG search requires the database"
+    try:
+        with pool.getconn() as conn:
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT to_regclass('knowledge_nodes')")
+                    found = cur.fetchone()
+                present = bool(found and found[0])
+            finally:
+                pool.putconn(conn)
+    except Exception as exc:  # noqa: BLE001 — honesty over hard failure
+        logger.warning("corpus probe failed, RAG backend unwired: %s", exc)
+        return None, "RAG search unavailable (corpus probe failed)"
+    if not present:
+        return None, "central knowledge corpus unavailable (knowledge nodes not present)"
+    return _RAGSearchBackend(pool), None
+
+
 def _build_unified_search(
     meta_store: Any,
     graph_backend: Optional[_GraphSearchBackend],
     graph_unavailable_reason: Optional[str],
     embeddings_backend: Optional[_EmbeddingsSearchBackend] = None,
     embeddings_unavailable_reason: Optional[str] = None,
+    rag_backend: Optional[_RAGSearchBackend] = None,
+    rag_unavailable_reason: Optional[str] = None,
 ) -> tuple[UnifiedSearch, list[str], dict[str, str]]:
     """Compose pluggable backends.
 
@@ -351,6 +462,12 @@ def _build_unified_search(
         wired.append("embeddings")
     elif embeddings_unavailable_reason is not None:
         unwired["embeddings"] = embeddings_unavailable_reason
+    if rag_backend is not None:
+        kwargs["rag"] = rag_backend
+        unwired.pop("rag", None)
+        wired.append("rag")
+    elif rag_unavailable_reason is not None:
+        unwired["rag"] = rag_unavailable_reason
     return UnifiedSearch(**kwargs), wired, unwired
 
 
@@ -413,8 +530,15 @@ def query_knowledge(
         pool, resolved_project, graphs, exclude_graphs
     )
     emb_backend, emb_reason = _embeddings_backend_for(pool)
+    rag_backend, rag_reason = _rag_backend_for(pool)
     search, wired, unwired = _build_unified_search(
-        meta_store, backend, reason, emb_backend, emb_reason
+        meta_store,
+        backend,
+        reason,
+        emb_backend,
+        emb_reason,
+        rag_backend,
+        rag_reason,
     )
     results = search.search(
         q,

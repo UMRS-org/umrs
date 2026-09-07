@@ -1,0 +1,64 @@
+"""Attempt/loop phase timing (WP-12, G-P11-1, G-P1-4).
+
+Computes per-attempt and per-iteration wall-clock phases from the durable
+rows (pure functions, tolerant of absent timestamps — an unknown phase is
+recorded as None, never invented). The job store observes these into the
+metric registry and persists phase records under attempts.metrics['timing'];
+the loop runtime does the same per iteration (results['timing_ms']).
+
+Phases measurable without schema changes:
+- ``queue_wait``: attempt created → running
+- ``wall``: attempt created → terminal end (succeeded/failed)
+- ``iteration``: loop iteration started_at → completed_at
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from typing import Any
+
+
+def _parse_iso(value: Any) -> datetime | None:
+    """Tolerant ISO-8601 parse (aware or naive → aware UTC)."""
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str) and value:
+        try:
+            parsed = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+    else:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def duration_ms(started: Any, ended: Any) -> int | None:
+    """Milliseconds between two timestamps, or None when either is unknown.
+
+   ``ended`` never precedes ``started`` on the wire (clock skew floors at 0).
+    """
+    start = _parse_iso(started)
+    end = _parse_iso(ended)
+    if start is None or end is None:
+        return None
+    return max(0, int((end - start).total_seconds() * 1000))
+
+
+def attempt_phases(
+    *,
+    started_at: Any,
+    transitioned_at: Any,
+    phase: str,
+) -> dict[str, int | None]:
+    """One transition's phase record.
+
+    - ``queue_wait_ms`` when phase == "running"
+    - ``wall_ms`` when phase == "ended"
+    Nothing is fabricated: unknown sides → None field.
+    """
+    ms = duration_ms(started_at, transitioned_at)
+    if phase == "running":
+        return {"queue_wait_ms": ms}
+    return {"wall_ms": ms}

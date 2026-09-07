@@ -150,6 +150,14 @@ def _validate_companion_worker_spec(spec: dict[str, Any]) -> None:
     _validate(spec)
 
 
+def _validate_research_loop_spec(spec: dict[str, Any]) -> None:
+    from umrs.jobs.research_loop_backend import (
+        validate_research_loop_spec as _validate,
+    )
+
+    _validate(spec)
+
+
 _JOB_SPEC_VALIDATORS = {
     JobType.INDEX_BUILD: _validate_index_build_spec,
     JobType.WORKFLOW_RUN: _validate_workflow_run_spec,
@@ -157,6 +165,7 @@ _JOB_SPEC_VALIDATORS = {
     JobType.DATA_INGESTION: _validate_data_ingestion_spec,
     JobType.KNOWLEDGE_REINDEX: _validate_knowledge_reindex_spec,
     JobType.COMPANION_WORKER: _validate_companion_worker_spec,
+    JobType.RESEARCH_LOOP: _validate_research_loop_spec,
 }
 
 

@@ -215,3 +215,40 @@ class TestAssetsRouter:
         client, _ = api
         res = client.get(f"/umrs/assets/artifact/{uuid.uuid4()}")
         assert res.status_code == 404
+
+
+class TestLoopArtifactLineage:
+    """ADR-036 D4 (WP-05): loop → artifact edges derive from iteration artifact_ids."""
+
+    def test_loop_rows_carry_produced_edges_deduped(self):
+        loop = SimpleNamespace(
+            loop_id="loop-9",
+            project_id="p1",
+            research_goal="digital filter",
+            status="stopped",
+            research_session_id="",
+            metadata={"hosting": "job", "durable_job_id": "job-77"},
+            iterations=[
+                SimpleNamespace(artifact_ids=["finding-1", "wf-art-1"]),
+                SimpleNamespace(artifact_ids=["wf-art-1", "finding-2"]),
+                SimpleNamespace(artifact_ids=[]),
+            ],
+        )
+        store = SimpleNamespace(list_all=lambda: [loop])
+        rows, warnings = build_asset_index(loop_store=store)
+        assert not warnings
+        row = rows[0]
+        produced = [(e.to_kind, e.to_id, e.relation) for e in row.lineage]
+        assert produced == [
+            ("artifact", "finding-1", "produced"),
+            ("artifact", "wf-art-1", "produced"),
+            ("artifact", "finding-2", "produced"),
+        ]
+        assert row.metadata["hosting"] == "job"
+        assert row.metadata["durable_job_id"] == "job-77"
+
+    def test_loop_without_iterations_has_no_artifact_edges(self):
+        loop = SimpleNamespace(loop_id="loop-0", project_id="p1", research_goal="g", status="running")
+        rows, _ = build_asset_index(loop_store=SimpleNamespace(list_all=lambda: [loop]))
+        assert rows[0].lineage == ()
+        assert rows[0].metadata["hosting"] == ""

@@ -914,12 +914,16 @@ class TestAdapters:
             created_at=datetime.utcnow(),
         )
 
-        with patch.object(backend, "_determine_target_host", return_value="pending"):
+        with (
+            patch.object(backend, "_determine_target_host", return_value="pending"),
+            patch.dict(os.environ, {"EGRESS_GUARD_IMAGE": "localhost/r4-mcp:test"}),
+        ):
             asyncio.run(backend.submit_job(job, attempt))
 
         env = mock_orchestrator.submit_job.await_args.kwargs["env"]
         assert env["RIVAULT_TIER"] == "project"
         assert env["RIVAULT_EXTRA_PROFILES"] == "custom-mcp egress rag"
+        assert env["EGRESS_GUARD_IMAGE"] == "localhost/r4-mcp:test"
         assert env["PROJECT_DATA_PATH"] == "/project/data"
         assert env["RAG_INDEX_PATH"] == "/project/rag-index"
         assert env["EGRESS_DOMAIN_ALLOWLIST"] == "api.example.com"
@@ -1417,24 +1421,25 @@ class TestOrchestrationServiceConfig:
             backend=mock_backend,
         )
 
-        result = asyncio.run(
-            service.provision(
-                ProvisionRequest(
-                    project_id="proj-1",
-                    model="qwen3-8b",
-                    model_path="/models/qwen3-8b",
-                    tier="project",
-                    mounts={
-                        "mcp_servers": [
-                            {"source": "/home/alice/tools", "target": "/mcp-servers/tools"}
-                        ],
-                        "project_data": {"source": "/project/data", "target": "/project"},
-                        "rag_index": {"source": "/project/rag-index", "target": "/rag-index"},
-                    },
-                    egress_domains=["api.example.com"],
+        with patch.dict(os.environ, {"EGRESS_GUARD_IMAGE": "localhost/r4-mcp:test"}):
+            result = asyncio.run(
+                service.provision(
+                    ProvisionRequest(
+                        project_id="proj-1",
+                        model="qwen3-8b",
+                        model_path="/models/qwen3-8b",
+                        tier="project",
+                        mounts={
+                            "mcp_servers": [
+                                {"source": "/home/alice/tools", "target": "/mcp-servers/tools"}
+                            ],
+                            "project_data": {"source": "/project/data", "target": "/project"},
+                            "rag_index": {"source": "/project/rag-index", "target": "/rag-index"},
+                        },
+                        egress_domains=["api.example.com"],
+                    )
                 )
             )
-        )
 
         assert result.success is True
         env = mock_backend.submit_job.await_args.kwargs["env"]
@@ -1443,6 +1448,7 @@ class TestOrchestrationServiceConfig:
         assert env["PROJECT_DATA_PATH"] == "/project/data"
         assert env["RAG_INDEX_PATH"] == "/project/rag-index"
         assert env["EGRESS_DOMAIN_ALLOWLIST"] == "api.example.com"
+        assert env["EGRESS_GUARD_IMAGE"] == "localhost/r4-mcp:test"
         metadata = mock_registry.register.call_args.kwargs["metadata"]
         assert metadata["tier"] == "project"
         assert metadata["egress_domains"] == ["api.example.com"]
