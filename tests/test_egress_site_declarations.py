@@ -18,6 +18,12 @@ class TestRccsDeclares:
         cfg = load_site_config("deploy/rccs/site.yaml")
         assert cfg.network.egress_proxy_image == "localhost/r4-mcp:latest"
 
+    def test_umrs_front_rccs_site_declares_proxy_image(self):
+        # The file the umrs-front rccs server container binds as
+        # /etc/umrs/site.yaml (compose volume ../rccs-front/site.yaml).
+        cfg = load_site_config("deploy/rccs-front/site.yaml")
+        assert cfg.network.egress_proxy_image == "localhost/r4-mcp:latest"
+
     def test_declared_image_uses_the_in_repo_proxy_entrypoint(self):
         # The declared image must be the r4-mcp image whose entrypoint is
         # `python -m r4_mcp.egress_guard` (rounds 1-2's in-repo proxy) — never
@@ -27,10 +33,10 @@ class TestRccsDeclares:
         assert "ghcr.io" not in cfg.network.egress_proxy_image
 
 
-class TestFrontStillRefusesByDefault:
-    def test_rccs_front_declares_no_image(self):
-        # The front profile stays default-deny unless the owner declares one.
-        cfg = load_site_config("deploy/rccs-front/site.yaml")
+class TestOtherVenuesStillRefuseByDefault:
+    def test_ai4s_declares_no_image(self):
+        # Non-rccs venues keep the default-deny baseline.
+        cfg = load_site_config("deploy/ai4s/site.yaml")
         assert (cfg.network.egress_proxy_image or "") == ""
 
 
