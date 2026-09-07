@@ -22,6 +22,8 @@ from typing import Any
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from pydantic import BaseModel, Field
 
+from .typed_errors import PlatformError
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/umrs/zmq", tags=["zmq-session"])
@@ -45,11 +47,15 @@ def get_session_curve_provider() -> Any:
     """FastAPI dependency — returns the provider or raises 503."""
     from umrs.core.session_curve_provider import get_shared_session_provider
 
+    from .typed_errors import raise_typed
+
     provider = get_shared_session_provider()
     if provider is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="ZMQ session CURVE provider not available (UMRS_ZMQ_AUTH_TYPE != session)",
+        raise_typed(
+            PlatformError.provider(
+                "unavailable",
+                "ZMQ session CURVE provider not available (UMRS_ZMQ_AUTH_TYPE != session)",
+            )
         )
     return provider
 
@@ -78,32 +84,24 @@ def _extract_jwt_identity(authorization: str | None = Header(None)) -> _JWTIdent
     """Extract full identity (sub, email, projects, roles) from the JWT bearer token."""
     from umrs.shared.auth import JWTError, resolve_jwt_secret, validate_jwt
 
+    from .typed_errors import raise_typed
+
     if not authorization:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing Authorization header",
-        )
+        raise_typed(PlatformError.auth("missing_header", "Missing Authorization header"))
     parts = authorization.split()
     if len(parts) != 2 or parts[0].lower() != "bearer":
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authorization header must be 'Bearer <token>'",
+        raise_typed(
+            PlatformError.auth("bad_scheme", "Authorization header must be 'Bearer <token>'")
         )
     token = parts[1]
     try:
         claims = validate_jwt(token, resolve_jwt_secret())
     except JWTError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=str(exc),
-        ) from exc
+        raise_typed(PlatformError.auth("bad_token", str(exc)), cause=exc)
 
     user_id = claims.get("sub") or claims.get("username") or claims.get("user_id")
     if not user_id:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="JWT missing 'sub' claim",
-        )
+        raise_typed(PlatformError.auth("bad_token", "JWT missing 'sub' claim"))
 
     # Extract projects: support both list and single-value claim
     projects_claim = claims.get("projects") or claims.get("project_id")
@@ -213,16 +211,16 @@ async def get_server_key() -> ServerKeyResponse:
     """
     from umrs.core.zmq_security import ZMQSecurityConfig
 
+    from .typed_errors import raise_typed
+
     cfg = ZMQSecurityConfig.from_env()
     if not cfg.enabled:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="CURVE is not enabled on this server",
-        )
+        raise_typed(PlatformError.curve("disabled", "CURVE is not enabled on this server"))
     if not cfg.server_public_key:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Server CURVE public key is not configured",
+        raise_typed(
+            PlatformError.curve(
+                "key_unconfigured", "Server CURVE public key is not configured"
+            )
         )
     return ServerKeyResponse(server_public_key=cfg.server_public_key)
 
@@ -296,16 +294,16 @@ async def revoke_session(
 
     Only the session owner can revoke it.
     """
+    from .typed_errors import raise_typed
+
     entry = provider.get_session(session_id)
     if entry is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Session {session_id} not found",
+        raise_typed(
+            PlatformError.session("not_found", f"Session {session_id} not found")
         )
     if entry.user_id != user_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Cannot revoke another user's session",
+        raise_typed(
+            PlatformError.session("forbidden", "Cannot revoke another user's session")
         )
     provider.revoke(session_id)
 
@@ -322,22 +320,23 @@ async def refresh_session(
     provider: Any = Depends(get_session_curve_provider),
 ) -> SessionInfoResponse:
     """Extend the session's expiry time."""
+    from .typed_errors import raise_typed
+
     existing = provider.get_session(session_id)
     if existing is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Session {session_id} not found",
+        raise_typed(
+            PlatformError.session("not_found", f"Session {session_id} not found")
         )
     if existing.user_id != user_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Cannot refresh another user's session",
+        raise_typed(
+            PlatformError.session("forbidden", "Cannot refresh another user's session")
         )
     updated = provider.refresh(session_id, body.ttl_seconds)
     if updated is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Session {session_id} expired or not found",
+        raise_typed(
+            PlatformError.session(
+                "expired_or_not_found", f"Session {session_id} expired or not found"
+            )
         )
     return SessionInfoResponse(
         session_id=updated.session_id,
