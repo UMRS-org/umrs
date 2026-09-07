@@ -10,7 +10,7 @@
 # =============================================================================
 set -euo pipefail
 
-# shellcheck source=./cluster-context.sh
+# shellcheck disable=SC1091  # resolved at runtime through the cluster shim
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/cluster-context.sh"
 
 SCRIPT_DIR="$UMRS_CLUSTER_DIR"
@@ -23,6 +23,12 @@ mkdir -p "$RESULTS_DIR"
 # Partitions to probe — one job per partition, targeting one node.
 # Supplied per cluster via UMRS_PARTITIONS in cluster.env.
 read -r -a PARTITIONS <<< "$UMRS_PARTITIONS"
+
+# Venue declarations the probe checks on every partition (ADR-045).
+EGRESS_IMAGE="$(umrs_site_value network.egress_proxy_image)"
+IMAGE_ARCHIVE_DIR="$(umrs_site_value runtime.image_archive_dir)"
+PRIV_SUBNET_POOL="$(umrs_site_value network.private_subnet_pool)"
+echo "Venue: egress image=${EGRESS_IMAGE:-<none>} archives=${IMAGE_ARCHIVE_DIR:-<none>} pool=${PRIV_SUBNET_POOL:-172.16.0.0/16 (default)}"
 
 if [[ ${#PARTITIONS[@]} -eq 0 ]]; then
     echo "ERROR: no partitions to probe — set UMRS_PARTITIONS in ${UMRS_CLUSTER_DIR}/cluster.env" >&2
@@ -38,6 +44,9 @@ RESULT_FILE="$1"
 PARTITION_NAME="$2"
 TARBALL="$3"
 REPO_PATH="$4"
+EGRESS_IMAGE="${5:-}"
+IMAGE_ARCHIVE_DIR="${6:-}"
+PRIV_SUBNET_POOL="${7:-}"
 
 exec > "$RESULT_FILE" 2>&1
 
@@ -83,22 +92,24 @@ echo "DEFAULT_NETWORK_BACKEND=${_net_backend}"
 [[ -x /usr/libexec/cni/bridge ]] && echo "CNI_BRIDGE=available" || echo "CNI_BRIDGE=not_found"
 [[ -x /usr/lib/cni/bridge ]] && echo "CNI_BRIDGE_ALT=available" || echo "CNI_BRIDGE_ALT=not_found"
 
-# 3. Check storage setup
+# 3. Container configuration — exactly what a serving job gets (ADR-045 D1):
+#    job-private conf files, node-local graphroot + network config dir, and the
+#    state-database runroot re-pin. Never the shared-$HOME storage.conf.
 echo ""
-echo "--- STORAGE SETUP ---"
-mkdir -p "${HOME}/.config/containers/"
-cat <<SEOF > "${HOME}/.config/containers/storage.conf"
-[storage]
-driver="overlay"
-runroot = "${XDG_RUNTIME_DIR}/containers/storage"
-rootless_storage_path="/var/tmp/podman_$(whoami)/storage"
-graphroot = "/var/tmp/podman_$(whoami)/storage"
-[storage.options]
-mount_program = "/usr/bin/fuse-overlayfs"
-[storage.options.overlay]
-mountopt="nodev,metacopy=on"
-SEOF
-echo "STORAGE_CONF=written"
+echo "--- VENUE CONFIG (venue.sh) ---"
+VENUE_LIB="${REPO_PATH}/src/umrs/mini-rivault-llm/venue.sh"
+if [[ -f "$VENUE_LIB" ]]; then
+    # shellcheck source=/dev/null
+    source "$VENUE_LIB"
+    if rivault_venue_prepare "probe-${SLURM_JOB_ID:-$$}" cgroupfs; then
+        echo "VENUE_CONFIG=ok graphroot=${RIVAULT_STORAGE_ROOT} runroot=${RIVAULT_RUNROOT} networks=${RIVAULT_NETWORK_CONFIG_DIR}"
+        podman info --format 'PODMAN_VIEW=backend={{.Host.NetworkBackend}} runroot={{.Store.RunRoot}} cfg={{.Store.ConfigFile}}' 2>&1 | grep '^PODMAN_VIEW' || true
+    else
+        echo "VENUE_CONFIG=fail"
+    fi
+else
+    echo "VENUE_LIB=missing (${VENUE_LIB})"
+fi
 ls -la /usr/bin/fuse-overlayfs 2>&1 && echo "FUSE_OVERLAYFS=yes" || echo "FUSE_OVERLAYFS=no"
 
 # 4. Cgroup / systemd bootstrap
@@ -120,24 +131,21 @@ else
     echo "SYSTEMCTL=not_found"
 fi
 
-# 5. Network creation
+# 5. Private network — the wrapper's own allocation path (ADR-045 D2): report
+#    (not reap) networks of dead jobs, then take a /24 from the site pool.
 echo ""
-echo "--- NETWORK ---"
-# Clean any leftovers
-podman rm -af 2>/dev/null || true
-podman network prune -f 2>/dev/null || true
-podman network rm -f genai-private-net 2>/dev/null || true
-
-NET_OK=0
-for IP1TO3 in '172.16.4' '10.0.4' '192.168.4'; do
-    if podman network create --disable-dns --subnet "${IP1TO3}.0/24" genai-private-net 2>/dev/null; then
-        echo "NETWORK_CREATED=yes (${IP1TO3}.0/24)"
-        NET_OK=1
-        break
+echo "--- NETWORK (venue.sh) ---"
+PROBE_NET="genai-private-net-probe-${SLURM_JOB_ID:-$$}"
+if declare -F rivault_net_create >/dev/null 2>&1; then
+    RIVAULT_NET_GC_DRY_RUN=1 rivault_net_gc "genai-private-net-" "$PROBE_NET" || true
+    echo "STALE_JOB_NETWORKS=${RIVAULT_NET_GC_REMOVED:-0}"
+    if rivault_net_create "$PROBE_NET" "${PRIV_SUBNET_POOL:-172.16.0.0/16}" "${SLURM_JOB_ID:-$$}" "" 8; then
+        echo "NETWORK_CREATED=yes (${RIVAULT_NET_SUBNET} ${RIVAULT_NET_MODE})"
+    else
+        echo "NETWORK_CREATED=no"
     fi
-done
-if [ "$NET_OK" -ne 1 ]; then
-    echo "NETWORK_CREATED=no"
+else
+    echo "NETWORK_CREATED=skipped (venue.sh missing)"
 fi
 
 # 6. GPU detection
@@ -166,7 +174,7 @@ fi
 # 7. Container run test (hello-world equivalent)
 echo ""
 echo "--- CONTAINER RUN ---"
-if podman run --rm --network genai-private-net alpine:latest echo "CONTAINER_RUN=ok" 2>&1; then
+if podman run --rm --network "$PROBE_NET" alpine:latest echo "CONTAINER_RUN=ok" 2>&1; then
     true
 else
     echo "CONTAINER_RUN=fail"
@@ -205,9 +213,24 @@ echo "--- LUSTRE ---"
 ls "${REPO_PATH}/src/umrs/mini-rivault-llm/serve-model.slurm" >/dev/null 2>&1 \
     && echo "LUSTRE_REPO=accessible" || echo "LUSTRE_REPO=not_accessible"
 
-# Cleanup
-podman rm -af 2>/dev/null || true
-podman network rm -f genai-private-net 2>/dev/null || true
+# 10. Egress-guard image — the ADR-040 D4 precondition, resolved the way the
+#     wrapper resolves it (node store -> shared archive -> pull), ADR-045 D3.
+echo ""
+echo "--- EGRESS GUARD IMAGE ---"
+if [[ -z "$EGRESS_IMAGE" ]]; then
+    echo "EGRESS_GUARD_IMAGE=not_declared (site.yaml network.egress_proxy_image empty: egress_domains provisions are refused)"
+elif declare -F rivault_ensure_image >/dev/null 2>&1; then
+    if rivault_ensure_image "$EGRESS_IMAGE" "$IMAGE_ARCHIVE_DIR"; then
+        echo "EGRESS_GUARD_IMAGE=ready source=${RIVAULT_IMAGE_SOURCE}"
+    else
+        echo "EGRESS_GUARD_IMAGE=missing (run deploy/<cluster>/stage_images.sh; archive dir: ${IMAGE_ARCHIVE_DIR:-<undeclared>})"
+    fi
+else
+    echo "EGRESS_GUARD_IMAGE=skipped (venue.sh missing)"
+fi
+
+# Cleanup — this probe's own resources only; other jobs' networks stay.
+podman network rm -f "$PROBE_NET" 2>/dev/null || true
 
 echo ""
 echo "===== PROBE DONE ====="
@@ -241,7 +264,8 @@ for PART in "${PARTITIONS[@]}"; do
            --job-name="probe-${PART}" \
            --output=/dev/null \
            --error=/dev/null \
-           "$PROBE_SCRIPT" "$RESULT_FILE" "$PART" "$VISION_TARBALL" "$REPO" 2>&1 || \
+           "$PROBE_SCRIPT" "$RESULT_FILE" "$PART" "$VISION_TARBALL" "$REPO" \
+           "$EGRESS_IMAGE" "$IMAGE_ARCHIVE_DIR" "$PRIV_SUBNET_POOL" 2>&1 || \
     echo "SBATCH_FAIL: $PART" | tee -a "$RESULT_FILE"
 done
 

@@ -88,3 +88,35 @@ UMRS_PROVISION_ROSTER="${UMRS_PROVISION_ROSTER:-}"
 
 export UMRS_CLUSTER UMRS_MODEL_ROOT UMRS_SSH_ALIAS UMRS_GATEWAY_PORT \
     UMRS_CLIENT_PROFILE UMRS_SITE_NAME UMRS_PARTITIONS UMRS_PROVISION_ROSTER
+
+# umrs_site_value KEY
+#   One attribute of this cluster's loaded SiteConfig, dotted
+#   (network.egress_proxy_image, runtime.image_archive_dir,
+#   partition_profile.<name>.arch, ...). Prints nothing when the value is
+#   unset or the site file cannot be loaded, so callers can default.
+umrs_site_value() {
+    local key="$1" py="${UMRS_CLUSTER_DIR}/.venv/bin/python" repo
+    repo="${UMRS_REPO:-$(cd "${UMRS_CLUSTER_DIR}/../.." && pwd)}"
+    [[ -x "${py}" ]] || py="$(command -v python3 || true)"
+    [[ -n "${py}" ]] || return 0
+    PYTHONPATH="${repo}/src${PYTHONPATH:+:${PYTHONPATH}}" \
+    UMRS_SITE_CONFIG="${UMRS_SITE_CONFIG:-${UMRS_CLUSTER_DIR}/site.yaml}" \
+        "${py}" - "${key}" <<'PY' 2>/dev/null || true
+import os
+import sys
+
+from umrs.orchestrator.site_config import load_site_config
+
+cfg = load_site_config(os.environ["UMRS_SITE_CONFIG"])
+key = sys.argv[1]
+if key.startswith("partition_profile."):
+    _, part, field = key.split(".", 2)
+    profile = cfg.get_partition_profile(part)
+    print(getattr(profile, field, "") if profile else "")
+else:
+    obj = cfg
+    for part in key.split("."):
+        obj = getattr(obj, part)
+    print("" if obj is None else obj)
+PY
+}
