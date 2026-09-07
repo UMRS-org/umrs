@@ -42,6 +42,10 @@ class JobType(Enum):
     KNOWLEDGE_REINDEX = (
         "knowledge_reindex"  # Re-embed stale artifacts (S10 pattern; INDEX_BUILD seam)
     )
+    # Vision inference calls wrapped request-driven (G-P4-2 / WP-09, ADR-044):
+    # one durable job per /vision/infer/submit execution, attempt transitions
+    # driven by the HTTP handlers (never scheduler-requeued — NEVER policy).
+    VISION_INFER = "vision_infer"
     # Note: CONTEXT_RETENTION and CONVERSATION_SUMMARIZE excluded from selective merge
 
 
@@ -78,6 +82,10 @@ class RestartPolicy(Enum):
 
 # Default backoff settings per job type
 DEFAULT_BACKOFFS: dict[JobType, dict[str, Any]] = {
+    JobType.VISION_INFER: {
+        "delays": [30, 60, 120],  # never requeued (NEVER policy); table entry required
+        "max_attempts": 1,
+    },
     JobType.ENDPOINT_PROVISION: {
         "delays": [5, 10, 20],  # Fast retry
         "max_attempts": 3,
