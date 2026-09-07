@@ -107,6 +107,13 @@ class RuntimeConfig:
     cdi_spec: str = "/var/run/cdi/nvidia.yaml"  # CDI spec path (if gpu_passthrough=cdi)
     cgroup_manager: str = "cgroupfs"
     storage_root: str = ""  # podman graphroot override
+    # ADR-045 D1: node-local dir for podman network configs (default
+    # <graphroot parent>/networks); keeps them off the shared $HOME.
+    network_config_dir: str = ""
+    # ADR-045 D3: shared-filesystem dir holding `podman save` archives
+    # (<name>-<tag>-<arch>.tar) that compute nodes load when an image is absent
+    # from their node-local store and no registry can serve it.
+    image_archive_dir: str = ""
 
 
 @dataclass
@@ -136,6 +143,10 @@ class NetworkConfig:
     egress_proxy_url: str = ""  # Forward proxy URL for mini-rivault egress
     egress_no_proxy: str = ""  # Comma-separated internal hosts bypassing proxy
     egress_proxy_image: str = ""  # In-stack egress-guard image (ADR-040); empty = none declared -> egress refused
+    # ADR-045 D2: pool the wrapper allocates each job's private /24 from
+    # (a.b.0.0/16, walked from a job-id-derived offset) or one fixed a.b.c.0/24.
+    # Empty = wrapper default 172.16.0.0/16.
+    private_subnet_pool: str = ""
 
 
 @dataclass
@@ -326,6 +337,14 @@ def _runtime_env(runtime: RuntimeConfig) -> dict[str, str]:
         env["BENTOML_VISION_IMAGE"] = runtime.vision_image
     if runtime.profiles:
         env["RIVAULT_PROFILES"] = " ".join(runtime.profiles)
+    if runtime.cgroup_manager:
+        env["RIVAULT_CGROUP_MANAGER"] = runtime.cgroup_manager
+    if runtime.storage_root:
+        env["RIVAULT_STORAGE_ROOT"] = runtime.storage_root
+    if runtime.network_config_dir:
+        env["RIVAULT_NETWORK_CONFIG_DIR"] = runtime.network_config_dir
+    if runtime.image_archive_dir:
+        env["RIVAULT_IMAGE_ARCHIVE_DIR"] = runtime.image_archive_dir
     return env
 
 
@@ -368,6 +387,8 @@ def _network_env(network: NetworkConfig) -> dict[str, str]:
         env["RIVAULT_NO_PROXY"] = network.egress_no_proxy
     if network.egress_proxy_image:
         env["EGRESS_GUARD_IMAGE"] = network.egress_proxy_image
+    if network.private_subnet_pool:
+        env["PRIV_SUBNET_POOL"] = network.private_subnet_pool
     return env
 
 
@@ -480,8 +501,6 @@ def load_site_config(path: str | None = None) -> SiteConfig:
     FileNotFoundError
         If no site.yaml is found.
     """
-    import yaml  # deferred to avoid hard dep when unused
-
     resolved: str | None = None
 
     if path:
@@ -499,12 +518,38 @@ def load_site_config(path: str | None = None) -> SiteConfig:
             "the working directory or the resolved UMRS config directory."
         )
 
-    with open(resolved) as fh:
-        raw = _expand_env_refs(yaml.safe_load(fh) or {})
+    raw = _expand_env_refs(_load_raw_with_extends(resolved))
 
     logger.info("Loaded site config from %s", resolved)
     raw = _apply_env_fallbacks(raw)
     return _parse_raw(raw)
+
+
+def _load_raw_with_extends(path: str, _seen: tuple[str, ...] = ()) -> dict[str, Any]:
+    """Read *path*; honour ``extends: <base site.yaml>`` (ADR-045 D5).
+
+    The base (relative to the extending file unless absolute) is loaded first
+    and this file is deep-merged over it: mappings merge key by key (so a
+    front overlay can adjust one field of one partition profile), scalars and
+    lists replace. ``extends`` chains are followed; cycles raise.
+    """
+    import yaml  # deferred to avoid hard dep when unused
+
+    real = os.path.realpath(path)
+    if real in _seen:
+        chain = " -> ".join(_seen + (real,))
+        raise ValueError(f"site.yaml extends cycle: {chain}")
+    with open(real) as fh:
+        raw = yaml.safe_load(fh) or {}
+    if not isinstance(raw, dict):
+        raise TypeError(f"site.yaml must be a mapping: {path}")
+    base_ref = raw.pop("extends", None)
+    if not base_ref:
+        return raw
+    base_path = os.path.expanduser(os.path.expandvars(str(base_ref)))
+    if not os.path.isabs(base_path):
+        base_path = os.path.join(os.path.dirname(real), base_path)
+    return _deep_merge(_load_raw_with_extends(base_path, _seen + (real,)), raw)
 
 
 def _parse_raw(raw: dict[str, Any]) -> SiteConfig:
@@ -555,6 +600,9 @@ def default_site_config() -> SiteConfig:
     cfg.runtime.rivault_dir = os.getenv("RIVAULT_DIR", "")
     cfg.runtime.repo_dir = os.getenv("UMRS_REPO", "")
     cfg.runtime.vision_image = os.getenv("BENTOML_VISION_IMAGE", "umrs-vision:latest")
+    cfg.runtime.storage_root = os.getenv("RIVAULT_STORAGE_ROOT", "")
+    cfg.runtime.network_config_dir = os.getenv("RIVAULT_NETWORK_CONFIG_DIR", "")
+    cfg.runtime.image_archive_dir = os.getenv("RIVAULT_IMAGE_ARCHIVE_DIR", "")
     profiles = os.getenv("RIVAULT_PROFILES", "")
     if profiles:
         cfg.runtime.profiles = profiles.split()
@@ -582,6 +630,7 @@ def default_site_config() -> SiteConfig:
     )
     cfg.network.egress_no_proxy = os.getenv("RIVAULT_NO_PROXY", "")
     cfg.network.egress_proxy_image = os.getenv("EGRESS_GUARD_IMAGE", "")
+    cfg.network.private_subnet_pool = os.getenv("PRIV_SUBNET_POOL", "")
 
     # vLLM
     cfg.vllm.model = os.getenv("VLLM_MODEL", "intfloat/e5-base-v2")

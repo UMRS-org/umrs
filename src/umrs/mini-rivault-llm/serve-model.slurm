@@ -10,6 +10,13 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 
+# ADR-045 venue library: job-private container config (D1), private-network
+# pool + garbage collection (D2), image staging (D3), host-probed GPU override
+# (D4). Shared with deploy/_common/harness_probe.sh and stage_images.sh so the
+# very same code is exercised on a venue before a serving job ever runs there.
+# shellcheck source=venue.sh
+source "${SCRIPT_DIR}/venue.sh"
+
 # ─── GOMAXPROCS: prevent Go-based services from NPROC exhaustion ─────────────
 # Default to 1 if not already set by the outer wrapper or environment.
 export GOMAXPROCS="${GOMAXPROCS:-1}"
@@ -115,10 +122,21 @@ try:
 except FileNotFoundError:
     raise SystemExit(0)
 
-for key, value in sorted(cfg.to_env().items()):
-    if os.environ.get(key):
-        continue
-    print(f"export {key}={shlex.quote(value)}")
+present = {key for key, value in os.environ.items() if value}
+partition = (
+    os.environ.get("SLURM_JOB_PARTITION") or os.environ.get("SLURM_PARTITION") or ""
+).split(",")[0].strip()
+# Site defaults first, then the partition profile (more specific) over them.
+# Neither overrides a value the job was submitted with (ADR-008 no-overwrite),
+# so pool-roster / request env always wins over site.yaml.
+layers = [cfg.to_env()]
+if partition:
+    layers.append(cfg.partition_env(partition))
+for layer in layers:
+    for key, value in sorted(layer.items()):
+        if key in present:
+            continue
+        print(f"export {key}={shlex.quote(str(value))}")
 PY
     } 2>/dev/null)" || return 0
 
@@ -165,19 +183,21 @@ _assert_offline_invariants() {
 }
 _assert_offline_invariants
 
-mkdir -p "${HOME}/.config/containers/"
-
-cat <<EOF > "${HOME}/.config/containers/storage.conf"
-[storage]
-driver="overlay"
-runroot = "${XDG_RUNTIME_DIR}/containers/storage"
-rootless_storage_path="/var/tmp/podman_${USER}/storage"
-graphroot = "/var/tmp/podman_${USER}/storage"           # Note: local non-NFS path so overlay works and images persist across jobs
-[storage.options]
-mount_program = "/usr/bin/fuse-overlayfs"
-[storage.options.overlay]
-mountopt="xattr_permissions=2,threaded=1"
-EOF
+# ADR-045 D1: job-private podman configuration. This wrapper used to write
+# ~/.config/containers/storage.conf with THIS job's runroot. $HOME is shared
+# across nodes on RCCS (and most HPC sites), so every job start repointed the
+# still-running jobs' podman state; their teardown then failed and left the
+# networks/containers behind that eventually exhausted the fixed subnets
+# (jobs 379190/379193/379194, 2026-09-07). The graphroot and the network
+# config dir are node-local and shared across this user's jobs (image cache);
+# the runroot follows the job's XDG_RUNTIME_DIR (podman's rootless default and
+# the only place it honours) and the state database is re-pinned to it when it
+# still names a dead job's dir and nothing is running. Only the conf files are
+# per job; podman reads them via CONTAINERS_STORAGE_CONF / CONTAINERS_CONF.
+# site.yaml runtime.storage_root / network_config_dir / cgroup_manager arrive
+# as RIVAULT_STORAGE_ROOT / RIVAULT_NETWORK_CONFIG_DIR / RIVAULT_CGROUP_MANAGER.
+rivault_venue_prepare "${SLURM_JOB_ID:-$$}" "${RIVAULT_CGROUP_MANAGER:-cgroupfs}" \
+    || { echo "[rivault] FATAL: cannot prepare the job-private podman configuration"; exit 1; }
 
 # Chroot isolation (user-NS GID mapping gap on compute nodes)
 export BUILDAH_ISOLATION=chroot
@@ -622,6 +642,14 @@ if [[ -n "${RIVAULT_GPU_OVERRIDE_FILE:-}" && -f "${RIVAULT_GPU_OVERRIDE_FILE}" ]
     # that the wrapper sets up.
     GPUoverride+=("--file" "${_GPU_OVERRIDE_FILE}")
     echo "[rivault] GPU override provided by wrapper: ${_GPU_OVERRIDE_FILE}"
+elif rivault_write_gpu_override "${TMPDIR:-/tmp}/umrs-x_nvidia-override-${SLURM_JOB_ID:-$$}.yaml"; then
+    # ADR-045 D4: generated from this host's /dev/nvidia* nodes and driver
+    # libraries (any architecture, any GPU count); cleanup removes it again.
+    _GPU_OVERRIDE_FILE="${TMPDIR:-/tmp}/umrs-x_nvidia-override-${SLURM_JOB_ID:-$$}.yaml"
+    export RIVAULT_GPU_OVERRIDE_FILE="${_GPU_OVERRIDE_FILE}"
+    export RIVAULT_GPU_OVERRIDE_GENERATED=1
+    GPUoverride+=("--file" "${_GPU_OVERRIDE_FILE}")
+    echo "[rivault] NVIDIA GPU detected via /dev/nvidia*; override generated: ${_GPU_OVERRIDE_FILE}"
 elif /bin/nvidia-smi --list-gpus 2>/dev/null | /bin/grep -qi '^GPU 0:' ; then
     GPUoverride+=("--file" "./x_nvidia-override.yaml")
     echo "[rivault] NVIDIA GPU detected via nvidia-smi"
@@ -693,8 +721,8 @@ echo "[rivault]   gpu override: ${_GPU_OVERRIDE_FILE:-embedded default}"
 # Fix: stop stale systemd scopes, delete libpod state DB (not the overlays —
 # those have UID-mapped files that rm can't remove), then migrate.
 #
-# SKIP when running from the deploy wrapper — the wrapper already handles
-# cleanup before delegating here (RIVAULT_WRAPPER_CLEANUP=1 is set by it).
+# RIVAULT_WRAPPER_CLEANUP=1 skips this block (an operator-run outer cleanup);
+# the deploy shims no longer set it — recovery is this wrapper's job (ADR-045).
 # NOTE (2026-08-12): `podman info` alone is NOT a reliable corruption probe —
 # nodes return ok for info while filtered-list / create paths still die with
 # "invalid internal status... pause process". Probe the exact compose-prone
@@ -778,35 +806,24 @@ if podman network exists "${RIVAULT_NETWORK_NAME}" 2>/dev/null; then
 	fi
 fi
 
-# Create a fresh genai-private-net, trying candidate subnets until one works.
-# Prefer a configurable subnet first and avoid reusing 192.168.4 by default,
-# because stale rootless IPAM allocations on crashed jobs have repeatedly
-# poisoned that range on RCCS Cloud.
+# ADR-045 D2: reap the private networks of jobs that no longer exist (their
+# leftover containers go with them), then allocate this job's /24 from the
+# site pool — PRIV_SUBNET_POOL (site.yaml network.private_subnet_pool, default
+# 172.16.0.0/16), walked from a job-id-derived offset so concurrent jobs that
+# share a network config view do not collide. An operator-pinned PRIV_IP1TO3 is
+# tried first; podman's own allocator is the last resort. Every attempt's error
+# is printed on failure (the old loop discarded them and printed one line).
 # NOTE: do NOT use --internal here; rootful podman's conmon port-forwarder
 # cannot relay data across an internal bridge (TCP connects but hangs).
 # The published port (NGINX_LITELLM_DOCKER_PORT) must be reachable from the
 # host so the SSH tunnel from the control-plane container can reach it.
-_net_created=0
-_preferred_ip1to3="${PRIV_IP1TO3:-172.16.4}"
-_candidate_subnets=()
-for _candidate in "${_preferred_ip1to3}" '172.16.4' '10.0.4' '192.168.4'; do
-    if [[ " ${_candidate_subnets[*]} " == *" ${_candidate} "* ]]; then
-        continue
-    fi
-    _candidate_subnets+=("${_candidate}")
-done
-for IP1TO3 in "${_candidate_subnets[@]}"; do
-	# Note: --disable-dns needed because infra lacks dns, but we need fixed ips
-    if podman network create --disable-dns --subnet "${IP1TO3}.0/24" "${RIVAULT_NETWORK_NAME}" 2>/dev/null; then
-		_net_created=1
-		break
-	fi
-done
-if [ "$_net_created" -ne 1 ]; then
-    echo "[rivault] ERROR: failed to create ${RIVAULT_NETWORK_NAME} with any candidate subnet"
-	exit 1
+rivault_net_gc "genai-private-net-" "${RIVAULT_NETWORK_NAME}"
+if ! rivault_net_create "${RIVAULT_NETWORK_NAME}" "${PRIV_SUBNET_POOL:-172.16.0.0/16}" \
+        "${SLURM_JOB_ID:-$uuid}" "${PRIV_IP1TO3:-}" "${PRIV_SUBNET_ATTEMPTS:-16}"; then
+    echo "[rivault] ERROR: failed to create ${RIVAULT_NETWORK_NAME} (attempts and diagnostics above)"
+    exit 1
 fi
-echo "[rivault] ${RIVAULT_NETWORK_NAME} created with subnet ${IP1TO3}.0/24"
+IP1TO3="${RIVAULT_NET_IP1TO3}"
 
 # Verify network is visible to podman (catches netavark storage issues)
 if ! podman network exists "${RIVAULT_NETWORK_NAME}" 2>/dev/null; then
@@ -814,15 +831,7 @@ if ! podman network exists "${RIVAULT_NETWORK_NAME}" 2>/dev/null; then
 	podman system migrate 2>/dev/null || true
     if ! podman network exists "${RIVAULT_NETWORK_NAME}" 2>/dev/null; then
         echo "[rivault] ERROR: ${RIVAULT_NETWORK_NAME} not visible after migrate"
-		echo "[rivault] DEBUG: network ls output:"
-		podman network ls 2>&1
-		echo "[rivault] DEBUG: network backend:"
-		cat "/var/tmp/podman_$(whoami)/storage/defaultNetworkBackend" 2>/dev/null
-		echo ""
-		echo "[rivault] DEBUG: network files:"
-		find "/var/tmp/podman_$(whoami)/storage" -name "*genai*" 2>/dev/null
-		find "${XDG_DATA_HOME:-$HOME/.local/share}/containers/storage" -name "*genai*" 2>/dev/null
-		find "$HOME/.config/containers/networks" -name "*genai*" 2>/dev/null
+		rivault_net_diagnostics
 		exit 1
 	fi
 fi
@@ -973,13 +982,41 @@ done
 # ADR-040 D4: the egress profile must never start without a present proxy
 # image. Refuse the launch here with a named error instead of bringing up a
 # stack whose proxy service is silently absent.
+# ADR-045 D3: present on the node -> archive on the shared filesystem
+# (RIVAULT_IMAGE_ARCHIVE_DIR = site.yaml runtime.image_archive_dir, produced by
+# deploy/<cluster>/stage_images.sh) -> registry pull -> refuse.
 if [[ " ${RIVAULT_PROFILES} " == *" egress "* ]]; then
     _egress_guard_image="${EGRESS_GUARD_IMAGE:-localhost/r4-mcp:${MCP_CUSTOM_DOCKER_TAG:-latest}}"
-    if command -v podman >/dev/null 2>&1 && ! podman image exists "${_egress_guard_image}" 2>/dev/null; then
-        podman pull "${_egress_guard_image}" >/dev/null 2>&1 || {
-            echo "[rivault] FATAL: egress profile requested but egress-guard image '${_egress_guard_image}' is not present on this node and cannot be pulled (ADR-040 D4); refusing to launch"
+    if command -v podman >/dev/null 2>&1 && \
+       ! rivault_ensure_image "${_egress_guard_image}" "${RIVAULT_IMAGE_ARCHIVE_DIR:-}" "${EGRESS_GUARD_IMAGE_ARCHIVE:-}"; then
+        echo "[rivault] FATAL: egress profile requested but egress-guard image '${_egress_guard_image}' is not present on this node and cannot be pulled (ADR-040 D4); refusing to launch. Stage it with deploy/<cluster>/stage_images.sh (ADR-045 D3)."
+        exit 1
+    fi
+fi
+
+# ADR-045 D3: the vision sidecar image travels the same way. Its archive keeps
+# the convention the legacy deploy shim established (VISION_TARBALL base path
+# + -<arch>.tar); when neither node store nor archive has it, build once here
+# and save it back for the other nodes of this architecture.
+if [[ " ${RIVAULT_PROFILES} " == *" vision-bentoml "* ]]; then
+    _vision_image="${BENTOML_VISION_IMAGE:-umrs-vision:latest}"
+    _vision_archive=""
+    if [[ -n "${VISION_TARBALL:-}" ]]; then
+        _vision_archive="${VISION_TARBALL%.tar}-$(rivault_arch_suffix).tar"
+    fi
+    if ! rivault_ensure_image "${_vision_image}" "${RIVAULT_IMAGE_ARCHIVE_DIR:-}" "${_vision_archive}"; then
+        _vision_repo="${UMRS_REPO:-${REPO_ROOT}}"
+        echo "[rivault] Building vision image ${_vision_image} on this node (first use on this venue; several minutes)..."
+        if podman build -t "${_vision_image}" -f "${_vision_repo}/src/umrs/vision_service/Dockerfile" "${_vision_repo}"; then
+            if [[ -n "${_vision_archive}" ]]; then
+                mkdir -p "$(dirname "${_vision_archive}")"
+                podman save "${_vision_image}" -o "${_vision_archive}.tmp" && mv "${_vision_archive}.tmp" "${_vision_archive}" \
+                    && echo "[rivault] Vision image saved to ${_vision_archive}"
+            fi
+        else
+            echo "[rivault] FATAL: vision image ${_vision_image} unavailable and the build failed"
             exit 1
-        }
+        fi
     fi
 fi
 

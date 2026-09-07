@@ -5,6 +5,11 @@
   "type": "object",
   "additionalProperties": false,
   "properties": {
+    "extends": {
+      "type": "string",
+      "description": "ADR-045 D5: path of a base site.yaml (relative to this file unless absolute) loaded first; this file deep-merges over it — mappings merge key by key, scalars and lists replace."
+    },
+    "strict_secrets": { "type": "boolean" },
     "name": {
       "type": "string"
     },
@@ -51,6 +56,11 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "nodes": { "type": "integer", "minimum": 0 },
+        "require_user_slurm_account": { "type": "boolean" },
+        "slurm_delegation": { "type": "string" },
+        "service_pubkey_path": { "type": "string" },
+        "slurm_proxy_path": { "type": "string" },
         "kind": { "type": "string" },
         "partition": { "type": "string" },
         "account": { "type": "string" },
@@ -69,6 +79,14 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "network_config_dir": {
+          "type": "string",
+          "description": "ADR-045 D1: node-local directory for podman network configs (default <graphroot parent>/networks) — keeps them off the shared $HOME."
+        },
+        "image_archive_dir": {
+          "type": "string",
+          "description": "ADR-045 D3: shared-filesystem directory of `podman save` archives (<name>-<tag>-<arch>.tar) that compute nodes load when an image is absent from their node-local store and no registry serves it."
+        },
         "kind": { "type": "string" },
         "compose_file": { "type": "string" },
         "rivault_dir": { "type": "string" },
@@ -103,6 +121,16 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "egress_proxy_url": { "type": "string" },
+        "egress_no_proxy": { "type": "string" },
+        "egress_proxy_image": {
+          "type": "string",
+          "description": "ADR-040 D4: in-stack egress-guard image; empty = none declared, egress_domains provisions are refused."
+        },
+        "private_subnet_pool": {
+          "type": "string",
+          "description": "ADR-045 D2: a.b.0.0/16 pool the wrapper allocates each job's private /24 from (job-id-derived offset), or one fixed a.b.c.0/24. Empty = 172.16.0.0/16."
+        },
         "litellm_port": { "type": "integer", "minimum": 0 },
         "litellm_master_key": { "type": "string" },
         "port_range_min": { "type": "integer", "minimum": 0 },
@@ -114,6 +142,7 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "enable_prefix_caching": { "type": "boolean" },
         "model": { "type": "string" },
         "docker_tag": { "type": "string" },
         "gpu_mem_util": { "type": "number", "minimum": 0 },
