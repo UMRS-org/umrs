@@ -337,7 +337,9 @@ def test_05_export_kb_bundle(e2e_ctx: E2EContext, tmp_path: Path) -> None:
     output_dir = tmp_path / "kb-bundle"
     output_dir.mkdir(parents=True)
 
-    engine = KnowledgeExportEngine(store=mock_store, output_dir=output_dir)
+    engine = KnowledgeExportEngine(
+        store=mock_store, output_dir=output_dir, secret_key="test-secret"
+    )
 
     async def _export():
         return await engine.export_project(e2e_ctx.project_id)
@@ -346,8 +348,14 @@ def test_05_export_kb_bundle(e2e_ctx: E2EContext, tmp_path: Path) -> None:
 
     e2e_ctx.bundle_dir = output_dir
 
-    # Verify the engine ran (even with mocked store)
+    # Verify the engine ran (signed v1.2 contract per ADR-032 amendment 2026-09)
     assert result is not None
+    import json as _json
+
+    manifest = _json.loads((output_dir / e2e_ctx.project_id / "manifest.json").read_text())
+    assert manifest["version"] == "1.2"
+    assert manifest["unsigned"] is False
+    assert manifest["signature"]
 
 
 # ── Step 5: Verify bundle structure ─────────────────────────────────────────

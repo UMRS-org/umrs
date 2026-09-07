@@ -752,6 +752,10 @@ class ExportRequest(BaseModel):
     """Export knowledge bundle."""
 
     project_id: str = Field(..., description="Project to export")
+    allow_unsigned: bool = Field(
+        default=False,
+        description="Produce a bundle even without UMRS_SECRET_KEY (manifest unsigned=true)",
+    )
 
 
 class VerifyJobRequest(BaseModel):
@@ -1085,13 +1089,17 @@ async def approve_knowledge(
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
-@router.get("/readiness", response_model=dict[str, Any])
+@router.get("/readiness/graph", response_model=dict[str, Any])
 async def knowledge_readiness(
     request: Request,
     project_id: str = Query(..., description="Project ID"),
     _get_project_id: str = Depends(get_project_id),
 ) -> dict[str, Any]:
-    """Get knowledge readiness: artifact count + verification status."""
+    """Get knowledge readiness: artifact count + verification status.
+
+    Renamed from ``GET /readiness`` (shadowed duplicate; G-P2-9): the
+    research-readiness controller handler registered earlier owns that path.
+    """
     try:
         from umrs.knowledge.store import KnowledgeStore
 
@@ -1150,6 +1158,7 @@ async def export_knowledge(
 
         spec: dict[str, Any] = {
             "project_id": body.project_id,
+            "allow_unsigned": body.allow_unsigned,
         }
 
         # Unified ingest governance (R6.4).
@@ -1163,9 +1172,9 @@ async def export_knowledge(
         )
 
         job_id = await runtime.submit_job_sync(
-            job_type=JobType.KNOWLEDGE_INGEST,
+            job_type=JobType.KNOWLEDGE_EXPORT,
             project_id=body.project_id,
-            spec={"export": spec},
+            spec=spec,
         )
 
         logger.info("Knowledge export queued: %s", job_id)
@@ -1179,7 +1188,7 @@ async def export_knowledge(
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
-@router.post("/verify", response_model=dict[str, Any])
+@router.post("/verify/trigger", response_model=dict[str, Any])
 async def trigger_verify(
     body: VerifyJobRequest = VerifyJobRequest(),
     project_id: str = Depends(get_project_id),
@@ -1187,6 +1196,8 @@ async def trigger_verify(
     """Trigger a KNOWLEDGE_VERIFY durable job.
 
     Runs all verifiers in the registry against the project's knowledge.
+    Renamed from ``POST /verify`` (shadowed duplicate; G-P2-9): the
+    synchronous QA-with-evidence handler registered earlier owns that path.
     """
     try:
         from umrs.server.durable_job_runtime import get_runtime

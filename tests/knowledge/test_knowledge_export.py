@@ -46,7 +46,7 @@ def export_job() -> Job:
         project_id="test-project",
         user_id="test-user",
         job_type=JobType.KNOWLEDGE_EXPORT,
-        spec={"project_id": "test-project"},
+        spec={"project_id": "test-project", "allow_unsigned": True},
         idempotency_key="",
     )
 
@@ -406,12 +406,31 @@ class TestKnowledgeExportEngine:
         assert not verify_bundle_integrity(tmp_bundle_dir, "key")
 
     @pytest.mark.asyncio
-    async def test_no_signature_without_secret(self, tmp_bundle_dir: Path, fake_store) -> None:
-        """Without secret key, signature should be empty but valid."""
+    async def test_refuses_unsigned_without_optout(
+        self, tmp_bundle_dir: Path, fake_store
+    ) -> None:
+        """Fail-closed: no UMRS_SECRET_KEY and no opt-out raises (G-P2-3)."""
+        from umrs.knowledge.bundle_export import BundleIntegrityError
+
         engine = KnowledgeExportEngine(
             store=fake_store,
             output_dir=tmp_bundle_dir.parent,
             secret_key="",
+        )
+
+        with pytest.raises(BundleIntegrityError, match="UMRS_SECRET_KEY"):
+            await engine.export_project("test-project")
+
+    @pytest.mark.asyncio
+    async def test_unsigned_optout_marks_manifest(
+        self, tmp_bundle_dir: Path, fake_store
+    ) -> None:
+        """allow_unsigned=True produces a bundle marked unsigned=true (G-P2-3)."""
+        engine = KnowledgeExportEngine(
+            store=fake_store,
+            output_dir=tmp_bundle_dir.parent,
+            secret_key="",
+            allow_unsigned=True,
         )
 
         with (
@@ -422,9 +441,9 @@ class TestKnowledgeExportEngine:
             mock_cat.return_value = []
             await engine.export_project("test-project")
 
-        signature_path = tmp_bundle_dir / "signature.sig"
-        sig_content = signature_path.read_text().strip()
-        assert sig_content == ""
+        manifest = json.loads((tmp_bundle_dir / "manifest.json").read_text())
+        assert manifest["unsigned"] is True
+        assert (tmp_bundle_dir / "signature.sig").read_text().strip() == ""
 
     @pytest.mark.asyncio
     async def test_embed_paged_cursor(self, fake_store: MagicMock) -> None:
@@ -522,6 +541,7 @@ class TestBundleFormat:
             store=fake_store,
             output_dir=tmp_bundle_dir.parent,
             secret_key="",
+            allow_unsigned=True,
         )
 
         # Patch to return known artifact data
@@ -572,6 +592,7 @@ class TestBundleFormat:
             store=fake_store,
             output_dir=tmp_bundle_dir.parent,
             secret_key="",
+            allow_unsigned=True,
         )
 
         fake_store.list_nodes = AsyncMock(
@@ -619,6 +640,7 @@ class TestBundleFormat:
             store=fake_store,
             output_dir=tmp_bundle_dir.parent,
             secret_key="",
+            allow_unsigned=True,
         )
 
         with (
@@ -631,12 +653,15 @@ class TestBundleFormat:
 
         manifest = json.loads((tmp_bundle_dir / "manifest.json").read_text())
         assert manifest["format"] == "r4-kb"
-        assert manifest["version"] == "1.1"
+        assert manifest["version"] == "1.2"
         assert "tables" in manifest
         assert "a2l_links" in manifest["tables"]
         assert "a2l_refs" in manifest["tables"]
         assert "hash" in manifest
         assert "signature" in manifest
+        assert "embedding" in manifest
+        assert "generator" in manifest
+        assert manifest["generator"] == "umrs"
 
     @pytest.mark.asyncio
     async def test_roundtrip_equivalence(self, tmp_bundle_dir: Path, fake_store) -> None:

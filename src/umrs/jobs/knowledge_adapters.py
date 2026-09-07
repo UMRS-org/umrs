@@ -2335,6 +2335,7 @@ class _ExportIntegrityMixin:
         store_cls: Any,
         engine_cls: Any,
         verify_fn: Any,
+        allow_unsigned: bool = False,
     ) -> KnowledgeExportResult:
         """Run the export (or degraded fallback) and post-verify the bundle."""
         if pool is None:
@@ -2343,6 +2344,7 @@ class _ExportIntegrityMixin:
                 degraded=True,
                 degraded_reason=degraded_reason,
             )
+        secret_key = os.getenv("UMRS_SECRET_KEY", "")
         engine = engine_cls(
             store=store_cls(pool),
             output_dir=Path(
@@ -2351,14 +2353,12 @@ class _ExportIntegrityMixin:
                     str(Path(os.getcwd()) / ".kb_exports"),
                 )
             ),
-            secret_key=os.getenv("UMRS_SECRET_KEY", ""),
+            secret_key=secret_key,
+            allow_unsigned=allow_unsigned,
         )
         result = await engine.export_project(project_id)
-        if not result.degraded and result.bundle_path:
-            ok = verify_fn(
-                Path(result.bundle_path),
-                os.getenv("UMRS_SECRET_KEY", ""),
-            )
+        if secret_key and not result.degraded and result.bundle_path:
+            ok = verify_fn(Path(result.bundle_path), secret_key)
             if not ok:
                 logger.error(
                     "Bundle integrity check failed for %s", result.bundle_path
@@ -2391,6 +2391,7 @@ class KnowledgeExportBackend(OrchestratorBackend, _ExportIntegrityMixin):
 
         project_id = self._project_id or job.spec.get("project_id", job.project_id)
         self._project_id = project_id
+        allow_unsigned = bool(job.spec.get("allow_unsigned", False))
 
         KnowledgeEvent(
             event_type="create",
@@ -2414,6 +2415,7 @@ class KnowledgeExportBackend(OrchestratorBackend, _ExportIntegrityMixin):
                 KnowledgeStore,
                 KnowledgeExportEngine,
                 verify_bundle_integrity,
+                allow_unsigned=allow_unsigned,
             )
             _write_result(attempt, result)
 
