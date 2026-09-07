@@ -73,6 +73,13 @@ network:
   port_range_min: 12000   # Local tunnel port range (forward tunnels to compute)
   port_range_max: 12999
   port_strategy: static_range
+  # ADR-040 D4 / WP-01 round 3 (2026-09-07): the site's egress proxy image.
+  # This is the file the umrs-front rccs server container binds as
+  # /etc/umrs/site.yaml (compose volume ../rccs-front/site.yaml). Running
+  # inside the existing r4-mcp image (python -m r4_mcp.egress_guard) on
+  # podman-compute Slurm nodes; presence/pullability of THIS string is the
+  # declared precondition for any egress_domains endpoint (else: refuse 400).
+  egress_proxy_image: localhost/r4-mcp:latest
 
 vllm:
   model: intfloat/e5-base-v2
