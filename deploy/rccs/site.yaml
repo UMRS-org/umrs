@@ -63,6 +63,11 @@ network:
   port_range_min: 11434
   port_range_max: 11534
   port_strategy: static_range
+  # ADR-040 D4 / WP-01 round 3 (2026-09-07): the site's egress proxy image.
+  # Running inside the existing r4-mcp image (`python -m r4_mcp.egress_guard`)
+  # on podman-compute Slurm nodes; presence/pullability of THIS string is the
+  # declared precondition for any egress_domains endpoint (else: refuse 400).
+  egress_proxy_image: localhost/r4-mcp:latest
 
 vllm:
   model: intfloat/e5-base-v2
