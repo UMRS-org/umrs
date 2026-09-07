@@ -104,7 +104,7 @@ def _write_bundle(
     project_id: str = "proj-a",
     with_signature: bool = False,
     corrupt: bool = False,
-    version: str = "1.1",
+    version: str = "1.2",
     fmt: str = "r4-kb",
 ) -> Path:
     bundle = root / "bundle"
@@ -242,7 +242,7 @@ class TestRestoreFlow:
         store = _FakeStore()
         engine = KnowledgeImportEngine(store=store)
 
-        result = await engine.import_project(bundle, verify=False)
+        result = await engine.import_project(bundle, verify=False, allow_unsigned=True)
 
         assert result.project_id == "proj-a"
         assert result.artifact_count == 2
@@ -256,7 +256,7 @@ class TestRestoreFlow:
         store = _FakeStore()
         engine = KnowledgeImportEngine(store=store)
 
-        result = await engine.import_project(bundle, verify=False)
+        result = await engine.import_project(bundle, verify=False, allow_unsigned=True)
 
         assert result.embedding_count == 1
         assert result.catalog_count == 1
@@ -268,7 +268,9 @@ class TestRestoreFlow:
         store = _FakeStore()
         engine = KnowledgeImportEngine(store=store)
 
-        result = await engine.import_project(bundle, target_project_id="new-project", verify=False)
+        result = await engine.import_project(
+            bundle, target_project_id="new-project", verify=False, allow_unsigned=True
+        )
 
         assert result.project_id == "new-project"
         assert all(a["project_id"] == "new-project" for a in store.artifacts)
@@ -284,8 +286,8 @@ class TestRestoreFlow:
         store = _FakeStore()
         engine = KnowledgeImportEngine(store=store)
 
-        await engine.import_project(bundle, verify=False)
-        second = await engine.import_project(bundle, verify=False)
+        await engine.import_project(bundle, verify=False, allow_unsigned=True)
+        second = await engine.import_project(bundle, verify=False, allow_unsigned=True)
 
         # Artifacts dedup by content hash on the second run.
         assert second.artifact_count == 0
@@ -295,8 +297,8 @@ class TestRestoreFlow:
     async def test_integrity_verification_with_secret(self, tmp_path):
         bundle = _write_bundle(tmp_path, with_signature=False, corrupt=False)
         engine = KnowledgeImportEngine(store=_FakeStore(), secret_key=_SECRET)
-        # SIGNATURE file missing → integrity check fails.
-        with pytest.raises(BundleFormatError, match="integrity"):
+        # Unsigned bundle is refused fail-closed even with a key configured.
+        with pytest.raises(BundleFormatError, match="unsigned"):
             await engine.import_project(bundle)
 
     async def test_verified_bundle_passes_and_marks_flag(self, tmp_path):
@@ -304,6 +306,64 @@ class TestRestoreFlow:
         engine = KnowledgeImportEngine(store=_FakeStore(), secret_key=_SECRET)
         result = await engine.import_project(bundle)
         assert result.verified is True
+
+
+class TestUnsignedPolicy:
+    """G-P2-3 fail-closed rules (ADR-032 amendment 2026-09)."""
+
+    async def test_unsigned_refused_without_optout(self, tmp_path):
+        bundle = _write_bundle(tmp_path)
+        engine = KnowledgeImportEngine(store=_FakeStore())
+        with pytest.raises(BundleFormatError, match="unsigned"):
+            await engine.import_project(bundle)
+
+    async def test_unsigned_restored_with_optout(self, tmp_path):
+        bundle = _write_bundle(tmp_path)
+        engine = KnowledgeImportEngine(store=_FakeStore())
+        result = await engine.import_project(bundle, allow_unsigned=True)
+        assert result.unsigned is True
+        assert result.verified is False
+
+    async def test_signed_without_key_refused_without_optout(self, tmp_path):
+        bundle = _write_bundle(tmp_path, with_signature=True)
+        engine = KnowledgeImportEngine(store=_FakeStore(), secret_key="")
+        with pytest.raises(BundleFormatError, match="cannot verify"):
+            await engine.import_project(bundle)
+
+    async def test_signed_without_key_restored_with_optout(self, tmp_path):
+        bundle = _write_bundle(tmp_path, with_signature=True)
+        engine = KnowledgeImportEngine(store=_FakeStore(), secret_key="")
+        result = await engine.import_project(bundle, allow_unsigned=True)
+        assert result.unsigned is True
+
+
+class TestLegacyVersions:
+    """Readers accept 1.0/1.1 bundles; writers only emit 1.2 (G-P2-4)."""
+
+    async def test_legacy_1_1_accepted(self, tmp_path):
+        bundle = _write_bundle(tmp_path, version="1.1")
+        engine = KnowledgeImportEngine(store=_FakeStore())
+        result = await engine.import_project(bundle, allow_unsigned=True)
+        assert result.project_id == "proj-a"
+        assert result.embedding_pin is False
+
+    async def test_v1_2_embedding_pin_reported(self, tmp_path):
+        bundle = _write_bundle(tmp_path)
+        manifest_path = bundle / "manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["embedding"] = {
+            "model": "intfloat/e5-base-v2",
+            "model_path": "/models/e5-base-v2",
+            "revision": "",
+            "dimensions": 1024,
+            "distance": "cosine",
+            "normalization": "unknown",
+            "pending": False,
+        }
+        manifest_path.write_text(json.dumps(manifest))
+        engine = KnowledgeImportEngine(store=_FakeStore())
+        result = await engine.import_project(bundle, allow_unsigned=True)
+        assert result.embedding_pin is True
 
 
 # ── Route tests ───────────────────────────────────────────────────────────
@@ -348,7 +408,7 @@ class TestRestoreRoute:
         client = TestClient(app)
         resp = client.post(
             "/umrs/knowledge/restore",
-            json={"bundle_dir": str(bundle)},
+            json={"bundle_dir": str(bundle), "allow_unsigned": True},
         )
         assert resp.status_code == 200, resp.text
         payload = resp.json()["restore"]
@@ -360,6 +420,6 @@ class TestRestoreRoute:
         client = TestClient(app)
         resp = client.post(
             "/umrs/knowledge/restore",
-            json={"bundle_dir": str(bad)},
+            json={"bundle_dir": str(bad), "allow_unsigned": True},
         )
         assert resp.status_code == 400

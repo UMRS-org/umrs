@@ -31,7 +31,8 @@ from .store import KnowledgeEdge, KnowledgeNode
 logger = logging.getLogger(__name__)
 
 _BUNDLE_FORMAT = "r4-kb"
-_BUNDLE_VERSION = "1.1"
+_ACCEPTED_VERSIONS = {"1.0", "1.1", "1.2"}
+_SIGNATURE_FILENAME = "signature.sig"
 
 _TABLE_FILES: dict[str, str] = {
     "artifacts": "artifacts.jsonl",
@@ -67,6 +68,8 @@ class KnowledgeImportResult:
     degraded: bool = False
     degraded_reason: str = ""
     duration_seconds: float = 0.0
+    unsigned: bool = False
+    embedding_pin: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -84,6 +87,8 @@ class KnowledgeImportResult:
             "degraded": self.degraded,
             "degraded_reason": self.degraded_reason,
             "duration_seconds": self.duration_seconds,
+            "unsigned": self.unsigned,
+            "embedding_pin": self.embedding_pin,
         }
 
 
@@ -109,7 +114,7 @@ def _checked_manifest(bundle_path: Path) -> dict[str, Any]:
     if fmt != _BUNDLE_FORMAT:
         raise BundleFormatError(f"unsupported bundle format: {fmt!r}")
     version = manifest.get("version")
-    if version != _BUNDLE_VERSION:
+    if version not in _ACCEPTED_VERSIONS:
         raise BundleFormatError(f"unsupported bundle version: {version!r}")
     if not manifest.get("project_id"):
         raise BundleFormatError("manifest missing project_id")
@@ -173,6 +178,20 @@ async def _restore_jsonl_rows(
     return restored, skipped
 
 
+def _read_stored_signature(bundle_path: Path) -> str:
+    """Signature carrier for the signed-marker decision.
+
+    ``signature.sig`` is canonical: it is what ``verify_signature`` checks,
+    and what the exporter always produces when a key is configured. A bundle
+    whose manifest carries a signature field but has no ``signature.sig``
+    (truncated package) counts as unsigned, matching the legacy behavior.
+    """
+    sig_path = bundle_path / _SIGNATURE_FILENAME
+    if sig_path.exists():
+        return sig_path.read_text(encoding="utf-8").strip()
+    return ""
+
+
 class KnowledgeImportEngine:
     """Restore engine (mirror of ``KnowledgeExportEngine``)."""
 
@@ -186,18 +205,25 @@ class KnowledgeImportEngine:
         *,
         target_project_id: str | None = None,
         verify: bool = True,
+        allow_unsigned: bool = False,
     ) -> KnowledgeImportResult:
-        """Restore one bundle directory. Raises on integrity/format errors."""
+        """Restore one bundle directory. Raises on integrity/format errors.
+
+        Unsigned bundles are refused unless ``allow_unsigned=True``, regardless
+        of ``verify`` (fail-closed per ADR-032 amendment 2026-09). ``verify``
+        only gates the HMAC check for signed bundles.
+        """
         t0 = time.monotonic()
         bundle_path = Path(bundle_dir)
         result = KnowledgeImportResult()
 
-        if verify and self._secret_key:
-            if not verify_bundle_integrity(bundle_path, self._secret_key):
-                raise BundleFormatError("bundle integrity verification failed")
-            result.verified = True
-
         manifest = _checked_manifest(bundle_path)
+        embedding = manifest.get("embedding") or {}
+        result.embedding_pin = bool(embedding.get("model")) and not embedding.get(
+            "pending", False
+        )
+        self._enforce_integrity(bundle_path, verify, allow_unsigned, result)
+
         source_project = str(manifest["project_id"])
         target = target_project_id or source_project
         result.project_id = target
@@ -235,6 +261,41 @@ class KnowledgeImportEngine:
             result.verified,
         )
         return result
+
+    def _enforce_integrity(
+        self,
+        bundle_path: Path,
+        verify: bool,
+        allow_unsigned: bool,
+        result: KnowledgeImportResult,
+    ) -> None:
+        """Fail-closed integrity gate (ADR-032 amendment 2026-09)."""
+        stored_sig = _read_stored_signature(bundle_path)
+        if not stored_sig:
+            if not allow_unsigned:
+                raise BundleFormatError(
+                    "bundle is unsigned; pass allow_unsigned=True to restore anyway"
+                )
+            logger.warning("Restoring UNSIGNED bundle %s (allow_unsigned)", bundle_path)
+            result.unsigned = True
+            return
+        if not verify:
+            return
+        if not self._secret_key:
+            if not allow_unsigned:
+                raise BundleFormatError(
+                    "cannot verify signed bundle: UMRS_SECRET_KEY is not configured; "
+                    "set the key or pass allow_unsigned=True"
+                )
+            logger.warning(
+                "Skipping signature check on signed bundle %s (no key; allow_unsigned)",
+                bundle_path,
+            )
+            result.unsigned = True
+            return
+        if not verify_bundle_integrity(bundle_path, self._secret_key):
+            raise BundleFormatError("bundle integrity verification failed")
+        result.verified = True
 
     # ── Store-backed restores ───────────────────────────────────────────
 
