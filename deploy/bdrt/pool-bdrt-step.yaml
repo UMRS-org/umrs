@@ -782,6 +782,13 @@ endpoints:
       # Native kernel overlay (fuse-overlayfs breakage class on spark nodes).
       CONTAINERS_STORAGE_CONF: "/home/mnagaso/.config/containers/storage-native.conf"
       VLLM_DOCKER_IMAGE: "ghcr.io/miaai-lab/glm53-flash-spark:mm-ray-v1"
+      # 2026-09-08 nimbus-0: multi-node Ray-head podman run aborts with
+      #   Error: invalid option specified: "uid"
+      # at the wrapper's keep-id:uid=0,gid=0 userns pass-through (sbatch-only;
+      # the identical invocation passes interactively and on the rccs GB10
+      # venue). Host mode avoids the batch parse path entirely; this recipe
+      # has no CDI usage that requires keep-id (RCCS_SKIP_CDI=1 already).
+      RIVAULT_USERNS_MODE: "host"
       VLLM_TOOL_CALL_PARSER: "glm47"
       VLLM_REASONING_PARSER: "glm45"
       VLLM_TRUST_REMOTE_CODE: "1"
