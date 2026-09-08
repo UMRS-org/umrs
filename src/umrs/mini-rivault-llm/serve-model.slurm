@@ -1888,6 +1888,20 @@ RAYEOF
         # nvmlDeviceGetCount()==0 and raised
         #   "current platform  does not support ray".
         (
+            # The head exported CONTAINERS_STORAGE_CONF / CONTAINERS_CONF pointing
+            # at $XDG_RUNTIME_DIR/rivault-<job>/containers, and srun propagates the
+            # whole job env to every worker step — but those conf files only
+            # exist on the node where rivault_venue_prepare ran (the head). On the
+            # worker node the very first podman call then dies with
+            #   "stat /run/user/<uid>/rivault-<job>/containers/storage.conf: no such file or directory"
+            # (bdrt job 4521, 2026-09-08). Recreate the SAME job-private conf
+            # node-locally before any podman invocation. runroot follows
+            # XDG_RUNTIME_DIR, so the worker uses its own node-local run dir;
+            # runroot adoption is a no-op while any container runs on the node.
+            srun --nodes=1 --ntasks=1 --nodelist="${wnode}" --overlap bash -c \
+                "source '${SCRIPT_DIR}/venue.sh' && rivault_venue_prepare '${SLURM_JOB_ID:-${uuid}}' '${RIVAULT_CGROUP_MANAGER:-cgroupfs}'" \
+                >/dev/null 2>&1 \
+                || echo "[rivault] WARN: worker venue prepare failed on ${wnode}; podman will use inherited paths" >&2
             for _wattempt in 1 2 3 4 5; do
                 # Reset any stale rootless-podman pause process on the worker
                 # node. A leftover pause process from a previous job makes every
