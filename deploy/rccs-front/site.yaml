@@ -61,7 +61,11 @@ runtime:
   # once the umrs-front compose mounts it alongside (follow-up in ADR-045).
 
 storage:
-  model_cache_dir: ""  # No local model cache — models on Lustre (login+compute only)
+  # Durable model_download staging root on the shared Lustre (login+compute
+  # view; /etc/umrs/models fallback is not a valid stage target — the
+  # registry path validator rejects it, so 'r4 model stage' returns 500).
+  # Keep within allowed_patterns entry 1: /lvs0/rccs-dmp/masaru.nagaso/umrs_models/*
+  model_cache_dir: /lvs0/rccs-dmp/masaru.nagaso/umrs_models
   sam3_model_path: /lvs0/dne1/rccs-dmp/masaru.nagaso/umrs_models/sam3.1
   hmae_model_path: /lvs0/dne1/rccs-dmp/masaru.nagaso/umrs_models/hmae
   hmae_config_path: ""
