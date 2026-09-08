@@ -58,10 +58,7 @@ runtime:
   storage_root: ""
 
 storage:
-  # Durable model_download staging root on the shared DGX-Spark FS (keeps
-  # stage off the /etc/umrs/models fallback that the path validator rejects
-  # -> 500, the same failure fixed on rccs-front via #120/#121).
-  model_cache_dir: /home/mnagaso/umrs_models
+  model_cache_dir: ""  # No local model cache — models on the DGX-Spark FS
   sam3_model_path: /home/mnagaso/umrs_models/sam3.1
   hmae_model_path: ""
   hmae_config_path: ""
