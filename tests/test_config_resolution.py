@@ -44,3 +44,57 @@ class TestConfigResolution:
         assert result is not None
         assert isinstance(result, str)
         assert result == "current_s3_config"
+
+
+class TestModelStagingRoot:
+    """API model_download staging root resolution (fix 2026-09-08).
+
+    Live failure: stage fell back to /etc/umrs/models on umrs-front, the
+    registry path validator rejected it, and POST /umrs/models/stage 500ed.
+    """
+
+    def test_env_override_wins(self, monkeypatch, tmp_path):
+        from umrs.shared.config import get_resolved_model_staging_root
+
+        monkeypatch.setenv("UMRS_MODEL_STAGING_ROOT", str(tmp_path))
+        assert get_resolved_model_staging_root() == str(tmp_path)
+
+    def test_site_model_cache_dir_used_when_no_env(self, monkeypatch):
+        """site.storage.model_cache_dir is honored when no env override."""
+        from types import SimpleNamespace
+
+        import umrs.shared.config as cfg_mod
+
+        monkeypatch.delenv("UMRS_MODEL_STAGING_ROOT", raising=False)
+
+        fake_site = SimpleNamespace(
+            storage=SimpleNamespace(model_cache_dir="/lvs0/rccs-dmp/x/umrs_models")
+        )
+
+        import umrs.orchestrator.site_config as sc
+
+        monkeypatch.setattr(sc, "get_site_config", lambda: fake_site)
+        monkeypatch.setattr(
+            cfg_mod, "get_resolved_umrs_subdir", lambda name: f"/should-not-be-used/{name}"
+        )
+
+        result = cfg_mod.get_resolved_model_staging_root()
+        assert result == "/lvs0/rccs-dmp/x/umrs_models"
+
+    def test_fallback_to_default_subdir_when_no_site_config(self, monkeypatch):
+        import umrs.shared.config as cfg_mod
+
+        monkeypatch.delenv("UMRS_MODEL_STAGING_ROOT", raising=False)
+
+        import umrs.orchestrator.site_config as sc
+
+        monkeypatch.setattr(
+            sc,
+            "get_site_config",
+            lambda: (_ for _ in ()).throw(RuntimeError("no site")),
+        )
+        monkeypatch.setattr(
+            cfg_mod, "get_resolved_umrs_subdir", lambda name: f"/etc/umrs/{name}"
+        )
+
+        assert cfg_mod.get_resolved_model_staging_root() == "/etc/umrs/models"
