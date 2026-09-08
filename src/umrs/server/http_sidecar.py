@@ -182,7 +182,7 @@ def _init_governance_store(app, db_pool):
         ensure_governance_schema(gov_conn)
         gov_conn.commit()
         app.state.umrs_governance_store_conn = gov_conn
-        gov_store = GovernanceStore(gov_conn)
+        gov_store = GovernanceStore(gov_conn, pool=db_pool)
         app.state.umrs_governance_store = gov_store
         set_governance_store(gov_store)
         logger.info("Governance store initialized for HTTP sidecar")
