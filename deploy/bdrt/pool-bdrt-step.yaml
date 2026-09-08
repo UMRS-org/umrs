@@ -859,6 +859,10 @@ endpoints:
       VLLM_USE_V2_MODEL_RUNNER: "1"
       VLLM_SPECULATIVE_CONFIG: '{"method":"mtp","num_speculative_tokens":3}'
       RIVAULT_USERNS_MODE: "host"
+      # dgx-spark nodes lack the CNI bridge/portmap/firewall/tuning plugins
+      # (job 4592: "genai-private-net-<id> not visible after migrate").
+      # netavark is the working backend on this venue (login + glm lanes).
+      RIVAULT_NETWORK_BACKEND: "netavark"
       VLLM_TOOL_CALL_PARSER: "qwen3_coder"
       VLLM_REASONING_PARSER: "qwen3"
       VLLM_TRUST_REMOTE_CODE: "1"
