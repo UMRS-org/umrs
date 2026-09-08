@@ -814,3 +814,44 @@ endpoints:
       # carries the refreshed emit_image/emit_video template from HF main.
       # Single staged copy is enough: bdrt $HOME is shared NFS.
       RCCS_SKIP_CDI: "1"
+
+  # ── Qwen3.8-Flash-Next-NVFP4-bdrt (single node → spark) ─────────────
+  #  Recipe: github.com/MiaAI-Lab/Qwen3.8-Flash-Next-Single-DGX-Spark —
+  #  vendor-verified on this exact host class (2026-09-06 sweep):
+  #  GMU 0.780 (94.87 GiB), FP8 KV ≈16.7 GiB (~993k tok), MTP3, seqs 4,
+  #  batched tokens 2048, V2 model runner pinned. Hybrid linear-attention
+  #  (Qwen3-Next GDN) multimodal; 99 GiB NVFP4 checkpoint. Single node is
+  #  the verified shape — do NOT bump TP/PP before validating single-node.
+  - name: qwen3.8-flash-next-nvfp4-bdrt
+    model: Qwen3.8-Flash-Next-NVFP4-bdrt
+    aliases:
+      - Qwen3.8-Flash-Next-NVFP4
+      - qwen3.8-flash-next
+    tier: system
+    node_count: 1
+    partition: spark
+    max_model_len: 131072
+    env_vars:
+      VLLM_HOST_MODEL_PATH: "/home/mnagaso/umrs_models/Qwen3.8-Flash-Next-NVFP4"
+      VLLM_PATH_TO_HUGGINGFACE: "/home/mnagaso/umrs_models"
+      VLLM_MODEL: "Mia-AiLab/Qwen3.8-Flash-Next-NVFP4"
+      VLLM_MAX_MODEL_LEN: "131072"
+      VLLM_GPU_MEM_UTIL: "0.78"
+      VLLM_MAX_NUM_SEQS: "4"
+      VLLM_MAX_NUM_BATCHED_TOKENS: "2048"
+      VLLM_TP: "1"
+      VLLM_TENSOR_PARALLEL_SIZE: "1"
+      VLLM_DOCKER_IMAGE: "vllm/vllm-openai:qwen38-flash-next"
+      # Recipe pins (see .env.sample): V2 runner prevents MTP cudagraph
+      # mode override (PIECEWISE cost +24% single-stream + driver OOM).
+      VLLM_USE_V2_MODEL_RUNNER: "1"
+      CUDAGRAPH_CAPTURE_SIZES: "auto"
+      MAMBA_SSM_CACHE_DTYPE: "bfloat16"
+      VLLM_SPECULATIVE_CONFIG: '{"method":"mtp","num_speculative_tokens":3}'
+      RIVAULT_USERNS_MODE: "host"
+      VLLM_TOOL_CALL_PARSER: "qwen3_xml"
+      VLLM_REASONING_PARSER: "qwen3"
+      VLLM_TRUST_REMOTE_CODE: "1"
+      VLLM_KV_CACHE_DTYPE: "fp8"
+      PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
+      RCCS_SKIP_CDI: "1"
