@@ -175,8 +175,42 @@ def _apply_governance_migrations(conn, cur, from_version: int, to_version: int) 
 class GovernanceStore:
     """Postgres-backed resource ownership and quota store."""
 
-    def __init__(self, conn) -> None:
+    def __init__(self, conn, pool=None) -> None:
         self.conn = conn
+        self._pool = pool
+
+    def _reconnect(self) -> None:
+        """Swap a dead connection for a fresh pool connection (bounded).
+
+        Original failure class 2026-09-08: umrs-server-bdrt booted while the
+        postgres container cycled during converge; the boot-issued conn then
+        died once ("server closed the connection"), and every later query
+        from this long-lived object raised psycopg2.InterfaceError
+        "connection already closed" — provisions then 500'd at check_quota
+        until the server was restarted. When a pool is available, exchange
+        instead of 500-ing.
+        """
+        if self._pool is None:
+            return
+        try:
+            self._pool.putconn(self.conn)
+        except Exception:
+            try:
+                self._pool.putconn(self.conn, close=True)
+            except Exception:
+                pass
+        self.conn = self._pool.getconn()
+
+    @staticmethod
+    def _is_conn_dead(exc: Exception) -> bool:
+        try:
+            import psycopg2
+
+            return isinstance(
+                exc, (psycopg2.InterfaceError, psycopg2.OperationalError)
+            )
+        except Exception:
+            return False
 
     # ---- Ownership ----
 
@@ -350,20 +384,34 @@ class GovernanceStore:
         resource_type: str,
     ) -> dict[str, Any] | None:
         """Get quota for a project+resource_type."""
-        cur = self.conn.cursor()
-        try:
-            cur.execute(
-                "SELECT project_id, resource_type, max_count, current_count, "
-                "updated_at, warn_count "
-                "FROM resource_quotas WHERE project_id = %s AND resource_type = %s",
-                (project_id, resource_type),
-            )
-            row = cur.fetchone()
-        except Exception:
-            self.conn.rollback()
-            return None
-        finally:
-            cur.close()
+        for attempt in (1, 2):
+            cur = self.conn.cursor()
+            try:
+                cur.execute(
+                    "SELECT project_id, resource_type, max_count, current_count, "
+                    "updated_at, warn_count "
+                    "FROM resource_quotas WHERE project_id = %s AND resource_type = %s",
+                    (project_id, resource_type),
+                )
+                row = cur.fetchone()
+            except Exception as exc:
+                last_exc = exc
+                if attempt == 1 and self._is_conn_dead(exc):
+                    try:
+                        self._reconnect()
+                        continue
+                    except Exception as recon_exc:
+                        logger.warning(
+                            "Governance store reconnect failed: %s", recon_exc
+                        )
+                        return None
+                try:
+                    self.conn.rollback()
+                except Exception:
+                    pass
+                return None
+            finally:
+                cur.close()
 
         if not row:
             return None
