@@ -180,9 +180,27 @@ def get_resolved_json_server_path():
 
 
 def get_resolved_model_staging_root():
+    """Root the HTTP API stores model_download jobs under (registry storage_path).
+
+    Resolution order: UMRS_MODEL_STAGING_ROOT env > site.storage.model_cache_dir
+    > the legacy config subdir (e.g. /etc/umrs/models on the server, which the
+    registry path validator almost never allows and yields a 500 on stage
+    (observed live on rccs 2026-09-08)). The site knob is now honored so the
+    API stage staging root and the validator root agree without a second env.
+    """
     override = os.environ.get("UMRS_MODEL_STAGING_ROOT")
     if override:
         return os.path.realpath(os.path.expanduser(override))
+    try:
+        from ..orchestrator.site_config import get_site_config
+
+        site_dir = getattr(get_site_config().storage, "model_cache_dir", "") or ""
+        if site_dir:
+            return site_dir
+    except Exception:
+        # Site config unavailable (deployment profile without site.yaml);
+        # fall back to the historical default below.
+        pass
     return get_resolved_umrs_subdir("models")
 
 
