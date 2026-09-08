@@ -823,7 +823,7 @@ endpoints:
   #  memory-mapped packed table. Hybrid linear-attention (Qwen3-Next GDN)
   #  multimodal; 99 GiB NVFP4 checkpoint. Single node is the verified
   #  shape — do NOT bump TP/PP before validating single-node.
-  #  Image: localhost/qwen38-flash-next-bdrt:v1 = vllm/vllm-openai:
+  #  Image: localhost/qwen38-flash-next-bdrt:v2 = vllm/vllm-openai:
   #  qwen38-flash-next + the recipe's 9 GB10 patches baked in
   #  (ple_layer, modelopt_mxfp8, qsa fp8-kv, mtp draft-vocab, ple_offload
   #  layer/connector/worker/protocol) — source /home/mnagaso/qwen38-recipe.
@@ -848,7 +848,7 @@ endpoints:
       VLLM_MAX_NUM_BATCHED_TOKENS: "2048"
       VLLM_TP: "1"
       VLLM_TENSOR_PARALLEL_SIZE: "1"
-      VLLM_DOCKER_IMAGE: "localhost/qwen38-flash-next-bdrt:v1"
+      VLLM_DOCKER_IMAGE: "localhost/qwen38-flash-next-bdrt:v2"
       # PLE offload (REQUIRED — 98.6 GiB of weights do not fit without the
       # mmap-served PLE table; see recipe docs/memory-incident-2026-09-04).
       VLLM_PLE_CPU_OFFLOAD: "1"
