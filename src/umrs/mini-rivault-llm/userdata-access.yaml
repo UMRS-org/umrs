@@ -31,9 +31,12 @@ services:
       HIP_VISIBLE_DEVICES: ""
     restart: unless-stopped
     pull_policy: missing
-    cap_drop: [ ALL ]
-    cap_add: [ sys_nice, chown, dac_override, setgid, setuid ]  #net_bind_service
-    userns_mode: "${RIVAULT_USERNS_MODE:-keep-id:uid=0,gid=0}"
+    # cap_drop/cap_add/userns_mode removed (2026-09-08): on slurm-launched
+    # rootless podman this trio crashes runc create with PID-pipe EOF — same
+    # failure the 2026-08-12 fix removed from the main serve-model.yaml nginx.
+    # Without this fix the exit stack (nginx+coredns) wedged podman-compose
+    # on BOTH exit-stack launches and the wrapper never reached the endpoint
+    # publisher (jobs 379372/379479).
     deploy:
       mode: replicated
       replicas: ${NGINX_REPLICAS:-1}
@@ -68,9 +71,11 @@ services:
       HIP_VISIBLE_DEVICES: ""
     restart: unless-stopped
     pull_policy: missing
-    cap_drop: [ ALL ]
-    cap_add: [ sys_nice, net_bind_service ]
-    userns_mode: "${RIVAULT_USERNS_MODE:-keep-id:uid=0,gid=0}"
+    # cap_drop/cap_add/userns_mode removed (2026-09-08): same runc-create
+    # PID-pipe EOF as the exit nginx — see note above. coredns does not
+    # need net_bind_service here: it uses unprivileged port 53 via expose
+    # on the bridge networks, and binds only the DNS resolver socket inside
+    # rootless-netns.
     deploy:
       mode: replicated
       replicas: ${COREDNS_REPLICAS:-1}
