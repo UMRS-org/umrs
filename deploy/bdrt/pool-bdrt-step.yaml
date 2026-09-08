@@ -819,9 +819,16 @@ endpoints:
   #  Recipe: github.com/MiaAI-Lab/Qwen3.8-Flash-Next-Single-DGX-Spark —
   #  vendor-verified on this exact host class (2026-09-06 sweep):
   #  GMU 0.780 (94.87 GiB), FP8 KV ≈16.7 GiB (~993k tok), MTP3, seqs 4,
-  #  batched tokens 2048, V2 model runner pinned. Hybrid linear-attention
-  #  (Qwen3-Next GDN) multimodal; 99 GiB NVFP4 checkpoint. Single node is
-  #  the verified shape — do NOT bump TP/PP before validating single-node.
+  #  batched tokens 2048, V2 model runner pinned, PLE CPU-offload with a
+  #  memory-mapped packed table. Hybrid linear-attention (Qwen3-Next GDN)
+  #  multimodal; 99 GiB NVFP4 checkpoint. Single node is the verified
+  #  shape — do NOT bump TP/PP before validating single-node.
+  #  Image: localhost/qwen38-flash-next-bdrt:v1 = vllm/vllm-openai:
+  #  qwen38-flash-next + the recipe's 9 GB10 patches baked in
+  #  (ple_layer, modelopt_mxfp8, qsa fp8-kv, mtp draft-vocab, ple_offload
+  #  layer/connector/worker/protocol) — source /home/mnagaso/qwen38-recipe.
+  #  PLE packed table (27 GiB, one-time) lives INSIDE the HF-cache mount
+  #  tree so the compose lane needs no extra mounts.
   - name: qwen3.8-flash-next-nvfp4-bdrt
     model: Qwen3.8-Flash-Next-NVFP4-bdrt
     aliases:
@@ -841,17 +848,30 @@ endpoints:
       VLLM_MAX_NUM_BATCHED_TOKENS: "2048"
       VLLM_TP: "1"
       VLLM_TENSOR_PARALLEL_SIZE: "1"
-      VLLM_DOCKER_IMAGE: "vllm/vllm-openai:qwen38-flash-next"
+      VLLM_DOCKER_IMAGE: "localhost/qwen38-flash-next-bdrt:v1"
+      # PLE offload (REQUIRED — 98.6 GiB of weights do not fit without the
+      # mmap-served PLE table; see recipe docs/memory-incident-2026-09-04).
+      VLLM_PLE_CPU_OFFLOAD: "1"
+      VLLM_PLE_PACKED_TABLE_DIR: "/root/.cache/huggingface/ple_cache/Mia-AiLab--Qwen3.8-Flash-Next-NVFP4"
+      VLLM_PLE_OFFLOAD_STEP_TIMEOUT: "300"
       # Recipe pins (see .env.sample): V2 runner prevents MTP cudagraph
       # mode override (PIECEWISE cost +24% single-stream + driver OOM).
       VLLM_USE_V2_MODEL_RUNNER: "1"
-      CUDAGRAPH_CAPTURE_SIZES: "auto"
-      MAMBA_SSM_CACHE_DTYPE: "bfloat16"
       VLLM_SPECULATIVE_CONFIG: '{"method":"mtp","num_speculative_tokens":3}'
       RIVAULT_USERNS_MODE: "host"
-      VLLM_TOOL_CALL_PARSER: "qwen3_xml"
+      VLLM_TOOL_CALL_PARSER: "qwen3_coder"
       VLLM_REASONING_PARSER: "qwen3"
       VLLM_TRUST_REMOTE_CODE: "1"
-      VLLM_KV_CACHE_DTYPE: "fp8"
       PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
+      # CLI-only knobs from the recipe launch block (kv dtype, lazy load,
+      # chunked prefill, mp executor for the offload worker, FULL decode
+      # graphs at MTP3 widths {4,8,12,16} for MAX_NUM_SEQS=4).
+      VLLM_EXTRA_ARGS: >-
+        --load-format safetensors
+        --safetensors-load-strategy lazy
+        --enable-chunked-prefill
+        --kv-cache-dtype fp8
+        --mamba-ssm-cache-dtype bfloat16
+        --distributed-executor-backend mp
+        --compilation-config {"mode":0,"cudagraph_mode":"FULL_DECODE_ONLY","cudagraph_capture_sizes":[4,8,12,16]}
       RCCS_SKIP_CDI: "1"
