@@ -48,6 +48,7 @@ from .research_sessions import set_session_store
 from .scientific_memory import router as scientific_memory_router
 from .secret_broker import router as secret_broker_router
 from .skills import router as skills_router
+from .source_grants import router as source_grants_router
 from .traces import router as traces_router
 from .usage import router as usage_router
 from .user_sources import router as user_sources_router
@@ -95,6 +96,7 @@ __all__ = [
     "secret_broker_router",
     "set_session_store",
     "skills_router",
+    "source_grants_router",
     "traces_router",
     "usage_router",
     "user_sources_router",

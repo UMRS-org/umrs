@@ -650,6 +650,7 @@ def _create_app():
         scientific_memory_router,
         secret_broker_router,
         skills_router,
+        source_grants_router,
         traces_router,
         usage_router,
         user_sources_router,
@@ -765,6 +766,7 @@ def _create_app():
     # R0/R1 secrets surfaces (enveloped identity enforced router-wide, G-6).
     app.include_router(secret_broker_router)
     app.include_router(user_sources_router)
+    app.include_router(source_grants_router)
 
     # Satellite stores auto-resolve via the shared factories (Postgres when
     # a pool is resolvable, else in-memory). Routers return 503 on failure.
