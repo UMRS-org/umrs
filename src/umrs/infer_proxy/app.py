@@ -186,10 +186,12 @@ def _prepare(request: Request) -> _Prepared:
         source_override=request.headers.get("x-r4-source"),
     )
     logger.info(
-        "infer_eval sid=%s client=%s verdict=%s",
+        "infer_eval sid=%s client=%s verdict=%s path=%s method=%s",
         sid,
         client_ip,
         verdict.reason or "ok",
+        "/" + request.path_params.get("path", ""),
+        request.method,
     )
     if verdict.deny():
         return _Prepared(
