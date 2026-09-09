@@ -424,9 +424,16 @@ def create_app(
     except ValueError:
         logger.warning("UMRS_INFER_RPM unparsable — rate limiter OFF")
         app.state.rate_limiter = SessionRateLimiter(0)
-    # Logging discipline: filter tokens out of every proxy log line.
-    for handler in logging.getLogger("umrs.infer_proxy").handlers or [
-        logging.NullHandler()
-    ]:
+    # Logging discipline: one stdout handler if none exists, redact filters on all.
+    proxy_logger = logging.getLogger("umrs.infer_proxy")
+    if not proxy_logger.handlers:
+        stream_handler = logging.StreamHandler()
+        stream_handler.setFormatter(
+            logging.Formatter("%(asctime)s %(levelname)s infer_access %(message)s")
+        )
+        proxy_logger.addHandler(stream_handler)
+    proxy_logger.setLevel(os.environ.get("UMRS_INFER_ACCESS_LEVEL", "info").upper())
+    proxy_logger.propagate = True
+    for handler in proxy_logger.handlers:
         handler.addFilter(SecretRedactingFilter())
     return app
