@@ -137,6 +137,22 @@ class TestFailurePaths:
 
 
 class TestTemplates:
+    def test_nginx_conf_bootstrap_http_uplink_has_no_ca(self):
+        conf = render_nginx_conf(_cfg(infer_uplink="http"))
+        assert "proxy_pass http://" in conf
+        assert "internal-ca.pem" not in conf
+        assert "proxy_ssl_verify" not in conf
+
+    def test_nginx_conf_https_uplink_needs_ca(self):
+        conf = render_nginx_conf(_cfg(infer_uplink="https"))
+        assert "proxy_pass https://" in conf
+        assert "internal-ca.pem" in conf
+        assert "proxy_ssl_verify on" in conf
+
+    def test_squid_deny_set_dedups_shared_hosts(self):
+        conf = render_squid_conf(_cfg(gateway_host="data0.x", umrs_host="data0.x"))
+        assert conf.count("data0.x") == 1  # duplicate dstdomain entries are a FATAL acl bug
+
     def test_nginx_conf_never_logs_authorization(self):
         conf = render_nginx_conf(_cfg())
         assert "$http_authorization" not in conf
