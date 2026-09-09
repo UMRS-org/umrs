@@ -88,6 +88,13 @@ class IssueLeaseRequest(BaseModel):
     bound_to_step: str = ""
     tier: str = ""
     owner_id: str = ""
+    # inference-scope bindings (R0-2/R1; optional — absent on legacy calls)
+    session_id: str = ""
+    source_ids: list[str] = []
+    default_source_id: str = ""
+    egress_ip: str = ""
+    project: str = ""
+    max_lifetime_seconds: int | None = None
 
 
 class IssueLeaseResponse(BaseModel):
@@ -162,6 +169,12 @@ def issue_lease(
         bound_to_step=req.bound_to_step,
         tier=req.tier,
         owner_id=owner_id,
+        session_id=req.session_id,
+        source_ids=tuple(req.source_ids),
+        default_source_id=req.default_source_id,
+        egress_ip=req.egress_ip,
+        project=req.project,
+        max_lifetime_seconds=req.max_lifetime_seconds,
     )
     d = lease.to_dict()
     return IssueLeaseResponse(

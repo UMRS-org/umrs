@@ -138,3 +138,34 @@ def test_cross_user_lease_invisible(app):
         broker._leases.clear()
         broker._secret_index.clear()
         broker._audit.clear()
+
+
+def test_inference_bindings_flow_through_issue(app):
+    """The issue route passes inference bindings to the broker (live-leg lesson:
+    the R0 HTTP route dated R0-2 by not passing them; this pins the guard)."""
+    headers = _headers(SECRET, "alice", "alice-proj", False)
+    with TestClient(app) as client:
+        r = client.post(
+            "/umrs/secrets/lease",
+            headers=headers,
+            json={
+                "job_id": "sess-1", "secret_name": "t", "scope": "inference",
+                "session_id": "sess-1",
+                "source_ids": ["11111111-1111-4111-8111-111111111111"],
+                "default_source_id": "11111111-1111-4111-8111-111111111111",
+                "egress_ip": "10.1.1.1",
+                "project": "proj-1",
+                "max_lifetime_seconds": 86_400,
+            },
+        )
+        assert r.status_code == 201
+        lease_id = r.json()["lease_id"]
+        from umrs.api.secret_broker import get_broker
+
+        lease = get_broker().get_lease(lease_id)
+        assert lease.session_id == "sess-1"
+        assert lease.source_ids == ("11111111-1111-4111-8111-111111111111",)
+        assert lease.default_source_id == "11111111-1111-4111-8111-111111111111"
+        assert lease.egress_ip == "10.1.1.1"
+        assert lease.project == "proj-1"
+        assert lease.max_lifetime_at is not None
