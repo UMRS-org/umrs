@@ -62,6 +62,10 @@ class ProvisionConfig:
     # or "http" (bootstrap: umrs-infer plain loopback in the trust zone).
     infer_uplink: str = "https"
     internal_ca_path: str = "/etc/umrs/internal-ca.pem"
+    # Override nginx's resolver with an explicit bridge-DNS address (live-leg
+    # motivation: infer host comes in as a name on a bridge netns; without it
+    # stock nginx can't re-resolve per request). "" = no resolver directive.
+    infer_resolve_via: str = ""
     lease_seconds: int = 3600
     max_lifetime_seconds: int = 7 * 86_400
     worker_memory: str = "16g"
@@ -85,13 +89,27 @@ class ProvisionResult:
 
 
 def _infer_tls_block(cfg: ProvisionConfig) -> str:
-    """HTTPS-uplink block vs plain bootstrap HTTP (internal-CA lands later)."""
+    """HTTPS-uplink block vs plain bootstrap HTTP (internal-CA lands later).
+
+    Name-based upstreams (umrs-infer on a bridge) must not bake at startup:
+    ``resolver`` + variable re-resolves per request — a proxy recreate whose
+    IP changed would otherwise strand every existing session's sidecar.
+    """
+    needs_resolver = (
+        cfg.infer_resolve_via
+        and not cfg.infer_host.replace("[", "").replace("]", "").replace(".", "").isdigit()
+    )
+    resolver = f"    resolver {cfg.infer_resolve_via} valid=10s;\n" if needs_resolver else ""
     if cfg.infer_uplink == "https":
-        return f"""      proxy_pass https://{cfg.infer_host}:{cfg.infer_port}/s/{cfg.session_id}/;
+        return f"""{resolver}
+      set $infer https://{cfg.infer_host}:{cfg.infer_port}/s/{cfg.session_id}/;
+      proxy_pass $infer;
       proxy_ssl_verify on;
       proxy_ssl_trusted_certificate {cfg.internal_ca_path};
       proxy_ssl_server_name on;"""
-    return f"""      proxy_pass http://{cfg.infer_host}:{cfg.infer_port}/s/{cfg.session_id}/;"""
+    return f"""{resolver}
+      set $infer http://{cfg.infer_host}:{cfg.infer_port}/s/{cfg.session_id}/;
+      proxy_pass $infer;"""
 
 
 def render_nginx_conf(cfg: ProvisionConfig) -> str:
