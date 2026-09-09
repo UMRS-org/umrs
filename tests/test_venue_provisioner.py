@@ -16,6 +16,7 @@ from umrs.venues.frontend_podman import (
     SELFTEST_SCRIPT,
     FrontendPodmanProvisioner,
     ProvisionConfig,
+    render_allowlist_file,
     render_nginx_conf,
     render_squid_conf,
     worker_run_args,
@@ -157,10 +158,24 @@ class TestTemplates:
 
     def test_squid_allowlist_mode(self):
         conf = render_squid_conf(
-            _cfg(web_policy="allowlist", web_allowlist_path="/etc/squid/allow.txt")
+            _cfg(web_policy="allowlist", web_allow_domains=("pypi.org", "github.com"))
         )
         assert "acl allowed dstdomain" in conf
         assert "http_access deny !allowed" in conf
+
+    def test_squid_allowlist_file_egressguard_schema_parity(self):
+        content = render_allowlist_file(("PYPI.ORG", "github.com.", " pypi.org ", ""))
+        assert content == "github.com\npypi.org\n"  # normalized, deduped, sorted
+
+    def test_allowlist_file_empty_means_deny_all_fail_closed(self):
+        assert render_allowlist_file(()) == ""
+        assert render_allowlist_file(("", " ", "..")) == ""
+
+    def test_allowlist_mounts_allow_file(self):
+        _, _, podman, _ = _provision(web_policy="allowlist", web_allow_domains=("pypi.org",))
+        flattened = [" ".join(c) for c in podman.calls]
+        assert any("squid-allow.txt:/etc/squid/allow.txt" in c for c in flattened)
+        assert any("squid.conf:/etc/squid/squid.conf" in c for c in flattened)
 
     def test_selftest_script_self_consistency(self):
         assert "exit 78" in SELFTEST_SCRIPT

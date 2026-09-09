@@ -57,7 +57,7 @@ class ProvisionConfig:
     nginx_image: str = "docker.io/nginx@sha256:PINNED"
     squid_image: str = "docker.io/ubuntu/squid@sha256:PINNED"
     web_policy: str = "public"  # public | allowlist | none
-    web_allowlist_path: str = ""
+    web_allow_domains: tuple[str, ...] = ()  # EgressGuard format (R2-7); allowlist mode
     lease_seconds: int = 3600
     max_lifetime_seconds: int = 7 * 86_400
     worker_memory: str = "16g"
@@ -130,10 +130,31 @@ def _squid_deny_set(cfg: ProvisionConfig) -> str:
     )
 
 
+def normalize_allow_domain(host: str) -> str:
+    """EgressGuard normalization (parse_allowlist parity, R2-7):
+    lower-case, whitespace trimmed, one trailing dot stripped.
+    """
+    return host.strip().lower().rstrip(".")
+
+
+def render_allowlist_file(domains: tuple[str, ...]) -> str:
+    """One domain per line for squid dstdomain (EgressGuard schema parity).
+
+    An empty allowlist renders an empty file — squid denies every destination
+    (fail-closed parity with EgressGuard's empty-list rule).
+    """
+    seen = {normalize_allow_domain(d) for d in domains if normalize_allow_domain(d)}
+    return "".join(f"{d}\n" for d in sorted(seen))
+
+
 def render_squid_conf(cfg: ProvisionConfig) -> str:
-    """Forward-proxy config per design §3.4 (web class; no credential injection)."""
+    """Forward-proxy config per design §3.4 (web class; no credential injection).
+
+    Allowlist mode reads a mounted `/etc/squid/allow.txt` the provisioner
+    writes from ``web_allow_domains`` (EgressGuard schema parity, R2-7).
+    """
     allowlist = ""
-    if cfg.web_policy == "allowlist" and cfg.web_allowlist_path:
+    if cfg.web_policy == "allowlist":
         allowlist = (
             'acl allowed dstdomain "/etc/squid/allow.txt"\nhttp_access deny !allowed\n'
         )
@@ -303,6 +324,10 @@ class FrontendPodmanProvisioner:
         (session_dir / "nginx.conf").write_text(render_nginx_conf(cfg))
         if cfg.web_policy != "none":
             (session_dir / "squid.conf").write_text(render_squid_conf(cfg))
+            if cfg.web_policy == "allowlist":
+                (session_dir / "squid-allow.txt").write_text(
+                    render_allowlist_file(cfg.web_allow_domains)
+                )
         (session_dir / "entrypoint-selftest.sh").write_text(SELFTEST_SCRIPT)
         (session_dir / "entrypoint-selftest.sh").chmod(0o700)
         result.steps.append("configs")
@@ -336,6 +361,15 @@ class FrontendPodmanProvisioner:
             cfg.nginx_image,
         )
         if cfg.web_policy != "none":
+            squid_volumes = [
+                "-v",
+                f"{session_dir}/squid.conf:/etc/squid/squid.conf:ro,Z",
+            ]
+            if cfg.web_policy == "allowlist":
+                squid_volumes += [
+                    "-v",
+                    f"{session_dir}/squid-allow.txt:/etc/squid/allow.txt:ro,Z",
+                ]
             self._run_ok(
                 "squid",
                 "run",
@@ -345,8 +379,7 @@ class FrontendPodmanProvisioner:
                 "--read-only",
                 "--cap-drop",
                 "ALL",
-                "-v",
-                f"{session_dir}/squid.conf:/etc/squid/squid.conf:ro,Z",
+                *squid_volumes,
                 cfg.squid_image,
             )
         result.steps.append("egress-pod")
