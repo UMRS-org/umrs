@@ -124,6 +124,7 @@ class UnsealFetch:
     owner: str
     name: str
     provider_kind: str
+    base_url: str
     allow_host: str
     allow_paths: tuple[str, ...]
     key_fingerprint: str
@@ -282,6 +283,7 @@ class SealedSourceStore:
             owner=str(row["owner"]),
             name=str(row["name"]),
             provider_kind=str(row["provider_kind"]),
+            base_url=str(row["base_url"]),
             allow_host=str(row["allow_host"]),
             allow_paths=tuple(str(p) for p in (row["allow_paths"] or [])),
             key_fingerprint=str(row["key_fingerprint"]),

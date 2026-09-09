@@ -110,6 +110,10 @@ class TestPush:
             store = SealedSourceStore(env.state._test_pool)
             full = store.fetch_for_unseal(payload["id"])
             assert full is not None
+            # Real-store row carries every field the proxy needs (live-leg
+            # lesson: a base_url omission was invisible in fake-store tests).
+            assert full.base_url == "https://api.example-provider.com/v1"
+            assert full.allow_host == "https://api.example-provider.com"
             assert (
                 unseal_credential(
                     type(
