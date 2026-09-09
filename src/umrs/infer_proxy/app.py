@@ -359,6 +359,18 @@ async def proxy_request(request: Request) -> Any:
             await upstream.aclose()
 
     def _audit_done() -> None:
+        # Access log contract §3.3.4 via logger.warning (uvicorn default
+        # surfaces it): ts sid source_id method path status ms reason.
+        logger.warning(
+            "infer_access ts=%.3f sid=%s source_id=%s method=%s path=%s status=%s ms=%d reason=ok",
+            time.time(),
+            request.path_params["sid"],
+            prep.full.id,
+            request.method,
+            request.url.path,
+            upstream.status_code,
+            elapsed_ms,
+        )
         _audit_broker(
             request,
             lease.lease_id,

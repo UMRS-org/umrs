@@ -182,6 +182,7 @@ def _app(monkeypatch, *, lease: SecretLease | None = None, store=None, broker=No
         seen["url"] = str(request.url)
         seen["headers"] = dict(request.headers)
         seen["body"] = request.read()
+        seen["extensions"] = dict(request.extensions or {})
         return _stream_response()
 
     http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
@@ -237,7 +238,10 @@ class TestProxyEndToEnd:
         assert "tok-session" not in upstream_headers.values()
         assert "attacker-tries" not in upstream_headers.values()
         assert "cookie" not in upstream_headers
-        assert seen["url"] == "https://api.example-provider.com/v1/chat/completions"
+        # TOCTOU pin (R2-2): the connect URL is the pinned IP; Host + SNI keep the original host.
+        assert seen["url"] == "https://104.18.2.161/v1/chat/completions"
+        assert upstream_headers.get("host") == "api.example-provider.com"
+        assert seen["extensions"]["sni_hostname"] == "api.example-provider.com"
         assert resp.text == "chunk-1\nchunk-2\n"
         assert resp.headers["x-usage"] == "12"
 
