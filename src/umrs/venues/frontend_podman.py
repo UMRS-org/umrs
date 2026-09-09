@@ -58,6 +58,10 @@ class ProvisionConfig:
     squid_image: str = "docker.io/ubuntu/squid@sha256:PINNED"
     web_policy: str = "public"  # public | allowlist | none
     web_allow_domains: tuple[str, ...] = ()  # EgressGuard format (R2-7); allowlist mode
+    # Inference uplink: "https+internal-ca" (production target, cert bundled)
+    # or "http" (bootstrap: umrs-infer plain loopback in the trust zone).
+    infer_uplink: str = "https"
+    internal_ca_path: str = "/etc/umrs/internal-ca.pem"
     lease_seconds: int = 3600
     max_lifetime_seconds: int = 7 * 86_400
     worker_memory: str = "16g"
@@ -80,9 +84,18 @@ class ProvisionResult:
 # ── Templates ────────────────────────────────────────────────────────────
 
 
+def _infer_tls_block(cfg: ProvisionConfig) -> str:
+    """HTTPS-uplink block vs plain bootstrap HTTP (internal-CA lands later)."""
+    if cfg.infer_uplink == "https":
+        return f"""      proxy_pass https://{cfg.infer_host}:{cfg.infer_port}/s/{cfg.session_id}/;
+      proxy_ssl_verify on;
+      proxy_ssl_trusted_certificate {cfg.internal_ca_path};
+      proxy_ssl_server_name on;"""
+    return f"""      proxy_pass http://{cfg.infer_host}:{cfg.infer_port}/s/{cfg.session_id}/;"""
+
+
 def render_nginx_conf(cfg: ProvisionConfig) -> str:
     """Inference-listener nginx.conf (design §3.4). No $http_authorization logged."""
-    allowlist_block = ""
     return f"""worker_processes 1;
 error_log stderr warn;
 pid /tmp/nginx.pid;
@@ -97,7 +110,7 @@ http {{
     access_log /dev/stdout sess;
     client_max_body_size 512m;
     location / {{
-      proxy_pass https://{cfg.infer_host}:{cfg.infer_port}/s/{cfg.session_id}/;
+{_infer_tls_block(cfg)}
       proxy_http_version 1.1;
       proxy_set_header Connection "";
       proxy_set_header Host {cfg.infer_host};
@@ -107,9 +120,6 @@ http {{
       proxy_read_timeout 3600s;
       proxy_send_timeout 3600s;
       proxy_connect_timeout 10s;
-      proxy_ssl_verify on;
-      proxy_ssl_trusted_certificate /etc/ssl/internal-ca.pem;
-      proxy_ssl_server_name on;
     }}
   }}
   server {{
@@ -117,11 +127,11 @@ http {{
     return 404;  # ingress listener placeholder — gateway-side routing lands with venue wiring
   }}
 }}
-{allowlist_block}"""
+"""
 
 
 def _squid_deny_set(cfg: ProvisionConfig) -> str:
-    extras = " ".join(h for h in (cfg.gateway_host, cfg.umrs_host) if h)
+    extras = " ".join(sorted({h for h in (cfg.gateway_host, cfg.umrs_host) if h}))
     return (
         "acl infra_ips dst 0.0.0.0/8 10.0.0.0/8 100.64.0.0/10 127.0.0.0/8 "
         "169.254.0.0/16 172.16.0.0/12 192.0.0.0/24 192.168.0.0/16 198.18.0.0/15 "
