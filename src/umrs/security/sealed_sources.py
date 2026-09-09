@@ -89,6 +89,7 @@ class SealedSourceMeta:
     updated_at: Any
     tombstoned_at: Any
     active_leases: int | None = None
+    next_lease_expiry: Any = None  # latest expires_at across live leases (badge countdown)
 
     def to_dict(self) -> dict[str, Any]:
         def _iso(v: Any) -> Any:
@@ -110,6 +111,8 @@ class SealedSourceMeta:
         }
         if self.active_leases is not None:
             payload["active_leases"] = self.active_leases
+        if self.next_lease_expiry is not None:
+            payload["next_lease_expiry"] = _iso(self.next_lease_expiry)
         return payload
 
 
@@ -235,14 +238,21 @@ class SealedSourceStore:
                 for meta in metas:
                     with conn.cursor(cursor_factory=RealDictCursor) as cur2:
                         cur2.execute(
-                            "SELECT count(*) AS c FROM secret_leases l "
+                            "SELECT count(*) AS c, max(l.expires_at) AS latest "
+                            "FROM secret_leases l "
                             "WHERE %s::uuid = ANY (l.source_ids) "
                             "AND NOT l.is_revoked AND l.expires_at > now()",
                             (meta.id,),
                         )
-                        count = int(cur2.fetchone()["c"])
+                        row2 = cur2.fetchone()
                     rows.append(
-                        SealedSourceMeta(**{**meta.__dict__, "active_leases": count})
+                        SealedSourceMeta(
+                            **{
+                                **meta.__dict__,
+                                "active_leases": int(row2["c"]),
+                                "next_lease_expiry": row2["latest"],
+                            }
+                        )
                     )
                 return rows
             finally:
@@ -288,6 +298,70 @@ class SealedSourceStore:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
                 cur.execute(sql, params)
             conn.commit()
+        finally:
+            self._pool.putconn(conn)
+
+    @staticmethod
+    def _pubkey_from_privkey(privkey_b64: str) -> str:
+        """X25519 public half derives from the private key bytes."""
+        import base64 as _b64
+
+        from .seal import _crypto
+
+        c = _crypto()
+        priv = c["X25519PrivateKey"].from_private_bytes(_b64.b64decode(privkey_b64))
+        raw = priv.public_key().public_bytes(
+            c["serialization"].Encoding.Raw,
+            c["serialization"].PublicFormat.Raw,
+        )
+        return _b64.b64encode(raw).decode()
+
+    def rewrap_all(self, *, old_privkey_b64: str, new_pubkey_b64: str) -> dict[str, int]:
+        """Rotation job (R2-5): rewrite the OLD key-epoch rows' DEK wrapping in one txn.
+
+        Scope: rows with ``seal_key_id == <old pub id>`` (foreign-epoch rows
+        never move). Unwrap all first; any failure aborts before a single write.
+        Returns {"rows_rewrapped": n, "seal_key_id": new_id}.
+        """
+        from .rotation import rewrap_sealed_rows
+        from .seal import seal_key_id
+
+        old_pub = self._pubkey_from_privkey(old_privkey_b64)
+        old_id = seal_key_id(old_pub)
+
+        conn = self._pool.getconn()
+        try:
+            from psycopg2.extras import RealDictCursor
+
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(
+                    "SELECT id, dek_wrapped FROM user_sources_sealed "
+                    "WHERE tombstoned_at IS NULL AND seal_key_id = %s",
+                    (old_id,),
+                )
+                rows = [(str(r["id"]), bytes(r["dek_wrapped"])) for r in cur.fetchall() or []]
+
+            # First: rewrap everything in memory (fail before any write).
+            rewrapped = list(
+                rewrap_sealed_rows(
+                    rows,
+                    old_privkey_b64=old_privkey_b64,
+                    new_pubkey_b64=new_pubkey_b64,
+                    row_attrs=lambda r: r,
+                )
+            )
+            new_seal_id = seal_key_id(new_pubkey_b64)
+
+            with conn.cursor() as cur:
+                for row_id, new_wrapped, new_id in rewrapped:
+                    cur.execute(
+                        "UPDATE user_sources_sealed "
+                        "SET dek_wrapped = %s, seal_key_id = %s, updated_at = now() "
+                        "WHERE id = %s",
+                        (new_wrapped, new_id, row_id),
+                    )
+            conn.commit()
+            return {"rows_rewrapped": len(rewrapped), "seal_key_id": new_seal_id}
         finally:
             self._pool.putconn(conn)
 

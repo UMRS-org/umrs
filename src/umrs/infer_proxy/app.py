@@ -17,6 +17,7 @@ tokens). No per-user labels in metrics.
 from __future__ import annotations
 
 import logging
+import os
 import re
 import time
 from dataclasses import dataclass
@@ -99,24 +100,38 @@ def _audit_broker(
         broker._audit_log(lease_id, operation, actor, detail)
 
 
-def _resolve_host_ip_allowed(host: str) -> bool:
-    """DNS resolution + global-unicast rule for the upstream (§2.3)."""
+def resolve_checked_ips(host: str) -> list[str]:
+    """Resolve once, validate every address is global unicast, return sorted.
+
+    The pin contract (R2-2 / TOCTOU): the SAME list is the only set the
+    connector may dial — no second resolution at connect time.
+    """
     import ipaddress
     import socket
 
     try:
         ipaddress.ip_address(host)
-        return _ip_is_public(host)
+        return [host] if _ip_is_public(host) else []
     except ValueError:
         pass
     try:
         infos = socket.getaddrinfo(host, None, 0, socket.SOCK_STREAM)
     except socket.gaierror:
-        return False
-    addresses = {info[4][0] for info in infos}
-    if not addresses:
-        return False
-    return all(_ip_is_public(addr) for addr in addresses)
+        return []
+    ips = sorted({info[4][0] for info in infos})
+    if not ips:
+        return []
+    return ips if all(_ip_is_public(ip) for ip in ips) else []
+
+
+def _pin_url(url: str, pin_ip: str) -> str:
+    """Swap the URL host for the pinned IP (Host header + SNI stay the original)."""
+    from urllib.parse import urlsplit
+
+    parts = urlsplit(url)
+    host_str = f"[{pin_ip}]" if ":" in pin_ip else pin_ip
+    port = f":{parts.port}" if parts.port else ""
+    return f"{parts.scheme}://{host_str}{port}{parts.path or '/'}{('?' + parts.query) if parts.query else ''}"
 
 
 async def healthz(request: Request) -> JSONResponse:
@@ -133,6 +148,7 @@ class _Prepared:
     policy: Any = None
     host: str = ""
     path: str = ""
+    pin_ip: str = ""
     started: float = 0.0
 
 
@@ -181,7 +197,8 @@ def _prepare(request: Request) -> _Prepared:
     if not allows(policy, request.method, path, full.allow_paths):
         return _Prepared(error=_denied(request, lease, 403, "path_denied"))
     host = full.allow_host.split("://", 1)[1].split(":")[0].strip("[]")
-    if not _resolve_host_ip_allowed(host):
+    pin_ip = _first_ip_or_none(resolve_checked_ips(host))
+    if pin_ip is None:
         return _Prepared(error=_denied(request, lease, 470, "host_denied"))
     return _Prepared(
         lease=lease,
@@ -189,8 +206,14 @@ def _prepare(request: Request) -> _Prepared:
         policy=policy,
         host=host,
         path=path,
+        pin_ip=pin_ip,
         started=time.monotonic(),
     )
+
+
+def _first_ip_or_none(ips: list[str]) -> str | None:
+    """Deterministic pin — sorted first; empty = host denied."""
+    return ips[0] if ips else None
 
 
 def _unseal_api_key(request: Request, full: Any) -> str:
@@ -241,12 +264,41 @@ def _check_redirect(
     return bool(location_host and location_host != host)
 
 
+class SessionRateLimiter:
+    """Sliding-window per-session rate limiter (R2-3, opt-in; off at 0).
+
+    In-memory by design: the proxy is single-process per venue profile;
+    a horizontally scaled deployment pins one proxy per egress-net (ops
+    runbook notes the per-process bound as the intended ceiling).
+    """
+
+    def __init__(self, rpm: int = 0) -> None:
+        self._rpm = rpm
+        self._windows: dict[str, list[float]] = {}
+
+    def allow(self, sid: str) -> bool:
+        if self._rpm <= 0:
+            return True
+        now = time.monotonic()
+        window = self._windows.setdefault(sid, [])
+        cutoff = now - 60.0
+        window[:] = [t for t in window if t >= cutoff]
+        if len(window) >= self._rpm:
+            return False
+        window.append(now)
+        return True
+
+
 async def proxy_request(request: Request) -> Any:
     """ANY /s/{sid}/{path:path} — the credential-injecting forward."""
     prep = _prepare(request)
     if prep.error is not None:
         return prep.error
     lease = prep.lease
+
+    limiter = getattr(request.app.state, "rate_limiter", None)
+    if limiter is not None and not limiter.allow(request.path_params["sid"]):
+        return _denied(request, lease, 429, "rate_denied")
 
     try:
         api_key = _unseal_api_key(request, prep.full)
@@ -255,11 +307,17 @@ async def proxy_request(request: Request) -> Any:
 
     headers = _upstream_headers(request, prep.policy, api_key, prep.full.allow_host)
     url = join_provider_url(prep.full.base_url, prep.path)
+    if prep.pin_ip:
+        url = _pin_url(url, prep.pin_ip)
     client = _http_client(request)
     try:
         upstream = await client.send(
             client.build_request(
-                request.method, url, headers=headers, content=request.stream()
+                request.method,
+                url,
+                headers=headers,
+                content=request.stream(),
+                extensions={"sni_hostname": prep.host} if prep.pin_ip else None,
             ),
             stream=True,
             follow_redirects=False,
@@ -331,6 +389,14 @@ def create_app(
         http2=True,
         limits=httpx.Limits(max_connections=256, max_keepalive_connections=64),
     )
+    # R2-3: per-session rate cap, off by default (UMRS_INFER_RPM env may set it).
+    try:
+        app.state.rate_limiter = SessionRateLimiter(
+            rpm=int(os.environ.get("UMRS_INFER_RPM", "0"))
+        )
+    except ValueError:
+        logger.warning("UMRS_INFER_RPM unparsable — rate limiter OFF")
+        app.state.rate_limiter = SessionRateLimiter(0)
     # Logging discipline: filter tokens out of every proxy log line.
     for handler in logging.getLogger("umrs.infer_proxy").handlers or [
         logging.NullHandler()
