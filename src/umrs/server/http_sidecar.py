@@ -13,6 +13,7 @@ Usage:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import pathlib
@@ -261,7 +262,9 @@ def _init_approval_inbox(trust_conn) -> None:
         tool_approvals.configure(ApprovalInboxStore(trust_conn))
         logger.info("Companion approval inbox initialized (postgres)")
     except Exception:
-        logger.warning("Approval inbox unavailable — staying process-local", exc_info=True)
+        logger.warning(
+            "Approval inbox unavailable — staying process-local", exc_info=True
+        )
 
 
 def _init_usage_pool(db_pool):
@@ -292,10 +295,8 @@ def _site_capabilities() -> dict[str, str | int]:
         pass
     zmq_port = os.environ.get("UMRS_CONTROL_PORT")
     if zmq_port:
-        try:
+        with contextlib.suppress(ValueError):
             caps["zmq_control_port"] = int(zmq_port)
-        except ValueError:
-            pass
     return caps
 
 
@@ -597,9 +598,7 @@ def _tag_metrics_source() -> None:
         METRICS.set_source(load_site_config().name)
         logger.info("LLM metrics source tagged: %s", METRICS._source)
     except Exception:
-        logger.debug(
-            "No site config available — LLM metrics will have empty source"
-        )
+        logger.debug("No site config available — LLM metrics will have empty source")
 
 
 def _create_app():
@@ -649,9 +648,11 @@ def _create_app():
         reflective_memory_router,
         research_sessions_router,
         scientific_memory_router,
+        secret_broker_router,
         skills_router,
         traces_router,
         usage_router,
+        user_sources_router,
         verification_router,
         vision_router,
         workflows_router,
@@ -761,6 +762,9 @@ def _create_app():
     app.include_router(reflective_memory_router)
     app.include_router(evidence_router)
     app.include_router(experiment_registry_router)
+    # R0/R1 secrets surfaces (enveloped identity enforced router-wide, G-6).
+    app.include_router(secret_broker_router)
+    app.include_router(user_sources_router)
 
     # Satellite stores auto-resolve via the shared factories (Postgres when
     # a pool is resolvable, else in-memory). Routers return 503 on failure.

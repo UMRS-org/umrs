@@ -46,9 +46,11 @@ from .reflective_memory import router as reflective_memory_router
 from .research_sessions import router as research_sessions_router
 from .research_sessions import set_session_store
 from .scientific_memory import router as scientific_memory_router
+from .secret_broker import router as secret_broker_router
 from .skills import router as skills_router
 from .traces import router as traces_router
 from .usage import router as usage_router
+from .user_sources import router as user_sources_router
 from .verification import router as verification_router
 from .vision import router as vision_router
 from .workflows import router as workflows_router
@@ -90,10 +92,12 @@ __all__ = [
     "reflective_memory_router",
     "research_sessions_router",
     "scientific_memory_router",
+    "secret_broker_router",
     "set_session_store",
     "skills_router",
     "traces_router",
     "usage_router",
+    "user_sources_router",
     "verification_router",
     "vision_router",
     "workflows_router",
