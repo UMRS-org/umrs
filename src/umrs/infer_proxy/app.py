@@ -178,11 +178,18 @@ def _prepare(request: Request) -> _Prepared:
         return _Prepared(error=_json_error(401, "token_invalid"))
     pool = getattr(request.app.state, "umrs_db_pool", None)
     lease = lease_by_token(pool, token)
+    client_ip = _client_ip(request)
     verdict = check_lease(
         lease,
         sid=sid,
-        client_ip=_client_ip(request),
+        client_ip=client_ip,
         source_override=request.headers.get("x-r4-source"),
+    )
+    logger.info(
+        "infer_eval sid=%s client=%s verdict=%s",
+        sid,
+        client_ip,
+        verdict.reason or "ok",
     )
     if verdict.deny():
         return _Prepared(
