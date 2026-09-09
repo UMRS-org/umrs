@@ -132,11 +132,13 @@ http {{
 
 def _squid_deny_set(cfg: ProvisionConfig) -> str:
     extras = " ".join(sorted({h for h in (cfg.gateway_host, cfg.umrs_host) if h}))
+    # host.containers.internal is covered by .internal; squid rejects a
+    # host entry that is a subdomain of another acl entry (fatal at parse).
     return (
         "acl infra_ips dst 0.0.0.0/8 10.0.0.0/8 100.64.0.0/10 127.0.0.0/8 "
         "169.254.0.0/16 172.16.0.0/12 192.0.0.0/24 192.168.0.0/16 198.18.0.0/15 "
         "224.0.0.0/4 240.0.0.0/4 ::1/128 fc00::/7 fe80::/10 ::ffff:0:0/96\n"
-        f"acl infra_names dstdomain host.containers.internal .infra .internal .local localhost {extras}"
+        f"acl infra_names dstdomain .infra .internal .local localhost {extras}"
     )
 
 
