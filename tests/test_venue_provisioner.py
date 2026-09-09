@@ -167,7 +167,9 @@ class TestTemplates:
         assert "http_access deny infra_ips" in conf
         assert "10.0.0.0/8" in conf
         assert "169.254.0.0/16" in conf
-        assert "host.containers.internal" in conf
+        # host.containers.internal must NOT sit next to .internal (squid fatal overlap).
+        assert "host.containers.internal" not in conf
+        assert ".internal" in conf
         assert "gw.example.org" in conf
         assert "http_access deny CONNECT !SSL_ports" in conf
         assert "http_access allow all" in conf
