@@ -15,16 +15,43 @@ Provides:
 from __future__ import annotations
 
 import logging
-from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query, status
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel
 
-from ..jobs.secret_broker import SecretBroker
+from umrs.knowledge.access_scope import CallerScope
+
+from ..jobs.secret_broker import SecretBroker, SecretLease
+from ._scope_identity import get_caller_scope
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/umrs/secrets", tags=["secrets"])
+# G-6 (R0-1): every /umrs/secrets/* route requires a verified caller identity
+# (401 without verified headers in strict mode — no anonymous envelope).
+router = APIRouter(
+    prefix="/umrs/secrets",
+    tags=["secrets"],
+    dependencies=[Depends(get_caller_scope)],
+)
+
+
+def _check_lease_visible(
+    lease: SecretLease | None, caller: CallerScope, lease_id: str
+) -> SecretLease:
+    """404 without disclosing: admin sees all, users see their own leases only."""
+    if lease is None:
+        raise HTTPException(status_code=404, detail="Lease not found")
+    if not caller.is_admin and lease.owner_id != caller.user_id:
+        raise HTTPException(status_code=404, detail="Lease not found")
+    return lease
+
+
+def _visible_leases(
+    leases: list[SecretLease], caller: CallerScope
+) -> list[SecretLease]:
+    if caller.is_admin:
+        return leases
+    return [lease for lease in leases if lease.owner_id == caller.user_id]
 
 
 # ---------------------------------------------------------------------------
@@ -35,9 +62,16 @@ _broker: SecretBroker | None = None
 
 
 def get_broker() -> SecretBroker:
+    """Process-global broker; R0-2 durability via env-driven factory.
+
+    ``UMRS_SECRET_BROKER_BACKEND=pg|memory|auto`` (default auto — Postgres
+    when the shared pool resolves, else in-memory).
+    """
     global _broker
     if _broker is None:
-        _broker = SecretBroker()
+        from ..jobs.secret_broker import build_default_broker
+
+        _broker = build_default_broker()
     return _broker
 
 
@@ -113,7 +147,12 @@ class AuditEntryResponse(BaseModel):
 @router.post(
     "/lease", response_model=IssueLeaseResponse, status_code=status.HTTP_201_CREATED
 )
-def issue_lease(req: IssueLeaseRequest):
+def issue_lease(
+    req: IssueLeaseRequest, caller: CallerScope = Depends(get_caller_scope)
+):
+    # Owner pinning (R0-1): non-admin callers mint leases for themselves only;
+    # admin may mint on behalf (jobs plane). The body field never wins across owners.
+    owner_id = req.owner_id if caller.is_admin else (caller.user_id or req.owner_id)
     broker = get_broker()
     lease, secret_value = broker.issue_lease(
         job_id=req.job_id,
@@ -122,7 +161,7 @@ def issue_lease(req: IssueLeaseRequest):
         lease_seconds=req.lease_seconds,
         bound_to_step=req.bound_to_step,
         tier=req.tier,
-        owner_id=req.owner_id,
+        owner_id=owner_id,
     )
     d = lease.to_dict()
     return IssueLeaseResponse(
@@ -154,6 +193,7 @@ def list_leases(
     scope: str | None = Query(None),
     active_only: bool = Query(False),
     limit: int = Query(50, ge=1, le=500),
+    caller: CallerScope = Depends(get_caller_scope),
 ):
     broker = get_broker()
     results = broker.list_leases(
@@ -162,21 +202,22 @@ def list_leases(
         active_only=active_only,
         limit=limit,
     )
-    return [LeaseResponse(**l.to_dict()) for l in results]
+    return [
+        LeaseResponse(**lease.to_dict()) for lease in _visible_leases(results, caller)
+    ]
 
 
 @router.get("/lease/{lease_id}", response_model=LeaseResponse)
-def get_lease(lease_id: str):
+def get_lease(lease_id: str, caller: CallerScope = Depends(get_caller_scope)):
     broker = get_broker()
-    lease = broker.get_lease(lease_id)
-    if not lease:
-        raise HTTPException(status_code=404, detail="Lease not found")
+    lease = _check_lease_visible(broker.get_lease(lease_id), caller, lease_id)
     return LeaseResponse(**lease.to_dict())
 
 
 @router.post("/lease/{lease_id}/revoke")
-def revoke_lease(lease_id: str):
+def revoke_lease(lease_id: str, caller: CallerScope = Depends(get_caller_scope)):
     broker = get_broker()
+    _check_lease_visible(broker.get_lease(lease_id), caller, lease_id)
     ok = broker.revoke_lease(lease_id)
     if not ok:
         raise HTTPException(status_code=404, detail="Lease not found")
@@ -184,8 +225,11 @@ def revoke_lease(lease_id: str):
 
 
 @router.post("/lease/{lease_id}/renew")
-def renew_lease(lease_id: str, req: RenewRequest):
+def renew_lease(
+    lease_id: str, req: RenewRequest, caller: CallerScope = Depends(get_caller_scope)
+):
     broker = get_broker()
+    _check_lease_visible(broker.get_lease(lease_id), caller, lease_id)
     ok = broker.renew_lease(lease_id, req.extend_seconds, req.actor)
     if not ok:
         raise HTTPException(
@@ -196,7 +240,11 @@ def renew_lease(lease_id: str, req: RenewRequest):
 
 
 @router.post("/job/{job_id}/revoke")
-def revoke_job_leases(job_id: str):
+def revoke_job_leases(job_id: str, caller: CallerScope = Depends(get_caller_scope)):
+    # Operator-class action: revoking every lease of a job is admin-only
+    # (per-lease revoke above is the owner path).
+    if not caller.is_admin:
+        raise HTTPException(status_code=403, detail="admin required")
     broker = get_broker()
     count = broker.revoke_job_leases(job_id)
     return {"status": "revoked", "job_id": job_id, "leases_revoked": count}
@@ -207,6 +255,7 @@ def get_audit_trail(
     lease_id: str | None = Query(None),
     operation: str | None = Query(None),
     limit: int = Query(100, ge=1, le=1000),
+    caller: CallerScope = Depends(get_caller_scope),
 ):
     broker = get_broker()
     entries = broker.get_audit_trail(
@@ -214,11 +263,21 @@ def get_audit_trail(
         operation=operation,
         limit=limit,
     )
-    return [AuditEntryResponse(**e.to_dict()) for e in entries]
+    if caller.is_admin:
+        return [AuditEntryResponse(**e.to_dict()) for e in entries]
+    visible_ids = {
+        lease.lease_id
+        for lease in _visible_leases(broker.list_leases(limit=5000), caller)
+    }
+    return [
+        AuditEntryResponse(**e.to_dict()) for e in entries if e.lease_id in visible_ids
+    ]
 
 
 @router.post("/cleanup")
-def cleanup_expired():
+def cleanup_expired(caller: CallerScope = Depends(get_caller_scope)):
+    if not caller.is_admin:
+        raise HTTPException(status_code=403, detail="admin required")
     broker = get_broker()
     count = broker.cleanup_expired()
     return {"status": "ok", "expired_removed": count}
