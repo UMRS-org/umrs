@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 from umrs.api.catalog_store import CatalogStoreUnavailable, get_catalog_meta_store
 from umrs.api.files import S3Config, get_project_id, get_s3_config
 from umrs.data_catalog.links import hydrate_links
+from umrs.data_catalog.plane_counts import compute_plane_counts
 from umrs.data_catalog.query import read_catalog_object, search_catalog
 from umrs.knowledge.access_scope import CallerScope, project_readable
 
@@ -99,6 +100,12 @@ class CatalogStatsResponse(BaseModel):
     object_count: int
     states: dict[str, int] = Field(default_factory=dict)
     modalities: dict[str, int] = Field(default_factory=dict)
+    # ADR-031 §Consequences 6: downstream-plane row counts. ``None`` = not
+    # computable in this process (no shared pool / query failure) — honest
+    # omission, never a fabricated zero.
+    canonical_documents: int | None = None
+    chunk_nodes: int | None = None
+    vector_rows: int | None = None
 
 
 @router.get(
@@ -225,16 +232,35 @@ async def catalog_read(
     summary="Catalog object counts by state and modality",
 )
 async def catalog_stats(
+    request: Request,
     project_id: str = Depends(get_project_id),
     caller: CallerScope = Depends(get_caller_scope),
 ) -> CatalogStatsResponse:
-    """Return aggregate catalog stats for a project (replaces S3 manifest)."""
+    """Aggregate catalog stats + downstream plane counts (ADR-031 §Conseq. 6).
+
+    Plane counts are a read-side projection of the canonical/vector planes;
+    consistency classification itself stays with the plane reconciler.
+    """
     _enforce_catalog_scope(caller, project_id)
     meta_store = _require_catalog_meta_store()
     stats = meta_store.project_stats(project_id)
+    plane_counts = None
+    pool = getattr(request.app.state, "umrs_db_pool", None)
+    if pool is not None:
+        try:
+            plane_counts = compute_plane_counts(pool, project_id)
+        except Exception:
+            logger.warning(
+                "plane counts unavailable for %s — omitting from stats",
+                project_id,
+                exc_info=True,
+            )
     return CatalogStatsResponse(
         project_id=stats["project_id"],
         object_count=stats["object_count"],
         states=stats["states"],
         modalities=stats["modalities"],
+        canonical_documents=plane_counts.canonical_documents if plane_counts else None,
+        chunk_nodes=plane_counts.chunk_nodes if plane_counts else None,
+        vector_rows=plane_counts.vector_rows if plane_counts else None,
     )
