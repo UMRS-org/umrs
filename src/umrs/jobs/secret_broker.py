@@ -351,6 +351,7 @@ class SecretBroker:
             return False
 
         lease.expires_at = new_expiry
+        lease.last_accessed_at = _now()  # heartbeat recency for the idle sweep
         self._persist_expiry(lease)
         self._audit_log(lease_id, "renew", actor, f"extended by {extend_seconds}s")
         return True
@@ -379,6 +380,10 @@ class SecretBroker:
         return True
 
     # ── Reads ───────────────────────────────────────────────────────────
+
+    def lease_by_plaintext_token(self, token: str) -> SecretLease | None:
+        """Hash+read the live lease for a plaintext session token (R1-2 proxy)."""
+        return self._lease_by_hash(hashlib.sha256(token.encode()).hexdigest())
 
     def get_lease(self, lease_id: str) -> SecretLease | None:
         if self._pool is not None:
@@ -559,8 +564,9 @@ class SecretBroker:
         try:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
                 cur.execute(
-                    "UPDATE secret_leases SET expires_at = %s WHERE lease_id = %s",
-                    (lease.expires_at, lease.lease_id),
+                    "UPDATE secret_leases SET expires_at = %s, last_accessed_at = %s "
+                    "WHERE lease_id = %s",
+                    (lease.expires_at, lease.last_accessed_at, lease.lease_id),
                 )
             conn.commit()
         finally:
