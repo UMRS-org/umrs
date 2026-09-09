@@ -316,6 +316,72 @@ class SealedSourceStore:
         )
         return _b64.b64encode(raw).decode()
 
+    def purge_audit_older_than(self, days: int) -> dict[str, int]:
+        """R3-2 retention TTL. Deletes audit rows older than ``days`` days.
+
+        Pair rule: user_source_audit + secret_audit are purged together so
+        the two halves of one security event expire as one.
+        Returns row counts per table.
+        """
+        if days <= 0:
+            return {"user_source_audit": 0, "secret_audit": 0}
+        counts = {"user_source_audit": 0, "secret_audit": 0}
+        conn = self._pool.getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM user_source_audit WHERE created_at < now() - make_interval(days => %s)",
+                    (days,),
+                )
+                counts["user_source_audit"] = cur.rowcount
+                cur.execute(
+                    "DELETE FROM secret_audit WHERE created_at < now() - make_interval(days => %s)",
+                    (days,),
+                )
+                counts["secret_audit"] = cur.rowcount
+            conn.commit()
+        finally:
+            self._pool.putconn(conn)
+        return counts
+
+    def export_audit(
+        self, *, owner: str | None = None, since_days: int = 30, limit: int = 10_000
+    ) -> list[dict[str, Any]]:
+        """R3-2 export hook: flattened audit rows for accounting (owner filter optional)."""
+        conn = self._pool.getconn()
+        try:
+            from psycopg2.extras import RealDictCursor
+
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                if owner:
+                    cur.execute(
+                        "SELECT created_at, action, actor_type, owner, source_id, detail "
+                        "FROM user_source_audit WHERE owner = %s AND created_at > now() - make_interval(days => %s) "
+                        "ORDER BY created_at LIMIT %s",
+                        (owner, since_days, limit),
+                    )
+                else:
+                    cur.execute(
+                        "SELECT created_at, action, actor_type, owner, source_id, detail "
+                        "FROM user_source_audit WHERE created_at > now() - make_interval(days => %s) "
+                        "ORDER BY created_at LIMIT %s",
+                        (since_days, limit),
+                    )
+                rows = cur.fetchall() or []
+        finally:
+            self._pool.putconn(conn)
+        return [
+            {
+                "created_at": r["created_at"].isoformat() if hasattr(r["created_at"], "isoformat") else r["created_at"],
+                "action": r["action"],
+                "actor_type": r["actor_type"],
+                "owner": r["owner"],
+                "source_id": str(r["source_id"]) if r["source_id"] else None,
+                "detail": r["detail"],
+            }
+            for r in rows
+        ]
+
     def rewrap_all(self, *, old_privkey_b64: str, new_pubkey_b64: str) -> dict[str, int]:
         """Rotation job (R2-5): rewrite the OLD key-epoch rows' DEK wrapping in one txn.
 
