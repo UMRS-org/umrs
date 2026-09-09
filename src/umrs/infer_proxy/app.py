@@ -40,6 +40,14 @@ from .urljoin import join_provider_url
 
 logger = logging.getLogger("umrs.infer_proxy")
 
+try:  # h2 is optional: image flavours today ship http/1.1 only.
+    import h2 as _h2  # noqa: F401
+
+    _HTTP2_AVAILABLE = True
+except ImportError:
+    _HTTP2_AVAILABLE = False
+    logger.info("h2 unavailable — inference proxy will offer HTTP/1.1 upstream")
+
 _HOP_BY_HOP = {
     "connection",
     "keep-alive",
@@ -386,7 +394,7 @@ def create_app(
     app.state.broker = broker or SecretBroker(db_pool=umrs_db_pool)
     app.state.http_client = http_client or httpx.AsyncClient(
         timeout=httpx.Timeout(connect=10.0, read=None, write=600.0, pool=10.0),
-        http2=True,
+        http2=_HTTP2_AVAILABLE,  # provider offers h2 else http/1.1 (design §2.2)
         limits=httpx.Limits(max_connections=256, max_keepalive_connections=64),
     )
     # R2-3: per-session rate cap, off by default (UMRS_INFER_RPM env may set it).
