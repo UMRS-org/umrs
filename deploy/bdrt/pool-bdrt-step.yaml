@@ -877,5 +877,5 @@ endpoints:
         --kv-cache-dtype fp8
         --mamba-ssm-cache-dtype bfloat16
         --distributed-executor-backend mp
-        --compilation-config {"mode":0,"cudagraph_mode":"FULL_DECODE_ONLY","cudagraph_capture_sizes":[4,8,12,16]}
+        --compilation-config '{"mode":0,"cudagraph_mode":"FULL_DECODE_ONLY","cudagraph_capture_sizes":[4,8,12,16]}'
       RCCS_SKIP_CDI: "1"
