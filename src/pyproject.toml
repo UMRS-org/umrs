@@ -33,6 +33,14 @@ client = [
     "boto3",
     "psycopg2-binary",
 ]
+# OTel tracing (WP-12 round 2): no-op unless OTEL_EXPORTER_OTLP_ENDPOINT
+# is set; instrumented FastAPI + OTLP/HTTP JSON exporter.
+# Install with: pip install umrs[otel]
+otel = [
+    "opentelemetry-sdk>=1.27.0",
+    "opentelemetry-exporter-otlp-proto-http>=1.27.0",
+    "opentelemetry-instrumentation-fastapi>=0.48b0",
+]
 # Full client: adds direct ZMQ transport (pyzmq) and S3 bucket upload/download
 # (boto3/pillow), plus the CURVE session bootstrap transport (requests).
 # Install with: pip install umrs[client-full]
