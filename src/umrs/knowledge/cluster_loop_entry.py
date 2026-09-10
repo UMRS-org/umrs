@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 from typing import Any
 
@@ -95,8 +96,38 @@ def main(argv: list[str] | None = None) -> int:
 
     configure_cluster_hosting(loop)
     kind = loop_hosting.host(args.loop_id, job_id=args.job_id, attempt_id=args.attempt_id)
-    logger.info("cluster hosting finished: loop=%s kind=%s", args.loop_id, kind)
-    return 0
+    logger.info("cluster hosting started: loop=%s kind=%s", args.loop_id, kind)
+    if kind == "terminal":
+        return 0
+
+    # The engine driver runs on a daemon thread; this process IS the driver
+    # container. Wait for the loop record to reach a terminal state via the
+    # gateway store — exiting early kills the thread mid-iteration (leg
+    # 381161: process exited in <1s, loop never advanced).
+    import time
+
+    from .loop import LoopStatus
+
+    timeout = float(os.environ.get("UMRS_CLUSTER_LOOP_TIMEOUT_SEC", str(6 * 3600)))
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        current = store.get(args.loop_id)
+        if current is None:
+            logger.warning("loop record vanished mid-run: %s", args.loop_id)
+            return 3
+        if current.status in (LoopStatus.STOPPED, LoopStatus.ERROR):
+            logger.info(
+                "cluster hosting finished: loop=%s status=%s iteration=%d/%d findings=%d",
+                current.loop_id,
+                current.status.value,
+                current.current_iteration,
+                current.max_iterations,
+                current.total_findings,
+            )
+            return 0 if current.status is LoopStatus.STOPPED else 4
+        time.sleep(10)
+    logger.error("loop %s did not reach a terminal state within %.0fs", args.loop_id, timeout)
+    return 5
 
 
 if __name__ == "__main__":
