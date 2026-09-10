@@ -39,7 +39,21 @@ def _gateway_hmac_secret() -> str:
 
 
 def _cluster_deploy_dir(site_name: str) -> str:
-    """Deploy dir for this venue's wrapper stack (matches endpoint provision)."""
+    """Remote deploy dir for this venue's wrapper stack.
+
+    Resolved the same way RemoteSlurmBackend resolves its job-info dir:
+    ``site.yaml`` ``extra.slurm_job_info_dir``'s parent — a path that exists
+    on the *remote* submit host, not inside the server container. Falls back
+    to the local repo path (unit tests / in-proc submit seams).
+    """
+    try:
+        from ..orchestrator.site_config import load_site_config
+
+        info_dir = (load_site_config().extra or {}).get("slurm_job_info_dir")
+        if info_dir:
+            return str(Path(str(info_dir)).parent)
+    except Exception:
+        pass
     repo = os.environ.get("R4_REPO_ROOT", os.getcwd())
     return str(Path(repo) / "deploy" / "rccs")
 
@@ -65,7 +79,8 @@ class ClusterSlurmSubmitter:
         loop_id = str(spec.get("loop_id") or "").strip()
         if not loop_id:
             raise ValueError("cluster-venue loop job requires spec.loop_id")
-        wrapper = str((self._repo_root / LOOP_WRAPPER_REL).resolve())
+        deploy_dir = _cluster_deploy_dir("rccs")
+        wrapper = str(Path(deploy_dir) / Path(LOOP_WRAPPER_REL).name)
         env = {
             "LOOP_ID": loop_id,
             "R4_GATEWAY_BASE": os.environ.get(
