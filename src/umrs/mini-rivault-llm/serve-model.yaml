@@ -28,6 +28,11 @@ services:
       # so the UMRS readiness poller can never reach the endpoint.
       - vllm:${PRIV_IP1TO3:-10.0.0}.${VLLM_IP4:-22}
       - bentoml-vision:${PRIV_IP1TO3:-10.0.0}.${BENTOML_VISION_IP4:-35}
+    # Host-published ports are STATIC (4000 LiteLLM, 3001 vision) → at most
+    # ONE rivault instance per compute node; when running more than one job
+    # at once, always pin nodes explicitly with --nodelist (live §6b-3, bdrt:
+    # second job on the same node wedge-binds 3001 and the first job's
+    # readiness probe goes blind behind it).
     ports:
       - ${NGINX_LITELLM_DOCKER_PORT:?}:4000
       - ${BENTOML_VISION_DOCKER_PORT:-3001}:3001

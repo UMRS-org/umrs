@@ -74,12 +74,20 @@ rivault_venue_defaults() {
 }
 
 # rivault_venue_network_backend
-#   "netavark" when the partition profile asks for the switch
-#   (RIVAULT_PARTITION_NEEDS_NETAVARK=1) or RIVAULT_NETWORK_BACKEND is set;
-#   empty otherwise (podman decides: its persisted choice, else autodetect).
+#   RIVAULT_NETWORK_BACKEND verbatim when set; else the partition profile's
+#   network (RIVAULT_PARTITION_NETWORK_BACKEND — dgx-spark's profile pins
+#   netavark because its compute nodes carry no CNI plugins, §6b-3); else
+#   netavark when the switch flag asks for it
+#   (RIVAULT_PARTITION_NEEDS_NETAVARK=1); empty otherwise (podman decides:
+#   its persisted choice, else autodetect).
 rivault_venue_network_backend() {
+    # Order: explicit job env → partition profile (dgx-spark profile carries
+    # `network_backend: netavark`; the CNI bridge plugins are absent there —
+    # live §6b-3) → the legacy switch flag → backend-autodetect.
     if [[ -n "${RIVAULT_NETWORK_BACKEND:-}" ]]; then
         printf '%s\n' "${RIVAULT_NETWORK_BACKEND}"
+    elif [[ -n "${RIVAULT_PARTITION_NETWORK_BACKEND:-}" ]]; then
+        printf '%s\n' "${RIVAULT_PARTITION_NETWORK_BACKEND}"
     elif [[ "${RIVAULT_PARTITION_NEEDS_NETAVARK:-0}" == "1" ]]; then
         printf 'netavark\n'
     fi
