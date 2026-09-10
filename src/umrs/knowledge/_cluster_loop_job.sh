@@ -82,6 +82,7 @@ exec podman run --rm \
   --read-only \
   --network "${PRIV_NETWORK}" \
   --tmpfs /tmp:size=1g \
+  --tmpfs /run:size=64m \
   --secret "loop-${JOB_ID}-gateway-hmac,type=mount,target=/run/secrets/gateway-hmac,mode=0400" \
   -v "${R4_DIR}:/umrs-src:ro,Z" \
   -e LOOP_ID="${LOOP_ID}" \
