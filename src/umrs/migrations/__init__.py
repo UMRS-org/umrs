@@ -71,6 +71,88 @@ def get_applied_migrations(cursor) -> set:
     return {row[0] for row in cursor.fetchall()}
 
 
+def _split_statements(sql: str) -> list[str]:
+    """Split SQL on top-level semicolons (stdlib scanner).
+
+    Honors single/double quotes, line comments, block comments, and
+    dollar-quoted bodies (``$$`` / ``$tag$``). Empty/whitespace statements
+    are dropped. Used only for CONCURRENTLY-flagged files, which are plain
+    DDL — the scanner is intentionally conservative for that surface.
+    """
+    statements: list[str] = []
+    buf: list[str] = []
+    i, n = 0, len(sql)
+    mode: str | None = None  # "'", '"', "--", "/*", or a dollar tag
+    while i < n:
+        ch = sql[i]
+        nxt = sql[i + 1] if i + 1 < n else ""
+        if mode is None:
+            if ch == "'":
+                mode = "'"
+            elif ch == '"':
+                mode = '"'
+            elif ch == "-" and nxt == "-":
+                mode = "--"
+            elif ch == "/" and nxt == "*":
+                mode = "/*"
+                buf.append(ch)
+                buf.append(nxt)
+                i += 2
+                continue
+            elif ch == "$":
+                j = i + 1
+                while j < n and (sql[j].isalnum() or sql[j] == "_"):
+                    j += 1
+                if j < n and sql[j] == "$":
+                    mode = sql[i : j + 1]  # e.g. "$$" or "$func$"
+                    buf.append(mode)
+                    i = j + 1
+                    continue
+                # bare '$' (placeholder) — not a tag
+            elif ch == ";":
+                statement = "".join(buf).strip()
+                if statement:
+                    statements.append(statement)
+                buf = []
+                i += 1
+                continue
+            buf.append(ch)
+            i += 1
+            continue
+        # inside a mode
+        buf.append(ch)
+        if mode == "'":
+            if ch == "'":
+                if nxt == "'":
+                    buf.append(nxt)
+                    i += 1
+                else:
+                    mode = None
+        elif mode == '"':
+            if ch == '"':
+                mode = None
+        elif mode == "--":
+            if ch == "\n":
+                mode = None
+        elif mode == "/*":
+            if ch == "*" and nxt == "/":
+                buf.append(nxt)
+                i += 1
+                mode = None
+        elif mode.startswith("$"):
+            if sql.startswith(mode, i):
+                buf.extend(mode[1:])
+                i += len(mode) - 1
+                mode = None
+                i += 1
+                continue
+        i += 1
+    tail = "".join(buf).strip()
+    if tail:
+        statements.append(tail)
+    return statements
+
+
 def apply_migration(cursor, version: str, sql_path: Path) -> bool:
     """
     Apply a single migration.
@@ -85,11 +167,33 @@ def apply_migration(cursor, version: str, sql_path: Path) -> bool:
     """
     sql_content = sql_path.read_text()
 
-    # Execute migration SQL
-    cursor.execute(sql_content)
+    # Concurrent-index files cannot run inside the per-migration transaction
+    # (Postgres forbids CREATE INDEX CONCURRENTLY in a txn block; a
+    # multi-statement simple-protocol execute is still one implicit txn
+    # server-side). Historical leg: 0051 was applied out-of-band on deployed
+    # DBs (psql autocommit), which is precisely why a fresh bootstrap failed.
+    # Files flagged with CONCURRENTLY apply statement-by-statement under
+    # autocommit (psql `\i` semantics; partial application possible on error
+    # — logged, never silent).
+    concurrent = "CONCURRENTLY" in sql_content.upper()
+    conn = cursor.connection
+    if concurrent:
+        logger.warning(
+            "Migration %s uses CONCURRENTLY — applying statement-by-statement "
+            "outside the migration transaction (psql-semantics)",
+            version,
+        )
+        conn.autocommit = True
+    try:
+        statements = _split_statements(sql_content) if concurrent else [sql_content]
+        for statement in statements:
+            cursor.execute(statement)
 
-    # Record migration
-    cursor.execute("INSERT INTO schema_migrations (version) VALUES (%s)", (version,))
+        # Record migration
+        cursor.execute("INSERT INTO schema_migrations (version) VALUES (%s)", (version,))
+    finally:
+        if concurrent:
+            conn.autocommit = False
 
     logger.info(f"Applied migration: {version} ({sql_path.name})")
     return True
@@ -122,6 +226,14 @@ def apply_migrations(
 
     try:
         with conn.cursor() as cursor:
+            # Durable-jobs schema is boot-time DDL (own versioned table set);
+            # several file migrations FK it (0040, 0071). A CLI-driven fresh
+            # bootstrap has no app boot yet, so ensure it first — idempotent.
+            from umrs.jobs.schema import ensure_schema as ensure_jobs_schema
+
+            ensure_jobs_schema(conn)
+            conn.commit()
+
             # Ensure migrations table exists
             ensure_migrations_table(cursor)
             conn.commit()
