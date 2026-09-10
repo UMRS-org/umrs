@@ -169,6 +169,16 @@ def _result_for(
             }
         )
     if not snap.get("driver_alive", False):
+        # A parked ask-mode loop is human-paced: the engine thread sits in
+        # the approval gate, but multi-host races (claim requeue) or a brief
+        # registry window can make the in-process registry miss it. Failing
+        # the attempt re-hosts the loop — which overwrites the registry,
+        # makes the ORIGINAL thread invisible, and cascades duplicate
+        # hosts/rewinds (live: three engines on one parked loop, 2026-09-10).
+        # Parked = a decision-pending state, check as running; the restart
+        # path (attempt LOST on server restart) is the genuine recovery.
+        if snap.get("awaiting_approval"):
+            return AttemptCheckResult.running(f"{detail} (parked awaiting approval)")
         if remote_driver and _remote_driver_fresh(snap, attempt):
             return AttemptCheckResult.running(f"{detail} (remote driver pending)")
         return AttemptCheckResult.failed(f"loop driver not alive ({detail})")
