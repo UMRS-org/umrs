@@ -84,6 +84,10 @@ class JobStore:
         """
         self.db_pool = db_pool
         self.umrs_instance_id = umrs_instance_id or str(uuid.uuid4())
+        # WP-14: claim-site scoping (venue). Scheduler set this with the
+        # site's name at boot; "" keeps the pre-venue ANY-claim semantics
+        # until all rows carry venue (pre-release migration lane).
+        self.site_name: str = ""
         self._ensure_schema()
 
         # Post-completion callbacks (set by adapters module).
@@ -195,6 +199,10 @@ class JobStore:
                 project_id, user_id, job_type, spec
             )
 
+        # WP-14 venue resolution: spec-declared venue wins (cluster-venue
+        # kinds declare it); otherwise this scheduler's site owns creation.
+        venue = str(spec.get("venue") or "").strip() or self.site_name
+
         now = datetime.utcnow()
 
         with self._get_conn() as conn, conn.cursor() as cur:
@@ -205,12 +213,12 @@ class JobStore:
                             job_id, project_id, user_id, job_type, spec,
                             idempotency_key, status, priority,
                             desired_max_attempts, restart_policy, ttl_seconds,
-                            created_at, updated_at
+                            venue, created_at, updated_at
                         ) VALUES (
                             %s, %s, %s, %s, %s,
                             %s, %s, %s,
                             %s, %s, %s,
-                            %s, %s
+                            %s, %s, %s
                         )
                     """,
                     (
@@ -225,6 +233,7 @@ class JobStore:
                         max_attempts,
                         restart_policy.value,
                         ttl_seconds,
+                        venue,
                         now,
                         now,
                     ),
@@ -527,11 +536,11 @@ class JobStore:
 
     def claim_next_jobs(self, limit: int = 10) -> list[str]:
         """
-        Claim QUEUED jobs ready to run.
+        Claim QUEUED jobs ready to run (WP-14 venue-scoped).
 
         Returns job_ids of jobs that are:
-        - status = QUEUED
-        - next_run_at <= now
+        - status = QUEUED AND next_run_at <= now
+        - venue = '' (shared) OR venue = this scheduler's site_name
         - ordered by priority DESC, next_run_at ASC
         """
         now = datetime.utcnow()
@@ -541,12 +550,14 @@ class JobStore:
             cur.execute(
                 """
                     SELECT job_id FROM jobs
-                    WHERE status = %s AND next_run_at <= %s
+                    WHERE status = %s
+                      AND next_run_at <= %s
+                      AND (venue = '' OR venue = %s)
                     ORDER BY priority DESC, next_run_at ASC
                     LIMIT %s
                     FOR UPDATE SKIP LOCKED
                 """,
-                (JobStatus.QUEUED.value, now, limit),
+                (JobStatus.QUEUED.value, now, self.site_name, limit),
             )
 
             return [row[0] for row in cur.fetchall()]

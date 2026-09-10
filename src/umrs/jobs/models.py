@@ -224,6 +224,10 @@ class Job:
     # Child job IDs spawned by this parent job
     fan_out_child_job_ids: list[str] = field(default_factory=list)
 
+    # WP-14 claim-side cluster scoping: the site this job belongs to.
+    # Empty string = shared/global (pre-venue rows; deliberately global jobs).
+    venue: str = ""
+
     next_run_at: datetime | None = None
     active_attempt_id: str | None = None
     commit_attempt_id: str | None = None
@@ -264,6 +268,7 @@ class Job:
             "restart_policy": self.restart_policy.value,
             "ttl_seconds": self.ttl_seconds,
             "fan_out_child_job_ids": self.fan_out_child_job_ids,
+            "venue": self.venue,
             "next_run_at": self.next_run_at.isoformat() if self.next_run_at else None,
             "active_attempt_id": self.active_attempt_id,
             "commit_attempt_id": self.commit_attempt_id,
@@ -293,6 +298,7 @@ class Job:
             restart_policy=RestartPolicy(data.get("restart_policy", "on_crash")),
             ttl_seconds=data.get("ttl_seconds"),
             fan_out_child_job_ids=data.get("fan_out_child_job_ids", []),
+            venue=str(data.get("venue") or ""),
             next_run_at=_parse_datetime(data.get("next_run_at")),
             active_attempt_id=data.get("active_attempt_id"),
             commit_attempt_id=data.get("commit_attempt_id"),

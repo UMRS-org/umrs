@@ -32,6 +32,9 @@ REF_PREFIX = "research_loop_job|"
 DRIVERS = frozenset({"engine", "agent"})
 
 
+CLUSTER_VENUE_PATTERN = "cluster:"
+
+
 def validate_research_loop_spec(spec: dict) -> dict:
     if not isinstance(spec, dict):
         raise TypeError("research_loop_job spec must be an object")
@@ -41,7 +44,22 @@ def validate_research_loop_spec(spec: dict) -> dict:
     driver = str(spec.get("driver") or "engine").strip()
     if driver not in DRIVERS:
         raise ValueError(f"research_loop_job driver must be one of {sorted(DRIVERS)}")
-    return {"loop_id": loop_id, "driver": driver}
+    venue = str(spec.get("venue") or "").strip()
+    if venue and not (
+        venue == "frontend" or venue.startswith(CLUSTER_VENUE_PATTERN)
+    ):
+        raise ValueError(
+            f"research_loop_job venue must be 'frontend' or 'cluster:<name>' (got {venue!r})"
+        )
+    if venue.startswith(CLUSTER_VENUE_PATTERN) and driver != "engine":
+        raise ValueError(
+            "research_loop_job on a cluster venue accepts driver 'engine' only "
+            "(the companion agent driver needs cluster-side wiring — follow-on)"
+        )
+    out = {"loop_id": loop_id, "driver": driver}
+    if venue:
+        out["venue"] = venue
+    return out
 
 
 class ResearchLoopBackend(OrchestratorBackend):
@@ -76,6 +94,8 @@ class ResearchLoopStatusChecker(BackendStatusChecker):
         return JobType.RESEARCH_LOOP
 
     async def check_status(self, attempt: JobAttempt, job: Job) -> AttemptCheckResult:
+        # Feeble investigator's note: `job` (Job) is the caller's handle; only the attempt
+        # records ref drives this checker. Keeping the interface signature.
         backend_ref = attempt.backend_ref or ""
         if not backend_ref.startswith(REF_PREFIX):
             return AttemptCheckResult.failed("Unexpected backend reference")

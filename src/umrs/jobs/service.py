@@ -151,8 +151,19 @@ class JobService:
 
         logger.info(f"Starting JobService (instance={self.instance_id})")
 
-        # Initialize JobStore
+        # Initialize JobStore, pinning claim-side site scoping when the site
+        # config names a cluster (WP-14 / ADR-034 lineage: cross-cluster
+        # job theft stays impossible because claims of site-bound rows only
+        # happen on the site itself).
         self._job_store = JobStore(self.db_pool, self.instance_id)
+        try:
+            from ..orchestrator.site_config import load_site_config
+
+            site_name = str(getattr(load_site_config(), "name", "") or "").strip()
+            if site_name:
+                self._job_store.site_name = site_name
+        except Exception:  # noqa: BLE001 — sites without a config run shared
+            pass
 
         # Wire auto-ingest post-completion hooks (TASK-035).
         try:
