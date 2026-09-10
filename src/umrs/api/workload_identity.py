@@ -47,7 +47,7 @@ class IssueRequest(BaseModel):
     job_id: str
     step_name: str
     scope: str
-    ttl_seconds: int = 900
+    ttl_seconds: int = Field(default=900, gt=0)
     tier: str = ""
     owner_id: str = ""
     metadata: dict[str, Any] | None = None
