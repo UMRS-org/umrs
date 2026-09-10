@@ -16,6 +16,14 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 # very same code is exercised on a venue before a serving job ever runs there.
 # shellcheck source=venue.sh
 source "${SCRIPT_DIR}/venue.sh"
+# Vendored podman-compose (>=1.2): compute-node PATH prefix when $HOME carries
+# one; the distro shim (1.0.x) cannot parse --profile and its version gate
+# misreads its embedded podman version as the shim version, so compose calls
+# fail with "invalid choice 'harness'" (live 2026-09-09 bdrt; was a nimbus
+# hot-patch until now — see §6b-3/§8 housekeeping).
+if [ -r "$HOME/venvs/pc-all/bin/podman-compose" ]; then
+    export PATH="$HOME/venvs/pc-all/bin:$PATH"
+fi
 
 # ─── GOMAXPROCS: prevent Go-based services from NPROC exhaustion ─────────────
 # Default to 1 if not already set by the outer wrapper or environment.
