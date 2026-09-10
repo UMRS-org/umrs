@@ -149,6 +149,23 @@ class _FakeCursor:
         rows.sort(key=lambda r: r[2], reverse=True)
         self._result = rows[:limit]
 
+    # -- deletes (WP-04 G-P6-1 round 2) --------------------------------------
+    def _exec_delete_archive(self, params):
+        sid = params[0]
+        if sid in self._archives:
+            self._archives.discard(sid)
+            self.rowcount = 1
+        else:
+            self.rowcount = 0
+
+    def _exec_delete_snapshot(self, params):
+        uid, sid = params
+        if (uid, sid) in self._table:
+            del self._table[(uid, sid)]
+            self.rowcount = 1
+        else:
+            self.rowcount = 0
+
     def execute(self, sql, params):
         sql_l = sql.lower().strip()
         self._recorded.append((sql, params))
@@ -160,6 +177,12 @@ class _FakeCursor:
             return
         if sql_l.startswith("select session_id, name, update_marker, venue"):
             self._exec_list(sql_l, params)
+            return
+        if sql_l.startswith("delete from companion_session_archives"):
+            self._exec_delete_archive(params)
+            return
+        if sql_l.startswith("delete from companion_session_snapshots"):
+            self._exec_delete_snapshot(params)
             return
         raise AssertionError(f"unexpected SQL: {sql_l[:80]}")
 
@@ -180,6 +203,9 @@ class _FakeConn:
 
     def commit(self):
         self.committed = True
+
+    def rollback(self):
+        self.committed = False
 
 
 class _FakePool:
@@ -275,6 +301,40 @@ class TestSnapshotGet:
         client = _client(pool)
         _post(client, pool, sid="sess-1")
         resp = client.get("/umrs/companion/sessions/sess-1", headers={"x-user-id": "bob"})
+        assert resp.status_code == 404
+
+
+class TestSnapshotDelete:
+    def test_owner_delete_drop_tombstone_and_row(self):
+        pool = _FakePool()
+        client = _client(pool)
+        _post(client, pool, sid="sess-d")
+        pool.archives.add("sess-d")
+        resp = client.delete(
+            "/umrs/companion/sessions/sess-d", headers={"x-user-id": "alice"}
+        )
+        assert resp.status_code == 200
+        assert resp.json()["deleted"] is True
+        assert ("alice", "sess-d") not in pool.table
+        assert "sess-d" not in pool.archives
+        assert pool.conn.committed is True
+
+    def test_other_user_delete_is_404_and_leaves_row(self):
+        pool = _FakePool()
+        client = _client(pool)
+        _post(client, pool, sid="sess-1")
+        resp = client.delete(
+            "/umrs/companion/sessions/sess-1", headers={"x-user-id": "bob"}
+        )
+        assert resp.status_code == 404
+        assert ("alice", "sess-1") in pool.table
+
+    def test_absent_delete_is_404(self):
+        pool = _FakePool()
+        client = _client(pool)
+        resp = client.delete(
+            "/umrs/companion/sessions/sess-ghost", headers={"x-user-id": "alice"}
+        )
         assert resp.status_code == 404
 
 

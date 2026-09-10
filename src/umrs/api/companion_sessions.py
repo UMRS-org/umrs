@@ -177,6 +177,42 @@ async def get_session_snapshot(session_id: str, request: Request) -> dict[str, A
     }
 
 
+@router.delete("/{session_id}", response_model=dict[str, Any])
+async def delete_session_snapshot(session_id: str, request: Request) -> dict[str, Any]:
+    """Delete one mirrored snapshot for the owner (WP-04 G-P6-1 round 2).
+
+    Single txn drops the archive tombstone AND the snapshot row, so a
+    client-side ``delete`` can never be undone by reconcile ``restored``
+    semantics. 404 for others/absent — ownership is never revealed.
+    """
+    uid = _uid(request)
+    pool = _pool(request)
+    conn = pool.getconn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM companion_session_archives WHERE session_id = %s",
+                (session_id,),
+            )
+            cur.execute(
+                """
+                DELETE FROM companion_session_snapshots
+                WHERE user_id = %s AND session_id = %s
+                """,
+                (uid, session_id),
+            )
+            deleted = cur.rowcount > 0
+            if deleted:
+                conn.commit()
+            else:
+                conn.rollback()
+    finally:
+        pool.putconn(conn)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="snapshot not found")
+    return {"status": "ok", "session_id": session_id, "deleted": True}
+
+
 def _list_where(
     uid: str,
     venues: list[str],
