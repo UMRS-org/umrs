@@ -349,7 +349,7 @@ class AutonomousResearchLoop:
                 loop.status = LoopStatus.STOPPED
 
         except Exception as exc:
-            logger.error("Research loop failed: %s", exc)
+            logger.error("Research loop failed: %s", exc, exc_info=True)
             loop.status = LoopStatus.ERROR
             loop.phase = LoopPhase.FAILED
             loop.metadata["error"] = str(exc)
