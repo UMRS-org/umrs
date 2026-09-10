@@ -13,18 +13,15 @@ def _mvp_auth_and_engine(monkeypatch):
     path never does real workloads in these tests)."""
     monkeypatch.setenv("UMRS_AUTH_MODE", "mvp")
     from umrs.api import loop as loop_api
+    from umrs.knowledge import engine_loop_runner
     from umrs.knowledge.loop import AutonomousResearchLoop
 
     loop_api._loop_engine = AutonomousResearchLoop(simulated=True)
     monkeypatch.setattr(
         loop_api, "_registered_workflow_names", lambda _owner: ["demo08_yield_eval"]
     )
-    # Never spawn engine runners for these surface tests — they're not testing
-    # lifecycle; they're testing wire shape. Without this the phantom engine
-    # completes loops before route-level assertions run.
-    from umrs.knowledge import engine_loop_runner
-
     monkeypatch.setattr(engine_loop_runner, "register", lambda *_args, **_kwargs: None)
+    loop_api._configure_hosting()
     yield
     loop_api.clear_loop_store()
 
