@@ -84,6 +84,29 @@ class TestSweep:
         assert result.idled == 0
         provisioner.teardown.assert_not_called()
 
+    def test_revoked_only_session_gets_teardown(self):
+        broker, provisioner, executor = _executor()
+        lease = _lease_for(broker, "sess-revoke-then-sweep")
+        broker.revoke_lease(lease.lease_id)
+        result = executor.sweep_once()
+        assert result.torn_down == ["sess-revoke-then-sweep"]
+        provisioner.teardown.assert_called_once_with("sess-revoke-then-sweep")
+
+    def test_revoked_session_with_valid_sibling_is_skipped(self):
+        broker, provisioner, executor = _executor()
+        revoked, _secret = broker.issue_lease(
+            job_id="session-sx", secret_name="t", scope="inference",
+            owner_id="alice", session_id="sess-sx",
+        )
+        live, _ = broker.issue_lease(
+            job_id="session-sx", secret_name="t2", scope="inference",
+            owner_id="alice", session_id="sess-sx", lease_seconds=3600,
+        )
+        broker.revoke_lease(revoked.lease_id)
+        result = executor.sweep_once()
+        assert "sess-sx" not in result.torn_down
+        provisioner.teardown.assert_not_called()
+
     def test_teardown_error_isolated_sweep_continues(self):
         broker, provisioner, executor = _executor()
         a = _lease_for(broker, "sess-a", lease_seconds=1)
@@ -100,10 +123,12 @@ class TestSweep:
         assert len(result.errors) == 1
         assert "podman down" in result.errors[0]
 
-    def test_revoked_lease_skipped(self):
+    def test_revoked_lease_gets_teardown_via_sweeper(self):
+        """F-5: a revoked inference lease + no valid siblings → sweeper tears down."""
         broker, provisioner, executor = _executor()
         lease = _lease_for(broker, "sess-end", lease_seconds=1)
         broker.revoke_lease(lease.lease_id)
         result = executor.sweep_once()
         assert result.expired == 0 and result.idled == 0
-        provisioner.teardown.assert_not_called()
+        assert result.torn_down == ["sess-end"]
+        provisioner.teardown.assert_called_once_with("sess-end")

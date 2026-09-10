@@ -56,10 +56,19 @@ class VenueRuntimeExecutor:
         return now - last >= timedelta(seconds=self._idle_seconds)
 
     def sweep_once(self, *, actor: str = "sweeper") -> SweepResult:
-        """Expire/revoke-then-teardown pass; idempotent and error-isolated."""
+        """Expire/revoke-then-teardown pass; idempotent and error-isolated.
+
+        Semantics (design F-5): expiry and idle revoke+teardown; lease that
+        was revoked by ANY actor (unpush cascade, session end) tears down
+        when no still-valid lease for the same session remains.
+        """
         result = SweepResult()
         now = _now()
+        by_session: dict[str, list[SecretLease]] = {}
         for lease in self._broker.list_leases(scope="inference", limit=100_000):
+            if not lease.session_id:
+                continue
+            by_session.setdefault(lease.session_id, []).append(lease)
             if lease.is_revoked:
                 continue
             if lease.is_expired:
@@ -68,7 +77,33 @@ class VenueRuntimeExecutor:
             elif self._is_idle(lease, now):
                 result.idled += 1
                 self._idle_session(lease, actor, result)
+        self._teardown_revoked_sessions(by_session, actor, result)
         return result
+
+    def _teardown_revoked_sessions(
+        self, by_session: dict[str, list[SecretLease]], actor: str, result: SweepResult
+    ) -> None:
+        """Tear down sessions whose inference leases are all revoked/expired-left.
+
+        Any still-valid lease keeps the session alive; revoked survivors without
+        a live sibling get a teardown (idempotently on failure of prior sweeps).
+        """
+        for session_id, leases in by_session.items():
+            if session_id in result.torn_down:
+                continue  # torn earlier in this same sweep (expire/idle already fired)
+            if any(err.startswith(f"{session_id}: ") for err in result.errors):
+                continue  # a failed teardown already logged once this sweep
+            if any(lease.is_valid for lease in leases):
+                continue
+            if not any(lease.is_revoked for lease in leases):
+                continue
+            try:
+                self._provisioner.teardown(session_id)
+                if session_id not in result.torn_down:
+                    result.torn_down.append(session_id)
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("venue revoked-session teardown failed for %s", session_id)
+                result.errors.append(f"{session_id}: revoked teardown: {exc}")
 
     def _expire_session(self, lease: SecretLease, actor: str, result: SweepResult) -> None:
         self._revoke_and_teardown(lease, actor, "expires_at reached", result)
