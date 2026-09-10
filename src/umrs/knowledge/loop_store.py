@@ -47,6 +47,17 @@ def _row_to_loop(row: Any) -> ResearchLoop:
         else str(row["updated_at"] or ""),
         metadata=json.loads(row["metadata"] or "{}"),
     )
+    # Plan restores the retrieval anchors / hypotheses / experiments a real-mode
+    # engine reads every checkpoint cycle; previously dropped on rehydration,
+    # which made anchored real-mode loops fail the evidence guard (live
+    # ask-probe leg, 2026-09-10).
+    raw_plan = row.get("plan")
+    if raw_plan:
+        from .planner import ResearchPlan
+
+        loop.plan = ResearchPlan.from_dict(
+            raw_plan if not isinstance(raw_plan, str) else json.loads(raw_plan)
+        )
     return loop
 
 
