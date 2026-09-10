@@ -83,7 +83,7 @@ exec podman run --rm \
   --network "${PRIV_NETWORK}" \
   --tmpfs /tmp:size=1g \
   --tmpfs /run:size=64m \
-  --secret "loop-${JOB_ID}-gateway-hmac,type=mount,target=/run/secrets/gateway-hmac,mode=0400" \
+  --secret "loop-${JOB_ID}-gateway-hmac,type=env,target=UMRS_GATEWAY_HMAC_SECRET" \
   -v "${R4_DIR}:/umrs-src:ro,Z" \
   -e LOOP_ID="${LOOP_ID}" \
   -e R4_GATEWAY_BASE="${R4_GATEWAY_BASE}" \
@@ -91,7 +91,7 @@ exec podman run --rm \
   -e R4_LOOP_ATTEMPT_ID="${R4_LOOP_ATTEMPT_ID}" \
   -e R4_LOOP_OWNER="${R4_LOOP_OWNER}" \
   -e R4_LOOP_PROJECT="${R4_LOOP_PROJECT}" \
-  -e UMRS_GATEWAY_HMAC_SECRET_FILE=/run/secrets/gateway-hmac \
+  -e UMRS_GATEWAY_HMAC_SECRET_FILE="" \
   -e PYTHONPATH="/umrs-src" \
   -e HTTPS_PROXY="${HTTPS_PROXY}" -e HTTP_PROXY="${HTTP_PROXY}" \
   -e NO_PROXY="${NO_PROXY}" \
