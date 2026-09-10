@@ -79,7 +79,7 @@ class ClusterSlurmSubmitter:
             "RIVAULT_WRAPPER_DIR": _cluster_deploy_dir("rccs"),
         }
         if self._submit is None:
-            from umrs.orchestrator.orchestrator_config import OrchestratorConfig
+            from umrs.orchestrator.base import OrchestratorConfig
             from umrs.orchestrator.remote_slurm_backend import RemoteSlurmBackend
 
             submitter = RemoteSlurmBackend(OrchestratorConfig())
