@@ -123,6 +123,7 @@ class TestSpecAndWiring:
             "loop_id": "l",
             "driver": "engine",
             "venue": "cluster:rccs",
+            "cluster_site": "rccs",
         }
         with pytest.raises(ValueError, match="cluster venue accepts driver 'engine' only"):
             validate_research_loop_spec(
