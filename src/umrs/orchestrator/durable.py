@@ -202,6 +202,7 @@ class DurableOrchestrationService:
             readiness_poller=orch.readiness_poller,
             registry=orch.registry,
             orchestrator=orch.backend,
+            instance_id=self._job_service.instance_id,
         )
         self._job_service.set_status_checker(status_checker)
 
