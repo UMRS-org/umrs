@@ -10,142 +10,98 @@ Design Invariants:
 A. Attempt-scoped writes: All outputs to s3://…/jobs/<job_id>/attempt_<n>/…
 B. Commit pointer is truth: Only commit_attempt_id outputs visible
 C. No concurrent attempts: Advisory lock per job
+
+Exports are resolved lazily (PEP 562): importing ``umrs.jobs`` must not drag
+``psycopg2`` (jobs.store) into driver containers that only need a leaf
+module such as ``umrs.jobs.timing`` — first real cluster leg crashed the
+sim engine at exactly that import (leg 381165).
 """
 
-from .adapters import (
-    CleanupBackend,
-    CleanupStatusChecker,
-    EndpointProvisionBackend,
-    EndpointProvisionStatusChecker,
-    IndexBuildBackend,
-    IndexBuildStatusChecker,
-    create_backend_factory,
-    create_status_checker,
-)
-from .data_ingestion import DataIngestionBackend
-from .data_ingestion import DataIngestionStatusChecker
-from .knowledge_adapters import (
-    KnowledgeEmbedBackend,
-    KnowledgeEmbedResult,
-    KnowledgeEmbedStatusChecker,
-    KnowledgeEvent,
-    KnowledgeIngestBackend,
-    KnowledgeIngestResult,
-    KnowledgeIngestStatusChecker,
-    KnowledgeUnderstandBackend,
-    KnowledgeUnderstandResult,
-    KnowledgeUnderstandStatusChecker,
-)
+from __future__ import annotations
 
-# Note: context_jobs excluded from selective merge
-from .ha import (
-    ClusterCoordinator,
-    DistributedLockManager,
-    HeartbeatError,
-    HeartbeatManager,
-    InstanceInfo,
-    LockAcquisitionError,
-    LockError,
-    LockNotHeldError,
-)
-from .models import (
-    AttemptStatus,
-    Job,
-    JobAttempt,
-    JobStatus,
-    JobType,
-    RestartPolicy,
-    compute_idempotency_key,
-    generate_attempt_id,
-    generate_job_id,
-)
-from .monitor import (
-    AttemptCheckResult,
-    AttemptMonitor,
-    CompositeStatusChecker,
-    EndpointProvisionChecker,
-)
-from .reconciler import Reconciler, ReconcileResult, reconcile_on_startup
-from .scheduler import Scheduler, SimpleBackendAdapter
-from .schema import ensure_schema, get_schema_version
-from .service import JobService, create_job_service
-from .store import (
-    AttemptNotFoundError,
-    DuplicateJobError,
-    InvalidTransitionError,
-    JobNotFoundError,
-    JobStore,
-    JobStoreError,
-)
-from .workflow_run import WorkflowRunBackend
+import importlib
+from typing import Any
 
-__all__ = [
-    # Enums
-    "JobType",
-    "JobStatus",
-    "AttemptStatus",
-    "RestartPolicy",
-    # Models
-    "Job",
-    "JobAttempt",
-    # Utilities
-    "compute_idempotency_key",
-    "generate_job_id",
-    "generate_attempt_id",
-    # Schema
-    "ensure_schema",
-    "get_schema_version",
-    # Store
-    "JobStore",
-    "JobStoreError",
-    "DuplicateJobError",
-    "JobNotFoundError",
-    "AttemptNotFoundError",
-    "InvalidTransitionError",
-    # Reconciler
-    "Reconciler",
-    "ReconcileResult",
-    "reconcile_on_startup",
-    # Scheduler
-    "Scheduler",
-    "SimpleBackendAdapter",
-    # Monitor
-    "AttemptMonitor",
-    "AttemptCheckResult",
-    "CompositeStatusChecker",
-    "EndpointProvisionChecker",
-    # Service
-    "JobService",
-    "create_job_service",
-    # Adapters
-    "CleanupBackend",
-    "CleanupStatusChecker",
-    "EndpointProvisionBackend",
-    "EndpointProvisionStatusChecker",
-    "IndexBuildBackend",
-    "IndexBuildStatusChecker",
-    "DataIngestionBackend",
-    "DataIngestionStatusChecker",
-    "KnowledgeIngestBackend",
-    "KnowledgeIngestResult",
-    "KnowledgeIngestStatusChecker",
-    "KnowledgeUnderstandBackend",
-    "KnowledgeUnderstandResult",
-    "KnowledgeUnderstandStatusChecker",
-    "KnowledgeEmbedBackend",
-    "KnowledgeEmbedResult",
-    "KnowledgeEmbedStatusChecker",
-    "KnowledgeEvent",
-    "WorkflowRunBackend",
-    "create_backend_factory",
-    "create_status_checker",
-    # HA Coordination (U-703, U-715)
-    "HeartbeatManager",
-    "DistributedLockManager",
-    "ClusterCoordinator",
-    "InstanceInfo",
-    "HeartbeatError",
-    "LockError",
-    "LockAcquisitionError",
-    "LockNotHeldError",
-]
+_EXPORT_MAP: dict[str, str] = {
+    # adapters
+    "CleanupBackend": ".adapters",
+    "CleanupStatusChecker": ".adapters",
+    "EndpointProvisionBackend": ".adapters",
+    "EndpointProvisionStatusChecker": ".adapters",
+    "IndexBuildBackend": ".adapters",
+    "IndexBuildStatusChecker": ".adapters",
+    "create_backend_factory": ".adapters",
+    "create_status_checker": ".adapters",
+    # data_ingestion
+    "DataIngestionBackend": ".data_ingestion",
+    "DataIngestionStatusChecker": ".data_ingestion",
+    # knowledge_adapters
+    "KnowledgeEmbedBackend": ".knowledge_adapters",
+    "KnowledgeEmbedResult": ".knowledge_adapters",
+    "KnowledgeEmbedStatusChecker": ".knowledge_adapters",
+    "KnowledgeEvent": ".knowledge_adapters",
+    "KnowledgeIngestBackend": ".knowledge_adapters",
+    "KnowledgeIngestResult": ".knowledge_adapters",
+    "KnowledgeIngestStatusChecker": ".knowledge_adapters",
+    "KnowledgeUnderstandBackend": ".knowledge_adapters",
+    "KnowledgeUnderstandResult": ".knowledge_adapters",
+    "KnowledgeUnderstandStatusChecker": ".knowledge_adapters",
+    # ha
+    "ClusterCoordinator": ".ha",
+    "DistributedLockManager": ".ha",
+    "HeartbeatError": ".ha",
+    "HeartbeatManager": ".ha",
+    "InstanceInfo": ".ha",
+    "LockAcquisitionError": ".ha",
+    "LockError": ".ha",
+    "LockNotHeldError": ".ha",
+    # models
+    "AttemptStatus": ".models",
+    "Job": ".models",
+    "JobAttempt": ".models",
+    "JobStatus": ".models",
+    "JobType": ".models",
+    "RestartPolicy": ".models",
+    "compute_idempotency_key": ".models",
+    "generate_attempt_id": ".models",
+    "generate_job_id": ".models",
+    # monitor
+    "AttemptCheckResult": ".monitor",
+    "AttemptMonitor": ".monitor",
+    "CompositeStatusChecker": ".monitor",
+    "EndpointProvisionChecker": ".monitor",
+    # reconciler
+    "Reconciler": ".reconciler",
+    "ReconcileResult": ".reconciler",
+    "reconcile_on_startup": ".reconciler",
+    # scheduler
+    "Scheduler": ".scheduler",
+    "SimpleBackendAdapter": ".scheduler",
+    # schema
+    "ensure_schema": ".schema",
+    "get_schema_version": ".schema",
+    # service
+    "JobService": ".service",
+    "create_job_service": ".service",
+    # store
+    "AttemptNotFoundError": ".store",
+    "DuplicateJobError": ".store",
+    "InvalidTransitionError": ".store",
+    "JobNotFoundError": ".store",
+    "JobStore": ".store",
+    "JobStoreError": ".store",
+    # workflow_run
+    "WorkflowRunBackend": ".workflow_run",
+}
+
+
+def __getattr__(name: str) -> Any:
+    module = _EXPORT_MAP.get(name)
+    if module is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    value = getattr(importlib.import_module(module, __name__), name)
+    globals()[name] = value
+    return value
+
+
+__all__ = list(_EXPORT_MAP)
