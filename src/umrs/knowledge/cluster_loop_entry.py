@@ -24,9 +24,18 @@ from .loop import AutonomousResearchLoop
 logger = logging.getLogger(__name__)
 
 
-def _engine_factory_from(store: Any) -> Any:
-    """Cluster-side engine factory: the phased engine with its iteration hook."""
+def _engine_factory_from(store: Any, *, loop: Any | None = None) -> Any:
+    """Cluster-side engine factory.
+
+    ``metadata.simulated`` on the loop record selects the sim engine (leg /
+    probe loop records); anything else is the real phased engine.
+    """
+    metadata = getattr(loop, "metadata", {}) or {}
+    simulated = bool(metadata.get("simulated"))
+
     def _make() -> AutonomousResearchLoop:
+        if simulated:
+            return AutonomousResearchLoop(simulated=True)
         return AutonomousResearchLoop(store)
 
     return _make
@@ -46,10 +55,11 @@ def _agent_denied_fabric(project_id: str) -> Any:
 def configure_cluster_hosting(loop: Any) -> None:
     """Wire the loop_hosting seam for the cluster driver."""
     store = build_cluster_store()
+    simulate = bool((getattr(loop, "metadata", {}) or {}).get("simulated"))
     loop_hosting.configure(
         loop_hosting.HostingWiring(
             store=lambda: store,
-            engine_factory=lambda: _engine_factory_from(store),
+            engine_factory=lambda: _engine_factory_from(store, loop=loop),
             agent_executor=_agent_denied_fabric,
             checkpoint_store=lambda: None,  # durable checkpoints stay server-side
             finding_sink=lambda: store,

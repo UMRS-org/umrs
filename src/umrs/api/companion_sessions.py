@@ -1,13 +1,19 @@
-"""Companion session snapshots (ADR-036 F2 first leg).
+"""Companion session snapshots (ADR-036 F2 first leg + venue registry).
 
 Client companion sessions mirror their state here (write-through). A fresh
 machine answers cross-client session presence/read by pulling these rows;
 the companion SQLite store is the rebuildable read-model over them.
+
+Venue/state registry columns (0084): the listing supports server-side
+filters so a unified session view (local + remote) never has to emulate
+remote filtering client-side. Plan:
+docs/development/session-venue-selection-and-unified-listing-plan-2026-09-09.md
 """
 
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
@@ -17,6 +23,40 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/umrs/companion/sessions", tags=["companion-sessions"])
 
+# Venue grammar (plan §4.1): local | frontend | cluster:<name>.
+# '' means absent (client did not declare; never fabricated server-side).
+_VENUE_RE = re.compile(r"^(local|frontend|cluster:[a-z0-9][a-z0-9-]{0,62})$")
+# Recorded states. 'archived' is computed from tombstones, never stored.
+_STATE_STORED = frozenset({"", "ongoing", "stopped", "completed", "error"})
+# Filterable computed states include 'archived'.
+_STATE_COMPUTED = _STATE_STORED | {"archived"}
+
+
+def _validate_venue(value: str) -> str:
+    if not _VENUE_RE.match(value or ""):
+        raise HTTPException(
+            status_code=400,
+            detail=f"invalid venue {value!r}: expected local | frontend | cluster:<name>",
+        )
+    return value
+
+
+def _validate_stored_state(value: str) -> str:
+    if value not in _STATE_STORED:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"invalid state {value!r}: expected one of "
+                f"{sorted(s for s in _STATE_STORED if s)} or '' "
+                "('archived' is computed, never stored)"
+            ),
+        )
+    return value
+
+
+def _csv_filter(param: str | None) -> list[str]:
+    return [part.strip() for part in (param or "").split(",") if part.strip()]
+
 
 class SessionSnapshotBody(BaseModel):
     """The mirrored companion session document."""
@@ -24,6 +64,8 @@ class SessionSnapshotBody(BaseModel):
     name: str = Field(default="", max_length=256)
     updated_at: str = Field(default="")
     payload: str = Field(default="")
+    venue: str = Field(default="")  # '' = absent; clients declare at PUT.
+    state: str = Field(default="")
 
 
 # ── Auth + pool helpers ────────────────────────────────────────────────────
@@ -54,22 +96,35 @@ async def put_session_snapshot(
     """Mirror one client session state. Newer updates supersede older ones."""
     uid = _uid(request)
     pool = _pool(request)
+    venue = _validate_venue(body.venue) if body.venue else ""
+    state = _validate_stored_state(body.state)
+    # Venue: a PUT that omits venue must not stomp a recorded one — absent
+    # means absent, not 'local'. Local clients always declare 'local'.
     conn = pool.getconn()
     try:
         with conn.cursor() as cur:
             cur.execute(
                 """
                 INSERT INTO companion_session_snapshots
-                    (user_id, session_id, name, payload, update_marker)
-                VALUES (%s, %s, %s, %s, %s)
+                    (user_id, session_id, name, payload, update_marker, venue, state)
+                VALUES (%s, %s, %s, %s, %s,
+                        COALESCE(NULLIF(%s, ''), 'local'), %s)
                 ON CONFLICT (user_id, session_id) DO UPDATE SET
                     name = EXCLUDED.name,
                     payload = EXCLUDED.payload,
                     update_marker = EXCLUDED.update_marker,
+                    venue = CASE
+                        WHEN EXCLUDED.venue <> '' THEN EXCLUDED.venue
+                        ELSE companion_session_snapshots.venue
+                    END,
+                    state = CASE
+                        WHEN EXCLUDED.state <> '' THEN EXCLUDED.state
+                        ELSE companion_session_snapshots.state
+                    END,
                     updated_at = now()
                 WHERE companion_session_snapshots.update_marker <= EXCLUDED.update_marker
                 """,
-                (uid, session_id, body.name, body.payload, body.updated_at),
+                (uid, session_id, body.name, body.payload, body.updated_at, venue, state),
             )
             applied = cur.rowcount > 0
             conn.commit()
@@ -88,9 +143,12 @@ async def get_session_snapshot(session_id: str, request: Request) -> dict[str, A
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT session_id, name, payload, update_marker
-                FROM companion_session_snapshots
-                WHERE user_id = %s AND session_id = %s
+                SELECT s.session_id, s.name, s.payload, s.update_marker,
+                       s.venue, s.state, a.archived_at
+                FROM companion_session_snapshots s
+                LEFT JOIN companion_session_archives a
+                    ON a.session_id = s.session_id
+                WHERE s.user_id = %s AND s.session_id = %s
                 """,
                 (uid, session_id),
             )
@@ -99,34 +157,106 @@ async def get_session_snapshot(session_id: str, request: Request) -> dict[str, A
         pool.putconn(conn)
     if row is None:
         raise HTTPException(status_code=404, detail="snapshot not found")
-    sid, name, payload, updated = row
-    return {"session_id": sid, "name": name, "payload": payload, "updated_at": updated}
+    sid, name, payload, updated, venue, state, archived_at = row
+    return {
+        "session_id": sid,
+        "name": name,
+        "payload": payload,
+        "updated_at": updated,
+        "venue": venue,
+        "state": "archived" if archived_at else state,
+        "archived_at": str(archived_at) if archived_at else "",
+    }
+
+
+def _list_where(
+    uid: str,
+    venues: list[str],
+    states: list[str],
+    include_archived: bool,
+) -> tuple[str, list[Any]]:
+    """Build the WHERE tail + params for the listing route."""
+    clauses = ["user_id = %s"]
+    params: list[Any] = [uid]
+    if venues:
+        clauses.append("venue = ANY(%s)")
+        params.append(venues)
+    if states:
+        clauses.append("computed_state = ANY(%s)")
+        params.append(states)
+    if not include_archived:
+        clauses.append("archived_at IS NULL")
+    return " AND ".join(clauses), params
 
 
 @router.get("", response_model=dict[str, Any])
-async def list_session_snapshots(request: Request, limit: int = 50) -> dict[str, Any]:
-    """List my snapshots (summary rows only, no payloads)."""
+async def list_session_snapshots(
+    request: Request,
+    limit: int = 50,
+    venue: str | None = None,
+    state: str | None = None,
+    include_archived: bool = False,
+    project: str | None = None,
+) -> dict[str, Any]:
+    """List my snapshots (summary rows only, no payloads).
+
+    Filters compose server-side: venue csv (local/frontend/cluster:<name>),
+    state csv (ongoing/stopped/completed/error/archived), project id, and
+    archive inclusion. 'archived' is computed from the tombstone table.
+    """
     uid = _uid(request)
     pool = _pool(request)
     limit = min(max(limit, 1), 200)
+    venues = [_validate_venue(v) for v in _csv_filter(venue)]
+    states = _csv_filter(state)
+    invalid = [s for s in states if s not in _STATE_COMPUTED]
+    if invalid:
+        raise HTTPException(status_code=400, detail=f"invalid state filter: {invalid}")
+    where, params = _list_where(uid, venues, states, include_archived)
+    project_clause = ""
+    if project:
+        project_clause = (
+            " AND payload LIKE '{%'"
+            " AND COALESCE(payload::jsonb -> 'metadata' -> 'config' ->> 'project_id',"
+            "             payload::jsonb -> 'metadata' ->> 'project_id') = %s"
+        )
+        params.append(project)
     conn = pool.getconn()
     try:
         with conn.cursor() as cur:
             cur.execute(
-                """
-                SELECT session_id, name, update_marker
-                FROM companion_session_snapshots
-                WHERE user_id = %s
-                ORDER BY updated_at DESC
+                f"""
+                SELECT session_id, name, update_marker, venue, computed_state,
+                       archived_at
+                FROM (
+                    SELECT s.session_id, s.name, s.update_marker, s.venue, s.state,
+                           s.payload, a.archived_at,
+                           CASE WHEN a.session_id IS NOT NULL THEN 'archived'
+                                ELSE s.state END AS computed_state,
+                           s.user_id
+                    FROM companion_session_snapshots s
+                    LEFT JOIN companion_session_archives a
+                        ON a.session_id = s.session_id
+                ) t
+                WHERE {where}{project_clause}
+                ORDER BY update_marker DESC
                 LIMIT %s
                 """,
-                (uid, limit),
+                (*params, limit),
             )
             rows = cur.fetchall()
     finally:
         pool.putconn(conn)
     snapshots = [
-        {"session_id": sid, "name": name, "updated_at": upd} for sid, name, upd in rows
+        {
+            "session_id": sid,
+            "name": name,
+            "updated_at": upd,
+            "venue": venue_value,
+            "state": computed_state,
+            "archived_at": str(archived_at) if archived_at else "",
+        }
+        for sid, name, upd, venue_value, computed_state, archived_at in rows
     ]
     return {"snapshots": snapshots, "count": len(snapshots)}
 
