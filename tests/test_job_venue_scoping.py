@@ -93,6 +93,20 @@ class TestVenueClaimScoping:
         assert rccs.claim_next_jobs(limit=10) == [job]
         assert bdrt.claim_next_jobs(limit=10) == []
 
+    def test_cluster_prefix_normalizes_to_site_name_at_create(self, pool):
+        store = _make_store(pool, "bdrt")
+        job = store.create_job(
+            project_id="proj-x", user_id="alice",
+            job_type=JobType.RESEARCH_LOOP,
+            spec={"venue": "cluster:rccs-front", "loop_id": "l"},
+            idempotency_key=None,
+        )
+        rccs = _make_store(pool, "rccs-front")
+        bdrt = _make_store(pool, "bdrt")
+        store.enqueue_job(job)
+        assert rccs.claim_next_jobs(limit=10) == [job]
+        assert bdrt.claim_next_jobs(limit=10) == []
+
 
 class TestEnsureSchema:
     def test_ensure_schema_adds_venue_column_for_existing_dbs(self, pool):

@@ -51,15 +51,37 @@ def validate_research_loop_spec(spec: dict) -> dict:
         raise ValueError(
             f"research_loop_job venue must be 'frontend' or 'cluster:<name>' (got {venue!r})"
         )
-    if venue.startswith(CLUSTER_VENUE_PATTERN) and driver != "engine":
-        raise ValueError(
-            "research_loop_job on a cluster venue accepts driver 'engine' only "
-            "(the companion agent driver needs cluster-side wiring — follow-on)"
-        )
     out = {"loop_id": loop_id, "driver": driver}
+    if venue.startswith(CLUSTER_VENUE_PATTERN):
+        if driver != "engine":
+            raise ValueError(
+                "research_loop_job on a cluster venue accepts driver 'engine' only "
+                "(the companion agent driver needs cluster-side wiring — follow-on)"
+            )
+        out["cluster_site"] = split_cluster_venue_name(venue)
+    elif venue and venue != "frontend":
+        raise ValueError(
+            f"research_loop_job venue must be 'frontend' or 'cluster:<site-name>' "
+            f"(got {venue!r})"
+        )
     if venue:
         out["venue"] = venue
     return out
+
+
+def split_cluster_venue_name(venue: str) -> str:
+    """`cluster:<site-name>` → the site.name part (byte-exact with site.yaml).
+
+    Claim scoping must be exact: ``cluster:rccs-front`` ⇔ site.name=rccs-front.
+    The name after the prefix must be non-empty and free of separators that
+    would make reconciliation ambiguous.
+    """
+    name = venue[len(CLUSTER_VENUE_PATTERN) :].strip()
+    if not name:
+        raise ValueError("research_loop_job cluster venue requires a site name after 'cluster:'")
+    if "/" in name or name != name.lower() or name.startswith((" ", "-")):
+        raise ValueError(f"research_loop_job cluster site name is invalid: {name!r}")
+    return name
 
 
 class ResearchLoopBackend(OrchestratorBackend):

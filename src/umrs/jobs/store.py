@@ -88,6 +88,21 @@ class JobStore:
         # site's name at boot; "" keeps the pre-venue ANY-claim semantics
         # until all rows carry venue (pre-release migration lane).
         self.site_name: str = ""
+
+    def _resolve_venue(self, spec: dict[str, Any]) -> str:
+        """Cluster-set venue resolution (WP-14).
+
+        ``cluster:<site-name>`` declares a site-bound job — the column stores
+        the site name (byte-exact with site.name) so claims land where the spec
+        declared. Otherwise this scheduler's site owns creation ("" stays the
+        global/shared lane when the site itself has no name).
+        """
+        venue = str(spec.get("venue") or "").strip()
+        if venue.startswith("cluster:"):
+            from .research_loop_backend import split_cluster_venue_name
+
+            return split_cluster_venue_name(venue)
+        return venue or self.site_name
         self._ensure_schema()
 
         # Post-completion callbacks (set by adapters module).
@@ -199,9 +214,13 @@ class JobStore:
                 project_id, user_id, job_type, spec
             )
 
-        # WP-14 venue resolution: spec-declared venue wins (cluster-venue
-        # kinds declare it); otherwise this scheduler's site owns creation.
-        venue = str(spec.get("venue") or "").strip() or self.site_name
+        # WP-14 venue resolution: cluster-set venue wins with prefix stripped
+        # (`cluster:rccs-front` → the site-bound label 'rccs-front' so claims
+        # map onto site.name exactly); plain empty venue stays site-default
+        # (or shared when site_name itself is empty).
+        venue = self._resolve_venue(spec)
+
+        now = datetime.utcnow()
 
         now = datetime.utcnow()
 
