@@ -139,11 +139,10 @@ class TestFailurePaths:
 class TestTemplates:
     def test_nginx_conf_bootstrap_http_uplink_has_no_ca(self):
         conf = render_nginx_conf(_cfg(infer_uplink="http", infer_host="10.99.0.4"))
-        assert "proxy_pass $infer" in conf
-        assert "http://" in conf
+        assert "proxy_pass http://$um_infer" in conf
         assert "internal-ca.pem" not in conf
         assert "proxy_ssl_verify" not in conf
-        assert "resolver" not in conf  # literal IP: no generic resolution needed
+        assert "resolver " not in conf  # literal IP: no generic resolution needed
 
     def test_nginx_conf_https_uplink_needs_ca(self):
         conf = render_nginx_conf(_cfg(infer_uplink="https", infer_host="10.99.0.4"))
@@ -156,13 +155,19 @@ class TestTemplates:
             _cfg(infer_uplink="http", infer_host="umrs-infer", infer_resolve_via="172.20.8.1")
         )
         assert "resolver 172.20.8.1 valid=10s;" in conf
-        assert "set $infer http://umrs-infer:8443/s/sess-t1/;" in conf
-        assert "proxy_pass $infer" in conf
+        assert "set $um_infer umrs-infer:8443;" in conf
+        assert "rewrite ^/(.+)$ /s/sess-t1/$1 break;" in conf
+        assert "proxy_pass http://$um_infer;" in conf
 
     def test_nginx_conf_absent_resolve_via_emits_no_resolver(self):
         conf = render_nginx_conf(_cfg(infer_uplink="http", infer_host="umrs-infer"))
         assert "resolver " not in conf
-        assert "set $infer" in conf
+        assert "set $um_infer" in conf
+
+    def test_nginx_conf_https_uplink_emits_tls_and_host_var(self):
+        conf = render_nginx_conf(_cfg(infer_uplink="https", infer_host="umrs-infer"))
+        assert "proxy_pass https://$um_infer" in conf
+        assert "proxy_ssl_verify on" in conf
 
     def test_squid_deny_set_dedups_shared_hosts(self):
         conf = render_squid_conf(_cfg(gateway_host="data0.x", umrs_host="data0.x"))
