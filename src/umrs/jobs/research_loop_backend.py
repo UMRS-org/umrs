@@ -139,10 +139,23 @@ class ResearchLoopStatusChecker(BackendStatusChecker):
         snap = loop_hosting.snapshot(loop_id)
         if snap is None:
             return AttemptCheckResult.failed(f"research loop record missing: {loop_id}")
-        return _result_for(snap)
+        remote = _parse_ref(backend_ref).get("driver") == "slurm"
+        return _result_for(snap, remote_driver=remote, attempt=attempt)
 
 
-def _result_for(snap: dict) -> AttemptCheckResult:
+# Grace for cluster (slurm) drivers: queue wait + image pull + pod start on
+# the compute node can take many minutes before the remote driver first
+# writes the loop record back through the gateway. Until that grace passes,
+# an untouched record means the driver has not started YET — not crashed.
+REMOTE_DRIVER_GRACE_SEC = 15 * 60
+
+
+def _result_for(
+    snap: dict,
+    *,
+    remote_driver: bool = False,
+    attempt: JobAttempt | None = None,
+) -> AttemptCheckResult:
     status = snap["status"]
     detail = f"iteration {snap['current_iteration']}/{snap['max_iterations']}"
     if status == "error":
@@ -156,5 +169,46 @@ def _result_for(snap: dict) -> AttemptCheckResult:
             }
         )
     if not snap.get("driver_alive", False):
+        if remote_driver and _remote_driver_fresh(snap, attempt):
+            return AttemptCheckResult.running(f"{detail} (remote driver pending)")
         return AttemptCheckResult.failed(f"loop driver not alive ({detail})")
     return AttemptCheckResult.running(detail)
+
+
+def _remote_driver_fresh(snap: dict, attempt: JobAttempt | None) -> bool:
+    """Liveness for cluster drivers: record touched recently, or attempt young.
+
+    The remote driver (Slurm venue) is never visible to the in-process runner
+    registry; it proves life by writing the loop record through the gateway,
+    which bumps ``research_loops.updated_at``. Before its first write, the
+    attempt's own age is the only signal: a freshly submitted attempt inside
+    the grace window is assumed queued/pulling, not dead.
+    """
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc)
+
+    def _age(raw: object) -> float | None:
+        if raw is None:
+            return None
+        if isinstance(raw, datetime):
+            ts = raw if raw.tzinfo else raw.replace(tzinfo=timezone.utc)
+            return (now - ts).total_seconds()
+        text = str(raw or "").strip()
+        if not text:
+            return None
+        try:
+            ts = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        return (now - ts).total_seconds()
+
+    record_age = _age(snap.get("updated_at"))
+    if record_age is not None and record_age < REMOTE_DRIVER_GRACE_SEC:
+        return True
+    attempt_age = _age(getattr(attempt, "started_at", None)) if attempt else None
+    if attempt_age is not None and attempt_age < REMOTE_DRIVER_GRACE_SEC:
+        return True
+    return False

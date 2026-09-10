@@ -238,6 +238,7 @@ def snapshot(loop_id: str) -> dict[str, Any] | None:
         "total_findings": loop.total_findings,
         "error": str(loop.metadata.get("error") or ""),
         "driver_alive": driver_alive(loop_id),
+        "updated_at": loop.updated_at or "",
     }
 
 
