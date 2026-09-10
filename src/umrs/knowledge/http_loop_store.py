@@ -32,6 +32,7 @@ class ClusterLoopTransport:
     base_url: str  # guard-allowed ingress, e.g. https://data0.ai.r-ccs.riken.jp/rccs
     owner_headers: dict[str, str]
     timeout: int = 30
+    path_prefix: str = "/gw/loops"  # gateway lane rewrites to server's /umrs/loops/*
 
     def _call(
         self, method: str, path: str, body: dict[str, Any] | None = None
@@ -41,8 +42,8 @@ class ClusterLoopTransport:
         if body is not None:
             data = json.dumps(body).encode("utf-8")
             headers["Content-Type"] = "application/json"
-        req = Request(f"{self.base_url}{path}", data=data, headers=headers,
-                      method=method)
+        req = Request(f"{self.base_url}{self.path_prefix}{path}", data=data,
+                      headers=headers, method=method)
         with urlopen(req, timeout=self.timeout) as resp:
             return json.loads(resp.read() or b"{}")
 
@@ -85,7 +86,7 @@ class HttpLoopStore:
     def load(self, loop_id: str) -> ResearchLoop:
         """Load the durable loop record (404-safe; cluster provisioner only
         hosts loops that already exist)."""
-        payload = self._transport.get(f"/umrs/loops/{loop_id}")
+        payload = self._transport.get(f"/{loop_id}")
         if payload.get("detail"):
             raise KeyError(f"loop {loop_id} load failed: {payload.get('detail')}")
         return _loop_from_status(loop_id, payload)
@@ -104,11 +105,11 @@ class HttpLoopStore:
             "completed_at": loop.completed_at or None,
             "metadata": loop.metadata,
         }
-        self._transport.put(f"/umrs/loops/{loop.loop_id}/state", body)
+        self._transport.put(f"/{loop.loop_id}/state", body)
 
     def list_iterations(self, loop_id: str) -> list[dict[str, Any]]:
         """Read-side iteration projection for restart checks."""
-        payload = self._transport.get(f"/umrs/loops/{loop_id}/iterations")
+        payload = self._transport.get(f"/{loop_id}/iterations")
         return list(payload or [])
 
 

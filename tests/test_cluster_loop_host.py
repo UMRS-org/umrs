@@ -48,7 +48,7 @@ def _load_payload(**over) -> dict:
 
 class TestHttpLoopStore:
     def test_load_maps_wire_to_loop_record(self):
-        t = _FakeTransport({("GET", "/umrs/loops/abc"): _load_payload()})
+        t = _FakeTransport({("GET", "/abc"): _load_payload()})
         store = HttpLoopStore(t)
         loop = store.load("abc")
         assert loop.loop_id == "abc"
@@ -64,7 +64,7 @@ class TestHttpLoopStore:
         assert loop.metadata["agent"] is False
 
     def test_load_rejects_error_payload_no_fabrication(self):
-        t = _FakeTransport({("GET", "/umrs/loops/ghost"): {"detail": "Loop ghost not found"}})
+        t = _FakeTransport({("GET", "/ghost"): {"detail": "Loop ghost not found"}})
         with pytest.raises(KeyError, match="not found"):
             HttpLoopStore(t).load("ghost")
 
