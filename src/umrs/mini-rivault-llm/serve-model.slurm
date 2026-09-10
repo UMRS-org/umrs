@@ -155,6 +155,23 @@ mask_secret_state() {
     fi
 }
 
+# ─── Bounded compose-up ─────────────────────────────────────────────────────
+# Live finding (2026-09-07, rccs exit-stack): `podman-compose up` wedged
+# silently for ~7 h on a crashed-stack signature instead of exiting nonzero;
+# only an operator kill ended it. Every `up` now rides timeout(1) with a
+# named diagnostic; RIVAULT_COMPOSE_UP_TIMEOUT_SEC overrides the bound.
+RIVAULT_COMPOSE_UP_TIMEOUT_SEC="${RIVAULT_COMPOSE_UP_TIMEOUT_SEC:-180}"
+_rivault_compose_up() {
+    local out rc
+    out="$(timeout "${RIVAULT_COMPOSE_UP_TIMEOUT_SEC}" "$@" 2>&1)"
+    rc=$?
+    printf '%s\n' "${out}"
+    if [[ ${rc} -eq 124 ]]; then
+        echo "[rivault] ERROR: compose up exceeded ${RIVAULT_COMPOSE_UP_TIMEOUT_SEC}s — wedged (killed); check stack state" >&2
+    fi
+    return "${rc}"
+}
+
 # ─── Task 4: assert-offline — fail fast if offline invariants violated ──────
 # Establish the batch-shell offline posture BEFORE asserting: these vars are
 # passed to podman via -e later, but the assert runs at batch-shell scope where
@@ -1204,7 +1221,7 @@ run_litellm_db_sql_migrations() {
     rm -rf "${migrations_dir}" 2>/dev/null || true
     mkdir -p "${migrations_dir}"
 
-    if ! podman-compose --project-name "${RIVAULT_COMPOSE_PROJECT}" --in-pod false \
+    if ! _rivault_compose_up podman-compose --project-name "${RIVAULT_COMPOSE_PROJECT}" --in-pod false \
              --env-file "./env.${uuid}" \
              --file "./serve-model.yaml" \
              ${GPUoverride[@]} \
@@ -2037,7 +2054,7 @@ if ! run_litellm_db_sql_migrations; then
     exit 1
 fi
 
-if ! podman-compose --project-name "${RIVAULT_COMPOSE_PROJECT}" --in-pod false \
+if ! _rivault_compose_up podman-compose --project-name "${RIVAULT_COMPOSE_PROJECT}" --in-pod false \
          --env-file "./env.${uuid}" \
          --file "./serve-model.yaml" ${GPUoverride[@]} \
          ${_profile_flags} \
@@ -2047,7 +2064,7 @@ if ! podman-compose --project-name "${RIVAULT_COMPOSE_PROJECT}" --in-pod false \
 	exit 1
 fi
 
-if ! podman-compose --project-name "${RIVAULT_EXIT_PROJECT}" --in-pod false \
+if ! _rivault_compose_up podman-compose --project-name "${RIVAULT_EXIT_PROJECT}" --in-pod false \
          --env-file "./env.${uuid}" \
          --file "./userdata-access.yaml" \
          --profile harness \
