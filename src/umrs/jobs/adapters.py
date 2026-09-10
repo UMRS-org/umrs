@@ -1430,6 +1430,7 @@ def create_status_checker(
     orchestrator: BaseOrchestrator | None = None,
     embedding_worker=None,
     include_model_download: bool = True,
+    instance_id: str | None = None,
 ):
     """
     Create a composite status checker for JobService.
@@ -1493,7 +1494,7 @@ def create_status_checker(
 
     from .research_loop_backend import ResearchLoopStatusChecker
 
-    checker.register(JobType.RESEARCH_LOOP, ResearchLoopStatusChecker())
+    checker.register(JobType.RESEARCH_LOOP, ResearchLoopStatusChecker(instance_id=instance_id))
 
     return checker
 

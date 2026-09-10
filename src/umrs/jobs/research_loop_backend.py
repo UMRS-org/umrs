@@ -119,7 +119,19 @@ class ResearchLoopBackend(OrchestratorBackend):
 
 
 class ResearchLoopStatusChecker(BackendStatusChecker):
-    """Loop-record-driven attempt status."""
+    """Loop-record-driven attempt status.
+
+    ``instance_id`` scopes in-process liveness: server-hosted loop drivers
+    live only in the claiming server's runner registry, so every other
+    server's monitor would always read them as "not alive" and kill foreign
+    attempts (live 2026-09-10: bdrt/ai4s/octopus checkers failed a parked
+    rccs-hosted loop's attempts in a 3-way cascade). Foreign attempts still
+    honor terminal loop-record states; death detection stays with the
+    host's LOST-attempt reconciler.
+    """
+
+    def __init__(self, instance_id: str | None = None) -> None:
+        self._instance_id = instance_id
 
     @property
     def job_type(self) -> JobType:
@@ -140,7 +152,13 @@ class ResearchLoopStatusChecker(BackendStatusChecker):
         if snap is None:
             return AttemptCheckResult.failed(f"research loop record missing: {loop_id}")
         remote = _parse_ref(backend_ref).get("driver") == "slurm"
-        return _result_for(snap, remote_driver=remote, attempt=attempt)
+        foreign = (
+            not remote
+            and self._instance_id
+            and attempt.umrs_instance_id
+            and attempt.umrs_instance_id != self._instance_id
+        )
+        return _result_for(snap, remote_driver=remote, attempt=attempt, foreign=foreign)
 
 
 # Grace for cluster (slurm) drivers: queue wait + image pull + pod start on
@@ -155,6 +173,7 @@ def _result_for(
     *,
     remote_driver: bool = False,
     attempt: JobAttempt | None = None,
+    foreign: bool = False,
 ) -> AttemptCheckResult:
     status = snap["status"]
     detail = f"iteration {snap['current_iteration']}/{snap['max_iterations']}"
@@ -168,6 +187,11 @@ def _result_for(
                 "findings": snap["total_findings"],
             }
         )
+    if foreign:
+        # Not our attempt: the in-process registry can never see its driver.
+        # Terminal records above are record-truth; everything else defers to
+        # the host's own checker + LOST reconciliation.
+        return AttemptCheckResult.running(f"{detail} (hosted by another instance)")
     if not snap.get("driver_alive", False):
         # A parked ask-mode loop is human-paced: the engine thread sits in
         # the approval gate, but multi-host races (claim requeue) or a brief
