@@ -32,7 +32,7 @@ class ClusterLoopTransport:
     base_url: str  # guard-allowed ingress, e.g. https://data0.ai.r-ccs.riken.jp/rccs
     owner_headers: dict[str, str]
     timeout: int = 30
-    path_prefix: str = "/gw/loops"  # gateway lane rewrites to server's /umrs/loops/*
+    path_prefix: str = "/gw/loopjob"  # HMAC lane; rewrites to server's /umrs/loops/*
 
     def _call(
         self, method: str, path: str, body: dict[str, Any] | None = None
