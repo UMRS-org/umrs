@@ -83,6 +83,29 @@ class HttpLoopStore:
     def __init__(self, transport: ClusterLoopTransport) -> None:
         self._transport = transport
 
+    @property
+    def durability(self) -> str:
+        """FindingSink-protocol surface (fold bookkeeping only)."""
+        return "remote-loop-record"
+
+    def get(self, loop_id: str) -> ResearchLoop | None:
+        """LoopStore.get contract: None when the record does not exist."""
+        try:
+            return self.load(loop_id)
+        except KeyError:
+            return None
+
+    def mint_artifact(self, **kwargs: Any) -> None:  # FindingSink protocol
+        raise RuntimeError(
+            "cluster driver pods must not mint knowledge artifacts server-side "
+            "(driver-side findings mint after pull-resume)"
+        )
+
+    def link(self, **kwargs: Any) -> None:  # FindingSink protocol
+        raise RuntimeError(
+            "cluster driver pods must not link knowledge artifacts server-side"
+        )
+
     def load(self, loop_id: str) -> ResearchLoop:
         """Load the durable loop record (404-safe; cluster provisioner only
         hosts loops that already exist)."""
