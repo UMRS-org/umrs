@@ -694,6 +694,11 @@ def _create_app():
         lifespan=_lifespan,
     )
 
+    # WP-12 round 2: optional OTel (no-op unless OTEL_EXPORTER_OTLP_ENDPOINT).
+    from umrs.server.otel import setup_otel
+
+    setup_otel(app, service_label="umrs-http-sidecar")
+
     # Correlation ID middleware: extracts X-Request-ID from Gateway (NGINX)
     # or X-Correlation-ID from R4 SDK; makes it available via get_request_id().
     from umrs.server.correlation import CorrelationIDMiddleware
