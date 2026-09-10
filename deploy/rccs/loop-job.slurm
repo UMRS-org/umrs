@@ -32,6 +32,7 @@ if [[ ! -f "${WRAPPER_DIR}/site.yaml" ]]; then
 fi
 export UMRS_SITE_CONFIG="${UMRS_SITE_CONFIG:-${WRAPPER_DIR}/site.yaml}"
 R4_DIR="${R4_DIR:-$(cd "${WRAPPER_DIR}/../../src/umrs" 2>/dev/null && pwd)}"
+export R4_DIR
 if [[ -z "${R4_DIR}" || ! -d "${R4_DIR}/knowledge" ]]; then
     echo "[loop-job] FATAL: umrs source tree not under ${R4_DIR} (set R4_DIR=<repo-root>/src/umrs)"
     exit 1
