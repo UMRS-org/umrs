@@ -60,13 +60,18 @@ async def put_cached_output(
 ):
     """Cache a tool output for a session (project-namespaced)."""
     store = _get_store()
+    ttl = req.get("ttl_seconds", 300)
+    if not isinstance(ttl, int) or isinstance(ttl, bool) or ttl <= 0:
+        # WP-16 round 2: presets reject TTL<=0 at the request boundary
+        # (no born-expired cache entries; same clamp as jobs/traces/identity).
+        raise HTTPException(status_code=400, detail="ttl_seconds must be a positive integer")
     entry = store.put(
         session_id=_namespaced(project_id, req["session_id"]),
         tool_name=req["tool_name"],
         inputs=req.get("inputs"),
         output=req.get("output"),
         output_ref=req.get("output_ref"),
-        ttl_seconds=req.get("ttl_seconds", 300),
+        ttl_seconds=ttl,
     )
     return entry.to_dict()
 

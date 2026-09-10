@@ -59,7 +59,7 @@ class TraceCreateRequest(BaseModel):
     parent_trace_id: str | None = None
     inputs: dict[str, Any] | None = None
     model_ref: dict[str, Any] | None = None
-    ttl_seconds: int | None = None
+    ttl_seconds: int | None = Field(default=None, gt=0)
 
 
 class TraceUpdateRequest(BaseModel):
