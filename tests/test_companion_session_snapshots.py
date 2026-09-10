@@ -4,14 +4,16 @@ from __future__ import annotations
 
 import json
 
-import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from umrs.api.companion_sessions import router
 
 
 def _venue_state_match(
-    row: dict, archived_at: str | None, venue_filter: list[str] | None, state_filter: list[str] | None
+    row: dict,
+    archived_at: str | None,
+    venue_filter: list[str] | None,
+    state_filter: list[str] | None,
 ) -> tuple[str, str] | None:
     """Venue/state csv predicate; returns (venue, computed) or None."""
     venue = row.get("venue", "local")
@@ -143,9 +145,7 @@ class _FakeCursor:
             )
             if matched is not None:
                 venue, computed = matched
-                rows.append(
-                    (sid, row["name"], row["update_marker"], venue, computed, archived_at)
-                )
+                rows.append((sid, row["name"], row["update_marker"], venue, computed, archived_at))
         rows.sort(key=lambda r: r[2], reverse=True)
         self._result = rows[:limit]
 
@@ -295,9 +295,7 @@ class TestSnapshotList:
         client = _client(pool)
         _post(client, pool, sid="local-1", venue="local")
         _post(client, pool, sid="front-1", venue="frontend")
-        resp = client.get(
-            "/umrs/companion/sessions?venue=frontend", headers={"x-user-id": "alice"}
-        )
+        resp = client.get("/umrs/companion/sessions?venue=frontend", headers={"x-user-id": "alice"})
         rows = resp.json()["snapshots"]
         assert [r["session_id"] for r in rows] == ["front-1"]
         assert rows[0]["venue"] == "frontend"
@@ -309,9 +307,7 @@ class TestSnapshotList:
         _post(client, pool, sid="dead-1", state="stopped")
         _post(client, pool, sid="gone-1", state="stopped")
         pool.archives.add("gone-1")
-        resp = client.get(
-            "/umrs/companion/sessions?state=stopped", headers={"x-user-id": "alice"}
-        )
+        resp = client.get("/umrs/companion/sessions?state=stopped", headers={"x-user-id": "alice"})
         assert [r["session_id"] for r in resp.json()["snapshots"]] == ["dead-1"]
 
     def test_state_archived_with_include_archived(self):
@@ -334,25 +330,19 @@ class TestSnapshotList:
         payload_a = '{"metadata": {"config": {"project_id": "proj-a"}}}'
         _post(client, pool, sid="pa", payload=payload_a)
         _post(client, pool, sid="pb", payload='{"metadata": {"config": {"project_id": "proj-b"}}}')
-        resp = client.get(
-            "/umrs/companion/sessions?project=proj-a", headers={"x-user-id": "alice"}
-        )
+        resp = client.get("/umrs/companion/sessions?project=proj-a", headers={"x-user-id": "alice"})
         assert [r["session_id"] for r in resp.json()["snapshots"]] == ["pa"]
 
     def test_invalid_state_filter_is_400(self):
         pool = _FakePool()
         client = _client(pool)
-        resp = client.get(
-            "/umrs/companion/sessions?state=doomed", headers={"x-user-id": "alice"}
-        )
+        resp = client.get("/umrs/companion/sessions?state=doomed", headers={"x-user-id": "alice"})
         assert resp.status_code == 400
 
     def test_invalid_venue_filter_is_400(self):
         pool = _FakePool()
         client = _client(pool)
-        resp = client.get(
-            "/umrs/companion/sessions?venue=nowhere", headers={"x-user-id": "alice"}
-        )
+        resp = client.get("/umrs/companion/sessions?venue=nowhere", headers={"x-user-id": "alice"})
         assert resp.status_code == 400
 
 

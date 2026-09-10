@@ -76,6 +76,22 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Diag (temporary): same mount inside the run, reporting as the image user.
+podman run --rm --entrypoint /bin/sh \
+  --cap-drop ALL \
+  --security-opt no-new-privileges \
+  --read-only \
+  --tmpfs /tmp:size=1g \
+  --tmpfs /run:size=64m \
+  -v "${R4_DIR}:/umrs-repo/src/umrs:ro,Z" \
+  "${LOOP_IMAGE}" -c '
+    id
+    ls -la /umrs-repo/src/umrs | head -8
+    ls /umrs-repo/src/umrs/knowledge 2>&1 | head -5
+    PYTHONPATH=/umrs-repo/src python -c "import umrs; print(umrs.__file__)" 2>&1 | tail -2
+    PYTHONPATH=/umrs-repo/src python -c "import umrs.knowledge; print(\"knowledge OK\")" 2>&1 | tail -2
+  ' 2>&1 | sed 's/^/[diag] /'
+
 exec podman run --rm \
   --cap-drop ALL \
   --security-opt no-new-privileges \
