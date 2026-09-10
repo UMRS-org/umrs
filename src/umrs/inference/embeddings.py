@@ -165,7 +165,7 @@ def _resolve_store_fn(store_fn):
     """Default to the production SQL store when no override is supplied."""
     if store_fn is not None:
         return store_fn
-    from umrs.server.sql import store_embeddings_in_db  # noqa: boundary
+    from umrs.server.sql import store_embeddings_in_db  # noqa: boundary — lazy fallback
 
     return store_embeddings_in_db
 

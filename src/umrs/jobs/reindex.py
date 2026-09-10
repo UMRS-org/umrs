@@ -85,7 +85,7 @@ class KnowledgeReindexBackend(OrchestratorBackend):
             logger.info("reindex no-op: no stale artifacts for job=%s", job.job_id)
             return _backend_ref(spec, swept=0, stamped=0)
 
-        from umrs.server.sql import maintain_pgvector_index  # noqa: boundary — lazy composition
+        from umrs.server.sql import maintain_pgvector_index  # noqa: boundary — lazy server.sql composition (sweep)
 
         metrics = maintain_pgvector_index(
             spec["database"],
