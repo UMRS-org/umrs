@@ -267,21 +267,21 @@ class RemoteSlurmBackend(SlurmBackend):
         When per-user delegation is active and ``requesting_user`` is provided,
         the sbatch is executed as that user via the UMRS service identity key.
         """
-        model = model_path or self.config.model_path
-        if not model:
-            raise ValueError(
-                "model_path is required (set VLLM_MODEL_PATH or pass explicitly)"
-            )
-
-        # Determine which SSH connection to use for submission
+        # Wrapper jobs (loop jobs, vendor wrappers) carry their own runtime —
+        # a model requirement is only valid for the legacy direct-submit path.
         requesting_user = kwargs.pop("requesting_user", None)
-
-        # Peek at the env dict before popping — needed for SLURM_WRAPPER_SCRIPT check.
         _peek_env = kwargs.get("env") or {}
         wrapper_script = self._get_wrapper_script(env=_peek_env)
+
+        model = model_path or self.config.model_path
+        if not model and not wrapper_script:
+            raise ValueError(
+                "model_path is required for direct-submit jobs (no wrapper declares one)"
+            )
+
         if wrapper_script:
             return await self._submit_wrapper_job(
-                model, wrapper_script, requesting_user=requesting_user, **kwargs
+                model or "", wrapper_script, requesting_user=requesting_user, **kwargs
             )
 
         # Legacy: generate Singularity-based sbatch script and pipe via stdin.

@@ -70,9 +70,19 @@ class ResearchLoopBackend(OrchestratorBackend):
         return "research_loop"
 
     async def submit_job(self, job: Job, attempt: JobAttempt) -> str:
+        spec = validate_research_loop_spec(job.spec or {})
+
+        # Cluster venue: submit the driver inside a mini-RiVault/Slurm sandbox
+        # instead of the server process (WP-05 round 2). Front-end rows take the
+        # in-process path below.
+        venue = str(spec.get("venue") or "")
+        if venue.startswith(CLUSTER_VENUE_PATTERN):
+            from .cluster_venue import ClusterSlurmSubmitter
+
+            return await ClusterSlurmSubmitter().submit(job=job, attempt=attempt, spec=spec)
+
         from umrs.knowledge import loop_hosting
 
-        spec = validate_research_loop_spec(job.spec or {})
         kind = loop_hosting.host(
             spec["loop_id"], job_id=job.job_id, attempt_id=attempt.attempt_id
         )
