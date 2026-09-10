@@ -100,16 +100,24 @@ def _infer_tls_block(cfg: ProvisionConfig) -> str:
         and not cfg.infer_host.replace("[", "").replace("]", "").replace(".", "").isdigit()
     )
     resolver = f"    resolver {cfg.infer_resolve_via} valid=10s;\n" if needs_resolver else ""
-    if cfg.infer_uplink == "https":
-        return f"""{resolver}
-      set $infer https://{cfg.infer_host}:{cfg.infer_port}/s/{cfg.session_id}/;
-      proxy_pass $infer;
+    # IMPORTANT nginx semantics: `proxy_pass <variable>` with the URI in the
+    # variable DROPS the request path (live-leg I-2 failure: path=/ denied).
+    # Correct recipe: rewrite the path to /s/<sid>/..., then `proxy_pass
+    # http://<scheme-var>` with NO URI — the rewritten URI passes verbatim and
+    # the resolver re-resolves the upstream name per request.
+    scheme = "https" if cfg.infer_uplink == "https" else "http"
+    tls = (
+        f"""
       proxy_ssl_verify on;
       proxy_ssl_trusted_certificate {cfg.internal_ca_path};
       proxy_ssl_server_name on;"""
+        if cfg.infer_uplink == "https"
+        else ""
+    )
     return f"""{resolver}
-      set $infer http://{cfg.infer_host}:{cfg.infer_port}/s/{cfg.session_id}/;
-      proxy_pass $infer;"""
+      set $um_infer {cfg.infer_host}:{cfg.infer_port};
+      rewrite ^/(.+)$ /s/{cfg.session_id}/$1 break;
+      proxy_pass {scheme}://$um_infer;{tls}"""
 
 
 def render_nginx_conf(cfg: ProvisionConfig) -> str:
