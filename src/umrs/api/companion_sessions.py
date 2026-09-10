@@ -124,7 +124,15 @@ async def put_session_snapshot(
                     updated_at = now()
                 WHERE companion_session_snapshots.update_marker <= EXCLUDED.update_marker
                 """,
-                (uid, session_id, body.name, body.payload, body.updated_at, venue, state),
+                (
+                    uid,
+                    session_id,
+                    body.name,
+                    body.payload,
+                    body.updated_at,
+                    venue,
+                    state,
+                ),
             )
             applied = cur.rowcount > 0
             conn.commit()
