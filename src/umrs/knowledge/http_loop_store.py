@@ -12,11 +12,12 @@ rides POST /umrs/loops/{loop_id}/iterations (already live).
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass
 from typing import Any
 
-import requests
+from urllib.request import Request, urlopen
 
 from .loop import LoopPhase, LoopStatus, ResearchLoop
 
@@ -25,26 +26,34 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class ClusterLoopTransport:
-    """Request summon surface (unit-tested; real product uses requests)."""
+    """Request summon surface (unit-tested; stdlib-only — the r4-mcp driver
+    image carries no requests)."""
 
     base_url: str  # guard-allowed ingress, e.g. https://data0.ai.r-ccs.riken.jp/rccs
     owner_headers: dict[str, str]
     timeout: int = 30
 
+    def _call(
+        self, method: str, path: str, body: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        data = None
+        headers = dict(self.owner_headers)
+        if body is not None:
+            data = json.dumps(body).encode("utf-8")
+            headers["Content-Type"] = "application/json"
+        req = Request(f"{self.base_url}{path}", data=data, headers=headers,
+                      method=method)
+        with urlopen(req, timeout=self.timeout) as resp:
+            return json.loads(resp.read() or b"{}")
+
     def get(self, path: str) -> dict[str, Any]:
-        return requests.get(
-            f"{self.base_url}{path}", headers=self.owner_headers, timeout=self.timeout
-        ).json()
+        return self._call("GET", path)
 
     def post(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
-        return requests.post(
-            f"{self.base_url}{path}", json=body, headers=self.owner_headers, timeout=self.timeout
-        ).json()
+        return self._call("POST", path, body)
 
     def put(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
-        return requests.put(
-            f"{self.base_url}{path}", json=body, headers=self.owner_headers, timeout=self.timeout
-        ).json()
+        return self._call("PUT", path, body)
 
 
 def _loop_from_status(loop_id: str, payload: dict[str, Any]) -> ResearchLoop:
