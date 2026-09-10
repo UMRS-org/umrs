@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 # Schema version - increment when schema changes
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 # SQL for creating the jobs table (U-701)
@@ -43,6 +43,10 @@ CREATE TABLE IF NOT EXISTS jobs (
 
     -- Fan-out child job IDs (GitHub Issue #87, TASK-015-005)
     fan_out_child_job_ids TEXT[],
+
+    -- WP-14 claim-side cluster scoping: site name this job belongs to.
+    -- Empty string = shared/global (pre-venue rows; deliberately global jobs).
+    venue VARCHAR(32) NOT NULL DEFAULT '',
 
     next_run_at TIMESTAMPTZ,
     active_attempt_id VARCHAR(64),
@@ -230,6 +234,13 @@ CREATE TABLE IF NOT EXISTS schema_versions (
 SCHEMA_MIGRATIONS = {
     3: "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS ttl_seconds INTEGER;",
     4: "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS fan_out_child_job_ids TEXT[];",
+    # 5 (2026-09-10): jobs.venue — claim-side cluster scoping (WP-14/ADR-034).
+    5: (
+        "ALTER TABLE jobs "
+        "ADD COLUMN IF NOT EXISTS venue VARCHAR(32) NOT NULL DEFAULT ''; "
+        "CREATE INDEX IF NOT EXISTS idx_jobs_venue_status_next_run "
+        "ON jobs (venue, status, next_run_at);"
+    ),
 }
 
 

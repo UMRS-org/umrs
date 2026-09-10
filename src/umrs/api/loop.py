@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field
 from umrs.knowledge import loop_hosting
 from umrs.knowledge.loop import (
     AutonomousResearchLoop,
+    LoopPhase,
     LoopStatus,
     ResearchLoop,
 )
@@ -854,6 +855,176 @@ async def list_iterations(
         )
         for i in iterations[-limit:]
     ]
+
+
+class AppendIterationRequest(BaseModel):
+    """Cluster-venue loop-driver writes one iteration outcome (WP-05 round 2).
+
+    Mirrors the durable loop record's LoopIteration shape; the backend maps it
+    onto research_state semantics via loop_store.load/save (never replaces the
+    whole record, never invents findings text).
+    """
+
+    iteration_id: str = ""
+    iteration_number: int = 0
+    phase: str = "experiment_execution"
+    started_at: str = ""
+    completed_at: str = ""
+    hypothesis: str = ""
+    hypothesis_id: str = ""
+    experiment_id: str = ""
+    results: dict[str, Any] = Field(default_factory=dict)
+    analysis: str = ""
+    evaluation: str = ""
+    findings: list[str] = Field(default_factory=list)
+    workflow_run_id: str = ""
+    status: str = "pending"  # pending | running | completed | failed
+    completion_state: str | None = None  # "ready" when the driver is concluding
+
+
+async def _apply_iteration_record(loop: ResearchLoop, body: AppendIterationRequest) -> dict[str, Any]:
+    """Map the driver-provided body onto the store-backed loop and save it."""
+    from r4_contracts.research import Finding
+    from umrs.knowledge.loop import LoopIteration, LoopPhase
+
+    try:
+        phase = LoopPhase(body.phase)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=f"invalid phase {body.phase!r}") from exc
+
+    iteration_id = body.iteration_id or f"it-{body.iteration_number:03d}"
+    iteration = LoopIteration(
+        iteration_id=iteration_id,
+        loop_id=loop.loop_id,
+        iteration_number=body.iteration_number or len(loop.iterations) + 1,
+        phase=phase,
+        started_at=body.started_at,
+        completed_at=body.completed_at,
+        hypothesis=body.hypothesis,
+        hypothesis_id=body.hypothesis_id,
+        experiment_id=body.experiment_id,
+        workflow_run_id=body.workflow_run_id,
+        results=body.results,
+        analysis=body.analysis,
+        evaluation=body.evaluation,
+        findings=[
+            Finding(
+                finding_id=f"{iteration_id}-f{i}",
+                statement=f,
+                hypothesis_id=body.hypothesis_id,
+            )
+            for i, f in enumerate(body.findings)
+        ],
+        status=body.status,
+    )
+    loop.iterations.append(iteration)
+    loop.current_iteration = min(
+        loop.max_iterations,
+        max(loop.current_iteration, iteration.iteration_number),
+    )
+    if body.findings:
+        loop.total_findings = loop.total_findings + len(body.findings)
+    if body.completion_state == "ready":
+        loop.status = LoopStatus.STOPPED
+    _loop_store.save(loop)
+    return {
+        "ok": True,
+        "iteration_number": iteration.iteration_number,
+        "status": loop.status.value,
+        "current_iteration": loop.current_iteration,
+    }
+
+
+@router.post(
+    "/{loop_id}/iterations",
+    summary="Append one iteration outcome (cluster-venue driver write)",
+    response_model=dict[str, Any],
+)
+async def append_iteration(loop_id: str, body: AppendIterationRequest) -> dict[str, Any]:
+    """Cluster-venue loop drivers write their iteration outcome here.
+
+    Owner-scoped via the verified-identity envelope (same envelope as allied
+    loop routes through the gateway lanes).
+    """
+    loop = get_loop(loop_id)
+    if loop.status == LoopStatus.STOPPED:
+        raise HTTPException(status_code=409, detail="loop already finished")
+    return await _apply_iteration_record(loop, body)
+
+
+@router.get(
+    "/{loop_id}/snapshot",
+    summary="Checker-safe snapshot of loop runtime state",
+)
+async def get_loop_snapshot(loop_id: str) -> dict[str, Any]:
+    """Mirror the loop_hosting.snapshot checker view over HTTP.
+
+    Cluster-venue checkers call this to compute attempt status without a
+    direct DSN (loop truth stays server-side; snapshot stays a projection).
+    """
+    from umrs.knowledge import loop_hosting
+
+    if not loop_hosting.is_configured():
+        _configure_hosting()
+    snap = loop_hosting.snapshot(loop_id)
+    if snap is None:
+        raise HTTPException(status_code=404, detail=f"Loop {loop_id} not found")
+    return snap
+
+
+class LoopStateUpdateRequest(BaseModel):
+    """Whole-status projection write from cluster-venue drivers (WP-05 round 2).
+
+    `save()` semantics over the durable loop record: only the fields drivers
+    legitimately change between iterations. Other state (plan, iterations,
+    timestamps except completed_at) stays owned by the server.
+    """
+
+    status: str | None = None
+    phase: str | None = None
+    current_iteration: int | None = None
+    total_hypotheses_tested: int | None = None
+    total_experiments_run: int | None = None
+    total_findings: int | None = None
+    success_rate: float | None = None
+    completed_at: str | None = None
+    error: str | None = None
+    metadata: dict[str, Any] | None = None
+
+
+@router.put("/{loop_id}/state", summary="Status projection write (cluster driver save)", response_model=LoopStatusResponse)
+async def update_loop_state(loop_id: str, body: LoopStateUpdateRequest) -> LoopStatusResponse:
+    """Driver calls `save()` after each iteration — mapped to the durable record."""
+    loop = get_loop(loop_id)
+    if body.status is not None:
+        try:
+            loop.status = LoopStatus(body.status)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=f"invalid status {body.status!r}") from exc
+    if body.phase is not None:
+        try:
+            loop.phase = LoopPhase(body.phase)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=f"invalid phase {body.phase!r}") from exc
+    if body.current_iteration is not None:
+        loop.current_iteration = max(0, min(loop.max_iterations, body.current_iteration))
+    if body.total_hypotheses_tested is not None:
+        loop.total_hypotheses_tested = body.total_hypotheses_tested
+    if body.total_experiments_run is not None:
+        loop.total_experiments_run = body.total_experiments_run
+    if body.total_findings is not None:
+        loop.total_findings = body.total_findings
+    if body.success_rate is not None:
+        loop.success_rate = body.success_rate
+    if body.completed_at is not None:
+        loop.completed_at = body.completed_at
+    if body.error is not None:
+        loop.metadata["error"] = body.error
+    if body.metadata:
+        loop.metadata.update(body.metadata)
+    loop.updated_at = datetime.now(timezone.utc).isoformat()
+    _loop_store.save(loop)
+    return await get_loop_status(loop_id)
 
 
 @router.post(

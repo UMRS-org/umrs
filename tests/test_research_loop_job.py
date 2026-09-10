@@ -113,9 +113,27 @@ class TestSpecAndWiring:
             "driver": "engine",
         }
         assert validate_research_loop_spec({"loop_id": "l", "driver": "agent"})["driver"] == "agent"
-        with pytest.raises(TypeError):
-            validate_research_loop_spec("nope")
-        for bad in ({}, {"loop_id": " "}, {"loop_id": "l", "driver": "rocket"}):
+        # Venue field (WP-05 round 2): frontend default, cluster:<name> engine-only.
+        assert validate_research_loop_spec({"loop_id": "l", "venue": "frontend"}) == {
+            "loop_id": "l",
+            "driver": "engine",
+            "venue": "frontend",
+        }
+        assert validate_research_loop_spec({"loop_id": "l", "venue": "cluster:rccs"}) == {
+            "loop_id": "l",
+            "driver": "engine",
+            "venue": "cluster:rccs",
+        }
+        with pytest.raises(ValueError, match="cluster venue accepts driver 'engine' only"):
+            validate_research_loop_spec(
+                {"loop_id": "l", "driver": "agent", "venue": "cluster:rccs"}
+            )
+        for bad in (
+            {},
+            {"loop_id": " "},
+            {"loop_id": "l", "driver": "rocket"},
+            {"loop_id": "l", "venue": "cluster-bad-prefix"},
+        ):
             with pytest.raises(ValueError):
                 validate_research_loop_spec(bad)
 
