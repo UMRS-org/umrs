@@ -1,6 +1,8 @@
-"""Route tests for companion session snapshots (ADR-036 F2 first leg)."""
+"""Route tests for companion session snapshots (ADR-036 F2 + venue registry 0084)."""
 
 from __future__ import annotations
+
+import json
 
 import pytest
 from fastapi import FastAPI
@@ -8,9 +10,68 @@ from fastapi.testclient import TestClient
 from umrs.api.companion_sessions import router
 
 
+def _venue_state_match(
+    row: dict, archived_at: str | None, venue_filter: list[str] | None, state_filter: list[str] | None
+) -> tuple[str, str] | None:
+    """Venue/state csv predicate; returns (venue, computed) or None."""
+    venue = row.get("venue", "local")
+    if venue_filter is not None and venue not in venue_filter:
+        return None
+    computed = "archived" if archived_at else row.get("state", "")
+    if state_filter is not None and computed not in state_filter:
+        return None
+    return venue, computed
+
+
+def _row_matches(
+    row: dict,
+    sid: str,
+    *,
+    archived_at: str | None,
+    include_archived: bool,
+    venue_filter: list[str] | None,
+    state_filter: list[str] | None,
+    project_filter: str | None,
+) -> tuple[str, str] | None:
+    """One-row list predicate for the fake cursor; returns (venue, computed)."""
+    if archived_at and not include_archived:
+        return None
+    matched = _venue_state_match(row, archived_at, venue_filter, state_filter)
+    if matched is None:
+        return None
+    if project_filter is not None and not _payload_project_matches(row, project_filter):
+        return None
+    return matched
+
+
+def _payload_project_matches(row: dict, project_filter: str) -> bool:
+    """Fake of the payload::jsonb metadata project lookup."""
+    try:
+        meta = json.loads(row["payload"]).get("metadata") or {}
+    except json.JSONDecodeError:
+        return False
+    project = (meta.get("config") or {}).get("project_id") or meta.get("project_id")
+    return project == project_filter
+
+
+def _parse_list_params(sql_l: str, rest: list) -> tuple:
+    """Split tail params by clause text; both filter params are str lists."""
+    venue_filter = state_filter = None
+    project_filter = None
+    if "venue = any" in sql_l and rest and isinstance(rest[0], list):
+        venue_filter = rest.pop(0)
+    if "computed_state = any" in sql_l and rest and isinstance(rest[0], list):
+        state_filter = rest.pop(0)
+    if rest and isinstance(rest[0], str):
+        project_filter = rest.pop(0)
+    include_archived = "archived_at is null" not in sql_l
+    return venue_filter, state_filter, project_filter, include_archived
+
+
 class _FakeCursor:
-    def __init__(self, table, recorded):
+    def __init__(self, table, archives, recorded):
         self._table = table
+        self._archives = archives
         self._recorded = recorded
         self._result = []
         self._row = None
@@ -22,38 +83,85 @@ class _FakeCursor:
     def __exit__(self, *_args):
         return False
 
+    # -- insert (upsert) ----------------------------------------------------
+    def _exec_insert(self, params):
+        uid, sid, name, payload, marker, venue, state = params
+        venue = venue or "local"
+        existing = self._table.get((uid, sid))
+        if existing is None or existing["update_marker"] <= marker:
+            previous = existing or {}
+            self._table[(uid, sid)] = {
+                "name": name,
+                "payload": payload,
+                "update_marker": marker,
+                "venue": venue if venue else previous.get("venue", "local"),
+                "state": state if state else previous.get("state", ""),
+            }
+            self.rowcount = 1
+        else:
+            self.rowcount = 0
+
+    # -- detail select ------------------------------------------------------
+    def _exec_get(self, params):
+        uid, sid = params
+        row = self._table.get((uid, sid))
+        if row is None:
+            self._row = None
+        else:
+            archived = sid in self._archives
+            self._row = (
+                sid,
+                row["name"],
+                row["payload"],
+                row["update_marker"],
+                row.get("venue", "local"),
+                row.get("state", ""),
+                "ts" if archived else None,
+            )
+
+    # -- listing select -----------------------------------------------------
+    def _exec_list(self, sql_l: str, params):
+        uid = params[0]
+        rest = list(params[1:])
+        limit = rest.pop()  # limit is always last
+        venue_filter, state_filter, project_filter, include_archived = _parse_list_params(
+            sql_l, rest
+        )
+        rows = []
+        for (row_uid, sid), row in self._table.items():
+            if row_uid != uid:
+                continue
+            archived_at = "ts" if sid in self._archives else None
+            matched = _row_matches(
+                row,
+                sid,
+                archived_at=archived_at,
+                include_archived=include_archived,
+                venue_filter=venue_filter,
+                state_filter=state_filter,
+                project_filter=project_filter,
+            )
+            if matched is not None:
+                venue, computed = matched
+                rows.append(
+                    (sid, row["name"], row["update_marker"], venue, computed, archived_at)
+                )
+        rows.sort(key=lambda r: r[2], reverse=True)
+        self._result = rows[:limit]
+
     def execute(self, sql, params):
         sql_l = sql.lower().strip()
         self._recorded.append((sql, params))
         if sql_l.startswith("insert"):
-            uid, sid, name, payload, marker = params
-            existing = self._table.get((uid, sid))
-            if existing is None or existing["update_marker"] <= marker:
-                self._table[(uid, sid)] = {
-                    "name": name,
-                    "payload": payload,
-                    "update_marker": marker,
-                }
-                self.rowcount = 1
-            else:
-                self.rowcount = 0
+            self._exec_insert(params)
             return
-        if sql_l.startswith("select session_id, name, payload"):
-            uid, sid = params
-            row = self._table.get((uid, sid))
-            if row is None:
-                self._row = None
-            else:
-                self._row = (sid, row["name"], row["payload"], row["update_marker"])
+        if sql_l.startswith("select s.session_id"):
+            self._exec_get(params)
             return
-        if sql_l.startswith("select session_id, name, update_marker"):
-            uid, limit = params
-            rows = [
-                (sid, r["name"], r["update_marker"])
-                for (u, sid), r in self._table.items()
-                if u == uid
-            ]
-            self._result = rows[:limit]
+        if sql_l.startswith("select session_id, name, update_marker, venue"):
+            self._exec_list(sql_l, params)
+            return
+        raise AssertionError(f"unexpected SQL: {sql_l[:80]}")
 
     def fetchone(self):
         return self._row
@@ -63,8 +171,8 @@ class _FakeCursor:
 
 
 class _FakeConn:
-    def __init__(self, table, recorded):
-        self._cursor = _FakeCursor(table, recorded)
+    def __init__(self, table, archives, recorded):
+        self._cursor = _FakeCursor(table, archives, recorded)
         self.committed = False
 
     def cursor(self):
@@ -77,8 +185,9 @@ class _FakeConn:
 class _FakePool:
     def __init__(self):
         self.table: dict = {}
+        self.archives: set = set()
         self.recorded: list = []
-        self.conn = _FakeConn(self.table, self.recorded)
+        self.conn = _FakeConn(self.table, self.archives, self.recorded)
 
     def getconn(self):
         return self.conn
@@ -94,57 +203,77 @@ def _client(find_pool: _FakePool) -> TestClient:
     return TestClient(app)
 
 
+def _post(client, pool, uid="alice", sid="s1", **over):
+    body = {"name": "demo", "updated_at": "2026-09-09T10:00:00Z", "payload": "{}"}
+    body.update(over)
+    return client.post(
+        f"/umrs/companion/sessions/{sid}/snapshot", json=body, headers={"x-user-id": uid}
+    )
+
+
 class TestSnapshotUpsert:
     def test_insert_then_stale_marker_not_applied(self):
         pool = _FakePool()
         client = _client(pool)
-        body = {"name": "demo", "updated_at": "2026-09-06T10:00:00Z", "payload": "{}"}
-        r1 = client.post(
-            "/umrs/companion/sessions/sess-1/snapshot",
-            json=body,
-            headers={"x-user-id": "alice"},
-        )
+        r1 = _post(client, pool, sid="sess-1")
         assert r1.status_code == 200
         assert r1.json()["applied"] is True
-
-        older = {"name": "demo", "updated_at": "2026-09-06T09:00:00Z", "payload": "{}"}
-        r2 = client.post(
-            "/umrs/companion/sessions/sess-1/snapshot",
-            json=older,
-            headers={"x-user-id": "alice"},
-        )
+        r2 = _post(client, pool, sid="sess-1", updated_at="2026-09-09T09:00:00Z")
         assert r2.json()["applied"] is False
 
     def test_missing_identity_header_is_401(self):
         client = _client(_FakePool())
-        body = {"name": "x", "updated_at": "1", "payload": "{}"}
-        resp = client.post("/umrs/companion/sessions/s-1/snapshot", json=body)
+        resp = client.post(
+            "/umrs/companion/sessions/s-1/snapshot",
+            json={"name": "x", "updated_at": "1", "payload": "{}"},
+        )
         assert resp.status_code == 401
+
+    def test_invalid_venue_body_is_400(self):
+        pool = _FakePool()
+        client = _client(pool)
+        resp = _post(client, pool, venue="moonbase")
+        assert resp.status_code == 400
+
+    def test_archived_is_not_storable_state(self):
+        pool = _FakePool()
+        client = _client(pool)
+        resp = _post(client, pool, state="archived")
+        assert resp.status_code == 400
+        assert "archived" in resp.json()["detail"]
 
 
 class TestSnapshotGet:
     def test_owner_reads_own_row(self):
         pool = _FakePool()
         client = _client(pool)
-        body = {"name": "demo", "updated_at": "100", "payload": '{"a": 1}'}
-        client.post(
-            "/umrs/companion/sessions/sess-1/snapshot",
-            json=body,
-            headers={"x-user-id": "alice"},
-        )
+        _post(client, pool, sid="sess-1", payload='{"a": 1}')
         resp = client.get("/umrs/companion/sessions/sess-1", headers={"x-user-id": "alice"})
         assert resp.status_code == 200
         assert resp.json()["payload"] == '{"a": 1}'
 
+    def test_get_reports_venue_and_state(self):
+        pool = _FakePool()
+        client = _client(pool)
+        _post(client, pool, sid="sess-9", venue="frontend", state="stopped")
+        resp = client.get("/umrs/companion/sessions/sess-9", headers={"x-user-id": "alice"})
+        assert resp.json()["venue"] == "frontend"
+        assert resp.json()["state"] == "stopped"
+        assert resp.json()["archived_at"] == ""
+
+    def test_get_computes_archived_state(self):
+        pool = _FakePool()
+        client = _client(pool)
+        _post(client, pool, sid="sess-a", state="stopped")
+        pool.archives.add("sess-a")
+        resp = client.get("/umrs/companion/sessions/sess-a", headers={"x-user-id": "alice"})
+        assert resp.json()["state"] == "archived"
+        assert resp.json()["archived_at"]
+
     def test_other_user_gets_404(self):
         pool = _FakePool()
         client = _client(pool)
-        body = {"name": "demo", "updated_at": "100", "payload": "{}"}
-        client.post(
-            "/umrs/companion/sessions/sess-1/snapshot",
-            json=body,
-            headers={"x-user-id": "alice"},
-        )
+        _post(client, pool, sid="sess-1")
         resp = client.get("/umrs/companion/sessions/sess-1", headers={"x-user-id": "bob"})
         assert resp.status_code == 404
 
@@ -154,16 +283,77 @@ class TestSnapshotList:
         pool = _FakePool()
         client = _client(pool)
         for uid in ("alice", "bob"):
-            client.post(
-                "/umrs/companion/sessions/s1/snapshot",
-                json={"name": "x", "updated_at": "1", "payload": "{}"},
-                headers={"x-user-id": uid},
-            )
+            _post(client, pool, uid=uid, sid="s1")
         resp = client.get("/umrs/companion/sessions", headers={"x-user-id": "alice"})
         assert resp.status_code == 200
         rows = resp.json()["snapshots"]
         assert len(rows) == 1
         assert rows[0]["session_id"] == "s1"
+
+    def test_venue_filter(self):
+        pool = _FakePool()
+        client = _client(pool)
+        _post(client, pool, sid="local-1", venue="local")
+        _post(client, pool, sid="front-1", venue="frontend")
+        resp = client.get(
+            "/umrs/companion/sessions?venue=frontend", headers={"x-user-id": "alice"}
+        )
+        rows = resp.json()["snapshots"]
+        assert [r["session_id"] for r in rows] == ["front-1"]
+        assert rows[0]["venue"] == "frontend"
+
+    def test_state_filter_excludes_archived_by_default(self):
+        pool = _FakePool()
+        client = _client(pool)
+        _post(client, pool, sid="open-1", state="ongoing")
+        _post(client, pool, sid="dead-1", state="stopped")
+        _post(client, pool, sid="gone-1", state="stopped")
+        pool.archives.add("gone-1")
+        resp = client.get(
+            "/umrs/companion/sessions?state=stopped", headers={"x-user-id": "alice"}
+        )
+        assert [r["session_id"] for r in resp.json()["snapshots"]] == ["dead-1"]
+
+    def test_state_archived_with_include_archived(self):
+        pool = _FakePool()
+        client = _client(pool)
+        _post(client, pool, sid="gone-1", state="stopped")
+        pool.archives.add("gone-1")
+        resp = client.get(
+            "/umrs/companion/sessions?state=archived&include_archived=true",
+            headers={"x-user-id": "alice"},
+        )
+        rows = resp.json()["snapshots"]
+        assert [r["session_id"] for r in rows] == ["gone-1"]
+        assert rows[0]["state"] == "archived"
+        assert rows[0]["archived_at"]
+
+    def test_project_filter_reads_payload_metadata(self):
+        pool = _FakePool()
+        client = _client(pool)
+        payload_a = '{"metadata": {"config": {"project_id": "proj-a"}}}'
+        _post(client, pool, sid="pa", payload=payload_a)
+        _post(client, pool, sid="pb", payload='{"metadata": {"config": {"project_id": "proj-b"}}}')
+        resp = client.get(
+            "/umrs/companion/sessions?project=proj-a", headers={"x-user-id": "alice"}
+        )
+        assert [r["session_id"] for r in resp.json()["snapshots"]] == ["pa"]
+
+    def test_invalid_state_filter_is_400(self):
+        pool = _FakePool()
+        client = _client(pool)
+        resp = client.get(
+            "/umrs/companion/sessions?state=doomed", headers={"x-user-id": "alice"}
+        )
+        assert resp.status_code == 400
+
+    def test_invalid_venue_filter_is_400(self):
+        pool = _FakePool()
+        client = _client(pool)
+        resp = client.get(
+            "/umrs/companion/sessions?venue=nowhere", headers={"x-user-id": "alice"}
+        )
+        assert resp.status_code == 400
 
 
 class TestDegradation:
@@ -171,10 +361,9 @@ class TestDegradation:
         app = FastAPI()
         app.include_router(router)
         client = TestClient(app)
-        body = {"name": "x", "updated_at": "1", "payload": "{}"}
         resp = client.post(
             "/umrs/companion/sessions/s1/snapshot",
-            json=body,
+            json={"name": "x", "updated_at": "1", "payload": "{}"},
             headers={"x-user-id": "alice"},
         )
         assert resp.status_code == 503
