@@ -37,6 +37,7 @@ from umrs.api.llm_usage import (
     fill_usage,
     record_usage,
 )
+from umrs.metrics import METRICS
 from umrs.server.correlation import get_request_id
 
 logger = logging.getLogger(__name__)
@@ -387,8 +388,6 @@ async def _proxy_streaming(
                     # ProxyTimer at the route boundary — chunk, not decoded
                     # token, same honest semantics as the retired gateway.
                     _ttft_observed = True
-                    from umrs.metrics import METRICS
-
                     METRICS.llm_first_token(model, timer.elapsed_ms() / 1000)
                 if usage_record is not None:
                     _tail_chunks.append(chunk)
