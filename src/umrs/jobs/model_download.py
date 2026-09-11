@@ -21,6 +21,7 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
+from .download_safety import DownloadCancelledError
 from .model_download_sources import download_from_huggingface
 from .model_download_state import (
     DownloadProgress,
@@ -98,6 +99,16 @@ class ModelDownloadBackend(OrchestratorBackend):
         self.path_validator = path_validator
         self.download_registry = download_registry or get_download_registry()
         self.default_hf_token = default_hf_token or os.environ.get("HF_TOKEN")
+        # 6b-3b cancellability substrate (2026-09-11): attempt-level asyncio
+        # task handles + a cancel-bus listener so a durable cancel IS an
+        # interrupt, not only a status flip. S3/HTTP/local chunk loops honour
+        # mid-flight; the HF opacity is named (single blocking snapshot call).
+        self._handles: dict[str, asyncio.Task] = {}
+        self._cancelled_attempts: set[str] = set()
+
+        from .download_safety import register_cancel_listener
+
+        register_cancel_listener(self._on_durable_cancel)
 
     @property
     def backend_name(self) -> str:
@@ -114,6 +125,70 @@ class ModelDownloadBackend(OrchestratorBackend):
             target_path,
             self.path_validator.allowed_patterns,
         )
+
+    def _assert_download_venue(self, ctx) -> None:
+        """Refuse venues that would wedge the host (6b-3a live lesson, 2026-09-09).
+
+        A download target on the container OVERLAY (data0) turns a 100+ GiB
+        model into CoW upper-layer copies and wedged the front disk at 100%
+        once already. A venue with too little free space for a whole model
+        would look fine today and die on day 5. Both are checked BEFORE a
+        single byte is written — a path can satisfy the registry policy and
+        still be physically wrong.
+        """
+        from .download_safety import assert_download_safe
+
+        assert_download_safe(ctx.target_path)
+
+    def _on_durable_cancel(self, job_id: str) -> None:
+        """Cancel-bus listener: our registered jobs get INTERRUPTED (6b-3b)."""
+        for attempt_id, ctx in list(self.download_registry._tasks.items()):
+            if getattr(ctx, "job_id", "") != job_id:
+                continue
+            self._cancelled_attempts.add(attempt_id)
+            handle = self._handles.get(attempt_id)
+            if handle is not None and not handle.done():
+                handle.cancel()
+
+    def cancel_attempt(self, attempt_id: str) -> bool:
+        """Explicit attempt-level cancel hook (public; mirrors durable path)."""
+        self._cancelled_attempts.add(attempt_id)
+        handle = self._handles.get(attempt_id)
+        if handle is None or handle.done():
+            return False
+        handle.cancel()
+        return True
+
+    def _raise_if_cancelled(self, attempt_id: str) -> None:
+        """Mid-loop cancellation check (runs from any progress callback)."""
+        if attempt_id in self._cancelled_attempts:
+            from .download_safety import DownloadCancelledError
+
+            raise DownloadCancelledError(f"attempt {attempt_id} cancelled")
+
+    async def _execute_download(self, ctx: DownloadTaskContext) -> None:
+        """Execute the download task (with the 6b-3 venue assertion)."""
+        try:
+            self._assert_download_venue(ctx)
+        except asyncio.CancelledError:
+            await self._record_cancellation(ctx, "cancelled before first byte")
+            return
+        except (OSError, RuntimeError) as e:
+            logger.error("download venue refused for %s: %s", ctx.attempt_id, e)
+            ctx.progress.status = "failed"
+            ctx.progress.error_message = f"venue: {e}"
+            await self.download_registry.update_progress(ctx.attempt_id, ctx.progress)
+            return
+        await self._execute_download_inner(ctx)
+
+    async def _record_cancellation(self, ctx: DownloadTaskContext, reason: str) -> None:
+        """Terminal cancelled record — honest cancel, not failed-status swap."""
+        ctx.progress.status = "cancelled"
+        ctx.progress.error_message = reason
+        try:
+            await self.download_registry.update_progress(ctx.attempt_id, ctx.progress)
+        finally:
+            self._rollback_staged_model(ctx)
 
     def _create_download_context(
         self,
@@ -155,8 +230,10 @@ class ModelDownloadBackend(OrchestratorBackend):
         # Register task
         await self.download_registry.register(ctx)
 
-        # Start download in background
-        asyncio.create_task(self._execute_download(ctx))
+        # Start download in background (keep the handle: cancel needs a hook).
+        self._handles[attempt.attempt_id] = asyncio.create_task(
+            self._execute_download(ctx)
+        )
 
         logger.info(
             f"Submitted model download: job={job.job_id} "
@@ -166,11 +243,12 @@ class ModelDownloadBackend(OrchestratorBackend):
 
         return attempt.attempt_id
 
-    async def _execute_download(self, ctx: DownloadTaskContext) -> None:
-        """Execute the download task."""
+    async def _execute_download_inner(self, ctx: DownloadTaskContext) -> None:
+        """Execute the download work dispatch + terminal bookkeeping."""
         try:
             # Update progress callback
             async def update_progress(progress: DownloadProgress) -> None:
+                self._raise_if_cancelled(ctx.attempt_id)
                 await self.download_registry.update_progress(
                     ctx.attempt_id,
                     progress,
@@ -209,6 +287,12 @@ class ModelDownloadBackend(OrchestratorBackend):
             else:
                 self._rollback_staged_model(ctx)
 
+        except asyncio.CancelledError:
+            # The task handle caught the task.cancel — honest cancelled
+            # terminal, never a silent prefers-failed swap.
+            await self._record_cancellation(ctx, "cancelled mid-download")
+        except DownloadCancelledError as exc:
+            await self._record_cancellation(ctx, str(exc))
         except Exception as e:
             logger.exception(f"Download failed for {ctx.attempt_id}: {e}")
             ctx.progress.status = "failed"

@@ -911,7 +911,11 @@ async def cancel_job(
     Cancel a job (U-734).
 
     Returns 403 if the caller does not own the job and is not admin.
-    Note: This stops scheduling but does NOT kill running backend jobs.
+    The durable flip ALSO broadcasts to in-process listener classes (6b-3b):
+    model-download backends interrupt mid-flight chunk loops — the loop's
+    progress callback is where a cancel currently shakes open; for
+    uninterruptible sub-passes (the HF single-snapshot opacity, named
+    6b-3a) the interrupt lands at pass boundary, never silently dropped.
     """
     try:
         job = store.get_job(job_id)
@@ -922,6 +926,13 @@ async def cancel_job(
             from ..jobs.workflow_run import cancel_workflow_execution_for_job
 
             cancel_workflow_execution_for_job(job)
+        # 6b-3b (2026-09-11): durable cancel ALSO broadcasts to in-process
+        # back-end listeners (model download, etc.) so a running job is
+        # interrupted — never only re-labeled cancelled while it keeps
+        # writing.
+        from ..jobs.download_safety import broadcast_cancel
+
+        broadcast_cancel(job_id)
         return JobActionResponse(
             job_id=job_id,
             action="cancel",
