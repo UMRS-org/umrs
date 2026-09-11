@@ -389,3 +389,20 @@ def test_contract_loops_family_codes():
     }
     for code, status in expected.items():
         assert codes[code] == status, code
+
+
+def test_contract_companion_family_codes():
+    from r4_contracts.errors import known_error_codes
+
+    codes = known_error_codes()
+    expected = {
+        "companion.not_found": 404,
+        "companion.forbidden": 403,
+        "companion.unauthorized": 401,
+        "companion.conflict": 409,
+        "companion.gone": 410,
+        "companion.unavailable": 503,
+        "companion.unprocessable": 422,
+    }
+    for code, status in expected.items():
+        assert codes[code] == status, code
