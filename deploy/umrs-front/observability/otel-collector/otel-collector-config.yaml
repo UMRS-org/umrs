@@ -1,0 +1,158 @@
+# OpenTelemetry Collector Configuration for RiVault
+# Unified telemetry collection and routing
+
+receivers:
+  # OTLP receiver for traces, metrics, and logs
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+  # Prometheus receiver for scraping existing metrics endpoints
+  prometheus:
+    config:
+      scrape_configs:
+        - job_name: 'otel-collector'
+          scrape_interval: 10s
+          static_configs:
+            - targets: ['localhost:8888']
+
+  # Host metrics (CPU, memory, disk, network)
+  hostmetrics:
+    collection_interval: 30s
+    scrapers:
+      cpu:
+      memory:
+      disk:
+      network:
+      filesystem:
+
+processors:
+  # Batch processor for efficiency
+  batch:
+    timeout: 10s
+    send_batch_size: 1024
+    send_batch_max_size: 2048
+
+  # Memory limiter to prevent OOM
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 512
+    spike_limit_mib: 128
+
+  # Add resource attributes
+  resource:
+    attributes:
+      - key: service.env
+        value: production
+        action: upsert
+      - key: service.cluster
+        value: rivault
+        action: upsert
+
+  # Filter out noisy spans
+  filter/traces:
+    spans:
+      exclude:
+        match_type: strict
+        attributes:
+          - key: http.target
+            value: /health
+          - key: http.target
+            value: /metrics
+
+  # Tail sampling for traces (reduce volume)
+  tail_sampling:
+    decision_wait: 10s
+    num_traces: 100
+    expected_new_traces_per_sec: 10
+    policies:
+      # Always sample errors
+      - name: errors
+        type: status_code
+        status_code:
+          status_codes: [ERROR]
+      # Always sample slow traces
+      - name: slow-traces
+        type: latency
+        latency:
+          threshold_ms: 5000
+      # Sample 10% of everything else
+      - name: probabilistic-sampler
+        type: probabilistic
+        probabilistic:
+          sampling_percentage: 10
+
+exporters:
+  # Prometheus exporter for metrics
+  prometheus:
+    endpoint: "0.0.0.0:8889"
+    namespace: rivault
+    const_labels:
+      collector: otel
+
+  # Prometheus remote write (to Prometheus server)
+  prometheusremotewrite:
+    endpoint: http://umrs-front-prometheus:9090/api/v1/write
+    tls:
+      insecure: true
+
+  # Jaeger exporter for traces
+  otlp/jaeger:
+    endpoint: jaeger:4317
+    tls:
+      insecure: true
+
+
+  # Loki exporter for logs
+  loki:
+    endpoint: http://loki:3100/loki/api/v1/push
+
+  # Debug exporter (for troubleshooting)
+  debug:
+    verbosity: detailed
+    sampling_initial: 5
+    sampling_thereafter: 200
+
+extensions:
+  # Health check endpoint
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+  # Performance profiler
+  pprof:
+    endpoint: 0.0.0.0:1777
+
+  # zPages for debugging
+  zpages:
+    endpoint: 0.0.0.0:55679
+
+service:
+  extensions: [health_check, pprof, zpages]
+
+  pipelines:
+    # Traces pipeline
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, filter/traces, batch, resource]
+      exporters: [otlp/jaeger]
+
+    # Metrics pipeline
+    metrics:
+      receivers: [otlp, prometheus, hostmetrics]
+      processors: [memory_limiter, batch, resource]
+      exporters: [prometheusremotewrite]
+
+    # Logs pipeline
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, batch, resource]
+      exporters: [loki]
+
+  telemetry:
+    logs:
+      level: info
+    metrics:
+      address: 0.0.0.0:8888
