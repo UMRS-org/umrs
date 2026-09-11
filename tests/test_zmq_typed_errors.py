@@ -266,3 +266,18 @@ def test_jobs_404_carries_typed_header_byte_identical():
     assert exc.status_code == 404
     assert exc.headers.get("x-platform-error-code") == "jobs.not_found"
     assert exc.detail == "Job not found: job-nothing"
+
+
+def test_contract_pipelines_family_codes():
+    from r4_contracts.errors import known_error_codes
+
+    codes = known_error_codes()
+    expected = {
+        "pipelines.not_found": 404,
+        "pipelines.forbidden": 403,
+        "pipelines.conflict": 409,
+        "pipelines.bad_spec": 400,
+        "pipelines.rag_profile_not_found": 404,
+    }
+    for code, status in expected.items():
+        assert codes[code] == status, code

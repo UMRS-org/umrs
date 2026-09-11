@@ -47,6 +47,7 @@ from ..rag.registry import (
     get_embedder_registry,
     get_reranker_registry,
 )
+from .typed_errors import PlatformError, raise_typed
 
 logger = logging.getLogger(__name__)
 
@@ -601,7 +602,7 @@ async def create_pipeline(
     try:
         pipeline = store.create_pipeline(pipeline)
     except ValueError as e:
-        raise HTTPException(status_code=409, detail=str(e)) from e
+        raise_typed(PlatformError.pipelines("conflict", str(e)), cause=e)
 
     # Governance tracking
     from .governance import record_resource_created
@@ -645,11 +646,11 @@ async def get_pipeline(
 
     pipeline = store.get_pipeline(pipeline_id)
     if not pipeline:
-        raise HTTPException(status_code=404, detail=f"Pipeline {pipeline_id} not found")
+        raise_typed(PlatformError.pipelines("not_found", f"Pipeline {pipeline_id} not found"))
 
     # Check project access
     if pipeline.project_id != project_id:
-        raise HTTPException(status_code=403, detail="Access denied to this pipeline")
+        raise_typed(PlatformError.pipelines("forbidden", "Access denied to this pipeline"))
 
     return pipeline_to_response(pipeline)
 
@@ -667,10 +668,10 @@ async def update_pipeline(
 
     pipeline = store.get_pipeline(pipeline_id)
     if not pipeline:
-        raise HTTPException(status_code=404, detail=f"Pipeline {pipeline_id} not found")
+        raise_typed(PlatformError.pipelines("not_found", f"Pipeline {pipeline_id} not found"))
 
     if pipeline.project_id != project_id:
-        raise HTTPException(status_code=403, detail="Access denied to this pipeline")
+        raise_typed(PlatformError.pipelines("forbidden", "Access denied to this pipeline"))
 
     updates = _pipeline_updates(request)
     pipeline = store.update_pipeline(pipeline_id, updates)
@@ -689,10 +690,10 @@ async def delete_pipeline(
 
     pipeline = store.get_pipeline(pipeline_id)
     if not pipeline:
-        raise HTTPException(status_code=404, detail=f"Pipeline {pipeline_id} not found")
+        raise_typed(PlatformError.pipelines("not_found", f"Pipeline {pipeline_id} not found"))
 
     if pipeline.project_id != project_id:
-        raise HTTPException(status_code=403, detail="Access denied to this pipeline")
+        raise_typed(PlatformError.pipelines("forbidden", "Access denied to this pipeline"))
 
     store.delete_pipeline(pipeline_id)
 
@@ -710,11 +711,11 @@ def _validate_pipeline_components(request: PipelineCreateRequest) -> None:
     if request.chunker:
         errors = validator.validate_chunker(request.chunker.chunker_type)
         if errors:
-            raise HTTPException(status_code=400, detail=errors[0])
+            raise_typed(PlatformError.pipelines("bad_spec", errors[0]))
     if request.embedder:
         errors = validator.validate_embedder(request.embedder.model_name)
         if errors:
-            raise HTTPException(status_code=400, detail=errors[0])
+            raise_typed(PlatformError.pipelines("bad_spec", errors[0]))
 
 
 def _pipeline_definition_from_request(
@@ -823,7 +824,7 @@ async def create_rag_profile(
     if request.reranker:
         errors = validator.validate_reranker(request.reranker.model_name)
         if errors:
-            raise HTTPException(status_code=400, detail=errors[0])
+            raise_typed(PlatformError.pipelines("bad_spec", errors[0]))
 
     profile = RAGProfile.create(
         name=request.name,
@@ -848,7 +849,7 @@ async def create_rag_profile(
     try:
         profile = store.create_rag_profile(profile)
     except ValueError as e:
-        raise HTTPException(status_code=409, detail=str(e)) from e
+        raise_typed(PlatformError.pipelines("conflict", str(e)), cause=e)
 
     # Governance tracking
     from .governance import record_resource_created
@@ -894,12 +895,10 @@ async def get_rag_profile(
 
     profile = store.get_rag_profile(profile_id)
     if not profile:
-        raise HTTPException(
-            status_code=404, detail=f"RAG profile {profile_id} not found"
-        )
+        raise_typed(PlatformError.pipelines("rag_profile_not_found", f"RAG profile {profile_id} not found"))
 
     if profile.project_id != project_id:
-        raise HTTPException(status_code=403, detail="Access denied to this profile")
+        raise_typed(PlatformError.pipelines("forbidden", "Access denied to this profile"))
 
     return rag_profile_to_response(profile)
 
@@ -918,12 +917,10 @@ async def update_rag_profile(
 
     profile = store.get_rag_profile(profile_id)
     if not profile:
-        raise HTTPException(
-            status_code=404, detail=f"RAG profile {profile_id} not found"
-        )
+        raise_typed(PlatformError.pipelines("rag_profile_not_found", f"RAG profile {profile_id} not found"))
 
     if profile.project_id != project_id:
-        raise HTTPException(status_code=403, detail="Access denied to this profile")
+        raise_typed(PlatformError.pipelines("forbidden", "Access denied to this profile"))
 
     updates = _rag_profile_updates_from_request(request)
 
@@ -976,12 +973,10 @@ async def delete_rag_profile(
 
     profile = store.get_rag_profile(profile_id)
     if not profile:
-        raise HTTPException(
-            status_code=404, detail=f"RAG profile {profile_id} not found"
-        )
+        raise_typed(PlatformError.pipelines("rag_profile_not_found", f"RAG profile {profile_id} not found"))
 
     if profile.project_id != project_id:
-        raise HTTPException(status_code=403, detail="Access denied to this profile")
+        raise_typed(PlatformError.pipelines("forbidden", "Access denied to this profile"))
 
     store.delete_rag_profile(profile_id)
 
