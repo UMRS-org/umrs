@@ -37,6 +37,7 @@ from ._knowledge_mutation_guard import enforce_graph_mutation_authorization
 from .files import get_project_id, get_s3_config
 from .governance import guard_ingest
 from .knowledge_v2 import _resolve_ingest_target
+from .typed_errors import PlatformError, raise_typed
 
 router = APIRouter(prefix="/umrs/knowledge", tags=["knowledge"])
 logger = logging.getLogger(__name__)
@@ -60,13 +61,16 @@ async def _stage_upload_bytes(
     try:
         content = await file.read()
     except Exception as exc:  # body-read failure is caller-side physics
-        raise HTTPException(
-            status_code=400, detail=f"Failed to read upload body: {exc}"
-        ) from exc
+        raise_typed(
+            PlatformError.knowledge2("bad_request", f"Failed to read upload body: {exc}"),
+            cause=exc,
+        )
     if len(content) > MAX_BYTES:
-        raise HTTPException(
-            status_code=413,
-            detail=f"Upload exceeds {MAX_BYTES // (1024 * 1024)} MiB limit",
+        raise_typed(
+            PlatformError.knowledge2(
+                "upload_too_large",
+                f"Upload exceeds {MAX_BYTES // (1024 * 1024)} MiB limit",
+            )
         )
     try:
         client.put_object(
@@ -76,9 +80,10 @@ async def _stage_upload_bytes(
             ContentType=file.content_type or "application/octet-stream",
         )
     except Exception as exc:  # venue fault: fail honest, never silent-fallback
-        raise HTTPException(
-            status_code=503, detail=f"S3 staging unavailable: {exc}"
-        ) from exc
+        raise_typed(
+            PlatformError.knowledge2("unavailable", f"S3 staging unavailable: {exc}"),
+            cause=exc,
+        )
 
 
 async def _submit_upload_ingest(
@@ -97,12 +102,14 @@ async def _submit_upload_ingest(
 
     runtime = get_runtime()
     if runtime is None:
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                "UMRS durable job runtime not available "
-                "(staged object retained for operator cleanup)"
-            ),
+        raise_typed(
+            PlatformError.knowledge2(
+                "unavailable",
+                (
+                    "UMRS durable job runtime not available "
+                    "(staged object retained for operator cleanup)"
+                ),
+            )
         )
     spec: dict[str, Any] = {
         "sources": [
@@ -127,9 +134,10 @@ async def _submit_upload_ingest(
             spec=spec,
         )
     except Exception as exc:
-        raise HTTPException(
-            status_code=500, detail=f"Ingest submit failed: {exc}"
-        ) from exc
+        raise_typed(
+            PlatformError.knowledge2("failure", f"Ingest submit failed: {exc}"),
+            cause=exc,
+        )
     logger.info(
         "knowledge upload staged → ingest queued: %s (key=%s graph=%s)",
         job_id,
@@ -160,7 +168,7 @@ async def knowledge_upload(
     """
     # 1. Identity + filename sanity.
     if not (file.filename or "").strip():
-        raise HTTPException(status_code=400, detail="Filename required")
+        raise_typed(PlatformError.knowledge2("bad_request", "Filename required"))
 
     user_id = request.headers.get("x-user-id", "")
 
