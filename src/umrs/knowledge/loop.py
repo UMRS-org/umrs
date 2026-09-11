@@ -573,6 +573,22 @@ class AutonomousResearchLoop:
             METRICS.loop_iteration_seconds(
                 "simulated" if self._simulated else "real", iteration_ms / 1000
             )
+            # WP-12 r2: same window → OTel span (no-op without OTel hookup).
+            from umrs.jobs.timing import maybe_emit_span
+
+            maybe_emit_span(
+                "umrs.loop.iteration",
+                started_at=iteration.started_at,
+                transitioned_at=iteration.completed_at,
+                attributes={
+                    "umrs.loop_id": str(iteration.loop_id),
+                    "umrs.iteration_id": str(iteration.iteration_id),
+                    "umrs.iteration_number": int(iteration.iteration_number),
+                    "umrs.project_id": str(loop.project_id or ""),
+                    "umrs.engine": "simulated" if self._simulated else "real",
+                    "umrs.durable_job_id": str(iteration.durable_job_id or ""),
+                },
+            )
         loop.iterations.append(iteration)
         loop.updated_at = datetime.now(timezone.utc).isoformat()
         self._checkpoint(iteration)

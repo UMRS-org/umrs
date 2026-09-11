@@ -101,3 +101,52 @@ class TestMaybeEmitAttemptSpan:
         monkeypatch.setitem(sys.modules, "opentelemetry", otel_pkg)
 
         assert maybe_emit_attempt_span(**self._base_kwargs()) is False
+
+
+# ---------------------------------------------------------------------------
+# Generic span hook + loop-iteration wiring (WP-12 r2)
+# ---------------------------------------------------------------------------
+
+
+class TestMaybeEmitSpanGenericHook:
+    def test_emits_verbatim_name_and_attributes(self, monkeypatch):
+        import sys
+        import types
+
+        calls = []
+        fake_span = MagicMock()
+
+        def _start(name, *, start_time, attributes):
+            calls.append((name, start_time, attributes))
+            return fake_span
+
+        otel_mod = types.ModuleType("umrs.server.otel")
+        otel_mod.otel_active = lambda: True
+        monkeypatch.setitem(sys.modules, "umrs.server.otel", otel_mod)
+        otel_pkg = types.ModuleType("opentelemetry")
+        trace_mod = types.SimpleNamespace(
+            get_tracer=lambda *_a, **_k: types.SimpleNamespace(start_span=_start)
+        )
+        otel_pkg.trace = trace_mod
+        monkeypatch.setitem(sys.modules, "opentelemetry", otel_pkg)
+
+        from umrs.jobs.timing import maybe_emit_span
+
+        start = datetime(2026, 9, 11, 3, 0, tzinfo=timezone.utc)
+        ok = maybe_emit_span(
+            "umrs.loop.iteration",
+            started_at=start,
+            transitioned_at=start + timedelta(seconds=42),
+            attributes={"umrs.loop_id": "loop-7"},
+        )
+        assert ok is True
+        (name, start_ns, attrs), = calls
+        assert name == "umrs.loop.iteration"
+        assert attrs == {"umrs.loop_id": "loop-7"}
+        assert fake_span.end.call_args.kwargs["end_time"] - start_ns == 42 * 1e9
+
+    def test_noop_endpoint_off(self, monkeypatch):
+        monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)
+        from umrs.jobs.timing import maybe_emit_span
+
+        assert maybe_emit_span("x", started_at="2026-09-11", transitioned_at="2026-09-11T00:01") is False
