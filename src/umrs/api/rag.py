@@ -17,6 +17,8 @@ from typing import Any
 
 import httpx
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
+
+from .typed_errors import PlatformError, raise_typed
 from pydantic import BaseModel, Field
 
 from umrs.knowledge.access_scope import (
@@ -149,9 +151,11 @@ def _require_rag_scope(
         project_writable(target, caller) if write else project_readable(target, caller)
     )
     if not allowed:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"Access denied: no {'write' if write else 'read'} scope for '{target}'",
+        raise_typed(
+            PlatformError.rag(
+                "forbidden",
+                f"Access denied: no {'write' if write else 'read'} scope for '{target}'",
+            )
         )
     return user_id, project_id
 
@@ -358,9 +362,11 @@ def _discover_rag_endpoint(
         )
 
     if not endpoints:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="No active endpoint available. Please provision an endpoint first.",
+        raise_typed(
+            PlatformError.rag(
+                "unavailable",
+                "No active endpoint available. Please provision an endpoint first.",
+            )
         )
 
     ep = endpoints[0]
@@ -423,7 +429,7 @@ async def query_rag(
 
     except httpx.RequestError as e:
         logger.exception("RAG query request failed: %s", e)
-        raise HTTPException(status_code=503, detail="RAG service unavailable") from e
+        raise_typed(PlatformError.rag("unavailable", "RAG service unavailable"), cause=e)
 
 
 @router.post("/upload", response_model=UploadResponse)
@@ -443,7 +449,7 @@ async def upload_document(
     _user_id, project_id = _require_rag_scope(request, write=True)
 
     if not file.filename:
-        raise HTTPException(status_code=400, detail="Filename required")
+        raise_typed(PlatformError.rag("bad_request", "Filename required"))
 
     # Dual-corpus dwell: the central ingest plane runs its OWN
     # governance/mutation gates (single audit record).
@@ -537,7 +543,7 @@ async def _upload_via_endpoint(  # noqa: C901 - legacy path retained for the dwe
 
     except httpx.RequestError as e:
         logger.exception("Upload request failed: %s", e)
-        raise HTTPException(status_code=503, detail="RAG service unavailable") from e
+        raise_typed(PlatformError.rag("unavailable", "RAG service unavailable"), cause=e)
 
 
 @router.get("/documents", response_model=list[DocumentInfo])
@@ -577,7 +583,7 @@ async def list_documents(
 
     except httpx.RequestError as e:
         logger.exception("List documents failed: %s", e)
-        raise HTTPException(status_code=503, detail="RAG service unavailable") from e
+        raise_typed(PlatformError.rag("unavailable", "RAG service unavailable"), cause=e)
 
 
 @router.delete("/documents/{document_id}")
@@ -599,7 +605,7 @@ async def delete_document(
             )
 
             if response.status_code == 404:
-                raise HTTPException(status_code=404, detail="Document not found")
+                raise_typed(PlatformError.rag("not_found", "Document not found"))
 
             if response.status_code != 200:
                 raise HTTPException(
@@ -616,7 +622,7 @@ async def delete_document(
 
     except httpx.RequestError as e:
         logger.exception("Delete document failed: %s", e)
-        raise HTTPException(status_code=503, detail="RAG service unavailable") from e
+        raise_typed(PlatformError.rag("unavailable", "RAG service unavailable"), cause=e)
 
 
 @router.get("/documents/{document_id}", response_model=DocumentInfo)
@@ -638,7 +644,7 @@ async def get_document(
             )
 
             if response.status_code == 404:
-                raise HTTPException(status_code=404, detail="Document not found")
+                raise_typed(PlatformError.rag("not_found", "Document not found"))
 
             if response.status_code != 200:
                 raise HTTPException(
@@ -657,7 +663,7 @@ async def get_document(
 
     except httpx.RequestError as e:
         logger.exception("Get document failed: %s", e)
-        raise HTTPException(status_code=503, detail="RAG service unavailable") from e
+        raise_typed(PlatformError.rag("unavailable", "RAG service unavailable"), cause=e)
 
 
 @router.get("/stats")
@@ -687,4 +693,4 @@ async def rag_stats(
 
     except httpx.RequestError as e:
         logger.exception("RAG stats request failed: %s", e)
-        raise HTTPException(status_code=503, detail="RAG service unavailable") from e
+        raise_typed(PlatformError.rag("unavailable", "RAG service unavailable"), cause=e)
