@@ -667,6 +667,46 @@ services:
       replicas: 1
       endpoint_mode: vip
 
+  # ── sts-renewal (WP-11 r3, ADR-043 rollout 2026-09-11) ───────────────────
+  # Per-attempt STS sessions cap at 3600s while serving runs days. Add the
+  # 'sts-renewal' profile to run the renewal sidecar: it polls
+  # /umrs/jobs/{job}/attempts/{attempt}/credentials/sts on a TTL-fraction
+  # cadence and ATOMICALLY re-renders ./sts_fs/sts.env for any consumer that
+  # reads credentials per-request (serving env_freeze is deprecated).
+  sts-renewal:
+    profiles: [ sts-renewal ]
+    image: docker.io/library/python:3.14-alpine
+    command:
+      - "python"
+      - "-u"
+      - "/opt/rivault/sts_renewal.py"
+    networks:
+      genai-private-net: {}
+    volumes:
+      - type: bind
+        source: ./sts_renewal.py
+        target: /opt/rivault/sts_renewal.py
+        read_only: true
+      - type: bind
+        source: ./sts_fs
+        target: /shared
+    environment:
+      <<: *rivault-egress-env
+      UMRS_BASE_URL: ${UMRS_BASE_URL:-}
+      RIVAULT_JOB_ID: ${RIVAULT_JOB_ID:-${SLURM_JOB_ID:-}}
+      RIVAULT_ATTEMPT_ID: ${RIVAULT_ATTEMPT_ID:-1}
+      UMRS_AUTH_TOKEN: ${UMRS_AUTH_TOKEN:-${R4_API_KEY:-}}
+      RIVAULT_STS_TTL_SEC: ${RIVAULT_STS_TTL_SEC:-3000}
+      STS_ENV_PATH: /shared/sts.env
+      TZ: ${GENAI_TZ:-Asia/Tokyo}
+    cap_drop: [ ALL ]
+    userns_mode: "${RIVAULT_USERNS_MODE:-keep-id:uid=0,gid=0}"
+    restart: unless-stopped
+    deploy:
+      mode: replicated
+      replicas: 1
+      endpoint_mode: vip
+
 ##volumes:
 ##  postgres_data:
 ##    name: litellm_postgres_data
