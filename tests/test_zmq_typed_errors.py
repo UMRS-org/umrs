@@ -281,3 +281,19 @@ def test_contract_pipelines_family_codes():
     }
     for code, status in expected.items():
         assert codes[code] == status, code
+
+
+def test_contract_ops_family_codes():
+    from r4_contracts.errors import known_error_codes
+
+    codes = known_error_codes()
+    expected = {
+        "ops.governance_unavailable": 503,
+        "ops.reload_unavailable": 503,
+        "ops.not_found": 404,
+        "ops.bad_request": 400,
+        "ops.unprocessable": 422,
+        "auth.admin_required": 403,
+    }
+    for code, status in expected.items():
+        assert codes[code] == status, code

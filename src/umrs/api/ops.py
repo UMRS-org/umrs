@@ -20,6 +20,8 @@ from typing import Any
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
+from .typed_errors import PlatformError, raise_typed
+
 from ._verified_headers import CallerIdentity, get_caller
 
 logger = logging.getLogger(__name__)
@@ -130,17 +132,15 @@ def require_ops_admin(
     if x_user_id and x_verified_project_id:
         admin = (x_verified_is_admin or "").strip() in ("true", "1")
         if not admin:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Ops endpoints require admin privileges",
+            raise_typed(
+                PlatformError.auth("admin_required", "Ops endpoints require admin privileges")
             )
         return
 
     # Strict mode (the audit B12 default): reject if no verified headers
     if os.environ.get("UMRS_AUTH_MODE", "strict").strip().lower() == "strict":
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing Gateway-verified caller identity",
+        raise_typed(
+            PlatformError.auth("gateway_identity_required", "Missing Gateway-verified caller identity")
         )
 
     from ._identity import warn_legacy_params_once
@@ -148,9 +148,8 @@ def require_ops_admin(
     warn_legacy_params_once("ops.require_ops_admin")
     # MVP/test mode: check query-param is_admin
     if not is_admin:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Ops endpoints require admin privileges",
+        raise_typed(
+            PlatformError.auth("admin_required", "Ops endpoints require admin privileges")
         )
     return
 
@@ -173,9 +172,8 @@ def require_authenticated(
 
     # Strict mode (the audit B12 default): reject if no verified headers
     if os.environ.get("UMRS_AUTH_MODE", "strict").strip().lower() == "strict":
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing Gateway-verified caller identity",
+        raise_typed(
+            PlatformError.auth("gateway_identity_required", "Missing Gateway-verified caller identity")
         )
 
     from ._identity import warn_legacy_params_once
@@ -185,10 +183,7 @@ def require_authenticated(
     if caller_user_id:
         return
 
-    raise HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Authentication required",
-    )
+    raise_typed(PlatformError.auth("missing_header", "Authentication required"))
 
 
 # ---------------------------------------------------------------------------
@@ -875,9 +870,11 @@ def ops_reload(
     returned summary is filtered to only show that user's buckets.
     """
     if _reload_configure_file is None or _reload_buckets_cfg is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Reload context not initialised — server may still be starting",
+        raise_typed(
+            PlatformError.ops(
+                "reload_unavailable",
+                "Reload context not initialised — server may still be starting",
+            )
         )
 
     try:
@@ -968,9 +965,7 @@ async def audit_retention_cleanup(
     """
     expected = os.environ.get("UMRS_ADMIN_TOKEN", "")
     if not expected or admin_token != expected:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, detail="Admin token required"
-        )
+        raise_typed(PlatformError.auth("admin_required", "Admin token required"))
 
     from .audit_events import _audit_store
 
@@ -1011,10 +1006,7 @@ async def governance_ownership(
 
     store = get_governance_store()
     if store is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Governance store not initialized",
-        )
+        raise_typed(PlatformError.ops("governance_unavailable", "Governance store not initialized"))
 
     if owner_id:
         records = store.list_owned(
@@ -1025,10 +1017,7 @@ async def governance_ownership(
     elif project_id:
         records = store.list_by_project(project_id, resource_type=resource_type)
     else:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Provide owner_id or project_id as filter",
-        )
+        raise_typed(PlatformError.ops("bad_request", "Provide owner_id or project_id as filter"))
 
     return {"records": records, "count": len(records)}
 
@@ -1044,18 +1033,13 @@ async def governance_transfer(
     """Transfer ownership of a resource (admin-only)."""
     expected = os.environ.get("UMRS_ADMIN_TOKEN", "")
     if not expected or admin_token != expected:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, detail="Admin token required"
-        )
+        raise_typed(PlatformError.auth("admin_required", "Admin token required"))
 
     from .governance import get_governance_store
 
     store = get_governance_store()
     if store is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Governance store not initialized",
-        )
+        raise_typed(PlatformError.ops("governance_unavailable", "Governance store not initialized"))
 
     updated = store.transfer_owner(
         resource_type,
@@ -1064,10 +1048,7 @@ async def governance_transfer(
         new_project_id=new_project_id,
     )
     if not updated:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"No ownership record: {resource_type}/{resource_id}",
-        )
+        raise_typed(PlatformError.ops("not_found", f"No ownership record: {resource_type}/{resource_id}"))
 
     from .audit_events import emit_audit
 
@@ -1097,10 +1078,7 @@ async def governance_quotas(
 
     store = get_governance_store()
     if store is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Governance store not initialized",
-        )
+        raise_typed(PlatformError.ops("governance_unavailable", "Governance store not initialized"))
 
     quotas = store.list_quotas(project_id)
     return {"project_id": project_id, "quotas": quotas}
@@ -1126,24 +1104,21 @@ async def governance_set_quota(
     """
     expected = os.environ.get("UMRS_ADMIN_TOKEN", "")
     if not expected or admin_token != expected:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, detail="Admin token required"
-        )
+        raise_typed(PlatformError.auth("admin_required", "Admin token required"))
 
     if warn_count is not None and warn_count >= max_count:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"warn_count ({warn_count}) must be less than max_count ({max_count})",
+        raise_typed(
+            PlatformError.ops(
+                "unprocessable",
+                f"warn_count ({warn_count}) must be less than max_count ({max_count})",
+            )
         )
 
     from .governance import get_governance_store
 
     store = get_governance_store()
     if store is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Governance store not initialized",
-        )
+        raise_typed(PlatformError.ops("governance_unavailable", "Governance store not initialized"))
 
     store.set_quota(project_id, resource_type, max_count, warn_count=warn_count)
 
@@ -1245,9 +1220,7 @@ def _check_governance_admin(admin_token: str) -> None:
     """Raise 403 unless the presented admin token matches the environment."""
     expected = os.environ.get("UMRS_ADMIN_TOKEN", "")
     if not expected or admin_token != expected:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, detail="Admin token required"
-        )
+        raise_typed(PlatformError.auth("admin_required", "Admin token required"))
 
 
 def _governance_store_or_503():
@@ -1256,10 +1229,7 @@ def _governance_store_or_503():
 
     store = get_governance_store()
     if store is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Governance store not initialized",
-        )
+        raise_typed(PlatformError.ops("governance_unavailable", "Governance store not initialized"))
     return store
 
 
@@ -1271,15 +1241,9 @@ def _governance_store_or_503():
 def _validate_share_params(granted_to_type: str, access_level: str) -> None:
     """Validate share parameters (raises 422 on invalid values)."""
     if granted_to_type not in ("user", "group"):
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="granted_to_type must be 'user' or 'group'",
-        )
+        raise_typed(PlatformError.ops("unprocessable", "granted_to_type must be 'user' or 'group'"))
     if access_level not in ("read", "write"):
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="access_level must be 'read' or 'write'",
-        )
+        raise_typed(PlatformError.ops("unprocessable", "access_level must be 'read' or 'write'"))
 
 
 def _require_owner_or_admin(
@@ -1297,10 +1261,7 @@ def _require_owner_or_admin(
     if not is_admin:
         owner = store.get_owner(resource_type, resource_id)
         if not owner or owner.get("owner_id") != user_id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Only the resource owner or admin can {action}",
-            )
+            raise_typed(PlatformError.auth("admin_required", f"Only the resource owner or admin can {action}"))
 
 
 @router.post("/governance/shares")
@@ -1322,10 +1283,7 @@ async def governance_create_share(
 
     store = get_governance_store()
     if store is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Governance store not initialized",
-        )
+        raise_typed(PlatformError.ops("governance_unavailable", "Governance store not initialized"))
 
     _validate_share_params(granted_to_type, access_level)
 
@@ -1375,10 +1333,7 @@ async def governance_revoke_share(
 
     store = get_governance_store()
     if store is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Governance store not initialized",
-        )
+        raise_typed(PlatformError.ops("governance_unavailable", "Governance store not initialized"))
 
     expected_admin = os.environ.get("UMRS_ADMIN_TOKEN", "")
     is_admin = bool(expected_admin and admin_token == expected_admin)
@@ -1386,10 +1341,7 @@ async def governance_revoke_share(
     if not is_admin:
         owner = store.get_owner(resource_type, resource_id)
         if not owner or owner.get("owner_id") != user_id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Only the resource owner or admin can revoke shares",
-            )
+            raise_typed(PlatformError.auth("admin_required", "Only the resource owner or admin can revoke shares"))
 
     deleted = store.revoke_share(
         resource_type,
@@ -1427,10 +1379,7 @@ async def governance_list_shares(
 
     store = get_governance_store()
     if store is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Governance store not initialized",
-        )
+        raise_typed(PlatformError.ops("governance_unavailable", "Governance store not initialized"))
 
     if resource_type and resource_id:
         # List shares for a specific resource (owner or admin)
@@ -1440,10 +1389,7 @@ async def governance_list_shares(
         if not is_admin:
             owner = store.get_owner(resource_type, resource_id)
             if not owner or owner.get("owner_id") != user_id:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="Only the resource owner or admin can list shares",
-                )
+                raise_typed(PlatformError.auth("admin_required", "Only the resource owner or admin can list shares"))
 
         shares = store.list_shares_for_resource(resource_type, resource_id)
     else:
