@@ -297,3 +297,20 @@ def test_contract_ops_family_codes():
     }
     for code, status in expected.items():
         assert codes[code] == status, code
+
+
+def test_contract_workflows_family_codes():
+    from r4_contracts.errors import known_error_codes
+
+    codes = known_error_codes()
+    expected = {
+        "workflows.not_found": 404,
+        "workflows.bad_request": 400,
+        "workflows.forbidden": 403,
+        "workflows.conflict": 409,
+        "workflows.failure": 500,
+        "workflows.bad_gateway": 502,
+        "workflows.upload_too_large": 413,
+    }
+    for code, status in expected.items():
+        assert codes[code] == status, code
