@@ -13,6 +13,8 @@ from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
+
+from .typed_errors import PlatformError, raise_typed
 from pydantic import BaseModel, Field
 
 from umrs.grants import ASSET_KINDS, GRANTEE_KINDS, AssetGrant, GrantStore
@@ -40,7 +42,7 @@ class GrantBody(BaseModel):
 def _caller(request: Request) -> CallerScope:
     uid = request.headers.get("x-user-id", "").strip()
     if not uid:
-        raise HTTPException(status_code=401, detail="identity header missing")
+        raise_typed(PlatformError.grants("unauthorized", "identity header missing"))
     pid = request.headers.get("x-verified-project-id", "").strip()
     admin = request.headers.get("x-verified-is-admin", "").strip() in ("true", "1")
     return CallerScope(user_id=uid, project_id=pid, is_admin=admin)
@@ -49,7 +51,7 @@ def _caller(request: Request) -> CallerScope:
 def _pool(request: Request) -> Any:
     pool = getattr(request.app.state, "umrs_db_pool", None)
     if pool is None:
-        raise HTTPException(status_code=503, detail="database pool unavailable")
+        raise_typed(PlatformError.grants("unavailable", "database pool unavailable"))
     return pool
 
 
@@ -112,12 +114,12 @@ async def create_grant(body: GrantBody, request: Request) -> dict[str, Any]:
     caller = _caller(request)
     pool = _pool(request)
     if body.asset_kind not in ASSET_KINDS or body.grantee_kind not in GRANTEE_KINDS:
-        raise HTTPException(
-            status_code=400, detail="unknown asset_kind or grantee_kind"
+        raise_typed(
+            PlatformError.grants("bad_request", "unknown asset_kind or grantee_kind")
         )
     if not _asset_writable(pool, body.asset_kind, body.asset_id, caller):
         # 404-shaped: the asset is absent or not the caller's to share.
-        raise HTTPException(status_code=404, detail="asset not found")
+        raise_typed(PlatformError.grants("not_found", "asset not found"))
     conn = pool.getconn()
     try:
         store = GrantStore(conn)
@@ -132,7 +134,7 @@ async def create_grant(body: GrantBody, request: Request) -> dict[str, Any]:
                 expires_at=body.expires_at,
             )
         except Exception as exc:  # live-grant uniqueness violation → conflict
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
+            raise_typed(PlatformError.grants("conflict", str(exc)), cause=exc)
     finally:
         pool.putconn(conn)
     return {"status": "ok", "grant": grant.to_dict()}
@@ -150,9 +152,9 @@ async def list_grants_for_asset(
     caller = _caller(request)
     pool = _pool(request)
     if not asset_kind or not asset_id:
-        raise HTTPException(status_code=400, detail="asset_kind and asset_id required")
+        raise_typed(PlatformError.grants("bad_request", "asset_kind and asset_id required"))
     if not _asset_writable(pool, asset_kind, asset_id, caller):
-        raise HTTPException(status_code=404, detail="asset not found")
+        raise_typed(PlatformError.grants("not_found", "asset not found"))
     conn = pool.getconn()
     try:
         grants = GrantStore(conn).list_for_asset(
@@ -189,9 +191,9 @@ async def revoke_grant(grant_id: str, request: Request) -> dict[str, Any]:
         store = GrantStore(conn)
         grant = store.get_grant(grant_id)
         if grant is None:
-            raise HTTPException(status_code=404, detail="grant not found")
+            raise_typed(PlatformError.grants("not_found", "grant not found"))
         if not _asset_writable(pool, grant.asset_kind, grant.asset_id, caller):
-            raise HTTPException(status_code=404, detail="grant not found")
+            raise_typed(PlatformError.grants("not_found", "grant not found"))
         revoked = store.revoke_grant(grant_id, now=datetime.now(timezone.utc))
     finally:
         pool.putconn(conn)
