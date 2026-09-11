@@ -139,6 +139,27 @@ class RegisteredEndpoint:
         delta = self.expires_at - datetime.utcnow()
         return max(0, delta.total_seconds())
 
+    def asset_scope(self) -> Any:
+        """The endpoint's owner record as ONE canonical AssetScope (WP-06 r2 leg-d).
+
+        Semantics delegate to ``umrs.shared.scope_grammar``: metadata
+        ``owner_type``/``tier`` feeds the representation, the record's
+        project/owner ids ride through. ``AssetScope`` comes from the
+        ladder module — the grammar this registry used to invent locally.
+        """
+        from ..shared.scope_grammar import normalize_asset_scope
+
+        owner_type = (
+            self.metadata.get("owner_type")
+            or self.metadata.get("tier")
+            or _default_owner_type(self.project_id)
+        )
+        return normalize_asset_scope(
+            str(owner_type),
+            owner_id=str(self.metadata.get("owner_id") or ""),
+            project_id=self.project_id or "",
+        )
+
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for API response."""
         owner_type = self.metadata.get("owner_type") or self.metadata.get("tier")
@@ -178,6 +199,14 @@ class RegisteredEndpoint:
         served = self.metadata.get("served_model_name")
         if served:
             d["served_model_name"] = served
+        # WP-06 r2 leg-d: ladder view of the endpoint's owner record
+        # (single grammar — consume everywhere instead of inventing dialects).
+        scope = self.asset_scope()
+        d["asset_scope"] = {
+            "kind": scope.kind,
+            "owner_id": scope.owner_id,
+            "project_id": scope.project_id,
+        }
         max_model_len = self.metadata.get("max_model_len")
         if isinstance(max_model_len, int) and max_model_len > 0:
             d["max_model_len"] = max_model_len
