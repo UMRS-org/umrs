@@ -75,6 +75,25 @@ The preferred orchestrator path for this branch is
 
 These are normally exported by the deploy wrapper or `site.yaml` bridge:
 
+### sts-renewal profile (WP-11 round 3)
+
+Add `sts-renewal` to `RIVAULT_PROFILES` to run the credential renewal
+sidecar in the same network (`genai-private-net`):
+
+- It POSTs `${UMRS_BASE_URL}/umrs/jobs/${RIVAULT_JOB_ID}/attempts/
+  ${RIVAULT_ATTEMPT_ID}/credentials/sts` every
+  `min(ttl/2, ttl-180)` (floor 60s, `RIVAULT_STS_TTL_SEC` default 3000).
+- It atomically re-renders `./sts_fs/sts.env` (`S3_ENDPOINT_URL`,
+  `S3_BUCKET`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `S3_SESSION_TOKEN`) — the
+  ADR-043 fix for session-cap vs days-long serving (no provision-time
+  env-freeze).
+- Auth: `UMRS_AUTH_TOKEN` falls back to `R4_API_KEY`; the STS identity
+  itself stays server-side (only the minted contract travels).
+- `rivault_venue_write_container_configs` runs as usual; `sts_fs/` exists
+  in-tree with `.gitkeep`.
+- Repo-contract pins: `umrs/tests/test_sts_renewal.py`. Live flip remains
+  an ops-day change (the pencil-marked leg, ADR-043 rollout block).
+
 - `RIVAULT_DIR`
 - `RIVAULT_PROFILES`
 - `VLLM_PATH_TO_HUGGINGFACE`
