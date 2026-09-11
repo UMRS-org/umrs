@@ -74,6 +74,42 @@ def code_version_ref(repo_root: str | None = None) -> dict[str, Any]:
     }
 
 
+def build_model_pins(spec: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Declared model pins for the manifest (WP-10 round 2).
+
+    One pin per well-known spec field; values are recorded VERBATIM with the
+    field as source attribution — never resolved, defaulted, or invented.
+    Absent fields contribute no pin. The active-version authority
+    (VectorVersionStore) is not a job-store dependency, so venue lookup pins
+    stay an open leg (named in wp10.md); spec pins are the durable substrate.
+    """
+    if not isinstance(spec, dict):
+        return []
+    pins: list[dict[str, Any]] = []
+    for name_key, version_key in (
+        ("model", "model_version"),
+        ("model_name", "model_version"),
+        ("embedding_model", "embedding_model_version"),
+        ("rag_model", "rag_model_version"),
+    ):
+        name = spec.get(name_key)
+        if not name:
+            continue
+        pin: dict[str, Any] = {"name": str(name), "source": f"spec.{name_key}"}
+        version = spec.get(version_key)
+        if version:
+            pin["version"] = str(version)
+        path = spec.get(f"{name_key}_path") or (
+            spec.get("model_path") if name_key in ("model", "model_name") else None
+        )
+        if path:
+            pin["path"] = str(path)
+        # Same dedup predicate: one pin per distinct name (first source wins).
+        if all(p["name"] != pin["name"] for p in pins):
+            pins.append(pin)
+    return pins
+
+
 def environment_snapshot() -> dict[str, Any]:
     """Runtime facts for one completed attempt (EnvironmentSnapshot shape)."""
     gpus = [g for g in os.environ.get("NVIDIA_VISIBLE_DEVICES", "").split(",") if g]
@@ -99,11 +135,14 @@ def execution_manifest(
     trigger: str = "api",
     pipeline_name: str = "",
     tags: dict[str, str] | None = None,
+    model_pins: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """One attempt's manifest, ready to persist under attempts.metrics.
 
     The trigger defaults to ``api`` — the honest value when nothing better
     is recorded; callers pass ``scheduled``/``webhook`` when known.
+    ``model_pins`` is the verbatim spec-declared pin list (WP-10 round 2);
+    an empty list is recorded honestly (nothing declared), never dropped.
     """
     from datetime import datetime, timezone
 
@@ -115,6 +154,7 @@ def execution_manifest(
         "created_at": datetime.now(timezone.utc).isoformat(),
         "trace_ids": [],
         "provenance": provenance,
+        "model_pins": model_pins if model_pins is not None else [],
         "environment": environment_snapshot(),
         "code_versions": [code_version_ref()],
     }
