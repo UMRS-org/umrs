@@ -25,6 +25,7 @@ from ..artifact_registry.store import (
 )
 from .endpoints import _caller_is_admin
 from .files import get_project_id
+from .typed_errors import PlatformError, raise_typed
 from .jobs import get_optional_job_store
 
 
@@ -49,9 +50,11 @@ def _require_artifact_scope(artifact, caller_project: str, is_admin: bool) -> No
         return
     if artifact is not None and artifact.project_id == caller_project:
         return
-    raise HTTPException(
-        status_code=status.HTTP_404_NOT_FOUND,
-        detail="Artifact not found",
+    raise_typed(
+        PlatformError.artifacts(
+            "not_found",
+            "Artifact not found"
+        ),
     )
 
 
@@ -80,9 +83,11 @@ async def list_artifacts(
     """List artifacts with optional filters."""
     job_store = get_optional_job_store()
     if not job_store or not job_store.db_pool:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Artifact store not available",
+        raise_typed(
+            PlatformError.artifacts(
+                "unavailable",
+                "Artifact store not available"
+            ),
         )
 
     query = ArtifactQuery(
@@ -113,9 +118,11 @@ async def register_artifact(
     """Register a new artifact in the registry."""
     job_store = get_optional_job_store()
     if not job_store or not job_store.db_pool:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Artifact store not available",
+        raise_typed(
+            PlatformError.artifacts(
+                "unavailable",
+                "Artifact store not available"
+            ),
         )
 
     # Non-admin callers can only register into their own project.
@@ -140,16 +147,20 @@ async def get_artifact(
     try:
         aid = uuid.UUID(artifact_id)
     except ValueError:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid artifact id: {artifact_id}",
+        raise_typed(
+            PlatformError.artifacts(
+                "bad_request",
+                f"Invalid artifact id: {artifact_id}"
+            ),
         )
 
     job_store = get_optional_job_store()
     if not job_store or not job_store.db_pool:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Artifact store not available",
+        raise_typed(
+            PlatformError.artifacts(
+                "unavailable",
+                "Artifact store not available"
+            ),
         )
 
     conn_factory = job_store.db_pool.getconn
@@ -157,9 +168,11 @@ async def get_artifact(
         store = ArtifactStore(conn_factory, conn_release=job_store.db_pool.putconn)
         artifact = store.get(aid)
         if artifact is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Artifact {artifact_id} not found",
+            raise_typed(
+                PlatformError.artifacts(
+                    "not_found",
+                    f"Artifact {artifact_id} not found"
+                ),
             )
         _require_artifact_scope(artifact, caller_project, is_admin)
         return _artifact_response(artifact)
@@ -178,16 +191,20 @@ async def get_lineage(
     try:
         aid = uuid.UUID(artifact_id)
     except ValueError:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid artifact id: {artifact_id}",
+        raise_typed(
+            PlatformError.artifacts(
+                "bad_request",
+                f"Invalid artifact id: {artifact_id}"
+            ),
         )
 
     job_store = get_optional_job_store()
     if not job_store or not job_store.db_pool:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Artifact store not available",
+        raise_typed(
+            PlatformError.artifacts(
+                "unavailable",
+                "Artifact store not available"
+            ),
         )
 
     conn_factory = job_store.db_pool.getconn
@@ -195,9 +212,11 @@ async def get_lineage(
         store = ArtifactStore(conn_factory, conn_release=job_store.db_pool.putconn)
         artifact = store.get(aid)
         if artifact is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Artifact {artifact_id} not found",
+            raise_typed(
+                PlatformError.artifacts(
+                    "not_found",
+                    f"Artifact {artifact_id} not found"
+                ),
             )
         _require_artifact_scope(artifact, caller_project, is_admin)
         edges = store.lineage(aid, depth=depth)
@@ -224,16 +243,20 @@ async def update_metadata(
     try:
         aid = uuid.UUID(artifact_id)
     except ValueError:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid artifact id: {artifact_id}",
+        raise_typed(
+            PlatformError.artifacts(
+                "bad_request",
+                f"Invalid artifact id: {artifact_id}"
+            ),
         )
 
     job_store = get_optional_job_store()
     if not job_store or not job_store.db_pool:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Artifact store not available",
+        raise_typed(
+            PlatformError.artifacts(
+                "unavailable",
+                "Artifact store not available"
+            ),
         )
 
     conn_factory = job_store.db_pool.getconn
@@ -245,10 +268,7 @@ async def update_metadata(
             store.update_metadata(aid, patch)
             return {"status": "ok"}
         except ArtifactNotFoundError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=str(exc),
-            ) from exc
+            raise_typed(PlatformError.artifacts("not_found", str(exc)), cause=exc)
     finally:
         store.close()
 
@@ -263,16 +283,20 @@ async def delete_artifact(
     try:
         aid = uuid.UUID(artifact_id)
     except ValueError:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid artifact id: {artifact_id}",
+        raise_typed(
+            PlatformError.artifacts(
+                "bad_request",
+                f"Invalid artifact id: {artifact_id}"
+            ),
         )
 
     job_store = get_optional_job_store()
     if not job_store or not job_store.db_pool:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Artifact store not available",
+        raise_typed(
+            PlatformError.artifacts(
+                "unavailable",
+                "Artifact store not available"
+            ),
         )
 
     conn_factory = job_store.db_pool.getconn
