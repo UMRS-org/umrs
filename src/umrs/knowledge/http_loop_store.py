@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from dataclasses import dataclass
 from typing import Any
 
@@ -22,6 +23,23 @@ from urllib.request import Request, urlopen
 from .loop import LoopPhase, LoopStatus, ResearchLoop
 
 logger = logging.getLogger(__name__)
+
+
+def _inject_trace_context(headers: dict[str, str]) -> None:
+    """W3C traceparent injection when the OTel stack is live (WP-12 r2).
+
+    The driver's boot (umrs[otel] extra; active only with an exporter
+    endpoint) gives the write-back spans trace continuity across the
+    gateway lane; with no OTel setup the global propagator is the no-op one
+    and this is a zero-cost pass.
+    """
+    if not os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT"):
+        return
+    try:
+        from opentelemetry.propagate import inject
+    except ImportError:
+        return
+    inject(headers)
 
 
 @dataclass(frozen=True)
@@ -42,6 +60,7 @@ class ClusterLoopTransport:
         if body is not None:
             data = json.dumps(body).encode("utf-8")
             headers["Content-Type"] = "application/json"
+        _inject_trace_context(headers)
         req = Request(f"{self.base_url}{self.path_prefix}{path}", data=data,
                       headers=headers, method=method)
         with urlopen(req, timeout=self.timeout) as resp:

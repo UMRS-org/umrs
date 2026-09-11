@@ -93,6 +93,9 @@ class ClusterSlurmSubmitter:
             "UMRS_GATEWAY_HMAC_SECRET_HEX": _hmac_hex(_gateway_hmac_secret()),
             "RIVAULT_WRAPPER_DIR": _cluster_deploy_dir("rccs"),
         }
+        # WP-12 round 2: OTel trace-context propagation across the durable-job
+        # boundary — only when the server-side boot is active; never fabricate.
+        env.update(_otel_job_env())
         if self._submit is None:
             from umrs.orchestrator.base import OrchestratorConfig
             from umrs.orchestrator.remote_slurm_backend import RemoteSlurmBackend
@@ -105,6 +108,30 @@ class ClusterSlurmSubmitter:
         else:
             result = await self._submit(wrapper, env)
         return _runtime_ref(result, spec)
+
+
+def _otel_job_env() -> dict[str, str]:
+    """Job-facing OTel env, only when the server's boot is active (WP-12 r2).
+
+    Carries the exporter endpoint for the driver's own boot (when the driver
+    image has the otel extra it picks it up the same way), plus the current
+    W3C traceparent when a span is in flight so the driver's root span links
+    to this job's planning span. Inactive/missing stack → empty dict.
+    """
+    endpoint = os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT", "").strip()
+    if not endpoint:
+        return {}
+    env = {"OTEL_EXPORTER_OTLP_ENDPOINT": endpoint}
+    try:
+        from opentelemetry.propagate import inject
+
+        carrier: dict[str, str] = {}
+        inject(carrier)
+        if carrier.get("traceparent"):
+            env["TRACEPARENT"] = carrier["traceparent"]
+    except ImportError:
+        pass
+    return env
 
 
 def _runtime_ref(result: Any, spec: Mapping[str, Any]) -> str:
