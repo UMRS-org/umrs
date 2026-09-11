@@ -432,28 +432,68 @@ async def upload_document(
     file: UploadFile = File(...),
     registry: EndpointRegistry = Depends(get_registry),
 ):
-    """Upload a document for RAG indexing."""
+    """Upload a document for RAG indexing.
+
+    WP-15 dual-corpus dwell (owner decision 2026-09-11): NEW uploads write
+    to the CENTRAL durable ingest plane at ``/umrs/knowledge/upload``;
+    the endpoint-corpus proxy stays available only behind the explicit
+    ``UMRS_RAG_UPLOAD_FACADE=endpoint`` opt-in (endpoint corpus is read-only
+    for standing data). There is no silent dual-write.
+    """
     _user_id, project_id = _require_rag_scope(request, write=True)
 
-    # Unified ingest governance (R6.4): quota + audit via guard_ingest.
-    # Legacy behaviour preserved: quota denial (HTTPException) propagates,
-    # governance-inactive passes.
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="Filename required")
+
+    # Dual-corpus dwell: the central ingest plane runs its OWN
+    # governance/mutation gates (single audit record).
+    import os as _os
+
+    facade = _os.environ.get("UMRS_RAG_UPLOAD_FACADE", "central").lower()
+    if facade != "endpoint":
+        return await _upload_via_central(request, file, project_id)
+    return await _upload_via_endpoint(request, file, registry, _user_id, project_id)
+
+
+async def _upload_via_central(
+    request: Request, file: UploadFile, project_id: str
+) -> UploadResponse:
+    """Dual-corpus dwell default: central ingest owns uploads (own gates)."""
+    from .knowledge_upload import knowledge_upload
+
+    result = await knowledge_upload(
+        request=request, file=file, graph_id=None, project_id=project_id
+    )
+    return UploadResponse(
+        document_id=result.get("job_id", ""),
+        filename=file.filename or "",
+        status="queued-central",
+        chunks=0,
+        knowledge_nodes_minted=0,
+    )
+
+
+async def _upload_via_endpoint(  # noqa: C901 - legacy path retained for the dwell
+    request: Request,
+    file: UploadFile,
+    registry: EndpointRegistry,
+    user_id: str,
+    project_id: str,
+) -> UploadResponse:
+    """Explicit opt-in legacy endpoint proxy (pre-dwell behaviour intact)."""
     try:
         from .governance import guard_ingest
 
         guard_ingest(
             project_id,
             "rag.upload",
-            user_id=_user_id,
+            user_id=user_id,
             details={"filename": getattr(file, "filename", "")},
         )
     except Exception as exc:
         if hasattr(exc, "status_code"):
             raise
         logger.debug("governance not active for rag upload: %s", exc)
-
-    if not file.filename:
-        raise HTTPException(status_code=400, detail="Filename required")
 
     rag_base = _discover_rag_endpoint(registry, project_id)
     rag_url = f"{rag_base}/rag/upload"
@@ -491,7 +531,7 @@ async def upload_document(
                 result=result,
                 filename=file.filename or "",
                 mime_type=file.content_type or "",
-                user_id=_user_id,
+                user_id=user_id,
                 project_id=project_id,
             )
 

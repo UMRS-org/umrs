@@ -25,11 +25,11 @@ from .grants import router as grants_router
 from .intake_uploads import router as intake_uploads_router
 from .jobs import router as jobs_router
 from .knowledge import router as knowledge_router
-from .knowledge_graph import router as knowledge_graph_router
 from .knowledge_graphs import router as knowledge_graphs_router
 from .knowledge_lineage import router as knowledge_lineage_router
 from .knowledge_proposals import router as knowledge_proposals_router
 from .knowledge_query import router as knowledge_query_router
+from .knowledge_upload import router as knowledge_upload_router
 from .knowledge_v2 import router as knowledge_v2_router
 from .llm import router as llm_router
 from .loop import router as loops_router
@@ -74,12 +74,12 @@ __all__ = [
     "grants_router",
     "intake_uploads_router",
     "jobs_router",
-    "knowledge_graph_router",
     "knowledge_graphs_router",
     "knowledge_lineage_router",
     "knowledge_proposals_router",
     "knowledge_query_router",
     "knowledge_router",
+    "knowledge_upload_router",
     "knowledge_v2_router",
     "llm_router",
     "loops_router",

@@ -52,10 +52,16 @@ async def _fake_post_ok(self, url, **kwargs):
 
 
 def _upload_regression_shims(monkeypatch):
-    """Keep the upload test hermetic: governance/audit side channels off."""
+    """Keep the upload test hermetic: governance/audit side channels off.
+
+    Also pins the dwell-era facade to the endpoint lane — these tests
+    validate the pre-dwell proxy semantics on which minting rides; central
+    uploads have their own suite (test_knowledge_upload.py).
+    """
     monkeypatch.setattr("umrs.api.governance.check_quota", lambda *a, **k: None)
     monkeypatch.setattr("umrs.api.governance.record_resource_created", lambda *a, **k: None)
     monkeypatch.setattr("umrs.api.audit_events.emit_audit", lambda *a, **k: None)
+    monkeypatch.setenv("UMRS_RAG_UPLOAD_FACADE", "endpoint")
 
 
 def test_upload_mints_knowledge_nodes(monkeypatch):
