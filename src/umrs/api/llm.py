@@ -355,6 +355,7 @@ async def _proxy_streaming(
     timer: ProxyTimer | None = None,
     registry: EndpointRegistry | None = None,
     job_id: str | None = None,
+    model: str = "",
 ) -> StreamingResponse:
     """Stream upstream response to the caller.
 
@@ -374,10 +375,21 @@ async def _proxy_streaming(
     # Only the tail matters — the final SSE event carries ``usage``.
     _tail_chunks: list[bytes] = []
     _MAX_TAIL = 5
+    _ttft_observed = False
 
     async def _yield():
+        nonlocal _ttft_observed
         try:
             async for chunk in response.aiter_bytes():
+                if not _ttft_observed and timer is not None:
+                    # P11 TTFT SLO (ADR-014 follow-up): observed exactly once
+                    # per stream at the first upstream chunk; anchor = the
+                    # ProxyTimer at the route boundary — chunk, not decoded
+                    # token, same honest semantics as the retired gateway.
+                    _ttft_observed = True
+                    from umrs.metrics import METRICS
+
+                    METRICS.llm_first_token(model, timer.elapsed_ms() / 1000)
                 if usage_record is not None:
                     _tail_chunks.append(chunk)
                     if len(_tail_chunks) > _MAX_TAIL:
@@ -505,6 +517,7 @@ async def _proxy_to_litellm(
             timer=timer,
             registry=registry,
             job_id=endpoint.job_id,
+            model=endpoint.model or "",
         )
     try:
         return await _proxy_oneshot(

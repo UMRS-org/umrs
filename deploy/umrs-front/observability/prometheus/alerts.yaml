@@ -278,9 +278,25 @@ groups:
   # ==========================================================================
   - name: llm-slo
     rules:
-      # LLMFirstTokenSlow pruned 2026-09-11 (ADR-014): series came only from
-      # the retired Python gateway (ratified P11 TTFT SLO now unmeasured —
-      # owned by G-P11-2/G-P1-4; re-instrument on the sidecar or UMRS route).
+      # LLMFirstTokenSlow restored 2026-09-11 (same-day ADR-014 follow-up):
+      # the UMRS LLM route now owns `rivault_llm_first_token_seconds` —
+      # same series name, same chunk-at-first-streamed-chunk anchor, umrs
+      # source/model labels (`umrs/src/umrs/api/llm.py` `_proxy_streaming`,
+      # metric registered in `umrs/src/umrs/metrics.py`).
+      - alert: LLMFirstTokenSlow
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(rivault_llm_first_token_seconds_bucket[10m])) by (le)
+          ) > 30
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "LLM time-to-first-chunk p95 above 30s"
+          description: "UMRS-route-measured TTFT p95 is {{ $value }}s over the last 10 minutes (ratified P11 SLO is 30s)."
+          runbook_url: "docs/operations/embedding-outage-playbook.md"
+
       - alert: AttemptWallTimeAnomalous
         expr: |
           histogram_quantile(0.95,
