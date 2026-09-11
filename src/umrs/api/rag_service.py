@@ -15,6 +15,8 @@ import contextlib
 
 import httpx
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
+
+from .typed_errors import PlatformError, raise_typed
 from langchain_community.embeddings import SentenceTransformerEmbeddings
 from langchain_core.callbacks import CallbackManagerForRetrieverRun
 from langchain_core.documents import Document
@@ -919,7 +921,7 @@ def _build_retriever(payload: RAGSearchRequest, fetch_k: int) -> UMRSPgVectorRet
             top_k=fetch_k,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise_typed(PlatformError.ragservice("bad_request", str(exc)), cause=exc)
 
 
 def _retrieve_documents(payload: RAGSearchRequest) -> list[Document]:
@@ -928,9 +930,9 @@ def _retrieve_documents(payload: RAGSearchRequest) -> list[Document]:
     try:
         return retriever.get_relevant_documents(payload.query)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise_typed(PlatformError.ragservice("bad_request", str(exc)), cause=exc)
     except Exception as exc:  # pragma: no cover - defensive
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise_typed(PlatformError.ragservice("failure", str(exc)), cause=exc)
 
 
 def _docs_by_id(docs: list[Document]) -> dict[str, Document]:
@@ -1048,9 +1050,7 @@ def _vector_search_items(
 @app.post("/rag/search", response_model=RAGSearchResponse)
 def rag_search(payload: RAGSearchRequest) -> RAGSearchResponse:
     if EMBEDDINGS is None:
-        raise HTTPException(
-            status_code=500, detail="Embeddings backend not initialized"
-        )
+        raise_typed(PlatformError.ragservice("unavailable", "Embeddings backend not initialized"))
 
     docs = _retrieve_documents(payload)
     if payload.search_method == "hybrid" and HYBRID_SEARCHER is not None and docs:
@@ -1103,12 +1103,14 @@ def _retrieve_or_404(
             # Fail-soft on individual sub-query errors
             continue
     if not all_docs:
-        raise HTTPException(
-            status_code=404,
-            detail=(
-                "No documents retrieved for the given query and filters. "
-                "Check user/xp_name/bucket_alias/modality."
-            ),
+        raise_typed(
+            PlatformError.ragservice(
+                "not_found",
+                (
+                    "No documents retrieved for the given query and filters. "
+                    "Check user/xp_name/bucket_alias/modality."
+                ),
+            )
         )
     return all_docs
 
@@ -1269,9 +1271,7 @@ def rag_qa(payload: RAGQARequest) -> RAGQAResponse:
     4. Ask the LLM to answer using only the retrieved context.
     """
     if EMBEDDINGS is None:
-        raise HTTPException(
-            status_code=500, detail="Embeddings backend not initialized"
-        )
+        raise_typed(PlatformError.ragservice("unavailable", "Embeddings backend not initialized"))
     llm_candidates = _build_llm_candidates()
     retriever = _build_retriever(payload, _fetch_k_for(payload))
     rewritten_queries, preferred = _rewrite_query(payload, llm_candidates)
@@ -1397,7 +1397,7 @@ def _resolve_xp_for_project(project_id: str) -> str | None:
             return project_id
     if _legacy_table_fallback():
         return None
-    raise HTTPException(status_code=404, detail=_no_index_detail(project_id))
+    raise_typed(PlatformError.ragservice("not_found", _no_index_detail(project_id)))
 
 
 def _resolve_entry_for_upload(project_id: str) -> dict[str, Any] | None:
@@ -1417,9 +1417,7 @@ def rag_query(payload: GatewayQueryRequest) -> GatewayQueryResponse:
     Wraps the internal /rag/qa endpoint with Gateway's expected format.
     """
     if EMBEDDINGS is None:
-        raise HTTPException(
-            status_code=500, detail="Embeddings backend not initialized"
-        )
+        raise_typed(PlatformError.ragservice("unavailable", "Embeddings backend not initialized"))
 
     # Map Gateway request to internal format.
     # Strict project → experience mapping (ADR-027 P0): an unmapped project
@@ -1464,22 +1462,24 @@ def rag_query(payload: GatewayQueryRequest) -> GatewayQueryResponse:
 async def _read_upload_text(file: UploadFile) -> tuple[bytes, str]:
     """Validate upload basics; return (raw_bytes, decoded_text)."""
     if not file.filename:
-        raise HTTPException(status_code=400, detail="Filename required")
+        raise_typed(PlatformError.ragservice("bad_request", "Filename required"))
     if EMBEDDINGS is None:
-        raise HTTPException(status_code=500, detail="Embeddings not initialized")
+        raise_typed(PlatformError.ragservice("unavailable", "Embeddings not initialized"))
     if not DB_MODEL_STORE:
-        raise HTTPException(status_code=500, detail="RAG store not configured")
+        raise_typed(PlatformError.ragservice("unavailable", "RAG store not configured"))
 
     raw_content = await file.read()
     try:
         text = raw_content.decode("utf-8")
     except UnicodeDecodeError:
-        raise HTTPException(
-            status_code=400,
-            detail="Only UTF-8 text files are supported for now.",
+        raise_typed(
+            PlatformError.ragservice(
+                "bad_request",
+                "Only UTF-8 text files are supported for now.",
+            )
         )
     if not text.strip():
-        raise HTTPException(status_code=400, detail="Uploaded file is empty")
+        raise_typed(PlatformError.ragservice("bad_request", "Uploaded file is empty"))
     return raw_content, text
 
 
@@ -1489,13 +1489,15 @@ def _select_upload_target(project_id: str) -> dict[str, Any]:
     if entry is not None:
         return entry
     if not _legacy_table_fallback():
-        raise HTTPException(status_code=404, detail=_no_index_detail(project_id))
+        raise_typed(PlatformError.ragservice("not_found", _no_index_detail(project_id)))
     for _path, candidate in DB_MODEL_STORE.items():
         if candidate.get("store_embeddings_flag", False):
             return candidate
-    raise HTTPException(
-        status_code=500,
-        detail="No embedding-enabled table found in configuration.",
+    raise_typed(
+        PlatformError.ragservice(
+            "unavailable",
+            "No embedding-enabled table found in configuration.",
+        )
     )
 
 
@@ -1510,7 +1512,7 @@ def _chunk_and_embed(text: str) -> tuple[list[dict[str, Any]], list[Any]]:
     max_tokens = int(os.getenv("UMRS_RAG_CHUNK_MAX_TOKENS", "256"))
     chunks = _chunk_text_without_nlp(text, tokenizer=tokenizer, max_tokens=max_tokens)
     if not chunks:
-        raise HTTPException(status_code=400, detail="No chunks produced from document")
+        raise_typed(PlatformError.ragservice("bad_request", "No chunks produced from document"))
 
     chunk_texts = [c["text"] for c in chunks]
     model_name = getattr(EMBEDDINGS, "model_name", None)
@@ -1708,7 +1710,7 @@ def _persist_chunks(
         cur.close()
     except Exception as exc:
         conn.rollback()
-        raise HTTPException(status_code=500, detail=f"Database insertion failed: {exc}")
+        raise_typed(PlatformError.ragservice("failure", f"Database insertion failed: {exc}"), cause=exc)
     finally:
         db_pool.putconn(conn)
 

@@ -461,3 +461,17 @@ def test_contract_knowledge2_family_codes():
     }
     for code, status in expected.items():
         assert codes[code] == status, code
+
+
+def test_contract_ragservice_family_codes():
+    from r4_contracts.errors import known_error_codes
+
+    codes = known_error_codes()
+    expected = {
+        "ragservice.unavailable": 500,
+        "ragservice.not_found": 404,
+        "ragservice.bad_request": 400,
+        "ragservice.failure": 500,
+    }
+    for code, status in expected.items():
+        assert codes[code] == status, code
