@@ -206,14 +206,11 @@ def _validate_params_against_schema(
         name for name in required if isinstance(name, str) and name not in params
     ]
     if missing:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={
-                "error": "validation_error",
-                "code": "workflow_parameters_invalid",
-                "message": f"Missing required workflow parameters: {', '.join(missing)}",
-                "missing": missing,
-            },
+        raise_typed(
+            PlatformError.workflows2(
+                "bad_request",
+                { "error": "validation_error", "code": "workflow_parameters_invalid", "message": f"Missing required workflow parameters: {', '.join(missing)}", "missing": missing, }
+            ),
         )
 
 

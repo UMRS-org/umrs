@@ -18,7 +18,6 @@ from datetime import datetime, timezone
 from typing import Any
 
 from umrs.knowledge.canonical_graph_view import CanonicalGraphView, default_view
-from umrs.knowledge_graph_api import InMemoryKnowledgeGraph
 from umrs.knowledge_model import InMemoryKnowledgeModelStore
 
 __all__ = [
@@ -118,7 +117,7 @@ class ResearchReadinessController:
         self,
         *,
         knowledge_model: InMemoryKnowledgeModelStore | None = None,
-        knowledge_graph: InMemoryKnowledgeGraph | CanonicalGraphView | None = None,
+        knowledge_graph: CanonicalGraphView | None = None,
     ) -> None:
         self._knowledge_model = knowledge_model or InMemoryKnowledgeModelStore()
         self._knowledge_graph = knowledge_graph or default_view(store=None)
@@ -131,67 +130,70 @@ class ResearchReadinessController:
             ReadinessReport with readiness level, completeness, and recommendation
         """
         report = ReadinessReport()
+        counts = self._type_counts()
+        report.knowledge_completeness = self._completeness(counts)
 
-        # Count objects by type
+        report.evidence_quality = self._evidence_quality(counts["evidence"])
+
+        report.contradictions = self._contradiction_count()
+
+        # Unsupported hypotheses (hypotheses with no supporting evidence)
+        report.unsupported_hypotheses = max(0, counts["hypothesis"] - counts["evidence"])
+
+        # Missing experiments (hypotheses without experiments)
+        report.missing_experiments = max(0, counts["hypothesis"] - counts["experiment"])
+
+        level, recommendation = self._readiness_decision(report.knowledge_completeness, report.evidence_quality)
+        report.readiness_level = level
+        report.recommendation = recommendation
+
+        return report
+
+    def _type_counts(self) -> dict[str, int]:
+        """Per-type object counts in one pass."""
         objects = self._knowledge_model.list_objects(limit=10000)
-        paper_count = sum(1 for o in objects if o.object_type.value == "paper")
-        hypothesis_count = sum(1 for o in objects if o.object_type.value == "hypothesis")
-        experiment_count = sum(1 for o in objects if o.object_type.value == "experiment")
-        finding_count = sum(1 for o in objects if o.object_type.value == "finding")
-        evidence_count = sum(1 for o in objects if o.object_type.value == "evidence")
+        keys = ("paper", "hypothesis", "experiment", "finding", "evidence")
+        return {
+            key: sum(1 for o in objects if o.object_type.value == key)
+            for key in keys
+        }
 
-        # Knowledge completeness (simple heuristic)
-        has_papers = paper_count > 0
-        has_hypotheses = hypothesis_count > 0
-        has_experiments = experiment_count > 0
-        has_findings = finding_count > 0
-        has_evidence = evidence_count > 0
+    @staticmethod
+    def _completeness(counts: dict[str, int]) -> float:
+        """Presence-fraction across the five readiness kinds."""
+        kinds = ("paper", "hypothesis", "experiment", "finding", "evidence")
+        presence = sum(1 for key in kinds if counts.get(key, 0) > 0)
+        return presence / 5.0
 
-        completeness = sum([
-            has_papers, has_hypotheses, has_experiments,
-            has_findings, has_evidence,
-        ]) / 5.0
-
-        report.knowledge_completeness = completeness
-
-        # Evidence quality
+    @staticmethod
+    def _evidence_quality(evidence_count: int) -> str:
+        """Evidence quality tier (high/medium/low by count)."""
         if evidence_count >= 5:
-            report.evidence_quality = "high"
-        elif evidence_count >= 2:
-            report.evidence_quality = "medium"
-        else:
-            report.evidence_quality = "low"
+            return "high"
+        if evidence_count >= 2:
+            return "medium"
+        return "low"
 
-        # Contradictions (edges with CONTRADICTS relation)
+    def _contradiction_count(self) -> int:
+        """Edges whose relation name reads 'contradict' (one pass, no double-count)."""
         all_nodes = self._knowledge_graph.query()
         contradiction_count = 0
         for node in all_nodes:
             for edge in self._knowledge_graph.get_outgoing(node.node_id):
                 if "contradict" in edge.relation_type.value.lower():
                     contradiction_count += 1
-        report.contradictions = contradiction_count
+        return contradiction_count
 
-        # Unsupported hypotheses (hypotheses with no supporting evidence)
-        report.unsupported_hypotheses = max(0, hypothesis_count - evidence_count)
-
-        # Missing experiments (hypotheses without experiments)
-        report.missing_experiments = max(0, hypothesis_count - experiment_count)
-
-        # Determine readiness level
-        if completeness >= 0.8 and report.evidence_quality == "high":
-            report.readiness_level = ReadinessLevel.READY
-            report.recommendation = "Ready for autonomous research."
-        elif completeness >= 0.6:
-            report.readiness_level = ReadinessLevel.PARTIALLY_READY
-            report.recommendation = "Partially ready. Consider adding more evidence."
-        elif completeness >= 0.4:
-            report.readiness_level = ReadinessLevel.NOT_READY
-            report.recommendation = "Not ready. Upload more papers and datasets."
-        else:
-            report.readiness_level = ReadinessLevel.BLOCKED
-            report.recommendation = "Blocked. Insufficient knowledge base."
-
-        return report
+    @staticmethod
+    def _readiness_decision(completeness: float, evidence_quality: str) -> tuple[ReadinessLevel, str]:
+        """Level+recommendation table (one decision rule row each)."""
+        if completeness >= 0.8 and evidence_quality == "high":
+            return ReadinessLevel.READY, "Ready for autonomous research."
+        if completeness >= 0.6:
+            return ReadinessLevel.PARTIALLY_READY, "Partially ready. Consider adding more evidence."
+        if completeness >= 0.4:
+            return ReadinessLevel.NOT_READY, "Not ready. Upload more papers and datasets."
+        return ReadinessLevel.BLOCKED, "Blocked. Insufficient knowledge base."
 
     def approve(
         self,

@@ -19,6 +19,7 @@ import os
 from dataclasses import dataclass
 
 from fastapi import Header, HTTPException
+from .typed_errors import PlatformError, raise_typed
 
 from r4_contracts.handshake_hmac import (
     ENV_VAR,
@@ -147,11 +148,10 @@ class CallerIdentity:
         if self.is_admin:
             return requested
         if requested and requested.strip() and requested.strip() != self.project_id:
-            raise HTTPException(
-                status_code=403,
-                detail=(
-                    f"project filter '{requested.strip()}' is outside the "
-                    "caller's verified project"
+            raise_typed(
+                PlatformError.verified(
+                    "forbidden",
+                    ( f"project filter '{requested.strip()}' is outside the " "caller's verified project" )
                 ),
             )
         return self.project_id
@@ -166,14 +166,13 @@ class CallerIdentity:
         declared_clean = (declared or "").strip()
         if self.is_admin:
             if not declared_clean:
-                raise HTTPException(status_code=400, detail="project_id is required")
+                raise_typed(PlatformError.verified("bad_request", "project_id is required"))
             return declared_clean
         if declared_clean and declared_clean != self.project_id:
-            raise HTTPException(
-                status_code=403,
-                detail=(
-                    f"project_id '{declared_clean}' is outside the "
-                    "caller's verified project"
+            raise_typed(
+                PlatformError.verified(
+                    "forbidden",
+                    ( f"project_id '{declared_clean}' is outside the " "caller's verified project" )
                 ),
             )
         return self.project_id
@@ -187,15 +186,17 @@ class CallerIdentity:
         if self.is_admin:
             return
         if target_project and target_project != self.project_id:
-            raise HTTPException(status_code=404, detail="resource not found")
+            raise_typed(PlatformError.verified("not_found", "resource not found"))
 
 
 def _missing_caller(strict: bool) -> CallerIdentity | None:
     """Absent identity headers: reject under strict, anonymous under mvp."""
     if strict:
-        raise HTTPException(
-            status_code=401,
-            detail="Missing Gateway-verified caller identity",
+        raise_typed(
+            PlatformError.verified(
+                "unauthorized",
+                "Missing Gateway-verified caller identity"
+            ),
         )
     return None
 
@@ -236,9 +237,11 @@ def resolve_caller(
     if not uid or not pid:
         return _missing_caller(strict)
     if not _signature_ok(strict, uid, pid, x_verified_is_admin, x_verified_hmac):
-        raise HTTPException(
-            status_code=401,
-            detail="Gateway-verified identity signature rejected",
+        raise_typed(
+            PlatformError.verified(
+                "unauthorized",
+                "Gateway-verified identity signature rejected"
+            ),
         )
     return CallerIdentity(
         user_id=uid,
@@ -273,8 +276,10 @@ def get_verified_caller(
         x_user_id, x_verified_project_id, x_verified_is_admin, x_verified_hmac
     )
     if caller is None:
-        raise HTTPException(
-            status_code=401,
-            detail="Caller identity required for this operation",
+        raise_typed(
+            PlatformError.verified(
+                "unauthorized",
+                "Caller identity required for this operation"
+            ),
         )
     return caller

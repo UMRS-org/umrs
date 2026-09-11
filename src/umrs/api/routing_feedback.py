@@ -17,6 +17,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, Field
+from .typed_errors import PlatformError, raise_typed
 
 from ..jobs.routing_feedback import RoutingFeedbackStore
 
@@ -135,7 +136,7 @@ def update_feedback(feedback_id: str, req: UpdateFeedbackRequest):
         quality_score=req.quality_score,
     )
     if not ok:
-        raise HTTPException(status_code=404, detail="Feedback not found")
+        raise_typed(PlatformError.routing("not_found", "Feedback not found"))
     return {"status": "updated", "feedback_id": feedback_id}
 
 
@@ -168,7 +169,7 @@ def get_feedback(feedback_id: str):
     store = get_store()
     fb = store.get_feedback(feedback_id)
     if not fb:
-        raise HTTPException(status_code=404, detail="Feedback not found")
+        raise_typed(PlatformError.routing("not_found", "Feedback not found"))
     return FeedbackResponse(**fb.to_dict())
 
 
@@ -177,5 +178,5 @@ def delete_feedback(feedback_id: str):
     store = get_store()
     ok = store.delete_feedback(feedback_id)
     if not ok:
-        raise HTTPException(status_code=404, detail="Feedback not found")
+        raise_typed(PlatformError.routing("not_found", "Feedback not found"))
     return {"status": "deleted", "feedback_id": feedback_id}

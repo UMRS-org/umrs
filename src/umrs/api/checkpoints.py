@@ -16,6 +16,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
+from .typed_errors import PlatformError, raise_typed
 
 from ..jobs.checkpoint_store import Checkpoint, CheckpointStore
 
@@ -109,7 +110,7 @@ async def get_checkpoint(
     """Retrieve a specific checkpoint."""
     ckpt = store.get_checkpoint(checkpoint_id)
     if not ckpt:
-        raise HTTPException(status_code=404, detail="Checkpoint not found")
+        raise_typed(PlatformError.checkpoints("not_found", "Checkpoint not found"))
     return _to_response(ckpt)
 
 
@@ -132,7 +133,7 @@ async def latest_checkpoint(
     """Get the latest checkpoint for job resumption."""
     ckpt = store.select_resume_checkpoint(job_id)
     if not ckpt:
-        raise HTTPException(status_code=404, detail="No checkpoints found for job")
+        raise_typed(PlatformError.checkpoints("not_found", "No checkpoints found for job"))
     return _to_response(ckpt)
 
 

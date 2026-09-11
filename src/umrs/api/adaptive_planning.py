@@ -16,6 +16,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, Field
+from .typed_errors import PlatformError, raise_typed
 
 from ..jobs.adaptive_planning import AdaptivePlanningEngine
 from ..jobs.routing_feedback import RoutingFeedbackStore
@@ -128,7 +129,7 @@ def deactivate_heuristic(heuristic_id: str):
     engine = get_engine()
     ok = engine.deactivate_heuristic(heuristic_id)
     if not ok:
-        raise HTTPException(status_code=404, detail="Heuristic not found")
+        raise_typed(PlatformError.adaptive("not_found", "Heuristic not found"))
     return {"status": "deactivated", "heuristic_id": heuristic_id}
 
 
@@ -137,5 +138,5 @@ def delete_heuristic(heuristic_id: str):
     engine = get_engine()
     ok = engine.delete_heuristic(heuristic_id)
     if not ok:
-        raise HTTPException(status_code=404, detail="Heuristic not found")
+        raise_typed(PlatformError.adaptive("not_found", "Heuristic not found"))
     return {"status": "deleted", "heuristic_id": heuristic_id}

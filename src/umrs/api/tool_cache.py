@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
+from .typed_errors import PlatformError, raise_typed
 
 from .endpoints import _caller_is_admin
 from .files import get_project_id
@@ -39,7 +40,7 @@ def set_store(store) -> None:
 
 def _get_store():
     if _store is None:
-        raise HTTPException(status_code=503, detail="Tool output cache not initialized")
+        raise_typed(PlatformError.toolcache("unavailable", "Tool output cache not initialized"))
     return _store
 
 
@@ -64,7 +65,7 @@ async def put_cached_output(
     if not isinstance(ttl, int) or isinstance(ttl, bool) or ttl <= 0:
         # WP-16 round 2: presets reject TTL<=0 at the request boundary
         # (no born-expired cache entries; same clamp as jobs/traces/identity).
-        raise HTTPException(status_code=400, detail="ttl_seconds must be a positive integer")
+        raise_typed(PlatformError.toolcache("bad_request", "ttl_seconds must be a positive integer"))
     entry = store.put(
         session_id=_namespaced(project_id, req["session_id"]),
         tool_name=req["tool_name"],
@@ -104,7 +105,7 @@ async def lookup_cached_output(
         {"_raw_hash": inputs_hash},
     )
     if entry is None:
-        raise HTTPException(status_code=404, detail="Cache miss")
+        raise_typed(PlatformError.toolcache("not_found", "Cache miss"))
     return entry.to_dict()
 
 
@@ -124,9 +125,11 @@ async def invalidate_session_cache(
 async def cleanup_expired(is_admin: bool = Depends(_caller_is_admin)):
     """Remove all expired cache entries (admin-only: cross-project op)."""
     if not is_admin:
-        raise HTTPException(
-            status_code=403,
-            detail="cleanup requires admin role (cross-project operation)",
+        raise_typed(
+            PlatformError.toolcache(
+                "forbidden",
+                "cleanup requires admin role (cross-project operation)"
+            ),
         )
     store = _get_store()
     count = store.cleanup_expired()

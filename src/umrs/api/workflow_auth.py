@@ -194,9 +194,11 @@ def enforce_http_execution_access(
 ) -> None:
     """Raise 404/403 when the caller cannot access an execution."""
     if record is None and job is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Execution {execution_id} not found",
+        raise_typed(
+            PlatformError.workflowauth(
+                "not_found",
+                f"Execution {execution_id} not found"
+            ),
         )
 
     user_id, project_id, is_admin, provenance = caller_from_identity(identity)
@@ -210,9 +212,11 @@ def enforce_http_execution_access(
     ):
         return
 
-    raise HTTPException(
-        status_code=status.HTTP_403_FORBIDDEN,
-        detail=authorization_denied_detail(),
+    raise_typed(
+        PlatformError.workflowauth(
+            "forbidden",
+            authorization_denied_detail()
+        ),
     )
 
 

@@ -19,6 +19,7 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
+from .typed_errors import PlatformError, raise_typed
 
 from umrs.knowledge.graph_registry import GraphRegistryStore, ProposalStore
 
@@ -44,16 +45,16 @@ class ProposalDecisionRequest(BaseModel):
 def _proposal_store(request: Request) -> ProposalStore:
     pool = getattr(request.app.state, "umrs_db_pool", None)
     if pool is None:
-        raise HTTPException(status_code=503, detail="Database unavailable")
+        raise_typed(PlatformError.proposals("unavailable", "Database unavailable"))
     return ProposalStore(pool)
 
 
 def _require_graph(request: Request, graph_id: str) -> None:
     pool = getattr(request.app.state, "umrs_db_pool", None)
     if pool is None:
-        raise HTTPException(status_code=503, detail="Database unavailable")
+        raise_typed(PlatformError.proposals("unavailable", "Database unavailable"))
     if GraphRegistryStore(pool).resolve_graph(graph_id) is None:
-        raise HTTPException(status_code=404, detail=f"Graph {graph_id} not found")
+        raise_typed(PlatformError.proposals("not_found", f"Graph {graph_id} not found"))
 
 
 @router.post("/graphs/{graph_id}/proposals", status_code=201)
@@ -97,7 +98,7 @@ async def get_proposal(proposal_id: str, request: Request) -> dict[str, Any]:
     """Fetch one proposal by id."""
     proposal = _proposal_store(request).get_proposal(proposal_id)
     if proposal is None:
-        raise HTTPException(status_code=404, detail=f"Proposal {proposal_id} not found")
+        raise_typed(PlatformError.proposals("not_found", f"Proposal {proposal_id} not found"))
     return proposal.to_dict()
 
 
@@ -116,15 +117,13 @@ async def decide_proposal(
     store = _proposal_store(request)
     proposal = store.get_proposal(proposal_id)
     if proposal is None:
-        raise HTTPException(status_code=404, detail=f"Proposal {proposal_id} not found")
+        raise_typed(PlatformError.proposals("not_found", f"Proposal {proposal_id} not found"))
     if proposal.status != "pending":
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "error": "proposal_already_decided",
-                "proposal_id": proposal_id,
-                "status": proposal.status,
-            },
+        raise_typed(
+            PlatformError.proposals(
+                "conflict",
+                { "error": "proposal_already_decided", "proposal_id": proposal_id, "status": proposal.status, }
+            ),
         )
     decided_by = identity.user_id or "user"
     updated = store.decide(proposal_id, approved=body.approved, decided_by=decided_by)

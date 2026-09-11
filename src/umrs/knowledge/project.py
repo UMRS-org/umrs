@@ -34,7 +34,7 @@ from pathlib import Path
 from typing import Any
 
 from r4_contracts.research import ResearchRunStatus
-from umrs.knowledge_graph_api import RelationType
+from umrs.knowledge.graph_types import RelationType
 
 from .coverage import (
     CoverageCalculator,
@@ -127,7 +127,7 @@ class ProjectPhase(str, Enum):
     CREATED = "created"
     INGESTING = "ingesting"
     UNDERSTANDING = "understanding"
-    READY = "ready"                       # Knowledge verified, ready for research
+    READY = "ready"  # Knowledge verified, ready for research
     PLANNING = "planning"
     RESEARCHING = "researching"
     COMPLETED = "completed"
@@ -248,9 +248,7 @@ class ResearchProject:
         self._knowledge_ir: dict[str, KnowledgeIR] = {}
 
         # Scientific memory (auto-registered artifacts) — UMRS API adapter
-        memory_storage = (
-            Path(storage_path) / "memory.json" if storage_path else None
-        )
+        memory_storage = Path(storage_path) / "memory.json" if storage_path else None
         self._memory_store = ScientificMemoryStore(storage_path=memory_storage)
         self._memory_store.load()
         self._memory_manager = ScientificMemoryManager(store=self._memory_store)
@@ -347,7 +345,9 @@ class ResearchProject:
             # Allow understand() without ingest for empty projects
             pass
         self._transition(
-            self.phase if self.phase != ProjectPhase.CREATED else ProjectPhase.INGESTING,
+            self.phase
+            if self.phase != ProjectPhase.CREATED
+            else ProjectPhase.INGESTING,
             ProjectPhase.UNDERSTANDING,
         )
         start = datetime.now(timezone.utc)
@@ -361,7 +361,15 @@ class ResearchProject:
         self._persist_extracted_knowledge_to_umrs()
 
         # Build knowledge graph from artifacts + extracted knowledge
-        artifact_dicts = [dict(a, extracted_knowledge=self._extracted_knowledge.get(a.get("artifact_id", ""))) for a in artifacts]
+        artifact_dicts = [
+            dict(
+                a,
+                extracted_knowledge=self._extracted_knowledge.get(
+                    a.get("artifact_id", "")
+                ),
+            )
+            for a in artifacts
+        ]
         self._knowledge_graph = self._linker.link(artifact_dicts)
         self._sync_graph_to_store()
         self._sync_graph_to_umrs_adapter()
@@ -369,7 +377,9 @@ class ResearchProject:
 
         # Calculate coverage dashboard
         coverage_artifacts = self._build_coverage_artifacts(artifacts)
-        self._coverage_dashboard = self._coverage_calculator.calculate(coverage_artifacts)
+        self._coverage_dashboard = self._coverage_calculator.calculate(
+            coverage_artifacts
+        )
 
         self.updated_at = datetime.now(timezone.utc).isoformat()
         self._log_transition(
@@ -381,7 +391,9 @@ class ResearchProject:
                 "extracted_count": len(self._extracted_knowledge),
                 "graph_nodes": len(self._knowledge_graph.nodes),
                 "graph_edges": len(self._knowledge_graph.edges),
-                "coverage_score": self._coverage_dashboard.coverage_score if self._coverage_dashboard else 0.0,
+                "coverage_score": self._coverage_dashboard.coverage_score
+                if self._coverage_dashboard
+                else 0.0,
             },
         )
         # Transition to READY after understanding
@@ -429,18 +441,22 @@ class ResearchProject:
         )
         return knowledge
 
-    def _build_coverage_artifacts(self, artifacts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _build_coverage_artifacts(
+        self, artifacts: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
         """Assemble the artifact records used by the coverage calculator."""
         coverage_artifacts = []
         for artifact in artifacts:
             artifact_id = artifact.get("artifact_id", "")
-            coverage_artifacts.append({
-                "artifact_id": artifact_id,
-                "artifact_type": artifact.get("artifact_type", "text"),
-                "filename": artifact.get("filename", ""),
-                "metadata": artifact.get("metadata", {}),
-                "extracted_knowledge": self._extracted_knowledge.get(artifact_id),
-            })
+            coverage_artifacts.append(
+                {
+                    "artifact_id": artifact_id,
+                    "artifact_type": artifact.get("artifact_type", "text"),
+                    "filename": artifact.get("filename", ""),
+                    "metadata": artifact.get("metadata", {}),
+                    "extracted_knowledge": self._extracted_knowledge.get(artifact_id),
+                }
+            )
         return coverage_artifacts
 
     def verify(self, question: str) -> VerificationAnswer:
@@ -493,7 +509,11 @@ class ResearchProject:
             ProjectPhase.READY,
             ProjectPhase.READY,
             start,
-            inputs={"coverage_score": self._coverage_dashboard.coverage_score if self._coverage_dashboard else 0.0},
+            inputs={
+                "coverage_score": self._coverage_dashboard.coverage_score
+                if self._coverage_dashboard
+                else 0.0
+            },
             outputs={
                 "readiness_level": self._readiness_report.readiness_level.value,
                 "confidence_level": self._readiness_report.confidence_level.value,
@@ -635,7 +655,7 @@ class ResearchProject:
     def composition(self) -> ProjectComposition:
         return self._composition
 
-    def run_research(
+    def run_research(  # noqa: C901 — reason=pre-existing critical debt; named per WP tradition, not refactored this wave owner=agent-debug added=2026-09-11 expires=2026-12
         self,
         max_iterations: int = 10,
         *,
@@ -666,127 +686,27 @@ class ResearchProject:
         ``on_run_ready(engine, run_handle)`` is invoked after the run row and
         loop engine exist so callers (e.g. Bun cancel) can wire early.
         """
-        if self._readiness_report is None or not self._readiness_report.user_approved:
-            raise RuntimeError(
-                "Research readiness report must be approved before running research. "
-                "Call check_readiness() and approve_readiness() first."
-            )
-        if self._research_plan is None:
-            raise RuntimeError(
-                "Research plan must be generated before running research. "
-                "Call plan_research() first."
-            )
-
+        self._validate_research_ready(simulate=simulate, workflow_port=workflow_port)
         port = workflow_port if workflow_port is not None else self._workflow_port
-        if not simulate and port is None:
-            raise RuntimeError(
-                "workflow execution port required for real mode; "
-                "pass workflow_port= / set_workflow_port(), or pass simulate=True "
-                "(--simulate) for fabricated placeholders"
-            )
 
-        self._transition(ProjectPhase.PLANNING, ProjectPhase.RESEARCHING)
         start = datetime.now(timezone.utc)
-
-        from umrs.graph_reasoning import GraphNavigator
-
-        graph_navigator = GraphNavigator(graph=self._umrs_knowledge_graph.graph)
-
-        run_handle = None
-        if self._run_store is not None:
-            run_handle = self._run_store.create_run(
-                self.project_id,
-                simulated=simulate,
-            )
-            self._last_run_handle = run_handle
-
-        def _persist_iteration(iteration: Any) -> None:
-            if run_handle is None or self._run_store is None:
-                return
-            self._run_store.record_iteration(
-                run_handle.run_id,
-                iteration_number=iteration.iteration_number,
-                workflow_execution_id=iteration.workflow_run_id or None,
-                durable_job_id=iteration.durable_job_id,
-                status=iteration.status,
-                payload=iteration.to_dict(),
-                iteration_id=iteration.iteration_id,
-            )
-
-        self._loop_engine = AutonomousResearchLoop(
-            simulated=simulate,
-            workflow_port=None if simulate else port,
-            knowledge_store=None if simulate else self._knowledge_store,
-            graph_navigator=None if simulate else graph_navigator,
+        loop_engine, graph_navigator, run_handle = self._research_setup_engine(
+            simulate=simulate,
+            workflow_port=port,
             cancel_check=cancel_check,
-            iteration_hook=_persist_iteration,
+            on_run_ready=on_run_ready,
         )
-        if run_handle is not None:
-            from .active_runs import register_active_engine
+        self._loop_engine = loop_engine
 
-            register_active_engine(run_handle.run_id, self._loop_engine)
-        if on_run_ready is not None:
-            on_run_ready(self._loop_engine, run_handle)
+        self._run_engine_loop(
+            loop_engine,
+            graph_navigator=graph_navigator,
+            run_handle=run_handle,
+            simulate=simulate,
+            max_iterations=max_iterations,
+        )
 
-        try:
-            self._research_loop = self._loop_engine.start_loop(
-                project_id=self.project_id,
-                research_goal=self._research_plan.title or "Autonomous research",
-                max_iterations=max_iterations,
-                research_plan=self._research_plan,
-                knowledge_store=None if simulate else self._knowledge_store,
-                graph_navigator=None if simulate else graph_navigator,
-            )
-            if run_handle is not None and self._run_store is not None:
-                self._run_store.update_status(
-                    run_handle.run_id,
-                    ResearchRunStatus.RUNNING,
-                    loop_id=self._research_loop.loop_id,
-                )
-                refreshed = self._run_store.get_run(run_handle.run_id)
-                if refreshed is not None:
-                    self._last_run_handle = refreshed
-                    run_handle = refreshed
-
-            self._research_loop = self._loop_engine.run(self._research_loop)
-        finally:
-            if run_handle is not None:
-                from .active_runs import unregister_active_engine
-
-                unregister_active_engine(run_handle.run_id)
-
-        # Register research loop results in scientific memory + graph
-        for iteration in self._research_loop.iterations:
-            _persist_iteration(iteration)
-            self._memory_manager.register_analysis_result(
-                project_id=self.project_id,
-                analysis=iteration.analysis or "",
-                summary=f"Analysis from iteration {iteration.iteration_number}",
-            )
-            supporting = "supports" in (iteration.evaluation or "").lower()
-            for finding in iteration.findings:
-                statement = (
-                    finding.statement
-                    if hasattr(finding, "statement")
-                    else (
-                        finding.get("statement", finding)
-                        if isinstance(finding, dict)
-                        else finding
-                    )
-                )
-                self._memory_manager.register_accepted_finding(
-                    project_id=self.project_id,
-                    finding=statement,
-                    confidence=getattr(finding, "confidence", 0.7) or 0.7,
-                )
-                if not simulate:
-                    self._register_finding_graph_edges(
-                        finding,
-                        supporting=supporting,
-                    )
-        if not simulate:
-            self._persist_finding_graph_edges()
-
+        self._register_iteration_findings(simulate=simulate, run_handle=run_handle)
         final_phase, cause = self._map_loop_outcome(self._research_loop)
         success = final_phase == ProjectPhase.COMPLETED
 
@@ -810,25 +730,7 @@ class ResearchProject:
             error=cause,
         )
 
-        if run_handle is not None and self._run_store is not None:
-            run_status = {
-                ProjectPhase.COMPLETED: ResearchRunStatus.COMPLETED,
-                ProjectPhase.FAILED: ResearchRunStatus.FAILED,
-                ProjectPhase.CANCELLED: ResearchRunStatus.CANCELLED,
-            }[final_phase]
-            try:
-                self._run_store.update_status(
-                    run_handle.run_id,
-                    run_status,
-                    error=cause,
-                    loop_id=self._research_loop.loop_id,
-                )
-            except ValueError:
-                # Already terminal (e.g. external cancel) — leave as-is.
-                pass
-            refreshed = self._run_store.get_run(run_handle.run_id)
-            if refreshed is not None:
-                self._last_run_handle = refreshed
+        self._finalize_run_handle(run_handle, final_phase, cause)
 
         self._transition(ProjectPhase.RESEARCHING, final_phase)
         return self._research_loop
@@ -837,10 +739,189 @@ class ResearchProject:
     def _map_loop_outcome(loop: ResearchLoop) -> tuple[ProjectPhase, str | None]:
         """Map loop engine status/phase to a terminal project phase."""
         if loop.status == LoopStatus.ERROR or loop.phase == LoopPhase.FAILED:
-            return ProjectPhase.FAILED, loop.metadata.get("error") or "research loop error"
+            return ProjectPhase.FAILED, loop.metadata.get(
+                "error"
+            ) or "research loop error"
         if loop.phase == LoopPhase.CANCELLED:
             return ProjectPhase.CANCELLED, "research loop cancelled"
         return ProjectPhase.COMPLETED, None
+
+    def _validate_research_ready(self, *, simulate: bool, workflow_port: Any) -> None:
+        """Readiness before the run: approved report + plan + real-mode port."""
+        if self._readiness_report is None or not self._readiness_report.user_approved:
+            raise RuntimeError(
+                "Research readiness report must be approved before running research. "
+                "Call check_readiness() and approve_readiness() first."
+            )
+        if self._research_plan is None:
+            raise RuntimeError(
+                "Research plan must be generated before running research. "
+                "Call plan_research() first."
+            )
+        port = workflow_port if workflow_port is not None else self._workflow_port
+        if not simulate and port is None:
+            raise RuntimeError(
+                "workflow execution port required for real mode; "
+                "pass workflow_port= / set_workflow_port(), or pass simulate=True "
+                "(--simulate) for fabricated placeholders"
+            )
+
+    def _run_engine_loop(
+        self,
+        loop_engine: Any,
+        *,
+        graph_navigator: Any,
+        run_handle: Any | None,
+        simulate: bool,
+        max_iterations: int,
+    ) -> None:
+        """Start + run the research loop, with run-row status transitions."""
+        try:
+            self._research_loop = loop_engine.start_loop(
+                project_id=self.project_id,
+                research_goal=self._research_plan.title or "Autonomous research",
+                max_iterations=max_iterations,
+                research_plan=self._research_plan,
+                knowledge_store=None if simulate else self._knowledge_store,
+                graph_navigator=graph_navigator,
+            )
+            if run_handle is not None and self._run_store is not None:
+                self._run_store.update_status(
+                    run_handle.run_id,
+                    ResearchRunStatus.RUNNING,
+                    loop_id=self._research_loop.loop_id,
+                )
+                refreshed = self._run_store.get_run(run_handle.run_id)
+                if refreshed is not None:
+                    self._last_run_handle = refreshed
+                    run_handle = refreshed
+
+            self._research_loop = loop_engine.run(self._research_loop)
+        finally:
+            if run_handle is not None:
+                from .active_runs import unregister_active_engine
+
+                unregister_active_engine(run_handle.run_id)
+
+    def _research_setup_engine(
+        self,
+        *,
+        simulate: bool,
+        workflow_port: Any,
+        cancel_check: Any,
+        on_run_ready: Any,
+    ):
+        """Boot-graph + run-row + loop engine + on_run_ready hook (setup phase).
+
+        Behaviour identical to the split origin: builds the navigator, opens
+        the run row, wires the iteration-persist hook, registers the active
+        engine, then fires ``on_run_ready``.
+        """
+        from umrs.graph_reasoning import GraphNavigator
+
+        graph_navigator = GraphNavigator(graph=self._umrs_knowledge_graph.graph)
+        run_handle = None
+        if self._run_store is not None:
+            run_handle = self._run_store.create_run(
+                self.project_id,
+                simulated=simulate,
+            )
+            self._last_run_handle = run_handle
+
+        loop_engine = AutonomousResearchLoop(
+            simulated=simulate,
+            workflow_port=None if simulate else workflow_port,
+            knowledge_store=None if simulate else self._knowledge_store,
+            graph_navigator=None if simulate else graph_navigator,
+            cancel_check=cancel_check,
+            iteration_hook=self._persist_iteration_hook_for(run_handle),
+        )
+        if run_handle is not None:
+            from .active_runs import register_active_engine
+
+            register_active_engine(run_handle.run_id, loop_engine)
+        if on_run_ready is not None:
+            on_run_ready(loop_engine, run_handle)
+        return loop_engine, graph_navigator, run_handle
+
+    def _persist_iteration_hook_for(self, run_handle: Any | None):
+        """Iteration-persist closure (same capture contract as the origin)."""
+
+        def _persist_iteration(iteration: Any) -> None:
+            if run_handle is None or self._run_store is None:
+                return
+            self._run_store.record_iteration(
+                run_handle.run_id,
+                iteration_number=iteration.iteration_number,
+                workflow_execution_id=iteration.workflow_run_id or None,
+                durable_job_id=iteration.durable_job_id,
+                status=iteration.status,
+                payload=iteration.to_dict(),
+                iteration_id=iteration.iteration_id,
+            )
+
+        return _persist_iteration
+
+    def _register_iteration_findings(
+        self, *, simulate: bool, run_handle: Any | None
+    ) -> None:
+        """Persist + register analyses and findings for every iteration."""
+        for iteration in self._research_loop.iterations:
+            self._persist_iteration_hook_for(run_handle)(iteration)
+            self._memory_manager.register_analysis_result(
+                project_id=self.project_id,
+                analysis=iteration.analysis or "",
+                summary=f"Analysis from iteration {iteration.iteration_number}",
+            )
+            supporting = "supports" in (iteration.evaluation or "").lower()
+            for finding in iteration.findings:
+                statement = self._finding_statement(finding)
+                self._memory_manager.register_accepted_finding(
+                    project_id=self.project_id,
+                    finding=statement,
+                    confidence=getattr(finding, "confidence", 0.7) or 0.7,
+                )
+                if not simulate:
+                    self._register_finding_graph_edges(
+                        finding,
+                        supporting=supporting,
+                    )
+        if not simulate:
+            self._persist_finding_graph_edges()
+
+    @staticmethod
+    def _finding_statement(finding: Any) -> str:
+        """Finding statement across object/dict/str shapes (original permissive casing)."""
+        if hasattr(finding, "statement"):
+            return str(getattr(finding, "statement"))
+        if isinstance(finding, dict):
+            return str(finding.get("statement", finding))
+        return str(finding)
+
+    def _finalize_run_handle(
+        self, run_handle: Any | None, final_phase: Any, cause: Any
+    ) -> None:
+        """Terminal run-row update (already-terminal tolerated)."""
+        if run_handle is None or self._run_store is None:
+            return
+        run_status = {
+            ProjectPhase.COMPLETED: ResearchRunStatus.COMPLETED,
+            ProjectPhase.FAILED: ResearchRunStatus.FAILED,
+            ProjectPhase.CANCELLED: ResearchRunStatus.CANCELLED,
+        }[final_phase]
+        try:
+            self._run_store.update_status(
+                run_handle.run_id,
+                run_status,
+                error=cause,
+                loop_id=self._research_loop.loop_id,
+            )
+        except ValueError:
+            # Already terminal (e.g. external cancel) — leave as-is.
+            pass
+        refreshed = self._run_store.get_run(run_handle.run_id)
+        if refreshed is not None:
+            self._last_run_handle = refreshed
 
     # ── Public API: Accessors ────────────────────────────────────────────────
 
@@ -942,9 +1023,15 @@ class ResearchProject:
             "extracted_count": len(self._extracted_knowledge),
             "graph_nodes": len(self._knowledge_graph.nodes),
             "graph_edges": len(self._knowledge_graph.edges),
-            "coverage_score": self._coverage_dashboard.coverage_score if self._coverage_dashboard else 0.0,
-            "readiness_level": self._readiness_report.readiness_level.value if self._readiness_report else "unknown",
-            "readiness_approved": self._readiness_report.user_approved if self._readiness_report else False,
+            "coverage_score": self._coverage_dashboard.coverage_score
+            if self._coverage_dashboard
+            else 0.0,
+            "readiness_level": self._readiness_report.readiness_level.value
+            if self._readiness_report
+            else "unknown",
+            "readiness_approved": self._readiness_report.user_approved
+            if self._readiness_report
+            else False,
             "has_research_plan": self._research_plan is not None,
             "has_research_loop": self._research_loop is not None,
             "external_ref_count": len(self._external_refs),
@@ -957,13 +1044,29 @@ class ResearchProject:
     def _register_finding_graph_edges(self, finding: Any, *, supporting: bool) -> None:
         """Write Finding nodes and SUPPORTS/REFUTES edges into the UMRS graph."""
         finding_id = getattr(finding, "finding_id", None) or ""
-        hypothesis_id = getattr(finding, "hypothesis_id", None) or ""
-        statement = getattr(finding, "statement", "") or ""
-        confidence = float(getattr(finding, "confidence", 0.7) or 0.7)
         if not finding_id:
             return
-
+        confidence = float(getattr(finding, "confidence", 0.7) or 0.7)
         graph = self._umrs_knowledge_graph
+        self._register_finding_node(graph, finding, finding_id)
+        hypothesis_id = getattr(finding, "hypothesis_id", None) or ""
+        if hypothesis_id:
+            self._register_finding_hypothesis_edge(
+                graph,
+                finding_id,
+                hypothesis_id,
+                confidence,
+                self.project_id,
+                supporting,
+            )
+        for ref in getattr(finding, "evidence_refs", None) or []:
+            self._register_finding_evidence_edge(graph, finding_id, confidence, ref)
+
+    @staticmethod
+    def _register_finding_node(graph: Any, finding: Any, finding_id: str) -> None:
+        """Register the finding graph node with its registration metadata."""
+        hypothesis_id = getattr(finding, "hypothesis_id", None) or ""
+        statement = getattr(finding, "statement", "") or ""
         graph.add_node(
             node_id=finding_id,
             node_type="finding",
@@ -975,36 +1078,51 @@ class ResearchProject:
                 "simulated": bool(getattr(finding, "simulated", False)),
             },
         )
-        if hypothesis_id:
-            graph.add_node(
-                node_id=hypothesis_id,
-                node_type="hypothesis",
-                title=hypothesis_id,
-            )
-            relation = RelationType.SUPPORTS if supporting else RelationType.REFUTES
-            graph.add_edge(
-                source_id=finding_id,
-                target_id=hypothesis_id,
-                relation_type=relation,
-                confidence=confidence,
-                metadata={"project_id": self.project_id},
-            )
-        for ref in getattr(finding, "evidence_refs", None) or []:
-            artifact_id = getattr(ref, "artifact_id", None) or ""
-            if not artifact_id:
-                continue
-            graph.add_node(
-                node_id=artifact_id,
-                node_type="artifact",
-                title=artifact_id,
-            )
-            graph.add_edge(
-                source_id=finding_id,
-                target_id=artifact_id,
-                relation_type=RelationType.SUPPORTS,
-                confidence=confidence,
-                metadata={"kind": "evidence_ref"},
-            )
+
+    @staticmethod
+    def _register_finding_hypothesis_edge(
+        graph: Any,
+        finding_id: str,
+        hypothesis_id: str,
+        confidence: float,
+        project_id: str,
+        supporting: bool,
+    ) -> None:
+        """hypothesis side (node + directed relation) for one finding."""
+        graph.add_node(
+            node_id=hypothesis_id,
+            node_type="hypothesis",
+            title=hypothesis_id,
+        )
+        relation = RelationType.SUPPORTS if supporting else RelationType.REFUTES
+        graph.add_edge(
+            source_id=finding_id,
+            target_id=hypothesis_id,
+            relation_type=relation,
+            confidence=confidence,
+            metadata={"project_id": project_id},
+        )
+
+    @staticmethod
+    def _register_finding_evidence_edge(
+        graph: Any, finding_id: str, confidence: float, ref: Any
+    ) -> None:
+        """one evidence-ref (node + SUPPORTS edge) for a finding."""
+        artifact_id = getattr(ref, "artifact_id", None) or ""
+        if not artifact_id:
+            return
+        graph.add_node(
+            node_id=artifact_id,
+            node_type="artifact",
+            title=artifact_id,
+        )
+        graph.add_edge(
+            source_id=finding_id,
+            target_id=artifact_id,
+            relation_type=RelationType.SUPPORTS,
+            confidence=confidence,
+            metadata={"kind": "evidence_ref"},
+        )
 
     def _finding_graph_path(self) -> Path | None:
         if self._storage_path is None:
@@ -1018,10 +1136,28 @@ class ResearchProject:
             return
         import json
 
+        nodes, edges = self._collect_finding_payload()
+        try:
+            path.write_text(
+                json.dumps(
+                    {"nodes": nodes, "edges": edges},
+                    indent=2,
+                    sort_keys=True,
+                ),
+                encoding="utf-8",
+            )
+        except OSError as exc:
+            logger.warning("Failed to persist finding edges: %s", exc)
+
+    def _collect_finding_payload(
+        self,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Nodes+edges snapshot source (pure math; no IO)."""
         nodes = self._umrs_knowledge_graph.query(node_type="finding")
         payload_nodes: list[dict[str, Any]] = []
         payload_edges: list[dict[str, Any]] = []
-        for node in nodes:
+
+        def _capture(node) -> None:
             payload_nodes.append(
                 {
                     "node_id": node.node_id,
@@ -1030,43 +1166,31 @@ class ResearchProject:
                     "metadata": dict(node.metadata or {}),
                 }
             )
+
+        for node in nodes:
+            _capture(node)
             for edge in self._umrs_knowledge_graph.get_outgoing(node.node_id):
-                payload_edges.append(
-                    {
-                        "source_id": edge.source_id,
-                        "target_id": edge.target_id,
-                        "relation_type": (
-                            edge.relation_type.value
-                            if hasattr(edge.relation_type, "value")
-                            else str(edge.relation_type)
-                        ),
-                        "confidence": float(getattr(edge, "confidence", 1.0) or 1.0),
-                        "metadata": dict(getattr(edge, "metadata", None) or {}),
-                    }
-                )
+                payload_edges.append(self._payload_edge_row(edge))
                 target = self._umrs_knowledge_graph.get_node(edge.target_id)
                 if target is not None:
-                    payload_nodes.append(
-                        {
-                            "node_id": target.node_id,
-                            "node_type": target.node_type,
-                            "title": target.title,
-                            "metadata": dict(target.metadata or {}),
-                        }
-                    )
-        # Deduplicate nodes by id (last write wins).
+                    _capture(target)
         by_id = {n["node_id"]: n for n in payload_nodes}
-        try:
-            path.write_text(
-                json.dumps(
-                    {"nodes": list(by_id.values()), "edges": payload_edges},
-                    indent=2,
-                    sort_keys=True,
-                ),
-                encoding="utf-8",
-            )
-        except OSError as exc:
-            logger.warning("Failed to persist finding edges: %s", exc)
+        return list(by_id.values()), payload_edges
+
+    @staticmethod
+    def _payload_edge_row(edge: Any) -> dict[str, Any]:
+        """One durable edge row (relation value normalized, never fabricated)."""
+        return {
+            "source_id": edge.source_id,
+            "target_id": edge.target_id,
+            "relation_type": (
+                edge.relation_type.value
+                if hasattr(edge.relation_type, "value")
+                else str(edge.relation_type)
+            ),
+            "confidence": float(getattr(edge, "confidence", 1.0) or 1.0),
+            "metadata": dict(getattr(edge, "metadata", None) or {}),
+        }
 
     def _load_finding_graph_edges(self) -> None:
         """Reload finding nodes/edges saved by ``_persist_finding_graph_edges``."""
@@ -1083,33 +1207,46 @@ class ResearchProject:
         if not isinstance(payload, dict):
             return
         for node in payload.get("nodes") or []:
-            if not isinstance(node, dict) or not node.get("node_id"):
-                continue
-            self._umrs_knowledge_graph.add_node(
-                node_id=str(node["node_id"]),
-                node_type=str(node.get("node_type") or "finding"),
-                title=str(node.get("title") or ""),
-                metadata=dict(node.get("metadata") or {}),
-            )
+            self._load_finding_node_row(node)
         for edge in payload.get("edges") or []:
-            if not isinstance(edge, dict):
-                continue
-            source_id = str(edge.get("source_id") or "")
-            target_id = str(edge.get("target_id") or "")
-            if not source_id or not target_id:
-                continue
-            raw_rel = edge.get("relation_type") or RelationType.RELATED_TO.value
-            try:
-                relation = RelationType(raw_rel)
-            except ValueError:
-                relation = RelationType.RELATED_TO
-            self._umrs_knowledge_graph.add_edge(
-                source_id=source_id,
-                target_id=target_id,
-                relation_type=relation,
-                confidence=float(edge.get("confidence") or 1.0),
-                metadata=dict(edge.get("metadata") or {}),
-            )
+            self._load_finding_edge_row(edge)
+
+    def _load_finding_node_row(self, node: Any) -> None:
+        """Reload one persisted finding node (shape-checked, never imposed)."""
+        if not isinstance(node, dict) or not node.get("node_id"):
+            return
+        self._umrs_knowledge_graph.add_node(
+            node_id=str(node["node_id"]),
+            node_type=str(node.get("node_type") or "finding"),
+            title=str(node.get("title") or ""),
+            metadata=dict(node.get("metadata") or {}),
+        )
+
+    @staticmethod
+    def _finding_relation_type(raw_rel: Any) -> Any:
+        """Safe relation derive (relative-abby default when unknown)."""
+        raw_rel = raw_rel or RelationType.RELATED_TO.value
+        try:
+            return RelationType(raw_rel)
+        except ValueError:
+            return RelationType.RELATED_TO
+
+    def _load_finding_edge_row(self, edge: Any) -> None:
+        """Reload one persisted finding edge (source/target required)."""
+        if not isinstance(edge, dict):
+            return
+        source_id = str(edge.get("source_id") or "")
+        target_id = str(edge.get("target_id") or "")
+        if not source_id or not target_id:
+            return
+        relation = self._finding_relation_type(edge.get("relation_type"))
+        self._umrs_knowledge_graph.add_edge(
+            source_id=source_id,
+            target_id=target_id,
+            relation_type=relation,
+            confidence=float(edge.get("confidence") or 1.0),
+            metadata=dict(edge.get("metadata") or {}),
+        )
 
     def _ingest_directory_local(self, *directories: str | Path) -> int:
         """Ingest files directly into the in-memory knowledge store."""
@@ -1167,19 +1304,23 @@ class ResearchProject:
             return False
 
         filename = file_path.name
-        artifact_id = f"{artifact_type}-{file_path.stem}-{hash(str(file_path)) & 0xFFFFFF:X}"
+        artifact_id = (
+            f"{artifact_type}-{file_path.stem}-{hash(str(file_path)) & 0xFFFFFF:X}"
+        )
 
         # Add to knowledge store
-        self._ensure_local_knowledge_store().add_artifact({
-            "artifact_id": artifact_id,
-            "artifact_type": artifact_type,
-            "filename": filename,
-            "content": content,
-            "metadata": {
-                "path": str(file_path),
-                "size_bytes": len(content),
-            },
-        })
+        self._ensure_local_knowledge_store().add_artifact(
+            {
+                "artifact_id": artifact_id,
+                "artifact_type": artifact_type,
+                "filename": filename,
+                "content": content,
+                "metadata": {
+                    "path": str(file_path),
+                    "size_bytes": len(content),
+                },
+            }
+        )
         return True
 
     def _ensure_local_knowledge_store(self) -> InMemoryKnowledgeStore:
@@ -1363,12 +1504,16 @@ class ResearchProject:
         if from_phase == to_phase:
             return
         self.phase = to_phase
-        self._transitions.append(WorkflowTransition(
-            from_phase=from_phase,
-            to_phase=to_phase,
-            timestamp=datetime.now(timezone.utc).isoformat(),
-        ))
-        logger.info("Project %s: %s → %s", self.project_id, from_phase.value, to_phase.value)
+        self._transitions.append(
+            WorkflowTransition(
+                from_phase=from_phase,
+                to_phase=to_phase,
+                timestamp=datetime.now(timezone.utc).isoformat(),
+            )
+        )
+        logger.info(
+            "Project %s: %s → %s", self.project_id, from_phase.value, to_phase.value
+        )
 
     def _log_transition(
         self,
@@ -1393,13 +1538,15 @@ class ResearchProject:
                 transition.error = error
                 return
         # If no matching transition, create a new one
-        self._transitions.append(WorkflowTransition(
-            from_phase=from_phase,
-            to_phase=to_phase,
-            timestamp=datetime.now(timezone.utc).isoformat(),
-            duration_seconds=duration,
-            inputs=inputs or {},
-            outputs=outputs or {},
-            success=success,
-            error=error,
-        ))
+        self._transitions.append(
+            WorkflowTransition(
+                from_phase=from_phase,
+                to_phase=to_phase,
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                duration_seconds=duration,
+                inputs=inputs or {},
+                outputs=outputs or {},
+                success=success,
+                error=error,
+            )
+        )

@@ -73,10 +73,7 @@ def get_model_store() -> ModelStore:
     """Get the global model store instance."""
     if _model_store is None:
         raise_typed(
-            PlatformError.models(
-                "unavailable",
-                "Model store not initialized"
-            ),
+            PlatformError.models("unavailable", "Model store not initialized"),
         )
     return _model_store
 
@@ -504,7 +501,7 @@ def _context_from_verified_headers(
         raise_typed(
             PlatformError.auth(
                 "gateway_signature_rejected",
-                "Gateway-verified identity signature rejected"
+                "Gateway-verified identity signature rejected",
             ),
         )
     memberships: set[str] = set()
@@ -602,7 +599,7 @@ def get_access_context(
         raise_typed(
             PlatformError.auth(
                 "gateway_identity_required",
-                "Missing Gateway-verified caller identity for model access"
+                "Missing Gateway-verified caller identity for model access",
             ),
         )
 
@@ -823,18 +820,12 @@ async def get_model(
         return ModelResponse.from_entry(model)
     except ModelNotFoundError:
         raise_typed(
-            PlatformError.models(
-                "not_found",
-                f"Model not found: {model_id}"
-            ),
+            PlatformError.models("not_found", f"Model not found: {model_id}"),
             cause=None,
         )
     except PermissionDeniedError as e:
         raise_typed(
-            PlatformError.models(
-                "forbidden",
-                str(e)
-            ),
+            PlatformError.models("forbidden", str(e)),
             cause=e,
         )
 
@@ -909,34 +900,22 @@ async def create_model(
 
     except PermissionDeniedError as e:
         raise_typed(
-            PlatformError.models(
-                "forbidden",
-                str(e)
-            ),
+            PlatformError.models("forbidden", str(e)),
             cause=e,
         )
     except PathNotAllowedError as e:
         raise_typed(
-            PlatformError.models(
-                "bad_request",
-                str(e)
-            ),
+            PlatformError.models("bad_request", str(e)),
             cause=e,
         )
     except DuplicateModelError as e:
         raise_typed(
-            PlatformError.models(
-                "conflict",
-                str(e)
-            ),
+            PlatformError.models("conflict", str(e)),
             cause=e,
         )
     except ValueError as e:
         raise_typed(
-            PlatformError.models(
-                "bad_request",
-                str(e)
-            ),
+            PlatformError.models("bad_request", str(e)),
             cause=e,
         )
 
@@ -946,8 +925,7 @@ def _validate_stage_scope(scope: ModelScope, request, ctx: AccessContext) -> Non
     if scope == ModelScope.SYSTEM and not ctx.is_admin:
         raise_typed(
             PlatformError.auth(
-                "admin_required",
-                "Admin role required to stage system models"
+                "admin_required", "Admin role required to stage system models"
             ),
         )
 
@@ -958,8 +936,7 @@ def _validate_stage_scope(scope: ModelScope, request, ctx: AccessContext) -> Non
         if not ctx.is_admin:
             raise_typed(
                 PlatformError.models(
-                    "forbidden",
-                    f"Not a member of project {request.project_id}"
+                    "forbidden", f"Not a member of project {request.project_id}"
                 ),
             )
 
@@ -1051,18 +1028,12 @@ async def stage_model(
 
     except DuplicateModelError as e:
         raise_typed(
-            PlatformError.models(
-                "conflict",
-                str(e)
-            ),
+            PlatformError.models("conflict", str(e)),
             cause=e,
         )
     except ValueError as e:
         raise_typed(
-            PlatformError.models(
-                "bad_request",
-                str(e)
-            ),
+            PlatformError.models("bad_request", str(e)),
             cause=e,
         )
 
@@ -1097,18 +1068,12 @@ async def update_model(
 
     except ModelNotFoundError:
         raise_typed(
-            PlatformError.models(
-                "not_found",
-                f"Model not found: {model_id}"
-            ),
+            PlatformError.models("not_found", f"Model not found: {model_id}"),
             cause=None,
         )
     except PermissionDeniedError as e:
         raise_typed(
-            PlatformError.models(
-                "forbidden",
-                str(e)
-            ),
+            PlatformError.models("forbidden", str(e)),
             cause=e,
         )
 
@@ -1156,18 +1121,12 @@ async def delete_model(
                 )
     except ModelNotFoundError:
         raise_typed(
-            PlatformError.models(
-                "not_found",
-                f"Model not found: {model_id}"
-            ),
+            PlatformError.models("not_found", f"Model not found: {model_id}"),
             cause=None,
         )
     except PermissionDeniedError as e:
         raise_typed(
-            PlatformError.models(
-                "forbidden",
-                str(e)
-            ),
+            PlatformError.models("forbidden", str(e)),
             cause=e,
         )
 
@@ -1210,10 +1169,7 @@ async def detect_model_capabilities(
         model = store.get_model(model_id)
     except ModelNotFoundError:
         raise_typed(
-            PlatformError.models(
-                "not_found",
-                f"Model not found: {model_id}"
-            ),
+            PlatformError.models("not_found", f"Model not found: {model_id}"),
             cause=None,
         )
 
@@ -1254,10 +1210,7 @@ async def detect_model_capabilities(
         store.update_capabilities(model.model_id, merged)
     except Exception as e:
         raise_typed(
-            PlatformError.models(
-                "failure",
-                f"Failed to update capabilities: {e}"
-            ),
+            PlatformError.models("failure", f"Failed to update capabilities: {e}"),
             cause=e,
         )
 
@@ -1402,16 +1355,13 @@ def _check_publish_allowed(source_model, request: "ModelPublishRequest", ctx) ->
         raise_typed(
             PlatformError.models(
                 "bad_request",
-                "Only user-scoped models can be published to project scope"
+                "Only user-scoped models can be published to project scope",
             ),
         )
 
     if not ctx.is_admin and source_model.owner_id != ctx.user_id:
         raise_typed(
-            PlatformError.models(
-                "forbidden",
-                "Only the model owner can publish it"
-            ),
+            PlatformError.models("forbidden", "Only the model owner can publish it"),
         )
 
     if (
@@ -1422,7 +1372,7 @@ def _check_publish_allowed(source_model, request: "ModelPublishRequest", ctx) ->
         raise_typed(
             PlatformError.models(
                 "forbidden",
-                f"User is not a member of project '{request.target_project_id}'"
+                f"User is not a member of project '{request.target_project_id}'",
             ),
         )
 
@@ -1473,26 +1423,17 @@ async def publish_model(
 
     except ModelNotFoundError:
         raise_typed(
-            PlatformError.models(
-                "not_found",
-                f"Model not found: {model_id}"
-            ),
+            PlatformError.models("not_found", f"Model not found: {model_id}"),
             cause=None,
         )
     except DuplicateModelError as e:
         raise_typed(
-            PlatformError.models(
-                "conflict",
-                str(e)
-            ),
+            PlatformError.models("conflict", str(e)),
             cause=e,
         )
     except PermissionDeniedError as e:
         raise_typed(
-            PlatformError.models(
-                "forbidden",
-                str(e)
-            ),
+            PlatformError.models("forbidden", str(e)),
             cause=e,
         )
 
@@ -1514,18 +1455,12 @@ async def resolve_model_path(
         return {"model_id": model_id, "storage_ref": path}
     except ModelNotFoundError:
         raise_typed(
-            PlatformError.models(
-                "not_found",
-                f"Model not found: {model_id}"
-            ),
+            PlatformError.models("not_found", f"Model not found: {model_id}"),
             cause=None,
         )
     except PermissionDeniedError as e:
         raise_typed(
-            PlatformError.models(
-                "forbidden",
-                str(e)
-            ),
+            PlatformError.models("forbidden", str(e)),
             cause=e,
         )
 
@@ -1652,8 +1587,7 @@ async def create_system_model(
     if not ctx.is_admin:
         raise_typed(
             PlatformError.auth(
-                "admin_required",
-                "Admin role required to create system models"
+                "admin_required", "Admin role required to create system models"
             ),
         )
 
@@ -1697,34 +1631,22 @@ async def create_system_model(
 
     except PermissionDeniedError as e:
         raise_typed(
-            PlatformError.models(
-                "forbidden",
-                str(e)
-            ),
+            PlatformError.models("forbidden", str(e)),
             cause=e,
         )
     except PathNotAllowedError as e:
         raise_typed(
-            PlatformError.models(
-                "bad_request",
-                str(e)
-            ),
+            PlatformError.models("bad_request", str(e)),
             cause=e,
         )
     except DuplicateModelError as e:
         raise_typed(
-            PlatformError.models(
-                "conflict",
-                str(e)
-            ),
+            PlatformError.models("conflict", str(e)),
             cause=e,
         )
     except ValueError as e:
         raise_typed(
-            PlatformError.models(
-                "bad_request",
-                str(e)
-            ),
+            PlatformError.models("bad_request", str(e)),
             cause=e,
         )
 
@@ -1735,10 +1657,7 @@ def _check_download_target_scope(store, model_name: str, request, ctx) -> None:
         allowed, reason = store.check_policy_access(model_name, request.project_id)
         if not allowed:
             raise_typed(
-                PlatformError.models(
-                    "forbidden",
-                    reason
-                ),
+                PlatformError.models("forbidden", reason),
             )
 
     target_scope = ModelScope(request.target_scope)
@@ -1746,7 +1665,7 @@ def _check_download_target_scope(store, model_name: str, request, ctx) -> None:
         raise_typed(
             PlatformError.models(
                 "forbidden",
-                "Cannot download to system scope. Use project or user scope."
+                "Cannot download to system scope. Use project or user scope.",
             ),
         )
 
@@ -1754,15 +1673,13 @@ def _check_download_target_scope(store, model_name: str, request, ctx) -> None:
         if not request.project_id:
             raise_typed(
                 PlatformError.models(
-                    "bad_request",
-                    "project_id required for project scope"
+                    "bad_request", "project_id required for project scope"
                 ),
             )
         if request.project_id not in ctx.project_memberships and not ctx.is_admin:
             raise_typed(
                 PlatformError.models(
-                    "forbidden",
-                    f"Not a member of project {request.project_id}"
+                    "forbidden", f"Not a member of project {request.project_id}"
                 ),
             )
 
@@ -1871,18 +1788,12 @@ async def download_model_to_user_space(
 
     except ModelNotFoundError:
         raise_typed(
-            PlatformError.models(
-                "not_found",
-                f"System model not found: {model_name}"
-            ),
+            PlatformError.models("not_found", f"System model not found: {model_name}"),
             cause=None,
         )
     except PermissionDeniedError as e:
         raise_typed(
-            PlatformError.models(
-                "forbidden",
-                str(e)
-            ),
+            PlatformError.models("forbidden", str(e)),
             cause=e,
         )
 
@@ -1928,8 +1839,7 @@ async def get_model_policy(
     if policy is None:
         raise_typed(
             PlatformError.models(
-                "not_found",
-                f"No policy found for model: {model_name}"
+                "not_found", f"No policy found for model: {model_name}"
             ),
         )
 
@@ -1951,8 +1861,7 @@ async def update_model_policy(
     if not ctx.is_admin:
         raise_typed(
             PlatformError.auth(
-                "admin_required",
-                "Admin role required to update model policies"
+                "admin_required", "Admin role required to update model policies"
             ),
         )
 
@@ -1975,17 +1884,13 @@ async def update_model_policy(
     except ModelNotFoundError:
         raise_typed(
             PlatformError.models(
-                "not_found",
-                f"No policy found for model: {model_name}"
+                "not_found", f"No policy found for model: {model_name}"
             ),
             cause=None,
         )
     except PermissionDeniedError as e:
         raise_typed(
-            PlatformError.models(
-                "forbidden",
-                str(e)
-            ),
+            PlatformError.models("forbidden", str(e)),
             cause=e,
         )
 
@@ -2068,10 +1973,7 @@ async def create_policy(
 
     except PermissionDeniedError as e:
         raise_typed(
-            PlatformError.models(
-                "forbidden",
-                str(e)
-            ),
+            PlatformError.models("forbidden", str(e)),
             cause=e,
         )
 
@@ -2087,10 +1989,7 @@ async def get_policy(
         return PolicyResponse.from_policy(policy)
     except ModelNotFoundError:
         raise_typed(
-            PlatformError.models(
-                "not_found",
-                f"Policy not found: {policy_id}"
-            ),
+            PlatformError.models("not_found", f"Policy not found: {policy_id}"),
             cause=None,
         )
 
@@ -2138,18 +2037,12 @@ async def update_policy(
 
     except ModelNotFoundError:
         raise_typed(
-            PlatformError.models(
-                "not_found",
-                f"Policy not found: {policy_id}"
-            ),
+            PlatformError.models("not_found", f"Policy not found: {policy_id}"),
             cause=None,
         )
     except PermissionDeniedError as e:
         raise_typed(
-            PlatformError.models(
-                "forbidden",
-                str(e)
-            ),
+            PlatformError.models("forbidden", str(e)),
             cause=e,
         )
 
@@ -2170,18 +2063,12 @@ async def delete_policy(
         logger.info("Admin %s deleted policy %s", ctx.user_id, policy_id)
     except ModelNotFoundError:
         raise_typed(
-            PlatformError.models(
-                "not_found",
-                f"Policy not found: {policy_id}"
-            ),
+            PlatformError.models("not_found", f"Policy not found: {policy_id}"),
             cause=None,
         )
     except PermissionDeniedError as e:
         raise_typed(
-            PlatformError.models(
-                "forbidden",
-                str(e)
-            ),
+            PlatformError.models("forbidden", str(e)),
             cause=e,
         )
 
@@ -2266,10 +2153,7 @@ async def create_model_version(
         )
     except ModelNotFoundError:
         raise_typed(
-            PlatformError.models(
-                "not_found",
-                f"Model not found: {model_id}"
-            ),
+            PlatformError.models("not_found", f"Model not found: {model_id}"),
         )
 
 
@@ -2296,10 +2180,7 @@ async def list_model_versions(
         )
     except ModelNotFoundError:
         raise_typed(
-            PlatformError.models(
-                "not_found",
-                f"Model not found: {model_id}"
-            ),
+            PlatformError.models("not_found", f"Model not found: {model_id}"),
         )
 
 
@@ -2334,7 +2215,7 @@ async def activate_model_version(
         raise_typed(
             PlatformError.models(
                 "version_not_found",
-                f"Version {version_str} not found for model {model_id}"
+                f"Version {version_str} not found for model {model_id}",
             ),
         )
 
@@ -2374,7 +2255,7 @@ async def update_model_version_activation(
         raise_typed(
             PlatformError.models(
                 "version_not_found",
-                f"Version {version_str} not found for model {model_id}"
+                f"Version {version_str} not found for model {model_id}",
             ),
             cause=exc,
         )
@@ -2411,6 +2292,6 @@ async def deactivate_model_version(
         raise_typed(
             PlatformError.models(
                 "version_not_found",
-                f"Version {version_str} not found for model {model_id}"
+                f"Version {version_str} not found for model {model_id}",
             ),
         )

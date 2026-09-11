@@ -11,6 +11,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
+from .typed_errors import PlatformError, raise_typed
 
 from umrs.evidence import (
     Evidence,
@@ -34,7 +35,7 @@ def set_store(store) -> None:
 
 def _get_store():
     if _store is None:
-        raise HTTPException(status_code=503, detail="Evidence store not initialized")
+        raise_typed(PlatformError.evidence("unavailable", "Evidence store not initialized"))
     return _store
 
 
@@ -141,7 +142,7 @@ def get_evidence(
 ):
     entry = _get_store().get_evidence(evidence_id)
     if entry is None:
-        raise HTTPException(status_code=404, detail=f"Evidence {evidence_id} not found")
+        raise_typed(PlatformError.evidence("not_found", f"Evidence {evidence_id} not found"))
     if caller is not None:
         caller.assert_can_access(entry.project_id)
     return _to_response(entry)
@@ -179,12 +180,15 @@ def update_status(
     if caller is not None:
         existing = _get_store().get_evidence(evidence_id)
         if existing is None:
-            raise HTTPException(
-                status_code=404, detail=f"Evidence {evidence_id} not found"
+            raise_typed(
+                PlatformError.evidence(
+                    "not_found",
+                    f"Evidence {evidence_id} not found"
+                ),
             )
         caller.assert_can_access(existing.project_id)
     found = _get_store().update_status(evidence_id, EvidenceStatus(req.status.lower()))
     if not found:
-        raise HTTPException(status_code=404, detail=f"Evidence {evidence_id} not found")
+        raise_typed(PlatformError.evidence("not_found", f"Evidence {evidence_id} not found"))
     entry = _get_store().get_evidence(evidence_id)
     return _to_response(entry)

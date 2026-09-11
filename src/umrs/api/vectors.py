@@ -6,6 +6,7 @@ import logging
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
+from .typed_errors import PlatformError, raise_typed
 
 logger = logging.getLogger(__name__)
 
@@ -22,8 +23,11 @@ def set_store(store) -> None:
 
 def _get_store():
     if _store is None:
-        raise HTTPException(
-            status_code=503, detail="Vector version store not initialized"
+        raise_typed(
+            PlatformError.vectors(
+                "unavailable",
+                "Vector version store not initialized"
+            ),
         )
     return _store
 
@@ -56,7 +60,7 @@ async def get_active_version(model_name: str):
     store = _get_store()
     version = store.get_active_version(model_name)
     if version is None:
-        raise HTTPException(status_code=404, detail="No active version found")
+        raise_typed(PlatformError.vectors("not_found", "No active version found"))
     return version.to_dict()
 
 
@@ -97,7 +101,7 @@ async def get_reembed_job(reembed_id: str):
     store = _get_store()
     job = store.get_reembed_job(reembed_id)
     if job is None:
-        raise HTTPException(status_code=404, detail="Re-embed job not found")
+        raise_typed(PlatformError.vectors("not_found", "Re-embed job not found"))
     return job.to_dict()
 
 
@@ -113,5 +117,5 @@ async def update_reembed_progress(reembed_id: str, req: dict):
         error=req.get("error"),
     )
     if job is None:
-        raise HTTPException(status_code=404, detail="Re-embed job not found")
+        raise_typed(PlatformError.vectors("not_found", "Re-embed job not found"))
     return job.to_dict()

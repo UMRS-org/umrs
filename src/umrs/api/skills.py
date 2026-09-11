@@ -100,9 +100,11 @@ def _get_registry() -> SkillRegistry:
     if _skill_store is not None:
         return _skill_store
     if _registry is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Skill registry unavailable",
+        raise_typed(
+            PlatformError.skills(
+                "unavailable",
+                "Skill registry unavailable"
+            ),
         )
     return _registry
 
@@ -184,10 +186,13 @@ def _resolve_scope(value: str) -> SkillScope:
     try:
         return SkillScope(value)
     except ValueError:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="scope must be one of: system, project, user",
-        ) from None
+        raise_typed(
+            PlatformError.skills(
+                "bad_request",
+                "scope must be one of: system, project, user"
+            ),
+            cause=None,
+        )
 
 
 def _visible_skills(caller: _CallerIdentity) -> list[RegisteredSkill]:
@@ -235,8 +240,11 @@ async def register_skill(
     """Register a skill bundle in the UMRS registry."""
     scope = _resolve_scope(request.scope)
     if scope == SkillScope.SYSTEM and not caller.is_admin:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, detail="admin required"
+        raise_typed(
+            PlatformError.skills(
+                "forbidden",
+                "admin required"
+            ),
         )
     if scope == SkillScope.PROJECT:
         project_id = request.project_id or caller.project_id
@@ -255,9 +263,13 @@ async def register_skill(
             project_id=project_id,
         )
     except SkillValidationError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
-        ) from exc
+        raise_typed(
+            PlatformError.skills(
+                "bad_request",
+                str(exc)
+            ),
+            cause=exc,
+        )
     return _skill_response(skill)
 
 
@@ -273,9 +285,11 @@ async def get_skill(
             or skill.manifest.name == skill_id_or_name
         ):
             return _skill_response(skill)
-    raise HTTPException(
-        status_code=status.HTTP_404_NOT_FOUND,
-        detail=f"Skill not found: {skill_id_or_name}",
+    raise_typed(
+        PlatformError.skills(
+            "not_found",
+            f"Skill not found: {skill_id_or_name}"
+        ),
     )
 
 
@@ -294,13 +308,18 @@ async def unregister_skill(
             target = skill
             break
     if target is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Skill not found: {skill_id_or_name}",
+        raise_typed(
+            PlatformError.skills(
+                "not_found",
+                f"Skill not found: {skill_id_or_name}"
+            ),
         )
     if not caller.is_admin and target.owner_id != caller.user_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, detail="owner or admin required"
+        raise_typed(
+            PlatformError.skills(
+                "forbidden",
+                "owner or admin required"
+            ),
         )
     _get_registry().unregister(target.skill_id)
     return {"status": "unregistered", "skill_id": target.skill_id}

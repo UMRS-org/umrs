@@ -703,9 +703,11 @@ async def get_job_detail(job_id: str) -> JobDetailResponse:
     except Exception:
         from fastapi import HTTPException
 
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Job not found: {job_id}",
+        raise_typed(
+            PlatformError.dashboard(
+                "not_found",
+                f"Job not found: {job_id}"
+            ),
         )
 
     job_summary = _job_summary(job)
@@ -733,9 +735,11 @@ async def get_model_detail(
     except Exception:
         from fastapi import HTTPException
 
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Model not found: {model_id}",
+        raise_typed(
+            PlatformError.dashboard(
+                "not_found",
+                f"Model not found: {model_id}"
+            ),
         )
 
     # Get versions

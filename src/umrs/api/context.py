@@ -33,6 +33,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, Field
+from .typed_errors import PlatformError, raise_typed
 
 logger = logging.getLogger(__name__)
 
@@ -310,7 +311,7 @@ class _ContextStore:
         if conv is None:
             from fastapi import HTTPException
 
-            raise HTTPException(status_code=404, detail="Conversation not found")
+            raise_typed(PlatformError.contextapi("not_found", "Conversation not found"))
 
         messages = self.get_messages(req.conversation_id, limit=req.max_tokens // 4)
 
@@ -800,7 +801,7 @@ def get_conversation(conversation_id: str) -> ConversationResponse:
     """Get a single conversation."""
     conv = get_context_store().get_conversation(conversation_id)
     if conv is None:
-        raise HTTPException(status_code=404, detail="Conversation not found")
+        raise_typed(PlatformError.contextapi("not_found", "Conversation not found"))
     return conv
 
 
@@ -813,7 +814,7 @@ def append_messages(
     """Append messages to a conversation."""
     conv = get_context_store().get_conversation(conversation_id)
     if conv is None:
-        raise HTTPException(status_code=404, detail="Conversation not found")
+        raise_typed(PlatformError.contextapi("not_found", "Conversation not found"))
     return get_context_store().append_messages(conversation_id, messages)
 
 

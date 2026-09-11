@@ -6,6 +6,7 @@ import logging
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
+from .typed_errors import PlatformError, raise_typed
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +23,7 @@ def set_store(store) -> None:
 
 def _get_store():
     if _store is None:
-        raise HTTPException(status_code=503, detail="Namespace store not initialized")
+        raise_typed(PlatformError.namespaces("unavailable", "Namespace store not initialized"))
     return _store
 
 
@@ -63,7 +64,7 @@ async def get_namespace(namespace_id: str):
     store = _get_store()
     ns = store.get_namespace(namespace_id)
     if ns is None:
-        raise HTTPException(status_code=404, detail="Namespace not found")
+        raise_typed(PlatformError.namespaces("not_found", "Namespace not found"))
     return ns.to_dict()
 
 
@@ -73,7 +74,7 @@ async def deactivate_namespace(namespace_id: str):
     store = _get_store()
     ok = store.deactivate_namespace(namespace_id)
     if not ok:
-        raise HTTPException(status_code=404, detail="Namespace not found")
+        raise_typed(PlatformError.namespaces("not_found", "Namespace not found"))
     return {"status": "deactivated", "namespace_id": namespace_id}
 
 
