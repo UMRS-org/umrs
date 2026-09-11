@@ -41,6 +41,8 @@ from umrs.knowledge_graph_api import (
     KnowledgeNode,
     RelationType,
 )
+from .canonical_graph_view import CanonicalGraphView as TransactionCanonicalGraphView
+from .canonical_graph_view import default_view
 from umrs.knowledge_model import (
     InMemoryKnowledgeModelStore,
     KnowledgeObject,
@@ -296,13 +298,15 @@ class UMRSKnowledgeGraphAdapter:
         self._graph = graph
 
     @property
-    def graph(self) -> InMemoryKnowledgeGraph:
+    def graph(self) -> InMemoryKnowledgeGraph | TransactionCanonicalGraphView:
         """Underlying UMRS knowledge graph store."""
         return self._graph
 
     def load_from_linker_graph(self, linker_graph: Any) -> None:
         """Replace adapter contents with linker output from ``understand()``."""
-        fresh = InMemoryKnowledgeGraph()
+        # ADR-026 exit wave A: same semantics via the canonical view
+        # (store=None → in-memory dicts, same dedupe/traversal).
+        fresh = default_view(store=None)
         for node in linker_graph.nodes.values():
             fresh.add_node(
                 node_id=node.node_id,

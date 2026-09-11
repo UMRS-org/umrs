@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
+from umrs.knowledge.canonical_graph_view import CanonicalGraphView, default_view
 from umrs.knowledge_graph_api import InMemoryKnowledgeGraph
 from umrs.knowledge_model import InMemoryKnowledgeModelStore
 
@@ -117,10 +118,10 @@ class ResearchReadinessController:
         self,
         *,
         knowledge_model: InMemoryKnowledgeModelStore | None = None,
-        knowledge_graph: InMemoryKnowledgeGraph | None = None,
+        knowledge_graph: InMemoryKnowledgeGraph | CanonicalGraphView | None = None,
     ) -> None:
         self._knowledge_model = knowledge_model or InMemoryKnowledgeModelStore()
-        self._knowledge_graph = knowledge_graph or InMemoryKnowledgeGraph()
+        self._knowledge_graph = knowledge_graph or default_view(store=None)
         self._approval: ApprovalRecord | None = None
 
     def evaluate_readiness(self) -> ReadinessReport:
