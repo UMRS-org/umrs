@@ -26,6 +26,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from umrs.knowledge.canonical_graph_view import CanonicalGraphView, default_view
 from umrs.knowledge_graph_api import (
     InMemoryKnowledgeGraph,
     KnowledgeEdge,
@@ -161,11 +162,16 @@ class GraphNavigator:
       7. LLM               — generate plan/answer
     """
 
-    def __init__(self, graph: InMemoryKnowledgeGraph | None = None) -> None:
-        self._graph = graph or InMemoryKnowledgeGraph()
+    def __init__(
+        self, graph: InMemoryKnowledgeGraph | CanonicalGraphView | None = None
+    ) -> None:
+        # ADR-026 exit wave A: default to the canonical-store-backed view
+        # (semantics identical to InMemoryKnowledgeGraph when store=None —
+        # in-memory dicts, edge dedupe, direction-agnostic reads).
+        self._graph = graph or default_view(store=None)
 
     @property
-    def graph(self) -> InMemoryKnowledgeGraph:
+    def graph(self) -> InMemoryKnowledgeGraph | CanonicalGraphView:
         """The underlying knowledge graph."""
         return self._graph
 
@@ -360,28 +366,11 @@ class GraphNavigator:
         context.related = self.find_related(anchor_id)
 
         # 2. Evidence — find evidence chains for the anchor and related claims
-        # Check anchor first (it might be a hypothesis or finding)
         anchor_node = self._graph.get_node(anchor_id)
-        if anchor_node and anchor_node.node_type in ("hypothesis", "finding", "conclusion"):
-            chain = self.find_evidence_chain(anchor_id)
-            context.evidence_chains.append(chain)
-
-        for hypothesis_id in context.related.hypotheses:
-            chain = self.find_evidence_chain(hypothesis_id)
-            context.evidence_chains.append(chain)
-
-        for finding_id in context.related.findings:
-            chain = self.find_evidence_chain(finding_id)
-            context.evidence_chains.append(chain)
+        self._fill_evidence_chains(context, anchor_id, anchor_node)
 
         # 3. Experiments — find experiment chains for the anchor and related hypotheses
-        if anchor_node and anchor_node.node_type == "hypothesis":
-            chain = self.find_experiment_chain(anchor_id)
-            context.experiment_chains.append(chain)
-
-        for hypothesis_id in context.related.hypotheses:
-            chain = self.find_experiment_chain(hypothesis_id)
-            context.experiment_chains.append(chain)
+        self._fill_experiment_chains(context, anchor_id, anchor_node)
 
         # 4. Graph paths — find paths between related objects for explainability
         all_related = (
@@ -402,39 +391,55 @@ class GraphNavigator:
 
     # ── Internal Helper Methods ─────────────────────────────────────────
 
+    def _fill_evidence_chains(
+        self,
+        context: GraphReasoningContext,
+        anchor_id: str,
+        anchor_node: KnowledgeNode | None,
+    ) -> None:
+        """Evidence chains for the anchor (when claim-shaped) and related."""
+        if anchor_node and anchor_node.node_type in ("hypothesis", "finding", "conclusion"):
+            chain = self.find_evidence_chain(anchor_id)
+            context.evidence_chains.append(chain)
+        for hypothesis_id in context.related.hypotheses:
+            chain = self.find_evidence_chain(hypothesis_id)
+            context.evidence_chains.append(chain)
+        for finding_id in context.related.findings:
+            chain = self.find_evidence_chain(finding_id)
+            context.evidence_chains.append(chain)
+
+    def _fill_experiment_chains(
+        self,
+        context: GraphReasoningContext,
+        anchor_id: str,
+        anchor_node: KnowledgeNode | None,
+    ) -> None:
+        """Experiment chains for the anchor (when a hypothesis) and related."""
+        if anchor_node and anchor_node.node_type == "hypothesis":
+            chain = self.find_experiment_chain(anchor_id)
+            context.experiment_chains.append(chain)
+        for hypothesis_id in context.related.hypotheses:
+            chain = self.find_experiment_chain(hypothesis_id)
+            context.experiment_chains.append(chain)
+
     def _categorize_node(
         self,
         node: KnowledgeNode,
         related: RelatedObjects,
     ) -> None:
         """Categorize a node into the RelatedObjects structure."""
-        node_type = node.node_type
-        node_id = node.node_id
-
-        if node_type == "paper":
-            if node_id not in related.papers:
-                related.papers.append(node_id)
-        elif node_type == "code":
-            if node_id not in related.code:
-                related.code.append(node_id)
-        elif node_type == "notebook":
-            if node_id not in related.notebooks:
-                related.notebooks.append(node_id)
-        elif node_type == "dataset":
-            if node_id not in related.datasets:
-                related.datasets.append(node_id)
-        elif node_type == "hypothesis":
-            if node_id not in related.hypotheses:
-                related.hypotheses.append(node_id)
-        elif node_type == "experiment":
-            if node_id not in related.experiments:
-                related.experiments.append(node_id)
-        elif node_type == "finding":
-            if node_id not in related.findings:
-                related.findings.append(node_id)
-        elif node_type == "figure":
-            if node_id not in related.figures:
-                related.figures.append(node_id)
-        elif node_type == "equation":
-            if node_id not in related.equations:
-                related.equations.append(node_id)
+        buckets = (
+            ("paper", related.papers),
+            ("code", related.code),
+            ("notebook", related.notebooks),
+            ("dataset", related.datasets),
+            ("hypothesis", related.hypotheses),
+            ("experiment", related.experiments),
+            ("finding", related.findings),
+            ("figure", related.figures),
+            ("equation", related.equations),
+        )
+        for bucket_name, bucket in buckets:
+            if node.node_type == bucket_name and node.node_id not in bucket:
+                bucket.append(node.node_id)
+                return

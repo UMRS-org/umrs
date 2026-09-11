@@ -19,6 +19,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from umrs.knowledge.canonical_graph_view import CanonicalGraphView, default_view
 from umrs.knowledge_graph_api import InMemoryKnowledgeGraph
 from umrs.knowledge_model import (
     InMemoryKnowledgeModelStore,
@@ -166,11 +167,11 @@ class KnowledgeDashboardController:
         self,
         *,
         knowledge_model: InMemoryKnowledgeModelStore | None = None,
-        knowledge_graph: InMemoryKnowledgeGraph | None = None,
+        knowledge_graph: InMemoryKnowledgeGraph | CanonicalGraphView | None = None,
         scientific_memory: InMemoryScientificMemoryStore | None = None,
     ) -> None:
         self._knowledge_model = knowledge_model or InMemoryKnowledgeModelStore()
-        self._knowledge_graph = knowledge_graph or InMemoryKnowledgeGraph()
+        self._knowledge_graph = knowledge_graph or default_view(store=None)
         self._scientific_memory = scientific_memory or InMemoryScientificMemoryStore()
 
     def get_knowledge_summary(self) -> KnowledgeSummary:
@@ -183,27 +184,7 @@ class KnowledgeDashboardController:
 
         # Count objects by type
         for obj in self._knowledge_model.list_objects(limit=10000):
-            if obj.object_type == KnowledgeObjectType.PAPER:
-                summary.paper_count += 1
-            elif obj.object_type == KnowledgeObjectType.CODE:
-                summary.code_count += 1
-            elif obj.object_type == KnowledgeObjectType.NOTEBOOK:
-                summary.notebook_count += 1
-            elif obj.object_type == KnowledgeObjectType.DATASET:
-                summary.dataset_count += 1
-            elif obj.object_type == KnowledgeObjectType.HYPOTHESIS:
-                summary.hypothesis_count += 1
-            elif obj.object_type == KnowledgeObjectType.EXPERIMENT:
-                summary.experiment_count += 1
-            elif obj.object_type == KnowledgeObjectType.FINDING:
-                summary.finding_count += 1
-            elif obj.object_type == KnowledgeObjectType.FIGURE:
-                summary.figure_count += 1
-            elif obj.object_type == KnowledgeObjectType.EQUATION:
-                summary.equation_count += 1
-            elif obj.object_type == KnowledgeObjectType.EVIDENCE:
-                summary.evidence_count += 1
-
+            self._bump_type_count(summary, obj.object_type)
             summary.total_objects += 1
 
         # Graph statistics
@@ -219,22 +200,43 @@ class KnowledgeDashboardController:
         # Memory statistics
         summary.memory_entry_count = len(self._scientific_memory.list_entries(limit=10000))
 
-        # Coverage score (simple heuristic)
-        if summary.total_objects > 0:
-            has_papers = summary.paper_count > 0
-            has_code = summary.code_count > 0
-            has_hypotheses = summary.hypothesis_count > 0
-            has_experiments = summary.experiment_count > 0
-            has_findings = summary.finding_count > 0
-
-            completeness = sum([
-                has_papers, has_code, has_hypotheses,
-                has_experiments, has_findings,
-            ]) / 5.0
-
-            summary.coverage_score = completeness
-
+        summary.coverage_score = self._coverage_score(summary)
         return summary
+
+    @staticmethod
+    def _bump_type_count(summary: KnowledgeSummary, object_type: KnowledgeObjectType) -> None:
+        """Increment the per-type count bucket (extracted for the gate)."""
+        bump_map = {
+            KnowledgeObjectType.PAPER: "paper_count",
+            KnowledgeObjectType.CODE: "code_count",
+            KnowledgeObjectType.NOTEBOOK: "notebook_count",
+            KnowledgeObjectType.DATASET: "dataset_count",
+            KnowledgeObjectType.HYPOTHESIS: "hypothesis_count",
+            KnowledgeObjectType.EXPERIMENT: "experiment_count",
+            KnowledgeObjectType.FINDING: "finding_count",
+            KnowledgeObjectType.FIGURE: "figure_count",
+            KnowledgeObjectType.EQUATION: "equation_count",
+            KnowledgeObjectType.EVIDENCE: "evidence_count",
+        }
+        field = bump_map.get(object_type)
+        if field:
+            setattr(summary, field, getattr(summary, field) + 1)
+
+    @staticmethod
+    def _coverage_score(summary: KnowledgeSummary) -> float:
+        """Coverage heuristic: presence-fraction across the five main kinds."""
+        if summary.total_objects <= 0:
+            return 0.0
+        presence = sum(
+            [
+                summary.paper_count > 0,
+                summary.code_count > 0,
+                summary.hypothesis_count > 0,
+                summary.experiment_count > 0,
+                summary.finding_count > 0,
+            ]
+        )
+        return presence / 5.0
 
     def list_objects(
         self,
