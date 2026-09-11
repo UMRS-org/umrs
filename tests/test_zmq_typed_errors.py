@@ -135,3 +135,42 @@ class TestProviderUnavailable:
         assert exc.status_code == 503
         assert exc.headers.get(ERROR_CODE_HEADER) == "provider.unavailable"
         assert "provider not available" in exc.detail
+
+
+# ---------------------------------------------------------------------------
+# WP-16 round 2 — research_sessions family becomes typed (additive header)
+# ---------------------------------------------------------------------------
+
+
+def test_contract_gains_research_session_codes():
+    from r4_contracts.errors import known_error_codes
+
+    codes = known_error_codes()
+    assert codes["session.store_unavailable"] == 503
+    assert codes["session.archive_cascade_failed"] == 500
+    assert codes["session.not_found"] == 404
+
+
+def test_research_session_404_is_typed_and_byte_identical():
+    import asyncio
+    from unittest.mock import MagicMock
+
+    import pytest
+
+    import umrs.api.research_sessions as rs
+
+    store = MagicMock()
+    store.get.return_value = None
+    prev_store = rs._store
+    rs._store = store
+    try:
+        with pytest.raises(Exception) as excinfo:
+            asyncio.run(rs.get_session("nope-1", caller=None))
+    finally:
+        rs._store = prev_store
+
+    exc = excinfo.value
+    assert exc.status_code == 404
+    assert exc.detail == "Session nope-1 not found"  # byte-identical, no drift
+    headers = getattr(exc, "headers", {}) or {}
+    assert headers.get("x-platform-error-code") == "session.not_found"

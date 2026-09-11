@@ -18,6 +18,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from .typed_errors import PlatformError, raise_typed
 from umrs.research_sessions import ResearchSession, SessionLoopLink
 from umrs.research_sessions.store import SessionStore
 
@@ -53,9 +54,11 @@ def get_session_store() -> SessionStore | None:
 
 def _require_store() -> SessionStore:
     if _store is None:
-        raise HTTPException(
-            status_code=503,
-            detail="Research session store unavailable (no DB pool configured)",
+        raise_typed(
+            PlatformError.session(
+                "store_unavailable",
+                "Research session store unavailable (no DB pool configured)",
+            )
         )
     return _store
 
@@ -173,7 +176,7 @@ async def get_session(
     store = _require_store()
     session = store.get(session_id)
     if session is None:
-        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+        raise_typed(PlatformError.session("not_found", f"Session {session_id} not found"))
     if caller is not None:
         caller.assert_can_access(session.project_id)
     return SessionResponse(session=session.to_dict())
@@ -190,8 +193,8 @@ async def update_session(
     if caller is not None:
         existing = store.get(session_id)
         if existing is None:
-            raise HTTPException(
-                status_code=404, detail=f"Session {session_id} not found"
+            raise_typed(
+                PlatformError.session("not_found", f"Session {session_id} not found")
             )
         caller.assert_can_access(existing.project_id)
 
@@ -217,10 +220,13 @@ async def update_session(
             # own except-path rolls back, but clients need a clean 500, not
             # a raw DB exception leaking through FastAPI's default handler.
             logger.exception("archive cascade failed for %s", session_id)
-            raise HTTPException(
-                status_code=500,
-                detail=f"archive cascade failed, transaction rolled back: {exc}",
-            ) from exc
+            raise_typed(
+                PlatformError.session(
+                    "archive_cascade_failed",
+                    f"archive cascade failed, transaction rolled back: {exc}",
+                ),
+                cause=exc,
+            )
     else:
         session = store.update(
             session_id,
@@ -229,7 +235,7 @@ async def update_session(
             metadata=request.metadata,
         )
     if session is None:
-        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+        raise_typed(PlatformError.session("not_found", f"Session {session_id} not found"))
     logger.info(
         "research session %s updated: title=%s status=%s",
         session_id,
@@ -249,7 +255,7 @@ async def attach_loop(
     store = _require_store()
     existing = store.get(session_id)
     if existing is None:
-        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+        raise_typed(PlatformError.session("not_found", f"Session {session_id} not found"))
     if caller is not None:
         caller.assert_can_access(existing.project_id)
 
@@ -272,7 +278,7 @@ async def list_session_loops(
     store = _require_store()
     existing = store.get(session_id)
     if existing is None:
-        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+        raise_typed(PlatformError.session("not_found", f"Session {session_id} not found"))
     if caller is not None:
         caller.assert_can_access(existing.project_id)
     loops = store.list_loops(session_id)
@@ -291,7 +297,7 @@ async def detach_loop(
     store = _require_store()
     existing = store.get(session_id)
     if existing is None:
-        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+        raise_typed(PlatformError.session("not_found", f"Session {session_id} not found"))
     if caller is not None:
         caller.assert_can_access(existing.project_id)
     store.detach_loop(session_id, loop_id)
