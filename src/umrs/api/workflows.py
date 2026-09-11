@@ -45,6 +45,7 @@ from ..server.workflow_registry_handler import (
     unregister_workflow,
 )
 from .jobs import CallerIdentity, get_caller_identity, get_optional_job_store
+from .typed_errors import PlatformError, raise_typed
 from .workflow_auth import (
     enforce_http_execution_access,
     execution_payload_from_job,
@@ -222,16 +223,13 @@ def _parse_command_response(raw: str, *, action: str) -> dict[str, Any]:
         data = json.loads(raw)
     except json.JSONDecodeError as exc:
         logger.exception("Invalid JSON from workflow command handler during %s", action)
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Invalid workflow handler response during {action}",
-        ) from exc
+        raise_typed(
+            PlatformError.workflows("bad_gateway", f"Invalid workflow handler response during {action}"),
+            cause=exc,
+        )
 
     if not isinstance(data, dict):
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Unexpected workflow handler response during {action}",
-        )
+        raise_typed(PlatformError.workflows("bad_gateway", f"Unexpected workflow handler response during {action}"))
 
     if data.get("status") != "error":
         return data
@@ -282,14 +280,9 @@ def _verified_workflow_user(user_id: str | None, x_user_id: str | None) -> str:
     if verified_user_id:
         return verified_user_id
     if _strict_auth_mode():
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing Gateway-verified user identity",
-        )
+        raise_typed(PlatformError.auth("gateway_identity_required", "Missing Gateway-verified user identity"))
     if not user_id or not user_id.strip():
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="user_id is required"
-        )
+        raise_typed(PlatformError.workflows("bad_request", "user_id is required"))
     return user_id.strip()
 
 
@@ -337,12 +330,14 @@ def _authorize_declared_workflow_project(
     if is_admin or not verified_project_id:
         return
     if declared_project_id not in allowed:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=(
-                f"project_id '{declared_project_id}' is outside the "
-                "caller's verified projects"
-            ),
+        raise_typed(
+            PlatformError.workflows(
+                "forbidden",
+                (
+                    f"project_id '{declared_project_id}' is outside the "
+                    "caller's verified projects"
+                ),
+            )
         )
 
 
@@ -367,10 +362,7 @@ def _verified_workflow_params(
         resolved_params["project_id"] = verified_project_id
         return resolved_params
     if _strict_auth_mode():
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing Gateway-verified project identity",
-        )
+        raise_typed(PlatformError.auth("gateway_identity_required", "Missing Gateway-verified project identity"))
     return resolved_params
 
 
@@ -390,10 +382,7 @@ def _require_verified_workflow_identity(
     """
     if not (_header_str(x_user_id) and _header_str(x_verified_project_id)):
         if _strict_auth_mode():
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Missing Gateway-verified workflow identity",
-            )
+            raise_typed(PlatformError.auth("gateway_identity_required", "Missing Gateway-verified workflow identity"))
         return
     if not _strict_auth_mode():
         return
@@ -407,10 +396,7 @@ def _require_verified_workflow_identity(
         project_id=_header_str(x_verified_project_id),
         is_admin=_header_str(x_verified_is_admin) == "true",
     ):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Gateway-verified identity signature rejected",
-        )
+        raise_typed(PlatformError.auth("gateway_signature_rejected", "Gateway-verified identity signature rejected"))
 
 
 def _enforce_workflow_upload_role(
@@ -446,7 +432,7 @@ def _enforce_workflow_upload_role(
             scope=scope,
             details={"reason": reason},
         )
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=reason)
+        raise_typed(PlatformError.workflows("forbidden", reason))
 
     headers_present = bool(actor and project_id)
     if not (_strict_auth_mode() or headers_present):
@@ -579,10 +565,7 @@ def _resolve_definition_for_caller(
         for candidate in _all_definitions():
             if candidate.get("name") == name:
                 return candidate
-    raise HTTPException(
-        status_code=status.HTTP_404_NOT_FOUND,
-        detail=f"Run definition '{name}' not found",
-    )
+    raise_typed(PlatformError.workflows("not_found", f"Run definition '{name}' not found"))
 
 
 def _all_definitions() -> list[dict[str, Any]]:
@@ -609,12 +592,14 @@ async def save_run_definition(
     caller = _header_str(x_user_id) or ""
     workflow_entry = _resolve_workflow_catalog_entry(request.workflow_name, caller)
     if workflow_entry is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=(
-                f"Workflow '{request.workflow_name}' not found; "
-                "run definitions must reference a registered workflow"
-            ),
+        raise_typed(
+            PlatformError.workflows(
+                "not_found",
+                (
+                    f"Workflow '{request.workflow_name}' not found; "
+                    "run definitions must reference a registered workflow"
+                ),
+            )
         )
     try:
         record_dict = save_definition(
@@ -626,7 +611,7 @@ async def save_run_definition(
             description=request.description,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise_typed(PlatformError.workflows("bad_request", str(exc)), cause=exc)
     return {
         "status": "ok",
         "definition": RunDefinitionRecord.from_dict(record_dict).to_dict(),
@@ -693,10 +678,7 @@ async def delete_run_definition(
     victim = owner if is_admin else caller
     removed = delete_definition(name, victim)
     if removed == 0:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Run definition '{name}' not found",
-        )
+        raise_typed(PlatformError.workflows("not_found", f"Run definition '{name}' not found"))
     return {
         "status": "ok",
         "name": name,
@@ -752,10 +734,7 @@ async def list_workflow_triggers(
     caller = _header_str(x_user_id) or ""
     entry = _resolve_workflow_catalog_entry(workflow_name, caller)
     if entry is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Workflow '{workflow_name}' not found",
-        )
+        raise_typed(PlatformError.workflows("not_found", f"Workflow '{workflow_name}' not found"))
     workflow_json = _read_entry_workflow_json(entry)
     return {
         "status": "ok",
@@ -787,22 +766,13 @@ async def delete_workflow(
 
     entry = _resolve_workflow_catalog_entry(workflow_name, caller)
     if entry is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Workflow '{workflow_name}' not found",
-        )
+        raise_typed(PlatformError.workflows("not_found", f"Workflow '{workflow_name}' not found"))
     owner = str(entry.get("user_id", ""))
     scope = str(entry.get("scope", "user"))
     if scope == "system" and not is_admin:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only admins may delete system workflows",
-        )
+        raise_typed(PlatformError.auth("admin_required", "Only admins may delete system workflows"))
     if owner and owner != caller and not is_admin:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"Workflow '{workflow_name}' is owned by another user",
-        )
+        raise_typed(PlatformError.workflows("forbidden", f"Workflow '{workflow_name}' is owned by another user"))
 
     result = unregister_workflow(
         workflow_name,
@@ -810,10 +780,7 @@ async def delete_workflow(
         scope=scope,
     )
     if result["removed"] == 0:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Workflow '{workflow_name}' not found",
-        )
+        raise_typed(PlatformError.workflows("not_found", f"Workflow '{workflow_name}' not found"))
 
     from .governance import record_resource_deleted
 
@@ -843,10 +810,7 @@ async def describe_workflow(
     caller = _header_str(x_user_id) or ""
     entry = _resolve_workflow_catalog_entry(workflow_name, caller)
     if entry is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Workflow '{workflow_name}' not found",
-        )
+        raise_typed(PlatformError.workflows("not_found", f"Workflow '{workflow_name}' not found"))
     return _describe_workflow_entry(entry)
 
 
@@ -865,14 +829,10 @@ def _check_workflow_quota(project_id: str) -> None:
 def _resolved_upload_name(filename: str, workflow_name: str | None) -> str:
     """Validate filename/name form inputs and return the final name."""
     if not filename:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="Filename required"
-        )
+        raise_typed(PlatformError.workflows("bad_request", "Filename required"))
     resolved = workflow_name or Path(filename).stem
     if not resolved:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="workflow_name is required"
-        )
+        raise_typed(PlatformError.workflows("bad_request", "workflow_name is required"))
     return resolved
 
 
@@ -883,10 +843,12 @@ def _load_extracted_workflow_json(dest: str) -> tuple[str, dict[str, Any]]:
         with open(workflow_json_path, encoding="utf-8") as handle:
             workflow_json = json.load(handle)
     except Exception as exc:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to load extracted workflow.json: {exc}",
-        ) from exc
+        raise_typed(
+            PlatformError.workflows(
+                "failure", f"Failed to load extracted workflow.json: {exc}"
+            ),
+            cause=exc,
+        )
     return str(workflow_json.get("version", "0.1")), workflow_json
 
 
@@ -911,9 +873,7 @@ def _register_uploaded_workflow(
         description=workflow_json.get("description", ""),
     )
     if result.get("status") == "error":
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(result.get("message", "Workflow registration failed")),
+        raise_typed(PlatformError.workflows("failure", str(result.get("message", "Workflow registration failed"))),
         )
 
     # Governance tracking
@@ -1023,10 +983,7 @@ async def trigger_workflow(
     )
     entry = _resolve_workflow_catalog_entry(workflow_name, user_id)
     if entry is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Workflow '{workflow_name}' not found",
-        )
+        raise_typed(PlatformError.workflows("not_found", f"Workflow '{workflow_name}' not found"))
     describe = _describe_workflow_entry(entry)
     schema = describe.get("parameter_schema", {})
     _validate_params_against_schema(params, schema)
@@ -1204,9 +1161,11 @@ def _gate_state_for(record: Any, step_name: str) -> str:
 def _reject_gate_decision(state: str, execution_id: str, step_name: str) -> None:
     """Raise the HTTP error matching a non-waiting gate state."""
     if state == "unknown_step":
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=(f"Step '{step_name}' is not part of execution '{execution_id}'"),
+        raise_typed(
+            PlatformError.workflows(
+                "not_found",
+                (f"Step '{step_name}' is not part of execution '{execution_id}'"),
+            )
         )
     detail = (
         f"Step '{step_name}' in execution '{execution_id}' already has a "
@@ -1217,7 +1176,7 @@ def _reject_gate_decision(state: str, execution_id: str, step_name: str) -> None
             "waiting for approval"
         )
     )
-    raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=detail)
+    raise_typed(PlatformError.workflows("conflict", detail))
 
 
 @router.post("/executions/{execution_id}/steps/{step_name}/approve")
@@ -1244,11 +1203,13 @@ async def approve_execution_gate(
         execution_id=execution_id,
     )
     if record is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=(
-                f"Execution '{execution_id}' is not tracked by the in-process registry"
-            ),
+        raise_typed(
+            PlatformError.workflows(
+                "not_found",
+                (
+                    f"Execution '{execution_id}' is not tracked by the in-process registry"
+                ),
+            )
         )
 
     gate_state = _gate_state_for(record, step_name)
@@ -1265,10 +1226,7 @@ async def approve_execution_gate(
         comment=request.comment,
     )
     if updated is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Execution '{execution_id}' is not tracked by the registry",
-        )
+        raise_typed(PlatformError.workflows("not_found", f"Execution '{execution_id}' is not tracked by the registry"))
 
     linked_job = _get_job_for_record(store, record) if job is None else job
 
