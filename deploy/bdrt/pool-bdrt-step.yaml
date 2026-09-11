@@ -863,6 +863,11 @@ endpoints:
       # (job 4592: "genai-private-net-<id> not visible after migrate").
       # netavark is the working backend on this venue (login + glm lanes).
       RIVAULT_NETWORK_BACKEND: "netavark"
+      # Static host-publish 3001 is already claimed by a crashed-venue
+      # residue on dgx-spark-1 (the §6b-3 note: never two rivaults on the
+      # same node). Take the next-free publish for this recipe instead of
+      # hunting the residue down (site owner sweep is a separate action).
+      BENTOML_VISION_DOCKER_PORT: "3011"
       # SM121 arch-pin set (§6b-3 candidate (a), verdict leg 2026-09-11):
       # the GB10 JIT toolchain must be told sm-121 explicitly or weight load
       # completes then `PTX JIT compiler library not found` kills the engine
