@@ -110,3 +110,50 @@ def test_persist_is_best_effort_under_failure(monkeypatch):
     # must not raise — manifest failure never blocks the terminal state
     store._persist_attempt_manifest("att-2", "job-2")
     assert store.get_attempt_manifest("att-2") is None
+
+
+def test_venue_enrichment_attaches_only_via_wired_store(monkeypatch):
+    """WP-10 r2: venue active_version lands on spec-pinned names.
+
+    Without a wired VectorVersionStore the manifest carries spec pins only
+    (never fabricated availability). With one pinned at boot, its active
+    version attaches to the matching pin name.
+    """
+
+    class _VVS:
+        def get_active_version(self, name):
+            if name == "bge-m3":
+                return type("V", (), {"model_version": "v2026-08"})()
+            return None
+
+    def _store(monkeypatch, vvs):
+        pool = _FakePool()
+        store = _TestStore(pool)
+        store.vector_version_store = vvs
+        monkeypatch.setattr(
+            store,
+            "get_job",
+            lambda _id: type(
+                "Job", (), {"spec": {"embedding_model": "bge-m3"}, "commit_attempt_id": "a1"}
+            )(),
+        )
+        monkeypatch.setattr(store, "get_attempts_for_job", lambda _id: [])
+        import umrs.jobs.provenance
+
+        monkeypatch.setattr(
+            umrs.jobs.provenance,
+            "build_provenance",
+            lambda job, attempts: type("Prov", (), {"to_dict": lambda self: {"job_id": "j"}})(),
+        )
+        return store
+
+    store_novir = _store(monkeypatch, None)
+    store_novir._persist_attempt_manifest("att-a", "job-x")
+    manifest_a = store_novir.get_attempt_manifest("att-a")
+    assert manifest_a["model_pins"][0]["name"] == "bge-m3"
+    assert "venue_active_version" not in manifest_a["model_pins"][0]
+
+    store_wired = _store(monkeypatch, _VVS())
+    store_wired._persist_attempt_manifest("att-b", "job-y")
+    manifest_b = store_wired.get_attempt_manifest("att-b")
+    assert manifest_b["model_pins"][0]["venue_active_version"] == "v2026-08"
