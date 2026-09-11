@@ -64,6 +64,46 @@ def attempt_phases(
     return {"wall_ms": ms}
 
 
+def maybe_emit_span(
+    name: str,
+    *,
+    started_at: Any,
+    transitioned_at: Any,
+    attributes: dict[str, Any] | None = None,
+) -> bool:
+    """Emit ONE OTel span covering [started_at, transitioned_at] (WP-12 r2).
+
+    Generic hook shared by attempt-phase and loop-iteration emissions:
+    window comes from the durable rows (skew-floored at 0, ns stamps);
+    attributes are passed verbatim (ids ride spans — the cardinality ban
+    is metrics-only). Hard no-ops: empty/incoherent window, otlp endpoint
+    unset, otel SDK absent, tracer failure. Returns True only when a span
+    was actually exported-scheduled.
+    """
+    try:
+        from ..server.otel import otel_active
+
+        if not otel_active():
+            return False
+        from opentelemetry import trace
+    except (ImportError, AttributeError, RuntimeError):
+        # tracer stack absent/broken — never block the runtime path
+        return False
+    start = _parse_iso(started_at)
+    end = _parse_iso(transitioned_at)
+    if start is None or end is None:
+        return False
+    start_ns = int(start.timestamp() * 1e9)
+    end_ns = max(int(end.timestamp() * 1e9), start_ns)
+    try:
+        tracer = trace.get_tracer("umrs")
+        span = tracer.start_span(name, start_time=start_ns, attributes=attributes or {})
+        span.end(end_time=end_ns)
+        return True
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        return False
+
+
 def maybe_emit_attempt_span(
     *,
     job_id: str,
@@ -83,43 +123,26 @@ def maybe_emit_attempt_span(
     carry (job/attempt ids are fine on spans; they were forbidden on
     *metrics* for cardinality, never on traces).
 
-    Hard no-ops: OTel disabled (otlp endpoint unset), otel SDK absent,
+    Hard no-ops besides the fields check: OTel disabled, otel SDK absent,
     tracer failure — observability never blocks attempt state transitions.
-    Returns True only when a span was actually exported-scheduled.
+    Returns True only when all spans were exported-scheduled.
     """
     if not fields:
         return False
-    try:
-        from ..server.otel import otel_active
-
-        if not otel_active():
-            return False
-        from opentelemetry import trace
-    except (ImportError, AttributeError, RuntimeError):
-        # tracer stack absent/broken — never block the transition path
-        return False
-    start = _parse_iso(started_at)
-    end = _parse_iso(transitioned_at)
-    if start is None or end is None:
-        return False
-    start_ns = int(start.timestamp() * 1e9)
-    end_ns = max(int(end.timestamp() * 1e9), start_ns)
-    try:
-        tracer = trace.get_tracer("umrs.jobs.attempt")
-        for field_name in fields:
-            span = tracer.start_span(
-                f"umrs.attempt.{field_name.removesuffix('_ms')}",
-                start_time=start_ns,
-                attributes={
-                    "umrs.job_id": str(job_id),
-                    "umrs.attempt_id": str(attempt_id),
-                    "umrs.attempt_no": int(attempt_no),
-                    "umrs.backend": str(backend or "unknown"),
-                    "umrs.job_type": str(job_type or "unknown"),
-                    "umrs.authority_bounded": True,
-                },
-            )
-            span.end(end_time=end_ns)
-        return True
-    except (AttributeError, RuntimeError, TypeError, ValueError):
-        return False
+    all_ok = True
+    for field_name in fields:
+        ok = maybe_emit_span(
+            f"umrs.attempt.{field_name.removesuffix('_ms')}",
+            started_at=started_at,
+            transitioned_at=transitioned_at,
+            attributes={
+                "umrs.job_id": str(job_id),
+                "umrs.attempt_id": str(attempt_id),
+                "umrs.attempt_no": int(attempt_no),
+                "umrs.backend": str(backend or "unknown"),
+                "umrs.job_type": str(job_type or "unknown"),
+                "umrs.authority_bounded": True,
+            },
+        )
+        all_ok = all_ok and ok
+    return all_ok
