@@ -731,22 +731,45 @@ elif /bin/rocm-smi -i 2>/dev/null | /bin/grep -qi '^GPU\[0\]' ; then
     echo "[rivault] ROCm GPU detected via rocm-smi"
 fi
 
-# Ensure podman-compose >= 1.2.0 (needed for --profile support)
+# Ensure podman-compose that can PARSE --profile (needed below).
+#
+# Capability-first gate, not a version gate: the dgx-spark distro shim prints
+# the embedded podman version (4.9.3) as its own, yet its CLI is a 1.0.x shim
+# that cannot parse --profile at runtime ("invalid choice 'harness'") — a
+# pure version read silently false-passes there (live 2026-09-09 bdrt §6b-3).
+# Fix: try the actual help output; on failure install a vendored
+# podman-compose >= 1.2 into $HOME/venvs/pc-all (durable across jobs — the
+# PATH prefix at the top of this script already prefers it).
 _pc_ok=false
 if command -v podman-compose >/dev/null 2>&1; then
-    _pc_ver="$(podman-compose -v 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
-    if [[ -n "$_pc_ver" ]] && printf '%s\n%s\n' "1.2.0" "$_pc_ver" | sort -V | head -1 | grep -q '^1\.2\.0$'; then
+    if podman-compose up --help 2>/dev/null | grep -q -- '--profile'; then
         _pc_ok=true
     else
-        echo "[rivault] podman-compose ${_pc_ver:-unknown} too old (need >= 1.2.0)"
+        echo "[rivault] podman-compose present but cannot parse --profile (shim?)"
     fi
 fi
 if ! $_pc_ok; then
-    echo "[rivault] Installing podman-compose >= 1.2.0 ..."
-    pip3 install --quiet 'podman-compose>=1.2.0' 2>/dev/null || \
+    _pc_all_venv="$HOME/venvs/pc-all"
+    echo "[rivault] Installing vendored podman-compose >= 1.2 into ${_pc_all_venv} ..."
+    if [ -x "${_pc_all_venv}/bin/pip" ] && [ -x "${_pc_all_venv}/bin/podman-compose" ]; then
+        export PATH="${_pc_all_venv}/bin:$PATH"
+    else
+        { python3 -m venv --system-site-packages "${_pc_all_venv}" && \
+          "${_pc_all_venv}/bin/pip" install --quiet 'podman-compose>=1.2' && \
+          export PATH="${_pc_all_venv}/bin:$PATH"; } 2>/dev/null || \
+        pip3 install --quiet 'podman-compose>=1.2.0' 2>/dev/null || \
         pip3 install --user --quiet 'podman-compose>=1.2.0' 2>/dev/null || \
         { python3 -m venv --system-site-packages /tmp/pc-venv && /tmp/pc-venv/bin/pip install --quiet 'podman-compose>=1.2.0' && export PATH="/tmp/pc-venv/bin:$PATH"; }
-    echo "[rivault] podman-compose: $(podman-compose -v 2>/dev/null)"
+    fi
+    # Re-check capability, never trust exit codes alone (shim survives PATH).
+    if command -v podman-compose >/dev/null 2>&1 && podman-compose up --help 2>/dev/null | grep -q -- '--profile'; then
+        _pc_ok=true
+        echo "[rivault] podman-compose ok: $(command -v podman-compose)"
+    fi
+fi
+if ! $_pc_ok; then
+    echo "[rivault] FATAL: no --profile-capable podman-compose on PATH; abort before any state is mutated" >&2
+    exit 1
 fi
 
 # fix some cgroup/podman stuff on some nodes — full systemd bootstrap
