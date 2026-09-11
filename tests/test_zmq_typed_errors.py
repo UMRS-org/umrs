@@ -558,3 +558,15 @@ def test_contract_grants_family_codes():
     }
     for code, status in expected.items():
         assert codes[code] == status, code
+
+
+def test_contract_traces_family_codes():
+    from r4_contracts.errors import known_error_codes
+
+    codes = known_error_codes()
+    expected = {
+        "traces.not_found": 404,
+        "traces.forbidden": 403,
+    }
+    for code, status in expected.items():
+        assert codes[code] == status, code
