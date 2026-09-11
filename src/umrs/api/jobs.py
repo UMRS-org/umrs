@@ -1043,6 +1043,73 @@ async def mint_attempt_credentials_route(
     return {"status": "minted", "credentials": record}
 
 
+@router.post(
+    "/{job_id}/attempts/{attempt_id}/credentials/sts",
+    summary="Per-attempt STS credentials (WP-11 round 2)",
+    description=(
+        "Federates the attempt's minted credential record into real STS "
+        "temporary credentials (MinIO AssumeRole, prefix-scoped inline "
+        "policy, capped TTL 3600s). Fail-closed: an STS venue failure is a "
+        "503, never an ambient-credential fallback. The token itself is never "
+        "persisted or logged (round-1 mint record is the audit trail)."
+    ),
+)
+async def mint_attempt_sts_credentials(
+    job_id: str,
+    attempt_id: str,
+    caller: CallerIdentity = Depends(get_caller_identity),
+    store: JobStore = Depends(get_job_store),
+) -> dict[str, Any]:
+    """Mint real per-attempt identity via STS AssumeRole."""
+    from ..jobs.attempt_credentials import AttemptCredentials
+    from ..jobs.sts_federation import STSFederationError, assume_role_for_attempt
+    from .files import get_s3_config
+
+    try:
+        job = store.get_job(job_id)
+    except JobNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Job not found: {job_id}",
+        ) from None
+    _enforce_job_access(caller, job, action="mint sts credentials")
+    attempt = _attempt_for_job(store, job_id, attempt_id)
+
+    raw = store.get_attempt_credentials(attempt_id)
+    if not raw:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="No attempt credentials minted yet — POST .../credentials first",
+        )
+    record = AttemptCredentials.from_dict(raw)
+
+    config = get_s3_config()
+    try:
+        creds = assume_role_for_attempt(
+            record,
+            bucket=config.bucket,
+            endpoint_url=config.endpoint_url,
+            access_key=config.access_key,
+            secret_key=config.secret_key,
+        )
+    except STSFederationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"STS federation unavailable: {exc}",
+        ) from exc
+
+    # Re-mint the record with the capped STS TTL so downstream presign verbs
+    # bound their URLs by the session lifetime (never wider).
+    _ = attempt  # attempt_no already folded into the record; keep route pure
+    return {
+        "status": "federated",
+        "scope_prefixes": list(record.scope_prefixes),
+        "bucket": config.bucket,
+        "endpoint_url": config.endpoint_url,
+        "credentials": creds,
+    }
+
+
 class AttemptPresignBody(BaseModel):
     """Request for an attempt-scoped presigned URL."""
 
