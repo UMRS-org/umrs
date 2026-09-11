@@ -88,6 +88,11 @@ class JobStore:
         # site's name at boot; "" keeps the pre-venue ANY-claim semantics
         # until all rows carry venue (pre-release migration lane).
         self.site_name: str = ""
+        # WP-10 r2: optional venue-side VectorVersionStore for manifest
+        # model-pin enrichment. Boot code may set this on a real venue; it
+        # stays None anywhere the venue store is not wired and the manifest
+        # builder then records spec pins ONLY (never fabricated availability).
+        self.vector_version_store: Any | None = None
 
     def _resolve_venue(self, spec: dict[str, Any]) -> str:
         """Cluster-set venue resolution (WP-14).
@@ -959,11 +964,27 @@ class JobStore:
             from .provenance import build_provenance
 
             spec = job.spec or {}
+            pins = build_model_pins(spec)
+            # WP-10 r2: venue enrichment — only when a real, vendor-side
+            # VectorVersionStore is wired at boot. An absent store must not
+            # "discover" anything.
+            vvs = self.vector_version_store
+            if vvs is not None:
+                for pin in pins:
+                    try:
+                        version = vvs.get_active_version(pin["name"])
+                    except (AttributeError, RuntimeError):
+                        # venue lookup failure must never block a manifest
+                        version = None
+                    if version is not None:
+                        pin["venue_active_version"] = str(
+                            getattr(version, "model_version", "")
+                        )
             manifest = execution_manifest(
                 provenance=build_provenance(job, attempts).to_dict(),
                 trigger=str(spec.get("trigger") or "api"),
                 pipeline_name=str(spec.get("workflow_name") or ""),
-                model_pins=build_model_pins(spec),
+                model_pins=pins,
             )
             with self._get_conn() as conn, conn.cursor() as cur:
                 cur.execute(

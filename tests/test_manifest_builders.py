@@ -119,3 +119,4 @@ class TestBuildModelPins:
             model_pins=[{"name": "m1", "source": "spec.model"}],
         )
         assert manifest2["model_pins"][0]["name"] == "m1"
+
