@@ -277,17 +277,31 @@ def build_deployment_profile(
     roster_defaults: dict[str, Any] | None,
     spec_overrides: dict[str, Any],
 ) -> dict[str, Any]:
-    """Merge roster defaults with spec overrides for DeploymentSpec profile."""
+    """Merge roster defaults with spec overrides for DeploymentSpec profile.
+
+    env_vars precedence MUST NOT let an *empty* spec override stomp the
+    roster: callers previously always passed "env_vars": requested_env even
+    when it was {} (no spec env at all), zeroing the roster's env merge —
+    observed silently losing VLLM_DOCKER_IMAGE + arch pins into every
+    routine provision (verdict leg, 2026-09-11).
+    """
     profile: dict[str, Any] = dict(roster_defaults or {})
 
-    # Apply spec overrides — explicit values win
+    # Apply spec overrides — explicit values win; None values fall back
+    # (profile stays the roster's); an empty env_vars map is NOT an
+    # intentional override and cannot erase the roster's env key.
     for key, value in spec_overrides.items():
-        if value is not None:
-            profile[key] = value
+        if value is None:
+            continue
+        if key == "env_vars" and isinstance(value, dict) and not value:
+            continue
+        profile[key] = value
 
-    # Handle env_vars merging
+    # Handle env_vars merging — the roster side comes from roster_defaults
+    # itself (the profile copy may already have been overwritten by a spec
+    # env_map in the loop above; merging must not lose the roster keys).
     env_vars: dict[str, str] = {}
-    roster_env = profile.get("env_vars")
+    roster_env = dict(roster_defaults or {}).get("env_vars")
     if isinstance(roster_env, dict):
         env_vars.update({str(k): str(v) for k, v in roster_env.items()})
     spec_env = spec_overrides.get("env_vars")
@@ -550,7 +564,7 @@ class EndpointProvisionBackend(OrchestratorBackend):
                 "parallel_strategy": parallel_strategy,
                 "ttl_sec": ttl_sec,
                 "tier": tier,
-                "env_vars": requested_env,
+                **({"env_vars": requested_env} if requested_env else {}),
             },
         )
 
