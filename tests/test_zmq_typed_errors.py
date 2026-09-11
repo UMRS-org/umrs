@@ -490,3 +490,17 @@ def test_contract_usersources_family_codes():
     }
     for code, status in expected.items():
         assert codes[code] == status, code
+
+
+def test_contract_sourcegrants_family_codes():
+    from r4_contracts.errors import known_error_codes
+
+    codes = known_error_codes()
+    expected = {
+        "sourcegrants.unavailable": 503,
+        "sourcegrants.unauthorized": 401,
+        "sourcegrants.bad_request": 400,
+        "sourcegrants.not_found": 404,
+    }
+    for code, status in expected.items():
+        assert codes[code] == status, code
