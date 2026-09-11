@@ -530,3 +530,16 @@ def test_contract_provenance_family_codes():
     }
     for code, status in expected.items():
         assert codes[code] == status, code
+
+
+def test_contract_knowledgemodel_family_codes():
+    from r4_contracts.errors import known_error_codes
+
+    codes = known_error_codes()
+    expected = {
+        "knowledgemodel.unavailable": 503,
+        "knowledgemodel.not_found": 404,
+        "knowledgemodel.bad_request": 400,
+    }
+    for code, status in expected.items():
+        assert codes[code] == status, code
