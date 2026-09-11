@@ -62,3 +62,64 @@ def attempt_phases(
     if phase == "running":
         return {"queue_wait_ms": ms}
     return {"wall_ms": ms}
+
+
+def maybe_emit_attempt_span(
+    *,
+    job_id: str,
+    attempt_id: str,
+    attempt_no: int,
+    backend: str,
+    job_type: str = "",
+    started_at: Any,
+    transitioned_at: Any,
+    fields: dict[str, int],
+) -> bool:
+    """Emit ONE OTel span per recorded phase field (WP-12 round 2, G-P11-1).
+
+    Span timing = the measured phase window [started_at, transitioned_at]
+    (ns timestamps from the durable rows — skew-floored at 0 just like the
+    metric path). Span-carried ids are the same ones the lineage tables
+    carry (job/attempt ids are fine on spans; they were forbidden on
+    *metrics* for cardinality, never on traces).
+
+    Hard no-ops: OTel disabled (otlp endpoint unset), otel SDK absent,
+    tracer failure — observability never blocks attempt state transitions.
+    Returns True only when a span was actually exported-scheduled.
+    """
+    if not fields:
+        return False
+    try:
+        from ..server.otel import otel_active
+
+        if not otel_active():
+            return False
+        from opentelemetry import trace
+    except (ImportError, AttributeError, RuntimeError):
+        # tracer stack absent/broken — never block the transition path
+        return False
+    start = _parse_iso(started_at)
+    end = _parse_iso(transitioned_at)
+    if start is None or end is None:
+        return False
+    start_ns = int(start.timestamp() * 1e9)
+    end_ns = max(int(end.timestamp() * 1e9), start_ns)
+    try:
+        tracer = trace.get_tracer("umrs.jobs.attempt")
+        for field_name in fields:
+            span = tracer.start_span(
+                f"umrs.attempt.{field_name.removesuffix('_ms')}",
+                start_time=start_ns,
+                attributes={
+                    "umrs.job_id": str(job_id),
+                    "umrs.attempt_id": str(attempt_id),
+                    "umrs.attempt_no": int(attempt_no),
+                    "umrs.backend": str(backend or "unknown"),
+                    "umrs.job_type": str(job_type or "unknown"),
+                    "umrs.authority_bounded": True,
+                },
+            )
+            span.end(end_time=end_ns)
+        return True
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        return False

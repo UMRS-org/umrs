@@ -923,6 +923,25 @@ class JobStore:
                        WHERE attempt_id = %s""",
                     (json.dumps({"timing": fields}), attempt_id),
                 )
+            # WP-12 r2: same phase window → OTel span (no-op without OTel).
+            from .timing import maybe_emit_attempt_span
+
+            job_type = ""
+            try:
+                job_type = str(getattr(self.get_job(attempt.job_id), "job_type", "") or "")
+            except (AttributeError, RuntimeError):
+                # span attribute enrichment only; missing job row must not block
+                job_type = ""
+            maybe_emit_attempt_span(
+                job_id=str(getattr(attempt, "job_id", "")),
+                attempt_id=attempt_id,
+                attempt_no=int(getattr(attempt, "attempt_no", 0)),
+                backend=str(getattr(attempt, "backend", "")),
+                job_type=job_type,
+                started_at=attempt.started_at,
+                transitioned_at=when,
+                fields=fields,
+            )
         except Exception:
             logger.exception("attempt timing persistence failed for %s (phase=%s)", attempt_id, phase)
 
