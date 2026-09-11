@@ -32,6 +32,7 @@ from ..jobs.store import (
     JobNotFoundError,
     JobStore,
 )
+from .typed_errors import PlatformError, raise_typed
 
 logger = logging.getLogger(__name__)
 
@@ -55,10 +56,7 @@ def set_job_store(store: JobStore) -> None:
 def get_job_store() -> JobStore:
     """Get the global job store instance."""
     if _job_store is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Job store not initialized",
-        )
+        raise_typed(PlatformError.jobs("unavailable", "Job store not initialized"))
     return _job_store
 
 
@@ -141,10 +139,7 @@ def get_caller_identity(
             project_id=verified_project_id,
             is_admin=admin,
         ):
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Gateway-verified identity signature rejected",
-            )
+            raise_typed(PlatformError.auth("gateway_signature_rejected", "Gateway-verified identity signature rejected"))
         return CallerIdentity(
             user_id=verified_user_id,
             project_id=verified_project_id,
@@ -152,19 +147,13 @@ def get_caller_identity(
         )
 
     if _strict_auth_mode():
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing Gateway-verified caller identity",
-        )
+        raise_typed(PlatformError.auth("gateway_identity_required", "Missing Gateway-verified caller identity"))
 
     from ._identity import warn_legacy_params_once
 
     warn_legacy_params_once("jobs.get_caller_identity")
     if not caller_user_id or not caller_project_id:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="caller_user_id and caller_project_id are required",
-        )
+        raise_typed(PlatformError.auth("caller_identity_required", "caller_user_id and caller_project_id are required"))
 
     return CallerIdentity(
         user_id=caller_user_id.strip(),
@@ -227,7 +216,7 @@ def _check_scope_target(
 def _deny_unless(condition: bool, detail: str) -> None:
     """Raise 403 for a violated scope rule (keeps call-sites above budget)."""
     if not condition:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=detail)
+        raise_typed(PlatformError.jobs("forbidden", detail))
 
 
 def _resolve_job_create_identity_primitive(
@@ -261,10 +250,7 @@ def _resolve_job_create_identity_primitive(
             is_admin=admin,
         )
         if not trusted:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Gateway-verified identity signature rejected",
-            )
+            raise_typed(PlatformError.auth("gateway_signature_rejected", "Gateway-verified identity signature rejected"))
         return verified_project_id, verified_user_id, admin
     if verified_user_id and verified_project_id:
         admin = _header_str(x_verified_is_admin) in ("true", "1")
@@ -275,10 +261,7 @@ def _resolve_job_create_identity_primitive(
     uid = x_user_id_from_body
     if pid and uid:
         return pid, uid, False
-    raise HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Missing Gateway-verified caller identity",
-    )
+    raise_typed(PlatformError.auth("gateway_identity_required", "Missing Gateway-verified caller identity"))
 
 
 # =============================================================================
@@ -549,10 +532,7 @@ def _enforce_job_access(
             job.project_id,
             job.user_id,
         )
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"Not authorised to {action} job {job.job_id}",
-        )
+        raise_typed(PlatformError.jobs("forbidden", f"Not authorised to {action} job {job.job_id}"))
 
 
 # =============================================================================
@@ -585,11 +565,13 @@ async def create_job(
         try:
             job_type = JobType(request.job_type)
         except ValueError:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid job_type: {request.job_type}. "
-                f"Valid types: {[t.value for t in JobType]}",
-            ) from None
+            raise_typed(
+                PlatformError.jobs(
+                    "bad_request",
+                    f"Invalid job_type: {request.job_type}. "
+                    f"Valid types: {[t.value for t in JobType]}",
+                )
+            )
 
         # #216: reject types without a dispatch backend on the REST/scheduler
         # path — otherwise a durable job is accepted and only explodes with
@@ -600,11 +582,13 @@ async def create_job(
         try:
             restart_policy = RestartPolicy(request.restart_policy)
         except ValueError:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid restart_policy: {request.restart_policy}. "
-                f"Valid policies: {[p.value for p in RestartPolicy]}",
-            ) from None
+            raise_typed(
+                PlatformError.jobs(
+                    "bad_request",
+                    f"Invalid restart_policy: {request.restart_policy}. "
+                    f"Valid policies: {[p.value for p in RestartPolicy]}",
+                )
+            )
 
         # Build spec dict
         spec = request.spec.model_dump(exclude_none=True)
@@ -686,10 +670,7 @@ def _create_fan_out_job(
             **create_kwargs,
         )
     except (KeyError, ValueError) as exc:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=str(exc),
-        ) from exc
+        raise_typed(PlatformError.jobs("unprocessable", str(exc)), cause=exc)
 
 
 def _parse_status_filter(status_filter: str | None) -> JobStatus | None:
@@ -699,10 +680,7 @@ def _parse_status_filter(status_filter: str | None) -> JobStatus | None:
     try:
         return JobStatus(status_filter)
     except ValueError:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid status: {status_filter}",
-        ) from None
+        raise_typed(PlatformError.jobs("bad_request", f"Invalid status: {status_filter}"))
 
 
 # #216: job types accepted by JobType enum but with no dispatch backend on the
@@ -717,13 +695,15 @@ def _enforce_dispatchable_job_type(job_type: JobType) -> None:
     """Reject unimplemented job types at submission (400) instead of burning a
     durable job that only explodes with "not yet implemented" at dispatch (#216)."""
     if job_type in _UNDISPATCHABLE_JOB_TYPES:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                f"job_type '{job_type.value}' is not implemented on this "
-                "deployment (no durable dispatch backend). Remove from "
-                "_UNDISPATCHABLE_JOB_TYPES in api/jobs.py when the backend lands."
-            ),
+        raise_typed(
+            PlatformError.jobs(
+                "bad_request",
+                (
+                    f"job_type '{job_type.value}' is not implemented on this "
+                    "deployment (no durable dispatch backend). Remove from "
+                    "_UNDISPATCHABLE_JOB_TYPES in api/jobs.py when the backend lands."
+                ),
+            )
         )
 
 
@@ -734,10 +714,7 @@ def _parse_job_type_filter(job_type: str | None) -> JobType | None:
     try:
         return JobType(job_type)
     except ValueError:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid job_type: {job_type}",
-        ) from None
+        raise_typed(PlatformError.jobs("bad_request", f"Invalid job_type: {job_type}"))
 
 
 @router.get(
@@ -830,10 +807,7 @@ async def get_job(
         return response
 
     except JobNotFoundError:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Job not found: {job_id}",
-        ) from None
+        raise_typed(PlatformError.jobs("not_found", f"Job not found: {job_id}"))
 
 
 @router.get(
@@ -853,17 +827,16 @@ async def get_job_manifest(
     try:
         job = store.get_job(job_id)
     except JobNotFoundError:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Job not found: {job_id}",
-        ) from None
+        raise_typed(PlatformError.jobs("not_found", f"Job not found: {job_id}"))
     _enforce_job_access(caller, job, action="read")
     manifest = store.get_latest_attempt_manifest(job_id)
     if manifest is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"No execution manifest persisted for job {job_id} yet "
-            "(recorded at attempt completion)",
+        raise_typed(
+            PlatformError.jobs(
+                "manifest_missing",
+                f"No execution manifest persisted for job {job_id} yet "
+                "(recorded at attempt completion)",
+            )
         )
     return {"job_id": job_id, "manifest": manifest}
 
@@ -882,10 +855,7 @@ async def list_job_manifests(
     try:
         job = store.get_job(job_id)
     except JobNotFoundError:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Job not found: {job_id}",
-        ) from None
+        raise_typed(PlatformError.jobs("not_found", f"Job not found: {job_id}"))
     _enforce_job_access(caller, job, action="read")
     manifests = []
     for attempt in store.get_attempts_for_job(job_id):
@@ -941,15 +911,9 @@ async def cancel_job(
         )
 
     except JobNotFoundError:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Job not found: {job_id}",
-        ) from None
+        raise_typed(PlatformError.jobs("not_found", f"Job not found: {job_id}"))
     except InvalidTransitionError as e:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=str(e),
-        ) from e
+        raise_typed(PlatformError.jobs("conflict", str(e)), cause=e)
 
 
 def _drift_window(store: JobStore, job_id: str) -> dict[str, Any]:
@@ -991,10 +955,7 @@ def _attempt_for_job(store: JobStore, job_id: str, attempt_id: str) -> Any:
     for attempt in store.get_attempts_for_job(job_id):
         if attempt.attempt_id == attempt_id:
             return attempt
-    raise HTTPException(
-        status_code=status.HTTP_404_NOT_FOUND,
-        detail=f"Attempt not found on job {job_id}: {attempt_id}",
-    )
+    raise_typed(PlatformError.jobs("attempt_not_found", f"Attempt not found on job {job_id}: {attempt_id}"))
 
 
 def _load_or_mint_credentials(
@@ -1044,10 +1005,7 @@ async def mint_attempt_credentials_route(
     try:
         job = store.get_job(job_id)
     except JobNotFoundError:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Job not found: {job_id}",
-        ) from None
+        raise_typed(PlatformError.jobs("not_found", f"Job not found: {job_id}"))
     _enforce_job_access(caller, job, action="mint credentials")
     attempt = _attempt_for_job(store, job_id, attempt_id)
     record = _load_or_mint_credentials(store, job_id, attempt_id, attempt.attempt_no)
@@ -1079,19 +1037,13 @@ async def mint_attempt_sts_credentials(
     try:
         job = store.get_job(job_id)
     except JobNotFoundError:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Job not found: {job_id}",
-        ) from None
+        raise_typed(PlatformError.jobs("not_found", f"Job not found: {job_id}"))
     _enforce_job_access(caller, job, action="mint sts credentials")
     attempt = _attempt_for_job(store, job_id, attempt_id)
 
     raw = store.get_attempt_credentials(attempt_id)
     if not raw:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="No attempt credentials minted yet — POST .../credentials first",
-        )
+        raise_typed(PlatformError.presign("not_minted", "No attempt credentials minted yet — POST .../credentials first"))
     record = AttemptCredentials.from_dict(raw)
 
     config = get_s3_config()
@@ -1104,10 +1056,7 @@ async def mint_attempt_sts_credentials(
             secret_key=config.secret_key,
         )
     except STSFederationError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"STS federation unavailable: {exc}",
-        ) from exc
+        raise_typed(PlatformError.jobs("unavailable", f"STS federation unavailable: {exc}"), cause=exc)
 
     # Re-mint the record with the capped STS TTL so downstream presign verbs
     # bound their URLs by the session lifetime (never wider).
@@ -1151,26 +1100,17 @@ async def presign_for_attempt(
     try:
         job = store.get_job(job_id)
     except JobNotFoundError:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Job not found: {job_id}",
-        ) from None
+        raise_typed(PlatformError.jobs("not_found", f"Job not found: {job_id}"))
     _enforce_job_access(caller, job, action="presign")
     _attempt_for_job(store, job_id, attempt_id)
 
     raw = store.get_attempt_credentials(attempt_id)
     if not raw:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="No attempt credentials minted yet — POST .../credentials first",
-        )
+        raise_typed(PlatformError.presign("not_minted", "No attempt credentials minted yet — POST .../credentials first"))
     record = AttemptCredentials.from_dict(raw)
     key = body.key.lstrip("/")
     if not key_in_scope(key, record):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="key outside attempt scope or credentials expired",
-        )
+        raise_typed(PlatformError.presign("out_of_scope", "key outside attempt scope or credentials expired"))
 
     ttl = min(body.ttl_sec or record.ttl_sec, record.ttl_sec)
     from .files import get_s3_config
@@ -1204,18 +1144,13 @@ async def reproduce_job(
     try:
         job = store.get_job(job_id)
     except JobNotFoundError:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Job not found: {job_id}",
-        ) from None
+        raise_typed(PlatformError.jobs("not_found", f"Job not found: {job_id}"))
     _enforce_job_access(caller, job, action="reproduce")
     drift = _drift_window(store, job_id)
     try:
         store.retry_job(job_id)
     except InvalidTransitionError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
-        ) from exc
+        raise_typed(PlatformError.jobs("conflict", str(exc)), cause=exc)
     return {
         "job_id": job_id,
         "action": "reproduce",
@@ -1243,10 +1178,7 @@ async def retry_job(
     Returns 403 for non-admin callers.
     """
     if not caller.is_admin:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Retry is an admin-only operation",
-        )
+        raise_typed(PlatformError.jobs("forbidden", "Retry is an admin-only operation"))
 
     try:
         store.retry_job(job_id)
@@ -1258,15 +1190,9 @@ async def retry_job(
         )
 
     except JobNotFoundError:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Job not found: {job_id}",
-        ) from None
+        raise_typed(PlatformError.jobs("not_found", f"Job not found: {job_id}"))
     except InvalidTransitionError as e:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=str(e),
-        ) from e
+        raise_typed(PlatformError.jobs("conflict", str(e)), cause=e)
 
 
 # =============================================================================
