@@ -863,13 +863,6 @@ endpoints:
       # (job 4592: "genai-private-net-<id> not visible after migrate").
       # netavark is the working backend on this venue (login + glm lanes).
       RIVAULT_NETWORK_BACKEND: "netavark"
-      # SM121 arch-pin set (§6b-3 candidate (a), verdict leg 2026-09-11):
-      # the GB10 JIT toolchain must be told sm-121 explicitly or weight load
-      # completes then `PTX JIT compiler library not found` kills the engine
-      # right after. Recipe note implies the glm-5.3 set carries the same.
-      TORCH_CUDA_ARCH_LIST: "12.1a"
-      FLASHINFER_CUDA_ARCH_LIST: "12.1a"
-      FLASHINFER_DISABLE_VERSION_CHECK: "1"
       VLLM_TOOL_CALL_PARSER: "qwen3_coder"
       VLLM_REASONING_PARSER: "qwen3"
       VLLM_TRUST_REMOTE_CODE: "1"
