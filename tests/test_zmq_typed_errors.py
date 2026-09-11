@@ -446,3 +446,18 @@ def test_contract_mcp_family_codes():
     }
     for code, status in expected.items():
         assert codes[code] == status, code
+
+
+def test_contract_knowledge2_family_codes():
+    from r4_contracts.errors import known_error_codes
+
+    codes = known_error_codes()
+    expected = {
+        "knowledge2.unknown_graph": 400,
+        "knowledge2.graph_not_active": 400,
+        "knowledge2.bad_request": 400,
+        "knowledge2.unavailable": 503,
+        "knowledge2.failure": 500,
+    }
+    for code, status in expected.items():
+        assert codes[code] == status, code
