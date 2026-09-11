@@ -16,6 +16,8 @@ import logging
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+
+from .typed_errors import PlatformError, raise_typed
 from pydantic import BaseModel, Field
 
 from umrs.api.files import S3Config, get_project_id, get_s3_config
@@ -216,19 +218,17 @@ def _resolve_ingest_target(
         return default_graph_id(project_id)
     pool = getattr(request.app.state, "umrs_db_pool", None)
     if pool is None:
-        raise HTTPException(
-            status_code=503,
-            detail="Graph registry requires the database (named-graph target)",
+        raise_typed(
+            PlatformError.knowledge2(
+                "unavailable",
+                "Graph registry requires the database (named-graph target)",
+            )
         )
     graph = GraphRegistryStore(pool).resolve_graph(graph_ref)
     if graph is None:
-        raise HTTPException(
-            status_code=400, detail=f"Unknown target graph {graph_ref!r}"
-        )
+        raise_typed(PlatformError.knowledge2("unknown_graph", f"Unknown target graph {graph_ref!r}"))
     if graph.status != "active":
-        raise HTTPException(
-            status_code=400, detail=f"Graph {graph_ref!r} is {graph.status}"
-        )
+        raise_typed(PlatformError.knowledge2("graph_not_active", f"Graph {graph_ref!r} is {graph.status}"))
     return graph.graph_id
 
 
@@ -272,9 +272,7 @@ async def trigger_ingest(
 
     runtime = get_runtime()
     if runtime is None:
-        raise HTTPException(
-            status_code=503, detail="UMRS durable job runtime not available"
-        )
+        raise_typed(PlatformError.knowledge2("unavailable", "UMRS durable job runtime not available"))
 
     target_graph_id = _resolve_ingest_target(request, project_id, body.graph_id)
     enforce_graph_mutation_authorization(
@@ -334,7 +332,7 @@ async def trigger_ingest(
         }
     except Exception as exc:
         logger.exception("Failed to queue knowledge ingest")
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise_typed(PlatformError.knowledge2("failure", str(exc)), cause=exc)
 
 
 @router.get("/artifacts")
@@ -374,7 +372,7 @@ async def list_artifacts(
         raise
     except Exception as exc:
         logger.exception("Failed to list artifacts")
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise_typed(PlatformError.knowledge2("failure", str(exc)))
 
 
 def _lint_source(checks: list, source: str, file_path: str) -> list[dict[str, Any]]:
@@ -447,7 +445,7 @@ async def run_lint(
         )
     except Exception as exc:
         logger.exception("Lint check failed")
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise_typed(PlatformError.knowledge2("failure", str(exc)))
 
 
 @router.post("/verify", response_model=VerifyResponse)
@@ -463,9 +461,7 @@ async def trigger_verify(
 
     runtime = get_runtime()
     if runtime is None:
-        raise HTTPException(
-            status_code=503, detail="UMRS durable job runtime not available"
-        )
+        raise_typed(PlatformError.knowledge2("unavailable", "UMRS durable job runtime not available"))
 
     spec: dict[str, Any] = {
         "project_id": project_id,
@@ -484,7 +480,7 @@ async def trigger_verify(
         return VerifyResponse(job_id=job_id, status="queued")
     except Exception as exc:
         logger.exception("Failed to queue knowledge verify")
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise_typed(PlatformError.knowledge2("failure", str(exc)))
 
 
 @router.get("/readiness")
@@ -521,7 +517,7 @@ async def knowledge_readiness(
         raise
     except Exception as exc:
         logger.exception("Knowledge readiness check failed")
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise_typed(PlatformError.knowledge2("failure", str(exc)))
 
 
 @router.post("/emit-workflow", response_model=WorkflowDraftResponse)
@@ -541,7 +537,7 @@ async def emit_workflow(
 
     plan = body.plan
     if not isinstance(plan, dict):
-        raise HTTPException(status_code=400, detail="plan must be a dict")
+        raise_typed(PlatformError.knowledge2("bad_request", "plan must be a dict"))
 
     try:
         result = _emit_workflow(
@@ -553,7 +549,7 @@ async def emit_workflow(
         )
     except Exception as exc:
         logger.exception("Failed to emit workflow")
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise_typed(PlatformError.knowledge2("failure", str(exc)), cause=exc)
 
     return WorkflowDraftResponse(
         workflow_id=result["workflow_id"],
