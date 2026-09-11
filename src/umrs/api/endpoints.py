@@ -35,6 +35,7 @@ from ..orchestrator.endpoint_mounts import (
 )
 from ..orchestrator.readiness import get_readiness_poller
 from ..shared.auth import JWTError, resolve_jwt_secret, validate_jwt
+from .typed_errors import PlatformError, raise_typed
 
 logger = logging.getLogger(__name__)
 
@@ -79,12 +80,14 @@ def _validate_partition_allowed(request_partition: str | None) -> None:
     except Exception:
         allowed = []
     if allowed and part not in allowed:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                f"partition '{part}' not in this site's scheduler partitions "
-                f"({', '.join(allowed)})"
-            ),
+        raise_typed(
+            PlatformError.endpoints(
+                "bad_request",
+                (
+                    f"partition '{part}' not in this site's scheduler partitions "
+                    f"({', '.join(allowed)})"
+                ),
+            )
         )
 
 
@@ -101,13 +104,15 @@ def _enforce_serving_mode_supported(request: Any) -> None:
     """
     serving_mode = getattr(request, "serving_mode", "single") or "single"
     if serving_mode != "single":
-        raise HTTPException(
-            status_code=status.HTTP_501_NOT_IMPLEMENTED,
-            detail=(
-                f"serving_mode='{serving_mode}' is not yet implemented by the "
-                "serving runtime — the request is validated but no runtime "
-                "consumer materializes it. Provision with serving_mode='single'."
-            ),
+        raise_typed(
+            PlatformError.endpoints(
+                "not_implemented",
+                (
+                    f"serving_mode='{serving_mode}' is not yet implemented by the "
+                    "serving runtime — the request is validated but no runtime "
+                    "consumer materializes it. Provision with serving_mode='single'."
+                ),
+            )
         )
 
 
@@ -137,11 +142,13 @@ def _authorize_model_entry_for_caller(
             scope,
         )
         return
-    raise HTTPException(
-        status_code=status.HTTP_403_FORBIDDEN,
-        detail=(
-            f"Model '{entry.get('name')}' is {scope}-scope and not provisionable "
-            "by this caller"
+    raise_typed(
+        PlatformError.endpoints(
+            "forbidden",
+            (
+                f"Model '{entry.get('name')}' is {scope}-scope and not provisionable "
+                "by this caller"
+            ),
         ),
     )
 
@@ -175,29 +182,35 @@ def _enforce_recipe_policy(is_admin: bool, request: Any) -> None:
     if is_admin:
         return
     if getattr(request, "env_vars", None):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=(
-                "env_vars require admin role (recipe-controlled channel); "
-                "use a curated recipe or ask an admin to add one"
+        raise_typed(
+            PlatformError.endpoints(
+                "forbidden",
+                (
+                    "env_vars require admin role (recipe-controlled channel); "
+                    "use a curated recipe or ask an admin to add one"
+                ),
             ),
         )
     if getattr(request, "container_image", None):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=(
-                "container_image override requires admin role "
-                "(recipe-controlled channel)"
+        raise_typed(
+            PlatformError.endpoints(
+                "forbidden",
+                (
+                    "container_image override requires admin role "
+                    "(recipe-controlled channel)"
+                ),
             ),
         )
 
 
 def _raise_strict_project_auth_error() -> None:
-    raise HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail=(
-            "UMRS_AUTH_MODE=strict requires a verified project claim; "
-            "X-Project-ID and default-project fallbacks are disabled."
+    raise_typed(
+        PlatformError.auth(
+            "gateway_identity_required",
+            (
+                "UMRS_AUTH_MODE=strict requires a verified project claim; "
+                "X-Project-ID and default-project fallbacks are disabled."
+            ),
         ),
     )
 
@@ -224,25 +237,28 @@ def _jwt_claims(
     token = _bearer_token(authorization)
     if not token:
         if required:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Missing Authorization bearer token",
+            raise_typed(
+                PlatformError.auth(
+                    "gateway_identity_required", "Missing Authorization bearer token"
+                ),
             )
         return None
     if token.count(".") != 2:
         if required:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Authorization bearer token is not a JWT",
+            raise_typed(
+                PlatformError.auth(
+                    "gateway_identity_required",
+                    "Authorization bearer token is not a JWT",
+                ),
             )
         return None
     try:
         return validate_jwt(token, resolve_jwt_secret())
     except JWTError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=str(exc),
-        ) from exc
+        raise_typed(
+            PlatformError.auth("gateway_identity_required", str(exc)),
+            cause=exc,
+        )
 
 
 def _claim_values(claims: dict[str, Any], *names: str) -> list[str]:
@@ -297,9 +313,8 @@ def _forbid_if_project_mismatch(
     project_id: str | None,
 ) -> None:
     if project_id is not None and endpoint.project_id != project_id:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Endpoint not found",
+        raise_typed(
+            PlatformError.endpoints("not_found", "Endpoint not found"),
         )
 
 
@@ -315,10 +330,10 @@ def _require_identity_for_mutation(project_id: str | None, action: str) -> None:
     their existing permissive behavior.
     """
     if project_id is None and _strict_auth_mode():
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=(
-                f"{action} requires an authenticated project identity in strict mode"
+        raise_typed(
+            PlatformError.auth(
+                "gateway_identity_required",
+                (f"{action} requires an authenticated project identity in strict mode"),
             ),
         )
 
@@ -375,14 +390,17 @@ def _project_id_authorized_by_claims(
 ) -> str:
     effective_project_id = requested_project_id or _claim_project_id(claims)
     if not effective_project_id:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="JWT is missing project_id claim",
+        raise_typed(
+            PlatformError.auth(
+                "gateway_identity_required", "JWT is missing project_id claim"
+            ),
         )
     if not _claim_can_access_project(claims, effective_project_id):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Requested project is not allowed by JWT project memberships",
+        raise_typed(
+            PlatformError.endpoints(
+                "forbidden",
+                "Requested project is not allowed by JWT project memberships",
+            ),
         )
     return effective_project_id
 
@@ -454,9 +472,11 @@ def _require_internal_endpoint_writer(
     if not _strict_auth_mode():
         return
     if not _caller_is_admin(authorization, x_user_id, x_verified_is_admin):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Endpoint registry mutation requires admin JWT in strict mode",
+        raise_typed(
+            PlatformError.endpoints(
+                "forbidden",
+                "Endpoint registry mutation requires admin JWT in strict mode",
+            ),
         )
 
 
@@ -466,9 +486,10 @@ def _enforce_provision_authorization(
     is_admin: bool,
 ) -> None:
     if request.tier == "system" and not is_admin:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only admins may provision system-tier endpoints",
+        raise_typed(
+            PlatformError.endpoints(
+                "forbidden", "Only admins may provision system-tier endpoints"
+            ),
         )
 
 
@@ -1193,9 +1214,11 @@ def get_project_id(
     if project_id:
         return project_id
 
-    raise HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Missing project_id. Provide X-Project-ID header or valid JWT.",
+    raise_typed(
+        PlatformError.auth(
+            "gateway_identity_required",
+            "Missing project_id. Provide X-Project-ID header or valid JWT.",
+        ),
     )
 
 
@@ -1280,9 +1303,11 @@ def _resolve_provision_project_id(
     if body_project_id:
         return body_project_id
 
-    raise HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Missing project_id. Provide X-Project-ID header or project_id in the request body.",
+    raise_typed(
+        PlatformError.auth(
+            "gateway_identity_required",
+            "Missing project_id. Provide X-Project-ID header or project_id in the request body.",
+        ),
     )
 
 
@@ -1395,10 +1420,10 @@ def _validated_model_path_override(model_path: str) -> str:
     try:
         return validate_mount_source(model_path)
     except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid model_path: {exc}",
-        ) from exc
+        raise_typed(
+            PlatformError.endpoints("bad_request", f"Invalid model_path: {exc}"),
+            cause=exc,
+        )
 
 
 def _serving_profile(model_entry: dict[str, Any] | None) -> dict[str, Any]:
@@ -1473,14 +1498,16 @@ def _require_egress_proxy_for_request(request: ProvisionRequest) -> None:
     mounts = request.mounts
     reasons = egress_reasons(
         mcp_mounts=bool(mounts and mounts.mcp_servers),
-        egress_domains=[str(d).strip() for d in (request.egress_domains or []) if str(d).strip()],
+        egress_domains=[
+            str(d).strip() for d in (request.egress_domains or []) if str(d).strip()
+        ],
     )
     if not reasons:
         return
     try:
         require_egress_proxy_image(reasons)
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        raise_typed(PlatformError.endpoints("bad_request", str(exc)), cause=exc)
 
 
 def _active_site_profiles() -> list[str]:
@@ -1832,9 +1859,10 @@ async def list_endpoints(
     # would otherwise enumerate every tenant's endpoints incl. host/port/
     # litellm_url (audited: all-tenant registry dump with no admin gate).
     if project_id is None and not is_admin:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Cross-project endpoint listing requires admin role",
+        raise_typed(
+            PlatformError.endpoints(
+                "forbidden", "Cross-project endpoint listing requires admin role"
+            ),
         )
 
     statuses = _parse_status_filter(status_filter)
@@ -1855,10 +1883,10 @@ def _parse_status_filter(status_filter: str | None) -> list[EndpointStatus] | No
     try:
         return [EndpointStatus(s.strip()) for s in status_filter.split(",")]
     except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid status filter: {e}",
-        ) from e
+        raise_typed(
+            PlatformError.endpoints("bad_request", f"Invalid status filter: {e}"),
+            cause=e,
+        )
 
 
 async def _prune_ghost_ready(registry: EndpointRegistry, endpoints: list) -> list:
@@ -1923,16 +1951,15 @@ async def update_endpoint_status(
     try:
         new_status = EndpointStatus(request.status)
     except ValueError:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid status: {request.status}",
-        ) from None
+        raise_typed(
+            PlatformError.endpoints("bad_request", f"Invalid status: {request.status}"),
+            cause=None,
+        )
 
     endpoint = registry.update_status(job_id, new_status, request.error_message)
     if not endpoint:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Endpoint not found: {job_id}",
+        raise_typed(
+            PlatformError.endpoints("not_found", f"Endpoint not found: {job_id}"),
         )
 
     return EndpointResponse(**endpoint.to_dict())
@@ -1957,9 +1984,8 @@ async def refresh_endpoint(
     """Refresh a stuck endpoint."""
     endpoint = registry.get_by_job_id(job_id)
     if not endpoint:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Endpoint not found: {job_id}",
+        raise_typed(
+            PlatformError.endpoints("not_found", f"Endpoint not found: {job_id}"),
         )
     _forbid_if_project_mismatch(endpoint, project_id)
 
@@ -1968,9 +1994,10 @@ async def refresh_endpoint(
     service = get_orchestration_service()
     refreshed = await service.refresh_endpoint(job_id)
     if not refreshed:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Endpoint not found after refresh: {job_id}",
+        raise_typed(
+            PlatformError.endpoints(
+                "not_found", f"Endpoint not found after refresh: {job_id}"
+            ),
         )
 
     return EndpointResponse(**refreshed.to_dict())
@@ -1991,18 +2018,16 @@ async def mark_endpoint_used(
 
     existing = registry.get_by_job_id(job_id)
     if not existing:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Endpoint not found: {job_id}",
+        raise_typed(
+            PlatformError.endpoints("not_found", f"Endpoint not found: {job_id}"),
         )
     _require_identity_for_mutation(project_id, "Mark endpoint used")
     _forbid_if_project_mismatch(existing, project_id)
 
     endpoint = registry.mark_used(job_id)
     if not endpoint:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Endpoint not found: {job_id}",
+        raise_typed(
+            PlatformError.endpoints("not_found", f"Endpoint not found: {job_id}"),
         )
 
     return EndpointResponse(**endpoint.to_dict())
@@ -2029,10 +2054,10 @@ async def _fetch_upstream_metrics(
             return await client.get(target_url, headers=metrics_headers)
     except Exception as exc:  # noqa: BLE001 - best-effort proxy
         logger.warning("Failed to fetch endpoint metrics from %s: %s", target_url, exc)
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Failed to fetch endpoint metrics",
-        ) from exc
+        raise_typed(
+            PlatformError.endpoints("bad_gateway", "Failed to fetch endpoint metrics"),
+            cause=exc,
+        )
 
 
 @router.get(
@@ -2062,22 +2087,24 @@ async def proxy_endpoint_metrics(
     this proxy requires a resolved caller project — or admin.
     """
     if project_id is None and _strict_auth_mode() and not is_admin:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Endpoint metrics proxy requires an authenticated project",
+        raise_typed(
+            PlatformError.auth(
+                "gateway_identity_required",
+                "Endpoint metrics proxy requires an authenticated project",
+            ),
         )
     endpoint = registry.get_by_job_id(job_id)
     if not endpoint:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Endpoint not found: {job_id}",
+        raise_typed(
+            PlatformError.endpoints("not_found", f"Endpoint not found: {job_id}"),
         )
     _forbid_if_project_mismatch(endpoint, project_id)
 
     if endpoint.status not in {EndpointStatus.READY, EndpointStatus.DEGRADED}:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"Endpoint {job_id} is {endpoint.status.value}",
+        raise_typed(
+            PlatformError.endpoints(
+                "unavailable", f"Endpoint {job_id} is {endpoint.status.value}"
+            ),
         )
 
     target_url = f"http://{endpoint.host}:{endpoint.port}/metrics"
@@ -2086,9 +2113,10 @@ async def proxy_endpoint_metrics(
     upstream = await _fetch_upstream_metrics(target_url, _metrics_headers())
 
     if upstream.status_code != status.HTTP_200_OK:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Endpoint metrics returned {upstream.status_code}",
+        raise_typed(
+            PlatformError.endpoints(
+                "bad_gateway", f"Endpoint metrics returned {upstream.status_code}"
+            )
         )
 
     return Response(
@@ -2111,9 +2139,8 @@ async def remove_endpoint(
 
     endpoint = registry.remove(job_id)
     if not endpoint:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Endpoint not found: {job_id}",
+        raise_typed(
+            PlatformError.endpoints("not_found", f"Endpoint not found: {job_id}"),
         )
 
 
@@ -2242,9 +2269,8 @@ async def get_endpoint(
 
     endpoint = registry.get_by_job_id(job_id)
     if not endpoint:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Endpoint not found: {job_id}",
+        raise_typed(
+            PlatformError.endpoints("not_found", f"Endpoint not found: {job_id}"),
         )
     _forbid_if_project_mismatch(endpoint, project_id)
 
@@ -2692,21 +2718,25 @@ def _check_requesting_user_gate(requesting_user: str) -> None:
         _user_store = UserStore()
         _user_record = _user_store.resolve_user(requesting_user)
         if _user_record.disabled:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"User '{_user_record.username}' is disabled.",
+            raise_typed(
+                PlatformError.endpoints(
+                    "forbidden", f"User '{_user_record.username}' is disabled."
+                ),
             )
         _require_slurm_account(_user_record, requesting_user)
     except HTTPException:
         raise
     except UserStoreError as _use:
         # User record not found in the store — reject rather than proceed.
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"User '{requesting_user}' is not registered. "
-            "Ask an admin to run: "
-            f"umrs-server admin user add {requesting_user}",
-        ) from _use
+        raise_typed(
+            PlatformError.endpoints(
+                "forbidden",
+                f"User '{requesting_user}' is not registered. "
+                "Ask an admin to run: "
+                f"umrs-server admin user add {requesting_user}",
+            ),
+            cause=_use,
+        )
     except Exception:
         # User store infrastructure failure (I/O error, corrupt file, etc.).
         # Log and proceed to avoid blocking provisioning when the store is
@@ -2733,12 +2763,14 @@ def _require_slurm_account(user_record, requesting_user: str) -> None:
         return
     if user_record.resolve_slurm_account(_site_name):
         return
-    raise HTTPException(
-        status_code=status.HTTP_403_FORBIDDEN,
-        detail=(
-            f"User '{user_record.username}' has no Slurm account configured. "
-            "Ask an admin to run: "
-            f"umrs-server admin user set-slurm-account {user_record.username} <account>"
+    raise_typed(
+        PlatformError.endpoints(
+            "forbidden",
+            (
+                f"User '{user_record.username}' has no Slurm account configured. "
+                "Ask an admin to run: "
+                f"umrs-server admin user set-slurm-account {user_record.username} <account>"
+            ),
         ),
     )
 
@@ -2915,11 +2947,13 @@ async def provision_endpoint(
         model_entry=model_entry,
     )
     if not resolved_model_path:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                f"Unable to resolve model path for '{request.model}'. "
-                "Register the model in the catalog or provide model_path explicitly."
+        raise_typed(
+            PlatformError.endpoints(
+                "bad_request",
+                (
+                    f"Unable to resolve model path for '{request.model}'. "
+                    "Register the model in the catalog or provide model_path explicitly."
+                ),
             ),
         )
 
@@ -3085,9 +3119,8 @@ async def deprovision_endpoint(
 
     endpoint = registry.get_by_job_id(job_id)
     if not endpoint:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Endpoint not found: {job_id}",
+        raise_typed(
+            PlatformError.endpoints("not_found", f"Endpoint not found: {job_id}"),
         )
     _require_identity_for_mutation(project_id, "Deprovision")
     _forbid_if_project_mismatch(endpoint, project_id)
@@ -3118,9 +3151,10 @@ async def deprovision_endpoint(
                     ),
                 },
             )
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to deprovision endpoint: {job_id}",
+        raise_typed(
+            PlatformError.endpoints(
+                "failure", f"Failed to deprovision endpoint: {job_id}"
+            ),
         )
 
     from .audit_events import emit_audit
@@ -3214,18 +3248,18 @@ async def upgrade_endpoint(
     """
     endpoint = registry.get_by_job_id(job_id)
     if endpoint is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Endpoint not found: {job_id}",
+        raise_typed(
+            PlatformError.endpoints("not_found", f"Endpoint not found: {job_id}"),
         )
     _require_identity_for_mutation(project_id, "Upgrade")
     _forbid_if_project_mismatch(endpoint, project_id)
 
     # Concurrency gate (Q-13 #3): one in-flight upgrade per endpoint.
     if endpoint.metadata.get("upgrade_in_flight"):
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"an upgrade is already in flight for endpoint {job_id}",
+        raise_typed(
+            PlatformError.endpoints(
+                "conflict", f"an upgrade is already in flight for endpoint {job_id}"
+            ),
         )
 
     from ..orchestrator.service import get_orchestration_service
@@ -3248,9 +3282,11 @@ async def upgrade_endpoint(
         # Old endpoint MUST still be addressable after a failed upgrade.
         # If it is not, treat it as a failure report (500), never a 2xx.
         if final is None:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=(f"upgrade failed and old endpoint is unrecoverable: {error}"),
+            raise_typed(
+                PlatformError.endpoints(
+                    "failure",
+                    (f"upgrade failed and old endpoint is unrecoverable: {error}"),
+                ),
             )
         return EndpointUpgradeResponse(
             job_id=job_id,
@@ -3314,19 +3350,20 @@ async def update_endpoint_location(
     """
     # Default strict (audit B12): mvp is an explicit dev opt-in.
     if os.environ.get("UMRS_AUTH_MODE", "strict").strip().lower() != "strict":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=(
-                "Route requires UMRS_AUTH_MODE=strict. "
-                "This admin route is only available in strict auth mode."
+        raise_typed(
+            PlatformError.endpoints(
+                "forbidden",
+                (
+                    "Route requires UMRS_AUTH_MODE=strict. "
+                    "This admin route is only available in strict auth mode."
+                ),
             ),
         )
 
     endpoint = registry.get_by_job_id(job_id)
     if not endpoint:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Endpoint not found: {job_id}",
+        raise_typed(
+            PlatformError.endpoints("not_found", f"Endpoint not found: {job_id}"),
         )
 
     registry.update_location(
@@ -3338,9 +3375,10 @@ async def update_endpoint_location(
 
     updated = registry.get_by_job_id(job_id)
     if not updated:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Endpoint disappeared after location update",
+        raise_typed(
+            PlatformError.endpoints(
+                "failure", "Endpoint disappeared after location update"
+            ),
         )
 
     return EndpointLocationResponse(
