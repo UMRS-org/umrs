@@ -406,3 +406,17 @@ def test_contract_companion_family_codes():
     }
     for code, status in expected.items():
         assert codes[code] == status, code
+
+
+def test_contract_rag_family_codes():
+    from r4_contracts.errors import known_error_codes
+
+    codes = known_error_codes()
+    expected = {
+        "rag.unavailable": 503,
+        "rag.forbidden": 403,
+        "rag.not_found": 404,
+        "rag.bad_request": 400,
+    }
+    for code, status in expected.items():
+        assert codes[code] == status, code
