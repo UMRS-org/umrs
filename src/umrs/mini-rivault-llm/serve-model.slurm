@@ -477,6 +477,24 @@ export EGRESS_AUDIT_LOG_PATH
 mkdir -p "${EGRESS_AUDIT_LOG_PATH}" || { echo "[rivault] FATAL: cannot create EGRESS_AUDIT_LOG_PATH='${EGRESS_AUDIT_LOG_PATH}'"; exit 1; }
 echo "[rivault] egress audit log dir: ${EGRESS_AUDIT_LOG_PATH}"
 
+# Vision publish port: the compose pins the static host-publish (default
+# 3001) and bind failures surface only INSIDE the service start (Live class:
+# 5 attempts died at bind on dgx-spark-1 — leftover rootlessport zombies
+# from earlier attempts AND co-tenant stacks hold these ports). Probe up to
+# 20 candidates here in the batch shell — never bind-fail silently.
+_bv_port="${BENTOML_VISION_DOCKER_PORT:-3001}"
+_bv_base="${_bv_port}"
+for _try in $(seq "${_bv_port}" $(( _bv_port + 20 ))); do
+    if ! ss -tln 2>/dev/null | grep -qE ":${_try}\s"; then
+        _bv_port="${_try}"
+        break
+    fi
+done
+if [[ "${_bv_port}" != "${_bv_base}" ]]; then
+    echo "[rivault] vision publish port ${_bv_base} busy → ${_bv_port}"
+fi
+export BENTOML_VISION_DOCKER_PORT="${_bv_port}"
+
 cat <<EOF > "./env.${uuid}"
 # ═══════════════════════════════════════════════════════════════════════════════
 # Mini-RiVault environment file — generated per-job (UUID=${uuid})
