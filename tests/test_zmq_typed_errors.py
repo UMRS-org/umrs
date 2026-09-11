@@ -224,3 +224,45 @@ def test_files_bucket_denied_carries_typed_header(monkeypatch):
     headers = getattr(exc, "headers", {}) or {}
     assert headers.get("x-platform-error-code") == "files.bucket_denied"
     assert "Bucket not in download allowlist: other-bucket" == getattr(exc, "detail", "")
+
+
+def test_contract_jobs_family_codes():
+    from r4_contracts.errors import known_error_codes
+
+    codes = known_error_codes()
+    expected = {
+        "jobs.not_found": 404,
+        "jobs.attempt_not_found": 404,
+        "jobs.conflict": 409,
+        "jobs.forbidden": 403,
+        "jobs.bad_request": 400,
+        "jobs.unprocessable": 422,
+        "jobs.unavailable": 503,
+        "jobs.manifest_missing": 404,
+        "auth.gateway_signature_rejected": 401,
+        "auth.gateway_identity_required": 401,
+        "auth.caller_identity_required": 401,
+    }
+    for code, status in expected.items():
+        assert codes[code] == status, code
+
+
+def test_jobs_404_carries_typed_header_byte_identical():
+    from unittest.mock import MagicMock
+
+    import pytest
+
+    import umrs.api.jobs as jobs_api
+    from umrs.jobs.store import JobNotFoundError
+
+    store = MagicMock()
+    store.get_job.side_effect = JobNotFoundError("nope")
+    caller = MagicMock()
+    import asyncio
+
+    with pytest.raises(Exception) as excinfo:
+        asyncio.run(jobs_api.get_job("job-nothing", caller=caller, store=store))
+    exc = excinfo.value
+    assert exc.status_code == 404
+    assert exc.headers.get("x-platform-error-code") == "jobs.not_found"
+    assert exc.detail == "Job not found: job-nothing"
