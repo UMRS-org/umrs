@@ -65,15 +65,20 @@ def _resolve_target_project(body: RestoreRequest) -> str:
         with open(manifest_path, encoding="utf-8") as handle:
             manifest = json.load(handle)
     except (OSError, json.JSONDecodeError) as exc:
-        raise HTTPException(
-            status_code=400,
-            detail=f"cannot resolve restore target: unreadable manifest ({exc})",
-        ) from exc
+        raise_typed(
+            PlatformError.bundle(
+                "bad_request",
+                f"cannot resolve restore target: unreadable manifest ({exc})"
+            ),
+            cause=exc,
+        )
     project = manifest.get("project_id")
     if not project:
-        raise HTTPException(
-            status_code=400,
-            detail="bundle manifest has no project_id — pass project_id explicitly",
+        raise_typed(
+            PlatformError.bundle(
+                "bad_request",
+                "bundle manifest has no project_id — pass project_id explicitly"
+            ),
         )
     return str(project)
 

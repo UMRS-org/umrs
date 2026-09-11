@@ -26,7 +26,7 @@ import asyncio
 import logging
 from typing import Any
 
-from umrs.knowledge_graph_api import (
+from umrs.knowledge.graph_types import (
     KnowledgeEdge,
     KnowledgeNode,
     RelationType,

@@ -16,6 +16,7 @@ import logging
 from typing import Any, Optional
 
 from fastapi import HTTPException, Request
+from .typed_errors import PlatformError, raise_typed
 
 from umrs.knowledge.graph_registry import ProposalStore
 
@@ -37,7 +38,7 @@ def request_session_id(request: Request) -> str:
 def _proposal_store(request: Request) -> ProposalStore:
     pool = getattr(request.app.state, "umrs_db_pool", None)
     if pool is None:
-        raise HTTPException(status_code=503, detail="Database unavailable")
+        raise_typed(PlatformError.knowledge_guard("unavailable", "Database unavailable"))
     return ProposalStore(pool)
 
 
@@ -60,44 +61,34 @@ def enforce_graph_mutation_authorization(
     if request_actor(request) != AGENT_ACTOR:
         return
     if not proposal_id:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "error": "proposal_required",
-                "target_graph_id": target_graph_id,
-                "message": (
-                    "Agent-originated knowledge-graph mutation requires an "
-                    "approved graph-extension proposal. Create one via "
-                    "POST /umrs/knowledge/graphs/{graph_id}/proposals and have "
-                    "the user approve it before mutating."
-                ),
-            },
+        raise_typed(
+            PlatformError.knowledge_guard(
+                "conflict",
+                { "error": "proposal_required", "target_graph_id": target_graph_id, "message": ( "Agent-originated knowledge-graph mutation requires an " "approved graph-extension proposal. Create one via " "POST /umrs/knowledge/graphs/{graph_id}/proposals and have " "the user approve it before mutating." ), }
+            ),
         )
     store = _proposal_store(request)
     proposal = store.get_proposal(proposal_id)
     if proposal is None:
-        raise HTTPException(
-            status_code=404,
-            detail={"error": "proposal_not_found", "proposal_id": proposal_id},
+        raise_typed(
+            PlatformError.knowledge_guard(
+                "not_found",
+                {"error": "proposal_not_found", "proposal_id": proposal_id}
+            ),
         )
     if proposal.target_graph_id != target_graph_id:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "error": "proposal_target_mismatch",
-                "proposal_id": proposal_id,
-                "proposal_target": proposal.target_graph_id,
-                "requested_target": target_graph_id,
-            },
+        raise_typed(
+            PlatformError.knowledge_guard(
+                "conflict",
+                { "error": "proposal_target_mismatch", "proposal_id": proposal_id, "proposal_target": proposal.target_graph_id, "requested_target": target_graph_id, }
+            ),
         )
     if proposal.status != "approved":
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "error": "proposal_not_approved",
-                "proposal_id": proposal_id,
-                "status": proposal.status,
-            },
+        raise_typed(
+            PlatformError.knowledge_guard(
+                "conflict",
+                { "error": "proposal_not_approved", "proposal_id": proposal_id, "status": proposal.status, }
+            ),
         )
 
 
@@ -111,17 +102,11 @@ def enforce_registry_write_authorization(request: Request) -> None:
     """
     if request_actor(request) != AGENT_ACTOR:
         return
-    raise HTTPException(
-        status_code=403,
-        detail={
-            "error": "registry_write_forbidden_for_agent",
-            "message": (
-                "Agents may not create, update, or archive knowledge graphs. "
-                "Propose changes via "
-                "POST /umrs/knowledge/graphs/{graph_id}/proposals — a human "
-                "decides; a human manages graph lifecycle."
-            ),
-        },
+    raise_typed(
+        PlatformError.knowledge_guard(
+            "forbidden",
+            { "error": "registry_write_forbidden_for_agent", "message": ( "Agents may not create, update, or archive knowledge graphs. " "Propose changes via " "POST /umrs/knowledge/graphs/{graph_id}/proposals — a human " "decides; a human manages graph lifecycle." ), }
+        ),
     )
 
 

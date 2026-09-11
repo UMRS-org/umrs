@@ -14,6 +14,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, Field
+from .typed_errors import PlatformError, raise_typed
 
 from ..jobs.adaptive_planning import AdaptivePlanningEngine
 from ..jobs.reflective_memory import ReflectiveMemoryInspector
@@ -86,9 +87,11 @@ def inspect(
     limit: int = Query(50, ge=1, le=500),
 ):
     if tier and tier not in VALID_TIERS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid tier: {tier!r}; must be one of {VALID_TIERS}",
+        raise_typed(
+            PlatformError.reflective(
+                "bad_request",
+                f"Invalid tier: {tier!r}; must be one of {VALID_TIERS}"
+            ),
         )
     inspector = get_inspector()
     snap = inspector.inspect(
@@ -103,12 +106,15 @@ def inspect(
 @router.delete("/{tier}/{entry_id}")
 def delete_entry(tier: str, entry_id: str):
     if tier not in VALID_TIERS:
-        raise HTTPException(status_code=400, detail=f"Invalid tier: {tier!r}")
+        raise_typed(PlatformError.reflective("bad_request", f"Invalid tier: {tier!r}"))
     inspector = get_inspector()
     ok = inspector.delete_entry(entry_id, tier)
     if not ok:
-        raise HTTPException(
-            status_code=404, detail="Entry not found or deletion not supported"
+        raise_typed(
+            PlatformError.reflective(
+                "not_found",
+                "Entry not found or deletion not supported"
+            ),
         )
     return {"status": "deleted", "entry_id": entry_id, "tier": tier}
 
@@ -116,7 +122,7 @@ def delete_entry(tier: str, entry_id: str):
 @router.post("/{tier}/reset")
 def reset_tier(tier: str):
     if tier not in VALID_TIERS:
-        raise HTTPException(status_code=400, detail=f"Invalid tier: {tier!r}")
+        raise_typed(PlatformError.reflective("bad_request", f"Invalid tier: {tier!r}"))
     inspector = get_inspector()
     count = inspector.reset_tier(tier)
     return {"status": "reset", "tier": tier, "entries_affected": count}

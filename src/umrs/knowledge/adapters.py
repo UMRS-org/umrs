@@ -35,12 +35,7 @@ from umrs.experiment_registry import (
 from umrs.experiment_registry import (
     build_default_store as _build_default_experiment_registry,
 )
-from umrs.knowledge_graph_api import (
-    InMemoryKnowledgeGraph,
-    KnowledgeEdge,
-    KnowledgeNode,
-    RelationType,
-)
+from umrs.knowledge.graph_types import KnowledgeEdge, KnowledgeNode, RelationType
 from .canonical_graph_view import CanonicalGraphView as TransactionCanonicalGraphView
 from .canonical_graph_view import default_view
 from umrs.knowledge_model import (
@@ -289,7 +284,7 @@ class UMRSKnowledgeGraphAdapter:
     Architecture: UMRS owns the knowledge graph. R4 orchestrates.
     """
 
-    def __init__(self, graph: InMemoryKnowledgeGraph | None = None) -> None:
+    def __init__(self, graph: TransactionCanonicalGraphView | None = None) -> None:
         # ADR-026 migration: canonical-backed view (durable when resolvable).
         if graph is None:
             from .canonical_graph_view import default_view
@@ -298,7 +293,7 @@ class UMRSKnowledgeGraphAdapter:
         self._graph = graph
 
     @property
-    def graph(self) -> InMemoryKnowledgeGraph | TransactionCanonicalGraphView:
+    def graph(self) -> TransactionCanonicalGraphView:
         """Underlying UMRS knowledge graph store."""
         return self._graph
 

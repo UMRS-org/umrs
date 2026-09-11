@@ -238,10 +238,11 @@ def _discover_endpoint(
         endpoint = _variant_pool_match(registry, project_id, model)
 
     if not endpoint:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"No active endpoint for model '{model}'. "
-            "Try again later or provision an endpoint.",
+        raise_typed(
+            PlatformError.llm(
+                "unavailable",
+                f"No active endpoint for model '{model}'. " "Try again later or provision an endpoint."
+            ),
         )
 
     return endpoint
@@ -333,17 +334,19 @@ async def _open_stream(
     except httpx.TimeoutException:
         await client.aclose()
         logger.error("Timeout proxying to %s", upstream_url)
-        raise HTTPException(
-            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-            detail="Request to upstream service timed out",
-        ) from None
+        raise_typed(
+            PlatformError.llm("gateway_timeout", "Request to upstream service timed out")
+        )
     except httpx.RequestError as exc:
         await client.aclose()
         logger.error("Error proxying to %s: %s", upstream_url, exc)
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Failed to connect to upstream service",
-        ) from exc
+        raise_typed(
+            PlatformError.llm(
+                "bad_gateway",
+                "Failed to connect to upstream service"
+            ),
+            cause=exc,
+        )
     return client, response
 
 
@@ -452,16 +455,18 @@ async def _proxy_oneshot(
             )
         except httpx.TimeoutException:
             logger.error("Timeout proxying to %s", upstream_url)
-            raise HTTPException(
-                status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-                detail="Request to upstream service timed out",
-            ) from None
+            raise_typed(
+                PlatformError.llm("gateway_timeout", "Request to upstream service timed out")
+            )
         except httpx.RequestError as exc:
             logger.error("Error proxying to %s: %s", upstream_url, exc)
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail="Failed to connect to upstream service",
-            ) from exc
+            raise_typed(
+                PlatformError.llm(
+                    "bad_gateway",
+                    "Failed to connect to upstream service"
+                ),
+                cause=exc,
+            )
 
 
 async def _proxy_to_litellm(
@@ -565,9 +570,11 @@ def _extract_model(body: dict) -> str:
     """Extract model name from request body."""
     model = body.get("model")
     if not model:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Missing 'model' field in request body",
+        raise_typed(
+            PlatformError.llm(
+                "bad_request",
+                "Missing 'model' field in request body"
+            ),
         )
     return model
 

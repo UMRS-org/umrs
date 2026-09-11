@@ -88,10 +88,11 @@ def _discover_endpoint(
     if all_eps:
         return min(all_eps, key=lambda ep: ep.active_requests)
 
-    raise HTTPException(
-        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-        detail=f"No active endpoint for project '{project_id}'. "
-        "Try again later or provision an endpoint.",
+    raise_typed(
+        PlatformError.chatapi(
+            "unavailable",
+            f"No active endpoint for project '{project_id}'. " "Try again later or provision an endpoint."
+        ),
     )
 
 
@@ -195,10 +196,13 @@ async def chat_completions(
         )
     except httpx.RequestError as exc:
         logger.error("Error proxying POST %s: %s", upstream_url, exc)
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Failed to connect to Assistant Service",
-        ) from exc
+        raise_typed(
+            PlatformError.chatapi(
+                "bad_gateway",
+                "Failed to connect to Assistant Service"
+            ),
+            cause=exc,
+        )
     finally:
         if registry:
             registry.decrement_requests(endpoint.job_id)
@@ -225,10 +229,13 @@ async def list_models(
         )
     except httpx.RequestError as exc:
         logger.error("Error proxying GET %s: %s", upstream_url, exc)
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Failed to connect to Assistant Service",
-        ) from exc
+        raise_typed(
+            PlatformError.chatapi(
+                "bad_gateway",
+                "Failed to connect to Assistant Service"
+            ),
+            cause=exc,
+        )
 
 
 @router.get("/manifest")
@@ -252,10 +259,13 @@ async def get_manifest(
         )
     except httpx.RequestError as exc:
         logger.error("Error proxying GET %s: %s", upstream_url, exc)
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Failed to connect to Assistant Service",
-        ) from exc
+        raise_typed(
+            PlatformError.chatapi(
+                "bad_gateway",
+                "Failed to connect to Assistant Service"
+            ),
+            cause=exc,
+        )
 
 
 # ---------------------------------------------------------------------------

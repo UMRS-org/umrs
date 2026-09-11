@@ -12,7 +12,7 @@ sync resource available in API workers and matches the ``search_api`` sync
 backend port used by the K3 facade.
 
 CRITICAL: No imports from ``umrs.api`` or ``umrs.server``.
-Only stdlib + logging imports (same rule as ``knowledge_graph_api/pg_store.py``).
+Only stdlib + logging imports (mirrored on the canonical store pool rule).
 """
 
 from __future__ import annotations
@@ -148,7 +148,7 @@ class GraphExtensionProposal:
 
 
 class _SyncPoolStore:
-    """Shared psycopg2 pool plumbing (mirrors knowledge_graph_api/pg_store)."""
+    """Shared psycopg2 pool plumbing (canonical store pool, mirrors the registry's contract)."""
 
     def __init__(self, db_pool: Any) -> None:
         self._pool = db_pool

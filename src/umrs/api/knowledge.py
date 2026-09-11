@@ -28,7 +28,7 @@ from umrs.knowledge.knowledge_dashboard_controller import (
 from umrs.knowledge.project import ProjectPhase, ResearchProject
 from umrs.knowledge.research_readiness_controller import ResearchReadinessController
 from umrs.knowledge.verification_store import VerificationStore
-from umrs.knowledge_graph_api import KnowledgeEdge
+from umrs.knowledge.graph_types import KnowledgeEdge
 from umrs.knowledge_model import InMemoryKnowledgeModelStore
 from umrs.scientific_memory import InMemoryScientificMemoryStore
 from umrs.scientific_reasoning_engine import ScientificReasoningEngine
@@ -658,10 +658,6 @@ async def understand_project(
         logger.exception("understand failed for project %s", project_id)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-    from umrs.api.knowledge_graph import register_project_graph
-
-    register_project_graph(project_id, project.umrs_knowledge_graph.graph)
-
     pool = getattr(request.app.state, "umrs_db_pool", None)
     if pool is not None:
         GraphRegistryStore(pool).ensure_default_graph(project_id)
@@ -707,9 +703,6 @@ async def verify_project_knowledge(
     ):
         try:
             project.understand()
-            from umrs.api.knowledge_graph import register_project_graph
-
-            register_project_graph(project_id, project.umrs_knowledge_graph.graph)
         except Exception as exc:
             logger.exception("auto-understand failed for project %s", project_id)
             raise HTTPException(status_code=500, detail=str(exc)) from exc

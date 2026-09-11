@@ -46,8 +46,11 @@ def _verify(headers: Any, uid: str, pid: str, admin: bool) -> None:
         project_id=pid,
         is_admin=admin,
     ):
-        raise HTTPException(
-            status_code=401, detail="Gateway-verified identity signature rejected"
+        raise_typed(
+            PlatformError.scopeidentity(
+                "unauthorized",
+                "Gateway-verified identity signature rejected"
+            ),
         )
 
 
@@ -66,13 +69,19 @@ def request_caller_scope(request: Request) -> CallerScope:
         if legacy:
             # Legacy project-level trust (pre-boundary routes, mvp mode).
             if _strict_mode():
-                raise HTTPException(
-                    status_code=401, detail="Missing gateway-verified caller identity"
+                raise_typed(
+                    PlatformError.scopeidentity(
+                        "unauthorized",
+                        "Missing gateway-verified caller identity"
+                    ),
                 )
             return CallerScope(user_id="", project_id=legacy)
         if _strict_mode():
-            raise HTTPException(
-                status_code=401, detail="Missing gateway-verified caller identity"
+            raise_typed(
+                PlatformError.scopeidentity(
+                    "unauthorized",
+                    "Missing gateway-verified caller identity"
+                ),
             )
         return CallerScope(anonymous=True)
     admin = _clean(headers.get("x-verified-is-admin")) in ("true", "1")

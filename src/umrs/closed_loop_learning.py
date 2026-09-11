@@ -37,10 +37,7 @@ from umrs.hypothesis_lifecycle import (
     HypothesisLifecycle,
     HypothesisStatus,
 )
-from umrs.knowledge_graph_api import (
-    InMemoryKnowledgeGraph,
-    RelationType,
-)
+from umrs.knowledge.graph_types import RelationType
 from umrs.scientific_memory import (
     InMemoryScientificMemoryStore,
     MemoryEntry,
@@ -147,7 +144,7 @@ class ClosedLoopLearning:
     def __init__(
         self,
         *,
-        knowledge_graph: InMemoryKnowledgeGraph | None = None,
+        knowledge_graph: Any | None = None,
         scientific_memory: InMemoryScientificMemoryStore | None = None,
         hypothesis_lifecycle: HypothesisLifecycle | None = None,
         reasoning_engine: ScientificReasoningEngine | None = None,

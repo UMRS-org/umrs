@@ -12,6 +12,7 @@ from typing import Any
 import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel, Field
+from .typed_errors import PlatformError, raise_typed
 
 from umrs.api import vision_durable
 from umrs.api.files import S3Config, get_project_id, get_s3_config, validate_key
@@ -82,7 +83,7 @@ def _parse_s3_uri(image_uri: str, project_id: str, config: S3Config) -> tuple[st
         path = image_uri[5:]
         parts = path.split("/", 1)
         if len(parts) != 2 or not parts[0] or not parts[1]:
-            raise HTTPException(status_code=400, detail="Invalid image_uri S3 format")
+            raise_typed(PlatformError.vision("bad_request", "Invalid image_uri S3 format"))
         bucket, key = parts
     else:
         bucket, key = config.bucket, image_uri
@@ -120,8 +121,11 @@ def _resolve_endpoint(
             and _has_project_access(endpoint, project_id)
         ):
             return endpoint
-        raise HTTPException(
-            status_code=404, detail=f"No ready vision endpoint: {endpoint_id}"
+        raise_typed(
+            PlatformError.vision(
+                "not_found",
+                f"No ready vision endpoint: {endpoint_id}"
+            ),
         )
 
     statuses = [EndpointStatus.READY, EndpointStatus.DEGRADED]
@@ -138,8 +142,11 @@ def _resolve_endpoint(
         return matches[0]
 
     target = model or "vision"
-    raise HTTPException(
-        status_code=404, detail=f"No ready vision endpoint for {target}"
+    raise_typed(
+        PlatformError.vision(
+            "not_found",
+            f"No ready vision endpoint for {target}"
+        ),
     )
 
 

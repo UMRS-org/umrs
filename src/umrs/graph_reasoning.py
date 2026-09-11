@@ -27,12 +27,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from umrs.knowledge.canonical_graph_view import CanonicalGraphView, default_view
-from umrs.knowledge_graph_api import (
-    InMemoryKnowledgeGraph,
-    KnowledgeEdge,
-    KnowledgeNode,
-    RelationType,
-)
+from umrs.knowledge.graph_types import KnowledgeEdge, KnowledgeNode, RelationType
 
 __all__ = [
     "RelatedObjects",
@@ -162,16 +157,13 @@ class GraphNavigator:
       7. LLM               — generate plan/answer
     """
 
-    def __init__(
-        self, graph: InMemoryKnowledgeGraph | CanonicalGraphView | None = None
-    ) -> None:
-        # ADR-026 exit wave A: default to the canonical-store-backed view
-        # (semantics identical to InMemoryKnowledgeGraph when store=None —
-        # in-memory dicts, edge dedupe, direction-agnostic reads).
+    def __init__(self, graph: CanonicalGraphView | None = None) -> None:
+        # ADR-026 exit wave C: canonical view is the only graph home
+        # (InMemoryKnowledgeGraph died with the deprecated facade).
         self._graph = graph or default_view(store=None)
 
     @property
-    def graph(self) -> InMemoryKnowledgeGraph | CanonicalGraphView:
+    def graph(self) -> CanonicalGraphView:
         """The underlying knowledge graph."""
         return self._graph
 

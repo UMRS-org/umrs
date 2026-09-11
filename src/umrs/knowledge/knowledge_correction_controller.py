@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from umrs.knowledge.canonical_graph_view import CanonicalGraphView, default_view
-from umrs.knowledge_graph_api import InMemoryKnowledgeGraph, RelationType
+from umrs.knowledge.graph_types import RelationType
 
 __all__ = [
     "CorrectionRecord",
@@ -94,7 +94,7 @@ class KnowledgeCorrectionController:
     def __init__(
         self,
         *,
-        knowledge_graph: InMemoryKnowledgeGraph | CanonicalGraphView | None = None,
+        knowledge_graph: CanonicalGraphView | None = None,
     ) -> None:
         self._knowledge_graph = knowledge_graph or default_view(store=None)
         self._corrections: list[CorrectionRecord] = []

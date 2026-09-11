@@ -475,9 +475,11 @@ def _parse_scope(raw: str) -> SearchScope:
     """Validate the scope query parameter against ``SearchScope`` names."""
     if raw in _VALID_SCOPES:
         return SearchScope(raw)
-    raise HTTPException(
-        status_code=status.HTTP_400_BAD_REQUEST,
-        detail=f"Unknown scope '{raw}'. Valid values: {sorted(_VALID_SCOPES)}",
+    raise_typed(
+        PlatformError.knowledgequery(
+            "bad_request",
+            f"Unknown scope '{raw}'. Valid values: {sorted(_VALID_SCOPES)}"
+        ),
     )
 
 
@@ -485,9 +487,11 @@ def _resolve_project_id(identity: CallerIdentity, project_id: str | None) -> str
     """Verified project context wins; fall back to the explicit parameter."""
     resolved = identity.project_id or (project_id or "")
     if not resolved:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="project_id is required (or a verified project header)",
+        raise_typed(
+            PlatformError.knowledgequery(
+                "bad_request",
+                "project_id is required (or a verified project header)"
+            ),
         )
     return resolved
 
@@ -520,9 +524,11 @@ def query_knowledge(
     """
     meta_store = get_optional_catalog_meta_store()
     if meta_store is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Catalog metadata store is unavailable",
+        raise_typed(
+            PlatformError.knowledgequery(
+                "unavailable",
+                "Catalog metadata store is unavailable"
+            ),
         )
     resolved_project = _resolve_project_id(identity, project_id)
     pool = getattr(request.app.state, "umrs_db_pool", None)

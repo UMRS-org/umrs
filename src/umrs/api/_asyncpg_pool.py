@@ -90,9 +90,13 @@ async def knowledge_asyncpg_pool(request: Request):
     try:
         import asyncpg
     except ImportError as exc:
-        raise HTTPException(
-            status_code=503, detail="asyncpg unavailable in server install"
-        ) from exc
+        raise_typed(
+            PlatformError.asyncpgpool(
+                "unavailable",
+                "asyncpg unavailable in server install"
+            ),
+            cause=exc,
+        )
 
     kwargs: dict = {"dsn": dsn, "init": _init_json_codecs}
     if is_local:

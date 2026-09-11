@@ -86,23 +86,29 @@ class RecordPartRequest(BaseModel):
 def _require_manifest(manifest_id: str) -> IntakeUploadManifest:
     manifest = _get_store().get(manifest_id)
     if manifest is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Manifest '{manifest_id}' not found",
+        raise_typed(
+            PlatformError.intake(
+                "not_found",
+                f"Manifest '{manifest_id}' not found"
+            ),
         )
     return manifest
 
 
 def _require_uploading(manifest: IntakeUploadManifest) -> None:
     if manifest.status == "assembled":
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Manifest already assembled — complete is idempotent; use GET",
+        raise_typed(
+            PlatformError.intake(
+                "conflict",
+                "Manifest already assembled — complete is idempotent; use GET"
+            ),
         )
     if manifest.status == "failed":
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"Manifest failed: {manifest.error_note or 'unknown error'}",
+        raise_typed(
+            PlatformError.intake(
+                "conflict",
+                f"Manifest failed: {manifest.error_note or 'unknown error'}"
+            ),
         )
 
 
@@ -151,9 +157,11 @@ def presign_part(
     manifest = _require_manifest(manifest_id)
     _require_uploading(manifest)
     if part_no > manifest.expected_parts:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"part {part_no} exceeds expected_parts={manifest.expected_parts}",
+        raise_typed(
+            PlatformError.intake(
+                "bad_request",
+                f"part {part_no} exceeds expected_parts={manifest.expected_parts}"
+            ),
         )
     config = get_s3_config()
     part_key = _part_key(manifest.target_key, manifest.manifest_id, part_no)
@@ -184,9 +192,11 @@ def record_part(
     manifest = _require_manifest(manifest_id)
     _require_uploading(manifest)
     if part_no > manifest.expected_parts:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"part {part_no} exceeds expected_parts={manifest.expected_parts}",
+        raise_typed(
+            PlatformError.intake(
+                "bad_request",
+                f"part {part_no} exceeds expected_parts={manifest.expected_parts}"
+            ),
         )
     if part_no not in manifest.received_parts:
         manifest.received_parts.append(part_no)
@@ -265,13 +275,11 @@ def _raise_if_missing(manifest: IntakeUploadManifest, present: dict[int, Any]) -
     """409 with the missing part list when the set is incomplete."""
     missing = [n for n in range(1, manifest.expected_parts + 1) if n not in present]
     if missing:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail={
-                "error": "incomplete upload",
-                "missing_parts": missing,
-                "manifest_id": manifest.manifest_id,
-            },
+        raise_typed(
+            PlatformError.intake(
+                "conflict",
+                { "error": "incomplete upload", "missing_parts": missing, "manifest_id": manifest.manifest_id, }
+            ),
         )
 
 

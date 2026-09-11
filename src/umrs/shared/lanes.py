@@ -47,7 +47,8 @@ FAMILY_LANES: dict[str, SurfaceLane] = {
     "models": SurfaceLane.STABLE,
     "llm": SurfaceLane.STABLE,
     "knowledge": SurfaceLane.BETA,
-    "knowledge-graph": SurfaceLane.BETA,
+    # ADR-026 wave C: the sat facade's knowledge-graph surface is DELETED;
+    # the canonical multigraph routes under knowledge/graph + knowledge/graphs.
     "k2": SurfaceLane.BETA,
     "loops": SurfaceLane.BETA,
     "research": SurfaceLane.BETA,
