@@ -26,6 +26,16 @@ endpoints:
     nodelist: dgx-spark-1
     max_model_len: 262144
     env_vars:
+      # §6b-3 candidate fix (UNVERIFIED — flip on when reprovisioning into the
+      # v3 image path): dgx-spark Blackwell SM121 vLLM builds can trip
+      # "PTX JIT compiler library not found" right after weight load. The
+      # candidate pins force explicit 12.1a kernel coverage + skip the
+      # flashinfer version gate. LEAVE COMMENTED until live-verified on this
+      # venue; then uncomment + reprovision the roster (see
+      # src/umrs/mini-rivault-llm/README.md venue prerequisites).
+      #TORCH_CUDA_ARCH_LIST: "12.1a"
+      #FLASHINFER_CUDA_ARCH_LIST: "12.1a"
+      #FLASHINFER_DISABLE_VERSION_CHECK: "1"
       # atom-1 monitor-drift overrides (see pool-bdrt-step.yaml node-health note)
       XDG_RUNTIME_DIR: "/tmp/xdg-umrs-q36"
       RIVAULT_ENGINE_ZERO_STREAK_TOLERANCE: "1000000"

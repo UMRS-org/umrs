@@ -16,6 +16,10 @@ endpoints:
     partition: edge-double
     max_model_len: 262144
     env_vars:
+      # SM121 candidate pins (UNVERIFIED, see pool-bdrt-qwen36.yaml header note):
+      #TORCH_CUDA_ARCH_LIST: "12.1a"
+      #FLASHINFER_CUDA_ARCH_LIST: "12.1a"
+      #FLASHINFER_DISABLE_VERSION_CHECK: "1"
       VLLM_HOST_MODEL_PATH: "/home/mnagaso/umrs_models/hub/models--0xSero--Step-3.7-Flash-148B/snapshots"
       VLLM_PATH_TO_HUGGINGFACE: "/home/mnagaso/umrs_models"
       VLLM_MODEL: "0xSero/Step-3.7-Flash-148B"
