@@ -25,6 +25,8 @@ import secrets
 from typing import Any, Iterator, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+
+from .typed_errors import PlatformError, raise_typed
 from pydantic import BaseModel, Field
 from starlette.responses import StreamingResponse
 
@@ -66,10 +68,7 @@ def get_trust_store():
 
 def _require_trust_store():
     if _trust_store is None:
-        raise HTTPException(
-            status_code=503,
-            detail="Companion trust store unavailable (no DB pool configured)",
-        )
+        raise_typed(PlatformError.companion("unavailable", "Companion trust store unavailable (no DB pool configured)"))
     return _trust_store
 
 
@@ -100,7 +99,7 @@ def _managers(
 ) -> tuple[CompanionWorkerManager, CompanionTurnAttemptRegistry]:
     pool = getattr(request.app.state, "umrs_db_pool", None)
     if pool is None:
-        raise HTTPException(status_code=503, detail="database pool unavailable")
+        raise_typed(PlatformError.companion("unavailable", "database pool unavailable"))
     return CompanionWorkerManager(pool), CompanionTurnAttemptRegistry(pool)
 
 
@@ -149,7 +148,7 @@ async def _submit_companion_job(request: Request, owner: str, project: str) -> s
 
     runtime = get_runtime()
     if runtime is None:
-        raise HTTPException(status_code=503, detail="durable job runtime unavailable")
+        raise_typed(PlatformError.companion("unavailable", "durable job runtime unavailable"))
     from umrs.jobs.models import JobType
 
     return await runtime.submit_job_sync(
@@ -234,7 +233,7 @@ def _validated_scope(raw: str) -> str:
     try:
         return str(parse_scope(raw, allow_legacy=False))
     except ScopeError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise_typed(PlatformError.companion("unprocessable", str(exc)), cause=exc)
 
 
 def _authorize_scope_write(scope: str, x_user_id: str, caller_project: str) -> None:
@@ -252,23 +251,19 @@ def _authorize_scope_write(scope: str, x_user_id: str, caller_project: str) -> N
     if claim.kind == "project":
         if caller_project and claim.id == caller_project:
             return
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                f"cannot grant trust scoped to project {claim.id!r} — not the "
-                "caller's verified project"
-            ),
+        raise_typed(
+            PlatformError.companion(
+                "forbidden",
+                (
+                    f"cannot grant trust scoped to project {claim.id!r} — not the "
+                    "caller's verified project"
+                ),
+            )
         )
     if claim.kind == "group":
-        raise HTTPException(
-            status_code=422,
-            detail="group-scoped trust is not writable yet (no group membership authority)",
-        )
+        raise_typed(PlatformError.companion("unprocessable", "group-scoped trust is not writable yet (no group membership authority)"))
     if claim.kind == "user" and claim.id != x_user_id:
-        raise HTTPException(
-            status_code=403,
-            detail=f"cannot grant trust scoped to user {claim.id!r} — not the caller",
-        )
+        raise_typed(PlatformError.companion("forbidden", f"cannot grant trust scoped to user {claim.id!r} — not the caller"))
 
 
 class TurnAcceptedResponse(BaseModel):
@@ -311,14 +306,14 @@ def _enforce_ownership(row: dict, x_user_id: str) -> None:
     """A registry row is reachable only by its owner user."""
     owner = str(row.get("owner_user_id") or "")
     if x_user_id and owner and owner != x_user_id:
-        raise HTTPException(status_code=401, detail="worker ownership mismatch")
+        raise_typed(PlatformError.companion("unauthorized", "worker ownership mismatch"))
 
 
 def _validated_mode(raw: Optional[str]) -> str:
     """Permission mode is captured per attempt ('ask' | 'auto')."""
     mode = (raw or "ask").strip().lower()
     if mode not in ("ask", "auto"):
-        raise HTTPException(status_code=422, detail=f"invalid mode: {mode!r}")
+        raise_typed(PlatformError.companion("unprocessable", f"invalid mode: {mode!r}"))
     return mode
 
 
@@ -432,7 +427,7 @@ async def get_worker(
     managers, _ = _managers(request)
     row = managers.get(registry_key)
     if row is None:
-        raise HTTPException(status_code=404, detail="worker not found")
+        raise_typed(PlatformError.companion("not_found", "worker not found"))
     _enforce_ownership(row, x_user_id)
     return _worker_row_to_response(row)
 
@@ -446,7 +441,7 @@ async def begin_turn_attempt(
     managers, turns = _managers(request)
     row = managers.get(body.registry_key)
     if row is None:
-        raise HTTPException(status_code=404, detail="worker not found")
+        raise_typed(PlatformError.companion("not_found", "worker not found"))
     _enforce_ownership(row, x_user_id)
     token = (body.request_token or "").strip() or f"rt-{secrets.token_hex(8)}"
     mode = _validated_mode(body.mode)
@@ -530,7 +525,7 @@ def _enforce_approval_ownership(record: dict, x_user_id: str) -> None:
     """An approval intent is decidable only by the loop owner (ownerless: anyone)."""
     owner = str(record.get("user_id") or "")
     if owner and owner != x_user_id:
-        raise HTTPException(status_code=401, detail="approval ownership mismatch")
+        raise_typed(PlatformError.companion("unauthorized", "approval ownership mismatch"))
 
 
 def _flip_loop_to_auto(loop_id: str) -> None:
@@ -587,14 +582,14 @@ async def record_approval_decision(
 
     existing = tool_approvals.get(approval_id)
     if existing is None:
-        raise HTTPException(status_code=404, detail=f"approval not found: {approval_id}")
+        raise_typed(PlatformError.companion("not_found", f"approval not found: {approval_id}"))
     _enforce_approval_ownership(existing, x_user_id)
     try:
         record = tool_approvals.decide(approval_id, body.decision, decided_by=x_user_id)
     except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise_typed(PlatformError.companion("not_found", str(exc)), cause=exc)
     except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise_typed(PlatformError.companion("conflict", str(exc)), cause=exc)
 
     if body.decision == "always":
         _apply_always_decision(record, x_user_id)
@@ -644,7 +639,7 @@ async def grant_trust_row(
     except SessionArchivedError as exc:
         # Gone: once the tombstone exists, late grant attempts must fail
         # closed (410) — the archived session's scopes are terminal.
-        raise HTTPException(status_code=410, detail=str(exc)) from exc
+        raise_typed(PlatformError.companion("gone", str(exc)), cause=exc)
     return row.to_dict()
 
 
