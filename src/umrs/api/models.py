@@ -24,7 +24,7 @@ import logging
 import os
 from typing import Any
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, Query, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from ..jobs.models import JobType, RestartPolicy
@@ -48,6 +48,7 @@ from ..model_registry.store import (
 )
 from ..shared.config import get_resolved_model_staging_root
 from .jobs import get_job_store
+from .typed_errors import PlatformError, raise_typed
 
 logger = logging.getLogger(__name__)
 
@@ -71,9 +72,11 @@ def set_model_store(store: ModelStore) -> None:
 def get_model_store() -> ModelStore:
     """Get the global model store instance."""
     if _model_store is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Model store not initialized",
+        raise_typed(
+            PlatformError.models(
+                "unavailable",
+                "Model store not initialized"
+            ),
         )
     return _model_store
 
@@ -498,9 +501,11 @@ def _context_from_verified_headers(
         project_id=primary_project,
         is_admin=admin,
     ):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Gateway-verified identity signature rejected",
+        raise_typed(
+            PlatformError.auth(
+                "gateway_signature_rejected",
+                "Gateway-verified identity signature rejected"
+            ),
         )
     memberships: set[str] = set()
     if header_memberships:
@@ -594,9 +599,11 @@ def get_access_context(
         )
 
     if _strict_auth_mode():
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing Gateway-verified caller identity for model access",
+        raise_typed(
+            PlatformError.auth(
+                "gateway_identity_required",
+                "Missing Gateway-verified caller identity for model access"
+            ),
         )
 
     return _legacy_query_context(user_id, is_admin, project_memberships)
@@ -815,15 +822,21 @@ async def get_model(
         model = store.get_model(model_id, ctx)
         return ModelResponse.from_entry(model)
     except ModelNotFoundError:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Model not found: {model_id}",
-        ) from None
+        raise_typed(
+            PlatformError.models(
+                "not_found",
+                f"Model not found: {model_id}"
+            ),
+            cause=None,
+        )
     except PermissionDeniedError as e:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=str(e),
-        ) from e
+        raise_typed(
+            PlatformError.models(
+                "forbidden",
+                str(e)
+            ),
+            cause=e,
+        )
 
 
 def _check_model_creation_quota(project_id: str | None) -> None:
@@ -895,33 +908,47 @@ async def create_model(
         return ModelResponse.from_entry(model)
 
     except PermissionDeniedError as e:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=str(e),
-        ) from e
+        raise_typed(
+            PlatformError.models(
+                "forbidden",
+                str(e)
+            ),
+            cause=e,
+        )
     except PathNotAllowedError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e),
-        ) from e
+        raise_typed(
+            PlatformError.models(
+                "bad_request",
+                str(e)
+            ),
+            cause=e,
+        )
     except DuplicateModelError as e:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=str(e),
-        ) from e
+        raise_typed(
+            PlatformError.models(
+                "conflict",
+                str(e)
+            ),
+            cause=e,
+        )
     except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e),
-        ) from e
+        raise_typed(
+            PlatformError.models(
+                "bad_request",
+                str(e)
+            ),
+            cause=e,
+        )
 
 
 def _validate_stage_scope(scope: ModelScope, request, ctx: AccessContext) -> None:
     """Validate stage request scope permissions (raises HTTPException)."""
     if scope == ModelScope.SYSTEM and not ctx.is_admin:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Admin role required to stage system models",
+        raise_typed(
+            PlatformError.auth(
+                "admin_required",
+                "Admin role required to stage system models"
+            ),
         )
 
     if (
@@ -929,9 +956,11 @@ def _validate_stage_scope(scope: ModelScope, request, ctx: AccessContext) -> Non
         and request.project_id not in ctx.project_memberships
     ):
         if not ctx.is_admin:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Not a member of project {request.project_id}",
+            raise_typed(
+                PlatformError.models(
+                    "forbidden",
+                    f"Not a member of project {request.project_id}"
+                ),
             )
 
 
@@ -1021,15 +1050,21 @@ async def stage_model(
         )
 
     except DuplicateModelError as e:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=str(e),
-        ) from e
+        raise_typed(
+            PlatformError.models(
+                "conflict",
+                str(e)
+            ),
+            cause=e,
+        )
     except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e),
-        ) from e
+        raise_typed(
+            PlatformError.models(
+                "bad_request",
+                str(e)
+            ),
+            cause=e,
+        )
 
 
 @router.patch("/{model_id}", response_model=ModelResponse)
@@ -1061,15 +1096,21 @@ async def update_model(
         return ModelResponse.from_entry(model)
 
     except ModelNotFoundError:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Model not found: {model_id}",
-        ) from None
+        raise_typed(
+            PlatformError.models(
+                "not_found",
+                f"Model not found: {model_id}"
+            ),
+            cause=None,
+        )
     except PermissionDeniedError as e:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=str(e),
-        ) from e
+        raise_typed(
+            PlatformError.models(
+                "forbidden",
+                str(e)
+            ),
+            cause=e,
+        )
 
 
 @router.delete("/{model_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -1114,15 +1155,21 @@ async def delete_model(
                     model_id,
                 )
     except ModelNotFoundError:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Model not found: {model_id}",
-        ) from None
+        raise_typed(
+            PlatformError.models(
+                "not_found",
+                f"Model not found: {model_id}"
+            ),
+            cause=None,
+        )
     except PermissionDeniedError as e:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=str(e),
-        ) from e
+        raise_typed(
+            PlatformError.models(
+                "forbidden",
+                str(e)
+            ),
+            cause=e,
+        )
 
 
 # =============================================================================
@@ -1162,10 +1209,13 @@ async def detect_model_capabilities(
     try:
         model = store.get_model(model_id)
     except ModelNotFoundError:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Model not found: {model_id}",
-        ) from None
+        raise_typed(
+            PlatformError.models(
+                "not_found",
+                f"Model not found: {model_id}"
+            ),
+            cause=None,
+        )
 
     if not model.storage_ref:
         return ModelDetectResponse(
@@ -1203,10 +1253,13 @@ async def detect_model_capabilities(
     try:
         store.update_capabilities(model.model_id, merged)
     except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to update capabilities: {e}",
-        ) from e
+        raise_typed(
+            PlatformError.models(
+                "failure",
+                f"Failed to update capabilities: {e}"
+            ),
+            cause=e,
+        )
 
     return ModelDetectResponse(
         model_id=model.model_id,
@@ -1346,15 +1399,19 @@ class ModelPublishRequest(BaseModel):
 def _check_publish_allowed(source_model, request: "ModelPublishRequest", ctx) -> None:
     """Validate publish request (raises HTTPException on denial)."""
     if source_model.scope != ModelScope.USER:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Only user-scoped models can be published to project scope",
+        raise_typed(
+            PlatformError.models(
+                "bad_request",
+                "Only user-scoped models can be published to project scope"
+            ),
         )
 
     if not ctx.is_admin and source_model.owner_id != ctx.user_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only the model owner can publish it",
+        raise_typed(
+            PlatformError.models(
+                "forbidden",
+                "Only the model owner can publish it"
+            ),
         )
 
     if (
@@ -1362,9 +1419,11 @@ def _check_publish_allowed(source_model, request: "ModelPublishRequest", ctx) ->
         and request.target_project_id not in ctx.project_memberships
         and request.target_project_id not in ctx.admin_project_ids
     ):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"User is not a member of project '{request.target_project_id}'",
+        raise_typed(
+            PlatformError.models(
+                "forbidden",
+                f"User is not a member of project '{request.target_project_id}'"
+            ),
         )
 
 
@@ -1413,20 +1472,29 @@ async def publish_model(
         return ModelResponse.from_entry(published_model)
 
     except ModelNotFoundError:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Model not found: {model_id}",
-        ) from None
+        raise_typed(
+            PlatformError.models(
+                "not_found",
+                f"Model not found: {model_id}"
+            ),
+            cause=None,
+        )
     except DuplicateModelError as e:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=str(e),
-        ) from e
+        raise_typed(
+            PlatformError.models(
+                "conflict",
+                str(e)
+            ),
+            cause=e,
+        )
     except PermissionDeniedError as e:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=str(e),
-        ) from e
+        raise_typed(
+            PlatformError.models(
+                "forbidden",
+                str(e)
+            ),
+            cause=e,
+        )
 
 
 @router.get("/{model_id}/path", response_model=dict[str, str])
@@ -1445,15 +1513,21 @@ async def resolve_model_path(
         path = store.resolve_model_path(model_id, ctx)
         return {"model_id": model_id, "storage_ref": path}
     except ModelNotFoundError:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Model not found: {model_id}",
-        ) from None
+        raise_typed(
+            PlatformError.models(
+                "not_found",
+                f"Model not found: {model_id}"
+            ),
+            cause=None,
+        )
     except PermissionDeniedError as e:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=str(e),
-        ) from e
+        raise_typed(
+            PlatformError.models(
+                "forbidden",
+                str(e)
+            ),
+            cause=e,
+        )
 
 
 # =============================================================================
@@ -1576,9 +1650,11 @@ async def create_system_model(
     for faster first-request latency.
     """
     if not ctx.is_admin:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Admin role required to create system models",
+        raise_typed(
+            PlatformError.auth(
+                "admin_required",
+                "Admin role required to create system models"
+            ),
         )
 
     try:
@@ -1620,25 +1696,37 @@ async def create_system_model(
         )
 
     except PermissionDeniedError as e:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=str(e),
-        ) from e
+        raise_typed(
+            PlatformError.models(
+                "forbidden",
+                str(e)
+            ),
+            cause=e,
+        )
     except PathNotAllowedError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e),
-        ) from e
+        raise_typed(
+            PlatformError.models(
+                "bad_request",
+                str(e)
+            ),
+            cause=e,
+        )
     except DuplicateModelError as e:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=str(e),
-        ) from e
+        raise_typed(
+            PlatformError.models(
+                "conflict",
+                str(e)
+            ),
+            cause=e,
+        )
     except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e),
-        ) from e
+        raise_typed(
+            PlatformError.models(
+                "bad_request",
+                str(e)
+            ),
+            cause=e,
+        )
 
 
 def _check_download_target_scope(store, model_name: str, request, ctx) -> None:
@@ -1646,28 +1734,36 @@ def _check_download_target_scope(store, model_name: str, request, ctx) -> None:
     if request.project_id:
         allowed, reason = store.check_policy_access(model_name, request.project_id)
         if not allowed:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=reason,
+            raise_typed(
+                PlatformError.models(
+                    "forbidden",
+                    reason
+                ),
             )
 
     target_scope = ModelScope(request.target_scope)
     if target_scope == ModelScope.SYSTEM:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Cannot download to system scope. Use project or user scope.",
+        raise_typed(
+            PlatformError.models(
+                "forbidden",
+                "Cannot download to system scope. Use project or user scope."
+            ),
         )
 
     if target_scope == ModelScope.PROJECT:
         if not request.project_id:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="project_id required for project scope",
+            raise_typed(
+                PlatformError.models(
+                    "bad_request",
+                    "project_id required for project scope"
+                ),
             )
         if request.project_id not in ctx.project_memberships and not ctx.is_admin:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Not a member of project {request.project_id}",
+            raise_typed(
+                PlatformError.models(
+                    "forbidden",
+                    f"Not a member of project {request.project_id}"
+                ),
             )
 
 
@@ -1774,15 +1870,21 @@ async def download_model_to_user_space(
         )
 
     except ModelNotFoundError:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"System model not found: {model_name}",
-        ) from None
+        raise_typed(
+            PlatformError.models(
+                "not_found",
+                f"System model not found: {model_name}"
+            ),
+            cause=None,
+        )
     except PermissionDeniedError as e:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=str(e),
-        ) from e
+        raise_typed(
+            PlatformError.models(
+                "forbidden",
+                str(e)
+            ),
+            cause=e,
+        )
 
 
 # =============================================================================
@@ -1824,9 +1926,11 @@ async def get_model_policy(
     policy = store.get_policy_by_model_name(model_name)
 
     if policy is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"No policy found for model: {model_name}",
+        raise_typed(
+            PlatformError.models(
+                "not_found",
+                f"No policy found for model: {model_name}"
+            ),
         )
 
     return PolicyResponse.from_policy(policy)
@@ -1845,9 +1949,11 @@ async def update_model_policy(
     Admin-only endpoint. Updates access control and quotas for the specified model.
     """
     if not ctx.is_admin:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Admin role required to update model policies",
+        raise_typed(
+            PlatformError.auth(
+                "admin_required",
+                "Admin role required to update model policies"
+            ),
         )
 
     try:
@@ -1867,15 +1973,21 @@ async def update_model_policy(
         return PolicyResponse.from_policy(policy)
 
     except ModelNotFoundError:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"No policy found for model: {model_name}",
-        ) from None
+        raise_typed(
+            PlatformError.models(
+                "not_found",
+                f"No policy found for model: {model_name}"
+            ),
+            cause=None,
+        )
     except PermissionDeniedError as e:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=str(e),
-        ) from e
+        raise_typed(
+            PlatformError.models(
+                "forbidden",
+                str(e)
+            ),
+            cause=e,
+        )
 
 
 # =============================================================================
@@ -1955,10 +2067,13 @@ async def create_policy(
         return PolicyResponse.from_policy(policy)
 
     except PermissionDeniedError as e:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=str(e),
-        ) from e
+        raise_typed(
+            PlatformError.models(
+                "forbidden",
+                str(e)
+            ),
+            cause=e,
+        )
 
 
 @policy_router.get("/{policy_id}", response_model=PolicyResponse)
@@ -1971,10 +2086,13 @@ async def get_policy(
         policy = store.get_policy(policy_id)
         return PolicyResponse.from_policy(policy)
     except ModelNotFoundError:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Policy not found: {policy_id}",
-        ) from None
+        raise_typed(
+            PlatformError.models(
+                "not_found",
+                f"Policy not found: {policy_id}"
+            ),
+            cause=None,
+        )
 
 
 @policy_router.get("/check/{model_name}", response_model=PolicyCheckResponse)
@@ -2019,15 +2137,21 @@ async def update_policy(
         return PolicyResponse.from_policy(policy)
 
     except ModelNotFoundError:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Policy not found: {policy_id}",
-        ) from None
+        raise_typed(
+            PlatformError.models(
+                "not_found",
+                f"Policy not found: {policy_id}"
+            ),
+            cause=None,
+        )
     except PermissionDeniedError as e:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=str(e),
-        ) from e
+        raise_typed(
+            PlatformError.models(
+                "forbidden",
+                str(e)
+            ),
+            cause=e,
+        )
 
 
 @policy_router.delete("/{policy_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -2045,15 +2169,21 @@ async def delete_policy(
         store.delete_policy(policy_id, ctx)
         logger.info("Admin %s deleted policy %s", ctx.user_id, policy_id)
     except ModelNotFoundError:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Policy not found: {policy_id}",
-        ) from None
+        raise_typed(
+            PlatformError.models(
+                "not_found",
+                f"Policy not found: {policy_id}"
+            ),
+            cause=None,
+        )
     except PermissionDeniedError as e:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=str(e),
-        ) from e
+        raise_typed(
+            PlatformError.models(
+                "forbidden",
+                str(e)
+            ),
+            cause=e,
+        )
 
 
 # =============================================================================
@@ -2135,9 +2265,11 @@ async def create_model_version(
             created_at=ver.created_at.isoformat() if ver.created_at else None,
         )
     except ModelNotFoundError:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Model not found: {model_id}",
+        raise_typed(
+            PlatformError.models(
+                "not_found",
+                f"Model not found: {model_id}"
+            ),
         )
 
 
@@ -2163,9 +2295,11 @@ async def list_model_versions(
             latest_version=latest,
         )
     except ModelNotFoundError:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Model not found: {model_id}",
+        raise_typed(
+            PlatformError.models(
+                "not_found",
+                f"Model not found: {model_id}"
+            ),
         )
 
 
@@ -2197,9 +2331,11 @@ async def activate_model_version(
             created_at=ver.created_at.isoformat() if ver.created_at else None,
         )
     except ModelNotFoundError:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Version {version_str} not found for model {model_id}",
+        raise_typed(
+            PlatformError.models(
+                "version_not_found",
+                f"Version {version_str} not found for model {model_id}"
+            ),
         )
 
 
@@ -2235,10 +2371,13 @@ async def update_model_version_activation(
             created_at=ver.created_at.isoformat() if ver.created_at else None,
         )
     except ModelNotFoundError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Version {version_str} not found for model {model_id}",
-        ) from exc
+        raise_typed(
+            PlatformError.models(
+                "version_not_found",
+                f"Version {version_str} not found for model {model_id}"
+            ),
+            cause=exc,
+        )
 
 
 @router.post(
@@ -2269,7 +2408,9 @@ async def deactivate_model_version(
             created_at=ver.created_at.isoformat() if ver.created_at else None,
         )
     except ModelNotFoundError:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Version {version_str} not found for model {model_id}",
+        raise_typed(
+            PlatformError.models(
+                "version_not_found",
+                f"Version {version_str} not found for model {model_id}"
+            ),
         )

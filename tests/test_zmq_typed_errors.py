@@ -314,3 +314,44 @@ def test_contract_workflows_family_codes():
     }
     for code, status in expected.items():
         assert codes[code] == status, code
+
+
+def test_contract_models_family_codes():
+    from r4_contracts.errors import known_error_codes
+
+    codes = known_error_codes()
+    expected = {
+        "models.not_found": 404,
+        "models.version_not_found": 404,
+        "models.forbidden": 403,
+        "models.conflict": 409,
+        "models.bad_request": 400,
+        "models.unavailable": 503,
+        "models.failure": 500,
+    }
+    for code, status in expected.items():
+        assert codes[code] == status, code
+
+
+def test_models_404_carries_typed_header_byte_identical():
+    import asyncio
+    from unittest.mock import MagicMock
+
+    import pytest
+
+    import umrs.api.models as models_api
+    from umrs.model_registry.store.crud import ModelNotFoundError
+
+    store = MagicMock()
+    store.get_model.side_effect = ModelNotFoundError("nope")
+    ctx = MagicMock(user_id="u", memberships={"proj-1"})
+
+    with pytest.raises(Exception) as excinfo:
+        result = models_api.get_model("nope", ctx=ctx, store=store)
+        if asyncio.iscoroutine(result):
+            asyncio.run(result)
+    exc = excinfo.value
+    assert exc.status_code == 404
+    headers = getattr(exc, "headers", {}) or {}
+    assert headers.get("x-platform-error-code") == "models.not_found"
+    assert exc.detail == "Model not found: nope"
