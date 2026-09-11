@@ -504,3 +504,16 @@ def test_contract_sourcegrants_family_codes():
     }
     for code, status in expected.items():
         assert codes[code] == status, code
+
+
+def test_contract_scimem_family_codes():
+    from r4_contracts.errors import known_error_codes
+
+    codes = known_error_codes()
+    expected = {
+        "scimem.unavailable": 503,
+        "scimem.not_found": 404,
+        "scimem.bad_request": 400,
+    }
+    for code, status in expected.items():
+        assert codes[code] == status, code
