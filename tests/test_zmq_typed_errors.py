@@ -355,3 +355,21 @@ def test_models_404_carries_typed_header_byte_identical():
     headers = getattr(exc, "headers", {}) or {}
     assert headers.get("x-platform-error-code") == "models.not_found"
     assert exc.detail == "Model not found: nope"
+
+
+def test_contract_endpoints_family_codes():
+    from r4_contracts.errors import known_error_codes
+
+    codes = known_error_codes()
+    expected = {
+        "endpoints.not_found": 404,
+        "endpoints.forbidden": 403,
+        "endpoints.conflict": 409,
+        "endpoints.bad_request": 400,
+        "endpoints.unavailable": 503,
+        "endpoints.failure": 500,
+        "endpoints.not_implemented": 501,
+        "endpoints.bad_gateway": 502,
+    }
+    for code, status in expected.items():
+        assert codes[code] == status, code

@@ -270,7 +270,8 @@ def test_cross_project_listing_denied_for_non_admin():
 
     src = inspect.getsource(ep.list_endpoints)
     assert "project_id is None and not is_admin" in src
-    assert "403" in src or "HTTP_403_FORBIDDEN" in src
+    # typed family landing: members decode through the contract table
+    assert '"forbidden"' in src or "403" in src or "HTTP_403_FORBIDDEN" in src
     # And the check must precede any registry access.
     assert src.find("project_id is None and not is_admin") < src.find(
         "registry.list_all"
@@ -356,7 +357,8 @@ def test_endpoint_metrics_proxy_strict_requires_identity(monkeypatch):
 
     src = inspect.getsource(endpoints.proxy_endpoint_metrics)
     assert "project_id is None and _strict_auth_mode() and not is_admin" in src
-    assert "401" in src or "HTTP_401_UNAUTHORIZED" in src
+    # typed family landing: members decode through the contract table
+    assert "gateway_identity_required" in src or "401" in src or "HTTP_401_UNAUTHORIZED" in src
     assert src.find("project_id is None and _strict_auth_mode()") < src.find(
         "registry.get_by_job_id"
     )
