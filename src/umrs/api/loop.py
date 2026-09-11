@@ -17,6 +17,8 @@ from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
+
+from .typed_errors import PlatformError, raise_typed
 from pydantic import BaseModel, Field
 
 from umrs.knowledge import loop_hosting
@@ -224,7 +226,7 @@ def _default_workflow_port():
 def get_loop(loop_id: str) -> ResearchLoop:
     loop = _loop_store.get(loop_id)
     if loop is None:
-        raise HTTPException(status_code=404, detail=f"Loop {loop_id} not found")
+        raise_typed(PlatformError.loops("not_found", f"Loop {loop_id} not found"))
     return loop
 
 
@@ -350,25 +352,30 @@ def _enforce_readiness_approval(request: StartLoopRequest) -> None:
         readiness = project.check_readiness()
         gate_applies = not readiness.user_approved
     except Exception as exc:
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                f"Readiness gate unavailable for project {request.project_id}: "
-                f"{exc}. Retry later; loops without a verifiable gate are denied "
-                "while approved=False is not explicitly set."
+        raise_typed(
+            PlatformError.loops(
+                "unavailable",
+                (
+                    f"Readiness gate unavailable for project {request.project_id}: "
+                    f"{exc}. Retry later; loops without a verifiable gate are denied "
+                    "while approved=False is not explicitly set."
+                ),
             ),
-        ) from exc
+            cause=exc,
+        )
 
     if gate_applies and project is not None:
         has_artifacts = bool(project.knowledge_store.list_artifacts())
         if not has_artifacts:
             return  # Trust the client for fresh projects
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                f"Research readiness not approved for project "
-                f"{request.project_id}. "
-                f"Approve with: r4 project approve {request.project_id}"
+        raise_typed(
+            PlatformError.loops(
+                "forbidden",
+                (
+                    f"Research readiness not approved for project "
+                    f"{request.project_id}. "
+                    f"Approve with: r4 project approve {request.project_id}"
+                ),
             ),
         )
 
@@ -436,24 +443,29 @@ def _catalog_candidates(requested: str, owner: str) -> list[str] | None:
                 "workflow catalog unavailable; trusting requested name: %s", exc
             )
             return None
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                f"Workflow catalog unavailable ({exc}); pass workflow_name explicitly "
-                "or retry once the registry is reachable."
+        raise_typed(
+            PlatformError.loops(
+                "unavailable",
+                (
+                    f"Workflow catalog unavailable ({exc}); pass workflow_name explicitly "
+                    "or retry once the registry is reachable."
+                ),
             ),
-        ) from exc
+            cause=exc,
+        )
 
 
 def _pick_workflow(requested: str, candidates: list[str] | None) -> tuple[str, str]:
     """(name, source) or a 400 that names the candidates and the next step."""
     if requested:
         if candidates is not None and requested not in candidates:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"workflow_name '{requested}' is not a registered UMRS workflow "
-                    f"(registered: {candidates or 'none'}). {_WORKFLOW_DISCOVERY_HINT}"
+            raise_typed(
+                PlatformError.loops(
+                    "bad_request",
+                    (
+                        f"workflow_name '{requested}' is not a registered UMRS workflow "
+                        f"(registered: {candidates or 'none'}). {_WORKFLOW_DISCOVERY_HINT}"
+                    ),
                 ),
             )
         return requested, (
@@ -463,18 +475,22 @@ def _pick_workflow(requested: str, candidates: list[str] | None) -> tuple[str, s
     if len(names) == 1:
         return names[0], "single-registered-default"
     if not names:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Real-mode loops run each experiment as a registered UMRS workflow "
-                f"and none is registered for this caller. {_WORKFLOW_DISCOVERY_HINT}"
+        raise_typed(
+            PlatformError.loops(
+                "bad_request",
+                (
+                    "Real-mode loops run each experiment as a registered UMRS workflow "
+                    f"and none is registered for this caller. {_WORKFLOW_DISCOVERY_HINT}"
+                ),
             ),
         )
-    raise HTTPException(
-        status_code=400,
-        detail=(
-            f"Several workflows are registered ({names}); pass workflow_name to "
-            f"choose one. {_WORKFLOW_DISCOVERY_HINT}"
+    raise_typed(
+        PlatformError.loops(
+            "bad_request",
+            (
+                f"Several workflows are registered ({names}); pass workflow_name to "
+                f"choose one. {_WORKFLOW_DISCOVERY_HINT}"
+            ),
         ),
     )
 
@@ -542,9 +558,11 @@ def _loop_owner(
         from umrs.api._scope_identity import _strict_mode
 
         if _strict_mode():
-            raise HTTPException(
-                status_code=401,
-                detail="loop start requires gateway-verified identity in strict mode",
+            raise_typed(
+                PlatformError.auth(
+                    "gateway_identity_required",
+                    "loop start requires gateway-verified identity in strict mode",
+                ),
             )
         return ""
     from umrs.api.workflows import _require_verified_workflow_identity
@@ -629,14 +647,15 @@ def _attach_loop_to_session(loop: ResearchLoop, session_id: str) -> None:
 
         store = get_session_store()
         if store is None:
-            raise HTTPException(
-                status_code=503,
-                detail="Session store unavailable; cannot register loop under session",
+            raise_typed(
+                PlatformError.loops(
+                    "unavailable",
+                    "Session store unavailable; cannot register loop under session",
+                ),
             )
         if store.get(session_id) is None:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Session {session_id} not found",
+            raise_typed(
+                PlatformError.session("not_found", f"Session {session_id} not found"),
             )
         store.attach_loop(
             SessionLoopLink(
@@ -882,7 +901,9 @@ class AppendIterationRequest(BaseModel):
     completion_state: str | None = None  # "ready" when the driver is concluding
 
 
-async def _apply_iteration_record(loop: ResearchLoop, body: AppendIterationRequest) -> dict[str, Any]:
+async def _apply_iteration_record(
+    loop: ResearchLoop, body: AppendIterationRequest
+) -> dict[str, Any]:
     """Map the driver-provided body onto the store-backed loop and save it."""
     from r4_contracts.research import Finding
     from umrs.knowledge.loop import LoopIteration, LoopPhase
@@ -890,7 +911,10 @@ async def _apply_iteration_record(loop: ResearchLoop, body: AppendIterationReque
     try:
         phase = LoopPhase(body.phase)
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=f"invalid phase {body.phase!r}") from exc
+        raise_typed(
+            PlatformError.loops("unprocessable", f"invalid phase {body.phase!r}"),
+            cause=exc,
+        )
 
     iteration_id = body.iteration_id or f"it-{body.iteration_number:03d}"
     iteration = LoopIteration(
@@ -940,7 +964,9 @@ async def _apply_iteration_record(loop: ResearchLoop, body: AppendIterationReque
     summary="Append one iteration outcome (cluster-venue driver write)",
     response_model=dict[str, Any],
 )
-async def append_iteration(loop_id: str, body: AppendIterationRequest) -> dict[str, Any]:
+async def append_iteration(
+    loop_id: str, body: AppendIterationRequest
+) -> dict[str, Any]:
     """Cluster-venue loop drivers write their iteration outcome here.
 
     Owner-scoped via the verified-identity envelope (same envelope as allied
@@ -948,7 +974,7 @@ async def append_iteration(loop_id: str, body: AppendIterationRequest) -> dict[s
     """
     loop = get_loop(loop_id)
     if loop.status == LoopStatus.STOPPED:
-        raise HTTPException(status_code=409, detail="loop already finished")
+        raise_typed(PlatformError.loops("conflict", "loop already finished"))
     return await _apply_iteration_record(loop, body)
 
 
@@ -968,7 +994,7 @@ async def get_loop_snapshot(loop_id: str) -> dict[str, Any]:
         _configure_hosting()
     snap = loop_hosting.snapshot(loop_id)
     if snap is None:
-        raise HTTPException(status_code=404, detail=f"Loop {loop_id} not found")
+        raise_typed(PlatformError.loops("not_found", f"Loop {loop_id} not found"))
     return snap
 
 
@@ -992,22 +1018,36 @@ class LoopStateUpdateRequest(BaseModel):
     metadata: dict[str, Any] | None = None
 
 
-@router.put("/{loop_id}/state", summary="Status projection write (cluster driver save)", response_model=LoopStatusResponse)
-async def update_loop_state(loop_id: str, body: LoopStateUpdateRequest) -> LoopStatusResponse:
+@router.put(
+    "/{loop_id}/state",
+    summary="Status projection write (cluster driver save)",
+    response_model=LoopStatusResponse,
+)
+async def update_loop_state(
+    loop_id: str, body: LoopStateUpdateRequest
+) -> LoopStatusResponse:
     """Driver calls `save()` after each iteration — mapped to the durable record."""
     loop = get_loop(loop_id)
     if body.status is not None:
         try:
             loop.status = LoopStatus(body.status)
         except ValueError as exc:
-            raise HTTPException(status_code=422, detail=f"invalid status {body.status!r}") from exc
+            raise_typed(
+                PlatformError.loops("unprocessable", f"invalid status {body.status!r}"),
+                cause=exc,
+            )
     if body.phase is not None:
         try:
             loop.phase = LoopPhase(body.phase)
         except ValueError as exc:
-            raise HTTPException(status_code=422, detail=f"invalid phase {body.phase!r}") from exc
+            raise_typed(
+                PlatformError.loops("unprocessable", f"invalid phase {body.phase!r}"),
+                cause=exc,
+            )
     if body.current_iteration is not None:
-        loop.current_iteration = max(0, min(loop.max_iterations, body.current_iteration))
+        loop.current_iteration = max(
+            0, min(loop.max_iterations, body.current_iteration)
+        )
     if body.total_hypotheses_tested is not None:
         loop.total_hypotheses_tested = body.total_hypotheses_tested
     if body.total_experiments_run is not None:
@@ -1075,9 +1115,11 @@ async def pause_loop(loop_id: str) -> StopLoopResponse:
 async def resume_loop(loop_id: str) -> StartLoopResponse:
     loop = get_loop(loop_id)
     if loop.status != LoopStatus.PAUSED:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Cannot resume loop in status {loop.status.value}; only paused loops can be resumed",
+        raise_typed(
+            PlatformError.loops(
+                "bad_request",
+                f"Cannot resume loop in status {loop.status.value}; only paused loops can be resumed",
+            ),
         )
     loop.status = LoopStatus.RUNNING
     _loop_store.save(loop)  # PG-backed stores only persist via save()

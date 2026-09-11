@@ -373,3 +373,19 @@ def test_contract_endpoints_family_codes():
     }
     for code, status in expected.items():
         assert codes[code] == status, code
+
+
+def test_contract_loops_family_codes():
+    from r4_contracts.errors import known_error_codes
+
+    codes = known_error_codes()
+    expected = {
+        "loops.not_found": 404,
+        "loops.forbidden": 403,
+        "loops.conflict": 409,
+        "loops.bad_request": 400,
+        "loops.unprocessable": 422,
+        "loops.unavailable": 503,
+    }
+    for code, status in expected.items():
+        assert codes[code] == status, code
