@@ -31,11 +31,7 @@ import logging
 import os
 import sys
 import warnings
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from enum import Enum
 from typing import Any
-from uuid import uuid4
 
 logger = logging.getLogger(__name__)
 
@@ -52,167 +48,22 @@ if os.environ.get("UMRS_SAT_KG_QUIET") != "1" and "pytest" not in sys.modules:
     )
 
 __all__ = [
-    "RelationType",
-    "KnowledgeNode",
+    "InMemoryKnowledgeGraph",
     "KnowledgeEdge",
     "KnowledgeGraphAPI",
-    "InMemoryKnowledgeGraph",
+    "KnowledgeNode",
+    "RelationType",
     "build_default_graph",
 ]
 
 
-# ── Relation Types ─────────────────────────────────────────────────────────
-
-
-class RelationType(str, Enum):
-    """Typed relationships between scientific knowledge objects."""
-
-    # Citation relationships
-    CITES = "cites"
-    REFERENCES = "references"
-    REFERENCED_BY = "referenced_by"
-
-    # Derivation relationships
-    DERIVES_FROM = "derives_from"
-    PRODUCES = "produces"
-    PRODUCED_BY = "produced_by"
-
-    # Evidence relationships
-    SUPPORTS = "supports"
-    CONTRADICTS = "contradicts"
-    EVIDENCE_FOR = "evidence_for"
-    EVIDENCE_AGAINST = "evidence_against"
-
-    # Implementation relationships
-    IMPLEMENTS = "implements"
-    IMPLEMENTED_BY = "implemented_by"
-    DESCRIBES = "describes"
-    DESCRIBED_BY = "described_by"
-
-    # Composition relationships
-    PART_OF = "part_of"
-    CONTAINS = "contains"
-    DEPENDS_ON = "depends_on"
-    USES = "uses"
-
-    # Research flow relationships
-    ANSWERS = "answers"
-    ANSWERED_BY = "answered_by"
-    ASSUMES = "assumes"
-    VERIFIES = "verifies"
-    REFUTES = "refutes"
-
-    # Related (generic)
-    RELATED_TO = "related_to"
-
-
-# ── Knowledge Node ─────────────────────────────────────────────────────────
-
-
-@dataclass
-class KnowledgeNode:
-    """A node in the knowledge graph.
-
-    Attributes:
-        node_id: Unique identifier for the node (typically an object_id)
-        node_type: The type of node (paper, code, hypothesis, etc.)
-        title: Human-readable title for the node
-        metadata: Additional metadata
-    """
-
-    node_id: str = ""
-    node_type: str = ""
-    title: str = ""
-    metadata: dict[str, Any] = field(default_factory=dict)
-
-    def to_dict(self) -> dict[str, Any]:
-        """Convert to dictionary."""
-        return {
-            "node_id": self.node_id,
-            "node_type": self.node_type,
-            "title": self.title,
-            "metadata": self.metadata,
-        }
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "KnowledgeNode":
-        """Create from dictionary."""
-        return cls(
-            node_id=data.get("node_id", ""),
-            node_type=data.get("node_type", ""),
-            title=data.get("title", ""),
-            metadata=data.get("metadata", {}),
-        )
-
-
-# ── Knowledge Edge ────────────────────────────────────────────────────────
-
-
-@dataclass
-class KnowledgeEdge:
-    """An edge in the knowledge graph (typed relationship).
-
-    Attributes:
-        edge_id: Unique identifier for the edge
-        source_id: Source node ID
-        target_id: Target node ID
-        relation_type: Type of relationship
-        weight: Edge weight (default 1.0)
-        confidence: Confidence score (0.0–1.0)
-        metadata: Additional metadata
-        created_at: When the edge was created
-    """
-
-    edge_id: str = ""
-    source_id: str = ""
-    target_id: str = ""
-    relation_type: RelationType = RelationType.RELATED_TO
-    weight: float = 1.0
-    confidence: float = 1.0
-    metadata: dict[str, Any] = field(default_factory=dict)
-    created_at: str = ""
-
-    def __post_init__(self) -> None:
-        if not self.edge_id:
-            self.edge_id = f"edge-{uuid4().hex[:12]}"
-        if not self.created_at:
-            self.created_at = datetime.now(timezone.utc).isoformat()
-
-    def to_dict(self) -> dict[str, Any]:
-        """Convert to dictionary."""
-        return {
-            "edge_id": self.edge_id,
-            "source_id": self.source_id,
-            "target_id": self.target_id,
-            "relation_type": self.relation_type.value,
-            "weight": self.weight,
-            "confidence": self.confidence,
-            "metadata": self.metadata,
-            "created_at": self.created_at,
-        }
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "KnowledgeEdge":
-        """Create from dictionary."""
-        relation_type_raw = data.get("relation_type", "related_to")
-        relation_type = (
-            RelationType(relation_type_raw)
-            if isinstance(relation_type_raw, str)
-            else relation_type_raw
-        )
-        return cls(
-            edge_id=data.get("edge_id", ""),
-            source_id=data.get("source_id", ""),
-            target_id=data.get("target_id", ""),
-            relation_type=relation_type,
-            weight=data.get("weight", 1.0),
-            confidence=data.get("confidence", 1.0),
-            metadata=data.get("metadata", {}),
-            created_at=data.get("created_at", ""),
-        )
-
-
-# ── Knowledge Graph API Protocol ──────────────────────────────────────────
+# DTO home (ADR-026 wave B): the shared graph type vocabulary lives in
+# ``umrs.knowledge.graph_types`` — this facade re-exports them until wave C.
+from umrs.knowledge.graph_types import (
+    KnowledgeEdge,
+    KnowledgeNode,
+    RelationType,
+)
 
 
 class KnowledgeGraphAPI:
@@ -221,10 +72,26 @@ class KnowledgeGraphAPI:
     UMRS provides an implementation of this API. R4 consumes it.
     """
 
-    def add_node(self, *, node_id: str, node_type: str, title: str = "", metadata: dict | None = None) -> None:
+    def add_node(
+        self,
+        *,
+        node_id: str,
+        node_type: str,
+        title: str = "",
+        metadata: dict | None = None,
+    ) -> None:
         raise NotImplementedError
 
-    def add_edge(self, *, source_id: str, target_id: str, relation_type: RelationType, weight: float = 1.0, confidence: float = 1.0, metadata: dict | None = None) -> str:
+    def add_edge(
+        self,
+        *,
+        source_id: str,
+        target_id: str,
+        relation_type: RelationType,
+        weight: float = 1.0,
+        confidence: float = 1.0,
+        metadata: dict | None = None,
+    ) -> str:
         raise NotImplementedError
 
     def get_node(self, node_id: str) -> KnowledgeNode | None:
@@ -242,10 +109,14 @@ class KnowledgeGraphAPI:
     def get_related(self, node_id: str, relation_type: RelationType) -> list[str]:
         raise NotImplementedError
 
-    def find_path(self, source_id: str, target_id: str, max_depth: int = 5) -> list[str] | None:
+    def find_path(
+        self, source_id: str, target_id: str, max_depth: int = 5
+    ) -> list[str] | None:
         raise NotImplementedError
 
-    def query(self, *, node_type: str | None = None, relation_type: RelationType | None = None) -> list[KnowledgeNode]:
+    def query(
+        self, *, node_type: str | None = None, relation_type: RelationType | None = None
+    ) -> list[KnowledgeNode]:
         raise NotImplementedError
 
 
@@ -313,10 +184,7 @@ class InMemoryKnowledgeGraph(KnowledgeGraphAPI):
         # Check for existing edge (deduplication)
         for edge_id in self._outgoing.get(source_id, []):
             edge = self._edges[edge_id]
-            if (
-                edge.target_id == target_id
-                and edge.relation_type == relation_type
-            ):
+            if edge.target_id == target_id and edge.relation_type == relation_type:
                 # Update existing edge
                 edge.weight = weight
                 edge.confidence = confidence
@@ -409,8 +277,7 @@ class InMemoryKnowledgeGraph(KnowledgeGraphAPI):
         """Query the graph for nodes matching the given criteria."""
         if node_type is not None:
             return [
-                node for node in self._nodes.values()
-                if node.node_type == node_type
+                node for node in self._nodes.values() if node.node_type == node_type
             ]
         if relation_type is not None:
             # Return all nodes that have an edge of the given type
@@ -419,10 +286,7 @@ class InMemoryKnowledgeGraph(KnowledgeGraphAPI):
                 if edge.relation_type == relation_type:
                     matching_node_ids.add(edge.source_id)
                     matching_node_ids.add(edge.target_id)
-            return [
-                self._nodes[nid] for nid in matching_node_ids
-                if nid in self._nodes
-            ]
+            return [self._nodes[nid] for nid in matching_node_ids if nid in self._nodes]
         return list(self._nodes.values())
 
 
