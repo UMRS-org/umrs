@@ -21,6 +21,8 @@ import logging
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+
+from .typed_errors import PlatformError, raise_typed
 from pydantic import BaseModel, Field
 
 from umrs.knowledge.access_scope import CallerScope
@@ -50,16 +52,16 @@ _VALID_PROVIDER_KINDS = {
 def _store(request: Request) -> SealedSourceStore:
     pool = getattr(request.app.state, "umrs_db_pool", None)
     if pool is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="sealed source store requires the shared umrs_db pool",
+        raise_typed(
+            PlatformError.usersources(
+                "unavailable",
+                "sealed source store requires the shared umrs_db pool",
+            )
         )
     try:
         return SealedSourceStore(pool)
     except SealedStoreUnavailable as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
-        ) from exc
+        raise_typed(PlatformError.usersources("unavailable", str(exc)), cause=exc)
 
 
 def _seal_pubkey() -> str:
@@ -68,13 +70,16 @@ def _seal_pubkey() -> str:
     try:
         return recipient_keys().seal_pubkey()
     except SealError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=(
-                "sealed store not configured on this server: "
-                "UMRS_SEAL_PUBKEY_B64 missing (push unavailable, no plaintext fallback)"
+        raise_typed(
+            PlatformError.usersources(
+                "unavailable",
+                (
+                    "sealed store not configured on this server: "
+                    "UMRS_SEAL_PUBKEY_B64 missing (push unavailable, no plaintext fallback)"
+                ),
             ),
-        ) from exc
+            cause=exc,
+        )
 
 
 class PushSourceRequest(BaseModel):
@@ -108,14 +113,10 @@ async def push_source(
     caller: CallerScope = Depends(get_caller_scope),
 ) -> PushSourceResponse:
     if body.provider_kind not in _VALID_PROVIDER_KINDS:
-        raise HTTPException(
-            status_code=400, detail=f"unknown provider_kind {body.provider_kind!r}"
-        )
+        raise_typed(PlatformError.usersources("bad_request", f"unknown provider_kind {body.provider_kind!r}"))
     owner = caller.user_id
     if not owner:
-        raise HTTPException(
-            status_code=401, detail="user identity required to push a source"
-        )
+        raise_typed(PlatformError.usersources("unauthorized", "user identity required to push a source"))
     try:
         normalized = validate_provider_base_url(body.base_url)
     except ProviderUrlError as exc:
@@ -134,7 +135,7 @@ async def push_source(
             allow_host=normalized.allow_host,
         )
     except SealError as exc:
-        raise HTTPException(status_code=500, detail="sealing failed") from exc
+        raise_typed(PlatformError.usersources("failure", "sealing failed"), cause=exc)
 
     store = _store(request)
     try:
@@ -162,9 +163,7 @@ async def push_source(
         logger.exception(
             "sealed source push failed for owner=%s name=%s", owner, body.name
         )
-        raise HTTPException(
-            status_code=500, detail="sealed source write failed"
-        ) from None
+        raise_typed(PlatformError.usersources("failure", "sealed source write failed"))
 
     return PushSourceResponse(
         id=source_id,
@@ -184,7 +183,7 @@ async def list_my_sources(
     caller: CallerScope = Depends(get_caller_scope),
 ) -> list[dict[str, Any]]:
     if not caller.user_id:
-        raise HTTPException(status_code=401, detail="user identity required")
+        raise_typed(PlatformError.usersources("unauthorized", "user identity required"))
     store = _store(request)
     return [
         meta.to_dict()
@@ -199,11 +198,11 @@ async def unpush_source(
     caller: CallerScope = Depends(get_caller_scope),
 ) -> dict[str, Any]:
     if not caller.user_id:
-        raise HTTPException(status_code=401, detail="user identity required")
+        raise_typed(PlatformError.usersources("unauthorized", "user identity required"))
     store = _store(request)
     source_id = store.tombstone(caller.user_id, name)
     if source_id is None:
-        raise HTTPException(status_code=404, detail=f"Source {name!r} not found")
+        raise_typed(PlatformError.usersources("not_found", f"Source {name!r} not found"))
 
     # Cascade: revoke every lease still referencing the source (D-6 instant deny).
     from ..jobs.secret_broker import build_default_broker
@@ -272,6 +271,6 @@ async def list_audit(
     caller: CallerScope = Depends(get_caller_scope),
 ) -> list[dict[str, Any]]:
     if not caller.user_id:
-        raise HTTPException(status_code=401, detail="user identity required")
+        raise_typed(PlatformError.usersources("unauthorized", "user identity required"))
     store = _store(request)
     return user_source_audit_rows(store, caller.user_id, source_id, limit)
