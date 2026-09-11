@@ -15,6 +15,8 @@ import logging
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+
+from .typed_errors import PlatformError, raise_typed
 from pydantic import BaseModel, Field
 
 from umrs.a2l import (
@@ -103,7 +105,7 @@ async def derive_artifact(body: DeriveBody, store=Depends(_get_store)) -> dict[s
     try:
         record = await store.derive_artifact(req)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise_typed(PlatformError.a2l("bad_request", str(exc)), cause=exc)
     return record.to_dict()
 
 
@@ -123,7 +125,7 @@ async def list_artifacts(
 async def get_artifact(artifact_id: str, store=Depends(_get_store)) -> dict[str, Any]:
     record = await store.get_artifact(artifact_id)
     if record is None:
-        raise HTTPException(status_code=404, detail="artifact not found")
+        raise_typed(PlatformError.a2l("not_found", "artifact not found"))
     return record.to_dict()
 
 
@@ -133,13 +135,13 @@ async def patch_artifact_status(
 ) -> dict[str, Any]:
     new_status = str(body.get("status", ""))
     if not new_status:
-        raise HTTPException(status_code=400, detail="status is required")
+        raise_typed(PlatformError.a2l("bad_request", "status is required"))
     try:
         record = await store.update_artifact_status(
             artifact_id, new_status, error=str(body.get("error") or "")
         )
     except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise_typed(PlatformError.a2l("conflict", str(exc)), cause=exc)
     return record.to_dict()
 
 
@@ -174,7 +176,7 @@ async def list_executions(
 async def get_execution(execution_id: str, store=Depends(_get_store)) -> dict[str, Any]:
     record = await store.get_execution(execution_id)
     if record is None:
-        raise HTTPException(status_code=404, detail="execution not found")
+        raise_typed(PlatformError.a2l("not_found", "execution not found"))
     return record.to_dict()
 
 
@@ -186,7 +188,7 @@ async def patch_execution(
     try:
         record = await store.update_execution(execution_id, patch)
     except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise_typed(PlatformError.a2l("not_found", str(exc)), cause=exc)
     return record.to_dict()
 
 
@@ -233,5 +235,5 @@ async def job_view(job_id: str, store=Depends(_get_store)) -> dict[str, Any]:
     """Compositional history view for one job: spine state + conserved rows."""
     view = await store.job_conservation_view(job_id)
     if view["spine"] is None and not (view["artifacts"] or view["executions"] or view["decisions"]):
-        raise HTTPException(status_code=404, detail=f"no conservation data for job {job_id}")
+        raise_typed(PlatformError.a2l("not_found", f"no conservation data for job {job_id}"))
     return view

@@ -15,6 +15,8 @@ import logging
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, status
+
+from .typed_errors import PlatformError, raise_typed
 from pydantic import BaseModel, Field
 
 from ..jobs.workload_identity import WorkloadIdentityIssuer
@@ -120,7 +122,7 @@ def validate_token(req: ValidateRequest):
     issuer = get_issuer()
     identity = issuer.validate(req.token)
     if not identity:
-        raise HTTPException(status_code=401, detail="Invalid or expired token")
+        raise_typed(PlatformError.workloadidentity("unauthorized", "Invalid or expired token"))
     return IdentityResponse(**identity.to_dict())
 
 
@@ -146,7 +148,7 @@ def get_identity(identity_id: str):
     issuer = get_issuer()
     identity = issuer.get_identity(identity_id)
     if not identity:
-        raise HTTPException(status_code=404, detail="Identity not found")
+        raise_typed(PlatformError.workloadidentity("not_found", "Identity not found"))
     return IdentityResponse(**identity.to_dict())
 
 
@@ -155,7 +157,7 @@ def revoke_identity(identity_id: str):
     issuer = get_issuer()
     ok = issuer.revoke(identity_id)
     if not ok:
-        raise HTTPException(status_code=404, detail="Identity not found")
+        raise_typed(PlatformError.workloadidentity("not_found", "Identity not found"))
     return {"status": "revoked", "identity_id": identity_id}
 
 

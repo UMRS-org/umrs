@@ -17,6 +17,8 @@ from __future__ import annotations
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+
+from .typed_errors import PlatformError, raise_typed
 from pydantic import BaseModel
 
 from umrs.knowledge.access_scope import CallerScope
@@ -40,9 +42,9 @@ def _check_lease_visible(
 ) -> SecretLease:
     """404 without disclosing: admin sees all, users see their own leases only."""
     if lease is None:
-        raise HTTPException(status_code=404, detail="Lease not found")
+        raise_typed(PlatformError.secretbroker("not_found", "Lease not found"))
     if not caller.is_admin and lease.owner_id != caller.user_id:
-        raise HTTPException(status_code=404, detail="Lease not found")
+        raise_typed(PlatformError.secretbroker("not_found", "Lease not found"))
     return lease
 
 
@@ -196,7 +198,7 @@ def validate_secret(req: ValidateSecretRequest):
     broker = get_broker()
     lease = broker.validate_secret(req.secret_value)
     if not lease:
-        raise HTTPException(status_code=401, detail="Invalid or expired secret")
+        raise_typed(PlatformError.secretbroker("unauthorized", "Invalid or expired secret"))
     return LeaseResponse(**lease.to_dict())
 
 
@@ -233,7 +235,7 @@ def revoke_lease(lease_id: str, caller: CallerScope = Depends(get_caller_scope))
     _check_lease_visible(broker.get_lease(lease_id), caller, lease_id)
     ok = broker.revoke_lease(lease_id)
     if not ok:
-        raise HTTPException(status_code=404, detail="Lease not found")
+        raise_typed(PlatformError.secretbroker("not_found", "Lease not found"))
     return {"status": "revoked", "lease_id": lease_id}
 
 
@@ -245,9 +247,11 @@ def renew_lease(
     _check_lease_visible(broker.get_lease(lease_id), caller, lease_id)
     ok = broker.renew_lease(lease_id, req.extend_seconds, req.actor)
     if not ok:
-        raise HTTPException(
-            status_code=400,
-            detail="Lease not found, expired, or renewal exceeds max TTL",
+        raise_typed(
+            PlatformError.secretbroker(
+                "bad_request",
+                "Lease not found, expired, or renewal exceeds max TTL"
+            ),
         )
     return {"status": "renewed", "lease_id": lease_id}
 
@@ -257,7 +261,7 @@ def revoke_job_leases(job_id: str, caller: CallerScope = Depends(get_caller_scop
     # Operator-class action: revoking every lease of a job is admin-only
     # (per-lease revoke above is the owner path).
     if not caller.is_admin:
-        raise HTTPException(status_code=403, detail="admin required")
+        raise_typed(PlatformError.secretbroker("forbidden", "admin required"))
     broker = get_broker()
     count = broker.revoke_job_leases(job_id)
     return {"status": "revoked", "job_id": job_id, "leases_revoked": count}
@@ -290,7 +294,7 @@ def get_audit_trail(
 @router.post("/cleanup")
 def cleanup_expired(caller: CallerScope = Depends(get_caller_scope)):
     if not caller.is_admin:
-        raise HTTPException(status_code=403, detail="admin required")
+        raise_typed(PlatformError.secretbroker("forbidden", "admin required"))
     broker = get_broker()
     count = broker.cleanup_expired()
     return {"status": "ok", "expired_removed": count}

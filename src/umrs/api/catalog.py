@@ -13,6 +13,8 @@ import logging
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+
+from .typed_errors import PlatformError, raise_typed
 from pydantic import BaseModel, Field
 
 from umrs.api.catalog_store import CatalogStoreUnavailable, get_catalog_meta_store
@@ -33,12 +35,11 @@ def _enforce_catalog_scope(caller: CallerScope, project_id: str) -> None:
     """Three-tier boundary: system (all) / project (members) / user (owner)."""
     if project_readable(project_id, caller):
         return
-    raise HTTPException(
-        status_code=status.HTTP_403_FORBIDDEN,
-        detail={
-            "error": "scope_denied",
-            "message": "Project is outside the caller's access tier.",
-        },
+    raise_typed(
+        PlatformError.catalog(
+            "forbidden",
+            { "error": "scope_denied", "message": "Project is outside the caller's access tier.", }
+        ),
     )
 
 
@@ -46,10 +47,13 @@ def _require_catalog_meta_store():
     try:
         return get_catalog_meta_store()
     except CatalogStoreUnavailable as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=str(exc),
-        ) from exc
+        raise_typed(
+            PlatformError.catalog(
+                "unavailable",
+                str(exc)
+            ),
+            cause=exc,
+        )
 
 
 class CatalogLinksResponse(BaseModel):
@@ -127,9 +131,11 @@ async def catalog_search(
     """Grep catalog metadata scoped to the caller's project."""
     _enforce_catalog_scope(caller, project_id)
     if not q.strip() and not any([modality, state, tag, prefix]):
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Provide q and/or at least one filter (modality, state, tag, prefix)",
+        raise_typed(
+            PlatformError.catalog(
+                "unprocessable",
+                "Provide q and/or at least one filter (modality, state, tag, prefix)"
+            ),
         )
     meta_store = _require_catalog_meta_store()
     hits = search_catalog(
@@ -187,9 +193,11 @@ async def catalog_read(
     """Read catalog object bytes or extracted document text with project ACL."""
     _enforce_catalog_scope(caller, project_id)
     if source not in {"auto", "raw", "extracted"}:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="source must be auto, raw, or extracted",
+        raise_typed(
+            PlatformError.catalog(
+                "unprocessable",
+                "source must be auto, raw, or extracted"
+            ),
         )
     meta_store = _require_catalog_meta_store()
     s3_client = config.get_client()
@@ -205,21 +213,27 @@ async def catalog_read(
             source=source,  # type: ignore[arg-type]
         )
     except PermissionError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=str(exc),
-        ) from exc
+        raise_typed(
+            PlatformError.catalog(
+                "forbidden",
+                str(exc)
+            ),
+            cause=exc,
+        )
     except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=str(exc),
-        ) from exc
+        raise_typed(
+            PlatformError.catalog(
+                "not_found",
+                str(exc)
+            ),
+            cause=exc,
+        )
     except Exception as exc:
         logger.exception("catalog read failed for %s", s3_key)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to read catalog object",
-        ) from exc
+        raise_typed(
+            PlatformError.catalog("unavailable", "Failed to read catalog object"),
+            cause=exc,
+        )
 
     pool = getattr(request.app.state, "umrs_db_pool", None)
     payload["links"] = hydrate_links(pool, project_id=project_id, s3_key=s3_key)

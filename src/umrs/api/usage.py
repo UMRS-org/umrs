@@ -21,6 +21,8 @@ from datetime import date, datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Query, Request, status
 
+from .typed_errors import PlatformError, raise_typed
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/umrs/usage", tags=["usage"])
@@ -34,20 +36,14 @@ router = APIRouter(prefix="/umrs/usage", tags=["usage"])
 def _get_pool(request: Request):
     pool = getattr(request.app.state, "umrs_db_pool", None)
     if pool is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Usage database unavailable",
-        )
+        raise_typed(PlatformError.usage("unavailable", "Usage database unavailable"))
     return pool
 
 
 def _caller_user_id(request: Request) -> str:
     uid = request.headers.get("x-user-id", "").strip()
     if not uid:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing X-User-ID header",
-        )
+        raise_typed(PlatformError.auth("missing_header", "Missing X-User-ID header"))
     return uid
 
 
@@ -195,10 +191,7 @@ async def usage_billing(
     Requires admin authentication.
     """
     if not _is_admin(request):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Admin token required for billing aggregation",
-        )
+        raise_typed(PlatformError.auth("admin_required", "Admin token required for billing aggregation"))
 
     pool = _get_pool(request)
     _caller_user_id(request)  # validate caller identity
