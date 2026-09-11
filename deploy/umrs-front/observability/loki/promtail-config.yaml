@@ -1,0 +1,41 @@
+# Promtail configuration for the umrs-front observability stack.
+# Tails the harness/server logs written under the umrs-front deploy log dir
+# (mounted read-only at /umrs-logs) and ships them to Loki.
+
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  - job_name: umrs-front
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: umrs-front
+          host: data0
+          __path__: /umrs-logs/*.log
+
+    pipeline_stages:
+      # Derive a service label from the log file name, e.g.
+      # server-rccs.log -> server-rccs, gateway-ai4s.log -> gateway-ai4s.
+      - regex:
+          expression: '/umrs-logs/(?P<service>[^/]+)\.log$'
+          source: filename
+      - labels:
+          service:
+      # Best-effort structured-log enrichment (no-op for plain text lines).
+      - json:
+          expressions:
+            level: level
+            message: msg
+            request_id: request_id
+            job_id: job_id
+      - labels:
+          level:

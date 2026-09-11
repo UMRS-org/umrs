@@ -1,0 +1,363 @@
+# Prometheus Alert Rules for RiVault
+# See DEVELOPMENT_OBJECTIVES.md Section 9.1
+
+groups:
+  # ==========================================================================
+  # Gateway Alerts
+  # ==========================================================================
+  - name: gateway
+    rules:
+      - alert: GatewayHighErrorRate
+        expr: |
+          (
+            sum(rate(rivault_gateway_requests_total{status=~"5.."}[5m]))
+            /
+            sum(rate(rivault_gateway_requests_total[5m]))
+          ) > 0.05
+        for: 2m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "High error rate in Gateway"
+          description: "Gateway error rate is {{ $value | humanizePercentage }} over the last 5 minutes"
+          runbook_url: "https://wiki.rivault.io/runbooks/gateway-errors"
+
+      - alert: GatewayHighLatency
+        expr: |
+          histogram_quantile(0.99,
+            sum(rate(rivault_gateway_request_duration_seconds_bucket[5m])) by (le)
+          ) > 5
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "High latency in Gateway"
+          description: "Gateway p99 latency is {{ $value | humanizeDuration }}"
+
+      - alert: GatewayDown
+        expr: up{job="gateway"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Gateway is down"
+          description: "Gateway instance {{ $labels.instance }} is unreachable"
+
+  # ==========================================================================
+  # UMRS Alerts
+  # ==========================================================================
+  - name: umrs
+    rules:
+      - alert: UMRSDown
+        expr: up{job="umrs"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "UMRS is down"
+          description: "UMRS instance {{ $labels.instance }} is unreachable"
+
+      - alert: EndpointProvisioningStuck
+        expr: |
+          rivault_endpoints_provisioning > 0
+          and
+          changes(rivault_endpoints_provisioning[10m]) == 0
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Endpoint provisioning stuck"
+          description: "{{ $value }} endpoints have been provisioning for >10 minutes"
+
+      - alert: NoActiveEndpoints
+        expr: rivault_endpoints_active == 0
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "No active inference endpoints"
+          description: "All inference endpoints are down or not provisioned"
+
+      - alert: JobFailureRateHigh
+        expr: |
+          (
+            sum(rate(umrs_job_total{event="failed"}[1h]))
+            /
+            sum(rate(umrs_job_total[1h]))
+          ) > 0.1
+        for: 15m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "High job failure rate"
+          description: "Job failure rate is {{ $value | humanizePercentage }}"
+
+  # ==========================================================================
+  # LLM / vLLM Alerts
+  # ==========================================================================
+  - name: llm
+    rules:
+      - alert: LLMHighLatency
+        expr: |
+          histogram_quantile(0.99,
+            sum(rate(rivault_llm_request_duration_seconds_bucket[5m])) by (le, model)
+          ) > 30
+        for: 5m
+        labels:
+          severity: warning
+          team: ml
+        annotations:
+          summary: "High LLM latency"
+          description: "LLM {{ $labels.model }} p99 latency is {{ $value | humanizeDuration }}"
+
+      - alert: VLLMQueueBacklog
+        expr: vllm_num_requests_waiting > 50
+        for: 5m
+        labels:
+          severity: warning
+          team: ml
+        annotations:
+          summary: "vLLM request queue backlog"
+          description: "{{ $value }} requests waiting in queue for {{ $labels.model }}"
+
+      - alert: LLMHighErrorRate
+        expr: |
+          (
+            sum(rate(litellm_total_errors[5m]))
+            /
+            sum(rate(litellm_total_requests[5m]))
+          ) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+          team: ml
+        annotations:
+          summary: "High LLM error rate"
+          description: "LLM error rate is {{ $value | humanizePercentage }} over the last 5 minutes"
+
+      - alert: VLLMHighPreemptionRate
+        expr: |
+          rate(vllm:num_preemption_total[5m]) > 1
+        for: 5m
+        labels:
+          severity: warning
+          team: ml
+        annotations:
+          summary: "vLLM high preemption rate"
+          description: "vLLM is preempting {{ $value }} requests/s for {{ $labels.model_name }}"
+
+      - alert: VLLMHighSwapRate
+        expr: |
+          rate(vllm:num_requests_swapped_total[5m]) > 1
+        for: 5m
+        labels:
+          severity: warning
+          team: ml
+        annotations:
+          summary: "vLLM high swap rate"
+          description: "vLLM is swapping {{ $value }} requests/s for {{ $labels.model_name }}"
+
+      - alert: VLLMHighCacheUsage
+        expr: vllm:kv_cache_usage_perc > 0.95
+        for: 2m
+        labels:
+          severity: warning
+          team: ml
+        annotations:
+          summary: "vLLM cache nearly full"
+          description: "GPU KV cache at {{ $value | humanizePercentage }} for {{ $labels.model_name }}"
+
+      - alert: LiteLLMDown
+        expr: up{job="litellm"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "LiteLLM is down"
+          description: "LiteLLM proxy is unreachable"
+
+  # ==========================================================================
+  # Infrastructure Alerts
+  # ==========================================================================
+  - name: infrastructure
+    rules:
+      - alert: PostgresDown
+        expr: pg_up == 0
+        for: 1m
+        labels:
+          severity: critical
+          team: infrastructure
+        annotations:
+          summary: "PostgreSQL is down"
+          description: "PostgreSQL database is unreachable"
+
+      - alert: PostgresHighConnections
+        expr: |
+          (pg_stat_activity_count / pg_settings_max_connections) > 0.8
+        for: 5m
+        labels:
+          severity: warning
+          team: infrastructure
+        annotations:
+          summary: "PostgreSQL connection pool nearly exhausted"
+          description: "{{ $value | humanizePercentage }} of connections in use"
+
+      - alert: MinIODown
+        expr: minio_cluster_health_status == 0
+        for: 1m
+        labels:
+          severity: critical
+          team: infrastructure
+        annotations:
+          summary: "MinIO is unhealthy"
+          description: "MinIO cluster is not healthy"
+
+      - alert: DiskSpaceRunningLow
+        expr: |
+          (
+            node_filesystem_avail_bytes{mountpoint="/"}
+            /
+            node_filesystem_size_bytes{mountpoint="/"}
+          ) < 0.1
+        for: 5m
+        labels:
+          severity: warning
+          team: infrastructure
+        annotations:
+          summary: "Disk space running low"
+          description: "Less than 10% disk space remaining on {{ $labels.instance }}"
+
+  # ==========================================================================
+  # Observability Stack Self-Monitoring
+  # ==========================================================================
+  - name: observability
+    rules:
+      - alert: PrometheusTargetDown
+        expr: up == 0
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Prometheus target down"
+          description: "Target {{ $labels.job }}/{{ $labels.instance }} is unreachable"
+
+      - alert: LokiDown
+        expr: up{job="loki"} == 0
+        for: 2m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Loki is down"
+          description: "Loki log aggregator is unreachable"
+
+      - alert: JaegerDown
+        expr: up{job="jaeger"} == 0
+        for: 2m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Jaeger is down"
+          description: "Jaeger tracing collector is unreachable"
+
+  # ==========================================================================
+  # UMRS SLO Alerts (Q-06 / Backlog Task 14)
+  # ==========================================================================
+  - name: umrs-slo
+    rules:
+      - alert: DurableThreadDead
+        expr: |
+          time() - umrs_bridge_last_activity_timestamp{bridge="gen1_gen2_runtime"} > 60
+        for: 1m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Durable job runtime bridge appears dead"
+          description: "gen1_gen2_runtime bridge last activity was {{ $value | humanizeDuration }} ago. Heartbeat expected every cycle; >60s implies thread stall or ZMQ disconnect."
+
+      - alert: MonitorTimeoutSpike
+        expr: |
+          rate(umrs_monitor_checks_total{outcome="timeout"}[10m]) > 0.1
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Elevated attempt-monitor timeout rate"
+          description: "Attempt monitor is timing out at {{ $value | humanize }}/s over 10m. Verify upstream site connectivity, ZMQ health, and attempt liveness on the larger endpoint."
+
+      - alert: TransportReconnectStorm
+        expr: |
+          rate(umrs_transport_reconnects_total[5m]) > 1
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "ZMQ data-plane reconnect rate rising"
+          description: "ZMQ transport reconnects are above {{ $value | humanize }}/s — durable job spooling degraded. Check the broker's slow-consumer backlog."
+
+      - alert: DegradationLevelHigh
+        expr: |
+          max(umrs_degradation_level) >= 2
+        for: 5m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "UMRS operating in unhealthy degradation level"
+          description: "A subsystem (bridge / transport / queue) reports degradation_level >= 2. Check the degraded subsystem's recent history."
+
+      - alert: SchedulerBacklogGrowing
+        expr: |
+          umrs_reconciler_queue_depth > 50
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Reconciler backlog exceeding capacity"
+          description: "Pending reconciliation tasks > 50 persistently — scheduler throughput insufficient for the current job volume."
+
+  # ==========================================================================
+  # LLM SLO Alerts (WP-12, P11 ratified headline SLO — G-P11-2)
+  # ==========================================================================
+  - name: llm-slo
+    rules:
+      - alert: LLMFirstTokenSlow
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(rivault_llm_first_token_seconds_bucket[10m])) by (le)
+          ) > 30
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "LLM time-to-first-chunk p95 above 30s"
+          description: "Gateway-measured TTFT p95 is {{ $value }}s over the last 10 minutes (ratified P11 SLO is 30s)."
+          runbook_url: "docs/operations/embedding-outage-playbook.md"
+
+      - alert: AttemptWallTimeAnomalous
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(umrs_attempt_phase_seconds_bucket{phase="wall"}[15m])) by (le)
+          ) > 3600
+        for: 15m
+        labels:
+          severity: info
+          team: platform
+        annotations:
+          summary: "Attempt wall-clock p95 over one hour"
+          description: "Durable attempts' wall time p95 is {{ $value | humanizeDuration }} — venue saturation or an endpoint stuck provisioning."

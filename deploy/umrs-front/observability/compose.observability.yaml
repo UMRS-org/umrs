@@ -1,0 +1,165 @@
+# Ansible managed
+# umrs-front observability stack (Prometheus / Grafana / Loki / Promtail /
+# Jaeger / OpenTelemetry Collector / node-exporter).
+#
+# Reuses the repo's observability/ configs (grafana provisioning + dashboards,
+# loki config, otel config, prometheus alerts) via read-only bind mounts so the
+# dashboards/datasources stay in sync with the rest of the platform. Only
+# prometheus.yaml and promtail-config.yaml are rendered into the deploy dir to
+# point at host-networked umrs-front services.
+#
+# Service names match observability/grafana/.../datasources.yaml
+# (prometheus / loki / jaeger) so the provisioned Grafana datasources resolve
+# unchanged on the bridge network.
+#
+# Externally reachable UIs are published on the firewall-open 50000-51000 range.
+
+services:
+  prometheus:
+    image: docker.io/prom/prometheus:v2.51.0
+    container_name: umrs-front-prometheus
+    restart: unless-stopped
+    # host.containers.internal lets Prometheus scrape host-networked services
+    # (UMRS HTTP, MinIO) that bind on the data0 host.
+    extra_hosts:
+      - "host.containers.internal:host-gateway"
+    ports:
+      - "50190:9090"
+    volumes:
+      - "/home/mnagaso/deploy/ai4s-platform/umrs/deploy/umrs-front/observability/prometheus.yaml:/etc/prometheus/prometheus.yml:ro,z"
+      - "/home/mnagaso/deploy/ai4s-platform/observability/prometheus/alerts.yaml:/etc/prometheus/alerts.yml:ro,z"
+      - prometheus_targets:/etc/prometheus/targets
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=15d'
+      - '--web.enable-lifecycle'
+      - '--web.enable-remote-write-receiver'
+    networks:
+      - observability
+
+  vllm-targets-generator:
+    image: docker.io/library/python:3.12-slim
+    container_name: umrs-front-vllm-targets-generator
+    restart: unless-stopped
+    environment:
+      - VLLM_TARGETS_UMRS_URLS=http://host.containers.internal:8004
+      - VLLM_TARGETS_OUTPUT=/etc/prometheus/targets/vllm-targets.json
+      - VLLM_TARGETS_TIMEOUT=10
+    volumes:
+      - "/home/mnagaso/deploy/ai4s-platform/observability/prometheus/vllm-targets-generator.py:/app/vllm-targets-generator.py:ro,z"
+      - prometheus_targets:/etc/prometheus/targets
+    command:
+      - /bin/sh
+      - -c
+      - 'pip install --no-cache-dir urllib3 && while true; do python3 /app/vllm-targets-generator.py; sleep 15; done'
+    networks:
+      - observability
+    depends_on:
+      - prometheus
+
+  grafana:
+    image: docker.io/grafana/grafana:10.4.0
+    container_name: umrs-front-grafana
+    restart: unless-stopped
+    ports:
+      - "50300:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_INSTALL_PLUGINS=grafana-clock-panel,grafana-piechart-panel
+    volumes:
+      - "/home/mnagaso/deploy/ai4s-platform/observability/grafana/provisioning:/etc/grafana/provisioning:ro,z"
+      - "/home/mnagaso/deploy/ai4s-platform/observability/grafana/dashboards:/var/lib/grafana/dashboards:ro,z"
+      - grafana_data:/var/lib/grafana
+    networks:
+      - observability
+    depends_on:
+      - prometheus
+      - loki
+
+  loki:
+    image: docker.io/grafana/loki:2.9.5
+    container_name: umrs-front-loki
+    restart: unless-stopped
+    volumes:
+      - "/home/mnagaso/deploy/ai4s-platform/observability/loki/loki-config.yaml:/etc/loki/config.yaml:ro,z"
+      - loki_data:/loki
+    command: -config.file=/etc/loki/config.yaml -config.expand-env=true
+    networks:
+      - observability
+
+  promtail:
+    image: docker.io/grafana/promtail:2.9.5
+    container_name: umrs-front-promtail
+    restart: unless-stopped
+    volumes:
+      - "/home/mnagaso/deploy/ai4s-platform/umrs/deploy/umrs-front/observability/promtail-config.yaml:/etc/promtail/config.yaml:ro,z"
+      - "/home/mnagaso/deploy/ai4s-platform/umrs/deploy/umrs-front/logs:/umrs-logs:ro,z"
+    command: -config.file=/etc/promtail/config.yaml
+    networks:
+      - observability
+    depends_on:
+      - loki
+
+  jaeger:
+    image: docker.io/jaegertracing/all-in-one:1.55
+    container_name: umrs-front-jaeger
+    restart: unless-stopped
+    ports:
+      - "50686:16686"  # UI
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+      - SPAN_STORAGE_TYPE=badger
+      - BADGER_EPHEMERAL=false
+      - BADGER_DIRECTORY_VALUE=/badger/data
+      - BADGER_DIRECTORY_KEY=/badger/key
+      - QUERY_MAX_CLOCK_SKEW_ADJUSTMENT=0s
+    volumes:
+      - jaeger_data:/badger
+    networks:
+      - observability
+
+  otel-collector:
+    image: docker.io/otel/opentelemetry-collector-contrib:0.96.0
+    container_name: umrs-front-otel-collector
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:4317:4317"  # OTLP gRPC (loopback; lane sidecars/umrs servers run host-net elsewhere)
+      - "127.0.0.1:4318:4318"  # OTLP HTTP (lane sidecars via host net; umrs servers via host.containers.internal)
+      - "127.0.0.1:55679:55679"  # zpages debug (loopback, diag only)
+    volumes:
+      - "/home/mnagaso/deploy/ai4s-platform/observability/otel-collector-config.yaml:/etc/otel-collector/config.yaml:ro,z"
+    command: --config=/etc/otel-collector/config.yaml
+    networks:
+      - observability
+    depends_on:
+      - prometheus
+      - loki
+      - jaeger
+
+  node-exporter:
+    image: docker.io/prom/node-exporter:v1.7.0
+    container_name: umrs-front-node-exporter
+    restart: unless-stopped
+    command:
+      - '--path.rootfs=/host'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+    volumes:
+      - "/:/host:ro,rslave"
+    networks:
+      - observability
+
+networks:
+  observability:
+    name: umrs-front-observability
+    driver: bridge
+
+volumes:
+  prometheus_data:
+  prometheus_targets:
+  grafana_data:
+  loki_data:
+  jaeger_data:
