@@ -46,6 +46,8 @@ from umrs.shared.warnings import (
     check_download_ready,
 )
 
+from .typed_errors import PlatformError, raise_typed
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/umrs/files", tags=["files"])
@@ -281,18 +283,17 @@ def get_project_id(
             is_admin=_header_bool(x_verified_is_admin),
         ):
             return verified_project_id
-        raise HTTPException(
-            status_code=401,
-            detail="Verified project identity rejected (signature mismatch)",
-        )
+        raise_typed(PlatformError.auth("verified_project_mismatch", "Verified project identity rejected (signature mismatch)"))
     # Default strict (audit B12): mvp is an explicit dev opt-in.
     if os.environ.get("UMRS_AUTH_MODE", "strict").strip().lower() == "strict":
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=(
-                "UMRS_AUTH_MODE=strict requires a verified project claim; "
-                "X-Project-ID and default-project fallbacks are disabled."
-            ),
+        raise_typed(
+            PlatformError.auth(
+                "verified_project_required",
+                (
+                    "UMRS_AUTH_MODE=strict requires a verified project claim; "
+                    "X-Project-ID and default-project fallbacks are disabled."
+                ),
+            )
         )
 
     project_id = _header_str(x_project_id)
@@ -303,10 +304,7 @@ def get_project_id(
         logger.warning("JWT project_id extraction not implemented, using default")
         return "default-project"
 
-    raise HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Missing project_id. Provide X-Project-ID header or valid JWT.",
-    )
+    raise_typed(PlatformError.auth("project_required", "Missing project_id. Provide X-Project-ID header or valid JWT."))
 
 
 def validate_key(key: str, project_id: str, *, warn_on_rename: bool = False) -> str:
@@ -326,10 +324,7 @@ def validate_key(key: str, project_id: str, *, warn_on_rename: bool = False) -> 
 
     # Reject path traversal attempts
     if ".." in key.split("/"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid key: path traversal not allowed",
-        )
+        raise_typed(PlatformError.files("traversal", "Invalid key: path traversal not allowed"))
 
     # Check if key is already namespaced
     if key.startswith(f"{project_id}/"):
@@ -381,9 +376,7 @@ async def upload_file(
 ) -> UploadResponse:
     """Store an uploaded file under the caller's project namespace."""
     if not file.filename:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="Filename required"
-        )
+        raise_typed(PlatformError.files("filename_required", "Filename required"))
 
     object_key = validate_key(key or _upload_key(file.filename, purpose), project_id)
     bucket = config.bucket
@@ -404,10 +397,7 @@ async def upload_file(
         )
     except ClientError as e:
         logger.error("S3 error uploading file: %s", e)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to upload file",
-        ) from e
+        raise_typed(PlatformError.files("upload_failed", "Failed to upload file"), cause=e)
 
     object_etag = (put_response.get("ETag") or "").strip('"')
     _fire_post_upload_ingest(
@@ -475,10 +465,7 @@ async def _await_download_readiness(request: PresignRequest) -> None:
 
     job_store = get_jobs_store()
     if not job_store:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Job status is unavailable; download cannot be authorized",
-        )
+        raise_typed(PlatformError.files("auth_unavailable", "Job status is unavailable; download cannot be authorized"))
 
     deadline = asyncio.get_running_loop().time() + request.block_timeout
     while True:
@@ -489,20 +476,14 @@ async def _await_download_readiness(request: PresignRequest) -> None:
                 attempt = job_store.get_attempt(job.active_attempt_id)
                 attempt_status = attempt.status.value
         except JobNotFoundError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Job {request.job_id} was not found",
-            ) from exc
+            raise_typed(PlatformError.files("job_not_found", f"Job {request.job_id} was not found"), cause=exc)
         except Exception as exc:
             logger.warning(
                 "Failed to read job status for presign download job_id=%s: %s",
                 request.job_id,
                 exc,
             )
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Job status is unavailable; download cannot be authorized",
-            ) from exc
+            raise_typed(PlatformError.files("auth_unavailable", "Job status is unavailable; download cannot be authorized"), cause=exc)
 
         readiness = check_download_ready(
             request.job_id, attempt_status, blocking=request.blocking
@@ -593,16 +574,16 @@ async def _generate_presigned_url_impl(
 
     except ClientError as e:
         logger.error(f"S3 error generating presigned URL: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to generate presigned URL: {e.response['Error']['Message']}",
-        ) from e
+        raise_typed(
+            PlatformError.files(
+                "presign_failed",
+                f"Failed to generate presigned URL: {e.response['Error']['Message']}",
+            ),
+            cause=e,
+        )
     except Exception as e:
         logger.error(f"Error generating presigned URL: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to generate presigned URL",
-        ) from e
+        raise_typed(PlatformError.files("presign_failed", "Failed to generate presigned URL"), cause=e)
 
 
 @router.post(
@@ -683,15 +664,9 @@ async def get_file_metadata(
 
     except ClientError as e:
         if e.response["Error"]["Code"] == "404":
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"File not found: {key}",
-            ) from e
+            raise_typed(PlatformError.files("not_found", f"File not found: {key}"), cause=e)
         logger.error(f"S3 error getting file metadata: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to get file metadata",
-        ) from e
+        raise_typed(PlatformError.files("metadata_failed", "Failed to get file metadata"), cause=e)
 
 
 @router.delete(
@@ -735,10 +710,7 @@ async def delete_file(
 
     except ClientError as e:
         logger.error(f"S3 error deleting file: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to delete file",
-        ) from e
+        raise_typed(PlatformError.files("delete_failed", "Failed to delete file"), cause=e)
 
 
 def _cross_bucket_allowlist(config: S3Config) -> set[str]:
@@ -764,10 +736,7 @@ def _resolve_download_key(path: str, bucket_name: str, project_id: str, config: 
     # layout; still reject traversal but do not re-namespace.
     key = path.strip("/")
     if ".." in key.split("/"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid key: path traversal not allowed",
-        )
+        raise_typed(PlatformError.files("traversal", "Invalid key: path traversal not allowed"))
     return key
 
 
@@ -789,19 +758,13 @@ def _stream_object(s3_client, bucket_name: str, key: str):
         try:
             head = s3_client.head_object(Bucket=bucket_name, Key=key)
         except ClientError as e:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"File not found: {key}",
-            ) from e
+            raise_typed(PlatformError.files("not_found", f"File not found: {key}"), cause=e)
         obj = s3_client.get_object(Bucket=bucket_name, Key=key)
     except HTTPException:
         raise
     except ClientError as e:
         logger.error(f"S3 error downloading file: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to download file",
-        ) from e
+        raise_typed(PlatformError.files("download_failed", "Failed to download file"), cause=e)
 
     content_type = head.get("ContentType") or "application/octet-stream"
     size = head.get("ContentLength")
@@ -834,10 +797,7 @@ async def download_file_stream(
     """Stream an S3 object stored in the caller's project namespace."""
     bucket_name = bucket or config.bucket
     if bucket_name not in _cross_bucket_allowlist(config):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"Bucket not in download allowlist: {bucket_name}",
-        )
+        raise_typed(PlatformError.files("bucket_denied", f"Bucket not in download allowlist: {bucket_name}"))
     key = _resolve_download_key(path, bucket_name, project_id, config)
     return _stream_object(config.get_client(), bucket_name, key)
 
@@ -876,10 +836,7 @@ async def check_files_exist(
 
     except ClientError as e:
         logger.error(f"S3 error checking files: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to check files",
-        ) from e
+        raise_typed(PlatformError.files("bucket_unreachable", "Failed to check files"), cause=e)
 
 
 # =============================================================================
@@ -1065,10 +1022,7 @@ async def check_download_status(
 
     job_store = get_jobs_store()
     if not job_store:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Job status is unavailable; download readiness cannot be determined",
-        )
+        raise_typed(PlatformError.files("auth_unavailable", "Job status is unavailable; download readiness cannot be determined"))
 
     if blocking and timeout > 0:
         return await _poll_job_until_ready(job_store, job_id, timeout)

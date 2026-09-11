@@ -174,3 +174,53 @@ def test_research_session_404_is_typed_and_byte_identical():
     assert exc.detail == "Session nope-1 not found"  # byte-identical, no drift
     headers = getattr(exc, "headers", {}) or {}
     assert headers.get("x-platform-error-code") == "session.not_found"
+
+
+def test_contract_files_family_codes():
+    from r4_contracts.errors import known_error_codes
+
+    codes = known_error_codes()
+    expected = {
+        "files.traversal": 400,
+        "files.filename_required": 400,
+        "files.upload_failed": 500,
+        "files.presign_failed": 500,
+        "files.not_found": 404,
+        "files.job_not_found": 404,
+        "files.auth_unavailable": 503,
+        "files.metadata_failed": 500,
+        "files.delete_failed": 500,
+        "files.download_failed": 500,
+        "files.bucket_unreachable": 500,
+        "files.bucket_denied": 403,
+        "auth.verified_project_mismatch": 401,
+        "auth.verified_project_required": 401,
+        "auth.project_required": 401,
+    }
+    for code, status in expected.items():
+        assert codes[code] == status, code
+
+
+def test_files_bucket_denied_carries_typed_header(monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+
+    import pytest
+
+    import umrs.api.files as files_api
+
+    config = SimpleNamespace(bucket="umrs-files")
+    with pytest.raises(Exception) as excinfo:
+        asyncio.run(
+            files_api.download_file_stream(
+                path="ns/key.txt",
+                bucket="other-bucket",
+                project_id="proj-1",
+                config=config,
+            )
+        )
+    exc = excinfo.value
+    assert getattr(exc, "status_code", None) == 403, f"{exc!r}"
+    headers = getattr(exc, "headers", {}) or {}
+    assert headers.get("x-platform-error-code") == "files.bucket_denied"
+    assert "Bucket not in download allowlist: other-bucket" == getattr(exc, "detail", "")
