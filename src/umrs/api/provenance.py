@@ -13,6 +13,8 @@ import logging
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+
+from .typed_errors import PlatformError, raise_typed
 from pydantic import BaseModel, Field
 
 from ..jobs.models import JobStatus, JobType
@@ -111,16 +113,10 @@ def get_provenance(
     try:
         job = store.get_job(job_id)
     except JobNotFoundError:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Job not found: {job_id}",
-        )
+        raise_typed(PlatformError.provenance("not_found", f"Job not found: {job_id}"))
 
     if not caller.can_access_job(job):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not authorized to view this job's provenance",
-        )
+        raise_typed(PlatformError.provenance("forbidden", "Not authorized to view this job's provenance"))
 
     attempts = store.get_attempts_for_job(job_id)
     record = build_provenance(job, attempts)
@@ -147,16 +143,10 @@ def get_provenance_lineage(
     try:
         job = store.get_job(job_id)
     except JobNotFoundError:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Job not found: {job_id}",
-        )
+        raise_typed(PlatformError.provenance("not_found", f"Job not found: {job_id}"))
 
     if not caller.can_access_job(job):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not authorized to view this job's lineage",
-        )
+        raise_typed(PlatformError.provenance("forbidden", "Not authorized to view this job's lineage"))
 
     traces = trace_store.get_traces_for_job(job_id)
     graph = build_lineage_graph(job_id, traces)
@@ -183,14 +173,10 @@ def diff_provenance(
         try:
             job = store.get_job(jid)
         except JobNotFoundError:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Job not found: {jid}",
-            )
+            raise_typed(PlatformError.provenance("not_found", f"Job not found: {jid}"))
         if not caller.can_access_job(job):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Not authorized to view job: {jid}",
+            raise_typed(
+                PlatformError.provenance("forbidden", f"Not authorized to view job: {jid}")
             )
 
     # Build provenance records
@@ -230,9 +216,8 @@ def list_provenance(
         try:
             jt = JobType(job_type)
         except ValueError:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid job_type: {job_type}",
+            raise_typed(
+                PlatformError.provenance("bad_request", f"Invalid job_type: {job_type}")
             )
 
     js = None
@@ -240,19 +225,17 @@ def list_provenance(
         try:
             js = JobStatus(status_filter)
         except ValueError:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid status: {status_filter}",
+            raise_typed(
+                PlatformError.provenance("bad_request", f"Invalid status: {status_filter}")
             )
 
     effective_project = project_id or caller.project_id
 
     # Non-admin callers MUST NOT query another project's jobs.
     if project_id and project_id != caller.project_id and not caller.is_admin:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Cross-project provenance listing requires admin privileges",
-        )
+            raise_typed(
+                PlatformError.auth("admin_required", "Cross-project provenance listing requires admin privileges")
+            )
 
     jobs = store.list_jobs(
         project_id=effective_project,
