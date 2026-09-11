@@ -18,6 +18,8 @@ import logging
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
+
+from .typed_errors import PlatformError, raise_typed
 from pydantic import BaseModel, Field
 
 from umrs.knowledge_model import (
@@ -43,9 +45,11 @@ def set_store(store: InMemoryKnowledgeModelStore) -> None:
 
 def _get_store() -> InMemoryKnowledgeModelStore:
     if _store is None:
-        raise HTTPException(
-            status_code=503,
-            detail="Knowledge model store not initialized",
+        raise_typed(
+            PlatformError.knowledgemodel(
+                "unavailable",
+                "Knowledge model store not initialized",
+            )
         )
     return _store
 
@@ -107,9 +111,11 @@ async def create_object(req: CreateObjectRequest) -> ObjectResponse:
     try:
         object_type = KnowledgeObjectType(req.object_type)
     except ValueError:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid object type: {req.object_type}",
+        raise_typed(
+            PlatformError.knowledgemodel(
+                "bad_request",
+                f"Invalid object type: {req.object_type}",
+            )
         )
 
     object_id = store.create_object(
@@ -130,9 +136,11 @@ async def get_object(object_id: str) -> ObjectResponse:
     store = _get_store()
     obj = store.get_object(object_id)
     if obj is None:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Object {object_id} not found",
+        raise_typed(
+            PlatformError.knowledgemodel(
+                "not_found",
+                f"Object {object_id} not found",
+            )
         )
     return ObjectResponse(**obj.to_dict())
 
@@ -150,9 +158,11 @@ async def update_object(
         metadata=req.metadata,
     )
     if not result:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Object {object_id} not found",
+        raise_typed(
+            PlatformError.knowledgemodel(
+                "not_found",
+                f"Object {object_id} not found",
+            )
         )
     obj = store.get_object(object_id)
     return ObjectResponse(**obj.to_dict())
@@ -172,9 +182,11 @@ async def delete_object(
         deletion_reason=deletion_reason,
     )
     if not result:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Object {object_id} not found",
+        raise_typed(
+            PlatformError.knowledgemodel(
+                "not_found",
+                f"Object {object_id} not found",
+            )
         )
     return {"deleted": True, "object_id": object_id}
 
@@ -194,20 +206,14 @@ async def list_objects(
         try:
             obj_type = KnowledgeObjectType(object_type)
         except ValueError:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid object type: {object_type}",
-            )
+            raise_typed(PlatformError.knowledgemodel("bad_request", f"Invalid object type: {object_type}"))
 
     obj_status: KnowledgeObjectStatus | None = None
     if status:
         try:
             obj_status = KnowledgeObjectStatus(status)
         except ValueError:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid status: {status}",
-            )
+                        raise_typed(PlatformError.knowledgemodel("bad_request", f"Invalid status: {status}"))
 
     objects = store.list_objects(
         project_id=project_id,
@@ -235,10 +241,7 @@ async def search_objects(
         try:
             obj_type = KnowledgeObjectType(object_type)
         except ValueError:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid object type: {object_type}",
-            )
+            raise_typed(PlatformError.knowledgemodel("bad_request", f"Invalid object type: {object_type}"))
 
     objects = store.search_objects(
         query,
@@ -260,9 +263,11 @@ async def get_object_history(object_id: str) -> ObjectHistoryResponse:
     try:
         versions = store.get_object_history(object_id)
     except KnowledgeObjectNotFoundError:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Object {object_id} not found",
+        raise_typed(
+            PlatformError.knowledgemodel(
+                "not_found",
+                f"Object {object_id} not found",
+            )
         )
     return ObjectHistoryResponse(
         object_id=object_id,
