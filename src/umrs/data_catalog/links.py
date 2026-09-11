@@ -80,6 +80,34 @@ def _resolve_document_id(pool: Any, project_id: str, s3_key: str) -> tuple[str |
         pool.putconn(conn)
 
 
+_PROJECT_VECTOR_COUNT_SQL = """
+SELECT COUNT(*)
+  FROM knowledge_node_embeddings e
+  JOIN knowledge_nodes n USING (node_id)
+ WHERE n.project_id = %s
+"""
+
+
+def count_vector_rows_for_project(pool: Any, project_id: str) -> int | None:
+    """Project-wide vector-row count for the catalogue-plane stats bridge.
+
+    This is the ONLY data_catalog location allowed to touch the vector
+    table (ADR-031 dependency direction; fence-designated bridge). The
+    sibling `plane_counts.py` delegates here, never holding the table token
+    itself. Returns None on pool issues instead of raising (fail-open,
+    never a fabricated zero).
+    """
+    conn = pool.getconn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(_PROJECT_VECTOR_COUNT_SQL, (project_id,))
+            return int(cur.fetchone()[0] or 0)
+    except Exception:  # noqa: BLE001 — fail-open by contract
+        return None
+    finally:
+        pool.putconn(conn)
+
+
 def hydrate_links(pool: Any, *, project_id: str, s3_key: str) -> dict[str, Any] | None:
     """Server-side document→node→vector links for one catalogue row.
 
