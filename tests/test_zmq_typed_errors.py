@@ -543,3 +543,18 @@ def test_contract_knowledgemodel_family_codes():
     }
     for code, status in expected.items():
         assert codes[code] == status, code
+
+
+def test_contract_grants_family_codes():
+    from r4_contracts.errors import known_error_codes
+
+    codes = known_error_codes()
+    expected = {
+        "grants.unauthorized": 401,
+        "grants.unavailable": 503,
+        "grants.not_found": 404,
+        "grants.conflict": 409,
+        "grants.bad_request": 400,
+    }
+    for code, status in expected.items():
+        assert codes[code] == status, code
