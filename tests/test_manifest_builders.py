@@ -69,3 +69,53 @@ class TestExecutionManifest:
     def test_default_trigger_is_api_not_invented(self):
         manifest = execution_manifest(provenance={})
         assert manifest["trigger"] == "api"
+
+
+# ---------------------------------------------------------------------------
+# WP-10 round 2 — model pins into the manifest
+# ---------------------------------------------------------------------------
+
+
+class TestBuildModelPins:
+    def test_spec_fields_become_verbatim_pins(self):
+        from umrs.jobs.manifest import build_model_pins
+
+        pins = build_model_pins(
+            {
+                "model": "qwen3-8b",
+                "model_version": "v3",
+                "model_path": "/models/qwen3-8b",
+                "embedding_model": "bge-m3",
+            }
+        )
+        by_name = {p["name"]: p for p in pins}
+        assert by_name["qwen3-8b"]["version"] == "v3"
+        assert by_name["qwen3-8b"]["path"] == "/models/qwen3-8b"
+        assert by_name["qwen3-8b"]["source"] == "spec.model"
+        assert by_name["bge-m3"]["source"] == "spec.embedding_model"
+        assert "version" not in by_name["bge-m3"]  # never fabricated
+
+    def test_absent_fields_contribute_no_pins(self):
+        from umrs.jobs.manifest import build_model_pins
+
+        assert build_model_pins({}) == []
+        assert build_model_pins(None) == []
+        assert build_model_pins("not-a-dict") == []
+
+    def test_duplicate_names_pin_once_first_source_wins(self):
+        from umrs.jobs.manifest import build_model_pins
+
+        pins = build_model_pins({"model": "m1", "model_name": "m1"})
+        assert [p["name"] for p in pins] == ["m1"]
+        assert pins[0]["source"] == "spec.model"
+
+    def test_manifest_carries_pins_and_records_empty_honestly(self):
+        from umrs.jobs.manifest import execution_manifest
+
+        manifest = execution_manifest(provenance={}, model_pins=[])
+        assert manifest["model_pins"] == []
+        manifest2 = execution_manifest(
+            provenance={},
+            model_pins=[{"name": "m1", "source": "spec.model"}],
+        )
+        assert manifest2["model_pins"][0]["name"] == "m1"

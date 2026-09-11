@@ -936,7 +936,7 @@ class JobStore:
         try:
             job = self.get_job(job_id)
             attempts = self.get_attempts_for_job(job_id)
-            from .manifest import execution_manifest
+            from .manifest import build_model_pins, execution_manifest
             from .provenance import build_provenance
 
             spec = job.spec or {}
@@ -944,6 +944,7 @@ class JobStore:
                 provenance=build_provenance(job, attempts).to_dict(),
                 trigger=str(spec.get("trigger") or "api"),
                 pipeline_name=str(spec.get("workflow_name") or ""),
+                model_pins=build_model_pins(spec),
             )
             with self._get_conn() as conn, conn.cursor() as cur:
                 cur.execute(
