@@ -478,10 +478,12 @@ mkdir -p "${EGRESS_AUDIT_LOG_PATH}" || { echo "[rivault] FATAL: cannot create EG
 echo "[rivault] egress audit log dir: ${EGRESS_AUDIT_LOG_PATH}"
 
 # Vision publish port: the compose pins the static host-publish (default
-# 3001) and bind failures surface only INSIDE the service start (Live class:
-# 5 attempts died at bind on dgx-spark-1 — leftover rootlessport zombies
-# from earlier attempts AND co-tenant stacks hold these ports). Probe up to
-# 20 candidates here in the batch shell — never bind-fail silently.
+# port value 3001) and bind failures surface only INSIDE the service start
+# (Live class: 5 attempts died at bind on dgx-spark-1 — leftover rootlessport
+# zombies from earlier attempts AND co-tenant stacks hold these ports).
+# Probe up to 20 candidates here in the batch shell — never bind-fail
+# silently. NOTE: this file is an UNQUOTED heredoc at the env render —
+# backticks in comments execute as command substitution.
 _bv_port="${BENTOML_VISION_DOCKER_PORT:-3001}"
 _bv_base="${_bv_port}"
 for _try in $(seq "${_bv_port}" $(( _bv_port + 20 ))); do
@@ -615,10 +617,10 @@ HMAE_CHECKPOINT=${HMAE_CHECKPOINT:-./models/hmae/latest_checkpoint.pth}
 # R-1 (Phase 2k): prefer orchestrator-allocated LITELLM_PORT to avoid
 # collision between concurrent jobs; fall back to random if unset.
 NGINX_LITELLM_DOCKER_PORT=${NGINX_LITELLM_DOCKER_PORT}
-# Published vision readiness port (compose's `...:3001` interpolation reads
-# only this env file — ambient env never reaches it). Static host publish
-# means at most ONE holder per node; recipes override this key when another
-# stack already pins 3001 (live §6b-3: verdict attempts died at bind).
+# Published vision readiness port (the compose interpolation reads only
+# this env file — ambient env never reaches it). Static host publish means
+# at most ONE holder per node; recipes override this key when another stack
+# already pins 3001 (live §6b-3: verdict attempts died at bind).
 BENTOML_VISION_DOCKER_PORT=${BENTOML_VISION_DOCKER_PORT:-3001}
 # First three octets of the private container subnet (genai-private-net)
 PRIV_IP1TO3=${PRIV_IP1TO3:-192.168.4}
