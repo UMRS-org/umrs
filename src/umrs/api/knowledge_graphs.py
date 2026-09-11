@@ -17,6 +17,8 @@ import logging
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+
+from .typed_errors import PlatformError, raise_typed
 from pydantic import BaseModel, Field
 
 from umrs.knowledge.access_scope import (
@@ -39,7 +41,7 @@ router = APIRouter(prefix="/umrs/knowledge/graphs", tags=["knowledge-graphs"])
 def _registry(request: Request) -> GraphRegistryStore:
     pool = getattr(request.app.state, "umrs_db_pool", None)
     if pool is None:
-        raise HTTPException(status_code=503, detail="Database unavailable")
+        raise_typed(PlatformError.knowledgegraphs("unavailable", "Database unavailable"))
     return GraphRegistryStore(pool)
 
 
@@ -161,7 +163,7 @@ async def get_graph(graph_id: str, request: Request) -> dict[str, Any]:
         owner_id=graph.owner_id,
         caller=scope,
     ):
-        raise HTTPException(status_code=404, detail=f"Graph {graph_id} not found")
+        raise_typed(PlatformError.knowledgegraphs("not_found", f"Graph {graph_id} not found"))
     return graph.to_dict()
 
 
@@ -184,9 +186,7 @@ async def get_graph_content(
             graph_id, node_limit=node_limit, edge_limit=edge_limit
         )
     except KeyError:
-        raise HTTPException(
-            status_code=404, detail=f"Graph {graph_id} not found"
-        ) from None
+        raise_typed(PlatformError.knowledgegraphs("not_found", f"Graph {graph_id} not found"))
     scope = get_caller_scope(request)
     if not graph_readable(
         kind=str(content.get("kind") or ""),
@@ -196,7 +196,7 @@ async def get_graph_content(
         owner_id=str(content.get("owner_id") or ""),
         caller=scope,
     ):
-        raise HTTPException(status_code=404, detail=f"Graph {graph_id} not found")
+        raise_typed(PlatformError.knowledgegraphs("not_found", f"Graph {graph_id} not found"))
     return content
 
 
@@ -215,7 +215,7 @@ async def update_graph(
     registry = _registry(request)
     existing = registry.get_graph(graph_id)
     if existing is None:
-        raise HTTPException(status_code=404, detail=f"Graph {graph_id} not found")
+        raise_typed(PlatformError.knowledgegraphs("not_found", f"Graph {graph_id} not found"))
     scope = get_caller_scope(request)
     if not graph_writable(
         kind=existing.kind,
@@ -232,8 +232,8 @@ async def update_graph(
         )
     if body.status is not None:
         if body.status not in GRAPH_STATUSES:
-            raise HTTPException(
-                status_code=400, detail=f"Invalid status {body.status!r}"
+            raise_typed(
+                PlatformError.knowledgegraphs("bad_request", f"Invalid status {body.status!r}")
             )
         registry.set_status(graph_id, body.status)
     graph = registry.update_graph(
