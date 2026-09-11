@@ -597,6 +597,11 @@ HMAE_CHECKPOINT=${HMAE_CHECKPOINT:-./models/hmae/latest_checkpoint.pth}
 # R-1 (Phase 2k): prefer orchestrator-allocated LITELLM_PORT to avoid
 # collision between concurrent jobs; fall back to random if unset.
 NGINX_LITELLM_DOCKER_PORT=${NGINX_LITELLM_DOCKER_PORT}
+# Published vision readiness port (compose's `...:3001` interpolation reads
+# only this env file — ambient env never reaches it). Static host publish
+# means at most ONE holder per node; recipes override this key when another
+# stack already pins 3001 (live §6b-3: verdict attempts died at bind).
+BENTOML_VISION_DOCKER_PORT=${BENTOML_VISION_DOCKER_PORT:-3001}
 # First three octets of the private container subnet (genai-private-net)
 PRIV_IP1TO3=${PRIV_IP1TO3:-192.168.4}
 # DNS resolver for containers (podman uses host resolv.conf, not 127.0.0.11)
