@@ -6,36 +6,15 @@ groups:
   # Gateway Alerts
   # ==========================================================================
   - name: gateway
+    # 2026-09-11 (ADR-014 removal): GatewayHighErrorRate / GatewayHighLatency
+    # / EndpointProvisioningStuck / NoActiveEndpoints / LLMHighLatency /
+    # LLMFirstTokenSlow were pruned — their series (rivault_gateway_*,
+    # rivault_endpoints_*, rivault_llm_*) were emitted only by the retired
+    # Python gateway. No equivalent edge-side emission exists yet on
+    # NGINX+sidecar; re-add under the sidecar's own metric names when it
+    # starts instrumenting (check_metrics_coverage.py now fails on
+    # silent-dead rules).
     rules:
-      - alert: GatewayHighErrorRate
-        expr: |
-          (
-            sum(rate(rivault_gateway_requests_total{status=~"5.."}[5m]))
-            /
-            sum(rate(rivault_gateway_requests_total[5m]))
-          ) > 0.05
-        for: 2m
-        labels:
-          severity: critical
-          team: platform
-        annotations:
-          summary: "High error rate in Gateway"
-          description: "Gateway error rate is {{ $value | humanizePercentage }} over the last 5 minutes"
-          runbook_url: "https://wiki.rivault.io/runbooks/gateway-errors"
-
-      - alert: GatewayHighLatency
-        expr: |
-          histogram_quantile(0.99,
-            sum(rate(rivault_gateway_request_duration_seconds_bucket[5m])) by (le)
-          ) > 5
-        for: 5m
-        labels:
-          severity: warning
-          team: platform
-        annotations:
-          summary: "High latency in Gateway"
-          description: "Gateway p99 latency is {{ $value | humanizeDuration }}"
-
       - alert: GatewayDown
         expr: up{job="gateway"} == 0
         for: 1m
@@ -61,29 +40,6 @@ groups:
           summary: "UMRS is down"
           description: "UMRS instance {{ $labels.instance }} is unreachable"
 
-      - alert: EndpointProvisioningStuck
-        expr: |
-          rivault_endpoints_provisioning > 0
-          and
-          changes(rivault_endpoints_provisioning[10m]) == 0
-        for: 10m
-        labels:
-          severity: warning
-          team: platform
-        annotations:
-          summary: "Endpoint provisioning stuck"
-          description: "{{ $value }} endpoints have been provisioning for >10 minutes"
-
-      - alert: NoActiveEndpoints
-        expr: rivault_endpoints_active == 0
-        for: 5m
-        labels:
-          severity: warning
-          team: platform
-        annotations:
-          summary: "No active inference endpoints"
-          description: "All inference endpoints are down or not provisioned"
-
       - alert: JobFailureRateHigh
         expr: |
           (
@@ -104,19 +60,6 @@ groups:
   # ==========================================================================
   - name: llm
     rules:
-      - alert: LLMHighLatency
-        expr: |
-          histogram_quantile(0.99,
-            sum(rate(rivault_llm_request_duration_seconds_bucket[5m])) by (le, model)
-          ) > 30
-        for: 5m
-        labels:
-          severity: warning
-          team: ml
-        annotations:
-          summary: "High LLM latency"
-          description: "LLM {{ $labels.model }} p99 latency is {{ $value | humanizeDuration }}"
-
       - alert: VLLMQueueBacklog
         expr: vllm_num_requests_waiting > 50
         for: 5m
@@ -335,20 +278,9 @@ groups:
   # ==========================================================================
   - name: llm-slo
     rules:
-      - alert: LLMFirstTokenSlow
-        expr: |
-          histogram_quantile(0.95,
-            sum(rate(rivault_llm_first_token_seconds_bucket[10m])) by (le)
-          ) > 30
-        for: 10m
-        labels:
-          severity: warning
-          team: platform
-        annotations:
-          summary: "LLM time-to-first-chunk p95 above 30s"
-          description: "Gateway-measured TTFT p95 is {{ $value }}s over the last 10 minutes (ratified P11 SLO is 30s)."
-          runbook_url: "docs/operations/embedding-outage-playbook.md"
-
+      # LLMFirstTokenSlow pruned 2026-09-11 (ADR-014): series came only from
+      # the retired Python gateway (ratified P11 TTFT SLO now unmeasured —
+      # owned by G-P11-2/G-P1-4; re-instrument on the sidecar or UMRS route).
       - alert: AttemptWallTimeAnomalous
         expr: |
           histogram_quantile(0.95,
