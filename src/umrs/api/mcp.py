@@ -23,6 +23,8 @@ from typing import Any
 
 import aiohttp
 from fastapi import APIRouter, HTTPException, Query, Request, status
+
+from .typed_errors import PlatformError, raise_typed
 from pydantic import BaseModel, Field
 
 from ..mcp.store import (
@@ -84,10 +86,7 @@ def _check_blocked_ip(hostname: str) -> None:
         return
     for network in _BLOCKED_NETWORKS:
         if addr in network:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=f"MCP server URL resolves to a blocked network ({network}): {hostname}",
-            )
+            raise_typed(PlatformError.mcp("unprocessable", f"MCP server URL resolves to a blocked network ({network}): {hostname}"))
 
 
 def _validate_mcp_url(url: str) -> None:
@@ -105,29 +104,17 @@ def _validate_mcp_url(url: str) -> None:
     try:
         parsed = urllib.parse.urlparse(url)
     except Exception:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"Invalid URL format: {url}",
-        )
+        raise_typed(PlatformError.mcp("unprocessable", f"Invalid URL format: {url}"))
 
     if parsed.scheme not in ("http", "https"):
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"MCP server URL must use http or https scheme, got: {parsed.scheme!r}",
-        )
+        raise_typed(PlatformError.mcp("unprocessable", f"MCP server URL must use http or https scheme, got: {parsed.scheme!r}"))
 
     hostname = parsed.hostname
     if not hostname:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="MCP server URL must include a hostname",
-        )
+        raise_typed(PlatformError.mcp("unprocessable", "MCP server URL must include a hostname"))
 
     if hostname.lower() in _BLOCKED_HOSTNAMES:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"MCP server URL hostname is blocked (metadata endpoint): {hostname}",
-        )
+        raise_typed(PlatformError.mcp("unprocessable", f"MCP server URL hostname is blocked (metadata endpoint): {hostname}"))
 
     _check_blocked_ip(hostname)
 
@@ -153,10 +140,7 @@ def set_mcp_store(store: MCPServerStore) -> None:
 def _get_store() -> MCPServerStore:
     """Get the active MCP store or 503."""
     if _store is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="MCP server store not available",
-        )
+        raise_typed(PlatformError.mcp("unavailable", "MCP server store not available"))
     return _store
 
 
@@ -380,15 +364,9 @@ async def get_server(request: Request, server_id_or_name: str) -> ServerResponse
         else:
             server = store.get_server_by_name(server_id_or_name)
     except MCPServerNotFoundError:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Server not found: {server_id_or_name}",
-        ) from None
+        raise_typed(PlatformError.mcp("not_found", f"Server not found: {server_id_or_name}"))
     if not _server_visible(server, scope.project_id, unrestricted):
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Server not found: {server_id_or_name}",
-        )
+        raise_typed(PlatformError.mcp("not_found", f"Server not found: {server_id_or_name}"))
     return _server_to_response(server)
 
 
@@ -431,10 +409,7 @@ async def unregister_server(request: Request, server_id_or_name: str) -> dict[st
         deleted = store.unregister_server(server_id_or_name)
 
     if not deleted:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Server not found: {server_id_or_name}",
-        )
+        raise_typed(PlatformError.mcp("not_found", f"Server not found: {server_id_or_name}"))
 
     from .audit_events import emit_audit
 
@@ -486,10 +461,7 @@ async def lookup_tool_server(
     store = _get_store()
     server = store.get_server_for_tool(tool)
     if not server:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"No server found for tool: {tool}",
-        )
+        raise_typed(PlatformError.mcp("not_found", f"No server found for tool: {tool}"))
     return _server_to_response(server)
 
 
@@ -561,10 +533,7 @@ async def call_tool(
     store = _get_store()
     server = store.get_server_for_tool(request.tool)
     if not server:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Tool not found: {request.tool}",
-        )
+        raise_typed(PlatformError.mcp("not_found", f"Tool not found: {request.tool}"))
 
     logger.info("Invoking tool %s on server %s", request.tool, server.name)
 

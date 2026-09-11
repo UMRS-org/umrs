@@ -433,3 +433,16 @@ def test_contract_artifacts_family_codes():
     }
     for code, status in expected.items():
         assert codes[code] == status, code
+
+
+def test_contract_mcp_family_codes():
+    from r4_contracts.errors import known_error_codes
+
+    codes = known_error_codes()
+    expected = {
+        "mcp.not_found": 404,
+        "mcp.unavailable": 503,
+        "mcp.unprocessable": 422,
+    }
+    for code, status in expected.items():
+        assert codes[code] == status, code
