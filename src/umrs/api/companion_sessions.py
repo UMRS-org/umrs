@@ -17,6 +17,8 @@ import re
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
+
+from .typed_errors import PlatformError, raise_typed
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
@@ -34,21 +36,21 @@ _STATE_COMPUTED = _STATE_STORED | {"archived"}
 
 def _validate_venue(value: str) -> str:
     if not _VENUE_RE.match(value or ""):
-        raise HTTPException(
-            status_code=400,
-            detail=f"invalid venue {value!r}: expected local | frontend | cluster:<name>",
+        raise_typed(
+            PlatformError.companionsessions(
+                "bad_request",
+                f"invalid venue {value!r}: expected local | frontend | cluster:<name>"
+            ),
         )
     return value
 
 
 def _validate_stored_state(value: str) -> str:
     if value not in _STATE_STORED:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"invalid state {value!r}: expected one of "
-                f"{sorted(s for s in _STATE_STORED if s)} or '' "
-                "('archived' is computed, never stored)"
+        raise_typed(
+            PlatformError.companionsessions(
+                "bad_request",
+                ( f"invalid state {value!r}: expected one of " f"{sorted(s for s in _STATE_STORED if s)} or '' " "('archived' is computed, never stored)" )
             ),
         )
     return value
@@ -75,14 +77,14 @@ def _uid(request: Request) -> str:
     """Owner identity, as asserted by the gateway-verified header."""
     uid = request.headers.get("x-user-id", "").strip()
     if not uid:
-        raise HTTPException(status_code=401, detail="identity header missing")
+        raise_typed(PlatformError.companionsessions("unauthorized", "identity header missing"))
     return uid
 
 
 def _pool(request: Request) -> Any:
     pool = getattr(request.app.state, "umrs_db_pool", None)
     if pool is None:
-        raise HTTPException(status_code=503, detail="database pool unavailable")
+        raise_typed(PlatformError.companionsessions("unavailable", "database pool unavailable"))
     return pool
 
 
@@ -164,7 +166,7 @@ async def get_session_snapshot(session_id: str, request: Request) -> dict[str, A
     finally:
         pool.putconn(conn)
     if row is None:
-        raise HTTPException(status_code=404, detail="snapshot not found")
+        raise_typed(PlatformError.companionsessions("not_found", "snapshot not found"))
     sid, name, payload, updated, venue, state, archived_at = row
     return {
         "session_id": sid,
@@ -209,7 +211,7 @@ async def delete_session_snapshot(session_id: str, request: Request) -> dict[str
     finally:
         pool.putconn(conn)
     if not deleted:
-        raise HTTPException(status_code=404, detail="snapshot not found")
+        raise_typed(PlatformError.companionsessions("not_found", "snapshot not found"))
     return {"status": "ok", "session_id": session_id, "deleted": True}
 
 
@@ -255,7 +257,7 @@ async def list_session_snapshots(
     states = _csv_filter(state)
     invalid = [s for s in states if s not in _STATE_COMPUTED]
     if invalid:
-        raise HTTPException(status_code=400, detail=f"invalid state filter: {invalid}")
+        raise_typed(PlatformError.companionsessions("bad_request", f"invalid state filter: {invalid}"))
     where, params = _list_where(uid, venues, states, include_archived)
     project_clause = ""
     if project:

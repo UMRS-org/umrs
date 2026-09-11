@@ -18,6 +18,8 @@ import logging
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+
+from .typed_errors import PlatformError, raise_typed
 from pydantic import BaseModel, Field
 
 from ._verified_headers import CallerIdentity, get_caller
@@ -113,14 +115,18 @@ async def resolve_finding(
     caller context exists the write is admin-only.
     """
     if caller is not None and not caller.is_admin:
-        raise HTTPException(
-            status_code=403,
-            detail="verification finding writes are admin-scoped",
+        raise_typed(
+            PlatformError.verification(
+                "forbidden",
+                "verification finding writes are admin-scoped"
+            ),
         )
     if _store is None:
-        raise HTTPException(
-            status_code=503,
-            detail="Verification store not initialized — cannot persist findings",
+        raise_typed(
+            PlatformError.verification(
+                "unavailable",
+                "Verification store not initialized — cannot persist findings"
+            ),
         )
 
     await _store.upsert_finding(
@@ -151,14 +157,18 @@ async def list_findings(
     dump is admin-scoped whenever a verified caller is present.
     """
     if caller is not None and not caller.is_admin:
-        raise HTTPException(
-            status_code=403,
-            detail="verification findings listing is admin-scoped",
+        raise_typed(
+            PlatformError.verification(
+                "forbidden",
+                "verification findings listing is admin-scoped"
+            ),
         )
     if _store is None:
-        raise HTTPException(
-            status_code=503,
-            detail="Verification store not initialized — cannot list findings",
+        raise_typed(
+            PlatformError.verification(
+                "unavailable",
+                "Verification store not initialized — cannot list findings"
+            ),
         )
     findings = await _store.list_findings(
         report_id=report_id,
@@ -192,14 +202,18 @@ async def transition_finding(
     Wave-6 F3: same admin scoping as the other findings endpoints.
     """
     if caller is not None and not caller.is_admin:
-        raise HTTPException(
-            status_code=403,
-            detail="verification finding transitions are admin-scoped",
+        raise_typed(
+            PlatformError.verification(
+                "forbidden",
+                "verification finding transitions are admin-scoped"
+            ),
         )
     if _store is None:
-        raise HTTPException(
-            status_code=503,
-            detail="Verification store not initialized — cannot transition findings",
+        raise_typed(
+            PlatformError.verification(
+                "unavailable",
+                "Verification store not initialized — cannot transition findings"
+            ),
         )
     try:
         finding = await _store.transition_finding(
@@ -211,7 +225,7 @@ async def transition_finding(
             "title": finding.title,
         }
     except TransitionError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise_typed(PlatformError.verification("bad_request", str(exc)))
 
 
 @router.get("/sessions")

@@ -6,6 +6,8 @@ import logging
 
 from fastapi import APIRouter, HTTPException
 
+from .typed_errors import PlatformError, raise_typed
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/umrs/workflow-fork", tags=["workflow-fork"])
@@ -21,7 +23,7 @@ def set_forker(forker) -> None:
 
 def _get_forker():
     if _forker is None:
-        raise HTTPException(status_code=503, detail="Workflow forker not initialized")
+        raise_typed(PlatformError.workflowfork("unavailable", "Workflow forker not initialized"))
     return _forker
 
 
@@ -42,7 +44,7 @@ async def fork_workflow(req: dict):
         )
         return result.to_dict()
     except WorkflowForkError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise_typed(PlatformError.workflowfork("bad_request", str(exc)))
 
 
 @router.get("/lineage/{job_id}")
@@ -55,4 +57,4 @@ async def get_fork_lineage(job_id: str):
         chain = forker.get_fork_lineage(job_id)
         return {"job_id": job_id, "lineage_chain": chain}
     except WorkflowForkError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
+        raise_typed(PlatformError.workflowfork("not_found", str(exc)))
