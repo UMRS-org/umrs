@@ -42,6 +42,22 @@ For the normal Slurm+Podman deployment path:
 4. `serve-model.slurm` chooses the appropriate override file and runs the
       profile set from `serve-model.yaml` through Podman Compose.
 
+### Venue prerequisites
+
+- **podman-compose must parse `--profile`.** Distro shims that spoof the
+  embedded podman version (dgx-spark prints 4.9.3 but ships a 1.0.x CLI)
+  fail at runtime; the script capability-gates with `up --help`, and on
+  failure installs a vendored `podman-compose >= 1.2` into
+  `$HOME/venvs/pc-all` (durable across jobs; PATH prefix picks it up).
+  Fail-closed: no `--profile`-capable compose ⇒ the job exits before
+  touching state.
+- **Static host-publish ports** (4000 LiteLLM, 3001 vision): at most one
+  mini-rivault per node — always submit with `--nodelist <node>` (site pool
+  YAMLs already forward `nodelist` → `#SBATCH --nodelist=...`).
+- **dgx-spark carries no CNI plugins** → `network_backend: netavark` in the
+  partition profile; `venue.sh` honours it via
+  `RIVAULT_PARTITION_NETWORK_BACKEND` (§6b-3).
+
 The preferred orchestrator path for this branch is
 `src/umrs/orchestrator/slurm_podman_backend.py`.
 
