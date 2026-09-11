@@ -570,3 +570,16 @@ def test_contract_traces_family_codes():
     }
     for code, status in expected.items():
         assert codes[code] == status, code
+
+
+def test_contract_knowledgegraphs_family_codes():
+    from r4_contracts.errors import known_error_codes
+
+    codes = known_error_codes()
+    expected = {
+        "knowledgegraphs.unavailable": 503,
+        "knowledgegraphs.not_found": 404,
+        "knowledgegraphs.bad_request": 400,
+    }
+    for code, status in expected.items():
+        assert codes[code] == status, code
