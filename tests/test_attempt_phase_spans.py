@@ -13,16 +13,6 @@ from unittest.mock import MagicMock
 from umrs.jobs.timing import maybe_emit_attempt_span
 
 
-def _fake_otel_stack(spans):
-    fake_span = MagicMock()
-    spans.append(fake_span)
-    fake_tracer = MagicMock()
-    fake_tracer.start_span.return_value = fake_span
-    fake_trace = MagicMock()
-    fake_trace.get_tracer.return_value = fake_tracer
-    return fake_tracer, fake_trace
-
-
 class TestMaybeEmitAttemptSpan:
     def _base_kwargs(self):
         start = datetime(2026, 9, 11, 0, 0, tzinfo=timezone.utc)
