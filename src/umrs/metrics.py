@@ -306,6 +306,16 @@ class UMRSMetrics:
             "End-to-end LLM proxy latency in seconds",
             ["source", "model"],
         )
+        # ADR-014 follow-up (2026-09-11): the retired Python gateway owned the
+        # ratified P11 TTFT SLO series `rivault_llm_first_token_seconds`; the
+        # UMRS LLM route is now the only streaming proxy, so the SAME series
+        # name is owned here (SLO continuity — alert LLMFirstTokenSlow stays
+        # valid) with umrs-standard source/model labels.
+        self._llm_first_token = _histogram(
+            "rivault_llm_first_token_seconds",
+            "LLM time-to-first-streamed-chunk measured at the UMRS LLM route (P11 SLO)",
+            ["source", "model"],
+        )
         self._llm_requests = _counter(
             "umrs_llm_requests_total",
             "Total LLM proxy requests by source, model, streaming",
@@ -641,6 +651,21 @@ class UMRSMetrics:
         """Record end-to-end proxy latency."""
         s = source or self._source
         self._llm_request_duration.labels(source=s, model=model).observe(seconds)
+
+    def llm_first_token(
+        self, model: str, seconds: float, source: str = ""
+    ) -> None:
+        """Record time-to-first-streamed-chunk (P11 TTFT SLO series).
+
+        Observed exactly once per streaming response at the first chunk the
+        upstream yields; seconds come from the ProxyTimer started at the
+        route boundary (proxy-measured TTFT, same anchor as the retired
+        gateway implementation — chunk, not decoded token).
+        """
+        if seconds < 0:
+            return
+        s = source or self._source
+        self._llm_first_token.labels(source=s, model=model).observe(seconds)
 
     def llm_request(self, model: str, streaming: bool, source: str = "") -> None:
         """Increment LLM request counter."""

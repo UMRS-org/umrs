@@ -654,3 +654,92 @@ def test_discovery_by_served_name():
         )
 
     assert response.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# P11 TTFT SLO series (ADR-014 follow-up, 2026-09-11)
+# ---------------------------------------------------------------------------
+
+
+def test_streaming_first_chunk_observes_ttft_once():
+    """Streaming responses observe the TTFT SLO series exactly once per stream.
+
+    Series anchor: first upstream chunk, measured from the ProxyTimer at the
+    route boundary (chunk — not decoded token). Fails without the change:
+    the retired Python gateway owned this series and nothing else recorded it.
+    """
+    import httpx
+
+    registry = _make_registry_with_endpoint()
+    client = _create_client(registry)
+
+    chunks = [
+        b'data: {"choices":[{"delta":{"content":"he"}}]}\n\n',
+        b'data: {"choices":[{"delta":{"content":"llo"}}]}\n\n',
+        b"data: [DONE]\n\n",
+    ]
+
+    class _FakeResponse:
+        status_code = 200
+        headers = {"content-type": "text/event-stream"}
+
+        async def aiter_bytes(self):
+            for c in chunks:
+                yield c
+
+        async def aclose(self):
+            return None
+
+    class _FakeClient:
+        async def aclose(self):
+            return None
+
+    async def fake_open_stream(request, upstream_url, headers, body):
+        return _FakeClient(), _FakeResponse()
+
+    observations: list[tuple[str, float]] = []
+
+    from umrs.metrics import METRICS
+
+    with (
+        patch.object(llm_api, "_open_stream", fake_open_stream),
+        patch.object(METRICS, "llm_first_token", lambda model, seconds: observations.append((model, seconds))),
+    ):
+        response = client.post(
+            "/umrs/llm/v1/chat/completions",
+            json={"model": "qwen3-8b", "messages": [], "stream": True},
+            headers={"x-user-id": "user-1", "x-project-id": "test-project"},
+        )
+
+    assert response.status_code == 200
+    assert len(observations) == 1, f"TTFT must be observed exactly once, got {observations}"
+    assert observations[0][0] == "qwen3-8b"
+    assert observations[0][1] >= 0
+
+
+def test_oneshot_never_observes_ttft():
+    """Non-streaming requests must NOT touch the TTFT series."""
+
+    registry = _make_registry_with_endpoint()
+    client = _create_client(registry)
+
+    async def fake_request(self, method, url, **kwargs):
+        return _mock_litellm_response({"id": "x", "choices": []})
+
+    import httpx
+
+    from umrs.metrics import METRICS
+
+    observations: list[tuple[str, float]] = []
+    with (
+        patch.object(httpx.AsyncClient, "request", fake_request),
+        patch.object(METRICS, "llm_first_token", lambda *a: observations.append(a)),
+    ):
+        response = client.post(
+            "/umrs/llm/v1/chat/completions",
+            json={"model": "qwen3-8b", "messages": []},
+            headers={"x-user-id": "user-1", "x-project-id": "test-project"},
+        )
+
+    assert response.status_code == 200
+    assert observations == []
