@@ -2282,7 +2282,11 @@ while [ "$RIVAULT_JOB_TIMEOUT" -eq 0 ] || [ "$ELAPSED" -lt "$RIVAULT_JOB_TIMEOUT
                 "${_ENGINE_RESPAWNS}/${RIVAULT_ENGINE_RESPAWN_MAX}, sleeps ${RIVAULT_ENGINE_RESPAWN_SLEEP_SEC}s"
             sleep "$RIVAULT_ENGINE_RESPAWN_SLEEP_SEC"
             echo "[rivault] post-mortem for dead engine ${_engine}:"
-            podman logs --tail 25 "$_engine" 2>&1 | sed 's/^/[rivault]   /' || true
+            # 25-tail API frames routinely hide the child (engine-core subprocess)
+            # root cause — the APIServer abort shows up last in log order while the
+            # real failure prints earlier. 200-tail at INFO level, plus full
+            # --follow-style preceding tail when the wrapper is walltime-bounded.
+            podman logs --tail 200 "$_engine" 2>&1 | sed 's/^/[rivault]   /' || true
             if _engine_recreate "$_engine" 2>&1; then
                 echo "[rivault] Engine respawn OK ($_engine recreated; model reload in background)"
             else
