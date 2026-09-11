@@ -18,6 +18,8 @@ from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+
+from .typed_errors import PlatformError, raise_typed
 from pydantic import BaseModel, Field
 
 from umrs.grants.source_store import SourceGrantStore
@@ -37,7 +39,7 @@ router = APIRouter(
 def _store(request: Request) -> SourceGrantStore:
     pool = getattr(request.app.state, "umrs_db_pool", None)
     if pool is None:
-        raise HTTPException(status_code=503, detail="source grants require the shared umrs_db pool")
+        raise_typed(PlatformError.sourcegrants("unavailable", "source grants require the shared umrs_db pool"))
     return SourceGrantStore(pool)
 
 
@@ -50,10 +52,10 @@ def _sealed_meta(request: Request, name: str, owner: str):
 
     pool = getattr(request.app.state, "umrs_db_pool", None)
     if pool is None:
-        raise HTTPException(status_code=503, detail="shared pool required")
+        raise_typed(PlatformError.sourcegrants("unavailable", "shared pool required"))
     meta = SealedSourceStore(pool).get_meta(owner, name)
     if meta is None:
-        raise HTTPException(status_code=404, detail=f"Source {name!r} not found for the caller")
+        raise_typed(PlatformError.sourcegrants("not_found", f"Source {name!r} not found for the caller"))
     return meta
 
 
@@ -72,9 +74,9 @@ def create_grant(
     caller: CallerScope = Depends(get_caller_scope),
 ) -> dict[str, Any]:
     if not caller.user_id:
-        raise HTTPException(status_code=401, detail="user identity required")
+        raise_typed(PlatformError.sourcegrants("unauthorized", "user identity required"))
     if body.grantee == caller.user_id:
-        raise HTTPException(status_code=400, detail="cannot grant to yourself")
+        raise_typed(PlatformError.sourcegrants("bad_request", "cannot grant to yourself"))
     meta = _sealed_meta(request, body.source_name, caller.user_id)
 
     store = _store(request)
@@ -111,7 +113,7 @@ def list_mine(
     caller: CallerScope = Depends(get_caller_scope),
 ) -> list[dict[str, Any]]:
     if not caller.user_id:
-        raise HTTPException(status_code=401, detail="user identity required")
+        raise_typed(PlatformError.sourcegrants("unauthorized", "user identity required"))
     store = _store(request)
     return [g.to_dict() for g in store.list_for_owner(caller.user_id)]
 
@@ -122,7 +124,7 @@ def list_for_me(
     caller: CallerScope = Depends(get_caller_scope),
 ) -> list[dict[str, Any]]:
     if not caller.user_id:
-        raise HTTPException(status_code=401, detail="user identity required")
+        raise_typed(PlatformError.sourcegrants("unauthorized", "user identity required"))
     store = _store(request)
     return [g.to_dict() for g in store.list_for_grantee(caller.user_id)]
 
@@ -134,15 +136,15 @@ def revoke_grant(
     caller: CallerScope = Depends(get_caller_scope),
 ) -> dict[str, Any]:
     if not caller.user_id:
-        raise HTTPException(status_code=401, detail="user identity required")
+        raise_typed(PlatformError.sourcegrants("unauthorized", "user identity required"))
     store = _store(request)
     grant = store.get_grant(grant_id)
     if grant is None:
-        raise HTTPException(status_code=404, detail="Grant not found")
+        raise_typed(PlatformError.sourcegrants("not_found", "Grant not found"))
     if grant.owner != caller.user_id:
-        raise HTTPException(status_code=404, detail="Grant not found")  # owner-only; no leakage
+        raise_typed(PlatformError.sourcegrants("not_found", "Grant not found"))  # owner-only; no leakage
     if not store.revoke_grant(grant_id, actor=caller.user_id, now=_now()):
-        raise HTTPException(status_code=404, detail="Grant not found or already revoked")
+        raise_typed(PlatformError.sourcegrants("not_found", "Grant not found or already revoked"))
 
     # Cascade: any live lease referencing a now-revoked source for that grantee dies.
     from ..jobs.secret_broker import build_default_broker
