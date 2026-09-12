@@ -13,7 +13,9 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-ASSET_KINDS = ("model", "knowledge_graph")
+# WP-06 round 2 leg-b: two more kinds; 'bundle' stays deferred (no durable
+# bundle-owner rows exist today and fabricating one would lie).
+ASSET_KINDS = ("model", "knowledge_graph", "endpoint", "workflow")
 GRANTEE_KINDS = ("user", "project")
 
 
