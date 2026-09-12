@@ -8,12 +8,13 @@ with ACL enforcement and path validation.
 from __future__ import annotations
 
 import json
-from datetime import datetime
 import logging
+from datetime import datetime, timezone
 from typing import Any
 
 import psycopg2
 
+from umrs.metrics import METRICS
 from umrs.model_registry.capabilities import resolve_capabilities
 
 from ..models import (
@@ -30,16 +31,14 @@ from ..models import (
     generate_policy_id,
 )
 from ..runtime_config import RuntimeConfig
-from .acl import AccessContext, ACLEnforcer
-from .errors import DuplicateModelError, ModelNotFoundError, PermissionDeniedError
-from .path_validator import PathValidator
-from umrs.metrics import METRICS
-
 from ..versions import (
     ModelVersion,
     VersionHistory,
     VersionStatus,
 )
+from .acl import AccessContext, ACLEnforcer
+from .errors import DuplicateModelError, ModelNotFoundError, PermissionDeniedError
+from .path_validator import PathValidator
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +55,7 @@ class ModelStore:
         conn: psycopg2.extensions.connection,
         path_validator: PathValidator | None = None,
         acl_enforcer: ACLEnforcer | None = None,
-        pool: "psycopg2.pool.AbstractConnectionPool | None" = None,
+        pool: psycopg2.pool.AbstractConnectionPool | None = None,
     ):
         self._conn = conn
         self._pool = pool
@@ -378,6 +377,73 @@ class ModelStore:
                     "Skipping corrupt model_catalog_entries row %s: %s", name, exc
                 )
         return entries
+
+    # ------------------------------------------------------------------
+    # P10-C3 (WP-06 r2 console badges): grant-aware listing with reason chip
+    # ------------------------------------------------------------------
+
+    def list_models_with_reasons(
+        self,
+        ctx: AccessContext,
+        *,
+        limit: int = 500,
+    ) -> list[tuple[ModelEntry, str]]:
+        """Grant-aware model listing with a visibility-reason chip per row.
+
+        Same base rows ``list_models`` returns, PLUS rows a live ADR-041 grant
+        authorized for this caller — each row carries its `claim'
+        reason ('system' | 'project' | 'user' | 'admin' | 'grant' |
+        'none'; 'none' rows never appear because they aren't readable at all).
+        No fabrication: 'grant' only rides on verified grant_authorizes.
+        """
+        base = self.list_models(ctx, limit=limit)
+        out: list[tuple[ModelEntry, str]] = []
+        for model in base:
+            out.append((model, self.acl.read_reason(model, ctx)))
+        if self.acl._grant_reader is None:
+            return out
+
+        # Grant-driven rows base SQL could never find (grantee not the scope owner).
+
+        now = datetime.now(timezone.utc)
+        grant_rows: list[ModelEntry] = []
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT DISTINCT m.model_id, m.name, m.scope, m.owner_id, m.project_id,
+                       m.storage_ref, m.model_type, m.huggingface_id, m.description,
+                       m.serving_profile, m.status, m.model_ref_json,
+                       m.execution_authority_default, m.created_at, m.updated_at,
+                       m.capabilities, m.runtime_config
+                FROM model_catalog_entries m
+                JOIN asset_grants g
+                  ON g.asset_kind = 'model'
+                 AND g.asset_id = m.model_id
+                 AND g.tombstoned_at IS NULL
+                WHERE (
+                    (g.grantee_kind = 'user' AND g.grantee_id = %s)
+                    OR
+                    (g.grantee_kind = 'project' AND g.grantee_id = ANY(%s))
+                )
+                ORDER BY m.scope, m.name
+                LIMIT %s
+                """,
+                (
+                    ctx.user_id,
+                    sorted(ctx.project_memberships) if ctx.project_memberships else [],
+                    limit,
+                ),
+            )
+            grant_rows.extend(ModelEntry.from_row(row) for row in cur.fetchall())
+        seen = {m.model_id for m, _ in out}
+        for model in grant_rows:
+            if model.model_id in seen:
+                continue
+            reason = self.acl.read_reason(model, ctx)
+            # 'grant' only if the verified check pinned it (never decorative)
+            if reason != "none":
+                out.append((model, reason))
+        return out
 
     # -------------------------------------------------------------------------
     # Update
