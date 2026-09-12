@@ -29,11 +29,12 @@ import logging
 import os
 from typing import Any
 
-from fastapi import APIRouter, Query, Request, status
+from fastapi import APIRouter, Query, Request
 from pydantic import BaseModel, Field
 
 from ..api.jobs import get_optional_job_store, get_job_store
 from ..api.models import get_optional_model_store
+from .typed_errors import PlatformError, raise_typed
 
 logger = logging.getLogger(__name__)
 
@@ -701,7 +702,6 @@ async def get_job_detail(job_id: str) -> JobDetailResponse:
     try:
         job = store.get_job(job_id)
     except Exception:
-        from fastapi import HTTPException
 
         raise_typed(
             PlatformError.dashboard(
@@ -733,7 +733,6 @@ async def get_model_detail(
     try:
         model = store.get_model(model_id)
     except Exception:
-        from fastapi import HTTPException
 
         raise_typed(
             PlatformError.dashboard(

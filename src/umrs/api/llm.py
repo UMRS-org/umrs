@@ -21,15 +21,9 @@ import os
 import re
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from fastapi import APIRouter, Depends, Query, Request, Response
 from fastapi.responses import StreamingResponse
 
-from umrs.orchestrator.endpoint_registry import (
-    EndpointRegistry,
-    EndpointStatus,
-    RegisteredEndpoint,
-    get_registry,
-)
 from umrs.api.llm_usage import (
     ProxyTimer,
     UsageRecord,
@@ -38,7 +32,14 @@ from umrs.api.llm_usage import (
     fill_usage,
     record_usage,
 )
+from umrs.api.typed_errors import PlatformError, raise_typed
 from umrs.metrics import METRICS
+from umrs.orchestrator.endpoint_registry import (
+    EndpointRegistry,
+    EndpointStatus,
+    RegisteredEndpoint,
+    get_registry,
+)
 from umrs.server.correlation import get_request_id
 
 logger = logging.getLogger(__name__)

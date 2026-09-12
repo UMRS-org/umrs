@@ -21,6 +21,8 @@ from typing import Any
 
 from fastapi import HTTPException, Request
 
+from umrs.api.typed_errors import PlatformError, raise_typed
+
 
 async def _init_json_codecs(conn: Any) -> None:
     """Register symmetric JSON/JSONB codecs (dict encode/decode)."""

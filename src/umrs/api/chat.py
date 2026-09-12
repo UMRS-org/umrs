@@ -25,9 +25,10 @@ import logging
 import os
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import StreamingResponse
 
+from umrs.api.typed_errors import PlatformError, raise_typed
 from umrs.orchestrator.endpoint_registry import (
     EndpointRegistry,
     EndpointStatus,

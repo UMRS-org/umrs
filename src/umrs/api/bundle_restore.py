@@ -26,6 +26,7 @@ from ._knowledge_mutation_guard import (
     request_actor,
     request_session_id,
 )
+from .typed_errors import PlatformError, raise_typed
 
 router = APIRouter(prefix="/umrs/knowledge", tags=["knowledge-restore"])
 
