@@ -25,7 +25,8 @@ from pathlib import Path
 from typing import Any
 
 from botocore.exceptions import ClientError
-from fastapi import APIRouter, Depends, HTTPException, Path as FPath, status
+from fastapi import APIRouter, Depends
+from fastapi import Path as FPath
 from pydantic import BaseModel, Field
 
 from umrs.data_catalog.intake_uploads import (
@@ -35,7 +36,9 @@ from umrs.data_catalog.intake_uploads import (
 )
 from umrs.shared.storage.s3_presign import generate_presigned_put
 
-from .files import S3Config, get_project_id, get_s3_config, validate_key
+from ..shared.storage.s3_config import S3Config, get_s3_config
+from .files import get_project_id, validate_key
+from .typed_errors import PlatformError, raise_typed
 
 logger = logging.getLogger(__name__)
 

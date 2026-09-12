@@ -2,24 +2,22 @@
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 from datetime import datetime, timezone
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-
-from .typed_errors import PlatformError, raise_typed
 from pydantic import BaseModel, Field
 
-import dataclasses
-
 from umrs.api._asyncpg_pool import knowledge_asyncpg_pool
-from umrs.api.files import S3Config, get_project_id, get_s3_config
+from umrs.api.files import get_project_id
 from umrs.graph_reasoning import GraphNavigator
 from umrs.jobs.models import JobType
 from umrs.knowledge.canonical_graph_view import (
     default_view as _canonical_default_view,
 )
+from umrs.knowledge.graph_types import KnowledgeEdge
 from umrs.knowledge.knowledge_correction_controller import (
     KnowledgeCorrectionController,
 )
@@ -30,10 +28,12 @@ from umrs.knowledge.knowledge_dashboard_controller import (
 from umrs.knowledge.project import ProjectPhase, ResearchProject
 from umrs.knowledge.research_readiness_controller import ResearchReadinessController
 from umrs.knowledge.verification_store import VerificationStore
-from umrs.knowledge.graph_types import KnowledgeEdge
 from umrs.knowledge_model import InMemoryKnowledgeModelStore
 from umrs.scientific_memory import InMemoryScientificMemoryStore
 from umrs.scientific_reasoning_engine import ScientificReasoningEngine
+from umrs.shared.storage.s3_config import S3Config, get_s3_config
+
+from .typed_errors import PlatformError, raise_typed
 
 logger = logging.getLogger(__name__)
 

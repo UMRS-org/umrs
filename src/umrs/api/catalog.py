@@ -13,18 +13,18 @@ import logging
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-
-from .typed_errors import PlatformError, raise_typed
 from pydantic import BaseModel, Field
 
 from umrs.api.catalog_store import CatalogStoreUnavailable, get_catalog_meta_store
-from umrs.api.files import S3Config, get_project_id, get_s3_config
+from umrs.api.files import get_project_id
 from umrs.data_catalog.links import hydrate_links
 from umrs.data_catalog.plane_counts import compute_plane_counts
 from umrs.data_catalog.query import read_catalog_object, search_catalog
 from umrs.knowledge.access_scope import CallerScope, project_readable
+from umrs.shared.storage.s3_config import S3Config, get_s3_config
 
 from ._scope_identity import get_caller_scope
+from .typed_errors import PlatformError, raise_typed
 
 logger = logging.getLogger(__name__)
 

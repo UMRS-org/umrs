@@ -10,14 +10,13 @@ Provides:
 """
 
 import logging
-from datetime import datetime, timezone
 import os
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
-from pydantic import BaseModel, ConfigDict, Field
-from pydantic import field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from ..jobs.models import (
     Job,
@@ -979,8 +978,8 @@ def _load_or_mint_credentials(
 ) -> dict[str, Any]:
     """Existing live record, else mint + persist a new one (idempotent)."""
     from ..jobs.attempt_credentials import (
-        AttemptCredentials,
         DEFAULT_ATTEMPT_TTL_SEC,
+        AttemptCredentials,
         mint_attempt_credentials,
     )
 
@@ -1048,7 +1047,7 @@ async def mint_attempt_sts_credentials(
     """Mint real per-attempt identity via STS AssumeRole."""
     from ..jobs.attempt_credentials import AttemptCredentials
     from ..jobs.sts_federation import STSFederationError, assume_role_for_attempt
-    from .files import get_s3_config
+    from ..shared.storage.s3_config import get_s3_config
 
     try:
         job = store.get_job(job_id)
@@ -1143,11 +1142,14 @@ async def presign_for_attempt(
         )
 
     ttl = min(body.ttl_sec or record.ttl_sec, record.ttl_sec)
-    from .files import get_s3_config
+    from ..shared.storage.s3_config import get_s3_config
 
     config = get_s3_config()
     client = config.get_client()
-    from ..shared.storage.s3_presign import generate_presigned_get, generate_presigned_put
+    from ..shared.storage.s3_presign import (
+        generate_presigned_get,
+        generate_presigned_put,
+    )
 
     if body.method == "get":
         url = generate_presigned_get(client, config.bucket, key, ttl=ttl)
