@@ -93,6 +93,54 @@ def _graph_writable(pool: Any, asset_id: str, caller: CallerScope) -> bool:
     )
 
 
+def _endpoint_writable(asset_id: str, caller: CallerScope) -> bool:
+    """WP-06 r2: endpoints grant-writable by the provisioning project's member.
+
+    Wired via the in-process EndpointRegistry (no duplicate dialect query):
+    caller's project must match the endpoint's project_id, OR the endpoint's
+    recorded owner_id when one is pinned (admin wins anywhere).
+    """
+    from umrs.orchestrator.endpoint_registry import get_registry
+
+    registry = get_registry()
+    caller_pid = caller.project_id or ""
+    for ep in registry.list_all(project_id=caller_pid) + list(
+        registry.list_all(project_id="") or []
+    ):
+        if ep.job_id != asset_id:
+            continue
+        owner = str(ep.metadata.get("owner_id") or "")
+        if owner and caller.user_id:
+            return owner == caller.user_id
+        return bool(caller_pid) and ep.project_id == caller_pid
+    return False
+
+
+def _workflow_entry(asset_id: str) -> dict | None:
+    """Catalog lookup for the workflow name (module catalog, never a new dialect)."""
+    from ..server import workflow_registry_handler as _wrh
+
+    try:
+        catalog = _wrh._load_catalog()
+    except Exception:
+        return None
+    for entry in (catalog or {}).get("workflows", []):
+        if str(entry.get("name") or "") == asset_id:
+            return entry
+    return None
+
+
+def _workflow_writable(asset_id: str, caller: CallerScope) -> bool:
+    """WP-06 r2: workflows are owner-writable (authority mirrors workflow_delete)."""
+    entry = _workflow_entry(asset_id)
+    if not isinstance(entry, dict):
+        return False
+    if str(entry.get("scope") or "") == "system":
+        return False  # system-scope = admin-owned; admin wins above
+    owner = str(entry.get("user_id") or "").strip()
+    return bool(owner) and bool(caller.user_id) and owner == caller.user_id
+
+
 def _asset_writable(
     pool: Any, asset_kind: str, asset_id: str, caller: CallerScope
 ) -> bool:
@@ -102,6 +150,10 @@ def _asset_writable(
         return _model_writable(pool, asset_id, caller)
     if asset_kind == "knowledge_graph":
         return _graph_writable(pool, asset_id, caller)
+    if asset_kind == "endpoint":
+        return _endpoint_writable(asset_id, caller)
+    if asset_kind == "workflow":
+        return _workflow_writable(asset_id, caller)
     return False
 
 
