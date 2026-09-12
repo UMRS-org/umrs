@@ -25,6 +25,7 @@ from .grants import router as grants_router
 from .intake_uploads import router as intake_uploads_router
 from .jobs import router as jobs_router
 from .knowledge import router as knowledge_router
+from .knowledge_attrition import router as knowledge_attrition_router
 from .knowledge_graphs import router as knowledge_graphs_router
 from .knowledge_lineage import router as knowledge_lineage_router
 from .knowledge_proposals import router as knowledge_proposals_router
@@ -77,6 +78,7 @@ __all__ = [
     "knowledge_graphs_router",
     "knowledge_lineage_router",
     "knowledge_proposals_router",
+    "knowledge_attrition_router",
     "knowledge_query_router",
     "knowledge_router",
     "knowledge_upload_router",
