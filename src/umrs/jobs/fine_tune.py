@@ -92,8 +92,11 @@ def get_fine_tune_registry() -> FineTuneTaskRegistry:
     return _registry
 
 
-def _validate_spec(spec: dict[str, Any]) -> FineTuneTaskContext:
-    """Strict components; absent inputs rejected, never defaulted at submit time."""
+def _validate_spec(spec: dict[str, Any]) -> dict[str, Any]:
+    """Strict components; absent inputs rejected, never defaulted at submit time.
+
+    Returns the normalized spec mapping on success.
+    """
     target_model = str(spec.get("target_model") or "").strip()
     if not target_model:
         raise ValueError("fine_tune requires spec.target_model (a catalog entry name)")
@@ -119,6 +122,15 @@ def _validate_spec(spec: dict[str, Any]) -> FineTuneTaskContext:
         raise ValueError(
             f"phase-F venue pin is {site!r} only (training memory profile honoured)"
         )
+    return {
+        "target_model": target_model,
+        "dataset_ref": dataset_ref,
+        "adapter_name": adapter_name,
+        "rank": rank,
+        "epochs": epochs,
+        "max_seq_len": max_seq_len,
+        "site": site,
+    }
 
 
 class FineTuneBackend:

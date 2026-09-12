@@ -19,14 +19,11 @@ def test_embeddings_store_factory_memory():
 
 
 def test_knowledge_graph_factory_memory():
-    from umrs.knowledge_graph_api import build_default_graph
+    """Factory construction produces a CanonicalGraphView (post-ADR-026 wave C)."""
+    from umrs.knowledge.canonical_graph_view import default_view
 
-    graph = build_default_graph()
-    assert type(graph).__name__ in {
-        "InMemoryKnowledgeGraph",
-        "PgKnowledgeGraphStore",
-        "PgKnowledgeGraph",
-    }
+    graph = default_view(store=None)
+    assert type(graph).__name__ == "CanonicalGraphView"
     for name in ("add_node", "get_node", "get_neighbors"):
         assert callable(getattr(graph, name, None)), f"missing {name}"
 

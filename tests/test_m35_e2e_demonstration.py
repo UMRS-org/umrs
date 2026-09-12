@@ -37,7 +37,8 @@ from umrs.knowledge.research_readiness_controller import (
 from umrs.knowledge.verification_chat_controller import (
     VerificationChatController,
 )
-from umrs.knowledge_graph_api import InMemoryKnowledgeGraph, RelationType
+from umrs.knowledge.canonical_graph_view import default_view
+from umrs.knowledge.graph_types import RelationType
 from umrs.knowledge_model import (
     InMemoryKnowledgeModelStore,
     KnowledgeObjectType,
@@ -48,7 +49,7 @@ from umrs.scientific_memory import InMemoryScientificMemoryStore, MemoryEntry
 def _build_knowledge_base():
     """Build a knowledge base simulating post-ingestion state."""
     km = InMemoryKnowledgeModelStore()
-    kg = InMemoryKnowledgeGraph()
+    kg = default_view(store=None)
     sm = InMemoryScientificMemoryStore()
 
     # Create scientific objects (simulating upload + ingestion)
@@ -321,7 +322,7 @@ async def test_end_to_end_knowledge_verification():
 def test_rejection_blocks_autonomous_research():
     """Test that rejection blocks autonomous research."""
     km = InMemoryKnowledgeModelStore()
-    kg = InMemoryKnowledgeGraph()
+    kg = default_view(store=None)
 
     readiness_controller = ResearchReadinessController(
         knowledge_model=km,
@@ -340,7 +341,7 @@ def test_rejection_blocks_autonomous_research():
 
 def test_correction_provenance():
     """Test that corrections become provenance."""
-    kg = InMemoryKnowledgeGraph()
+    kg = default_view(store=None)
     kg.add_node(node_id="paper-001", node_type="paper", title="Paper 1")
     kg.add_node(node_id="paper-002", node_type="paper", title="Paper 2")
 
@@ -371,7 +372,7 @@ def test_correction_provenance():
 def test_readiness_levels():
     """Test that readiness levels are correctly determined."""
     km = InMemoryKnowledgeModelStore()
-    kg = InMemoryKnowledgeGraph()
+    kg = default_view(store=None)
 
     # Empty knowledge base → BLOCKED
     controller = ResearchReadinessController(knowledge_model=km, knowledge_graph=kg)
