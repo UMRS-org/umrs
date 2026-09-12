@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+
+from .typed_errors import PlatformError, raise_typed
 from pydantic import BaseModel, Field
 
 import dataclasses
@@ -48,8 +50,8 @@ def set_engine(engine) -> None:
 
 def _get_engine():
     if _engine is None:
-        raise HTTPException(
-            status_code=503, detail="Knowledge search engine not initialized"
+        raise_typed(
+            PlatformError.knowledge("unavailable", "Knowledge search engine not initialized")
         )
     return _engine
 
@@ -170,10 +172,9 @@ async def post_external_search(req: ExternalSearchRequest):
     try:
         source_types = [ExternalSourceType(n) for n in names]
     except ValueError:
-        raise HTTPException(
-            status_code=400,
-            detail=f"unknown source in {names!r}; allowed: {', '.join(default)}",
-        ) from None
+        raise_typed(
+            PlatformError.knowledge("bad_request", f"unknown source in {names!r}; allowed: {', '.join(default)}")
+        )
 
     searcher = ExternalKnowledgeSearcher()
     results = searcher.search_all(
@@ -388,7 +389,7 @@ async def get_knowledge_object(
     await _explorer_caller(request)
     detail = _dashboard_controller.get_object_detail(object_id)
     if detail is None:
-        raise HTTPException(status_code=404, detail=f"Object {object_id} not found")
+        raise_typed(PlatformError.knowledge("not_found", f"Object {object_id} not found"))
     return _build_object_detail_response(detail)
 
 
@@ -656,7 +657,7 @@ async def understand_project(
         project.understand()
     except Exception as exc:
         logger.exception("understand failed for project %s", project_id)
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise_typed(PlatformError.knowledge("failure", str(exc)), cause=exc)
 
     pool = getattr(request.app.state, "umrs_db_pool", None)
     if pool is not None:
@@ -705,13 +706,13 @@ async def verify_project_knowledge(
             project.understand()
         except Exception as exc:
             logger.exception("auto-understand failed for project %s", project_id)
-            raise HTTPException(status_code=500, detail=str(exc)) from exc
+            raise_typed(PlatformError.knowledge("failure", str(exc)), cause=exc)
 
     try:
         answer = project.verify(body.question)
     except Exception as exc:
         logger.exception("verify failed for project %s", project_id)
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise_typed(PlatformError.knowledge("failure", str(exc)), cause=exc)
     return answer.to_dict()
 
 
@@ -859,9 +860,8 @@ async def knowledge_reconcile(
     await _explorer_caller(request)
     pool = getattr(request.app.state, "umrs_db_pool", None)
     if pool is None:
-        raise HTTPException(
-            status_code=503,
-            detail="reconciliation requires the shared umrs_db pool",
+        raise_typed(
+            PlatformError.knowledge("unavailable", "reconciliation requires the shared umrs_db pool")
         )
     from umrs.knowledge.plane_reconciler import scan_project
 
@@ -869,7 +869,7 @@ async def knowledge_reconcile(
         report = scan_project(pool, project_id)
     except Exception as exc:
         logger.exception("plane reconciliation failed for %s", project_id)
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise_typed(PlatformError.knowledge("failure", str(exc)), cause=exc)
     return _reconcile_payload(report, sample_limit=sample)
 
 
@@ -911,7 +911,7 @@ async def knowledge_status(
         raise
     except Exception as exc:
         logger.exception("Failed to get knowledge status")
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise_typed(PlatformError.knowledge("failure", str(exc)), cause=exc)
 
 
 async def _list_findings_filtered(ver, report_id, status, severity):
@@ -971,7 +971,7 @@ async def knowledge_findings(
         return _findings_payload(findings)
     except Exception as exc:
         logger.exception("Failed to list findings")
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise_typed(PlatformError.knowledge("failure", str(exc)), cause=exc)
 
 
 @router.patch("/findings/{finding_key}", response_model=dict[str, Any])
@@ -1011,10 +1011,10 @@ async def transition_finding(
         raise
     except ValueError as exc:
         logger.warning("Finding transition failed: %s", exc)
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise_typed(PlatformError.knowledge("bad_request", str(exc)), cause=exc)
     except Exception as exc:
         logger.exception("Failed to transition finding")
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise_typed(PlatformError.knowledge("failure", str(exc)), cause=exc)
 
 
 @router.post("/approve", response_model=dict[str, Any])
@@ -1037,9 +1037,7 @@ async def approve_knowledge(
         report = await ver.get_report(report_id)
 
         if report is None:
-            raise HTTPException(
-                status_code=404, detail=f"Report not found: {report_id}"
-            )
+            raise_typed(PlatformError.knowledge("not_found", f"Report not found: {report_id}"))
 
         # Confidence check
         confidence_ok = report.confidence >= confidence_threshold
@@ -1079,7 +1077,7 @@ async def approve_knowledge(
         raise
     except Exception as exc:
         logger.exception("Failed to approve knowledge")
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise_typed(PlatformError.knowledge("failure", str(exc)), cause=exc)
 
 
 @router.get("/readiness/graph", response_model=dict[str, Any])
@@ -1129,7 +1127,7 @@ async def knowledge_readiness(
         }
     except Exception as exc:
         logger.exception("Failed to get knowledge readiness")
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise_typed(PlatformError.knowledge("failure", str(exc)), cause=exc)
 
 
 @router.post("/export", response_model=dict[str, Any])
@@ -1144,9 +1142,8 @@ async def export_knowledge(
 
         runtime = get_runtime()
         if runtime is None:
-            raise HTTPException(
-                status_code=503,
-                detail="UMRS durable job runtime not available",
+            raise_typed(
+                PlatformError.knowledge("unavailable", "UMRS durable job runtime not available")
             )
 
         spec: dict[str, Any] = {
@@ -1178,7 +1175,7 @@ async def export_knowledge(
         }
     except Exception as exc:
         logger.exception("Failed to queue knowledge export")
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise_typed(PlatformError.knowledge("failure", str(exc)), cause=exc)
 
 
 @router.post("/verify/trigger", response_model=dict[str, Any])
@@ -1197,9 +1194,8 @@ async def trigger_verify(
 
         runtime = get_runtime()
         if runtime is None:
-            raise HTTPException(
-                status_code=503,
-                detail="UMRS durable job runtime not available",
+            raise_typed(
+                PlatformError.knowledge("unavailable", "UMRS durable job runtime not available")
             )
 
         spec: dict[str, Any] = {
@@ -1221,4 +1217,4 @@ async def trigger_verify(
         }
     except Exception as exc:
         logger.exception("Failed to queue knowledge verify")
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise_typed(PlatformError.knowledge("failure", str(exc)), cause=exc)
