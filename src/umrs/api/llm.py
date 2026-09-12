@@ -18,6 +18,7 @@ import contextlib
 import json
 import logging
 import os
+import re
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
@@ -350,6 +351,9 @@ async def _open_stream(
     return client, response
 
 
+_CONTENT_TOKEN_RE = re.compile(rb'"content"\s*:\s*"((?:\\.|[^"\\])*)"')
+
+
 async def _proxy_streaming(
     request: Request,
     upstream_url: str,
@@ -380,9 +384,10 @@ async def _proxy_streaming(
     _tail_chunks: list[bytes] = []
     _MAX_TAIL = 5
     _ttft_observed = False
+    _ttfc_observed = False
 
     async def _yield():
-        nonlocal _ttft_observed
+        nonlocal _ttft_observed, _ttfc_observed
         try:
             async for chunk in response.aiter_bytes():
                 if not _ttft_observed and timer is not None:
@@ -392,6 +397,13 @@ async def _proxy_streaming(
                     # token, same honest semantics as the retired gateway.
                     _ttft_observed = True
                     METRICS.llm_first_token(model, timer.elapsed_ms() / 1000)
+                if not _ttfc_observed and timer is not None and chunk:
+                    # P11 decode leg: first SSE delta with a NON-EMPTY content
+                    # token (role/done frames never count).
+                    content_match = _CONTENT_TOKEN_RE.search(chunk)
+                    if content_match and content_match.group(1):
+                        _ttfc_observed = True
+                        METRICS.llm_first_content(model, timer.elapsed_ms() / 1000)
                 if usage_record is not None:
                     _tail_chunks.append(chunk)
                     if len(_tail_chunks) > _MAX_TAIL:

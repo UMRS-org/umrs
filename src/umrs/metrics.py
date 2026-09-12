@@ -316,6 +316,14 @@ class UMRSMetrics:
             "LLM time-to-first-streamed-chunk measured at the UMRS LLM route (P11 SLO)",
             ["source", "model"],
         )
+        # P11-P2 (decode-time leg, same anchor but stricter): first SSE delta
+        # with a non-empty content field — semantics within SSE frame =
+        # mainstream decoded-token proxy; honest name says exactly that.
+        self._llm_first_content = _histogram(
+            "rivault_llm_first_content_seconds",
+            "LLM time-to-first-content-delta measured at the UMRS LLM route (P11 decode leg)",
+            ["source", "model"],
+        )
         self._llm_requests = _counter(
             "umrs_llm_requests_total",
             "Total LLM proxy requests by source, model, streaming",
@@ -666,6 +674,20 @@ class UMRSMetrics:
             return
         s = source or self._source
         self._llm_first_token.labels(source=s, model=model).observe(seconds)
+
+    def llm_first_content(
+        self, model: str, seconds: float, source: str = ""
+    ) -> None:
+        """Record time-to-first-non-empty-content-delta (P11 decode leg).
+
+        Observed exactly once per stream at the first SSE chunk carrying a
+        non-empty content token (the first real decoded-token-user-visible
+        event); same ProxyTimer anchor as the chunk TTFT series.
+        """
+        if seconds < 0:
+            return
+        s = source or self._source
+        self._llm_first_content.labels(source=s, model=model).observe(seconds)
 
     def llm_request(self, model: str, streaming: bool, source: str = "") -> None:
         """Increment LLM request counter."""
