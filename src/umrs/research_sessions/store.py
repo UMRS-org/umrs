@@ -295,6 +295,41 @@ class SessionStore:
             self._return(conn)
         return self.get(session_id)
 
+    def _aged_session_rows(self, max_days: int) -> list[tuple[str, str]]:
+        """Donor rows for the sweep (pin-exempt check is the caller's)."""
+        conn = self._borrow()
+        try:
+            cur = conn.cursor()
+            cutoff_sql = (
+                "datetime('now', ?)"
+                if self._sqlite
+                else "now() - (%s * interval '1 day')"
+            )
+            cutoff_param = f"-{max_days} days" if self._sqlite else max_days
+            cur.execute(
+                self._q(
+                    "SELECT session_id, metadata FROM research_sessions "
+                    "WHERE status != 'archived' "
+                    f"AND updated_at < {cutoff_sql}"
+                ),
+                (cutoff_param,),
+            )
+            return cur.fetchall()
+        finally:
+            self._return(conn)
+
+    @staticmethod
+    def _row_is_pinned(metadata_raw: str) -> bool:
+        """metadata.pinned check — false both on blank text and malformed json."""
+        if not metadata_raw:
+            return False
+        import json as _json
+
+        try:
+            return bool(_json.loads(metadata_raw).get("pinned"))
+        except (ValueError, TypeError):
+            return False
+
     def archive_aged_sessions(
         self,
         *,
@@ -312,35 +347,9 @@ class SessionStore:
         """
         if max_days <= 0:
             return []
-        conn = self._borrow()
-        try:
-            cur = conn.cursor()
-            cutoff_sql = "datetime('now', ?)" if self._sqlite else "now() - (%s * interval '1 day')"
-            cutoff_param = f"-{max_days} days" if self._sqlite else max_days
-            cur.execute(
-                self._q(
-                    "SELECT session_id, metadata FROM research_sessions "
-                    "WHERE status != 'archived' "
-                    f"AND updated_at < {cutoff_sql}"
-                ),
-                (cutoff_param,) if not self._sqlite else (cutoff_param,),
-            )
-            rows = cur.fetchall()
-        finally:
-            self._return(conn)
         ids: list[str] = []
-        for row in rows:
-            session_id = row[0]
-            metadata_raw = row[1] or ""
-            pinned = False
-            if metadata_raw:
-                import json as _json
-
-                try:
-                    pinned = bool(_json.loads(metadata_raw).get("pinned"))
-                except (ValueError, TypeError):
-                    pinned = False
-            if pinned:
+        for session_id, metadata_raw in self._aged_session_rows(max_days):
+            if self._row_is_pinned(metadata_raw or ""):
                 continue
             session = self.archive_with_trust_cascade(session_id, trust_store)
             if session is not None:
@@ -412,7 +421,9 @@ class SessionStore:
                 (link.session_id, link.loop_id, link.venue, link.loop_role),
             )
             cur.execute(
-                self._q("UPDATE research_sessions SET updated_at = now() WHERE session_id = %s"),
+                self._q(
+                    "UPDATE research_sessions SET updated_at = now() WHERE session_id = %s"
+                ),
                 (link.session_id,),
             )
             self._commit(conn)
