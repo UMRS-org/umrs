@@ -46,6 +46,15 @@ class JobType(Enum):
     # one durable job per /vision/infer/submit execution, attempt transitions
     # driven by the HTTP handlers (never scheduler-requeued — NEVER policy).
     VISION_INFER = "vision_infer"
+    # ADR-047 (WP-09 round 2, 2026-09-12): new executor-driven classes land
+    # registered in the enum IMMEDIATELY but dispatch-blocked with a typed
+    # "not yet implemented" at submit-time until the executor side lands
+    # (_UNDISPATCHABLE_JOB_TYPES in api/jobs.py). Phenoms stay honest: a type
+    # exists (documented POST 400), and no durable attempt gets born that
+    # can never finish.
+    BATCH_INFER = "batch_infer"
+    FINE_TUNE = "fine_tune"
+    MODEL_EVAL = "model_eval"
     # Note: CONTEXT_RETENTION and CONVERSATION_SUMMARIZE excluded from selective merge
 
 
@@ -97,6 +106,18 @@ DEFAULT_BACKOFFS: dict[JobType, dict[str, Any]] = {
     JobType.INDEX_BUILD: {
         "delays": [30, 60, 120],  # Slow retry
         "max_attempts": 5,
+    },
+    JobType.BATCH_INFER: {
+        "delays": [30, 60, 120],  # Long input chunks tolerate patient requeue
+        "max_attempts": 3,
+    },
+    JobType.MODEL_EVAL: {
+        "delays": [20, 40, 80],  # Bench-run retry; never auto-restart on infra stall
+        "max_attempts": 2,
+    },
+    JobType.FINE_TUNE: {
+        "delays": [300, 900, 1800],  # Heavyweight training; safer manual retry path
+        "max_attempts": 1,
     },
     JobType.EMBEDDING_BATCH: {
         "delays": [30, 60, 120],
