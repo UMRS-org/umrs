@@ -694,6 +694,14 @@ def _create_app():
         lifespan=_lifespan,
     )
 
+    # WP-16 r2 problem+json (opt-in): RFC 7807 projection applies only to
+    # responses carrying x-platform-error-code; all other shapes unchanged.
+    from umrs.api.problem_json import enabled_by_env, install_problem_json_handler
+
+    if enabled_by_env():
+        install_problem_json_handler(app)
+        logger.info("problem+json projection enabled (UMRS_PROBLEM_JSON)")
+
     # WP-12 round 2: optional OTel (no-op unless OTEL_EXPORTER_OTLP_ENDPOINT).
     from umrs.server.otel import setup_otel
 
