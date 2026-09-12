@@ -689,9 +689,9 @@ _UNDISPATCHABLE_JOB_TYPES = {
     JobType.EMBEDDING_BATCH,
     JobType.PIPELINE_RUN,
     # ADR-047 wave: executor classes that have no shipped backend YET.
-    # BATCH_INFER graduated 2026-09-12 (BatchInferBackend landed with pins).
+    # BATCH_INFER graduated 2026-09-12 (c5061d43).
+    # MODEL_EVAL graduated 2026-09-12 (this wave).
     JobType.FINE_TUNE,
-    JobType.MODEL_EVAL,
 }
 
 
