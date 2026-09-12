@@ -21,7 +21,11 @@ def client():
 
 
 @pytest.fixture(autouse=True)
-def _clean_registry():
+def _clean_registry(monkeypatch):
+    # Backend pin: never let a leaked DB_HOST/DATABASE_URL flip the suite
+    # onto the PG-backed registry (auto mode). These tests assert the
+    # in-memory contract.
+    monkeypatch.setenv("UMRS_WORKFLOW_EXECUTION_REGISTRY", "memory")
     reset_execution_registry_for_tests()
     yield
     reset_execution_registry_for_tests()

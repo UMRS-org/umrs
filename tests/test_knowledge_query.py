@@ -112,13 +112,16 @@ class TestKnowledgeQueryFacadeEdge:
         )
         assert resp.status_code == 400
 
-    def test_missing_project_is_400(self, client):
+    def test_missing_project_is_401_via_identity_gate(self, client):
+        # Identity gate (get_caller_identity) fires before the route's own
+        # project check: with no verified project header and no legacy query
+        # params the caller identity itself is incomplete → 401, never 400.
         resp = client.get(
             "/umrs/knowledge/query",
             params={"q": "ct"},
             headers={"X-User-ID": "alice"},
         )
-        assert resp.status_code == 400
+        assert resp.status_code == 401
 
     def test_verified_project_header_overrides_param(self, client, meta_store):
         resp = client.get(

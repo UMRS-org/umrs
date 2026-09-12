@@ -62,6 +62,23 @@ def pytest_collection_modifyitems(config, items):
             item.add_marker(skip_integration)
 
 
+@pytest.fixture(autouse=True)
+def _restore_environ_between_tests() -> Generator:
+    """Re-apply the pre-test environment after every test.
+
+    Some production paths (e.g. site_config ``inject_env``) write straight
+    into ``os.environ`` outside monkeypatch control. Left unrestored, a
+    leaked ``DB_HOST``/``DATABASE_URL`` silently flips auto-mode store
+    factories onto the PG backend for every later test in the worker
+    (observed: dashboard + knowledge suites failing only when run after
+    test_rag_service_llm_resolution). Snapshot/restore per test.
+    """
+    snapshot = dict(os.environ)
+    yield
+    os.environ.clear()
+    os.environ.update(snapshot)
+
+
 @pytest.fixture(scope="session")
 def db_url(request) -> str:
     """Get database URL from command line or environment."""
