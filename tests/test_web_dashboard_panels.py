@@ -28,7 +28,10 @@ def client(app) -> TestClient:
 
 
 @pytest.fixture(autouse=True)
-def _reset_registry():
+def _reset_registry(monkeypatch):
+    # See test_web_dashboard.py — pin the in-memory backend; a leaked
+    # DB_HOST/DATABASE_URL must not flip this suite onto the PG registry.
+    monkeypatch.setenv("UMRS_WORKFLOW_EXECUTION_REGISTRY", "memory")
     reset_execution_registry_for_tests()
     yield
     reset_execution_registry_for_tests()

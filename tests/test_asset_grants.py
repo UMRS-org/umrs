@@ -217,7 +217,7 @@ class TestGrantStore:
     def test_create_rejects_unknown_kinds(self):
         store = GrantStore(_FakeConn())
         for kwargs in (
-            {"asset_kind": "endpoint"},
+            {"asset_kind": "dataset"},
             {"grantee_kind": "org"},
         ):
             merged = {

@@ -1,21 +1,13 @@
 """Presigned-URL TTL edge behavior probe (G-P5-5, WP-16).
 
-The gap named TTL edge behavior (negative / zero / expired presigned URLs)
-as UNPROBED — the read-only verification scope couldn't exercise expiry on
-the live compose stack. These pins lock the generation-side truth (the
-sidecar's AWS Signature v2 generator) with the limitation named:
+Round-2 owner decision (umrs 406a659a + sidecar d5548377): the generator
+CLAMPS — TTL <= 0 is refused at generation (``ValueError``) and at request
+boundaries (HTTP 400/422). These pins lock the clamp truth with the
+named limitation:
 
-- the generator NEVER clamps TTL: negative/zero TTL mints a born-expired
-  URL deterministically (Expires in the past) with a well-formed signature;
-- expiry ENFORCEMENT is server-side at MinIO (S3 evaluates Expires at
+- expiry ENFORCEMENT stays server-side at MinIO (S3 evaluates Expires at
   request time) — the generation-side probe cannot claim live 403s;
-- the live-compose negative-TTL assertion remains a harness item
-  (named in the gap note, not hidden).
-
-A clamp policy (reject TTL <= 0) was considered and NOT added here:
-sidecar generation semantics are part of the deployed wire surface; a
-floor needs the site-owner decision + downstream review. Recorded in
-wp16.md as the round-2 question.
+- the live-compose negative-TTL assertion remains a harness item.
 """
 
 from __future__ import annotations
@@ -25,6 +17,8 @@ import hashlib
 import hmac
 import importlib.util
 import time
+
+import pytest
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
@@ -58,35 +52,20 @@ class TestExpiryArithmetic:
         expires = int(_parse(url)["Expires"])
         assert before + 3600 <= expires <= after + 3600
 
-    def test_zero_ttl_is_born_expired_and_well_formed(self):
+    def test_zero_ttl_refused_at_generation(self):
         sidecar = _load_sidecar()
-        url = sidecar.generate_presigned_url("bucket", "key", ttl_seconds=0)
-        params = _parse(url)
-        expires = int(params["Expires"])
-        assert abs(expires - int(time.time())) <= 1
-        assert params["Signature"] == _expected_signature(
-            sidecar.S3_SECRET_KEY, "GET", expires, "bucket", "key"
-        )
+        with pytest.raises(ValueError, match="ttl_seconds must be positive"):
+            sidecar.generate_presigned_url("bucket", "key", ttl_seconds=0)
 
-    def test_negative_ttl_mints_past_expiry_deterministically(self):
+    def test_negative_ttl_refused_at_generation(self):
         sidecar = _load_sidecar()
-        before = int(time.time())
-        url = sidecar.generate_presigned_url("bucket", "key", ttl_seconds=-3600)
-        after = int(time.time())
-        params = _parse(url)
-        expires = int(params["Expires"])
-        assert before - 3600 <= expires <= after - 3600
-        assert expires < before  # unambiguously already-expired at mint time
-        # Signature is still the correct v2 signature over that raw expiry —
-        # no silent clamping anywhere in the generator.
-        assert params["Signature"] == _expected_signature(
-            sidecar.S3_SECRET_KEY, "GET", expires, "bucket", "key"
-        )
+        with pytest.raises(ValueError, match="ttl_seconds must be positive"):
+            sidecar.generate_presigned_url("bucket", "key", ttl_seconds=-3600)
 
     def test_identical_inputs_identical_url(self):
         sidecar = _load_sidecar()
-        one = sidecar.generate_presigned_url("bucket", "key", ttl_seconds=-60)
-        two = sidecar.generate_presigned_url("bucket", "key", ttl_seconds=-60)
+        one = sidecar.generate_presigned_url("bucket", "key", ttl_seconds=60)
+        two = sidecar.generate_presigned_url("bucket", "key", ttl_seconds=60)
         # Both minted inside the same second-window (skew tolerance 1s).
         assert _parse(one)["Signature"] == _parse(two)["Signature"] or (
             abs(int(_parse(one)["Expires"]) - int(_parse(two)["Expires"])) <= 1
@@ -94,9 +73,11 @@ class TestExpiryArithmetic:
 
 
 class TestNamedLimitation:
-    def test_generator_has_no_ttl_floor(self):
-        """Pin the truth the clamp decision builds on."""
+    def test_generator_floor_is_exactly_positive_seconds(self):
+        """Smallest legal TTL mints inside the expected window."""
         sidecar = _load_sidecar()
-        url = sidecar.generate_presigned_url("b", "k", ttl_seconds=-(365 * 86400))
+        before = int(time.time())
+        url = sidecar.generate_presigned_url("b", "k", ttl_seconds=1)
+        after = int(time.time())
         expires = int(_parse(url)["Expires"])
-        assert expires < int(time.time()) - 364 * 86400
+        assert before + 1 <= expires <= after + 1
