@@ -654,6 +654,7 @@ def _create_app():
         jobs_router,
         knowledge_graphs_router,
         knowledge_lineage_router,
+        knowledge_attrition_router,
         knowledge_proposals_router,
         knowledge_query_router,
         knowledge_router,
@@ -768,6 +769,7 @@ def _create_app():
     app.include_router(knowledge_proposals_router)
     app.include_router(knowledge_query_router)
     app.include_router(knowledge_upload_router)
+    app.include_router(knowledge_attrition_router)
     app.include_router(knowledge_v2_router)
     app.include_router(events_sse_router)
     app.include_router(llm_router)
