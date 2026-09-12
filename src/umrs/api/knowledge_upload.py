@@ -33,8 +33,9 @@ from fastapi import (
 )
 from fastapi import status as http_status
 
+from ..shared.storage.s3_config import get_s3_config
 from ._knowledge_mutation_guard import enforce_graph_mutation_authorization
-from .files import get_project_id, get_s3_config
+from .files import get_project_id
 from .governance import guard_ingest
 from .knowledge_v2 import _resolve_ingest_target
 from .typed_errors import PlatformError, raise_typed

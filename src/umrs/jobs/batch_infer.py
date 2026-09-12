@@ -45,11 +45,11 @@ from typing import Any
 
 import httpx
 
-from ..api.files import get_s3_config
 from ..orchestrator.endpoint_registry import (
     EndpointStatus,
     get_registry,
 )
+from ..shared.storage.s3_config import get_s3_config
 from .download_safety import DownloadCancelledError
 from .models import Job, JobAttempt, JobType
 from .monitor import AttemptCheckResult, BackendStatusChecker

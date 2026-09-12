@@ -10,24 +10,34 @@ import logging
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    status,
+)
 from pydantic import BaseModel, Field
-from .typed_errors import PlatformError, raise_typed
 
 from umrs.api import vision_durable
-from umrs.api.files import S3Config, get_project_id, get_s3_config, validate_key
-from umrs.api.files import _header_str
+from umrs.api.files import _header_str, get_project_id, validate_key
 from umrs.orchestrator.endpoint_registry import (
     EndpointRegistry,
     EndpointStatus,
     RegisteredEndpoint,
     get_registry,
 )
+from umrs.shared.storage.s3_config import S3Config, get_s3_config
 from umrs.shared.storage.s3_presign import (
     generate_presigned_get,
     generate_presigned_put,
 )
 from umrs.vision_service.output_specs import describe_output_artifacts
+
+from .typed_errors import PlatformError, raise_typed
 
 logger = logging.getLogger(__name__)
 

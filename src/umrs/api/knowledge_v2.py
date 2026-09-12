@@ -16,13 +16,14 @@ import logging
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-
-from .typed_errors import PlatformError, raise_typed
 from pydantic import BaseModel, Field
 
-from umrs.api.files import S3Config, get_project_id, get_s3_config
+from umrs.api.files import get_project_id
 from umrs.jobs.models import JobType
 from umrs.knowledge.graph_registry import default_graph_id
+from umrs.shared.storage.s3_config import S3Config, get_s3_config
+
+from .typed_errors import PlatformError, raise_typed
 
 logger = logging.getLogger(__name__)
 
@@ -346,14 +347,13 @@ async def list_artifacts(
 ) -> ArtifactListResponse:
     """List knowledge artifacts (paginated)."""
     try:
-        from umrs.knowledge.store import KnowledgeStore
-
         # Reuse the shared app-level pool (built once in http_sidecar.py) —
         # do NOT call build_durable_job_db_pool_from_env() here, which opens
         # a brand-new connection pool on every request and leaks it.
         import dataclasses
 
         from umrs.api._asyncpg_pool import knowledge_asyncpg_pool
+        from umrs.knowledge.store import KnowledgeStore
 
         pool = await knowledge_asyncpg_pool(request)
         store = KnowledgeStore(pool)
@@ -494,12 +494,11 @@ async def knowledge_readiness(
     Combines artifact count, graph coverage, and verification status.
     """
     try:
-        from umrs.knowledge.store import KnowledgeStore
-
         # Reuse the shared app-level pool (built once in http_sidecar.py) —
         # do NOT call build_durable_job_db_pool_from_env() here, which opens
         # a brand-new connection pool on every request and leaks it.
         from umrs.api._asyncpg_pool import knowledge_asyncpg_pool
+        from umrs.knowledge.store import KnowledgeStore
 
         pool = await knowledge_asyncpg_pool(request)
         store = KnowledgeStore(pool)

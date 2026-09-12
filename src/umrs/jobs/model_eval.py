@@ -35,8 +35,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-from ..api.files import get_s3_config
 from ..orchestrator.endpoint_registry import EndpointStatus, get_registry
+from ..shared.storage.s3_config import get_s3_config
 from .batch_infer import (
     _read_prompts_from_s3,
     _run_one_row,
