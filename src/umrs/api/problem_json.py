@@ -81,7 +81,18 @@ def install_problem_json_handler(app) -> None:
 
 
 def enabled_by_env() -> bool:
-    """Site knob: UMRS_PROBLEM_JSON=1 turns the projection on (default OFF)."""
+    """Site knob (2026-09-12 soak flip): projection is ON BY DEFAULT with an
+    explicit opt-out (UMRS_PROBLEM_JSON=0 / off / no / false; any casing).
+
+    Rationale checkpoint (post-WP-16): the handler rewrites ONLY responses
+    carrying x-platform-error-code; lean dataclass chains like the r4
+    client (`_api_error_message` reads ``detail`` and degrades it as plain
+    text) stay byte-correct before-and-after, so the flip can't fabricate
+    parse confusion downstream.'''
+    """
     import os
 
-    return os.environ.get("UMRS_PROBLEM_JSON", "").strip().lower() in ("1", "true", "yes", "on")
+    raw = os.environ.get("UMRS_PROBLEM_JSON", "").strip().lower()
+    if raw in ("0", "false", "no", "off"):
+        return False
+    return True

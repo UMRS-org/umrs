@@ -66,10 +66,25 @@ class TestInstalledHandler:
         assert response.headers["content-type"].startswith("application/json")
         assert response.json() == {"detail": "plain-keep"}
 
-    def test_env_flag_default_off(self, monkeypatch):
+    def test_env_flag_default_on_and_opt_out(self, monkeypatch):
         from umrs.api import problem_json as p
 
         monkeypatch.delenv("UMRS_PROBLEM_JSON", raising=False)
+        assert p.enabled_by_env() is True
+        monkeypatch.setenv("UMRS_PROBLEM_JSON", "0")
         assert p.enabled_by_env() is False
         monkeypatch.setenv("UMRS_PROBLEM_JSON", "1")
         assert p.enabled_by_env() is True
+
+
+def test_env_default_is_on_with_opt_out(monkeypatch):
+    from umrs.api import problem_json as p
+
+    monkeypatch.delenv("UMRS_PROBLEM_JSON", raising=False)
+    assert p.enabled_by_env() is True
+    monkeypatch.setenv("UMRS_PROBLEM_JSON", "0")
+    assert p.enabled_by_env() is False
+    monkeypatch.setenv("UMRS_PROBLEM_JSON", "off")
+    assert p.enabled_by_env() is False
+    monkeypatch.setenv("UMRS_PROBLEM_JSON", "1")
+    assert p.enabled_by_env() is True
