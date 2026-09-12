@@ -160,16 +160,19 @@ def test_create_grant_round_trip(client):
 
 
 def test_create_rejects_unknown_asset_kind(client):
+    # WP-06 r2: 'endpoint'/'workflow' are valid kinds; the negative gate is a
+    # genuinely-unknown kind (e.g. 'bundle' — deferred by design).
     response = client.post(
         "/umrs/grants",
         json={
-            "asset_kind": "endpoint",
+            "asset_kind": "bundle",
             "asset_id": "e-1",
             "grantee_kind": "user",
             "grantee_id": "alice",
         },
     )
     assert response.status_code == 400
+    assert response.headers.get("x-platform-error-code") == "grants.bad_request"
 
 
 def test_create_404s_when_asset_not_writable(client, monkeypatch):
@@ -257,4 +260,7 @@ def test_revoke_tombstones_never_deletes(client):
 
 
 def test_supported_asset_kinds_documented():
-    assert set(ASSET_KINDS) == {"model", "knowledge_graph"}
+    # WP-06 round 2 leg-b: endpoint + workflow joined; 'bundle' stays deferred
+    # (no durable bundle-owner rows today; do not fabricate).
+    assert set(ASSET_KINDS) == {"model", "knowledge_graph", "endpoint", "workflow"}
+    assert "bundle" not in ASSET_KINDS
