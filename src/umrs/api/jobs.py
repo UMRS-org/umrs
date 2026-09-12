@@ -107,9 +107,7 @@ class CallerIdentity:
 def get_caller_identity(
     caller_user_id: str | None = Query(None, description="Caller's user ID"),
     caller_project_id: str | None = Query(None, description="Caller's project ID"),
-    is_admin: bool = Query(
-        False, description="Admin flag (legacy, ignored in strict mode)"
-    ),
+    is_admin: bool = Query(False, description="Admin flag (legacy, ignored in strict mode)"),
     x_user_id: str | None = Header(None),
     x_verified_project_id: str | None = Header(None),
     x_verified_is_admin: str | None = Header(None),
@@ -139,7 +137,11 @@ def get_caller_identity(
             project_id=verified_project_id,
             is_admin=admin,
         ):
-            raise_typed(PlatformError.auth("gateway_signature_rejected", "Gateway-verified identity signature rejected"))
+            raise_typed(
+                PlatformError.auth(
+                    "gateway_signature_rejected", "Gateway-verified identity signature rejected"
+                )
+            )
         return CallerIdentity(
             user_id=verified_user_id,
             project_id=verified_project_id,
@@ -147,13 +149,21 @@ def get_caller_identity(
         )
 
     if _strict_auth_mode():
-        raise_typed(PlatformError.auth("gateway_identity_required", "Missing Gateway-verified caller identity"))
+        raise_typed(
+            PlatformError.auth(
+                "gateway_identity_required", "Missing Gateway-verified caller identity"
+            )
+        )
 
     from ._identity import warn_legacy_params_once
 
     warn_legacy_params_once("jobs.get_caller_identity")
     if not caller_user_id or not caller_project_id:
-        raise_typed(PlatformError.auth("caller_identity_required", "caller_user_id and caller_project_id are required"))
+        raise_typed(
+            PlatformError.auth(
+                "caller_identity_required", "caller_user_id and caller_project_id are required"
+            )
+        )
 
     return CallerIdentity(
         user_id=caller_user_id.strip(),
@@ -250,7 +260,11 @@ def _resolve_job_create_identity_primitive(
             is_admin=admin,
         )
         if not trusted:
-            raise_typed(PlatformError.auth("gateway_signature_rejected", "Gateway-verified identity signature rejected"))
+            raise_typed(
+                PlatformError.auth(
+                    "gateway_signature_rejected", "Gateway-verified identity signature rejected"
+                )
+            )
         return verified_project_id, verified_user_id, admin
     if verified_user_id and verified_project_id:
         admin = _header_str(x_verified_is_admin) in ("true", "1")
@@ -261,7 +275,9 @@ def _resolve_job_create_identity_primitive(
     uid = x_user_id_from_body
     if pid and uid:
         return pid, uid, False
-    raise_typed(PlatformError.auth("gateway_identity_required", "Missing Gateway-verified caller identity"))
+    raise_typed(
+        PlatformError.auth("gateway_identity_required", "Missing Gateway-verified caller identity")
+    )
 
 
 # =============================================================================
@@ -330,9 +346,7 @@ class JobCreateRequest(BaseModel):
         ),
     )
 
-    enqueue_immediately: bool = Field(
-        True, description="Immediately queue for scheduling"
-    )
+    enqueue_immediately: bool = Field(True, description="Immediately queue for scheduling")
 
     @field_validator("ttl_seconds")
     @classmethod
@@ -474,12 +488,9 @@ def _job_to_response(job: Job, include_attempts: bool = False) -> JobResponse:
         remaining_alive_seconds=(
             max(
                 0,
-                job.ttl_seconds
-                - int((datetime.utcnow() - job.updated_at).total_seconds()),
+                job.ttl_seconds - int((datetime.utcnow() - job.updated_at).total_seconds()),
             )
-            if job.ttl_seconds
-            and job.ttl_seconds > 0
-            and job.status == JobStatus.COMPLETED
+            if job.ttl_seconds and job.ttl_seconds > 0 and job.status == JobStatus.COMPLETED
             else job.ttl_seconds
             if job.ttl_seconds == -1 and job.status == JobStatus.COMPLETED
             else None
@@ -602,9 +613,7 @@ async def create_job(
         )
         _enforce_job_scope_policy(job_type, spec, user_id, project_id, is_admin)
 
-        create_method = (
-            store.create_fan_out_graph if request.fan_out_jobs else store.create_job
-        )
+        create_method = store.create_fan_out_graph if request.fan_out_jobs else store.create_job
         create_kwargs = dict(
             project_id=project_id,
             user_id=user_id,
@@ -692,6 +701,9 @@ _UNDISPATCHABLE_JOB_TYPES = {
     # BATCH_INFER graduated 2026-09-12 (c5061d43).
     # MODEL_EVAL graduated 2026-09-12 (this wave).
     JobType.FINE_TUNE,
+    # SESSION_GC: gated at submission (operator-side, POST /umrs/jobs requires
+    # identity as every other submission; max_days is job-locked at submit-time).
+    # Not in this set.
 }
 
 
@@ -729,9 +741,7 @@ def _parse_job_type_filter(job_type: str | None) -> JobType | None:
 )
 async def list_jobs(
     project_id: str | None = Query(None, description="Filter by project ID"),
-    status_filter: str | None = Query(
-        None, alias="status", description="Filter by status"
-    ),
+    status_filter: str | None = Query(None, alias="status", description="Filter by status"),
     job_type: str | None = Query(None, description="Filter by job type"),
     limit: int = Query(100, ge=1, le=1000, description="Max results to return"),
     offset: int = Query(0, ge=0, description="Offset for pagination"),
@@ -959,7 +969,9 @@ def _attempt_for_job(store: JobStore, job_id: str, attempt_id: str) -> Any:
     for attempt in store.get_attempts_for_job(job_id):
         if attempt.attempt_id == attempt_id:
             return attempt
-    raise_typed(PlatformError.jobs("attempt_not_found", f"Attempt not found on job {job_id}: {attempt_id}"))
+    raise_typed(
+        PlatformError.jobs("attempt_not_found", f"Attempt not found on job {job_id}: {attempt_id}")
+    )
 
 
 def _load_or_mint_credentials(
@@ -1047,7 +1059,11 @@ async def mint_attempt_sts_credentials(
 
     raw = store.get_attempt_credentials(attempt_id)
     if not raw:
-        raise_typed(PlatformError.presign("not_minted", "No attempt credentials minted yet — POST .../credentials first"))
+        raise_typed(
+            PlatformError.presign(
+                "not_minted", "No attempt credentials minted yet — POST .../credentials first"
+            )
+        )
     record = AttemptCredentials.from_dict(raw)
 
     config = get_s3_config()
@@ -1060,7 +1076,9 @@ async def mint_attempt_sts_credentials(
             secret_key=config.secret_key,
         )
     except STSFederationError as exc:
-        raise_typed(PlatformError.jobs("unavailable", f"STS federation unavailable: {exc}"), cause=exc)
+        raise_typed(
+            PlatformError.jobs("unavailable", f"STS federation unavailable: {exc}"), cause=exc
+        )
 
     # Re-mint the record with the capped STS TTL so downstream presign verbs
     # bound their URLs by the session lifetime (never wider).
@@ -1110,11 +1128,19 @@ async def presign_for_attempt(
 
     raw = store.get_attempt_credentials(attempt_id)
     if not raw:
-        raise_typed(PlatformError.presign("not_minted", "No attempt credentials minted yet — POST .../credentials first"))
+        raise_typed(
+            PlatformError.presign(
+                "not_minted", "No attempt credentials minted yet — POST .../credentials first"
+            )
+        )
     record = AttemptCredentials.from_dict(raw)
     key = body.key.lstrip("/")
     if not key_in_scope(key, record):
-        raise_typed(PlatformError.presign("out_of_scope", "key outside attempt scope or credentials expired"))
+        raise_typed(
+            PlatformError.presign(
+                "out_of_scope", "key outside attempt scope or credentials expired"
+            )
+        )
 
     ttl = min(body.ttl_sec or record.ttl_sec, record.ttl_sec)
     from .files import get_s3_config
@@ -1127,7 +1153,12 @@ async def presign_for_attempt(
         url = generate_presigned_get(client, config.bucket, key, ttl=ttl)
     else:
         url = generate_presigned_put(client, config.bucket, key, ttl=ttl)
-    return {"url": url, "method": body.method, "expires_in_sec": ttl, "scope": list(record.scope_prefixes)}
+    return {
+        "url": url,
+        "method": body.method,
+        "expires_in_sec": ttl,
+        "scope": list(record.scope_prefixes),
+    }
 
 
 @router.post(

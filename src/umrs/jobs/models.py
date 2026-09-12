@@ -55,6 +55,10 @@ class JobType(Enum):
     BATCH_INFER = "batch_infer"
     FINE_TUNE = "fine_tune"
     MODEL_EVAL = "model_eval"
+    # Ops lane (2026-09-12): archive-aged companion research-session rows via
+    # the ADR-035 archive cascade (never DELETE — mirror-aware delete is
+    # r4's own lane; the server only archives what it owns).
+    SESSION_GC = "session_gc"
     # Note: CONTEXT_RETENTION and CONVERSATION_SUMMARIZE excluded from selective merge
 
 
@@ -117,6 +121,10 @@ DEFAULT_BACKOFFS: dict[JobType, dict[str, Any]] = {
     },
     JobType.FINE_TUNE: {
         "delays": [300, 900, 1800],  # Heavyweight training; safer manual retry path
+        "max_attempts": 1,
+    },
+    JobType.SESSION_GC: {
+        "delays": [60, 300, 900],  # Archive sweeps; rarely needs a re-run
         "max_attempts": 1,
     },
     JobType.EMBEDDING_BATCH: {
