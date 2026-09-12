@@ -11,12 +11,12 @@ import os
 from dataclasses import dataclass
 from typing import Any
 
-from fastapi import HTTPException, status
 
 from ..jobs.models import Job, JobStatus, JobType
 from ..jobs.store import JobStore
 from ..server.workflow_execution_registry import ExecutionRecord
 from .jobs import CallerIdentity
+from .typed_errors import PlatformError, raise_typed
 
 # Canonical workflow lifecycle statuses (minimal contract skeleton).
 WORKFLOW_TERMINAL_STATUSES = frozenset({"succeeded", "failed", "cancelled"})

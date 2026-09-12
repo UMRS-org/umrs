@@ -19,8 +19,9 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from fastapi import Header, HTTPException, Request
+from fastapi import Header, Request
 
+from umrs.api.typed_errors import PlatformError, raise_typed
 from umrs.knowledge.access_scope import CallerScope
 
 

@@ -13,6 +13,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from umrs.api.typed_errors import PlatformError, raise_typed
 from umrs.experiment_registry import (
     ExperimentStatus,
 )

@@ -23,13 +23,14 @@ from __future__ import annotations
 import logging
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, Query, Request
 
 from umrs.knowledge.graph_registry import GraphRegistryStore, KnowledgeGraphMeta
 from umrs.search_api import SearchScope, UnifiedSearch
 
 from .catalog_store import get_optional_catalog_meta_store
 from .jobs import CallerIdentity, get_caller_identity
+from .typed_errors import PlatformError, raise_typed
 
 logger = logging.getLogger(__name__)
 

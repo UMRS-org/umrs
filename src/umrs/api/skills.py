@@ -4,11 +4,17 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, Header, Query, Request, status
 from pydantic import BaseModel, Field
 
-from umrs.skills import RegisteredSkill, SkillManifest, SkillRegistry, SkillScope
-from umrs.skills import SkillValidationError
+from umrs.api.typed_errors import PlatformError, raise_typed
+from umrs.skills import (
+    RegisteredSkill,
+    SkillManifest,
+    SkillRegistry,
+    SkillScope,
+    SkillValidationError,
+)
 
 router = APIRouter(prefix="/umrs/skills", tags=["skills"])
 
