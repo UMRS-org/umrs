@@ -583,3 +583,17 @@ def test_contract_knowledgegraphs_family_codes():
     }
     for code, status in expected.items():
         assert codes[code] == status, code
+
+
+def test_contract_knowledge_family_codes():
+    from r4_contracts.errors import known_error_codes
+
+    codes = known_error_codes()
+    expected = {
+        "knowledge.unavailable": 503,
+        "knowledge.not_found": 404,
+        "knowledge.bad_request": 400,
+        "knowledge.failure": 500,
+    }
+    for code, status in expected.items():
+        assert codes[code] == status, code
