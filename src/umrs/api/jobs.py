@@ -688,6 +688,12 @@ def _parse_status_filter(status_filter: str | None) -> JobStatus | None:
 _UNDISPATCHABLE_JOB_TYPES = {
     JobType.EMBEDDING_BATCH,
     JobType.PIPELINE_RUN,
+    # ADR-047 wave (executor classes named but not yet built): honest 400
+    # until each executor ships. Exit gate: testing.spec validation + backend
+    # registration.
+    JobType.BATCH_INFER,
+    JobType.FINE_TUNE,
+    JobType.MODEL_EVAL,
 }
 
 

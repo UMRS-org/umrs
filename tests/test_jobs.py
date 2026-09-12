@@ -273,6 +273,9 @@ class TestJobTypes:
             "knowledge_reindex",
             "research_loop_job",
             "vision_infer",
+            "batch_infer",
+            "fine_tune",
+            "model_eval",
         ]
         actual = [t.value for t in JobType]
         assert set(expected) == set(actual)
@@ -498,3 +501,30 @@ class TestCallerIdentity:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+class TestUndispatchableExecutorWave:
+    """ADR-047: new executor classes stay honest 400 at submit (fail-without-change)."""
+
+    def test_types_registered_in_enum(self):
+        from umrs.jobs.models import JobType
+
+        members = {m.value for m in JobType}
+        assert "batch_infer" in members
+        assert "fine_tune" in members
+        assert "model_eval" in members
+
+    def test_each_type_hits_the_400_gate(self):
+        from umrs.api.jobs import _UNDISPATCHABLE_JOB_TYPES, _enforce_dispatchable_job_type
+        from umrs.jobs.models import JobType
+        import pytest
+
+        for jt in (JobType.BATCH_INFER, JobType.FINE_TUNE, JobType.MODEL_EVAL):
+            assert jt in _UNDISPATCHABLE_JOB_TYPES
+            with pytest.raises(Exception) as excinfo:
+                _enforce_dispatchable_job_type(jt)
+            exc = excinfo.value
+            assert exc.status_code == 400
+            assert "not implemented on this deployment" in str(exc.detail)
+            headers = getattr(exc, "headers", {}) or {}
+            assert headers.get("x-platform-error-code") == "jobs.bad_request"
