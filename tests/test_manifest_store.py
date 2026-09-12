@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from unittest.mock import MagicMock
 
 from umrs.jobs.store import JobStore
 
@@ -80,9 +81,7 @@ def test_persist_and_read_back_manifest(monkeypatch):
     monkeypatch.setattr(
         umrs.jobs.provenance,
         "build_provenance",
-        lambda job, attempts: type(
-            "Prov", (), {"to_dict": lambda self: {"job_id": "job-1"}}
-        )(),
+        lambda job, attempts: type("Prov", (), {"to_dict": lambda self: {"job_id": "job-1"}})(),
     )
 
     store._persist_attempt_manifest("att-1", "job-1")
@@ -157,3 +156,29 @@ def test_venue_enrichment_attaches_only_via_wired_store(monkeypatch):
     store_wired._persist_attempt_manifest("att-b", "job-y")
     manifest_b = store_wired.get_attempt_manifest("att-b")
     assert manifest_b["model_pins"][0]["venue_active_version"] == "v2026-08"
+
+
+def test_vector_version_store_reuses_shared_pool(monkeypatch):
+    """WP-06 r2 leg-c: boot wiring must hand the store the venpool, never a fresh dsn."""
+    from umrs.jobs.vector_version_store import VectorVersionStore
+
+    class _Pool:
+        def __init__(self):
+            self.getconn_calls = 0
+            self.putconn_calls = 0
+
+        def getconn(self):
+            self.getconn_calls += 1
+            return MagicMock()
+
+        def putconn(self, c):
+            self.putconn_calls += 1
+
+    pool = _Pool()
+    store = VectorVersionStore(pool=pool)
+    assert store.db_enabled is True
+    assert pool.getconn_calls == 0  # no eager acquisition at construction
+    with store._get_conn() as conn:
+        assert conn is not None
+    assert pool.getconn_calls == 1
+    assert pool.putconn_calls == 1  # returned, not leaked

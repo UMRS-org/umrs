@@ -165,6 +165,19 @@ class JobService:
         except Exception:  # noqa: BLE001 — sites without a config run shared
             pass
 
+        # WP-06 r2 leg-c + WP-10 r2 venue-pin enrichment prerequisite: attach a
+        # pool-backed VectorVersionStore at boot so model pins gain their venue
+        # active_version instead of remaining spec-only (in-memory stand-ins
+        # would fabricate availability).
+        try:
+            from .vector_version_store import VectorVersionStore
+
+            self._job_store.vector_version_store = VectorVersionStore(pool=self.db_pool)
+            logger.info("VectorVersionStore wired with shared umrs_db pool")
+        except (ImportError, RuntimeError, TypeError) as exc:
+            # Pool injection is opt-in: the wiring fault must never block boot
+            logger.warning("VectorVersionStore wiring skipped (%s)", exc)
+
         # Wire auto-ingest post-completion hooks (TASK-035).
         try:
             from .adapters import register_auto_ingest_callbacks
