@@ -286,6 +286,8 @@ class ModelResponse(BaseModel):
     status: str
     created_at: str | None
     updated_at: str | None
+    # P10-C3 console badge source: "system"|"project"|"user"|"admin"|"grant"|None-when-uncomputed
+    visibility_source: str | None = None
 
     @classmethod
     def from_entry(cls, entry: ModelEntry) -> "ModelResponse":
@@ -781,24 +783,39 @@ async def list_models(
     type_enum = ModelType(model_type) if model_type else None
     status_enum = ModelStatus(status) if status else None
 
-    models = store.list_models(
-        ctx=ctx,
-        scope=scope_enum,
-        model_type=type_enum,
-        status=status_enum,
-        project_id=project_id,
-        limit=limit,
-        offset=offset,
-    )
+    # P10-C3 (WP-06 r2): grant-aware listing with the visibility-reason chip.
+    # System/project/user rows also get the chip; grant rows only when the
+    # verified grant path pinned them (never decorative).
+    try:
+        models_with_reasons = store.list_models_with_reasons(ctx, limit=limit)
+    except (AttributeError, RuntimeError):
+        # Conservative fallback: the classic scope-only listing (never fabricate)
+        fallback = store.list_models(
+            ctx=ctx,
+            scope=scope_enum,
+            model_type=type_enum,
+            status=status_enum,
+            project_id=project_id,
+            limit=limit,
+            offset=offset,
+        )
+        models_with_reasons = [(m, None) for m in fallback]
 
     # Apply deployment-scoped visibility (e.g. frontier-only on AI4S).
     from .model_visibility import is_model_visible
 
-    models = [m for m in models if is_model_visible(getattr(m, "name", None))]
+    models_with_reasons = [
+        (m, r) for (m, r) in models_with_reasons if is_model_visible(getattr(m, "name", None))
+    ]
 
+    responses: list[ModelResponse] = []
+    for model, reason in models_with_reasons:
+        resp = ModelResponse.from_entry(model)
+        resp.visibility_source = reason
+        responses.append(resp)
     return ModelListResponse(
-        models=[ModelResponse.from_entry(m) for m in models],
-        total=len(models),  # TODO: Add count query for accurate total
+        models=responses,
+        total=len(responses),  # TODO: Add count query for accurate total
         limit=limit,
         offset=offset,
     )

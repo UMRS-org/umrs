@@ -125,8 +125,30 @@ def _init_model_store(app, db_pool):
         ensure_model_registry_schema(model_conn)
         model_conn.commit()
         app.state.umrs_model_store_conn = model_conn
+        # WP-06 r2 P10-C3 (console badges): wire the grant-reader seam so the
+        # ACL's read_reason surface isn't scope-only — without it every listing
+        # stays a scope query (badge chips never carry 'grant' on live rows).
+        from umrs.grants import GrantStore
+        from umrs.model_registry.store import ACLEnforcer
+
+        def _read_grants_for_acl(asset_kind: str, asset_id: str):
+            """Borrow-and-return per call (fail-open grants absent = no grants)."""
+            if db_pool is None:
+                return []
+            conn = db_pool.getconn()
+            try:
+                return GrantStore(conn).list_for_asset(asset_kind, asset_id)
+            finally:
+                db_pool.putconn(conn)
+
+        acl = ACLEnforcer(grant_reader=_read_grants_for_acl)
         set_model_store(
-            ModelStore(model_conn, path_validator=PathValidator(), pool=db_pool)
+            ModelStore(
+                model_conn,
+                path_validator=PathValidator(),
+                pool=db_pool,
+                acl_enforcer=acl,
+            )
         )
         logger.info("Model store initialized for HTTP sidecar")
     except Exception:

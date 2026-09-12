@@ -84,6 +84,25 @@ class ACLEnforcer:
                     return True
         return False
 
+    def read_reason(self, model: ModelEntry, ctx: AccessContext) -> str:
+        """WHY safe reading holds (WP-06 r2 console badge source).
+
+        Honest one-token surface consumed verbatim by UI badges. Returns the
+        grant chip exactly when a *live grant* is what authorizes the read —
+        scope ownership is the normal case. 'none' when no read holds.
+        """
+        if ctx.is_admin:
+            return "admin"
+        if model.scope == ModelScope.SYSTEM:
+            return "system"
+        if model.scope == ModelScope.PROJECT and model.project_id in ctx.project_memberships:
+            return "project"
+        if model.scope == ModelScope.USER and model.owner_id == ctx.user_id:
+            return "user"
+        if self._grant_allows(model, ctx):
+            return "grant"
+        return "none"
+
     def can_read(self, model: ModelEntry, ctx: AccessContext) -> bool:
         """Check if user can read/use a model."""
         if ctx.is_admin:
