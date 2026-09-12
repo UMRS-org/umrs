@@ -276,6 +276,7 @@ class TestJobTypes:
             "batch_infer",
             "fine_tune",
             "model_eval",
+            "session_gc",
         ]
         actual = [t.value for t in JobType]
         assert set(expected) == set(actual)

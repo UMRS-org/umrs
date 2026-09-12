@@ -186,6 +186,20 @@ class DurableOrchestrationService:
             logger.debug("UserStore unavailable; per-user Slurm accounts disabled")
             user_store = None
 
+        # SESSION_GC lane: ONE shared backend across dispatch factory + status
+        # checker (their reports are shared by reference), stitched to the umrs_db
+        # pool; absent → honest failure at submit (never a straight-DELETE fallback).
+        from .research_sessions.store import SessionStore
+        from .session_gc import SessionGcBackend
+
+        try:
+            session_store = SessionStore(self.db_pool)
+            session_gc_backend = SessionGcBackend(session_store=session_store)
+        except (AttributeError, TypeError) as exc:
+            logger.debug("SessionGcBackend wiring skipped (session_gc unavailable): %s", exc)
+            session_store = None
+            session_gc_backend = None
+
         backend_factory = create_backend_factory(
             orchestrator=orch.backend,
             registry=orch.registry,
@@ -194,6 +208,7 @@ class DurableOrchestrationService:
             model_store=model_store,
             path_validator=path_validator,
             user_store=user_store,
+            session_store=session_store,
         )
         self._job_service.set_backend_factory(backend_factory)
 
@@ -203,6 +218,7 @@ class DurableOrchestrationService:
             registry=orch.registry,
             orchestrator=orch.backend,
             instance_id=self._job_service.instance_id,
+            session_store=session_store,
         )
         self._job_service.set_status_checker(status_checker)
 

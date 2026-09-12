@@ -295,6 +295,58 @@ class SessionStore:
             self._return(conn)
         return self.get(session_id)
 
+    def archive_aged_sessions(
+        self,
+        *,
+        max_days: int,
+        trust_store: Any,
+    ) -> list[str]:
+        """Archive non-archived sessions older than max_days via the ADR-035
+        item-8 cascade (ONE transaction per session — archive + session-scope
+        trust revoke + companion_session_archives tombstone).
+
+        Rules:
+        - max_days <= 0 → no-op (nothing archives without an explicit policy).
+        - Pinned rows (metadata.pinned = true) are exempt.
+        - Already-archived rows are good, never re-cascaded (idempotent side).
+        """
+        if max_days <= 0:
+            return []
+        conn = self._borrow()
+        try:
+            cur = conn.cursor()
+            cutoff_sql = "datetime('now', ?)" if self._sqlite else "now() - (%s * interval '1 day')"
+            cutoff_param = f"-{max_days} days" if self._sqlite else max_days
+            cur.execute(
+                self._q(
+                    "SELECT session_id, metadata FROM research_sessions "
+                    "WHERE status != 'archived' "
+                    f"AND updated_at < {cutoff_sql}"
+                ),
+                (cutoff_param,) if not self._sqlite else (cutoff_param,),
+            )
+            rows = cur.fetchall()
+        finally:
+            self._return(conn)
+        ids: list[str] = []
+        for row in rows:
+            session_id = row[0]
+            metadata_raw = row[1] or ""
+            pinned = False
+            if metadata_raw:
+                import json as _json
+
+                try:
+                    pinned = bool(_json.loads(metadata_raw).get("pinned"))
+                except (ValueError, TypeError):
+                    pinned = False
+            if pinned:
+                continue
+            session = self.archive_with_trust_cascade(session_id, trust_store)
+            if session is not None:
+                ids.append(session_id)
+        return ids
+
     def archive_with_trust_cascade(
         self, session_id: str, trust_store: Any
     ) -> ResearchSession | None:
@@ -360,10 +412,7 @@ class SessionStore:
                 (link.session_id, link.loop_id, link.venue, link.loop_role),
             )
             cur.execute(
-                self._q(
-                    "UPDATE research_sessions SET updated_at = now() "
-                    "WHERE session_id = %s"
-                ),
+                self._q("UPDATE research_sessions SET updated_at = now() WHERE session_id = %s"),
                 (link.session_id,),
             )
             self._commit(conn)
@@ -376,8 +425,7 @@ class SessionStore:
             cur = conn.cursor()
             cur.execute(
                 self._q(
-                    "DELETE FROM research_session_loops "
-                    "WHERE session_id = %s AND loop_id = %s"
+                    "DELETE FROM research_session_loops WHERE session_id = %s AND loop_id = %s"
                 ),
                 (session_id, loop_id),
             )
@@ -425,8 +473,7 @@ class SessionStore:
     def _list_loops_on(self, cur, session_id: str) -> list[SessionLoopLink]:
         cur.execute(
             self._q(
-                "SELECT * FROM research_session_loops WHERE session_id = %s "
-                "ORDER BY attached_at"
+                "SELECT * FROM research_session_loops WHERE session_id = %s ORDER BY attached_at"
             ),
             (session_id,),
         )

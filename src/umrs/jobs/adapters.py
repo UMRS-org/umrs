@@ -142,9 +142,7 @@ def _resolve_model_entry(model_name: str) -> "ModelEntry | None":
                 model_name,
             )
             scope_order = {"system": 0, "project": 1, "user": 2}
-            matches.sort(
-                key=lambda entry: scope_order.get(str(entry.get("scope", "system")), 99)
-            )
+            matches.sort(key=lambda entry: scope_order.get(str(entry.get("scope", "system")), 99))
             # Convert dict to ModelEntry for compatibility
             return ModelEntry.from_dict(matches[0])
     except Exception:
@@ -381,9 +379,7 @@ def _readiness_progress_detail(endpoint: Any, error: str | None) -> str:
         return "starting LiteLLM / waiting for service port"
     if "chat probe timeout" in lowered or "request timeout" in lowered:
         return "loading model weights / waiting for inference warmup"
-    if any(
-        code in lowered for code in ("http 404", "http 500", "http 502", "http 503")
-    ):
+    if any(code in lowered for code in ("http 404", "http 500", "http 502", "http 503")):
         return "starting LiteLLM / waiting for proxy readiness"
     if "no models in response" in lowered or "expected model" in lowered:
         return "registering served model / loading model"
@@ -697,9 +693,7 @@ class EndpointProvisionBackend(OrchestratorBackend):
             endpoint_metadata.setdefault("job_status", job_info.status.value)
             endpoint_metadata.setdefault("detail", _backend_progress_detail(job_info))
             if deployment_spec.parallel_strategy != "tp_pp":
-                endpoint_metadata["parallel_strategy"] = (
-                    deployment_spec.parallel_strategy
-                )
+                endpoint_metadata["parallel_strategy"] = deployment_spec.parallel_strategy
 
             self.registry.register(
                 project_id=project_id,
@@ -713,8 +707,7 @@ class EndpointProvisionBackend(OrchestratorBackend):
             )
 
             logger.info(
-                "Submitted endpoint provision: job=%s attempt=%s backend_ref=%s "
-                "spec_version=%s",
+                "Submitted endpoint provision: job=%s attempt=%s backend_ref=%s spec_version=%s",
                 job.job_id,
                 attempt.attempt_id,
                 job_info.job_id,
@@ -751,9 +744,7 @@ class EndpointProvisionBackend(OrchestratorBackend):
             submit_kwargs["partition_override"] = partition_override
         if nodelist_hint:
             submit_kwargs["nodelist_hint"] = nodelist_hint
-        eff_strategy = parallel_strategy or (requested_env or {}).get(
-            "VLLM_PARALLEL_STRATEGY", ""
-        )
+        eff_strategy = parallel_strategy or (requested_env or {}).get("VLLM_PARALLEL_STRATEGY", "")
         if eff_strategy:
             submit_kwargs["env"]["VLLM_PARALLEL_STRATEGY"] = eff_strategy
             is_tep = eff_strategy.lower() == "tep"
@@ -833,8 +824,7 @@ class EndpointProvisionStatusChecker(BackendStatusChecker):
         if endpoint.status == EndpointStatus.FAILED:
             self._clear_readiness_tracking(backend_ref)
             return AttemptCheckResult.failed(
-                endpoint.error_message
-                or endpoint.metadata.get("error", "endpoint failed")
+                endpoint.error_message or endpoint.metadata.get("error", "endpoint failed")
             )
 
         if endpoint.host in ("", "pending"):
@@ -865,8 +855,7 @@ class EndpointProvisionStatusChecker(BackendStatusChecker):
 
             if check_no == 1:
                 logger.info(
-                    "Starting readiness polling for %s at %s:%s via durable monitor "
-                    "(auth=%s)",
+                    "Starting readiness polling for %s at %s:%s via durable monitor (auth=%s)",
                     backend_ref,
                     endpoint.host,
                     endpoint.port,
@@ -875,8 +864,7 @@ class EndpointProvisionStatusChecker(BackendStatusChecker):
 
             if is_ready:
                 logger.info(
-                    "Endpoint %s ready after durable monitor check %s at %s:%s. "
-                    "Models: %s",
+                    "Endpoint %s ready after durable monitor check %s at %s:%s. Models: %s",
                     backend_ref,
                     check_no,
                     endpoint.host,
@@ -912,18 +900,12 @@ class EndpointProvisionStatusChecker(BackendStatusChecker):
                 self.registry.update_metadata(
                     backend_ref,
                     {
-                        "detail": f"degraded: {progress_detail}"
-                        if progress_detail
-                        else "degraded",
-                        "readiness_error": _short_progress_text(error)
-                        if error
-                        else None,
+                        "detail": f"degraded: {progress_detail}" if progress_detail else "degraded",
+                        "readiness_error": _short_progress_text(error) if error else None,
                     },
                 )
                 self.registry.mark_degraded(backend_ref)
-                return AttemptCheckResult.running(
-                    "degraded: endpoint reachable but unhealthy"
-                )
+                return AttemptCheckResult.running("degraded: endpoint reachable but unhealthy")
 
             last_error = self._last_readiness_error.get(backend_ref)
             if check_no == 1 or check_no % 5 == 0 or error != last_error:
@@ -987,9 +969,7 @@ class EndpointProvisionStatusChecker(BackendStatusChecker):
         try:
             job_info = await self.orchestrator.get_job_status(backend_ref)
         except Exception as exc:
-            logger.warning(
-                "Failed to refresh backend status for %s: %s", backend_ref, exc
-            )
+            logger.warning("Failed to refresh backend status for %s: %s", backend_ref, exc)
             return None
 
         from umrs.orchestrator.base import JobStatus as OrchestratorJobStatus
@@ -1000,9 +980,7 @@ class EndpointProvisionStatusChecker(BackendStatusChecker):
             "detail": _backend_progress_detail(job_info),
         }
         if job_info.error_message:
-            progress_metadata["backend_error"] = _short_progress_text(
-                job_info.error_message
-            )
+            progress_metadata["backend_error"] = _short_progress_text(job_info.error_message)
 
         if job_info.endpoint:
             self.registry.update_location(
@@ -1027,9 +1005,7 @@ class EndpointProvisionStatusChecker(BackendStatusChecker):
             OrchestratorJobStatus.STOPPED,
         ):
             self._clear_readiness_tracking(backend_ref)
-            error = job_info.error_message or (
-                f"Backend job {backend_ref} {job_info.status.value}"
-            )
+            error = job_info.error_message or (f"Backend job {backend_ref} {job_info.status.value}")
             self.registry.update_metadata(
                 backend_ref,
                 {
@@ -1166,8 +1142,7 @@ class CleanupBackend(OrchestratorBackend):
         self,
         orchestrator,
         registry: EndpointRegistry,
-        get_job_with_attempts: Callable[[str], tuple[Job, list[JobAttempt]]]
-        | None = None,
+        get_job_with_attempts: Callable[[str], tuple[Job, list[JobAttempt]]] | None = None,
     ):
         self.orchestrator = orchestrator
         self.registry = registry
@@ -1319,6 +1294,7 @@ def create_backend_factory(
     model_store=None,
     path_validator=None,
     user_store=None,
+    session_store=None,
 ):
     """
     Create a backend factory function for JobService.
@@ -1364,6 +1340,10 @@ def create_backend_factory(
 
     model_eval_backend = ModelEvalBackend()
 
+    from .session_gc import SessionGcBackend
+
+    session_gc_backend = SessionGcBackend(session_store=session_store)
+
     from .knowledge_adapters import (
         KnowledgeEmbedBackend,
         KnowledgeExportBackend,
@@ -1401,6 +1381,12 @@ def create_backend_factory(
     knowledge_reindex_backend = KnowledgeReindexBackend()
 
     def factory(job_type: JobType) -> OrchestratorBackend:
+        if job_type == JobType.SESSION_GC:
+            if session_gc_backend.session_store is None:
+                raise RuntimeError(
+                    "session_gc lacks a shared umrs_db session store (wiring missing)"
+                )
+            return session_gc_backend
         if job_type == JobType.ENDPOINT_PROVISION:
             return endpoint_backend
         elif job_type == JobType.ENDPOINT_UPGRADE:
@@ -1420,8 +1406,7 @@ def create_backend_factory(
         elif job_type == JobType.MODEL_DOWNLOAD:
             if model_download_backend is None:
                 raise RuntimeError(
-                    "Model download backend not configured. "
-                    "Provide model_store and path_validator."
+                    "Model download backend not configured. Provide model_store and path_validator."
                 )
             return model_download_backend
         elif job_type == JobType.KNOWLEDGE_INGEST:
@@ -1457,6 +1442,8 @@ def create_status_checker(
     embedding_worker=None,
     include_model_download: bool = True,
     instance_id: str | None = None,
+    session_store=None,
+    session_gc_backend=None,
 ):
     """
     Create a composite status checker for JobService.
@@ -1493,6 +1480,10 @@ def create_status_checker(
     from .model_eval import ModelEvalStatusChecker
 
     checker.register(JobType.MODEL_EVAL, ModelEvalStatusChecker())
+
+    from .session_gc import SessionGcStatusChecker
+
+    checker.register(JobType.SESSION_GC, SessionGcStatusChecker(backend=session_gc_backend))
     checker.register(JobType.INDEX_BUILD, IndexBuildStatusChecker())
     from .data_ingestion import DataIngestionStatusChecker
 
