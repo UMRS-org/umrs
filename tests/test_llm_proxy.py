@@ -842,3 +842,101 @@ def test_first_content_never_fires_on_role_only_streams():
 
     assert response.status_code == 200
     assert observations == []
+
+
+def test_decode_rate_records_at_stream_end():
+    """P11 decode-rate leg: whole-stream content-delta rate, exactly once
+    at the finally (empty streams DON'T fabricate a rate).
+    """
+    registry = _make_registry_with_endpoint()
+    client = _create_client(registry)
+
+    chunks = [
+        b'data: {"choices":[{"delta":{"role":"assistant"}}]}\n\n',
+        b'data: {"choices":[{"delta":{"content":" he"}}]}\n\n',
+        b'data: {"choices":[{"delta":{"content":"lo"}}]}\n\n',
+        b'data: {"choices":[{"delta":{"content":"!"}}]}\n\n',
+        b"data: [DONE]\n\n",
+    ]
+
+    class _FakeResponse:
+        status_code = 200
+        headers = {"content-type": "text/event-stream"}
+
+        async def aiter_bytes(self):
+            for c in chunks:
+                yield c
+
+        async def aclose(self):
+            return None
+
+    class _FakeClient:
+        async def aclose(self):
+            return None
+
+    async def fake_open_stream(request, upstream_url, headers, body):
+        return _FakeClient(), _FakeResponse()
+
+    rates: list[float] = []
+
+    from umrs.metrics import METRICS
+
+    with (
+        patch.object(llm_api, "_open_stream", fake_open_stream),
+        patch.object(METRICS, "llm_decode_content_rate", lambda model, dps: rates.append(dps)),
+    ):
+        response = client.post(
+            "/umrs/llm/v1/chat/completions",
+            json={"model": "qwen3-8b", "messages": [], "stream": True},
+            headers={"x-user-id": "user-1", "x-project-id": "test-project"},
+        )
+
+    assert response.status_code == 200
+    assert len(rates) == 1
+    assert rates[0] > 0, f"expected a positive delta rate from 3 content chunks, got {rates}"
+
+
+def test_decode_rate_never_fired_without_content_frames():
+    """Role-only / empty streams record no rate at all (never fabricated)."""
+    registry = _make_registry_with_endpoint()
+    client = _create_client(registry)
+
+    chunks = [
+        b'data: {"choices":[{"delta":{"role":"assistant"}}]}\n\n',
+        b"data: [DONE]\n\n",
+    ]
+
+    class _FakeResponse:
+        status_code = 200
+        headers = {"content-type": "text/event-stream"}
+
+        async def aiter_bytes(self):
+            for c in chunks:
+                yield c
+
+        async def aclose(self):
+            return None
+
+    class _FakeClient:
+        async def aclose(self):
+            return None
+
+    async def fake_open_stream(request, upstream_url, headers, body):
+        return _FakeClient(), _FakeResponse()
+
+    rates: list[float] = []
+
+    from umrs.metrics import METRICS
+
+    with (
+        patch.object(llm_api, "_open_stream", fake_open_stream),
+        patch.object(METRICS, "llm_decode_content_rate", lambda model, dps: rates.append(dps)),
+    ):
+        response = client.post(
+            "/umrs/llm/v1/chat/completions",
+            json={"model": "qwen3-8b", "messages": [], "stream": True},
+            headers={"x-user-id": "user-1", "x-project-id": "test-project"},
+        )
+
+    assert response.status_code == 200
+    assert rates == []

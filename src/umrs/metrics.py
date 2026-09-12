@@ -324,6 +324,14 @@ class UMRSMetrics:
             "LLM time-to-first-content-delta measured at the UMRS LLM route (P11 decode leg)",
             ["source", "model"],
         )
+        # P11 decode-rate leg (same-day follow-on): count of non-empty content
+        # deltas per second of a single stream's wall window — chunk-rate, NOT
+        # tokenizer tokens; the name says so (semantics honest by construction).
+        self._llm_decode_content_rate = _histogram(
+            "rivault_llm_decode_content_rate_deltas_per_second",
+            "LLM content-delta rate per request stream (chunk deltas/sec, not tokenizer tokens)",
+            ["source", "model"],
+        )
         self._llm_requests = _counter(
             "umrs_llm_requests_total",
             "Total LLM proxy requests by source, model, streaming",
@@ -688,6 +696,21 @@ class UMRSMetrics:
             return
         s = source or self._source
         self._llm_first_content.labels(source=s, model=model).observe(seconds)
+
+    def llm_decode_content_rate(
+        self, model: str, deltas_per_second: float, source: str = ""
+    ) -> None:
+        """Record content-delta rate per completed stream (P11 decode-rate leg).
+
+        Callers compute deltas/window at stream end; floats <=0 pass through
+        as 0 is still evidence (empty stream rate is a fact, never fabricated).
+        """
+        if deltas_per_second < 0:
+            return
+        s = source or self._source
+        self._llm_decode_content_rate.labels(source=s, model=model).observe(
+            deltas_per_second
+        )
 
     def llm_request(self, model: str, streaming: bool, source: str = "") -> None:
         """Increment LLM request counter."""

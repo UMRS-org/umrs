@@ -385,9 +385,11 @@ async def _proxy_streaming(
     _MAX_TAIL = 5
     _ttft_observed = False
     _ttfc_observed = False
+    _decode_start = None
+    _content_delta_count = 0
 
     async def _yield():
-        nonlocal _ttft_observed, _ttfc_observed
+        nonlocal _ttft_observed, _ttfc_observed, _decode_start, _content_delta_count
         try:
             async for chunk in response.aiter_bytes():
                 if not _ttft_observed and timer is not None:
@@ -397,19 +399,29 @@ async def _proxy_streaming(
                     # token, same honest semantics as the retired gateway.
                     _ttft_observed = True
                     METRICS.llm_first_token(model, timer.elapsed_ms() / 1000)
-                if not _ttfc_observed and timer is not None and chunk:
-                    # P11 decode leg: first SSE delta with a NON-EMPTY content
-                    # token (role/done frames never count).
+                if chunk:
+                    # P11 decode legs: first non-empty content delta (TTFC) +
+                    # stream-end content-delta rate (decode pace).
                     content_match = _CONTENT_TOKEN_RE.search(chunk)
                     if content_match and content_match.group(1):
-                        _ttfc_observed = True
-                        METRICS.llm_first_content(model, timer.elapsed_ms() / 1000)
+                        _content_delta_count += 1
+                        if not _ttfc_observed and timer is not None:
+                            _ttfc_observed = True
+                            METRICS.llm_first_content(model, timer.elapsed_ms() / 1000)
+                            _decode_start = timer.elapsed_ms()
                 if usage_record is not None:
                     _tail_chunks.append(chunk)
                     if len(_tail_chunks) > _MAX_TAIL:
                         _tail_chunks.pop(0)
                 yield chunk
         finally:
+            # P11 decode-rate leg: per-stream content-delta rate at end.
+            if timer is not None and _decode_start is not None:
+                window_sec = max(0.0, timer.elapsed_ms() / 1000)
+                if window_sec > 0:
+                    METRICS.llm_decode_content_rate(
+                        model, _content_delta_count / window_sec
+                    )
             await response.aclose()
             await client.aclose()
             # Decrement active requests after stream is fully consumed
