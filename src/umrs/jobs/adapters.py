@@ -1356,6 +1356,10 @@ def create_backend_factory(
 
     workflow_run_backend = WorkflowRunBackend()
 
+    from .batch_infer import BatchInferBackend
+
+    batch_infer_backend = BatchInferBackend()
+
     from .knowledge_adapters import (
         KnowledgeEmbedBackend,
         KnowledgeExportBackend,
@@ -1405,6 +1409,8 @@ def create_backend_factory(
             return cleanup_backend
         elif job_type == JobType.WORKFLOW_RUN:
             return workflow_run_backend
+        elif job_type == JobType.BATCH_INFER:
+            return batch_infer_backend
         elif job_type == JobType.MODEL_DOWNLOAD:
             if model_download_backend is None:
                 raise RuntimeError(
@@ -1473,6 +1479,10 @@ def create_status_checker(
     from .workflow_run import WorkflowRunStatusChecker
 
     checker.register(JobType.WORKFLOW_RUN, WorkflowRunStatusChecker())
+
+    from .batch_infer import BatchInferStatusChecker
+
+    checker.register(JobType.BATCH_INFER, BatchInferStatusChecker())
     checker.register(JobType.INDEX_BUILD, IndexBuildStatusChecker())
     from .data_ingestion import DataIngestionStatusChecker
 
