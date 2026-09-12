@@ -519,7 +519,7 @@ class TestUndispatchableExecutorWave:
         from umrs.jobs.models import JobType
         import pytest
 
-        for jt in (JobType.FINE_TUNE, JobType.MODEL_EVAL):
+        for jt in (JobType.FINE_TUNE,):
             assert jt in _UNDISPATCHABLE_JOB_TYPES
             with pytest.raises(Exception) as excinfo:
                 _enforce_dispatchable_job_type(jt)
@@ -529,9 +529,10 @@ class TestUndispatchableExecutorWave:
             headers = getattr(exc, "headers", {}) or {}
             assert headers.get("x-platform-error-code") == "jobs.bad_request"
 
-    def test_batch_infer_graduated_out_of_gate(self):
+    def test_executor_classes_graduated_out_of_gate(self):
         from umrs.api.jobs import _UNDISPATCHABLE_JOB_TYPES, _enforce_dispatchable_job_type
         from umrs.jobs.models import JobType
 
-        assert JobType.BATCH_INFER not in _UNDISPATCHABLE_JOB_TYPES
-        _enforce_dispatchable_job_type(JobType.BATCH_INFER)  # no raise
+        for jt in (JobType.BATCH_INFER, JobType.MODEL_EVAL):
+            assert jt not in _UNDISPATCHABLE_JOB_TYPES
+            _enforce_dispatchable_job_type(jt)  # no raise
