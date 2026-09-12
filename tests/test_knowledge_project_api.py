@@ -51,9 +51,10 @@ def _knowledge_api_deps():
 
     _ensure_umrs_namespace()
     files_module = _load_api_module("umrs.api.files", "files.py")
-    graph_module = _load_api_module("umrs.api.knowledge_graph", "knowledge_graph.py")
     knowledge_module = _load_api_module("umrs.api.knowledge", "knowledge.py")
-    return FastAPI, TestClient, files_module, graph_module, knowledge_module
+    # ADR-026 wave C: the sat facade module no longer exists; knowledge/
+    # canonical graph surface is the only graph face.
+    return FastAPI, TestClient, files_module, knowledge_module
 
 
 class _LocalS3Config:
@@ -76,7 +77,7 @@ def project_dir(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def knowledge_client(project_dir: Path, monkeypatch):
-    FastAPI, TestClient, files_module, graph_module, knowledge_module = _knowledge_api_deps()
+    FastAPI, TestClient, files_module, knowledge_module = _knowledge_api_deps()
     get_s3_config = files_module.get_s3_config
     get_project_id = files_module.get_project_id
 
@@ -91,7 +92,6 @@ def knowledge_client(project_dir: Path, monkeypatch):
 
     app = FastAPI()
     app.include_router(knowledge_module.router)
-    app.include_router(graph_module.router)
     app.dependency_overrides[get_s3_config] = lambda: _LocalS3Config()
     app.dependency_overrides[get_project_id] = lambda: "proj-http"
     return TestClient(app)
@@ -100,17 +100,15 @@ def knowledge_client(project_dir: Path, monkeypatch):
 def test_http_sidecar_exposes_knowledge_routes():
     _ensure_umrs_namespace()
     knowledge_module = _load_api_module("umrs.api.knowledge", "knowledge.py")
-    graph_module = _load_api_module("umrs.api.knowledge_graph", "knowledge_graph.py")
 
     from fastapi import FastAPI
 
     app = FastAPI()
     app.include_router(knowledge_module.router)
-    app.include_router(graph_module.router)
     paths = app.openapi()["paths"]
     assert "post" in paths["/umrs/knowledge/understand"]
     assert "post" in paths["/umrs/knowledge/verify"]
-    assert "get" in paths["/umrs/knowledge-graph/query"]
+    assert "/umrs/knowledge-graph/query" not in paths
 
 
 def test_http_understand_returns_graph_stats(knowledge_client):
@@ -146,18 +144,12 @@ def test_http_verify_returns_answer(knowledge_client):
     assert isinstance(body["answer"], str)
 
 
-def test_http_graph_query_after_understand(knowledge_client):
-    """sat facade retired (R5 tail): old query 410s; canonical add works."""
+def test_http_canonical_graph_still_serves(knowledge_client):
+    """sat facade retired entirely (ADR-026 wave C): canonical graph intact."""
     knowledge_client.post(
         "/umrs/knowledge/understand",
         headers={"X-Project-ID": "proj-http"},
     )
-
-    response = knowledge_client.get(
-        "/umrs/knowledge-graph/query",
-        headers={"X-Project-ID": "proj-http"},
-    )
-    assert response.status_code == 410
 
     canonical = knowledge_client.get(
         "/umrs/knowledge/graph",

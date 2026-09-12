@@ -1,6 +1,6 @@
 """CanonicalGraphView — protocol semantics + canonical write-through (R5).
 
-Mirror parity with InMemoryKnowledgeGraph (dedupe, direction-agnostic
+Mirror parity with CanonicalGraphView (dedupe, direction-agnostic
 reads, BFS) and durable routing into the canonical KnowledgeStore.
 """
 
@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from umrs.knowledge.canonical_graph_view import CanonicalGraphView
 from umrs.knowledge.ontology import canonical_relation
-from umrs.knowledge_graph_api import RelationType
+from umrs.knowledge.graph_types import RelationType
 
 
 class FakeStore:

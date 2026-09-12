@@ -32,10 +32,8 @@ from umrs.hypothesis_lifecycle import (
     HypothesisLifecycle,
     HypothesisStatus,
 )
-from umrs.knowledge_graph_api import (
-    InMemoryKnowledgeGraph,
-    RelationType,
-)
+from umrs.knowledge.canonical_graph_view import CanonicalGraphView, default_view
+from umrs.knowledge.graph_types import RelationType
 from umrs.knowledge.knowledge_driven_planner import KnowledgeDrivenPlanner
 from umrs.knowledge.planner import ResearchPlan
 from umrs.knowledge.verification_session import (
@@ -64,7 +62,7 @@ def test_end_to_end_scientific_research_workflow():
 
     # ── Step 1: Build Knowledge Graph ───────────────────────────────────
     # Simulate the knowledge graph that would be built after ingestion
-    graph = InMemoryKnowledgeGraph()
+    graph = default_view(store=None)
 
     # Add scientific objects as nodes
     graph.add_node(node_id="paper-001", node_type="paper", title="Attention Is All You Need")
@@ -235,7 +233,7 @@ def test_single_reasoning_path():
 
     The planner should NOT call GraphNavigator directly.
     """
-    graph = InMemoryKnowledgeGraph()
+    graph = default_view(store=None)
     graph.add_node(node_id="paper-001", node_type="paper", title="Test Paper")
 
     navigator = GraphNavigator(graph=graph)
@@ -259,7 +257,7 @@ def test_dependency_direction():
 
     Nothing below should call back into the planner.
     """
-    graph = InMemoryKnowledgeGraph()
+    graph = default_view(store=None)
     navigator = GraphNavigator(graph=graph)
     reasoning_engine = ScientificReasoningEngine(navigator=navigator)
     planner = KnowledgeDrivenPlanner(reasoning_engine=reasoning_engine)
@@ -286,7 +284,7 @@ def test_graph_traversal_uses_single_implementation():
     All graph traversal should go through GraphNavigator.find_path()
     or GraphNavigator.get_neighbors(), not through duplicate implementations.
     """
-    graph = InMemoryKnowledgeGraph()
+    graph = default_view(store=None)
     graph.add_node(node_id="a", node_type="paper")
     graph.add_node(node_id="b", node_type="code")
     graph.add_edge(source_id="a", target_id="b", relation_type=RelationType.IMPLEMENTS)
@@ -310,7 +308,7 @@ def test_evidence_ranking_uses_single_implementation():
     All evidence ranking should go through the Scientific Reasoning Engine,
     not through duplicate implementations in the planner or closed-loop learning.
     """
-    graph = InMemoryKnowledgeGraph()
+    graph = default_view(store=None)
     graph.add_node(node_id="paper-001", node_type="paper", title="Test Paper")
     graph.add_node(node_id="finding-001", node_type="finding", title="Finding")
     graph.add_edge(source_id="finding-001", target_id="paper-001", relation_type=RelationType.SUPPORTS, confidence=0.9)
@@ -343,7 +341,7 @@ def test_closed_loop_uses_reasoning_engine():
     The closed-loop should call reasoning_engine.reason() to generate
     the next hypothesis, not implement its own reasoning logic.
     """
-    graph = InMemoryKnowledgeGraph()
+    graph = default_view(store=None)
     graph.add_node(node_id="paper-001", node_type="paper", title="Test Paper")
     graph.add_node(node_id="hypothesis-001", node_type="hypothesis", title="Test Hypothesis")
     graph.add_edge(source_id="paper-001", target_id="hypothesis-001", relation_type=RelationType.DESCRIBES, confidence=0.8)

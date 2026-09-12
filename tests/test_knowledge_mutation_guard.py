@@ -192,28 +192,19 @@ class TestKnowledgeMutationGuard:
         assert runtime.calls == []
 
     def test_agent_direct_node_write_is_blocked_without_proposal(self):
-        from umrs.api.knowledge_graph import (
-            _project_graphs,
-            register_project_graph,
-        )
-        from umrs.api.knowledge_graph import (
-            router as kg_router,
-        )
-        from umrs.knowledge_graph_api import InMemoryKnowledgeGraph
+        """Facade deleted (ADR-026 wave C): direct writes are 404 (no route).
 
-        register_project_graph("proj-a", InMemoryKnowledgeGraph())
-        try:
-            app = FastAPI()
-            app.include_router(kg_router)
-            app.state.umrs_db_pool = FakePool([])
-            client = TestClient(app, raise_server_exceptions=False)
-            resp = client.post(
-                "/umrs/knowledge-graph/nodes",
-                json={"node_id": "n-1", "node_type": "concept"},
-                headers={"X-Project-ID": "proj-a", "x-r4-actor": "agent"},
-            )
-            # R5 tail: sat facade retired — gate now 410s before mutation
-            # guard runs; canonical path lives on /umrs/knowledge/graph.
-            assert resp.status_code == 410, resp.text
-        finally:
-            _project_graphs.pop("proj-a", None)
+        The retired facade's register_project_graph store is gone with it —
+        the coverage stays honest: hitting the old path must not succeed.
+        """
+        from umrs.knowledge.canonical_graph_view import default_view
+
+        _ = default_view(store=None)  # construction shape kept for smoke
+        app = FastAPI()
+        client = TestClient(app, raise_server_exceptions=False)
+        resp = client.post(
+            "/umrs/knowledge-graph/nodes",
+            json={"node_id": "n-1", "node_type": "concept"},
+            headers={"X-Project-ID": "proj-a", "x-r4-actor": "agent"},
+        )
+        assert resp.status_code == 404, resp.text

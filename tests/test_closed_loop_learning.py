@@ -11,7 +11,8 @@ from umrs.hypothesis_lifecycle import (
     HypothesisLifecycle,
     HypothesisStatus,
 )
-from umrs.knowledge_graph_api import InMemoryKnowledgeGraph, RelationType
+from umrs.knowledge.canonical_graph_view import default_view
+from umrs.knowledge.graph_types import RelationType
 from umrs.scientific_memory import InMemoryScientificMemoryStore
 
 
@@ -57,7 +58,7 @@ def test_closed_loop_init():
 
 def test_closed_loop_init_with_dependencies():
     """Test ClosedLoopLearning with custom dependencies."""
-    graph = InMemoryKnowledgeGraph()
+    graph = default_view(store=None)
     memory = InMemoryScientificMemoryStore()
     lifecycle = HypothesisLifecycle()
 
@@ -116,7 +117,7 @@ def test_process_experiment_result_updates_hypothesis():
 
 def test_process_experiment_result_creates_graph_edge():
     """Test that processing a result creates a knowledge graph edge."""
-    graph = InMemoryKnowledgeGraph()
+    graph = default_view(store=None)
     lifecycle = HypothesisLifecycle()
     hyp_id = lifecycle.propose(statement="Test hypothesis")
 
@@ -212,58 +213,58 @@ def test_generate_next_hypothesis():
     assert hyp_id != ""
 
 
-def test_closed_loop_full_cycle():
-    """Test a full closed-loop cycle: experiment → finding → next hypothesis."""
+def _run_closed_loop_iteration():
+    """One experiment → finding iteration; every leg asserts its own sentence."""
     lifecycle = HypothesisLifecycle()
-    graph = InMemoryKnowledgeGraph()
+    graph = default_view(store=None)
     memory = InMemoryScientificMemoryStore()
-
     loop = ClosedLoopLearning(
         knowledge_graph=graph,
         scientific_memory=memory,
         hypothesis_lifecycle=lifecycle,
     )
-
-    # 1. Propose initial hypothesis
     hyp_id = lifecycle.propose(
         statement="Learning rate affects convergence",
         planner_version="v1",
     )
-
-    # 2. Run experiment and process result
     result = ExperimentResult(
         experiment_id="exp-001",
         hypothesis_id=hyp_id,
         metrics={"accuracy": 0.92, "loss": 0.08},
         status="success",
     )
-    finding = loop.process_experiment_result(result)
+    return lifecycle, graph, memory, loop, hyp_id, loop.process_experiment_result(result)
 
-    # 3. Verify finding was created correctly
+
+def test_closed_loop_produces_supporting_finding():
+    """Finding joining arrives marked supporting with one evidence entry."""
+    lifecycle, graph, memory, loop, hyp_id, finding = _run_closed_loop_iteration()
     assert finding.supporting is True
     assert finding.experiment_id == "exp-001"
     assert len(finding.evidence_ids) == 1
 
-    # 4. Verify hypothesis was updated
+
+def test_closed_loop_updates_hypothesis_state():
+    """Hypothesis admits SUPPORT after one supporting evidence."""
+    lifecycle, graph, memory, loop, hyp_id, _ = _run_closed_loop_iteration()
     hyp = lifecycle.get(hyp_id)
-    # After 1 supporting evidence (confidence=1.0 >= 0.8), transitions to SUPPORTED
     assert hyp.status == HypothesisStatus.SUPPORTED
     assert len(hyp.supporting_evidence) == 1
 
-    # 5. Verify graph edge was created
+
+def test_closed_loop_writes_graph_and_memory():
+    """Graph SUPPORTS-edge + memory entry persist across the cycle."""
+    _, graph, memory, _, hyp_id, finding = _run_closed_loop_iteration()
     outgoing = graph.get_outgoing(finding.finding_id)
     assert len(outgoing) == 1
     assert outgoing[0].relation_type == RelationType.SUPPORTS
+    assert len(memory.list_entries()) == 1
 
-    # 6. Verify scientific memory was updated
-    entries = memory.list_entries()
-    assert len(entries) == 1
 
-    # 7. Generate next hypothesis
+def test_closed_loop_generates_next_hypothesis():
+    """Next hypothesis id + PROPOSED status on the follow-up."""
+    lifecycle, _, _, loop, _, _ = _run_closed_loop_iteration()
     next_hyp_id = loop.generate_next_hypothesis()
-    assert next_hyp_id != ""
-
-    # 8. Verify the new hypothesis was proposed
     next_hyp = lifecycle.get(next_hyp_id)
     assert next_hyp is not None
     assert next_hyp.status == HypothesisStatus.PROPOSED

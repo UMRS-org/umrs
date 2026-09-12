@@ -9,18 +9,16 @@ from umrs.graph_reasoning import (
     GraphReasoningContext,
     RelatedObjects,
 )
-from umrs.knowledge_graph_api import (
-    InMemoryKnowledgeGraph,
-    RelationType,
-)
+from umrs.knowledge.canonical_graph_view import CanonicalGraphView, default_view
+from umrs.knowledge.graph_types import RelationType
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────
 
 
-def _build_test_graph() -> InMemoryKnowledgeGraph:
+def _build_test_graph() -> CanonicalGraphView:
     """Build a test knowledge graph with scientific objects."""
-    graph = InMemoryKnowledgeGraph()
+    graph = default_view(store=None)
 
     # Add nodes
     graph.add_node(node_id="paper-001", node_type="paper", title="Attention Is All You Need")
@@ -52,8 +50,8 @@ def _build_test_graph() -> InMemoryKnowledgeGraph:
 # ── Model Tests ────────────────────────────────────────────────────────────
 
 
-def test_related_objects_defaults():
-    """Test RelatedObjects defaults."""
+def test_related_objects_empty_object_lists():
+    """Empty-collection buckets start empty."""
     related = RelatedObjects()
     assert related.papers == []
     assert related.code == []
@@ -61,6 +59,11 @@ def test_related_objects_defaults():
     assert related.datasets == []
     assert related.hypotheses == []
     assert related.experiments == []
+
+
+def test_related_objects_empty_namesake_lists():
+    """Domain buckets also start empty."""
+    related = RelatedObjects()
     assert related.findings == []
     assert related.figures == []
     assert related.equations == []
@@ -117,7 +120,7 @@ def test_graph_navigator_init():
 
 def test_graph_navigator_init_with_graph():
     """Test GraphNavigator with custom graph."""
-    graph = InMemoryKnowledgeGraph()
+    graph = default_view(store=None)
     nav = GraphNavigator(graph=graph)
     assert nav.graph is graph
 
@@ -259,7 +262,7 @@ def test_find_related_empty_graph():
 
 def test_find_evidence_chain_no_evidence():
     """Test finding evidence chain when no evidence exists."""
-    graph = InMemoryKnowledgeGraph()
+    graph = default_view(store=None)
     graph.add_node(node_id="hypothesis-001", node_type="hypothesis")
     nav = GraphNavigator(graph=graph)
 

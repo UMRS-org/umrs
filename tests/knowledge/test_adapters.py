@@ -20,7 +20,7 @@ from umrs.knowledge.adapters import (
 )
 from umrs.evidence import Evidence, EvidenceSourceType
 from umrs.experiment_registry import ExperimentStatus
-from umrs.knowledge_graph_api import RelationType
+from umrs.knowledge.graph_types import RelationType
 from umrs.knowledge_model import KnowledgeObjectType
 from umrs.scientific_memory import MemoryEntry, MemoryEntryType
 from umrs.search_api import SearchScope

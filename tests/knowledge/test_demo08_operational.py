@@ -16,7 +16,7 @@ from r4_contracts.research import ResearchRunStatus
 from umrs.knowledge.execution_port import FakeWorkflowExecutionPort
 from umrs.knowledge.project import ProjectPhase, ResearchProject
 from umrs.knowledge.run_store import ResearchRunStore
-from umrs.knowledge_graph_api import RelationType
+from umrs.knowledge.graph_types import RelationType
 
 
 def _load_materialize_blank_project():
