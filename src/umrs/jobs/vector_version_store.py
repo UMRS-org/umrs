@@ -131,15 +131,46 @@ class VersionSummary:
         }
 
 
+class _PooledConnection:
+    """Context-manager shim: borrow a conn from the shared pool (putconn on exit)."""
+
+    def __init__(self, pool):
+        self._pool = pool
+        self._conn = None
+
+    def __enter__(self):
+        self._conn = self._pool.getconn()
+        return self._conn
+
+    def __exit__(self, exc_type, _exc, _tb):
+        try:
+            if exc_type is None:
+                self._conn.commit()
+            else:
+                self._conn.rollback()
+        finally:
+            self._pool.putconn(self._conn)
+        return False
+
+
 class VectorVersionStore:
     """Manages embedding model version tracking and re-embedding.
 
     Falls back to in-memory storage when ``db_url`` is not set (dev mode).
     """
 
-    def __init__(self, db_url: str | None = None) -> None:
+    def __init__(self, db_url: str | None = None, *, pool: Any | None = None) -> None:
         self._db_url = db_url
+        # Pool-injected mode (WP-06 r2 / venue wiring): reuse the server's
+        # shared ThreadedConnectionPool instead of burning a fresh connection
+        # per call — same connection lifecycle as every other umrs store.
+        self._pool = pool
         self._psycopg2 = None
+        if pool is not None:
+            import psycopg2.pool  # type: ignore
+
+            self._psycopg2 = psycopg2.pool
+            return
         if db_url:
             try:
                 import psycopg2  # type: ignore
@@ -156,9 +187,13 @@ class VectorVersionStore:
 
     @property
     def db_enabled(self) -> bool:
-        return self._psycopg2 is not None and self._db_url is not None
+        return self._psycopg2 is not None and (
+            self._db_url is not None or self._pool is not None
+        )
 
     def _get_conn(self):
+        if self._pool is not None:
+            return _PooledConnection(self._pool)
         return self._psycopg2.connect(self._db_url)
 
     # ------------------------------------------------------------------
