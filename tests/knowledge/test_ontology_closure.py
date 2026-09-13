@@ -22,12 +22,28 @@ import inspect
 
 import pytest
 
-from umrs.knowledge.canonical_graph_view import CanonicalGraphView, in_memory_view
+from umrs.knowledge.canonical_graph_view import (
+    CanonicalGraphView,
+    _store_worker,
+    in_memory_view,
+)
 from umrs.knowledge.ontology import Ontology, ontology_from_dict
+
+# ADR-049 Leg B: closure traverses only ontology-DECLARED transitive
+# relations; the premise suite binds an explicit permissive ontology so
+# each walk pins the engine, not the default declaration.
+_PERMISSIVE = Ontology(
+    ontology_id="premise-permissive",
+    version="1",
+    entity_types=frozenset({"concept", "entity", "class", "function", "file",
+                            "module", "relationship"}),
+    relation_types=frozenset({"cites", "uses", "depends_on", "related_to"}),
+    transitive_relations=frozenset({"cites", "uses", "depends_on"}),
+)
 
 
 def _view() -> CanonicalGraphView:
-    return in_memory_view(project_id="proj-c", graph_id="g-c")
+    return in_memory_view(project_id="proj-c", graph_id="g-c", ontology=_PERMISSIVE)
 
 
 def _link(view: CanonicalGraphView, a: str, b: str, rel: str = "USES") -> None:
@@ -122,6 +138,83 @@ class TestStoreCteShape:
     def test_depth_reported_in_content(self) -> None:
         src = self._sql_parts()
         assert "walk_depth" in src
+
+
+class TestLegBProjection:
+    def test_walk_refused_when_ontology_does_not_declare_transitive(self) -> None:
+        """Leg B (ADR-049): closure over an undeclared relation refuses."""
+        v = in_memory_view(project_id="proj-c", graph_id="g-c")  # DEFAULT_ONTOLOGY
+        v.add_edge(source_id="a", target_id="b", relation_type="CITES")
+        with pytest.raises(ValueError, match="does not declare it transitive"):
+            v.walk("a", "CITES")
+
+    def test_walk_passes_when_declared_on_default(self) -> None:
+        """depends_on IS declared on the default ontology (v1 default)."""
+        v = in_memory_view(project_id="proj-c", graph_id="g-c")
+        v.add_edge(source_id="a", target_id="b", relation_type="DEPENDS_ON")
+        v.add_edge(source_id="b", target_id="c", relation_type="DEPENDS_ON")
+        assert v.walk("a", "DEPENDS_ON") == [("b", 1), ("c", 2)]
+
+    def test_view_exposes_bound_ontology(self) -> None:
+        from umrs.knowledge.ontology import DEFAULT_ONTOLOGY
+
+        v = in_memory_view(project_id="p", graph_id="g", ontology=_PERMISSIVE)
+        assert v.ontology is _PERMISSIVE
+        assert in_memory_view(project_id="p2").ontology is DEFAULT_ONTOLOGY
+
+    def test_custom_transitive_set_executes_walk(self) -> None:
+        """A custom ontology granting 'uses' transitive traverses it."""
+        custom = Ontology(
+            ontology_id="custom-uses",
+            version="1",
+            entity_types=frozenset({"concept"}),
+            relation_types=frozenset({"uses"}),
+            transitive_relations=frozenset({"uses"}),
+        )
+        v = in_memory_view(project_id="p", graph_id="g", ontology=custom)
+        v.add_edge(source_id="a", target_id="b", relation_type="USES")
+        assert v.walk("a", "USES") == [("b", 1)]
+        # ...but the same custom graph's DEFAULT undeclared dependency stays refused.
+        with pytest.raises(ValueError, match="does not declare it transitive"):
+            v.walk("a", "DEPENDS_ON")
+
+
+class TestLivePgClosure:
+    def test_live_pg_walk_matches_memory_semantics(self) -> None:
+        """Store-backed walk vs the in-memory projection (live DSN rehearsal).
+
+        Skips when no working DSN; otherwise seeds a graph and asserts the
+        recursive-CTE result equals the memory BFS result row-for-row.
+        """
+        import os
+
+        dsn = os.environ.get("DATABASE_URL") or ""
+        if not dsn:
+            pytest.skip("live PG rehearsal needs DATABASE_URL")
+        worker = _store_worker()
+        pool = worker.build_pool(dsn)
+        import datetime
+
+        from umrs.knowledge.store import KnowledgeEdge as StoreEdge
+        from umrs.knowledge.store import KnowledgeNode as StoreNode
+        from umrs.knowledge.store import KnowledgeStore
+
+        store = KnowledgeStore(pool)
+        gid, pid = "g-pin-legb", "proj-pin-legb"
+        now = datetime.datetime.now(datetime.timezone.utc)
+
+        from umrs.knowledge.canonical_graph_view import _run_mutation
+
+        def w(coro):
+            _run_mutation(coro)
+
+        for nid in ("a", "b", "c", "d"):
+            w(store.upsert_node(StoreNode(node_id=nid, project_id=pid, node_type="concept", label=nid, content={}, content_hash=nid, created_at=now, graph_id=gid)))
+        for i, (s, t) in enumerate([("a", "b"), ("b", "c"), ("c", "d"), ("d", "a")]):
+            w(store.upsert_edge(StoreEdge(edge_id=f"p{i}", project_id=pid, source_id=s, target_id=t, relation_type="depends_on", content={}, created_at=now, graph_id=gid)))
+        store_view = CanonicalGraphView(store=store, project_id=pid, graph_id=gid)
+        got = store_view.walk("a", "DEPENDS_ON")
+        assert got == [("b", 1), ("c", 2), ("d", 3)]
 
 
 class TestOntologyTransitiveDeclaration:

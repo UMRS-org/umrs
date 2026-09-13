@@ -140,3 +140,59 @@ class TestKnowledgeQueryFacadeEdge:
         )
         assert resp.status_code == 200
         assert resp.json()["query"]["scope"] == "catalog"
+
+
+class TestOntologyBlocks:
+    def test_ontologies_blocks_per_selected_graph(self, client, meta_store, monkeypatch):
+        """ADR-049 Leg B: response carries the bound ontology per selected
+        graph as its own block; anunknown reference is reported via
+        ontology_error, never smudged."""
+        from umrs.knowledge.graph_registry import KnowledgeGraphMeta
+
+        metas = [
+            KnowledgeGraphMeta(
+                graph_id="g-default", name="default", project_id="proj-a",
+                ontology_id="r4-default",
+            ),
+            KnowledgeGraphMeta(
+                graph_id="g-bogus", name="bogus", project_id="proj-a",
+                ontology_id="never-registered",
+            ),
+        ]
+
+        class _FakeRegistry:
+            def ensure_default_graph(self, project_id):
+                return metas[0]
+
+        monkeypatch.setattr(
+            "umrs.api.knowledge_query._resolve_selected_graphs",
+            lambda registry, project_id, graphs_csv, exclude_csv: (metas, []),
+        )
+        # Pool slot occupied so the graph backend wires — psycopg shape
+        # (getconn/cursor) returning zero rows; registry resolution is
+        # monkeypatched above.
+        from unittest.mock import MagicMock
+
+        pool = MagicMock()
+        cursor = MagicMock()
+        cursor.fetchall.return_value = []
+        conn = MagicMock()
+        conn.cursor.return_value.__enter__.return_value = cursor
+        pool.getconn.return_value = conn
+        client.app.state.umrs_db_pool = pool
+        try:
+            resp = client.get(
+                "/umrs/knowledge/query",
+                params={"q": "ct", "project": "proj-a"},
+                headers={"X-User-ID": "alice", "X-Verified-Project-ID": "proj-a"},
+            )
+        finally:
+            client.app.state.umrs_db_pool = None
+
+        assert resp.status_code == 200
+        blocks = resp.json()["query"]["ontologies"]
+        by_id = {b["graph_id"]: b for b in blocks}
+        assert set(by_id) == {"g-default", "g-bogus"}
+        assert by_id["g-default"]["ontology"]["ontology_id"] == "r4-default"
+        assert "transitive_relations" in by_id["g-default"]["ontology"]
+        assert "ontology_error" in by_id["g-bogus"]
