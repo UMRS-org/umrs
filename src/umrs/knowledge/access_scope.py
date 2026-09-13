@@ -161,21 +161,25 @@ def visibility_predicate(
     *,
     owned_sql: str | None = None,
     placeholder: str = "%s",
+    include_ambient: bool = False,
 ) -> str:
     """Render the ADR-050 family rule as one SQL boolean expression.
 
     ``alias`` prefixes the column references (``n.project_id``); ``owned_sql``
     replaces the default ownership half (``<a>.project_id = <placeholder>``)
     when a lane owns rows by a wider clause; ``placeholder`` is ``%s`` for
-    psycopg2 and ``$n`` for asyncpg callers. The returned string binds
-    exactly one parameter (the caller's project id) unless ``owned_sql`` is
-    supplied, in which case it binds whatever ``owned_sql`` binds.
+    psycopg2 and ``$n`` for asyncpg callers; ``include_ambient`` drops the
+    ambient exclusion — set it only for admin lanes (ADR-050 wave 2.1).
+    The returned string binds exactly one parameter (the caller's project
+    id) unless ``owned_sql`` is supplied, in which case it binds whatever
+    ``owned_sql`` binds.
     """
     prefix = f"{alias}." if alias else ""
     owned = owned_sql or f"{prefix}project_id = {placeholder}"
+    ambient_clause = "" if include_ambient else f" AND {prefix}visibility != '{VISIBILITY_AMBIENT}'"
     return (
-        f"(({owned} OR {prefix}visibility = '{VISIBILITY_SYSTEM}') "
-        f"AND {prefix}visibility != '{VISIBILITY_AMBIENT}')"
+        f"(({owned} OR {prefix}visibility = '{VISIBILITY_SYSTEM}')"
+        f"{ambient_clause})"
     )
 
 

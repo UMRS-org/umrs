@@ -124,6 +124,28 @@ def _print_audit(rows: list[tuple[str, str, str, int]]) -> None:
         print(f"  {plane:<18} {summary}")
 
 
+def lifecycle_candidates(conn) -> list[str]:
+    """Projects holding tier-'project' rows whose default graph does not
+    exist in ``knowledge_graphs`` — ambient lifecycle candidates
+    (advisory list; marked only via --mark-ambient-lifecycle with
+    affirmative confirmation, never implicitly)."""
+    candidates: set[str] = set()
+    with conn.cursor() as cur:
+        for _plane, table in PLANES:
+            try:
+                cur.execute(
+                    f"SELECT DISTINCT r.project_id FROM {table} r "
+                    "WHERE r.visibility = 'project' AND NOT EXISTS ("
+                    "  SELECT 1 FROM knowledge_graphs g "
+                    "  WHERE g.status != 'retired' AND g.project_id = r.project_id"
+                    ") ORDER BY r.project_id"
+                )
+            except Exception:
+                continue
+            candidates |= {row[0] for row in cur.fetchall() if row[0]}
+    return sorted(candidates)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -137,7 +159,19 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="comma-separated project ids to restore to the owner-only 'project' tier",
     )
+    parser.add_argument(
+        "--lifecycle-report",
+        action="store_true",
+        help="list ambient lifecycle candidates (projects with rows but no live default graph)",
+    )
+    parser.add_argument(
+        "--mark-ambient-lifecycle",
+        action="store_true",
+        help="mark the projects listed by --lifecycle-report ambient (asks for confirmation)",
+    )
     return parser
+
+
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -147,13 +181,34 @@ def main(argv: list[str] | None = None) -> int:
         ("system", _csv(args.mark_system)),
         ("project", _csv(args.mark_project)),
     ]
-    if not args.audit and not any(projects for _tier, projects in actions):
-        print("ERROR: no action requested (use --audit or --mark-*)", file=sys.stderr)
+    if (
+        not args.audit
+        and not args.lifecycle_report
+        and not any(projects for _tier, projects in actions)
+    ):
+        print("ERROR: no action requested (use --audit, --lifecycle-report, or --mark-*)", file=sys.stderr)
         return 2
 
     conn = _connect(args.dsn)
     try:
         _print_audit(audit(conn))
+        if args.lifecycle_report:
+            candidates = lifecycle_candidates(conn)
+            n = len(candidates)
+            print(f"\nlifecycle ambient candidates ({n}):")
+            for project in candidates:
+                print(f"  - {project}")
+            if args.mark_ambient_lifecycle and candidates:
+                confirm = input(
+                    f"Mark these {n} project(s) ambient now? Type 'ambient' to confirm: "
+                ).strip().lower()
+                if confirm != "ambient":
+                    print("aborted — nothing marked")
+                    return 0
+                changed = mark_projects(conn, candidates, "ambient")
+                conn.commit()
+                print("\nmarked (lifecycle): " + ", ".join(f"{p}={c}" for p, c in changed.items()))
+                return 0
         changed: dict[str, int] = dict.fromkeys(dict(PLANES), 0)
         for tier, projects in actions:
             for plane, count in mark_projects(conn, projects, tier).items():

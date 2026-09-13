@@ -24,6 +24,47 @@ def _dict_cursor(conn):
     return conn.cursor(cursor_factory=RealDictCursor)
 
 
+def _visibility_clause(include_ambient: bool) -> str:
+    """ADR-050 tier gate for the catalog lane (R-02/0093).
+
+    Ownership keeps its catalog shape (project row OR s3_key prefix);
+    system rows widen; ambient rows leave unless the admin lane asks.
+    """
+    return visibility_predicate(
+        owned_sql="(project_id = %s OR s3_key LIKE %s)",
+        include_ambient=include_ambient,
+    )
+
+
+def _search_filters(
+    project_id: str,
+    *,
+    modality: str | None,
+    state: str | None,
+    tag: str | None,
+    prefix: str | None,
+    include_ambient: bool,
+    tokens: list[Any],
+) -> tuple[list[str], list[Any]]:
+    """Assemble the WHERE clauses + params for a catalog search call."""
+    clauses = [_visibility_clause(include_ambient), "state != 'error'"]
+    params: list[Any] = [project_id, f"{_like_literal(project_id)}/%"]
+    if modality:
+        clauses.append("detected_modality = %s")
+        params.append(modality)
+    if state:
+        clauses.append("state = %s")
+        params.append(state)
+    if tag:
+        clauses.append("tags @> %s::jsonb")
+        params.append(json.dumps([tag]))
+    if prefix:
+        normalized = prefix if prefix.endswith("/") else f"{prefix}/"
+        clauses.append("s3_key LIKE %s")
+        params.append(f"{_like_literal(normalized)}%")
+    return clauses, params
+
+
 def _like_literal(value: str) -> str:
     """Escape LIKE metacharacters in a literal used inside a LIKE pattern.
 
@@ -311,35 +352,19 @@ class CatalogMetaStore:
         state: str | None = None,
         tag: str | None = None,
         prefix: str | None = None,
+        include_ambient: bool = False,
     ) -> list[CatalogHit]:
         """Lexical search over catalog metadata with optional structured filters."""
         tokens = tokenize(query) if query.strip() else []
 
-        # ADR-050: visibility families — project rows + system rows visible,
-        # ambient rows read-gated (kept, never served to regular callers).
-        # Column added to catalog_objects by migration 0093 (R-02); predicate
-        # rendered by knowledge.access_scope.visibility_predicate, ownership
-        # half kept as the catalog's own (project_id OR s3_key prefix) rule.
-        clauses = [
-            visibility_predicate(owned_sql="(project_id = %s OR s3_key LIKE %s)"),
-            "state != 'error'",
-        ]
-        params: list[Any] = [project_id, f"{_like_literal(project_id)}/%"]
-
-        if modality:
-            clauses.append("detected_modality = %s")
-            params.append(modality)
-        if state:
-            clauses.append("state = %s")
-            params.append(state)
-        if tag:
-            clauses.append("tags @> %s::jsonb")
-            params.append(json.dumps([tag]))
-        if prefix:
-            normalized = prefix if prefix.endswith("/") else f"{prefix}/"
-            clauses.append("s3_key LIKE %s")
-            params.append(f"{_like_literal(normalized)}%")
-
+        clauses, params = _search_filters(
+            project_id,
+            modality=modality,
+            state=state,
+            tag=tag,
+            prefix=prefix,
+            include_ambient=include_ambient,
+        )
         ts_query = " & ".join(_escape_ts_token(t) for t in tokens if t)
         fts_clause = ""
         if ts_query:

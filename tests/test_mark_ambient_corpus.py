@@ -173,3 +173,33 @@ def test_no_changes_means_no_commit(tool, capsys):
     assert tool.main(["--dsn", "postgresql://x", "--mark-system", "handbook"]) == 0
     assert conn.commits == 0
     assert "marked" not in capsys.readouterr().out.split("per-plane totals")[1]
+
+
+def test_lifecycle_report_lists_candidates_and_marks_nothing_by_default(tool, capsys, monkeypatch):
+    audit_rows = {"knowledge_nodes": [("proj-dead", "project", 4)], "catalog_objects": []}
+    tool2 = tool
+    monkeypatch.setattr(tool2, "_connect", lambda _dsn: _Conn(audit_rows=audit_rows))
+    # lifecycle fake: proj-dead has rows; NO live default graph row (candidate)
+    monkeypatch.setattr(tool2, "lifecycle_candidates", lambda _conn: ["proj-dead"])
+    rc = tool2.main(["--dsn", "postgresql://x", "--lifecycle-report"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "lifecycle ambient candidates (1)" in out
+    assert "proj-dead" in out
+    conn = tool2._test_state["conn"]
+    assert conn.commits == 0
+
+
+def test_lifecycle_mark_requires_confirmation_phrase(tool, capsys, monkeypatch):
+    tool2 = tool
+    monkeypatch.setattr(tool2, "lifecycle_candidates", lambda _conn: ["proj-dead"])
+    monkeypatch.setattr(tool2, "mark_projects", lambda conn, projects, tier: dict.fromkeys(
+        dict(tool2.PLANES), 0
+    ))
+    monkeypatch.setattr("builtins.input", lambda _prompt: "ambient")
+    rc = tool2.main(
+        ["--dsn", "postgresql://x", "--lifecycle-report", "--mark-ambient-lifecycle"]
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "marked (lifecycle)" in out

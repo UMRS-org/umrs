@@ -69,6 +69,7 @@ class FakeCatalogMetaStore:
         state: str | None = None,
         tag: str | None = None,
         prefix: str | None = None,
+        include_ambient: bool = False,
     ) -> list[CatalogHit]:
         tokens = tokenize(query) if query.strip() else []
         hits: list[CatalogHit] = []
