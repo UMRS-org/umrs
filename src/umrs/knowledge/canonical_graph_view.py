@@ -95,9 +95,30 @@ class _StoreWorker:
 
         import asyncpg  # type: ignore[import-untyped]
 
-        self._pool = asyncio.run_coroutine_threadsafe(
-            asyncpg.create_pool(dsn=dsn), self._loop
-        ).result(timeout=10)
+        import json as _json
+
+        async def _json_codecs(conn: Any) -> None:
+            # jsonb codec registration self-contained here (foundation
+            # module must not import umrs.api) — without it asyncpg refuses
+            # dict params on content columns.
+            for typename in ("json", "jsonb"):
+                await conn.set_type_codec(
+                    typename,
+                    encoder=_json.dumps,
+                    decoder=_json.loads,
+                    schema="pg_catalog",
+                    format="text",
+                )
+
+        async def _create() -> Any:
+            # asyncpg.create_pool returns a PoolInit (awaitable, NOT a
+            # coroutine object) — wrap it: run_coroutine_threadsafe demands
+            # an actual coroutine.
+            return await asyncpg.create_pool(dsn=dsn, init=_json_codecs)
+
+        self._pool = asyncio.run_coroutine_threadsafe(_create(), self._loop).result(
+            timeout=10
+        )
         return self._pool
 
     def submit(self, coro: Any) -> None:
@@ -115,6 +136,11 @@ class _StoreWorker:
         """Run a mutation on the worker loop and block the (sync) caller."""
         future = asyncio.run_coroutine_threadsafe(coro, self._loop)
         future.result(timeout=timeout)
+
+    def result_value(self, coro: Any, timeout: float = 15.0) -> Any:
+        """Run a read on the worker loop and return its value to the caller."""
+        future = asyncio.run_coroutine_threadsafe(coro, self._loop)
+        return future.result(timeout=timeout)
 
     def shutdown(self) -> None:
         """Tear down pool + loop (test isolation)."""
@@ -437,6 +463,126 @@ class CanonicalGraphView:
                     visited.add(neighbor)
                     queue.append((neighbor, path + [neighbor]))
         return None
+
+    # -- closure inference (ADR-049 Leg C) -----------------------------------
+
+    # Sat relation names whose canonical target is ambiguous (two sat names
+    # collapse to the same canonical relation): closure over them can never
+    # be claimed sat-faithful, only canonical — so they fail CLOSED here.
+    _WALK_FAIL_CLOSED_SAT: tuple[str, ...] = (
+        "SUPPORTS",
+        "EVIDENCE_FOR",
+        "CONTRADICTS",
+        "EVIDENCE_AGAINST",
+    )
+
+    def _walk_resolve(
+        self, relation_type: Any, direction: str
+    ) -> tuple[str, bool, str, str]:
+        """Project (sat|canonical relation, direction) onto (sat_name,
+        canonical_name, effective_direction) with the fail-closed contract."""
+        sat_name = relation_type if isinstance(relation_type, str) else (
+            getattr(relation_type, "name", None) or str(relation_type)
+        )
+        if sat_name == "related_to":
+            return sat_name, "related_to", direction
+        if sat_name in self._WALK_FAIL_CLOSED_SAT:
+            raise ValueError(
+                f"walk over collapsed sat relation {sat_name!r} refused — "
+                "canonical shares with another sat relation; query the "
+                "canonical layer with content['sat_relation'] filters instead"
+            )
+        from .ontology import canonical_relation
+
+        canonical_name, inverse = canonical_relation(sat_name)
+        effective_direction = (
+            "incoming" if (direction == "incoming") != bool(inverse) else "outgoing"
+        )
+        return sat_name, canonical_name, effective_direction
+
+    def walk(
+        self,
+        start_id: str,
+        relation_type: Any,
+        *,
+        direction: str = "outgoing",
+        max_depth: int = 64,
+    ) -> list[tuple[str, int]]:
+        """Transitive closure over ONE declared relation (ADR-049 Leg C).
+
+        Returns ``[(node_id, depth), ...]`` ordered (depth, node_id),
+        deterministic, cycle-safe by construction (path membership), and
+        depth-capped by contract. Inferred paths are RELATIONAL read
+        results only — nothing about the durable rows changes.
+
+        - relation_type is the view language (sat enum name or canonical).
+        - Inverse-flagged sat relations walk the canonical edge in the
+          flipped direction, per the ADR-026 projection.
+        - Collapsed sat names (SUPPORTS/EVIDENCE_FOR/CONTRADICTS family)
+          fail CLOSED: no sat-masquerade of an ambiguous closure.
+        - Memory-backed views BFS over the mirror; store-backed views run
+          a recursive CTE through the store (worker-routed pool — the pool
+          stays on its own loop).
+        """
+        if direction not in ("outgoing", "incoming"):
+            raise ValueError(f"direction must be outgoing|incoming, not {direction!r}")
+        sat_name, canonical_name, effective_direction = self._walk_resolve(
+            relation_type, direction
+        )
+        if self._store is None:
+            return self._walk_memory(start_id, sat_name, direction, max_depth)
+        edges = _store_worker().result_value(
+            self._store.walk_closure(
+                self._project_id,
+                self._graph_id,
+                start_id,
+                canonical_name,
+                effective_direction,
+                max_depth,
+            )
+        )
+        return sorted(
+            {
+                (
+                    e.target_id if effective_direction == "outgoing" else e.source_id,
+                    int((e.content or {}).get("walk_depth") or 0),
+                )
+                for e in edges
+            },
+            key=lambda row: (row[1], row[0]),
+        )
+
+    def _walk_successors(self, node: str, sat_name: str, direction: str) -> list[str]:
+        edges = self.get_outgoing(node) if direction == "outgoing" else self.get_incoming(node)
+
+        def _match(relation: Any) -> bool:
+            # sat enums carry NAMES; stored rows may be raw strings.
+            return relation == sat_name or getattr(relation, "name", None) == sat_name
+
+        if direction == "outgoing":
+            return [e.target_id for e in edges if _match(e.relation_type)]
+        return [e.source_id for e in edges if _match(e.relation_type)]
+
+    def _walk_memory(
+        self,
+        start_id: str,
+        sat_name: str,
+        direction: str,
+        max_depth: int,
+    ) -> list[tuple[str, int]]:
+        """Cycle-safe BFS over the in-memory mirror (sat edge language)."""
+        seen: dict[str, int] = {}
+        frontier = [(start_id, 0)]
+        while frontier:
+            node, depth = frontier.pop(0)
+            if depth >= max_depth:
+                continue
+            for nid in self._walk_successors(node, sat_name, direction):
+                if nid == start_id or nid in seen:
+                    continue  # cycle guard — every visited node counted once
+                seen[nid] = depth + 1
+                frontier.append((nid, depth + 1))
+        return sorted(seen.items(), key=lambda row: (row[1], row[0]))
 
     def query(
         self,
