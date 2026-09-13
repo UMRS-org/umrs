@@ -27,7 +27,6 @@ from fastapi import (
     APIRouter,
     Depends,
     File,
-    HTTPException,
     Request,
     UploadFile,
 )
@@ -56,8 +55,13 @@ def _safe_basename(name: str) -> str:
 
 async def _stage_upload_bytes(
     file: UploadFile, *, bucket: str, staged_key: str, client: Any
-) -> None:
-    """Read + size-check + put_object (venue faults are honest 503s/413s)."""
+) -> tuple[str, int]:
+    """Read + size-check + put_object (venue faults are honest 503s/413s).
+
+    Returns ``(content_sha256, byte_size)`` of the staged payload so the
+    per-user disk ledger (ADR-051 D-3) can charge the uploader once per
+    unique object.
+    """
     MAX_BYTES = 512 * 1024 * 1024
     try:
         content = await file.read()
@@ -85,6 +89,9 @@ async def _stage_upload_bytes(
             PlatformError.knowledge2("unavailable", f"S3 staging unavailable: {exc}"),
             cause=exc,
         )
+    import hashlib
+
+    return hashlib.sha256(content).hexdigest(), len(content)
 
 
 async def _submit_upload_ingest(
@@ -187,16 +194,27 @@ async def knowledge_upload(
         proposal_id=request.headers.get("x-proposal-id"),
     )
 
-    # 3. Stage bytes → submit job.
+    # 3. Stage bytes → charge per-user disk ledger (ADR-051 D-3) → submit.
     config = get_s3_config()
     basename = _safe_basename(file.filename)
     staged_key = f"{_BUCKET_PREFIX}/{project_id}/{uuid4()}/{basename}"
-    await _stage_upload_bytes(
+    content_hash, byte_size = await _stage_upload_bytes(
         file,
         bucket=config.bucket,
         staged_key=staged_key,
         client=config.get_client(),
     )
+    # Disk budget: per-user, charged once per unique content hash, refusal
+    # is typed quota.disk_bytes_exceeded (staged bytes stay uncleared
+    # until the follow-up sweep — named explicitly in the ADR rollout).
+    if user_id:
+        from umrs.api.disk_ledger import DiskLedger
+
+        pool = getattr(request.app.state, "umrs_db_pool", None)
+        if pool is not None:
+            DiskLedger(pool.getconn()).charge(
+                user_id, content_hash=content_hash, byte_size=byte_size
+            )
     return await _submit_upload_ingest(
         bucket=config.bucket,
         staged_key=staged_key,

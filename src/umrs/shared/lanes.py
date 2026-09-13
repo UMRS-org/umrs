@@ -58,6 +58,9 @@ FAMILY_LANES: dict[str, SurfaceLane] = {
     # R1 secrets wave (a5ad437a): user-managed sources + their grants ride
     # the same /umrs/user-sources prefix — user-facing v1beta.
     "user-sources": SurfaceLane.BETA,
+    # ADR-051 (2026-09-14): self-service durable projects registry — BETA,
+    # same family as loops/research (user-facing surface).
+    "projects": SurfaceLane.BETA,
     "ops": SurfaceLane.INTERNAL,
     # R1 secrets wave: broker/lease machinery is ops-plane, never user-facing.
     "secrets": SurfaceLane.INTERNAL,

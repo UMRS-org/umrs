@@ -808,6 +808,10 @@ def _create_app():
     app.include_router(secret_broker_router)
     app.include_router(user_sources_router)
     app.include_router(source_grants_router)
+    # ADR-051 (2026-09-14): self-service durable projects registry.
+    from umrs.api.projects import router as projects_router
+
+    app.include_router(projects_router)
 
     # Satellite stores auto-resolve via the shared factories (Postgres when
     # a pool is resolvable, else in-memory). Routers return 503 on failure.

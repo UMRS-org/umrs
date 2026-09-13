@@ -149,11 +149,16 @@ async def _submit_companion_job(request: Request, owner: str, project: str) -> s
     runtime = get_runtime()
     if runtime is None:
         raise_typed(PlatformError.companion("unavailable", "durable job runtime unavailable"))
+    from umrs.api.agent_quota import enforce_spawn_budget
     from umrs.jobs.models import JobType
 
+    # ADR-051 D-2: agent CPU-process budget per user — once at spawn,
+    # before the durable row is created (typed 503 on the ceiling).
+    enforce_spawn_budget(getattr(request.app.state, "umrs_db_pool", None), user_id=owner)
     return await runtime.submit_job_sync(
         job_type=JobType.COMPANION_WORKER,
         project_id=project,
+        user_id=owner,
         spec={"registry_key": f"{owner}@{project}"},
     )
 

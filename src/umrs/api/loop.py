@@ -716,12 +716,21 @@ async def _submit_loop_job(
         runtime = get_runtime()
         if runtime is None:
             return None
+        from umrs.api.agent_quota import enforce_spawn_budget
         from umrs.jobs.models import JobType
+
+        # ADR-051 D-2: agent CPU-process budget per user — once at spawn.
+        # A quota refusal aborts loop start with a typed 503 (never a
+        # fallback thread masquerading as "not allowed").
+        owner = str(loop.metadata.get("owner_user_id") or "") or ""
+        enforce_spawn_budget(
+            getattr(http_request.app.state, "umrs_db_pool", None), user_id=owner
+        )
 
         return await runtime.submit_job_sync(
             job_type=JobType.RESEARCH_LOOP,
             project_id=loop.project_id,
-            user_id=str(loop.metadata.get("owner_user_id") or ""),
+            user_id=owner,
             spec={"loop_id": loop.loop_id, "driver": "agent" if agentic else "engine"},
         )
     except Exception as exc:  # noqa: BLE001 — hosting fallback, recorded on the loop
