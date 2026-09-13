@@ -11,7 +11,7 @@ from umrs.hypothesis_lifecycle import (
     HypothesisLifecycle,
     HypothesisStatus,
 )
-from umrs.knowledge.canonical_graph_view import default_view
+from umrs.knowledge.canonical_graph_view import in_memory_view
 from umrs.knowledge.graph_types import RelationType
 from umrs.scientific_memory import InMemoryScientificMemoryStore
 
@@ -58,7 +58,7 @@ def test_closed_loop_init():
 
 def test_closed_loop_init_with_dependencies():
     """Test ClosedLoopLearning with custom dependencies."""
-    graph = default_view(store=None)
+    graph = in_memory_view()
     memory = InMemoryScientificMemoryStore()
     lifecycle = HypothesisLifecycle()
 
@@ -117,7 +117,7 @@ def test_process_experiment_result_updates_hypothesis():
 
 def test_process_experiment_result_creates_graph_edge():
     """Test that processing a result creates a knowledge graph edge."""
-    graph = default_view(store=None)
+    graph = in_memory_view()
     lifecycle = HypothesisLifecycle()
     hyp_id = lifecycle.propose(statement="Test hypothesis")
 
@@ -216,7 +216,7 @@ def test_generate_next_hypothesis():
 def _run_closed_loop_iteration():
     """One experiment → finding iteration; every leg asserts its own sentence."""
     lifecycle = HypothesisLifecycle()
-    graph = default_view(store=None)
+    graph = in_memory_view()
     memory = InMemoryScientificMemoryStore()
     loop = ClosedLoopLearning(
         knowledge_graph=graph,

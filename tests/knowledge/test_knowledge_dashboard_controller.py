@@ -8,7 +8,7 @@ from umrs.knowledge.knowledge_dashboard_controller import (
     ObjectDetail,
     ObjectSummary,
 )
-from umrs.knowledge.canonical_graph_view import default_view
+from umrs.knowledge.canonical_graph_view import in_memory_view
 from umrs.knowledge.graph_types import RelationType
 from umrs.knowledge_model import (
     InMemoryKnowledgeModelStore,
@@ -19,7 +19,7 @@ from umrs.scientific_memory import InMemoryScientificMemoryStore, MemoryEntry
 
 def _setup():
     km = InMemoryKnowledgeModelStore()
-    kg = default_view(store=None)
+    kg = in_memory_view()
     sm = InMemoryScientificMemoryStore()
 
     # Create some objects

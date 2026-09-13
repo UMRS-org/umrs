@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 from typing import Any
 
 from umrs.knowledge.graph_types import (
@@ -41,25 +42,112 @@ logger = logging.getLogger(__name__)
 
 
 def _run_mutation(coro: Any) -> None:
-    """Schedule the store write; block when no event loop is running."""
+    """Run the store write on the view's pool-owning worker loop.
+
+    The knowledge asyncpg pool is loop-bound; a mutation scheduled on any
+    OTHER loop (asyncio.run() per write from sync contexts; a pytest-asyncio
+    test loop; a different api request-loop) crashes cross-loop
+    (CI 2026-09-13 class: 'attached to a different loop' / 'another
+    operation is in progress'). All mutations ride the same dedicated
+    worker thread the pool was built on. Semantic split preserved from the
+    pre-worker design: sync callers BLOCK until the write lands (their
+    premises assert immediately afterwards); async callers fire-and-forget
+    with a warning callback (the api request loop never parks on it).
+    """
     try:
-        loop = asyncio.get_running_loop()
+        asyncio.get_running_loop()
     except RuntimeError:
-        loop = None
-    if loop is None:
-        asyncio.run(coro)
-    else:
-        task = loop.create_task(coro)
-        # Preserve visibility for debugging (errors surface via callback).
-        task.add_done_callback(
-            lambda t: (
-                logger.warning(
-                    "canonical graph mutation failed: %s", t.exception(), exc_info=True
-                )
-                if t.exception()
-                else None
-            )
+        # Sync context — block so the write is visible to the caller.
+        _store_worker().submit_blocking(coro)
+        return
+    _store_worker().submit(coro)
+
+
+class _StoreWorker:
+    """Daemon background thread owning the store loop + pool lifetime.
+
+    One per process. The knowledge pool is created lazily inside the
+    worker's loop and every mutation is dispatched back to it via
+    run_coroutine_threadsafe — order-safe from sync and async callers
+    alike.
+    """
+
+    def __init__(self) -> None:
+        import threading
+
+        self._loop = asyncio.new_event_loop()
+        self._pool: Any = None
+        self._thread = threading.Thread(
+            target=self._loop.run_forever,
+            name="canonical-graph-store-worker",
+            daemon=True,
         )
+        self._thread.start()
+
+    @property
+    def loop(self) -> asyncio.AbstractEventLoop:
+        return self._loop
+
+    def build_pool(self, dsn: str) -> Any:
+        """Create the asyncpg pool INSIDE the worker loop (idempotent)."""
+        if self._pool is not None:
+            return self._pool
+
+        import asyncpg  # type: ignore[import-untyped]
+
+        self._pool = asyncio.run_coroutine_threadsafe(
+            asyncpg.create_pool(dsn=dsn), self._loop
+        ).result(timeout=10)
+        return self._pool
+
+    def submit(self, coro: Any) -> None:
+        """Fire-and-forget a mutation on the worker loop."""
+        future = asyncio.run_coroutine_threadsafe(coro, self._loop)
+
+        def _report(fut: Any) -> None:
+            exc = fut.exception()
+            if exc is not None:
+                logger.warning("canonical graph mutation failed: %s", exc, exc_info=True)
+
+        future.add_done_callback(_report)
+
+    def submit_blocking(self, coro: Any, timeout: float = 10.0) -> None:
+        """Run a mutation on the worker loop and block the (sync) caller."""
+        future = asyncio.run_coroutine_threadsafe(coro, self._loop)
+        future.result(timeout=timeout)
+
+    def shutdown(self) -> None:
+        """Tear down pool + loop (test isolation)."""
+        if self._pool is not None:
+            try:
+                asyncio.run_coroutine_threadsafe(self._pool.close(), self._loop).result(
+                    timeout=5
+                )
+            except Exception:  # noqa: BLE001 — teardown must not raise
+                pass
+            self._pool = None
+        self._loop.call_soon_threadsafe(self._loop.stop)
+
+
+_worker: "_StoreWorker | None" = None
+_worker_lock = threading.Lock()
+
+
+def _store_worker() -> _StoreWorker:
+    global _worker
+    with _worker_lock:
+        if _worker is None or not _worker.loop.is_running():
+            _worker = _StoreWorker()
+        return _worker
+
+
+def _reset_store_worker_for_tests() -> None:
+    """Drop the worker (test isolation between loop-lifetime-sensitive suites)."""
+    global _worker
+    with _worker_lock:
+        if _worker is not None:
+            _worker.shutdown()
+            _worker = None
 
 
 def _resolve_pool(request: Any | None) -> Any | None:
@@ -73,9 +161,9 @@ def _resolve_pool(request: Any | None) -> Any | None:
 def _maybe_knowledge_store() -> KnowledgeStore | None:
     """Resolve a durable KnowledgeStore when the knowledge DSN is configured.
 
-    Reuses an already-initialized singleton when present (api contexts);
-    otherwise builds one synchronously (engine/job contexts — must not be
-    called inside a running event loop).
+    The pool is built inside the dedicated store-worker thread's loop
+    (`_store_worker`), so mutations dispatched back to that loop stay on
+    the pool's owning loop from EVERY caller context (sync, api, pytest).
     """
     try:
         from umrs.jobs.knowledge_adapters import _resolve_knowledge_dsn
@@ -83,12 +171,15 @@ def _maybe_knowledge_store() -> KnowledgeStore | None:
         dsn = _resolve_knowledge_dsn()
         if not dsn:
             return None
-        from .store import build_knowledge_pool, get_store  # type: ignore[attr-defined]
+        from .store import get_store  # type: ignore[attr-defined]
 
         try:
             return get_store()
         except RuntimeError:
-            build_knowledge_pool(dsn)
+            _worker_pool = _store_worker().build_pool(dsn)
+            from .store import set_pool
+
+            set_pool(_worker_pool)
             return get_store()
     except Exception:
         logger.debug("canonical store unavailable; mirror-only view", exc_info=True)
@@ -111,6 +202,24 @@ def default_view(
         project_id=project_id,
         graph_id=gid,
     )
+
+
+def in_memory_view(
+    project_id: str = "default",
+    graph_id: str | None = None,
+) -> "CanonicalGraphView":
+    """Explicitly store-free view — NEVER resolves a durable store.
+
+    Complement to :func:`default_view`, whose ``store=None`` argument means
+    "auto-resolve". Premise/unit tests want the old InMemoryKnowledgeGraph
+    semantics unconditionally even on hosts where the knowledge DSN points
+    at a live Postgres (CI self-hosted class 2026-09-13: adapter suites
+    auto-resolved a pool and died with cross-loop asyncpg errors).
+    """
+    from .graph_registry import default_graph_id
+
+    gid = graph_id or default_graph_id(project_id)
+    return CanonicalGraphView(store=None, project_id=project_id, graph_id=gid)
 
 
 class CanonicalGraphView:

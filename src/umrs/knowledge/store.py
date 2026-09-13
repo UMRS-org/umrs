@@ -878,6 +878,18 @@ def get_store() -> KnowledgeStore:
     return _instance
 
 
+def set_pool(pool: Any) -> None:
+    """Install an externally-built pool as the store's global.
+
+    Used by canonical_graph_view's store-worker when the pool must be
+    owned by a dedicated background loop instead of the caller's loop
+    (build_knowledge_pool always binds the caller's loop).
+    """
+    global _pool, _instance
+    _pool = pool
+    _instance = None
+
+
 def build_knowledge_pool(uri: str, **kwargs: Any) -> Any:
     """Create the asyncpg pool for the knowledge store and set the global."""
     import asyncio
@@ -895,3 +907,35 @@ def reset_store() -> None:
     """Reset the store singleton for testing (pool is preserved)."""
     global _instance
     _instance = None
+
+
+def reset_knowledge_pool() -> None:
+    """Close and drop the global knowledge pool (test isolation).
+
+    The pool binds to the event loop that built it
+    (``build_knowledge_pool``); pytest-asyncio spins one loop per test, so
+    a surviving pool crashes the next test with cross-loop asyncpg errors
+    ('attached to a different loop' / 'another operation is in progress' —
+    CI self-hosted 2026-09-13). Teardown between tests rebuilds under the
+    live loop.
+    """
+    global _pool, _instance
+    _instance = None
+    pool, _pool = _pool, None
+    # Delegate worker-owned pools to the worker's own shutdown.
+    try:
+        from .canonical_graph_view import _reset_store_worker_for_tests
+
+        _reset_store_worker_for_tests()
+    except Exception:  # noqa: BLE001 — teardown must not raise
+        pass
+    if pool is None:
+        return
+    try:
+        import asyncio
+
+        loop = asyncio.get_event_loop_policy().get_event_loop()
+        if not loop.is_closed():
+            loop.run_until_complete(pool.close())
+    except Exception:  # noqa: BLE001 — teardown must not raise
+        pass
