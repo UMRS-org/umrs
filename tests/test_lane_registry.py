@@ -27,6 +27,8 @@ CLASSIFIED_FIXED: dict[str, SurfaceLane] = {
     "grants": SurfaceLane.BETA,
     # R1 secrets wave (a5ad437a): user-sources user-facing; broker internal.
     "user-sources": SurfaceLane.BETA,
+    # ADR-051 (2026-09-14): self-service durable projects registry — BETA.
+    "projects": SurfaceLane.BETA,
     "ops": SurfaceLane.INTERNAL,
     "secrets": SurfaceLane.INTERNAL,
     "skills": SurfaceLane.INTERNAL,

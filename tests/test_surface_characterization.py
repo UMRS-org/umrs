@@ -171,6 +171,8 @@ def test_lane_assignments_match_record(app):
         "grants": "v1beta",
         # R1 secrets wave (a5ad437a): user-sources BETA, secrets broker INTERNAL.
         "user-sources": "v1beta",
+        # ADR-051 (2026-09-14): self-service durable projects registry — BETA.
+        "projects": "v1beta",
         "ops": "internal",
         "secrets": "internal",
         "skills": "internal",
