@@ -26,7 +26,7 @@ from umrs.api.knowledge_query import (
     _GraphSearchBackend,
     _RAGSearchBackend,
 )
-from umrs.data_catalog.pg_store import CatalogMetaStore
+from umrs.data_catalog.pg_store import CatalogMetaStore, _search_filters, _visibility_clause
 from umrs.knowledge.access_scope import (
     VISIBILITY_TIERS,
     visibility_clause,
@@ -72,7 +72,7 @@ class TestVisibilityGatingShape:
 
     def test_rag_lane_uses_shared_predicate(self) -> None:
         src = inspect.getsource(_RAGSearchBackend.search_rag)
-        assert "visibility_predicate('n')" in src
+        assert "visibility_predicate('n', include_ambient=self._include_ambient)" in src
         assert "visibility = 'system'" not in src  # no second copy of the rule
 
     def test_graph_lane_uses_shared_predicate_with_graph_ownership(self) -> None:
@@ -86,12 +86,17 @@ class TestVisibilityGatingShape:
             _EmbeddingsSearchBackend._similarity_hits,
         ):
             src = inspect.getsource(fn)
-            assert "visibility_predicate('n')" in src, fn.__name__
+            assert "visibility_predicate('n', include_ambient=self._include_ambient)" in src, fn.__name__
             assert "WHERE n.project_id = %s" not in src, fn.__name__  # old ungated form gone
 
     def test_catalog_store_uses_shared_predicate_with_s3_ownership(self) -> None:
         src = inspect.getsource(CatalogMetaStore.search)
-        assert 'visibility_predicate(owned_sql="(project_id = %s OR s3_key LIKE %s)")' in src
+        assert "_search_filters" in src  # one filter-builder, not hand-rolled gates
+        filters_src = inspect.getsource(_search_filters)
+        assert "_visibility_clause" in filters_src
+        helper = inspect.getsource(_visibility_clause)
+        assert "visibility_predicate(" in helper
+        assert 'owned_sql="(project_id = %s OR s3_key LIKE %s)"' in helper
         # system rows bypass the project ACL re-check (visible to every caller)
         assert 'row.get("visibility") != VISIBILITY_SYSTEM' in src
 
@@ -144,3 +149,20 @@ class TestVisibilityTierConfig:
         assert "catalog_objects_visibility_idx" in migration
         assert "ON catalog_objects (project_id, visibility)" in migration
         assert "COMMENT ON COLUMN catalog_objects.visibility" in migration
+
+
+class TestIncludeAmbient:
+    def test_default_predicate_excludes_ambient(self) -> None:
+        sql = visibility_predicate("n")
+        assert "visibility != 'ambient'" in sql
+
+    def test_include_ambient_drops_the_exclusion(self) -> None:
+        sql = visibility_predicate("n", include_ambient=True)
+        assert "visibility != 'ambient'" not in sql
+
+    def test_route_passes_include_ambient_from_admin_identity(self) -> None:
+        src = inspect.getsource(query_knowledge := __import__(
+            "umrs.api.knowledge_query", fromlist=["query_knowledge"]
+        ).query_knowledge)
+        assert "identity.is_admin" in src
+        assert "include_ambient=include_ambient" in src

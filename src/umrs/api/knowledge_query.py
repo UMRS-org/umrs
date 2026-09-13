@@ -66,8 +66,9 @@ def _hit_to_dict(hit: Any, *, project_id: str) -> dict[str, Any]:
 class _CatalogSearchBackend:
     """``search_api`` CatalogSearchable port over the live catalog store."""
 
-    def __init__(self, meta_store: Any) -> None:
+    def __init__(self, meta_store: Any, *, include_ambient: bool = False) -> None:
         self._store = meta_store
+        self._include_ambient = include_ambient
 
     def search_catalog(
         self, query: str, *, project_id: str | None = None, limit: int = 20
@@ -78,7 +79,11 @@ class _CatalogSearchBackend:
         from umrs.data_catalog.query import search_catalog
 
         hits = search_catalog(
-            self._store, query=query, project_id=project_id, limit=limit
+            self._store,
+            query=query,
+            project_id=project_id,
+            limit=limit,
+            include_ambient=self._include_ambient,
         )
         return [_hit_to_dict(hit, project_id=project_id) for hit in hits]
 
@@ -91,7 +96,8 @@ class _GraphSearchBackend:
     the same fallback ``KnowledgeStore.list_nodes`` uses.
     """
 
-    def __init__(self, pool: Any, selected: list[KnowledgeGraphMeta]) -> None:
+    def __init__(self, pool: Any, selected: list[KnowledgeGraphMeta], *, include_ambient: bool = False) -> None:
+        self._include_ambient = include_ambient
         self._pool = pool
         self._selected = selected
         self._by_id = {g.graph_id: g for g in selected}
@@ -115,7 +121,8 @@ class _GraphSearchBackend:
         # ADR-050 tier gate rendered from the single predicate; ownership
         # half is the graph selection (explicit graphs + legacy '' rows).
         gate = visibility_predicate(
-            owned_sql="(graph_id = ANY(%s) OR (graph_id = '' AND project_id = ANY(%s)))"
+            owned_sql="(graph_id = ANY(%s) OR (graph_id = '' AND project_id = ANY(%s)))",
+            include_ambient=self._include_ambient,
         )
         with self._pool.getconn() as conn:
             try:
@@ -233,8 +240,9 @@ class _EmbeddingsSearchBackend:
     lane stays table-reader.
     """
 
-    def __init__(self, pool: Any) -> None:
+    def __init__(self, pool: Any, *, include_ambient: bool = False) -> None:
         self._pool = pool
+        self._include_ambient = include_ambient
 
     def search_embeddings(
         self,
@@ -257,7 +265,7 @@ class _EmbeddingsSearchBackend:
                         "n.label, n.project_id "
                         "FROM knowledge_node_embeddings e "
                         "JOIN knowledge_nodes n ON n.node_id = e.node_id "
-                        f"WHERE {visibility_predicate('n')} "
+                        f"WHERE {visibility_predicate('n', include_ambient=self._include_ambient)} "
                         "AND (e.model_name ILIKE %s OR n.label ILIKE %s OR e.node_id ILIKE %s) "
                         "ORDER BY e.created_at DESC LIMIT %s",
                         (project_id, pattern, pattern, pattern, limit),
@@ -284,7 +292,7 @@ class _EmbeddingsSearchBackend:
                         "n.label, n.project_id, (e.embedding <=> %s::vector) AS distance "
                         "FROM knowledge_node_embeddings e "
                         "JOIN knowledge_nodes n ON n.node_id = e.node_id "
-                        f"WHERE {visibility_predicate('n')} "
+                        f"WHERE {visibility_predicate('n', include_ambient=self._include_ambient)} "
                         "ORDER BY distance ASC LIMIT %s",
                         (qv, project_id, limit),
                     )
@@ -318,7 +326,7 @@ class _EmbeddingsSearchBackend:
         }
 
 
-def _embeddings_backend_for(pool: Any) -> tuple[Optional[_EmbeddingsSearchBackend], Optional[str]]:
+def _embeddings_backend_for(pool: Any, *, include_ambient: bool = False) -> tuple[Optional[_EmbeddingsSearchBackend], Optional[str]]:
     """Wire the 0075 backend iff the table exists; honesty reason otherwise."""
     if pool is None:
         return None, "embeddings search requires the database"
@@ -336,7 +344,7 @@ def _embeddings_backend_for(pool: Any) -> tuple[Optional[_EmbeddingsSearchBacken
         return None, "embeddings search unavailable (table probe failed)"
     if not present:
         return None, "embeddings search unavailable (migration 0075 not applied)"
-    return _EmbeddingsSearchBackend(pool), None
+    return _EmbeddingsSearchBackend(pool, include_ambient=include_ambient), None
 
 
 def _first_text_field(content_text: str) -> str | None:
@@ -384,8 +392,9 @@ class _RAGSearchBackend:
     the venue.
     """
 
-    def __init__(self, pool: Any) -> None:
+    def __init__(self, pool: Any, *, include_ambient: bool = False) -> None:
         self._pool = pool
+        self._include_ambient = include_ambient
 
     def search_rag(
         self,
@@ -407,7 +416,7 @@ class _RAGSearchBackend:
                         "SELECT n.node_id, n.label, n.node_type, n.content::text, "
                         "n.content_hash, n.updated_at "
                         "FROM knowledge_nodes n "
-                        f"WHERE {visibility_predicate('n')} "
+                        f"WHERE {visibility_predicate('n', include_ambient=self._include_ambient)} "
                         "AND (n.label ILIKE %s OR n.node_type ILIKE %s "
                         "OR n.content::text ILIKE %s) "
                         "ORDER BY n.updated_at DESC LIMIT %s",
@@ -436,7 +445,7 @@ class _RAGSearchBackend:
         }
 
 
-def _rag_backend_for(pool: Any) -> tuple[Optional[_RAGSearchBackend], Optional[str]]:
+def _rag_backend_for(pool: Any, *, include_ambient: bool = False) -> tuple[Optional[_RAGSearchBackend], Optional[str]]:
     """Wire the central-corpus RAG backend iff knowledge_nodes exists."""
     if pool is None:
         return None, "RAG search requires the database"
@@ -454,7 +463,7 @@ def _rag_backend_for(pool: Any) -> tuple[Optional[_RAGSearchBackend], Optional[s
         return None, "RAG search unavailable (corpus probe failed)"
     if not present:
         return None, "central knowledge corpus unavailable (knowledge nodes not present)"
-    return _RAGSearchBackend(pool), None
+    return _RAGSearchBackend(pool, include_ambient=include_ambient), None
 
 
 def _build_unified_search(
@@ -465,6 +474,7 @@ def _build_unified_search(
     embeddings_unavailable_reason: Optional[str] = None,
     rag_backend: Optional[_RAGSearchBackend] = None,
     rag_unavailable_reason: Optional[str] = None,
+    include_ambient: bool = False,
 ) -> tuple[UnifiedSearch, list[str], dict[str, str]]:
     """Compose pluggable backends.
 
@@ -472,7 +482,9 @@ def _build_unified_search(
     """
     wired = ["catalog"]
     unwired = dict(_UNWIRED_BACKENDS)
-    kwargs: dict[str, Any] = {"catalog": _CatalogSearchBackend(meta_store)}
+    kwargs: dict[str, Any] = {
+        "catalog": _CatalogSearchBackend(meta_store, include_ambient=include_ambient)
+    }
     if graph_backend is not None:
         kwargs["knowledge_graph"] = graph_backend
         wired.append("knowledge_graph")
@@ -554,11 +566,18 @@ def query_knowledge(
         )
     resolved_project = _resolve_project_id(identity, project_id)
     pool = getattr(request.app.state, "umrs_db_pool", None)
+    # ADR-050 wave-2.1: the ambient read lane is admin-only; regular callers
+    # never see ambient rows on any lane.
+    include_ambient = bool(identity.is_admin)
     backend, reason, selected, excluded = _graph_backend_for(
-        pool, resolved_project, graphs, exclude_graphs
+        pool,
+        resolved_project,
+        graphs,
+        exclude_graphs,
+        include_ambient=include_ambient,
     )
-    emb_backend, emb_reason = _embeddings_backend_for(pool)
-    rag_backend, rag_reason = _rag_backend_for(pool)
+    emb_backend, emb_reason = _embeddings_backend_for(pool, include_ambient=include_ambient)
+    rag_backend, rag_reason = _rag_backend_for(pool, include_ambient=include_ambient)
     search, wired, unwired = _build_unified_search(
         meta_store,
         backend,
@@ -567,6 +586,7 @@ def query_knowledge(
         emb_reason,
         rag_backend,
         rag_reason,
+        include_ambient=include_ambient,
     )
     results = search.search(
         q,
@@ -590,6 +610,8 @@ def _graph_backend_for(
     project_id: str,
     graphs_csv: Optional[str],
     exclude_csv: Optional[str],
+    *,
+    include_ambient: bool = False,
 ) -> tuple[Optional[_GraphSearchBackend], Optional[str], list, list]:
     """Build the graph backend or an honesty reason, plus selection truth."""
     if pool is None:
@@ -600,7 +622,12 @@ def _graph_backend_for(
     )
     if not selected:
         return None, "no graphs selected (empty or fully excluded)", selected, excluded
-    return _GraphSearchBackend(pool, selected), None, selected, excluded
+    return (
+        _GraphSearchBackend(pool, selected, include_ambient=include_ambient),
+        None,
+        selected,
+        excluded,
+    )
 
 
 def _ontology_registry_for(pool: Any) -> tuple[Any | None, Any | None]:

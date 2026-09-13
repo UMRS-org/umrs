@@ -26,6 +26,7 @@ def search_catalog(
     state: str | None = None,
     tag: str | None = None,
     prefix: str | None = None,
+    include_ambient: bool = False,
 ) -> list[CatalogHit]:
     """Lexical search over catalog metadata with project ACL filtering."""
     return meta_store.search(
@@ -36,6 +37,7 @@ def search_catalog(
         state=state,
         tag=tag,
         prefix=prefix,
+        include_ambient=include_ambient,
     )
 
 
