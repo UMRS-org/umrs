@@ -421,7 +421,11 @@ def build_pool(uri: str, **kwargs: Any) -> Any:
         if loop.is_running():
             # sidecar lifespan is async; caller should use build_pool_async
             raise RuntimeError("use build_pool_async from an async context")
-        _pool = loop.run_until_complete(asyncpg.create_pool(dsn=uri, **kwargs))
+        from umrs.shared.pg_settings import asyncpg_pool_kwargs
+
+        _pool = loop.run_until_complete(
+            asyncpg.create_pool(dsn=uri, **asyncpg_pool_kwargs("a2l-store", **kwargs))
+        )
     except RuntimeError:
         raise
     return _pool
@@ -431,8 +435,10 @@ async def build_pool_async(uri: str, **kwargs: Any) -> Any:
     """Create the asyncpg pool from an async context."""
     import asyncpg  # type: ignore[import-untyped]
 
+    from umrs.shared.pg_settings import asyncpg_pool_kwargs
+
     global _pool
-    _pool = await asyncpg.create_pool(dsn=uri, **kwargs)
+    _pool = await asyncpg.create_pool(dsn=uri, **asyncpg_pool_kwargs("a2l-store", **kwargs))
     return _pool
 
 

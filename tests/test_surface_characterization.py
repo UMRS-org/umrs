@@ -175,7 +175,45 @@ def test_lane_assignments_match_record(app):
         "secrets": "internal",
         "skills": "internal",
         "zmq": "internal",
+        # 2026-09-13 release lane decision (R-13): the S5 placement list is
+        # emptied; lanes below mirror umrs/shared/lanes.py (wave log there).
+        "jobs": "v1-stable",
+        "workflows": "v1-stable",
+        "files": "v1-stable",
+        "pipelines": "v1-stable",
+        "mcp": "v1beta",
+        "rag": "v1beta",
+        "rag-profiles": "v1beta",
+        "uploads": "v1beta",
+        "companion": "v1beta",
+        "chat": "v1beta",
+        "catalog": "v1beta",
+        "artifacts": "v1beta",
+        "assets": "v1beta",
+        "provenance": "v1beta",
+        "traces": "v1beta",
+        "verification": "v1beta",
+        "evidence": "v1beta",
+        "experiment-registry": "v1beta",
+        "scientific-memory": "v1beta",
+        "reflective-memory": "v1beta",
+        "vision": "v1beta",
+        "a2l": "v1beta",
+        "components": "v1beta",
+        "usage": "v1beta",
+        "web": "v1beta",
+        "egress": "internal",
     }, "lane drift vs the S2/S3 record — classification moves belong in the wave log"
+
+
+def test_no_served_family_is_unclassified(app):
+    """R-13 (2026-09-13): every served family carries a release lane."""
+    served = {_family_of(p) for p in _route_paths(app)}
+    unclassified = sorted(f for f in served if FAMILY_LANES.get(f) == "unclassified")
+    assert unclassified == [], (
+        "served families still UNCLASSIFIED — a lane decision is required before rc1:\n"
+        + "\n".join(unclassified)
+    )
 
 
 # ── premise: the companion venue contract is served exactly (m5 ↔ m6) ─────

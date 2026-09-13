@@ -51,7 +51,11 @@ def main(argv: list[str] | None = None) -> int:
         logger.error("--bucket or S3_BUCKET is required")
         return 1
 
-    db_pool = pool.SimpleConnectionPool(1, 2, args.db_url)
+    from umrs.shared.pg_settings import pg_connect_kwargs
+
+    db_pool = pool.SimpleConnectionPool(
+        1, 2, args.db_url, **pg_connect_kwargs("catalog-reconcile")
+    )
     store = CatalogMetaStore(db_pool)
     s3_client = _build_s3_client()
 

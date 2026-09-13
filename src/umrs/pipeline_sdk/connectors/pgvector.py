@@ -33,12 +33,15 @@ class PgVectorConnector:
     def _connect(self, dbname: str = "postgres"):
         import psycopg2
 
+        from umrs.shared.pg_settings import pg_connect_kwargs
+
         return psycopg2.connect(
             host=self.host,
             port=self.port,
             user=self.user,
             password=self.password,
             dbname=dbname,
+            **pg_connect_kwargs("pgvector-connector"),
         )
 
     def list_user_databases(self) -> list[str]:

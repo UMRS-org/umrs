@@ -297,10 +297,13 @@ def _open_artifact_store() -> tuple[Any, Any]:
         import psycopg2
 
         from umrs.artifact_registry.store import ArtifactStore
+        from umrs.shared.pg_settings import pg_connect_kwargs
 
         from .knowledge_adapters import _resolve_knowledge_dsn
 
-        conn = psycopg2.connect(_resolve_knowledge_dsn())
+        conn = psycopg2.connect(
+            _resolve_knowledge_dsn(), **pg_connect_kwargs("workflow-run")
+        )
         return ArtifactStore(lambda: conn), conn
     except Exception as exc:  # noqa: BLE001
         logger.warning("Artifact registry unavailable: %s", exc)

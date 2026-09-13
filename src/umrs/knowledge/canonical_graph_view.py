@@ -114,7 +114,11 @@ class _StoreWorker:
             # asyncpg.create_pool returns a PoolInit (awaitable, NOT a
             # coroutine object) — wrap it: run_coroutine_threadsafe demands
             # an actual coroutine.
-            return await asyncpg.create_pool(dsn=dsn, init=_json_codecs)
+            from umrs.shared.pg_settings import asyncpg_pool_kwargs
+
+            return await asyncpg.create_pool(
+                dsn=dsn, **asyncpg_pool_kwargs("graph-view", init=_json_codecs)
+            )
 
         self._pool = asyncio.run_coroutine_threadsafe(_create(), self._loop).result(
             timeout=10

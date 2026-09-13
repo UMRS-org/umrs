@@ -145,7 +145,9 @@ class RoutingFeedbackStore:
         return self._psycopg2 is not None and self._db_url is not None
 
     def _get_conn(self):
-        return self._psycopg2.connect(self._db_url)
+        from umrs.shared.pg_settings import pg_connect_kwargs
+
+        return self._psycopg2.connect(self._db_url, **pg_connect_kwargs("routing-feedback"))
 
     # =========================================================================
     # Record feedback

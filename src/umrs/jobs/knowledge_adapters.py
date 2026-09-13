@@ -265,7 +265,11 @@ def _get_pool() -> Any:
     try:
         import asyncpg
 
-        return asyncpg.create_pool(dsn=conn_str)  # type: ignore[return-value]
+        from umrs.shared.pg_settings import asyncpg_pool_kwargs
+
+        return asyncpg.create_pool(  # type: ignore[return-value]
+            dsn=conn_str, **asyncpg_pool_kwargs("knowledge-adapters")
+        )
     except Exception:
         return None
 
@@ -290,7 +294,11 @@ async def _open_pool() -> Any:
         try:
             import asyncpg
 
-            pool = await asyncpg.create_pool(dsn=dsn, init=_init_json_codecs)
+            from umrs.shared.pg_settings import asyncpg_pool_kwargs
+
+            pool = await asyncpg.create_pool(
+                dsn=dsn, **asyncpg_pool_kwargs("knowledge-adapters", init=_init_json_codecs)
+            )
         except Exception as exc:
             logger.warning("Knowledge asyncpg pool unavailable: %s", exc)
             pool = None

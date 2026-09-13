@@ -565,7 +565,11 @@ async def _wire_a2l_recorder(application) -> None:
         if dsn:
             import asyncpg
 
-            kwargs: dict = {"dsn": dsn, "init": _init_json_codecs}
+            from umrs.shared.pg_settings import asyncpg_pool_kwargs
+
+            kwargs: dict = asyncpg_pool_kwargs(
+                "a2l-recorder", dsn=dsn, init=_init_json_codecs
+            )
             if is_local:
                 kwargs["ssl"] = "disable"  # jobs pool parity
             pool = await asyncpg.create_pool(**kwargs)

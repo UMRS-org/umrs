@@ -156,6 +156,27 @@ VALID_FAILURE_CATEGORIES = {
 }
 
 
+def _outcome_matches(outcome: WorkflowOutcome, filters: dict[str, str | None]) -> bool:
+    """Truthy filters must equal the outcome's attribute (falsy filters ignored)."""
+    return all(not value or getattr(outcome, key) == value for key, value in filters.items())
+
+
+def _summary_from_row(name: str, row: tuple) -> OutcomeSummary:
+    """OutcomeSummary from the aggregate row (total, ok, failed, cancelled, avg_dur, avg_tok)."""
+    total = row[0] or 0
+    succeeded = row[1] or 0
+    return OutcomeSummary(
+        workflow_name=name,
+        total_runs=total,
+        succeeded=succeeded,
+        failed=row[2] or 0,
+        cancelled=row[3] or 0,
+        success_rate=succeeded / total if total else 0.0,
+        avg_duration_sec=float(row[4]) if row[4] is not None else None,
+        avg_tokens=float(row[5]) if row[5] is not None else None,
+    )
+
+
 class WorkflowOutcomeStore:
     """Durable workflow outcome store backed by Postgres.
 
@@ -182,7 +203,9 @@ class WorkflowOutcomeStore:
         return self._db_url is not None and self._psycopg2 is not None
 
     def _conn(self):  # type: ignore[no-untyped-def]
-        return self._psycopg2.connect(self._db_url)  # type: ignore[union-attr]
+        from umrs.shared.pg_settings import pg_connect_kwargs
+
+        return self._psycopg2.connect(self._db_url, **pg_connect_kwargs("workflow-outcome"))  # type: ignore[union-attr]
 
     # ── Record ──────────────────────────────────────────────
 
@@ -279,15 +302,13 @@ class WorkflowOutcomeStore:
         """List outcomes with optional filters."""
         if self.db_enabled:
             return self._db_list(workflow_name, model_used, user_id, status, limit)
-        results = list(self._mem.values())
-        if workflow_name:
-            results = [o for o in results if o.workflow_name == workflow_name]
-        if model_used:
-            results = [o for o in results if o.model_used == model_used]
-        if user_id:
-            results = [o for o in results if o.user_id == user_id]
-        if status:
-            results = [o for o in results if o.status == status]
+        filters = {
+            "workflow_name": workflow_name,
+            "model_used": model_used,
+            "user_id": user_id,
+            "status": status,
+        }
+        results = [o for o in self._mem.values() if _outcome_matches(o, filters)]
         results.sort(key=lambda o: o.created_at, reverse=True)
         return results[:limit]
 
@@ -447,18 +468,7 @@ class WorkflowOutcomeStore:
                        FROM workflow_outcomes WHERE workflow_name = %s""",
                     (workflow_name,),
                 )
-                row = cur.fetchone()
-                total = row[0] or 0
-                summary = OutcomeSummary(
-                    workflow_name=workflow_name,
-                    total_runs=total,
-                    succeeded=row[1] or 0,
-                    failed=row[2] or 0,
-                    cancelled=row[3] or 0,
-                    success_rate=(row[1] or 0) / total if total else 0.0,
-                    avg_duration_sec=float(row[4]) if row[4] is not None else None,
-                    avg_tokens=float(row[5]) if row[5] is not None else None,
-                )
+                summary = _summary_from_row(workflow_name, cur.fetchone())
 
                 # Failure breakdown
                 cur.execute(
@@ -486,18 +496,7 @@ class WorkflowOutcomeStore:
                        FROM workflow_outcomes WHERE model_used = %s""",
                     (model_name,),
                 )
-                row = cur.fetchone()
-                total = row[0] or 0
-                return OutcomeSummary(
-                    workflow_name=f"model:{model_name}",
-                    total_runs=total,
-                    succeeded=row[1] or 0,
-                    failed=row[2] or 0,
-                    cancelled=row[3] or 0,
-                    success_rate=(row[1] or 0) / total if total else 0.0,
-                    avg_duration_sec=float(row[4]) if row[4] is not None else None,
-                    avg_tokens=float(row[5]) if row[5] is not None else None,
-                )
+                return _summary_from_row(f"model:{model_name}", cur.fetchone())
 
     def _row_to_outcome(self, row: tuple, cur: Any) -> WorkflowOutcome:
         cols = [desc[0] for desc in cur.description]

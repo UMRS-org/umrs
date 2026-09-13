@@ -102,7 +102,7 @@ def test_egress_audit_store_uses_configured_database(monkeypatch) -> None:
     monkeypatch.setitem(
         sys.modules,
         "psycopg2",
-        SimpleNamespace(connect=lambda _url: FakeConnection()),
+        SimpleNamespace(connect=lambda _url, **_kw: FakeConnection()),
     )
 
     store = egress_audit._EgressAuditStore()

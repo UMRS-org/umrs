@@ -147,7 +147,11 @@ def apply_backfill(pool: Any, plan: list[dict[str, Any]], *, batch_size: int = 5
 def _build_pool(dsn: str):
     from psycopg2 import pool as pg_pool
 
-    return pg_pool.ThreadedConnectionPool(minconn=1, maxconn=2, dsn=dsn)
+    from umrs.shared.pg_settings import pg_connect_kwargs
+
+    return pg_pool.ThreadedConnectionPool(
+        minconn=1, maxconn=2, dsn=dsn, **pg_connect_kwargs("embedding-backfill")
+    )
 
 
 def main(argv: list[str] | None = None) -> int:

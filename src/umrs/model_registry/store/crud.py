@@ -43,6 +43,37 @@ from .path_validator import PathValidator
 logger = logging.getLogger(__name__)
 
 
+
+def _require_admin(ctx: AccessContext | None, target: str, action: str) -> None:
+    """Admin-only guard for policy/system-model mutations (no ctx = trusted caller)."""
+    if ctx and not ctx.is_admin:
+        raise PermissionDeniedError(ctx.user_id, target, action, "Admin only")
+
+
+def _resolve_system_capabilities(
+    name: str, storage_ref: str, capabilities: ModelCapabilities | None
+) -> ModelCapabilities:
+    """Explicit capabilities win; otherwise detect from the storage ref."""
+    caps = resolve_capabilities(name, capabilities or ModelCapabilities())
+    if storage_ref and capabilities is None:
+        from ..detect import merge_detected_capabilities
+
+        caps = merge_detected_capabilities(caps, storage_ref, model_name=name)
+    return caps
+
+
+def _visibility_condition(ctx: AccessContext) -> tuple[str, list[Any]]:
+    """Non-admin visibility: system rows, member projects' rows, own user rows."""
+    parts = ["scope = 'system'"]
+    params: list[Any] = []
+    if ctx.project_memberships:
+        placeholders = ", ".join(["%s"] * len(ctx.project_memberships))
+        parts.append(f"(scope = 'project' AND project_id IN ({placeholders}))")
+        params.extend(ctx.project_memberships)
+    parts.append("(scope = 'user' AND owner_id = %s)")
+    params.append(ctx.user_id)
+    return f"({' OR '.join(parts)})", params
+
 class ModelStore:
     """
     Model Registry data access layer.
@@ -88,8 +119,11 @@ class ModelStore:
                         self._conn.close()
                     except Exception:
                         pass
+                from umrs.shared.pg_settings import pg_connect_kwargs
+
                 self._conn = psycopg2.connect(
                     dbname=self._conn.info.dbname if self._conn else None,
+                    **pg_connect_kwargs("model-registry"),
                 )
         return self._conn
 
@@ -320,31 +354,14 @@ class ModelStore:
         params: list[Any] = []
 
         if not ctx.is_admin:
-            visibility_parts = ["scope = 'system'"]
+            visibility_sql, visibility_params = _visibility_condition(ctx)
+            conditions.append(visibility_sql)
+            params.extend(visibility_params)
 
-            if ctx.project_memberships:
-                placeholders = ", ".join(["%s"] * len(ctx.project_memberships))
-                visibility_parts.append(
-                    f"(scope = 'project' AND project_id IN ({placeholders}))"
-                )
-                params.extend(ctx.project_memberships)
-
-            visibility_parts.append("(scope = 'user' AND owner_id = %s)")
-            params.append(ctx.user_id)
-
-            conditions.append(f"({' OR '.join(visibility_parts)})")
-
-        if scope:
-            conditions.append("scope = %s")
-            params.append(scope.value)
-
-        if model_type:
-            conditions.append("model_type = %s")
-            params.append(model_type.value)
-
-        if status:
-            conditions.append("status = %s")
-            params.append(status.value)
+        for column, enum_value in (("scope", scope), ("model_type", model_type), ("status", status)):
+            if enum_value:
+                conditions.append(f"{column} = %s")
+                params.append(enum_value.value)
 
         if project_id:
             conditions.append("project_id = %s")
@@ -884,37 +901,24 @@ class ModelStore:
         ctx: AccessContext | None = None,
     ) -> ModelPolicy:
         """Update a model policy."""
-        if ctx and not ctx.is_admin:
-            raise PermissionDeniedError(ctx.user_id, policy_id, "update", "Admin only")
+        _require_admin(ctx, policy_id, "update")
 
         self.get_policy(policy_id)
 
         updates = []
         params: list[Any] = []
-
-        if allowed_projects is not None:
-            updates.append("allowed_projects = %s")
-            params.append(allowed_projects)
-
-        if denied_projects is not None:
-            updates.append("denied_projects = %s")
-            params.append(denied_projects)
-
-        if max_concurrent_endpoints is not None:
-            updates.append("max_concurrent_endpoints = %s")
-            params.append(max_concurrent_endpoints)
-
-        if enable_warm_pool is not None:
-            updates.append("enable_warm_pool = %s")
-            params.append(enable_warm_pool)
-
-        if warm_pool_min is not None:
-            updates.append("warm_pool_min = %s")
-            params.append(warm_pool_min)
-
-        if warm_pool_max is not None:
-            updates.append("warm_pool_max = %s")
-            params.append(warm_pool_max)
+        fields = (
+            ("allowed_projects", allowed_projects),
+            ("denied_projects", denied_projects),
+            ("max_concurrent_endpoints", max_concurrent_endpoints),
+            ("enable_warm_pool", enable_warm_pool),
+            ("warm_pool_min", warm_pool_min),
+            ("warm_pool_max", warm_pool_max),
+        )
+        for column, value in fields:
+            if value is not None:
+                updates.append(f"{column} = %s")
+                params.append(value)
 
         if not updates:
             return self.get_policy(policy_id)
@@ -1008,10 +1012,7 @@ class ModelStore:
 
         Atomic operation that creates both model entry and policy.
         """
-        if ctx and not ctx.is_admin:
-            raise PermissionDeniedError(
-                ctx.user_id, name, "create_system_model", "Admin only"
-            )
+        _require_admin(ctx, name, "create_system_model")
 
         self.path_validator.validate(storage_ref)
 
@@ -1024,12 +1025,7 @@ class ModelStore:
         policy_id = generate_policy_id()
 
         profile = serving_profile or ServingProfile()
-        explicit_capabilities = capabilities is not None
-        caps = resolve_capabilities(name, capabilities or ModelCapabilities())
-        if storage_ref and not explicit_capabilities:
-            from ..detect import merge_detected_capabilities
-
-            caps = merge_detected_capabilities(caps, storage_ref, model_name=name)
+        caps = _resolve_system_capabilities(name, storage_ref, capabilities)
 
         try:
             with self.conn.cursor() as cur:

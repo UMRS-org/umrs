@@ -153,6 +153,15 @@ class _PooledConnection:
         return False
 
 
+def _apply_reembed_status(job: ReembedJob, status: str) -> None:
+    """Status transition with started/completed timestamps (in-memory path)."""
+    job.status = status
+    if status == "running" and job.started_at is None:
+        job.started_at = _now()
+    elif status in ("succeeded", "failed", "cancelled"):
+        job.completed_at = _now()
+
+
 class VectorVersionStore:
     """Manages embedding model version tracking and re-embedding.
 
@@ -194,7 +203,9 @@ class VectorVersionStore:
     def _get_conn(self):
         if self._pool is not None:
             return _PooledConnection(self._pool)
-        return self._psycopg2.connect(self._db_url)
+        from umrs.shared.pg_settings import pg_connect_kwargs
+
+        return self._psycopg2.connect(self._db_url, **pg_connect_kwargs("vector-versions"))
 
     # ------------------------------------------------------------------
     # Version tracking
@@ -365,11 +376,7 @@ class VectorVersionStore:
         job.processed_vectors = processed
         job.failed_vectors = failed
         if status:
-            job.status = status
-            if status == "running" and job.started_at is None:
-                job.started_at = _now()
-            elif status in ("succeeded", "failed", "cancelled"):
-                job.completed_at = _now()
+            _apply_reembed_status(job, status)
         if error:
             job.error = error
         return job

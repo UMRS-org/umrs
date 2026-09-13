@@ -137,7 +137,9 @@ class ExecutionTraceStore:
 
     def _get_conn(self):
         """Get a database connection."""
-        return self._psycopg2.connect(self._db_url)
+        from umrs.shared.pg_settings import pg_connect_kwargs
+
+        return self._psycopg2.connect(self._db_url, **pg_connect_kwargs("execution-trace"))
 
     # ------------------------------------------------------------------
     # Core CRUD

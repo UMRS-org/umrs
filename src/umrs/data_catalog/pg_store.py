@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+from umrs.knowledge.access_scope import VISIBILITY_SYSTEM, visibility_predicate
+
 from .scoring import CatalogHit, allowed, score_meta, tokenize
 from .schema import CatalogObjectMeta, CatalogState
 
@@ -59,31 +61,84 @@ def _parse_updated_at(value: Any) -> str:
     return str(value or "")
 
 
+def _json_list(value: Any) -> list:
+    """JSONB list column as a Python list (accepts a JSON string or None)."""
+    if isinstance(value, str):
+        value = json.loads(value)
+    return list(value or [])
+
+
+def _text(row: dict[str, Any], key: str, default: str = "") -> str:
+    """Text column with NULL/empty collapsed to ``default``."""
+    return str(row.get(key) or default)
+
+
 def _row_to_meta(row: dict[str, Any]) -> CatalogObjectMeta:
-    tags = row.get("tags") or []
-    filename_signals = row.get("filename_signals") or []
-    if isinstance(tags, str):
-        tags = json.loads(tags)
-    if isinstance(filename_signals, str):
-        filename_signals = json.loads(filename_signals)
     return CatalogObjectMeta(
         s3_key=str(row["s3_key"]),
-        object_etag=str(row.get("object_etag") or ""),
+        object_etag=_text(row, "object_etag"),
         state=CatalogState(str(row["state"])),
-        owner=str(row.get("owner") or ""),
-        acl_scope=str(row.get("acl_scope") or ""),
+        owner=_text(row, "owner"),
+        acl_scope=_text(row, "acl_scope"),
         updated_at=_parse_updated_at(row.get("updated_at")),
-        summary=str(row.get("summary") or ""),
-        deterministic_summary=str(row.get("deterministic_summary") or ""),
+        summary=_text(row, "summary"),
+        deterministic_summary=_text(row, "deterministic_summary"),
         perception_summary=row.get("perception_summary"),
         perception_model=row.get("perception_model"),
-        tags=list(tags),
-        filename_signals=list(filename_signals),
-        detected_modality=str(row.get("detected_modality") or "unknown"),
+        tags=_json_list(row.get("tags")),
+        filename_signals=_json_list(row.get("filename_signals")),
+        detected_modality=_text(row, "detected_modality", "unknown"),
         extracted_text_ref=row.get("extracted_text_ref"),
         extracted_knowledge_ref=row.get("extracted_knowledge_ref"),
         error_note=row.get("error_note"),
     )
+
+
+def _normalized_prefix(project_id: str, prefix: str | None) -> str:
+    normalized = prefix or f"{project_id}/"
+    return normalized if normalized.endswith("/") else f"{normalized}/"
+
+
+def _list_where(
+    project_id: str,
+    *,
+    prefix: str | None,
+    normalized_prefix: str,
+    include_pending: bool,
+    include_error: bool,
+) -> tuple[list[str], list[Any]]:
+    """WHERE clauses + params for ``list_by_project`` (ownership + state filters)."""
+    clauses = ["(project_id = %s OR s3_key LIKE %s)"]
+    params: list[Any] = [project_id, f"{_like_literal(project_id)}/%"]
+    if prefix is not None:
+        clauses.append("s3_key LIKE %s")
+        params.append(f"{_like_literal(normalized_prefix)}%")
+    if not include_pending:
+        clauses.append("state != 'pending'")
+    if not include_error:
+        clauses.append("state != 'error'")
+    return clauses, params
+
+
+def _fallback_match(
+    meta: CatalogObjectMeta,
+    *,
+    modality: str | None,
+    state: str | None,
+    tag: str | None,
+    prefix: str | None,
+) -> bool:
+    """Structured-filter re-check for the recency-window search fallback."""
+    if modality and meta.detected_modality != modality:
+        return False
+    if state and meta.state.value != state:
+        return False
+    if tag and tag not in meta.tags:
+        return False
+    if prefix:
+        normalized = prefix if prefix.endswith("/") else f"{prefix}/"
+        return meta.s3_key.startswith(normalized)
+    return True
 
 
 class CatalogMetaStore:
@@ -214,23 +269,14 @@ class CatalogMetaStore:
         for recency-biased sampling (e.g. search fallback); leave it ``None``
         for callers that need the full authoritative artifact set.
         """
-        normalized_prefix = prefix or f"{project_id}/"
-        if not normalized_prefix.endswith("/"):
-            normalized_prefix = f"{normalized_prefix}/"
-
-        clauses = [
-            "(project_id = %s OR s3_key LIKE %s)",
-        ]
-        params: list[Any] = [project_id, f"{_like_literal(project_id)}/%"]
-
-        if prefix is not None:
-            clauses.append("s3_key LIKE %s")
-            params.append(f"{_like_literal(normalized_prefix)}%")
-
-        if not include_pending:
-            clauses.append("state != 'pending'")
-        if not include_error:
-            clauses.append("state != 'error'")
+        normalized_prefix = _normalized_prefix(project_id, prefix)
+        clauses, params = _list_where(
+            project_id,
+            prefix=prefix,
+            normalized_prefix=normalized_prefix,
+            include_pending=include_pending,
+            include_error=include_error,
+        )
 
         limit_sql = ""
         if limit is not None:
@@ -250,15 +296,10 @@ class CatalogMetaStore:
             )
             rows = cur.fetchall()
 
-        metas: list[CatalogObjectMeta] = []
-        for row in rows:
-            meta = _row_to_meta(row)
-            if not allowed(meta, project_id):
-                continue
-            if prefix is not None and not meta.s3_key.startswith(normalized_prefix):
-                continue
-            metas.append(meta)
-        return metas
+        metas = [meta for meta in map(_row_to_meta, rows) if allowed(meta, project_id)]
+        if prefix is None:
+            return metas
+        return [meta for meta in metas if meta.s3_key.startswith(normalized_prefix)]
 
     def search(
         self,
@@ -276,9 +317,11 @@ class CatalogMetaStore:
 
         # ADR-050: visibility families — project rows + system rows visible,
         # ambient rows read-gated (kept, never served to regular callers).
+        # Column added to catalog_objects by migration 0093 (R-02); predicate
+        # rendered by knowledge.access_scope.visibility_predicate, ownership
+        # half kept as the catalog's own (project_id OR s3_key prefix) rule.
         clauses = [
-            "((project_id = %s OR s3_key LIKE %s) OR visibility = 'system')",
-            "visibility != 'ambient'",
+            visibility_predicate(owned_sql="(project_id = %s OR s3_key LIKE %s)"),
             "state != 'error'",
         ]
         params: list[Any] = [project_id, f"{_like_literal(project_id)}/%"]
@@ -330,7 +373,9 @@ class CatalogMetaStore:
         hits: list[CatalogHit] = []
         for row in rows:
             meta = _row_to_meta(row)
-            if not allowed(meta, project_id):
+            # System-tier rows are visible to every caller (ADR-050); the
+            # project ACL re-check applies to the project tier only.
+            if row.get("visibility") != VISIBILITY_SYSTEM and not allowed(meta, project_id):
                 continue
             if tokens:
                 score = score_meta(meta, tokens, query=query)
@@ -384,16 +429,8 @@ class CatalogMetaStore:
         )
         hits: list[CatalogHit] = []
         for meta in metas:
-            if modality and meta.detected_modality != modality:
+            if not _fallback_match(meta, modality=modality, state=state, tag=tag, prefix=prefix):
                 continue
-            if state and meta.state.value != state:
-                continue
-            if tag and tag not in meta.tags:
-                continue
-            if prefix:
-                normalized = prefix if prefix.endswith("/") else f"{prefix}/"
-                if not meta.s3_key.startswith(normalized):
-                    continue
             score = score_meta(meta, tokens, query=query)
             if score <= 0:
                 continue

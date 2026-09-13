@@ -46,9 +46,11 @@ def summarize_reconcile_snapshot(project_id: str, *, db_url: str = "") -> dict[s
     try:
         import psycopg2  # noqa: PLC0415 - runtime dep, resolved server-side
 
+        from umrs.shared.pg_settings import pg_connect_kwargs
+
         from .plane_reconciler import scan_project
 
-        conn = psycopg2.connect(dsn)
+        conn = psycopg2.connect(dsn, **pg_connect_kwargs("reconcile-snapshot"))
         try:
             report = scan_project(_OneConnPool(conn), project_id)
         finally:

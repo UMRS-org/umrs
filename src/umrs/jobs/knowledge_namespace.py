@@ -128,7 +128,9 @@ class KnowledgeNamespaceStore:
         return self._psycopg2 is not None and self._db_url is not None
 
     def _get_conn(self):
-        return self._psycopg2.connect(self._db_url)
+        from umrs.shared.pg_settings import pg_connect_kwargs
+
+        return self._psycopg2.connect(self._db_url, **pg_connect_kwargs("knowledge-namespace"))
 
     # =========================================================================
     # Namespace CRUD
@@ -349,34 +351,38 @@ class KnowledgeNamespaceStore:
     ) -> NamespaceVisibility | None:
         """Get the visibility policy for a job or workflow."""
         if self.db_enabled:
-            conn = self._get_conn()
-            try:
-                with conn.cursor() as cur:
-                    if job_id:
-                        cur.execute(
-                            "SELECT * FROM namespace_visibility_policies WHERE job_id = %s ORDER BY created_at DESC LIMIT 1",
-                            (job_id,),
-                        )
-                    elif workflow_name:
-                        cur.execute(
-                            "SELECT * FROM namespace_visibility_policies WHERE workflow_name = %s ORDER BY created_at DESC LIMIT 1",
-                            (workflow_name,),
-                        )
-                    else:
-                        return None
-                    row = cur.fetchone()
-                    if not row:
-                        return None
-                    return self._row_to_policy(cur, row)
-            finally:
-                conn.close()
-
+            return self._db_get_visibility_policy(job_id, workflow_name)
         for policy in self._policies.values():
             if job_id and policy.job_id == job_id:
                 return policy
             if workflow_name and policy.workflow_name == workflow_name:
                 return policy
         return None
+
+    def _db_get_visibility_policy(
+        self, job_id: str | None, workflow_name: str | None
+    ) -> NamespaceVisibility | None:
+        """Latest policy row keyed by job (preferred) or workflow name."""
+        if job_id:
+            column, key = "job_id", job_id
+        elif workflow_name:
+            column, key = "workflow_name", workflow_name
+        else:
+            return None
+        conn = self._get_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"SELECT * FROM namespace_visibility_policies WHERE {column} = %s "
+                    "ORDER BY created_at DESC LIMIT 1",
+                    (key,),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None
+                return self._row_to_policy(cur, row)
+        finally:
+            conn.close()
 
     def resolve_visible_namespaces(
         self,

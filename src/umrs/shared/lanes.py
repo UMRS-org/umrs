@@ -40,7 +40,8 @@ class SurfaceLane(str, Enum):
 # registry authority; umrs/tests/test_surface_characterization.py imports
 # it instead of carrying a second copy. Classified entries are pinned to
 # the S2/S3 record by tests/test_lane_registry.py — do not relane without
-# a wave-log entry.
+# a wave-log entry. 2026-09-13 (release lane decision, R-13): the S5
+# placement list is empty — every mounted family carries a lane.
 FAMILY_LANES: dict[str, SurfaceLane] = {
     # S2/S3-classified lanes
     "endpoints": SurfaceLane.STABLE,
@@ -62,33 +63,52 @@ FAMILY_LANES: dict[str, SurfaceLane] = {
     "secrets": SurfaceLane.INTERNAL,
     "skills": SurfaceLane.INTERNAL,
     "zmq": SurfaceLane.INTERNAL,
-    # Mounted, no lane decision recorded yet — S5's placement list.
-    "a2l": SurfaceLane.UNCLASSIFIED,
-    "artifacts": SurfaceLane.UNCLASSIFIED,
-    "assets": SurfaceLane.UNCLASSIFIED,
-    "catalog": SurfaceLane.UNCLASSIFIED,
-    "chat": SurfaceLane.UNCLASSIFIED,
-    "companion": SurfaceLane.UNCLASSIFIED,
-    "components": SurfaceLane.UNCLASSIFIED,
-    "egress": SurfaceLane.UNCLASSIFIED,
-    "evidence": SurfaceLane.UNCLASSIFIED,
-    "experiment-registry": SurfaceLane.UNCLASSIFIED,
-    "files": SurfaceLane.UNCLASSIFIED,
-    "jobs": SurfaceLane.UNCLASSIFIED,
-    "mcp": SurfaceLane.UNCLASSIFIED,
-    "pipelines": SurfaceLane.UNCLASSIFIED,
-    "provenance": SurfaceLane.UNCLASSIFIED,
-    "rag": SurfaceLane.UNCLASSIFIED,
-    "rag-profiles": SurfaceLane.UNCLASSIFIED,
-    "reflective-memory": SurfaceLane.UNCLASSIFIED,
-    "scientific-memory": SurfaceLane.UNCLASSIFIED,
-    "traces": SurfaceLane.UNCLASSIFIED,
-    "uploads": SurfaceLane.UNCLASSIFIED,
-    "usage": SurfaceLane.UNCLASSIFIED,
-    "verification": SurfaceLane.UNCLASSIFIED,
-    "vision": SurfaceLane.UNCLASSIFIED,
-    "web": SurfaceLane.UNCLASSIFIED,
-    "workflows": SurfaceLane.UNCLASSIFIED,
+    # ── Release lane decision, R-13 (2026-09-13) ──────────────────────────
+    # Wave log: every family mounted by the sidecar now carries a lane;
+    # UNCLASSIFIED is not a shippable lane (production-release-plan §3/§4
+    # R-13). Decision rule: the router module's docstring/routes decide;
+    # deviations from the maintainer's proposed list are justified inline.
+    #
+    # v1-stable — job/workflow/file/pipeline surfaces the r4 CLI and TUI
+    # drive daily (durable jobs U-731+, workflow registry, presign U-402+,
+    # pipeline definitions X-001).
+    "jobs": SurfaceLane.STABLE,
+    "workflows": SurfaceLane.STABLE,
+    "files": SurfaceLane.STABLE,
+    "pipelines": SurfaceLane.STABLE,
+    # v1beta — user-facing knowledge / agent / memory / evidence surfaces
+    # that are served but still evolving (ADR-012 chat, ADR-034 a2l ledger,
+    # ADR-036 companion, K1 satellites, MEM-* memory routes, vision proxy).
+    "mcp": SurfaceLane.BETA,
+    "rag": SurfaceLane.BETA,
+    "rag-profiles": SurfaceLane.BETA,
+    "uploads": SurfaceLane.BETA,
+    "companion": SurfaceLane.BETA,
+    "chat": SurfaceLane.BETA,
+    "catalog": SurfaceLane.BETA,
+    "artifacts": SurfaceLane.BETA,
+    "assets": SurfaceLane.BETA,
+    "provenance": SurfaceLane.BETA,
+    "traces": SurfaceLane.BETA,
+    "verification": SurfaceLane.BETA,
+    "evidence": SurfaceLane.BETA,
+    "experiment-registry": SurfaceLane.BETA,
+    "scientific-memory": SurfaceLane.BETA,
+    "reflective-memory": SurfaceLane.BETA,
+    "vision": SurfaceLane.BETA,
+    "a2l": SurfaceLane.BETA,
+    # Deviation (R-13): proposed internal; `r4 rag`/TUI read
+    # /gw/components/{kind} to build pipelines — user-facing, so v1beta.
+    "components": SurfaceLane.BETA,
+    # Deviation (R-13): proposed internal; `r4 usage` (r4/_cli/usage.py)
+    # reads /umrs/usage/* and /me is per-user — user-facing, so v1beta.
+    "usage": SurfaceLane.BETA,
+    # Deviation (R-13): proposed internal; r4-web + `r4 dashboard` consume
+    # /umrs/web/* and r4-web ships as a beta product surface (§3) — v1beta.
+    "web": SurfaceLane.BETA,
+    # internal — operator plane: egress audit sink written by the gateway,
+    # read by `r4 agent audit` (A-1204/A-1209); never a user API.
+    "egress": SurfaceLane.INTERNAL,
 }
 
 

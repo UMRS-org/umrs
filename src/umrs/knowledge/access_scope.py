@@ -136,3 +136,51 @@ def graph_writable(
         is_admin=caller.is_admin,
         anonymous=caller.anonymous,
     )
+
+
+# ── ADR-050 visibility families (read-lane tier gate) ───────────────────────
+#
+# One predicate, rendered from ONE place (2026-09-13, R-02 / ADR-050 wave 2):
+#
+#     ((<a>.project_id = %s OR <a>.visibility = 'system')
+#      AND <a>.visibility != 'ambient')
+#
+# project rows stay owner-only, system rows widen to every caller, ambient
+# rows are hidden from every regular read lane (kept, never deleted). The
+# ownership half is pluggable so lanes with a wider ownership clause (graph
+# selection, catalog s3_key prefix) keep it intact — the gate is additive.
+
+VISIBILITY_TIERS: tuple[str, ...] = ("project", "system", "ambient")
+VISIBILITY_PROJECT = "project"
+VISIBILITY_SYSTEM = "system"
+VISIBILITY_AMBIENT = "ambient"
+
+
+def visibility_predicate(
+    alias: str | None = None,
+    *,
+    owned_sql: str | None = None,
+    placeholder: str = "%s",
+) -> str:
+    """Render the ADR-050 family rule as one SQL boolean expression.
+
+    ``alias`` prefixes the column references (``n.project_id``); ``owned_sql``
+    replaces the default ownership half (``<a>.project_id = <placeholder>``)
+    when a lane owns rows by a wider clause; ``placeholder`` is ``%s`` for
+    psycopg2 and ``$n`` for asyncpg callers. The returned string binds
+    exactly one parameter (the caller's project id) unless ``owned_sql`` is
+    supplied, in which case it binds whatever ``owned_sql`` binds.
+    """
+    prefix = f"{alias}." if alias else ""
+    owned = owned_sql or f"{prefix}project_id = {placeholder}"
+    return (
+        f"(({owned} OR {prefix}visibility = '{VISIBILITY_SYSTEM}') "
+        f"AND {prefix}visibility != '{VISIBILITY_AMBIENT}')"
+    )
+
+
+def visibility_clause(
+    project_id: str | None, alias: str | None = None
+) -> tuple[str, list]:
+    """psycopg2 convenience: ``(predicate, [project_id])`` for the default rule."""
+    return visibility_predicate(alias), [project_id]

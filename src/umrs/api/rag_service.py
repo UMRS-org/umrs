@@ -1812,7 +1812,9 @@ def rag_stats(
         return stats
 
     try:
-        conn = psycopg2.connect(db_url)
+        from umrs.shared.pg_settings import pg_connect_kwargs
+
+        conn = psycopg2.connect(db_url, **pg_connect_kwargs("rag-stats"))
         cur = conn.cursor()
 
         # Total chunks

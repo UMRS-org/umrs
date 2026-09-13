@@ -17,6 +17,7 @@ from psycopg2 import sql
 from umrs.core.TaskCmdStatus import TaskStatus
 from umrs.server.config import get_db_config, get_umrs_server_db_name, get_umrs_server_db_user
 from umrs.shared.buckets import BucketsCfg
+from umrs.shared.pg_settings import pg_connect_kwargs
 from umrs.shared.sql_helpers import create_db_name, metadata_dict
 
 # Per-process cache of per-experience DataBase/connection-pool objects, keyed
@@ -354,6 +355,7 @@ def create_db_user(username):
         password=cfg["superuser_password"],
         host=cfg["host"],
         port=cfg["port"],
+        **pg_connect_kwargs("admin"),
     )
     conn.autocommit = True
 
@@ -374,6 +376,71 @@ def create_db_user(username):
     logger.info(f"==> User '{username}' created in DB")
     cur.close()
     conn.close()
+
+
+def _adopt_legacy_database(cur, db_name: str, legacy_db_name: str) -> bool:
+    """One-time rename of an un-namespaced legacy database onto ``db_name``.
+
+    Best-effort: on any failure the caller falls through and creates a fresh
+    database, leaving the legacy one untouched for manual migration.
+    Returns True when the legacy database was adopted.
+    """
+    cur.execute("SELECT 1 FROM pg_database WHERE datname = %s;", (legacy_db_name,))
+    if not cur.fetchone():
+        return False
+    try:
+        cur.execute(
+            sql.SQL("ALTER DATABASE {} RENAME TO {};").format(
+                sql.Identifier(legacy_db_name), sql.Identifier(db_name)
+            )
+        )
+    except Exception as e:
+        logger.warning(
+            f"\t\t-->  Could not migrate legacy database "
+            f"'{legacy_db_name}' -> '{db_name}': {e}. Creating a fresh "
+            f"database; legacy data left in place for manual migration."
+        )
+        return False
+    logger.info(f"\t\t-->  Migrated legacy database '{legacy_db_name}' -> '{db_name}'.")
+    return True
+
+
+def _create_database_if_missing(cur, db_name: str, db_user: str, exists) -> None:
+    """CREATE DATABASE unless it exists; a concurrent creator counts as success."""
+    if exists:
+        logger.info(f"\t\t-->  Database '{db_name}' already exists.")
+        return
+    # In concurrent startup/reload flows another process can create it
+    # between the existence SELECT and CREATE DATABASE.
+    try:
+        cur.execute(sql.SQL("CREATE DATABASE {} OWNER {};").format(
+            sql.Identifier(db_name), sql.Identifier(db_user)
+        ))
+        logger.info(f"\t\t-->  Database '{db_name}' created successfully.")
+    except (psycopg2.errors.DuplicateDatabase, psycopg2.errors.UniqueViolation):
+        logger.info(f"\t\t-->  Database '{db_name}' already exists (race detected).")
+
+
+def _enable_pgvector(cfg: dict, db_name: str) -> None:
+    """Always ensure the pgvector extension exists in the target DB."""
+    conn_new = psycopg2.connect(
+        dbname=db_name,
+        user=cfg["superuser"],
+        password=cfg["superuser_password"],
+        host=cfg["host"],
+        port=cfg["port"],
+        **pg_connect_kwargs("admin"),
+    )
+    conn_new.autocommit = True
+    cur_new = conn_new.cursor()
+    try:
+        cur_new.execute("CREATE EXTENSION IF NOT EXISTS vector;")
+        logger.info(f"\t\t-->  pgvector extension enabled in '{db_name}'.")
+    except Exception as e:
+        logger.info(f"\t\t-->  Error enabling pgvector extension in '{db_name}': {e}")
+    finally:
+        cur_new.close()
+        conn_new.close()
 
 
 def create_db(sql_username, xp_name, username=None):
@@ -405,6 +472,7 @@ def create_db(sql_username, xp_name, username=None):
         password=cfg["superuser_password"],
         host=cfg["host"],
         port=cfg["port"],
+        **pg_connect_kwargs("admin"),
     )
     conn.autocommit = True  # Enable auto-commit mode
     cur = conn.cursor()
@@ -415,65 +483,12 @@ def create_db(sql_username, xp_name, username=None):
 
     # One-time migration to per-user namespaced databases: if the new
     # (username-namespaced) database does not yet exist but a legacy
-    # un-namespaced database does, adopt it by renaming. Best-effort — on any
-    # failure we fall through and create a fresh database, leaving the legacy
-    # one untouched for manual migration.
+    # un-namespaced database does, adopt it by renaming (best-effort).
     if not exists and username and legacy_db_name != db_name:
-        cur.execute(
-            "SELECT 1 FROM pg_database WHERE datname = %s;", (legacy_db_name,)
-        )
-        if cur.fetchone():
-            try:
-                cur.execute(
-                    sql.SQL("ALTER DATABASE {} RENAME TO {};").format(
-                        sql.Identifier(legacy_db_name), sql.Identifier(db_name)
-                    )
-                )
-                logger.info(
-                    f"\t\t-->  Migrated legacy database '{legacy_db_name}' "
-                    f"-> '{db_name}'."
-                )
-                exists = True
-            except Exception as e:
-                logger.warning(
-                    f"\t\t-->  Could not migrate legacy database "
-                    f"'{legacy_db_name}' -> '{db_name}': {e}. Creating a fresh "
-                    f"database; legacy data left in place for manual migration."
-                )
+        exists = _adopt_legacy_database(cur, db_name, legacy_db_name)
 
-    if exists:
-        logger.info(f"\t\t-->  Database '{db_name}' already exists.")
-    else:
-        # Create the database if it does not exist.
-        # In concurrent startup/reload flows another process can create it
-        # between the SELECT above and CREATE DATABASE below.
-        try:
-            cur.execute(sql.SQL("CREATE DATABASE {} OWNER {};").format(
-                sql.Identifier(DB_NAME), sql.Identifier(DB_USER)
-            ))
-            logger.info(f"\t\t-->  Database '{db_name}' created successfully.")
-        except (psycopg2.errors.DuplicateDatabase, psycopg2.errors.UniqueViolation):
-            # Treat as success: DB was created by another concurrent path.
-            logger.info(f"\t\t-->  Database '{db_name}' already exists (race detected).")
-
-    # Always ensure pgvector extension exists in target DB.
-    conn_new = psycopg2.connect(
-        dbname=DB_NAME,
-        user=cfg["superuser"],
-        password=cfg["superuser_password"],
-        host=cfg["host"],
-        port=cfg["port"],
-    )
-    conn_new.autocommit = True
-    cur_new = conn_new.cursor()
-    try:
-        cur_new.execute("CREATE EXTENSION IF NOT EXISTS vector;")
-        logger.info(f"\t\t-->  pgvector extension enabled in '{db_name}'.")
-    except Exception as e:
-        logger.info(f"\t\t-->  Error enabling pgvector extension in '{db_name}': {e}")
-    finally:
-        cur_new.close()
-        conn_new.close()
+    _create_database_if_missing(cur, DB_NAME, DB_USER, exists)
+    _enable_pgvector(cfg, DB_NAME)
     # Clean up and then create a pool to the target DB as the application user
     cur.close()
     conn.close()
@@ -486,6 +501,7 @@ def create_db(sql_username, xp_name, username=None):
         password=DB_USER_PASSWORD,
         host=cfg["host"],
         port=cfg["port"],
+        **pg_connect_kwargs("experience-pool"),
     )
     data_base = DataBase(db_pool, db_name, sql_username)
     with _db_pool_cache_lock:
@@ -547,6 +563,7 @@ def create_umrs_server_db_user():
         password=DB_SUPERUSER_PASSWORD,
         host=DB_HOST,
         port=DB_PORT,
+        **pg_connect_kwargs("admin"),
     )
     conn.autocommit = True
     try:
@@ -579,6 +596,7 @@ def create_umrs_server_db_user():
             password=DB_SUPERUSER_PASSWORD,
             host=DB_HOST,
             port=DB_PORT,
+            **pg_connect_kwargs("admin"),
         ) as conn_umrs:
             conn_umrs.autocommit = True
             with conn_umrs.cursor() as cur:
@@ -613,6 +631,8 @@ def create_server_db_pool(pool_size: int = 10) -> pg_pool.ThreadedConnectionPool
     # threads can corrupt its internal free-list. ThreadedConnectionPool wraps
     # the same logic with a threading.Lock(), making it safe for multi-threaded
     # servers where UMRSTask is called from multiple futures/threads in parallel.
+    # R-14 session hygiene (application_name + idle-in-transaction reaper)
+    # comes from umrs.shared.pg_settings — one place for every pool.
     return pg_pool.ThreadedConnectionPool(
         minconn=1,
         maxconn=pool_size,
@@ -621,6 +641,7 @@ def create_server_db_pool(pool_size: int = 10) -> pg_pool.ThreadedConnectionPool
         password=DB_UMRS_SERVER_PASSWORD,
         host=DB_HOST,
         port=DB_PORT,
+        **pg_connect_kwargs("server-pool"),
     )
 
 
@@ -698,6 +719,7 @@ def maintain_pgvector_index(
         password=cfg["superuser_password"],
         host=cfg["host"],
         port=cfg["port"],
+        **pg_connect_kwargs("maintenance"),
     )
     try:
         ensure_pgvector_enabled(conn)

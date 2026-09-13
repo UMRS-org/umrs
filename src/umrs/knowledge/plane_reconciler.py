@@ -266,7 +266,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--show-samples", type=int, default=5)
     args = parser.parse_args(argv)
 
-    pool = pg_pool.ThreadedConnectionPool(minconn=1, maxconn=2, dsn=args.dsn)
+    from umrs.shared.pg_settings import pg_connect_kwargs
+
+    pool = pg_pool.ThreadedConnectionPool(
+        minconn=1, maxconn=2, dsn=args.dsn, **pg_connect_kwargs("plane-reconciler")
+    )
     try:
         report = scan_project(pool, args.project)
     finally:

@@ -46,6 +46,83 @@ def _handle_completion_command(argv: list[str]) -> int:
     return 0
 
 
+def _build_admin_migrate_parser():
+    import argparse
+    import os
+
+    parser = argparse.ArgumentParser(
+        prog="umrs-server admin migrate",
+        description=(
+            "Apply pending UMRS schema migrations (python -m umrs.migrations "
+            "wrapper). With --check, exit 0 when the chain is current and 1 "
+            "when migrations are pending (the pending list is printed)."
+        ),
+    )
+    parser.add_argument(
+        "--db-url",
+        default=os.environ.get("DATABASE_URL"),
+        help="PostgreSQL connection URL (default: $DATABASE_URL)",
+    )
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="Report pending migrations without applying; exit 1 if any",
+    )
+    parser.add_argument("--target", help="Apply up to this version only")
+    return parser
+
+
+def _open_migrate_connection(db_url: str):
+    """psycopg2 connection for the migrate verb (R-14 hygiene kwargs applied)."""
+    import psycopg2
+
+    from umrs.shared.pg_settings import pg_connect_kwargs
+
+    return psycopg2.connect(db_url, **pg_connect_kwargs("admin-migrate"))
+
+
+def _handle_admin_migrate(argv: list[str]) -> int:
+    """``umrs-server admin migrate [--check] [--db-url URL] [--target V]``.
+
+    Thin dispatch to :mod:`umrs.migrations`: ``--check`` maps to
+    ``get_pending_migrations`` (exit 0 = current, 1 = pending, list printed);
+    without it ``apply_migrations`` runs and the applied count is printed.
+    Connection failures and missing DSNs exit 2 with a one-line reason.
+    """
+    args = _build_admin_migrate_parser().parse_args(argv)
+    if not args.db_url:
+        print(
+            "umrs-server admin migrate: --db-url or DATABASE_URL required",
+            file=sys.stderr,
+        )
+        return 2
+
+    from umrs.migrations import (
+        apply_migrations,
+        get_current_version,
+        get_pending_migrations,
+    )
+
+    try:
+        conn = _open_migrate_connection(args.db_url)
+    except Exception as exc:  # noqa: BLE001 — operator-facing one-liner
+        print(f"umrs-server admin migrate: cannot connect: {exc}", file=sys.stderr)
+        return 2
+    try:
+        if args.check:
+            pending = get_pending_migrations(conn)
+            print(f"Current version: {get_current_version(conn) or '(none)'}")
+            print(f"Pending migrations: {len(pending)}")
+            for version, path in pending:
+                print(f"  - {version}: {path.name}")
+            return 1 if pending else 0
+        count = apply_migrations(conn, target_version=args.target)
+        print(f"Applied {count} migration(s)")
+        return 0
+    finally:
+        conn.close()
+
+
 def _build_completion_parser():
     import argparse
 
@@ -91,33 +168,50 @@ def _emit_completion_if_requested() -> bool:
     return True
 
 
+def _handle_admin(argv: list[str]) -> int:
+    """``umrs-server admin …`` without loading the full server module.
+
+    ``admin migrate [--check]`` is a thin dispatch to umrs.migrations (R-10
+    support item, 2026-09-13); every other verb goes to the admin CLI.
+    """
+    if argv and argv[0] == "migrate":
+        return _handle_admin_migrate(argv[1:])
+    from umrs.cli.admin import main as admin_main
+
+    return admin_main(argv)
+
+
+def _fast_path(argv: list[str]) -> int | None:
+    """Subcommands, help and rejections that must not load torch/transformers.
+
+    Returns an exit code when handled, None when the full server should start.
+    """
+    head = argv[0] if argv else ""
+    if head == "completion":
+        return _handle_completion_command(argv[1:])
+    if head == "admin":
+        return _handle_admin(argv[1:])
+    # Lightweight help when no daemon-class args are given.
+    if not argv or (len(argv) == 1 and head in ("-h", "--help")):
+        _print_toplevel_help()
+        return 0
+    # Reject unknown subcommands before loading heavy ML imports.
+    if not head.startswith("-"):
+        print(
+            f"umrs-server: unknown command '{head}'\nRun 'umrs-server -h' for usage.",
+            file=sys.stderr,
+        )
+        return 2
+    return None
+
+
 def main():
     if _emit_completion_if_requested():
         return 0
 
-    if len(sys.argv) > 1 and sys.argv[1] == "completion":
-        return _handle_completion_command(sys.argv[2:])
-
-    # Fast-path: route `umrs-server admin …` without loading the full
-    # server module (which pulls in torch/transformers/spacy/…).
-    if len(sys.argv) > 1 and sys.argv[1] == "admin":
-        from umrs.cli.admin import main as admin_main
-
-        return admin_main(sys.argv[2:])
-
-    # Fast-path: show lightweight help when no daemon-class args are given.
-    if len(sys.argv) == 1 or (len(sys.argv) == 2 and sys.argv[1] in ("-h", "--help")):
-        _print_toplevel_help()
-        return 0
-
-    # Reject unknown subcommands before loading heavy ML imports.
-    first = sys.argv[1]
-    if not first.startswith("-"):
-        print(
-            f"umrs-server: unknown command '{first}'\nRun 'umrs-server -h' for usage.",
-            file=sys.stderr,
-        )
-        return 2
+    handled = _fast_path(sys.argv[1:])
+    if handled is not None:
+        return handled
 
     # Full server start – heavy imports happen only here.
     from server_umrs import main as legacy_main
@@ -134,6 +228,8 @@ def _print_toplevel_help():
         "\n"
         "subcommands:\n"
         "  admin        Offline admin CLI (user/token/slurm management)\n"
+        "  admin migrate [--check]\n"
+        "               Apply pending schema migrations (--check: exit 1 if pending)\n"
         "  completion   Print shell completion setup\n"
         "\n"
         "server mode options:\n"

@@ -43,7 +43,9 @@ def backfill_catalog(
 ) -> dict[str, int]:
     """Backfill legacy sidecars into ``catalog_objects``."""
     s3_client = _build_s3_client()
-    db_pool = pool.SimpleConnectionPool(1, 4, db_url)
+    from umrs.shared.pg_settings import pg_connect_kwargs
+
+    db_pool = pool.SimpleConnectionPool(1, 4, db_url, **pg_connect_kwargs("catalog-backfill"))
     store = CatalogMetaStore(db_pool)
 
     stats = {"seen": 0, "upserted": 0, "skipped": 0, "errors": 0}
