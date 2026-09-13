@@ -57,6 +57,11 @@ class Ontology:
     # dependencies/citations/algorithms loops. Empty means base extraction
     # only (serialized-absence tolerant, same as transitive_relations).
     extraction_fields: tuple[tuple[str, str], ...] = ()
+    # G-P1-6 follow-up: (child, parent) pairs declaring the entity subtype
+    # lattice; queries at a parent type include descendants transitively.
+    # Members MUST reference declared entity_types — checked in from_dict /
+    # declared-types validation, never silently widened.
+    subtype_of: tuple[tuple[str, str], ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize for graph provenance / API payloads."""
@@ -72,18 +77,37 @@ class Ontology:
             out["extraction_fields"] = {
                 field: relation for field, relation in sorted(self.extraction_fields)
             }
+        if self.subtype_of:
+            out["subtype_of"] = {
+                child: parent for child, parent in sorted(self.subtype_of)
+            }
         return out
 
 
 def ontology_from_dict(raw: Mapping[str, Any]) -> Ontology:
     """Build an Ontology from a serialized mapping (strict shape)."""
+    transitive = raw.get("transitive_relations")
+    extraction = raw.get("extraction_fields") or {}
+    subtype = raw.get("subtype_of") or {}
     try:
-        transitive = raw.get("transitive_relations")
-        extraction = raw.get("extraction_fields") or {}
+        entity_types = frozenset(str(t) for t in raw["entity_types"])
+        subtype_pairs = (
+            tuple(sorted((str(c), str(p)) for c, p in subtype.items()))
+            if isinstance(subtype, Mapping)
+            else ()
+        )
+        unknown_subtype_members = sorted(
+            {member for pair in subtype_pairs for member in pair if member not in entity_types}
+        )
+        if unknown_subtype_members:
+            raise ValueError(
+                f"subtype_of references undeclared entity types "
+                f"{unknown_subtype_members} — declare them in entity_types first"
+            )
         return Ontology(
             ontology_id=str(raw["ontology_id"]),
             version=str(raw["version"]),
-            entity_types=frozenset(str(t) for t in raw["entity_types"]),
+            entity_types=entity_types,
             relation_types=frozenset(str(t) for t in raw["relation_types"]),
             description=str(raw.get("description", "")),
             transitive_relations=(
@@ -93,6 +117,7 @@ def ontology_from_dict(raw: Mapping[str, Any]) -> Ontology:
             extraction_fields=tuple(
                 sorted((str(field), str(relation)) for field, relation in extraction.items())
             ) if isinstance(extraction, Mapping) else (),
+            subtype_of=subtype_pairs,
         )
     except (KeyError, TypeError) as exc:
         raise ValueError(f"invalid serialized ontology: missing {exc}") from exc

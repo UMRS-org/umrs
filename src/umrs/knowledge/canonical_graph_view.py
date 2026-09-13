@@ -452,6 +452,15 @@ class CanonicalGraphView:
         return list(neighbors)
 
     def get_related(self, node_id: str, relation_type: RelationType) -> list[str]:
+        """Directly-linked ids, inverse-expanded (G-P1-6 follow-up).
+
+        Exact-name matches first (legacy semantics). For declared inverse
+        pairs (ANSWERED_BY/PRODUCED_BY/REFERENCED_BY/DESCRIBED_BY/
+        IMPLEMENTED_BY) the canonical rows are also scanned in the flipped
+        role: ask all n's `ANSWERED_BY` and you get exactly the sources
+        whose `answers` rows point at n. Sat collapsing families are not
+        expanded (block per Leg C's fail-closed decision).
+        """
         related: list[str] = []
         for edge in self.get_outgoing(node_id):
             if edge.relation_type == relation_type:
@@ -459,7 +468,38 @@ class CanonicalGraphView:
         for edge in self.get_incoming(node_id):
             if edge.relation_type == relation_type:
                 related.append(edge.source_id)
-        return related
+        forward_name = self._inverse_pair_forward(relation_type)
+        if forward_name is not None:
+            # sat-inverse columns read the canonical rows in the FLIPPED
+            # role: n `ANSWERED_BY` = sources of canonical rows into n.
+            for edge in self.get_incoming(node_id):
+                if edge.relation_type == forward_name:
+                    related.append(edge.source_id)
+        return self._dedupe_preserve(related)
+
+    @staticmethod
+    def _dedupe_preserve(ids: list[str]) -> list[str]:
+        seen: set[str] = set()
+        out: list[str] = []
+        for node in ids:
+            if node not in seen:
+                seen.add(node)
+                out.append(node)
+        return out
+
+    def _inverse_pair_forward(self, relation_type: RelationType) -> str | None:
+        """Canonical forward name when `relation_type` is a declared inverse
+        tail (ANSWERED_BY family), else None."""
+        from .ontology import canonical_relation, canonical_to_sat
+
+        requested_name = (
+            relation_type if isinstance(relation_type, str)
+            else getattr(relation_type, "name", str(relation_type))
+        )
+        canonical, inverse = canonical_relation(requested_name)
+        if not inverse:
+            return None
+        return canonical_to_sat(canonical, None)
 
     def find_path(
         self, source_id: str, target_id: str, max_depth: int = 5
@@ -610,22 +650,52 @@ class CanonicalGraphView:
                 frontier.append((nid, depth + 1))
         return sorted(seen.items(), key=lambda row: (row[1], row[0]))
 
+    def _subtype_descendants(self, parent_type: str) -> set[str]:
+        """{parent_type} ∪ all transitive subtype descendants (G-P1-6)."""
+        children = {c for c, p in self._ontology.subtype_of if p == parent_type}
+        seen = {parent_type} | children
+        frontier = list(children)
+        while frontier:
+            child = frontier.pop()
+            for c, p in self._ontology.subtype_of:
+                if p == child and c not in seen:
+                    seen.add(c)
+                    frontier.append(c)
+        return seen
+
     def query(
         self,
         *,
         node_type: str | None = None,
         relation_type: RelationType | None = None,
     ) -> list[KnowledgeNode]:
+        # G-P1-9: traversal results project through the bound ontology's
+        # entity vocabulary WHEN the graph carries a NON-default ontology —
+        # the default ontology's 7 CHECK-bucket types intentionally do not
+        # restrict sat semantic labels (paper/code/hypothesis/etc.), so
+        # default-bound views stay no-op (premise law of the whole suite).
+        from .ontology import DEFAULT_ONTOLOGY
+
+        def _projected(nodes):
+            if self._ontology.ontology_id == DEFAULT_ONTOLOGY.ontology_id:
+                return nodes
+            return [
+                n for n in nodes if n.node_type in self._ontology.entity_types
+            ]
+
         if node_type is not None:
-            return [n for n in self._nodes.values() if n.node_type == node_type]
+            # G-P1-6 subtype expansion: querying a parent includes its
+            # declared descendants transitively.
+            types = self._subtype_descendants(node_type)
+            return _projected([n for n in self._nodes.values() if n.node_type in types])
         if relation_type is not None:
             matching: set[str] = set()
             for edge in self._edges.values():
                 if edge.relation_type == relation_type:
                     matching.add(edge.source_id)
                     matching.add(edge.target_id)
-            return [self._nodes[nid] for nid in matching if nid in self._nodes]
-        return list(self._nodes.values())
+            return _projected([self._nodes[nid] for nid in matching if nid in self._nodes])
+        return _projected(list(self._nodes.values()))
 
 
 # ── row → view adapters ──────────────────────────────────────────────────
