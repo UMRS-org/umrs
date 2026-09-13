@@ -2,36 +2,30 @@
 
 from __future__ import annotations
 
-import importlib.util
-import sys
-from pathlib import Path
-
 import pytest
 
 from catalog_store_fake import FakeCatalogMetaStore
-
-_api_dir = Path(__file__).resolve().parents[1] / "src" / "umrs" / "api"
-_spec = importlib.util.spec_from_file_location(
-    "umrs.api.catalog_store",
-    _api_dir / "catalog_store.py",
+from umrs.api.catalog_store import (
+    CatalogStoreUnavailable,
+    get_catalog_meta_store,
+    get_optional_catalog_meta_store,
+    init_catalog_meta_store,
+    set_catalog_meta_store,
 )
-assert _spec and _spec.loader
-_catalog_store = importlib.util.module_from_spec(_spec)
-sys.modules["umrs.api.catalog_store"] = _catalog_store
-_spec.loader.exec_module(_catalog_store)
 
-CatalogStoreUnavailable = _catalog_store.CatalogStoreUnavailable
-get_catalog_meta_store = _catalog_store.get_catalog_meta_store
-get_optional_catalog_meta_store = _catalog_store.get_optional_catalog_meta_store
-init_catalog_meta_store = _catalog_store.init_catalog_meta_store
-set_catalog_meta_store = _catalog_store.set_catalog_meta_store
+# NOTE: real package import (2026-09-13 repair). This file previously loaded a
+# standalone module object into ``sys.modules['umrs.api.catalog_store']``,
+# which replaced the package for every later suite in the same process and
+# poisoned routes bound after it (catalog stats 503 in full-suite runs when
+# `tests/api/catalog...` imported the route through the shadow).
 
 
 @pytest.fixture(autouse=True)
 def _reset_catalog_store():
+    prior = get_optional_catalog_meta_store()
     set_catalog_meta_store(None)
     yield
-    set_catalog_meta_store(None)
+    set_catalog_meta_store(prior)
 
 
 def test_get_catalog_meta_store_raises_when_uninitialized():
