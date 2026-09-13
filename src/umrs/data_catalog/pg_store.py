@@ -274,8 +274,11 @@ class CatalogMetaStore:
         """Lexical search over catalog metadata with optional structured filters."""
         tokens = tokenize(query) if query.strip() else []
 
+        # ADR-050: visibility families — project rows + system rows visible,
+        # ambient rows read-gated (kept, never served to regular callers).
         clauses = [
-            "(project_id = %s OR s3_key LIKE %s)",
+            "((project_id = %s OR s3_key LIKE %s) OR visibility = 'system')",
+            "visibility != 'ambient'",
             "state != 'error'",
         ]
         params: list[Any] = [project_id, f"{_like_literal(project_id)}/%"]

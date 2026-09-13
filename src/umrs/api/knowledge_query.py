@@ -117,8 +117,10 @@ class _GraphSearchBackend:
                     cur.execute(
                         "SELECT node_id, project_id, label, node_type, content, graph_id "
                         "FROM knowledge_nodes "
-                        "WHERE (graph_id = ANY(%s) "
+                        "WHERE ((graph_id = ANY(%s) "
                         "   OR (graph_id = '' AND project_id = ANY(%s))) "
+                        "   OR visibility = 'system') "
+                        "AND visibility != 'ambient' "
                         "AND (label ILIKE %s OR content::text ILIKE %s) "
                         "ORDER BY (label ILIKE %s) DESC, node_id LIMIT %s",
                         (graph_ids, default_projects, pattern, pattern, pattern, limit),
@@ -382,11 +384,16 @@ class _RAGSearchBackend:
         with self._pool.getconn() as conn:
             try:
                 with conn.cursor() as cur:
+                    # ADR-050: visibility families. Project rows + system rows
+                    # are visible; ambient rows are read-gated (kept, never
+                    # served to regular callers). `visibility` added by
+                    # migration 0092 with default 'project'.
                     cur.execute(
                         "SELECT n.node_id, n.label, n.node_type, n.content::text, "
                         "n.content_hash, n.updated_at "
                         "FROM knowledge_nodes n "
-                        "WHERE n.project_id = %s "
+                        "WHERE (n.project_id = %s OR n.visibility = 'system') "
+                        "AND n.visibility != 'ambient' "
                         "AND (n.label ILIKE %s OR n.node_type ILIKE %s "
                         "OR n.content::text ILIKE %s) "
                         "ORDER BY n.updated_at DESC LIMIT %s",
