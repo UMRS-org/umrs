@@ -282,3 +282,43 @@ class TestProposalApi:
         )
         assert resp.status_code == 200
         assert resp.json()["status"] == "declined"
+
+
+class TestOntologyTraversalBlock:
+    def test_graph_detail_carries_resolved_default_ontology(self):
+        """B-part-2 (ADR-049): traversal detail exposes the resolved ontology."""
+        graph = _graph_row()
+        client, _ = _client([graph])
+        resp = client.get("/umrs/knowledge/graphs/g-abc")
+        assert resp.status_code == 200, resp.text
+        block = resp.json()["ontology"]
+        assert block["graph_id"] == "g-abc"
+        assert block["ontology"]["ontology_id"] == "r4-default"
+        assert "transitive_relations" in block["ontology"]
+
+    def test_graph_detail_carries_inline_registered_custom_ontology(self):
+        """Inline provenance graphs resolve to their custom ontology."""
+        from umrs.knowledge.ontology import Ontology
+
+        custom = Ontology(
+            ontology_id="lab-x", version="2",
+            entity_types=frozenset({"concept"}), relation_types=frozenset({"supports"}),
+        )
+        graph = _graph_row(
+            ontology_id="lab-x",
+            ontology_version="2",
+            provenance={"ontology": custom.to_dict()},
+        )
+        client, _ = _client([graph])
+        resp = client.get("/umrs/knowledge/graphs/g-abc")
+        assert resp.status_code == 200, resp.text
+        block = resp.json()["ontology"]
+        assert block["ontology"]["ontology_id"] == "lab-x"
+
+    def test_graph_detail_unknown_reference_named_not_smudged(self):
+        graph = _graph_row(ontology_id="ghost-o", ontology_version="1")
+        client, _ = _client([graph])
+        resp = client.get("/umrs/knowledge/graphs/g-abc")
+        assert resp.status_code == 200, resp.text
+        block = resp.json()["ontology"]
+        assert "ontology_error" in block

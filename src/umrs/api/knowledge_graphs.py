@@ -25,7 +25,6 @@ from umrs.knowledge.access_scope import (
     CallerScope,
     graph_readable,
     graph_writable,
-    project_writable,
 )
 from umrs.knowledge.graph_registry import GRAPH_STATUSES, GraphRegistryStore
 
@@ -164,7 +163,27 @@ async def get_graph(graph_id: str, request: Request) -> dict[str, Any]:
         caller=scope,
     ):
         raise_typed(PlatformError.knowledgegraphs("not_found", f"Graph {graph_id} not found"))
-    return graph.to_dict()
+    payload = graph.to_dict()
+    # ADR-049 B-part-2: traversal surfaces carry the resolved ontology
+    # (registry-first); unresolvable references named, never smudged.
+    payload["ontology"] = _resolved_ontology_block(request, payload)
+    return payload
+
+
+def _resolved_ontology_block(request: Request, meta: dict[str, Any]) -> dict[str, Any]:
+    """Registry-first ontology block for one graph meta (ADR-049 B-part-2).
+
+    Shares the knowledge-query payload shape
+    ({graph_id, ontology} | {graph_id, ontology_error}) so consumers have
+    ONE language across query and traversal surfaces.
+    """
+    from .knowledge_query import _ontology_blocks_for
+
+    pool = getattr(request.app.state, "umrs_db_pool", None)
+    blocks = _ontology_blocks_for([meta], pool)
+    if blocks:
+        return blocks[0]
+    return {"graph_id": meta.get("graph_id", "?"), "ontology_error": "unresolved"}
 
 
 @router.get("/{graph_id}/content")

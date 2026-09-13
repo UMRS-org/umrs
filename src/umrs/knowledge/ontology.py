@@ -52,10 +52,15 @@ class Ontology:
     # ontology's own default (here: depends_on only, the dependency
     # relation whose closure scientists actually ask for).
     transitive_relations: frozenset[str] = frozenset({"depends_on"})
+    # ADR-049 Leg D: (extracted-content key, canonical relation) pairs the
+    # graph sink additionally EMITS edges for, on top of the base
+    # dependencies/citations/algorithms loops. Empty means base extraction
+    # only (serialized-absence tolerant, same as transitive_relations).
+    extraction_fields: tuple[tuple[str, str], ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize for graph provenance / API payloads."""
-        return {
+        out = {
             "ontology_id": self.ontology_id,
             "version": self.version,
             "entity_types": sorted(self.entity_types),
@@ -63,12 +68,18 @@ class Ontology:
             "transitive_relations": sorted(self.transitive_relations),
             "description": self.description,
         }
+        if self.extraction_fields:
+            out["extraction_fields"] = {
+                field: relation for field, relation in sorted(self.extraction_fields)
+            }
+        return out
 
 
 def ontology_from_dict(raw: Mapping[str, Any]) -> Ontology:
     """Build an Ontology from a serialized mapping (strict shape)."""
     try:
         transitive = raw.get("transitive_relations")
+        extraction = raw.get("extraction_fields") or {}
         return Ontology(
             ontology_id=str(raw["ontology_id"]),
             version=str(raw["version"]),
@@ -79,6 +90,9 @@ def ontology_from_dict(raw: Mapping[str, Any]) -> Ontology:
                 frozenset(str(t) for t in transitive) if transitive is not None
                 else frozenset({"depends_on"})
             ),
+            extraction_fields=tuple(
+                sorted((str(field), str(relation)) for field, relation in extraction.items())
+            ) if isinstance(extraction, Mapping) else (),
         )
     except (KeyError, TypeError) as exc:
         raise ValueError(f"invalid serialized ontology: missing {exc}") from exc
