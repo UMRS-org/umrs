@@ -509,6 +509,103 @@ class KnowledgeStore:
             )
             return [KnowledgeNode(**dict(r)) for r in rows]
 
+    async def walk_closure(
+        self,
+        project_id: str,
+        graph_id: str,
+        start_node_id: str,
+        relation_type: str,
+        direction: str = "outgoing",
+        max_depth: int = 64,
+    ) -> list[KnowledgeEdge]:
+        """Transitive closure over ONE canonical relation (ADR-049 Leg C).
+
+        Recursive CTE with a bind-arg depth guard and a path-membership
+        cycle guard — termination is a property of the SQL, never of
+        traversal luck. Result rows are the traversed edges (source/target
+        carry canonical ids; ``content['walk_depth']`` records the depth of
+        the target hop), ordered deterministic (depth, edge_id).
+
+        The caller is the canonical view (worker-routed pool); this method
+        is never combinable with the sat-collapse names (SUPPORTS /
+        CONTRADICTS family) — the view fails those closed upstream.
+        """
+        if direction not in ("outgoing", "incoming"):
+            raise ValueError(f"direction must be outgoing|incoming, got {direction!r}")
+        max_depth = max(1, min(int(max_depth), 512))
+        is_default = graph_id == default_graph_id(project_id)
+        graph_clause = " AND (graph_id = $5 OR (graph_id = '' AND $6))"
+        if direction == "outgoing":
+            sql = f"""
+                WITH RECURSIVE walk AS (
+                  SELECT e.target_id AS node_id, e.edge_id, 1 AS depth,
+                         ARRAY[$3::text, e.target_id]::text[] AS path
+                  FROM knowledge_edges e
+                  WHERE e.project_id = $1 AND e.source_id = $3
+                    AND e.relation_type = $4{graph_clause}
+                  UNION
+                  SELECT e.target_id, e.edge_id, w.depth + 1, w.path || e.target_id
+                  FROM knowledge_edges e
+                  JOIN walk w ON e.source_id = w.node_id
+                  WHERE e.project_id = $1 AND e.relation_type = $4{graph_clause}
+                    AND w.depth < $2
+                    AND NOT (e.target_id = ANY(w.path))
+                ),
+                dedup AS (
+                  SELECT edge_id, MIN(depth) AS depth
+                  FROM walk
+                  GROUP BY edge_id
+                )
+                SELECT d.depth, e2.edge_id, e2.project_id, e2.source_id,
+                       e2.target_id, e2.relation_type, e2.content,
+                       e2.created_at, e2.graph_id
+                FROM dedup d
+                JOIN knowledge_edges e2 ON e2.edge_id = d.edge_id
+                ORDER BY d.depth, e2.edge_id
+            """
+        else:
+            sql = f"""
+                WITH RECURSIVE walk AS (
+                  SELECT e.source_id AS node_id, e.edge_id, 1 AS depth,
+                         ARRAY[$3::text, e.source_id]::text[] AS path
+                  FROM knowledge_edges e
+                  WHERE e.project_id = $1 AND e.target_id = $3
+                    AND e.relation_type = $4{graph_clause}
+                  UNION
+                  SELECT e.source_id, e.edge_id, w.depth + 1, w.path || e.source_id
+                  FROM knowledge_edges e
+                  JOIN walk w ON e.target_id = w.node_id
+                  WHERE e.project_id = $1 AND e.relation_type = $4{graph_clause}
+                    AND w.depth < $2
+                    AND NOT (e.source_id = ANY(w.path))
+                ),
+                dedup AS (
+                  SELECT edge_id, MIN(depth) AS depth
+                  FROM walk
+                  GROUP BY edge_id
+                )
+                SELECT d.depth, e2.edge_id, e2.project_id, e2.source_id,
+                       e2.target_id, e2.relation_type, e2.content,
+                       e2.created_at, e2.graph_id
+                FROM dedup d
+                JOIN knowledge_edges e2 ON e2.edge_id = d.edge_id
+                ORDER BY d.depth, e2.edge_id
+            """
+        params: list[Any] = [
+            project_id, max_depth, start_node_id, relation_type, graph_id, is_default
+        ]
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(sql, *params)
+        edges = []
+        for row in rows:
+            payload = dict(row)
+            depth = payload.pop("depth")
+            content = dict(payload.get("content") or {})
+            content["walk_depth"] = depth
+            payload["content"] = content
+            edges.append(KnowledgeEdge(**payload))
+        return edges
+
     async def list_edges(
         self,
         project_id: str,

@@ -47,6 +47,11 @@ class Ontology:
     entity_types: frozenset[str]
     relation_types: frozenset[str]
     description: str = ""
+    # ADR-049 Leg C: relations the closure inference legs MAY traverse.
+    # Additive in v1 — absent from serialized payloads means the declaring
+    # ontology's own default (here: depends_on only, the dependency
+    # relation whose closure scientists actually ask for).
+    transitive_relations: frozenset[str] = frozenset({"depends_on"})
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize for graph provenance / API payloads."""
@@ -55,6 +60,7 @@ class Ontology:
             "version": self.version,
             "entity_types": sorted(self.entity_types),
             "relation_types": sorted(self.relation_types),
+            "transitive_relations": sorted(self.transitive_relations),
             "description": self.description,
         }
 
@@ -62,12 +68,17 @@ class Ontology:
 def ontology_from_dict(raw: Mapping[str, Any]) -> Ontology:
     """Build an Ontology from a serialized mapping (strict shape)."""
     try:
+        transitive = raw.get("transitive_relations")
         return Ontology(
             ontology_id=str(raw["ontology_id"]),
             version=str(raw["version"]),
             entity_types=frozenset(str(t) for t in raw["entity_types"]),
             relation_types=frozenset(str(t) for t in raw["relation_types"]),
             description=str(raw.get("description", "")),
+            transitive_relations=(
+                frozenset(str(t) for t in transitive) if transitive is not None
+                else frozenset({"depends_on"})
+            ),
         )
     except (KeyError, TypeError) as exc:
         raise ValueError(f"invalid serialized ontology: missing {exc}") from exc
