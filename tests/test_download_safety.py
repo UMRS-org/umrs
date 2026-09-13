@@ -19,6 +19,22 @@ from umrs.jobs.download_safety import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _isolate_cancel_bus():
+    """The cancel bus is a process-global listener list; backend constructors
+    self-register listeners that outlive their test. Snapshot/restore so a
+    broadcast inside one test never notifies another test's listeners."""
+    from umrs.jobs import download_safety as ds
+
+    snapshot = list(ds._listeners)
+    ds._listeners.clear()
+    try:
+        yield
+    finally:
+        ds._listeners.clear()
+        ds._listeners.extend(snapshot)
+
+
 class TestMountParsing:
     def test_overlay_refused_before_first_byte(self, tmp_path):
         with (
@@ -110,11 +126,18 @@ class TestCancelInterruptsDownload:
         async def napping():
             await asyncio.sleep(60)
 
-        handle = asyncio.get_event_loop().create_task(napping())
-        backend._handles["att-9"] = handle
-        assert backend.cancel_attempt("att-9") is True
-        assert "att-9" in backend._cancelled_attempts
-        assert backend.cancel_attempt("missing") is False
+        # get_event_loop() has no current-loop guarantee on the main thread
+        # once any earlier test closed it — own the loop explicitly.
+        loop = asyncio.new_event_loop()
+        try:
+            handle = loop.create_task(napping())
+            backend._handles["att-9"] = handle
+            assert backend.cancel_attempt("att-9") is True
+            assert "att-9" in backend._cancelled_attempts
+            assert backend.cancel_attempt("missing") is False
+        finally:
+            handle.cancel()
+            loop.close()
 
     def test_callback_guard_raises_mid_loop(self):
         from umrs.jobs.download_safety import DownloadCancelledError

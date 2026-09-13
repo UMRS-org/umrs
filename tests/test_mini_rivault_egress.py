@@ -34,6 +34,15 @@ def test_mini_rivault_compose_services_use_egress_proxy_env():
 
     for service_name in MINI_RIVAULT_SERVICES:
         env = compose["services"][service_name]["environment"]
+        if service_name == "vllm":
+            # ADR-040 D5 / WP-01 r3b live finding: vLLM stays fully offline.
+            # Its proxy env is pinned EMPTY (the egress anchor would inject
+            # the guard proxy under the 'egress' profile and trip the
+            # container's offline assert) — the pin is the empty-string
+            # invariant, not the guard-interpolation one.
+            for key in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
+                assert env[key] == ""
+            continue
         assert env["HTTP_PROXY"].startswith("${RIVAULT_HTTP_PROXY")
         assert env["HTTPS_PROXY"].startswith("${RIVAULT_HTTPS_PROXY")
         assert env["http_proxy"].startswith("${RIVAULT_HTTP_PROXY")
