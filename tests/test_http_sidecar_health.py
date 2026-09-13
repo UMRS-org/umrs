@@ -10,12 +10,26 @@ from fastapi.testclient import TestClient
 
 @pytest.fixture
 def sidecar_app():
-    """Create a test instance of the HTTP sidecar app."""
-    with patch.dict("os.environ", {"GATEWAY_ENVIRONMENT": "test"}, clear=False):
-        from umrs.server.http_sidecar import _create_app
+    """Create a test instance of the HTTP sidecar app.
 
-        app = _create_app()
-    return app
+    'Degraded without DB' premises need the raw boot state: force the pool
+    builder off and park any job-service singleton a previous suite started
+    (the durable runtime is process-global; with a live localhost PG and a
+    started service the readiness plane is honestly READY, not degraded).
+    """
+    from umrs.jobs.service import get_job_service, set_job_service
+
+    prior_service = get_job_service()
+    set_job_service(None)
+    with (
+        patch.dict("os.environ", {"GATEWAY_ENVIRONMENT": "test"}, clear=False),
+        patch("umrs.server.http_sidecar._build_db_pool", lambda _app: None),
+    ):
+        from umrs.server import http_sidecar
+
+        app = http_sidecar._create_app()
+    yield app
+    set_job_service(prior_service)
 
 
 @pytest.fixture
