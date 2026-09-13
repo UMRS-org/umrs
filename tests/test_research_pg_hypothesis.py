@@ -133,11 +133,26 @@ def test_closed_loop_defaults_in_memory_without_db(monkeypatch):
     from umrs.knowledge.canonical_graph_view import CanonicalGraphView
     from umrs.scientific_memory import InMemoryScientificMemoryStore
 
-    monkeypatch.delenv("DB_HOST", raising=False)
-    monkeypatch.delenv("DATABASE_URL", raising=False)
-    monkeypatch.delenv("UMRS_SCIENTIFIC_MEMORY_STORE_BACKEND", raising=False)
-    monkeypatch.delenv("UMRS_KNOWLEDGE_GRAPH_STORE_BACKEND", raising=False)
-    monkeypatch.delenv("UMRS_HYPOTHESIS_LIFECYCLE_STORE_BACKEND", raising=False)
+    # Premise = "no knowledge DSN resolvable": the resolver falls back to the
+    # durable-jobs-pool component vars on hosts that carry them (CI self-hosted
+    # sets POSTGRES_*), so pin the whole input surface, not just DB_HOST.
+    for var in (
+        "DATABASE_URL",
+        "UMRS_DATA_CATALOG_DB",
+        "DB_HOST",
+        "DB_PORT",
+        "UMRS_JOBS_DB",
+        "POSTGRES_PORT",
+        "POSTGRES_DB",
+        "DB_SUPERUSER",
+        "DB_SUPERUSER_PASSWORD",
+        "POSTGRES_USER",
+        "POSTGRES_PASSWORD",
+        "UMRS_SCIENTIFIC_MEMORY_STORE_BACKEND",
+        "UMRS_KNOWLEDGE_GRAPH_STORE_BACKEND",
+        "UMRS_HYPOTHESIS_LIFECYCLE_STORE_BACKEND",
+    ):
+        monkeypatch.delenv(var, raising=False)
     loop = ClosedLoopLearning()
     assert isinstance(loop._memory, InMemoryScientificMemoryStore)
     assert isinstance(loop._graph, CanonicalGraphView)
