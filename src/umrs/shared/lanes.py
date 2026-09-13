@@ -54,7 +54,12 @@ FAMILY_LANES: dict[str, SurfaceLane] = {
     "research": SurfaceLane.BETA,
     # ADR-041 asset grants (WP-06) — user-facing v1beta, same lane as loops.
     "grants": SurfaceLane.BETA,
+    # R1 secrets wave (a5ad437a): user-managed sources + their grants ride
+    # the same /umrs/user-sources prefix — user-facing v1beta.
+    "user-sources": SurfaceLane.BETA,
     "ops": SurfaceLane.INTERNAL,
+    # R1 secrets wave: broker/lease machinery is ops-plane, never user-facing.
+    "secrets": SurfaceLane.INTERNAL,
     "skills": SurfaceLane.INTERNAL,
     "zmq": SurfaceLane.INTERNAL,
     # Mounted, no lane decision recorded yet — S5's placement list.

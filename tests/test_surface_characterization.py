@@ -35,11 +35,13 @@ DORMANT_FAMILIES: set[str] = {
     "context",
     "recovery",
     "replay",
-    "secrets",
     "tool-cache",
     "vectors",
     "workload-identity",
     "workflow-fork",
+    # "secrets" graduated to served + INTERNAL lane by the R1 secrets wave
+    # (a5ad437a, enveloped identity router-wide); user-sources source/grant
+    # routers mounted in the same wave (BETA lane).
 }
 
 # Paths not subject to family classification (sidecar probes, docs, static).
@@ -161,12 +163,16 @@ def test_lane_assignments_match_record(app):
         "models": "v1-stable",
         "llm": "v1-stable",
         "knowledge": "v1beta",
-        "knowledge-graph": "v1beta",
+        # ADR-026 wave C: knowledge-graph surface deleted; canonical multigraph
+        # routes under knowledge/graph(+/s).
         "k2": "v1beta",
         "loops": "v1beta",
         "research": "v1beta",
         "grants": "v1beta",
+        # R1 secrets wave (a5ad437a): user-sources BETA, secrets broker INTERNAL.
+        "user-sources": "v1beta",
         "ops": "internal",
+        "secrets": "internal",
         "skills": "internal",
         "zmq": "internal",
     }, "lane drift vs the S2/S3 record — classification moves belong in the wave log"
