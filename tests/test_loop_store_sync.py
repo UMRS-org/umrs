@@ -10,6 +10,8 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import patch
 
+import pytest
+
 from umrs.knowledge.loop import LoopPhase, LoopStatus, ResearchLoop
 from umrs.knowledge.loop_store import LoopStore
 
@@ -89,6 +91,21 @@ def test_memory_facade_unchanged() -> None:
 
 
 class TestDriverReregistration:
+    @pytest.fixture(autouse=True)
+    def _memory_loop_store(self):
+        """Premise store: memory, never whatever pool a prior suite booted
+        into the api-level global (self-hosted CI: PG sync pool legitimately
+        attached by the sidecar suites → psycopg strictness on fixture rows
+        + aborted-tx poisoning of every later test in the process)."""
+        from umrs.api import loop as loop_api
+
+        prior = loop_api._loop_store
+        loop_api._loop_store = LoopStore.memory()
+        try:
+            yield
+        finally:
+            loop_api._loop_store = prior
+
     def test_engine_loop_restores_driver(self) -> None:
         from umrs.api import loop as loop_api
 
