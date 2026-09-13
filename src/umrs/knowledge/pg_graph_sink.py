@@ -211,7 +211,7 @@ class PgGraphSink:
         for ir in irs:
             await self._upsert_node(store, ir, project_id, graph_id)
             nodes_written += 1
-            await self._upsert_edges(store, ir, project_id, graph_id)
+            await self._upsert_edges(store, ir, project_id, graph_id, ontology)
         return nodes_written
 
     async def _upsert_node(
@@ -253,8 +253,34 @@ class PgGraphSink:
         ir: KnowledgeIRRow,
         project_id: str,
         graph_id: str,
+        ontology: Ontology | None = None,
     ) -> None:
-        """Create and upsert edges from one IR's extracted knowledge."""
+        """Create and upsert edges from one IR's extracted knowledge.
+
+        ADR-049 Leg D: when the binding ontology declares
+        ``extraction_fields``, edges are also emitted additively for those
+        (content-key, canonical relation) pairs — the base
+        dependencies/citations/algorithms loops ride unchanged. Extension
+        relations must be self-consistent with the ontology's own
+        ``relation_types`` declaration or the compile fails LOUD here
+        (same check exists at the fail-fast stage in
+        :func:`_validate_against_ontology`).
+        """
+        await self._upsert_base_edges(store, ir, project_id, graph_id)
+        # ADR-049 Leg D: ontology-declared extension fields (additive on top
+        # of the base loops; self-consistency is enforced at the gate).
+        if ontology is None or not ontology.extraction_fields:
+            return
+        await self._upsert_extension_edges(store, ir, project_id, graph_id, ontology)
+
+    async def _upsert_base_edges(
+        self,
+        store: KnowledgeStore,
+        ir: KnowledgeIRRow,
+        project_id: str,
+        graph_id: str,
+    ) -> None:
+        """The three base extraction loops (dependencies/citations/implements)."""
         node_id = _node_id_from_ir(ir)
         content = ir.content or {}
         extracted = content.get("extracted", {}) or {}
@@ -298,6 +324,37 @@ class PgGraphSink:
             )
             await store.upsert_edge(edge)
 
+        # (base loops continue in _upsert_extension_edges helpers)
+
+    async def _upsert_extension_edges(
+        self,
+        store: KnowledgeStore,
+        ir: KnowledgeIRRow,
+        project_id: str,
+        graph_id: str,
+        ontology: Ontology,
+    ) -> None:
+        """Ontology-declared extension loops, additive on the base set."""
+        node_id = _node_id_from_ir(ir)
+        content = ir.content or {}
+        extracted = content.get("extracted", {}) or {}
+        base_fields = {field for field, _ in _EXTRACTION_RELATIONS}
+        for field, relation in ontology.extraction_fields:
+            if field in base_fields:
+                continue  # base loop owns this field (never double-emit)
+            for value in extracted.get(field, []) or []:
+                edge = KnowledgeEdge(
+                    edge_id=_ext_edge_id(ir, relation, value),
+                    project_id=project_id,
+                    source_id=node_id,
+                    target_id=_node_id_for_dep(value, ""),
+                    relation_type=relation,
+                    content={"dep_name": value, "ir_id": ir.ir_id,
+                             "extraction_field": field},
+                    graph_id=graph_id,
+                )
+                await store.upsert_edge(edge)
+
 
 # ── Ontology validation ─────────────────────────────────────────────────────
 
@@ -311,6 +368,19 @@ _EXTRACTION_RELATIONS: tuple[tuple[str, str], ...] = (
 
 def _validate_against_ontology(ontology: Ontology, irs: list[KnowledgeIRRow]) -> None:
     """Fail fast when the compiled payload violates the graph's ontology."""
+    # Leg D: self-consistency gate BEFORE truncation — a mis-declared
+    # extraction map must trip here, not at the edge loop after rows are cut.
+    inconsistent = [
+        (field, relation)
+        for field, relation in ontology.extraction_fields
+        if relation not in ontology.relation_types
+    ]
+    if inconsistent:
+        raise ValueError(
+            f"ontology '{ontology.ontology_id}' v{ontology.version} mis-declares "
+            f"extraction fields {inconsistent}: every extraction relation must "
+            "belong to its own relation_types declaration"
+        )
     node_types: list[str] = []
     relation_types: list[str] = []
     for ir in irs:
@@ -337,6 +407,11 @@ def _content_hash_for_node(ir: KnowledgeIR, node_type: str, label: str) -> str:
     """Content hash for node dedup (type + label + ir_id)."""
     seed = f"{ir.ir_id}:{node_type}:{label}"
     return hashlib.sha256(seed.encode("utf-8")).hexdigest()
+
+
+def _ext_edge_id(ir: KnowledgeIR, relation: str, value: str) -> str:
+    """Deterministic id for ontology-declared extension edges (ADR-049 Leg D)."""
+    return f"edge:{ir.ir_id}:{relation}:{value}"
 
 
 def _dep_edge_id(ir: KnowledgeIR, dep_name: str) -> str:
