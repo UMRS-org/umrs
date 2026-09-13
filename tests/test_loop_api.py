@@ -345,14 +345,24 @@ class TestHosting:
         assert engine_loop_runner.get(loop_id) is None  # the job backend drives it, not the route
 
     def test_no_runtime_falls_back_to_thread_hosting(self):
-        client = _make_app()
-        resp = client.post(
-            "/umrs/loops", json={"project_id": "proj-t", "research_goal": "thread me"}
-        )
-        assert resp.status_code == 201
-        meta = client.get(f"/umrs/loops/{resp.json()['loop_id']}").json()["metadata"]
-        assert meta["hosting"] == "thread"
-        assert meta["driver"] == "engine"
+        # Premise is "NO durable runtime" — park any process-global runtime a
+        # prior suite genuinely started (durable orchestration suites boot
+        # one successfully after the SESSION_GC import repair).
+        from umrs.server.durable_job_runtime import _set_runtime, get_runtime
+
+        prior_runtime = get_runtime()
+        _set_runtime(None)
+        try:
+            client = _make_app()
+            resp = client.post(
+                "/umrs/loops", json={"project_id": "proj-t", "research_goal": "thread me"}
+            )
+            assert resp.status_code == 201
+            meta = client.get(f"/umrs/loops/{resp.json()['loop_id']}").json()["metadata"]
+            assert meta["hosting"] == "thread"
+            assert meta["driver"] == "engine"
+        finally:
+            _set_runtime(prior_runtime)
 
     def test_submission_failure_falls_back_and_is_recorded(self):
         client = _make_app()
