@@ -36,6 +36,13 @@ from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
+
+def _pg_kwargs() -> dict:
+    """R-14 session hygiene kwargs for every per-call egress-audit connection."""
+    from umrs.shared.pg_settings import pg_connect_kwargs
+
+    return pg_connect_kwargs("egress-audit")
+
 router = APIRouter(prefix="/umrs/egress", tags=["egress-audit"])
 
 
@@ -84,6 +91,20 @@ class EgressAuditListResponse(BaseModel):
 _INMEMORY_LIMIT = int(os.getenv("UMRS_EGRESS_AUDIT_MEMORY_LIMIT", "10000"))
 
 
+def _record_matches(
+    record: EgressAuditRecord,
+    user_id: str | None,
+    project_id: str | None,
+    action: str | None,
+    since: datetime | None,
+) -> bool:
+    """In-memory filter: truthy equality filters + optional ``since`` lower bound."""
+    checks = ((user_id, record.user_id), (project_id, record.project_id), (action, record.action))
+    if any(want and have != want for want, have in checks):
+        return False
+    return not (since and record.created_at < since)
+
+
 class _EgressAuditStore:
     """Thread-safe egress audit sink with optional Postgres backend."""
 
@@ -115,7 +136,7 @@ class _EgressAuditStore:
             return False
         try:
             assert self._psycopg2 is not None and self._db_url is not None
-            with self._psycopg2.connect(self._db_url) as conn:
+            with self._psycopg2.connect(self._db_url, **_pg_kwargs()) as conn:
                 with conn.cursor() as cur:
                     cur.execute(
                         """
@@ -201,13 +222,7 @@ class _EgressAuditStore:
         items.reverse()  # newest first
         out: list[EgressAuditRecord] = []
         for r in items:
-            if user_id and r.user_id != user_id:
-                continue
-            if project_id and r.project_id != project_id:
-                continue
-            if action and r.action != action:
-                continue
-            if since and r.created_at < since:
+            if not _record_matches(r, user_id, project_id, action, since):
                 continue
             out.append(r)
             if len(out) >= limit:
@@ -248,7 +263,7 @@ class _EgressAuditStore:
             "ORDER BY created_at DESC LIMIT %s"
         )
         params.append(limit)
-        with self._psycopg2.connect(self._db_url) as conn, conn.cursor() as cur:
+        with self._psycopg2.connect(self._db_url, **_pg_kwargs()) as conn, conn.cursor() as cur:
             cur.execute(sql, params)
             rows = cur.fetchall()
         return [self._row_to_record(row) for row in rows]

@@ -55,8 +55,15 @@ def build_sync_pool_from_env(*, min_conn: int = 1, max_conn: int = 4) -> Any:
     """
     from psycopg2 import pool as pg_pool
 
+    from umrs.shared.pg_settings import pg_connect_kwargs
+
     dsn = os.environ.get("DATABASE_URL")
-    kwargs: dict[str, Any] = {"minconn": min_conn, "maxconn": max_conn}
+    # R-14 session hygiene: application_name + idle-in-transaction reaper.
+    kwargs: dict[str, Any] = {
+        "minconn": min_conn,
+        "maxconn": max_conn,
+        **pg_connect_kwargs("sync-pool"),
+    }
     if dsn:
         return pg_pool.ThreadedConnectionPool(dsn=dsn, **kwargs)
     return pg_pool.ThreadedConnectionPool(

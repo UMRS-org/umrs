@@ -25,6 +25,7 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, Query, Request
 
+from umrs.knowledge.access_scope import visibility_predicate
 from umrs.knowledge.graph_registry import GraphRegistryStore, KnowledgeGraphMeta
 from umrs.search_api import SearchScope, UnifiedSearch
 
@@ -111,16 +112,18 @@ class _GraphSearchBackend:
             if meta.graph_id in graph_ids
         ]
         pattern = f"%{query}%"
+        # ADR-050 tier gate rendered from the single predicate; ownership
+        # half is the graph selection (explicit graphs + legacy '' rows).
+        gate = visibility_predicate(
+            owned_sql="(graph_id = ANY(%s) OR (graph_id = '' AND project_id = ANY(%s)))"
+        )
         with self._pool.getconn() as conn:
             try:
                 with conn.cursor() as cur:
                     cur.execute(
                         "SELECT node_id, project_id, label, node_type, content, graph_id "
                         "FROM knowledge_nodes "
-                        "WHERE ((graph_id = ANY(%s) "
-                        "   OR (graph_id = '' AND project_id = ANY(%s))) "
-                        "   OR visibility = 'system') "
-                        "AND visibility != 'ambient' "
+                        f"WHERE {gate} "
                         "AND (label ILIKE %s OR content::text ILIKE %s) "
                         "ORDER BY (label ILIKE %s) DESC, node_id LIMIT %s",
                         (graph_ids, default_projects, pattern, pattern, pattern, limit),
@@ -244,6 +247,8 @@ class _EmbeddingsSearchBackend:
         if query_embedding:
             return self._similarity_hits(query_embedding, project_id=project_id, limit=limit)
         pattern = f"%{query}%"
+        # ADR-050 tier gate on the owning node (R-02 wave 2: this lane was
+        # previously ungated — project-only, ambient rows still served).
         with self._pool.getconn() as conn:
             try:
                 with conn.cursor() as cur:
@@ -252,7 +257,7 @@ class _EmbeddingsSearchBackend:
                         "n.label, n.project_id "
                         "FROM knowledge_node_embeddings e "
                         "JOIN knowledge_nodes n ON n.node_id = e.node_id "
-                        "WHERE n.project_id = %s "
+                        f"WHERE {visibility_predicate('n')} "
                         "AND (e.model_name ILIKE %s OR n.label ILIKE %s OR e.node_id ILIKE %s) "
                         "ORDER BY e.created_at DESC LIMIT %s",
                         (project_id, pattern, pattern, pattern, limit),
@@ -279,7 +284,7 @@ class _EmbeddingsSearchBackend:
                         "n.label, n.project_id, (e.embedding <=> %s::vector) AS distance "
                         "FROM knowledge_node_embeddings e "
                         "JOIN knowledge_nodes n ON n.node_id = e.node_id "
-                        "WHERE n.project_id = %s "
+                        f"WHERE {visibility_predicate('n')} "
                         "ORDER BY distance ASC LIMIT %s",
                         (qv, project_id, limit),
                     )
@@ -334,23 +339,32 @@ def _embeddings_backend_for(pool: Any) -> tuple[Optional[_EmbeddingsSearchBacken
     return _EmbeddingsSearchBackend(pool), None
 
 
-def _node_snippet(content_text: str, content_hash: str) -> str:
-    """Snippet for a corpus hit: first text-ish JSONB value, else a ref line.
-
-    Never fabricates content — when the parsed payload has no text field,
-    the hit keeps an honest pointer to the content hash.
-    """
+def _first_text_field(content_text: str) -> str | None:
+    """First non-empty text-ish value of a JSONB payload, or None."""
     try:
         import json as _json
 
         parsed = _json.loads(content_text) if content_text else {}
     except (ValueError, TypeError):
         parsed = {}
-    if isinstance(parsed, dict):
-        for key in ("text", "preview", "chunk", "excerpt", "summary"):
-            value = parsed.get(key)
-            if isinstance(value, str) and value.strip():
-                return value.strip()[:240]
+    if not isinstance(parsed, dict):
+        return None
+    for key in ("text", "preview", "chunk", "excerpt", "summary"):
+        value = parsed.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()[:240]
+    return None
+
+
+def _node_snippet(content_text: str, content_hash: str) -> str:
+    """Snippet for a corpus hit: first text-ish JSONB value, else a ref line.
+
+    Never fabricates content — when the parsed payload has no text field,
+    the hit keeps an honest pointer to the content hash.
+    """
+    text = _first_text_field(content_text)
+    if text:
+        return text
     if content_text and not content_text.startswith("{"):
         return content_text[:240]
     return f"(content ref: {content_hash[:16]}…)" if content_hash else "(no snippet)"
@@ -387,13 +401,13 @@ class _RAGSearchBackend:
                     # ADR-050: visibility families. Project rows + system rows
                     # are visible; ambient rows are read-gated (kept, never
                     # served to regular callers). `visibility` added by
-                    # migration 0092 with default 'project'.
+                    # migration 0092 with default 'project'; predicate rendered
+                    # by knowledge.access_scope.visibility_predicate (one place).
                     cur.execute(
                         "SELECT n.node_id, n.label, n.node_type, n.content::text, "
                         "n.content_hash, n.updated_at "
                         "FROM knowledge_nodes n "
-                        "WHERE (n.project_id = %s OR n.visibility = 'system') "
-                        "AND n.visibility != 'ambient' "
+                        f"WHERE {visibility_predicate('n')} "
                         "AND (n.label ILIKE %s OR n.node_type ILIKE %s "
                         "OR n.content::text ILIKE %s) "
                         "ORDER BY n.updated_at DESC LIMIT %s",

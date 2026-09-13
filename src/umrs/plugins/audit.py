@@ -18,6 +18,17 @@ from .models import PluginAuditEntry
 logger = logging.getLogger(__name__)
 
 
+def _audit_where(filters: tuple[tuple[str, Any], ...]) -> tuple[str, list[Any]]:
+    """``(where_clause, params)`` from ``(("column op", value), …)``; falsy values skipped."""
+    conditions: list[str] = []
+    params: list[Any] = []
+    for predicate, value in filters:
+        if value:
+            params.append(value)
+            conditions.append(f"{predicate} ${len(params)}")
+    return (" AND ".join(conditions) if conditions else "1=1"), params
+
+
 class PluginAuditLog:
     """
     Audit logger for plugin executions (X-106).
@@ -58,7 +69,11 @@ class PluginAuditLog:
             try:
                 import asyncpg
 
-                self._db_pool = await asyncpg.create_pool(self.db_url)
+                from umrs.shared.pg_settings import asyncpg_pool_kwargs
+
+                self._db_pool = await asyncpg.create_pool(
+                    self.db_url, **asyncpg_pool_kwargs("plugin-audit")
+                )
 
                 # Ensure table exists
                 async with self._db_pool.acquire() as conn:
@@ -195,42 +210,17 @@ class PluginAuditLog:
         if not pool:
             return []
 
-        # Build query
-        conditions = []
-        params = []
-        param_idx = 1
-
-        if plugin_id:
-            conditions.append(f"plugin_id = ${param_idx}")
-            params.append(plugin_id)
-            param_idx += 1
-
-        if user_id:
-            conditions.append(f"user_id = ${param_idx}")
-            params.append(user_id)
-            param_idx += 1
-
-        if project_id:
-            conditions.append(f"project_id = ${param_idx}")
-            params.append(project_id)
-            param_idx += 1
-
-        if event_type:
-            conditions.append(f"event_type = ${param_idx}")
-            params.append(event_type)
-            param_idx += 1
-
-        if since:
-            conditions.append(f"timestamp >= ${param_idx}")
-            params.append(since)
-            param_idx += 1
-
-        if until:
-            conditions.append(f"timestamp <= ${param_idx}")
-            params.append(until)
-            param_idx += 1
-
-        where_clause = " AND ".join(conditions) if conditions else "1=1"
+        # Build query ($n placeholders numbered in filter order)
+        where_clause, params = _audit_where(
+            (
+                ("plugin_id =", plugin_id),
+                ("user_id =", user_id),
+                ("project_id =", project_id),
+                ("event_type =", event_type),
+                ("timestamp >=", since),
+                ("timestamp <=", until),
+            )
+        )
 
         query = f"""
             SELECT plugin_id, event_type, timestamp, user_id, project_id, details

@@ -31,13 +31,45 @@ CLASSIFIED_FIXED: dict[str, SurfaceLane] = {
     "secrets": SurfaceLane.INTERNAL,
     "skills": SurfaceLane.INTERNAL,
     "zmq": SurfaceLane.INTERNAL,
+    # ── 2026-09-13 release lane decision (R-13) — wave log ─────────────────
+    # The 26 families of the S5 placement list received their lane from the
+    # router docstrings/routes (see umrs/shared/lanes.py comment block for
+    # the three inline-justified deviations: components/usage/web → v1beta).
+    "jobs": SurfaceLane.STABLE,
+    "workflows": SurfaceLane.STABLE,
+    "files": SurfaceLane.STABLE,
+    "pipelines": SurfaceLane.STABLE,
+    "mcp": SurfaceLane.BETA,
+    "rag": SurfaceLane.BETA,
+    "rag-profiles": SurfaceLane.BETA,
+    "uploads": SurfaceLane.BETA,
+    "companion": SurfaceLane.BETA,
+    "chat": SurfaceLane.BETA,
+    "catalog": SurfaceLane.BETA,
+    "artifacts": SurfaceLane.BETA,
+    "assets": SurfaceLane.BETA,
+    "provenance": SurfaceLane.BETA,
+    "traces": SurfaceLane.BETA,
+    "verification": SurfaceLane.BETA,
+    "evidence": SurfaceLane.BETA,
+    "experiment-registry": SurfaceLane.BETA,
+    "scientific-memory": SurfaceLane.BETA,
+    "reflective-memory": SurfaceLane.BETA,
+    "vision": SurfaceLane.BETA,
+    "a2l": SurfaceLane.BETA,
+    "components": SurfaceLane.BETA,
+    "usage": SurfaceLane.BETA,
+    "web": SurfaceLane.BETA,
+    "egress": SurfaceLane.INTERNAL,
 }
 
 # S5's placement list — families deliberately awaiting a lane decision.
 # +1 2026-09-02: "assets" (asset index read-model, Review F4 / ADR-035 wave)
 # (2026-09-13: R1 secrets wave lanes recorded — classified-only move, no
 # placement-list delta)
-UNCLASSIFIED_COUNT = 26
+# 2026-09-13 release lane decision (R-13): placement list emptied — 26 → 0.
+# UNCLASSIFIED is not a shippable lane; a new family must land WITH a lane.
+UNCLASSIFIED_COUNT = 0
 
 
 # ── registry integrity ──────────────────────────────────────────────────────
@@ -63,6 +95,14 @@ def test_unclassified_placement_list_size() -> None:
     assert len(unclassified) == UNCLASSIFIED_COUNT
 
 
+def test_no_family_ships_unclassified() -> None:
+    """R-13 (2026-09-13): UNCLASSIFIED is not a shippable lane for a mounted family."""
+    unclassified = sorted(
+        f for f, lane in lanes.FAMILY_LANES.items() if lane == SurfaceLane.UNCLASSIFIED
+    )
+    assert unclassified == [], f"families without a release lane: {unclassified}"
+
+
 # ── path semantics ──────────────────────────────────────────────────────────
 
 
@@ -74,7 +114,9 @@ def test_unclassified_placement_list_size() -> None:
         ("/umrs/knowledge/graphs", "knowledge", SurfaceLane.BETA),
         ("/umrs/research/sessions/sess-1", "research", SurfaceLane.BETA),
         ("/umrs/ops/ping", "ops", SurfaceLane.INTERNAL),
-        ("/umrs/companion/chat", "companion", SurfaceLane.UNCLASSIFIED),
+        ("/umrs/companion/chat", "companion", SurfaceLane.BETA),
+        ("/umrs/jobs/job-1", "jobs", SurfaceLane.STABLE),
+        ("/umrs/egress/audit", "egress", SurfaceLane.INTERNAL),
         ("/health", None, SurfaceLane.UNCLASSIFIED),
         ("/umrs", None, SurfaceLane.UNCLASSIFIED),
         ("/umrs/not-a-family", "not-a-family", SurfaceLane.UNCLASSIFIED),

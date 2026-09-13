@@ -115,7 +115,9 @@ def configure_loop_store_sync(dsn: str) -> bool:
     global _loop_store
     import psycopg2
 
-    conn = psycopg2.connect(dsn)
+    from umrs.shared.pg_settings import pg_connect_kwargs
+
+    conn = psycopg2.connect(dsn, **pg_connect_kwargs("loop-store"))
     incoming = LoopStore.sync_pg(conn)
     for live in _loop_store.list_all():
         try:
@@ -1028,6 +1030,19 @@ async def update_loop_state(
 ) -> LoopStatusResponse:
     """Driver calls `save()` after each iteration — mapped to the durable record."""
     loop = get_loop(loop_id)
+    _apply_loop_enums(loop, body)
+    _apply_loop_counters(loop, body)
+    if body.error is not None:
+        loop.metadata["error"] = body.error
+    if body.metadata:
+        loop.metadata.update(body.metadata)
+    loop.updated_at = datetime.now(timezone.utc).isoformat()
+    _loop_store.save(loop)
+    return await get_loop_status(loop_id)
+
+
+def _apply_loop_enums(loop: Any, body: LoopStateUpdateRequest) -> None:
+    """Validated status/phase transitions (422 on unknown enum values)."""
     if body.status is not None:
         try:
             loop.status = LoopStatus(body.status)
@@ -1044,27 +1059,25 @@ async def update_loop_state(
                 PlatformError.loops("unprocessable", f"invalid phase {body.phase!r}"),
                 cause=exc,
             )
+
+
+_LOOP_COUNTER_FIELDS = (
+    "total_hypotheses_tested",
+    "total_experiments_run",
+    "total_findings",
+    "success_rate",
+    "completed_at",
+)
+
+
+def _apply_loop_counters(loop: Any, body: LoopStateUpdateRequest) -> None:
+    """Copy the provided (non-None) progress fields; clamp current_iteration."""
     if body.current_iteration is not None:
-        loop.current_iteration = max(
-            0, min(loop.max_iterations, body.current_iteration)
-        )
-    if body.total_hypotheses_tested is not None:
-        loop.total_hypotheses_tested = body.total_hypotheses_tested
-    if body.total_experiments_run is not None:
-        loop.total_experiments_run = body.total_experiments_run
-    if body.total_findings is not None:
-        loop.total_findings = body.total_findings
-    if body.success_rate is not None:
-        loop.success_rate = body.success_rate
-    if body.completed_at is not None:
-        loop.completed_at = body.completed_at
-    if body.error is not None:
-        loop.metadata["error"] = body.error
-    if body.metadata:
-        loop.metadata.update(body.metadata)
-    loop.updated_at = datetime.now(timezone.utc).isoformat()
-    _loop_store.save(loop)
-    return await get_loop_status(loop_id)
+        loop.current_iteration = max(0, min(loop.max_iterations, body.current_iteration))
+    for name in _LOOP_COUNTER_FIELDS:
+        value = getattr(body, name)
+        if value is not None:
+            setattr(loop, name, value)
 
 
 @router.post(

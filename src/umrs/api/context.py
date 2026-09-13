@@ -35,6 +35,13 @@ from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from .typed_errors import PlatformError, raise_typed
 
+
+def _pg_kwargs() -> dict:
+    """R-14 session hygiene kwargs for every per-call context connection."""
+    from umrs.shared.pg_settings import pg_connect_kwargs
+
+    return pg_connect_kwargs("context")
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/umrs/context", tags=["context-storage"])
@@ -314,54 +321,9 @@ class _ContextStore:
             raise_typed(PlatformError.contextapi("not_found", "Conversation not found"))
 
         messages = self.get_messages(req.conversation_id, limit=req.max_tokens // 4)
-
-        summary: str | None = None
-        summary_tokens = 0
-        if req.include_summary:
-            summaries = self._get_summaries(req.conversation_id)
-            if summaries:
-                summary = summaries[-1].get("content")
-                summary_tokens = summaries[-1].get("token_count", 0)
-
-        memory_items: list[dict[str, Any]] = []
-        memory_tokens = 0
-        if req.include_memory and req.memory_query:
-            mem_results = self.search_memory(
-                MemorySearchRequest(
-                    user_id=conv.user_id,
-                    project_id=conv.project_id,
-                    query=req.memory_query,
-                    limit=req.memory_limit,
-                )
-            )
-            memory_items = [
-                {"content": m.content, "importance": m.importance}
-                for m in mem_results.items
-            ]
-            # Estimate ~4 chars per token for memory items
-            memory_tokens = sum(len(m["content"]) // 4 for m in memory_items)
-
-        # RAG retrieval (keyword search over memory items with different query)
-        retrieval_context: list[dict[str, Any]] = []
-        rag_tokens = 0
-        if req.include_rag and req.rag_query:
-            rag_results = self.search_memory(
-                MemorySearchRequest(
-                    user_id=conv.user_id,
-                    project_id=req.rag_namespace_id or conv.project_id,
-                    query=req.rag_query,
-                    limit=req.rag_limit,
-                )
-            )
-            retrieval_context = [
-                {
-                    "content": m.content,
-                    "source": m.source,
-                    "importance": m.importance,
-                }
-                for m in rag_results.items
-            ]
-            rag_tokens = sum(len(r["content"]) // 4 for r in retrieval_context)
+        summary, summary_tokens = self._pack_summary(req)
+        memory_items, memory_tokens = self._pack_memory(req, conv)
+        retrieval_context, rag_tokens = self._pack_rag(req, conv)
 
         message_tokens = sum(m.token_count for m in messages)
         total_tokens = message_tokens + summary_tokens + memory_tokens + rag_tokens
@@ -380,6 +342,48 @@ class _ContextStore:
                 "retrieval": rag_tokens,
             },
         )
+
+    def _pack_summary(self, req: ContextPackRequest) -> tuple[str | None, int]:
+        """Latest conversation summary + its token count (when requested)."""
+        if not req.include_summary:
+            return None, 0
+        summaries = self._get_summaries(req.conversation_id)
+        if not summaries:
+            return None, 0
+        return summaries[-1].get("content"), summaries[-1].get("token_count", 0)
+
+    def _pack_memory(self, req: ContextPackRequest, conv: Any) -> tuple[list[dict[str, Any]], int]:
+        """Memory items for the pack (~4 chars per token estimate)."""
+        if not (req.include_memory and req.memory_query):
+            return [], 0
+        mem_results = self.search_memory(
+            MemorySearchRequest(
+                user_id=conv.user_id,
+                project_id=conv.project_id,
+                query=req.memory_query,
+                limit=req.memory_limit,
+            )
+        )
+        items = [{"content": m.content, "importance": m.importance} for m in mem_results.items]
+        return items, sum(len(m["content"]) // 4 for m in items)
+
+    def _pack_rag(self, req: ContextPackRequest, conv: Any) -> tuple[list[dict[str, Any]], int]:
+        """RAG retrieval: keyword search over memory items with a different query."""
+        if not (req.include_rag and req.rag_query):
+            return [], 0
+        rag_results = self.search_memory(
+            MemorySearchRequest(
+                user_id=conv.user_id,
+                project_id=req.rag_namespace_id or conv.project_id,
+                query=req.rag_query,
+                limit=req.rag_limit,
+            )
+        )
+        items = [
+            {"content": m.content, "source": m.source, "importance": m.importance}
+            for m in rag_results.items
+        ]
+        return items, sum(len(r["content"]) // 4 for r in items)
 
     def _get_summaries(self, conversation_id: str) -> list[dict]:
         if self.db_enabled:
@@ -446,7 +450,7 @@ class _ContextStore:
         self, conv_id: str, req: ConversationCreate, now: str
     ) -> ConversationResponse:
         assert self._psycopg2 and self._db_url
-        with self._psycopg2.connect(self._db_url) as conn:
+        with self._psycopg2.connect(self._db_url, **_pg_kwargs()) as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
@@ -485,7 +489,7 @@ class _ContextStore:
 
     def _db_get_conversation(self, conversation_id: str) -> ConversationResponse | None:
         assert self._psycopg2 and self._db_url
-        with self._psycopg2.connect(self._db_url) as conn:
+        with self._psycopg2.connect(self._db_url, **_pg_kwargs()) as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
@@ -518,7 +522,7 @@ class _ContextStore:
         self, user_id: str, limit: int
     ) -> list[ConversationResponse]:
         assert self._psycopg2 and self._db_url
-        with self._psycopg2.connect(self._db_url) as conn:
+        with self._psycopg2.connect(self._db_url, **_pg_kwargs()) as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
@@ -556,7 +560,7 @@ class _ContextStore:
         import json as _json
 
         results: list[MessageResponse] = []
-        with self._psycopg2.connect(self._db_url) as conn:
+        with self._psycopg2.connect(self._db_url, **_pg_kwargs()) as conn:
             with conn.cursor() as cur:
                 # Get next seq number
                 cur.execute(
@@ -622,7 +626,7 @@ class _ContextStore:
         self, conversation_id: str, limit: int, offset: int
     ) -> list[MessageResponse]:
         assert self._psycopg2 and self._db_url
-        with self._psycopg2.connect(self._db_url) as conn:
+        with self._psycopg2.connect(self._db_url, **_pg_kwargs()) as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
@@ -654,7 +658,7 @@ class _ContextStore:
 
     def _db_get_summaries(self, conversation_id: str) -> list[dict]:
         assert self._psycopg2 and self._db_url
-        with self._psycopg2.connect(self._db_url) as conn:
+        with self._psycopg2.connect(self._db_url, **_pg_kwargs()) as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
@@ -685,7 +689,7 @@ class _ContextStore:
         assert self._psycopg2 and self._db_url
         import json as _json
 
-        with self._psycopg2.connect(self._db_url) as conn:
+        with self._psycopg2.connect(self._db_url, **_pg_kwargs()) as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
@@ -723,7 +727,7 @@ class _ContextStore:
     def _db_search_memory(self, req: MemorySearchRequest) -> MemorySearchResponse:
         """Search memory using keyword matching (vector search requires embeddings)."""
         assert self._psycopg2 and self._db_url
-        with self._psycopg2.connect(self._db_url) as conn:
+        with self._psycopg2.connect(self._db_url, **_pg_kwargs()) as conn:
             with conn.cursor() as cur:
                 # Use trigram/keyword matching; full vector search requires
                 # embedding generation which is an async pipeline concern.

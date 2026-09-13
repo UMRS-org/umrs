@@ -993,9 +993,11 @@ def build_knowledge_pool(uri: str, **kwargs: Any) -> Any:
 
     import asyncpg  # type: ignore[import-untyped]
 
+    from umrs.shared.pg_settings import asyncpg_pool_kwargs
+
     global _pool
     _pool = asyncio.get_event_loop().run_until_complete(
-        asyncpg.create_pool(dsn=uri, **kwargs)
+        asyncpg.create_pool(dsn=uri, **asyncpg_pool_kwargs("knowledge-store", **kwargs))
     )
     return _pool
 

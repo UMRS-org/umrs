@@ -462,6 +462,8 @@ def build_durable_job_db_pool_from_env():
     # sslmode=disable: local container doesn't support SSL and the default
     # 'prefer' mode can fail during early startup with "error response during
     # SSL exchange".
+    from umrs.shared.pg_settings import pg_connect_kwargs
+
     admin_conn = psycopg2.connect(
         dbname="postgres",
         user=db_user,
@@ -469,6 +471,7 @@ def build_durable_job_db_pool_from_env():
         host=db_host,
         port=db_port,
         sslmode="disable",
+        **pg_connect_kwargs("admin"),
     )
     admin_conn.autocommit = True
     try:
@@ -482,6 +485,8 @@ def build_durable_job_db_pool_from_env():
     finally:
         admin_conn.close()
 
+    # R-14 session hygiene: application_name identifies this pool in
+    # pg_stat_activity; idle-in-transaction holders are reaped server-side.
     db_pool = pg_pool.ThreadedConnectionPool(
         minconn=1,
         maxconn=10,
@@ -491,6 +496,7 @@ def build_durable_job_db_pool_from_env():
         host=db_host,
         port=db_port,
         sslmode="disable",
+        **pg_connect_kwargs("durable-jobs"),
     )
     logger.info(
         "Durable jobs database pool ready (db=%s host=%s port=%s)",

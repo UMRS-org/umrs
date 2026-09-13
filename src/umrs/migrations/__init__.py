@@ -199,6 +199,21 @@ def apply_migration(cursor, version: str, sql_path: Path) -> bool:
     return True
 
 
+def _borrow_connection(db_pool) -> tuple:
+    """``(conn, return_to_pool)`` for a pool (``getconn``) or a bare connection."""
+    if hasattr(db_pool, "getconn"):
+        return db_pool.getconn(), True
+    return db_pool, False
+
+
+def _pending_up_to(applied: set, target_version: str | None) -> list[tuple[str, Path]]:
+    """Unapplied migration files, optionally capped at ``target_version``."""
+    pending = [(v, p) for v, p in get_migration_files() if v not in applied]
+    if target_version is None:
+        return pending
+    return [(v, p) for v, p in pending if v <= target_version]
+
+
 def apply_migrations(
     db_pool,
     target_version: str | None = None,
@@ -216,13 +231,7 @@ def apply_migrations(
     Returns:
         Number of migrations applied.
     """
-    # Get connection from pool or use directly
-    if hasattr(db_pool, "getconn"):
-        conn = db_pool.getconn()
-        return_to_pool = True
-    else:
-        conn = db_pool
-        return_to_pool = False
+    conn, return_to_pool = _borrow_connection(db_pool)
 
     try:
         with conn.cursor() as cursor:
@@ -238,16 +247,8 @@ def apply_migrations(
             ensure_migrations_table(cursor)
             conn.commit()
 
-            # Get applied migrations
-            applied = get_applied_migrations(cursor)
-
-            # Get pending migrations
-            all_migrations = get_migration_files()
-            pending = [
-                (v, p)
-                for v, p in all_migrations
-                if v not in applied and (target_version is None or v <= target_version)
-            ]
+            # Get applied + pending migrations
+            pending = _pending_up_to(get_applied_migrations(cursor), target_version)
 
             if not pending:
                 logger.info("No pending migrations")
@@ -369,7 +370,9 @@ if __name__ == "__main__":
         print("Error: --db-url or DATABASE_URL required")
         exit(1)
 
-    conn = psycopg2.connect(args.db_url)
+    from umrs.shared.pg_settings import pg_connect_kwargs
+
+    conn = psycopg2.connect(args.db_url, **pg_connect_kwargs("migrations"))
 
     if args.status:
         current = get_current_version(conn)

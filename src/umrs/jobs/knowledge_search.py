@@ -68,6 +68,41 @@ class KnowledgeSearchResult:
         }
 
 
+def _memory_candidates(
+    items: list[dict[str, Any]],
+    query_lower: str,
+    project_id: str | None,
+    namespaces: list[str] | None,
+) -> list[dict[str, Any]]:
+    """In-memory substring match, narrowed by project and namespace filters."""
+    candidates: list[dict[str, Any]] = []
+    for item in items:
+        if query_lower not in item.get("content", "").lower():
+            continue
+        if project_id and item.get("project_id") != project_id:
+            continue
+        if namespaces and item.get("namespace", "default") not in namespaces:
+            continue
+        candidates.append(item)
+    return candidates
+
+
+def _memory_hit(item: dict[str, Any]) -> KnowledgeSearchHit:
+    importance = float(item.get("importance", 0.5))
+    return KnowledgeSearchHit(
+        memory_id=item.get("memory_id", ""),
+        content=item.get("content", ""),
+        namespace=item.get("namespace", "default"),
+        project_id=item.get("project_id"),
+        source=item.get("source", ""),
+        score=importance,
+        document_source_uri=item.get("document_source_uri"),
+        document_source_type=item.get("document_source_type"),
+        importance=importance,
+        metadata=item.get("metadata") or {},
+    )
+
+
 class KnowledgeSearchEngine:
     """Searches memory_items across namespace partitions.
 
@@ -97,7 +132,9 @@ class KnowledgeSearchEngine:
         return self._psycopg2 is not None and self._db_url is not None
 
     def _get_conn(self):
-        return self._psycopg2.connect(self._db_url)
+        from umrs.shared.pg_settings import pg_connect_kwargs
+
+        return self._psycopg2.connect(self._db_url, **pg_connect_kwargs("knowledge-search"))
 
     def search(
         self,
@@ -217,42 +254,14 @@ class KnowledgeSearchEngine:
         namespaces: list[str] | None,
         limit: int,
     ) -> KnowledgeSearchResult:
-        query_lower = query.lower()
-        candidates = []
-
-        for item in self._items:
-            content = item.get("content", "")
-            if query_lower not in content.lower():
-                continue
-            if project_id and item.get("project_id") != project_id:
-                continue
-            if namespaces and item.get("namespace", "default") not in namespaces:
-                continue
-            candidates.append(item)
+        candidates = _memory_candidates(self._items, query.lower(), project_id, namespaces)
 
         # Score by importance
         candidates.sort(key=lambda x: x.get("importance", 0.5), reverse=True)
         candidates = candidates[:limit]
 
-        searched_ns = set()
-        hits = []
-        for item in candidates:
-            ns = item.get("namespace", "default")
-            searched_ns.add(ns)
-            hits.append(
-                KnowledgeSearchHit(
-                    memory_id=item.get("memory_id", ""),
-                    content=item.get("content", ""),
-                    namespace=ns,
-                    project_id=item.get("project_id"),
-                    source=item.get("source", ""),
-                    score=float(item.get("importance", 0.5)),
-                    document_source_uri=item.get("document_source_uri"),
-                    document_source_type=item.get("document_source_type"),
-                    importance=float(item.get("importance", 0.5)),
-                    metadata=item.get("metadata") or {},
-                )
-            )
+        hits = [_memory_hit(item) for item in candidates]
+        searched_ns = {hit.namespace for hit in hits}
 
         return KnowledgeSearchResult(
             query=query,

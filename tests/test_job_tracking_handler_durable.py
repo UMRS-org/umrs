@@ -11,6 +11,11 @@ JOB_SUBMIT = "JOB_SUBMIT"
 JOB_LIST = "JOB_LIST"
 
 
+def _job_matches(job, wanted: dict) -> bool:
+    """Truthy filters must equal the job's attribute (falsy filters are ignored)."""
+    return all(not value or getattr(job, key) == value for key, value in wanted.items())
+
+
 class FakeJobStore:
     def __init__(self):
         self.jobs = {}
@@ -65,13 +70,8 @@ class FakeJobStore:
         return self.attempts[job_id]
 
     def list_jobs(self, project_id=None, status=None, job_type=None, limit=100, offset=0):
-        jobs = list(self.jobs.values())
-        if project_id:
-            jobs = [job for job in jobs if job.project_id == project_id]
-        if status:
-            jobs = [job for job in jobs if job.status == status]
-        if job_type:
-            jobs = [job for job in jobs if job.job_type == job_type]
+        wanted = {"project_id": project_id, "status": status, "job_type": job_type}
+        jobs = [job for job in self.jobs.values() if _job_matches(job, wanted)]
         return jobs[offset : offset + limit]
 
     def cancel_job(self, job_id, reason="user_cancelled"):
@@ -307,6 +307,10 @@ def test_build_durable_job_db_pool_reads_env(monkeypatch):
 
     assert pool is sentinel_pool
     assert admin_conn.closed is True
+    # R-14 (2026-09-13): every construction site carries the session-hygiene
+    # kwargs from umrs.shared.pg_settings (application_name + idle-in-tx reaper).
+    from umrs.shared.pg_settings import pg_connect_kwargs
+
     assert connect_kwargs == {
         "dbname": "postgres",
         "user": "jobs-user",
@@ -314,6 +318,7 @@ def test_build_durable_job_db_pool_reads_env(monkeypatch):
         "host": "db-host",
         "port": "15432",
         "sslmode": "disable",
+        **pg_connect_kwargs("admin"),
     }
     assert pool_kwargs == {
         "minconn": 1,
@@ -324,7 +329,10 @@ def test_build_durable_job_db_pool_reads_env(monkeypatch):
         "host": "db-host",
         "port": "15432",
         "sslmode": "disable",
+        **pg_connect_kwargs("durable-jobs"),
     }
+    assert connect_kwargs["application_name"] == "umrs-admin"
+    assert pool_kwargs["application_name"] == "umrs-durable-jobs"
 
 
 class _FakeAdminCursorForDefault:

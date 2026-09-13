@@ -243,8 +243,10 @@ class PostgresBackend(RegistryBackend):
         # Build a DSN to the default 'postgres' database
         admin_dsn = self._dsn.rsplit("/", 1)[0] + "/postgres"
 
+        from umrs.shared.pg_settings import pg_connect_kwargs
+
         try:
-            conn = psycopg2.connect(admin_dsn)
+            conn = psycopg2.connect(admin_dsn, **pg_connect_kwargs("orchestrator-admin"))
             conn.autocommit = True
             with conn.cursor() as cur:
                 cur.execute(
@@ -268,8 +270,12 @@ class PostgresBackend(RegistryBackend):
                 "psycopg2 required for PostgreSQL backend: pip install psycopg2-binary"
             ) from None
 
+        from umrs.shared.pg_settings import pg_connect_kwargs
+
         if self._conn is None or self._conn.closed:
-            self._conn = psycopg2.connect(self._dsn)
+            self._conn = psycopg2.connect(
+                self._dsn, **pg_connect_kwargs("orchestrator-registry")
+            )
             self._conn.autocommit = True
         return self._conn
 

@@ -100,7 +100,12 @@ async def knowledge_asyncpg_pool(request: Request):
             cause=exc,
         )
 
-    kwargs: dict = {"dsn": dsn, "init": _init_json_codecs}
+    from umrs.shared.pg_settings import asyncpg_pool_kwargs
+
+    # R-14 session hygiene: application_name + idle-in-transaction reaper.
+    kwargs: dict = asyncpg_pool_kwargs(
+        "knowledge-asyncpg", dsn=dsn, init=_init_json_codecs
+    )
     if is_local:
         kwargs["ssl"] = "disable"  # container-local PG has no TLS (jobs pool parity)
     pool = await asyncpg.create_pool(**kwargs)

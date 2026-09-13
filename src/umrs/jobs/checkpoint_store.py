@@ -96,7 +96,9 @@ class CheckpointStore:
         return self._db_url is not None and self._psycopg2 is not None
 
     def _conn(self):  # type: ignore[no-untyped-def]
-        return self._psycopg2.connect(self._db_url)  # type: ignore[union-attr]
+        from umrs.shared.pg_settings import pg_connect_kwargs
+
+        return self._psycopg2.connect(self._db_url, **pg_connect_kwargs("checkpoint-store"))  # type: ignore[union-attr]
 
     # ── Create ──────────────────────────────────────────────
 

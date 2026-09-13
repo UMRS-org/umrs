@@ -51,8 +51,10 @@ def main():
         print("Error: --db-url or DATABASE_URL required")
         sys.exit(1)
 
+    from umrs.shared.pg_settings import pg_connect_kwargs
+
     try:
-        conn = psycopg2.connect(args.db_url)
+        conn = psycopg2.connect(args.db_url, **pg_connect_kwargs("migrations"))
     except Exception as e:
         print(f"Error connecting to database: {e}")
         sys.exit(1)
