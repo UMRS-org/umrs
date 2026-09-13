@@ -79,6 +79,64 @@ def _restore_environ_between_tests() -> Generator:
     os.environ.update(snapshot)
 
 
+# Tables the knowledge premise suites (adapters / blank_project_e2e /
+# demo08_operational) read-after-write against. When a knowledge DSN
+# resolves (CI self-hosted, or any host with deployment creds), leftover
+# rows from previous runs break counts (rehearsal 2026-09-13: 100 != 21).
+_KNOWLEDGE_PREMISE_TABLES = (
+    "knowledge_node_embeddings",
+    "knowledge_edges",
+    "knowledge_nodes",
+    "sat_knowledge_object_versions",
+    "sat_knowledge_tombstones",
+    "sat_knowledge_objects",
+    "scientific_memory_entries",
+    "hypothesis_history",
+    "hypotheses",
+    "evidence_items",
+    "experiment_results",
+    "experiments",
+)
+
+
+def truncate_knowledge_premise_tables() -> None:
+    """TRUNCATE premise tables when — and only when — a knowledge DSN
+    resolves. No-op on hosts without PG (tests then ride in-memory state)."""
+    try:
+        from umrs.jobs.knowledge_adapters import _resolve_knowledge_dsn
+
+        dsn = _resolve_knowledge_dsn()
+        if not dsn:
+            return
+        import psycopg2
+
+        conn = psycopg2.connect(dsn)
+        try:
+            with conn.cursor() as cur:
+                for table in _KNOWLEDGE_PREMISE_TABLES:
+                    cur.execute(f"TRUNCATE TABLE {table} CASCADE")
+        finally:
+            conn.commit()
+            conn.close()
+    except Exception:  # noqa: BLE001 — isolation helper must not break collection
+        pass
+
+
+@pytest.fixture(autouse=True)
+def _reset_knowledge_pool_between_tests() -> Generator:
+    """The global knowledge pool is loop-bound at build time; with a
+    knowledge DSN configured (self-hosted CI) surviving it kills the next
+    test with cross-loop asyncpg errors. Rebuild under each test's loop.
+    No-op when no DSN resolves (local runs)."""
+    yield
+    try:
+        from umrs.knowledge.store import reset_knowledge_pool
+
+        reset_knowledge_pool()
+    except Exception:  # noqa: BLE001 — isolation fixture must not raise
+        pass
+
+
 @pytest.fixture(scope="session")
 def db_url(request) -> str:
     """Get database URL from command line or environment."""

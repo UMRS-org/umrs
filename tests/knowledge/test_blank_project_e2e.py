@@ -11,6 +11,31 @@ from umrs.knowledge.workflow import run_project_workflow
 from umrs.knowledge_model import KnowledgeObjectType
 
 
+import pytest
+
+
+
+@pytest.fixture(autouse=True)
+def _graphs_always_in_memory(monkeypatch):
+    """Premise tests exercise pipeline semantics, never PG durability.
+
+    The adapter/ResearchProject constructors call default_view() internally,
+    which resolves a live pool when a knowledge DSN exists — then sync-context
+    mutations (`asyncio.run` per write) crash cross-loop against the
+    loop-bound pool (CI self-hosted class 2026-09-13). Pin the resolution to
+    in-memory; the pg-backed path has its own coverage in
+    tests/test_research_pg_store_factories.py.
+    """
+    from umrs.knowledge import canonical_graph_view as _cgv
+
+    monkeypatch.setattr(
+        _cgv,
+        "default_view",
+        lambda *args, **kwargs: _cgv.in_memory_view(*args, **kwargs),
+    )
+
+
+
 def _load_materialize_blank_project():
     path = Path(__file__).resolve().with_name("blank_project_fixture.py")
     spec = importlib.util.spec_from_file_location("blank_project_fixture", path)

@@ -9,7 +9,7 @@ from umrs.graph_reasoning import (
     GraphReasoningContext,
     RelatedObjects,
 )
-from umrs.knowledge.canonical_graph_view import CanonicalGraphView, default_view
+from umrs.knowledge.canonical_graph_view import CanonicalGraphView, in_memory_view
 from umrs.knowledge.graph_types import RelationType
 
 
@@ -18,7 +18,7 @@ from umrs.knowledge.graph_types import RelationType
 
 def _build_test_graph() -> CanonicalGraphView:
     """Build a test knowledge graph with scientific objects."""
-    graph = default_view(store=None)
+    graph = in_memory_view()
 
     # Add nodes
     graph.add_node(node_id="paper-001", node_type="paper", title="Attention Is All You Need")
@@ -120,7 +120,7 @@ def test_graph_navigator_init():
 
 def test_graph_navigator_init_with_graph():
     """Test GraphNavigator with custom graph."""
-    graph = default_view(store=None)
+    graph = in_memory_view()
     nav = GraphNavigator(graph=graph)
     assert nav.graph is graph
 
@@ -262,7 +262,7 @@ def test_find_related_empty_graph():
 
 def test_find_evidence_chain_no_evidence():
     """Test finding evidence chain when no evidence exists."""
-    graph = default_view(store=None)
+    graph = in_memory_view()
     graph.add_node(node_id="hypothesis-001", node_type="hypothesis")
     nav = GraphNavigator(graph=graph)
 
