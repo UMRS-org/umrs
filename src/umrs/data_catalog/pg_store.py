@@ -44,7 +44,6 @@ def _search_filters(
     tag: str | None,
     prefix: str | None,
     include_ambient: bool,
-    tokens: list[Any],
 ) -> tuple[list[str], list[Any]]:
     """Assemble the WHERE clauses + params for a catalog search call."""
     clauses = [_visibility_clause(include_ambient), "state != 'error'"]
