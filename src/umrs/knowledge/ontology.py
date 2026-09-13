@@ -120,11 +120,24 @@ class OntologyViolationError(ValueError):
         )
 
 
-def ontology_for_graph(graph: Optional[Mapping[str, Any]]) -> Ontology:
+def ontology_for_graph(
+    graph: Optional[Mapping[str, Any]],
+    *,
+    registry: Any | None = None,
+) -> Ontology:
     """Resolve the ontology bound to a graph registry row (or meta mapping).
 
-    See module docstring for the resolution order. Raises ``ValueError`` for
-    version mismatches and unknown ontology references (fail loud).
+    Resolution order (ADR-049 Leg A):
+
+    1. no graph / no ``ontology_id``        → :data:`DEFAULT_ONTOLOGY`
+    2. ``ontology_id == "r4-default"``      → :data:`DEFAULT_ONTOLOGY`
+       (``ontology_version`` must match)
+    3. **registry-backed live record** (0091, when a registry store is
+       handed in) at the pinned (id, version) → that ontology
+    4. inline serialized ontology in the graph meta (LEGACY path), strict
+       consistency (id + pinned version must match the payload)
+    5. otherwise → :class:`ValueError` (unknown ontology reference — fail
+       loud, never smudged to the default).
     """
     if not graph:
         return DEFAULT_ONTOLOGY
@@ -139,12 +152,17 @@ def ontology_for_graph(graph: Optional[Mapping[str, Any]]) -> Ontology:
                 f"(current: {DEFAULT_ONTOLOGY.version!r})"
             )
         return DEFAULT_ONTOLOGY
+    if registry is not None and version is not None:
+        record = registry.live_coordinate(str(ontology_id), str(version))
+        if record is not None:
+            return record.ontology
     custom = _inline_ontology(graph, ontology_id, version)
     if custom is not None:
         return custom
     raise ValueError(
         f"unknown ontology {ontology_id!r} referenced by graph "
-        f"{graph.get('graph_id', '?')!r} — register it inline in graph provenance "
+        f"{graph.get('graph_id', '?')!r} — register it in the ontology "
+        "registry (ADR-049 Leg A), keep it as inline provenance (legacy), "
         "or use 'r4-default'"
     )
 

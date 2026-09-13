@@ -176,6 +176,7 @@ class TestOntologyBlocks:
         pool = MagicMock()
         cursor = MagicMock()
         cursor.fetchall.return_value = []
+        cursor.fetchone.return_value = None  # ontology registry: no live row
         conn = MagicMock()
         conn.cursor.return_value.__enter__.return_value = cursor
         pool.getconn.return_value = conn

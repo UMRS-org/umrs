@@ -558,29 +558,9 @@ def query_knowledge(
     payload["unavailable_backends"] = unwired
     payload["selected_graphs"] = [g.graph_id for g in selected]
     payload["excluded_graphs"] = excluded
-    # ADR-049 Leg B: the bound ontology is response-visible per selected
-    # graph (unresolvable references are reported, never smudged).
-    from umrs.knowledge.ontology import ontology_for_graph
-
-    ontology_blocks = []
-    for graph in selected:
-        meta = (
-            graph
-            if isinstance(graph, dict)
-            else (
-                graph.to_dict()
-                if hasattr(graph, "to_dict")
-                else {}
-            )
-        )
-        block = {"graph_id": meta.get("graph_id", "?")}
-        try:
-            ontology_blocks.append(
-                {**block, "ontology": ontology_for_graph(meta).to_dict()}
-            )
-        except ValueError as exc:
-            ontology_blocks.append({**block, "ontology_error": str(exc)})
-    payload["ontologies"] = ontology_blocks
+    payload["ontologies"] = _ontology_blocks_for(
+        selected, getattr(request.app.state, "umrs_db_pool", None)
+    )
     return {"status": "ok", "query": payload}
 
 
@@ -600,3 +580,55 @@ def _graph_backend_for(
     if not selected:
         return None, "no graphs selected (empty or fully excluded)", selected, excluded
     return _GraphSearchBackend(pool, selected), None, selected, excluded
+
+
+def _ontology_registry_for(pool: Any) -> tuple[Any | None, Any | None]:
+    """Open a registry sync conn branched off a psycopg-shaped pool.
+
+    Returns (registry, conn); both None when the registry is unavailable —
+    callers then resolve via inline provenance only.
+    """
+    from umrs.knowledge.ontology_registry import OntologyRegistryStore
+
+    if pool is None or not hasattr(pool, "getconn"):
+        return None, None
+    try:
+        conn = pool.getconn()
+    except Exception:  # noqa: BLE001 — registry degrades to inline only
+        return None, None
+    return OntologyRegistryStore(conn), conn
+
+
+def _ontology_blocks_for(selected: list, pool: Any) -> list[dict[str, Any]]:
+    """ADR-049 Leg B/A: the bound ontology per selected graph, registry
+    (0091) resolving before inline provenance; unresolvable references are
+    named via ontology_error, never smudged."""
+    from umrs.knowledge.ontology import ontology_for_graph
+
+    registry, conn = _ontology_registry_for(pool)
+    blocks: list[dict[str, Any]] = []
+    try:
+        for graph in selected:
+            meta = (
+                graph
+                if isinstance(graph, dict)
+                else (
+                    graph.to_dict()
+                    if hasattr(graph, "to_dict")
+                    else {}
+                )
+            )
+            block = {"graph_id": meta.get("graph_id", "?")}
+            try:
+                blocks.append(
+                    {**block, "ontology": ontology_for_graph(meta, registry=registry).to_dict()}
+                )
+            except ValueError as exc:
+                blocks.append({**block, "ontology_error": str(exc)})
+    finally:
+        if conn is not None and hasattr(pool, "putconn"):
+            try:
+                pool.putconn(conn)
+            except Exception:  # noqa: BLE001 — pool return must not mask the response
+                pass
+    return blocks

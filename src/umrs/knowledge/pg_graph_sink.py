@@ -96,6 +96,25 @@ class PgGraphSink:
         """Initialize with a Postgres-backed KnowledgeStore."""
         self._store = store
 
+    def _ontology_registry(self) -> Any | None:
+        """Live ontology registry store when a SYNC pool is resolvable.
+
+        The async KnowledgeStore owns the asyncpg pool; the registry reads
+        ride the satellite sync pool (shared pattern). None when Postgres is
+        not configured — the inline legacy path then resolves instead.
+        """
+        try:
+            from ..shared.pg import get_default_sync_pool, pg_configured_from_env
+
+            if not pg_configured_from_env():
+                return None
+            from .ontology_registry import OntologyRegistryStore
+
+            pool = get_default_sync_pool()
+            return OntologyRegistryStore(pool) if pool is not None else None
+        except Exception:  # noqa: BLE001 — registry unavailability degrades to legacy
+            return None
+
     async def generate(
         self,
         store: Optional[KnowledgeStore] = None,
@@ -115,7 +134,10 @@ class PgGraphSink:
             graph: Registry row / meta mapping for the target graph. Determines
                 the binding ontology (ontology_for_graph); absent ⇒
                 DEFAULT_ONTOLOGY. The compiled payload is validated against it
-                BEFORE any rows are truncated.
+                BEFORE any rows are truncated. When the caller also passes a
+                ``registry_pool``, the live ontology REGISTRY (0091) is
+                consulted before the inline-provenance legacy path (ADR-049
+                Leg A resolution order).
 
         Returns:
             Number of nodes created/upserted.
@@ -126,7 +148,8 @@ class PgGraphSink:
         try:
             store = self._resolve_store(store, project_id, ir_ids)
             gid = graph_id or default_graph_id(project_id)
-            ontology = ontology_for_graph(graph)
+            registry = self._ontology_registry()
+            ontology = ontology_for_graph(graph, registry=registry)
             nodes_written = await self._regenerate(
                 store, project_id, gid, ir_ids, ontology
             )
