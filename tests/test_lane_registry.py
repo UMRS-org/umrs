@@ -25,13 +25,18 @@ CLASSIFIED_FIXED: dict[str, SurfaceLane] = {
     "loops": SurfaceLane.BETA,
     "research": SurfaceLane.BETA,
     "grants": SurfaceLane.BETA,
+    # R1 secrets wave (a5ad437a): user-sources user-facing; broker internal.
+    "user-sources": SurfaceLane.BETA,
     "ops": SurfaceLane.INTERNAL,
+    "secrets": SurfaceLane.INTERNAL,
     "skills": SurfaceLane.INTERNAL,
     "zmq": SurfaceLane.INTERNAL,
 }
 
 # S5's placement list — families deliberately awaiting a lane decision.
 # +1 2026-09-02: "assets" (asset index read-model, Review F4 / ADR-035 wave)
+# (2026-09-13: R1 secrets wave lanes recorded — classified-only move, no
+# placement-list delta)
 UNCLASSIFIED_COUNT = 26
 
 
