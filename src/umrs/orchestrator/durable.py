@@ -189,13 +189,17 @@ class DurableOrchestrationService:
         # SESSION_GC lane: ONE shared backend across dispatch factory + status
         # checker (their reports are shared by reference), stitched to the umrs_db
         # pool; absent → honest failure at submit (never a straight-DELETE fallback).
-        from .research_sessions.store import SessionStore
-        from .session_gc import SessionGcBackend
-
+        # research_sessions is a TOP-LEVEL package (umrs.research_sessions),
+        # never umrs.orchestrator.research_sessions — 48eae903 had this wrong
+        # and the wiring degraded silently under any db_pool presence.
         try:
+            from umrs.research_sessions.store import SessionStore
+
+            from .session_gc import SessionGcBackend
+
             session_store = SessionStore(self.db_pool)
             session_gc_backend = SessionGcBackend(session_store=session_store)
-        except (AttributeError, TypeError) as exc:
+        except (ImportError, AttributeError, TypeError) as exc:
             logger.debug("SessionGcBackend wiring skipped (session_gc unavailable): %s", exc)
             session_store = None
             session_gc_backend = None
