@@ -233,6 +233,8 @@ def default_view(
 def in_memory_view(
     project_id: str = "default",
     graph_id: str | None = None,
+    *,
+    ontology: Any | None = None,
 ) -> "CanonicalGraphView":
     """Explicitly store-free view — NEVER resolves a durable store.
 
@@ -245,7 +247,9 @@ def in_memory_view(
     from .graph_registry import default_graph_id
 
     gid = graph_id or default_graph_id(project_id)
-    return CanonicalGraphView(store=None, project_id=project_id, graph_id=gid)
+    return CanonicalGraphView(
+        store=None, project_id=project_id, graph_id=gid, ontology=ontology
+    )
 
 
 class CanonicalGraphView:
@@ -257,7 +261,14 @@ class CanonicalGraphView:
         store: KnowledgeStore | None,
         project_id: str,
         graph_id: str,
+        ontology: Any | None = None,
     ) -> None:
+        # The typed contract this graph answers to (ADR-049 Leg B): closure
+        # verbs enforce its transitive_relations declaration; responses
+        # expose it to query surfaces. DEFAULT_ONTOLOGY when unbound.
+        from .ontology import DEFAULT_ONTOLOGY
+
+        self._ontology = ontology if ontology is not None else DEFAULT_ONTOLOGY
         self._store = store
         self._project_id = project_id
         self._graph_id = graph_id
@@ -265,6 +276,11 @@ class CanonicalGraphView:
         self._edges: dict[str, KnowledgeEdge] = {}
         self._outgoing: dict[str, list[str]] = {}
         self._incoming: dict[str, list[str]] = {}
+
+    @property
+    def ontology(self) -> Any:
+        """The typed contract bound to this view (never None)."""
+        return self._ontology
 
     @property
     def project_id(self) -> str:
@@ -529,6 +545,16 @@ class CanonicalGraphView:
         sat_name, canonical_name, effective_direction = self._walk_resolve(
             relation_type, direction
         )
+        # ADR-049 Leg B: closure runs only over relations the bound
+        # ontology DECLARES transitive — an undeclared closure is refused,
+        # not silently traversed (query-time ontological projection).
+        if canonical_name not in self._ontology.transitive_relations:
+            raise ValueError(
+                f"walk over {canonical_name!r} refused: ontology "
+                f"'{self._ontology.ontology_id}' v{self._ontology.version} "
+                f"does not declare it transitive "
+                f"(transitive_relations={sorted(self._ontology.transitive_relations)})"
+            )
         if self._store is None:
             return self._walk_memory(start_id, sat_name, direction, max_depth)
         edges = _store_worker().result_value(

@@ -558,6 +558,29 @@ def query_knowledge(
     payload["unavailable_backends"] = unwired
     payload["selected_graphs"] = [g.graph_id for g in selected]
     payload["excluded_graphs"] = excluded
+    # ADR-049 Leg B: the bound ontology is response-visible per selected
+    # graph (unresolvable references are reported, never smudged).
+    from umrs.knowledge.ontology import ontology_for_graph
+
+    ontology_blocks = []
+    for graph in selected:
+        meta = (
+            graph
+            if isinstance(graph, dict)
+            else (
+                graph.to_dict()
+                if hasattr(graph, "to_dict")
+                else {}
+            )
+        )
+        block = {"graph_id": meta.get("graph_id", "?")}
+        try:
+            ontology_blocks.append(
+                {**block, "ontology": ontology_for_graph(meta).to_dict()}
+            )
+        except ValueError as exc:
+            ontology_blocks.append({**block, "ontology_error": str(exc)})
+    payload["ontologies"] = ontology_blocks
     return {"status": "ok", "query": payload}
 
 
