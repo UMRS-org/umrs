@@ -351,8 +351,11 @@ class TestCollectArtifactIds:
     """Test _collect_artifact_ids helper."""
 
     def test_empty_when_no_pool(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # 'no pool' premise = 'no DSN resolves' — the collection short-circuits
+        # before any pool work (the _get_pool monkeypatch is stale: the helper
+        # gates on _resolve_knowledge_dsn since the adapter refactor).
         monkeypatch.setattr(
-            "umrs.jobs.knowledge_adapters._get_pool", lambda: None
+            "umrs.jobs.knowledge_adapters._resolve_knowledge_dsn", lambda: ""
         )
         from umrs.jobs.knowledge_adapters import _collect_artifact_ids
 
@@ -360,11 +363,8 @@ class TestCollectArtifactIds:
         assert result == []
 
     def test_empty_when_no_metrics(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        def fake_pool() -> Any:
-            return None
-
         monkeypatch.setattr(
-            "umrs.jobs.knowledge_adapters._get_pool", fake_pool
+            "umrs.jobs.knowledge_adapters._resolve_knowledge_dsn", lambda: ""
         )
         from umrs.jobs.knowledge_adapters import _collect_artifact_ids
 
