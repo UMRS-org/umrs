@@ -1,10 +1,8 @@
 """Tests for B1 — Streaming Progress Tracker."""
 
 import threading
-import time
 
 import pytest
-
 from umrs.shared.progress import (
     CallbackAdapter,
     ConsoleProgressBar,

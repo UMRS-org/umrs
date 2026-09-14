@@ -147,7 +147,10 @@ class TestGraphContentApi:
     def test_content_200_webview_shape(self):
         script = [
             _graph_row(),
-            [self._node_row(), self._node_row(node_id="n2", label="finding-1", node_type="finding")],
+            [
+                self._node_row(),
+                self._node_row(node_id="n2", label="finding-1", node_type="finding"),
+            ],
             [self._edge_row()],
         ]
         client, _ = _client(script)
@@ -187,11 +190,13 @@ class TestGraphContentApi:
         assert node_params[2] == "proj-a"
 
     def test_content_non_default_no_legacy_fallback(self):
-        client, pool = _client([
-            _graph_row(graph_id="g-custom"),
-            [],
-            [],
-        ])
+        client, pool = _client(
+            [
+                _graph_row(graph_id="g-custom"),
+                [],
+                [],
+            ]
+        )
         resp = client.get("/umrs/knowledge/graphs/g-custom/content")
         assert resp.status_code == 200, resp.text
         _, node_params = pool.record[1]
@@ -301,8 +306,10 @@ class TestOntologyTraversalBlock:
         from umrs.knowledge.ontology import Ontology
 
         custom = Ontology(
-            ontology_id="lab-x", version="2",
-            entity_types=frozenset({"concept"}), relation_types=frozenset({"supports"}),
+            ontology_id="lab-x",
+            version="2",
+            entity_types=frozenset({"concept"}),
+            relation_types=frozenset({"supports"}),
         )
         graph = _graph_row(
             ontology_id="lab-x",

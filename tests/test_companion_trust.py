@@ -5,7 +5,6 @@ from __future__ import annotations
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-
 from umrs.api.companion import router, set_trust_store
 from umrs.companion_trust.store import DEFAULT_TTL_SEC, TrustAllowlistStore
 
@@ -185,7 +184,12 @@ class TestTrustRouter:
         assert ls.json()["count"] == 2
         d = api.delete("/umrs/companion/trust/shell_exec")
         assert d.status_code == 204
-        assert api.get("/umrs/companion/trust/check", params={"tool_name": "shell_exec"}).json()["allowed"] is False
+        assert (
+            api.get("/umrs/companion/trust/check", params={"tool_name": "shell_exec"}).json()[
+                "allowed"
+            ]
+            is False
+        )
 
     def test_invalid_scope_rejected(self, api: TestClient):
         r = api.put(

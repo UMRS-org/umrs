@@ -1,5 +1,3 @@
-import zmq
-import json
 from flask import Flask, request
 
 # context = zmq.Context()

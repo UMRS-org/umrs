@@ -113,7 +113,5 @@ class TestLoopIterationHookMath:
     def test_engine_label_and_duration(self):
         from umrs.jobs.timing import duration_ms
 
-        ms = duration_ms(
-            "2026-09-07T10:00:00+00:00", "2026-09-07T10:01:30+00:00"
-        )
+        ms = duration_ms("2026-09-07T10:00:00+00:00", "2026-09-07T10:01:30+00:00")
         assert ms == 90000

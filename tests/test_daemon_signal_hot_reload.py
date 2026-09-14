@@ -13,7 +13,6 @@ from pathlib import Path
 
 import pytest
 
-
 # -----------------------------------------------------------------------------
 # isolated import so ``UMRS_CONFIG`` overrides take effect per-test
 # -----------------------------------------------------------------------------
@@ -70,7 +69,7 @@ class TestPidFileIO:
         mod = _import_daemon_signal(monkeypatch, tmp_path)
         path = mod.write_pid_file()
         assert os.path.exists(path)
-        with open(path, "r", encoding="utf-8") as fh:
+        with open(path, encoding="utf-8") as fh:
             assert fh.read().strip() == str(os.getpid())
 
     def test_write_is_atomic_and_overwrites(

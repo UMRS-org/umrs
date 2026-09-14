@@ -6,11 +6,8 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import client_umrs
+from client_umrs import _fmt_cell, _resolve_status_target, action_list_buckets, format_status_text
 from umrs.client.control_commands import configure_status_parser
-from client_umrs import _fmt_cell
-from client_umrs import format_status_text
-from client_umrs import _resolve_status_target
-from client_umrs import action_list_buckets
 from umrs.core.TaskCmdStatus import TaskCmd
 from umrs.server.provisioning import reconcile_status_on_startup
 from umrs.shared.pretty_print import pretty_print_thread_status

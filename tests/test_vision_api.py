@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 import httpx
+import umrs.api.vision as vision_api
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-
-import umrs.api.vision as vision_api
 from umrs.api.vision import router
 from umrs.orchestrator.endpoint_registry import EndpointRegistry, EndpointStatus
 

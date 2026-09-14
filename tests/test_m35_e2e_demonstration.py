@@ -25,6 +25,8 @@ milestone is complete.
 from __future__ import annotations
 
 import pytest
+from umrs.knowledge.canonical_graph_view import in_memory_view
+from umrs.knowledge.graph_types import RelationType
 from umrs.knowledge.knowledge_correction_controller import (
     KnowledgeCorrectionController,
 )
@@ -37,8 +39,6 @@ from umrs.knowledge.research_readiness_controller import (
 from umrs.knowledge.verification_chat_controller import (
     VerificationChatController,
 )
-from umrs.knowledge.canonical_graph_view import in_memory_view
-from umrs.knowledge.graph_types import RelationType
 from umrs.knowledge_model import (
     InMemoryKnowledgeModelStore,
     KnowledgeObjectType,

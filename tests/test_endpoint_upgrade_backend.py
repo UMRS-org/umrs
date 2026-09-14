@@ -33,28 +33,20 @@ class TestJobType:
 
 class TestEndpointUpgradeBackendStub:
     def test_backend_job_type_binding(self) -> None:
-        backend = EndpointUpgradeBackend(
-            orchestrator=None, registry=None, port_manager=None
-        )
+        backend = EndpointUpgradeBackend(orchestrator=None, registry=None, port_manager=None)
         assert backend.job_type == JobType.ENDPOINT_UPGRADE
 
     def test_submit_job_raises_not_implemented_until_flip_orchestration(self) -> None:
-        backend = EndpointUpgradeBackend(
-            orchestrator=None, registry=None, port_manager=None
-        )
+        backend = EndpointUpgradeBackend(orchestrator=None, registry=None, port_manager=None)
         with pytest.raises(NotImplementedError, match="flip orchestration"):
             asyncio.run(backend.submit_job(job=None, attempt_id="a-1"))
 
     def test_check_status_raises_not_implemented(self) -> None:
-        backend = EndpointUpgradeBackend(
-            orchestrator=None, registry=None, port_manager=None
-        )
+        backend = EndpointUpgradeBackend(orchestrator=None, registry=None, port_manager=None)
         with pytest.raises(NotImplementedError):
             asyncio.run(backend.check_status(job=None, attempt_id="a-1"))
 
     def test_cancel_job_idempotent_in_phase_one(self) -> None:
-        backend = EndpointUpgradeBackend(
-            orchestrator=None, registry=None, port_manager=None
-        )
+        backend = EndpointUpgradeBackend(orchestrator=None, registry=None, port_manager=None)
         result = asyncio.run(backend.cancel_job(job=None, attempt_id="a-1"))
         assert result is True

@@ -4,13 +4,12 @@ from __future__ import annotations
 
 import io
 
+from catalog_store_fake import FakeCatalogMetaStore
 from umrs.data_catalog.constants import EXTRACTED_TEXT_PREFIX
 from umrs.data_catalog.extract import extract_content
 from umrs.data_catalog.ingest import ingest_object
 from umrs.data_catalog.query import read_catalog_object, resolve_read_source
 from umrs.data_catalog.schema import CatalogObjectMeta, CatalogState
-
-from catalog_store_fake import FakeCatalogMetaStore
 
 
 def test_extract_pdf_tags_when_empty(monkeypatch):

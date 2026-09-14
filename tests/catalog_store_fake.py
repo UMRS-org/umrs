@@ -113,9 +113,7 @@ class FakeCatalogMetaStore:
         ):
             total += 1
             by_state[meta.state.value] = by_state.get(meta.state.value, 0) + 1
-            by_modality[meta.detected_modality] = (
-                by_modality.get(meta.detected_modality, 0) + 1
-            )
+            by_modality[meta.detected_modality] = by_modality.get(meta.detected_modality, 0) + 1
         return {
             "project_id": project_id,
             "object_count": total,

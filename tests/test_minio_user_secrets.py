@@ -1,7 +1,6 @@
 import configparser
 
 import pytest
-
 from umrs.shared.storage import minio as minio_storage
 from umrs.shared.storage.s3 import s3_strong_password
 

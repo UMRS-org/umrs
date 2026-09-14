@@ -1,12 +1,11 @@
 #!/usr/bin/python3
-import psycopg2
-from psycopg2 import sql, pool
-import numpy as np
-from sklearn.cluster import KMeans
 import ast  # To safely convert strings to lists
-from PIL import Image
-from sentence_transformers import SentenceTransformer
 import os
+
+import numpy as np
+import psycopg2
+from sentence_transformers import SentenceTransformer
+from sklearn.cluster import KMeans
 
 
 def cluster_from_embeddings(conn, cur, table, nb_clusters=3):

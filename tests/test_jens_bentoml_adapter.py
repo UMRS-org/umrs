@@ -1,5 +1,4 @@
 from botocore.exceptions import ClientError
-
 from umrs.vision_service import bentoml_adapter
 
 

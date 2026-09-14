@@ -10,12 +10,7 @@ B6 is pinned client-side in vscode-extension/test; this file covers:
 
 from __future__ import annotations
 
-import asyncio
-from typing import Any
-from unittest.mock import MagicMock, patch
-
 import pytest
-
 
 # ── SSE producer wiring ──────────────────────────────────────────────────────
 
@@ -60,8 +55,8 @@ def _fake_client(project: str):
 
 class TestSSEProjectScoping:
     def test_emit_attaches_project_from_ctx(self):
-        from umrs.knowledge import events_sse
         from umrs.jobs.knowledge_adapters import KnowledgeEvent
+        from umrs.knowledge import events_sse
 
         _fake_client("proj-a")
         token = events_sse.set_project_ctx("proj-a")
@@ -74,8 +69,8 @@ class TestSSEProjectScoping:
         assert ev.data["project_id"] == "proj-a"
 
     def test_emit_explicit_project_wins_over_ctx(self):
-        from umrs.knowledge import events_sse
         from umrs.jobs.knowledge_adapters import KnowledgeEvent
+        from umrs.knowledge import events_sse
 
         _fake_client("proj-b")
         token = events_sse.set_project_ctx("proj-a")
@@ -90,16 +85,16 @@ class TestSSEProjectScoping:
         assert ev.project_id == "proj-b"
 
     def test_unattributed_event_dropped_fail_closed(self):
-        from umrs.knowledge import events_sse
         from umrs.jobs.knowledge_adapters import KnowledgeEvent
+        from umrs.knowledge import events_sse
 
         _fake_client("proj-a")
         events_sse.emit(KnowledgeEvent(event_type="skip", job_id="j", attempt_id="a"))
         assert events_sse._broadcast_queue.empty()
 
     def test_no_listeners_never_fills_queue(self):
-        from umrs.knowledge import events_sse
         from umrs.jobs.knowledge_adapters import KnowledgeEvent
+        from umrs.knowledge import events_sse
 
         token = events_sse.set_project_ctx("proj-a")
         try:
@@ -120,8 +115,8 @@ class TestSSEProjectScoping:
         assert [cid for cid, _ in targets] == ["c-proj-a"]
 
     def test_knowledge_event_emit_feeds_sse(self):
-        from umrs.knowledge import events_sse
         from umrs.jobs.knowledge_adapters import KnowledgeEvent
+        from umrs.knowledge import events_sse
 
         _fake_client("proj-a")
         token = events_sse.set_project_ctx("proj-a")
@@ -146,7 +141,9 @@ def _mcp_server(server_id: str, name: str, project_id: str | None):
         name=name,
         url=f"http://{name}.local",
         project_id=project_id,
-        tools=[MCPTool(tool_id=f"tool-{name}", server_id=server_id, name=f"t_{name}", description="")],
+        tools=[
+            MCPTool(tool_id=f"tool-{name}", server_id=server_id, name=f"t_{name}", description="")
+        ],
     )
 
 
@@ -212,9 +209,7 @@ class TestMCPServerScoping:
         monkeypatch.setenv("UMRS_AUTH_MODE", "mvp")
         from fastapi.testclient import TestClient
 
-        resp = TestClient(self.app).get(
-            f"{MCP_PREFIX}/servers", headers={"X-Project-ID": "proj-a"}
-        )
+        resp = TestClient(self.app).get(f"{MCP_PREFIX}/servers", headers={"X-Project-ID": "proj-a"})
         assert resp.status_code == 200
         names = {s["name"] for s in resp.json()}
         assert names == {"default-rag", "proj-a-tools"}
@@ -232,9 +227,7 @@ class TestMCPServerScoping:
         monkeypatch.setenv("UMRS_AUTH_MODE", "mvp")
         from fastapi.testclient import TestClient
 
-        resp = TestClient(self.app).get(
-            f"{MCP_PREFIX}/tools", headers={"X-Project-ID": "proj-a"}
-        )
+        resp = TestClient(self.app).get(f"{MCP_PREFIX}/tools", headers={"X-Project-ID": "proj-a"})
         assert resp.status_code == 200
         names = {t["name"] for t in resp.json()}
         assert names == {"t_default-rag", "t_proj-a-tools"}
@@ -315,8 +308,9 @@ class TestMCPMutationScoping:
     def test_admin_registers_global(self, monkeypatch):
         monkeypatch.setenv("UMRS_AUTH_MODE", "strict")
         monkeypatch.setenv("UMRS_HANDSHAKE_HMAC_SECRET", "sec")
-        from r4_contracts.handshake_hmac import sign_claims
         from fastapi.testclient import TestClient
+
+        from r4_contracts.handshake_hmac import sign_claims
 
         class _CapStore(_FakeMCPStore):
             def register_server(self, **kwargs):

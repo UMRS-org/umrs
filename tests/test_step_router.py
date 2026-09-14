@@ -6,10 +6,9 @@ declares capability requirements but the registry yields nothing.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import pytest
-
 from umrs.pipeline_sdk.workflow import StepSpec
 from umrs.server.step_router import (
     RoutingDecision,
@@ -67,7 +66,7 @@ def test_explicit_config_api_base_wins(monkeypatch):
     monkeypatch.delenv("UMRS_STEP_ROUTER_MOCK", raising=False)
     monkeypatch.setenv("OPENAI_API_KEY", "sk-env")
 
-    called: List[Any] = []
+    called: list[Any] = []
 
     def _fail(*a: Any, **kw: Any) -> Any:
         called.append((a, kw))
@@ -94,9 +93,9 @@ def test_explicit_config_api_base_wins(monkeypatch):
 def test_registry_capability_match_picks_system_then_endpoint(monkeypatch):
     monkeypatch.delenv("UMRS_STEP_ROUTER_MOCK", raising=False)
 
-    captured: Dict[str, Any] = {}
+    captured: dict[str, Any] = {}
 
-    def find_models(caps: List[str], model_type: Optional[str]) -> List[Dict[str, Any]]:
+    def find_models(caps: list[str], model_type: str | None) -> list[dict[str, Any]]:
         captured["caps"] = caps
         captured["mt"] = model_type
         return [
@@ -106,8 +105,8 @@ def test_registry_capability_match_picks_system_then_endpoint(monkeypatch):
         ]
 
     def find_endpoint(
-        model_name: str, project_id: Optional[str], owner_hint: Optional[str]
-    ) -> Optional[Dict[str, Any]]:
+        model_name: str, project_id: str | None, owner_hint: str | None
+    ) -> dict[str, Any] | None:
         captured.setdefault("calls", []).append((model_name, project_id, owner_hint))
         if model_name == "vlm-system":
             return {
@@ -148,15 +147,15 @@ def test_pinned_model_filters_candidate_set(monkeypatch):
     """When step.model is set, it narrows the candidate list to that name."""
     monkeypatch.delenv("UMRS_STEP_ROUTER_MOCK", raising=False)
 
-    def find_models(caps: List[str], mt: Optional[str]) -> List[Dict[str, Any]]:
+    def find_models(caps: list[str], mt: str | None) -> list[dict[str, Any]]:
         return [
             {"name": "vlm-a", "scope": "system", "model_type": "vision"},
             {"name": "vlm-b", "scope": "system", "model_type": "vision"},
         ]
 
-    seen: List[str] = []
+    seen: list[str] = []
 
-    def find_endpoint(model_name: str, *_a: Any, **_k: Any) -> Optional[Dict[str, Any]]:
+    def find_endpoint(model_name: str, *_a: Any, **_k: Any) -> dict[str, Any] | None:
         seen.append(model_name)
         if model_name == "vlm-b":
             return {"litellm_url": "http://b", "job_id": "ep-b"}
@@ -224,13 +223,13 @@ def _two_endpoint_router(monkeypatch) -> StepRouter:
     """
     monkeypatch.delenv("UMRS_STEP_ROUTER_MOCK", raising=False)
 
-    def find_models(caps: List[str], mt: Optional[str]) -> List[Dict[str, Any]]:
+    def find_models(caps: list[str], mt: str | None) -> list[dict[str, Any]]:
         return [
             {"name": "vlm-a", "scope": "system", "model_type": "vision"},
             {"name": "vlm-b", "scope": "system", "model_type": "vision"},
         ]
 
-    def find_endpoint(model_name: str, *_a: Any, **_k: Any) -> Optional[Dict[str, Any]]:
+    def find_endpoint(model_name: str, *_a: Any, **_k: Any) -> dict[str, Any] | None:
         if model_name == "vlm-a":
             return {"litellm_url": "http://a", "job_id": "ep-1"}
         if model_name == "vlm-b":
@@ -321,19 +320,19 @@ def test_affinity_hints_from_step_reads_routing_hints_off():
 def _two_endpoint_router_with_load(
     monkeypatch,
     *,
-    a_load: Optional[Dict[str, Any]] = None,
-    b_load: Optional[Dict[str, Any]] = None,
+    a_load: dict[str, Any] | None = None,
+    b_load: dict[str, Any] | None = None,
 ) -> StepRouter:
     """Helper: two same-tier endpoints (ep-1, ep-2) with custom load metadata."""
     monkeypatch.delenv("UMRS_STEP_ROUTER_MOCK", raising=False)
 
-    def find_models(caps: List[str], mt: Optional[str]) -> List[Dict[str, Any]]:
+    def find_models(caps: list[str], mt: str | None) -> list[dict[str, Any]]:
         return [
             {"name": "vlm-a", "scope": "system", "model_type": "vision"},
             {"name": "vlm-b", "scope": "system", "model_type": "vision"},
         ]
 
-    def find_endpoint(model_name: str, *_a: Any, **_k: Any) -> Optional[Dict[str, Any]]:
+    def find_endpoint(model_name: str, *_a: Any, **_k: Any) -> dict[str, Any] | None:
         if model_name == "vlm-a":
             return {
                 "litellm_url": "http://a",
@@ -436,13 +435,13 @@ def test_load_norm_top_level_override(monkeypatch):
     """``ep['load_norm']`` takes precedence over computed metadata."""
     monkeypatch.delenv("UMRS_STEP_ROUTER_MOCK", raising=False)
 
-    def find_models(caps: List[str], mt: Optional[str]) -> List[Dict[str, Any]]:
+    def find_models(caps: list[str], mt: str | None) -> list[dict[str, Any]]:
         return [
             {"name": "vlm-a", "scope": "system", "model_type": "vision"},
             {"name": "vlm-b", "scope": "system", "model_type": "vision"},
         ]
 
-    def find_endpoint(name: str, *_a: Any, **_k: Any) -> Optional[Dict[str, Any]]:
+    def find_endpoint(name: str, *_a: Any, **_k: Any) -> dict[str, Any] | None:
         if name == "vlm-a":
             # active=0 implies load_norm=0; the top-level override
             # should force load_norm=1.0 and lose to ep-2.
@@ -479,13 +478,13 @@ def test_scope_tier_is_hard_gate_not_score(monkeypatch):
     """
     monkeypatch.delenv("UMRS_STEP_ROUTER_MOCK", raising=False)
 
-    def find_models(caps: List[str], mt: Optional[str]) -> List[Dict[str, Any]]:
+    def find_models(caps: list[str], mt: str | None) -> list[dict[str, Any]]:
         return [
             {"name": "vlm-sys", "scope": "system", "model_type": "vision"},
             {"name": "vlm-proj", "scope": "project", "model_type": "vision"},
         ]
 
-    def find_endpoint(name: str, *_a: Any, **_k: Any) -> Optional[Dict[str, Any]]:
+    def find_endpoint(name: str, *_a: Any, **_k: Any) -> dict[str, Any] | None:
         if name == "vlm-sys":
             return {
                 "litellm_url": "http://sys",

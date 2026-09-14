@@ -186,9 +186,7 @@ class TestUnresolvedReference:
 
         store = _make_store(artifacts=artifacts, irs=irs, nodes=nodes, edges=edges)
         ver = UnresolvedReferenceVerifier()
-        findings = asyncio.get_event_loop().run_until_complete(
-            ver.run(store, PROJECT_ID)
-        )
+        findings = asyncio.get_event_loop().run_until_complete(ver.run(store, PROJECT_ID))
 
         assert len(findings) == 1
         assert findings[0].rule == "unresolved_artifact_ref"
@@ -204,9 +202,7 @@ class TestUnresolvedReference:
 
         store = _make_store(artifacts=artifacts, irs=irs, nodes=nodes, edges=edges)
         ver = UnresolvedReferenceVerifier()
-        findings = asyncio.get_event_loop().run_until_complete(
-            ver.run(store, PROJECT_ID)
-        )
+        findings = asyncio.get_event_loop().run_until_complete(ver.run(store, PROJECT_ID))
 
         assert len(findings) == 1
         assert findings[0].rule == "edge_target_missing"
@@ -221,9 +217,7 @@ class TestUnresolvedReference:
 
         store = _make_store(artifacts=artifacts, irs=irs, nodes=nodes, edges=edges)
         ver = UnresolvedReferenceVerifier()
-        findings = asyncio.get_event_loop().run_until_complete(
-            ver.run(store, PROJECT_ID)
-        )
+        findings = asyncio.get_event_loop().run_until_complete(ver.run(store, PROJECT_ID))
 
         assert len(findings) == 0
 
@@ -247,9 +241,7 @@ class TestOrphanArtifact:
 
         store = _make_store(artifacts=artifacts, irs=irs, nodes=nodes, edges=edges)
         ver = OrphanArtifactVerifier()
-        findings = asyncio.get_event_loop().run_until_complete(
-            ver.run(store, PROJECT_ID)
-        )
+        findings = asyncio.get_event_loop().run_until_complete(ver.run(store, PROJECT_ID))
 
         assert len(findings) == 1
         assert findings[0].artifact_id == "art-orphan"
@@ -268,9 +260,7 @@ class TestOrphanArtifact:
 
         store = _make_store(artifacts=artifacts, irs=irs)
         ver = OrphanArtifactVerifier()
-        findings = asyncio.get_event_loop().run_until_complete(
-            ver.run(store, PROJECT_ID)
-        )
+        findings = asyncio.get_event_loop().run_until_complete(ver.run(store, PROJECT_ID))
 
         assert len(findings) == 0
 
@@ -290,9 +280,7 @@ class TestDuplicateKnowledge:
 
         store = _make_store(artifacts=artifacts)
         ver = DuplicateKnowledgeVerifier()
-        findings = asyncio.get_event_loop().run_until_complete(
-            ver.run(store, PROJECT_ID)
-        )
+        findings = asyncio.get_event_loop().run_until_complete(ver.run(store, PROJECT_ID))
 
         dup_ids = {f.artifact_id for f in findings}
         assert "art-002" in dup_ids
@@ -308,9 +296,7 @@ class TestDuplicateKnowledge:
 
         store = _make_store(artifacts=artifacts)
         ver = DuplicateKnowledgeVerifier()
-        findings = asyncio.get_event_loop().run_until_complete(
-            ver.run(store, PROJECT_ID)
-        )
+        findings = asyncio.get_event_loop().run_until_complete(ver.run(store, PROJECT_ID))
 
         # Should find prefix duplicate at tier 8
         prefix_findings = [f for f in findings if "prefix_duplicate_8" in f.rule]
@@ -325,9 +311,7 @@ class TestDuplicateKnowledge:
 
         store = _make_store(artifacts=artifacts)
         ver = DuplicateKnowledgeVerifier()
-        findings = asyncio.get_event_loop().run_until_complete(
-            ver.run(store, PROJECT_ID)
-        )
+        findings = asyncio.get_event_loop().run_until_complete(ver.run(store, PROJECT_ID))
 
         assert len(findings) == 0
 
@@ -346,9 +330,7 @@ class TestMissingMetadata:
 
         store = _make_store(artifacts=artifacts)
         ver = MissingMetadataVerifier()
-        findings = asyncio.get_event_loop().run_until_complete(
-            ver.run(store, PROJECT_ID)
-        )
+        findings = asyncio.get_event_loop().run_until_complete(ver.run(store, PROJECT_ID))
 
         mime_findings = [f for f in findings if f.rule == "no_mime_type"]
         assert len(mime_findings) == 1
@@ -362,9 +344,7 @@ class TestMissingMetadata:
 
         store = _make_store(artifacts=artifacts)
         ver = MissingMetadataVerifier()
-        findings = asyncio.get_event_loop().run_until_complete(
-            ver.run(store, PROJECT_ID)
-        )
+        findings = asyncio.get_event_loop().run_until_complete(ver.run(store, PROJECT_ID))
 
         desc_findings = [f for f in findings if f.rule == "no_description"]
         assert len(desc_findings) == 2
@@ -381,9 +361,7 @@ class TestMissingMetadata:
 
         store = _make_store(artifacts=artifacts)
         ver = MissingMetadataVerifier()
-        findings = asyncio.get_event_loop().run_until_complete(
-            ver.run(store, PROJECT_ID)
-        )
+        findings = asyncio.get_event_loop().run_until_complete(ver.run(store, PROJECT_ID))
 
         assert len(findings) == 0
 
@@ -401,9 +379,7 @@ class TestIncompleteContext:
 
         store = _make_store(artifacts=artifacts)
         ver = IncompleteContextVerifier(min_artifacts=3, min_irs=0, min_nodes=0)
-        findings = asyncio.get_event_loop().run_until_complete(
-            ver.run(store, PROJECT_ID)
-        )
+        findings = asyncio.get_event_loop().run_until_complete(ver.run(store, PROJECT_ID))
 
         low_art = [f for f in findings if f.rule == "low_artifacts"]
         assert len(low_art) == 1
@@ -418,30 +394,19 @@ class TestIncompleteContext:
 
         store = _make_store(artifacts=artifacts, irs=irs)
         ver = IncompleteContextVerifier(min_artifacts=1, min_irs=2, min_nodes=0)
-        findings = asyncio.get_event_loop().run_until_complete(
-            ver.run(store, PROJECT_ID)
-        )
+        findings = asyncio.get_event_loop().run_until_complete(ver.run(store, PROJECT_ID))
 
         low_ir = [f for f in findings if f.rule == "low_irs"]
         assert len(low_ir) == 1
 
     def test_no_findings_when_above_thresholds(self):
-        artifacts = [
-            _artifact(f"art-{i}", f"hash{i}", mime_type="text/plain")
-            for i in range(5)
-        ]
-        irs = [
-            _ir(f"ir-{i}", f"art-{i}") for i in range(3)
-        ]
-        nodes = [
-            _node(f"node-{i}") for i in range(4)
-        ]
+        artifacts = [_artifact(f"art-{i}", f"hash{i}", mime_type="text/plain") for i in range(5)]
+        irs = [_ir(f"ir-{i}", f"art-{i}") for i in range(3)]
+        nodes = [_node(f"node-{i}") for i in range(4)]
 
         store = _make_store(artifacts=artifacts, irs=irs, nodes=nodes)
         ver = IncompleteContextVerifier(min_artifacts=3, min_irs=2, min_nodes=2)
-        findings = asyncio.get_event_loop().run_until_complete(
-            ver.run(store, PROJECT_ID)
-        )
+        findings = asyncio.get_event_loop().run_until_complete(ver.run(store, PROJECT_ID))
 
         assert len(findings) == 0
 

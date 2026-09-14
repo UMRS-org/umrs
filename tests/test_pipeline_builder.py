@@ -3,7 +3,6 @@
 import json
 
 import pytest
-
 from umrs.pipeline_sdk.builder import (
     PipelineBuilder,
     PipelineBuilderError,

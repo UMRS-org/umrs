@@ -78,7 +78,6 @@ def test_pool_created_with_json_codecs(monkeypatch):
         import types
 
         from fastapi import FastAPI, Request
-
         from umrs.api import _asyncpg_pool as pool_mod
 
         app = FastAPI()

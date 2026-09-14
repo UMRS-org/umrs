@@ -37,8 +37,8 @@ def test_profiles_degradation_logs(monkeypatch, caplog):
 
 
 def test_site_config_backend_degradation_logs(monkeypatch, caplog):
-    import umrs.server.rivault_launcher as rl
     import umrs.orchestrator.site_config as sc
+    import umrs.server.rivault_launcher as rl
 
     monkeypatch.setattr(sc, "get_site_config", lambda: (_ for _ in ()).throw(RuntimeError("yaml")))
 

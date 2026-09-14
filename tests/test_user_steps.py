@@ -16,12 +16,12 @@ import io
 import json
 import textwrap
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any
 from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
-
+from umrs.pipeline_sdk.adapter import EmbeddingAdapter
 from umrs.pipeline_sdk.step import Step, StepContext, StepResult
 from umrs.pipeline_sdk.workflow import (
     OutputSpec,
@@ -35,15 +35,13 @@ from umrs.pipeline_sdk.workflow import (
     load_steps,
     load_workflow,
 )
-from umrs.pipeline_sdk.adapter import EmbeddingAdapter
-
 
 # =========================================================================
 # Fixtures
 # =========================================================================
 
 
-def _minimal_workflow_dict(**overrides: Any) -> Dict[str, Any]:
+def _minimal_workflow_dict(**overrides: Any) -> dict[str, Any]:
     """Return the smallest valid workflow.json dict."""
     d = {
         "name": "test-pipeline",
@@ -105,7 +103,7 @@ class EmbeddingStep(Step):
 
 def _mock_s3():
     """Build a mock S3 client with basic get/put/head support."""
-    store: Dict[str, bytes] = {}
+    store: dict[str, bytes] = {}
     s3 = MagicMock()
 
     def put_object(Bucket, Key, Body, **kw):
@@ -356,7 +354,7 @@ class TestScriptLoading:
 
 
 class TestWorkflowPipeline:
-    def _make_pipeline(self, steps: List[Step], **wf_kw) -> WorkflowPipeline:
+    def _make_pipeline(self, steps: list[Step], **wf_kw) -> WorkflowPipeline:
         step_specs = [
             StepSpec(name=s.name, entrypoint=f"fake:{s.__class__.__name__}") for s in steps
         ]

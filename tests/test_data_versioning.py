@@ -1,12 +1,6 @@
 """Tests for B6 — Data Versioning."""
 
-import json
-import time
-
-import pytest
-
 from umrs.shared.data_versioning import (
-    DataVersion,
     DataVersionManager,
     ManifestDiff,
     ObjectRecord,

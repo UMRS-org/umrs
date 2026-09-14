@@ -8,10 +8,6 @@ These tests verify that:
 
 import json
 import logging
-from types import SimpleNamespace
-from unittest.mock import patch
-
-import pytest
 
 from umrs.core.zmq_correlation import (
     dumps_with_correlation_id,
@@ -123,9 +119,7 @@ class TestServerSideExtraction:
         mq._CONTROL_PARSERS = MessageQueue._CONTROL_PARSERS
 
         with caplog.at_level(logging.INFO):
-            cmd, result = mq._parse_json_payload(
-                ["CHECK", "client-1", "not-json"], "sender-1"
-            )
+            cmd, result = mq._parse_json_payload(["CHECK", "client-1", "not-json"], "sender-1")
 
         assert cmd == "CHECK"  # Still returns cmd
 
@@ -141,9 +135,7 @@ class TestBackwardCompatibility:
         mq._CONTROL_PARSERS = MessageQueue._CONTROL_PARSERS
 
         payload_str = json.dumps({"cmd": "CHECK"})
-        cmd, result = mq._parse_json_payload(
-            ["CHECK", "client-1", payload_str], "sender-1"
-        )
+        cmd, result = mq._parse_json_payload(["CHECK", "client-1", payload_str], "sender-1")
 
         assert cmd == "CHECK"
         client_id, payload_str_result, zmq_sender_id = result

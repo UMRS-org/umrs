@@ -8,11 +8,10 @@ filter everything out (empty list, status 200) — same behaviour as
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-
 from umrs.api import endpoints as endpoints_mod
 from umrs.api.endpoints import router
 from umrs.orchestrator.endpoint_registry import EndpointRegistry, get_registry
@@ -31,10 +30,10 @@ def _register(registry: EndpointRegistry, *, project_id: str, model: str, job_id
     registry.mark_ready(job_id)
 
 
-def _patch_registry(monkeypatch, entries: Dict[str, Dict[str, Any]]):
+def _patch_registry(monkeypatch, entries: dict[str, dict[str, Any]]):
     """Stub _resolve_registered_model_entry to return canned metadata."""
 
-    def fake_resolve(model_name: str) -> Optional[Dict[str, Any]]:
+    def fake_resolve(model_name: str) -> dict[str, Any] | None:
         return entries.get(model_name)
 
     monkeypatch.setattr(endpoints_mod, "_resolve_registered_model_entry", fake_resolve)

@@ -6,7 +6,6 @@ import json
 import sys
 
 import pytest
-
 from umrs.client import cli
 
 

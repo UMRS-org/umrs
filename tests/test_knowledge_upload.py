@@ -6,10 +6,8 @@ import io
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-
 from umrs.api.files import get_project_id
 from umrs.api.knowledge_upload import router
 
@@ -34,9 +32,7 @@ def _app(monkeypatch, *, s3=None, runtime=None):
         bucket="umrs-files",
         get_client=lambda: s3 or _FakeS3Client(),
     )
-    monkeypatch.setattr(
-        "umrs.api.knowledge_upload.get_s3_config", lambda: fake_config
-    )
+    monkeypatch.setattr("umrs.api.knowledge_upload.get_s3_config", lambda: fake_config)
     monkeypatch.setattr(
         "umrs.api.knowledge_upload._resolve_ingest_target", lambda *a, **k: "graph-default"
     )
@@ -95,8 +91,10 @@ def test_s3_fault_is_503_never_silent_fallback(monkeypatch):
 
 def test_oversize_is_413(monkeypatch):
     resp = _post(
-        _app(monkeypatch), monkeypatch,
-        filename="big.bin", data=b"x" * (512 * 1024 * 1024 + 1),
+        _app(monkeypatch),
+        monkeypatch,
+        filename="big.bin",
+        data=b"x" * (512 * 1024 * 1024 + 1),
     )
     assert resp.status_code == 413
 
@@ -134,14 +132,10 @@ class TestRagFacadeDwell:
             called["project_id"] = project_id
             return {"job_id": "job-central-1"}
 
-        monkeypatch.setattr(
-            "umrs.api.rag._require_rag_scope", lambda *_a, **_k: ("u-1", "proj-9")
-        )
+        monkeypatch.setattr("umrs.api.rag._require_rag_scope", lambda *_a, **_k: ("u-1", "proj-9"))
         # Facade's inner "from .knowledge_upload import knowledge_upload"
         # resolves the attribute on this module — patch there.
-        monkeypatch.setattr(
-            "umrs.api.knowledge_upload.knowledge_upload", fake_knowledge_upload
-        )
+        monkeypatch.setattr("umrs.api.knowledge_upload.knowledge_upload", fake_knowledge_upload)
 
         import asyncio
 
@@ -156,9 +150,7 @@ class TestRagFacadeDwell:
         monkeypatch.setenv("UMRS_RAG_UPLOAD_FACADE", "endpoint")
         from umrs.api import rag
 
-        monkeypatch.setattr(
-            "umrs.api.rag._require_rag_scope", lambda *_a, **_k: ("u-1", "proj-9")
-        )
+        monkeypatch.setattr("umrs.api.rag._require_rag_scope", lambda *_a, **_k: ("u-1", "proj-9"))
         monkeypatch.setattr(
             "umrs.api.rag._discover_rag_endpoint", lambda *_a, **_k: "http://rag-svc"
         )

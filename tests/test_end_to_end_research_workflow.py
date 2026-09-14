@@ -26,23 +26,20 @@ from umrs.closed_loop_learning import (
     ClosedLoopLearning,
     ExperimentResult,
 )
-from umrs.evidence import Evidence, EvidenceSourceType
 from umrs.graph_reasoning import GraphNavigator
 from umrs.hypothesis_lifecycle import (
     HypothesisLifecycle,
     HypothesisStatus,
 )
-from umrs.knowledge.canonical_graph_view import CanonicalGraphView, in_memory_view
+from umrs.knowledge.canonical_graph_view import in_memory_view
 from umrs.knowledge.graph_types import RelationType
 from umrs.knowledge.knowledge_driven_planner import KnowledgeDrivenPlanner
 from umrs.knowledge.planner import ResearchPlan
 from umrs.knowledge.verification_session import (
     VerificationSession,
-    VerificationSessionStore,
 )
 from umrs.scientific_memory import InMemoryScientificMemoryStore
 from umrs.scientific_reasoning_engine import ScientificReasoningEngine
-
 
 # ── Test: Full Scientific Research Workflow ──────────────────────────────
 
@@ -66,32 +63,91 @@ def test_end_to_end_scientific_research_workflow():
 
     # Add scientific objects as nodes
     graph.add_node(node_id="paper-001", node_type="paper", title="Attention Is All You Need")
-    graph.add_node(node_id="paper-002", node_type="paper", title="BERT: Pre-training of Deep Bidirectional Transformers")
+    graph.add_node(
+        node_id="paper-002",
+        node_type="paper",
+        title="BERT: Pre-training of Deep Bidirectional Transformers",
+    )
     graph.add_node(node_id="code-001", node_type="code", title="transformer_model.py")
     graph.add_node(node_id="code-002", node_type="code", title="data_loader.py")
-    graph.add_node(node_id="notebook-001", node_type="notebook", title="transformer_experiment.ipynb")
+    graph.add_node(
+        node_id="notebook-001", node_type="notebook", title="transformer_experiment.ipynb"
+    )
     graph.add_node(node_id="dataset-001", node_type="dataset", title="QM9 Molecular Dataset")
-    graph.add_node(node_id="hypothesis-001", node_type="hypothesis", title="Transformers can predict molecular properties")
+    graph.add_node(
+        node_id="hypothesis-001",
+        node_type="hypothesis",
+        title="Transformers can predict molecular properties",
+    )
     graph.add_node(node_id="experiment-001", node_type="experiment", title="Transformer on QM9")
-    graph.add_node(node_id="finding-001", node_type="finding", title="Transformer achieves 95% accuracy on QM9")
+    graph.add_node(
+        node_id="finding-001", node_type="finding", title="Transformer achieves 95% accuracy on QM9"
+    )
 
     # Add typed edges (relationships between scientific objects)
-    graph.add_edge(source_id="paper-001", target_id="paper-002", relation_type=RelationType.CITES, confidence=0.9)
-    graph.add_edge(source_id="paper-001", target_id="code-001", relation_type=RelationType.IMPLEMENTS, confidence=0.85)
-    graph.add_edge(source_id="paper-001", target_id="hypothesis-001", relation_type=RelationType.DESCRIBES, confidence=0.8)
-    graph.add_edge(source_id="code-001", target_id="notebook-001", relation_type=RelationType.RELATED_TO, confidence=0.7)
-    graph.add_edge(source_id="code-001", target_id="code-002", relation_type=RelationType.DEPENDS_ON, confidence=0.9)
-    graph.add_edge(source_id="notebook-001", target_id="dataset-001", relation_type=RelationType.USES, confidence=0.95)
-    graph.add_edge(source_id="notebook-001", target_id="experiment-001", relation_type=RelationType.PRODUCES, confidence=0.85)
-    graph.add_edge(source_id="experiment-001", target_id="finding-001", relation_type=RelationType.PRODUCES, confidence=0.9)
-    graph.add_edge(source_id="finding-001", target_id="hypothesis-001", relation_type=RelationType.SUPPORTS, confidence=0.95)
+    graph.add_edge(
+        source_id="paper-001",
+        target_id="paper-002",
+        relation_type=RelationType.CITES,
+        confidence=0.9,
+    )
+    graph.add_edge(
+        source_id="paper-001",
+        target_id="code-001",
+        relation_type=RelationType.IMPLEMENTS,
+        confidence=0.85,
+    )
+    graph.add_edge(
+        source_id="paper-001",
+        target_id="hypothesis-001",
+        relation_type=RelationType.DESCRIBES,
+        confidence=0.8,
+    )
+    graph.add_edge(
+        source_id="code-001",
+        target_id="notebook-001",
+        relation_type=RelationType.RELATED_TO,
+        confidence=0.7,
+    )
+    graph.add_edge(
+        source_id="code-001",
+        target_id="code-002",
+        relation_type=RelationType.DEPENDS_ON,
+        confidence=0.9,
+    )
+    graph.add_edge(
+        source_id="notebook-001",
+        target_id="dataset-001",
+        relation_type=RelationType.USES,
+        confidence=0.95,
+    )
+    graph.add_edge(
+        source_id="notebook-001",
+        target_id="experiment-001",
+        relation_type=RelationType.PRODUCES,
+        confidence=0.85,
+    )
+    graph.add_edge(
+        source_id="experiment-001",
+        target_id="finding-001",
+        relation_type=RelationType.PRODUCES,
+        confidence=0.9,
+    )
+    graph.add_edge(
+        source_id="finding-001",
+        target_id="hypothesis-001",
+        relation_type=RelationType.SUPPORTS,
+        confidence=0.95,
+    )
 
     # Verify graph has nodes and edges
     all_nodes = graph.query()
     assert len(all_nodes) >= 9, f"Expected at least 9 nodes, got {len(all_nodes)}"
 
     outgoing = graph.get_outgoing("paper-001")
-    assert len(outgoing) >= 3, f"Expected at least 3 outgoing edges from paper-001, got {len(outgoing)}"
+    assert len(outgoing) >= 3, (
+        f"Expected at least 3 outgoing edges from paper-001, got {len(outgoing)}"
+    )
 
     # ── Step 2: Scientific Reasoning Engine ──────────────────────────────
     # Create the reasoning engine with the knowledge graph
@@ -311,7 +367,12 @@ def test_evidence_ranking_uses_single_implementation():
     graph = in_memory_view()
     graph.add_node(node_id="paper-001", node_type="paper", title="Test Paper")
     graph.add_node(node_id="finding-001", node_type="finding", title="Finding")
-    graph.add_edge(source_id="finding-001", target_id="paper-001", relation_type=RelationType.SUPPORTS, confidence=0.9)
+    graph.add_edge(
+        source_id="finding-001",
+        target_id="paper-001",
+        relation_type=RelationType.SUPPORTS,
+        confidence=0.9,
+    )
 
     navigator = GraphNavigator(graph=graph)
     reasoning_engine = ScientificReasoningEngine(navigator=navigator)
@@ -344,7 +405,12 @@ def test_closed_loop_uses_reasoning_engine():
     graph = in_memory_view()
     graph.add_node(node_id="paper-001", node_type="paper", title="Test Paper")
     graph.add_node(node_id="hypothesis-001", node_type="hypothesis", title="Test Hypothesis")
-    graph.add_edge(source_id="paper-001", target_id="hypothesis-001", relation_type=RelationType.DESCRIBES, confidence=0.8)
+    graph.add_edge(
+        source_id="paper-001",
+        target_id="hypothesis-001",
+        relation_type=RelationType.DESCRIBES,
+        confidence=0.8,
+    )
 
     lifecycle = HypothesisLifecycle()
     hyp_id = lifecycle.propose(statement="Test hypothesis")

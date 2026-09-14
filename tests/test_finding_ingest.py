@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from r4_contracts.research import EvidenceRef, EvidenceSource, Finding
-
 from umrs.knowledge import finding_ingest
 from umrs.knowledge.finding_ingest import InMemoryFindingSink, mint_iteration
 from umrs.knowledge.loop import LoopIteration, LoopPhase, LoopStatus, ResearchLoop
+
+from r4_contracts.research import EvidenceRef, EvidenceSource, Finding
 
 
 def _loop() -> ResearchLoop:

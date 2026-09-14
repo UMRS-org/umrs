@@ -12,8 +12,6 @@ import asyncio
 import json
 from types import SimpleNamespace
 
-import pytest
-
 from umrs.api import knowledge as api_knowledge
 from umrs.jobs import knowledge_adapters as ka
 
@@ -167,7 +165,10 @@ class TestInlineTextIngest:
 
 class TestNodesEdgesForArtifact:
     def _parsed_empty(self):
-        return {k: [] for k in ("modules", "classes", "functions", "algorithms", "dependencies", "kernels")}
+        return {
+            k: []
+            for k in ("modules", "classes", "functions", "algorithms", "dependencies", "kernels")
+        }
 
     def test_w3_graph_json_imported(self, monkeypatch):
         monkeypatch.setenv("UMRS_KNOWLEDGE_LLM_EXTRACT", "0")
@@ -198,7 +199,9 @@ class TestNodesEdgesForArtifact:
         # code artifacts never reach LLM extraction
         calls.clear()
         parsed_code = {**self._parsed_empty(), "functions": ["f"]}
-        ka._nodes_edges_for_artifact("art-2", "ir-2", "code", b"def f(): pass", parsed_code, "proj", "")
+        ka._nodes_edges_for_artifact(
+            "art-2", "ir-2", "code", b"def f(): pass", parsed_code, "proj", ""
+        )
         assert calls == []
 
     def test_llm_disabled_env(self, monkeypatch):

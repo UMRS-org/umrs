@@ -149,7 +149,9 @@ def test_inference_bindings_flow_through_issue(app):
             "/umrs/secrets/lease",
             headers=headers,
             json={
-                "job_id": "sess-1", "secret_name": "t", "scope": "inference",
+                "job_id": "sess-1",
+                "secret_name": "t",
+                "scope": "inference",
                 "session_id": "sess-1",
                 "source_ids": ["11111111-1111-4111-8111-111111111111"],
                 "default_source_id": "11111111-1111-4111-8111-111111111111",

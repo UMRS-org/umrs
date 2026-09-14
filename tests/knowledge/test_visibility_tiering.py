@@ -86,7 +86,9 @@ class TestVisibilityGatingShape:
             _EmbeddingsSearchBackend._similarity_hits,
         ):
             src = inspect.getsource(fn)
-            assert "visibility_predicate('n', include_ambient=self._include_ambient)" in src, fn.__name__
+            assert "visibility_predicate('n', include_ambient=self._include_ambient)" in src, (
+                fn.__name__
+            )
             assert "WHERE n.project_id = %s" not in src, fn.__name__  # old ungated form gone
 
     def test_catalog_store_uses_shared_predicate_with_s3_ownership(self) -> None:
@@ -161,8 +163,10 @@ class TestIncludeAmbient:
         assert "visibility != 'ambient'" not in sql
 
     def test_route_passes_include_ambient_from_admin_identity(self) -> None:
-        src = inspect.getsource(query_knowledge := __import__(
-            "umrs.api.knowledge_query", fromlist=["query_knowledge"]
-        ).query_knowledge)
+        src = inspect.getsource(
+            query_knowledge := __import__(
+                "umrs.api.knowledge_query", fromlist=["query_knowledge"]
+            ).query_knowledge
+        )
         assert "identity.is_admin" in src
         assert "include_ambient=include_ambient" in src

@@ -12,7 +12,6 @@ from umrs.graph_reasoning import (
 from umrs.knowledge.canonical_graph_view import CanonicalGraphView, in_memory_view
 from umrs.knowledge.graph_types import RelationType
 
-
 # ── Fixtures ──────────────────────────────────────────────────────────────
 
 
@@ -26,23 +25,47 @@ def _build_test_graph() -> CanonicalGraphView:
     graph.add_node(node_id="code-001", node_type="code", title="transformer.py")
     graph.add_node(node_id="notebook-001", node_type="notebook", title="experiment.ipynb")
     graph.add_node(node_id="dataset-001", node_type="dataset", title="QM9")
-    graph.add_node(node_id="hypothesis-001", node_type="hypothesis", title="Transformers can predict molecular properties")
+    graph.add_node(
+        node_id="hypothesis-001",
+        node_type="hypothesis",
+        title="Transformers can predict molecular properties",
+    )
     graph.add_node(node_id="experiment-001", node_type="experiment", title="Transformer on QM9")
-    graph.add_node(node_id="finding-001", node_type="finding", title="Transformer achieves 95% accuracy")
+    graph.add_node(
+        node_id="finding-001", node_type="finding", title="Transformer achieves 95% accuracy"
+    )
     graph.add_node(node_id="figure-001", node_type="figure", title="loss_curve.png")
     graph.add_node(node_id="equation-001", node_type="equation", title="attention_weight")
 
     # Add edges
     graph.add_edge(source_id="paper-001", target_id="paper-002", relation_type=RelationType.CITES)
-    graph.add_edge(source_id="paper-001", target_id="code-001", relation_type=RelationType.IMPLEMENTS)
-    graph.add_edge(source_id="paper-001", target_id="hypothesis-001", relation_type=RelationType.DESCRIBES)
-    graph.add_edge(source_id="code-001", target_id="notebook-001", relation_type=RelationType.RELATED_TO)
-    graph.add_edge(source_id="notebook-001", target_id="dataset-001", relation_type=RelationType.USES)
-    graph.add_edge(source_id="notebook-001", target_id="experiment-001", relation_type=RelationType.PRODUCES)
-    graph.add_edge(source_id="experiment-001", target_id="finding-001", relation_type=RelationType.PRODUCES)
-    graph.add_edge(source_id="experiment-001", target_id="figure-001", relation_type=RelationType.PRODUCES)
-    graph.add_edge(source_id="finding-001", target_id="hypothesis-001", relation_type=RelationType.SUPPORTS)
-    graph.add_edge(source_id="hypothesis-001", target_id="equation-001", relation_type=RelationType.RELATED_TO)
+    graph.add_edge(
+        source_id="paper-001", target_id="code-001", relation_type=RelationType.IMPLEMENTS
+    )
+    graph.add_edge(
+        source_id="paper-001", target_id="hypothesis-001", relation_type=RelationType.DESCRIBES
+    )
+    graph.add_edge(
+        source_id="code-001", target_id="notebook-001", relation_type=RelationType.RELATED_TO
+    )
+    graph.add_edge(
+        source_id="notebook-001", target_id="dataset-001", relation_type=RelationType.USES
+    )
+    graph.add_edge(
+        source_id="notebook-001", target_id="experiment-001", relation_type=RelationType.PRODUCES
+    )
+    graph.add_edge(
+        source_id="experiment-001", target_id="finding-001", relation_type=RelationType.PRODUCES
+    )
+    graph.add_edge(
+        source_id="experiment-001", target_id="figure-001", relation_type=RelationType.PRODUCES
+    )
+    graph.add_edge(
+        source_id="finding-001", target_id="hypothesis-001", relation_type=RelationType.SUPPORTS
+    )
+    graph.add_edge(
+        source_id="hypothesis-001", target_id="equation-001", relation_type=RelationType.RELATED_TO
+    )
 
     return graph
 
@@ -247,10 +270,7 @@ def test_reason_with_hypothesis_anchor():
     assert context.query == "Is this hypothesis supported?"
     assert context.related.total() > 0
     # Should find evidence chains for the hypothesis
-    assert any(
-        chain.claim_id == "hypothesis-001"
-        for chain in context.evidence_chains
-    )
+    assert any(chain.claim_id == "hypothesis-001" for chain in context.evidence_chains)
 
 
 def test_find_related_empty_graph():

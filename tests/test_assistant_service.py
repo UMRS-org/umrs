@@ -155,9 +155,7 @@ async def test_augment_messages_passthrough_when_no_sources(monkeypatch):
     config = svc._resolve_config()
     messages = [{"role": "user", "content": "hi"}]
     assert (
-        await svc.augment_messages(
-            config, messages, project_id=None, top_k=3, threshold=0.7
-        )
+        await svc.augment_messages(config, messages, project_id=None, top_k=3, threshold=0.7)
         == messages
     )
 

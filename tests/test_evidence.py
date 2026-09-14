@@ -3,16 +3,13 @@
 from __future__ import annotations
 
 import pytest
-
 from umrs.evidence import (
     DuplicateEvidenceError,
     Evidence,
-    EvidenceNotFoundError,
     EvidenceSourceType,
     EvidenceStatus,
     InMemoryEvidenceStore,
 )
-
 
 # ── Enum Tests ────────────────────────────────────────────────────────────
 
@@ -180,9 +177,33 @@ def test_store_get_nonexistent():
 def test_store_list_evidence():
     """Test listing evidence with filters."""
     store = InMemoryEvidenceStore()
-    store.add_evidence(Evidence(evidence_id="evd-001", project_id="proj-001", source_type=EvidenceSourceType.UPLOADED_FILE, claim_id="claim-001", relevance_score=0.8))
-    store.add_evidence(Evidence(evidence_id="evd-002", project_id="proj-001", source_type=EvidenceSourceType.EXTERNAL_PAPER, claim_id="claim-001", relevance_score=0.9))
-    store.add_evidence(Evidence(evidence_id="evd-003", project_id="proj-002", source_type=EvidenceSourceType.UPLOADED_FILE, claim_id="claim-002", relevance_score=0.7))
+    store.add_evidence(
+        Evidence(
+            evidence_id="evd-001",
+            project_id="proj-001",
+            source_type=EvidenceSourceType.UPLOADED_FILE,
+            claim_id="claim-001",
+            relevance_score=0.8,
+        )
+    )
+    store.add_evidence(
+        Evidence(
+            evidence_id="evd-002",
+            project_id="proj-001",
+            source_type=EvidenceSourceType.EXTERNAL_PAPER,
+            claim_id="claim-001",
+            relevance_score=0.9,
+        )
+    )
+    store.add_evidence(
+        Evidence(
+            evidence_id="evd-003",
+            project_id="proj-002",
+            source_type=EvidenceSourceType.UPLOADED_FILE,
+            claim_id="claim-002",
+            relevance_score=0.7,
+        )
+    )
 
     # All active evidence
     all_evd = store.list_evidence()
@@ -227,7 +248,9 @@ def test_store_list_evidence_limit():
     """Test that limit is respected."""
     store = InMemoryEvidenceStore()
     for i in range(10):
-        store.add_evidence(Evidence(evidence_id=f"evd-{i:03d}", project_id="proj-001", relevance_score=0.5))
+        store.add_evidence(
+            Evidence(evidence_id=f"evd-{i:03d}", project_id="proj-001", relevance_score=0.5)
+        )
 
     limited = store.list_evidence(limit=5)
     assert len(limited) == 5
@@ -236,9 +259,30 @@ def test_store_list_evidence_limit():
 def test_store_search_evidence():
     """Test searching evidence."""
     store = InMemoryEvidenceStore()
-    store.add_evidence(Evidence(evidence_id="evd-001", project_id="p1", content="This is about machine learning", citation="Smith 2023"))
-    store.add_evidence(Evidence(evidence_id="evd-002", project_id="p1", content="This is about quantum computing", citation="Jones 2024"))
-    store.add_evidence(Evidence(evidence_id="evd-003", project_id="p2", content="Machine learning is powerful", citation="Brown 2023"))
+    store.add_evidence(
+        Evidence(
+            evidence_id="evd-001",
+            project_id="p1",
+            content="This is about machine learning",
+            citation="Smith 2023",
+        )
+    )
+    store.add_evidence(
+        Evidence(
+            evidence_id="evd-002",
+            project_id="p1",
+            content="This is about quantum computing",
+            citation="Jones 2024",
+        )
+    )
+    store.add_evidence(
+        Evidence(
+            evidence_id="evd-003",
+            project_id="p2",
+            content="Machine learning is powerful",
+            citation="Brown 2023",
+        )
+    )
 
     # Search by content
     results = store.search_evidence("machine learning")
@@ -258,9 +302,15 @@ def test_store_search_evidence():
 def test_store_get_evidence_for_claim():
     """Test getting evidence for a specific claim."""
     store = InMemoryEvidenceStore()
-    store.add_evidence(Evidence(evidence_id="evd-001", project_id="p1", claim_id="claim-001", relevance_score=0.8))
-    store.add_evidence(Evidence(evidence_id="evd-002", project_id="p1", claim_id="claim-001", relevance_score=0.9))
-    store.add_evidence(Evidence(evidence_id="evd-003", project_id="p1", claim_id="claim-002", relevance_score=0.7))
+    store.add_evidence(
+        Evidence(evidence_id="evd-001", project_id="p1", claim_id="claim-001", relevance_score=0.8)
+    )
+    store.add_evidence(
+        Evidence(evidence_id="evd-002", project_id="p1", claim_id="claim-001", relevance_score=0.9)
+    )
+    store.add_evidence(
+        Evidence(evidence_id="evd-003", project_id="p1", claim_id="claim-002", relevance_score=0.7)
+    )
 
     claim1_evd = store.get_evidence_for_claim("claim-001")
 
@@ -296,10 +346,26 @@ def test_store_update_status_nonexistent():
 def test_store_count():
     """Test counting evidence."""
     store = InMemoryEvidenceStore()
-    store.add_evidence(Evidence(evidence_id="evd-001", project_id="p1", source_type=EvidenceSourceType.UPLOADED_FILE))
-    store.add_evidence(Evidence(evidence_id="evd-002", project_id="p1", source_type=EvidenceSourceType.EXTERNAL_PAPER))
-    store.add_evidence(Evidence(evidence_id="evd-003", project_id="p1", source_type=EvidenceSourceType.UPLOADED_FILE))
-    store.add_evidence(Evidence(evidence_id="evd-004", project_id="p2", source_type=EvidenceSourceType.UPLOADED_FILE))
+    store.add_evidence(
+        Evidence(
+            evidence_id="evd-001", project_id="p1", source_type=EvidenceSourceType.UPLOADED_FILE
+        )
+    )
+    store.add_evidence(
+        Evidence(
+            evidence_id="evd-002", project_id="p1", source_type=EvidenceSourceType.EXTERNAL_PAPER
+        )
+    )
+    store.add_evidence(
+        Evidence(
+            evidence_id="evd-003", project_id="p1", source_type=EvidenceSourceType.UPLOADED_FILE
+        )
+    )
+    store.add_evidence(
+        Evidence(
+            evidence_id="evd-004", project_id="p2", source_type=EvidenceSourceType.UPLOADED_FILE
+        )
+    )
 
     assert store.count() == 4
     assert store.count(project_id="p1") == 3
@@ -324,8 +390,12 @@ def test_store_list_excludes_retracted():
 def test_store_get_evidence_for_claim_excludes_retracted():
     """Test that get_evidence_for_claim excludes retracted evidence."""
     store = InMemoryEvidenceStore()
-    evd1_id = store.add_evidence(Evidence(evidence_id="evd-001", project_id="p1", claim_id="claim-001", relevance_score=0.8))
-    evd2_id = store.add_evidence(Evidence(evidence_id="evd-002", project_id="p1", claim_id="claim-001", relevance_score=0.9))
+    evd1_id = store.add_evidence(
+        Evidence(evidence_id="evd-001", project_id="p1", claim_id="claim-001", relevance_score=0.8)
+    )
+    evd2_id = store.add_evidence(
+        Evidence(evidence_id="evd-002", project_id="p1", claim_id="claim-001", relevance_score=0.9)
+    )
 
     # Retract one
     store.update_status(evd1_id, EvidenceStatus.RETRACTED)

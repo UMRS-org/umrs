@@ -16,7 +16,10 @@ def _ensure_umrs_namespace() -> None:
 
 def _load_api_module(qualname: str, filename: str):
     # Back-compat shim: plain import via the lazy umrs.api package.
-    return getattr(__import__("umrs.api", fromlist=[filename.removesuffix(".py")]), filename.removesuffix(".py"))
+    return getattr(
+        __import__("umrs.api", fromlist=[filename.removesuffix(".py")]),
+        filename.removesuffix(".py"),
+    )
 
 
 def _knowledge_api_deps():
@@ -47,8 +50,7 @@ def project_dir(tmp_path: Path) -> Path:
     papers = tmp_path / "papers"
     papers.mkdir()
     (papers / "sample.txt").write_text(
-        "The goal of this paper is to test HTTP understand.\n"
-        "Keywords: http, understand, api\n"
+        "The goal of this paper is to test HTTP understand.\nKeywords: http, understand, api\n"
     )
     return papers
 

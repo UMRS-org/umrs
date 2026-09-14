@@ -153,8 +153,6 @@ class TestUploadNotifyFailure:
         s3_key = "path/to/key"
         notify_ok = False
         exit_code = 0
-        if s3_key and not notify_ok:
-            exit_code = 1
-        elif not s3_key:
+        if s3_key and not notify_ok or not s3_key:
             exit_code = 1
         assert exit_code == 1

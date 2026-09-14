@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 
 # launch_fastapi.py
-from fastapi import FastAPI
-from pydantic import BaseModel
-from typing import List
-from transformers import AutoTokenizer, AutoModel
+
 import torch
 import uvicorn
+from fastapi import FastAPI
+from pydantic import BaseModel
+from transformers import AutoModel, AutoTokenizer
 
 # ----- Créer le serveur FastAPI -----
 app = FastAPI(title="OpenAI-compatible Embedding Server")
@@ -20,12 +20,12 @@ model.eval()  # Mode évaluation, pas de calculs de gradients
 
 # ----- Définir les classes de requêtes et réponses -----
 class EmbeddingRequest(BaseModel):
-    input: List[str]
+    input: list[str]
     model: str
 
 
 class EmbeddingResponse(BaseModel):
-    data: List[dict]
+    data: list[dict]
 
 
 # ----- Endpoint pour calculer les embeddings -----

@@ -17,22 +17,15 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import tempfile
 import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any
-from unittest.mock import MagicMock, patch
-
-from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from unittest.mock import MagicMock, patch
 
 import pytest
-
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -152,40 +145,46 @@ def _create_mock_store() -> MagicMock:
         return "INSERT 0 1"
 
     async def fake_list_irs(project_id: str):
-        return [SimpleNamespace(
-            ir_id="test-ir",
-            artifact_id="test-artifact",
-            ir_type="summary",
-            version="1",
-            content="test content",
-            content_hash="sha256:test",
-            status="active",
-            created_at=datetime.now(),
-        )]
+        return [
+            SimpleNamespace(
+                ir_id="test-ir",
+                artifact_id="test-artifact",
+                ir_type="summary",
+                version="1",
+                content="test content",
+                content_hash="sha256:test",
+                status="active",
+                created_at=datetime.now(),
+            )
+        ]
 
     async def fake_list_nodes(project_id: str):
-        return [SimpleNamespace(
-            node_id="test-node",
-            project_id="test-project",
-            label="test-label",
-            node_type="artifact",
-            content="test content",
-            content_hash="sha256:test",
-            source_ir="test-ir",
-            created_at=datetime.now(),
-            updated_at=datetime.now(),
-        )]
+        return [
+            SimpleNamespace(
+                node_id="test-node",
+                project_id="test-project",
+                label="test-label",
+                node_type="artifact",
+                content="test content",
+                content_hash="sha256:test",
+                source_ir="test-ir",
+                created_at=datetime.now(),
+                updated_at=datetime.now(),
+            )
+        ]
 
     async def fake_list_edges(project_id: str):
-        return [SimpleNamespace(
-            edge_id="test-edge",
-            project_id="test-project",
-            source_id="test-node-1",
-            target_id="test-node-2",
-            relation_type="related_to",
-            content="test relation",
-            created_at=datetime.now(),
-        )]
+        return [
+            SimpleNamespace(
+                edge_id="test-edge",
+                project_id="test-project",
+                source_id="test-node-1",
+                target_id="test-node-2",
+                relation_type="related_to",
+                content="test relation",
+                created_at=datetime.now(),
+            )
+        ]
 
     @asynccontextmanager
     async def fake_acquire():
@@ -227,8 +226,13 @@ def test_01_create_test_data(e2e_ctx: E2EContext) -> None:
                 "(id, content_hash, kind, project_id, source_ref, size_bytes, mime_type) "
                 "VALUES ($1, $2, $3, $4, $5, $6, $7) "
                 "ON CONFLICT (id) DO NOTHING",
-                artifact_id, content_hash, "document", e2e_ctx.project_id,
-                "e2e-test-source", len(content), "text/plain",
+                artifact_id,
+                content_hash,
+                "document",
+                e2e_ctx.project_id,
+                "e2e-test-source",
+                len(content),
+                "text/plain",
             )
 
     asyncio.get_event_loop().run_until_complete(_insert())
@@ -248,7 +252,9 @@ def test_02_create_a2l_ref(e2e_ctx: E2EContext) -> None:
                 "(artifact_id, a2l_hash, a2l_id, synced_at, source) "
                 "VALUES ($1, $2, $3, NOW(), 'e2e-test') "
                 "ON CONFLICT (artifact_id, a2l_hash) DO NOTHING",
-                e2e_ctx.artifact_id, e2e_ctx.content_hash, a2l_id,
+                e2e_ctx.artifact_id,
+                e2e_ctx.content_hash,
+                a2l_id,
             )
 
     asyncio.get_event_loop().run_until_complete(_insert())
@@ -259,9 +265,10 @@ def test_02_create_a2l_ref(e2e_ctx: E2EContext) -> None:
 
 def test_03_call_a2l_derive_endpoint(e2e_ctx: E2EContext) -> None:
     """POST /umrs/a2l/derive — register A2L link for knowledge artifact."""
-    from unittest.mock import AsyncMock, patch
-    from umrs.api.a2l import derive_a2l_link
+    from unittest.mock import AsyncMock
+
     from pydantic import BaseModel
+    from umrs.api.a2l import derive_a2l_link
 
     mock_store = _create_mock_store()
 
@@ -275,6 +282,7 @@ def test_03_call_a2l_derive_endpoint(e2e_ctx: E2EContext) -> None:
     mock_store.fetchrow = AsyncMock(return_value={"id": 1})
 
     with patch("umrs.knowledge.store.get_store", return_value=mock_store):
+
         async def _test():
             result = await derive_a2l_link(
                 DeriveRequest(
@@ -287,6 +295,7 @@ def test_03_call_a2l_derive_endpoint(e2e_ctx: E2EContext) -> None:
             return result
 
         import asyncio
+
         result = asyncio.get_event_loop().run_until_complete(_test())
         assert result["status"] in ("created", "updated", "error")
 
@@ -296,16 +305,20 @@ def test_03_call_a2l_derive_endpoint(e2e_ctx: E2EContext) -> None:
 
 def test_04_verify_lineage_query(e2e_ctx: E2EContext) -> None:
     """GET /umrs/knowledge/lineage/{artifact_id} — verify ancestors/descendants."""
-    from unittest.mock import AsyncMock, patch
+    from unittest.mock import AsyncMock
+
     from umrs.api.knowledge_lineage import get_artifact_lineage
 
     mock_store = _create_mock_store()
     mock_store.fetchrow = AsyncMock(return_value={"artifact_id": e2e_ctx.artifact_id})
-    mock_store.fetch = AsyncMock(return_value=[
-        {"artifact_id": e2e_ctx.artifact_id, "a2l_id": "a2l-test"},
-    ])
+    mock_store.fetch = AsyncMock(
+        return_value=[
+            {"artifact_id": e2e_ctx.artifact_id, "a2l_id": "a2l-test"},
+        ]
+    )
 
     with patch("umrs.knowledge.store.get_store", return_value=mock_store):
+
         async def _test():
             result = await get_artifact_lineage(
                 artifact_id=e2e_ctx.artifact_id,
@@ -315,6 +328,7 @@ def test_04_verify_lineage_query(e2e_ctx: E2EContext) -> None:
             return result
 
         import asyncio
+
         result = asyncio.get_event_loop().run_until_complete(_test())
 
         assert result["artifact_id"] == e2e_ctx.artifact_id
@@ -377,9 +391,7 @@ def test_06_verify_bundle_structure(e2e_ctx: E2EContext, tmp_path: Path) -> None
     manifest_path = output_dir / "manifest.json"
     manifest_path.write_text(json.dumps(manifest_data))
 
-    (output_dir / "artifacts.jsonl").write_text(
-        '{"artifact_id": "test", "kind": "document"}\n'
-    )
+    (output_dir / "artifacts.jsonl").write_text('{"artifact_id": "test", "kind": "document"}\n')
     (output_dir / "a2l_links.jsonl").write_text(
         '{"knowledge_artifact_id": "test", "a2l_artifact_id": "a2l-test"}\n'
     )
@@ -426,9 +438,7 @@ def test_07_reimport_bundle(e2e_ctx: E2EContext, tmp_path: Path) -> None:
         "signature": "sig:test",
     }
     (output_dir / "manifest.json").write_text(json.dumps(manifest_data))
-    (output_dir / "artifacts.jsonl").write_text(
-        '{"artifact_id": "test", "kind": "document"}\n'
-    )
+    (output_dir / "artifacts.jsonl").write_text('{"artifact_id": "test", "kind": "document"}\n')
 
     writer = ExportBundleWriter(output_dir)
     assert writer is not None
@@ -439,16 +449,20 @@ def test_07_reimport_bundle(e2e_ctx: E2EContext, tmp_path: Path) -> None:
 
 def test_08_verify_lineage_after_reimport(e2e_ctx: E2EContext) -> None:
     """Verify lineage query still works post re-import."""
-    from unittest.mock import AsyncMock, patch
+    from unittest.mock import AsyncMock
+
     from umrs.api.knowledge_lineage import get_artifact_lineage
 
     mock_store = _create_mock_store()
     mock_store.fetchrow = AsyncMock(return_value={"artifact_id": e2e_ctx.artifact_id})
-    mock_store.fetch = AsyncMock(return_value=[
-        {"artifact_id": e2e_ctx.artifact_id, "a2l_id": "a2l-test"},
-    ])
+    mock_store.fetch = AsyncMock(
+        return_value=[
+            {"artifact_id": e2e_ctx.artifact_id, "a2l_id": "a2l-test"},
+        ]
+    )
 
     with patch("umrs.knowledge.store.get_store", return_value=mock_store):
+
         async def _test():
             result = await get_artifact_lineage(
                 artifact_id=e2e_ctx.artifact_id,
@@ -458,6 +472,7 @@ def test_08_verify_lineage_after_reimport(e2e_ctx: E2EContext) -> None:
             return result
 
         import asyncio
+
         result = asyncio.get_event_loop().run_until_complete(_test())
 
         assert result["artifact_id"] == e2e_ctx.artifact_id

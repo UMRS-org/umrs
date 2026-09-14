@@ -26,8 +26,6 @@ def _mvp_auth_and_engine(monkeypatch):
     loop_api.clear_loop_store()
 
 
-
-
 def _start_loop(client, **body) -> str:
     """POST /umrs/loops then freeze the simulated engine so the loop stays
     RUNNING for the test (surface semantics, not lifecycle)."""
@@ -113,31 +111,30 @@ class TestPutState:
             json={"project_id": "proj-x", "research_goal": "clamp", "max_iterations": 2},
         )
         loop_id = start.json()["loop_id"]
-        response = client.put(
-            f"/umrs/loops/{loop_id}/state", json={"current_iteration": 99}
-        )
+        response = client.put(f"/umrs/loops/{loop_id}/state", json={"current_iteration": 99})
         assert response.status_code == 200
         assert response.json()["current_iteration"] == 2
 
     def test_put_state_invalid_status_or_phase(self):
         client = _make_app()
-        start = client.post(
-            "/umrs/loops", json={"project_id": "proj-x", "research_goal": "bad"}
-        )
+        start = client.post("/umrs/loops", json={"project_id": "proj-x", "research_goal": "bad"})
         loop_id = start.json()["loop_id"]
-        assert client.put(f"/umrs/loops/{loop_id}/state", json={"status": "bogus"}).status_code == 422
-        assert client.put(f"/umrs/loops/{loop_id}/state", json={"phase": "bogus"}).status_code == 422
+        assert (
+            client.put(f"/umrs/loops/{loop_id}/state", json={"status": "bogus"}).status_code == 422
+        )
+        assert (
+            client.put(f"/umrs/loops/{loop_id}/state", json={"phase": "bogus"}).status_code == 422
+        )
 
     def test_finished_loop_stops_saving_state(self):
         client = _make_app()
-        start = client.post(
-            "/umrs/loops", json={"project_id": "proj-x", "research_goal": "frozen"}
-        )
+        start = client.post("/umrs/loops", json={"project_id": "proj-x", "research_goal": "frozen"})
         loop_id = start.json()["loop_id"]
         assert client.post(f"/umrs/loops/{loop_id}/stop").status_code == 200
-        assert client.put(
-            f"/umrs/loops/{loop_id}/state", json={"status": "running"}
-        ).status_code == 200  # PUT succeeds as a projection (no creation), but no resurrection: status stays stopped? Validate rule below.
+        assert (
+            client.put(f"/umrs/loops/{loop_id}/state", json={"status": "running"}).status_code
+            == 200
+        )  # PUT succeeds as a projection (no creation), but no resurrection: status stays stopped? Validate rule below.
 
     def test_finish_blocked_for_append_on_stopped_loop(self):
         client = _make_app()
@@ -146,9 +143,12 @@ class TestPutState:
         )
         loop_id = start.json()["loop_id"]
         assert client.post(f"/umrs/loops/{loop_id}/stop").status_code == 200
-        assert client.post(
-            f"/umrs/loops/{loop_id}/iterations", json={"iteration_number": 1}
-        ).status_code == 409
+        assert (
+            client.post(
+                f"/umrs/loops/{loop_id}/iterations", json={"iteration_number": 1}
+            ).status_code
+            == 409
+        )
 
 
 class TestAppendIteration:
@@ -207,14 +207,19 @@ class TestAppendIteration:
 class TestLoopSnapshot:
     def test_snapshot_returns_hosting_checker_view(self):
         client = _make_app()
-        start = client.post(
-            "/umrs/loops", json={"project_id": "proj-x", "research_goal": "snap"}
-        )
+        start = client.post("/umrs/loops", json={"project_id": "proj-x", "research_goal": "snap"})
         loop_id = start.json()["loop_id"]
         snap = client.get(f"/umrs/loops/{loop_id}/snapshot")
         assert snap.status_code == 200
         payload = snap.json()
-        for field in ("status", "phase", "current_iteration", "max_iterations", "total_findings", "driver_alive"):
+        for field in (
+            "status",
+            "phase",
+            "current_iteration",
+            "max_iterations",
+            "total_findings",
+            "driver_alive",
+        ):
             assert field in payload
         assert payload["driver_alive"] in (True, False)
 

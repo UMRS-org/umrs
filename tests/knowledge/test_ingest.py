@@ -5,18 +5,15 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 import pytest
-
+from catalog_store_fake import FakeCatalogMetaStore
 from umrs.data_catalog.ingest import IngestionError
 from umrs.knowledge.ingest import (
     BatchIngestionResult,
-    IngestionResult,
     IngesterConfig,
+    IngestionResult,
     KnowledgeIngester,
     ingest_object,
 )
-
-from catalog_store_fake import FakeCatalogMetaStore
-
 
 # ── Test Fixtures ────────────────────────────────────────────────────────────
 
@@ -76,7 +73,6 @@ def fake_meta_store(ready_meta):
     store = FakeCatalogMetaStore()
     store.upsert(ready_meta, "test-project")
     return store
-
 
     """Test that IngesterConfig has sensible defaults."""
     config = IngesterConfig()

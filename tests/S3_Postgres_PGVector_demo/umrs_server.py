@@ -2,12 +2,11 @@
 import json
 import os
 import sys
+from collections import defaultdict
+
+from umrs.inference.embeddings import *
 from umrs.server.sql import *
 from umrs.shared.storage.s3 import *
-from umrs.inference.embeddings import *
-import time
-from collections import defaultdict
-import signal
 
 # Path to the configuration file
 
@@ -93,7 +92,7 @@ if not os.path.exists(configure_file):
     sys.exit(f'Configuration file "{configure_file}" not found.')
 
 # Load JSON content from the file
-with open(configure_file, "r", encoding="utf-8") as file:
+with open(configure_file, encoding="utf-8") as file:
     content = json.load(file)
 
 # Print loaded content (optional)
@@ -109,7 +108,7 @@ for user in content["users"]:
     check_md5 = (user_md5, user["username"])
     db_model_store = configure_user(user, user_md5)
 
-print(f"\n######################\nServer configuration done!\n######################\n")
+print("\n######################\nServer configuration done!\n######################\n")
 
 
 try:
@@ -128,7 +127,7 @@ try:
                 bucket_name, s3_key, db_pool, table_name, model, modality_name, s3_connection
             )
         else:
-            print(f"No model associated with this bucket")
+            print("No model associated with this bucket")
 
 except KeyboardInterrupt:
     print("\nInterrupted by user. Exiting gracefully...")

@@ -7,8 +7,8 @@ reads, BFS) and durable routing into the canonical KnowledgeStore.
 from __future__ import annotations
 
 from umrs.knowledge.canonical_graph_view import CanonicalGraphView
-from umrs.knowledge.ontology import canonical_relation
 from umrs.knowledge.graph_types import RelationType
+from umrs.knowledge.ontology import canonical_relation
 
 
 class FakeStore:

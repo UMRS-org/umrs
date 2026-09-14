@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import pytest
 from fastapi import HTTPException
-
 from umrs.api.jobs import _UNDISPATCHABLE_JOB_TYPES, _enforce_dispatchable_job_type
 from umrs.jobs.models import JobType
 from umrs.jobs.service import JobService

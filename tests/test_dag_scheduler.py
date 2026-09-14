@@ -17,12 +17,11 @@ from __future__ import annotations
 
 import threading
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any
 from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
-
 from umrs.pipeline_sdk.dag import DAGScheduler, DAGValidationError, execute_dag
 from umrs.pipeline_sdk.step import Step, StepContext, StepResult
 from umrs.pipeline_sdk.workflow import (
@@ -30,7 +29,6 @@ from umrs.pipeline_sdk.workflow import (
     WorkflowDefinition,
     WorkflowPipeline,
 )
-
 
 # =========================================================================
 # Helper step classes
@@ -78,7 +76,7 @@ class RecordThreadStep(Step):
 
     def __init__(self):
         super().__init__()
-        self.thread_id: Optional[int] = None
+        self.thread_id: int | None = None
 
     def run(self, ctx: StepContext) -> StepResult:
         self.thread_id = threading.current_thread().ident
@@ -110,7 +108,7 @@ class FanInStep(Step):
 
     def __init__(self):
         super().__init__()
-        self.received_parent_results: Dict[str, StepResult] = {}
+        self.received_parent_results: dict[str, StepResult] = {}
 
     def run(self, ctx: StepContext) -> StepResult:
         self.received_parent_results = dict(ctx.parent_results)
@@ -123,14 +121,14 @@ class FanInStep(Step):
 
 
 def _make_specs(
-    names: List[str],
-    deps: Optional[Dict[str, List[str]]] = None,
+    names: list[str],
+    deps: dict[str, list[str]] | None = None,
     **overrides,
-) -> List[StepSpec]:
+) -> list[StepSpec]:
     """Build StepSpec list with optional depends_on map."""
     specs = []
     for n in names:
-        kw: Dict[str, Any] = {
+        kw: dict[str, Any] = {
             "name": n,
             "entrypoint": f"{n}_mod:{n.capitalize()}Step",
             "config": {},
@@ -143,7 +141,7 @@ def _make_specs(
 
 
 def _mock_s3() -> MagicMock:
-    store: Dict[str, bytes] = {}
+    store: dict[str, bytes] = {}
     s3 = MagicMock()
 
     def put_object(Bucket, Key, Body, **kw):

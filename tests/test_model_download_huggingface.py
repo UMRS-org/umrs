@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import tempfile
-from types import SimpleNamespace
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
-
 from umrs.jobs.model_download import download_from_huggingface
 
 

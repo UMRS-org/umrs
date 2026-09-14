@@ -65,7 +65,10 @@ class TestReadReason:
 
     def test_no_read_holds_shows_none(self):
         acl = ACLEnforcer()
-        assert acl.read_reason(_model(ModelScope.USER, owner_id="u-other"), _ctx(uid="u-other2")) == "none"
+        assert (
+            acl.read_reason(_model(ModelScope.USER, owner_id="u-other"), _ctx(uid="u-other2"))
+            == "none"
+        )
 
     def test_grant_never_decorative(self):
         acl = ACLEnforcer(grant_reader=lambda _kind, _id: [])

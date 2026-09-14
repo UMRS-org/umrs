@@ -39,9 +39,7 @@ class TestCodeVersionRef:
 
     def test_repo_root_resolves_a_revision(self):
         # umrs/ is itself a git checkout in CI and developer environments.
-        repo_root = os.path.abspath(
-            os.path.join(os.path.dirname(__file__), "..", "..", "..")
-        )
+        repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
         if not os.path.isdir(os.path.join(repo_root, ".git")) and not os.path.isfile(
             os.path.join(repo_root, ".git")
         ):
@@ -119,4 +117,3 @@ class TestBuildModelPins:
             model_pins=[{"name": "m1", "source": "spec.model"}],
         )
         assert manifest2["model_pins"][0]["name"] == "m1"
-

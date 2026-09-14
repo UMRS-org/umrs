@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import MagicMock, patch
-
-import pytest
+from unittest.mock import patch
 
 from umrs.knowledge.external import (
     ArxivSource,
@@ -14,14 +12,11 @@ from umrs.knowledge.external import (
     ExternalReference,
     ExternalSearchResult,
     ExternalSourceType,
-    SemanticScholarSource,
     SearchStatus,
+    SemanticScholarSource,
     search_arxiv,
-    search_crossref,
     search_external,
-    search_semantic_scholar,
 )
-
 
 # ── Enum Tests ─────────────────────────────────────────────────────────────
 

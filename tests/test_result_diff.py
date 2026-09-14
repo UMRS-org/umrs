@@ -1,7 +1,6 @@
 """Tests for B3 — Result Comparison & Diff."""
 
 import pytest
-
 from umrs.shared.result_diff import (
     DiffEntry,
     DiffReport,

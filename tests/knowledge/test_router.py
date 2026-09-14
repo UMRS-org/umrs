@@ -127,10 +127,12 @@ class TestLocalGraphSink:
         sink.compile([_ir("c1", filename="a.py", content=b"a")])
         first = read_local_knowledge_graph(tmp_path)
         assert len(first["nodes"]) == 1
-        sink.compile([
-            _ir("c1", filename="a.py", content=b"a"),
-            _ir("c2", filename="b.py", content=b"b"),
-        ])
+        sink.compile(
+            [
+                _ir("c1", filename="a.py", content=b"a"),
+                _ir("c2", filename="b.py", content=b"b"),
+            ]
+        )
         second = read_local_knowledge_graph(tmp_path)
         assert len(second["nodes"]) == 2
 

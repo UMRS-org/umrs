@@ -1,12 +1,12 @@
 #!/usr/bin/python3
-import psycopg2
-from psycopg2 import sql, pool
-import numpy as np
-from sklearn.cluster import KMeans
 import ast  # To safely convert strings to lists
+import os
+
+import numpy as np
+import psycopg2
 from PIL import Image
 from sentence_transformers import SentenceTransformer
-import os
+from sklearn.cluster import KMeans
 
 
 def cluster_from_embeddings(conn, cur, table, nb_clusters=3):
@@ -105,7 +105,6 @@ def query_db_with_embeddings_image(model, conn, cur, image_file, top_k=5):
 
 #  Sentence Transformer Loader
 def load_sentence_transformers_model(model_name):
-    from sentence_transformers import SentenceTransformer
 
     try:
         model = SentenceTransformer(model_name, local_files_only=True)

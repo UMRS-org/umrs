@@ -10,10 +10,9 @@ from __future__ import annotations
 
 import sys
 import types
-from typing import Any, Dict, List
+from typing import Any
 
 import pytest
-
 from umrs.pipeline_sdk.step import Step, StepContext, StepResult
 from umrs.server.step_executor import (
     EXECUTOR_IMAGE_METADATA_KEY,
@@ -62,7 +61,7 @@ class _RecordingExecutor(StepExecutor):
     metadata the runner threaded through."""
 
     def __init__(self) -> None:
-        self.calls: List[Dict[str, Any]] = []
+        self.calls: list[dict[str, Any]] = []
 
     def execute(self, *, entrypoint, config, ctx) -> StepResult:
         self.calls.append(
@@ -92,8 +91,8 @@ class _RaisingExecutor(StepExecutor):
         return StepResult(extra={"ok": True})
 
 
-def _workflow(routing_hints: Dict[str, Any] | None = None) -> Dict[str, Any]:
-    step: Dict[str, Any] = {
+def _workflow(routing_hints: dict[str, Any] | None = None) -> dict[str, Any]:
+    step: dict[str, Any] = {
         "name": "probe",
         "entrypoint": "umrs_test_per_step_image_module:_OkStep",
         "config": {},

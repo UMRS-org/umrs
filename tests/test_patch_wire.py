@@ -13,9 +13,7 @@ QW = PatchSpec(
 )
 
 # Test-file anchored template dir (cwd-independent: CI runs with cwd=umrs).
-_MINI_RIVAULT_DIR = (
-    Path(__file__).resolve().parents[1] / "src" / "umrs" / "mini-rivault-llm"
-)
+_MINI_RIVAULT_DIR = Path(__file__).resolve().parents[1] / "src" / "umrs" / "mini-rivault-llm"
 
 
 def test_patches_to_env_produces_parseable_triplet():
@@ -63,7 +61,6 @@ def test_shared_patch_resolver_is_called_before_env_write():
     Live drift class discovered on RCCS: the MN-only loop left the compose
     flavor with inert /dev/null patch mounts, silently skipping recipe patches.
     """
-    import pathlib
     import re
 
     template = _MINI_RIVAULT_DIR / "serve-model.slurm"

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-
 from umrs.knowledge_model import (
     DuplicateKnowledgeObjectError,
     ImmutableObjectError,
@@ -15,7 +14,6 @@ from umrs.knowledge_model import (
     ObjectVersion,
     Tombstone,
 )
-
 
 # ── Enum Tests ────────────────────────────────────────────────────────────
 
@@ -252,9 +250,7 @@ def test_store_create_duplicate_raises():
         )
         # The store should reject this
         if duplicate.object_id in store._objects:
-            raise DuplicateKnowledgeObjectError(
-                f"Object {duplicate.object_id} already exists"
-            )
+            raise DuplicateKnowledgeObjectError(f"Object {duplicate.object_id} already exists")
 
 
 def test_store_get_nonexistent():

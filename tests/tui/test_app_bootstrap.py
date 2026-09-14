@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import asyncio
 from unittest.mock import MagicMock
 
 import pytest
-
 from umrs.tui.app import MonitorApp
 
 
@@ -42,6 +40,7 @@ async def test_app_switches_tabs():
         await pilot.press("4")
         await pilot.pause()
         from textual.widgets import TabbedContent
+
         tc = app.query_one(TabbedContent)
         assert tc.active == "models"
 

@@ -2,8 +2,6 @@
 Unit tests for multi-user isolation (U-005).
 """
 
-import pytest
-
 from umrs.shared.isolation import (
     AccessControl,
     AccessLevel,

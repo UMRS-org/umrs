@@ -157,10 +157,12 @@ class TestLoadPolicies:
     def test_load_from_roster(self):
         registry = EndpointRegistry()
         scaler = PoolAutoscaler(registry)
-        count = scaler.load_policies_from_roster([
-            {"model": "M1", "name": "v1", "autoscale": {"min_replicas": 2}},
-            {"model": "M2", "autoscale": {"max_replicas": 8}},
-        ])
+        count = scaler.load_policies_from_roster(
+            [
+                {"model": "M1", "name": "v1", "autoscale": {"min_replicas": 2}},
+                {"model": "M2", "autoscale": {"max_replicas": 8}},
+            ]
+        )
         assert count == 2
         assert scaler.get_policy("M1", "v1") is not None
         assert scaler.get_policy("M2") is not None

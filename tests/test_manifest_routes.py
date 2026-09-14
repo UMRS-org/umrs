@@ -2,13 +2,9 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-from typing import Any
-
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-
 from umrs.api import jobs as jobs_api
 from umrs.api.jobs import router
 from umrs.jobs.store import JobNotFoundError
@@ -106,9 +102,7 @@ class TestManifestRoutes:
         assert client.get("/umrs/jobs/nope/manifest").status_code == 404
 
     def test_outsider_denied(self, store):
-        client = TestClient(
-            _app(store, caller=_FakeCaller(project_id="proj-y"))
-        )
+        client = TestClient(_app(store, caller=_FakeCaller(project_id="proj-y")))
         assert client.get("/umrs/jobs/job-1/manifest").status_code == 403
 
 
@@ -124,9 +118,9 @@ class TestReproduceRoute:
 
     def test_reproduce_without_recorded_code_declares_window(self, store):
         store.manifests = {}
-        data = TestClient(
-            _app(store, caller=_FakeCaller())
-        ).post("/umrs/jobs/job-1/reproduce").json()
+        data = (
+            TestClient(_app(store, caller=_FakeCaller())).post("/umrs/jobs/job-1/reproduce").json()
+        )
         assert data["drift"]["pinned"] is False
         assert data["drift"]["same_code"] is None
         assert "undeclared" in data["drift"]["note"]
@@ -135,7 +129,5 @@ class TestReproduceRoute:
         assert client.post("/umrs/jobs/nope/reproduce").status_code == 404
 
     def test_reproduce_outsider_denied(self, store):
-        client = TestClient(
-            _app(store, caller=_FakeCaller(project_id="proj-y"))
-        )
+        client = TestClient(_app(store, caller=_FakeCaller(project_id="proj-y")))
         assert client.post("/umrs/jobs/job-1/reproduce").status_code == 403

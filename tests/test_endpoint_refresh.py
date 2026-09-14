@@ -7,7 +7,6 @@ with host="pending" after a _finalize_provision task died (e.g. UMRS restart).
 from types import SimpleNamespace
 
 import pytest
-
 from umrs.orchestrator.base import JobStatus
 from umrs.orchestrator.endpoint_registry import EndpointRegistry, EndpointStatus
 from umrs.orchestrator.readiness import ReadinessConfig, ReadinessResult, ReadinessState

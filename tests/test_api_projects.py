@@ -143,7 +143,9 @@ class TestStoreLifecycle:
 class TestRoutes:
     def test_create_binds_caller_as_owner(self) -> None:
         client = _client(ProjectStore(_Conn()))
-        r = client.post("/umrs/projects", json={"project_id": "lab-c", "name": "C"}, headers=_headers("alice"))
+        r = client.post(
+            "/umrs/projects", json={"project_id": "lab-c", "name": "C"}, headers=_headers("alice")
+        )
         assert r.status_code == 201
         assert r.json()["project"]["owner_id"] == "alice"
 

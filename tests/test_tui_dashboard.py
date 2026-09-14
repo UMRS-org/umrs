@@ -15,9 +15,7 @@ import types
 from io import StringIO
 from unittest.mock import MagicMock
 
-import pytest
 from rich.console import Console
-
 
 SAMPLE_JOBS = [
     {

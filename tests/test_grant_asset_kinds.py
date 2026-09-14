@@ -5,8 +5,6 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from umrs.api.grants import (
     _asset_writable,
     _endpoint_writable,
@@ -71,9 +69,7 @@ class TestWorkflowWritability:
         return {"workflows": entries}
 
     def test_owner_wins(self):
-        episodes = self._catalog(
-            [{"name": "wf-1", "user_id": "u-ally", "scope": "user"}]
-        )
+        episodes = self._catalog([{"name": "wf-1", "user_id": "u-ally", "scope": "user"}])
         with patch("umrs.server.workflow_registry_handler._load_catalog", return_value=episodes):
             assert _workflow_writable("wf-1", _caller(uid="u-ally")) is True
             assert _workflow_writable("wf-1", _caller(uid="u-other")) is False
@@ -92,7 +88,9 @@ class TestWorkflowWritability:
             assert _asset_writable(None, "workflow", "wf-sys", _caller(is_admin=True)) is True
 
     def test_unknown_workflow_returns_false(self):
-        with patch("umrs.server.workflow_registry_handler._load_catalog", return_value=self._catalog([])):
+        with patch(
+            "umrs.server.workflow_registry_handler._load_catalog", return_value=self._catalog([])
+        ):
             assert _workflow_entry("missing") is None
             assert _workflow_writable("missing", _caller(uid="u-x")) is False
 

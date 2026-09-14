@@ -24,11 +24,13 @@ class MockJob:
     project_id: str = "proj-001"
     user_id: str = "user-alice"
     job_type: str = "pipeline_run"
-    spec: dict[str, Any] = field(default_factory=lambda: {
-        "ingest_results": True,
-        "workflow": "scientific-paper",
-        "step": "extract",
-    })
+    spec: dict[str, Any] = field(
+        default_factory=lambda: {
+            "ingest_results": True,
+            "workflow": "scientific-paper",
+            "step": "extract",
+        }
+    )
 
 
 @dataclass
@@ -83,9 +85,7 @@ class TestEnqueueAutoIngestDispatch:
         enqueue_auto_ingest(_make_job(job_type="workflow_run"), MockAttempt())
         assert called == ["enqueue"]
 
-    def test_skips_when_ingest_results_false(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_skips_when_ingest_results_false(self, monkeypatch: pytest.MonkeyPatch) -> None:
         called: list[str] = []
         monkeypatch.setattr(
             "umrs.jobs.knowledge_adapters.enqueue_knowledge_ingest",
@@ -97,9 +97,7 @@ class TestEnqueueAutoIngestDispatch:
         enqueue_auto_ingest(job, MockAttempt())
         assert called == []
 
-    def test_skips_non_productive_job_type(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_skips_non_productive_job_type(self, monkeypatch: pytest.MonkeyPatch) -> None:
         called: list[str] = []
         monkeypatch.setattr(
             "umrs.jobs.knowledge_adapters.enqueue_knowledge_ingest",
@@ -177,12 +175,8 @@ class TestAutoIngestIntegration:
         def fake_get_pool() -> Any:
             return None
 
-        monkeypatch.setattr(
-            "umrs.jobs.knowledge_adapters._get_pool", fake_get_pool
-        )
-        monkeypatch.setattr(
-            "umrs.jobs.service.get_job_service", lambda: None
-        )
+        monkeypatch.setattr("umrs.jobs.knowledge_adapters._get_pool", fake_get_pool)
+        monkeypatch.setattr("umrs.jobs.service.get_job_service", lambda: None)
 
         from umrs.jobs.knowledge_adapters import (
             enqueue_knowledge_ingest,
@@ -262,12 +256,8 @@ class TestAutoIngestIntegration:
             "umrs.knowledge.artifact_storage.ArtifactStorage.put_artifact",
             lambda *_a, **_k: fake_put_artifact(*_a, **_k),
         )
-        monkeypatch.setattr(
-            "umrs.jobs.knowledge_adapters._get_pool", lambda: None
-        )
-        monkeypatch.setattr(
-            "umrs.jobs.service.get_job_service", lambda: None
-        )
+        monkeypatch.setattr("umrs.jobs.knowledge_adapters._get_pool", lambda: None)
+        monkeypatch.setattr("umrs.jobs.service.get_job_service", lambda: None)
 
         from umrs.jobs.knowledge_adapters import (
             enqueue_knowledge_ingest,
@@ -277,9 +267,24 @@ class TestAutoIngestIntegration:
         attempt = MockAttempt()
 
         artifact_refs = [
-            {"artifact_id": "art-1", "content_hash": "hash-aaa", "kind": "document", "source_ref": "file.txt"},
-            {"artifact_id": "art-1", "content_hash": "hash-aaa", "kind": "document", "source_ref": "file.txt"},
-            {"artifact_id": "art-2", "content_hash": "hash-bbb", "kind": "code", "source_ref": "main.py"},
+            {
+                "artifact_id": "art-1",
+                "content_hash": "hash-aaa",
+                "kind": "document",
+                "source_ref": "file.txt",
+            },
+            {
+                "artifact_id": "art-1",
+                "content_hash": "hash-aaa",
+                "kind": "document",
+                "source_ref": "file.txt",
+            },
+            {
+                "artifact_id": "art-2",
+                "content_hash": "hash-bbb",
+                "kind": "code",
+                "source_ref": "main.py",
+            },
         ]
 
         monkeypatch.setattr(
@@ -298,12 +303,8 @@ class TestAutoIngestIntegration:
 
     def test_failure_graceful(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Failure path must not raise even when knowledge store is unavailable."""
-        monkeypatch.setattr(
-            "umrs.jobs.knowledge_adapters._get_pool", lambda: None
-        )
-        monkeypatch.setattr(
-            "umrs.jobs.service.get_job_service", lambda: None
-        )
+        monkeypatch.setattr("umrs.jobs.knowledge_adapters._get_pool", lambda: None)
+        monkeypatch.setattr("umrs.jobs.service.get_job_service", lambda: None)
 
         from umrs.jobs.knowledge_adapters import (
             enqueue_ingest_failure,
@@ -354,18 +355,14 @@ class TestCollectArtifactIds:
         # 'no pool' premise = 'no DSN resolves' — the collection short-circuits
         # before any pool work (the _get_pool monkeypatch is stale: the helper
         # gates on _resolve_knowledge_dsn since the adapter refactor).
-        monkeypatch.setattr(
-            "umrs.jobs.knowledge_adapters._resolve_knowledge_dsn", lambda: ""
-        )
+        monkeypatch.setattr("umrs.jobs.knowledge_adapters._resolve_knowledge_dsn", lambda: "")
         from umrs.jobs.knowledge_adapters import _collect_artifact_ids
 
         result = _collect_artifact_ids(MockJob())
         assert result == []
 
     def test_empty_when_no_metrics(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(
-            "umrs.jobs.knowledge_adapters._resolve_knowledge_dsn", lambda: ""
-        )
+        monkeypatch.setattr("umrs.jobs.knowledge_adapters._resolve_knowledge_dsn", lambda: "")
         from umrs.jobs.knowledge_adapters import _collect_artifact_ids
 
         result = _collect_artifact_ids(MockJob())

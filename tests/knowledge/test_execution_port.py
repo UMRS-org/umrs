@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-
 from umrs.knowledge.execution_port import (
     FakeWorkflowExecutionPort,
     WorkflowExecutionPort,

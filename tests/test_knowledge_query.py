@@ -151,11 +151,15 @@ class TestOntologyBlocks:
 
         metas = [
             KnowledgeGraphMeta(
-                graph_id="g-default", name="default", project_id="proj-a",
+                graph_id="g-default",
+                name="default",
+                project_id="proj-a",
                 ontology_id="r4-default",
             ),
             KnowledgeGraphMeta(
-                graph_id="g-bogus", name="bogus", project_id="proj-a",
+                graph_id="g-bogus",
+                name="bogus",
+                project_id="proj-a",
                 ontology_id="never-registered",
             ),
         ]

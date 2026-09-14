@@ -1,7 +1,7 @@
 #!/usr/bin/python3
 
-from transformers import AutoTokenizer, AutoModel
 import torch
+from transformers import AutoModel, AutoTokenizer
 
 # Load E5 model from Hugging Face
 model_name = "intfloat/e5-base-v2"

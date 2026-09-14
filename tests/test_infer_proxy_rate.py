@@ -3,12 +3,6 @@
 from __future__ import annotations
 
 import httpx
-import pytest
-from httpx import ASGITransport
-
-from umrs.infer_proxy.app import SessionRateLimiter, create_app
-from umrs.security.seal import generate_recipient_keypair, seal_credential
-
 from tests.test_infer_proxy import (
     _FakeBroker,
     _FakeStore,
@@ -17,6 +11,8 @@ from tests.test_infer_proxy import (
     _request,
     _stream_response,
 )
+from umrs.infer_proxy.app import SessionRateLimiter, create_app
+from umrs.security.seal import generate_recipient_keypair
 
 
 class TestSessionRateLimiter:

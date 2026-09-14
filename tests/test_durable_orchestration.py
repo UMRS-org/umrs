@@ -524,7 +524,9 @@ class TestAdapters:
         assert result.metrics["target_job_id"] == "slurm-123"
         assert result.metrics["requested_job_id"] == "job-endpoint-123"
 
-    @pytest.mark.skip(reason="Requires model registry (Postgres or catalog). Run with mocked store." )
+    @pytest.mark.skip(
+        reason="Requires model registry (Postgres or catalog). Run with mocked store."
+    )
     def test_endpoint_provision_backend_submit(self):
         """Test EndpointProvisionBackend submit_job."""
         from umrs.jobs import (
@@ -610,7 +612,9 @@ class TestAdapters:
             mock_orchestrator.submit_job.assert_called_once()
             mock_registry.register.assert_called_once()
 
-    @pytest.mark.skip(reason="Requires model registry (Postgres or catalog). Run with mocked store." )
+    @pytest.mark.skip(
+        reason="Requires model registry (Postgres or catalog). Run with mocked store."
+    )
     def test_endpoint_provision_backend_merges_env_vars(self):
         """EndpointProvisionBackend should preserve caller env overrides."""
         from umrs.jobs import (
@@ -845,7 +849,9 @@ class TestAdapters:
         registered_metadata = mock_registry.register.call_args.kwargs["metadata"]
         assert registered_metadata["max_model_len"] == 262144
 
-    @pytest.mark.skip(reason="Requires model registry (Postgres or catalog). Run with mocked store." )
+    @pytest.mark.skip(
+        reason="Requires model registry (Postgres or catalog). Run with mocked store."
+    )
     def test_endpoint_provision_backend_translates_mounts(self):
         """Durable endpoint jobs should translate mount intent to launch env."""
         from umrs.jobs import (
@@ -928,7 +934,9 @@ class TestAdapters:
         assert env["EGRESS_DOMAIN_ALLOWLIST"] == "api.example.com"
         assert "RIVAULT_MCP_MOUNTS_JSON" in env
 
-    @pytest.mark.skip(reason="Requires model registry (Postgres or catalog). Run with mocked store." )
+    @pytest.mark.skip(
+        reason="Requires model registry (Postgres or catalog). Run with mocked store."
+    )
     def test_endpoint_provision_backend_resolves_registered_model_path(self):
         """EndpointProvisionBackend should resolve catalog-backed models when only the name is provided."""
         from umrs.jobs import (
@@ -1097,7 +1105,9 @@ class TestAdapters:
         mock_registry.mark_failed.return_value = endpoint
 
         mock_readiness = MagicMock()
-        mock_readiness.check_ready_detail = AsyncMock(return_value=(True, False, ["test-model"], None))
+        mock_readiness.check_ready_detail = AsyncMock(
+            return_value=(True, False, ["test-model"], None)
+        )
 
         mock_orchestrator = MagicMock()
         mock_orchestrator.get_job_status = AsyncMock(

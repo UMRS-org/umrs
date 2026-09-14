@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import pytest
-
 from umrs.jobs.model_download import (
     DownloadTaskRegistry,
     ModelDownloadStatusChecker,
@@ -20,7 +19,7 @@ from umrs.jobs.models import (
     generate_attempt_id,
     generate_job_id,
 )
-from umrs.jobs.reconciler import ReconcileResult, Reconciler
+from umrs.jobs.reconciler import Reconciler, ReconcileResult
 
 
 @dataclass

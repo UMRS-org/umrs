@@ -20,13 +20,10 @@ import json
 from pathlib import Path
 
 import pytest
-
 from umrs.knowledge.project import (
     ProjectPhase,
     ResearchProject,
-    WorkflowTransition,
 )
-
 
 # ── Fixtures: Create a realistic project directory ────────────────────────
 
@@ -98,11 +95,7 @@ def project_dir(tmp_path: Path) -> Path:
     # Datasets
     data_dir = tmp_path / "data"
     data_dir.mkdir()
-    (data_dir / "qm9.csv").write_text(
-        "smiles,property1,property2\n"
-        "CCO,1.5,2.3\n"
-        "CCN,0.8,1.9\n"
-    )
+    (data_dir / "qm9.csv").write_text("smiles,property1,property2\nCCO,1.5,2.3\nCCN,0.8,1.9\n")
 
     return tmp_path
 

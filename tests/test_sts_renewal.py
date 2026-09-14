@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import json
 import os
-from unittest.mock import MagicMock, patch
-
 import sys
+from unittest.mock import patch
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src", "umrs", "mini-rivault-llm"))
 
 import sts_renewal  # noqa: E402
@@ -101,19 +101,18 @@ class TestMintStsContract:
             captured["timeout"] = timeout
             return _Resp()
 
-        with patch.object(sts_renewal, "_BASE", "http://umrs"), patch.object(
-            sts_renewal, "_JOB_ID", "job-1"
-        ), patch.object(sts_renewal, "_ATTEMPT_ID", "att-1"), patch.object(
-            sts_renewal, "_TOKEN", "JWTX"
-        ), patch.object(sts_renewal.request, "Request", _FakeReq), patch.object(
-            sts_renewal, "urlopen", _fake_urlopen
+        with (
+            patch.object(sts_renewal, "_BASE", "http://umrs"),
+            patch.object(sts_renewal, "_JOB_ID", "job-1"),
+            patch.object(sts_renewal, "_ATTEMPT_ID", "att-1"),
+            patch.object(sts_renewal, "_TOKEN", "JWTX"),
+            patch.object(sts_renewal.request, "Request", _FakeReq),
+            patch.object(sts_renewal, "urlopen", _fake_urlopen),
         ):
             payload = sts_renewal.mint_sts()
 
         assert captured["method"] == "POST"
-        assert captured["url"] == (
-            "http://umrs/umrs/jobs/job-1/attempts/att-1/credentials/sts"
-        )
+        assert captured["url"] == ("http://umrs/umrs/jobs/job-1/attempts/att-1/credentials/sts")
         assert captured["req"].headers["Authorization"] == "Bearer JWTX"
         assert captured["timeout"] == 30.0
         assert payload["credentials"]["session_token"] == "T"
@@ -121,7 +120,9 @@ class TestMintStsContract:
 
 class TestRun:
     def test_missing_env_fatal_boot(self):
-        with patch.object(sts_renewal, "_BASE", ""), patch.object(
-            sts_renewal, "_JOB_ID", "job"
-        ), patch.object(sts_renewal, "_ATTEMPT_ID", ""):
+        with (
+            patch.object(sts_renewal, "_BASE", ""),
+            patch.object(sts_renewal, "_JOB_ID", "job"),
+            patch.object(sts_renewal, "_ATTEMPT_ID", ""),
+        ):
             assert sts_renewal.run() == 2

@@ -22,9 +22,7 @@ SITE = SiteSpec(cluster="rccs", backend="slurm-remote", partition="ng-dgx-m0")
 MODEL = "cyberagent/calm3-22b-chat"
 
 # Test-file anchored roster path (cwd-independent: CI runs with cwd=umrs).
-ROSTER = str(
-    Path(__file__).resolve().parents[1] / "deploy" / "rccs-front" / "pool-rccs-cloud.yaml"
-)
+ROSTER = str(Path(__file__).resolve().parents[1] / "deploy" / "rccs-front" / "pool-rccs-cloud.yaml")
 
 
 @pytest.fixture(autouse=True)

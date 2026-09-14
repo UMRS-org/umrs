@@ -2,10 +2,10 @@ import json
 from datetime import datetime
 from datetime import timezone as _tz
 
-from umrs.jobs.models import Job, JobAttempt, JobStatus, JobType, RestartPolicy, AttemptStatus
+from umrs.jobs.models import AttemptStatus, Job, JobAttempt, JobStatus, JobType, RestartPolicy
+from umrs.jobs.store import InvalidTransitionError
 from umrs.server import job_tracking_handler
 from umrs.server.job_tracking_handler import DurableJobCommandBackend, handle_job_command
-from umrs.jobs.store import InvalidTransitionError
 
 JOB_SUBMIT = "JOB_SUBMIT"
 JOB_LIST = "JOB_LIST"

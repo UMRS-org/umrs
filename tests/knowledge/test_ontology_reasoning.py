@@ -19,7 +19,6 @@ Contracts locked:
 from __future__ import annotations
 
 import pytest
-
 from umrs.knowledge.canonical_graph_view import CanonicalGraphView, in_memory_view
 from umrs.knowledge.ontology import Ontology, ontology_from_dict
 
@@ -80,8 +79,10 @@ class TestSubtypeLattice:
 
     def test_cycle_in_lattice_terminates(self) -> None:
         onto = Ontology(
-            ontology_id="cyclic", version="1",
-            entity_types=frozenset({"a", "b"}), relation_types=frozenset({"cites"}),
+            ontology_id="cyclic",
+            version="1",
+            entity_types=frozenset({"a", "b"}),
+            relation_types=frozenset({"cites"}),
             subtype_of=(("a", "b"), ("b", "a")),
         )
         v = in_memory_view(ontology=onto)
@@ -105,15 +106,16 @@ class TestSubtypeLattice:
 class TestTraversalTypeFiltering:
     def test_default_vocabulary_noop_for_canonical_rows(self) -> None:
         v = in_memory_view()  # DEFAULT_ONTOLOGY entity_types cover the 7
-        for t in ("concept", "file", "entity", "class", "module", "function",
-                  "relationship"):
+        for t in ("concept", "file", "entity", "class", "module", "function", "relationship"):
             v.add_node(node_id=f"n-{t}", node_type=t)
         assert len(v.query()) == 7
 
     def test_custom_vocabulary_filters_nodes(self) -> None:
         onto = Ontology(
-            ontology_id="narrow", version="1",
-            entity_types=frozenset({"concept"}), relation_types=frozenset({"cites"}),
+            ontology_id="narrow",
+            version="1",
+            entity_types=frozenset({"concept"}),
+            relation_types=frozenset({"cites"}),
         )
         v = in_memory_view(ontology=onto)
         v.add_node(node_id="ok", node_type="concept")
@@ -122,8 +124,10 @@ class TestTraversalTypeFiltering:
 
     def test_relation_matched_filter(self) -> None:
         onto = Ontology(
-            ontology_id="narrow2", version="1",
-            entity_types=frozenset({"concept"}), relation_types=frozenset({"cites"}),
+            ontology_id="narrow2",
+            version="1",
+            entity_types=frozenset({"concept"}),
+            relation_types=frozenset({"cites"}),
         )
         v = in_memory_view(ontology=onto)
         v.add_node(node_id="ok", node_type="concept")

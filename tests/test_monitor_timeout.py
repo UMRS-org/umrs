@@ -11,9 +11,7 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
 from umrs.jobs.monitor import AttemptCheckResult, AttemptMonitor
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -175,4 +173,3 @@ class TestMonitorLifecycle:
 
         assert monitor._running is False
         monitor._task.cancel()
-

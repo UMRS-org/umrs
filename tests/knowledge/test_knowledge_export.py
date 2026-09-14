@@ -406,9 +406,7 @@ class TestKnowledgeExportEngine:
         assert not verify_bundle_integrity(tmp_bundle_dir, "key")
 
     @pytest.mark.asyncio
-    async def test_refuses_unsigned_without_optout(
-        self, tmp_bundle_dir: Path, fake_store
-    ) -> None:
+    async def test_refuses_unsigned_without_optout(self, tmp_bundle_dir: Path, fake_store) -> None:
         """Fail-closed: no UMRS_SECRET_KEY and no opt-out raises (G-P2-3)."""
         from umrs.knowledge.bundle_export import BundleIntegrityError
 
@@ -422,9 +420,7 @@ class TestKnowledgeExportEngine:
             await engine.export_project("test-project")
 
     @pytest.mark.asyncio
-    async def test_unsigned_optout_marks_manifest(
-        self, tmp_bundle_dir: Path, fake_store
-    ) -> None:
+    async def test_unsigned_optout_marks_manifest(self, tmp_bundle_dir: Path, fake_store) -> None:
         """allow_unsigned=True produces a bundle marked unsigned=true (G-P2-3)."""
         engine = KnowledgeExportEngine(
             store=fake_store,
@@ -593,9 +589,7 @@ class TestGtwop2ReferencesAndMarkers:
         assert manifest["skills"] == [
             {"ref": "project:science-run", "version_pin": "1.2.0", "scope": "project"}
         ]
-        assert manifest["mcp_configs"] == [
-            {"ref": "lab-mcp", "version_pin": "0.3.0"}
-        ]
+        assert manifest["mcp_configs"] == [{"ref": "lab-mcp", "version_pin": "0.3.0"}]
         assert manifest["collision_policy"] == "abort"
         assert manifest["provenance_canonical"] is False
         assert manifest["reconciliation_snapshot"] is None

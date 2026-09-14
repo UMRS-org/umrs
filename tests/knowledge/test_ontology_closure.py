@@ -21,7 +21,6 @@ from __future__ import annotations
 import inspect
 
 import pytest
-
 from umrs.knowledge.canonical_graph_view import (
     CanonicalGraphView,
     _store_worker,
@@ -35,8 +34,9 @@ from umrs.knowledge.ontology import Ontology, ontology_from_dict
 _PERMISSIVE = Ontology(
     ontology_id="premise-permissive",
     version="1",
-    entity_types=frozenset({"concept", "entity", "class", "function", "file",
-                            "module", "relationship"}),
+    entity_types=frozenset(
+        {"concept", "entity", "class", "function", "file", "module", "relationship"}
+    ),
     relation_types=frozenset({"cites", "uses", "depends_on", "related_to"}),
     transitive_relations=frozenset({"cites", "uses", "depends_on"}),
 )
@@ -80,7 +80,9 @@ class TestMemoryWalk:
         _link(v, "lib2", "app", "USES")
         _link(v, "core", "lib", "USES")
         assert v.walk("app", "USES", direction="incoming") == [
-            ("lib", 1), ("lib2", 1), ("core", 2),
+            ("lib", 1),
+            ("lib2", 1),
+            ("core", 2),
         ]
 
     def test_diamond_shared_ancestor_once(self) -> None:
@@ -209,9 +211,35 @@ class TestLivePgClosure:
             _run_mutation(coro)
 
         for nid in ("a", "b", "c", "d"):
-            w(store.upsert_node(StoreNode(node_id=nid, project_id=pid, node_type="concept", label=nid, content={}, content_hash=nid, created_at=now, graph_id=gid)))
+            w(
+                store.upsert_node(
+                    StoreNode(
+                        node_id=nid,
+                        project_id=pid,
+                        node_type="concept",
+                        label=nid,
+                        content={},
+                        content_hash=nid,
+                        created_at=now,
+                        graph_id=gid,
+                    )
+                )
+            )
         for i, (s, t) in enumerate([("a", "b"), ("b", "c"), ("c", "d"), ("d", "a")]):
-            w(store.upsert_edge(StoreEdge(edge_id=f"p{i}", project_id=pid, source_id=s, target_id=t, relation_type="depends_on", content={}, created_at=now, graph_id=gid)))
+            w(
+                store.upsert_edge(
+                    StoreEdge(
+                        edge_id=f"p{i}",
+                        project_id=pid,
+                        source_id=s,
+                        target_id=t,
+                        relation_type="depends_on",
+                        content={},
+                        created_at=now,
+                        graph_id=gid,
+                    )
+                )
+            )
         store_view = CanonicalGraphView(store=store, project_id=pid, graph_id=gid)
         got = store_view.walk("a", "DEPENDS_ON")
         assert got == [("b", 1), ("c", 2), ("d", 3)]
@@ -220,8 +248,10 @@ class TestLivePgClosure:
 class TestOntologyTransitiveDeclaration:
     def test_default_field_and_roundtrip(self) -> None:
         onto = Ontology(
-            ontology_id="x", version="1",
-            entity_types=frozenset({"concept"}), relation_types=frozenset({"cites"}),
+            ontology_id="x",
+            version="1",
+            entity_types=frozenset({"concept"}),
+            relation_types=frozenset({"cites"}),
         )
         assert onto.transitive_relations == frozenset({"depends_on"})
         back = ontology_from_dict(onto.to_dict())

@@ -1,12 +1,12 @@
 #!/usr/bin/python3
-import psycopg2
-import numpy as np
-import json
-from sentence_transformers import SentenceTransformer
-import os
-from sklearn.cluster import KMeans
 import ast  # To safely convert strings to lists
+import json
+import os
 
+import numpy as np
+import psycopg2
+from sentence_transformers import SentenceTransformer
+from sklearn.cluster import KMeans
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 

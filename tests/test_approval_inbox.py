@@ -15,7 +15,6 @@ from pathlib import Path
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-
 from umrs.companion_trust.approval_inbox import ApprovalInboxStore
 from umrs.companion_trust.store import TrustAllowlistStore
 from umrs.knowledge import tool_approvals
@@ -34,14 +33,21 @@ class TestStore:
     def test_request_is_idempotent_and_carries_owner_job_attempt(self):
         store = ApprovalInboxStore()
         first = store.request(
-            "loop-1", 2, ACTION, approval_id="appr-1", user_id="alice",
-            job_id="job-1", attempt_id="att-1",
+            "loop-1",
+            2,
+            ACTION,
+            approval_id="appr-1",
+            user_id="alice",
+            job_id="job-1",
+            attempt_id="att-1",
         )
         second = store.request("loop-1", 2, {"other": True}, approval_id="appr-1")
         assert first["id"] == second["id"] == "appr-1"
         assert second["action"] == ACTION  # first write wins
         assert (second["user_id"], second["job_id"], second["attempt_id"]) == (
-            "alice", "job-1", "att-1",
+            "alice",
+            "job-1",
+            "att-1",
         )
         assert second["status"] == "pending"
         assert len(store.pending()) == 1
@@ -178,9 +184,12 @@ class TestRoutes:
 
     def test_decision_unknown_404_and_repeat_409(self):
         client = _app("alice")
-        assert client.post(
-            "/umrs/companion/approvals/nope/decision", json={"decision": "once"}
-        ).status_code == 404
+        assert (
+            client.post(
+                "/umrs/companion/approvals/nope/decision", json={"decision": "once"}
+            ).status_code
+            == 404
+        )
         tool_approvals.request_approval("loop-a", 1, ACTION, approval_id="a-1", user_id="alice")
         first = client.post("/umrs/companion/approvals/a-1/decision", json={"decision": "no"})
         assert first.status_code == 200

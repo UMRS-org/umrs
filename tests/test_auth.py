@@ -15,7 +15,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-
 from umrs.shared.auth import (
     ADMIN_ONLY_COMMANDS,
     USER_ALLOWED_COMMANDS,
@@ -33,7 +32,6 @@ from umrs.shared.auth import (
     sanitize_username,
     validate_config_identity,
 )
-
 
 # =============================================================================
 # U-501: Admin Role Enforcement Tests

@@ -44,7 +44,11 @@ class _Cur:
             vector_rows = self._vector_probe(sql)
         else:
             vector_rows = None
-        self._rows = row if (row := (rows if rows is not None else vector_rows)) is not None else (self._probe_rows(sql) or [])
+        self._rows = (
+            row
+            if (row := (rows if rows is not None else vector_rows)) is not None
+            else (self._probe_rows(sql) or [])
+        )
 
     def fetchone(self):
         return self._rows[0] if self._rows else None
@@ -85,10 +89,13 @@ def test_hydrate_links_requires_pool_or_key():
 
 
 def test_s3_object_lane_wins_over_filename():
-    pool = _Pool([
-        ("s3_object", [("doc-xyz",)]),
-        ("LIKE %s", [("intfloat/e5-base-v2", 768, 3)]),
-    ], chunk_rows=[(7,)])
+    pool = _Pool(
+        [
+            ("s3_object", [("doc-xyz",)]),
+            ("LIKE %s", [("intfloat/e5-base-v2", 768, 3)]),
+        ],
+        chunk_rows=[(7,)],
+    )
     # Sanity guard: probes must NEVER confuse doc-resolution with vector stats.
     assert "knowledge_node_embeddings" not in "GROUP BY content->>'document_id'"
     links = hydrate_links(pool, project_id="spring8", s3_key="spring8/scan1.h5")
@@ -96,9 +103,7 @@ def test_s3_object_lane_wins_over_filename():
     assert links["document_id"] == "doc-xyz"
     assert links["link_method"] == "s3_object"
     assert links["chunk_nodes"] == 7
-    assert links["vector_rows"] == [
-        {"model": "intfloat/e5-base-v2", "dimension": 768, "rows": 3}
-    ]
+    assert links["vector_rows"] == [{"model": "intfloat/e5-base-v2", "dimension": 768, "rows": 3}]
     sql = pool._conn._cur.queries[0][0]
     assert "s3_object" in sql
     params = pool._conn._cur.queries[0][1]
@@ -106,11 +111,14 @@ def test_s3_object_lane_wins_over_filename():
 
 
 def test_filename_lane_matches_exactly_one_doc_node():
-    pool = _Pool([
-        ("s3_object", []),
-        ("GROUP BY", [("doc-abc", 1)]),
-        ("LIKE %s", []),
-    ], chunk_rows=[(2,)])
+    pool = _Pool(
+        [
+            ("s3_object", []),
+            ("GROUP BY", [("doc-abc", 1)]),
+            ("LIKE %s", []),
+        ],
+        chunk_rows=[(2,)],
+    )
     links = hydrate_links(pool, project_id="default", s3_key="default/data/scan.h5")
     assert links is not None
     assert links["document_id"] == "doc-abc"
@@ -120,10 +128,13 @@ def test_filename_lane_matches_exactly_one_doc_node():
 
 
 def test_filename_is_only_basename_of_the_key():
-    pool = _Pool([
-        ("GROUP BY", [("doc-t", 1)]),
-        ("LIKE %s", []),
-    ], chunk_rows=[(0,)])
+    pool = _Pool(
+        [
+            ("GROUP BY", [("doc-t", 1)]),
+            ("LIKE %s", []),
+        ],
+        chunk_rows=[(0,)],
+    )
     hydrate_links(pool, project_id="default", s3_key="deep/nested/area/report.pdf")
     filename_sql = next(sql for sql, _ in pool._conn._cur.queries if "filename" in sql)
     params = next(p for sql, p in pool._conn._cur.queries if sql == filename_sql)
@@ -131,10 +142,13 @@ def test_filename_is_only_basename_of_the_key():
 
 
 def test_multiple_filename_matches_yield_no_link():
-    pool = _Pool([
-        ("s3_object", []),
-        ("GROUP BY", [("doc-a", 1), ("doc-b", 1)]),
-    ], chunk_rows=[])
+    pool = _Pool(
+        [
+            ("s3_object", []),
+            ("GROUP BY", [("doc-a", 1), ("doc-b", 1)]),
+        ],
+        chunk_rows=[],
+    )
     assert hydrate_links(pool, project_id="default", s3_key="default/ambiguous.txt") is None
 
 
@@ -155,8 +169,10 @@ def test_query_failure_fails_open():
 
 
 def test_no_links_for_catalogue_only_objects():
-    pool = _Pool([
-        ("s3_object", []),
-        ("GROUP BY", []),
-    ])
+    pool = _Pool(
+        [
+            ("s3_object", []),
+            ("GROUP BY", []),
+        ]
+    )
     assert hydrate_links(pool, project_id="default", s3_key="default/unseen.bin") is None

@@ -112,20 +112,14 @@ class TestLiteLLMBackend:
         assert backend.ocr("scan.pdf", PDF_BYTES) == ""
 
     def test_transcribes_pages(self, monkeypatch):
-        monkeypatch.setattr(
-            ocr_module, "_pdf_to_page_images", lambda _content: [b"img1", b"img2"]
-        )
+        monkeypatch.setattr(ocr_module, "_pdf_to_page_images", lambda _content: [b"img1", b"img2"])
         backend = LiteLLMOCRBackend("http://litellm/v1", "glm-ocr")
-        monkeypatch.setattr(
-            backend, "_transcribe_image", lambda image: f"page:{len(image)}"
-        )
+        monkeypatch.setattr(backend, "_transcribe_image", lambda image: f"page:{len(image)}")
         result = backend.ocr("scan.pdf", PDF_BYTES)
         assert result == "page:4\n\npage:4"
 
     def test_transcription_error_returns_empty(self, monkeypatch):
-        monkeypatch.setattr(
-            ocr_module, "_pdf_to_page_images", lambda _content: [b"img1"]
-        )
+        monkeypatch.setattr(ocr_module, "_pdf_to_page_images", lambda _content: [b"img1"])
         backend = LiteLLMOCRBackend("http://litellm/v1", "glm-ocr")
 
         def _boom(_image):

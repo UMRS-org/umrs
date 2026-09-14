@@ -9,22 +9,16 @@ Tests:
 """
 
 import json
-import os
-import tempfile
 from unittest.mock import patch
 
 import pytest
-
+from umrs.core.TaskCmdStatus import TaskCmd
+from umrs.pipeline_sdk.workflow import StepSpec
 from umrs.server.workflow_registry_handler import (
     _handle_list_workflows,
-    _load_catalog,
-    _save_catalog,
     handle_workflow_command,
     register_workflow,
 )
-from umrs.core.TaskCmdStatus import TaskCmd
-from umrs.pipeline_sdk.workflow import StepSpec
-
 
 # ---------------------------------------------------------------------------
 # Fixtures

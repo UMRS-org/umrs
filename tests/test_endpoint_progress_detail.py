@@ -5,10 +5,10 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-
 from umrs.jobs.adapters import EndpointProvisionStatusChecker
 from umrs.jobs.models import AttemptStatus, Job, JobAttempt, JobStatus, JobType
-from umrs.orchestrator.base import EndpointInfo, JobInfo, JobStatus as OrchestratorJobStatus
+from umrs.orchestrator.base import EndpointInfo, JobInfo
+from umrs.orchestrator.base import JobStatus as OrchestratorJobStatus
 from umrs.orchestrator.endpoint_registry import EndpointRegistry
 
 
@@ -91,7 +91,9 @@ async def test_checker_persists_readiness_warmup_detail():
     )
     readiness_poller = MagicMock()
     readiness_poller.config.auth_token = None
-    readiness_poller.check_ready_detail = AsyncMock(return_value=(False, False, [], "Chat probe timeout"))
+    readiness_poller.check_ready_detail = AsyncMock(
+        return_value=(False, False, [], "Chat probe timeout")
+    )
 
     checker = EndpointProvisionStatusChecker(
         readiness_poller,

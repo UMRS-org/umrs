@@ -363,11 +363,14 @@ class TestTunnelModePortConfig:
         """Data queues should use the start of UMRS_DATA_PORT_RANGE by default."""
         from umrs.core.MessageQueue import MessageQueue
 
-        with patch.dict(
-            os.environ,
-            {"UMRS_DATA_PORT_RANGE": "7780-7784", "UMRS_TUNNEL_MODE": "true"},
-            clear=False,
-        ), patch("zmq.Context") as mock_context:
+        with (
+            patch.dict(
+                os.environ,
+                {"UMRS_DATA_PORT_RANGE": "7780-7784", "UMRS_TUNNEL_MODE": "true"},
+                clear=False,
+            ),
+            patch("zmq.Context") as mock_context,
+        ):
             mock_socket = MagicMock()
             mock_context.return_value.socket.return_value = mock_socket
 

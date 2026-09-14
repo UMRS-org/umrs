@@ -1,11 +1,6 @@
 """Tests for UserStore OIDC subject mapping (oidc_subject field)."""
 
-import json
-import tempfile
-from pathlib import Path
-
 import pytest
-
 from umrs.admin.user_store import UserRecord, UserStore, UserStoreError
 
 

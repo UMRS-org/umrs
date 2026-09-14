@@ -1,18 +1,11 @@
 """Tests for B2 — Batch Upload with Resume."""
 
-import json
-import os
-import tempfile
-from pathlib import Path
-
 import pytest
-
 from umrs.client.batch_upload import (
     BatchUploadManager,
     FileEntry,
     FileState,
     UploadManifest,
-    UploadReport,
     _compute_md5,
 )
 

@@ -96,7 +96,11 @@ class InMemoryStore:
         ts = now or _utcnow()
         count = 0
         for f in self._findings.values():
-            if f["status"] == "waived" and f["waiver_expires"] is not None and f["waiver_expires"] < ts:
+            if (
+                f["status"] == "waived"
+                and f["waiver_expires"] is not None
+                and f["waiver_expires"] < ts
+            ):
                 f["status"] = "resolved"
                 f["updated_at"] = ts
                 count += 1
@@ -104,17 +108,11 @@ class InMemoryStore:
 
     def list_open_findings(self) -> list[dict]:
         """List open or acknowledged findings."""
-        return [
-            f for f in self._findings.values()
-            if f["status"] in ("open", "acknowledged")
-        ]
+        return [f for f in self._findings.values() if f["status"] in ("open", "acknowledged")]
 
     def list_blocking_findings(self) -> list[dict]:
         """List blocking findings (any status)."""
-        return [
-            f for f in self._findings.values()
-            if f["severity"] == "blocking"
-        ]
+        return [f for f in self._findings.values() if f["severity"] == "blocking"]
 
     # -- helpers ---------------------------------------------------------------
 
@@ -165,8 +163,9 @@ class TestTransitionStickyWaiver:
     """A waived finding remains waived through re-waive — waiver is sticky."""
 
     def test_rewaive_keeps_waived(self, store):
-        store.upsert_finding(finding_key="f1", report_id="r1", category="sec",
-                             severity="blocking", title="X")
+        store.upsert_finding(
+            finding_key="f1", report_id="r1", category="sec", severity="blocking", title="X"
+        )
         store.waive_finding("f1", "evidence-1")
         assert store._findings["f1"]["status"] == "waived"
         # Re-waive
@@ -177,8 +176,14 @@ class TestTransitionStickyWaiver:
             store.transition_finding("f1", "waived", "open")
 
     def test_transition_to_waived_from_acknowledged(self, store):
-        store.upsert_finding(finding_key="f1", report_id="r1", category="sec",
-                             severity="warning", title="Y", status="acknowledged")
+        store.upsert_finding(
+            finding_key="f1",
+            report_id="r1",
+            category="sec",
+            severity="warning",
+            title="Y",
+            status="acknowledged",
+        )
         store.transition_finding("f1", "acknowledged", "waived")
         assert store._findings["f1"]["status"] == "waived"
 
@@ -187,8 +192,14 @@ class TestAutoResolveTriggers:
     """Auto-resolve triggers when waiver_expires < now()."""
 
     def test_expired_waiver_resolves(self, store):
-        store.upsert_finding(finding_key="f1", report_id="r1", category="sec",
-                             severity="blocking", title="Z", status="open")
+        store.upsert_finding(
+            finding_key="f1",
+            report_id="r1",
+            category="sec",
+            severity="blocking",
+            title="Z",
+            status="open",
+        )
         store.waive_finding("f1", "waiver-evidence", expires_after=timedelta(hours=1))
         # Simulate expiry by moving waiver_expires into the past
         store.set_time("f1", timedelta(hours=2))
@@ -198,8 +209,14 @@ class TestAutoResolveTriggers:
         assert store._findings["f1"]["status"] == "resolved"
 
     def test_non_expired_waiver_not_resolved(self, store):
-        store.upsert_finding(finding_key="f1", report_id="r1", category="sec",
-                             severity="blocking", title="Z", status="open")
+        store.upsert_finding(
+            finding_key="f1",
+            report_id="r1",
+            category="sec",
+            severity="blocking",
+            title="Z",
+            status="open",
+        )
         store.waive_finding("f1", "waiver-evidence", expires_after=timedelta(hours=2))
         now = _utcnow()
         count = store.auto_resolve_expired(now=now)
@@ -207,8 +224,14 @@ class TestAutoResolveTriggers:
         assert store._findings["f1"]["status"] == "waived"
 
     def test_waived_no_expiry_not_resolved(self, store):
-        store.upsert_finding(finding_key="f1", report_id="r1", category="sec",
-                             severity="blocking", title="Z", status="open")
+        store.upsert_finding(
+            finding_key="f1",
+            report_id="r1",
+            category="sec",
+            severity="blocking",
+            title="Z",
+            status="open",
+        )
         store.waive_finding("f1", "waiver-evidence")  # no expires_after
         now = _utcnow()
         count = store.auto_resolve_expired(now=now)
@@ -221,21 +244,32 @@ class TestKeyStability:
 
     def test_key_stable_across_three_upserts(self, store):
         key = "critical-auth-bypass"
-        result1 = store.upsert_finding(finding_key=key, report_id="r1", category="auth",
-                                       severity="blocking", title="Original")
+        result1 = store.upsert_finding(
+            finding_key=key, report_id="r1", category="auth", severity="blocking", title="Original"
+        )
         assert result1["finding_key"] == key
         assert result1["status"] == "open"
 
-        result2 = store.upsert_finding(finding_key=key, report_id="r1", category="auth",
-                                       severity="blocking", title="Updated v2",
-                                       evidence="new evidence")
+        result2 = store.upsert_finding(
+            finding_key=key,
+            report_id="r1",
+            category="auth",
+            severity="blocking",
+            title="Updated v2",
+            evidence="new evidence",
+        )
         assert result2["finding_key"] == key
         assert result2["title"] == "Updated v2"
         assert result2["status"] == "open"  # status preserved
 
-        result3 = store.upsert_finding(finding_key=key, report_id="r1", category="auth",
-                                       severity="critical", title="Updated v3",
-                                       evidence="more evidence")
+        result3 = store.upsert_finding(
+            finding_key=key,
+            report_id="r1",
+            category="auth",
+            severity="critical",
+            title="Updated v3",
+            evidence="more evidence",
+        )
         assert result3["finding_key"] == key
         assert result3["severity"] == "critical"
         assert result3["status"] == "open"  # still preserved
@@ -245,8 +279,14 @@ class TestResolvedImmutable:
     """Resolved findings cannot transition."""
 
     def test_resolved_no_transition(self, store):
-        store.upsert_finding(finding_key="f1", report_id="r1", category="sec",
-                             severity="warning", title="X", status="open")
+        store.upsert_finding(
+            finding_key="f1",
+            report_id="r1",
+            category="sec",
+            severity="warning",
+            title="X",
+            status="open",
+        )
         store.transition_finding("f1", "open", "resolved")
         assert store._findings["f1"]["status"] == "resolved"
         # No transitions from resolved
@@ -262,16 +302,27 @@ class TestTransitionRules:
         for from_status, allowed in _VALID_TRANSITIONS.items():
             invalid = [s for s in _VALID_TRANSITIONS if s not in allowed]
             for target in invalid:
-                store.upsert_finding(finding_key=f"f_{from_status}", report_id="r1",
-                                     category="sec", severity="info", title="t",
-                                     status=from_status)
+                store.upsert_finding(
+                    finding_key=f"f_{from_status}",
+                    report_id="r1",
+                    category="sec",
+                    severity="info",
+                    title="t",
+                    status=from_status,
+                )
                 with pytest.raises(TransitionError):
                     store.transition_finding(f"f_{from_status}", from_status, target)
 
     def test_valid_transitions(self, store):
         # open → acknowledged
-        store.upsert_finding(finding_key="f1", report_id="r1", category="sec",
-                             severity="info", title="t", status="open")
+        store.upsert_finding(
+            finding_key="f1",
+            report_id="r1",
+            category="sec",
+            severity="info",
+            title="t",
+            status="open",
+        )
         store.transition_finding("f1", "open", "acknowledged")
         assert store._findings["f1"]["status"] == "acknowledged"
         # acknowledged → resolved
@@ -286,15 +337,34 @@ class TestListOpenFindings:
     """list_open_findings returns only open or acknowledged."""
 
     def test_only_open_and_acknowledged(self, store):
-        store.upsert_finding(finding_key="f1", report_id="r1", category="sec",
-                             severity="blocking", title="Open")
-        store.upsert_finding(finding_key="f2", report_id="r1", category="sec",
-                             severity="warning", title="Acknowledged", status="acknowledged")
-        store.upsert_finding(finding_key="f3", report_id="r1", category="sec",
-                             severity="info", title="Resolved", status="resolved")
+        store.upsert_finding(
+            finding_key="f1", report_id="r1", category="sec", severity="blocking", title="Open"
+        )
+        store.upsert_finding(
+            finding_key="f2",
+            report_id="r1",
+            category="sec",
+            severity="warning",
+            title="Acknowledged",
+            status="acknowledged",
+        )
+        store.upsert_finding(
+            finding_key="f3",
+            report_id="r1",
+            category="sec",
+            severity="info",
+            title="Resolved",
+            status="resolved",
+        )
         store.waive_finding("f4", "e", expires_after=timedelta(hours=1)) if False else None
-        store.upsert_finding(finding_key="f4", report_id="r1", category="sec",
-                             severity="info", title="Waived", status="waived")
+        store.upsert_finding(
+            finding_key="f4",
+            report_id="r1",
+            category="sec",
+            severity="info",
+            title="Waived",
+            status="waived",
+        )
 
         open_findings = store.list_open_findings()
         keys = {f["finding_key"] for f in open_findings}
@@ -310,14 +380,28 @@ class TestListBlockingFindings:
     """list_blocking_findings returns only severity=blocking, all statuses."""
 
     def test_only_blocking_severity(self, store):
-        store.upsert_finding(finding_key="b1", report_id="r1", category="sec",
-                             severity="blocking", title="Blocking", status="open")
-        store.upsert_finding(finding_key="b2", report_id="r1", category="sec",
-                             severity="blocking", title="Blocked-ack", status="acknowledged")
-        store.upsert_finding(finding_key="w1", report_id="r1", category="sec",
-                             severity="warning", title="Warning")
-        store.upsert_finding(finding_key="i1", report_id="r1", category="sec",
-                             severity="info", title="Info")
+        store.upsert_finding(
+            finding_key="b1",
+            report_id="r1",
+            category="sec",
+            severity="blocking",
+            title="Blocking",
+            status="open",
+        )
+        store.upsert_finding(
+            finding_key="b2",
+            report_id="r1",
+            category="sec",
+            severity="blocking",
+            title="Blocked-ack",
+            status="acknowledged",
+        )
+        store.upsert_finding(
+            finding_key="w1", report_id="r1", category="sec", severity="warning", title="Warning"
+        )
+        store.upsert_finding(
+            finding_key="i1", report_id="r1", category="sec", severity="info", title="Info"
+        )
 
         blocking = store.list_blocking_findings()
         keys = {f["finding_key"] for f in blocking}
@@ -326,8 +410,14 @@ class TestListBlockingFindings:
         assert "i1" not in keys
 
     def test_blocking_including_resolved(self, store):
-        store.upsert_finding(finding_key="b1", report_id="r1", category="sec",
-                             severity="blocking", title="Blocked", status="resolved")
+        store.upsert_finding(
+            finding_key="b1",
+            report_id="r1",
+            category="sec",
+            severity="blocking",
+            title="Blocked",
+            status="resolved",
+        )
         blocking = store.list_blocking_findings()
         keys = {f["finding_key"] for f in blocking}
         assert "b1" in keys  # resolved blocking findings included

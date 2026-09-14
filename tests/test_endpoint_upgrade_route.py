@@ -174,7 +174,7 @@ class TestUpgradeRoute:
         monkeypatch.setenv("UMRS_AUTH_MODE", "mvp")
         test_app, registry, fake_service = app
         with TestClient(test_app) as client:
-            r = _upgrade(client, "job-001", payload={"model_path":"/models/new","mystery":True})
+            r = _upgrade(client, "job-001", payload={"model_path": "/models/new", "mystery": True})
         assert r.status_code == 422
 
 
@@ -185,7 +185,8 @@ class TestWireShape:
         from umrs.api import endpoints as e
 
         matches = [
-            r for r in e.router.routes
+            r
+            for r in e.router.routes
             if getattr(r, "path", "") == "/umrs/endpoints/{job_id}/upgrade"
         ]
         assert len(matches) == 1

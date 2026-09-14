@@ -1,17 +1,17 @@
 #!/usr/bin/python3
-import os
-import sys
-import boto3
-from botocore.exceptions import ClientError
 import hashlib
 import json
-from PIL import Image
+import os
+import sys
 from io import BytesIO
+
+import boto3
+from botocore.exceptions import ClientError
+from PIL import Image
 
 sqs = boto3.client("sqs")
 queue_name = "umrs-s3-queue"
 
-import json
 import boto3
 
 sqs = boto3.client("sqs")
@@ -140,7 +140,7 @@ def s3_store_txt(text_data, s3_cfg, user_md5):
 
         s3.head_bucket(Bucket=bucket_name)
 
-    except ClientError as e:
+    except ClientError:
         print(f"Bucket {cfg_bucket_name} Does not exists. Have it created.")
     except Exception as e:
         sys.exit(f"S3 Connection Failed: {e}")
@@ -169,7 +169,7 @@ def s3_store_image(in_path, s3_cfg, user_md5):
 
         s3.head_bucket(Bucket=bucket_name)
 
-    except ClientError as e:
+    except ClientError:
         print(f"Bucket {bucket_name} Does not exists. Have it created.")
     except Exception as e:
         sys.exit(f"S3 Connection Failed: {e}")

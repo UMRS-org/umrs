@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-
 from umrs.api.skills import router, set_skill_registry
 from umrs.skills import SkillRegistry
 

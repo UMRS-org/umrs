@@ -6,7 +6,6 @@ import asyncio
 from unittest.mock import MagicMock, patch
 
 import pytest
-
 from umrs.jobs.model_download import (
     DownloadSource,
     DownloadTaskContext,

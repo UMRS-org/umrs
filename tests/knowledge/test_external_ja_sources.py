@@ -6,8 +6,8 @@ from unittest.mock import patch
 
 from umrs.knowledge.external import (
     CiNiiSource,
-    ExternalSourceType,
     ExternalKnowledgeSearcher,
+    ExternalSourceType,
     JStageSource,
     SearchStatus,
     WEKO3Source,
@@ -15,7 +15,6 @@ from umrs.knowledge.external import (
     search_jstage,
     search_weko3,
 )
-
 
 CINII_JSON = """{
   "@graph": [{

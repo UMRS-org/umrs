@@ -7,15 +7,14 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
-
 from umrs.api.zmq_sessions import (
-    router,
-    set_session_curve_provider,
-    _require_user_id,
     _extract_jwt_identity,
     _JWTIdentity,
+    _require_user_id,
+    router,
+    set_session_curve_provider,
 )
-from umrs.core.session_curve_provider import SessionCredentialsProvider, SessionCurveEntry
+from umrs.core.session_curve_provider import SessionCredentialsProvider
 
 # ---------------------------------------------------------------------------
 # Fixtures

@@ -18,16 +18,10 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-MIGRATIONS_DIR = (
-    Path(__file__).resolve().parents[1] / "src" / "umrs" / "migrations"
-)
+MIGRATIONS_DIR = Path(__file__).resolve().parents[1] / "src" / "umrs" / "migrations"
 
-CREATE_RE = re.compile(
-    r"CREATE TABLE IF NOT EXISTS\s+([A-Za-z_][A-Za-z0-9_]*)", re.IGNORECASE
-)
-REF_RE = re.compile(
-    r"REFERENCES\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(", re.IGNORECASE
-)
+CREATE_RE = re.compile(r"CREATE TABLE IF NOT EXISTS\s+([A-Za-z_][A-Za-z0-9_]*)", re.IGNORECASE)
+REF_RE = re.compile(r"REFERENCES\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(", re.IGNORECASE)
 
 # Tables referenced by migrations but (legitimately) created outside the
 # migration chain — e.g. boot-time DDL in app code. MUST NOT grow silently:
@@ -82,7 +76,6 @@ def test_concurrently_files_are_runner_supported():
         return
     runner = (MIGRATIONS_DIR / "__init__.py").read_text()
     assert "conn.autocommit = True" in runner, (
-        "runner must handle CONCURRENTLY files out-of-transaction; "
-        f"flagged: {concurrent_files}"
+        f"runner must handle CONCURRENTLY files out-of-transaction; flagged: {concurrent_files}"
     )
     assert "autocommit = False" in runner, "autocommit must be restored"

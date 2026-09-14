@@ -3,15 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
-import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-
 from umrs.api.files import get_project_id
-from umrs.api.knowledge_attrition import router, _bucket, _report_for_project
+from umrs.api.knowledge_attrition import _bucket, _report_for_project, router
 
 
 def _app(monkeypatch, pool, project_id: str = "proj-9"):

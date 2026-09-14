@@ -20,17 +20,15 @@ import json
 from pathlib import Path
 
 import pytest
-
 from umrs.knowledge.project import ProjectPhase, ResearchProject
 from umrs.knowledge.workflow import (
-    WorkflowOptions,
     ProjectWorkflowResult,
+    WorkflowOptions,
     create_and_ingest,
     full_research_cycle,
     run_project_workflow,
     understand_and_verify,
 )
-
 
 # ── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -56,7 +54,13 @@ def project_dir(tmp_path: Path) -> Path:
         "metadata": {"kernelspec": {"name": "python3", "language": "python"}},
         "cells": [
             {"cell_type": "markdown", "source": "# Experiment\n", "metadata": {}},
-            {"cell_type": "code", "source": "import torch\nlr = 0.001", "execution_count": 1, "outputs": [], "metadata": {}},
+            {
+                "cell_type": "code",
+                "source": "import torch\nlr = 0.001",
+                "execution_count": 1,
+                "outputs": [],
+                "metadata": {},
+            },
         ],
     }
     (notebooks_dir / "experiment.ipynb").write_text(json.dumps(nb1))
@@ -86,7 +90,8 @@ def test_run_project_workflow_basic(project_dir: Path):
         name="Test Project",
         research_goal="What research should we perform next?",
         max_iterations=2,
-        auto_approve=True, simulate=True,
+        auto_approve=True,
+        simulate=True,
     )
 
     assert isinstance(result, ProjectWorkflowResult)
@@ -102,7 +107,8 @@ def test_run_project_workflow_ingests_files(project_dir: Path):
     result = run_project_workflow(
         "proj-001",
         project_dir,
-        auto_approve=True, simulate=True,
+        auto_approve=True,
+        simulate=True,
         max_iterations=1,
     )
 
@@ -114,7 +120,8 @@ def test_run_project_workflow_extracts_knowledge(project_dir: Path):
     result = run_project_workflow(
         "proj-001",
         project_dir,
-        auto_approve=True, simulate=True,
+        auto_approve=True,
+        simulate=True,
         max_iterations=1,
     )
 
@@ -128,7 +135,8 @@ def test_run_project_workflow_checks_readiness(project_dir: Path):
     result = run_project_workflow(
         "proj-001",
         project_dir,
-        auto_approve=True, simulate=True,
+        auto_approve=True,
+        simulate=True,
         max_iterations=1,
     )
 
@@ -142,7 +150,8 @@ def test_run_project_workflow_plans_research(project_dir: Path):
         "proj-001",
         project_dir,
         research_goal="What research should we perform next?",
-        auto_approve=True, simulate=True,
+        auto_approve=True,
+        simulate=True,
         max_iterations=1,
     )
 
@@ -156,7 +165,8 @@ def test_run_project_workflow_runs_research(project_dir: Path):
     result = run_project_workflow(
         "proj-001",
         project_dir,
-        auto_approve=True, simulate=True,
+        auto_approve=True,
+        simulate=True,
         max_iterations=3,
     )
 
@@ -170,7 +180,8 @@ def test_run_project_workflow_updates_memory(project_dir: Path):
     result = run_project_workflow(
         "proj-001",
         project_dir,
-        auto_approve=True, simulate=True,
+        auto_approve=True,
+        simulate=True,
         max_iterations=2,
     )
 
@@ -182,7 +193,8 @@ def test_run_project_workflow_with_verification_questions(project_dir: Path):
     result = run_project_workflow(
         "proj-001",
         project_dir,
-        auto_approve=True, simulate=True,
+        auto_approve=True,
+        simulate=True,
         max_iterations=1,
         verify_questions=["Explain my project", "What algorithms are implemented?"],
     )
@@ -212,7 +224,8 @@ def test_run_project_workflow_phase_durations(project_dir: Path):
     result = run_project_workflow(
         "proj-001",
         project_dir,
-        auto_approve=True, simulate=True,
+        auto_approve=True,
+        simulate=True,
         max_iterations=1,
     )
 
@@ -231,7 +244,8 @@ def test_run_project_workflow_to_dict(project_dir: Path):
     result = run_project_workflow(
         "proj-001",
         project_dir,
-        auto_approve=True, simulate=True,
+        auto_approve=True,
+        simulate=True,
         max_iterations=1,
     )
 
@@ -250,7 +264,8 @@ def test_run_project_workflow_handles_errors(project_dir: Path):
     result = run_project_workflow(
         "proj-001",
         "/nonexistent/directory",
-        auto_approve=True, simulate=True,
+        auto_approve=True,
+        simulate=True,
         max_iterations=1,
     )
 
@@ -295,7 +310,8 @@ def test_full_research_cycle(project_dir: Path):
         project_dir,
         research_goal="What research should we perform next?",
         max_iterations=2,
-        auto_approve=True, simulate=True,
+        auto_approve=True,
+        simulate=True,
     )
 
     assert isinstance(result, ProjectWorkflowResult)
@@ -325,7 +341,8 @@ def test_workflow_options_custom():
         research_goal="Custom goal",
         max_iterations=5,
         verify_questions=["Question 1", "Question 2"],
-        auto_approve=True, simulate=True,
+        auto_approve=True,
+        simulate=True,
         user_id="test-user",
     )
 
@@ -363,7 +380,8 @@ def test_full_pipeline_end_to_end(project_dir: Path):
         description="Full pipeline test",
         research_goal="What research should we perform next?",
         max_iterations=3,
-        auto_approve=True, simulate=True,
+        auto_approve=True,
+        simulate=True,
         verify_questions=[
             "Explain my project",
             "What algorithms are implemented?",
@@ -427,13 +445,15 @@ def test_pipeline_is_reproducible(project_dir: Path):
     result1 = run_project_workflow(
         "repro-001",
         project_dir,
-        auto_approve=True, simulate=True,
+        auto_approve=True,
+        simulate=True,
         max_iterations=2,
     )
     result2 = run_project_workflow(
         "repro-002",
         project_dir,
-        auto_approve=True, simulate=True,
+        auto_approve=True,
+        simulate=True,
         max_iterations=2,
     )
 
@@ -456,7 +476,8 @@ def test_pipeline_handles_empty_directory(tmp_path: Path):
     result = run_project_workflow(
         "empty-001",
         empty_dir,
-        auto_approve=True, simulate=True,
+        auto_approve=True,
+        simulate=True,
         max_iterations=1,
     )
 
@@ -475,7 +496,8 @@ def test_pipeline_handles_multiple_directories(project_dir: Path):
         project_dir / "notebooks",
         project_dir / "code",
         project_dir / "data",
-        auto_approve=True, simulate=True,
+        auto_approve=True,
+        simulate=True,
         max_iterations=1,
     )
 

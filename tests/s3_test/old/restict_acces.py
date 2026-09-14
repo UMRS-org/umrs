@@ -1,5 +1,6 @@
-import boto3
 import json
+
+import boto3
 
 bucket_name = "test-ej"
 endpoint_url = "https://127.0.0.1:9000"  # or your MinIO endpoint

@@ -3,10 +3,9 @@ Unit tests for Pipeline and RAG Profile API endpoints (X-001, X-002).
 """
 
 import pytest
-from fastapi.testclient import TestClient
 from fastapi import FastAPI
-
-from umrs.api.pipelines import router, PipelineStore, set_pipeline_store
+from fastapi.testclient import TestClient
+from umrs.api.pipelines import PipelineStore, router, set_pipeline_store
 
 
 @pytest.fixture

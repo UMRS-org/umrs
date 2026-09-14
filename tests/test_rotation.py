@@ -5,7 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-
 from umrs.security.rotation import (
     rewrap_sealed_rows,
     rewrap_wrapped_dek,

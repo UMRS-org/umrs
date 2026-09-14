@@ -11,7 +11,6 @@ from unittest.mock import patch
 import httpx
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-
 from umrs.api import rag as rag_module
 from umrs.api.rag import router
 from umrs.orchestrator.endpoint_registry import EndpointRegistry, get_registry

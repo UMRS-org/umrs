@@ -11,7 +11,6 @@ from umrs.knowledge.coverage import (
     calculate_coverage,
 )
 
-
 # ── Model Tests ────────────────────────────────────────────────────────────
 
 

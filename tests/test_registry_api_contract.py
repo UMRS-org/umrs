@@ -8,8 +8,9 @@ Tests the API responses conform to the expected contract for:
 - 503: Service unavailable
 """
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 # These tests validate the API contract without requiring full service deployment
 

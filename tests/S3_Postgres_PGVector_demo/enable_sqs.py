@@ -1,5 +1,6 @@
-import boto3
 import json
+
+import boto3
 
 sqs = boto3.client("sqs")
 sts = boto3.client("sts")

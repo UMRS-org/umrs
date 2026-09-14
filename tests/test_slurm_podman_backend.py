@@ -534,8 +534,7 @@ class TestNodeFromOutput:
         """Regression (bdrt): squeue reports dgx-spark-0 (no DNS on the login
         node); the wrapper's FQDN must replace it for the endpoint probe."""
         (output_dir / "slurm-12345.out").write_text(
-            "Allocated nodes: dgx-spark-0\n"
-            "Running on node: spark-atom-0.r-ccs10.riken.jp\n"
+            "Allocated nodes: dgx-spark-0\nRunning on node: spark-atom-0.r-ccs10.riken.jp\n"
         )
         mock_proc = AsyncMock()
         mock_proc.communicate.return_value = (b"dgx-spark-0 RUNNING\n", b"")

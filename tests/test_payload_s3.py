@@ -18,10 +18,9 @@ import subprocess
 import sys
 import types
 from types import SimpleNamespace
-from typing import Any, Dict, List
+from typing import Any
 
 import pytest
-
 from umrs.pipeline_sdk.step import Step, StepContext, StepResult
 from umrs.server.step_executor import (
     EXECUTOR_IMAGE_METADATA_KEY,
@@ -30,8 +29,6 @@ from umrs.server.step_executor import (
     StepExecutionError,
     StepExecutor,
     _payload_s3_key,
-    _PAYLOAD_MAX_BYTES,
-    _PAYLOAD_THRESHOLD_BYTES,
 )
 from umrs.server.step_router import reset_feedback_store
 from umrs.server.workflow_execution_registry import (
@@ -57,7 +54,7 @@ def _reset_registry():
 
 def _make_ctx(
     *,
-    metadata: Dict[str, Any] | None = None,
+    metadata: dict[str, Any] | None = None,
     s3: Any = None,
     run_id: str = "run-1",
 ) -> StepContext:
@@ -76,14 +73,14 @@ class _FakeS3:
     """In-memory S3 stub supporting put_object/get_object."""
 
     def __init__(self) -> None:
-        self.objects: Dict[str, bytes] = {}
-        self.puts: List[Dict[str, Any]] = []
+        self.objects: dict[str, bytes] = {}
+        self.puts: list[dict[str, Any]] = []
 
     def put_object(self, *, Bucket: str, Key: str, Body: bytes) -> None:
         self.objects[f"{Bucket}/{Key}"] = Body
         self.puts.append({"Bucket": Bucket, "Key": Key, "size": len(Body)})
 
-    def get_object(self, *, Bucket: str, Key: str) -> Dict[str, Any]:
+    def get_object(self, *, Bucket: str, Key: str) -> dict[str, Any]:
         data = self.objects.get(f"{Bucket}/{Key}")
         if data is None:
             raise Exception(f"NoSuchKey: {Bucket}/{Key}")
@@ -95,7 +92,7 @@ class _FakePodman:
 
     def __init__(
         self,
-        reply: Dict[str, Any],
+        reply: dict[str, Any],
         *,
         write_output: bool = True,
         fake_s3: _FakeS3 | None = None,
@@ -103,7 +100,7 @@ class _FakePodman:
         self.reply = reply
         self.write_output = write_output
         self.fake_s3 = fake_s3
-        self.calls: List[List[str]] = []
+        self.calls: list[list[str]] = []
 
     def __call__(self, cmd, **kwargs):  # noqa: ANN001
         self.calls.append(list(cmd))
@@ -293,7 +290,7 @@ def test_podman_s3_upload_failure_is_setup_error(monkeypatch):
 
 def test_payload_s3_metadata_stripped_from_worker_payload(monkeypatch):
     """``__payload_s3__`` must not leak into the worker's StepContext.metadata."""
-    captured: Dict[str, Any] = {}
+    captured: dict[str, Any] = {}
 
     def _capturing_run(cmd, **kwargs):  # noqa: ANN001
         workdir = None
@@ -336,7 +333,7 @@ def test_payload_s3_metadata_stripped_from_worker_payload(monkeypatch):
 
 class _RecordingExecutor(StepExecutor):
     def __init__(self) -> None:
-        self.calls: List[Dict[str, Any]] = []
+        self.calls: list[dict[str, Any]] = []
 
     def execute(self, *, entrypoint, config, ctx) -> StepResult:
         self.calls.append({"metadata": dict(ctx.metadata)})
@@ -358,7 +355,7 @@ _PROBE_MODULE._OkStep = _OkStep  # type: ignore[attr-defined]
 sys.modules["umrs_test_payload_s3_module"] = _PROBE_MODULE
 
 
-def _workflow() -> Dict[str, Any]:
+def _workflow() -> dict[str, Any]:
     return {
         "name": "wf",
         "steps": [

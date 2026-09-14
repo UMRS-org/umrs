@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import time
 import threading
+import time
 from unittest.mock import patch
 
 import pytest
-
 from umrs.core.session_curve_provider import (
     CURVE_KEY_LEN,
     SessionCredentialsProvider,

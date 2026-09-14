@@ -11,10 +11,10 @@ from __future__ import annotations
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from r4_contracts.errors import ERROR_CODE_HEADER
-
 from umrs.api.zmq_sessions import router, set_session_curve_provider
 from umrs.core.session_curve_provider import SessionCredentialsProvider
+
+from r4_contracts.errors import ERROR_CODE_HEADER
 
 
 def _app() -> FastAPI:
@@ -37,7 +37,6 @@ def client(provider):
 
 
 def _override_user(user_id: str):
-    from umrs.api.zmq_sessions import _require_user_id
 
     async def _mock():
         return user_id
@@ -67,9 +66,7 @@ class TestHeaderParity:
         assert resp.json()["detail"] == "Missing Authorization header"
 
     def test_bad_scheme_is_typed(self):
-        resp = TestClient(_app()).get(
-            "/umrs/zmq/session", headers={"Authorization": "token abc"}
-        )
+        resp = TestClient(_app()).get("/umrs/zmq/session", headers={"Authorization": "token abc"})
         assert resp.headers.get(ERROR_CODE_HEADER) == "auth.bad_scheme"
         assert resp.json()["detail"] == "Authorization header must be 'Bearer <token>'"
 
@@ -112,9 +109,7 @@ class TestHeaderParity:
         from umrs.api.zmq_sessions import _require_user_id
 
         app.dependency_overrides[_require_user_id] = _override_user("alice")
-        resp = client.post(
-            "/umrs/zmq/session/s-9/refresh", json={"ttl_seconds": 600}
-        )
+        resp = client.post("/umrs/zmq/session/s-9/refresh", json={"ttl_seconds": 600})
         assert resp.status_code == 404
         assert resp.headers.get(ERROR_CODE_HEADER) == "session.not_found"
         assert resp.json()["detail"] == "Session s-9 not found"
@@ -125,7 +120,6 @@ class TestProviderUnavailable:
     def test_register_503_carries_typed_header(self):
         """Dependency-direct probe: shared provider unset -> typed 503."""
         from fastapi import HTTPException
-
         from umrs.api.zmq_sessions import get_session_curve_provider
 
         set_session_curve_provider(None)
@@ -156,7 +150,6 @@ def test_research_session_404_is_typed_and_byte_identical():
     from unittest.mock import MagicMock
 
     import pytest
-
     import umrs.api.research_sessions as rs
 
     store = MagicMock()
@@ -206,7 +199,6 @@ def test_files_bucket_denied_carries_typed_header(monkeypatch):
     from types import SimpleNamespace
 
     import pytest
-
     import umrs.api.files as files_api
 
     config = SimpleNamespace(bucket="umrs-files")
@@ -223,7 +215,7 @@ def test_files_bucket_denied_carries_typed_header(monkeypatch):
     assert getattr(exc, "status_code", None) == 403, f"{exc!r}"
     headers = getattr(exc, "headers", {}) or {}
     assert headers.get("x-platform-error-code") == "files.bucket_denied"
-    assert "Bucket not in download allowlist: other-bucket" == getattr(exc, "detail", "")
+    assert getattr(exc, "detail", "") == "Bucket not in download allowlist: other-bucket"
 
 
 def test_contract_jobs_family_codes():
@@ -251,7 +243,6 @@ def test_jobs_404_carries_typed_header_byte_identical():
     from unittest.mock import MagicMock
 
     import pytest
-
     import umrs.api.jobs as jobs_api
     from umrs.jobs.store import JobNotFoundError
 
@@ -338,7 +329,6 @@ def test_models_404_carries_typed_header_byte_identical():
     from unittest.mock import MagicMock
 
     import pytest
-
     import umrs.api.models as models_api
     from umrs.model_registry.store.crud import ModelNotFoundError
 

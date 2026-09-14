@@ -272,10 +272,11 @@ class TestSessionRouter:
         the archived session must be refused with 410 (not write-succeed)."""
         import sqlite3
 
-        from umrs.api.companion import router as companion_router, set_trust_store
-        from umrs.companion_trust.store import TrustAllowlistStore
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
+        from umrs.api.companion import router as companion_router
+        from umrs.api.companion import set_trust_store
+        from umrs.companion_trust.store import TrustAllowlistStore
 
         shared = sqlite3.connect(":memory:", check_same_thread=False)
         trust = TrustAllowlistStore(conn=shared)

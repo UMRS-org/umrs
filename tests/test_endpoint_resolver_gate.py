@@ -212,9 +212,7 @@ def test_serving_mode_gate_is_before_warm_shortcircuit():
     gate_pos = src.find("_enforce_serving_mode_supported(request)")
     warm_pos = src.find("Check for existing warm endpoint first")
     assert gate_pos != -1 and warm_pos != -1
-    assert gate_pos < warm_pos, (
-        "serving_mode gate must precede the warm-endpoint short-circuit"
-    )
+    assert gate_pos < warm_pos, "serving_mode gate must precede the warm-endpoint short-circuit"
     # And it must not appear twice.
     assert len(re.findall(r"_enforce_serving_mode_supported\(request\)", src)) == 1
 
@@ -273,9 +271,7 @@ def test_cross_project_listing_denied_for_non_admin():
     # typed family landing: members decode through the contract table
     assert '"forbidden"' in src or "403" in src or "HTTP_403_FORBIDDEN" in src
     # And the check must precede any registry access.
-    assert src.find("project_id is None and not is_admin") < src.find(
-        "registry.list_all"
-    )
+    assert src.find("project_id is None and not is_admin") < src.find("registry.list_all")
 
 
 def test_model_scope_project_denied_for_other_project():
@@ -369,7 +365,6 @@ def test_workflow_provenance_flag_requires_trusted_identity():
     flag unless the dispatch was explicitly marked as a server-verified caller
     (the HTTP trigger route after HMAC)."""
     import inspect
-    import json
 
     from umrs.server import workflow_registry_handler as h
 
@@ -377,6 +372,4 @@ def test_workflow_provenance_flag_requires_trusted_identity():
     assert "trusted_identity and bool(payload.get" in src
     assert "trusted_identity" in inspect.getsource(h.handle_workflow_command)
     # Default for untrusted callers remains False.
-    assert "trusted_identity: bool = False" in inspect.getsource(
-        h.handle_workflow_command
-    )
+    assert "trusted_identity: bool = False" in inspect.getsource(h.handle_workflow_command)

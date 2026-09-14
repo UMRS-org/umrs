@@ -12,7 +12,6 @@ from __future__ import annotations
 import json
 
 import pytest
-
 from umrs.shared.auth import (
     ADMIN_ONLY_COMMANDS,
     USER_ALLOWED_COMMANDS,
@@ -20,7 +19,6 @@ from umrs.shared.auth import (
     UserRole,
     create_auth_context_from_request,
 )
-
 
 # ---------------------------------------------------------------------------
 # AuthContext.can_execute_command
@@ -213,7 +211,7 @@ class TestClientUnauthorizedHandling:
         if raw.startswith("UNAUTHORIZED:"):
             result = {
                 "status": "error",
-                "message": f"Authorization denied for MODEL_LIST",
+                "message": "Authorization denied for MODEL_LIST",
                 "code": "UNAUTHORIZED",
             }
         else:

@@ -92,15 +92,27 @@ def test_verification_session_store_get_nonexistent():
 def test_verification_session_store_list_sessions():
     """Test listing sessions with filters."""
     store = VerificationSessionStore()
-    store.save(VerificationSession(
-        session_id="s1", project_id="p1", question="Q1",
-    ))
-    store.save(VerificationSession(
-        session_id="s2", project_id="p1", question="Q2",
-    ))
-    store.save(VerificationSession(
-        session_id="s3", project_id="p2", question="Q3",
-    ))
+    store.save(
+        VerificationSession(
+            session_id="s1",
+            project_id="p1",
+            question="Q1",
+        )
+    )
+    store.save(
+        VerificationSession(
+            session_id="s2",
+            project_id="p1",
+            question="Q2",
+        )
+    )
+    store.save(
+        VerificationSession(
+            session_id="s3",
+            project_id="p2",
+            question="Q3",
+        )
+    )
 
     all_sessions = store.list_sessions()
     assert len(all_sessions) == 3
@@ -113,7 +125,9 @@ def test_verification_session_store_delete():
     """Test deleting a session."""
     store = VerificationSessionStore()
     session = VerificationSession(
-        session_id="s1", project_id="p1", question="Q1",
+        session_id="s1",
+        project_id="p1",
+        question="Q1",
     )
     store.save(session)
 

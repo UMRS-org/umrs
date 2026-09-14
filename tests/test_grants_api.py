@@ -7,7 +7,6 @@ from datetime import datetime, timezone
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-
 from umrs.api import grants as grants_api
 from umrs.api.grants import router
 from umrs.grants.store import ASSET_KINDS
@@ -42,8 +41,16 @@ class _FakeCursor:
                 created_by,
             ) = params
             self._rows[grant_id] = [
-                grant_id, asset_kind, asset_id, grantee_kind, grantee_id,
-                version_pin, expires_at, None, created_by, "2026-09-07",
+                grant_id,
+                asset_kind,
+                asset_id,
+                grantee_kind,
+                grantee_id,
+                version_pin,
+                expires_at,
+                None,
+                created_by,
+                "2026-09-07",
             ]
             return
         if lowered.startswith("update"):
@@ -67,11 +74,7 @@ class _FakeCursor:
             return
         if "asset_kind = %s and asset_id = %s" in sql:
             kind, asset = params
-            self._many = [
-                tuple(r)
-                for r in self._rows.values()
-                if r[1] == kind and r[2] == asset
-            ]
+            self._many = [tuple(r) for r in self._rows.values() if r[1] == kind and r[2] == asset]
             return
         if "grantee_kind = %s and grantee_id = %s" in sql:
             kind, gid = params
@@ -203,20 +206,52 @@ def test_missing_pool_503():
 def test_mine_lists_user_and_project_grants(client):
     rows = client.app.state.umrs_db_pool.rows
     rows["grt-a"] = [
-        "grt-a", "model", "mdl-1", "user", "carol",
-        None, None, None, "root", "2026-09-07",
+        "grt-a",
+        "model",
+        "mdl-1",
+        "user",
+        "carol",
+        None,
+        None,
+        None,
+        "root",
+        "2026-09-07",
     ]
     rows["grt-b"] = [
-        "grt-b", "knowledge_graph", "g-1", "project", "proj-x",
-        None, None, None, "root", "2026-09-07",
+        "grt-b",
+        "knowledge_graph",
+        "g-1",
+        "project",
+        "proj-x",
+        None,
+        None,
+        None,
+        "root",
+        "2026-09-07",
     ]
     rows["grt-c"] = [  # tombstoned → hidden from /mine
-        "grt-c", "model", "mdl-2", "user", "carol",
-        None, None, datetime(2026, 9, 7, tzinfo=timezone.utc), "root", "2026-09-06",
+        "grt-c",
+        "model",
+        "mdl-2",
+        "user",
+        "carol",
+        None,
+        None,
+        datetime(2026, 9, 7, tzinfo=timezone.utc),
+        "root",
+        "2026-09-06",
     ]
     rows["grt-d"] = [  # someone else → hidden
-        "grt-d", "model", "mdl-3", "user", "alice",
-        None, None, None, "root", "2026-09-07",
+        "grt-d",
+        "model",
+        "mdl-3",
+        "user",
+        "alice",
+        None,
+        None,
+        None,
+        "root",
+        "2026-09-07",
     ]
     response = client.get("/umrs/grants/mine")
     ids = {g["grant_id"] for g in response.json()["grants"]}
@@ -226,12 +261,28 @@ def test_mine_lists_user_and_project_grants(client):
 def test_list_for_asset_includes_tombstones_for_writers(client):
     rows = client.app.state.umrs_db_pool.rows
     rows["grt-a"] = [
-        "grt-a", "model", "mdl-1", "user", "alice",
-        None, None, None, "carol", "2026-09-07",
+        "grt-a",
+        "model",
+        "mdl-1",
+        "user",
+        "alice",
+        None,
+        None,
+        None,
+        "carol",
+        "2026-09-07",
     ]
     rows["grt-b"] = [
-        "grt-b", "model", "mdl-1", "user", "bob",
-        None, None, datetime(2026, 9, 7, tzinfo=timezone.utc), "carol", "2026-09-07",
+        "grt-b",
+        "model",
+        "mdl-1",
+        "user",
+        "bob",
+        None,
+        None,
+        datetime(2026, 9, 7, tzinfo=timezone.utc),
+        "carol",
+        "2026-09-07",
     ]
     response = client.get("/umrs/grants", params={"asset_kind": "model", "asset_id": "mdl-1"})
     assert response.status_code == 200

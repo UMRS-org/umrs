@@ -131,7 +131,10 @@ class TestExecuteLoop:
         with (
             patch("umrs.jobs.batch_infer._iter_s3_prompts", return_value=["p1", "p2", "p3"]),
             patch("umrs.jobs.batch_infer._run_one_row", new=AsyncMock(side_effect=rows)),
-            patch("umrs.jobs.batch_infer._upload_results", new=AsyncMock(return_value="jobs/job-b1/attempt_1/results.jsonl")),
+            patch(
+                "umrs.jobs.batch_infer._upload_results",
+                new=AsyncMock(return_value="jobs/job-b1/attempt_1/results.jsonl"),
+            ),
         ):
             asyncio.run(backend._execute(ctx))
         assert ctx.progress["status"] == "completed"
@@ -174,7 +177,11 @@ class TestStatusChecker:
 
     def test_completed_status_passes_through_metrics(self):
         ctx = _ctx()
-        ctx.progress = {"status": "completed", "rows_ok": 3, "s3_key": "jobs/job-b1/attempt_1/results.jsonl"}
+        ctx.progress = {
+            "status": "completed",
+            "rows_ok": 3,
+            "s3_key": "jobs/job-b1/attempt_1/results.jsonl",
+        }
         asyncio.run(get_batch_registry().register(ctx))
         try:
             checker = BatchInferStatusChecker()

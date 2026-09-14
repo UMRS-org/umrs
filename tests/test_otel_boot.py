@@ -11,8 +11,6 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-import pytest
-
 from umrs.server import otel
 
 
@@ -68,7 +66,9 @@ def test_otel_active_path_with_stubbed_stack(monkeypatch):
     import types
 
     fake_ot = types.ModuleType("opentelemetry")
-    fake_trace = types.SimpleNamespace(set_tracer_provider=lambda p: captured.setdefault("provider", p))
+    fake_trace = types.SimpleNamespace(
+        set_tracer_provider=lambda p: captured.setdefault("provider", p)
+    )
     fake_ot.trace = fake_trace
     exporter_mod = types.ModuleType("opentelemetry.exporter.otlp.proto.http.trace_exporter")
     exporter_mod.OTLPSpanExporter = lambda endpoint: ("exp", endpoint)
@@ -92,16 +92,12 @@ def test_otel_active_path_with_stubbed_stack(monkeypatch):
         "opentelemetry": fake_ot,
         "opentelemetry.exporter": types.ModuleType("opentelemetry.exporter"),
         "opentelemetry.exporter.otlp": types.ModuleType("opentelemetry.exporter.otlp"),
-        "opentelemetry.exporter.otlp.proto": types.ModuleType(
-            "opentelemetry.exporter.otlp.proto"
-        ),
+        "opentelemetry.exporter.otlp.proto": types.ModuleType("opentelemetry.exporter.otlp.proto"),
         "opentelemetry.exporter.otlp.proto.http": types.ModuleType(
             "opentelemetry.exporter.otlp.proto.http"
         ),
         "opentelemetry.exporter.otlp.proto.http.trace_exporter": exporter_mod,
-        "opentelemetry.instrumentation": types.ModuleType(
-            "opentelemetry.instrumentation"
-        ),
+        "opentelemetry.instrumentation": types.ModuleType("opentelemetry.instrumentation"),
         "opentelemetry.instrumentation.fastapi": instr_mod,
         "opentelemetry.sdk": types.ModuleType("opentelemetry.sdk"),
         "opentelemetry.sdk.resources": resources_mod,
