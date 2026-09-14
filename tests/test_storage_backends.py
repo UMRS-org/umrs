@@ -313,3 +313,80 @@ class TestMinioBackend:
 
         assert callable(minio_storage._mirror_s3cfg_to_user_files)
         assert callable(minio_storage._prune_stale_user_files_s3cfg)
+
+
+# ------------------------------------------------- login-time self-healing --
+class TestUserS3cfgCurrency:
+    def test_seaweedfs_reports_dead_key_and_missing_file(self, tmp_path):
+        iam = _FakeIam(existing_users=("alice",))
+        admin = _admin_cfg(tmp_path)
+        user_cfg = tmp_path / "s3cfg_alice"
+        assert _backend(iam).user_s3cfg_is_current("alice", str(user_cfg), admin) is False
+        user_cfg.write_text("[default]\naccess_key = DEADKEY\nsecret_key = dead\n")
+        assert (
+            _backend(iam, user_key_valid=False).user_s3cfg_is_current("alice", str(user_cfg), admin)
+            is False
+        )
+        assert (
+            _backend(iam, user_key_valid=True).user_s3cfg_is_current("alice", str(user_cfg), admin)
+            is True
+        )
+
+    def test_minio_trusts_the_file(self, tmp_path):
+        admin = _admin_cfg(tmp_path)
+        user_cfg = tmp_path / "s3cfg_alice"
+        assert MinioBackend().user_s3cfg_is_current("alice", str(user_cfg), admin) is False
+        user_cfg.write_text("[default]\naccess_key = alice\nsecret_key = s\n")
+        assert MinioBackend().user_s3cfg_is_current("alice", str(user_cfg), admin) is True
+
+
+class TestLoginS3cfgDelivery:
+    """ops._get_or_create_user_s3cfg re-provisions a stale s3cfg (ADR-055 cutover)."""
+
+    def _ops(self, monkeypatch, tmp_path, *, existing, admin_cfg, backend):
+        from umrs.api import ops
+
+        monkeypatch.setattr(ops, "_read_user_s3cfg", lambda _username: existing)
+        monkeypatch.setenv("UMRS_ADMIN_S3_CONFIGURATION_FILE", admin_cfg)
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setattr("umrs.shared.storage.backends.get_backend", lambda _name=None: backend)
+        return ops
+
+    def test_without_admin_config_returns_existing_unverified(self, monkeypatch, tmp_path):
+        ops = self._ops(monkeypatch, tmp_path, existing="OLD", admin_cfg="", backend=None)
+        monkeypatch.delenv("UMRS_ADMIN_S3_CONFIGURATION_FILE", raising=False)
+        assert ops._get_or_create_user_s3cfg("alice") == "OLD"
+
+    def test_current_s3cfg_is_delivered_as_is(self, monkeypatch, tmp_path):
+        backend = MagicMock()
+        backend.user_s3cfg_is_current.return_value = True
+        ops = self._ops(monkeypatch, tmp_path, existing="OLD", admin_cfg="/adm", backend=backend)
+        assert ops._get_or_create_user_s3cfg("alice") == "OLD"
+        backend.create_user.assert_not_called()
+
+    def test_stale_s3cfg_is_reprovisioned(self, monkeypatch, tmp_path):
+        backend = MagicMock()
+        backend.user_s3cfg_is_current.return_value = False
+        backend.create_user.return_value = ("alias", "NEW")
+        backend.profile.display_name = "SeaweedFS"
+        ops = self._ops(monkeypatch, tmp_path, existing="OLD", admin_cfg="/adm", backend=backend)
+        assert ops._get_or_create_user_s3cfg("alice") == "NEW"
+        args = backend.create_user.call_args.args
+        assert (
+            args[0] == "alice"
+            and args[1].endswith("/.config/umrs/s3cfg_alice")
+            and args[2] == "/adm"
+        )
+
+    def test_missing_s3cfg_is_provisioned(self, monkeypatch, tmp_path):
+        backend = MagicMock()
+        backend.user_s3cfg_is_current.return_value = False
+        backend.create_user.return_value = ("alias", "NEW")
+        ops = self._ops(monkeypatch, tmp_path, existing=None, admin_cfg="/adm", backend=backend)
+        assert ops._get_or_create_user_s3cfg("alice") == "NEW"
+
+    def test_store_failure_keeps_login_working_with_existing_file(self, monkeypatch, tmp_path):
+        backend = MagicMock()
+        backend.user_s3cfg_is_current.side_effect = RuntimeError("store down")
+        ops = self._ops(monkeypatch, tmp_path, existing="OLD", admin_cfg="/adm", backend=backend)
+        assert ops._get_or_create_user_s3cfg("alice") == "OLD"

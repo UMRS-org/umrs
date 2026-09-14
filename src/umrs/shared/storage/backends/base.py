@@ -182,6 +182,17 @@ class ObjectStoreBackend(Protocol):
         reconciled and returned, never silently re-keyed.
         """
 
+    def user_s3cfg_is_current(
+        self, username: str, user_s3cfg_path: str, admin_s3cfg_path: str
+    ) -> bool:
+        """Does the credential in the user's s3cfg still authenticate here?
+
+        Lets login-time delivery notice an s3cfg issued by a *previous*
+        backend (ADR-055 cutover: MinIO-era keys do not exist on SeaweedFS)
+        and re-provision instead of handing out dead credentials. A missing
+        file counts as not current.
+        """
+
     def grant_bucket_access(
         self, username: str, bucket: str, admin_s3cfg_path: str
     ) -> None:
