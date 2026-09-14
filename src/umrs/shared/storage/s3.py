@@ -1,12 +1,12 @@
 #!/usr/bin/python3
 import configparser
 import mimetypes
-import os, sys
+import os
 import secrets
 import string
+import sys
 import warnings
 from io import BytesIO
-from typing import Optional
 
 import boto3
 import urllib3
@@ -33,7 +33,7 @@ def create_presigned_url(
     object_key: str,
     mode: str,
     duration: int = 3600,
-) -> Optional[str]:
+) -> str | None:
     if mode not in (S3Mode.GET, S3Mode.PUT):
         raise ValueError(f"Invalid mode '{mode}', must be S3Mode.GET or S3Mode.PUT.")
     try:

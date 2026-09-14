@@ -149,7 +149,7 @@ def _load_step_class(entrypoint: str) -> type[Step]:
     module_path, _, class_name = entrypoint.partition(":")
     try:
         module = importlib.import_module(module_path)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         raise StepExecutionError(
             "setup", f"could not import {module_path!r}: {exc}"
         ) from exc
@@ -177,11 +177,11 @@ def _drive_lifecycle(
     instance = cls()
     try:
         instance.setup(config)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         raise StepExecutionError("setup", str(exc)) from exc
     try:
         result = instance.run(ctx)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         # Always attempt teardown so the step can release resources
         # even on failure — but never let teardown errors mask the
         # original run() error.
@@ -354,7 +354,7 @@ class SubprocessExecutor:
 
         try:
             reply = pickle.loads(completed.stdout)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             stderr = (completed.stderr or b"").decode(errors="replace")
             raise StepExecutionError(
                 "worker",
@@ -548,7 +548,7 @@ class PodmanExecutor:
                         Key=input_s3_key,
                         Body=payload_blob,
                     )
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:
                     raise StepExecutionError(
                         "setup",
                         f"failed to upload payload to "
@@ -706,7 +706,7 @@ class PodmanExecutor:
         try:
             with open(output_path, "rb") as fh:
                 return pickle.loads(fh.read())
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             stderr = (completed.stderr or b"").decode(errors="replace")
             raise StepExecutionError(
                 "worker",
@@ -724,7 +724,7 @@ class PodmanExecutor:
         try:
             obj = s3.get_object(Bucket=bucket, Key=key)
             return pickle.loads(obj["Body"].read())
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             stderr = (completed.stderr or b"").decode(errors="replace")
             raise StepExecutionError(
                 "worker",
@@ -948,7 +948,7 @@ class _PooledWorker:
 
         try:
             return pickle.loads(data)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise StepExecutionError(
                 "worker", f"could not decode pool worker reply: {exc}"
             ) from exc
@@ -1551,7 +1551,7 @@ class _RemoteWorker:
                 "worker",
                 f"remote worker {self.address} send timeout",
             ) from None
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             self._mark_failed()
             self._recreate_socket()
             raise StepExecutionError(
@@ -1567,7 +1567,7 @@ class _RemoteWorker:
                 "worker",
                 f"remote worker {self.address} timeout after {self._timeout}s",
             ) from None
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             self._mark_failed()
             self._recreate_socket()
             raise StepExecutionError(
@@ -1577,7 +1577,7 @@ class _RemoteWorker:
         self.last_used_at = time.monotonic()
         try:
             return pickle.loads(data)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise StepExecutionError(
                 "worker", f"could not decode remote worker reply: {exc}"
             ) from exc
@@ -1961,7 +1961,7 @@ class RouterPoolExecutor:
         # We send [empty_frame, payload] as the envelope.
         try:
             self._sock.send_multipart([b"", payload_blob])
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             with self._lock:
                 self._pending.pop(correlation_id, None)
             raise StepExecutionError(

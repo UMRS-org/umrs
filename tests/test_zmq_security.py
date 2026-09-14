@@ -1,5 +1,4 @@
 import os
-import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -115,18 +114,17 @@ class TestMessageQueueZMQSecurity:
             "UMRS_ZMQ_CURVE_CLIENT_PUBLIC_KEY": KEY_B,
             "UMRS_ZMQ_CURVE_CLIENT_SECRET_KEY": KEY_C,
         }
-        with patch.dict(os.environ, env, clear=False):
-            with patch("zmq.Context") as mock_context:
-                mock_socket = MagicMock()
-                mock_context.return_value.socket.return_value = mock_socket
+        with patch.dict(os.environ, env, clear=False), patch("zmq.Context") as mock_context:
+            mock_socket = MagicMock()
+            mock_context.return_value.socket.return_value = mock_socket
 
-                mq = MessageQueue(role="client", queue_type="control")
+            mq = MessageQueue(role="client", queue_type="control")
 
-                assert mock_socket.curve_serverkey == KEY_A.encode("ascii")
-                assert mock_socket.curve_publickey == KEY_B.encode("ascii")
-                assert mock_socket.curve_secretkey == KEY_C.encode("ascii")
-                mock_socket.connect.assert_called_once()
-                mq.close()
+            assert mock_socket.curve_serverkey == KEY_A.encode("ascii")
+            assert mock_socket.curve_publickey == KEY_B.encode("ascii")
+            assert mock_socket.curve_secretkey == KEY_C.encode("ascii")
+            mock_socket.connect.assert_called_once()
+            mq.close()
 
     def test_server_control_queue_applies_curve_and_stops_authenticator(self):
         from umrs.core.MessageQueue import MessageQueue
@@ -138,19 +136,18 @@ class TestMessageQueueZMQSecurity:
             "UMRS_ZMQ_CURVE_ALLOW_ANY_CLIENT_KEY": "true",
         }
         auth = MagicMock()
-        with patch.dict(os.environ, env, clear=False):
-            with patch("zmq.Context") as mock_context:
-                with patch("zmq.auth.thread.ThreadAuthenticator", return_value=auth):
-                    mock_socket = MagicMock()
-                    mock_context.return_value.socket.return_value = mock_socket
+        with patch.dict(os.environ, env, clear=False), patch("zmq.Context") as mock_context:
+            with patch("zmq.auth.thread.ThreadAuthenticator", return_value=auth):
+                mock_socket = MagicMock()
+                mock_context.return_value.socket.return_value = mock_socket
 
-                    mq = MessageQueue(role="server", queue_type="control")
+                mq = MessageQueue(role="server", queue_type="control")
 
-                    assert mock_socket.curve_publickey == KEY_A.encode("ascii")
-                    assert mock_socket.curve_secretkey == KEY_B.encode("ascii")
-                    assert mock_socket.curve_server is True
-                    mock_socket.bind.assert_called_once()
-                    mq.close()
+                assert mock_socket.curve_publickey == KEY_A.encode("ascii")
+                assert mock_socket.curve_secretkey == KEY_B.encode("ascii")
+                assert mock_socket.curve_server is True
+                mock_socket.bind.assert_called_once()
+                mq.close()
 
         auth.stop.assert_called_once()
 
@@ -241,7 +238,6 @@ class TestGenerateCurveKeypair:
         assert sec_path.endswith("testuser.key_secret")
 
         # Secret file should be mode 600
-        import stat
 
         mode = os.stat(sec_path).st_mode & 0o777
         assert mode == 0o600

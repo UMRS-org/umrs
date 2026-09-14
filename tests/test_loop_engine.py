@@ -11,13 +11,9 @@ Covers:
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
 import pytest
 
 # Splice removed (ADR-053): umrs installed editable in .venv.
-
 from umrs.knowledge.loop import (  # noqa: E402
     AutonomousResearchLoop,
     LoopIteration,

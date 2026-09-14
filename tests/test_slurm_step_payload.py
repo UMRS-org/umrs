@@ -8,8 +8,8 @@ from unittest.mock import patch
 
 import pytest
 from umrs.pipeline_sdk.step import StepContext, StepResult
-from umrs.server.step_executor import EXECUTOR_GPU_METADATA_KEY, StepExecutionError
 from umrs.server.slurm_step_executor import SlurmStepExecutor
+from umrs.server.step_executor import EXECUTOR_GPU_METADATA_KEY, StepExecutionError
 
 
 def _run_with_fake_sbatch(executor: SlurmStepExecutor, ctx: StepContext, **kwargs):

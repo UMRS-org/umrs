@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 # Splice/stub machinery removed (ADR-053): umrs.api.__init__ is a lazy

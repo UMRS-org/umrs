@@ -11,25 +11,22 @@ Covers:
 
 import json
 import os
+
+# Ensure src/ is on sys.path
 import tempfile
 import zipfile
 
 import pytest
 
-# Ensure src/ is on sys.path
-import sys
-
 # splice removed (ADR-053): umrs installed editable in .venv
-
-from umrs.core.TaskCmdStatus import TaskCmd, TaskStatus
+from umrs.core.TaskCmdStatus import TaskCmd
 from umrs.pipeline_sdk.workflow import (
+    ScriptLoadError,
     SourceSpec,
     SourceType,
     WorkflowDefinition,
     _resolve_source,
-    ScriptLoadError,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -124,6 +121,7 @@ class TestHandleUploadWorkflow:
         for testing without importing the full server (which requires torch).
         """
         import zipfile as _zf
+
         from umrs.pipeline_sdk.workflow import WorkflowDefinition
 
         if not os.path.isfile(zip_path):
@@ -131,7 +129,7 @@ class TestHandleUploadWorkflow:
 
         max_size = 500 * 1024 * 1024
         if os.path.getsize(zip_path) > max_size:
-            return False, None, f"Zip file too large"
+            return False, None, "Zip file too large"
 
         if not _zf.is_zipfile(zip_path):
             return False, None, f"Uploaded file is not a valid zip archive: {zip_path}"
@@ -163,7 +161,7 @@ class TestHandleUploadWorkflow:
             # Rewrite source
             actual_wf = os.path.join(dest_dir, "workflow.json")
             if os.path.isfile(actual_wf):
-                with open(actual_wf, "r") as fh:
+                with open(actual_wf) as fh:
                     wf_data = json.load(fh)
                 wf_data["source"] = {"type": "uploaded", "path": dest_dir}
                 with open(actual_wf, "w") as fh:

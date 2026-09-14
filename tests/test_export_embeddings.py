@@ -9,19 +9,16 @@ Verifies:
 """
 
 import json
-import os
-import sys
-import pytest
-from unittest.mock import MagicMock, patch, PropertyMock
 from dataclasses import dataclass, field
 from threading import RLock
-from typing import Any, Dict, Optional
+from typing import Any
+from unittest.mock import MagicMock
+
+import pytest
 
 # Ensure src/ is importable
 # splice removed (ADR-053): umrs installed editable in .venv
-
-from umrs.core.TaskCmdStatus import TaskCmd, TaskStatus
-
+from umrs.core.TaskCmdStatus import TaskCmd
 
 # ---------------------------------------------------------------------------
 # Lightweight stand-ins for DB / BucketsCfg (avoid heavy imports)
@@ -40,10 +37,10 @@ class FakeServerBucketEntry:
     store_embeddings_flag: bool = True
     modality_name: str = "image"
     s3_connection: Any = None
-    metadata: Dict = field(default_factory=dict)
+    metadata: dict = field(default_factory=dict)
     xp_name: str = "xp1"
     num_objects: int = 5
-    output_path_to_bucket: Optional[str] = None
+    output_path_to_bucket: str | None = None
     reentrant_lock: RLock = field(default_factory=RLock)
 
 

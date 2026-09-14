@@ -2,16 +2,12 @@
 
 from __future__ import annotations
 
-import pytest
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 
 # Plain imports (ADR-053): the umrs.jobs import cycle cited above was broken
 # in Phase 1.1; the spec-load harness is obsolete.
 from umrs.jobs.execution_trace_store import TraceRecord  # noqa: E402
 from umrs.jobs.lineage_graph import (  # noqa: E402
-    LineageGraph,
-    LineageGraphMetrics,
-    LineageNode,
     build_lineage_graph,
 )
 

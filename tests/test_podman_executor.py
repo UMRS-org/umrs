@@ -14,10 +14,9 @@ import pickle
 import shutil
 import subprocess
 from types import SimpleNamespace
-from typing import Any, Dict, List
+from typing import Any
 
 import pytest
-
 from umrs.pipeline_sdk.step import StepContext, StepResult
 from umrs.server.step_executor import (
     InProcessExecutor,
@@ -26,7 +25,6 @@ from umrs.server.step_executor import (
     SubprocessExecutor,
     build_step_executor,
 )
-
 
 # ----------------------------------------------------------------------
 # Helpers
@@ -54,7 +52,7 @@ class _FakePodman:
 
     def __init__(
         self,
-        reply: Dict[str, Any],
+        reply: dict[str, Any],
         *,
         write_output: bool = True,
         returncode: int = 0,
@@ -66,7 +64,7 @@ class _FakePodman:
         self.returncode = returncode
         self.stderr = stderr
         self.raises = raises
-        self.calls: List[List[str]] = []
+        self.calls: list[list[str]] = []
 
     def __call__(self, cmd, **kwargs):  # noqa: ANN001
         self.calls.append(list(cmd))
@@ -255,7 +253,7 @@ def test_podman_binary_missing_classified_as_worker(monkeypatch):
 
 
 def test_podman_workdir_cleaned_up_by_default(monkeypatch):
-    captured: List[str] = []
+    captured: list[str] = []
 
     def _capture_then_succeed(cmd, **kwargs):
         for i, arg in enumerate(cmd):
@@ -273,7 +271,7 @@ def test_podman_workdir_cleaned_up_by_default(monkeypatch):
 
 
 def test_podman_keep_workdir_preserves_dir(monkeypatch, tmp_path):
-    captured: List[str] = []
+    captured: list[str] = []
 
     def _ok(cmd, **kwargs):
         for i, arg in enumerate(cmd):
@@ -297,7 +295,7 @@ def test_podman_keep_workdir_preserves_dir(monkeypatch, tmp_path):
 
 
 def test_podman_timeout_triggers_force_remove(monkeypatch):
-    rm_calls: List[List[str]] = []
+    rm_calls: list[list[str]] = []
 
     def _run(cmd, **kwargs):
         if cmd[:3] == ["podman", "rm", "-f"]:
@@ -391,7 +389,7 @@ def test_podman_run_failure_propagated_through_runner(monkeypatch):
     reset_execution_registry_for_tests()
     step_router.reset_feedback_store()
 
-    calls: List[Dict[str, Any]] = []
+    calls: list[dict[str, Any]] = []
 
     class _FailingPodman:
         name = "podman-stub"
@@ -514,7 +512,7 @@ def test_podman_per_step_image_non_string_is_setup_error(monkeypatch):
 def test_podman_per_step_image_metadata_stripped_from_payload(monkeypatch):
     """``__executor_image__`` is an executor-internal contract — it must not
     leak into the worker's StepContext.metadata."""
-    captured: Dict[str, Any] = {}
+    captured: dict[str, Any] = {}
 
     def _capturing_run(cmd, **kwargs):  # noqa: ANN001
         # Find the workdir bind and read input.pkl that the executor wrote.

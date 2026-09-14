@@ -17,7 +17,6 @@ from unittest import mock
 
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # bootstrap_curve_session gateway robustness
 # ---------------------------------------------------------------------------
@@ -104,9 +103,8 @@ def test_bootstrap_uses_server_key_when_available():
 
 def test_bootstrap_get_network_error_is_non_fatal():
     """A network error on the server-key GET must not abort the bootstrap."""
-    from umrs.client import session_bootstrap
-
     import requests
+    from umrs.client import session_bootstrap
 
     with (
         mock.patch("requests.get", side_effect=requests.ConnectionError("boom")),
@@ -129,7 +127,6 @@ def test_bootstrap_get_network_error_is_non_fatal():
 @pytest.fixture()
 def _client_mod():
     import importlib
-    import sys
 
     # client_umrs installed editable alongside umrs (ADR-053).
     return importlib.import_module("client_umrs")

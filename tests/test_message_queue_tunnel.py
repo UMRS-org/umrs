@@ -12,13 +12,12 @@ Example SSH tunnel command:
     ssh -L 5555:localhost:5555 -L 5556:localhost:5556 user@rccs-server -N
 """
 
-import pytest
-from unittest.mock import MagicMock, patch
-import os
 import json
 import logging
+import os
+from unittest.mock import MagicMock, patch
 
-import sys
+import pytest
 
 # splice removed (ADR-053): umrs installed editable in .venv
 
@@ -48,31 +47,28 @@ class TestTunnelModeBasics:
         """tunnel_mode should be set from UMRS_TUNNEL_MODE env var."""
         from umrs.core.MessageQueue import MessageQueue
 
-        with patch.dict(os.environ, {"UMRS_TUNNEL_MODE": "true"}):
-            with patch("zmq.Context"):
-                mq = MessageQueue(role="server", queue_type="control")
-                assert mq.tunnel_mode is True
-                mq.close()
+        with patch.dict(os.environ, {"UMRS_TUNNEL_MODE": "true"}), patch("zmq.Context"):
+            mq = MessageQueue(role="server", queue_type="control")
+            assert mq.tunnel_mode is True
+            mq.close()
 
     def test_tunnel_mode_env_var_false(self):
         """UMRS_TUNNEL_MODE=false should disable tunnel mode."""
         from umrs.core.MessageQueue import MessageQueue
 
-        with patch.dict(os.environ, {"UMRS_TUNNEL_MODE": "false"}):
-            with patch("zmq.Context"):
-                mq = MessageQueue(role="server", queue_type="control")
-                assert mq.tunnel_mode is False
-                mq.close()
+        with patch.dict(os.environ, {"UMRS_TUNNEL_MODE": "false"}), patch("zmq.Context"):
+            mq = MessageQueue(role="server", queue_type="control")
+            assert mq.tunnel_mode is False
+            mq.close()
 
     def test_tunnel_mode_explicit_overrides_env(self):
         """Explicit tunnel_mode parameter should override env var."""
         from umrs.core.MessageQueue import MessageQueue
 
-        with patch.dict(os.environ, {"UMRS_TUNNEL_MODE": "true"}):
-            with patch("zmq.Context"):
-                mq = MessageQueue(role="server", queue_type="control", tunnel_mode=False)
-                assert mq.tunnel_mode is False
-                mq.close()
+        with patch.dict(os.environ, {"UMRS_TUNNEL_MODE": "true"}), patch("zmq.Context"):
+            mq = MessageQueue(role="server", queue_type="control", tunnel_mode=False)
+            assert mq.tunnel_mode is False
+            mq.close()
 
 
 class TestControlMessageLogging:
@@ -371,19 +367,18 @@ class TestTunnelModePortConfig:
             os.environ,
             {"UMRS_DATA_PORT_RANGE": "7780-7784", "UMRS_TUNNEL_MODE": "true"},
             clear=False,
-        ):
-            with patch("zmq.Context") as mock_context:
-                mock_socket = MagicMock()
-                mock_context.return_value.socket.return_value = mock_socket
+        ), patch("zmq.Context") as mock_context:
+            mock_socket = MagicMock()
+            mock_context.return_value.socket.return_value = mock_socket
 
-                mq = MessageQueue(
-                    role="server",
-                    queue_type="data",
-                )
+            mq = MessageQueue(
+                role="server",
+                queue_type="data",
+            )
 
-                bind_call = str(mock_socket.bind.call_args)
-                assert "7780" in bind_call
-                mq.close()
+            bind_call = str(mock_socket.bind.call_args)
+            assert "7780" in bind_call
+            mq.close()
 
     def test_ensure_client_data_queue_allocates_within_configured_range(self):
         """Server allocation should stay inside UMRS_DATA_PORT_RANGE and skip reserved ports."""

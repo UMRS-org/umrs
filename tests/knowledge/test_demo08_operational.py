@@ -11,15 +11,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from r4_contracts.research import ResearchRunStatus
+import pytest
 from umrs.knowledge.execution_port import FakeWorkflowExecutionPort
+from umrs.knowledge.graph_types import RelationType
 from umrs.knowledge.project import ProjectPhase, ResearchProject
 from umrs.knowledge.run_store import ResearchRunStore
-from umrs.knowledge.graph_types import RelationType
 
-
-import pytest
-
+from r4_contracts.research import ResearchRunStatus
 
 
 @pytest.fixture(autouse=True)

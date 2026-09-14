@@ -4,12 +4,9 @@ from __future__ import annotations
 import io
 
 import pytest
-
+from catalog_store_fake import FakeCatalogMetaStore
 from umrs.data_catalog.query import read_catalog_object, search_catalog
 from umrs.data_catalog.schema import CatalogObjectMeta, CatalogState
-
-from catalog_store_fake import FakeCatalogMetaStore
-
 
 # NOTE (ADR-053): this file no longer registers module shadows — plain
 # imports only. The historical _restore_sys_modules teardown was removed
@@ -172,9 +169,6 @@ def test_read_catalog_object_denied_when_meta_missing():
 def _catalog_api_deps():
     pytest.importorskip("fastapi")
 
-    from fastapi import FastAPI
-    from fastapi.testclient import TestClient
-
     # Plain imports (ADR-053): umrs.api.__init__ is a lazy __getattr__ shim
     # since Phase 1.3, so the spec-load shadow harness — whose stale module
     # objects poisoned sibling suites once, per the wave-13 comment below —
@@ -182,6 +176,8 @@ def _catalog_api_deps():
     import umrs.api.catalog as catalog_module
     import umrs.api.catalog_store as catalog_store_module
     import umrs.api.files as files_module
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
 
     catalog_module.CatalogReadResponse.model_rebuild()
     catalog_router = catalog_module.router
@@ -306,11 +302,10 @@ def test_api_catalog_stats_returns_counts_by_state_and_modality():
 def test_api_catalog_search_returns_503_when_store_uninitialized():
     pytest.importorskip("fastapi")
 
-    from fastapi import FastAPI
-    from fastapi.testclient import TestClient
-
     import umrs.api.catalog as catalog_module
     import umrs.api.catalog_store as catalog_store_module
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
 
     prior_store = catalog_store_module.get_optional_catalog_meta_store()
     catalog_store_module.set_catalog_meta_store(None)

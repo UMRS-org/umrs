@@ -4,14 +4,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-
+import pytest
 from umrs.knowledge.project import ProjectPhase
 from umrs.knowledge.workflow import run_project_workflow
 from umrs.knowledge_model import KnowledgeObjectType
-
-
-import pytest
-
 
 
 @pytest.fixture(autouse=True)
