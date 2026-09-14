@@ -804,10 +804,16 @@ class PodmanExecutor:
             )
 
         # Forward S3 connection settings so the in-container worker can
-        # rebuild a boto3 client matching the parent's MinIO endpoint.
-        endpoint = s3_config.get("endpoint_url") or os.environ.get("MINIO_ENDPOINT")
+        # rebuild a boto3 client matching the parent's object-store endpoint.
+        # S3_ENDPOINT_URL is canonical (ADR-055); MINIO_ENDPOINT is still sent
+        # for worker images built before the rename.
+        endpoint = (
+            s3_config.get("endpoint_url")
+            or os.environ.get("S3_ENDPOINT_URL")
+            or os.environ.get("MINIO_ENDPOINT")
+        )
         if endpoint:
-            cmd.extend(["-e", f"MINIO_ENDPOINT={endpoint}"])
+            cmd.extend(["-e", f"S3_ENDPOINT_URL={endpoint}", "-e", f"MINIO_ENDPOINT={endpoint}"])
         region = s3_config.get("region_name") or os.environ.get("AWS_REGION")
         if region:
             cmd.extend(["-e", f"AWS_REGION={region}"])
@@ -1252,6 +1258,7 @@ class WorkerPoolExecutor:
 
         # Forward S3 credentials so the worker can build a boto3 client.
         for env_var in (
+            "S3_ENDPOINT_URL",
             "MINIO_ENDPOINT",
             "AWS_REGION",
             "AWS_ACCESS_KEY_ID",

@@ -672,9 +672,12 @@ for pidfile in "${SCRIPT_DIR}"/server-*.pid; do
 done
 
 # Keep login-node S3 reverse tunnels alive for Slurm jobs.
-# Compute jobs forward minio-host:19000 -> login:9000, so login:9000 must
-# reverse-forward to this front-end S3 API (SeaweedFS) on each cluster.
-# The *_MINIO_TUNNEL_* variable names are kept (Ansible passes them).
+# Compute jobs forward <alias>:19000 -> login:9000 (alias: UMRS_S3_TUNNEL_ALIAS,
+# still minio-host by default), so login:9000 must reverse-forward to this
+# front-end S3 API (SeaweedFS) on each cluster.
+# Knobs: <CLUSTER>_S3_TUNNEL_ENABLED, <CLUSTER>_S3_REVERSE_SPEC, S3_TUNNEL_STRICT
+# (the pre-ADR-055 *_MINIO_TUNNEL_* / *_MINIO_REVERSE_SPEC / MINIO_TUNNEL_STRICT
+# names are still honoured). Pid/log files: <cluster>-s3-reverse-tunnel.*
 _stop_existing_tunnel() {
     local pidfile="$1"
     local label="$2"
@@ -725,19 +728,19 @@ _verify_tunnel() {
             rm -f "$pidfile"
             return 0
         fi
-        if [[ "${MINIO_TUNNEL_STRICT:-false}" == "true" ]]; then
+        if [[ "${S3_TUNNEL_STRICT:-false}" == "true" ]]; then
             echo "ERROR: ${label} S3 reverse tunnel failed to start. Check ${logfile}"
             exit 1
         fi
         echo "WARNING: ${label} S3 reverse tunnel could not be established (login node unreachable?)."
         echo "         Continuing without it — ${label} compute jobs cannot reach the S3 API until the"
         echo "         tunnel is restored. Verify SSH connectivity to '${ssh_target}' and re-run start.sh,"
-        echo "         or set ${upper}_MINIO_TUNNEL_ENABLED=false to skip it explicitly."
+        echo "         or set ${upper}_S3_TUNNEL_ENABLED=false to skip it explicitly."
         rm -f "$pidfile"
         return 0
     fi
     if ! ssh "$ssh_target" "curl -sf http://127.0.0.1:9000/status >/dev/null || curl -sf http://127.0.0.1:9000/minio/health/live >/dev/null" 2>/dev/null; then
-        if [[ "${MINIO_TUNNEL_STRICT:-false}" == "true" ]]; then
+        if [[ "${S3_TUNNEL_STRICT:-false}" == "true" ]]; then
             echo "ERROR: ${label} login node cannot reach the S3 API through the reverse tunnel."
             exit 1
         fi
@@ -752,75 +755,79 @@ RCCS_SSH_TARGET="${RCCS_SSH_TARGET:-masaru.nagaso@rccs-cloud}"
 AI4S_SSH_TARGET="${AI4S_SSH_TARGET:-ea0022@AI4S}"
 BDRT_SSH_TARGET="${BDRT_SSH_TARGET:-mnagaso@nimbus-0}"
 OCTOPUS_SSH_TARGET="${OCTOPUS_SSH_TARGET:-mnagaso@octopus}"
-RCCS_MINIO_REVERSE_SPEC="${RCCS_MINIO_REVERSE_SPEC:-127.0.0.1:9000:127.0.0.1:${S3_PORT}}"
-AI4S_MINIO_REVERSE_SPEC="${AI4S_MINIO_REVERSE_SPEC:-127.0.0.1:9000:127.0.0.1:${S3_PORT}}"
-BDRT_MINIO_REVERSE_SPEC="${BDRT_MINIO_REVERSE_SPEC:-127.0.0.1:9000:127.0.0.1:${S3_PORT}}"
-OCTOPUS_MINIO_REVERSE_SPEC="${OCTOPUS_MINIO_REVERSE_SPEC:-127.0.0.1:9000:127.0.0.1:${S3_PORT}}"
+RCCS_S3_REVERSE_SPEC="${RCCS_S3_REVERSE_SPEC:-${RCCS_MINIO_REVERSE_SPEC:-127.0.0.1:9000:127.0.0.1:${S3_PORT}}}"
+AI4S_S3_REVERSE_SPEC="${AI4S_S3_REVERSE_SPEC:-${AI4S_MINIO_REVERSE_SPEC:-127.0.0.1:9000:127.0.0.1:${S3_PORT}}}"
+BDRT_S3_REVERSE_SPEC="${BDRT_S3_REVERSE_SPEC:-${BDRT_MINIO_REVERSE_SPEC:-127.0.0.1:9000:127.0.0.1:${S3_PORT}}}"
+OCTOPUS_S3_REVERSE_SPEC="${OCTOPUS_S3_REVERSE_SPEC:-${OCTOPUS_MINIO_REVERSE_SPEC:-127.0.0.1:9000:127.0.0.1:${S3_PORT}}}"
 
 # Per-cluster tunnel toggles. When a cluster's login node is unreachable
 # (e.g. AI4S offline / "No route to host"), set the corresponding flag to
 # false (via .env or the Ansible role) so the dual-cluster deploy is not
 # aborted by one missing tunnel.
-RCCS_MINIO_TUNNEL_ENABLED="${RCCS_MINIO_TUNNEL_ENABLED:-true}"
-AI4S_MINIO_TUNNEL_ENABLED="${AI4S_MINIO_TUNNEL_ENABLED:-true}"
-BDRT_MINIO_TUNNEL_ENABLED="${BDRT_MINIO_TUNNEL_ENABLED:-true}"
-OCTOPUS_MINIO_TUNNEL_ENABLED="${OCTOPUS_MINIO_TUNNEL_ENABLED:-true}"
+RCCS_S3_TUNNEL_ENABLED="${RCCS_S3_TUNNEL_ENABLED:-${RCCS_MINIO_TUNNEL_ENABLED:-true}}"
+AI4S_S3_TUNNEL_ENABLED="${AI4S_S3_TUNNEL_ENABLED:-${AI4S_MINIO_TUNNEL_ENABLED:-true}}"
+BDRT_S3_TUNNEL_ENABLED="${BDRT_S3_TUNNEL_ENABLED:-${BDRT_MINIO_TUNNEL_ENABLED:-true}}"
+OCTOPUS_S3_TUNNEL_ENABLED="${OCTOPUS_S3_TUNNEL_ENABLED:-${OCTOPUS_MINIO_TUNNEL_ENABLED:-true}}"
 # When strict, a tunnel that fails to establish aborts start.sh. Default is
 # non-strict: log a warning and continue (compute jobs on that cluster cannot
 # reach the S3 API until the tunnel is restored).
-MINIO_TUNNEL_STRICT="${MINIO_TUNNEL_STRICT:-false}"
+S3_TUNNEL_STRICT="${S3_TUNNEL_STRICT:-${S3_TUNNEL_STRICT:-false}}"
 
 # Stop existing tunnels
-_stop_existing_tunnel "${SCRIPT_DIR}/rccs-minio-reverse-tunnel.pid" "RCCS"
-_stop_existing_tunnel "${SCRIPT_DIR}/ai4s-minio-reverse-tunnel.pid" "AI4S"
-_stop_existing_tunnel "${SCRIPT_DIR}/bdrt-minio-reverse-tunnel.pid" "BDRT"
-_stop_existing_tunnel "${SCRIPT_DIR}/octopus-minio-reverse-tunnel.pid" "OCTOPUS"
+# Pre-ADR-055 pid files (<cluster>-minio-reverse-tunnel.pid): stop those tunnels too.
+for _legacy in rccs ai4s bdrt octopus; do
+    _stop_existing_tunnel "${SCRIPT_DIR}/${_legacy}-minio-reverse-tunnel.pid" "${_legacy^^} (legacy pid)"
+done
+_stop_existing_tunnel "${SCRIPT_DIR}/rccs-s3-reverse-tunnel.pid" "RCCS"
+_stop_existing_tunnel "${SCRIPT_DIR}/ai4s-s3-reverse-tunnel.pid" "AI4S"
+_stop_existing_tunnel "${SCRIPT_DIR}/bdrt-s3-reverse-tunnel.pid" "BDRT"
+_stop_existing_tunnel "${SCRIPT_DIR}/octopus-s3-reverse-tunnel.pid" "OCTOPUS"
 
 # Launch enabled tunnels in parallel
-if [[ "$RCCS_MINIO_TUNNEL_ENABLED" == "true" ]]; then
-    _launch_tunnel "RCCS" "$RCCS_SSH_TARGET" "$RCCS_MINIO_REVERSE_SPEC" \
-        "${SCRIPT_DIR}/rccs-minio-reverse-tunnel.pid" "${LOG_DIR}/rccs-minio-reverse-tunnel.log"
+if [[ "$RCCS_S3_TUNNEL_ENABLED" == "true" ]]; then
+    _launch_tunnel "RCCS" "$RCCS_SSH_TARGET" "$RCCS_S3_REVERSE_SPEC" \
+        "${SCRIPT_DIR}/rccs-s3-reverse-tunnel.pid" "${LOG_DIR}/rccs-s3-reverse-tunnel.log"
 else
-    echo "Skipping RCCS S3 reverse tunnel (RCCS_MINIO_TUNNEL_ENABLED=false)."
+    echo "Skipping RCCS S3 reverse tunnel (RCCS_S3_TUNNEL_ENABLED=false)."
 fi
-if [[ "$AI4S_MINIO_TUNNEL_ENABLED" == "true" ]]; then
-    _launch_tunnel "AI4S" "$AI4S_SSH_TARGET" "$AI4S_MINIO_REVERSE_SPEC" \
-        "${SCRIPT_DIR}/ai4s-minio-reverse-tunnel.pid" "${LOG_DIR}/ai4s-minio-reverse-tunnel.log"
+if [[ "$AI4S_S3_TUNNEL_ENABLED" == "true" ]]; then
+    _launch_tunnel "AI4S" "$AI4S_SSH_TARGET" "$AI4S_S3_REVERSE_SPEC" \
+        "${SCRIPT_DIR}/ai4s-s3-reverse-tunnel.pid" "${LOG_DIR}/ai4s-s3-reverse-tunnel.log"
 else
-    echo "Skipping AI4S S3 reverse tunnel (AI4S_MINIO_TUNNEL_ENABLED=false)."
+    echo "Skipping AI4S S3 reverse tunnel (AI4S_S3_TUNNEL_ENABLED=false)."
 fi
-if [[ "$BDRT_MINIO_TUNNEL_ENABLED" == "true" ]]; then
-    _launch_tunnel "BDRT" "$BDRT_SSH_TARGET" "$BDRT_MINIO_REVERSE_SPEC" \
-        "${SCRIPT_DIR}/bdrt-minio-reverse-tunnel.pid" "${LOG_DIR}/bdrt-minio-reverse-tunnel.log"
+if [[ "$BDRT_S3_TUNNEL_ENABLED" == "true" ]]; then
+    _launch_tunnel "BDRT" "$BDRT_SSH_TARGET" "$BDRT_S3_REVERSE_SPEC" \
+        "${SCRIPT_DIR}/bdrt-s3-reverse-tunnel.pid" "${LOG_DIR}/bdrt-s3-reverse-tunnel.log"
 else
-    echo "Skipping BDRT S3 reverse tunnel (BDRT_MINIO_TUNNEL_ENABLED=false)."
+    echo "Skipping BDRT S3 reverse tunnel (BDRT_S3_TUNNEL_ENABLED=false)."
 fi
-if [[ "$OCTOPUS_MINIO_TUNNEL_ENABLED" == "true" ]]; then
-    _launch_tunnel "OCTOPUS" "$OCTOPUS_SSH_TARGET" "$OCTOPUS_MINIO_REVERSE_SPEC" \
-        "${SCRIPT_DIR}/octopus-minio-reverse-tunnel.pid" "${LOG_DIR}/octopus-minio-reverse-tunnel.log"
+if [[ "$OCTOPUS_S3_TUNNEL_ENABLED" == "true" ]]; then
+    _launch_tunnel "OCTOPUS" "$OCTOPUS_SSH_TARGET" "$OCTOPUS_S3_REVERSE_SPEC" \
+        "${SCRIPT_DIR}/octopus-s3-reverse-tunnel.pid" "${LOG_DIR}/octopus-s3-reverse-tunnel.log"
 else
-    echo "Skipping OCTOPUS S3 reverse tunnel (OCTOPUS_MINIO_TUNNEL_ENABLED=false)."
+    echo "Skipping OCTOPUS S3 reverse tunnel (OCTOPUS_S3_TUNNEL_ENABLED=false)."
 fi
 
 # Wait once for both SSH processes to establish
 sleep 3
 
-# Verify enabled tunnels (non-fatal unless MINIO_TUNNEL_STRICT=true)
-if [[ "$RCCS_MINIO_TUNNEL_ENABLED" == "true" ]]; then
+# Verify enabled tunnels (non-fatal unless S3_TUNNEL_STRICT=true)
+if [[ "$RCCS_S3_TUNNEL_ENABLED" == "true" ]]; then
     _verify_tunnel "RCCS" "$RCCS_SSH_TARGET" \
-        "${SCRIPT_DIR}/rccs-minio-reverse-tunnel.pid" "${LOG_DIR}/rccs-minio-reverse-tunnel.log"
+        "${SCRIPT_DIR}/rccs-s3-reverse-tunnel.pid" "${LOG_DIR}/rccs-s3-reverse-tunnel.log"
 fi
-if [[ "$AI4S_MINIO_TUNNEL_ENABLED" == "true" ]]; then
+if [[ "$AI4S_S3_TUNNEL_ENABLED" == "true" ]]; then
     _verify_tunnel "AI4S" "$AI4S_SSH_TARGET" \
-        "${SCRIPT_DIR}/ai4s-minio-reverse-tunnel.pid" "${LOG_DIR}/ai4s-minio-reverse-tunnel.log"
+        "${SCRIPT_DIR}/ai4s-s3-reverse-tunnel.pid" "${LOG_DIR}/ai4s-s3-reverse-tunnel.log"
 fi
-if [[ "$BDRT_MINIO_TUNNEL_ENABLED" == "true" ]]; then
+if [[ "$BDRT_S3_TUNNEL_ENABLED" == "true" ]]; then
     _verify_tunnel "BDRT" "$BDRT_SSH_TARGET" \
-        "${SCRIPT_DIR}/bdrt-minio-reverse-tunnel.pid" "${LOG_DIR}/bdrt-minio-reverse-tunnel.log"
+        "${SCRIPT_DIR}/bdrt-s3-reverse-tunnel.pid" "${LOG_DIR}/bdrt-s3-reverse-tunnel.log"
 fi
-if [[ "$OCTOPUS_MINIO_TUNNEL_ENABLED" == "true" ]]; then
+if [[ "$OCTOPUS_S3_TUNNEL_ENABLED" == "true" ]]; then
     _verify_tunnel "OCTOPUS" "$OCTOPUS_SSH_TARGET" \
-        "${SCRIPT_DIR}/octopus-minio-reverse-tunnel.pid" "${LOG_DIR}/octopus-minio-reverse-tunnel.log"
+        "${SCRIPT_DIR}/octopus-s3-reverse-tunnel.pid" "${LOG_DIR}/octopus-s3-reverse-tunnel.log"
 fi
 
 _stop_port_listener() {

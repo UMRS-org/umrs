@@ -596,7 +596,11 @@ services:
         ipv4_address: ${PRIV_IP1TO3:-10.0.0}.${BENTOML_VISION_IP4:-35}
     extra_hosts:
       - ${UMRS_S3_BUCKET_HOST:?}:${PRIV_IP1TO3:-10.0.0}.${NGINX_OUT_IP4:-252}
-      - minio-host:host-gateway
+      # Host alias the front server signs presigned URLs for
+      # (VISION_S3_PRESIGN_ENDPOINT). Backend-neutral name is s3-host; the
+      # default stays minio-host until every login-node checkout carries this
+      # line (ADR-055 naming follow-up).
+      - ${UMRS_S3_TUNNEL_ALIAS:-minio-host}:host-gateway
     depends_on:
       - nginx
     # Healthchecks removed (2026-08-12): runc cannot create healthchecked

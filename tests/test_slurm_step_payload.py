@@ -93,7 +93,8 @@ def test_slurm_sbatch_forwards_credentials_and_gpu(monkeypatch):
     assert "#SBATCH --gres=gpu:1" in script
     assert "#SBATCH --time=02:00:00" in script
     assert "--device nvidia.com/gpu=all" in script
-    assert "MINIO_ENDPOINT=http://minio:9000" in script
+    assert "S3_ENDPOINT_URL=http://minio:9000" in script  # canonical (ADR-055)
+    assert "MINIO_ENDPOINT=http://minio:9000" in script  # legacy name still forwarded
     assert "AWS_ACCESS_KEY_ID=test-key" in script
     assert "AWS_SECRET_ACCESS_KEY=test-secret" in script
 

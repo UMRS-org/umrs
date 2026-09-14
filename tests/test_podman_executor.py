@@ -176,7 +176,8 @@ def test_podman_forwards_minio_env(monkeypatch):
     monkeypatch.setenv("AWS_REGION", "us-east-1")
     PodmanExecutor(image="img").execute(entrypoint="pkg.mod:Cls", config={}, ctx=_make_ctx())
     cmd = fake.calls[0]
-    assert "MINIO_ENDPOINT=http://minio:9000" in cmd
+    assert "S3_ENDPOINT_URL=http://minio:9000" in cmd  # canonical (ADR-055)
+    assert "MINIO_ENDPOINT=http://minio:9000" in cmd  # legacy name still forwarded
     assert "AWS_REGION=us-east-1" in cmd
 
 

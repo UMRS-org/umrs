@@ -518,6 +518,14 @@ class ConnectInfoZMQ(BaseModel):
 
 
 class ConnectInfoServices(BaseModel):
+    """Service URLs advertised to clients.
+
+    ``s3_url`` is the object-store endpoint (ADR-055: backend-neutral name);
+    ``minio_url`` carries the same value for clients that still read the
+    pre-2026-09 key and will be dropped after they migrate.
+    """
+
+    s3_url: str | None = None
     minio_url: str | None = None
     rag_url: str | None = None
 
@@ -581,13 +589,20 @@ def ops_connect_info(
 def _add_connect_info_extras(result: dict[str, Any], x_user_id: str | None) -> None:
     """Add service URLs and per-user S3 credentials to connect-info result."""
     # Include service URLs when configured (allows clients to discover
-    # the correct MinIO/RAG endpoint instead of guessing from the host).
-    minio_url = os.environ.get("UMRS_MINIO_URL") or os.environ.get("MINIO_ENDPOINT")
+    # the correct S3/RAG endpoint instead of guessing from the host).
+    # UMRS_S3_URL is the canonical knob (ADR-055); the MinIO-era names stay
+    # readable so an older .env keeps working.
+    s3_url = (
+        os.environ.get("UMRS_S3_URL")
+        or os.environ.get("UMRS_MINIO_URL")
+        or os.environ.get("MINIO_ENDPOINT")
+    )
     rag_url = os.environ.get("RAG_URL")
-    if minio_url or rag_url:
+    if s3_url or rag_url:
         result["services"] = {}
-        if minio_url:
-            result["services"]["minio_url"] = minio_url
+        if s3_url:
+            result["services"]["s3_url"] = s3_url
+            result["services"]["minio_url"] = s3_url  # deprecated alias, same value
         if rag_url:
             result["services"]["rag_url"] = rag_url
 
