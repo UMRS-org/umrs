@@ -146,7 +146,7 @@ def test_dormant_families_is_empty_after_adr053_retirement():
     # ADR-053: the retirement wave deleted all twelve baseline unmounted
     # router modules; the only sanctioned residual dormant family is the
     # unfinished /umrs/context capability (named by the release plan).
-    assert DORMANT_FAMILIES <= {"context"}
+    assert DORMANT_FAMILIES.issubset({"context"})
 
 
 # ── premise: lane assignments match the S2/S3 record ──────────────────────
