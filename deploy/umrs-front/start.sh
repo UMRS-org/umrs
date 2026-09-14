@@ -235,11 +235,20 @@ if [[ "$START_MODE" != "--server" ]]; then
     # Remove legacy containers that conflict with compose-managed names.
     # umrs-minio is the pre-ADR-055 object store: stopped here for good; its
     # volume (umrs_minio_data) is left in place for the operator to remove.
-    # --depend: the compose provider records depends_on as podman
-    # dependencies, so the UMRS server containers depend on postgres (and
-    # on the object store); without it `rm -f` fails silently ("has dependent
-    # containers") and the later `compose up` collides on the name — the
-    # 2026-09-14 cutover outage (ADR-055). Dependents are recreated below.
+    # The compose provider records depends_on as podman dependencies: the
+    # UMRS server containers depend on postgres and the object store, and
+    # mcp-apps on the servers. Removing an infrastructure container while a
+    # dependent exists fails ("has dependent containers"), and `rm --depend`
+    # proved racy against the dependents' own stop (2026-09-14 cutover, ADR-055).
+    # So: remove dependents first, explicitly, in reverse dependency order.
+    # All of them are recreated by the `compose up` calls later in this script.
+    for _ctr in umrs-mcp-apps umrs-server-rccs umrs-server-ai4s umrs-server-bdrt umrs-server-octopus umrs-server; do
+        if podman inspect "$_ctr" >/dev/null 2>&1; then
+            echo "  Removing dependent container $_ctr (recreated later)..."
+            podman stop -t 10 "$_ctr" 2>/dev/null || true
+            podman rm -f "$_ctr" || echo "  WARNING: podman rm $_ctr failed (see above)"
+        fi
+    done
     for _ctr in umrs-postgres umrs-seaweedfs umrs-minio; do
         if podman inspect "$_ctr" >/dev/null 2>&1; then
             echo "  Removing legacy container $_ctr (and dependents)..."
