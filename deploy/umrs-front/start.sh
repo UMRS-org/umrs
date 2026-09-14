@@ -108,6 +108,9 @@ _render_seaweedfs_iam_config() {
 }
 EOF_IAM
     )
+    # `cat >` keeps the mode of a pre-existing file (0600 from earlier renders,
+    # run 34835109970) — set it explicitly.
+    chmod 644 "${dir}/iam.json"
     # SELinux: the compose bind of a single file did not get the :z relabel on
     # data0 (weed: "open /etc/seaweedfs/iam.json: permission denied" while the
     # :z-mounted /data volume worked). Apply the shared container label
