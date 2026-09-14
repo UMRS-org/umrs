@@ -30,7 +30,7 @@ def _hmac_hex(secret: str) -> str:
 
 def _gateway_hmac_secret() -> str:
     """UMRS gateway handshake secret for the loop driver (identity envelope)."""
-    from umrs.api._verified_headers import handshake_secret
+    from umrs.shared.handshake import handshake_secret
 
     secret = handshake_secret()
     if not secret:

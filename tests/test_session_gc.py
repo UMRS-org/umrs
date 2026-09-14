@@ -8,7 +8,7 @@ and the status checker maps reports to succeeded with the counters.
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -65,7 +65,7 @@ class TestSweepLane:
         store.archive_aged_sessions = MagicMock(return_value=["s-1", "s-2"])
         backend = SessionGcBackend(session_store=store)
         with patch(
-            "umrs.api.companion.get_trust_store",
+            "umrs.shared.trust_store_access.get_trust_store",
             return_value=MagicMock(),
         ):
             asyncio.run(backend.submit_job(_job({"max_days": 45}), _attempt()))
@@ -87,7 +87,7 @@ class TestSweepLane:
         store = MagicMock()
         store.archive_aged_sessions = MagicMock(return_value=["a"])
         backend = SessionGcBackend(session_store=store)
-        with patch("umrs.api.companion.get_trust_store", return_value=MagicMock()):
+        with patch("umrs.shared.trust_store_access.get_trust_store", return_value=MagicMock()):
             asyncio.run(backend.submit_job(_job({"max_days": 7}, job_id="job-g2"), _attempt()))
         assert set(backend.report_for("job-g2").keys()) >= {"max_days", "archived"}
         assert backend.report_for("the-other-attempt") == {}
