@@ -454,7 +454,7 @@ def create_db(sql_username, xp_name, username=None):
 
     DB_USER_PASSWORD = cfg["user_password"]
     db_pool = pg_pool.SimpleConnectionPool(
-        minconn=1, maxconn=50,  # Adjust based on your needs
+        minconn=1, maxconn=10,  # Adjust based on your needs
         dbname=db_name,
         user=sql_username,
         password=DB_USER_PASSWORD,

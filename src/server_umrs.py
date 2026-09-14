@@ -108,7 +108,7 @@ def _init_session_curve_provider():
         raise
 
 
-def perform_initial_config(configure_file, status_store):
+def perform_initial_config(configure_file, status_store, skip_create_users=False):
     if not os.path.exists(configure_file):
         sys.exit(f"Configuration file '{configure_file}' not found.")
 
@@ -146,8 +146,9 @@ def perform_initial_config(configure_file, status_store):
         print(f"Warning: failed to set debug mode on control queue: {e}")
     print ("Subscribed to zeroMQ message queue")
 
-    for user in users:
-        create_s3_sql_users(user, admin_s3_configuration_file)
+    if not skip_create_users:
+        for user in users:
+            create_s3_sql_users(user, admin_s3_configuration_file)
 
     server_cfg = ServerCfg()
     for user in users:
@@ -281,6 +282,7 @@ def server_event_loop(
             # timeout, and continue serving.
             try:
                 task_id = task_manager.tasks_status.create_task(cmd, payload)
+                print(f"Command: {cmd=} {payload=} {task_id=}")
                 update_status_func = make_update_status_callback(task_manager, task_id)
                 registry.dispatch(cmd, payload, update_status_func, ctx, task_id)
             except Exception as cmd_exc:  # noqa: BLE001 - loop must survive
@@ -429,6 +431,7 @@ def main():
                         help='Max worker threads in the pool (default: UMRS_POOL_MAX_WORKERS or 16)')
     parser.add_argument('--pool-max-pending', type=int, default=None,
                         help='Max pending tasks before rejecting requests (default: UMRS_POOL_MAX_PENDING or 64)')
+    parser.add_argument("--skip-create-users", action="store_true", help="Disable MinIO checks for bucket/user configuration to speed up server startup",)
     args = parser.parse_args()
     configure_file = args.conf
 
@@ -457,7 +460,7 @@ def main():
     task_manager = TaskManager(status_store, thread_dict, task_db_pool, thread_pool=thread_pool, reset=False)
 
     print("Performing initial configuration...")
-    control_mq, server_cfg, device, embedding_backend = perform_initial_config(configure_file, status_store)
+    control_mq, server_cfg, device, embedding_backend = perform_initial_config(configure_file, status_store, skip_create_users=args.skip_create_users)
 
     print("Initial configuration done.")
     reconcile_status_on_startup(task_manager.active_threads, server_cfg.buckets_cfg)
