@@ -26,11 +26,12 @@ from umrs.shared.lanes import FAMILY_LANES
 
 # ── premise tables ─────────────────────────────────────────────────────────
 
-# ADR-053 (2026-09-15): every previously unmounted router was deleted from
-# the source tree, so there are NO dormant families left to guard. The set
-# stays as the characterization table's anchor; tests below assert it is
-# empty and may only regress by adding a NEW un-mounted family here.
-DORMANT_FAMILIES: set[str] = set()
+# ADR-053 (2026-09-15): every previously dormant router was deleted from the
+# source tree EXCEPT ONE: `api/context.py` — the /umrs/context surface is a
+# declared-unfinished capability (release plan 2026-09-13 §11 escalation #3),
+# pinned dormant until a product mount wave decides it belongs behind a lane.
+# Adding any other name to this set is a deliberate decision, visible in diff.
+DORMANT_FAMILIES: set[str] = {"context"}
 
 # Paths not subject to family classification (sidecar probes, docs, static).
 INFRA_PATHS: set[str] = {
@@ -142,9 +143,10 @@ def test_dormant_families_not_served(app):
 
 
 def test_dormant_families_is_empty_after_adr053_retirement():
-    # ADR-053: the retirement wave deleted all twelve unmounted router
-    # modules; DORMANT_FAMILIES may only regain entries deliberately.
-    assert not DORMANT_FAMILIES
+    # ADR-053: the retirement wave deleted all twelve baseline unmounted
+    # router modules; the only sanctioned residual dormant family is the
+    # unfinished /umrs/context capability (named by the release plan).
+    assert DORMANT_FAMILIES <= {"context"}
 
 
 # ── premise: lane assignments match the S2/S3 record ──────────────────────
