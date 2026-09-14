@@ -9,8 +9,8 @@ synthetic document-id derivation, executor-mint SQL reuse with
 from __future__ import annotations
 
 from umrs.knowledge.legacy_corpus_canonize import (
-    _legacy_document_id,
     _SELECT_ROWS_SQL,
+    _legacy_document_id,
     canonize_document,
     read_corpus,
 )
@@ -18,9 +18,36 @@ from umrs.knowledge.legacy_corpus_canonize import (
 _CORPUS_ROWS = [
     # s3_object, checksum, chunk_start, chunk_end, chunk_md5, model, embedding, _content
     # checksum = per-DOCUMENT key (live survey: doc identity), s3_object is per-chunk
-    ("s3://bucket/docA.txt#chunk0", "sumA", 0, 100, "md5-a0", "intfloat/e5-base-v2", "[0.1,0.2]", "alpha chunk zero"),
-    ("s3://bucket/docA.txt#chunk1", "sumA", 100, 200, "md5-a1", "intfloat/e5-base-v2", "[0.3,0.4]", "alpha chunk one"),
-    ("s3://bucket/9f8e7d.txt", "sumB", 0, 50, "md5-b0", "intfloat/e5-base-v2", "[0.9,0.9]", "beta chunk zero"),
+    (
+        "s3://bucket/docA.txt#chunk0",
+        "sumA",
+        0,
+        100,
+        "md5-a0",
+        "intfloat/e5-base-v2",
+        "[0.1,0.2]",
+        "alpha chunk zero",
+    ),
+    (
+        "s3://bucket/docA.txt#chunk1",
+        "sumA",
+        100,
+        200,
+        "md5-a1",
+        "intfloat/e5-base-v2",
+        "[0.3,0.4]",
+        "alpha chunk one",
+    ),
+    (
+        "s3://bucket/9f8e7d.txt",
+        "sumB",
+        0,
+        50,
+        "md5-b0",
+        "intfloat/e5-base-v2",
+        "[0.9,0.9]",
+        "beta chunk zero",
+    ),
 ]
 
 
@@ -115,12 +142,16 @@ def test_canonize_document_mints_mint_shaped_rows_with_legacy_provenance():
     # provenance: every JSON content param carries the legacy origin
     import json
 
-    doc_params = next(p for sql, p in capture if "knowledge_nodes" in sql and p[0] == f"ragdoc-{doc_id}")
+    doc_params = next(
+        p for sql, p in capture if "knowledge_nodes" in sql and p[0] == f"ragdoc-{doc_id}"
+    )
     doc_content = json.loads(doc_params[4])
     assert doc_content["origin"] == "rag.legacy-canonize"
     assert doc_content["s3_object"] == "s3://bucket/docA.txt"
 
-    chunk_params = next(p for sql, p in capture if "knowledge_nodes" in sql and p[0] == f"ragdoc-{doc_id}-chunk0")
+    chunk_params = next(
+        p for sql, p in capture if "knowledge_nodes" in sql and p[0] == f"ragdoc-{doc_id}-chunk0"
+    )
     chunk_content = json.loads(chunk_params[4])
     assert chunk_content["s3_chunk"] == "s3://bucket/docA.txt#chunk0"
 

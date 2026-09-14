@@ -8,9 +8,8 @@ and safe default configuration.
 
 import subprocess
 import sys
-import torch
-from typing import Optional
 
+import torch
 
 # ---------------------------------------------------------------------------
 # Device detection
@@ -28,7 +27,7 @@ def detect_device() -> str:
 
 
 def auto_vllm_config(
-    model_max_len: Optional[int] = None,
+    model_max_len: int | None = None,
 ) -> dict:
     """
     Build a safe vLLM configuration depending on CPU vs GPU.
@@ -72,7 +71,7 @@ def launch_vllm_server(
     port: int = 8000,
     convert: str = "auto",
     runner: str = "auto",
-    model_max_len: Optional[int] = None,
+    model_max_len: int | None = None,
 ):
     """
     Launch the vLLM OpenAI-compatible API server.

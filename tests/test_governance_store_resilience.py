@@ -13,7 +13,6 @@ from unittest.mock import MagicMock
 
 import psycopg2
 import pytest
-
 from umrs.api.governance import GovernanceStore
 
 
@@ -123,9 +122,10 @@ def test_get_quota_success_second_attempt_when_pool_conn_recovers_later():
     fresh_conn.cursor.return_value = _cursor_with(None, _row())
     pool = _FakePool(fresh_conn)
     store = GovernanceStore(
-        MagicMock(name="dead_conn", cursor=MagicMock(
-            return_value=_cursor_with(psycopg2.InterfaceError("closed"), None)
-        )),
+        MagicMock(
+            name="dead_conn",
+            cursor=MagicMock(return_value=_cursor_with(psycopg2.InterfaceError("closed"), None)),
+        ),
         pool=pool,
     )
 

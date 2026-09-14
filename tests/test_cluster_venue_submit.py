@@ -85,7 +85,9 @@ async def test_backend_routes_cluster_to_submitter_and_frontend_to_host(monkeypa
         calls["cluster"] += 1
         return "research_loop_job|loop_id=loop-c|driver=slurm|slurm_id=slurm-42"
 
-    monkeypatch.setattr("umrs.jobs.cluster_venue.ClusterSlurmSubmitter.submit", _fake_cluster_submit)
+    monkeypatch.setattr(
+        "umrs.jobs.cluster_venue.ClusterSlurmSubmitter.submit", _fake_cluster_submit
+    )
     from umrs.knowledge import loop_hosting as _lh
 
     monkeypatch.setattr(
@@ -137,9 +139,7 @@ def _wire_simulated_hosting(loop_id: str = "l-1"):
 async def test_venue_mix_chooses_cluster_only_when_declared(monkeypatch):
     backend = ResearchLoopBackend()
     _wire_simulated_hosting("l-1")
-    no_venue = await backend.submit_job(
-        _job({"loop_id": "l-1", "driver": "engine"}), _attempt()
-    )
+    no_venue = await backend.submit_job(_job({"loop_id": "l-1", "driver": "engine"}), _attempt())
     assert "loop_id=l-1" in (no_venue or "")
 
     async def _fake_submit(_self, **kwargs):

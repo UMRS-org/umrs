@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import pytest
-
 from umrs.experiment_registry import (
-    DuplicateExperimentError,
     Experiment,
     ExperimentNotFoundError,
     ExperimentResult,
@@ -13,7 +11,6 @@ from umrs.experiment_registry import (
     InMemoryExperimentRegistry,
     InvalidStatusTransitionError,
 )
-
 
 # ── Enum Tests ────────────────────────────────────────────────────────────
 

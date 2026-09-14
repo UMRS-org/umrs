@@ -6,11 +6,10 @@ still alive or cannot be verified.
 """
 
 from dataclasses import dataclass
-from typing import Any, Dict
+from typing import Any
 
 import pytest
-
-from umrs.orchestrator.endpoint_registry import EndpointRegistry, EndpointStatus
+from umrs.orchestrator.endpoint_registry import EndpointRegistry
 from umrs.orchestrator.janitor import CleanupResult, Janitor, JanitorConfig
 
 pytestmark = pytest.mark.asyncio
@@ -29,7 +28,7 @@ class FakeJobInfo:
 class FakeBackend:
     """Minimal backend stub for testing liveness checks."""
 
-    def __init__(self, statuses: Dict[str, str]):
+    def __init__(self, statuses: dict[str, str]):
         """statuses maps job_id → status string.
 
         Use ``"READY"`` / ``"RUNNING"`` for alive, ``"COMPLETED"`` / ``"FAILED"``

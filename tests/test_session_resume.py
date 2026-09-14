@@ -14,18 +14,13 @@ Validates that:
 
 from __future__ import annotations
 
-import json
-import os
 import time
 from pathlib import Path
-from unittest.mock import MagicMock, patch, PropertyMock
-
-import pytest
+from unittest.mock import MagicMock, patch
 
 # ---------------------------------------------------------------------------
 # CurveSessionManager tests
 # ---------------------------------------------------------------------------
-
 from r4.curve_session import CurveSession, CurveSessionManager
 
 

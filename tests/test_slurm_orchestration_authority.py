@@ -34,8 +34,8 @@ def test_hybrid_slurm_requires_explicit_experimental_opt_in(monkeypatch) -> None
 
 
 def test_hybrid_slurm_opt_in_is_explicit(monkeypatch) -> None:
-    from umrs.orchestrator.hybrid.composer import HybridOrchestrator
     from umrs.model_registry.models import ExecutionAuthority
+    from umrs.orchestrator.hybrid.composer import HybridOrchestrator
 
     monkeypatch.setenv("RIVAULT_ENABLE_EXPERIMENTAL_HYBRID_SLURM", "true")
 

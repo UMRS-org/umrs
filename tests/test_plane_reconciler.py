@@ -8,15 +8,14 @@ the scan behavior (doc/chunk/vector aggregation + catalogue-presence gating
 from __future__ import annotations
 
 import pytest
-
 from umrs.knowledge.plane_reconciler import (
-    Asset,
-    classify,
-    scan_project,
     STATE_COMPLETE,
     STATE_EMBEDDING_PENDING,
     STATE_ORPHANED,
     STATE_PARTIAL,
+    Asset,
+    classify,
+    scan_project,
 )
 
 
@@ -30,7 +29,7 @@ def _asset(
     asset = Asset(document_id="doc-x")
     asset.doc_node_ids = [f"n-doc-{i}" for i in range(docs)]
     asset.chunk_node_ids = [f"n-ch-{i}" for i in range(chunks)]
-    asset.vector_rows_by_chunk = {cid: (1 if vectors else 0) for cid in asset.chunk_node_ids}
+    asset.vector_rows_by_chunk = dict.fromkeys(asset.chunk_node_ids, 1 if vectors else 0)
     if catalogue:
         asset.catalogue_keys = {"proj/file.txt"}
     return asset

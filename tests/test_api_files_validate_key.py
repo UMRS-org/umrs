@@ -12,7 +12,6 @@ import logging
 
 import pytest
 from fastapi import HTTPException
-
 from umrs.api.files import validate_key
 
 

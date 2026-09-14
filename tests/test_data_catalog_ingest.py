@@ -6,12 +6,10 @@ import io
 from typing import Any
 
 from botocore.exceptions import ClientError
-
+from catalog_store_fake import FakeCatalogMetaStore
 from umrs.data_catalog.constants import EXTRACTED_TEXT_PREFIX
 from umrs.data_catalog.ingest import ingest_object
-from umrs.data_catalog.schema import CatalogObjectMeta, CatalogState
-
-from catalog_store_fake import FakeCatalogMetaStore
+from umrs.data_catalog.schema import CatalogState
 
 
 def test_ingest_object_reads_only_configured_sample():
@@ -40,9 +38,7 @@ def test_ingest_object_reads_only_configured_sample():
     assert "perception_skipped" in meta.tags
     assert "catalog_sample_truncated" in meta.tags
 
-    extracted_keys = [
-        key for key in client.objects if key.startswith(EXTRACTED_TEXT_PREFIX)
-    ]
+    extracted_keys = [key for key in client.objects if key.startswith(EXTRACTED_TEXT_PREFIX)]
     assert len(extracted_keys) == 1
     assert client.objects[extracted_keys[0]] == b"abcd"
 

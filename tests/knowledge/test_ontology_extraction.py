@@ -19,7 +19,6 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 import pytest
-
 from umrs.knowledge.ontology import Ontology, ontology_from_dict
 from umrs.knowledge.pg_graph_sink import (
     PgGraphSink,
@@ -42,8 +41,9 @@ def _onto(**extensions: str) -> Ontology:
     return Ontology(
         ontology_id="lab-extraction",
         version="1",
-        entity_types=frozenset({"file", "function", "concept", "class", "module",
-                                "entity", "relationship"}),
+        entity_types=frozenset(
+            {"file", "function", "concept", "class", "module", "entity", "relationship"}
+        ),
         relation_types=frozenset(relations),
         extraction_fields=tuple(sorted(extensions.items())) if extensions else (),
     )
@@ -124,8 +124,10 @@ class TestLegDConsistencyGate:
 
     def test_empty_ir_list_never_validates(self) -> None:
         bad = Ontology(
-            ontology_id="b1", version="1",
-            entity_types=frozenset({"concept"}), relation_types=frozenset({"cites"}),
+            ontology_id="b1",
+            version="1",
+            entity_types=frozenset({"concept"}),
+            relation_types=frozenset({"cites"}),
             extraction_fields=(("evidence", "supports"),),
         )
         with pytest.raises(ValueError):
@@ -137,9 +139,7 @@ class TestLegDSerialization:
         onto = _onto(reviewed_by="supports", derived_from="depends_on")
         back = ontology_from_dict(onto.to_dict())
         assert back.extraction_fields == tuple(
-            sorted(
-                (("derived_from", "depends_on"), ("reviewed_by", "supports"))
-            )
+            sorted((("derived_from", "depends_on"), ("reviewed_by", "supports")))
         )
 
     def test_payload_without_fields_maps_to_empty(self) -> None:

@@ -19,11 +19,10 @@ import sys
 import threading
 import time
 import types
-from typing import Any, Dict
+from typing import Any
 
 import pytest
 import zmq
-
 from umrs.pipeline_sdk.step import Step, StepContext, StepResult
 from umrs.server.step_executor import (
     RemotePoolExecutor,
@@ -480,8 +479,6 @@ def test_remote_payload_too_large():
     original = os.environ.get("UMRS_ZMQ_MAX_PAYLOAD_BYTES")
     os.environ["UMRS_ZMQ_MAX_PAYLOAD_BYTES"] = "100"  # very small limit
 
-    from umrs.server.step_worker import zmq_pool_main
-
     zmq_ctx = zmq.Context()
     rep_sock = zmq_ctx.socket(zmq.REP)
     port = rep_sock.bind_to_random_port("tcp://127.0.0.1")
@@ -555,7 +552,7 @@ def test_remote_payload_too_large():
 class _PingAwareWorker:
     """In-process ZMQ REP worker that handles ping and task payloads."""
 
-    def __init__(self, capabilities: Dict[str, Any] | None = None) -> None:
+    def __init__(self, capabilities: dict[str, Any] | None = None) -> None:
         self._ctx = zmq.Context()
         self._sock = self._ctx.socket(zmq.REP)
         self._port = self._sock.bind_to_random_port("tcp://127.0.0.1")

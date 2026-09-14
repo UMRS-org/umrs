@@ -8,7 +8,6 @@ from types import SimpleNamespace
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-
 from umrs.api.assets import router as assets_router
 from umrs.asset_index import KINDS, AssetRow, build_asset_index
 from umrs.asset_index.fanout import _scope_of, model_access_context
@@ -49,7 +48,11 @@ class TestFanout:
         art = _artifact()
         store = _FakeArtifactStore(
             [art],
-            lineage_map={str(art.id): [SimpleNamespace(parent_artifact_id=uuid.uuid4(), relation="derived_from")]},
+            lineage_map={
+                str(art.id): [
+                    SimpleNamespace(parent_artifact_id=uuid.uuid4(), relation="derived_from")
+                ]
+            },
         )
         rows, warnings = build_asset_index(artifact_store=store)
         assert not warnings
@@ -89,7 +92,10 @@ class TestFanout:
 
     def test_jobs_compose(self):
         job = SimpleNamespace(
-            job_id="job-1", project_id="p1", state="running", job_type="KNOWLEDGE_INGEST",
+            job_id="job-1",
+            project_id="p1",
+            state="running",
+            job_type="KNOWLEDGE_INGEST",
             execution_authority="slurm",
         )
         store = SimpleNamespace(list_jobs=lambda limit=500: [job])
@@ -248,7 +254,9 @@ class TestLoopArtifactLineage:
         assert row.metadata["durable_job_id"] == "job-77"
 
     def test_loop_without_iterations_has_no_artifact_edges(self):
-        loop = SimpleNamespace(loop_id="loop-0", project_id="p1", research_goal="g", status="running")
+        loop = SimpleNamespace(
+            loop_id="loop-0", project_id="p1", research_goal="g", status="running"
+        )
         rows, _ = build_asset_index(loop_store=SimpleNamespace(list_all=lambda: [loop]))
         assert rows[0].lineage == ()
         assert rows[0].metadata["hosting"] == ""

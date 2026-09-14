@@ -17,10 +17,10 @@ import hashlib
 import hmac
 import importlib.util
 import time
-
-import pytest
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
+
+import pytest
 
 
 def _load_sidecar():

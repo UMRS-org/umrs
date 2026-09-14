@@ -193,13 +193,11 @@ def test_lifecycle_report_lists_candidates_and_marks_nothing_by_default(tool, ca
 def test_lifecycle_mark_requires_confirmation_phrase(tool, capsys, monkeypatch):
     tool2 = tool
     monkeypatch.setattr(tool2, "lifecycle_candidates", lambda _conn: ["proj-dead"])
-    monkeypatch.setattr(tool2, "mark_projects", lambda conn, projects, tier: dict.fromkeys(
-        dict(tool2.PLANES), 0
-    ))
-    monkeypatch.setattr("builtins.input", lambda _prompt: "ambient")
-    rc = tool2.main(
-        ["--dsn", "postgresql://x", "--lifecycle-report", "--mark-ambient-lifecycle"]
+    monkeypatch.setattr(
+        tool2, "mark_projects", lambda conn, projects, tier: dict.fromkeys(dict(tool2.PLANES), 0)
     )
+    monkeypatch.setattr("builtins.input", lambda _prompt: "ambient")
+    rc = tool2.main(["--dsn", "postgresql://x", "--lifecycle-report", "--mark-ambient-lifecycle"])
     assert rc == 0
     out = capsys.readouterr().out
     assert "marked (lifecycle)" in out

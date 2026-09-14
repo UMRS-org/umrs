@@ -3,15 +3,12 @@
 from __future__ import annotations
 
 import io
-import json
 from dataclasses import dataclass, field
 from typing import Any
 
+from catalog_store_fake import FakeCatalogMetaStore
 from umrs.data_catalog import perception
 from umrs.data_catalog.ingest import ingest_object
-from umrs.data_catalog.schema import CatalogObjectMeta
-
-from catalog_store_fake import FakeCatalogMetaStore
 
 
 @dataclass

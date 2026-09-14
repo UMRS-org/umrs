@@ -2,10 +2,9 @@
 
 import io
 
+from catalog_store_fake import FakeCatalogMetaStore
 from umrs.data_catalog.query import _allowed, _score_meta, read_catalog_object
 from umrs.data_catalog.schema import CatalogObjectMeta, CatalogState
-
-from catalog_store_fake import FakeCatalogMetaStore
 
 
 def test_allowed_by_acl_scope():

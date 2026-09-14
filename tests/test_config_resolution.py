@@ -7,8 +7,6 @@ umrs profile resolution to fail silently.
 See .github/instructions/umrs-branch-separation.instructions.md §5.
 """
 
-import pytest
-
 
 class TestConfigResolution:
     """Verify config constants are not shadowed."""
@@ -93,8 +91,6 @@ class TestModelStagingRoot:
             "get_site_config",
             lambda: (_ for _ in ()).throw(RuntimeError("no site")),
         )
-        monkeypatch.setattr(
-            cfg_mod, "get_resolved_umrs_subdir", lambda name: f"/etc/umrs/{name}"
-        )
+        monkeypatch.setattr(cfg_mod, "get_resolved_umrs_subdir", lambda name: f"/etc/umrs/{name}")
 
         assert cfg_mod.get_resolved_model_staging_root() == "/etc/umrs/models"

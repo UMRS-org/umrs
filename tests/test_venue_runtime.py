@@ -95,12 +95,19 @@ class TestSweep:
     def test_revoked_session_with_valid_sibling_is_skipped(self):
         broker, provisioner, executor = _executor()
         revoked, _secret = broker.issue_lease(
-            job_id="session-sx", secret_name="t", scope="inference",
-            owner_id="alice", session_id="sess-sx",
+            job_id="session-sx",
+            secret_name="t",
+            scope="inference",
+            owner_id="alice",
+            session_id="sess-sx",
         )
         live, _ = broker.issue_lease(
-            job_id="session-sx", secret_name="t2", scope="inference",
-            owner_id="alice", session_id="sess-sx", lease_seconds=3600,
+            job_id="session-sx",
+            secret_name="t2",
+            scope="inference",
+            owner_id="alice",
+            session_id="sess-sx",
+            lease_seconds=3600,
         )
         broker.revoke_lease(revoked.lease_id)
         result = executor.sweep_once()

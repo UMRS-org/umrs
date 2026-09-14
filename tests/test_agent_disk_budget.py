@@ -17,7 +17,6 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
-
 from umrs.api.agent_quota import (
     AGENT_JOB_KINDS,
     LIVE_JOB_STATUSES,
@@ -74,10 +73,15 @@ class TestDiskLedger:
         ledger = DiskLedger(conn)
         conn.execute = MagicMock()
         # First charge events — simulate no prior hash and usage reads via execute
-        ledger._conn = SimpleNamespace(cursor=MagicMock(return_value=MagicMock(
-            execute=MagicMock(),
-            fetchone=MagicMock(side_effect=[None, (0,)]),
-        )), commit=MagicMock())
+        ledger._conn = SimpleNamespace(
+            cursor=MagicMock(
+                return_value=MagicMock(
+                    execute=MagicMock(),
+                    fetchone=MagicMock(side_effect=[None, (0,)]),
+                )
+            ),
+            commit=MagicMock(),
+        )
         usage = ledger.usage("alice")
         assert usage == 0
 
@@ -105,7 +109,9 @@ class TestDiskLedgerIntegration:
         conn.cursor = MagicMock(
             return_value=MagicMock(
                 execute=lambda sql, params=None: executed_calls.append((sql, params)),
-                fetchone=MagicMock(side_effect=[None, (100,)],),
+                fetchone=MagicMock(
+                    side_effect=[None, (100,)],
+                ),
             )
         )
         conn.commit = MagicMock()

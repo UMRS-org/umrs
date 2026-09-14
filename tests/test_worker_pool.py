@@ -22,16 +22,14 @@ import io
 import os
 import pickle
 import struct
-import subprocess
 import sys
 import threading
 import time
 import types
 from collections import deque
-from typing import Any, Dict, List
+from typing import Any
 
 import pytest
-
 from umrs.pipeline_sdk.step import Step, StepContext, StepResult
 from umrs.server.step_executor import (
     EXECUTOR_GPU_METADATA_KEY,
@@ -404,8 +402,8 @@ class TestWorkerPoolExecutor:
         """Parallel tasks for the same key get separate workers
         (each thread holds one exclusively)."""
         exe = _make_pool_executor(monkeypatch)
-        results: List[StepResult] = []
-        errors: List[Exception] = []
+        results: list[StepResult] = []
+        errors: list[Exception] = []
 
         def _run_task():
             try:
@@ -560,8 +558,8 @@ class TestPoolControls:
     def test_max_workers_enforced(self, monkeypatch):
         """Pool never exceeds max_workers_per_key."""
         exe = _make_pool_executor(monkeypatch, max_workers_per_key=2, acquire_timeout=10.0)
-        results: List[StepResult] = []
-        errors: List[Exception] = []
+        results: list[StepResult] = []
+        errors: list[Exception] = []
 
         def _run():
             try:
@@ -628,8 +626,8 @@ class TestPoolControls:
     def test_blocking_proceeds_after_release(self, monkeypatch):
         """A blocked waiter proceeds when a worker is released."""
         exe = _make_pool_executor(monkeypatch, max_workers_per_key=1, acquire_timeout=10.0)
-        results: List[StepResult] = []
-        errors: List[Exception] = []
+        results: list[StepResult] = []
+        errors: list[Exception] = []
 
         def _run():
             try:
@@ -732,8 +730,8 @@ class TestPoolControls:
     def test_dead_worker_notifies_waiters(self, monkeypatch):
         """When a worker dies during a task, blocked waiters can proceed."""
         exe = _make_pool_executor(monkeypatch, max_workers_per_key=1, acquire_timeout=10.0)
-        results: List[StepResult] = []
-        errors: List[Exception] = []
+        results: list[StepResult] = []
+        errors: list[Exception] = []
 
         call_count = [0]
 
@@ -824,7 +822,7 @@ class _RecordingPoolExecutor(StepExecutor):
     """Records calls and tracks shutdown for runner tests."""
 
     def __init__(self) -> None:
-        self.calls: List[Dict[str, Any]] = []
+        self.calls: list[dict[str, Any]] = []
         self.shutdown_called = False
 
     def execute(self, *, entrypoint, config, ctx) -> StepResult:

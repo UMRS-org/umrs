@@ -171,11 +171,14 @@ class TestGrantLifecycle:
         owner, grantee = _ids()
         _push_source(env.state._pool, owner)
         with TestClient(env) as client:
-            assert client.post(
-                "/umrs/user-sources/grants",
-                json={"source_name": "main", "grantee": grantee},
-                headers=_headers(owner),
-            ).status_code == 201
+            assert (
+                client.post(
+                    "/umrs/user-sources/grants",
+                    json={"source_name": "main", "grantee": grantee},
+                    headers=_headers(owner),
+                ).status_code
+                == 201
+            )
             duplicate = client.post(
                 "/umrs/user-sources/grants",
                 json={"source_name": "main", "grantee": grantee},
@@ -199,13 +202,19 @@ class TestRevokeCascade:
 
         broker = SecretBroker(db_pool=env.state._pool)
         lease, _ = broker.issue_lease(
-            "job-g1", "t", "inference",
-            owner_id=grantee, session_id="sess-g1",
-            source_ids=(source_id,), default_source_id=source_id,
+            "job-g1",
+            "t",
+            "inference",
+            owner_id=grantee,
+            session_id="sess-g1",
+            source_ids=(source_id,),
+            default_source_id=source_id,
         )
 
         with TestClient(env) as client:
-            revoked = client.post(f"/umrs/user-sources/grants/{grant_id}/revoke", headers=_headers(owner))
+            revoked = client.post(
+                f"/umrs/user-sources/grants/{grant_id}/revoke", headers=_headers(owner)
+            )
             assert revoked.status_code == 200
             assert revoked.json()["leases_revoked"] == 1
         assert not broker.get_lease(lease.lease_id).is_valid

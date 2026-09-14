@@ -9,14 +9,12 @@ import os
 import subprocess
 import sys
 import types
-from typing import Any, Dict, List
+from typing import Any
 
 import pytest
-
 from umrs.pipeline_sdk.step import Step, StepContext, StepResult
 from umrs.server.step_executor import (
     EXECUTOR_GPU_METADATA_KEY,
-    EXECUTOR_IMAGE_METADATA_KEY,
     PodmanExecutor,
     StepExecutionError,
     StepExecutor,
@@ -64,7 +62,7 @@ class _FakePodman:
         self._reply = reply
         self._write_output = write_output
         self._returncode = returncode
-        self.calls: List[List[str]] = []
+        self.calls: list[list[str]] = []
         self._pkl = _pkl
 
     def __call__(self, cmd, **kwargs):
@@ -102,7 +100,7 @@ class _RecordingExecutor(StepExecutor):
     """Captures every execute() call so we can assert on metadata."""
 
     def __init__(self) -> None:
-        self.calls: List[Dict[str, Any]] = []
+        self.calls: list[dict[str, Any]] = []
 
     def execute(self, *, entrypoint, config, ctx) -> StepResult:
         self.calls.append({"metadata": dict(ctx.metadata)})
@@ -110,7 +108,7 @@ class _RecordingExecutor(StepExecutor):
 
 
 def _workflow(routing_hints=None):
-    step: Dict[str, Any] = {
+    step: dict[str, Any] = {
         "name": "probe",
         "entrypoint": "umrs_test_per_step_gpu_module:_OkStep",
         "config": {},

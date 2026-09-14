@@ -67,8 +67,12 @@ def test_scientific_memory_adapter_list_entries():
 def test_scientific_memory_adapter_search():
     """Test searching entries through the adapter."""
     adapter = _sm_adapter()
-    adapter.add(MemoryEntry(entry_id="n1", project_id="p1", content="machine learning", tags=["ml"]))
-    adapter.add(MemoryEntry(entry_id="n2", project_id="p1", content="quantum computing", tags=["quantum"]))
+    adapter.add(
+        MemoryEntry(entry_id="n1", project_id="p1", content="machine learning", tags=["ml"])
+    )
+    adapter.add(
+        MemoryEntry(entry_id="n2", project_id="p1", content="quantum computing", tags=["quantum"])
+    )
 
     results = adapter.search("machine learning")
     assert len(results) == 1
@@ -149,8 +153,6 @@ def test_knowledge_model_adapter_search_objects():
 
     results = adapter.search_objects("machine learning")
     assert len(results) == 1
-
-
 
 
 def _sm_adapter():
@@ -338,9 +340,33 @@ def test_evidence_adapter_add_and_get():
 def test_evidence_adapter_list_evidence():
     """Test listing evidence through the adapter."""
     adapter = _ev_adapter()
-    adapter.add_evidence(Evidence(evidence_id="evd-001", project_id="p1", source_type=EvidenceSourceType.UPLOADED_FILE, claim_id="c1", relevance_score=0.8))
-    adapter.add_evidence(Evidence(evidence_id="evd-002", project_id="p1", source_type=EvidenceSourceType.EXTERNAL_PAPER, claim_id="c1", relevance_score=0.9))
-    adapter.add_evidence(Evidence(evidence_id="evd-003", project_id="p2", source_type=EvidenceSourceType.UPLOADED_FILE, claim_id="c2", relevance_score=0.7))
+    adapter.add_evidence(
+        Evidence(
+            evidence_id="evd-001",
+            project_id="p1",
+            source_type=EvidenceSourceType.UPLOADED_FILE,
+            claim_id="c1",
+            relevance_score=0.8,
+        )
+    )
+    adapter.add_evidence(
+        Evidence(
+            evidence_id="evd-002",
+            project_id="p1",
+            source_type=EvidenceSourceType.EXTERNAL_PAPER,
+            claim_id="c1",
+            relevance_score=0.9,
+        )
+    )
+    adapter.add_evidence(
+        Evidence(
+            evidence_id="evd-003",
+            project_id="p2",
+            source_type=EvidenceSourceType.UPLOADED_FILE,
+            claim_id="c2",
+            relevance_score=0.7,
+        )
+    )
 
     all_evd = adapter.list_evidence()
     assert len(all_evd) == 3
@@ -352,9 +378,15 @@ def test_evidence_adapter_list_evidence():
 def test_evidence_adapter_get_evidence_for_claim():
     """Test getting evidence for a claim through the adapter."""
     adapter = _ev_adapter()
-    adapter.add_evidence(Evidence(evidence_id="evd-001", project_id="p1", claim_id="claim-001", relevance_score=0.8))
-    adapter.add_evidence(Evidence(evidence_id="evd-002", project_id="p1", claim_id="claim-001", relevance_score=0.9))
-    adapter.add_evidence(Evidence(evidence_id="evd-003", project_id="p1", claim_id="claim-002", relevance_score=0.7))
+    adapter.add_evidence(
+        Evidence(evidence_id="evd-001", project_id="p1", claim_id="claim-001", relevance_score=0.8)
+    )
+    adapter.add_evidence(
+        Evidence(evidence_id="evd-002", project_id="p1", claim_id="claim-001", relevance_score=0.9)
+    )
+    adapter.add_evidence(
+        Evidence(evidence_id="evd-003", project_id="p1", claim_id="claim-002", relevance_score=0.7)
+    )
 
     claim1_evd = adapter.get_evidence_for_claim("claim-001")
     assert len(claim1_evd) == 2

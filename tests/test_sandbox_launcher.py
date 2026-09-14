@@ -12,26 +12,21 @@ import json
 import os
 import tempfile
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
-import pytest
-
-from umrs.plugins.models import PluginSpec, PluginSourceType, PluginStatus, PluginResult
-from umrs.plugins.runner import PluginRunner
-from umrs.plugins.slurm_runner import SlurmPluginRunner
-from umrs.plugins.step_adapter import step_to_plugin_spec
-from umrs.plugins.user_workflow import UserWorkflow, UserWorkflowRunner
-from umrs.pipeline_sdk.step import Step, StepContext, StepResult
 from umrs.pipeline_sdk.workflow import (
     ExecutionMode,
     OutputSpec,
-    ResourceSpec,
     SourceSpec,
     SourceType,
     StepSpec,
     WorkflowDefinition,
 )
-
+from umrs.plugins.models import PluginResult, PluginSourceType, PluginSpec, PluginStatus
+from umrs.plugins.runner import PluginRunner
+from umrs.plugins.slurm_runner import SlurmPluginRunner
+from umrs.plugins.step_adapter import step_to_plugin_spec
+from umrs.plugins.user_workflow import UserWorkflow, UserWorkflowRunner
 
 # ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -314,10 +309,9 @@ class MyStep(Step):
         }
 
         with patch.dict(os.environ, env, clear=False):
-            from umrs.plugins.plugin_runner.entrypoint import main, WORKSPACE, SOURCE_DIR
-
             # Patch module-level constants
             import umrs.plugins.plugin_runner.entrypoint as ep_mod
+            from umrs.plugins.plugin_runner.entrypoint import main
 
             orig_ws = ep_mod.WORKSPACE
             orig_sd = ep_mod.SOURCE_DIR

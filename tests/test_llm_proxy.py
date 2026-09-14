@@ -7,7 +7,6 @@ from unittest.mock import patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-
 from umrs.api import llm as llm_api
 from umrs.api.llm import router
 from umrs.orchestrator.endpoint_registry import EndpointRegistry, get_registry
@@ -668,7 +667,6 @@ def test_streaming_first_chunk_observes_ttft_once():
     route boundary (chunk — not decoded token). Fails without the change:
     the retired Python gateway owned this series and nothing else recorded it.
     """
-    import httpx
 
     registry = _make_registry_with_endpoint()
     client = _create_client(registry)
@@ -703,7 +701,9 @@ def test_streaming_first_chunk_observes_ttft_once():
 
     with (
         patch.object(llm_api, "_open_stream", fake_open_stream),
-        patch.object(METRICS, "llm_first_token", lambda model, seconds: observations.append((model, seconds))),
+        patch.object(
+            METRICS, "llm_first_token", lambda model, seconds: observations.append((model, seconds))
+        ),
     ):
         response = client.post(
             "/umrs/llm/v1/chat/completions",
@@ -727,7 +727,6 @@ def test_oneshot_never_observes_ttft():
         return _mock_litellm_response({"id": "x", "choices": []})
 
     import httpx
-
     from umrs.metrics import METRICS
 
     observations: list[tuple[str, float]] = []
@@ -785,7 +784,9 @@ def test_first_content_delta_fires_at_first_nonempty_content():
     with (
         patch.object(llm_api, "_open_stream", fake_open_stream),
         patch.object(METRICS, "llm_first_token", lambda model, sec: firsts["token"].append(sec)),
-        patch.object(METRICS, "llm_first_content", lambda model, sec: firsts["content"].append(sec)),
+        patch.object(
+            METRICS, "llm_first_content", lambda model, sec: firsts["content"].append(sec)
+        ),
     ):
         response = client.post(
             "/umrs/llm/v1/chat/completions",

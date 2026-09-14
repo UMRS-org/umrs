@@ -2,7 +2,6 @@
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-
 from umrs.api import endpoints as endpoints_api
 from umrs.api.endpoints import router
 from umrs.orchestrator.endpoint_registry import EndpointRegistry, get_registry

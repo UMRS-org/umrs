@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import pytest
 
-
 # -- sidecar generator (generation-layer rejection) --------------------------
 
 
@@ -61,8 +60,11 @@ def test_trace_request_ttl_422():
     from umrs.api.traces import TraceCreateRequest
 
     fields = {
-        "job_id": "j", "step_name": "n", "step_type": "generic",
-        "inputs": None, "model_ref": None,
+        "job_id": "j",
+        "step_name": "n",
+        "step_type": "generic",
+        "inputs": None,
+        "model_ref": None,
     }
     with pytest.raises(ValidationError):
         TraceCreateRequest(**fields, ttl_seconds=0)
@@ -89,8 +91,11 @@ def test_tool_cache_route_rejects_nonpositive_ttl():
     tool_cache.set_store(_Store())
     try:
         body = {
-            "session_id": "s1", "tool_name": "probe",
-            "inputs": {}, "output": "x", "ttl_seconds": 0,
+            "session_id": "s1",
+            "tool_name": "probe",
+            "inputs": {},
+            "output": "x",
+            "ttl_seconds": 0,
         }
         r = client.post("/umrs/tool-cache", json=body)
         assert r.status_code == 400

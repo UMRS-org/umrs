@@ -10,16 +10,13 @@ Covers:
 """
 
 import json
-import uuid
 from unittest.mock import MagicMock, patch
 
 import pytest
-
 from umrs.pipeline_sdk.step import Step, StepContext, StepResult
 from umrs.pipeline_sdk.workflow import (
     ExecutionMode,
     OutputSpec,
-    ResourceSpec,
     SourceSpec,
     SourceType,
     StepSpec,
@@ -27,7 +24,6 @@ from umrs.pipeline_sdk.workflow import (
 )
 from umrs.plugins.step_adapter import step_to_plugin_spec
 from umrs.plugins.user_workflow import UserWorkflow, UserWorkflowRunner
-
 
 # ── Helpers ──────────────────────────────────────────────────────────────
 

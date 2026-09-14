@@ -310,9 +310,7 @@ class TestSnapshotDelete:
         client = _client(pool)
         _post(client, pool, sid="sess-d")
         pool.archives.add("sess-d")
-        resp = client.delete(
-            "/umrs/companion/sessions/sess-d", headers={"x-user-id": "alice"}
-        )
+        resp = client.delete("/umrs/companion/sessions/sess-d", headers={"x-user-id": "alice"})
         assert resp.status_code == 200
         assert resp.json()["deleted"] is True
         assert ("alice", "sess-d") not in pool.table
@@ -323,18 +321,14 @@ class TestSnapshotDelete:
         pool = _FakePool()
         client = _client(pool)
         _post(client, pool, sid="sess-1")
-        resp = client.delete(
-            "/umrs/companion/sessions/sess-1", headers={"x-user-id": "bob"}
-        )
+        resp = client.delete("/umrs/companion/sessions/sess-1", headers={"x-user-id": "bob"})
         assert resp.status_code == 404
         assert ("alice", "sess-1") in pool.table
 
     def test_absent_delete_is_404(self):
         pool = _FakePool()
         client = _client(pool)
-        resp = client.delete(
-            "/umrs/companion/sessions/sess-ghost", headers={"x-user-id": "alice"}
-        )
+        resp = client.delete("/umrs/companion/sessions/sess-ghost", headers={"x-user-id": "alice"})
         assert resp.status_code == 404
 
 

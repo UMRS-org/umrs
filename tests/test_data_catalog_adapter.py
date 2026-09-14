@@ -5,18 +5,17 @@ from __future__ import annotations
 import io
 from typing import Any
 
+from botocore.exceptions import ClientError
+from catalog_store_fake import FakeCatalogMetaStore
 from umrs.data_catalog.adapter import CatalogArtifactAdapter
 from umrs.data_catalog.artifacts import artifact_id_for_meta
 from umrs.data_catalog.constants import EXTRACTED_TEXT_PREFIX
 from umrs.data_catalog.schema import CatalogObjectMeta, CatalogState
 from umrs.knowledge.verify import KnowledgeVerifier
-from botocore.exceptions import ClientError
-
-from catalog_store_fake import FakeCatalogMetaStore
 
 
 def _adapter(
-    client: "_AdapterS3",
+    client: _AdapterS3,
     project_id: str = "proj-1",
     *,
     store: FakeCatalogMetaStore | None = None,

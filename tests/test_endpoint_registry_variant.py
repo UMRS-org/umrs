@@ -10,7 +10,6 @@ Covers:
 """
 
 import threading
-from datetime import datetime, timedelta
 
 from umrs.orchestrator.endpoint_registry import (
     EndpointRegistry,
@@ -65,7 +64,8 @@ class TestFindCandidates:
         reg.update_status("j2", EndpointStatus.FAILED, "error")
 
         candidates = reg._find_candidates(
-            "p1", "M",
+            "p1",
+            "M",
             status_filter=[EndpointStatus.READY, EndpointStatus.DEGRADED],
         )
         assert len(candidates) == 1

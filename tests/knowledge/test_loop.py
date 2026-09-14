@@ -11,7 +11,6 @@ from umrs.knowledge.loop import (
     run_research_loop,
 )
 
-
 # ── Enum Tests ─────────────────────────────────────────────────────────────
 
 

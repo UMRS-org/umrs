@@ -10,11 +10,10 @@ from __future__ import annotations
 
 import httpx
 import pytest
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
-
 import umrs.api.vision as vision_api
 import umrs.api.vision_durable as vd
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 from umrs.api.vision import router
 from umrs.orchestrator.endpoint_registry import EndpointRegistry, EndpointStatus
 
@@ -97,7 +96,11 @@ def test_submit_mints_running_job_and_returns_job_id(app_client, monkeypatch):
     with TestClient(app_client) as client:
         resp = client.post(
             "/umrs/vision/infer/submit",
-            headers={"X-Project-ID": "project-a", "X-Verified-Project-ID": "project-a", "X-User-ID": "alice"},
+            headers={
+                "X-Project-ID": "project-a",
+                "X-Verified-Project-ID": "project-a",
+                "X-User-ID": "alice",
+            },
             json=_submit_body(),
         )
     assert resp.status_code == 200
@@ -142,13 +145,12 @@ def test_submit_downstream_exception_marks_failed(app_client, monkeypatch):
         raise httpx.ConnectError("downstream dead")
 
     monkeypatch.setattr(vision_api, "_request_endpoint", boom)
-    with TestClient(app_client) as client:
-        with pytest.raises(Exception):
-            client.post(
-                "/umrs/vision/infer/submit",
-                headers={"X-Project-ID": "project-a", "X-Verified-Project-ID": "project-a"},
-                json=_submit_body(),
-            )
+    with TestClient(app_client) as client, pytest.raises(Exception):
+        client.post(
+            "/umrs/vision/infer/submit",
+            headers={"X-Project-ID": "project-a", "X-Verified-Project-ID": "project-a"},
+            json=_submit_body(),
+        )
     assert any(args[2] == "failed" for args, _ in term)
 
 
@@ -165,6 +167,7 @@ def test_status_completed_transitions_attempt_once_and_safely(app_client, monkey
         return httpx.Response(200, json={"task_id": "t-1", "status": "completed"})
 
     monkeypatch.setattr(vision_api, "_request_endpoint", fake_request)
+
     # get_job lookup stub on the module seam
     class _Store:
         def get_job(self, job_id):
@@ -185,7 +188,9 @@ def test_status_completed_transitions_attempt_once_and_safely(app_client, monkey
 
 def test_cancel_route_cancels_durable_row(app_client, monkeypatch):
     cancels: list = []
-    monkeypatch.setattr(vd, "cancel", lambda store, job_id, *, reason: cancels.append((job_id, reason)))
+    monkeypatch.setattr(
+        vd, "cancel", lambda store, job_id, *, reason: cancels.append((job_id, reason))
+    )
     monkeypatch.setattr(vd, "store_for", lambda req: object())
 
     async def fake_request(*a, **k):

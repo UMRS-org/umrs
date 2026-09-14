@@ -19,10 +19,9 @@ from __future__ import annotations
 
 import sys
 import types
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import pytest
-
 from umrs.pipeline_sdk.step import Step, StepContext, StepResult
 from umrs.server.step_router import StepRouter, reset_feedback_store
 from umrs.server.workflow_execution_registry import (
@@ -65,13 +64,13 @@ def _two_endpoint_router() -> StepRouter:
     satisfy the capability.
     """
 
-    def find_models(caps: List[str], mt: Optional[str]) -> List[Dict[str, Any]]:
+    def find_models(caps: list[str], mt: str | None) -> list[dict[str, Any]]:
         return [
             {"name": "vlm-a", "scope": "system", "model_type": "vision"},
             {"name": "vlm-b", "scope": "system", "model_type": "vision"},
         ]
 
-    def find_endpoint(model_name: str, *_a: Any, **_k: Any) -> Optional[Dict[str, Any]]:
+    def find_endpoint(model_name: str, *_a: Any, **_k: Any) -> dict[str, Any] | None:
         if model_name == "vlm-a":
             return {"litellm_url": "http://a", "job_id": "ep-1"}
         if model_name == "vlm-b":
@@ -86,7 +85,7 @@ class _RecordingStep(Step):
 
     name = "rec"
 
-    def setup(self, config: Dict[str, Any]) -> None:
+    def setup(self, config: dict[str, Any]) -> None:
         self._config = dict(config)
 
     def run(self, ctx: StepContext) -> StepResult:

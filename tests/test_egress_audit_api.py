@@ -9,10 +9,8 @@ from typing import Any
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-
 from umrs.api import egress_audit
 from umrs.api.egress_audit import EgressAuditRecord
-
 
 # pylint: disable=protected-access,too-few-public-methods
 
@@ -72,7 +70,7 @@ def test_egress_audit_store_uses_configured_database(monkeypatch) -> None:
     rows: list[tuple[Any, ...]] = []
 
     class FakeCursor:
-        def __enter__(self) -> "FakeCursor":
+        def __enter__(self) -> FakeCursor:
             return self
 
         def __exit__(self, *exc_info: object) -> None:
@@ -86,7 +84,7 @@ def test_egress_audit_store_uses_configured_database(monkeypatch) -> None:
             return rows
 
     class FakeConnection:
-        def __enter__(self) -> "FakeConnection":
+        def __enter__(self) -> FakeConnection:
             return self
 
         def __exit__(self, *exc_info: object) -> None:

@@ -3,17 +3,14 @@
 from __future__ import annotations
 
 import pytest
-
 from umrs.knowledge.verify import (
     Evidence,
     EvidenceType,
     InMemoryKnowledgeStore,
-    KnowledgeStore,
     KnowledgeVerifier,
     VerificationAnswer,
     verify_knowledge,
 )
-
 
 # ── Test Fixtures ──────────────────────────────────────────────────────────
 
@@ -30,64 +27,81 @@ def populated_store():
     store = InMemoryKnowledgeStore()
 
     # Add a paper
-    store.add_artifact({
-        "artifact_id": "paper-001",
-        "artifact_type": "paper",
-        "filename": "attention_is_all_you_need.pdf",
-        "title": "Attention Is All You Need",
-        "tags": ["transformer", "attention"],
-    })
-    store.add_extracted_knowledge("paper-001", {
-        "objective": "Present transformer architecture",
-        "methodology": "Self-attention mechanism",
-        "keywords": ["transformer", "attention", "neural networks"],
-        "algorithms": ["transformer", "self-attention"],
-        "conclusions": ["Transformers outperform RNNs"],
-        "assumptions": ["Self-attention is sufficient"],
-    })
+    store.add_artifact(
+        {
+            "artifact_id": "paper-001",
+            "artifact_type": "paper",
+            "filename": "attention_is_all_you_need.pdf",
+            "title": "Attention Is All You Need",
+            "tags": ["transformer", "attention"],
+        }
+    )
+    store.add_extracted_knowledge(
+        "paper-001",
+        {
+            "objective": "Present transformer architecture",
+            "methodology": "Self-attention mechanism",
+            "keywords": ["transformer", "attention", "neural networks"],
+            "algorithms": ["transformer", "self-attention"],
+            "conclusions": ["Transformers outperform RNNs"],
+            "assumptions": ["Self-attention is sufficient"],
+        },
+    )
 
     # Add code
-    store.add_artifact({
-        "artifact_id": "code-001",
-        "artifact_type": "code",
-        "filename": "transformer.py",
-        "tags": ["python", "transformer"],
-    })
-    store.add_extracted_knowledge("code-001", {
-        "algorithms": ["transformer", "self-attention"],
-        "apis": ["TransformerModel", "MultiHeadAttention"],
-        "modules": ["transformer"],
-        "dependencies": ["torch", "numpy"],
-        "parameters": ["d_model", "nhead", "num_layers"],
-        "kernels": [],
-        "execution_flow": "has_main_block",
-    })
+    store.add_artifact(
+        {
+            "artifact_id": "code-001",
+            "artifact_type": "code",
+            "filename": "transformer.py",
+            "tags": ["python", "transformer"],
+        }
+    )
+    store.add_extracted_knowledge(
+        "code-001",
+        {
+            "algorithms": ["transformer", "self-attention"],
+            "apis": ["TransformerModel", "MultiHeadAttention"],
+            "modules": ["transformer"],
+            "dependencies": ["torch", "numpy"],
+            "parameters": ["d_model", "nhead", "num_layers"],
+            "kernels": [],
+            "execution_flow": "has_main_block",
+        },
+    )
 
     # Add a notebook
-    store.add_artifact({
-        "artifact_id": "notebook-001",
-        "artifact_type": "notebook",
-        "filename": "transformer_experiment.ipynb",
-        "tags": ["experiment", "transformer"],
-    })
-    store.add_extracted_knowledge("notebook-001", {
-        "algorithms": ["transformer"],
-        "figures": [
-            {"cell_index": 5, "output_index": 0, "mime_type": "image/png"},
-            {"cell_index": 8, "output_index": 0, "mime_type": "image/png"},
-        ],
-        "generated_outputs": ["Training loss: 0.5", "Validation accuracy: 0.85"],
-        "execution_order": [1, 2, 3, 4, 5],
-        "experimental_settings": ["learning_rate=0.001", "batch_size=32"],
-    })
+    store.add_artifact(
+        {
+            "artifact_id": "notebook-001",
+            "artifact_type": "notebook",
+            "filename": "transformer_experiment.ipynb",
+            "tags": ["experiment", "transformer"],
+        }
+    )
+    store.add_extracted_knowledge(
+        "notebook-001",
+        {
+            "algorithms": ["transformer"],
+            "figures": [
+                {"cell_index": 5, "output_index": 0, "mime_type": "image/png"},
+                {"cell_index": 8, "output_index": 0, "mime_type": "image/png"},
+            ],
+            "generated_outputs": ["Training loss: 0.5", "Validation accuracy: 0.85"],
+            "execution_order": [1, 2, 3, 4, 5],
+            "experimental_settings": ["learning_rate=0.001", "batch_size=32"],
+        },
+    )
 
     # Add a dataset
-    store.add_artifact({
-        "artifact_id": "dataset-001",
-        "artifact_type": "dataset",
-        "filename": "qm9.csv",
-        "tags": ["molecules", "qm9"],
-    })
+    store.add_artifact(
+        {
+            "artifact_id": "dataset-001",
+            "artifact_type": "dataset",
+            "filename": "qm9.csv",
+            "tags": ["molecules", "qm9"],
+        }
+    )
 
     return store
 
@@ -158,11 +172,13 @@ def test_verification_answer_to_dict():
 def test_in_memory_store_add_artifact():
     """Test adding artifacts to the store."""
     store = InMemoryKnowledgeStore()
-    store.add_artifact({
-        "artifact_id": "test-001",
-        "artifact_type": "paper",
-        "filename": "test.pdf",
-    })
+    store.add_artifact(
+        {
+            "artifact_id": "test-001",
+            "artifact_type": "paper",
+            "filename": "test.pdf",
+        }
+    )
 
     assert len(store.list_artifacts()) == 1
     assert store.get_artifact("test-001") is not None
@@ -171,16 +187,20 @@ def test_in_memory_store_add_artifact():
 def test_in_memory_store_list_by_type():
     """Test listing artifacts by type."""
     store = InMemoryKnowledgeStore()
-    store.add_artifact({
-        "artifact_id": "p1",
-        "artifact_type": "paper",
-        "filename": "p1.pdf",
-    })
-    store.add_artifact({
-        "artifact_id": "c1",
-        "artifact_type": "code",
-        "filename": "c1.py",
-    })
+    store.add_artifact(
+        {
+            "artifact_id": "p1",
+            "artifact_type": "paper",
+            "filename": "p1.pdf",
+        }
+    )
+    store.add_artifact(
+        {
+            "artifact_id": "c1",
+            "artifact_type": "code",
+            "filename": "c1.py",
+        }
+    )
 
     assert len(store.list_artifacts("paper")) == 1
     assert len(store.list_artifacts("code")) == 1
@@ -190,18 +210,22 @@ def test_in_memory_store_list_by_type():
 def test_in_memory_store_search():
     """Test searching artifacts."""
     store = InMemoryKnowledgeStore()
-    store.add_artifact({
-        "artifact_id": "t1",
-        "artifact_type": "paper",
-        "filename": "transformer.pdf",
-        "tags": ["transformer"],
-    })
-    store.add_artifact({
-        "artifact_id": "t2",
-        "artifact_type": "code",
-        "filename": "cnn.py",
-        "tags": ["cnn"],
-    })
+    store.add_artifact(
+        {
+            "artifact_id": "t1",
+            "artifact_type": "paper",
+            "filename": "transformer.pdf",
+            "tags": ["transformer"],
+        }
+    )
+    store.add_artifact(
+        {
+            "artifact_id": "t2",
+            "artifact_type": "code",
+            "filename": "cnn.py",
+            "tags": ["cnn"],
+        }
+    )
 
     results = store.search_artifacts("transformer")
     assert len(results) == 1

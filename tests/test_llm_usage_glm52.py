@@ -241,23 +241,25 @@ class TestExtractUsageOneshot:
 
     def test_glm52_oneshot_response(self):
         """Extract usage from a GLM-5.2 oneshot response."""
-        response_body = json.dumps({
-            "id": "chatcmpl-abc",
-            "object": "chat.completion",
-            "model": "zai-org/GLM-5.2",
-            "choices": [{"message": {"content": "Hello!"}}],
-            "usage": {
-                "prompt_tokens": 10,
-                "total_tokens": 100,
-                "completion_tokens": 90,
-                "completion_tokens_details": {
-                    "reasoning_tokens": 50,
+        response_body = json.dumps(
+            {
+                "id": "chatcmpl-abc",
+                "object": "chat.completion",
+                "model": "zai-org/GLM-5.2",
+                "choices": [{"message": {"content": "Hello!"}}],
+                "usage": {
+                    "prompt_tokens": 10,
+                    "total_tokens": 100,
+                    "completion_tokens": 90,
+                    "completion_tokens_details": {
+                        "reasoning_tokens": 50,
+                    },
+                    "prompt_tokens_details": {
+                        "cached_tokens": 5,
+                    },
                 },
-                "prompt_tokens_details": {
-                    "cached_tokens": 5,
-                },
-            },
-        }).encode()
+            }
+        ).encode()
 
         result = extract_usage_oneshot(response_body)
 
@@ -277,10 +279,12 @@ class TestExtractUsageOneshot:
 
     def test_model_list_response_returns_none(self):
         """Model list responses should return ``None``."""
-        response_body = json.dumps({
-            "object": "list",
-            "data": [{"id": "model-1"}],
-        }).encode()
+        response_body = json.dumps(
+            {
+                "object": "list",
+                "data": [{"id": "model-1"}],
+            }
+        ).encode()
 
         result = extract_usage_oneshot(response_body)
 
@@ -300,7 +304,7 @@ class TestExtractUsageStreaming:
             b'data: {"id":"chatcmpl-abc","choices":[{"delta":{"content":"Hi"}}]}\n\n',
             b'data: {"id":"chatcmpl-abc","choices":[{"delta":{"content":" there"}}]}\n\n',
             b'data: {"id":"chatcmpl-abc","choices":[],"usage":{"prompt_tokens":10,"total_tokens":100,"completion_tokens":90,"completion_tokens_details":{"reasoning_tokens":50},"prompt_tokens_details":{"cached_tokens":5}}}\n\n',
-            b'data: [DONE]\n\n',
+            b"data: [DONE]\n\n",
         ]
 
         result = extract_usage_streaming(chunks)
@@ -315,7 +319,7 @@ class TestExtractUsageStreaming:
         """If no usage chunk is present, return ``None``."""
         chunks = [
             b'data: {"id":"chatcmpl-abc","choices":[{"delta":{"content":"Hi"}}]}\n\n',
-            b'data: [DONE]\n\n',
+            b"data: [DONE]\n\n",
         ]
 
         result = extract_usage_streaming(chunks)
@@ -333,7 +337,7 @@ class TestExtractUsageStreaming:
             b'data: {"id":"chatcmpl-abc","choices":[{"delta":{"reasoning_content":"Let me think..."}}]}\n\n',
             b'data: {"id":"chatcmpl-abc","choices":[{"delta":{"content":"The answer is 42."}}]}\n\n',
             b'data: {"id":"chatcmpl-abc","choices":[],"usage":{"prompt_tokens":10,"total_tokens":100,"completion_tokens":90,"completion_tokens_details":{"reasoning_tokens":60}}}\n\n',
-            b'data: [DONE]\n\n',
+            b"data: [DONE]\n\n",
         ]
 
         result = extract_usage_streaming(chunks)

@@ -12,7 +12,6 @@ from __future__ import annotations
 import logging
 
 import pytest
-
 from umrs.pipeline_sdk.workflow import (
     KNOWN_CAPABILITY_TAGS,
     KNOWN_MODEL_TYPES,

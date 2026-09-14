@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import pytest
 from fastapi import HTTPException
+
 from r4_contracts.handshake_hmac import sign_claims
 
 

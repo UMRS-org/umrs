@@ -3,7 +3,6 @@
 import importlib
 
 import pytest
-
 import umrs.api.model_visibility as mv
 
 FRONTIER = "GLM-5.1,GLM-5.2,Kimi-K2.6,DeepSeek-V4-Pro,DeepSeek-V4-Pro-128K,DeepSeek-V4-Pro-TEP"

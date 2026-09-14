@@ -15,7 +15,6 @@ import time
 from types import SimpleNamespace
 
 import pytest
-
 from umrs.jobs.checkpoint_store import CheckpointStore
 from umrs.jobs.models import DEFAULT_BACKOFFS, JobType
 from umrs.jobs.research_loop_backend import (

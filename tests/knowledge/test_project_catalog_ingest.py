@@ -3,15 +3,13 @@
 from __future__ import annotations
 
 import io
-import json
 from pathlib import Path
 from typing import Any
 
 import pytest
 from botocore.exceptions import ClientError
-
-from umrs.data_catalog.constants import EXTRACTED_TEXT_PREFIX
-from umrs.data_catalog.schema import CatalogObjectMeta, CatalogState
+from catalog_store_fake import FakeCatalogMetaStore
+from umrs.data_catalog.schema import CatalogState
 from umrs.knowledge.ingest import IngesterConfig
 from umrs.knowledge.local_ingest import (
     build_s3_key,
@@ -21,8 +19,6 @@ from umrs.knowledge.local_ingest import (
 )
 from umrs.knowledge.project import ProjectPhase, ResearchProject
 from umrs.knowledge.workflow import run_project_workflow
-
-from catalog_store_fake import FakeCatalogMetaStore
 
 
 class _FakeProjectS3:
@@ -88,8 +84,7 @@ class _FakePaginator:
         contents = [
             {"Key": key, "ETag": f'"{self.etags[key]}"', "Size": len(data)}
             for key, data in sorted(self.objects.items())
-            if key.startswith(Prefix)
-            and (catalog_list or not key.startswith("_data_catalog/"))
+            if key.startswith(Prefix) and (catalog_list or not key.startswith("_data_catalog/"))
         ]
         return [{"Contents": contents}]
 
@@ -108,20 +103,20 @@ def catalog_meta_store():
 
 @pytest.fixture
 def project_dir(tmp_path: Path) -> Path:
-  (tmp_path / "README.md").write_text("# Demo\n")
-  papers = tmp_path / "papers"
-  papers.mkdir()
-  (papers / "paper1.pdf").write_bytes(b"%PDF-1.4\nobjective: test paper\n")
-  code = tmp_path / "code"
-  code.mkdir()
-  (code / "model.py").write_text("import torch\n")
-  data = tmp_path / "data"
-  data.mkdir()
-  (data / "run.csv").write_text("x,y\n1,2\n")
-  git_dir = tmp_path / ".git"
-  git_dir.mkdir()
-  (git_dir / "config").write_text("should be skipped\n")
-  return tmp_path
+    (tmp_path / "README.md").write_text("# Demo\n")
+    papers = tmp_path / "papers"
+    papers.mkdir()
+    (papers / "paper1.pdf").write_bytes(b"%PDF-1.4\nobjective: test paper\n")
+    code = tmp_path / "code"
+    code.mkdir()
+    (code / "model.py").write_text("import torch\n")
+    data = tmp_path / "data"
+    data.mkdir()
+    (data / "run.csv").write_text("x,y\n1,2\n")
+    git_dir = tmp_path / ".git"
+    git_dir.mkdir()
+    (git_dir / "config").write_text("should be skipped\n")
+    return tmp_path
 
 
 def test_classify_and_skip_helpers():
@@ -251,7 +246,8 @@ def test_run_project_workflow_uses_catalog_when_s3_configured(
     result = run_project_workflow(
         "proj-1",
         project_dir,
-        auto_approve=True, simulate=True,
+        auto_approve=True,
+        simulate=True,
         max_iterations=1,
         s3_client=client,
         s3_bucket="bucket",

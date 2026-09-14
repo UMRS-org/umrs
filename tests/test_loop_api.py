@@ -419,9 +419,7 @@ class TestOwnerIdentity:
         decide the loop's tool grants — strict mode fails the start closed."""
         monkeypatch.setenv("UMRS_AUTH_MODE", "strict")
         client = _make_app()
-        resp = client.post(
-            "/umrs/loops", json={"project_id": "proj-o", "research_goal": "anon"}
-        )
+        resp = client.post("/umrs/loops", json={"project_id": "proj-o", "research_goal": "anon"})
         assert resp.status_code == 401
         assert "gateway-verified identity" in resp.json()["detail"]
 

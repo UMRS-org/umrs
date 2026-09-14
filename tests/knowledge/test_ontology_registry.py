@@ -13,9 +13,7 @@ lifecycle rule is a predicate over rows, like asset_grants):
 
 from __future__ import annotations
 
-
 import pytest
-
 from umrs.knowledge.ontology import DEFAULT_ONTOLOGY, Ontology, ontology_for_graph
 from umrs.knowledge.ontology_registry import (
     OntologyCoordinateConflict,
@@ -38,11 +36,21 @@ class _FakeCursor:
     def __init__(self, conn):
         self._conn = conn
         self.description = [
-            (c,) for c in (
-                "record_id", "ontology_id", "version", "entity_types",
-                "relation_types", "transitive_relations", "description",
-                "owner_id", "project_id", "status", "retired_at",
-                "created_at", "updated_at",
+            (c,)
+            for c in (
+                "record_id",
+                "ontology_id",
+                "version",
+                "entity_types",
+                "relation_types",
+                "transitive_relations",
+                "description",
+                "owner_id",
+                "project_id",
+                "status",
+                "retired_at",
+                "created_at",
+                "updated_at",
             )
         ]
 
@@ -78,15 +86,22 @@ class _FakeConn:
     def _insert(self, params):
         # Real INSERT carries ('active', NULL) inline → params hold 11 slots.
         (
-            record_id, ontology_id, version, entity_types, relation_types,
-            transitive_relations, description, owner_id, project_id,
-            created_at, updated_at,
+            record_id,
+            ontology_id,
+            version,
+            entity_types,
+            relation_types,
+            transitive_relations,
+            description,
+            owner_id,
+            project_id,
+            created_at,
+            updated_at,
         ) = params
         import json as _json
 
         live = any(
-            r["ontology_id"] == ontology_id and r["version"] == version
-            and r["retired_at"] is None
+            r["ontology_id"] == ontology_id and r["version"] == version and r["retired_at"] is None
             for r in self.rows.values()
         )
         assert not live, "partial-live-index premise violated in fixture"
@@ -183,8 +198,10 @@ class TestResolutionOrder:
         store = OntologyRegistryStore(_conn())
         registered = store.register(_onto("lab-onto", "1"), owner_id="a")
         inline_other = Ontology(
-            ontology_id="lab-onto", version="1",
-            entity_types=frozenset({"ZZZ-only"}), relation_types=frozenset({"cites"}),
+            ontology_id="lab-onto",
+            version="1",
+            entity_types=frozenset({"ZZZ-only"}),
+            relation_types=frozenset({"cites"}),
         )
         graph = {
             "graph_id": "g-x",

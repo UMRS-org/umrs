@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-from openai import OpenAI
 import httpx
+from openai import OpenAI
 
 
 def get_max_tokens_from_vllm(url: str, model_name: str, timeout: float = 2.0) -> int:

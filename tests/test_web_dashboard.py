@@ -5,7 +5,6 @@ from __future__ import annotations
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-
 from umrs.api.web_dashboard import _CONNECTOR_TYPES, router
 from umrs.server.workflow_execution_registry import (
     get_execution_registry,
@@ -83,7 +82,6 @@ def test_overview_workflow_counts_and_terminal_mapping(client):
 
 
 def test_overview_workflows_null_when_registry_missing(client, monkeypatch):
-    import umrs.api.web_dashboard as wd
 
     registry_cls = get_execution_registry().__class__
     _create_execution("running")

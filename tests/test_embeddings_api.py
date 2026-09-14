@@ -2,18 +2,12 @@
 
 from __future__ import annotations
 
-import pytest
-
 from umrs.embeddings_api import (
-    DuplicateEmbeddingError,
     Embedding,
     EmbeddingMatch,
-    EmbeddingNotFoundError,
     EmbeddingStatus,
-    EmbedderProtocol,
     InMemoryEmbeddingStore,
 )
-
 
 # ── Enum Tests ────────────────────────────────────────────────────────────
 

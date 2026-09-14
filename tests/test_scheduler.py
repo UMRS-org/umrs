@@ -1,15 +1,11 @@
 """Tests for B10 — Scheduled Recurring Jobs."""
 
-import json
-import time
 from datetime import datetime, timedelta, timezone
 
 import pytest
-
 from umrs.shared.scheduler import (
     JobScheduler,
     Schedule,
-    ScheduleEvent,
     ScheduleStatus,
     ScheduleStore,
     ScheduleType,

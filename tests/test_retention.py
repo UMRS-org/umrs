@@ -25,7 +25,11 @@ def pool(request):
     conn = pool.getconn()
     try:
         with conn, conn.cursor() as cur:
-            for mig in ("0085_secret_leases.sql", "0086_user_sources_sealed.sql", "0087_source_grants.sql"):
+            for mig in (
+                "0085_secret_leases.sql",
+                "0086_user_sources_sealed.sql",
+                "0087_source_grants.sql",
+            ):
                 cur.execute((_MIGRATIONS / mig).read_text())
             cur.execute("TRUNCATE user_source_audit, source_grants, user_sources_sealed")
     finally:
@@ -69,9 +73,7 @@ class TestRetention:
         try:
             with conn, conn.cursor() as cur:
                 # Move one row 120 days back; leave one fresh.
-                cur.execute(
-                    "DELETE FROM user_source_audit;"
-                )
+                cur.execute("DELETE FROM user_source_audit;")
                 cur.execute(
                     "INSERT INTO user_source_audit (action, owner, source_id, detail, created_at) "
                     "VALUES ('legacy', %s, %s, '{}'::jsonb, now() - make_interval(days => 120)), "

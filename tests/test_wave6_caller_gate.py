@@ -17,15 +17,15 @@ from __future__ import annotations
 import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
-
-from r4_contracts.handshake_hmac import sign_claims
-from umrs.api._verified_headers import CallerIdentity, resolve_caller
 from umrs.api import evidence as evidence_api
 from umrs.api import research_sessions as sessions_api
 from umrs.api import scientific_memory as sci_api
+from umrs.api._verified_headers import CallerIdentity, resolve_caller
 from umrs.evidence import build_default_store as build_evidence_store
 from umrs.research_sessions.store import SessionStore
 from umrs.scientific_memory import InMemoryScientificMemoryStore
+
+from r4_contracts.handshake_hmac import sign_claims
 
 SECRET = "wave6-secret"
 

@@ -6,24 +6,16 @@ least one manual placeholder (i.e. no partially valid steps).
 
 from __future__ import annotations
 
-import json
-import textwrap
-from pathlib import Path
-
 import pytest
-
 from umrs.knowledge.emit_workflow import (
     ManualPlaceholder,
     StepDraft,
-    StepMapping,
     WorkflowDraft,
     _experiment_to_step,
     _hypothesis_to_placeholder,
-    _make_step_id,
     _objective_to_step,
     emit_workflow,
 )
-
 
 # ── Fixtures ──────────────────────────────────────────────────────────────
 

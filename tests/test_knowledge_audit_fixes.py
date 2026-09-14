@@ -19,7 +19,6 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
-
 from umrs.jobs.knowledge_adapters import (
     KnowledgeEmbedBackend,
     KnowledgeEmbedResult,
@@ -37,7 +36,6 @@ from umrs.jobs.models import (
     generate_attempt_id,
     generate_job_id,
 )
-
 
 # ── small fakes ──────────────────────────────────────────────────────────────
 
@@ -136,8 +134,13 @@ class _FakeEmbedder:
 
 class TestRefCounts:
     def test_parses_counts(self):
-        assert _knowledge_ref_counts("knowledge_ingest|project=p|artifacts=3|failed=1", "artifacts") == 3
-        assert _knowledge_ref_counts("knowledge_ingest|project=p|artifacts=3|failed=1", "failed") == 1
+        assert (
+            _knowledge_ref_counts("knowledge_ingest|project=p|artifacts=3|failed=1", "artifacts")
+            == 3
+        )
+        assert (
+            _knowledge_ref_counts("knowledge_ingest|project=p|artifacts=3|failed=1", "failed") == 1
+        )
         assert _knowledge_ref_counts("knowledge_ingest|mode=degraded|project=p", "failed") == 0
 
     def test_non_numeric_is_zero(self):
@@ -240,7 +243,10 @@ class TestEmbedDegradedWhenNoEmbedder:
 
         ka._reset_node_embedder_for_tests()
         assert ka._get_node_embedder() is None
-        job = _job(JobType.KNOWLEDGE_EMBED, {"project_id": "p", "sources": [{"artifact_id": "a", "content_hash": "h"}]})
+        job = _job(
+            JobType.KNOWLEDGE_EMBED,
+            {"project_id": "p", "sources": [{"artifact_id": "a", "content_hash": "h"}]},
+        )
         attempt = _attempt("")
         ref = await KnowledgeEmbedBackend().submit_job(job, attempt)
         assert "mode=degraded" in ref
@@ -252,9 +258,7 @@ class TestEmbedOneArtifact:
         from umrs.jobs import knowledge_adapters as ka
 
         text = "The catalogue is the physical-existence authority. " * 40
-        monkeypatch.setattr(
-            ka, "_fetch_artifact_bytes", lambda *_a, **_k: text.encode("utf-8")
-        )
+        monkeypatch.setattr(ka, "_fetch_artifact_bytes", lambda *_a, **_k: text.encode("utf-8"))
         model_dir = str(tmp_path / "fake-model")
         monkeypatch.setenv("UMRS_KNOWLEDGE_EMBED_MODEL", model_dir)
         store = _CapturingStore()
@@ -319,12 +323,11 @@ class TestEmbedChainEnqueue:
                 captured["submission"] = submission
                 return "job-embed-1"
 
-        with patch.object(ka, "_enqueue_embed_job", wraps=ka._enqueue_embed_job), patch(
-            "umrs.jobs.service.get_job_service", return_value=_Svc()
+        with (
+            patch.object(ka, "_enqueue_embed_job", wraps=ka._enqueue_embed_job),
+            patch("umrs.jobs.service.get_job_service", return_value=_Svc()),
         ):
-            out = ka._enqueue_embed_job(
-                "proj-a", "alice", parent, [{"artifact_id": "a1"}]
-            )
+            out = ka._enqueue_embed_job("proj-a", "alice", parent, [{"artifact_id": "a1"}])
         assert out == "job-embed-1"
         sub = captured["submission"]
         assert sub.job_type is JobType.KNOWLEDGE_EMBED
@@ -368,7 +371,10 @@ class TestProjectScopedDedup:
         assert inserted is True
 
     def test_migration_0076_swaps_unique_scope(self):
-        mig = Path(__file__).parent.parent / "src/umrs/migrations/0076_knowledge_artifacts_project_dedup.sql"
+        mig = (
+            Path(__file__).parent.parent
+            / "src/umrs/migrations/0076_knowledge_artifacts_project_dedup.sql"
+        )
         text = mig.read_text()
         assert "DROP CONSTRAINT IF EXISTS knowledge_artifacts_content_hash_key" in text
         assert "(project_id, content_hash)" in text
@@ -420,9 +426,10 @@ class TestIngestRouteProjectGuard:
         from fastapi.testclient import TestClient
 
         fake_runtime = _FakeRuntime()
-        with patch(
-            "umrs.server.durable_job_runtime.get_runtime", return_value=fake_runtime
-        ), patch("umrs.api.governance.guard_ingest", return_value=None):
+        with (
+            patch("umrs.server.durable_job_runtime.get_runtime", return_value=fake_runtime),
+            patch("umrs.api.governance.guard_ingest", return_value=None),
+        ):
             client = TestClient(app)
             resp = client.post(
                 "/umrs/k2/ingest",
@@ -443,9 +450,10 @@ class TestIngestRouteProjectGuard:
         from fastapi.testclient import TestClient
 
         fake_runtime = _FakeRuntime()
-        with patch(
-            "umrs.server.durable_job_runtime.get_runtime", return_value=fake_runtime
-        ), patch("umrs.api.governance.guard_ingest", return_value=None):
+        with (
+            patch("umrs.server.durable_job_runtime.get_runtime", return_value=fake_runtime),
+            patch("umrs.api.governance.guard_ingest", return_value=None),
+        ):
             client = TestClient(app)
             resp = client.post(
                 "/umrs/k2/ingest",
@@ -501,18 +509,14 @@ class TestSearchScopeBinding:
         monkeypatch.setenv("UMRS_AUTH_MODE", "strict")
         from fastapi.testclient import TestClient
 
-        resp = TestClient(_build_search_app()).get(
-            "/umrs/knowledge/search", params={"query": "q"}
-        )
+        resp = TestClient(_build_search_app()).get("/umrs/knowledge/search", params={"query": "q"})
         assert resp.status_code == 401
 
     def test_mvp_anonymous_without_project_fails_closed(self, monkeypatch):
         monkeypatch.setenv("UMRS_AUTH_MODE", "mvp")
         from fastapi.testclient import TestClient
 
-        resp = TestClient(_build_search_app()).get(
-            "/umrs/knowledge/search", params={"query": "q"}
-        )
+        resp = TestClient(_build_search_app()).get("/umrs/knowledge/search", params={"query": "q"})
         assert resp.status_code == 403
         assert resp.json()["detail"]["error"] == "scope_required"
 

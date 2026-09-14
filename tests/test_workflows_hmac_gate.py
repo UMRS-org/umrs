@@ -14,13 +14,13 @@ from __future__ import annotations
 
 import pytest
 from fastapi import HTTPException
-
-from r4_contracts.handshake_hmac import sign_claims
 from umrs.api import workflows
 from umrs.api.workflows import (
     _require_verified_workflow_identity,
     _verified_workflow_params,
 )
+
+from r4_contracts.handshake_hmac import sign_claims
 
 
 def _secret_env(monkeypatch: pytest.MonkeyPatch) -> str:
@@ -137,8 +137,7 @@ class TestTrustedIdentityBridgeConsistency:
         tuple must not flow to the durable bridge as verified truth.
         """
         secret = _secret_env(monkeypatch)
-        from umrs.api._verified_headers import handshake_secret
-        from umrs.api._verified_headers import verified_headers_trusted
+        from umrs.api._verified_headers import handshake_secret, verified_headers_trusted
 
         forged = sign_claims("wrong-secret", "victim", "victim-project", False)
         assert handshake_secret() == secret

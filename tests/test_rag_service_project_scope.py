@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import pytest
 from fastapi import HTTPException
-
 from umrs.api import rag_service
 
 

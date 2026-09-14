@@ -2,7 +2,7 @@
 
 import requests
 
-api_key = open("NGC_API_Key.txt", "r").read().strip()
+api_key = open("NGC_API_Key.txt").read().strip()
 
 headers = {"Authorization": f"Bearer {api_key}"}
 model_id = "resnet_50_pyt_ckpt"

@@ -18,7 +18,6 @@ import textwrap
 import types
 
 import pytest
-
 from umrs.pipeline_sdk.step import Step, StepContext, StepResult
 from umrs.server.step_executor import (
     InProcessExecutor,
@@ -26,7 +25,6 @@ from umrs.server.step_executor import (
     SubprocessExecutor,
     build_step_executor,
 )
-
 
 # ----------------------------------------------------------------------
 # Sample step classes used by the in-process tests

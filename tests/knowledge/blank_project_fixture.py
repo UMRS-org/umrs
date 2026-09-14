@@ -77,8 +77,6 @@ def materialize_blank_project(target: Path, *, paper_count: int = 15) -> Path:
     for index in range(1, paper_count + 1):
         paper_path = papers_dir / f"gcmc-mof-paper-{index:02d}.pdf"
         if not paper_path.is_file():
-            paper_path.write_bytes(
-                _minimal_pdf_bytes(f"GCMC MOF yield study paper {index:02d}")
-            )
+            paper_path.write_bytes(_minimal_pdf_bytes(f"GCMC MOF yield study paper {index:02d}"))
 
     return target

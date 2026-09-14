@@ -96,7 +96,8 @@ class TestVenueClaimScoping:
     def test_cluster_prefix_normalizes_to_site_name_at_create(self, pool):
         store = _make_store(pool, "bdrt")
         job = store.create_job(
-            project_id="proj-x", user_id="alice",
+            project_id="proj-x",
+            user_id="alice",
             job_type=JobType.RESEARCH_LOOP,
             spec={"venue": "cluster:rccs-front", "loop_id": "l"},
             idempotency_key=None,

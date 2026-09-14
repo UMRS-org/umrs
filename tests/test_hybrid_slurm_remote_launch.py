@@ -6,7 +6,6 @@ import asyncio
 from unittest.mock import AsyncMock, patch
 
 import pytest
-
 from umrs.model_registry.models import ExecutionAuthority
 from umrs.orchestrator.hybrid.composer import HybridOrchestrator
 from umrs.orchestrator.hybrid.targets import AllocationInfo, AllocationStatus

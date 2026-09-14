@@ -15,7 +15,9 @@ from r4_contracts.errors import ERROR_CODE_HEADER, PlatformError
 
 class TestProblemBody:
     def test_rfc7807_field_shape(self):
-        error = PlatformError(code="session.store_unavailable", message="store down", http_status=503)
+        error = PlatformError(
+            code="session.store_unavailable", message="store down", http_status=503
+        )
         body = problem_body(error)
         assert body["type"] == "https://platform.dev/errors/session"
         assert body["title"] == "Session error"

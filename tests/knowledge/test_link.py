@@ -11,7 +11,6 @@ from umrs.knowledge.link import (
     link_knowledge,
 )
 
-
 # ── Model Tests ────────────────────────────────────────────────────────────
 
 
@@ -108,12 +107,8 @@ def test_knowledge_graph_add_edge():
 def test_knowledge_graph_no_duplicate_edges():
     """Test that duplicate edges are not added."""
     graph = KnowledgeGraph()
-    edge1 = KnowledgeEdge(
-        source_id="a", target_id="b", relation_type=RelationType.CITES
-    )
-    edge2 = KnowledgeEdge(
-        source_id="a", target_id="b", relation_type=RelationType.CITES
-    )
+    edge1 = KnowledgeEdge(source_id="a", target_id="b", relation_type=RelationType.CITES)
+    edge2 = KnowledgeEdge(source_id="a", target_id="b", relation_type=RelationType.CITES)
     graph.add_edge(edge1)
     graph.add_edge(edge2)
 
@@ -123,15 +118,15 @@ def test_knowledge_graph_no_duplicate_edges():
 def test_knowledge_graph_get_neighbors():
     """Test getting neighbors of a node."""
     graph = KnowledgeGraph()
-    graph.add_edge(KnowledgeEdge(
-        source_id="a", target_id="b", relation_type=RelationType.RELATED_TO
-    ))
-    graph.add_edge(KnowledgeEdge(
-        source_id="a", target_id="c", relation_type=RelationType.RELATED_TO
-    ))
-    graph.add_edge(KnowledgeEdge(
-        source_id="d", target_id="a", relation_type=RelationType.RELATED_TO
-    ))
+    graph.add_edge(
+        KnowledgeEdge(source_id="a", target_id="b", relation_type=RelationType.RELATED_TO)
+    )
+    graph.add_edge(
+        KnowledgeEdge(source_id="a", target_id="c", relation_type=RelationType.RELATED_TO)
+    )
+    graph.add_edge(
+        KnowledgeEdge(source_id="d", target_id="a", relation_type=RelationType.RELATED_TO)
+    )
 
     neighbors = graph.get_neighbors("a")
     assert set(neighbors) == {"b", "c", "d"}
@@ -141,15 +136,15 @@ def test_knowledge_graph_find_path():
     """Test finding a path between two nodes."""
     graph = KnowledgeGraph()
     # Create a chain: a → b → c → d
-    graph.add_edge(KnowledgeEdge(
-        source_id="a", target_id="b", relation_type=RelationType.RELATED_TO
-    ))
-    graph.add_edge(KnowledgeEdge(
-        source_id="b", target_id="c", relation_type=RelationType.RELATED_TO
-    ))
-    graph.add_edge(KnowledgeEdge(
-        source_id="c", target_id="d", relation_type=RelationType.RELATED_TO
-    ))
+    graph.add_edge(
+        KnowledgeEdge(source_id="a", target_id="b", relation_type=RelationType.RELATED_TO)
+    )
+    graph.add_edge(
+        KnowledgeEdge(source_id="b", target_id="c", relation_type=RelationType.RELATED_TO)
+    )
+    graph.add_edge(
+        KnowledgeEdge(source_id="c", target_id="d", relation_type=RelationType.RELATED_TO)
+    )
 
     path = graph.find_path("a", "d")
     assert path is not None
@@ -160,9 +155,9 @@ def test_knowledge_graph_find_path():
 def test_knowledge_graph_find_path_no_path():
     """Test finding a path when no path exists."""
     graph = KnowledgeGraph()
-    graph.add_edge(KnowledgeEdge(
-        source_id="a", target_id="b", relation_type=RelationType.RELATED_TO
-    ))
+    graph.add_edge(
+        KnowledgeEdge(source_id="a", target_id="b", relation_type=RelationType.RELATED_TO)
+    )
     # No connection to c
     path = graph.find_path("a", "c")
     assert path is None
@@ -172,9 +167,7 @@ def test_knowledge_graph_to_dict():
     """Test converting graph to dictionary."""
     graph = KnowledgeGraph()
     graph.add_node(KnowledgeNode(node_id="a", node_type="paper"))
-    graph.add_edge(KnowledgeEdge(
-        source_id="a", target_id="b", relation_type=RelationType.CITES
-    ))
+    graph.add_edge(KnowledgeEdge(source_id="a", target_id="b", relation_type=RelationType.CITES))
 
     data = graph.to_dict()
     assert "a" in data["nodes"]
@@ -218,7 +211,11 @@ def test_linker_link_by_filename():
     linker = KnowledgeLinker()
     artifacts = [
         {"artifact_id": "code-001", "artifact_type": "code", "filename": "transformer.py"},
-        {"artifact_id": "notebook-001", "artifact_type": "notebook", "filename": "transformer.ipynb"},
+        {
+            "artifact_id": "notebook-001",
+            "artifact_type": "notebook",
+            "filename": "transformer.ipynb",
+        },
     ]
     graph = linker.link(artifacts)
 

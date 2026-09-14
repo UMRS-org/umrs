@@ -516,9 +516,9 @@ class TestUndispatchableExecutorWave:
         assert "model_eval" in members
 
     def test_each_type_hits_the_400_gate(self):
+        import pytest
         from umrs.api.jobs import _UNDISPATCHABLE_JOB_TYPES, _enforce_dispatchable_job_type
         from umrs.jobs.models import JobType
-        import pytest
 
         for jt in (JobType.FINE_TUNE,):
             assert jt in _UNDISPATCHABLE_JOB_TYPES

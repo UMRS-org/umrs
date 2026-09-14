@@ -1,5 +1,6 @@
-import psycopg2
 import select
+
+import psycopg2
 
 # Database connection parameters
 DB_PARAMS = {

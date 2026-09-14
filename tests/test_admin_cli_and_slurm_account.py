@@ -5,20 +5,18 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any
 
 import pytest
-
 from umrs.admin.user_store import (
-    UserRecord,
+    VALID_ROLES,
     UserStore,
     UserStoreError,
-    VALID_ROLES,
     validate_username,
 )
-from umrs.cli.admin.main import build_parser, main as admin_main
+from umrs.cli.admin.main import build_parser
+from umrs.cli.admin.main import main as admin_main
 from umrs.cli.completion import completion_candidates
-
 
 # ---------------------------------------------------------------------------
 # user_store
@@ -481,7 +479,7 @@ class TestSlurmAccountDirective:
 
 class TestUserContextSlurmAccount:
     def test_from_headers_parses_slurm_account(self) -> None:
-        from umrs.shared.isolation import UserContext, UserRole
+        from umrs.shared.isolation import UserContext
 
         ctx = UserContext.from_headers(
             x_user_id="alice",

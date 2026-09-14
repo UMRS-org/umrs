@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-import json
 import asyncio
+import json
 from datetime import datetime
 from datetime import timezone as _tz
 from unittest.mock import patch
 
+from umrs.core.TaskCmdStatus import TaskCmd
 from umrs.jobs.models import Job, JobAttempt, JobStatus, JobType, RestartPolicy
 from umrs.jobs.workflow_run import WorkflowRunBackend
 from umrs.server.job_tracking_handler import DurableJobCommandBackend
@@ -16,7 +17,6 @@ from umrs.server.workflow_execution_registry import (
     reset_execution_registry_for_tests,
 )
 from umrs.server.workflow_registry_handler import handle_workflow_command, register_workflow
-from umrs.core.TaskCmdStatus import TaskCmd
 
 
 class FakeJobStore:

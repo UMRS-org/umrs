@@ -1,7 +1,4 @@
 #!/usr/bin/python3
-import sys
-import boto3
-import uuid
 import hashlib
 import os
 

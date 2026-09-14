@@ -1,9 +1,8 @@
 """Tests for catalog scoring and structured search filters."""
 
+from catalog_store_fake import FakeCatalogMetaStore
 from umrs.data_catalog.schema import CatalogObjectMeta, CatalogState
 from umrs.data_catalog.scoring import score_meta
-
-from catalog_store_fake import FakeCatalogMetaStore
 
 
 def test_score_meta_boosts_tag_and_ready_hits():

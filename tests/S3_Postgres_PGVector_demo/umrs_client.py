@@ -1,12 +1,12 @@
 #!/usr/bin/python3
+import argparse
 import json
 import os
 import sys
+from glob import glob
+
 from umrs.server.sql import *
 from umrs.shared.storage.s3 import *
-import time
-from glob import glob
-import argparse
 
 parser = argparse.ArgumentParser(description="Parse mandatory arguments.")
 
@@ -29,7 +29,7 @@ if not os.path.exists(configure_file):
     sys.exit(f'Configuration file "{configure_file}" not found.')
 
 # Load JSON content from the file
-with open(configure_file, "r", encoding="utf-8") as file:
+with open(configure_file, encoding="utf-8") as file:
     content = json.load(file)
 
 # Print loaded content (optional)
@@ -66,7 +66,7 @@ user_md5 = user["md5"]
 
 if modality["modality_name"] == "text":
     if os.path.isfile(args.data):  # if its a file store each line individually
-        with open(args.data, "r") as file:
+        with open(args.data) as file:
             for line in file.readlines():
                 line = line.strip()
                 s3_key = s3_store_txt(line, modality["s3"], user_md5)

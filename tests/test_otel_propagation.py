@@ -23,7 +23,8 @@ def test_job_env_empty_without_endpoint(monkeypatch):
 def test_job_env_carries_endpoint_and_traceparent(monkeypatch):
     monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector:4318")
     monkeypatch.setitem(
-        sys.modules, "opentelemetry.propagate",
+        sys.modules,
+        "opentelemetry.propagate",
         _stub_ot({"traceparent": "00-ab12-ef34-01"}),
     )
     env = _otel_job_env()
@@ -48,7 +49,8 @@ def test_http_store_no_injection_without_endpoint(monkeypatch):
 def test_http_store_injects_traceparent_when_live(monkeypatch):
     monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector:4318")
     monkeypatch.setitem(
-        sys.modules, "opentelemetry.propagate",
+        sys.modules,
+        "opentelemetry.propagate",
         _stub_ot({"traceparent": "00-feed-beef-99"}),
     )
     headers: dict[str, str] = {}

@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-import boto3
 import argparse
-import os, sys
-import warnings
-import urllib3
-import subprocess
 import json
+import os
+import subprocess
+import sys
+import warnings
+
+import boto3
+import urllib3
 from botocore.exceptions import ClientError, EndpointConnectionError
 
 # ✅ Suppress only SSL warnings from urllib3
@@ -25,7 +27,7 @@ def connect_to_s3(config_file):
     config = {}
 
     # Read and parse the file line by line
-    with open(config_file, "r") as file:
+    with open(config_file) as file:
         for line in file:
             line = line.strip()
             if line and not line.startswith("["):  # Ignore empty lines and section headers

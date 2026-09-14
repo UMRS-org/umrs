@@ -8,6 +8,7 @@ Covers:
 - _fire_coroutine schedules safely inside/outside running loops
 - durable runtime bootstrap no longer dead-disabled on UNKNOWN detection
 """
+
 import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
@@ -25,8 +26,15 @@ class TestMonitorNoneGuard:
         checker = MagicMock()
         checker.check_status = AsyncMock(return_value=None)
         mon = AttemptMonitor(job_store=job_store, status_checker=checker, poll_interval=0.1)
-        att = JobAttempt(attempt_id="a", job_id="j", attempt_no=1, backend="wf",
-                         status=AttemptStatus.RUNNING, backend_ref="", metrics={})
+        att = JobAttempt(
+            attempt_id="a",
+            job_id="j",
+            attempt_no=1,
+            backend="wf",
+            status=AttemptStatus.RUNNING,
+            backend_ref="",
+            metrics={},
+        )
         await mon._check_attempt(att)
         job_store.mark_attempt_succeeded.assert_not_called()
         job_store.mark_attempt_failed.assert_not_called()

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-
 from catalog_store_fake import FakeCatalogMetaStore
 from umrs.api.catalog_store import (
     CatalogStoreUnavailable,

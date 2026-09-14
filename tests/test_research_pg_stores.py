@@ -278,9 +278,7 @@ def test_zero_budget_keeps_zero_token_entry(evidence_store):
     """A zero-content (zero-token) evidence item must never be dropped
     merely because a budget is small: budget limits cost, and its cost
     is zero."""
-    evidence_store.add_evidence(
-        _evidence("evd-zero", "claim-1", 0.9, content="")
-    )
+    evidence_store.add_evidence(_evidence("evd-zero", "claim-1", 0.9, content=""))
     assert evidence_store.list_evidence(project_id="proj-1", limit=0) == []
     full = evidence_store.list_evidence(project_id="proj-1")
     assert any(e.evidence_id == "evd-zero" for e in full)

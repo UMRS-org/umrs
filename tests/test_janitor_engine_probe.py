@@ -8,10 +8,7 @@ READY ↔ DEGRADED transition semantics the cycle must hold so list surfaces
 
 from __future__ import annotations
 
-from typing import Any
-
 import pytest
-
 import umrs.orchestrator.readiness as readiness_mod
 from umrs.orchestrator.endpoint_registry import EndpointRegistry, EndpointStatus
 from umrs.orchestrator.janitor import Janitor, JanitorConfig
@@ -235,7 +232,7 @@ class TestJanitorEngineProbeGrace:
     while the cycle cadence is 60 s)."""
 
     async def test_warmup_ready_endpoints_are_not_probed(self, _patch_poller):
-        poller = _ScriptedPoller({13000: [(False, False, [], "loading") ] * 3})
+        poller = _ScriptedPoller({13000: [(False, False, [], "loading")] * 3})
         harness = _JanitorProbeHarness(poller, engine_probe_grace_sec=3600)
         _patch_poller["poller"] = poller
         _register_ready(harness.registry, "job-warm")
@@ -264,7 +261,7 @@ class TestJanitorEngineProbeGrace:
         from datetime import timedelta
 
         port = 13002
-        script = {port: [(False, False, [], "want fail")]*3}
+        script = {port: [(False, False, [], "want fail")] * 3}
         poller = _ScriptedPoller(script)
         harness = _JanitorProbeHarness(
             poller, engine_probe_grace_sec=3600, engine_probe_degrade_after=2

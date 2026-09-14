@@ -133,9 +133,7 @@ def test_recipe_partition_lifted_when_request_has_none(monkeypatch):
     monkeypatch.setenv("UMRS_PROVISION_ROSTER", roster)
     provision_roster._cache.clear()
 
-    legacy = provision_roster.resolve_model_provision_defaults(
-        "deepseek-v4-flash-0731", None
-    )
+    legacy = provision_roster.resolve_model_provision_defaults("deepseek-v4-flash-0731", None)
     assert legacy is not None
     assert legacy.get("partition") == "edge-double"
 
@@ -146,15 +144,12 @@ def test_recipe_partition_lifted_when_request_has_none(monkeypatch):
     )
     assert spec is not None
     assert spec.site.partition == "edge-double", (
-        "recipe partition must survive into the plan when the request "
-        "carries no explicit partition"
+        "recipe partition must survive into the plan when the request carries no explicit partition"
     )
 
 
 def test_resolver_serving_spec_returns_typed_plan(monkeypatch):
-    monkeypatch.setenv(
-        "UMRS_PROVISION_ROSTER", _roster("rccs-front", "pool-rccs-cloud.yaml")
-    )
+    monkeypatch.setenv("UMRS_PROVISION_ROSTER", _roster("rccs-front", "pool-rccs-cloud.yaml"))
     provision_roster._cache.clear()
     spec = provision_roster.resolve_model_serving_spec(
         "cyberagent/calm3-22b-chat",
@@ -171,9 +166,7 @@ def test_resolver_serving_spec_returns_typed_plan(monkeypatch):
 
 def test_legacy_public_shape_is_unchanged(monkeypatch):
     # Existing service callers expect this return shape — no new keys.
-    monkeypatch.setenv(
-        "UMRS_PROVISION_ROSTER", _roster("rccs-front", "pool-rccs-cloud.yaml")
-    )
+    monkeypatch.setenv("UMRS_PROVISION_ROSTER", _roster("rccs-front", "pool-rccs-cloud.yaml"))
     provision_roster._cache.clear()
     defaults = provision_roster.resolve_model_provision_defaults("cyberagent/calm3-22b-chat", None)
     assert defaults is not None

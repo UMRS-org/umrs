@@ -1,7 +1,6 @@
 from types import SimpleNamespace
 
 import pytest
-
 from umrs.server.durable_job_runtime import DurableJobRuntime, DurableJobRuntimeError
 
 

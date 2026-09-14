@@ -2,12 +2,9 @@
 
 import time
 
-import pytest
-
 from umrs.shared.resource_tracker import (
     QuotaAction,
     QuotaPolicy,
-    QuotaViolation,
     ResourceSnapshot,
     ResourceTracker,
     ResourceType,

@@ -4,7 +4,6 @@ from unittest.mock import MagicMock
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-
 from umrs.api.jobs import get_job_store
 from umrs.api.models import get_model_store, router
 from umrs.jobs.models import JobType

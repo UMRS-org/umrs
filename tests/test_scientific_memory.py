@@ -3,16 +3,13 @@
 from __future__ import annotations
 
 import pytest
-
 from umrs.scientific_memory import (
     DuplicateMemoryEntryError,
     InMemoryScientificMemoryStore,
     MemoryEntry,
-    MemoryEntryNotFoundError,
     MemoryEntryStatus,
     MemoryEntryType,
 )
-
 
 # ── Enum Tests ────────────────────────────────────────────────────────────
 
@@ -186,10 +183,38 @@ def test_store_get_nonexistent():
 def test_store_list_entries():
     """Test listing entries with filters."""
     store = InMemoryScientificMemoryStore()
-    store.add(MemoryEntry(entry_id="code-001", project_id="proj-001", entry_type=MemoryEntryType.GENERATED_CODE, content="code1"))
-    store.add(MemoryEntry(entry_id="code-002", project_id="proj-001", entry_type=MemoryEntryType.GENERATED_CODE, content="code2"))
-    store.add(MemoryEntry(entry_id="log-001", project_id="proj-001", entry_type=MemoryEntryType.EXPERIMENT_LOG, content="log1"))
-    store.add(MemoryEntry(entry_id="code-003", project_id="proj-002", entry_type=MemoryEntryType.GENERATED_CODE, content="code3"))
+    store.add(
+        MemoryEntry(
+            entry_id="code-001",
+            project_id="proj-001",
+            entry_type=MemoryEntryType.GENERATED_CODE,
+            content="code1",
+        )
+    )
+    store.add(
+        MemoryEntry(
+            entry_id="code-002",
+            project_id="proj-001",
+            entry_type=MemoryEntryType.GENERATED_CODE,
+            content="code2",
+        )
+    )
+    store.add(
+        MemoryEntry(
+            entry_id="log-001",
+            project_id="proj-001",
+            entry_type=MemoryEntryType.EXPERIMENT_LOG,
+            content="log1",
+        )
+    )
+    store.add(
+        MemoryEntry(
+            entry_id="code-003",
+            project_id="proj-002",
+            entry_type=MemoryEntryType.GENERATED_CODE,
+            content="code3",
+        )
+    )
 
     # All entries
     all_entries = store.list_entries()
@@ -204,11 +229,17 @@ def test_store_list_entries():
     assert len(code_entries) == 3
 
     # Filter by project and type
-    proj1_code = store.list_entries(project_id="proj-001", entry_type=MemoryEntryType.GENERATED_CODE)
+    proj1_code = store.list_entries(
+        project_id="proj-001", entry_type=MemoryEntryType.GENERATED_CODE
+    )
     assert len(proj1_code) == 2
 
     # Filter by experiment_id
-    store.add(MemoryEntry(entry_id="exp-001", project_id="proj-001", experiment_id="exp-123", content="exp"))
+    store.add(
+        MemoryEntry(
+            entry_id="exp-001", project_id="proj-001", experiment_id="exp-123", content="exp"
+        )
+    )
     exp_entries = store.list_entries(experiment_id="exp-123")
     assert len(exp_entries) == 1
     assert exp_entries[0].entry_id == "exp-001"
@@ -218,7 +249,9 @@ def test_store_list_entries_limit():
     """Test that limit is respected."""
     store = InMemoryScientificMemoryStore()
     for i in range(10):
-        store.add(MemoryEntry(entry_id=f"mem-{i:03d}", project_id="proj-001", content=f"content-{i}"))
+        store.add(
+            MemoryEntry(entry_id=f"mem-{i:03d}", project_id="proj-001", content=f"content-{i}")
+        )
 
     limited = store.list_entries(limit=5)
     assert len(limited) == 5
@@ -227,9 +260,27 @@ def test_store_list_entries_limit():
 def test_store_search():
     """Test searching entries."""
     store = InMemoryScientificMemoryStore()
-    store.add(MemoryEntry(entry_id="n1", project_id="p1", content="This is about machine learning", tags=["ml", "ai"]))
-    store.add(MemoryEntry(entry_id="n2", project_id="p1", content="This is about quantum computing", tags=["quantum"]))
-    store.add(MemoryEntry(entry_id="n3", project_id="p2", content="Machine learning is powerful", tags=["ml"]))
+    store.add(
+        MemoryEntry(
+            entry_id="n1",
+            project_id="p1",
+            content="This is about machine learning",
+            tags=["ml", "ai"],
+        )
+    )
+    store.add(
+        MemoryEntry(
+            entry_id="n2",
+            project_id="p1",
+            content="This is about quantum computing",
+            tags=["quantum"],
+        )
+    )
+    store.add(
+        MemoryEntry(
+            entry_id="n3", project_id="p2", content="Machine learning is powerful", tags=["ml"]
+        )
+    )
 
     # Search by content
     results = store.search("machine learning")
@@ -266,10 +317,18 @@ def test_store_update_status_nonexistent():
 def test_store_count():
     """Test counting entries."""
     store = InMemoryScientificMemoryStore()
-    store.add(MemoryEntry(entry_id="n1", project_id="p1", entry_type=MemoryEntryType.GENERATED_CODE))
-    store.add(MemoryEntry(entry_id="n2", project_id="p1", entry_type=MemoryEntryType.EXPERIMENT_LOG))
-    store.add(MemoryEntry(entry_id="n3", project_id="p1", entry_type=MemoryEntryType.GENERATED_CODE))
-    store.add(MemoryEntry(entry_id="n4", project_id="p2", entry_type=MemoryEntryType.GENERATED_CODE))
+    store.add(
+        MemoryEntry(entry_id="n1", project_id="p1", entry_type=MemoryEntryType.GENERATED_CODE)
+    )
+    store.add(
+        MemoryEntry(entry_id="n2", project_id="p1", entry_type=MemoryEntryType.EXPERIMENT_LOG)
+    )
+    store.add(
+        MemoryEntry(entry_id="n3", project_id="p1", entry_type=MemoryEntryType.GENERATED_CODE)
+    )
+    store.add(
+        MemoryEntry(entry_id="n4", project_id="p2", entry_type=MemoryEntryType.GENERATED_CODE)
+    )
 
     assert store.count() == 4
     assert store.count(project_id="p1") == 3

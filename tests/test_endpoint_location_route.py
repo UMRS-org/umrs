@@ -1,13 +1,9 @@
 """Tests for admin PUT /umrs/endpoints/{job_id}/location route."""
 
-import os
-from types import SimpleNamespace
-
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from umrs.api import endpoints as endpoints_module
-from umrs.api.endpoints import router, get_registry
+from umrs.api.endpoints import get_registry, router
 
 
 class TestLocationRoute:

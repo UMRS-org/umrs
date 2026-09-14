@@ -2,14 +2,9 @@
 
 from __future__ import annotations
 
-import json
-
-import pytest
-
+from catalog_store_fake import FakeCatalogMetaStore
 from umrs.data_catalog.pg_store import derive_project_id, reconcile_project
 from umrs.data_catalog.schema import CatalogObjectMeta, CatalogState
-
-from catalog_store_fake import FakeCatalogMetaStore
 
 
 def _ready_meta(s3_key: str, project_id: str, summary: str) -> CatalogObjectMeta:

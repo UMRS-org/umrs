@@ -1,7 +1,6 @@
 from types import SimpleNamespace
 
 import pytest
-
 from umrs.orchestrator.base import JobStatus
 from umrs.orchestrator.endpoint_registry import EndpointRegistry
 from umrs.orchestrator.readiness import ReadinessConfig, ReadinessResult, ReadinessState

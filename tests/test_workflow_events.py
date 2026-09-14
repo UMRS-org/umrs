@@ -117,10 +117,12 @@ def test_dispatcher_multiple_handlers():
     def handler2(event: WorkflowEventData) -> None:
         calls.append("handler2")
 
-    dispatcher.dispatch(WorkflowEventData(
-        event_type=WorkflowEvent.GRAPH_UPDATED,
-        project_id="proj-001",
-    ))
+    dispatcher.dispatch(
+        WorkflowEventData(
+            event_type=WorkflowEvent.GRAPH_UPDATED,
+            project_id="proj-001",
+        )
+    )
 
     assert calls == ["handler1", "handler2"]
 
@@ -137,10 +139,12 @@ def test_dispatcher_unregister():
     dispatcher.register(WorkflowEvent.ARTIFACT_UPLOADED, handler)
     dispatcher.unregister(WorkflowEvent.ARTIFACT_UPLOADED, handler)
 
-    dispatcher.dispatch(WorkflowEventData(
-        event_type=WorkflowEvent.ARTIFACT_UPLOADED,
-        project_id="proj-001",
-    ))
+    dispatcher.dispatch(
+        WorkflowEventData(
+            event_type=WorkflowEvent.ARTIFACT_UPLOADED,
+            project_id="proj-001",
+        )
+    )
 
     assert len(received) == 0
 
@@ -149,16 +153,20 @@ def test_dispatcher_event_log():
     """Test that dispatched events are logged."""
     dispatcher = WorkflowEventDispatcher()
 
-    dispatcher.dispatch(WorkflowEventData(
-        event_type=WorkflowEvent.ARTIFACT_UPLOADED,
-        project_id="proj-001",
-        object_id="obj-001",
-    ))
-    dispatcher.dispatch(WorkflowEventData(
-        event_type=WorkflowEvent.GRAPH_UPDATED,
-        project_id="proj-001",
-        object_id="obj-002",
-    ))
+    dispatcher.dispatch(
+        WorkflowEventData(
+            event_type=WorkflowEvent.ARTIFACT_UPLOADED,
+            project_id="proj-001",
+            object_id="obj-001",
+        )
+    )
+    dispatcher.dispatch(
+        WorkflowEventData(
+            event_type=WorkflowEvent.GRAPH_UPDATED,
+            project_id="proj-001",
+            object_id="obj-002",
+        )
+    )
 
     log = dispatcher.get_event_log()
     assert len(log) == 2
@@ -168,18 +176,24 @@ def test_dispatcher_event_log_filter():
     """Test filtering the event log."""
     dispatcher = WorkflowEventDispatcher()
 
-    dispatcher.dispatch(WorkflowEventData(
-        event_type=WorkflowEvent.ARTIFACT_UPLOADED,
-        project_id="proj-001",
-    ))
-    dispatcher.dispatch(WorkflowEventData(
-        event_type=WorkflowEvent.GRAPH_UPDATED,
-        project_id="proj-001",
-    ))
-    dispatcher.dispatch(WorkflowEventData(
-        event_type=WorkflowEvent.ARTIFACT_UPLOADED,
-        project_id="proj-002",
-    ))
+    dispatcher.dispatch(
+        WorkflowEventData(
+            event_type=WorkflowEvent.ARTIFACT_UPLOADED,
+            project_id="proj-001",
+        )
+    )
+    dispatcher.dispatch(
+        WorkflowEventData(
+            event_type=WorkflowEvent.GRAPH_UPDATED,
+            project_id="proj-001",
+        )
+    )
+    dispatcher.dispatch(
+        WorkflowEventData(
+            event_type=WorkflowEvent.ARTIFACT_UPLOADED,
+            project_id="proj-002",
+        )
+    )
 
     # Filter by event type
     log = dispatcher.get_event_log(event_type=WorkflowEvent.ARTIFACT_UPLOADED)
@@ -198,10 +212,12 @@ def test_dispatcher_clear():
     def handler(event: WorkflowEventData) -> None:
         pass
 
-    dispatcher.dispatch(WorkflowEventData(
-        event_type=WorkflowEvent.ARTIFACT_UPLOADED,
-        project_id="proj-001",
-    ))
+    dispatcher.dispatch(
+        WorkflowEventData(
+            event_type=WorkflowEvent.ARTIFACT_UPLOADED,
+            project_id="proj-001",
+        )
+    )
 
     dispatcher.clear()
 
@@ -223,10 +239,12 @@ def test_dispatcher_handler_exception_does_not_crash():
     def bad_handler(event: WorkflowEventData) -> None:
         raise RuntimeError("Handler error")
 
-    dispatcher.dispatch(WorkflowEventData(
-        event_type=WorkflowEvent.ARTIFACT_UPLOADED,
-        project_id="proj-001",
-    ))
+    dispatcher.dispatch(
+        WorkflowEventData(
+            event_type=WorkflowEvent.ARTIFACT_UPLOADED,
+            project_id="proj-001",
+        )
+    )
 
     # The good handler should still have been called
     assert len(received) == 1

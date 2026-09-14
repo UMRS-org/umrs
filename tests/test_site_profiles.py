@@ -12,12 +12,11 @@ from umrs.orchestrator.site_profiles import (
     load_site_profile,
 )
 
-
 EXPECTED_PROFILES = {"rccs-cloud", "lab-podman", "compose-dev", "k8s-cluster"}
 
 
 def test_shipped_site_profiles_are_discoverable():
-    assert EXPECTED_PROFILES <= set(available_site_profiles())
+    assert set(available_site_profiles()) >= EXPECTED_PROFILES
 
 
 def test_rccs_profile_expands_user_paths(monkeypatch):

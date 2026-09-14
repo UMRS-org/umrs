@@ -14,13 +14,11 @@ and a real loopback HTTP server that interrupts the transfer.
 from __future__ import annotations
 
 import asyncio
-import os
 from dataclasses import dataclass, field
 from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
-
 from umrs.jobs.model_download import (
     DownloadSource,
     DownloadTaskContext,
@@ -28,7 +26,6 @@ from umrs.jobs.model_download import (
     ModelDownloadBackend,
 )
 from umrs.jobs.model_download_state import (
-    DownloadProgress,
     recover_download_registry_from_job_store,
 )
 from umrs.jobs.models import (
@@ -37,11 +34,8 @@ from umrs.jobs.models import (
     JobAttempt,
     JobStatus,
     JobType,
-    generate_attempt_id,
-    generate_job_id,
 )
-from umrs.jobs.reconciler import ReconcileResult, Reconciler
-
+from umrs.jobs.reconciler import Reconciler, ReconcileResult
 
 # ---------------------------------------------------------------------------
 # Helpers

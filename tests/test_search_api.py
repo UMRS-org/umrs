@@ -5,12 +5,11 @@ from __future__ import annotations
 from umrs.search_api import (
     SearchDepth,
     SearchResult,
-    SearchResultType,
     SearchResults,
+    SearchResultType,
     SearchScope,
     UnifiedSearch,
 )
-
 
 # ── Enum Tests ────────────────────────────────────────────────────────────
 
@@ -298,7 +297,7 @@ def test_unified_search_scope_filtering():
 def test_unified_search_results_sorted_by_score():
     """Test that search results are sorted by score descending."""
     search = UnifiedSearch(
-        catalog=MockCatalogSearch(),      # score 0.8
+        catalog=MockCatalogSearch(),  # score 0.8
         knowledge_graph=MockKnowledgeGraphSearch(),  # score 0.9
     )
     results = search.search("test", scope=SearchScope.ALL)

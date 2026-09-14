@@ -465,8 +465,11 @@ def test_delete_workflow_admin_may_delete_other_users_workflow(client, tmp_path)
 
 def test_delete_workflow_system_scope_requires_admin(client, tmp_path):
     _register(
-        _workflow_json("shared-wf"), tmp_path,
-        name="shared-wf", user="bob", scope="system",
+        _workflow_json("shared-wf"),
+        tmp_path,
+        name="shared-wf",
+        user="bob",
+        scope="system",
     )
 
     # Non-admin cannot delete system workflows, even authenticated.
@@ -511,8 +514,12 @@ def _save_def(client, headers, name="nightly-seg", workflow="ct-analysis", param
 
 
 def test_run_definition_roundtrip(client, tmp_path):
-    _register(_workflow_json("ct-analysis", with_required_bucket=True), tmp_path,
-              name="ct-analysis", user="alice")
+    _register(
+        _workflow_json("ct-analysis", with_required_bucket=True),
+        tmp_path,
+        name="ct-analysis",
+        user="alice",
+    )
 
     saved = _save_def(client, _auth_headers("alice", "project-a"))
     assert saved.status_code == 200
@@ -588,8 +595,12 @@ def test_run_definition_delete_owner_and_admin(client, tmp_path):
 
 
 def test_run_definition_trigger_replays_exact_params(client, tmp_path):
-    _register(_workflow_json("ct-analysis", with_required_bucket=True), tmp_path,
-              name="ct-analysis", user="alice")
+    _register(
+        _workflow_json("ct-analysis", with_required_bucket=True),
+        tmp_path,
+        name="ct-analysis",
+        user="alice",
+    )
     _save_def(client, _auth_headers("alice", "project-a"), params={"bucket": "b1"})
 
     # Trigger must succeed with the stored params even though the request body

@@ -92,9 +92,9 @@ def tmp_py_file(tmp_path) -> str:
 def tmp_dir_with_files(tmp_path) -> str:
     """Create a temp dir with multiple files."""
     for name, content in [
-        ("file1.py", 'def func1(): pass\n'),
-        ("file2.py", 'class Class2:\n    pass\n'),
-        ("file3.cpp", 'int main() { return 0; }\n'),
+        ("file1.py", "def func1(): pass\n"),
+        ("file2.py", "class Class2:\n    pass\n"),
+        ("file3.cpp", "int main() { return 0; }\n"),
     ]:
         (tmp_path / name).write_text(content)
     return str(tmp_path)
@@ -117,9 +117,7 @@ def _make_fake_s3() -> MagicMock:
     client = MagicMock()
     client.list_buckets.return_value = {"Buckets": []}
     client.put_object.return_value = {"ETag": '"abc123"'}
-    client.head_object.side_effect = _FakeClientError(
-        {"Error": {"Code": "404"}}, "HeadObject"
-    )
+    client.head_object.side_effect = _FakeClientError({"Error": {"Code": "404"}}, "HeadObject")
     client.exceptions = MagicMock(ClientError=_FakeClientError)
     return client
 
@@ -186,9 +184,7 @@ class TestKnowledgeEvent:
         assert result.ir_id == "ir-001"
 
     def test_chaining(self):
-        e1 = KnowledgeEvent(
-            event_type="create", job_id="j", attempt_id="a"
-        ).emit()
+        e1 = KnowledgeEvent(event_type="create", job_id="j", attempt_id="a").emit()
         e2 = e1  # emit returns self
         assert e2.job_id == "j"
 
@@ -211,7 +207,8 @@ class TestKnowledgeIngestBackend:
     def test_init_s3_success(self, fake_s3_client):
         """Backend initializes S3 when available."""
         with patch(
-            "boto3.client", return_value=fake_s3_client,
+            "boto3.client",
+            return_value=fake_s3_client,
         ):
             backend = KnowledgeIngestBackend()
             backend._init_s3({"bucket": "test-bucket"})
@@ -220,7 +217,8 @@ class TestKnowledgeIngestBackend:
     def test_init_s3_fails(self):
         """Backend degrades gracefully when S3 unavailable."""
         with patch(
-            "boto3.client", side_effect=RuntimeError("no network"),
+            "boto3.client",
+            side_effect=RuntimeError("no network"),
         ):
             backend = KnowledgeIngestBackend()
             backend._init_s3({"bucket": "test-bucket"})
@@ -298,7 +296,8 @@ class TestKnowledgeIngestBackend:
         fake_s3 = _make_fake_s3()
 
         with patch(
-            "boto3.client", return_value=fake_s3,
+            "boto3.client",
+            return_value=fake_s3,
         ):
             backend = KnowledgeIngestBackend()
             result = await backend.submit_job(sample_job, sample_attempt)
@@ -326,10 +325,13 @@ class TestKnowledgeIngestBackend:
 
         fake_s3 = _make_fake_s3()
 
-        with patch("boto3.client", return_value=fake_s3), patch(
-            "umrs.jobs.knowledge_adapters._enqueue_understand_job",
-            return_value="job-understand-1",
-        ) as chain:
+        with (
+            patch("boto3.client", return_value=fake_s3),
+            patch(
+                "umrs.jobs.knowledge_adapters._enqueue_understand_job",
+                return_value="job-understand-1",
+            ) as chain,
+        ):
             backend = KnowledgeIngestBackend()
             await backend.submit_job(sample_job, sample_attempt)
 
@@ -341,9 +343,7 @@ class TestKnowledgeIngestBackend:
         assert parent_job.spec["graph_id"] == "g-named-1"
 
     @pytest.mark.asyncio
-    async def test_chain_gets_acquisition_descriptors_without_db(
-        self, sample_job, tmp_py_file
-    ):
+    async def test_chain_gets_acquisition_descriptors_without_db(self, sample_job, tmp_py_file):
         """Regression: chained understand receives desc inline (DB listing race).
 
         Production evidence: the artifact insert is fire-and-forget, so the
@@ -365,13 +365,17 @@ class TestKnowledgeIngestBackend:
 
         fake_s3 = _make_fake_s3()
 
-        with patch("boto3.client", return_value=fake_s3), patch(
-            "umrs.jobs.knowledge_adapters._list_project_artifact_sources",
-            return_value=[],  # simulate the racing-empty DB listing
-        ), patch(
-            "umrs.jobs.knowledge_adapters._enqueue_understand_job",
-            return_value="job-understand-1",
-        ) as chain:
+        with (
+            patch("boto3.client", return_value=fake_s3),
+            patch(
+                "umrs.jobs.knowledge_adapters._list_project_artifact_sources",
+                return_value=[],  # simulate the racing-empty DB listing
+            ),
+            patch(
+                "umrs.jobs.knowledge_adapters._enqueue_understand_job",
+                return_value="job-understand-1",
+            ) as chain,
+        ):
             backend = KnowledgeIngestBackend()
             await backend.submit_job(sample_job, sample_attempt)
 
@@ -400,9 +404,12 @@ class TestKnowledgeIngestBackend:
 
         fake_s3 = _make_fake_s3()
 
-        with patch("boto3.client", return_value=fake_s3), patch(
-            "umrs.jobs.knowledge_adapters._enqueue_understand_job",
-            side_effect=RuntimeError("db down"),
+        with (
+            patch("boto3.client", return_value=fake_s3),
+            patch(
+                "umrs.jobs.knowledge_adapters._enqueue_understand_job",
+                side_effect=RuntimeError("db down"),
+            ),
         ):
             backend = KnowledgeIngestBackend()
             result = await backend.submit_job(sample_job, sample_attempt)
@@ -440,15 +447,20 @@ class TestKnowledgeIngestBackend:
             events.append("enqueue-understand")
             return "job-understand-1"
 
-        with patch("boto3.client", return_value=fake_s3), patch(
-            "umrs.jobs.knowledge_adapters._resolve_knowledge_dsn",
-            return_value="postgresql://unit:test@127.0.0.1/umrs_test",
-        ), patch(
-            "umrs.jobs.knowledge_adapters._run_coroutine_sync",
-            side_effect=_mark_persist,
-        ), patch(
-            "umrs.jobs.knowledge_adapters._enqueue_understand_job",
-            side_effect=_mark_enqueue,
+        with (
+            patch("boto3.client", return_value=fake_s3),
+            patch(
+                "umrs.jobs.knowledge_adapters._resolve_knowledge_dsn",
+                return_value="postgresql://unit:test@127.0.0.1/umrs_test",
+            ),
+            patch(
+                "umrs.jobs.knowledge_adapters._run_coroutine_sync",
+                side_effect=_mark_persist,
+            ),
+            patch(
+                "umrs.jobs.knowledge_adapters._enqueue_understand_job",
+                side_effect=_mark_enqueue,
+            ),
         ):
             backend = KnowledgeIngestBackend()
             await backend.submit_job(sample_job, sample_attempt)
@@ -480,9 +492,12 @@ class TestKnowledgeIngestBackend:
         def _capture_store(project_id: str, descs: list[dict]) -> None:
             captured.append((project_id, descs))
 
-        with patch("boto3.client", return_value=fake_s3), patch(
-            "umrs.jobs.knowledge_adapters._store_artifacts_in_db_sync",
-            side_effect=_capture_store,
+        with (
+            patch("boto3.client", return_value=fake_s3),
+            patch(
+                "umrs.jobs.knowledge_adapters._store_artifacts_in_db_sync",
+                side_effect=_capture_store,
+            ),
         ):
             backend = KnowledgeIngestBackend()
             result = await backend.submit_job(sample_job, sample_attempt)
@@ -494,7 +509,9 @@ class TestKnowledgeIngestBackend:
         desc = descs[0]
         assert desc["content_hash"]
         assert desc["kind"] == "code"  # .py suffix heuristic
-        expected_key = f"projects/{sample_job.project_id}/knowledge/artifacts/{desc['content_hash']}"
+        expected_key = (
+            f"projects/{sample_job.project_id}/knowledge/artifacts/{desc['content_hash']}"
+        )
         assert desc["source_ref"] == expected_key
         assert desc["artifact_id"].startswith("art-")
 
@@ -510,15 +527,14 @@ class TestKnowledgeIngestBackend:
             backend_ref="",
             metrics={},
         )
-        sample_job.spec["sources"] = [
-            {"kind": "local_dir", "uri": tmp_dir_with_files}
-        ]
+        sample_job.spec["sources"] = [{"kind": "local_dir", "uri": tmp_dir_with_files}]
         sample_job.spec["bucket"] = "test-bucket"
 
         fake_s3 = _make_fake_s3()
 
         with patch(
-            "boto3.client", return_value=fake_s3,
+            "boto3.client",
+            return_value=fake_s3,
         ):
             backend = KnowledgeIngestBackend()
             result = await backend.submit_job(sample_job, sample_attempt)
@@ -547,7 +563,8 @@ class TestKnowledgeIngestBackend:
         fake_s3 = _make_fake_s3()
 
         with patch(
-            "boto3.client", return_value=fake_s3,
+            "boto3.client",
+            return_value=fake_s3,
         ):
             backend = KnowledgeIngestBackend()
             await backend.submit_job(sample_job, sample_attempt)
@@ -578,7 +595,8 @@ class TestKnowledgeIngestBackend:
         fake_s3 = _make_fake_s3()
 
         with patch(
-            "boto3.client", return_value=fake_s3,
+            "boto3.client",
+            return_value=fake_s3,
         ):
             backend = KnowledgeIngestBackend()
             await backend.submit_job(sample_job, sample_attempt)
@@ -612,7 +630,7 @@ class TestKnowledgeUnderstandBackend:
     @pytest.mark.asyncio
     async def test_parse_for_understand_cpp(self):
         """C++ source parsed with regex fallback from real content bytes."""
-        real_content = b'int main() { return 0; }\nvoid foo() {}\n'
+        real_content = b"int main() { return 0; }\nvoid foo() {}\n"
 
         result = _parse_for_understand("test-cpp", real_content, "cpp")
         assert result is not None
@@ -657,12 +675,15 @@ class TestKnowledgeUnderstandBackend:
         # Mock the real no-DSN control point: _open_pool yields None when
         # _resolve_knowledge_dsn() is empty. Patching the sync _get_pool had
         # no effect — async consumers resolve through _open_pool directly.
-        with patch(
-            "umrs.jobs.knowledge_adapters._resolve_knowledge_dsn",
-            return_value="",
-        ), patch(
-            "umrs.jobs.knowledge_adapters._build_s3_client",
-            return_value=(None, "umrs-data"),
+        with (
+            patch(
+                "umrs.jobs.knowledge_adapters._resolve_knowledge_dsn",
+                return_value="",
+            ),
+            patch(
+                "umrs.jobs.knowledge_adapters._build_s3_client",
+                return_value=(None, "umrs-data"),
+            ),
         ):
             backend = KnowledgeUnderstandBackend()
             await backend.submit_job(understand_job, sample_attempt)
@@ -693,12 +714,14 @@ class TestKnowledgeUnderstandBackend:
         # Make wait_closed async-friendly
         mock_pool.wait_closed = MagicMock(return_value=asyncio.sleep(0))
 
-        with patch("umrs.jobs.knowledge_adapters._get_pool", return_value=mock_pool), patch(
-            "umrs.jobs.knowledge_adapters._build_s3_client",
-            return_value=(None, "umrs-data"),
-        ), patch(
-            "umrs.knowledge.store.KnowledgeStore"
-        ) as MockStore:
+        with (
+            patch("umrs.jobs.knowledge_adapters._get_pool", return_value=mock_pool),
+            patch(
+                "umrs.jobs.knowledge_adapters._build_s3_client",
+                return_value=(None, "umrs-data"),
+            ),
+            patch("umrs.knowledge.store.KnowledgeStore") as MockStore,
+        ):
             store_instance = MagicMock()
             MockStore.return_value = store_instance
             store_instance.list_artifacts.return_value = ([], 0)
@@ -725,11 +748,13 @@ class TestCrashResumeIdempotency:
             failed_items=[{"file": "/bad.py", "error": "not found"}],
             degraded=False,
         )
-        data = json.dumps({
-            "artifact_ids": result.artifact_ids,
-            "failed_items": result.failed_items,
-            "degraded": result.degraded,
-        })
+        data = json.dumps(
+            {
+                "artifact_ids": result.artifact_ids,
+                "failed_items": result.failed_items,
+                "degraded": result.degraded,
+            }
+        )
         parsed = json.loads(data)
         assert parsed["artifact_ids"] == ["art-001", "art-002"]
 
@@ -743,14 +768,16 @@ class TestCrashResumeIdempotency:
             failed_items=[],
             degraded=False,
         )
-        data = json.dumps({
-            "ir_ids": result.ir_ids,
-            "nodes_created": result.nodes_created,
-            "edges_created": result.edges_created,
-            "already_ir": result.already_ir,
-            "failed_items": result.failed_items,
-            "degraded": result.degraded,
-        })
+        data = json.dumps(
+            {
+                "ir_ids": result.ir_ids,
+                "nodes_created": result.nodes_created,
+                "edges_created": result.edges_created,
+                "already_ir": result.already_ir,
+                "failed_items": result.failed_items,
+                "degraded": result.degraded,
+            }
+        )
         parsed = json.loads(data)
         assert parsed["already_ir"] == 2
 

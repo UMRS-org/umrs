@@ -1,7 +1,8 @@
 """Tests for UMRS Doctor module."""
-import pytest
+
 from unittest.mock import MagicMock, patch
-from pathlib import Path
+
+import pytest
 
 
 @pytest.fixture
@@ -13,7 +14,8 @@ class TestDoctorModule:
     """Tests for the Doctor diagnostic system."""
 
     def test_check_all_runs_all_checks(self, ctx):
-        from umrs.client.doctor import Doctor, DoctorReport
+        from umrs.client.doctor import Doctor
+
         doctor = Doctor(ctx)
         report = doctor.check_all()
         assert len(report.checks) == 8  # server, auth, storage, models, rag, workflows, jobs, demos
@@ -29,9 +31,11 @@ class TestDoctorModule:
 
     def test_check_server_reachable(self, ctx):
         from umrs.client.doctor import Doctor
+
         doctor = Doctor(ctx)
         with patch.object(doctor, "_run") as mock_run:
             import json
+
             mock_run.return_value.returncode = 0
             mock_run.return_value.stdout = json.dumps({"status": "ok"})
             results = doctor._check_server()
@@ -40,6 +44,7 @@ class TestDoctorModule:
 
     def test_check_server_unreachable(self, ctx):
         from umrs.client.doctor import Doctor
+
         doctor = Doctor(ctx)
         with patch.object(doctor, "_run") as mock_run:
             mock_run.return_value.returncode = 1
@@ -49,6 +54,7 @@ class TestDoctorModule:
 
     def test_check_auth_profile_exists(self, ctx):
         from umrs.client.doctor import Doctor
+
         doctor = Doctor(ctx)
         with patch("os.path.exists", return_value=True):
             results = doctor._check_auth()
@@ -56,6 +62,7 @@ class TestDoctorModule:
 
     def test_check_auth_no_profile(self, ctx):
         from umrs.client.doctor import Doctor
+
         ctx.profile_name = None
         doctor = Doctor(ctx)
         results = doctor._check_auth()
@@ -64,8 +71,10 @@ class TestDoctorModule:
 
     def test_check_storage_with_buckets(self, ctx):
         from umrs.client.doctor import Doctor
+
         doctor = Doctor(ctx)
         import json
+
         data = {"buckets": [{"name": "bucket1"}, {"name": "bucket2"}]}
         with patch.object(doctor, "_run") as mock_run:
             mock_run.return_value.returncode = 0
@@ -76,8 +85,10 @@ class TestDoctorModule:
 
     def test_check_models(self, ctx):
         from umrs.client.doctor import Doctor
+
         doctor = Doctor(ctx)
         import json
+
         models = [
             {"name": "m1", "type": "embedding"},
             {"name": "m2", "type": "text"},
@@ -90,6 +101,7 @@ class TestDoctorModule:
 
     def test_check_rag_no_pipelines(self, ctx):
         from umrs.client.doctor import Doctor
+
         doctor = Doctor(ctx)
         with patch.object(doctor, "_run") as mock_run:
             mock_run.return_value.returncode = 0
@@ -100,6 +112,7 @@ class TestDoctorModule:
 
     def test_check_workflows(self, ctx):
         from umrs.client.doctor import Doctor
+
         doctor = Doctor(ctx)
         with patch.object(doctor, "_run") as mock_run:
             mock_run.return_value.returncode = 0
@@ -108,6 +121,7 @@ class TestDoctorModule:
 
     def test_check_demos(self, ctx):
         from umrs.client.doctor import Doctor
+
         doctor = Doctor(ctx)
         with patch.object(doctor, "_run") as mock_run:
             mock_run.return_value.returncode = 0
@@ -117,20 +131,27 @@ class TestDoctorModule:
                 with patch("pathlib.Path.iterdir", return_value=[]):
                     results = doctor._check_demos()
                     assert len(results) == 1
-                    assert "ready" in results[0].message.lower() or "missing" in results[0].message.lower() or "ok" in results[0].message.lower()
+                    assert (
+                        "ready" in results[0].message.lower()
+                        or "missing" in results[0].message.lower()
+                        or "ok" in results[0].message.lower()
+                    )
 
 
 class TestDoctorReport:
     """Tests for DoctorReport output formatting."""
 
     def test_report_summary(self):
-        from umrs.client.doctor import DoctorReport, CheckResult
+        from umrs.client.doctor import CheckResult, DoctorReport
+
         report = DoctorReport()
-        report.checks.extend([
-            CheckResult(name="A", status="ok", message="OK"),
-            CheckResult(name="B", status="warning", message="Warn"),
-            CheckResult(name="C", status="error", message="Error"),
-        ])
+        report.checks.extend(
+            [
+                CheckResult(name="A", status="ok", message="OK"),
+                CheckResult(name="B", status="warning", message="Warn"),
+                CheckResult(name="C", status="error", message="Error"),
+            ]
+        )
         summary = report.summary()
         assert "OK: 1" in summary
         assert "Warnings: 1" in summary
@@ -139,19 +160,22 @@ class TestDoctorReport:
         assert "✗ C:" in summary
 
     def test_report_ok_property(self):
-        from umrs.client.doctor import DoctorReport, CheckResult
+        from umrs.client.doctor import CheckResult, DoctorReport
+
         report = DoctorReport()
         report.checks.append(CheckResult(name="A", status="ok", message="OK"))
         assert report.ok is True
 
     def test_report_not_ok_on_errors(self):
-        from umrs.client.doctor import DoctorReport, CheckResult
+        from umrs.client.doctor import CheckResult, DoctorReport
+
         report = DoctorReport()
         report.checks.append(CheckResult(name="A", status="error", message="Error"))
         assert report.ok is False
 
     def test_report_ok_on_warnings(self):
-        from umrs.client.doctor import DoctorReport, CheckResult
+        from umrs.client.doctor import CheckResult, DoctorReport
+
         report = DoctorReport()
         report.checks.append(CheckResult(name="A", status="warning", message="Warn"))
         assert report.ok is True
@@ -161,8 +185,10 @@ class TestDoctorRun:
     """Tests for the run_doctor entry point."""
 
     def test_run_doctor_all(self, ctx):
-        from umrs.client.doctor import run_doctor, Doctor
-        import io, sys
+        import io
+
+        from umrs.client.doctor import run_doctor
+
         output = io.StringIO()
         args = MagicMock(doctor_subcommand="all")
         with patch("sys.stdout", output):
@@ -171,8 +197,10 @@ class TestDoctorRun:
         assert "UMRS Doctor Report" in result
 
     def test_run_doctor_rag_only(self, ctx):
+        import io
+
         from umrs.client.doctor import run_doctor
-        import io, sys
+
         output = io.StringIO()
         args = MagicMock(doctor_subcommand="rag")
         with patch("sys.stdout", output):
@@ -182,6 +210,7 @@ class TestDoctorRun:
 
     def test_run_doctor_unknown(self, ctx):
         from umrs.client.doctor import run_doctor
+
         args = MagicMock(doctor_subcommand="invalid")
         result = run_doctor(ctx, args)
         assert result == 1

@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
-
 from umrs.knowledge.memory import (
     MemoryEntry,
     MemoryEntryStatus,
@@ -15,7 +13,6 @@ from umrs.knowledge.memory import (
     ScientificMemoryStore,
     create_scientific_memory,
 )
-
 
 # ── Enum Tests ─────────────────────────────────────────────────────────────
 
@@ -177,21 +174,27 @@ def test_store_add_duplicate_raises():
 def test_store_list_entries():
     """Test listing entries with filters."""
     store = ScientificMemoryStore()
-    store.add(MemoryEntry(
-        entry_id="note-001",
-        entry_type=MemoryEntryType.NOTE,
-        project_id="proj-001",
-    ))
-    store.add(MemoryEntry(
-        entry_id="code-001",
-        entry_type=MemoryEntryType.GENERATED_CODE,
-        project_id="proj-001",
-    ))
-    store.add(MemoryEntry(
-        entry_id="note-002",
-        entry_type=MemoryEntryType.NOTE,
-        project_id="proj-002",
-    ))
+    store.add(
+        MemoryEntry(
+            entry_id="note-001",
+            entry_type=MemoryEntryType.NOTE,
+            project_id="proj-001",
+        )
+    )
+    store.add(
+        MemoryEntry(
+            entry_id="code-001",
+            entry_type=MemoryEntryType.GENERATED_CODE,
+            project_id="proj-001",
+        )
+    )
+    store.add(
+        MemoryEntry(
+            entry_id="note-002",
+            entry_type=MemoryEntryType.NOTE,
+            project_id="proj-002",
+        )
+    )
 
     # All entries
     all_entries = store.list_entries()
@@ -209,18 +212,22 @@ def test_store_list_entries():
 def test_store_search():
     """Test searching entries."""
     store = ScientificMemoryStore()
-    store.add(MemoryEntry(
-        entry_id="note-001",
-        entry_type=MemoryEntryType.NOTE,
-        content="This is about machine learning",
-        tags=["ml", "ai"],
-    ))
-    store.add(MemoryEntry(
-        entry_id="note-002",
-        entry_type=MemoryEntryType.NOTE,
-        content="This is about quantum computing",
-        tags=["quantum"],
-    ))
+    store.add(
+        MemoryEntry(
+            entry_id="note-001",
+            entry_type=MemoryEntryType.NOTE,
+            content="This is about machine learning",
+            tags=["ml", "ai"],
+        )
+    )
+    store.add(
+        MemoryEntry(
+            entry_id="note-002",
+            entry_type=MemoryEntryType.NOTE,
+            content="This is about quantum computing",
+            tags=["quantum"],
+        )
+    )
 
     # Search by content
     results = store.search("machine learning")
@@ -252,7 +259,9 @@ def test_store_count():
     store = ScientificMemoryStore()
     store.add(MemoryEntry(entry_id="n1", entry_type=MemoryEntryType.NOTE, project_id="p1"))
     store.add(MemoryEntry(entry_id="n2", entry_type=MemoryEntryType.NOTE, project_id="p1"))
-    store.add(MemoryEntry(entry_id="c1", entry_type=MemoryEntryType.GENERATED_CODE, project_id="p2"))
+    store.add(
+        MemoryEntry(entry_id="c1", entry_type=MemoryEntryType.GENERATED_CODE, project_id="p2")
+    )
 
     assert store.count() == 3
     assert store.count(entry_type=MemoryEntryType.NOTE) == 2
@@ -263,11 +272,13 @@ def test_store_persistence(tmp_path: Path):
     """Test that entries persist to disk."""
     storage_file = tmp_path / "memory.json"
     store1 = ScientificMemoryStore(storage_path=storage_file)
-    store1.add(MemoryEntry(
-        entry_id="test-001",
-        entry_type=MemoryEntryType.NOTE,
-        content="Test content",
-    ))
+    store1.add(
+        MemoryEntry(
+            entry_id="test-001",
+            entry_type=MemoryEntryType.NOTE,
+            content="Test content",
+        )
+    )
 
     # Create a new store and load from disk
     store2 = ScientificMemoryStore(storage_path=storage_file)

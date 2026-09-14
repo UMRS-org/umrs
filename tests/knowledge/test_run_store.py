@@ -5,9 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from umrs.knowledge.run_store import ResearchRunStore
 
 from r4_contracts.research import ResearchRunStatus
-from umrs.knowledge.run_store import ResearchRunStore
 
 
 def test_create_get_and_status_transitions(tmp_path: Path) -> None:

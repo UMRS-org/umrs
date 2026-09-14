@@ -43,12 +43,8 @@ def _entry(status: str, bucket: str, *, thread_id: str = "t1") -> dict:
 
 class TestParseProcessObjectsReadiness:
     def test_running_for_output_bucket_is_incomplete(self):
-        payload = _status_payload(
-            [_entry("Running", "alice.xp.images")]
-        )
-        result = parse_process_objects_readiness(
-            payload, "alice.xp.images-output"
-        )
+        payload = _status_payload([_entry("Running", "alice.xp.images")])
+        result = parse_process_objects_readiness(payload, "alice.xp.images-output")
         assert result.ready is False
         assert result.status_known is True
         assert result.incomplete_statuses == ("Running",)
@@ -57,27 +53,19 @@ class TestParseProcessObjectsReadiness:
 
     def test_done_for_matching_bucket_is_ready(self):
         payload = _status_payload([_entry("Done", "alice.xp.images")])
-        result = parse_process_objects_readiness(
-            payload, "alice.xp.images-output"
-        )
+        result = parse_process_objects_readiness(payload, "alice.xp.images-output")
         assert result.ready is True
         assert result.status_known is True
         assert result.incomplete_statuses == ()
 
     def test_idle_is_terminal(self):
         payload = _status_payload([_entry("Idle", "alice.xp.images")])
-        result = parse_process_objects_readiness(
-            payload, "alice.xp.images-output"
-        )
+        result = parse_process_objects_readiness(payload, "alice.xp.images-output")
         assert result.ready is True
 
     def test_direct_bucket_name_match(self):
-        payload = _status_payload(
-            [_entry("Processing", "alice.xp.images-output")]
-        )
-        result = parse_process_objects_readiness(
-            payload, "alice.xp.images-output"
-        )
+        payload = _status_payload([_entry("Processing", "alice.xp.images-output")])
+        result = parse_process_objects_readiness(payload, "alice.xp.images-output")
         assert result.ready is False
         assert "Processing" in result.incomplete_statuses
 
@@ -108,12 +96,8 @@ class TestParseProcessObjectsReadiness:
         assert result.status_known is False
 
     def test_unrelated_running_work_does_not_block(self):
-        payload = _status_payload(
-            [_entry("Running", "other.user.bucket", thread_id="other")]
-        )
-        result = parse_process_objects_readiness(
-            payload, "alice.xp.images-output"
-        )
+        payload = _status_payload([_entry("Running", "other.user.bucket", thread_id="other")])
+        result = parse_process_objects_readiness(payload, "alice.xp.images-output")
         assert result.ready is True
         assert result.status_known is True
 
@@ -124,9 +108,7 @@ class TestParseProcessObjectsReadiness:
                 _entry("Running", "alice.xp.images", thread_id="new"),
             ]
         )
-        result = parse_process_objects_readiness(
-            payload, "alice.xp.images-output"
-        )
+        result = parse_process_objects_readiness(payload, "alice.xp.images-output")
         assert result.ready is False
         assert result.incomplete_statuses == ("Running",)
 
@@ -139,9 +121,7 @@ class TestParseProcessObjectsReadiness:
                 }
             },
         }
-        result = parse_process_objects_readiness(
-            payload, "alice.xp.images-output"
-        )
+        result = parse_process_objects_readiness(payload, "alice.xp.images-output")
         assert result.ready is False
 
 
@@ -208,28 +188,18 @@ class TestDownloadResultsCliFlags:
         dd_p.add_argument("bucket_alias")
         dd_p.add_argument("local_path")
         wait_group = dd_p.add_mutually_exclusive_group()
-        wait_group.add_argument(
-            "--wait", dest="wait", action="store_true", default=True
-        )
-        wait_group.add_argument(
-            "--no-wait", dest="wait", action="store_false"
-        )
+        wait_group.add_argument("--wait", dest="wait", action="store_true", default=True)
+        wait_group.add_argument("--no-wait", dest="wait", action="store_false")
         dd_p.add_argument("--timeout", type=int, default=3600)
 
-        args = parser.parse_args(
-            ["data", "download", "alias", "/tmp/out"]
-        )
+        args = parser.parse_args(["data", "download", "alias", "/tmp/out"])
         assert args.wait is True
         assert args.timeout == 3600
 
-        args = parser.parse_args(
-            ["data", "download", "alias", "/tmp/out", "--no-wait"]
-        )
+        args = parser.parse_args(["data", "download", "alias", "/tmp/out", "--no-wait"])
         assert args.wait is False
 
-        args = parser.parse_args(
-            ["data", "download", "alias", "/tmp/out", "--timeout", "30"]
-        )
+        args = parser.parse_args(["data", "download", "alias", "/tmp/out", "--timeout", "30"])
         assert args.timeout == 30
         assert args.wait is True
 

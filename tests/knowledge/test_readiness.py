@@ -12,7 +12,6 @@ from umrs.knowledge.readiness import (
     evaluate_readiness,
 )
 
-
 # ── Enum Tests ─────────────────────────────────────────────────────────────
 
 

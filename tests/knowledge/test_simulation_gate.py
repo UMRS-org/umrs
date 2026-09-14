@@ -5,7 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-
 from umrs.knowledge.execution_port import FakeWorkflowExecutionPort
 from umrs.knowledge.loop import AutonomousResearchLoop, LoopPhase
 from umrs.knowledge.project import ProjectPhase, ResearchProject

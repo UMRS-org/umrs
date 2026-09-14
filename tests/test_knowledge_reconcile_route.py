@@ -10,11 +10,11 @@ from __future__ import annotations
 
 from umrs.api.knowledge import _reconcile_payload
 from umrs.knowledge.plane_reconciler import (
-    Asset,
-    ReconcileReport,
     STATE_COMPLETE,
     STATE_EMBEDDING_PENDING,
     STATE_PARTIAL,
+    Asset,
+    ReconcileReport,
 )
 
 
@@ -26,7 +26,7 @@ def _asset(doc_id: str, state: str = STATE_COMPLETE, **kw) -> Asset:
     asset.vector_rows_by_chunk = kw.pop("vector_rows_by_chunk", {})
     asset.catalogue_keys = kw.pop("catalogue_keys", set()) or set()
     if kw.pop("has_embeddings", False):
-        asset.vector_rows_by_chunk = {cid: 1 for cid in asset.chunk_node_ids}
+        asset.vector_rows_by_chunk = dict.fromkeys(asset.chunk_node_ids, 1)
     if kw.pop("has_catalogue", False):
         asset.catalogue_keys = {"proj/file.txt"}
     for k, v in kw.items():

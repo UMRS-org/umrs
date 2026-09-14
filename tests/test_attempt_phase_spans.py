@@ -140,7 +140,7 @@ class TestMaybeEmitSpanGenericHook:
             attributes={"umrs.loop_id": "loop-7"},
         )
         assert ok is True
-        (name, start_ns, attrs), = calls
+        ((name, start_ns, attrs),) = calls
         assert name == "umrs.loop.iteration"
         assert attrs == {"umrs.loop_id": "loop-7"}
         assert fake_span.end.call_args.kwargs["end_time"] - start_ns == 42 * 1e9
@@ -149,4 +149,7 @@ class TestMaybeEmitSpanGenericHook:
         monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)
         from umrs.jobs.timing import maybe_emit_span
 
-        assert maybe_emit_span("x", started_at="2026-09-11", transitioned_at="2026-09-11T00:01") is False
+        assert (
+            maybe_emit_span("x", started_at="2026-09-11", transitioned_at="2026-09-11T00:01")
+            is False
+        )

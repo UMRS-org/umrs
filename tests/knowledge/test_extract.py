@@ -5,14 +5,12 @@ from __future__ import annotations
 import json
 
 import pytest
-
 from umrs.knowledge.extract import (
     ExtractedKnowledge,
     KnowledgeExtractor,
     extract_knowledge,
     resolve_extraction_content,
 )
-
 
 # ── Test Fixtures ────────────────────────────────────────────────────────────
 

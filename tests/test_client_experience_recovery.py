@@ -215,9 +215,7 @@ def test_experience_list_outputs_experiences(tmp_path, capsys):
                                 "sql": {
                                     "store_embeddings": "yes",
                                     "table_name": "image_input",
-                                    "meta_data": [
-                                        {"name": "sample_id", "type": "TEXT"}
-                                    ],
+                                    "meta_data": [{"name": "sample_id", "type": "TEXT"}],
                                 },
                             }
                         ],

@@ -10,7 +10,6 @@ import sys
 from pathlib import Path
 
 import pytest
-
 from umrs.server.step_router import reset_feedback_store
 from umrs.server.workflow_execution_registry import (
     get_execution_registry,
@@ -18,9 +17,7 @@ from umrs.server.workflow_execution_registry import (
 )
 from umrs.server.workflow_runner import run_workflow_record
 
-DEMO_ROOT = (
-    Path(__file__).resolve().parents[2] / "demos" / "video_ai_workflow" / "workflow"
-)
+DEMO_ROOT = Path(__file__).resolve().parents[2] / "demos" / "video_ai_workflow" / "workflow"
 FIX = DEMO_ROOT / "fixtures"
 
 
@@ -102,11 +99,7 @@ def test_video_ai_yolo_aggregate_via_workflow_runner(tmp_path, monkeypatch):
 
     assert record.status == "succeeded", record.error
     blobs = record.results.get("blobs", {})
-    assert any(
-        k.startswith("wf-runner-output/") and k.endswith("detections.csv") for k in blobs
-    )
-    assert any(
-        k.startswith("wf-runner-output/") and k.endswith("all_metrics.csv") for k in blobs
-    )
+    assert any(k.startswith("wf-runner-output/") and k.endswith("detections.csv") for k in blobs)
+    assert any(k.startswith("wf-runner-output/") and k.endswith("all_metrics.csv") for k in blobs)
     # Source bucket remains distinct from output bucket.
     assert any(k.startswith("wf-runner/") for k in blobs)

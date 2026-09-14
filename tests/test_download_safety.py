@@ -3,17 +3,14 @@
 from __future__ import annotations
 
 import asyncio
-import os
 from unittest.mock import MagicMock, patch
 
 import pytest
-
 from umrs.jobs.download_safety import (
     DownloadVenueError,
     assert_download_safe,
     broadcast_cancel,
     free_bytes_for,
-    min_free_bytes,
     mount_type_for,
     register_cancel_listener,
 )

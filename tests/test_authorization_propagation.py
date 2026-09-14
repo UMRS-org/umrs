@@ -15,11 +15,9 @@ import time
 from unittest.mock import MagicMock, patch
 
 import pytest
-
 from umrs.core.session_curve_provider import (
     CURVE_KEY_LEN,
     SessionCredentialsProvider,
-    SessionCurveEntry,
     SessionGrants,
 )
 
@@ -421,8 +419,7 @@ class TestSlurmTargetAttribution:
 class TestClientSessionBootstrap:
     def test_bootstrap_success(self):
         """Successful bootstrap should return CurveSessionInfo with all fields."""
-        import requests as _requests_mod
-        from umrs.client.session_bootstrap import CurveSessionInfo, bootstrap_curve_session
+        from umrs.client.session_bootstrap import bootstrap_curve_session
 
         mock_server_key_resp = MagicMock()
         mock_server_key_resp.status_code = 200

@@ -14,18 +14,16 @@ import textwrap
 from pathlib import Path
 
 import pytest
-
 from umrs.pipeline_sdk.step import Step
 from umrs.pipeline_sdk.workflow import (
     ScriptLoadError,
     StepSpec,
     WorkflowDefinition,
     _import_step_class,
-    _step_class_cache,
     _step_cache_lock,
+    _step_class_cache,
     load_steps,
 )
-
 
 # =========================================================================
 # Fixtures

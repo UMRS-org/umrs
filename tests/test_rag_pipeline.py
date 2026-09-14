@@ -9,12 +9,9 @@ Tests:
 - RAG pipeline integration
 """
 
-import pytest
-from unittest.mock import MagicMock, patch
-from dataclasses import dataclass, field
-from typing import Any, Optional
-import numpy as np
+from unittest.mock import MagicMock
 
+import pytest
 
 # =============================================================================
 # Test Fixtures
@@ -372,7 +369,7 @@ class TestRAGPipeline:
 
     def test_pipeline_query(self, sample_documents_with_embeddings):
         """Test full pipeline query."""
-        from umrs.rag.search import RAGPipeline, ContextAssembler
+        from umrs.rag.search import ContextAssembler, RAGPipeline
 
         # Create pipeline with injection scanning disabled for test
         assembler = ContextAssembler(enable_injection_scanning=False)
@@ -393,7 +390,7 @@ class TestRAGPipeline:
 
     def test_pipeline_with_reranking(self, sample_documents_with_embeddings):
         """Test pipeline with reranking enabled."""
-        from umrs.rag.search import RAGPipeline, CrossEncoderReranker, ContextAssembler
+        from umrs.rag.search import ContextAssembler, CrossEncoderReranker, RAGPipeline
 
         # Create reranker with mocked model
         reranker = CrossEncoderReranker()
@@ -415,7 +412,7 @@ class TestRAGPipeline:
 
     def test_pipeline_top_k(self, sample_documents_with_embeddings):
         """Test pipeline respects top_k parameter."""
-        from umrs.rag.search import RAGPipeline, ContextAssembler
+        from umrs.rag.search import ContextAssembler, RAGPipeline
 
         assembler = ContextAssembler(enable_injection_scanning=False)
         pipeline = RAGPipeline(context_assembler=assembler)
@@ -443,8 +440,8 @@ class TestRAGPipelineIntegration:
         """Test end-to-end flow without actual model loading."""
         from umrs.rag.search import (
             BM25,
-            HybridSearcher,
             ContextAssembler,
+            HybridSearcher,
         )
 
         # Test BM25 on its own

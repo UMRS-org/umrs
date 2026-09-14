@@ -11,8 +11,7 @@ import asyncio
 from unittest.mock import MagicMock, patch
 
 import pytest
-
-from umrs.jobs.models import Job, JobAttempt, JobStatus, JobType, RestartPolicy, AttemptStatus
+from umrs.jobs.models import AttemptStatus, Job, JobAttempt, JobStatus, JobType, RestartPolicy
 from umrs.jobs.session_gc import SessionGcBackend, SessionGcStatusChecker
 
 

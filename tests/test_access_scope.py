@@ -9,7 +9,6 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
-
 from umrs.knowledge.access_scope import (
     CallerScope,
     graph_readable,
@@ -63,9 +62,7 @@ class TestGraphTiers:
         readable = graph_readable
         assert readable(kind="system", project_id=None, owner_id="", caller=ANON)
         assert readable(kind="system", project_id=None, owner_id="", caller=BOB)
-        assert not graph_writable(
-            kind="system", project_id=None, owner_id="", caller=BOB
-        )
+        assert not graph_writable(kind="system", project_id=None, owner_id="", caller=BOB)
         assert graph_writable(kind="system", project_id=None, owner_id="", caller=ADMIN)
 
     def test_user_graph_owner_only(self):
@@ -75,25 +72,15 @@ class TestGraphTiers:
             assert fn(kind="user", project_id=None, owner_id="alice", caller=ADMIN)
 
     def test_personal_alias(self):
-        assert graph_readable(
-            kind="personal", project_id=None, owner_id="alice", caller=ALICE
-        )
+        assert graph_readable(kind="personal", project_id=None, owner_id="alice", caller=ALICE)
 
     def test_project_kind_member_rule(self):
-        assert graph_readable(
-            kind="project", project_id="proj-a", owner_id="", caller=ALICE
-        )
-        assert not graph_writable(
-            kind="project", project_id="proj-a", owner_id="", caller=BOB
-        )
+        assert graph_readable(kind="project", project_id="proj-a", owner_id="", caller=ALICE)
+        assert not graph_writable(kind="project", project_id="proj-a", owner_id="", caller=BOB)
 
     def test_legacy_research_kind_behaves_as_project(self):
-        assert graph_readable(
-            kind="research", project_id="proj-a", owner_id="", caller=ALICE
-        )
-        assert not graph_readable(
-            kind="research", project_id="proj-a", owner_id="", caller=BOB
-        )
+        assert graph_readable(kind="research", project_id="proj-a", owner_id="", caller=ALICE)
+        assert not graph_readable(kind="research", project_id="proj-a", owner_id="", caller=BOB)
 
     def test_graph_project_user_namespace(self):
         pid = personal_project("alice")
@@ -122,9 +109,7 @@ class TestScopeIdentityResolution:
         from umrs.api import _scope_identity as si
 
         monkeypatch.setenv("UMRS_AUTH_MODE", "strict")
-        req = self._request(
-            {"x-user-id": "alice", "x-verified-project-id": "proj-a"}
-        )
+        req = self._request({"x-user-id": "alice", "x-verified-project-id": "proj-a"})
         with pytest.raises(Exception):
             si.request_caller_scope(req)
 

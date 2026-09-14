@@ -1,7 +1,5 @@
 """Tests for B7 — Pipeline Templates."""
 
-import pytest
-
 from umrs.pipeline_sdk.templates import (
     ParameterType,
     PipelineTemplate,

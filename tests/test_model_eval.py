@@ -6,9 +6,6 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
-from umrs.jobs.batch_infer import BatchTaskContext
-from umrs.jobs.models import AttemptStatus, Job, JobAttempt, JobStatus, JobType, RestartPolicy
 from umrs.jobs.model_eval import (
     ModelEvalBackend,
     ModelEvalStatusChecker,
@@ -16,6 +13,7 @@ from umrs.jobs.model_eval import (
     _score,
     get_eval_registry,
 )
+from umrs.jobs.models import AttemptStatus, Job, JobAttempt, JobStatus, JobType, RestartPolicy
 
 
 def _job(spec: dict, job_id: str = "job-e1") -> Job:

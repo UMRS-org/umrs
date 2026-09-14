@@ -708,9 +708,7 @@ class TestModelEntryFromRow:
     def test_model_ref_from_json_ignores_invalid_payload(self):
         assert model_ref_from_json({}) is None
         assert model_ref_from_json({"path": "/x"}) is None
-        assert model_ref_from_json(
-            {"type": "filesystem_path", "path": "/models/x"}
-        ) is not None
+        assert model_ref_from_json({"type": "filesystem_path", "path": "/models/x"}) is not None
 
     def test_execution_authority_from_row_defaults_on_invalid(self):
         assert execution_authority_from_row("slurm") == ExecutionAuthority.SLURM

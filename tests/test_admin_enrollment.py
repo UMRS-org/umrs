@@ -12,10 +12,8 @@ from __future__ import annotations
 
 import json
 import os
-import tempfile
 
 import pytest
-
 from umrs.shared.auth import (
     ADMIN_ONLY_COMMANDS,
     AuthContext,
@@ -23,7 +21,6 @@ from umrs.shared.auth import (
     sanitize_username,
     validate_config_identity,
 )
-
 
 # ---------------------------------------------------------------------------
 # sanitize_username
@@ -200,6 +197,7 @@ class TestAdminUserCLI:
     def test_admin_user_add_parser(self):
         """Ensure 'admin user add <path>' is parseable."""
         import argparse
+
         from umrs.client.control_commands import (
             configure_admin_token_parser,
             configure_admin_user_parser,
@@ -221,6 +219,7 @@ class TestAdminUserCLI:
 
     def test_admin_user_list_parser(self):
         import argparse
+
         from umrs.client.control_commands import configure_admin_user_parser
 
         parser = argparse.ArgumentParser()
@@ -235,6 +234,7 @@ class TestAdminUserCLI:
 
     def test_admin_user_remove_parser(self):
         import argparse
+
         from umrs.client.control_commands import configure_admin_user_parser
 
         parser = argparse.ArgumentParser()
@@ -359,6 +359,7 @@ class TestSaltedTokenHashing:
     def test_legacy_unsalted_upgraded(self, tmp_path):
         """Simulate a legacy unsalted hash and verify it validates + upgrades."""
         import hashlib
+
         from umrs.shared.auth import AdminTokenManager
 
         mgr = AdminTokenManager(self._make_config(tmp_path))

@@ -7,7 +7,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-
 from umrs.api.jobs import get_caller_identity, get_job_store, router
 from umrs.jobs.attempt_credentials import mint_attempt_credentials
 from umrs.jobs.sts_federation import (
@@ -19,7 +18,9 @@ from umrs.jobs.sts_federation import (
 
 def _record(ttl: int = 900):
     return mint_attempt_credentials(
-        "job-1", "attempt-1", 1,
+        "job-1",
+        "attempt-1",
+        1,
         ttl_sec=ttl,
         extra_prefixes=("shared/dataset-x/",),
     )
@@ -28,7 +29,13 @@ def _record(ttl: int = 900):
 class TestAttemptPolicyDocument:
     def test_policy_scopes_to_recorded_prefixes_only(self):
         policy = attempt_policy_document(_record(), bucket="umrs-files")
-        object_stmts = [s for s in policy["Statement"] if s["Sid"].startswith("AttemptScope") and "Resource" in s and s["Action"] != ["s3:ListBucket"]]
+        object_stmts = [
+            s
+            for s in policy["Statement"]
+            if s["Sid"].startswith("AttemptScope")
+            and "Resource" in s
+            and s["Action"] != ["s3:ListBucket"]
+        ]
         assert len(object_stmts) == 2
         resources = {r for s in object_stmts for r in s["Resource"]}
         assert "arn:aws:s3:::umrs-files/jobs/job-1/attempt_1/*" in resources
@@ -79,8 +86,12 @@ class TestAssumeRoleForAttempt:
             {"AccessKeyId": "x", "SecretAccessKey": "y", "SessionToken": "z"}
         )
         assume_role_for_attempt(
-            _record(ttl=9000), bucket="b", endpoint_url="e",
-            access_key="a", secret_key="s", sts_client=client,
+            _record(ttl=9000),
+            bucket="b",
+            endpoint_url="e",
+            access_key="a",
+            secret_key="s",
+            sts_client=client,
         )
         assert client.assume_role.call_args.kwargs["DurationSeconds"] == 3600
 
@@ -89,16 +100,24 @@ class TestAssumeRoleForAttempt:
         client.assume_role.side_effect = RuntimeError("sts down")
         with pytest.raises(STSFederationError):
             assume_role_for_attempt(
-                _record(), bucket="b", endpoint_url="e",
-                access_key="a", secret_key="s", sts_client=client,
+                _record(),
+                bucket="b",
+                endpoint_url="e",
+                access_key="a",
+                secret_key="s",
+                sts_client=client,
             )
 
     def test_malformed_response_fails_closed(self):
         client = self._fake_client({"AccessKeyId": "x"})  # missing fields
         with pytest.raises(STSFederationError):
             assume_role_for_attempt(
-                _record(), bucket="b", endpoint_url="e",
-                access_key="a", secret_key="s", sts_client=client,
+                _record(),
+                bucket="b",
+                endpoint_url="e",
+                access_key="a",
+                secret_key="s",
+                sts_client=client,
             )
 
 
@@ -150,9 +169,7 @@ class TestSTSRoutes:
                 return_value=fake_creds,
             ),
         ):
-            response = self._app(store).post(
-                "/umrs/jobs/job-1/attempts/attempt-1/credentials/sts"
-            )
+            response = self._app(store).post("/umrs/jobs/job-1/attempts/attempt-1/credentials/sts")
 
         assert response.status_code == 200
         body = response.json()
@@ -170,17 +187,13 @@ class TestSTSRoutes:
             "umrs.jobs.sts_federation.assume_role_for_attempt",
             side_effect=STSFederationError("AssumeRole failed: boom"),
         ):
-            response = self._app(store).post(
-                "/umrs/jobs/job-1/attempts/attempt-1/credentials/sts"
-            )
+            response = self._app(store).post("/umrs/jobs/job-1/attempts/attempt-1/credentials/sts")
         assert response.status_code == 503
         assert "ambient" not in response.text.lower()
 
     def test_sts_route_409_without_mint_record(self):
         store = self._store(with_credentials=False)
-        response = self._app(store).post(
-            "/umrs/jobs/job-1/attempts/attempt-1/credentials/sts"
-        )
+        response = self._app(store).post("/umrs/jobs/job-1/attempts/attempt-1/credentials/sts")
         assert response.status_code == 409, f"body: {response.text}"
 
 

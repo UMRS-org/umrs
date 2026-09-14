@@ -15,12 +15,11 @@ import json
 from unittest import mock
 
 import pytest
-
+from umrs.server import workflow_registry_handler as handler
 from umrs.server.workflow_execution_registry import (
     ExecutionRecord,
     WorkflowExecutionRegistry,
 )
-from umrs.server import workflow_registry_handler as handler
 
 
 @pytest.fixture(autouse=True)

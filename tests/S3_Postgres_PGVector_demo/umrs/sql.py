@@ -1,9 +1,9 @@
 #!/usr/bin/python3
-import os
 import sys
-import psycopg2
-from psycopg2 import sql, pool
 from datetime import datetime
+
+import psycopg2
+from psycopg2 import sql
 
 
 def create_db_and_get_pool(sql_username, xp_name):
@@ -50,10 +50,6 @@ def create_db_and_get_pool(sql_username, xp_name):
         port=DB_PORT,
     )
     return db_pool
-
-
-import psycopg2
-from datetime import datetime
 
 
 def store_embeddings_in_db(db_pool, embedding, table_name, bucket_name, s3_key, text=None):
@@ -126,7 +122,7 @@ def get_vector_size(cursor, table_name):
     Returns:
         int: Vector size (dimension) if found, else None
     """
-    query = f"""
+    query = """
     SELECT atttypmod AS vector_size
     FROM pg_attribute
     WHERE attrelid = %s::regclass AND attname = 'embedding';
@@ -153,7 +149,7 @@ def configure_sql(db_pool, sql_cfg, modality_name):
         vector_size = int(sql_cfg["embeddings"]["vector_size"])
         field = {"name": "embedding", "type": f"VECTOR({vector_size})"}
         table_fields.append(field)
-        field = {"name": "model", "type": f"CHAR(1024)"}
+        field = {"name": "model", "type": "CHAR(1024)"}
         table_fields.append(field)
 
     for field in sql_cfg["meta_data"]:

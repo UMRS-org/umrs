@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-
 from umrs.tui.forms.screens import FormField, FormSchema, FormScreen
 
 
