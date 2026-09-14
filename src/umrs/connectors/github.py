@@ -11,10 +11,10 @@ from __future__ import annotations
 
 import json
 import logging
-import urllib.request
 import urllib.error
-from datetime import datetime, timezone
-from typing import Any, Dict, Iterator, List, Optional
+import urllib.request
+from collections.abc import Iterator
+from typing import Any
 
 from . import (
     Connector,
@@ -66,8 +66,8 @@ class GitHubConnector(Connector):
     def name(self) -> str:
         return "GitHub"
 
-    def validate_config(self, config: ConnectorConfig) -> List[str]:
-        errors: List[str] = []
+    def validate_config(self, config: ConnectorConfig) -> list[str]:
+        errors: list[str] = []
         if not config.settings.get("repo"):
             errors.append("repo is required (format: owner/repo)")
         if not config.credentials.get("token"):
@@ -78,7 +78,7 @@ class GitHubConnector(Connector):
         self,
         path: str,
         token: str,
-        params: Optional[Dict[str, str]] = None,
+        params: dict[str, str] | None = None,
     ) -> Any:
         url = f"{_GITHUB_API}{path}"
         if params:
@@ -101,7 +101,7 @@ class GitHubConnector(Connector):
         repo: str,
         token: str,
         branch: str = "main",
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Fetch the full file tree for a repo."""
         try:
             data = self._request(
@@ -114,7 +114,7 @@ class GitHubConnector(Connector):
             logger.warning("Failed to fetch tree for %s: %s", repo, exc)
             return []
 
-    def _fetch_file_content(self, repo: str, path: str, token: str) -> Optional[str]:
+    def _fetch_file_content(self, repo: str, path: str, token: str) -> str | None:
         """Fetch raw file content."""
         try:
             url = f"{_GITHUB_API}/repos/{repo}/contents/{path}"
@@ -136,7 +136,7 @@ class GitHubConnector(Connector):
     def fetch(
         self,
         config: ConnectorConfig,
-        checkpoint: Optional[SyncCheckpoint] = None,
+        checkpoint: SyncCheckpoint | None = None,
     ) -> Iterator[Document]:
         repo = config.settings["repo"]
         token = config.credentials["token"]
@@ -186,10 +186,10 @@ class GitHubConnector(Connector):
         self,
         repo: str,
         token: str,
-        checkpoint: Optional[SyncCheckpoint] = None,
+        checkpoint: SyncCheckpoint | None = None,
     ) -> Iterator[Document]:
         """Fetch open issues as documents."""
-        params: Dict[str, str] = {
+        params: dict[str, str] = {
             "state": "open",
             "per_page": "100",
             "sort": "updated",

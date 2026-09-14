@@ -25,9 +25,9 @@ import logging
 import os
 from typing import Any
 
-import psycopg2
-from psycopg2 import pool as pg_pool
-from psycopg2 import sql as pg_sql
+import psycopg2  # noqa: F401 — module attribute is a public patch target for tests
+from psycopg2 import pool as pg_pool  # noqa: F401
+from psycopg2 import sql as pg_sql  # noqa: F401
 
 from umrs.jobs.models import JobStatus, JobType, RestartPolicy
 from umrs.jobs.store import (
@@ -213,7 +213,6 @@ class DurableJobCommandBackend:
         Users without a ``slurm_account`` can still use shared system-tier
         endpoints and local inference — they just cannot submit HPC jobs.
         """
-        import os
 
         # Only enforce when running against a Slurm backend.
         if not os.getenv("SLURM_PARTITION") and not os.getenv("SLURM_ACCOUNT"):
@@ -446,9 +445,6 @@ class DurableJobCommandBackend:
         )
 
 
-
-
-
 def build_durable_job_backend_from_env() -> DurableJobCommandBackend | None:
     """Best-effort bootstrap of the durable job backend from process env."""
     try:
@@ -542,4 +538,4 @@ def _handle_job_command_scoped(
 
 # ADR-053: pool builder's home is umrs.shared.pg; re-export so callers here
 # stay byte-identical.
-from umrs.shared.pg import build_durable_job_db_pool_from_env  # noqa: E402,F401
+from umrs.shared.pg import build_durable_job_db_pool_from_env

@@ -200,7 +200,9 @@ class DurableOrchestrationService:
             session_store = SessionStore(self.db_pool)
             session_gc_backend = SessionGcBackend(session_store=session_store)
         except (ImportError, AttributeError, TypeError) as exc:
-            logger.debug("SessionGcBackend wiring skipped (session_gc unavailable): %s", exc)
+            logger.debug(
+                "SessionGcBackend wiring skipped (session_gc unavailable): %s", exc
+            )
             session_store = None
             session_gc_backend = None
 
@@ -291,7 +293,6 @@ class DurableOrchestrationService:
         # Policy check: authorize the provisioning request
         from umrs.shared.auth import AuthContext, UserRole
         from umrs.shared.authorization import (
-            AuthorizationDenied,
             ResourceRequest,
             authorize,
         )

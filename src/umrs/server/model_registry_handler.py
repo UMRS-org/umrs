@@ -153,7 +153,11 @@ class DurableModelCommandBackend:
 # ADR-053: JSON catalog readers live in umrs.shared.model_catalog (foundation);
 # maintain the legacy private names as thin delegations so callers inside the
 # server tree are byte-identical.
-from umrs.shared.model_catalog import _catalog_path, load_catalog, save_catalog
+from umrs.shared.model_catalog import (  # noqa: F401 — _catalog_path re-exported for legacy import sites
+    _catalog_path,
+    load_catalog,
+    save_catalog,
+)
 
 
 def _load_catalog() -> dict[str, Any]:

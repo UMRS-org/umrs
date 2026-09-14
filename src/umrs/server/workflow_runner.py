@@ -269,7 +269,7 @@ class _DAGAdapter:
     in the same shape as today.
     """
 
-    __slots__ = ("name", "depends_on", "_dict")
+    __slots__ = ("_dict", "depends_on", "name")
 
     def __init__(self, raw: dict[str, Any], synthetic_name: str) -> None:
         self.name: str = raw.get("name") or synthetic_name
@@ -920,9 +920,9 @@ def _execute_step(
         output_bucket=bucket + "-output",
         # Keep source input_bucket for trigger objects; parent artifacts
         # live in the shared output bucket (common {input}-output pattern).
-        parent_output_bucket=(bucket + "-output") if upstream_keys or (
-            spec.get("depends_on") or []
-        ) else "",
+        parent_output_bucket=(bucket + "-output")
+        if upstream_keys or (spec.get("depends_on") or [])
+        else "",
         config=config,
         metadata=metadata,
         run_id=record.execution_id,
@@ -981,7 +981,7 @@ def _emit_workflow_metric(
         name = type(executor).__name__ if executor is not None else "none"
         started = record.started_at or record.submitted_at
         METRICS.workflow_run(name, outcome, max(0.0, time.time() - started))
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.debug("workflow metrics emission failed", exc_info=True)
 
 
@@ -1011,8 +1011,9 @@ def _find_s3cfg() -> str | None:
 
 def _boto3_client_from_s3cfg(s3cfg_path: str, bucket: str) -> Any:
     """Build a boto3 S3 client from an s3cfg file."""
-    import boto3
     import configparser
+
+    import boto3
 
     config = configparser.ConfigParser(inline_comment_prefixes=("#", ";"))
     config.read(s3cfg_path)
@@ -1260,7 +1261,7 @@ def _run_wave_parallel(
         for future in futures:
             try:
                 name, _result, err = future.result()
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 # _execute_step is supposed to capture all
                 # exceptions internally; this branch is purely
                 # defensive.

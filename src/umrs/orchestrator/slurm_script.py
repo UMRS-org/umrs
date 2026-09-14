@@ -74,11 +74,7 @@ def _script_header(
 ) -> str:
     nodelist = f"\n#SBATCH --nodelist={nodelist_hint}" if nodelist_hint else ""
     reservation_line = f"\n#SBATCH --reservation={reservation}" if reservation else ""
-    nodes = (
-        node_count
-        if node_count and node_count > 1
-        else (cfg.slurm_nodes if cfg.slurm_nodes > 1 else 1)
-    )
+    nodes = node_count if node_count and node_count > 1 else (max(1, cfg.slurm_nodes))
     nodes_line = f"\n#SBATCH --nodes={nodes}" if nodes > 1 else ""
     mem_line = f"\n#SBATCH --mem={mem}" if mem else ""
     gres_line = f"\n#SBATCH --gres=gpu:{gpus}" if gpus else ""

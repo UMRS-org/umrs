@@ -57,7 +57,7 @@ def reset_request_id(token) -> None:
     _request_id_ctx.reset(token)
 
 
-from contextlib import contextmanager  # noqa: E402
+from contextlib import contextmanager
 
 
 @contextmanager

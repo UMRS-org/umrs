@@ -11,12 +11,11 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
-import urllib.request
 import urllib.error
 import urllib.parse
+import urllib.request
 from collections import deque
-from datetime import datetime, timezone
-from typing import Dict, Iterator, List, Optional, Set
+from collections.abc import Iterator
 
 from . import (
     Connector,
@@ -44,9 +43,9 @@ def _strip_html(html: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-def _extract_links(html: str, base_url: str) -> List[str]:
+def _extract_links(html: str, base_url: str) -> list[str]:
     """Extract absolute URLs from href attributes."""
-    links: List[str] = []
+    links: list[str] = []
     for match in re.finditer(r'href=["\']([^"\']+)["\']', html, re.IGNORECASE):
         href = match.group(1)
         absolute = urllib.parse.urljoin(base_url, href)
@@ -69,8 +68,8 @@ class WebCrawlConnector(Connector):
     def name(self) -> str:
         return "Web Crawl"
 
-    def validate_config(self, config: ConnectorConfig) -> List[str]:
-        errors: List[str] = []
+    def validate_config(self, config: ConnectorConfig) -> list[str]:
+        errors: list[str] = []
         if not config.settings.get("start_url"):
             errors.append("start_url is required in settings")
         return errors
@@ -78,7 +77,7 @@ class WebCrawlConnector(Connector):
     def fetch(
         self,
         config: ConnectorConfig,
-        checkpoint: Optional[SyncCheckpoint] = None,
+        checkpoint: SyncCheckpoint | None = None,
     ) -> Iterator[Document]:
         start_url = config.settings["start_url"]
         max_pages = config.settings.get("max_pages", _DEFAULT_MAX_PAGES)
@@ -88,7 +87,7 @@ class WebCrawlConnector(Connector):
             urllib.parse.urlparse(start_url).netloc,
         )
 
-        visited: Set[str] = set()
+        visited: set[str] = set()
         queue: deque[tuple[str, int]] = deque([(start_url, 0)])
 
         while queue and len(visited) < max_pages:

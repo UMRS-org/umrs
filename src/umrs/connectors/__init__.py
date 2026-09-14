@@ -21,10 +21,11 @@ from __future__ import annotations
 import logging
 import uuid
 from abc import ABC, abstractmethod
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -61,11 +62,11 @@ class ConnectorConfig:
 
     connector_type: ConnectorType
     name: str
-    credentials: Dict[str, str] = field(default_factory=dict)
-    settings: Dict[str, Any] = field(default_factory=dict)
-    schedule_cron: Optional[str] = None  # e.g. "0 */6 * * *"
-    project_id: Optional[str] = None
-    owner_id: Optional[str] = None
+    credentials: dict[str, str] = field(default_factory=dict)
+    settings: dict[str, Any] = field(default_factory=dict)
+    schedule_cron: str | None = None  # e.g. "0 */6 * * *"
+    project_id: str | None = None
+    owner_id: str | None = None
     enabled: bool = True
 
 
@@ -79,9 +80,9 @@ class Document:
     title: str = ""
     content: str = ""
     content_type: str = "text/plain"  # MIME type
-    metadata: Dict[str, Any] = field(default_factory=dict)
-    url: Optional[str] = None
-    last_modified: Optional[datetime] = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+    url: str | None = None
+    last_modified: datetime | None = None
     size_bytes: int = 0
     status: DocumentStatus = DocumentStatus.PENDING
 
@@ -95,20 +96,20 @@ class SyncCheckpoint:
     """Tracks sync progress for incremental fetching."""
 
     connector_name: str
-    last_sync: Optional[datetime] = None
-    cursor: Optional[str] = None  # Opaque cursor from the source API
+    last_sync: datetime | None = None
+    cursor: str | None = None  # Opaque cursor from the source API
     docs_synced: int = 0
     errors: int = 0
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
 class ConnectorResult:
     """Result from a connector sync run."""
 
-    documents: List[Document] = field(default_factory=list)
-    checkpoint: Optional[SyncCheckpoint] = None
-    errors: List[str] = field(default_factory=list)
+    documents: list[Document] = field(default_factory=list)
+    checkpoint: SyncCheckpoint | None = None
+    errors: list[str] = field(default_factory=list)
 
     @property
     def doc_count(self) -> int:
@@ -141,14 +142,14 @@ class Connector(ABC):
         """Human-readable connector name."""
 
     @abstractmethod
-    def validate_config(self, config: ConnectorConfig) -> List[str]:
+    def validate_config(self, config: ConnectorConfig) -> list[str]:
         """Validate config. Returns list of errors (empty = valid)."""
 
     @abstractmethod
     def fetch(
         self,
         config: ConnectorConfig,
-        checkpoint: Optional[SyncCheckpoint] = None,
+        checkpoint: SyncCheckpoint | None = None,
     ) -> Iterator[Document]:
         """Fetch documents from the source, yielding one at a time.
 
@@ -172,7 +173,7 @@ class ConnectorRegistry:
     """
 
     def __init__(self) -> None:
-        self._connectors: Dict[str, Connector] = {}
+        self._connectors: dict[str, Connector] = {}
 
     def register(self, connector: Connector) -> None:
         key = connector.connector_type.value
@@ -180,10 +181,10 @@ class ConnectorRegistry:
             logger.warning("Overwriting connector registration for %s", key)
         self._connectors[key] = connector
 
-    def get(self, connector_type: str) -> Optional[Connector]:
+    def get(self, connector_type: str) -> Connector | None:
         return self._connectors.get(connector_type)
 
-    def list_types(self) -> List[str]:
+    def list_types(self) -> list[str]:
         return list(self._connectors.keys())
 
     def __contains__(self, connector_type: object) -> bool:

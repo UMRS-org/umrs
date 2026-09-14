@@ -280,7 +280,7 @@ class WorkflowExecutionRegistry:
                     )
                     return
                 runner(record)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 logger.exception("Workflow execution %s crashed", record.execution_id)
                 record.update(
                     status="failed",
@@ -376,7 +376,7 @@ def serialise_record(record: ExecutionRecord) -> str:
 # The factory resolves the module-global name at every CALL (lambdas), so a
 # test patching `umrs.server.workflow_execution_registry.get_execution_registry`
 # is honored the same way a lazy `from umrs.server... import` at call time was.
-from ..shared.workflow_execution_access import (  # noqa: E402
+from ..shared.workflow_execution_access import (
     register_execution_registry_provider,
 )
 

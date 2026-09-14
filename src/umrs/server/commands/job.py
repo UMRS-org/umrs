@@ -19,7 +19,9 @@ from .base import CommandHandler, HandlerContext, StatusCallback
 logger = logging.getLogger(__name__)
 
 
-def _send_reply(ctx: HandlerContext, zmq_sender_id: Any, response_json: str, label: str) -> None:
+def _send_reply(
+    ctx: HandlerContext, zmq_sender_id: Any, response_json: str, label: str
+) -> None:
     """Send *response_json* back to the ZeroMQ caller. Log but never raise."""
     try:
         ctx.control_mq.send_string(response_json, zmq_sender_id)
@@ -30,10 +32,18 @@ def _send_reply(ctx: HandlerContext, zmq_sender_id: Any, response_json: str, lab
 class JobSubmitHandler(CommandHandler):
     """Handle JOB_SUBMIT — submit a new durable job with retry config."""
 
-    def execute(self, payload: Any, update_status: StatusCallback, ctx: HandlerContext, task_id: int) -> None:
+    def execute(
+        self,
+        payload: Any,
+        update_status: StatusCallback,
+        ctx: HandlerContext,
+        task_id: int,
+    ) -> None:
         client_id, payload_str, zmq_sender_id = payload
         response_json = handle_job_command(
-            "JOB_SUBMIT", client_id, payload_str,
+            "JOB_SUBMIT",
+            client_id,
+            payload_str,
             backend=ctx.job_command_backend,
         )
         _send_reply(ctx, zmq_sender_id, response_json, "JOB_SUBMIT")
@@ -43,10 +53,18 @@ class JobSubmitHandler(CommandHandler):
 class JobCancelHandler(CommandHandler):
     """Handle JOB_CANCEL — cancel a submitted job by ID."""
 
-    def execute(self, payload: Any, update_status: StatusCallback, ctx: HandlerContext, task_id: int) -> None:
+    def execute(
+        self,
+        payload: Any,
+        update_status: StatusCallback,
+        ctx: HandlerContext,
+        task_id: int,
+    ) -> None:
         client_id, payload_str, zmq_sender_id = payload
         response_json = handle_job_command(
-            "JOB_CANCEL", client_id, payload_str,
+            "JOB_CANCEL",
+            client_id,
+            payload_str,
             backend=ctx.job_command_backend,
         )
         _send_reply(ctx, zmq_sender_id, response_json, "JOB_CANCEL")
@@ -56,10 +74,18 @@ class JobCancelHandler(CommandHandler):
 class JobListHandler(CommandHandler):
     """Handle JOB_LIST — list durable jobs with optional filters."""
 
-    def execute(self, payload: Any, update_status: StatusCallback, ctx: HandlerContext, task_id: int) -> None:
+    def execute(
+        self,
+        payload: Any,
+        update_status: StatusCallback,
+        ctx: HandlerContext,
+        task_id: int,
+    ) -> None:
         client_id, payload_str, zmq_sender_id = payload
         response_json = handle_job_command(
-            "JOB_LIST", client_id, payload_str,
+            "JOB_LIST",
+            client_id,
+            payload_str,
             backend=ctx.job_command_backend,
         )
         _send_reply(ctx, zmq_sender_id, response_json, "JOB_LIST")

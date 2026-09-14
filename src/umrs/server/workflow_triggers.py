@@ -56,7 +56,7 @@ def _entry_triggers(entry: dict[str, Any]) -> list[dict[str, Any]]:
     try:
         with open(workflow_path, encoding="utf-8") as handle:
             data = json.load(handle)
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.warning("Failed reading triggers from %s", workflow_path, exc_info=True)
         return []
     triggers = data.get("triggers") or []
@@ -140,7 +140,7 @@ def dispatch_catalog_event(
     try:
         with _CATALOG_LOCK:
             catalog = _load_catalog()
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.warning(
             "Workflow trigger dispatch skipped: catalog unavailable", exc_info=True
         )
@@ -157,7 +157,7 @@ def dispatch_catalog_event(
                     owner=owner,
                 )
             )
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.exception(
                 "Workflow trigger dispatch failed for entry %s",
                 entry.get("name", "<unnamed>"),

@@ -639,8 +639,8 @@ def _create_app():
 
     configure_structured_logging()
 
-    from umrs.api.a2l_ledger import router as a2l_ledger_router
     from umrs.api.a2l import router as a2l_router
+    from umrs.api.a2l_ledger import router as a2l_ledger_router
     from umrs.api.artifact_routes import router as artifact_router
     from umrs.api.assets import router as assets_router
     from umrs.api.bundle_restore import router as bundle_restore_router
@@ -655,20 +655,20 @@ def _create_app():
     from umrs.api.grants import router as grants_router
     from umrs.api.intake_uploads import router as intake_uploads_router
     from umrs.api.jobs import router as jobs_router
+    from umrs.api.knowledge import router as knowledge_router
+    from umrs.api.knowledge_attrition import router as knowledge_attrition_router
     from umrs.api.knowledge_graphs import router as knowledge_graphs_router
     from umrs.api.knowledge_lineage import router as knowledge_lineage_router
-    from umrs.api.knowledge_attrition import router as knowledge_attrition_router
     from umrs.api.knowledge_proposals import router as knowledge_proposals_router
     from umrs.api.knowledge_query import router as knowledge_query_router
-    from umrs.api.knowledge import router as knowledge_router
     from umrs.api.knowledge_upload import router as knowledge_upload_router
     from umrs.api.llm import router as llm_router
     from umrs.api.loop import router as loops_router
     from umrs.api.mcp import router as mcp_router
     from umrs.api.models import router as models_router
+    from umrs.api.models import router as policy_router
     from umrs.api.ops import router as ops_router
     from umrs.api.pipelines import router as pipelines_router
-    from umrs.api.models import router as policy_router
     from umrs.api.provenance import router as provenance_router
     from umrs.api.rag import router as rag_router
     from umrs.api.reflective_memory import router as reflective_memory_router

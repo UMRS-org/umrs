@@ -19,9 +19,10 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Callable, Iterator
+from typing import Any
 
 from . import Connector, ConnectorConfig, Document, SyncCheckpoint
 from .intake_gate import IntakeGate, IntakePolicy
@@ -85,7 +86,7 @@ def _emit_metrics(
             failed=report.docs_failed,
             blocked=report.docs_blocked,
         )
-    except Exception:  # noqa: BLE001 — metrics must not break syncs
+    except Exception:
         logger.debug("connector metrics emission failed", exc_info=True)
 
 
@@ -193,7 +194,7 @@ class ConnectorSyncRunner:
     ) -> None:
         """Write cursor + stats + DLQ back to the durable store."""
         dlq = ((prior.dlq if prior else []) + report.dead_letters)[_DLQ_CAP_DROP:]
-        checkpoint_payload = dict((prior.checkpoint_json if prior else {}))
+        checkpoint_payload = dict(prior.checkpoint_json if prior else {})
         checkpoint_payload.update(checkpoint.metadata)
         if report.docs_blocked:
             checkpoint_payload["last_scan"] = {

@@ -146,7 +146,6 @@ def process_s3_objects(
         active_threads.record_status_for_users_by_key(users, key)
         active_threads.remove_from_running_list()
 
-
     # --- Service lifecycle: auto-release backend jobs when idle ---
     service_lifecycle = os.environ.get("UMRS_SERVICE_LIFECYCLE", "auto_release")
     if keep_endpoint_requested:
@@ -174,7 +173,9 @@ def process_s3_objects(
     if update_status_callback:
         update_status_callback(exit_status)
 
-    logger.info(f"\t--> Processing {nb_objects} file(s) done with status: {exit_status}!")
+    logger.info(
+        f"\t--> Processing {nb_objects} file(s) done with status: {exit_status}!"
+    )
     from umrs.server.config import ENABLE_PRETTY_PRINT
 
     with active_threads.lock:

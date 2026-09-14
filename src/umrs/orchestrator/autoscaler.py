@@ -19,7 +19,7 @@ no imports from ``umrs.api`` / ``umrs.server``.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -115,7 +115,9 @@ class PoolAutoscaler:
             logger.info("Loaded %d autoscale policies", count)
         return count
 
-    def get_policy(self, model: str, variant: str | None = None) -> AutoscalePolicy | None:
+    def get_policy(
+        self, model: str, variant: str | None = None
+    ) -> AutoscalePolicy | None:
         """Return the autoscale policy for a (model, variant) pair."""
         return self._policies.get((model, variant))
 
@@ -165,19 +167,21 @@ class PoolAutoscaler:
                 ready_count < policy.max_replicas
                 and total_active > policy.scale_up_depth * ready_count
             ):
-                decisions.append({
-                    "action": "scale_up",
-                    "model": model,
-                    "variant": variant,
-                    "ready_count": ready_count,
-                    "total_active": total_active,
-                    "threshold": policy.scale_up_depth * ready_count,
-                    "reason": (
-                        f"Queue depth {total_active} exceeds threshold "
-                        f"{policy.scale_up_depth * ready_count} "
-                        f"({ready_count} endpoints × {policy.scale_up_depth})"
-                    ),
-                })
+                decisions.append(
+                    {
+                        "action": "scale_up",
+                        "model": model,
+                        "variant": variant,
+                        "ready_count": ready_count,
+                        "total_active": total_active,
+                        "threshold": policy.scale_up_depth * ready_count,
+                        "reason": (
+                            f"Queue depth {total_active} exceeds threshold "
+                            f"{policy.scale_up_depth * ready_count} "
+                            f"({ready_count} endpoints × {policy.scale_up_depth})"
+                        ),
+                    }
+                )
 
             # Scale-down check: find idle endpoints
             import datetime
@@ -194,18 +198,20 @@ class PoolAutoscaler:
                     and ep.last_used_at < idle_threshold
                     and ep.active_requests == 0
                 ):
-                    decisions.append({
-                        "action": "scale_down",
-                        "model": model,
-                        "variant": variant,
-                        "job_id": ep.job_id,
-                        "ready_count": ready_count,
-                        "reason": (
-                            f"Endpoint {ep.job_id} idle for "
-                            f">{policy.scale_down_idle_sec}s "
-                            f"(ready_count={ready_count}, min={policy.min_replicas})"
-                        ),
-                    })
+                    decisions.append(
+                        {
+                            "action": "scale_down",
+                            "model": model,
+                            "variant": variant,
+                            "job_id": ep.job_id,
+                            "ready_count": ready_count,
+                            "reason": (
+                                f"Endpoint {ep.job_id} idle for "
+                                f">{policy.scale_down_idle_sec}s "
+                                f"(ready_count={ready_count}, min={policy.min_replicas})"
+                            ),
+                        }
+                    )
                     ready_count -= 1  # Track projected count
 
         return decisions

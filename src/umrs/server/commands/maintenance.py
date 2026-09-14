@@ -78,26 +78,34 @@ def _dispatch_maintenance(
 class RecomputeHandler(CommandHandler):
     """Handle RECOMPUTE — recompute all embeddings for the user's buckets."""
 
-    def execute(self, payload, update_status: StatusCallback, ctx: HandlerContext, task_id: int) -> None:
+    def execute(
+        self, payload, update_status: StatusCallback, ctx: HandlerContext, task_id: int
+    ) -> None:
         _dispatch_maintenance("RECOMPUTE", payload, update_status, ctx, task_id)
 
 
 class UpdateHandler(CommandHandler):
     """Handle UPDATE — update missing/mismatched embeddings for the user's buckets."""
 
-    def execute(self, payload, update_status: StatusCallback, ctx: HandlerContext, task_id: int) -> None:
+    def execute(
+        self, payload, update_status: StatusCallback, ctx: HandlerContext, task_id: int
+    ) -> None:
         _dispatch_maintenance("UPDATE", payload, update_status, ctx, task_id)
 
 
 class CheckHandler(CommandHandler):
     """Handle CHECK — check S3/DB consistency (admin: all users)."""
 
-    def execute(self, payload, update_status: StatusCallback, ctx: HandlerContext, task_id: int) -> None:
+    def execute(
+        self, payload, update_status: StatusCallback, ctx: HandlerContext, task_id: int
+    ) -> None:
         _dispatch_maintenance("CHECK", payload, update_status, ctx, task_id)
 
 
 class ReloadHandler(CommandHandler):
     """Handle RELOAD — hot-reload server config without restart (admin only)."""
 
-    def execute(self, payload, update_status: StatusCallback, ctx: HandlerContext, task_id: int) -> None:
+    def execute(
+        self, payload, update_status: StatusCallback, ctx: HandlerContext, task_id: int
+    ) -> None:
         _dispatch_maintenance("RELOAD", payload, update_status, ctx, task_id)

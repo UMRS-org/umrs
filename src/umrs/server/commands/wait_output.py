@@ -41,7 +41,9 @@ class WaitOutputHandler(CommandHandler):
     ) -> None:
         client_id, output_path_to_bucket, timeout, zmq_sender_id = payload
 
-        path_to_bucket, entry = ctx.buckets_cfg.find_by_output_path(output_path_to_bucket)
+        path_to_bucket, entry = ctx.buckets_cfg.find_by_output_path(
+            output_path_to_bucket
+        )
         if entry is None:
             # Bucket alias unknown — reply immediately so the client is not hung.
             with contextlib.suppress(RuntimeError):
@@ -50,17 +52,19 @@ class WaitOutputHandler(CommandHandler):
             return
 
         try:
-            thread_ident = ctx.task_manager.active_threads.launch_wait_table_modification_on_db(
-                path_to_bucket,
-                ctx.buckets_cfg,
-                client_id,
-                entry.data_base,
-                entry.table_name,
-                timeout,
-                ctx.control_mq,
-                zmq_sender_id,
-                "wait_output",
-                update_status_callback=update_status,
+            thread_ident = (
+                ctx.task_manager.active_threads.launch_wait_table_modification_on_db(
+                    path_to_bucket,
+                    ctx.buckets_cfg,
+                    client_id,
+                    entry.data_base,
+                    entry.table_name,
+                    timeout,
+                    ctx.control_mq,
+                    zmq_sender_id,
+                    "wait_output",
+                    update_status_callback=update_status,
+                )
             )
             ctx.task_manager.associate_thread_with_task(thread_ident, task_id)
         except ServerOverloadedError as exc:

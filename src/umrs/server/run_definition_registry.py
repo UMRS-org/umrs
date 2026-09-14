@@ -102,7 +102,12 @@ def save_definition(
         }
         catalog.setdefault("definitions", []).append(record)
         _save_definitions(catalog)
-    logger.info("Registered run definition: %s (workflow=%s, user=%s)", name, workflow_name, user_id)
+    logger.info(
+        "Registered run definition: %s (workflow=%s, user=%s)",
+        name,
+        workflow_name,
+        user_id,
+    )
     return dict(record)
 
 

@@ -25,7 +25,6 @@ import os
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +63,7 @@ class SSHControlConfig:
     remote_env: dict = field(default_factory=dict)
 
     @classmethod
-    def from_site_config(cls, scheduler_extra: dict) -> "SSHControlConfig":
+    def from_site_config(cls, scheduler_extra: dict) -> SSHControlConfig:
         """Build from site.yaml scheduler.extra section."""
         return cls(
             ssh_target=scheduler_extra.get("ssh_target", ""),
@@ -121,7 +120,7 @@ class SSHControlManager:
         self._connected = False
         self._lock = asyncio.Lock()
         self._reconnect_attempts = 0
-        self._health_task: Optional[asyncio.Task] = None
+        self._health_task: asyncio.Task | None = None
 
         # Determine control socket path.
         if config.control_path:
@@ -302,8 +301,8 @@ class SSHControlManager:
         self,
         command: str,
         *,
-        timeout: Optional[int] = None,
-        stdin_data: Optional[bytes] = None,
+        timeout: int | None = None,
+        stdin_data: bytes | None = None,
     ) -> CommandResult:
         """Execute a command on the remote host via the ControlMaster.
 
@@ -366,12 +365,12 @@ class SSHControlManager:
         command: str,
         stdin_data: bytes,
         *,
-        timeout: Optional[int] = None,
+        timeout: int | None = None,
     ) -> CommandResult:
         """Execute a remote command with stdin piped (e.g., sbatch script)."""
         return await self.run_remote(command, timeout=timeout, stdin_data=stdin_data)
 
-    async def read_remote_file(self, path: str) -> Optional[str]:
+    async def read_remote_file(self, path: str) -> str | None:
         """Read a file on the remote host. Returns None if file doesn't exist."""
         result = await self.run_remote(f"cat {path}")
         if result.returncode != 0:

@@ -21,7 +21,9 @@ from .base import CommandHandler, HandlerContext, StatusCallback
 logger = logging.getLogger(__name__)
 
 
-def _send_reply(ctx: HandlerContext, zmq_sender_id: Any, response_json: str, label: str) -> None:
+def _send_reply(
+    ctx: HandlerContext, zmq_sender_id: Any, response_json: str, label: str
+) -> None:
     """Send *response_json* back to the ZeroMQ caller. Log but never raise."""
     try:
         ctx.control_mq.send_string(response_json, zmq_sender_id)
@@ -32,9 +34,17 @@ def _send_reply(ctx: HandlerContext, zmq_sender_id: Any, response_json: str, lab
 class ListWorkflowsHandler(CommandHandler):
     """Handle LIST_WORKFLOWS — list registered workflows for a user."""
 
-    def execute(self, payload: Any, update_status: StatusCallback, ctx: HandlerContext, task_id: int) -> None:
+    def execute(
+        self,
+        payload: Any,
+        update_status: StatusCallback,
+        ctx: HandlerContext,
+        task_id: int,
+    ) -> None:
         client_id, payload_str, zmq_sender_id = payload
-        response_json = handle_workflow_command("LIST_WORKFLOWS", client_id, payload_str)
+        response_json = handle_workflow_command(
+            "LIST_WORKFLOWS", client_id, payload_str
+        )
         _send_reply(ctx, zmq_sender_id, response_json, "LIST_WORKFLOWS")
         update_status(TaskStatus.COMPLETED)
 
@@ -42,7 +52,13 @@ class ListWorkflowsHandler(CommandHandler):
 class RunWorkflowHandler(CommandHandler):
     """Handle RUN_WORKFLOW — trigger execution of a registered workflow."""
 
-    def execute(self, payload: Any, update_status: StatusCallback, ctx: HandlerContext, task_id: int) -> None:
+    def execute(
+        self,
+        payload: Any,
+        update_status: StatusCallback,
+        ctx: HandlerContext,
+        task_id: int,
+    ) -> None:
         client_id, payload_str, zmq_sender_id = payload
         # Only route through the durable job queue when a scheduler is actually
         # running to execute it. Otherwise (e.g. front-end deployments with no
@@ -62,7 +78,13 @@ class RunWorkflowHandler(CommandHandler):
 class WorkflowStatusHandler(CommandHandler):
     """Handle WORKFLOW_STATUS — show execution status for a workflow run."""
 
-    def execute(self, payload: Any, update_status: StatusCallback, ctx: HandlerContext, task_id: int) -> None:
+    def execute(
+        self,
+        payload: Any,
+        update_status: StatusCallback,
+        ctx: HandlerContext,
+        task_id: int,
+    ) -> None:
         client_id, payload_str, zmq_sender_id = payload
         response_json = handle_workflow_command(
             "WORKFLOW_STATUS",
@@ -76,7 +98,13 @@ class WorkflowStatusHandler(CommandHandler):
 class WorkflowExecutionsHandler(CommandHandler):
     """Handle WORKFLOW_EXECUTIONS — list workflow execution ids for the caller."""
 
-    def execute(self, payload: Any, update_status: StatusCallback, ctx: HandlerContext, task_id: int) -> None:
+    def execute(
+        self,
+        payload: Any,
+        update_status: StatusCallback,
+        ctx: HandlerContext,
+        task_id: int,
+    ) -> None:
         client_id, payload_str, zmq_sender_id = payload
         response_json = handle_workflow_command(
             "WORKFLOW_EXECUTIONS",
@@ -90,7 +118,13 @@ class WorkflowExecutionsHandler(CommandHandler):
 class WorkflowResultsHandler(CommandHandler):
     """Handle WORKFLOW_RESULTS — fetch results for a completed workflow run."""
 
-    def execute(self, payload: Any, update_status: StatusCallback, ctx: HandlerContext, task_id: int) -> None:
+    def execute(
+        self,
+        payload: Any,
+        update_status: StatusCallback,
+        ctx: HandlerContext,
+        task_id: int,
+    ) -> None:
         client_id, payload_str, zmq_sender_id = payload
         response_json = handle_workflow_command(
             "WORKFLOW_RESULTS",
@@ -104,7 +138,13 @@ class WorkflowResultsHandler(CommandHandler):
 class WorkflowCancelHandler(CommandHandler):
     """Handle WORKFLOW_CANCEL — cancel a running workflow execution."""
 
-    def execute(self, payload: Any, update_status: StatusCallback, ctx: HandlerContext, task_id: int) -> None:
+    def execute(
+        self,
+        payload: Any,
+        update_status: StatusCallback,
+        ctx: HandlerContext,
+        task_id: int,
+    ) -> None:
         client_id, payload_str, zmq_sender_id = payload
         response_json = handle_workflow_command(
             "WORKFLOW_CANCEL",
@@ -118,7 +158,13 @@ class WorkflowCancelHandler(CommandHandler):
 class WorkflowErrorsHandler(CommandHandler):
     """Handle WORKFLOW_ERRORS — show error logs for a failed workflow execution."""
 
-    def execute(self, payload: Any, update_status: StatusCallback, ctx: HandlerContext, task_id: int) -> None:
+    def execute(
+        self,
+        payload: Any,
+        update_status: StatusCallback,
+        ctx: HandlerContext,
+        task_id: int,
+    ) -> None:
         client_id, payload_str, zmq_sender_id = payload
         response_json = handle_workflow_command(
             "WORKFLOW_ERRORS",

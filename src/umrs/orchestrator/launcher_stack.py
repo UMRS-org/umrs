@@ -18,7 +18,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -171,7 +171,7 @@ class LauncherStack:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "LauncherStack":
+    def from_dict(cls, data: dict[str, Any]) -> LauncherStack:
         return cls(
             sif_path=data.get("sif_path", ""),
             sif_sha256=data.get("sif_sha256", ""),
@@ -191,10 +191,10 @@ class LauncherStack:
     async def discover(
         cls,
         sif_path: str,
-        ssh_manager: "SSHControlManager",
+        ssh_manager: SSHControlManager,
         *,
         sif_sha256: str = "",
-    ) -> "LauncherStack":
+    ) -> LauncherStack:
         """Discover the runtime stack by probing the SIF on the remote host.
 
         Executes ``singularity exec <sif> python -c "..."`` via SSH to

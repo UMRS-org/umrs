@@ -222,8 +222,8 @@ def build_default_store(db_pool: Any = None) -> Any:
 
 
 __all__ = [
-    "SyncStateRecord",
     "InMemorySyncStateStore",
     "PgSyncStateStore",
+    "SyncStateRecord",
     "build_default_store",
 ]

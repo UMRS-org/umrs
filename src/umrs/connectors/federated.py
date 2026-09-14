@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -24,9 +24,9 @@ class FederatedResult:
     source_name: str
     title: str
     snippet: str
-    url: Optional[str] = None
+    url: str | None = None
     score: float = 0.0
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 class FederatedSource(ABC):
@@ -41,13 +41,13 @@ class FederatedSource(ABC):
     def search(
         self,
         query: str,
-        credentials: Dict[str, str],
+        credentials: dict[str, str],
         limit: int = 10,
-        filters: Optional[Dict[str, Any]] = None,
-    ) -> List[FederatedResult]:
+        filters: dict[str, Any] | None = None,
+    ) -> list[FederatedResult]:
         """Search the source without indexing any data."""
 
-    def available(self, credentials: Dict[str, str]) -> bool:
+    def available(self, credentials: dict[str, str]) -> bool:
         """Check if the source is reachable."""
         return True
 
@@ -60,21 +60,21 @@ class FederatedSearcher:
     """
 
     def __init__(self) -> None:
-        self._sources: Dict[str, FederatedSource] = {}
+        self._sources: dict[str, FederatedSource] = {}
 
     def register(self, source: FederatedSource) -> None:
         self._sources[source.name] = source
 
-    def list_sources(self) -> List[str]:
+    def list_sources(self) -> list[str]:
         return list(self._sources.keys())
 
     def search(
         self,
         query: str,
-        credentials: Dict[str, Dict[str, str]],
-        sources: Optional[List[str]] = None,
+        credentials: dict[str, dict[str, str]],
+        sources: list[str] | None = None,
         limit: int = 10,
-    ) -> List[FederatedResult]:
+    ) -> list[FederatedResult]:
         """Search across registered sources.
 
         Args:
@@ -84,7 +84,7 @@ class FederatedSearcher:
             limit: Max results per source.
         """
         target_sources = sources or list(self._sources.keys())
-        all_results: List[FederatedResult] = []
+        all_results: list[FederatedResult] = []
 
         for src_name in target_sources:
             source = self._sources.get(src_name)

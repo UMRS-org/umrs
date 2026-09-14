@@ -9,7 +9,8 @@ import json
 import logging
 import urllib.parse
 import urllib.request
-from typing import Any, Dict, Iterator, List, Optional
+from collections.abc import Iterator
+from typing import Any
 
 from . import (
     Connector,
@@ -46,8 +47,8 @@ class SlackConnector(Connector):
     def name(self) -> str:
         return "Slack"
 
-    def validate_config(self, config: ConnectorConfig) -> List[str]:
-        errors: List[str] = []
+    def validate_config(self, config: ConnectorConfig) -> list[str]:
+        errors: list[str] = []
         if not config.credentials.get("bot_token"):
             errors.append("bot_token credential is required")
         return errors
@@ -55,7 +56,7 @@ class SlackConnector(Connector):
     def fetch(
         self,
         config: ConnectorConfig,
-        checkpoint: Optional[SyncCheckpoint] = None,
+        checkpoint: SyncCheckpoint | None = None,
     ) -> Iterator[Document]:
         token = config.credentials["bot_token"]
         channels = config.settings.get("channels", [])
@@ -71,7 +72,7 @@ class SlackConnector(Connector):
                 token, channel_id, include_threads, max_messages, checkpoint
             )
 
-    def _list_channels(self, token: str) -> List[str]:
+    def _list_channels(self, token: str) -> list[str]:
         """List channels the bot is a member of."""
         data = self._api_get(
             f"{_SLACK_API}/conversations.list",
@@ -86,10 +87,10 @@ class SlackConnector(Connector):
         channel_id: str,
         include_threads: bool,
         max_messages: int,
-        checkpoint: Optional[SyncCheckpoint],
+        checkpoint: SyncCheckpoint | None,
     ) -> Iterator[Document]:
         """Fetch messages from a single channel."""
-        params: Dict[str, str] = {"channel": channel_id, "limit": "100"}
+        params: dict[str, str] = {"channel": channel_id, "limit": "100"}
 
         # Incremental: use oldest from checkpoint
         if checkpoint and checkpoint.cursor:
@@ -186,8 +187,8 @@ class SlackConnector(Connector):
     def _api_get(
         url: str,
         token: str,
-        params: Dict[str, str],
-    ) -> Dict[str, Any]:
+        params: dict[str, str],
+    ) -> dict[str, Any]:
         """Make an authenticated GET request to Slack API."""
         if params:
             url = f"{url}?{urllib.parse.urlencode(params)}"
@@ -198,7 +199,7 @@ class SlackConnector(Connector):
                 "Accept": "application/json",
             },
         )
-        with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310
+        with urllib.request.urlopen(req, timeout=30) as resp:
             return json.loads(resp.read().decode())
 
 

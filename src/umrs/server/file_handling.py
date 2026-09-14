@@ -35,10 +35,13 @@ def _build_workflow_image(dest_dir: str, workflow_name: str) -> str | None:
 
     image_tag = f"{workflow_name}:latest"
     cmd = [
-        "podman", "build",
+        "podman",
+        "build",
         "--userns=host",
-        "-t", image_tag,
-        "-f", dockerfile_path,
+        "-t",
+        image_tag,
+        "-f",
+        dockerfile_path,
         dest_dir,
     ]
     try:
@@ -70,9 +73,7 @@ def _build_workflow_image(dest_dir: str, workflow_name: str) -> str | None:
         return None
 
 
-def _inject_image_into_workflow(
-    dest_dir: str, image_tag: str
-) -> None:
+def _inject_image_into_workflow(dest_dir: str, image_tag: str) -> None:
     """Inject *image_tag* into ``routing_hints.image`` for all steps.
 
     Steps that already declare ``routing_hints.image`` are left
@@ -102,9 +103,7 @@ def _inject_image_into_workflow(
     if modified:
         with open(wf_path, "w", encoding="utf-8") as fh:
             json.dump(wf_data, fh, indent=2, ensure_ascii=False)
-        logger.info(
-            "Injected routing_hints.image=%s into workflow.json", image_tag
-        )
+        logger.info("Injected routing_hints.image=%s into workflow.json", image_tag)
 
 
 def ensure_user_file_in_conf(conf_path, username, canonical_user_path):
@@ -317,7 +316,9 @@ def handle_upload_workflow(client_id, zip_path, workflow_name):
         except Exception as e:
             logger.info(f"Warning: failed to clean up zip file '{zip_path}': {e}")
 
-    logger.info(f"Workflow '{workflow_name}' for user '{client_id}' extracted to {dest_dir}")
+    logger.info(
+        f"Workflow '{workflow_name}' for user '{client_id}' extracted to {dest_dir}"
+    )
 
     # ---- Dockerfile-in-workflow: build image if Dockerfile present ----
     # If a Dockerfile exists in the extracted directory, build a
@@ -411,7 +412,9 @@ def persist_uploaded_user_config(
         try:
             os.makedirs(user_dir, exist_ok=True)
         except Exception as e:
-            logger.info(f"Warning: cannot ensure user files directory '{user_dir}': {e}")
+            logger.info(
+                f"Warning: cannot ensure user files directory '{user_dir}': {e}"
+            )
             return False, username, None
         dest_path = os.path.join(user_dir, f"{username}.json")
 

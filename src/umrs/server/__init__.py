@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from umrs.server.provisioning import ServerCfg as ServerCfg  # noqa: F401
+    from umrs.server.provisioning import ServerCfg as ServerCfg
 
 
 def __getattr__(name: str):
