@@ -33,7 +33,7 @@ class WorkflowRunBackend(OrchestratorBackend):
         if not isinstance(workflow_name, str) or not workflow_name.strip():
             raise ValueError("workflow_run spec.workflow_name is required")
 
-        from umrs.server.workflow_registry_handler import _launch_workflow_from_catalog
+        from umrs.shared.workflow_execution_access import _launch_workflow_from_catalog
 
         source_path = job.spec.get("source_path")
         if not isinstance(source_path, str) or not source_path.strip():
@@ -61,7 +61,7 @@ class WorkflowRunStatusChecker:
         job: Job,
     ) -> AttemptCheckResult:
         execution_id = _execution_id_from_attempt_or_job(attempt, job)
-        from umrs.server.workflow_execution_registry import get_execution_registry
+        from umrs.shared.workflow_execution_access import get_execution_registry
 
         record = get_execution_registry().get(execution_id)
         if record is None:
@@ -108,7 +108,7 @@ def cancel_workflow_execution_for_job(job: Job) -> None:
     if not isinstance(execution_id, str) or not execution_id.strip():
         return
 
-    from umrs.server.workflow_execution_registry import get_execution_registry
+    from umrs.shared.workflow_execution_access import get_execution_registry
 
     get_execution_registry().cancel(execution_id.strip())
 

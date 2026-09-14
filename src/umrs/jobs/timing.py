@@ -81,7 +81,7 @@ def maybe_emit_span(
     was actually exported-scheduled.
     """
     try:
-        from ..server.otel import otel_active
+        from umrs.shared.otel_flag import otel_active
 
         if not otel_active():
             return False

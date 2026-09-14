@@ -369,3 +369,20 @@ def reset_execution_registry_for_tests() -> None:
 def serialise_record(record: ExecutionRecord) -> str:
     """JSON-encode an execution record (used by ZMQ handlers)."""
     return json.dumps(record.to_dict(), default=str)
+
+
+# ADR-053 (1.1/1.2): register as the factory behind shared.workflow_execution_access
+# so foundation modules (jobs/workflow_run) never import umrs.server again.
+# The factory resolves the module-global name at every CALL (lambdas), so a
+# test patching `umrs.server.workflow_execution_registry.get_execution_registry`
+# is honored the same way a lazy `from umrs.server... import` at call time was.
+from ..shared.workflow_execution_access import (  # noqa: E402
+    register_execution_registry_provider,
+)
+
+
+def _workflow_execution_registry_factory():
+    return get_execution_registry()
+
+
+register_execution_registry_provider(_workflow_execution_registry_factory)

@@ -94,7 +94,7 @@ def _resolve_model_entry(model_name: str) -> "ModelEntry | None":
     """
     from umrs.model_registry.models import ModelEntry
     from umrs.model_registry.store import AccessContext, ModelStore, PathValidator
-    from umrs.server.job_tracking_handler import build_durable_job_db_pool_from_env
+    from umrs.shared.pg import build_durable_job_db_pool_from_env
 
     # ── Authoritative: Durable Postgres model store ──────────────────────────
     try:
@@ -131,7 +131,7 @@ def _resolve_model_entry(model_name: str) -> "ModelEntry | None":
 
     # ── Deprecated: JSON catalog fallback ────────────────────────────────────
     try:
-        from umrs.server.model_registry_handler import _load_catalog
+        from umrs.shared.model_catalog import load_catalog as _load_catalog
 
         models = _load_catalog().get("models", [])
         matches = [entry for entry in models if entry.get("name") == model_name]
@@ -176,7 +176,7 @@ def _check_active_certification(
     Returns a dict with keys: cert_id, model_name, launcher_fingerprint,
     sif_version, certified_config, smoke_test_passed, certified_at.
     """
-    from umrs.server.job_tracking_handler import build_durable_job_db_pool_from_env
+    from umrs.shared.pg import build_durable_job_db_pool_from_env
 
     # If no launcher fingerprint is provided, skip fingerprint-based matching
     # but still check that at least one active certification exists.
