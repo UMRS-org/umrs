@@ -16,9 +16,7 @@ import os
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
-
-from .typed_errors import PlatformError, raise_typed
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from pydantic import BaseModel, Field
 
 from umrs.knowledge.access_scope import (
@@ -31,6 +29,8 @@ from umrs.orchestrator.endpoint_registry import (
     EndpointStatus,
     get_registry,
 )
+
+from .typed_errors import PlatformError, raise_typed
 
 logger = logging.getLogger(__name__)
 
@@ -241,9 +241,7 @@ async def _mint_knowledge_nodes(
     gid = default_graph_id(project_id)
 
     doc_node_id = f"ragdoc-{document_id}"
-    content_hash = hashlib.sha256(
-        f"{document_id}:{filename}".encode("utf-8")
-    ).hexdigest()[:16]
+    content_hash = hashlib.sha256(f"{document_id}:{filename}".encode()).hexdigest()[:16]
     artifact_id = f"artifact-rag-{document_id}"
     await store.insert_artifact(
         artifact_id,
@@ -429,7 +427,9 @@ async def query_rag(
 
     except httpx.RequestError as e:
         logger.exception("RAG query request failed: %s", e)
-        raise_typed(PlatformError.rag("unavailable", "RAG service unavailable"), cause=e)
+        raise_typed(
+            PlatformError.rag("unavailable", "RAG service unavailable"), cause=e
+        )
 
 
 @router.post("/upload", response_model=UploadResponse)
@@ -479,7 +479,7 @@ async def _upload_via_central(
     )
 
 
-async def _upload_via_endpoint(  # noqa: C901 - legacy path retained for the dwell
+async def _upload_via_endpoint(
     request: Request,
     file: UploadFile,
     registry: EndpointRegistry,
@@ -543,7 +543,9 @@ async def _upload_via_endpoint(  # noqa: C901 - legacy path retained for the dwe
 
     except httpx.RequestError as e:
         logger.exception("Upload request failed: %s", e)
-        raise_typed(PlatformError.rag("unavailable", "RAG service unavailable"), cause=e)
+        raise_typed(
+            PlatformError.rag("unavailable", "RAG service unavailable"), cause=e
+        )
 
 
 @router.get("/documents", response_model=list[DocumentInfo])
@@ -583,7 +585,9 @@ async def list_documents(
 
     except httpx.RequestError as e:
         logger.exception("List documents failed: %s", e)
-        raise_typed(PlatformError.rag("unavailable", "RAG service unavailable"), cause=e)
+        raise_typed(
+            PlatformError.rag("unavailable", "RAG service unavailable"), cause=e
+        )
 
 
 @router.delete("/documents/{document_id}")
@@ -622,7 +626,9 @@ async def delete_document(
 
     except httpx.RequestError as e:
         logger.exception("Delete document failed: %s", e)
-        raise_typed(PlatformError.rag("unavailable", "RAG service unavailable"), cause=e)
+        raise_typed(
+            PlatformError.rag("unavailable", "RAG service unavailable"), cause=e
+        )
 
 
 @router.get("/documents/{document_id}", response_model=DocumentInfo)
@@ -663,7 +669,9 @@ async def get_document(
 
     except httpx.RequestError as e:
         logger.exception("Get document failed: %s", e)
-        raise_typed(PlatformError.rag("unavailable", "RAG service unavailable"), cause=e)
+        raise_typed(
+            PlatformError.rag("unavailable", "RAG service unavailable"), cause=e
+        )
 
 
 @router.get("/stats")
@@ -693,4 +701,6 @@ async def rag_stats(
 
     except httpx.RequestError as e:
         logger.exception("RAG stats request failed: %s", e)
-        raise_typed(PlatformError.rag("unavailable", "RAG service unavailable"), cause=e)
+        raise_typed(
+            PlatformError.rag("unavailable", "RAG service unavailable"), cause=e
+        )

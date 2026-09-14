@@ -119,7 +119,7 @@ def _read_prompts_from_s3(uri: str, client: Any) -> list[str]:
     """Download a prompts .jsonl and return prompt strings (plain fallback)."""
     if not uri.startswith("s3://"):
         raise ValueError("prompts_ref must be an s3:// URI")
-    bucket_key = uri[len("s3://"):]
+    bucket_key = uri[len("s3://") :]
     bucket, _, key = bucket_key.partition("/")
     body = client.get_object(Bucket=bucket, Key=key)["Body"].read().decode("utf-8")
     prompts: list[str] = []
@@ -158,15 +158,15 @@ def _validate_input_lane(
     if (not prompts_ref) and (not prompt_inline):
         raise ValueError("batch_infer requires spec.prompts OR spec.prompts_ref")
     if prompts_ref and prompt_inline:
-        raise ValueError("batch_infer accepts only one input lane (prompts_ref XOR prompts)")
+        raise ValueError(
+            "batch_infer accepts only one input lane (prompts_ref XOR prompts)"
+        )
     if prompt_inline is None:
         return prompts_ref, []
     return prompts_ref, _validate_inline(prompt_inline)
 
 
-def _resolve_ready_endpoint(
-    project_id: str, model: str
-) -> Any:
+def _resolve_ready_endpoint(project_id: str, model: str) -> Any:
     """Discover the READY/DEGRADED endpoint for (project, model) or raise."""
     registry = get_registry()
     candidates = registry.list_all(
@@ -247,7 +247,9 @@ async def _run_one_row(
     try:
         body = response.json()
         choices = body.get("choices") or []
-        text = (choices[0].get("message", {}) or {}).get("content", "") if choices else ""
+        text = (
+            (choices[0].get("message", {}) or {}).get("content", "") if choices else ""
+        )
         usage = body.get("usage", {}) or {}
     except (ValueError, KeyError) as exc:
         return {"ok": False, "error": f"shape_mismatch: {exc}", "prompt": prompt_text}
@@ -266,7 +268,9 @@ async def _upload_results(ctx: BatchTaskContext, rows: list[dict[str, Any]]) -> 
     config = get_s3_config()
     client = config.get_client()
     key = f"{scope_prefix_for(ctx.job_id, ctx.attempt_no)}results.jsonl"
-    payload = "\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + ("\n" if rows else "")
+    payload = "\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + (
+        "\n" if rows else ""
+    )
     client.put_object(
         Bucket=config.bucket,
         Key=key,
@@ -329,7 +333,9 @@ class BatchInferBackend:
         )
         return attempt.attempt_id
 
-    async def _drive_rows(self, ctx: BatchTaskContext) -> tuple[list[dict[str, Any]], str]:
+    async def _drive_rows(
+        self, ctx: BatchTaskContext
+    ) -> tuple[list[dict[str, Any]], str]:
         """Run the per-row loop (cancel-aware, progress-shaped) → (rows, s3_key)."""
         rows: list[dict[str, Any]] = []
         config = get_s3_config()
@@ -390,7 +396,6 @@ class BatchInferBackend:
 
 
 class BatchInferStatusChecker(BackendStatusChecker):
-
     """Read the batch registry's progress into terminal-or-running verdicts."""
 
     @property

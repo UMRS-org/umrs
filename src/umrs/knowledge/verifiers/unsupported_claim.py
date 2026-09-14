@@ -65,7 +65,7 @@ class UnsupportedClaimVerifier(VerifierBase):
         return available
 
     async def run(
-        self, knowledge_store: "KnowledgeStore", project_id: str
+        self, knowledge_store: KnowledgeStore, project_id: str
     ) -> list[Finding]:
         """Run unsupported claim check."""
         findings: list[Finding] = []

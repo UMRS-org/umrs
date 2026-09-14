@@ -35,25 +35,17 @@ DEFAULT_DEAD_THRESHOLD_SECONDS = 90
 class HeartbeatError(Exception):
     """Raised when heartbeat operation fails."""
 
-    pass
-
 
 class LockError(Exception):
     """Base exception for lock errors."""
-
-    pass
 
 
 class LockAcquisitionError(LockError):
     """Raised when lock cannot be acquired."""
 
-    pass
-
 
 class LockNotHeldError(LockError):
     """Raised when trying to release a lock we don't hold."""
-
-    pass
 
 
 class InstanceInfo:

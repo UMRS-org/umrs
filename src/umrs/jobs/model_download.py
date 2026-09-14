@@ -449,8 +449,7 @@ class ModelDownloadBackend(OrchestratorBackend):
             # Parse S3 URI: s3://bucket/prefix
             # source_id should be like "bucket/prefix" or full "s3://bucket/prefix"
             source = ctx.source_id
-            if source.startswith("s3://"):
-                source = source[5:]
+            source = source.removeprefix("s3://")
 
             parts = source.split("/", 1)
             if len(parts) < 2:
@@ -504,7 +503,7 @@ class ModelDownloadBackend(OrchestratorBackend):
 
         except Exception as e:
             progress.status = "failed"
-            progress.error_message = f"S3 download failed: {str(e)}"
+            progress.error_message = f"S3 download failed: {e!s}"
             return progress
 
     async def _download_from_http(
@@ -563,7 +562,7 @@ class ModelDownloadBackend(OrchestratorBackend):
 
         except Exception as e:
             progress.status = "failed"
-            progress.error_message = f"HTTP download failed: {str(e)}"
+            progress.error_message = f"HTTP download failed: {e!s}"
             progress.updated_at = datetime.now(timezone.utc)
             _notify_download_progress(progress_callback, progress)
             return progress
@@ -625,7 +624,7 @@ class ModelDownloadBackend(OrchestratorBackend):
 
         except Exception as e:
             progress.status = "failed"
-            progress.error_message = f"Local copy failed: {str(e)}"
+            progress.error_message = f"Local copy failed: {e!s}"
             return progress
 
 

@@ -422,12 +422,12 @@ def main() -> None:
 
 
 __all__ = [
-    "app",
-    "main",
     "AssistantConfig",
-    "extract_last_user_query",
-    "build_context_block",
-    "inject_context_into_messages",
-    "retrieve_context",
+    "app",
     "augment_messages",
+    "build_context_block",
+    "extract_last_user_query",
+    "inject_context_into_messages",
+    "main",
+    "retrieve_context",
 ]

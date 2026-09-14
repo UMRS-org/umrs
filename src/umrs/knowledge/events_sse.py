@@ -14,8 +14,9 @@ import os
 import time
 import uuid
 from collections import defaultdict
+from collections.abc import AsyncIterator
 from dataclasses import asdict, dataclass
-from typing import Any, AsyncIterator
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
@@ -150,7 +151,9 @@ async def _broadcast_loop() -> None:
             if bevent.event_type == "error":
                 logger.warning(
                     "SSE broadcast: %s delivered=%d dropped=%d",
-                    bevent.event_type, delivered, dropped,
+                    bevent.event_type,
+                    delivered,
+                    dropped,
                 )
     except asyncio.CancelledError:
         logger.info("SSE broadcast loop stopped")
@@ -222,7 +225,9 @@ async def sse_events(
 
     logger.info(
         "SSE client %s connected to project %s (total: %d)",
-        client_id, project_id, _project_client_count(project_id),
+        client_id,
+        project_id,
+        _project_client_count(project_id),
     )
 
     _start_broadcast_loop()
@@ -319,8 +324,11 @@ def start_sse() -> None:
         return
     _start_broadcast_loop()
     _sse_started = True
-    logger.info("SSE broadcast engine started (timeout=%ds, max_clients=%d)",
-                sse_timeout_sec, sse_max_clients)
+    logger.info(
+        "SSE broadcast engine started (timeout=%ds, max_clients=%d)",
+        sse_timeout_sec,
+        sse_max_clients,
+    )
 
 
 def stop_sse() -> None:
@@ -333,6 +341,7 @@ def stop_sse() -> None:
 
 
 # ── Health check ─────────────────────────────────────────────────────────────
+
 
 @router.get("/projects/{project_id}/events/health")
 async def sse_health(project_id: str) -> dict[str, Any]:
@@ -351,4 +360,4 @@ async def sse_health(project_id: str) -> dict[str, Any]:
 
 
 # ── Import guard ─────────────────────────────────────────────────────────────
-import os  # noqa: E402 — top-level for env vars, moved to avoid circular import
+import os

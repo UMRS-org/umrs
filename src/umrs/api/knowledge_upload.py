@@ -67,7 +67,9 @@ async def _stage_upload_bytes(
         content = await file.read()
     except Exception as exc:  # body-read failure is caller-side physics
         raise_typed(
-            PlatformError.knowledge2("bad_request", f"Failed to read upload body: {exc}"),
+            PlatformError.knowledge2(
+                "bad_request", f"Failed to read upload body: {exc}"
+            ),
             cause=exc,
         )
     if len(content) > MAX_BYTES:

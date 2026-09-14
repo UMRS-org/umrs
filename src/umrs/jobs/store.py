@@ -25,6 +25,8 @@ from typing import Any
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
+from umrs.metrics import METRICS
+
 from .models import (
     AttemptStatus,
     Job,
@@ -37,7 +39,6 @@ from .models import (
     generate_job_id,
 )
 from .schema import ensure_schema
-from umrs.metrics import METRICS
 
 logger = logging.getLogger(__name__)
 
@@ -899,7 +900,9 @@ class JobStore:
             # Invoke post-success hook (best-effort, non-blocking)
             self._invoke_post_success(attempt_id, job_id)
 
-    def _record_attempt_timing(self, attempt_id: str, phase: str, when: datetime) -> None:
+    def _record_attempt_timing(
+        self, attempt_id: str, phase: str, when: datetime
+    ) -> None:
         """WP-12: record one attempt phase span (best-effort; never blocks).
 
         Computes the phase milliseconds from the attempt row's started_at,
@@ -933,7 +936,9 @@ class JobStore:
 
             job_type = ""
             try:
-                job_type = str(getattr(self.get_job(attempt.job_id), "job_type", "") or "")
+                job_type = str(
+                    getattr(self.get_job(attempt.job_id), "job_type", "") or ""
+                )
             except (AttributeError, RuntimeError):
                 # span attribute enrichment only; missing job row must not block
                 job_type = ""
@@ -948,7 +953,9 @@ class JobStore:
                 fields=fields,
             )
         except Exception:
-            logger.exception("attempt timing persistence failed for %s (phase=%s)", attempt_id, phase)
+            logger.exception(
+                "attempt timing persistence failed for %s (phase=%s)", attempt_id, phase
+            )
 
     def _persist_attempt_manifest(self, attempt_id: str, job_id: str) -> None:
         """P7a: assemble + persist this attempt's ExecutionManifest (G-P7-1).
@@ -1027,7 +1034,9 @@ class JobStore:
                 return manifest
         return None
 
-    def record_attempt_credentials(self, attempt_id: str, credentials: dict[str, Any]) -> None:
+    def record_attempt_credentials(
+        self, attempt_id: str, credentials: dict[str, Any]
+    ) -> None:
         """WP-11: persist an attempt-scoped credential record (metrics slot).
 
         Never stores secret material — only scope, TTL and expiry.

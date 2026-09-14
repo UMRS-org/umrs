@@ -45,7 +45,9 @@ class NearDuplicateVerifier(VerifierBase):
         # We'll know after attempting to list embeddings.
         return True  # always attempt; degrade if no embeddings found.
 
-    async def run(self, knowledge_store: "KnowledgeStore", project_id: str) -> list[Finding]:
+    async def run(
+        self, knowledge_store: KnowledgeStore, project_id: str
+    ) -> list[Finding]:
         """Run near-duplicate detection."""
         findings: list[Finding] = []
 
@@ -54,7 +56,9 @@ class NearDuplicateVerifier(VerifierBase):
             return findings
 
         # Gather embeddings.
-        embeddings_map = await self._collect_embeddings(knowledge_store, project_id, artifacts)
+        embeddings_map = await self._collect_embeddings(
+            knowledge_store, project_id, artifacts
+        )
 
         if not embeddings_map:
             # No embeddings — degrade gracefully.
@@ -105,7 +109,7 @@ class NearDuplicateVerifier(VerifierBase):
 
     async def _collect_embeddings(
         self,
-        knowledge_store: "KnowledgeStore",
+        knowledge_store: KnowledgeStore,
         project_id: str,
         artifacts,
     ) -> dict[str, list[float]]:

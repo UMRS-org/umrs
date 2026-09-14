@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Query
+
 from .typed_errors import PlatformError, raise_typed
 
 logger = logging.getLogger(__name__)
@@ -23,7 +23,9 @@ def set_store(store) -> None:
 
 def _get_store():
     if _store is None:
-        raise_typed(PlatformError.namespaces("unavailable", "Namespace store not initialized"))
+        raise_typed(
+            PlatformError.namespaces("unavailable", "Namespace store not initialized")
+        )
     return _store
 
 

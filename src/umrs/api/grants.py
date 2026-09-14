@@ -12,13 +12,13 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
-
-from .typed_errors import PlatformError, raise_typed
+from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 
 from umrs.grants import ASSET_KINDS, GRANTEE_KINDS, AssetGrant, GrantStore
 from umrs.knowledge.access_scope import CallerScope, graph_writable
+
+from .typed_errors import PlatformError, raise_typed
 
 logger = logging.getLogger(__name__)
 
@@ -204,7 +204,9 @@ async def list_grants_for_asset(
     caller = _caller(request)
     pool = _pool(request)
     if not asset_kind or not asset_id:
-        raise_typed(PlatformError.grants("bad_request", "asset_kind and asset_id required"))
+        raise_typed(
+            PlatformError.grants("bad_request", "asset_kind and asset_id required")
+        )
     if not _asset_writable(pool, asset_kind, asset_id, caller):
         raise_typed(PlatformError.grants("not_found", "asset not found"))
     conn = pool.getconn()

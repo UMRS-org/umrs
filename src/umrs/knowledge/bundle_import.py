@@ -21,9 +21,10 @@ from __future__ import annotations
 import json
 import logging
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 from .bundle_export import verify_bundle_integrity
 from .store import KnowledgeEdge, KnowledgeNode
@@ -355,7 +356,10 @@ class KnowledgeImportEngine:
             return restored, skipped
         for row in _iter_rows(path):
             outcome, diff = await self._collision_decision(
-                table, id_column, str(row[row_id_key]), str(row.get("content_hash") or "")
+                table,
+                id_column,
+                str(row[row_id_key]),
+                str(row.get("content_hash") or ""),
             )
             if outcome == "skip":
                 skipped += 1

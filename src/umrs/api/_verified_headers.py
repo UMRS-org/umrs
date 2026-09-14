@@ -19,13 +19,14 @@ import os
 from dataclasses import dataclass
 
 from fastapi import Header
-from .typed_errors import PlatformError, raise_typed
-
 from r4_contracts.handshake_hmac import (
     verify_claims,
     verify_workflow_author_claim,
 )
+
 from umrs.shared.handshake import handshake_secret  # re-export (ADR-053)
+
+from .typed_errors import PlatformError, raise_typed
 
 
 def verified_headers_trusted(
@@ -146,7 +147,10 @@ class CallerIdentity:
             raise_typed(
                 PlatformError.verified(
                     "forbidden",
-                    ( f"project filter '{requested.strip()}' is outside the " "caller's verified project" )
+                    (
+                        f"project filter '{requested.strip()}' is outside the "
+                        "caller's verified project"
+                    ),
                 ),
             )
         return self.project_id
@@ -161,13 +165,18 @@ class CallerIdentity:
         declared_clean = (declared or "").strip()
         if self.is_admin:
             if not declared_clean:
-                raise_typed(PlatformError.verified("bad_request", "project_id is required"))
+                raise_typed(
+                    PlatformError.verified("bad_request", "project_id is required")
+                )
             return declared_clean
         if declared_clean and declared_clean != self.project_id:
             raise_typed(
                 PlatformError.verified(
                     "forbidden",
-                    ( f"project_id '{declared_clean}' is outside the " "caller's verified project" )
+                    (
+                        f"project_id '{declared_clean}' is outside the "
+                        "caller's verified project"
+                    ),
                 ),
             )
         return self.project_id
@@ -189,8 +198,7 @@ def _missing_caller(strict: bool) -> CallerIdentity | None:
     if strict:
         raise_typed(
             PlatformError.verified(
-                "unauthorized",
-                "Missing Gateway-verified caller identity"
+                "unauthorized", "Missing Gateway-verified caller identity"
             ),
         )
     return None
@@ -234,8 +242,7 @@ def resolve_caller(
     if not _signature_ok(strict, uid, pid, x_verified_is_admin, x_verified_hmac):
         raise_typed(
             PlatformError.verified(
-                "unauthorized",
-                "Gateway-verified identity signature rejected"
+                "unauthorized", "Gateway-verified identity signature rejected"
             ),
         )
     return CallerIdentity(
@@ -273,8 +280,7 @@ def get_verified_caller(
     if caller is None:
         raise_typed(
             PlatformError.verified(
-                "unauthorized",
-                "Caller identity required for this operation"
+                "unauthorized", "Caller identity required for this operation"
             ),
         )
     return caller

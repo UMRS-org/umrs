@@ -94,8 +94,7 @@ async def knowledge_asyncpg_pool(request: Request):
     except ImportError as exc:
         raise_typed(
             PlatformError.asyncpgpool(
-                "unavailable",
-                "asyncpg unavailable in server install"
+                "unavailable", "asyncpg unavailable in server install"
             ),
             cause=exc,
         )

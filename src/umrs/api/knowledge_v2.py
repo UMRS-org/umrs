@@ -13,7 +13,7 @@ No umrs.api or umrs.server imports — strict boundary.
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
@@ -36,18 +36,18 @@ class IngestRequest(BaseModel):
     sources: list[dict[str, Any]] = Field(
         ..., description="Source specs (kind, uri/path)"
     )
-    project_id: Optional[str] = Field(None, description="Project ID override")
-    allow_domains: Optional[list[str]] = Field(
+    project_id: str | None = Field(None, description="Project ID override")
+    allow_domains: list[str] | None = Field(
         None, description="Domain allowlist for remote sources"
     )
-    proposal_id: Optional[str] = Field(
+    proposal_id: str | None = Field(
         None,
         description=(
             "Approved graph-extension proposal id — required when the caller "
             "is an agent (x-r4-actor: agent); human-initiated calls omit it"
         ),
     )
-    graph_id: Optional[str] = Field(
+    graph_id: str | None = Field(
         None,
         description=(
             "Target knowledge graph (id or name) for this ingest. When absent, "
@@ -59,8 +59,8 @@ class IngestRequest(BaseModel):
 
 
 class LintRequest(BaseModel):
-    files: Optional[list[str]] = Field(None, description="List of file paths to lint")
-    source_code: Optional[dict[str, str]] = Field(
+    files: list[str] | None = Field(None, description="List of file paths to lint")
+    source_code: dict[str, str] | None = Field(
         None, description="Map of file_path -> source_code content"
     )
 
@@ -94,7 +94,7 @@ class WorkflowDraftResponse(BaseModel):
 
 
 class VerifyRequest(BaseModel):
-    project_id: Optional[str] = Field(None, description="Project to verify")
+    project_id: str | None = Field(None, description="Project to verify")
 
 
 class VerifyResponse(BaseModel):
@@ -122,11 +122,11 @@ class FindingResponse(BaseModel):
     title: str
     description: str
     evidence: str
-    artifact_id: Optional[str] = None
-    waived_evidence: Optional[str] = None
-    waiver_expires: Optional[str] = None
-    created_at: Optional[str] = None
-    updated_at: Optional[str] = None
+    artifact_id: str | None = None
+    waived_evidence: str | None = None
+    waiver_expires: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
 
 
 class ReportSummary(BaseModel):
@@ -140,8 +140,8 @@ class ReportSummary(BaseModel):
     failed_checks: int
     skipped_checks: int
     degraded: bool
-    degraded_reason: Optional[str] = None
-    created_at: Optional[str] = None
+    degraded_reason: str | None = None
+    created_at: str | None = None
 
 
 class ReportListResponse(BaseModel):
@@ -158,15 +158,15 @@ class FindingsResponse(BaseModel):
 
 
 class FindingListQuery(BaseModel):
-    report_id: Optional[str] = Field(None, description="Filter by report")
-    status: Optional[str] = Field(None, description="Filter by status")
-    severity: Optional[str] = Field(None, description="Filter by severity")
+    report_id: str | None = Field(None, description="Filter by report")
+    status: str | None = Field(None, description="Filter by status")
+    severity: str | None = Field(None, description="Filter by severity")
 
 
 class WaiveRequest(BaseModel):
     finding_key: str = Field(..., description="Finding identifier")
     evidence: str = Field(..., description="Waiver justification")
-    expires_days: Optional[int] = Field(None, description="Waiver expiry in days")
+    expires_days: int | None = Field(None, description="Waiver expiry in days")
 
 
 class ApproveRequest(BaseModel):
@@ -191,13 +191,13 @@ class EmitWorkflowRequest(BaseModel):
     plan: dict[str, Any] = Field(
         ..., description="ResearchPlan dict (objectives, hypotheses, experiments)"
     )
-    model: Optional[str] = Field(
+    model: str | None = Field(
         None, description="Model name for project context prefill"
     )
-    partition: Optional[str] = Field(
+    partition: str | None = Field(
         None, description="Slurm partition for project context prefill"
     )
-    account: Optional[str] = Field(
+    account: str | None = Field(
         None, description="Slurm account for project context prefill"
     )
 
@@ -206,7 +206,7 @@ class EmitWorkflowRequest(BaseModel):
 
 
 def _resolve_ingest_target(
-    request: Request, project_id: str, graph_ref: Optional[str]
+    request: Request, project_id: str, graph_ref: str | None
 ) -> str:
     """Resolve the ingest target graph (default: the project's default graph).
 
@@ -227,9 +227,17 @@ def _resolve_ingest_target(
         )
     graph = GraphRegistryStore(pool).resolve_graph(graph_ref)
     if graph is None:
-        raise_typed(PlatformError.knowledge2("unknown_graph", f"Unknown target graph {graph_ref!r}"))
+        raise_typed(
+            PlatformError.knowledge2(
+                "unknown_graph", f"Unknown target graph {graph_ref!r}"
+            )
+        )
     if graph.status != "active":
-        raise_typed(PlatformError.knowledge2("graph_not_active", f"Graph {graph_ref!r} is {graph.status}"))
+        raise_typed(
+            PlatformError.knowledge2(
+                "graph_not_active", f"Graph {graph_ref!r} is {graph.status}"
+            )
+        )
     return graph.graph_id
 
 
@@ -273,7 +281,11 @@ async def trigger_ingest(
 
     runtime = get_runtime()
     if runtime is None:
-        raise_typed(PlatformError.knowledge2("unavailable", "UMRS durable job runtime not available"))
+        raise_typed(
+            PlatformError.knowledge2(
+                "unavailable", "UMRS durable job runtime not available"
+            )
+        )
 
     target_graph_id = _resolve_ingest_target(request, project_id, body.graph_id)
     enforce_graph_mutation_authorization(
@@ -342,8 +354,8 @@ async def list_artifacts(
     project_id: str = Depends(get_project_id),
     page: int = Query(1, ge=1),
     page_size: int = Query(25, ge=1, le=100),
-    kind: Optional[str] = Query(None, description="Filter by artifact kind"),
-    status: Optional[str] = Query(None, description="Filter by status"),
+    kind: str | None = Query(None, description="Filter by artifact kind"),
+    status: str | None = Query(None, description="Filter by status"),
 ) -> ArtifactListResponse:
     """List knowledge artifacts (paginated)."""
     try:
@@ -461,7 +473,11 @@ async def trigger_verify(
 
     runtime = get_runtime()
     if runtime is None:
-        raise_typed(PlatformError.knowledge2("unavailable", "UMRS durable job runtime not available"))
+        raise_typed(
+            PlatformError.knowledge2(
+                "unavailable", "UMRS durable job runtime not available"
+            )
+        )
 
     spec: dict[str, Any] = {
         "project_id": project_id,

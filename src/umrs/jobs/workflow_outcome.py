@@ -158,7 +158,9 @@ VALID_FAILURE_CATEGORIES = {
 
 def _outcome_matches(outcome: WorkflowOutcome, filters: dict[str, str | None]) -> bool:
     """Truthy filters must equal the outcome's attribute (falsy filters ignored)."""
-    return all(not value or getattr(outcome, key) == value for key, value in filters.items())
+    return all(
+        not value or getattr(outcome, key) == value for key, value in filters.items()
+    )
 
 
 def _summary_from_row(name: str, row: tuple) -> OutcomeSummary:
@@ -205,7 +207,9 @@ class WorkflowOutcomeStore:
     def _conn(self):  # type: ignore[no-untyped-def]
         from umrs.shared.pg_settings import pg_connect_kwargs
 
-        return self._psycopg2.connect(self._db_url, **pg_connect_kwargs("workflow-outcome"))  # type: ignore[union-attr]
+        return self._psycopg2.connect(
+            self._db_url, **pg_connect_kwargs("workflow-outcome")
+        )  # type: ignore[union-attr]
 
     # ── Record ──────────────────────────────────────────────
 

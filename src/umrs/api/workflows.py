@@ -29,11 +29,10 @@ from fastapi import (
     UploadFile,
     status,
 )
-
-from ..core.zmq_correlation import dumps_with_correlation_id
 from pydantic import BaseModel, Field, model_validator
 
 from ..core.TaskCmdStatus import TaskCmd
+from ..core.zmq_correlation import dumps_with_correlation_id
 from ..jobs.models import JobStatus
 from ..jobs.store import InvalidTransitionError, JobNotFoundError, JobStore
 from ..server.file_handling import handle_upload_workflow
@@ -209,7 +208,12 @@ def _validate_params_against_schema(
         raise_typed(
             PlatformError.workflows2(
                 "bad_request",
-                { "error": "validation_error", "code": "workflow_parameters_invalid", "message": f"Missing required workflow parameters: {', '.join(missing)}", "missing": missing, }
+                {
+                    "error": "validation_error",
+                    "code": "workflow_parameters_invalid",
+                    "message": f"Missing required workflow parameters: {', '.join(missing)}",
+                    "missing": missing,
+                },
             ),
         )
 
@@ -221,12 +225,18 @@ def _parse_command_response(raw: str, *, action: str) -> dict[str, Any]:
     except json.JSONDecodeError as exc:
         logger.exception("Invalid JSON from workflow command handler during %s", action)
         raise_typed(
-            PlatformError.workflows("bad_gateway", f"Invalid workflow handler response during {action}"),
+            PlatformError.workflows(
+                "bad_gateway", f"Invalid workflow handler response during {action}"
+            ),
             cause=exc,
         )
 
     if not isinstance(data, dict):
-        raise_typed(PlatformError.workflows("bad_gateway", f"Unexpected workflow handler response during {action}"))
+        raise_typed(
+            PlatformError.workflows(
+                "bad_gateway", f"Unexpected workflow handler response during {action}"
+            )
+        )
 
     if data.get("status") != "error":
         return data
@@ -277,7 +287,11 @@ def _verified_workflow_user(user_id: str | None, x_user_id: str | None) -> str:
     if verified_user_id:
         return verified_user_id
     if _strict_auth_mode():
-        raise_typed(PlatformError.auth("gateway_identity_required", "Missing Gateway-verified user identity"))
+        raise_typed(
+            PlatformError.auth(
+                "gateway_identity_required", "Missing Gateway-verified user identity"
+            )
+        )
     if not user_id or not user_id.strip():
         raise_typed(PlatformError.workflows("bad_request", "user_id is required"))
     return user_id.strip()
@@ -359,7 +373,11 @@ def _verified_workflow_params(
         resolved_params["project_id"] = verified_project_id
         return resolved_params
     if _strict_auth_mode():
-        raise_typed(PlatformError.auth("gateway_identity_required", "Missing Gateway-verified project identity"))
+        raise_typed(
+            PlatformError.auth(
+                "gateway_identity_required", "Missing Gateway-verified project identity"
+            )
+        )
     return resolved_params
 
 
@@ -379,7 +397,12 @@ def _require_verified_workflow_identity(
     """
     if not (_header_str(x_user_id) and _header_str(x_verified_project_id)):
         if _strict_auth_mode():
-            raise_typed(PlatformError.auth("gateway_identity_required", "Missing Gateway-verified workflow identity"))
+            raise_typed(
+                PlatformError.auth(
+                    "gateway_identity_required",
+                    "Missing Gateway-verified workflow identity",
+                )
+            )
         return
     if not _strict_auth_mode():
         return
@@ -393,7 +416,12 @@ def _require_verified_workflow_identity(
         project_id=_header_str(x_verified_project_id),
         is_admin=_header_str(x_verified_is_admin) == "true",
     ):
-        raise_typed(PlatformError.auth("gateway_signature_rejected", "Gateway-verified identity signature rejected"))
+        raise_typed(
+            PlatformError.auth(
+                "gateway_signature_rejected",
+                "Gateway-verified identity signature rejected",
+            )
+        )
 
 
 def _enforce_workflow_upload_role(
@@ -562,7 +590,9 @@ def _resolve_definition_for_caller(
         for candidate in _all_definitions():
             if candidate.get("name") == name:
                 return candidate
-    raise_typed(PlatformError.workflows("not_found", f"Run definition '{name}' not found"))
+    raise_typed(
+        PlatformError.workflows("not_found", f"Run definition '{name}' not found")
+    )
 
 
 def _all_definitions() -> list[dict[str, Any]]:
@@ -675,7 +705,9 @@ async def delete_run_definition(
     victim = owner if is_admin else caller
     removed = delete_definition(name, victim)
     if removed == 0:
-        raise_typed(PlatformError.workflows("not_found", f"Run definition '{name}' not found"))
+        raise_typed(
+            PlatformError.workflows("not_found", f"Run definition '{name}' not found")
+        )
     return {
         "status": "ok",
         "name": name,
@@ -731,7 +763,11 @@ async def list_workflow_triggers(
     caller = _header_str(x_user_id) or ""
     entry = _resolve_workflow_catalog_entry(workflow_name, caller)
     if entry is None:
-        raise_typed(PlatformError.workflows("not_found", f"Workflow '{workflow_name}' not found"))
+        raise_typed(
+            PlatformError.workflows(
+                "not_found", f"Workflow '{workflow_name}' not found"
+            )
+        )
     workflow_json = _read_entry_workflow_json(entry)
     return {
         "status": "ok",
@@ -763,13 +799,25 @@ async def delete_workflow(
 
     entry = _resolve_workflow_catalog_entry(workflow_name, caller)
     if entry is None:
-        raise_typed(PlatformError.workflows("not_found", f"Workflow '{workflow_name}' not found"))
+        raise_typed(
+            PlatformError.workflows(
+                "not_found", f"Workflow '{workflow_name}' not found"
+            )
+        )
     owner = str(entry.get("user_id", ""))
     scope = str(entry.get("scope", "user"))
     if scope == "system" and not is_admin:
-        raise_typed(PlatformError.auth("admin_required", "Only admins may delete system workflows"))
+        raise_typed(
+            PlatformError.auth(
+                "admin_required", "Only admins may delete system workflows"
+            )
+        )
     if owner and owner != caller and not is_admin:
-        raise_typed(PlatformError.workflows("forbidden", f"Workflow '{workflow_name}' is owned by another user"))
+        raise_typed(
+            PlatformError.workflows(
+                "forbidden", f"Workflow '{workflow_name}' is owned by another user"
+            )
+        )
 
     result = unregister_workflow(
         workflow_name,
@@ -777,7 +825,11 @@ async def delete_workflow(
         scope=scope,
     )
     if result["removed"] == 0:
-        raise_typed(PlatformError.workflows("not_found", f"Workflow '{workflow_name}' not found"))
+        raise_typed(
+            PlatformError.workflows(
+                "not_found", f"Workflow '{workflow_name}' not found"
+            )
+        )
 
     from .governance import record_resource_deleted
 
@@ -807,7 +859,11 @@ async def describe_workflow(
     caller = _header_str(x_user_id) or ""
     entry = _resolve_workflow_catalog_entry(workflow_name, caller)
     if entry is None:
-        raise_typed(PlatformError.workflows("not_found", f"Workflow '{workflow_name}' not found"))
+        raise_typed(
+            PlatformError.workflows(
+                "not_found", f"Workflow '{workflow_name}' not found"
+            )
+        )
     return _describe_workflow_entry(entry)
 
 
@@ -820,7 +876,7 @@ def _check_workflow_quota(project_id: str) -> None:
     except Exception as exc:
         if hasattr(exc, "status_code"):
             raise
-        pass  # governance not active
+        # governance not active
 
 
 def _resolved_upload_name(filename: str, workflow_name: str | None) -> str:
@@ -870,7 +926,10 @@ def _register_uploaded_workflow(
         description=workflow_json.get("description", ""),
     )
     if result.get("status") == "error":
-        raise_typed(PlatformError.workflows("failure", str(result.get("message", "Workflow registration failed"))),
+        raise_typed(
+            PlatformError.workflows(
+                "failure", str(result.get("message", "Workflow registration failed"))
+            ),
         )
 
     # Governance tracking
@@ -980,7 +1039,11 @@ async def trigger_workflow(
     )
     entry = _resolve_workflow_catalog_entry(workflow_name, user_id)
     if entry is None:
-        raise_typed(PlatformError.workflows("not_found", f"Workflow '{workflow_name}' not found"))
+        raise_typed(
+            PlatformError.workflows(
+                "not_found", f"Workflow '{workflow_name}' not found"
+            )
+        )
     describe = _describe_workflow_entry(entry)
     schema = describe.get("parameter_schema", {})
     _validate_params_against_schema(params, schema)
@@ -1223,7 +1286,12 @@ async def approve_execution_gate(
         comment=request.comment,
     )
     if updated is None:
-        raise_typed(PlatformError.workflows("not_found", f"Execution '{execution_id}' is not tracked by the registry"))
+        raise_typed(
+            PlatformError.workflows(
+                "not_found",
+                f"Execution '{execution_id}' is not tracked by the registry",
+            )
+        )
 
     linked_job = _get_job_for_record(store, record) if job is None else job
 
@@ -1243,7 +1311,7 @@ async def approve_execution_gate(
                 "workflow_name": getattr(record, "workflow_name", ""),
             },
         )
-    except Exception:  # noqa: BLE001 — conservation is degradable
+    except Exception:
         logger.warning("a2l gate decision conservation failed", exc_info=True)
 
     return {"status": "ok", "execution": _execution_payload(updated, linked_job)}

@@ -17,14 +17,13 @@ import logging
 import os
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
-
-from .typed_errors import PlatformError, raise_typed
+from fastapi import APIRouter, Depends, Query, status
 from pydantic import BaseModel, Field
 
 from ..jobs.execution_trace_store import ExecutionTraceStore, TraceRecord
 from ..jobs.store import JobStore
 from .jobs import CallerIdentity, get_caller_identity, get_job_store
+from .typed_errors import PlatformError, raise_typed
 
 logger = logging.getLogger(__name__)
 
@@ -144,7 +143,11 @@ def _verify_job_access(
     except JobNotFoundError:
         raise_typed(PlatformError.jobs("not_found", f"Job not found: {job_id}"))
     if not caller.can_access_job(job):
-        raise_typed(PlatformError.traces("forbidden", "Not authorized to access traces for this job"))
+        raise_typed(
+            PlatformError.traces(
+                "forbidden", "Not authorized to access traces for this job"
+            )
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -193,7 +196,7 @@ def get_trace(
     """Get a single execution trace by ID."""
     record = trace_store.get_trace(trace_id)
     if record is None:
-                raise_typed(PlatformError.traces("not_found", f"Trace not found: {trace_id}"))
+        raise_typed(PlatformError.traces("not_found", f"Trace not found: {trace_id}"))
     return record.to_dict()
 
 
@@ -210,7 +213,7 @@ def update_trace(
     """Update trace status, outputs, or metadata."""
     existing = trace_store.get_trace(trace_id)
     if existing is None:
-                raise_typed(PlatformError.traces("not_found", f"Trace not found: {trace_id}"))
+        raise_typed(PlatformError.traces("not_found", f"Trace not found: {trace_id}"))
 
     # Apply status transition
     if req.status == "running":
@@ -251,7 +254,11 @@ def update_trace(
         record = trace_store._update_trace(trace_id, **updates) if updates else existing
 
     if record is None:
-                raise_typed(PlatformError.traces("not_found", f"Trace not found after update: {trace_id}"))
+        raise_typed(
+            PlatformError.traces(
+                "not_found", f"Trace not found after update: {trace_id}"
+            )
+        )
     return record.to_dict()
 
 
@@ -304,7 +311,7 @@ def get_trace_lineage(
     """Get the full ancestor chain for a trace (root first)."""
     chain = trace_store.get_lineage(trace_id)
     if not chain:
-                raise_typed(PlatformError.traces("not_found", f"Trace not found: {trace_id}"))
+        raise_typed(PlatformError.traces("not_found", f"Trace not found: {trace_id}"))
     return {
         "traces": [t.to_dict() for t in chain],
         "count": len(chain),
@@ -376,7 +383,7 @@ def get_trace_inputs(
     """Get the stored input snapshot for deterministic replay."""
     record = trace_store.get_trace(trace_id)
     if record is None:
-                raise_typed(PlatformError.traces("not_found", f"Trace not found: {trace_id}"))
+        raise_typed(PlatformError.traces("not_found", f"Trace not found: {trace_id}"))
     return {
         "trace_id": trace_id,
         "inputs_hash": record.inputs_hash,
@@ -397,7 +404,7 @@ def get_trace_outputs(
     """Get the stored output snapshot for a completed trace."""
     record = trace_store.get_trace(trace_id)
     if record is None:
-                raise_typed(PlatformError.traces("not_found", f"Trace not found: {trace_id}"))
+        raise_typed(PlatformError.traces("not_found", f"Trace not found: {trace_id}"))
     return {
         "trace_id": trace_id,
         "outputs_hash": record.outputs_hash,

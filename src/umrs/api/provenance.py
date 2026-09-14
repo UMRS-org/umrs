@@ -12,18 +12,17 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
-
-from .typed_errors import PlatformError, raise_typed
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
 
+from ..jobs.lineage_graph import build_lineage_graph
 from ..jobs.models import JobStatus, JobType
 from ..jobs.provenance import build_provenance
-from ..jobs.lineage_graph import build_lineage_graph
 from ..jobs.provenance_diff import compute_provenance_diff
 from ..jobs.store import JobNotFoundError, JobStore
 from .jobs import CallerIdentity, get_caller_identity, get_job_store
 from .traces import get_trace_store
+from .typed_errors import PlatformError, raise_typed
 
 logger = logging.getLogger(__name__)
 
@@ -116,7 +115,11 @@ def get_provenance(
         raise_typed(PlatformError.provenance("not_found", f"Job not found: {job_id}"))
 
     if not caller.can_access_job(job):
-        raise_typed(PlatformError.provenance("forbidden", "Not authorized to view this job's provenance"))
+        raise_typed(
+            PlatformError.provenance(
+                "forbidden", "Not authorized to view this job's provenance"
+            )
+        )
 
     attempts = store.get_attempts_for_job(job_id)
     record = build_provenance(job, attempts)
@@ -146,7 +149,11 @@ def get_provenance_lineage(
         raise_typed(PlatformError.provenance("not_found", f"Job not found: {job_id}"))
 
     if not caller.can_access_job(job):
-        raise_typed(PlatformError.provenance("forbidden", "Not authorized to view this job's lineage"))
+        raise_typed(
+            PlatformError.provenance(
+                "forbidden", "Not authorized to view this job's lineage"
+            )
+        )
 
     traces = trace_store.get_traces_for_job(job_id)
     graph = build_lineage_graph(job_id, traces)
@@ -176,7 +183,9 @@ def diff_provenance(
             raise_typed(PlatformError.provenance("not_found", f"Job not found: {jid}"))
         if not caller.can_access_job(job):
             raise_typed(
-                PlatformError.provenance("forbidden", f"Not authorized to view job: {jid}")
+                PlatformError.provenance(
+                    "forbidden", f"Not authorized to view job: {jid}"
+                )
             )
 
     # Build provenance records
@@ -226,16 +235,21 @@ def list_provenance(
             js = JobStatus(status_filter)
         except ValueError:
             raise_typed(
-                PlatformError.provenance("bad_request", f"Invalid status: {status_filter}")
+                PlatformError.provenance(
+                    "bad_request", f"Invalid status: {status_filter}"
+                )
             )
 
     effective_project = project_id or caller.project_id
 
     # Non-admin callers MUST NOT query another project's jobs.
     if project_id and project_id != caller.project_id and not caller.is_admin:
-            raise_typed(
-                PlatformError.auth("admin_required", "Cross-project provenance listing requires admin privileges")
+        raise_typed(
+            PlatformError.auth(
+                "admin_required",
+                "Cross-project provenance listing requires admin privileges",
             )
+        )
 
     jobs = store.list_jobs(
         project_id=effective_project,

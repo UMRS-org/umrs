@@ -24,7 +24,9 @@ class WorkflowExecutionPort(Protocol):
         """Return current execution status payload."""
         ...
 
-    def wait(self, execution_id: str, *, timeout: float | None = None) -> dict[str, Any]:
+    def wait(
+        self, execution_id: str, *, timeout: float | None = None
+    ) -> dict[str, Any]:
         """Block until terminal; return status/results payload."""
         ...
 
@@ -59,7 +61,9 @@ class FakeWorkflowExecutionPort:
         if self.require_durable and not self.durable_job_id:
             raise RuntimeError("durable job backend required for real research mode")
         self._counter += 1
-        execution_id = f"{self.execution_id_prefix}-{self._counter:04d}-{uuid4().hex[:6]}"
+        execution_id = (
+            f"{self.execution_id_prefix}-{self._counter:04d}-{uuid4().hex[:6]}"
+        )
         self._executions[execution_id] = {
             "execution_id": execution_id,
             "workflow_name": workflow_name,
@@ -82,7 +86,9 @@ class FakeWorkflowExecutionPort:
             "workflow_name": record.get("workflow_name", ""),
         }
 
-    def wait(self, execution_id: str, *, timeout: float | None = None) -> dict[str, Any]:
+    def wait(
+        self, execution_id: str, *, timeout: float | None = None
+    ) -> dict[str, Any]:
         self.calls.append(("wait", (execution_id,), {"timeout": timeout}))
         if self.wait_payload is not None:
             return dict(self.wait_payload)

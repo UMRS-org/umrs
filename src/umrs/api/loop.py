@@ -17,8 +17,6 @@ from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
-
-from .typed_errors import PlatformError, raise_typed
 from pydantic import BaseModel, Field
 
 from umrs.knowledge import loop_hosting
@@ -30,6 +28,8 @@ from umrs.knowledge.loop import (
 )
 from umrs.knowledge.loop_store import LoopStore
 from umrs.knowledge.project import ResearchProject
+
+from .typed_errors import PlatformError, raise_typed
 
 logger = logging.getLogger(__name__)
 
@@ -917,6 +917,7 @@ async def _apply_iteration_record(
 ) -> dict[str, Any]:
     """Map the driver-provided body onto the store-backed loop and save it."""
     from r4_contracts.research import Finding
+
     from umrs.knowledge.loop import LoopIteration, LoopPhase
 
     try:
@@ -1082,7 +1083,9 @@ _LOOP_COUNTER_FIELDS = (
 def _apply_loop_counters(loop: Any, body: LoopStateUpdateRequest) -> None:
     """Copy the provided (non-None) progress fields; clamp current_iteration."""
     if body.current_iteration is not None:
-        loop.current_iteration = max(0, min(loop.max_iterations, body.current_iteration))
+        loop.current_iteration = max(
+            0, min(loop.max_iterations, body.current_iteration)
+        )
     for name in _LOOP_COUNTER_FIELDS:
         value = getattr(body, name)
         if value is not None:

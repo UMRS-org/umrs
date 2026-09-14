@@ -54,7 +54,9 @@ class FigureLegibilityVerifier(VerifierBase):
             return True
         return False
 
-    async def run(self, knowledge_store: "KnowledgeStore", project_id: str) -> list[Finding]:
+    async def run(
+        self, knowledge_store: KnowledgeStore, project_id: str
+    ) -> list[Finding]:
         """Run figure legibility check on image artifacts."""
         if not self.can_run(project_id):
             return [self._degraded_finding()]
@@ -90,7 +92,9 @@ class FigureLegibilityVerifier(VerifierBase):
             message="Figure legibility check skipped: VLM unavailable [DEGRADED]",
         )
 
-    async def _gather_images(self, knowledge_store: "KnowledgeStore", project_id: str) -> list:
+    async def _gather_images(
+        self, knowledge_store: KnowledgeStore, project_id: str
+    ) -> list:
         """Gather image artifacts from knowledge store."""
         artifacts, _ = await knowledge_store.list_artifacts(project_id)
         return [a for a in artifacts if a.kind in ("image", "figure", "diagram")]
@@ -124,5 +128,7 @@ class FigureLegibilityVerifier(VerifierBase):
                     "issues": result.get("issues", []),
                 }
         except Exception as exc:  # noqa: BLE001
-            logger.warning("VLM assessment failed for %s: %s", artifact.artifact_id, exc)
+            logger.warning(
+                "VLM assessment failed for %s: %s", artifact.artifact_id, exc
+            )
         return None

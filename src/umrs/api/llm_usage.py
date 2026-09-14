@@ -177,7 +177,7 @@ INSERT INTO llm_usage_log (
 """
 
 
-def _do_record_sync(pool, record: UsageRecord) -> None:  # noqa: ANN001
+def _do_record_sync(pool, record: UsageRecord) -> None:
     """Execute the INSERT using a psycopg2 ThreadedConnectionPool.
 
     Runs in a thread so the async event loop is never blocked.
@@ -250,7 +250,7 @@ def _do_record_sync(pool, record: UsageRecord) -> None:  # noqa: ANN001
                 pass
 
 
-def record_usage(pool, record: UsageRecord) -> None:  # noqa: ANN001
+def record_usage(pool, record: UsageRecord) -> None:
     """Schedule a fire-and-forget task to persist *record*.
 
     The INSERT runs on the default executor (thread pool) so the async

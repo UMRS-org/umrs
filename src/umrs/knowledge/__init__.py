@@ -58,13 +58,19 @@ def __getattr__(name: str):
         from .artifact_storage import ArtifactStorage
 
         return ArtifactStorage
-    if name in {"KnowledgeIngester", "IngestionResult", "IngestionError", "ingest_object"}:
+    if name in {
+        "KnowledgeIngester",
+        "IngestionResult",
+        "IngestionError",
+        "ingest_object",
+    }:
         from .ingest import (
             IngestionError,
             IngestionResult,
             KnowledgeIngester,
             ingest_object,
         )
+
         return locals()[name]
     if name in {
         "UMRSScientificMemoryAdapter",
@@ -84,6 +90,7 @@ def __getattr__(name: str):
             UMRSScientificMemoryAdapter,
             UMRSSearchAdapter,
         )
+
         return locals()[name]
     if name in {
         "VerificationStore",
@@ -99,17 +106,20 @@ def __getattr__(name: str):
             VerificationReport,
             VerificationStore,
         )
+
         return locals()[name]
     # TASK-013: KnowledgeEvent pub/sub, egress fetch (lazy — may add deps)
     if name in {"KnowledgeEvent", "ScanResult", "FetchResult"}:
         if name == "KnowledgeEvent":
             from .events import KnowledgeEvent
+
             return KnowledgeEvent
         if name == "ScanResult":
             from .egress_fetch import ScanResult
+
             return ScanResult
         if name == "FetchResult":
             from .egress_fetch import FetchResult
+
             return FetchResult
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-

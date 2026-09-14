@@ -17,12 +17,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-
-from .typed_errors import PlatformError, raise_typed
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
-
-from ._verified_headers import CallerIdentity, get_caller
 
 from umrs.graph_reasoning import GraphNavigator
 from umrs.knowledge.verification_chat_controller import (
@@ -34,9 +30,12 @@ from umrs.knowledge.verification_store import (
 )
 from umrs.scientific_reasoning_engine import ScientificReasoningEngine
 
+from ._verified_headers import CallerIdentity, get_caller
+
 # Reuse the shared M3.5 knowledge graph so verification chat can reason
 # over the same state that populates the dashboard/explorer/readiness views.
 from .knowledge import _m35_knowledge_graph
+from .typed_errors import PlatformError, raise_typed
 
 logger = logging.getLogger(__name__)
 
@@ -117,15 +116,14 @@ async def resolve_finding(
     if caller is not None and not caller.is_admin:
         raise_typed(
             PlatformError.verification(
-                "forbidden",
-                "verification finding writes are admin-scoped"
+                "forbidden", "verification finding writes are admin-scoped"
             ),
         )
     if _store is None:
         raise_typed(
             PlatformError.verification(
                 "unavailable",
-                "Verification store not initialized — cannot persist findings"
+                "Verification store not initialized — cannot persist findings",
             ),
         )
 
@@ -159,15 +157,14 @@ async def list_findings(
     if caller is not None and not caller.is_admin:
         raise_typed(
             PlatformError.verification(
-                "forbidden",
-                "verification findings listing is admin-scoped"
+                "forbidden", "verification findings listing is admin-scoped"
             ),
         )
     if _store is None:
         raise_typed(
             PlatformError.verification(
                 "unavailable",
-                "Verification store not initialized — cannot list findings"
+                "Verification store not initialized — cannot list findings",
             ),
         )
     findings = await _store.list_findings(
@@ -204,15 +201,14 @@ async def transition_finding(
     if caller is not None and not caller.is_admin:
         raise_typed(
             PlatformError.verification(
-                "forbidden",
-                "verification finding transitions are admin-scoped"
+                "forbidden", "verification finding transitions are admin-scoped"
             ),
         )
     if _store is None:
         raise_typed(
             PlatformError.verification(
                 "unavailable",
-                "Verification store not initialized — cannot transition findings"
+                "Verification store not initialized — cannot transition findings",
             ),
         )
     try:

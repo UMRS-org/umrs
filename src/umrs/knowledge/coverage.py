@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
@@ -32,11 +31,11 @@ logger = logging.getLogger(__name__)
 class CoverageStatus(str, Enum):
     """Status of a knowledge artifact in the coverage dashboard."""
 
-    COMPLETE = "complete"          # All required metadata present
-    PARTIAL = "partial"            # Some metadata missing
-    MISSING = "missing"            # Artifact not found
-    ERROR = "error"                # Parsing/extraction failed
-    UNKNOWN = "unknown"            # Unknown format or type
+    COMPLETE = "complete"  # All required metadata present
+    PARTIAL = "partial"  # Some metadata missing
+    MISSING = "missing"  # Artifact not found
+    ERROR = "error"  # Parsing/extraction failed
+    UNKNOWN = "unknown"  # Unknown format or type
 
 
 class ArtifactType(str, Enum):
@@ -137,9 +136,9 @@ class CoverageDashboard:
     type_error: dict[str, int] = field(default_factory=dict)
 
     # Overall scores
-    coverage_score: float = 0.0          # % of artifacts with complete metadata
-    confidence_score: float = 0.0       # Average extraction confidence
-    completeness_score: float = 0.0     # Average metadata completeness
+    coverage_score: float = 0.0  # % of artifacts with complete metadata
+    confidence_score: float = 0.0  # Average extraction confidence
+    completeness_score: float = 0.0  # Average metadata completeness
 
     # Issues
     missing_artifacts: list[str] = field(default_factory=list)
@@ -252,9 +251,7 @@ class CoverageCalculator:
         # Extract knowledge if available
         knowledge = artifact.get("extracted_knowledge", {})
         if isinstance(knowledge, dict):
-            coverage.extraction_confidence = knowledge.get(
-                "extraction_confidence", 0.0
-            )
+            coverage.extraction_confidence = knowledge.get("extraction_confidence", 0.0)
             coverage.missing_fields = self._find_missing_fields(
                 knowledge,
                 artifact_type_str,
@@ -405,11 +402,17 @@ class CoverageCalculator:
         dashboard.type_counts[type_key] = dashboard.type_counts.get(type_key, 0) + 1
 
         if coverage.status == CoverageStatus.COMPLETE:
-            dashboard.type_complete[type_key] = dashboard.type_complete.get(type_key, 0) + 1
+            dashboard.type_complete[type_key] = (
+                dashboard.type_complete.get(type_key, 0) + 1
+            )
         elif coverage.status == CoverageStatus.PARTIAL:
-            dashboard.type_partial[type_key] = dashboard.type_partial.get(type_key, 0) + 1
+            dashboard.type_partial[type_key] = (
+                dashboard.type_partial.get(type_key, 0) + 1
+            )
         elif coverage.status == CoverageStatus.MISSING:
-            dashboard.type_missing[type_key] = dashboard.type_missing.get(type_key, 0) + 1
+            dashboard.type_missing[type_key] = (
+                dashboard.type_missing.get(type_key, 0) + 1
+            )
         elif coverage.status == CoverageStatus.ERROR:
             dashboard.type_error[type_key] = dashboard.type_error.get(type_key, 0) + 1
 
@@ -456,7 +459,10 @@ class CoverageCalculator:
                 dashboard.total_embeddings += 1
             if artifact.indexed_at:
                 # Track the most recent indexing time
-                if not dashboard.last_indexing_time or artifact.indexed_at > dashboard.last_indexing_time:
+                if (
+                    not dashboard.last_indexing_time
+                    or artifact.indexed_at > dashboard.last_indexing_time
+                ):
                     dashboard.last_indexing_time = artifact.indexed_at
 
 

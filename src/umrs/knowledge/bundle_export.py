@@ -439,14 +439,18 @@ class KnowledgeExportEngine:
             },
         }
 
-    def _resolve_reconciliation_snapshot(self, project_id: str) -> dict[str, Any] | None:
+    def _resolve_reconciliation_snapshot(
+        self, project_id: str
+    ) -> dict[str, Any] | None:
         """Best-effort reconciliation snapshot summary (WP-18 attach leg)."""
         try:
             from .reconcile_snapshot import summarize_reconcile_snapshot
 
             return summarize_reconcile_snapshot(project_id)
         except Exception as exc:  # noqa: BLE001 - snapshot is best-effort metadata
-            logger.warning("reconciliation snapshot skipped for %s: %s", project_id, exc)
+            logger.warning(
+                "reconciliation snapshot skipped for %s: %s", project_id, exc
+            )
             return None
 
     async def _resolve_context_references(
@@ -736,6 +740,6 @@ __all__ = [
     "KnowledgeExportEngine",
     "KnowledgeExportResult",
     "upload_bundle_to_s3",
-    "verify_signature",
     "verify_bundle_integrity",
+    "verify_signature",
 ]

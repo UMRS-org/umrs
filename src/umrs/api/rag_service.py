@@ -14,9 +14,7 @@ os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 import contextlib
 
 import httpx
-from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
-
-from .typed_errors import PlatformError, raise_typed
+from fastapi import FastAPI, File, Form, Query, UploadFile
 from langchain_community.embeddings import SentenceTransformerEmbeddings
 from langchain_core.callbacks import CallbackManagerForRetrieverRun
 from langchain_core.documents import Document
@@ -25,6 +23,9 @@ from langchain_core.retrievers import BaseRetriever
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, ConfigDict, Field
 
+# ADR-027 G5/P1b: executor-side canonical mint. Imported at module level but
+# every call path is best-effort (never fails an upload).
+from umrs.knowledge.rag_upload_mint import mint_rag_upload as _mint_canonical_upload
 from umrs.orchestrator.endpoint_registry import (
     EndpointStatus,
     RegisteredEndpoint,
@@ -37,11 +38,9 @@ from umrs.server.provisioning import ServerCfg, configure_user
 from umrs.shared.config import (
     get_resolved_json_server_path,
 )
-
-# ADR-027 G5/P1b: executor-side canonical mint. Imported at module level but
-# every call path is best-effort (never fails an upload).
-from umrs.knowledge.rag_upload_mint import mint_rag_upload as _mint_canonical_upload
 from umrs.shared.utils import add_document_prefix, add_query_prefix
+
+from .typed_errors import PlatformError, raise_typed
 
 
 def _cosine_score(distance) -> float:
@@ -214,7 +213,7 @@ def _model_name_from_entry(model: Any) -> str | None:
     if model is None:
         return None
     if hasattr(model, "model_name"):
-        return getattr(model, "model_name") or None
+        return model.model_name or None
     if isinstance(model, dict):
         return model.get("model_name") or None
     if isinstance(model, str):
@@ -1050,7 +1049,11 @@ def _vector_search_items(
 @app.post("/rag/search", response_model=RAGSearchResponse)
 def rag_search(payload: RAGSearchRequest) -> RAGSearchResponse:
     if EMBEDDINGS is None:
-        raise_typed(PlatformError.ragservice("unavailable", "Embeddings backend not initialized"))
+        raise_typed(
+            PlatformError.ragservice(
+                "unavailable", "Embeddings backend not initialized"
+            )
+        )
 
     docs = _retrieve_documents(payload)
     if payload.search_method == "hybrid" and HYBRID_SEARCHER is not None and docs:
@@ -1271,7 +1274,11 @@ def rag_qa(payload: RAGQARequest) -> RAGQAResponse:
     4. Ask the LLM to answer using only the retrieved context.
     """
     if EMBEDDINGS is None:
-        raise_typed(PlatformError.ragservice("unavailable", "Embeddings backend not initialized"))
+        raise_typed(
+            PlatformError.ragservice(
+                "unavailable", "Embeddings backend not initialized"
+            )
+        )
     llm_candidates = _build_llm_candidates()
     retriever = _build_retriever(payload, _fetch_k_for(payload))
     rewritten_queries, preferred = _rewrite_query(payload, llm_candidates)
@@ -1417,7 +1424,11 @@ def rag_query(payload: GatewayQueryRequest) -> GatewayQueryResponse:
     Wraps the internal /rag/qa endpoint with Gateway's expected format.
     """
     if EMBEDDINGS is None:
-        raise_typed(PlatformError.ragservice("unavailable", "Embeddings backend not initialized"))
+        raise_typed(
+            PlatformError.ragservice(
+                "unavailable", "Embeddings backend not initialized"
+            )
+        )
 
     # Map Gateway request to internal format.
     # Strict project → experience mapping (ADR-027 P0): an unmapped project
@@ -1464,7 +1475,9 @@ async def _read_upload_text(file: UploadFile) -> tuple[bytes, str]:
     if not file.filename:
         raise_typed(PlatformError.ragservice("bad_request", "Filename required"))
     if EMBEDDINGS is None:
-        raise_typed(PlatformError.ragservice("unavailable", "Embeddings not initialized"))
+        raise_typed(
+            PlatformError.ragservice("unavailable", "Embeddings not initialized")
+        )
     if not DB_MODEL_STORE:
         raise_typed(PlatformError.ragservice("unavailable", "RAG store not configured"))
 
@@ -1512,7 +1525,9 @@ def _chunk_and_embed(text: str) -> tuple[list[dict[str, Any]], list[Any]]:
     max_tokens = int(os.getenv("UMRS_RAG_CHUNK_MAX_TOKENS", "256"))
     chunks = _chunk_text_without_nlp(text, tokenizer=tokenizer, max_tokens=max_tokens)
     if not chunks:
-        raise_typed(PlatformError.ragservice("bad_request", "No chunks produced from document"))
+        raise_typed(
+            PlatformError.ragservice("bad_request", "No chunks produced from document")
+        )
 
     chunk_texts = [c["text"] for c in chunks]
     model_name = getattr(EMBEDDINGS, "model_name", None)
@@ -1710,7 +1725,10 @@ def _persist_chunks(
         cur.close()
     except Exception as exc:
         conn.rollback()
-        raise_typed(PlatformError.ragservice("failure", f"Database insertion failed: {exc}"), cause=exc)
+        raise_typed(
+            PlatformError.ragservice("failure", f"Database insertion failed: {exc}"),
+            cause=exc,
+        )
     finally:
         db_pool.putconn(conn)
 

@@ -114,8 +114,8 @@ class MCPVerifier(VerifierBase):
 
     async def run(
         self,
-        knowledge_store,  # noqa: ARG002
-        project_id: str,  # noqa: ARG002
+        knowledge_store,
+        project_id: str,
     ) -> list[Finding]:
         """Run the MCP tool and convert its output to findings."""
         from r4_mcp.security import ToolCapability
@@ -136,7 +136,9 @@ class MCPVerifier(VerifierBase):
         # Load manifest and get required capability
         manifests = self._load_manifests()
         manifest = manifests[0]
-        required_cap = manifest.tool_capabilities.get(self.config.tool_name, ToolCapability.NONE)
+        required_cap = manifest.tool_capabilities.get(
+            self.config.tool_name, ToolCapability.NONE
+        )
 
         # Check KNOWLEDGE_VERIFY capability (redundant guard — validate_config already checked)
         if (required_cap & ToolCapability.KNOWLEDGE_VERIFY) == ToolCapability.NONE:
@@ -187,7 +189,9 @@ class MCPVerifier(VerifierBase):
         # Parse result — MCP returns content blocks with text
         return self._extract_findings(result, self.name)
 
-    def _extract_findings(self, result: dict[str, Any], verifier_name: str) -> list[Finding]:
+    def _extract_findings(
+        self, result: dict[str, Any], verifier_name: str
+    ) -> list[Finding]:
         """Extract findings from an MCP tool result."""
         findings: list[Finding] = []
 

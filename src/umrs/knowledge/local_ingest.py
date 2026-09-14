@@ -19,18 +19,20 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-_SKIP_DIR_NAMES = frozenset({
-    ".git",
-    "__pycache__",
-    "node_modules",
-    ".venv",
-    "venv",
-    "_data_catalog",
-    ".pytest_cache",
-    ".mypy_cache",
-    ".tox",
-    ".ruff_cache",
-})
+_SKIP_DIR_NAMES = frozenset(
+    {
+        ".git",
+        "__pycache__",
+        "node_modules",
+        ".venv",
+        "venv",
+        "_data_catalog",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".tox",
+        ".ruff_cache",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -64,7 +66,17 @@ def classify_local_file(file_path: Path) -> str | None:
     if suffix == ".ipynb":
         return "notebook"
     if suffix in {
-        ".py", ".pyx", ".cpp", ".cc", ".cu", ".cuh", ".rs", ".go", ".rb", ".js", ".ts",
+        ".py",
+        ".pyx",
+        ".cpp",
+        ".cc",
+        ".cu",
+        ".cuh",
+        ".rs",
+        ".go",
+        ".rb",
+        ".js",
+        ".ts",
     }:
         return "code"
     if suffix in {".pdf", ".pptx", ".ppt"}:

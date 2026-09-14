@@ -45,9 +45,7 @@ def validate_research_loop_spec(spec: dict) -> dict:
     if driver not in DRIVERS:
         raise ValueError(f"research_loop_job driver must be one of {sorted(DRIVERS)}")
     venue = str(spec.get("venue") or "").strip()
-    if venue and not (
-        venue == "frontend" or venue.startswith(CLUSTER_VENUE_PATTERN)
-    ):
+    if venue and not (venue == "frontend" or venue.startswith(CLUSTER_VENUE_PATTERN)):
         raise ValueError(
             f"research_loop_job venue must be 'frontend' or 'cluster:<name>' (got {venue!r})"
         )
@@ -78,7 +76,9 @@ def split_cluster_venue_name(venue: str) -> str:
     """
     name = venue[len(CLUSTER_VENUE_PATTERN) :].strip()
     if not name:
-        raise ValueError("research_loop_job cluster venue requires a site name after 'cluster:'")
+        raise ValueError(
+            "research_loop_job cluster venue requires a site name after 'cluster:'"
+        )
     if "/" in name or name != name.lower() or name.startswith((" ", "-")):
         raise ValueError(f"research_loop_job cluster site name is invalid: {name!r}")
     return name
@@ -101,7 +101,9 @@ class ResearchLoopBackend(OrchestratorBackend):
         if venue.startswith(CLUSTER_VENUE_PATTERN):
             from .cluster_venue import ClusterSlurmSubmitter
 
-            return await ClusterSlurmSubmitter().submit(job=job, attempt=attempt, spec=spec)
+            return await ClusterSlurmSubmitter().submit(
+                job=job, attempt=attempt, spec=spec
+            )
 
         from umrs.knowledge import loop_hosting
 

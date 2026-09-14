@@ -6,11 +6,11 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
-from .typed_errors import PlatformError, raise_typed
+from fastapi import APIRouter, Depends
 
 from .endpoints import _caller_is_admin
 from .files import get_project_id
+from .typed_errors import PlatformError, raise_typed
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +40,9 @@ def set_store(store) -> None:
 
 def _get_store():
     if _store is None:
-        raise_typed(PlatformError.toolcache("unavailable", "Tool output cache not initialized"))
+        raise_typed(
+            PlatformError.toolcache("unavailable", "Tool output cache not initialized")
+        )
     return _store
 
 
@@ -65,7 +67,11 @@ async def put_cached_output(
     if not isinstance(ttl, int) or isinstance(ttl, bool) or ttl <= 0:
         # WP-16 round 2: presets reject TTL<=0 at the request boundary
         # (no born-expired cache entries; same clamp as jobs/traces/identity).
-        raise_typed(PlatformError.toolcache("bad_request", "ttl_seconds must be a positive integer"))
+        raise_typed(
+            PlatformError.toolcache(
+                "bad_request", "ttl_seconds must be a positive integer"
+            )
+        )
     entry = store.put(
         session_id=_namespaced(project_id, req["session_id"]),
         tool_name=req["tool_name"],
@@ -127,8 +133,7 @@ async def cleanup_expired(is_admin: bool = Depends(_caller_is_admin)):
     if not is_admin:
         raise_typed(
             PlatformError.toolcache(
-                "forbidden",
-                "cleanup requires admin role (cross-project operation)"
+                "forbidden", "cleanup requires admin role (cross-project operation)"
             ),
         )
     store = _get_store()

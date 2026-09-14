@@ -16,15 +16,14 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
-
-from .typed_errors import PlatformError, raise_typed
+from fastapi import APIRouter, Depends, Query, status
 from pydantic import BaseModel
 
 from umrs.knowledge.access_scope import CallerScope
 
 from ..jobs.secret_broker import SecretBroker, SecretLease
 from ._scope_identity import get_caller_scope
+from .typed_errors import PlatformError, raise_typed
 
 logger = logging.getLogger(__name__)
 
@@ -198,7 +197,9 @@ def validate_secret(req: ValidateSecretRequest):
     broker = get_broker()
     lease = broker.validate_secret(req.secret_value)
     if not lease:
-        raise_typed(PlatformError.secretbroker("unauthorized", "Invalid or expired secret"))
+        raise_typed(
+            PlatformError.secretbroker("unauthorized", "Invalid or expired secret")
+        )
     return LeaseResponse(**lease.to_dict())
 
 
@@ -249,8 +250,7 @@ def renew_lease(
     if not ok:
         raise_typed(
             PlatformError.secretbroker(
-                "bad_request",
-                "Lease not found, expired, or renewal exceeds max TTL"
+                "bad_request", "Lease not found, expired, or renewal exceeds max TTL"
             ),
         )
     return {"status": "renewed", "lease_id": lease_id}

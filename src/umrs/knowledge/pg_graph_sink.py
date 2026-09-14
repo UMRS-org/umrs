@@ -19,8 +19,9 @@ from __future__ import annotations
 import hashlib
 import logging
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Mapping, Optional, Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from umrs.metrics import METRICS
 
@@ -117,11 +118,11 @@ class PgGraphSink:
 
     async def generate(
         self,
-        store: Optional[KnowledgeStore] = None,
-        project_id: Optional[str] = None,
-        ir_ids: Optional[list[str]] = None,
-        graph_id: Optional[str] = None,
-        graph: Optional[Mapping[str, Any]] = None,
+        store: KnowledgeStore | None = None,
+        project_id: str | None = None,
+        ir_ids: list[str] | None = None,
+        graph_id: str | None = None,
+        graph: Mapping[str, Any] | None = None,
     ) -> int:
         """Truncate and recompile the Postgres knowledge graph.
 
@@ -168,9 +169,9 @@ class PgGraphSink:
 
     def _resolve_store(
         self,
-        store: Optional[KnowledgeStore],
-        project_id: Optional[str],
-        ir_ids: Optional[list[str]],
+        store: KnowledgeStore | None,
+        project_id: str | None,
+        ir_ids: list[str] | None,
     ) -> KnowledgeStore:
         """Validate generate() inputs and resolve the store."""
         if project_id is None or ir_ids is None:
@@ -349,8 +350,11 @@ class PgGraphSink:
                     source_id=node_id,
                     target_id=_node_id_for_dep(value, ""),
                     relation_type=relation,
-                    content={"dep_name": value, "ir_id": ir.ir_id,
-                             "extraction_field": field},
+                    content={
+                        "dep_name": value,
+                        "ir_id": ir.ir_id,
+                        "extraction_field": field,
+                    },
                     graph_id=graph_id,
                 )
                 await store.upsert_edge(edge)

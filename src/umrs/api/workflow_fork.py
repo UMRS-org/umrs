@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 
 from .typed_errors import PlatformError, raise_typed
 
@@ -23,7 +23,9 @@ def set_forker(forker) -> None:
 
 def _get_forker():
     if _forker is None:
-        raise_typed(PlatformError.workflowfork("unavailable", "Workflow forker not initialized"))
+        raise_typed(
+            PlatformError.workflowfork("unavailable", "Workflow forker not initialized")
+        )
     return _forker
 
 

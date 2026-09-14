@@ -72,9 +72,13 @@ class ClusterSlurmSubmitter:
         repo_root: Path | None = None,
     ) -> None:
         self._submit = submit_wrapped
-        self._repo_root = repo_root or Path(os.environ.get("R4_REPO_ROOT") or os.getcwd())
+        self._repo_root = repo_root or Path(
+            os.environ.get("R4_REPO_ROOT") or os.getcwd()
+        )
 
-    async def submit(self, *, job: Job, attempt: JobAttempt, spec: Mapping[str, Any]) -> str:
+    async def submit(
+        self, *, job: Job, attempt: JobAttempt, spec: Mapping[str, Any]
+    ) -> str:
         """Submit the loop's driver env-injected into the cluster wrapper."""
         loop_id = str(spec.get("loop_id") or "").strip()
         if not loop_id:

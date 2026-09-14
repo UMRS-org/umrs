@@ -13,12 +13,13 @@ enforcement that client modes (TRUST/autopilot) cannot bypass.
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
+from typing import Any
 
-from fastapi import HTTPException, Request
-from .typed_errors import PlatformError, raise_typed
+from fastapi import Request
 
 from umrs.knowledge.graph_registry import ProposalStore
+
+from .typed_errors import PlatformError, raise_typed
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +39,9 @@ def request_session_id(request: Request) -> str:
 def _proposal_store(request: Request) -> ProposalStore:
     pool = getattr(request.app.state, "umrs_db_pool", None)
     if pool is None:
-        raise_typed(PlatformError.knowledge_guard("unavailable", "Database unavailable"))
+        raise_typed(
+            PlatformError.knowledge_guard("unavailable", "Database unavailable")
+        )
     return ProposalStore(pool)
 
 
@@ -46,7 +49,7 @@ def enforce_graph_mutation_authorization(
     request: Request,
     *,
     target_graph_id: str,
-    proposal_id: Optional[str],
+    proposal_id: str | None,
 ) -> None:
     """Raise unless the request may mutate persistent graph content.
 
@@ -64,7 +67,16 @@ def enforce_graph_mutation_authorization(
         raise_typed(
             PlatformError.knowledge_guard(
                 "conflict",
-                { "error": "proposal_required", "target_graph_id": target_graph_id, "message": ( "Agent-originated knowledge-graph mutation requires an " "approved graph-extension proposal. Create one via " "POST /umrs/knowledge/graphs/{graph_id}/proposals and have " "the user approve it before mutating." ), }
+                {
+                    "error": "proposal_required",
+                    "target_graph_id": target_graph_id,
+                    "message": (
+                        "Agent-originated knowledge-graph mutation requires an "
+                        "approved graph-extension proposal. Create one via "
+                        "POST /umrs/knowledge/graphs/{graph_id}/proposals and have "
+                        "the user approve it before mutating."
+                    ),
+                },
             ),
         )
     store = _proposal_store(request)
@@ -72,22 +84,30 @@ def enforce_graph_mutation_authorization(
     if proposal is None:
         raise_typed(
             PlatformError.knowledge_guard(
-                "not_found",
-                {"error": "proposal_not_found", "proposal_id": proposal_id}
+                "not_found", {"error": "proposal_not_found", "proposal_id": proposal_id}
             ),
         )
     if proposal.target_graph_id != target_graph_id:
         raise_typed(
             PlatformError.knowledge_guard(
                 "conflict",
-                { "error": "proposal_target_mismatch", "proposal_id": proposal_id, "proposal_target": proposal.target_graph_id, "requested_target": target_graph_id, }
+                {
+                    "error": "proposal_target_mismatch",
+                    "proposal_id": proposal_id,
+                    "proposal_target": proposal.target_graph_id,
+                    "requested_target": target_graph_id,
+                },
             ),
         )
     if proposal.status != "approved":
         raise_typed(
             PlatformError.knowledge_guard(
                 "conflict",
-                { "error": "proposal_not_approved", "proposal_id": proposal_id, "status": proposal.status, }
+                {
+                    "error": "proposal_not_approved",
+                    "proposal_id": proposal_id,
+                    "status": proposal.status,
+                },
             ),
         )
 
@@ -105,19 +125,27 @@ def enforce_registry_write_authorization(request: Request) -> None:
     raise_typed(
         PlatformError.knowledge_guard(
             "forbidden",
-            { "error": "registry_write_forbidden_for_agent", "message": ( "Agents may not create, update, or archive knowledge graphs. " "Propose changes via " "POST /umrs/knowledge/graphs/{graph_id}/proposals — a human " "decides; a human manages graph lifecycle." ), }
+            {
+                "error": "registry_write_forbidden_for_agent",
+                "message": (
+                    "Agents may not create, update, or archive knowledge graphs. "
+                    "Propose changes via "
+                    "POST /umrs/knowledge/graphs/{graph_id}/proposals — a human "
+                    "decides; a human manages graph lifecycle."
+                ),
+            },
         ),
     )
 
 
 def mark_proposal_executed(
     request: Request,
-    proposal_id: Optional[str],
+    proposal_id: str | None,
     *,
     actor: str,
     session_id: str,
     operation: str,
-    extra: Optional[dict[str, Any]] = None,
+    extra: dict[str, Any] | None = None,
 ) -> None:
     """Record execution provenance on the proposal (audit anchor, 0069).
 

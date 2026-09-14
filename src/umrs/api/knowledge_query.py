@@ -21,7 +21,7 @@ Existing subsystem routes stay untouched (aliases per K3 guardrail).
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
+from typing import Any
 
 from fastapi import APIRouter, Depends, Query, Request
 
@@ -96,25 +96,30 @@ class _GraphSearchBackend:
     the same fallback ``KnowledgeStore.list_nodes`` uses.
     """
 
-    def __init__(self, pool: Any, selected: list[KnowledgeGraphMeta], *, include_ambient: bool = False) -> None:
+    def __init__(
+        self,
+        pool: Any,
+        selected: list[KnowledgeGraphMeta],
+        *,
+        include_ambient: bool = False,
+    ) -> None:
         self._include_ambient = include_ambient
         self._pool = pool
         self._selected = selected
         self._by_id = {g.graph_id: g for g in selected}
-        self._default_by_project = {
-            g.project_id: g for g in selected if g.project_id
-        }
+        self._default_by_project = {g.project_id: g for g in selected if g.project_id}
 
     def search_knowledge_graph(
         self,
         query: str,
         *,
-        project_id: Optional[str] = None,
+        project_id: str | None = None,
         limit: int = 20,
     ) -> list[dict[str, Any]]:
         graph_ids = [g.graph_id for g in self._selected]
         default_projects = [
-            pid for pid, meta in self._default_by_project.items()
+            pid
+            for pid, meta in self._default_by_project.items()
             if meta.graph_id in graph_ids
         ]
         pattern = f"%{query}%"
@@ -160,7 +165,7 @@ class _GraphSearchBackend:
 
 
 def _resolve_exclusions(
-    registry: GraphRegistryStore, exclude_csv: Optional[str]
+    registry: GraphRegistryStore, exclude_csv: str | None
 ) -> tuple[set[str], list[str]]:
     """Map exclude tokens to graph ids (unknown tokens only recorded by name)."""
     excluded_ids: set[str] = set()
@@ -193,8 +198,8 @@ def _resolve_includes(
 def _resolve_selected_graphs(
     registry: GraphRegistryStore,
     project_id: str,
-    graphs_csv: Optional[str],
-    exclude_csv: Optional[str],
+    graphs_csv: str | None,
+    exclude_csv: str | None,
 ) -> tuple[list[KnowledgeGraphMeta], list[str]]:
     """Resolve explicit include/exclude tokens into selected graph metas.
 
@@ -213,7 +218,7 @@ def _resolve_selected_graphs(
     return selected, excluded_names
 
 
-def _split_csv(raw: Optional[str]) -> list[str]:
+def _split_csv(raw: str | None) -> list[str]:
     if not raw:
         return []
     return [t.strip() for t in raw.split(",") if t.strip()]
@@ -248,12 +253,14 @@ class _EmbeddingsSearchBackend:
         self,
         query: str,
         *,
-        project_id: Optional[str] = None,
+        project_id: str | None = None,
         limit: int = 20,
-        query_embedding: Optional[list[float]] = None,
+        query_embedding: list[float] | None = None,
     ) -> list[dict[str, Any]]:
         if query_embedding:
-            return self._similarity_hits(query_embedding, project_id=project_id, limit=limit)
+            return self._similarity_hits(
+                query_embedding, project_id=project_id, limit=limit
+            )
         pattern = f"%{query}%"
         # ADR-050 tier gate on the owning node (R-02 wave 2: this lane was
         # previously ungated — project-only, ambient rows still served).
@@ -279,7 +286,7 @@ class _EmbeddingsSearchBackend:
         self,
         query_embedding: list[float],
         *,
-        project_id: Optional[str],
+        project_id: str | None,
         limit: int,
     ) -> list[dict[str, Any]]:
         """Cosine-distance ANN over 0075 rows using a pre-computed vector."""
@@ -326,7 +333,9 @@ class _EmbeddingsSearchBackend:
         }
 
 
-def _embeddings_backend_for(pool: Any, *, include_ambient: bool = False) -> tuple[Optional[_EmbeddingsSearchBackend], Optional[str]]:
+def _embeddings_backend_for(
+    pool: Any, *, include_ambient: bool = False
+) -> tuple[_EmbeddingsSearchBackend | None, str | None]:
     """Wire the 0075 backend iff the table exists; honesty reason otherwise."""
     if pool is None:
         return None, "embeddings search requires the database"
@@ -400,7 +409,7 @@ class _RAGSearchBackend:
         self,
         query: str,
         *,
-        project_id: Optional[str] = None,
+        project_id: str | None = None,
         limit: int = 20,
     ) -> list[dict[str, Any]]:
         pattern = f"%{query}%"
@@ -445,7 +454,9 @@ class _RAGSearchBackend:
         }
 
 
-def _rag_backend_for(pool: Any, *, include_ambient: bool = False) -> tuple[Optional[_RAGSearchBackend], Optional[str]]:
+def _rag_backend_for(
+    pool: Any, *, include_ambient: bool = False
+) -> tuple[_RAGSearchBackend | None, str | None]:
     """Wire the central-corpus RAG backend iff knowledge_nodes exists."""
     if pool is None:
         return None, "RAG search requires the database"
@@ -462,18 +473,21 @@ def _rag_backend_for(pool: Any, *, include_ambient: bool = False) -> tuple[Optio
         logger.warning("corpus probe failed, RAG backend unwired: %s", exc)
         return None, "RAG search unavailable (corpus probe failed)"
     if not present:
-        return None, "central knowledge corpus unavailable (knowledge nodes not present)"
+        return (
+            None,
+            "central knowledge corpus unavailable (knowledge nodes not present)",
+        )
     return _RAGSearchBackend(pool, include_ambient=include_ambient), None
 
 
 def _build_unified_search(
     meta_store: Any,
-    graph_backend: Optional[_GraphSearchBackend],
-    graph_unavailable_reason: Optional[str],
-    embeddings_backend: Optional[_EmbeddingsSearchBackend] = None,
-    embeddings_unavailable_reason: Optional[str] = None,
-    rag_backend: Optional[_RAGSearchBackend] = None,
-    rag_unavailable_reason: Optional[str] = None,
+    graph_backend: _GraphSearchBackend | None,
+    graph_unavailable_reason: str | None,
+    embeddings_backend: _EmbeddingsSearchBackend | None = None,
+    embeddings_unavailable_reason: str | None = None,
+    rag_backend: _RAGSearchBackend | None = None,
+    rag_unavailable_reason: str | None = None,
     include_ambient: bool = False,
 ) -> tuple[UnifiedSearch, list[str], dict[str, str]]:
     """Compose pluggable backends.
@@ -512,7 +526,7 @@ def _parse_scope(raw: str) -> SearchScope:
     raise_typed(
         PlatformError.knowledgequery(
             "bad_request",
-            f"Unknown scope '{raw}'. Valid values: {sorted(_VALID_SCOPES)}"
+            f"Unknown scope '{raw}'. Valid values: {sorted(_VALID_SCOPES)}",
         ),
     )
 
@@ -523,8 +537,7 @@ def _resolve_project_id(identity: CallerIdentity, project_id: str | None) -> str
     if not resolved:
         raise_typed(
             PlatformError.knowledgequery(
-                "bad_request",
-                "project_id is required (or a verified project header)"
+                "bad_request", "project_id is required (or a verified project header)"
             ),
         )
     return resolved
@@ -560,8 +573,7 @@ def query_knowledge(
     if meta_store is None:
         raise_typed(
             PlatformError.knowledgequery(
-                "unavailable",
-                "Catalog metadata store is unavailable"
+                "unavailable", "Catalog metadata store is unavailable"
             ),
         )
     resolved_project = _resolve_project_id(identity, project_id)
@@ -576,7 +588,9 @@ def query_knowledge(
         exclude_graphs,
         include_ambient=include_ambient,
     )
-    emb_backend, emb_reason = _embeddings_backend_for(pool, include_ambient=include_ambient)
+    emb_backend, emb_reason = _embeddings_backend_for(
+        pool, include_ambient=include_ambient
+    )
     rag_backend, rag_reason = _rag_backend_for(pool, include_ambient=include_ambient)
     search, wired, unwired = _build_unified_search(
         meta_store,
@@ -608,14 +622,19 @@ def query_knowledge(
 def _graph_backend_for(
     pool: Any,
     project_id: str,
-    graphs_csv: Optional[str],
-    exclude_csv: Optional[str],
+    graphs_csv: str | None,
+    exclude_csv: str | None,
     *,
     include_ambient: bool = False,
-) -> tuple[Optional[_GraphSearchBackend], Optional[str], list, list]:
+) -> tuple[_GraphSearchBackend | None, str | None, list, list]:
     """Build the graph backend or an honesty reason, plus selection truth."""
     if pool is None:
-        return None, "knowledge graph search requires the database", [], _split_csv(exclude_csv)
+        return (
+            None,
+            "knowledge graph search requires the database",
+            [],
+            _split_csv(exclude_csv),
+        )
     registry = GraphRegistryStore(pool)
     selected, excluded = _resolve_selected_graphs(
         registry, project_id, graphs_csv, exclude_csv
@@ -660,16 +679,17 @@ def _ontology_blocks_for(selected: list, pool: Any) -> list[dict[str, Any]]:
             meta = (
                 graph
                 if isinstance(graph, dict)
-                else (
-                    graph.to_dict()
-                    if hasattr(graph, "to_dict")
-                    else {}
-                )
+                else (graph.to_dict() if hasattr(graph, "to_dict") else {})
             )
             block = {"graph_id": meta.get("graph_id", "?")}
             try:
                 blocks.append(
-                    {**block, "ontology": ontology_for_graph(meta, registry=registry).to_dict()}
+                    {
+                        **block,
+                        "ontology": ontology_for_graph(
+                            meta, registry=registry
+                        ).to_dict(),
+                    }
                 )
             except ValueError as exc:
                 blocks.append({**block, "ontology_error": str(exc)})

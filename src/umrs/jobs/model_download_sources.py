@@ -238,6 +238,6 @@ async def download_from_huggingface(
         return _failed_progress(f"Revision not found: {revision or 'main'}")
     except Exception as exc:
         progress.status = "failed"
-        progress.error_message = f"Download failed: {str(exc)}"
+        progress.error_message = f"Download failed: {exc!s}"
         logger.exception("HuggingFace download failed for %s", repo_id)
         return progress

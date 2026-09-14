@@ -17,7 +17,6 @@ import logging
 import os
 from dataclasses import dataclass
 from typing import Any
-
 from urllib.request import Request, urlopen
 
 from .loop import LoopPhase, LoopStatus, ResearchLoop
@@ -61,8 +60,12 @@ class ClusterLoopTransport:
             data = json.dumps(body).encode("utf-8")
             headers["Content-Type"] = "application/json"
         _inject_trace_context(headers)
-        req = Request(f"{self.base_url}{self.path_prefix}{path}", data=data,
-                      headers=headers, method=method)
+        req = Request(
+            f"{self.base_url}{self.path_prefix}{path}",
+            data=data,
+            headers=headers,
+            method=method,
+        )
         with urlopen(req, timeout=self.timeout) as resp:
             return json.loads(resp.read() or b"{}")
 
@@ -182,7 +185,6 @@ def _owner_headers_from_env() -> dict[str, str]:
 def build_cluster_store(gateway_base_url: str | None = None) -> HttpLoopStore:
     """Assemble the HTTP-backed store from the environment."""
     import os
-
 
     base = gateway_base_url or os.environ.get("R4_GATEWAY_BASE", "").rstrip("/")
     if not base:

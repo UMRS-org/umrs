@@ -106,14 +106,14 @@ class Scope(str, Enum):
     USER = "user"
 
     @classmethod
-    def from_str(cls, value: str) -> "Scope":
+    def from_str(cls, value: str) -> Scope:
         """Parse a scope string, defaulting to USER for unknown values."""
         try:
             return cls(value.lower())
         except ValueError:
             return cls.USER
 
-    def is_broader_than(self, other: "Scope") -> bool:
+    def is_broader_than(self, other: Scope) -> bool:
         """Return True if this scope is broader (more visible) than other."""
         order = {Scope.SYSTEM: 0, Scope.PROJECT: 1, Scope.GROUP: 2, Scope.USER: 3}
         return order[self] < order[other]

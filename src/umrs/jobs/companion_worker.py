@@ -15,10 +15,10 @@ from __future__ import annotations
 
 import hashlib
 import secrets
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Any, Iterator, Optional
-
+from typing import Any
 
 WORKER_KIND = "companion_worker"
 
@@ -58,7 +58,7 @@ class CompanionWorkerSpec:
         }
 
     @classmethod
-    def from_dict(cls, data: dict) -> "CompanionWorkerSpec":
+    def from_dict(cls, data: dict) -> CompanionWorkerSpec:
         return cls(
             owner_user_id=str(data.get("owner_user_id") or ""),
             project_id=str(data.get("project_id") or ""),
@@ -182,7 +182,7 @@ class CompanionWorkerManager:
             )
         return self._fetch_required(spec.registry_key())
 
-    def get(self, registry_key: str) -> Optional[dict]:
+    def get(self, registry_key: str) -> dict | None:
         with self._cursor() as cur:
             cur.execute(
                 "SELECT * FROM companion_workers WHERE registry_key = %s",
@@ -204,7 +204,7 @@ class CompanionWorkerManager:
         *,
         attempt_index: int,
         attempts_max: int = WORKER_MAX_ATTEMPTS,
-    ) -> Optional[dict]:
+    ) -> dict | None:
         """Register one attempt-loop heartbeat; degrade on the last attempt.
 
         attempt_index >= attempts_max - 1 → state='draining' (graceful reconnect
@@ -358,15 +358,15 @@ class TurnAttempt:
     request_token: str
     user_message_hash: str
     state: str
-    committed_response_ref: Optional[str]
-    parent_attempt_id: Optional[str]
-    research_session_id: Optional[str]
+    committed_response_ref: str | None
+    parent_attempt_id: str | None
+    research_session_id: str | None
     user_message: str = ""
-    response_content: Optional[str] = None
+    response_content: str | None = None
     mode: str = "ask"
 
     @classmethod
-    def from_row(cls, row: dict) -> "TurnAttempt":
+    def from_row(cls, row: dict) -> TurnAttempt:
         return cls(
             attempt_id=str(row["attempt_id"]),
             job_id=str(row.get("job_id") or ""),
@@ -428,7 +428,7 @@ class CompanionTurnAttemptRegistry:
         "research_session_id, user_message, response_content, mode"
     )
 
-    def get(self, attempt_id: str) -> Optional[TurnAttempt]:
+    def get(self, attempt_id: str) -> TurnAttempt | None:
         with self._cursor() as cur:
             cur.execute(
                 f"SELECT {self._SELECT_COLS} FROM companion_turns WHERE attempt_id = %s",
@@ -451,8 +451,8 @@ class CompanionTurnAttemptRegistry:
         session_id: str,
         request_token: str,
         user_message: str,
-        parent_attempt_id: Optional[str] = None,
-        research_session_id: Optional[str] = None,
+        parent_attempt_id: str | None = None,
+        research_session_id: str | None = None,
         mode: str = "ask",
     ) -> TurnAttempt:
         """start or reuse the attempt row for a request token (idempotent).
@@ -500,7 +500,7 @@ class CompanionTurnAttemptRegistry:
         attempt_id: str,
         *,
         committed_response_ref: str,
-        response_content: Optional[str] = None,
+        response_content: str | None = None,
     ) -> None:
         """Commit the buffered response exactly-once; idempotent per attempt."""
         with self._cursor() as cur:

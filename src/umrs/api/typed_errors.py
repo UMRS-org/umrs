@@ -22,4 +22,4 @@ def raise_typed(error: PlatformError, *, cause: Exception | None = None) -> NoRe
     raise exc
 
 
-__all__ = ["raise_typed", "PlatformError"]
+__all__ = ["PlatformError", "raise_typed"]

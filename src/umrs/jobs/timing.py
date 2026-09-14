@@ -37,7 +37,7 @@ def _parse_iso(value: Any) -> datetime | None:
 def duration_ms(started: Any, ended: Any) -> int | None:
     """Milliseconds between two timestamps, or None when either is unknown.
 
-   ``ended`` never precedes ``started`` on the wire (clock skew floors at 0).
+    ``ended`` never precedes ``started`` on the wire (clock skew floors at 0).
     """
     start = _parse_iso(started)
     end = _parse_iso(ended)

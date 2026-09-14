@@ -24,8 +24,9 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from collections.abc import Callable
 from datetime import datetime, timezone
-from typing import Any, Callable, Optional
+from typing import Any
 
 from .loop import AutonomousResearchLoop, LoopIteration, LoopStatus, ResearchLoop
 
@@ -50,7 +51,7 @@ class EngineLoopRunner(threading.Thread):
         engine_factory: EngineFactory,
         store: Any,
         poll_seconds: float = 0.5,
-        on_iteration: Optional[IterationHook] = None,
+        on_iteration: IterationHook | None = None,
     ) -> None:
         super().__init__(name=f"engine-loop-{loop.loop_id}", daemon=True)
         self._loop = loop
@@ -87,7 +88,7 @@ class EngineLoopRunner(threading.Thread):
 
     # -- control protocol (store is the source of truth) --------------------
 
-    def _poll(self, loop_id: str) -> Optional[ResearchLoop]:
+    def _poll(self, loop_id: str) -> ResearchLoop | None:
         try:
             return self._store.get(loop_id)
         except Exception as exc:  # noqa: BLE001 — treat poll failure as missing
@@ -118,7 +119,7 @@ class EngineLoopRunner(threading.Thread):
         while it was down (request_approval is idempotent under approval_id).
         """
 
-        def _request(action: dict, approval_id: Optional[str]) -> dict:
+        def _request(action: dict, approval_id: str | None) -> dict:
             from . import tool_approvals
 
             return tool_approvals.request_approval(
@@ -185,12 +186,12 @@ class EngineLoopRunner(threading.Thread):
         engine = self._engine_factory()
 
         # Checkpoint the live record after each engine iteration.
-        engine._iteration_hook = lambda it: self._checkpoint(loop, it)  # noqa: SLF001
+        engine._iteration_hook = lambda it: self._checkpoint(loop, it)
         # Cooperative cancel/pause via the store poll.
-        engine._cancel_check = self._cancel_check  # noqa: SLF001
+        engine._cancel_check = self._cancel_check
         # Tool-grain gate: ask-mode loops park at each workflow trigger until
         # a decision lands in the durable approval inbox (ADR-036 (a)).
-        engine._approval_gate = self._make_approval_gate(loop)  # noqa: SLF001
+        engine._approval_gate = self._make_approval_gate(loop)
 
         result = engine.run(loop)
         if result.status == LoopStatus.RUNNING:
@@ -215,7 +216,7 @@ def register(
     engine_factory: EngineFactory,
     store: Any,
     poll_seconds: float = 0.5,
-    on_iteration: Optional[IterationHook] = None,
+    on_iteration: IterationHook | None = None,
 ) -> EngineLoopRunner:
     """Spawn a daemon engine runner for ``loop``. Idempotent when alive."""
     with _LOCK:
@@ -234,7 +235,7 @@ def register(
     return runner
 
 
-def get(loop_id: str) -> Optional[EngineLoopRunner]:
+def get(loop_id: str) -> EngineLoopRunner | None:
     """Live runner (or None)."""
     with _LOCK:
         runner = _RUNNERS.get(loop_id)

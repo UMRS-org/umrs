@@ -148,7 +148,7 @@ class LocalGraphSink:
         self._storage_path = storage_path
         self._linker = linker or KnowledgeLinker()
 
-    def accepts(self, ir: KnowledgeIR) -> bool:  # noqa: ARG002 — every artifact is a node
+    def accepts(self, ir: KnowledgeIR) -> bool:
         return True
 
     def compile(self, irs: Sequence[KnowledgeIR]) -> CompileResult:

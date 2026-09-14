@@ -411,7 +411,11 @@ class SecretBroker:
         limit: int = 50,
     ) -> list[SecretLease]:
         """List secret leases with optional filters."""
-        results = self._pool_list_leases() if self._pool is not None else list(self._leases.values())
+        results = (
+            self._pool_list_leases()
+            if self._pool is not None
+            else list(self._leases.values())
+        )
         matched = [
             lease
             for lease in results

@@ -47,7 +47,9 @@ class VenueRuntimeExecutor:
         self._provisioner = provisioner
         self._idle_seconds = idle_seconds
 
-    def heartbeat(self, lease_id: str, extend_seconds: int = 900, actor: str = "worker") -> bool:
+    def heartbeat(
+        self, lease_id: str, extend_seconds: int = 900, actor: str = "worker"
+    ) -> bool:
         """Worker heartbeat → renew with hard-cap semantics (broker enforced)."""
         return self._broker.renew_lease(lease_id, extend_seconds, actor)
 
@@ -101,14 +103,20 @@ class VenueRuntimeExecutor:
                 self._provisioner.teardown(session_id)
                 if session_id not in result.torn_down:
                     result.torn_down.append(session_id)
-            except Exception as exc:  # noqa: BLE001
-                logger.exception("venue revoked-session teardown failed for %s", session_id)
+            except Exception as exc:
+                logger.exception(
+                    "venue revoked-session teardown failed for %s", session_id
+                )
                 result.errors.append(f"{session_id}: revoked teardown: {exc}")
 
-    def _expire_session(self, lease: SecretLease, actor: str, result: SweepResult) -> None:
+    def _expire_session(
+        self, lease: SecretLease, actor: str, result: SweepResult
+    ) -> None:
         self._revoke_and_teardown(lease, actor, "expires_at reached", result)
 
-    def _idle_session(self, lease: SecretLease, actor: str, result: SweepResult) -> None:
+    def _idle_session(
+        self, lease: SecretLease, actor: str, result: SweepResult
+    ) -> None:
         self._revoke_and_teardown(
             lease, actor, f"idle beyond {self._idle_seconds}s without heartbeat", result
         )
@@ -121,7 +129,7 @@ class VenueRuntimeExecutor:
                 return
             self._provisioner.teardown(lease.session_id)
             result.torn_down.append(lease.session_id)
-        except Exception as exc:  # noqa: BLE001 — one bad session must not stall the sweep
+        except Exception as exc:
             logger.exception("venue sweep failed for session %s", lease.session_id)
             result.errors.append(f"{lease.session_id}: {detail}: {exc}")
             # Best-effort state: lease stays revoked; the next sweep retries teardown.

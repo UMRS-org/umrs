@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
+
 from .typed_errors import PlatformError, raise_typed
 
 logger = logging.getLogger(__name__)
@@ -25,8 +25,7 @@ def _get_store():
     if _store is None:
         raise_typed(
             PlatformError.vectors(
-                "unavailable",
-                "Vector version store not initialized"
+                "unavailable", "Vector version store not initialized"
             ),
         )
     return _store

@@ -26,8 +26,9 @@ CRITICAL: No imports from ``umrs.api`` or ``umrs.server`` (foundation module).
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Mapping, Optional
+from typing import Any
 
 from .store import KnowledgeStore
 
@@ -97,7 +98,12 @@ def ontology_from_dict(raw: Mapping[str, Any]) -> Ontology:
             else ()
         )
         unknown_subtype_members = sorted(
-            {member for pair in subtype_pairs for member in pair if member not in entity_types}
+            {
+                member
+                for pair in subtype_pairs
+                for member in pair
+                if member not in entity_types
+            }
         )
         if unknown_subtype_members:
             raise ValueError(
@@ -111,12 +117,18 @@ def ontology_from_dict(raw: Mapping[str, Any]) -> Ontology:
             relation_types=frozenset(str(t) for t in raw["relation_types"]),
             description=str(raw.get("description", "")),
             transitive_relations=(
-                frozenset(str(t) for t in transitive) if transitive is not None
+                frozenset(str(t) for t in transitive)
+                if transitive is not None
                 else frozenset({"depends_on"})
             ),
             extraction_fields=tuple(
-                sorted((str(field), str(relation)) for field, relation in extraction.items())
-            ) if isinstance(extraction, Mapping) else (),
+                sorted(
+                    (str(field), str(relation))
+                    for field, relation in extraction.items()
+                )
+            )
+            if isinstance(extraction, Mapping)
+            else (),
             subtype_of=subtype_pairs,
         )
     except (KeyError, TypeError) as exc:
@@ -160,7 +172,7 @@ class OntologyViolationError(ValueError):
 
 
 def ontology_for_graph(
-    graph: Optional[Mapping[str, Any]],
+    graph: Mapping[str, Any] | None,
     *,
     registry: Any | None = None,
 ) -> Ontology:

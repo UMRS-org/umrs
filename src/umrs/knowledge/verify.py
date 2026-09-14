@@ -57,10 +57,10 @@ class Evidence:
     """A piece of evidence supporting an answer."""
 
     evidence_type: EvidenceType
-    source_id: str = ""              # artifact_id, paper_id, etc.
-    source_name: str = ""            # filename, title, etc.
-    content: str = ""               # the evidence text
-    confidence: float = 0.0         # 0.0–1.0
+    source_id: str = ""  # artifact_id, paper_id, etc.
+    source_name: str = ""  # filename, title, etc.
+    content: str = ""  # the evidence text
+    confidence: float = 0.0  # 0.0–1.0
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -88,9 +88,9 @@ class VerificationAnswer:
     question: str
     answer: str
     evidence: list[Evidence] = field(default_factory=list)
-    confidence: float = 0.0          # 0.0–1.0
+    confidence: float = 0.0  # 0.0–1.0
     missing_info: list[str] = field(default_factory=list)
-    answered: bool = True            # False if we couldn't answer
+    answered: bool = True  # False if we couldn't answer
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -118,7 +118,9 @@ class KnowledgeStore(Protocol):
     def get_extracted_knowledge(self, artifact_id: str) -> dict[str, Any] | None:
         """Get extracted knowledge for an artifact."""
 
-    def search_artifacts(self, query: str, artifact_type: str | None = None) -> list[dict[str, Any]]:
+    def search_artifacts(
+        self, query: str, artifact_type: str | None = None
+    ) -> list[dict[str, Any]]:
         """Search artifacts by query."""
 
     def get_knowledge_graph(self) -> dict[str, Any]:
@@ -157,7 +159,9 @@ class InMemoryKnowledgeStore:
     def list_artifacts(self, artifact_type: str | None = None) -> list[dict[str, Any]]:
         artifacts = list(self.artifacts.values())
         if artifact_type:
-            artifacts = [a for a in artifacts if a.get("artifact_type") == artifact_type]
+            artifacts = [
+                a for a in artifacts if a.get("artifact_type") == artifact_type
+            ]
         return artifacts
 
     def get_artifact(self, artifact_id: str) -> dict[str, Any] | None:
@@ -183,13 +187,15 @@ class InMemoryKnowledgeStore:
         results = []
         for artifact in self.list_artifacts(artifact_type):
             # Search in filename, summary, tags, keywords
-            searchable = " ".join([
-                artifact.get("filename", ""),
-                artifact.get("summary", ""),
-                artifact.get("title", ""),
-                " ".join(artifact.get("tags", [])),
-                " ".join(artifact.get("keywords", [])),
-            ]).lower()
+            searchable = " ".join(
+                [
+                    artifact.get("filename", ""),
+                    artifact.get("summary", ""),
+                    artifact.get("title", ""),
+                    " ".join(artifact.get("tags", [])),
+                    " ".join(artifact.get("keywords", [])),
+                ]
+            ).lower()
             if query_lower in searchable:
                 results.append(artifact)
         return results
@@ -328,13 +334,17 @@ class KnowledgeVerifier:
             if knowledge:
                 summary = knowledge.get("summary", knowledge.get("objective", ""))
                 if summary:
-                    evidence.append(Evidence(
-                        evidence_type=EvidenceType.SOURCE_CODE if artifact.get("artifact_type") == "code" else EvidenceType.UPLOADED_FILE,
-                        source_id=artifact_id,
-                        source_name=artifact.get("filename", ""),
-                        content=summary[:500],
-                        confidence=0.7,
-                    ))
+                    evidence.append(
+                        Evidence(
+                            evidence_type=EvidenceType.SOURCE_CODE
+                            if artifact.get("artifact_type") == "code"
+                            else EvidenceType.UPLOADED_FILE,
+                            source_id=artifact_id,
+                            source_name=artifact.get("filename", ""),
+                            content=summary[:500],
+                            confidence=0.7,
+                        )
+                    )
 
         # Build answer
         parts = []
@@ -372,13 +382,15 @@ class KnowledgeVerifier:
                 algorithms = knowledge.get("algorithms", [])
                 if algorithms:
                     algorithms_found.extend(algorithms)
-                    evidence.append(Evidence(
-                        evidence_type=EvidenceType.SOURCE_CODE,
-                        source_id=artifact_id,
-                        source_name=artifact.get("filename", ""),
-                        content=f"Algorithms: {', '.join(algorithms)}",
-                        confidence=0.8,
-                    ))
+                    evidence.append(
+                        Evidence(
+                            evidence_type=EvidenceType.SOURCE_CODE,
+                            source_id=artifact_id,
+                            source_name=artifact.get("filename", ""),
+                            content=f"Algorithms: {', '.join(algorithms)}",
+                            confidence=0.8,
+                        )
+                    )
 
         # Deduplicate
         algorithms_found = list(set(algorithms_found))
@@ -388,11 +400,13 @@ class KnowledgeVerifier:
             answer_text += "\n".join(f"  - {alg}" for alg in sorted(algorithms_found))
         else:
             answer_text = "No algorithms found in the project."
-            evidence.append(Evidence(
-                evidence_type=EvidenceType.UPLOADED_FILE,
-                content="No code artifacts with algorithm annotations found",
-                confidence=0.0,
-            ))
+            evidence.append(
+                Evidence(
+                    evidence_type=EvidenceType.UPLOADED_FILE,
+                    content="No code artifacts with algorithm annotations found",
+                    confidence=0.0,
+                )
+            )
 
         confidence = min(1.0, len(algorithms_found) / 5.0) if algorithms_found else 0.0
 
@@ -401,7 +415,9 @@ class KnowledgeVerifier:
             answer=answer_text,
             evidence=evidence,
             confidence=confidence,
-            missing_info=[] if algorithms_found else ["No algorithms extracted from code"],
+            missing_info=[]
+            if algorithms_found
+            else ["No algorithms extracted from code"],
         )
 
     def _handle_list_papers(self, question: str) -> VerificationAnswer:
@@ -414,12 +430,14 @@ class KnowledgeVerifier:
             for paper in paper_artifacts:
                 title = paper.get("title", paper.get("filename", ""))
                 answer_text += f"  - {title}\n"
-                evidence.append(Evidence(
-                    evidence_type=EvidenceType.EXTERNAL_PAPER,
-                    source_id=paper.get("artifact_id", ""),
-                    source_name=title,
-                    confidence=0.9,
-                ))
+                evidence.append(
+                    Evidence(
+                        evidence_type=EvidenceType.EXTERNAL_PAPER,
+                        source_id=paper.get("artifact_id", ""),
+                        source_name=title,
+                        confidence=0.9,
+                    )
+                )
         else:
             answer_text = "No papers found in the project."
 
@@ -443,12 +461,14 @@ class KnowledgeVerifier:
             for code in code_artifacts:
                 filename = code.get("filename", "")
                 answer_text += f"  - {filename}\n"
-                evidence.append(Evidence(
-                    evidence_type=EvidenceType.SOURCE_CODE,
-                    source_id=code.get("artifact_id", ""),
-                    source_name=filename,
-                    confidence=0.9,
-                ))
+                evidence.append(
+                    Evidence(
+                        evidence_type=EvidenceType.SOURCE_CODE,
+                        source_id=code.get("artifact_id", ""),
+                        source_name=filename,
+                        confidence=0.9,
+                    )
+                )
         else:
             answer_text = "No code files found in the project."
 
@@ -472,16 +492,20 @@ class KnowledgeVerifier:
             for nb in notebook_artifacts:
                 filename = nb.get("filename", "")
                 answer_text += f"  - {filename}\n"
-                evidence.append(Evidence(
-                    evidence_type=EvidenceType.NOTEBOOK_CELL,
-                    source_id=nb.get("artifact_id", ""),
-                    source_name=filename,
-                    confidence=0.9,
-                ))
+                evidence.append(
+                    Evidence(
+                        evidence_type=EvidenceType.NOTEBOOK_CELL,
+                        source_id=nb.get("artifact_id", ""),
+                        source_name=filename,
+                        confidence=0.9,
+                    )
+                )
         else:
             answer_text = "No notebooks found in the project."
 
-        confidence = min(1.0, len(notebook_artifacts) / 5.0) if notebook_artifacts else 0.0
+        confidence = (
+            min(1.0, len(notebook_artifacts) / 5.0) if notebook_artifacts else 0.0
+        )
 
         return VerificationAnswer(
             question=question,
@@ -501,16 +525,20 @@ class KnowledgeVerifier:
             for ds in dataset_artifacts:
                 name = ds.get("filename", ds.get("name", ""))
                 answer_text += f"  - {name}\n"
-                evidence.append(Evidence(
-                    evidence_type=EvidenceType.DATASET,
-                    source_id=ds.get("artifact_id", ""),
-                    source_name=name,
-                    confidence=0.9,
-                ))
+                evidence.append(
+                    Evidence(
+                        evidence_type=EvidenceType.DATASET,
+                        source_id=ds.get("artifact_id", ""),
+                        source_name=name,
+                        confidence=0.9,
+                    )
+                )
         else:
             answer_text = "No datasets found in the project."
 
-        confidence = min(1.0, len(dataset_artifacts) / 5.0) if dataset_artifacts else 0.0
+        confidence = (
+            min(1.0, len(dataset_artifacts) / 5.0) if dataset_artifacts else 0.0
+        )
 
         return VerificationAnswer(
             question=question,
@@ -530,16 +558,20 @@ class KnowledgeVerifier:
             for exp in experiment_artifacts:
                 name = exp.get("filename", exp.get("name", ""))
                 answer_text += f"  - {name}\n"
-                evidence.append(Evidence(
-                    evidence_type=EvidenceType.EXPERIMENT_RESULT,
-                    source_id=exp.get("artifact_id", ""),
-                    source_name=name,
-                    confidence=0.9,
-                ))
+                evidence.append(
+                    Evidence(
+                        evidence_type=EvidenceType.EXPERIMENT_RESULT,
+                        source_id=exp.get("artifact_id", ""),
+                        source_name=name,
+                        confidence=0.9,
+                    )
+                )
         else:
             answer_text = "No experiments found in the project."
 
-        confidence = min(1.0, len(experiment_artifacts) / 5.0) if experiment_artifacts else 0.0
+        confidence = (
+            min(1.0, len(experiment_artifacts) / 5.0) if experiment_artifacts else 0.0
+        )
 
         return VerificationAnswer(
             question=question,
@@ -562,13 +594,15 @@ class KnowledgeVerifier:
                 assumptions = knowledge.get("assumptions", [])
                 if assumptions:
                     assumptions_found.extend(assumptions)
-                    evidence.append(Evidence(
-                        evidence_type=EvidenceType.UPLOADED_FILE,
-                        source_id=artifact_id,
-                        source_name=artifact.get("filename", ""),
-                        content=f"Assumptions: {'; '.join(assumptions)}",
-                        confidence=0.7,
-                    ))
+                    evidence.append(
+                        Evidence(
+                            evidence_type=EvidenceType.UPLOADED_FILE,
+                            source_id=artifact_id,
+                            source_name=artifact.get("filename", ""),
+                            content=f"Assumptions: {'; '.join(assumptions)}",
+                            confidence=0.7,
+                        )
+                    )
 
         # Deduplicate
         assumptions_found = list(set(assumptions_found))
@@ -579,7 +613,9 @@ class KnowledgeVerifier:
         else:
             answer_text = "No assumptions found in the project."
 
-        confidence = min(1.0, len(assumptions_found) / 5.0) if assumptions_found else 0.0
+        confidence = (
+            min(1.0, len(assumptions_found) / 5.0) if assumptions_found else 0.0
+        )
 
         return VerificationAnswer(
             question=question,
@@ -602,13 +638,15 @@ class KnowledgeVerifier:
                 conclusions = knowledge.get("conclusions", [])
                 if conclusions:
                     conclusions_found.extend(conclusions)
-                    evidence.append(Evidence(
-                        evidence_type=EvidenceType.UPLOADED_FILE,
-                        source_id=artifact_id,
-                        source_name=artifact.get("filename", ""),
-                        content=f"Conclusions: {'; '.join(conclusions)}",
-                        confidence=0.7,
-                    ))
+                    evidence.append(
+                        Evidence(
+                            evidence_type=EvidenceType.UPLOADED_FILE,
+                            source_id=artifact_id,
+                            source_name=artifact.get("filename", ""),
+                            content=f"Conclusions: {'; '.join(conclusions)}",
+                            confidence=0.7,
+                        )
+                    )
 
         # Deduplicate
         conclusions_found = list(set(conclusions_found))
@@ -619,7 +657,9 @@ class KnowledgeVerifier:
         else:
             answer_text = "No conclusions found in the project."
 
-        confidence = min(1.0, len(conclusions_found) / 5.0) if conclusions_found else 0.0
+        confidence = (
+            min(1.0, len(conclusions_found) / 5.0) if conclusions_found else 0.0
+        )
 
         return VerificationAnswer(
             question=question,
@@ -643,19 +683,23 @@ class KnowledgeVerifier:
                 figures = knowledge.get("figures", [])
                 if figures:
                     for fig in figures:
-                        figures_found.append({
-                            "notebook": nb.get("filename", ""),
-                            "cell_index": fig.get("cell_index", 0),
-                            "output_index": fig.get("output_index", 0),
-                            "mime_type": fig.get("mime_type", ""),
-                        })
-                    evidence.append(Evidence(
-                        evidence_type=EvidenceType.NOTEBOOK_CELL,
-                        source_id=artifact_id,
-                        source_name=nb.get("filename", ""),
-                        content=f"Figures: {len(figures)} found",
-                        confidence=0.8,
-                    ))
+                        figures_found.append(
+                            {
+                                "notebook": nb.get("filename", ""),
+                                "cell_index": fig.get("cell_index", 0),
+                                "output_index": fig.get("output_index", 0),
+                                "mime_type": fig.get("mime_type", ""),
+                            }
+                        )
+                    evidence.append(
+                        Evidence(
+                            evidence_type=EvidenceType.NOTEBOOK_CELL,
+                            source_id=artifact_id,
+                            source_name=nb.get("filename", ""),
+                            content=f"Figures: {len(figures)} found",
+                            confidence=0.8,
+                        )
+                    )
 
         if figures_found:
             answer_text = f"Found {len(figures_found)} figures:\n"
@@ -663,11 +707,13 @@ class KnowledgeVerifier:
                 answer_text += f"  - {fig['notebook']} (cell {fig['cell_index']}, output {fig['output_index']})\n"
         else:
             answer_text = "No figures found in notebooks."
-            evidence.append(Evidence(
-                evidence_type=EvidenceType.NOTEBOOK_CELL,
-                content="No notebook artifacts with figures found",
-                confidence=0.0,
-            ))
+            evidence.append(
+                Evidence(
+                    evidence_type=EvidenceType.NOTEBOOK_CELL,
+                    content="No notebook artifacts with figures found",
+                    confidence=0.0,
+                )
+            )
 
         confidence = min(1.0, len(figures_found) / 5.0) if figures_found else 0.0
 
@@ -692,23 +738,31 @@ class KnowledgeVerifier:
             if knowledge:
                 generated_outputs = knowledge.get("generated_outputs", [])
                 if generated_outputs:
-                    outputs_found.append({
-                        "notebook": nb.get("filename", ""),
-                        "outputs_count": len(generated_outputs),
-                        "sample_output": generated_outputs[0][:200] if generated_outputs else "",
-                    })
-                    evidence.append(Evidence(
-                        evidence_type=EvidenceType.NOTEBOOK_CELL,
-                        source_id=artifact_id,
-                        source_name=nb.get("filename", ""),
-                        content=f"Generated outputs: {len(generated_outputs)}",
-                        confidence=0.8,
-                    ))
+                    outputs_found.append(
+                        {
+                            "notebook": nb.get("filename", ""),
+                            "outputs_count": len(generated_outputs),
+                            "sample_output": generated_outputs[0][:200]
+                            if generated_outputs
+                            else "",
+                        }
+                    )
+                    evidence.append(
+                        Evidence(
+                            evidence_type=EvidenceType.NOTEBOOK_CELL,
+                            source_id=artifact_id,
+                            source_name=nb.get("filename", ""),
+                            content=f"Generated outputs: {len(generated_outputs)}",
+                            confidence=0.8,
+                        )
+                    )
 
         if outputs_found:
             answer_text = f"Found {len(outputs_found)} notebooks with outputs:\n"
             for out in outputs_found:
-                answer_text += f"  - {out['notebook']} ({out['outputs_count']} outputs)\n"
+                answer_text += (
+                    f"  - {out['notebook']} ({out['outputs_count']} outputs)\n"
+                )
         else:
             answer_text = "No notebooks with generated outputs found."
 
@@ -744,28 +798,36 @@ class KnowledgeVerifier:
                         # Simple matching: if any algorithm name appears in paper keywords
                         for algo in code_algorithms:
                             if any(algo.lower() in kw.lower() for kw in paper_keywords):
-                                supporting_papers.append({
-                                    "paper": paper.get("filename", ""),
-                                    "code": code.get("filename", ""),
-                                    "algorithm": algo,
-                                })
-                                evidence.append(Evidence(
-                                    evidence_type=EvidenceType.EXTERNAL_PAPER,
-                                    source_id=paper_id,
-                                    source_name=paper.get("filename", ""),
-                                    content=f"Paper describes algorithm: {algo}",
-                                    confidence=0.7,
-                                ))
+                                supporting_papers.append(
+                                    {
+                                        "paper": paper.get("filename", ""),
+                                        "code": code.get("filename", ""),
+                                        "algorithm": algo,
+                                    }
+                                )
+                                evidence.append(
+                                    Evidence(
+                                        evidence_type=EvidenceType.EXTERNAL_PAPER,
+                                        source_id=paper_id,
+                                        source_name=paper.get("filename", ""),
+                                        content=f"Paper describes algorithm: {algo}",
+                                        confidence=0.7,
+                                    )
+                                )
                                 break
 
         if supporting_papers:
             answer_text = f"Found {len(supporting_papers)} supporting paper(s):\n"
             for sp in supporting_papers:
-                answer_text += f"  - {sp['paper']} (supports {sp['code']} via {sp['algorithm']})\n"
+                answer_text += (
+                    f"  - {sp['paper']} (supports {sp['code']} via {sp['algorithm']})\n"
+                )
         else:
             answer_text = "No supporting papers found."
 
-        confidence = min(1.0, len(supporting_papers) / 5.0) if supporting_papers else 0.0
+        confidence = (
+            min(1.0, len(supporting_papers) / 5.0) if supporting_papers else 0.0
+        )
 
         return VerificationAnswer(
             question=question,
@@ -785,13 +847,15 @@ class KnowledgeVerifier:
 
         if search_results:
             for result in search_results[:5]:
-                evidence.append(Evidence(
-                    evidence_type=EvidenceType.CATALOG_ENTRY,
-                    source_id=result.get("artifact_id", ""),
-                    source_name=result.get("filename", ""),
-                    content=result.get("summary", ""),
-                    confidence=0.5,
-                ))
+                evidence.append(
+                    Evidence(
+                        evidence_type=EvidenceType.CATALOG_ENTRY,
+                        source_id=result.get("artifact_id", ""),
+                        source_name=result.get("filename", ""),
+                        content=result.get("summary", ""),
+                        confidence=0.5,
+                    )
+                )
 
         answer_text = f"I found {len(search_results)} potentially relevant artifacts."
         if not search_results:

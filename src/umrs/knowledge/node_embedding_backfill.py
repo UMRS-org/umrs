@@ -51,7 +51,9 @@ ON CONFLICT (node_id, model_name) DO UPDATE SET
 """
 
 
-def _rag_chunk_lookup(cur: Any, tables: list[str]) -> dict[str, tuple[str, list[float]]]:
+def _rag_chunk_lookup(
+    cur: Any, tables: list[str]
+) -> dict[str, tuple[str, list[float]]]:
     """md5 → (model_name, embedding_list) from one or more rag tables."""
     out: dict[str, tuple[str, list[float]]] = {}
     for table in tables:
@@ -122,7 +124,9 @@ def plan_backfill(
         pool.putconn(conn)
 
 
-def apply_backfill(pool: Any, plan: list[dict[str, Any]], *, batch_size: int = 500) -> int:
+def apply_backfill(
+    pool: Any, plan: list[dict[str, Any]], *, batch_size: int = 500
+) -> int:
     """Write the planned upserts; returns row count."""
     if not plan:
         return 0
@@ -155,8 +159,12 @@ def _build_pool(dsn: str):
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0] if __doc__ else None)
-    ap.add_argument("--dsn", required=True, help="PostgreSQL DSN against the central umrs_db")
+    ap = argparse.ArgumentParser(
+        description=__doc__.splitlines()[0] if __doc__ else None
+    )
+    ap.add_argument(
+        "--dsn", required=True, help="PostgreSQL DSN against the central umrs_db"
+    )
     ap.add_argument(
         "--tables",
         nargs="+",

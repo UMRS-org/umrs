@@ -21,8 +21,6 @@ import logging
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-
-from .typed_errors import PlatformError, raise_typed
 from pydantic import BaseModel, Field
 
 from umrs.knowledge.access_scope import CallerScope
@@ -31,6 +29,7 @@ from umrs.security.seal import SealError, key_fingerprint, seal_credential
 from umrs.security.sealed_sources import SealedSourceStore, SealedStoreUnavailable
 
 from ._scope_identity import get_caller_scope
+from .typed_errors import PlatformError, raise_typed
 
 logger = logging.getLogger(__name__)
 
@@ -113,10 +112,18 @@ async def push_source(
     caller: CallerScope = Depends(get_caller_scope),
 ) -> PushSourceResponse:
     if body.provider_kind not in _VALID_PROVIDER_KINDS:
-        raise_typed(PlatformError.usersources("bad_request", f"unknown provider_kind {body.provider_kind!r}"))
+        raise_typed(
+            PlatformError.usersources(
+                "bad_request", f"unknown provider_kind {body.provider_kind!r}"
+            )
+        )
     owner = caller.user_id
     if not owner:
-        raise_typed(PlatformError.usersources("unauthorized", "user identity required to push a source"))
+        raise_typed(
+            PlatformError.usersources(
+                "unauthorized", "user identity required to push a source"
+            )
+        )
     try:
         normalized = validate_provider_base_url(body.base_url)
     except ProviderUrlError as exc:
@@ -202,7 +209,9 @@ async def unpush_source(
     store = _store(request)
     source_id = store.tombstone(caller.user_id, name)
     if source_id is None:
-        raise_typed(PlatformError.usersources("not_found", f"Source {name!r} not found"))
+        raise_typed(
+            PlatformError.usersources("not_found", f"Source {name!r} not found")
+        )
 
     # Cascade: revoke every lease still referencing the source (D-6 instant deny).
     from ..jobs.secret_broker import build_default_broker

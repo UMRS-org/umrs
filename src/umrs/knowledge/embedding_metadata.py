@@ -22,8 +22,8 @@ re-indexing ad hoc (S9 premise).
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime, timezone
-from typing import Sequence
 
 TARGET_MODEL_KEY = "target_model"
 INDEX_NAME_KEY = "index_name"

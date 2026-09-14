@@ -43,6 +43,7 @@ def _pg_kwargs() -> dict:
 
     return pg_connect_kwargs("egress-audit")
 
+
 router = APIRouter(prefix="/umrs/egress", tags=["egress-audit"])
 
 
@@ -99,7 +100,11 @@ def _record_matches(
     since: datetime | None,
 ) -> bool:
     """In-memory filter: truthy equality filters + optional ``since`` lower bound."""
-    checks = ((user_id, record.user_id), (project_id, record.project_id), (action, record.action))
+    checks = (
+        (user_id, record.user_id),
+        (project_id, record.project_id),
+        (action, record.action),
+    )
     if any(want and have != want for want, have in checks):
         return False
     return not (since and record.created_at < since)
@@ -263,7 +268,10 @@ class _EgressAuditStore:
             "ORDER BY created_at DESC LIMIT %s"
         )
         params.append(limit)
-        with self._psycopg2.connect(self._db_url, **_pg_kwargs()) as conn, conn.cursor() as cur:
+        with (
+            self._psycopg2.connect(self._db_url, **_pg_kwargs()) as conn,
+            conn.cursor() as cur,
+        ):
             cur.execute(sql, params)
             rows = cur.fetchall()
         return [self._row_to_record(row) for row in rows]
@@ -344,9 +352,9 @@ def list_audit(
 
 
 __all__ = [
-    "router",
-    "EgressAuditRecord",
     "EgressAuditCreateResponse",
     "EgressAuditListResponse",
+    "EgressAuditRecord",
     "get_store",
+    "router",
 ]

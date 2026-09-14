@@ -190,15 +190,18 @@ def _merge_vectors(
     pool: Any, assets: dict[str, Asset]
 ) -> tuple[dict[str, int], list[str]]:
     vector_by_chunk = {
-        str(node_id): int(rows or 0)
-        for node_id, rows in _rows(pool, _VECTORS_SQL, ())
+        str(node_id): int(rows or 0) for node_id, rows in _rows(pool, _VECTORS_SQL, ())
     }
     chunk_ids: set[str] = set()
     for asset in assets.values():
         chunk_ids.update(asset.chunk_node_ids)
         for chunk_id in asset.chunk_node_ids:
             asset.vector_rows_by_chunk[chunk_id] = vector_by_chunk.get(chunk_id, 0)
-    orphaned = [nid for nid, rows in vector_by_chunk.items() if nid not in chunk_ids and rows > 0]
+    orphaned = [
+        nid
+        for nid, rows in vector_by_chunk.items()
+        if nid not in chunk_ids and rows > 0
+    ]
     return vector_by_chunk, orphaned
 
 
@@ -206,7 +209,9 @@ def _attach_catalogue(pool: Any, project_id: str, assets: dict[str, Asset]) -> b
     """Attach s3_keys to assets when the catalogue plane is readable here."""
     probe_rows = list(_rows(pool, _CATALOGUE_TABLE_PROBE_SQL, ()))
     if not probe_rows or not (probe_rows[0] and probe_rows[0][0]):
-        logger.warning("catalog_objects not found in this pool — catalogue column marked unknown")
+        logger.warning(
+            "catalog_objects not found in this pool — catalogue column marked unknown"
+        )
         return False
     basename_by_doc: dict[str, str] = {}
     for asset_id, asset in assets.items():
@@ -256,6 +261,7 @@ def scan_project(pool: Any, project_id: str) -> ReconcileReport:
 def main(argv: list[str] | None = None) -> int:
     """`python -m umrs.knowledge.plane_reconciler --dsn ... --project X`."""
     import argparse
+
     from psycopg2 import pool as pg_pool
 
     parser = argparse.ArgumentParser(

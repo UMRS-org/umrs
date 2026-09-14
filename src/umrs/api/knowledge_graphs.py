@@ -14,11 +14,9 @@ deterministic default graph first, so existing projects appear automatically.
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-
-from .typed_errors import PlatformError, raise_typed
 from pydantic import BaseModel, Field
 
 from umrs.knowledge.access_scope import (
@@ -31,6 +29,7 @@ from umrs.knowledge.graph_registry import GRAPH_STATUSES, GraphRegistryStore
 from ._knowledge_mutation_guard import enforce_registry_write_authorization
 from ._scope_identity import get_caller_scope
 from .jobs import CallerIdentity, get_caller_identity
+from .typed_errors import PlatformError, raise_typed
 
 logger = logging.getLogger(__name__)
 
@@ -40,36 +39,36 @@ router = APIRouter(prefix="/umrs/knowledge/graphs", tags=["knowledge-graphs"])
 def _registry(request: Request) -> GraphRegistryStore:
     pool = getattr(request.app.state, "umrs_db_pool", None)
     if pool is None:
-        raise_typed(PlatformError.knowledgegraphs("unavailable", "Database unavailable"))
+        raise_typed(
+            PlatformError.knowledgegraphs("unavailable", "Database unavailable")
+        )
     return GraphRegistryStore(pool)
 
 
 class CreateGraphRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=200)
     description: str = ""
-    project_id: Optional[str] = None
+    project_id: str | None = None
     kind: str = "research"
-    ontology_id: Optional[str] = None
-    ontology_version: Optional[str] = None
+    ontology_id: str | None = None
+    ontology_version: str | None = None
     provenance: dict[str, Any] = Field(default_factory=dict)
 
 
 class UpdateGraphRequest(BaseModel):
-    description: Optional[str] = None
-    kind: Optional[str] = None
-    ontology_id: Optional[str] = None
-    ontology_version: Optional[str] = None
-    status: Optional[str] = Field(
-        default=None, description="Lifecycle: active | archived"
-    )
+    description: str | None = None
+    kind: str | None = None
+    ontology_id: str | None = None
+    ontology_version: str | None = None
+    status: str | None = Field(default=None, description="Lifecycle: active | archived")
 
 
 @router.get("")
 async def list_graphs(
     request: Request,
-    project_id: Optional[str] = Query(None),
-    status: Optional[str] = Query("active"),
-    q: Optional[str] = Query(None, description="Name/description search"),
+    project_id: str | None = Query(None),
+    status: str | None = Query("active"),
+    q: str | None = Query(None, description="Name/description search"),
     limit: int = Query(200, ge=1, le=1000),
 ) -> dict[str, Any]:
     """List registered knowledge graphs with optional filters.
@@ -162,7 +161,9 @@ async def get_graph(graph_id: str, request: Request) -> dict[str, Any]:
         owner_id=graph.owner_id,
         caller=scope,
     ):
-        raise_typed(PlatformError.knowledgegraphs("not_found", f"Graph {graph_id} not found"))
+        raise_typed(
+            PlatformError.knowledgegraphs("not_found", f"Graph {graph_id} not found")
+        )
     payload = graph.to_dict()
     # ADR-049 B-part-2: traversal surfaces carry the resolved ontology
     # (registry-first); unresolvable references named, never smudged.
@@ -205,7 +206,9 @@ async def get_graph_content(
             graph_id, node_limit=node_limit, edge_limit=edge_limit
         )
     except KeyError:
-        raise_typed(PlatformError.knowledgegraphs("not_found", f"Graph {graph_id} not found"))
+        raise_typed(
+            PlatformError.knowledgegraphs("not_found", f"Graph {graph_id} not found")
+        )
     scope = get_caller_scope(request)
     if not graph_readable(
         kind=str(content.get("kind") or ""),
@@ -215,7 +218,9 @@ async def get_graph_content(
         owner_id=str(content.get("owner_id") or ""),
         caller=scope,
     ):
-        raise_typed(PlatformError.knowledgegraphs("not_found", f"Graph {graph_id} not found"))
+        raise_typed(
+            PlatformError.knowledgegraphs("not_found", f"Graph {graph_id} not found")
+        )
     return content
 
 
@@ -234,7 +239,9 @@ async def update_graph(
     registry = _registry(request)
     existing = registry.get_graph(graph_id)
     if existing is None:
-        raise_typed(PlatformError.knowledgegraphs("not_found", f"Graph {graph_id} not found"))
+        raise_typed(
+            PlatformError.knowledgegraphs("not_found", f"Graph {graph_id} not found")
+        )
     scope = get_caller_scope(request)
     if not graph_writable(
         kind=existing.kind,
@@ -252,7 +259,9 @@ async def update_graph(
     if body.status is not None:
         if body.status not in GRAPH_STATUSES:
             raise_typed(
-                PlatformError.knowledgegraphs("bad_request", f"Invalid status {body.status!r}")
+                PlatformError.knowledgegraphs(
+                    "bad_request", f"Invalid status {body.status!r}"
+                )
             )
         registry.set_status(graph_id, body.status)
     graph = registry.update_graph(

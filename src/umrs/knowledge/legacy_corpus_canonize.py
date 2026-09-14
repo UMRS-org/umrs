@@ -61,7 +61,7 @@ def _strip_fragment(s3_object: str) -> str:
 
 def _legacy_document_id(doc_key: str) -> str:
     """doc_key = document checksum (or fragment-stripped s3_object fallback)."""
-    return hashlib.md5(doc_key.encode("utf-8")).hexdigest()  # noqa: S324 — id scheme, not security
+    return hashlib.md5(doc_key.encode("utf-8")).hexdigest()
 
 
 def _doc_label(doc_uri: str) -> str:
@@ -84,7 +84,16 @@ def read_corpus(source_pool: Any, table: str) -> dict[str, dict[str, Any]]:
     try:
         with conn.cursor() as cur:
             cur.execute(_SELECT_ROWS_SQL.format(table=table))
-            for s3_object, checksum, start, end, md5, model, emb, content in cur.fetchall():
+            for (
+                s3_object,
+                checksum,
+                start,
+                end,
+                md5,
+                model,
+                emb,
+                content,
+            ) in cur.fetchall():
                 doc_uri = _strip_fragment(s3_object)
                 key = checksum or doc_uri
                 entry = docs.setdefault(key, {"uri": doc_uri, "rows": []})
@@ -118,7 +127,7 @@ def canonize_document(
     doc_node_id = f"ragdoc-{document_id}"
     gid = default_graph_id(project_id)
     filename = _doc_label(doc_uri)
-    content_hash = hashlib.sha256(f"{document_id}:{filename}".encode("utf-8")).hexdigest()[:16]
+    content_hash = hashlib.sha256(f"{document_id}:{filename}".encode()).hexdigest()[:16]
     artifact_id = f"artifact-rag-{document_id}"
     with canonical_conn.cursor() as cur:
         _upsert_artifact(
@@ -172,8 +181,12 @@ def canonize_document(
                 graph_id=gid,
             )
             _upsert_part_of_edge(
-                cur, chunk_id=chunk_id, doc_node_id=doc_node_id, project_id=project_id,
-                graph_id=gid, origin=ORIGIN,
+                cur,
+                chunk_id=chunk_id,
+                doc_node_id=doc_node_id,
+                project_id=project_id,
+                graph_id=gid,
+                origin=ORIGIN,
             )
             _upsert_embedding(
                 cur,
@@ -197,12 +210,20 @@ def _build_pool(dsn: str):
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0] if __doc__ else None)
+    ap = argparse.ArgumentParser(
+        description=__doc__.splitlines()[0] if __doc__ else None
+    )
     ap.add_argument("--source-dsn", required=True, help="Legacy corpus database DSN")
     ap.add_argument("--dsn", required=True, help="Canonical umrs_db DSN")
-    ap.add_argument("--table", default="text", help="Legacy chunk table (default: text)")
-    ap.add_argument("--project-id", required=True, help="Canonical project for minted nodes")
-    ap.add_argument("--max-per-doc", type=int, default=500, help="Sanity cap per document")
+    ap.add_argument(
+        "--table", default="text", help="Legacy chunk table (default: text)"
+    )
+    ap.add_argument(
+        "--project-id", required=True, help="Canonical project for minted nodes"
+    )
+    ap.add_argument(
+        "--max-per-doc", type=int, default=500, help="Sanity cap per document"
+    )
     ap.add_argument("--apply", action="store_true", help="Write (default: dry-run)")
     ap.add_argument("--verbose", action="store_true")
     args = ap.parse_args(argv)
@@ -213,7 +234,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         docs = read_corpus(source_pool, args.table)
         total_chunks = sum(len(entry["rows"]) for entry in docs.values())
-        print(f"plan: {len(docs)} documents, {total_chunks} chunks (project={args.project_id})")
+        print(
+            f"plan: {len(docs)} documents, {total_chunks} chunks (project={args.project_id})"
+        )
         if args.verbose:
             for entry in docs.values():
                 print(f"  {entry['uri']}: {len(entry['rows'])} chunks")
@@ -240,7 +263,9 @@ def main(argv: list[str] | None = None) -> int:
                 raise
             finally:
                 canonical_pool.putconn(conn)
-        print(f"applied: {written_docs} documents, {written_chunks} chunk nodes+vectors")
+        print(
+            f"applied: {written_docs} documents, {written_chunks} chunk nodes+vectors"
+        )
         return 0
     finally:
         source_pool.closeall()

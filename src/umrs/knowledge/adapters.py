@@ -36,8 +36,6 @@ from umrs.experiment_registry import (
     build_default_store as _build_default_experiment_registry,
 )
 from umrs.knowledge.graph_types import KnowledgeEdge, KnowledgeNode, RelationType
-from .canonical_graph_view import CanonicalGraphView as TransactionCanonicalGraphView
-from .canonical_graph_view import default_view
 from umrs.knowledge_model import (
     InMemoryKnowledgeModelStore,
     KnowledgeObject,
@@ -63,14 +61,17 @@ from umrs.search_api import (
     UnifiedSearch,
 )
 
+from .canonical_graph_view import CanonicalGraphView as TransactionCanonicalGraphView
+from .canonical_graph_view import default_view
+
 __all__ = [
-    "UMRSScientificMemoryAdapter",
-    "UMRSKnowledgeModelAdapter",
-    "UMRSKnowledgeGraphAdapter",
-    "UMRSScientificExperimentRegistryAdapter",
-    "UMRSEvidenceAdapter",
-    "UMRSSearchAdapter",
     "UMRSEmbeddingsAdapter",
+    "UMRSEvidenceAdapter",
+    "UMRSKnowledgeGraphAdapter",
+    "UMRSKnowledgeModelAdapter",
+    "UMRSScientificExperimentRegistryAdapter",
+    "UMRSScientificMemoryAdapter",
+    "UMRSSearchAdapter",
 ]
 
 

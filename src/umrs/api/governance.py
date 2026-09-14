@@ -206,9 +206,7 @@ class GovernanceStore:
         try:
             import psycopg2
 
-            return isinstance(
-                exc, (psycopg2.InterfaceError, psycopg2.OperationalError)
-            )
+            return isinstance(exc, (psycopg2.InterfaceError, psycopg2.OperationalError))
         except Exception:
             return False
 

@@ -23,15 +23,13 @@ from typing import Any
 
 import aiohttp
 from fastapi import APIRouter, HTTPException, Query, Request, status
-
-from .typed_errors import PlatformError, raise_typed
 from pydantic import BaseModel, Field
 
 from ..mcp.store import (
     MCPServerNotFoundError,
     MCPServerStore,
 )
-
+from .typed_errors import PlatformError, raise_typed
 
 # =============================================================================
 # URL Validation / SSRF Protection
@@ -86,7 +84,12 @@ def _check_blocked_ip(hostname: str) -> None:
         return
     for network in _BLOCKED_NETWORKS:
         if addr in network:
-            raise_typed(PlatformError.mcp("unprocessable", f"MCP server URL resolves to a blocked network ({network}): {hostname}"))
+            raise_typed(
+                PlatformError.mcp(
+                    "unprocessable",
+                    f"MCP server URL resolves to a blocked network ({network}): {hostname}",
+                )
+            )
 
 
 def _validate_mcp_url(url: str) -> None:
@@ -107,14 +110,26 @@ def _validate_mcp_url(url: str) -> None:
         raise_typed(PlatformError.mcp("unprocessable", f"Invalid URL format: {url}"))
 
     if parsed.scheme not in ("http", "https"):
-        raise_typed(PlatformError.mcp("unprocessable", f"MCP server URL must use http or https scheme, got: {parsed.scheme!r}"))
+        raise_typed(
+            PlatformError.mcp(
+                "unprocessable",
+                f"MCP server URL must use http or https scheme, got: {parsed.scheme!r}",
+            )
+        )
 
     hostname = parsed.hostname
     if not hostname:
-        raise_typed(PlatformError.mcp("unprocessable", "MCP server URL must include a hostname"))
+        raise_typed(
+            PlatformError.mcp("unprocessable", "MCP server URL must include a hostname")
+        )
 
     if hostname.lower() in _BLOCKED_HOSTNAMES:
-        raise_typed(PlatformError.mcp("unprocessable", f"MCP server URL hostname is blocked (metadata endpoint): {hostname}"))
+        raise_typed(
+            PlatformError.mcp(
+                "unprocessable",
+                f"MCP server URL hostname is blocked (metadata endpoint): {hostname}",
+            )
+        )
 
     _check_blocked_ip(hostname)
 
@@ -364,9 +379,13 @@ async def get_server(request: Request, server_id_or_name: str) -> ServerResponse
         else:
             server = store.get_server_by_name(server_id_or_name)
     except MCPServerNotFoundError:
-        raise_typed(PlatformError.mcp("not_found", f"Server not found: {server_id_or_name}"))
+        raise_typed(
+            PlatformError.mcp("not_found", f"Server not found: {server_id_or_name}")
+        )
     if not _server_visible(server, scope.project_id, unrestricted):
-        raise_typed(PlatformError.mcp("not_found", f"Server not found: {server_id_or_name}"))
+        raise_typed(
+            PlatformError.mcp("not_found", f"Server not found: {server_id_or_name}")
+        )
     return _server_to_response(server)
 
 
@@ -409,7 +428,9 @@ async def unregister_server(request: Request, server_id_or_name: str) -> dict[st
         deleted = store.unregister_server(server_id_or_name)
 
     if not deleted:
-        raise_typed(PlatformError.mcp("not_found", f"Server not found: {server_id_or_name}"))
+        raise_typed(
+            PlatformError.mcp("not_found", f"Server not found: {server_id_or_name}")
+        )
 
     from .audit_events import emit_audit
 
@@ -650,7 +671,7 @@ async def _post_tool_call_once(
     url: str,
     payload: dict[str, Any],
     tool_name: str,
-) -> "tuple[str, Any]":
+) -> tuple[str, Any]:
     """One proxy attempt.
 
     Returns ("ok", result) when the tool call succeeded, ("retry", None) for

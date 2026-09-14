@@ -22,16 +22,16 @@ import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from ..orchestrator.endpoint_registry import (
-    EndpointRegistry,
-    RegisteredEndpoint,
-    EndpointStatus,
-    get_registry,
-)
 from ..orchestrator.endpoint_mounts import (
     egress_reasons,
     require_egress_proxy_image,
     validate_mount_source,
+)
+from ..orchestrator.endpoint_registry import (
+    EndpointRegistry,
+    EndpointStatus,
+    RegisteredEndpoint,
+    get_registry,
 )
 from ..orchestrator.readiness import get_readiness_poller
 from ..shared.auth import JWTError, resolve_jwt_secret, validate_jwt

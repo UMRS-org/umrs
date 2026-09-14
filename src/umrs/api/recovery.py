@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
+
 from .typed_errors import PlatformError, raise_typed
 
 logger = logging.getLogger(__name__)
@@ -23,7 +23,9 @@ def set_recoverer(recoverer) -> None:
 
 def _get_recoverer():
     if _recoverer is None:
-        raise_typed(PlatformError.recovery("unavailable", "Session recoverer not initialized"))
+        raise_typed(
+            PlatformError.recovery("unavailable", "Session recoverer not initialized")
+        )
     return _recoverer
 
 
@@ -46,5 +48,7 @@ async def recover_single_session(job_id: str):
     recoverer = _get_recoverer()
     result = recoverer.recover_sessions(lost_job_ids=[job_id])
     if not result.recovered_sessions:
-        raise_typed(PlatformError.recovery("not_found", "No session traces found for job"))
+        raise_typed(
+            PlatformError.recovery("not_found", "No session traces found for job")
+        )
     return result.recovered_sessions[0].to_dict()

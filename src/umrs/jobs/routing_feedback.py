@@ -147,7 +147,9 @@ class RoutingFeedbackStore:
     def _get_conn(self):
         from umrs.shared.pg_settings import pg_connect_kwargs
 
-        return self._psycopg2.connect(self._db_url, **pg_connect_kwargs("routing-feedback"))
+        return self._psycopg2.connect(
+            self._db_url, **pg_connect_kwargs("routing-feedback")
+        )
 
     # =========================================================================
     # Record feedback

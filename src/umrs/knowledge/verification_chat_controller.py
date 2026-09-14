@@ -139,7 +139,9 @@ class VerificationChatController:
                     project_id=project_id,
                     question=answer.question,
                     evidence_ids=answer.evidence_ids,
-                    graph_traversal=[str(p) for p in answer.graph_paths[0]] if answer.graph_paths else [],
+                    graph_traversal=[str(p) for p in answer.graph_paths[0]]
+                    if answer.graph_paths
+                    else [],
                     confidence=answer.confidence,
                     answer=answer.answer,
                 )
@@ -153,7 +155,9 @@ class VerificationChatController:
                     project_id=project_id,
                     question=answer.question,
                     evidence_ids=answer.evidence_ids,
-                    graph_traversal=[str(p) for p in answer.graph_paths[0]] if answer.graph_paths else [],
+                    graph_traversal=[str(p) for p in answer.graph_paths[0]]
+                    if answer.graph_paths
+                    else [],
                     confidence=answer.confidence,
                 )
             except Exception as exc:  # noqa: BLE001
@@ -246,9 +250,7 @@ class VerificationChatController:
     ) -> list[dict[str, Any]]:
         """List verification sessions (TASK-046)."""
         if self._session_store is not None:
-            return self._session_store.list_sessions(
-                project_id=project_id, limit=limit
-            )
+            return self._session_store.list_sessions(project_id=project_id, limit=limit)
         if self._store is not None:
             return await self._store.list_verification_sessions(
                 project_id=project_id, limit=limit

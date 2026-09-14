@@ -90,10 +90,7 @@ def _require_manifest(manifest_id: str) -> IntakeUploadManifest:
     manifest = _get_store().get(manifest_id)
     if manifest is None:
         raise_typed(
-            PlatformError.intake(
-                "not_found",
-                f"Manifest '{manifest_id}' not found"
-            ),
+            PlatformError.intake("not_found", f"Manifest '{manifest_id}' not found"),
         )
     return manifest
 
@@ -103,14 +100,13 @@ def _require_uploading(manifest: IntakeUploadManifest) -> None:
         raise_typed(
             PlatformError.intake(
                 "conflict",
-                "Manifest already assembled — complete is idempotent; use GET"
+                "Manifest already assembled — complete is idempotent; use GET",
             ),
         )
     if manifest.status == "failed":
         raise_typed(
             PlatformError.intake(
-                "conflict",
-                f"Manifest failed: {manifest.error_note or 'unknown error'}"
+                "conflict", f"Manifest failed: {manifest.error_note or 'unknown error'}"
             ),
         )
 
@@ -163,7 +159,7 @@ def presign_part(
         raise_typed(
             PlatformError.intake(
                 "bad_request",
-                f"part {part_no} exceeds expected_parts={manifest.expected_parts}"
+                f"part {part_no} exceeds expected_parts={manifest.expected_parts}",
             ),
         )
     config = get_s3_config()
@@ -198,7 +194,7 @@ def record_part(
         raise_typed(
             PlatformError.intake(
                 "bad_request",
-                f"part {part_no} exceeds expected_parts={manifest.expected_parts}"
+                f"part {part_no} exceeds expected_parts={manifest.expected_parts}",
             ),
         )
     if part_no not in manifest.received_parts:
@@ -281,7 +277,11 @@ def _raise_if_missing(manifest: IntakeUploadManifest, present: dict[int, Any]) -
         raise_typed(
             PlatformError.intake(
                 "conflict",
-                { "error": "incomplete upload", "missing_parts": missing, "manifest_id": manifest.manifest_id, }
+                {
+                    "error": "incomplete upload",
+                    "missing_parts": missing,
+                    "manifest_id": manifest.manifest_id,
+                },
             ),
         )
 

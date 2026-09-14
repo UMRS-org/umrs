@@ -17,9 +17,10 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any, Protocol
 
+from umrs.metrics import METRICS
+
 from .models import Job, JobAttempt, JobType
 from .store import JobStore, JobStoreError
-from umrs.metrics import METRICS
 
 logger = logging.getLogger(__name__)
 
@@ -163,7 +164,7 @@ class Scheduler:
                 continue
             await self._schedule_job(job_id, job)
 
-    async def _schedule_job(self, job_id: str, job: "Job | None" = None) -> None:
+    async def _schedule_job(self, job_id: str, job: Job | None = None) -> None:
         """
         Schedule a single job.
 

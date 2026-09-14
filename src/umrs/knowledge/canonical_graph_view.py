@@ -93,9 +93,9 @@ class _StoreWorker:
         if self._pool is not None:
             return self._pool
 
-        import asyncpg  # type: ignore[import-untyped]
-
         import json as _json
+
+        import asyncpg  # type: ignore[import-untyped]
 
         async def _json_codecs(conn: Any) -> None:
             # jsonb codec registration self-contained here (foundation
@@ -132,7 +132,9 @@ class _StoreWorker:
         def _report(fut: Any) -> None:
             exc = fut.exception()
             if exc is not None:
-                logger.warning("canonical graph mutation failed: %s", exc, exc_info=True)
+                logger.warning(
+                    "canonical graph mutation failed: %s", exc, exc_info=True
+                )
 
         future.add_done_callback(_report)
 
@@ -159,7 +161,7 @@ class _StoreWorker:
         self._loop.call_soon_threadsafe(self._loop.stop)
 
 
-_worker: "_StoreWorker | None" = None
+_worker: _StoreWorker | None = None
 _worker_lock = threading.Lock()
 
 
@@ -221,7 +223,7 @@ def default_view(
     graph_id: str | None = None,
     *,
     store: KnowledgeStore | None = None,
-) -> "CanonicalGraphView":
+) -> CanonicalGraphView:
     """View over the project's default graph; store attached when resolvable."""
     from .graph_registry import default_graph_id
 
@@ -239,7 +241,7 @@ def in_memory_view(
     graph_id: str | None = None,
     *,
     ontology: Any | None = None,
-) -> "CanonicalGraphView":
+) -> CanonicalGraphView:
     """Explicitly store-free view — NEVER resolves a durable store.
 
     Complement to :func:`default_view`, whose ``store=None`` argument means
@@ -296,7 +298,7 @@ class CanonicalGraphView:
 
     # ── loading ─────────────────────────────────────────────────────────
 
-    async def refresh(self) -> "CanonicalGraphView":
+    async def refresh(self) -> CanonicalGraphView:
         """Load canonical rows into the in-memory mirror."""
         if self._store is None:
             return self
@@ -314,7 +316,7 @@ class CanonicalGraphView:
         store: KnowledgeStore | None,
         project_id: str,
         graph_id: str,
-    ) -> "CanonicalGraphView":
+    ) -> CanonicalGraphView:
         return cls(store=store, project_id=project_id, graph_id=graph_id)
 
     # ── mutations ───────────────────────────────────────────────────────
@@ -497,7 +499,8 @@ class CanonicalGraphView:
         from .ontology import canonical_relation, canonical_to_sat
 
         requested_name = (
-            relation_type if isinstance(relation_type, str)
+            relation_type
+            if isinstance(relation_type, str)
             else getattr(relation_type, "name", str(relation_type))
         )
         canonical, inverse = canonical_relation(requested_name)
@@ -541,8 +544,10 @@ class CanonicalGraphView:
     ) -> tuple[str, bool, str, str]:
         """Project (sat|canonical relation, direction) onto (sat_name,
         canonical_name, effective_direction) with the fail-closed contract."""
-        sat_name = relation_type if isinstance(relation_type, str) else (
-            getattr(relation_type, "name", None) or str(relation_type)
+        sat_name = (
+            relation_type
+            if isinstance(relation_type, str)
+            else (getattr(relation_type, "name", None) or str(relation_type))
         )
         if sat_name == "related_to":
             return sat_name, "related_to", direction
@@ -623,7 +628,11 @@ class CanonicalGraphView:
         )
 
     def _walk_successors(self, node: str, sat_name: str, direction: str) -> list[str]:
-        edges = self.get_outgoing(node) if direction == "outgoing" else self.get_incoming(node)
+        edges = (
+            self.get_outgoing(node)
+            if direction == "outgoing"
+            else self.get_incoming(node)
+        )
 
         def _match(relation: Any) -> bool:
             # sat enums carry NAMES; stored rows may be raw strings.
@@ -683,9 +692,7 @@ class CanonicalGraphView:
         def _projected(nodes):
             if self._ontology.ontology_id == DEFAULT_ONTOLOGY.ontology_id:
                 return nodes
-            return [
-                n for n in nodes if n.node_type in self._ontology.entity_types
-            ]
+            return [n for n in nodes if n.node_type in self._ontology.entity_types]
 
         if node_type is not None:
             # G-P1-6 subtype expansion: querying a parent includes its
@@ -698,7 +705,9 @@ class CanonicalGraphView:
                 if edge.relation_type == relation_type:
                     matching.add(edge.source_id)
                     matching.add(edge.target_id)
-            return _projected([self._nodes[nid] for nid in matching if nid in self._nodes])
+            return _projected(
+                [self._nodes[nid] for nid in matching if nid in self._nodes]
+            )
         return _projected(list(self._nodes.values()))
 
 

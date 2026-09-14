@@ -123,9 +123,7 @@ def parse_notebook(filename: str, content: bytes) -> NotebookParseResult:
         # Extract figures from code cell outputs
         if parsed_cell.is_code():
             for out_idx, output in enumerate(parsed_cell.outputs):
-                figures = _extract_figures_from_output(
-                    output, idx, out_idx
-                )
+                figures = _extract_figures_from_output(output, idx, out_idx)
                 result.figures.extend(figures)
 
     # Build extracted text

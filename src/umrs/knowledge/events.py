@@ -26,12 +26,12 @@ Usage:
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import uuid
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Callable, Coroutine, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -39,15 +39,17 @@ logger = logging.getLogger(__name__)
 _UNSET: datetime = datetime(1970, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
 
 # Allowed event_type values — keep in sync with SSE/audit consumers
-_VALID_EVENT_TYPES: frozenset[str] = frozenset({
-    "parsed",
-    "extracted",
-    "embedded",
-    "indexed",
-    "archived",
-    "failed",
-    "resumed",
-})
+_VALID_EVENT_TYPES: frozenset[str] = frozenset(
+    {
+        "parsed",
+        "extracted",
+        "embedded",
+        "indexed",
+        "archived",
+        "failed",
+        "resumed",
+    }
+)
 
 # Consumer callback type
 _ConsumerCallback = Callable[[KnowledgeEvent], Coroutine[Any, Any, None]]
@@ -183,7 +185,9 @@ class KnowledgeEvent:
     # Pub/sub registry (static)
     # ------------------------------------------------------------------
 
-    _consumers: list[_ConsumerCallback] = field(default=list, repr=False, init=False, hash=False)
+    _consumers: list[_ConsumerCallback] = field(
+        default=list, repr=False, init=False, hash=False
+    )
 
     @classmethod
     def register_consumer(cls, callback: _ConsumerCallback) -> None:

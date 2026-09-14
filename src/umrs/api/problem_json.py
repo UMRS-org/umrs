@@ -28,7 +28,6 @@ import logging
 
 from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
-
 from r4_contracts.errors import ERROR_CODE_HEADER, PlatformError
 
 logger = logging.getLogger(__name__)
@@ -66,7 +65,9 @@ async def problem_json_handler(request: Request, exc: HTTPException) -> JSONResp
     if not code or "." not in code:
         # untyped: identical to the stock FastAPI handler
         return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
-    error = PlatformError(code=code, message=str(exc.detail), http_status=exc.status_code)
+    error = PlatformError(
+        code=code, message=str(exc.detail), http_status=exc.status_code
+    )
     return JSONResponse(
         problem_body(error),
         status_code=exc.status_code,
