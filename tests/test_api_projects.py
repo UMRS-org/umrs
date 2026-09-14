@@ -17,8 +17,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
-
-from umrs.api.projects import ProjectStore, ProjectNotFound, router
+from umrs.api.projects import ProjectNotFound, ProjectStore, router
 
 
 class _Cursor:

@@ -1,14 +1,9 @@
 import json
-import os
-import sys
 from argparse import Namespace
 
 import pytest
 
-
 # splice removed (ADR-053): umrs installed editable in .venv
-
-
 from client_umrs import _handle_config_command, _resolve_control_client_id
 from umrs.shared.json_config import load_client_cfg_file
 from umrs.shared.loaded_config_profiles import (

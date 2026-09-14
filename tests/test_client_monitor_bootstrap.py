@@ -1,18 +1,13 @@
 from __future__ import annotations
 
-import os
 import sys
 import types
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-import pytest
-
-
 # splice removed (ADR-053): umrs installed editable in .venv
-
-
 import client_umrs
+import pytest
 
 
 class _FakeConnection:

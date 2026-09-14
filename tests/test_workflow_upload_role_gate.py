@@ -8,17 +8,14 @@ Gate semantics (header-driven, strict-or-verified-identity requests):
 
 from __future__ import annotations
 
-import sys
 import zipfile
 from io import BytesIO
-from pathlib import Path
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 # splice removed (ADR-053): pytest auto-inserts tests/ for sibling helpers; umrs editable
-
 from umrs.api import audit_events, workflows  # noqa: E402
 
 

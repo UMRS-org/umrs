@@ -21,16 +21,14 @@ Today truth for tests below (verified 2026-08-13):
 from __future__ import annotations
 
 import json
-import sys
-from pathlib import Path
 from typing import Any
 
 import pytest
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
 
 # splice removed (ADR-053): pytest auto-inserts tests/ for sibling helpers
 from _transport_parity_helpers import SpyAuditStore, compare_rows  # noqa: E402
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
 
 class _StubJobStore:

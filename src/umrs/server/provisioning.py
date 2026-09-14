@@ -450,7 +450,6 @@ def deprovision_user(user_cfg, admin_s3_configuration_file):
     - Object-store identity and attached policies (backend adapter, ADR-055)
     - User S3 config file (~/.s3cfg_<username>)
     """
-    import configparser
 
     from umrs.server.sql import create_db_name, drop_db, drop_db_user
     from umrs.shared.storage.backends import get_backend

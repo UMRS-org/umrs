@@ -1,14 +1,9 @@
 from __future__ import annotations
 
 import json
-import os
-import sys
 from argparse import Namespace
 
-
 # splice removed (ADR-053): umrs installed editable in .venv
-
-
 import client_umrs
 
 

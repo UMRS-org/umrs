@@ -32,17 +32,15 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from umrs.pipeline_sdk.step import Step, StepContext, StepResult
+from umrs.pipeline_sdk.step import StepContext, StepResult
 
 from .step_executor import (
+    _PAYLOAD_MAX_BYTES,
     EXECUTOR_GPU_METADATA_KEY,
     EXECUTOR_IMAGE_METADATA_KEY,
     EXECUTOR_PAYLOAD_S3_METADATA_KEY,
     StepExecutionError,
     StepExecutor,
-    _PAYLOAD_MAX_BYTES,
-    _drive_lifecycle,
-    _load_step_class,
     _serialise_ctx_payload,
     _serialise_s3_client_config,
 )
@@ -317,7 +315,7 @@ class SlurmStepExecutor(StepExecutor):
         return "\n".join(lines)
 
     @staticmethod
-    def _format_time_limit(timeout_seconds: float | int | None) -> str | None:
+    def _format_time_limit(timeout_seconds: float | None) -> str | None:
         """Convert timeout seconds to Slurm ``HH:MM:SS`` when usable."""
         if timeout_seconds is None:
             return None

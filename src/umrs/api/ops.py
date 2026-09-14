@@ -17,12 +17,11 @@ import time
 from datetime import datetime, timedelta
 from typing import Any
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, Query
 from pydantic import BaseModel, Field
 
-from .typed_errors import PlatformError, raise_typed
-
 from ._verified_headers import CallerIdentity, get_caller
+from .typed_errors import PlatformError, raise_typed
 
 logger = logging.getLogger(__name__)
 
@@ -1427,8 +1426,8 @@ async def governance_analytics(
     """
     _check_governance_admin(admin_token)
 
-    from .governance import get_governance_store
     from .audit_events import query_audit_events
+    from .governance import get_governance_store
 
     analytics: dict[str, Any] = {
         "quota_utilization": [],

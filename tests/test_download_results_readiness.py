@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 import argparse
-import sys
 from pathlib import Path
 
 # Splice removed (ADR-053): umrs installed editable in .venv.
-
 from umrs.client.download_results import (  # noqa: E402
     classify_wait_reply,
     format_wait_progress,

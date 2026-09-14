@@ -1,15 +1,15 @@
 #!/usr/bin/python3
-import psycopg2
-from psycopg2 import sql, pool
-import numpy as np
-from sklearn.cluster import KMeans
 import ast  # To safely convert strings to lists
+import os
+from types import SimpleNamespace
+
+import numpy as np
+import psycopg2
 from PIL import Image
-import os, sys
+from sklearn.cluster import KMeans
 
 # Splice removed (ADR-053): umrs installed editable in .venv.
 from umrs.inference import *
-from types import SimpleNamespace
 
 
 def cluster_from_embeddings(conn, cur, table, nb_clusters=3):

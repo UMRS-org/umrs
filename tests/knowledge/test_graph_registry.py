@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
 import pytest
 
 # splice removed (ADR-053): pytest auto-inserts tests/ for sibling helpers; umrs editable

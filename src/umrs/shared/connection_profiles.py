@@ -615,10 +615,10 @@ def resolve_connection(
 
 
 __all__ = [
+    "UMRS_PROFILE_ENV_VAR_NAME",
     "ConnectionProfile",
     "DataPortRange",
     "ResolvedConnection",
-    "UMRS_PROFILE_ENV_VAR_NAME",
     "discover_connection_profiles",
     "get_connections_dir",
     "get_current_profile_name",

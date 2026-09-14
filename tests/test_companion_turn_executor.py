@@ -9,7 +9,6 @@ fails terminal on upstream errors; env resolution precedence and the
 from __future__ import annotations
 
 import asyncio
-import sys
 from pathlib import Path
 
 import pytest

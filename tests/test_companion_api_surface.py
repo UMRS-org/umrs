@@ -2,15 +2,12 @@
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
 import pytest
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
 
 # splice removed (ADR-053): pytest auto-inserts tests/ for sibling helpers; umrs editable
 from fake_pg_pool import FakePool  # noqa: E402
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 from umrs.api.companion import router  # noqa: E402
 
 from r4_contracts.handshake_hmac import sign_claims  # noqa: E402

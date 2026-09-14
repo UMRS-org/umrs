@@ -11,15 +11,14 @@ Run with:
     pytest tests/test_durable_orchestration.py -v
 """
 
+import asyncio
 import os
-import pytest
+
+# Test imports
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import asyncio
-
-# Test imports
-import sys
+import pytest
 
 # splice removed (ADR-053): umrs installed editable in .venv
 
@@ -132,7 +131,7 @@ class TestJobModels:
 
     def test_idempotency_key_computation(self):
         """Test idempotency key is deterministic."""
-        from umrs.jobs import compute_idempotency_key, JobType
+        from umrs.jobs import JobType, compute_idempotency_key
 
         key1 = compute_idempotency_key(
             project_id="proj-1",
@@ -159,7 +158,7 @@ class TestJobModels:
 
     def test_job_serialization(self):
         """Test Job to_dict/from_dict round-trip."""
-        from umrs.jobs import Job, JobType, JobStatus, RestartPolicy, compute_idempotency_key
+        from umrs.jobs import Job, JobStatus, JobType, RestartPolicy, compute_idempotency_key
 
         idempotency_key = compute_idempotency_key(
             project_id="proj-1",
@@ -195,7 +194,7 @@ class TestJobModels:
 
     def test_attempt_serialization(self):
         """Test JobAttempt to_dict/from_dict round-trip."""
-        from umrs.jobs import JobAttempt, AttemptStatus
+        from umrs.jobs import AttemptStatus, JobAttempt
 
         attempt = JobAttempt(
             attempt_id="att-123",
@@ -229,11 +228,11 @@ class TestAdapters:
     def test_index_build_backend_submit(self):
         """IndexBuildBackend should perform pgvector maintenance synchronously."""
         from umrs.jobs import (
+            AttemptStatus,
             Job,
             JobAttempt,
-            JobType,
             JobStatus,
-            AttemptStatus,
+            JobType,
             compute_idempotency_key,
         )
         from umrs.jobs.adapters import IndexBuildBackend
@@ -289,11 +288,11 @@ class TestAdapters:
     def test_cleanup_backend_submit_endpoint(self):
         """CleanupBackend should teardown an endpoint target."""
         from umrs.jobs import (
+            AttemptStatus,
             Job,
             JobAttempt,
-            JobType,
             JobStatus,
-            AttemptStatus,
+            JobType,
             compute_idempotency_key,
         )
         from umrs.jobs.adapters import CleanupBackend
@@ -342,11 +341,11 @@ class TestAdapters:
     def test_cleanup_backend_resolves_durable_endpoint_job_id(self):
         """CleanupBackend should resolve durable endpoint job IDs to backend refs."""
         from umrs.jobs import (
+            AttemptStatus,
             Job,
             JobAttempt,
-            JobType,
             JobStatus,
-            AttemptStatus,
+            JobType,
             compute_idempotency_key,
         )
         from umrs.jobs.adapters import CleanupBackend
@@ -428,11 +427,11 @@ class TestAdapters:
     def test_cleanup_status_checker_succeeds_when_endpoint_is_absent(self):
         """Cleanup status should succeed once the target endpoint is gone."""
         from umrs.jobs import (
+            AttemptStatus,
             Job,
             JobAttempt,
-            JobType,
             JobStatus,
-            AttemptStatus,
+            JobType,
             compute_idempotency_key,
         )
         from umrs.jobs.adapters import CleanupStatusChecker
@@ -477,11 +476,11 @@ class TestAdapters:
     def test_cleanup_status_checker_reports_requested_job_id(self):
         """Cleanup status should preserve the original durable endpoint job ID in metrics."""
         from umrs.jobs import (
+            AttemptStatus,
             Job,
             JobAttempt,
-            JobType,
             JobStatus,
-            AttemptStatus,
+            JobType,
             compute_idempotency_key,
         )
         from umrs.jobs.adapters import CleanupStatusChecker
@@ -529,11 +528,11 @@ class TestAdapters:
     def test_endpoint_provision_backend_submit(self):
         """Test EndpointProvisionBackend submit_job."""
         from umrs.jobs import (
+            AttemptStatus,
             Job,
             JobAttempt,
-            JobType,
             JobStatus,
-            AttemptStatus,
+            JobType,
             compute_idempotency_key,
         )
         from umrs.jobs.adapters import EndpointProvisionBackend
@@ -615,11 +614,11 @@ class TestAdapters:
     def test_endpoint_provision_backend_merges_env_vars(self):
         """EndpointProvisionBackend should preserve caller env overrides."""
         from umrs.jobs import (
+            AttemptStatus,
             Job,
             JobAttempt,
-            JobType,
             JobStatus,
-            AttemptStatus,
+            JobType,
             compute_idempotency_key,
         )
         from umrs.jobs.adapters import EndpointProvisionBackend
@@ -713,11 +712,11 @@ class TestAdapters:
         262144 on bdrt).
         """
         from umrs.jobs import (
+            AttemptStatus,
             Job,
             JobAttempt,
-            JobType,
             JobStatus,
-            AttemptStatus,
+            JobType,
             compute_idempotency_key,
         )
         from umrs.jobs.adapters import EndpointProvisionBackend
@@ -850,11 +849,11 @@ class TestAdapters:
     def test_endpoint_provision_backend_translates_mounts(self):
         """Durable endpoint jobs should translate mount intent to launch env."""
         from umrs.jobs import (
+            AttemptStatus,
             Job,
             JobAttempt,
-            JobType,
             JobStatus,
-            AttemptStatus,
+            JobType,
             compute_idempotency_key,
         )
         from umrs.jobs.adapters import EndpointProvisionBackend
@@ -933,11 +932,11 @@ class TestAdapters:
     def test_endpoint_provision_backend_resolves_registered_model_path(self):
         """EndpointProvisionBackend should resolve catalog-backed models when only the name is provided."""
         from umrs.jobs import (
+            AttemptStatus,
             Job,
             JobAttempt,
-            JobType,
             JobStatus,
-            AttemptStatus,
+            JobType,
             compute_idempotency_key,
         )
         from umrs.jobs.adapters import EndpointProvisionBackend
@@ -1036,15 +1035,16 @@ class TestAdapters:
     def test_endpoint_status_checker_refreshes_slurm_endpoint_location(self):
         """Backend status should update pending Slurm endpoints before readiness checks."""
         from umrs.jobs import (
+            AttemptStatus,
             Job,
             JobAttempt,
-            JobType,
             JobStatus,
-            AttemptStatus,
+            JobType,
             compute_idempotency_key,
         )
         from umrs.jobs.adapters import EndpointProvisionStatusChecker
-        from umrs.orchestrator.base import EndpointInfo, JobInfo, JobStatus as OrchestratorJobStatus
+        from umrs.orchestrator.base import EndpointInfo, JobInfo
+        from umrs.orchestrator.base import JobStatus as OrchestratorJobStatus
         from umrs.orchestrator.endpoint_registry import EndpointStatus, RegisteredEndpoint
 
         job = Job(
@@ -1455,8 +1455,9 @@ class TestOrchestrationServiceConfig:
 
     def test_provision_waits_for_backend_endpoint_before_readiness(self):
         """Slurm-style submissions should resolve the assigned host before readiness polling."""
+        from umrs.orchestrator.base import EndpointInfo, JobInfo
+        from umrs.orchestrator.base import JobStatus as BackendJobStatus
         from umrs.orchestrator.detection import BackendType
-        from umrs.orchestrator.base import EndpointInfo, JobInfo, JobStatus as BackendJobStatus
         from umrs.orchestrator.service import OrchestrationService, ProvisionRequest
 
         registered_endpoint = MagicMock(job_id="slurm-654", is_usable=True)
@@ -1535,8 +1536,9 @@ class TestOrchestrationServiceConfig:
         """Non-blocking provision mode should return after submit/register."""
         from unittest.mock import patch
 
+        from umrs.orchestrator.base import JobInfo
+        from umrs.orchestrator.base import JobStatus as BackendJobStatus
         from umrs.orchestrator.detection import BackendType
-        from umrs.orchestrator.base import JobInfo, JobStatus as BackendJobStatus
         from umrs.orchestrator.service import OrchestrationService, ProvisionRequest
 
         registered_endpoint = MagicMock(job_id="slurm-777", is_usable=False)
@@ -1611,7 +1613,7 @@ class TestReconciler:
 
     def test_reconciler_creation(self):
         """Test Reconciler can be created."""
-        from umrs.jobs import Reconciler, JobStore
+        from umrs.jobs import JobStore, Reconciler
 
         mock_store = MagicMock(spec=JobStore)
         mock_store.umrs_instance_id = "umrs-1"
@@ -1702,7 +1704,7 @@ class TestStateMachine:
 
     def test_job_can_transition_queued_to_running(self):
         """Test valid QUEUED -> RUNNING transition."""
-        from umrs.jobs import Job, JobType, JobStatus, compute_idempotency_key
+        from umrs.jobs import Job, JobStatus, JobType, compute_idempotency_key
 
         spec = {}
         idempotency_key = compute_idempotency_key(
@@ -1731,7 +1733,7 @@ class TestStateMachine:
 
     def test_attempt_can_retry(self):
         """Test Job can_retry logic."""
-        from umrs.jobs import Job, JobType, JobStatus, compute_idempotency_key
+        from umrs.jobs import Job, JobStatus, JobType, compute_idempotency_key
 
         spec = {}
         idempotency_key = compute_idempotency_key(
