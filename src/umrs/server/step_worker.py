@@ -49,7 +49,11 @@ def _build_s3_client(s3_config: dict[str, Any]) -> Any:
         logger.warning("boto3 unavailable in worker: %s", exc)
         return None
     kwargs: dict[str, Any] = {}
-    endpoint = s3_config.get("endpoint_url") or os.environ.get("MINIO_ENDPOINT")
+    endpoint = (
+        s3_config.get("endpoint_url")
+        or os.environ.get("S3_ENDPOINT_URL")
+        or os.environ.get("MINIO_ENDPOINT")  # pre-ADR-055 name
+    )
     if endpoint:
         kwargs["endpoint_url"] = endpoint
     region = s3_config.get("region_name") or os.environ.get("AWS_REGION")

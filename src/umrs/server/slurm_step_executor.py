@@ -279,9 +279,14 @@ class SlurmStepExecutor(StepExecutor):
             # Match PodmanExecutor device CDI form (site-dependent).
             parts.extend(["--device", "nvidia.com/gpu=all"])
 
-        endpoint = s3_config.get("endpoint_url") or os.environ.get("MINIO_ENDPOINT")
+        endpoint = (
+            s3_config.get("endpoint_url")
+            or os.environ.get("S3_ENDPOINT_URL")
+            or os.environ.get("MINIO_ENDPOINT")
+        )
         if endpoint:
-            parts.extend(["-e", f"MINIO_ENDPOINT={endpoint}"])
+            # S3_ENDPOINT_URL is canonical (ADR-055); MINIO_ENDPOINT kept for older workers.
+            parts.extend(["-e", f"S3_ENDPOINT_URL={endpoint}", "-e", f"MINIO_ENDPOINT={endpoint}"])
         region = s3_config.get("region_name") or os.environ.get("AWS_REGION")
         if region:
             parts.extend(["-e", f"AWS_REGION={region}"])

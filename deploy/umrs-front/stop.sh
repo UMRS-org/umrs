@@ -68,7 +68,7 @@ fi
 
 # ─── Stop S3 reverse tunnels ────────────────────────────────────────────────
 echo "Stopping S3 reverse tunnels..."
-for pidfile in *-minio-reverse-tunnel.pid; do
+for pidfile in *-s3-reverse-tunnel.pid *-minio-reverse-tunnel.pid; do
     [[ -f "$pidfile" ]] || continue
     pid=$(cat "$pidfile")
     name="${pidfile%.pid}"

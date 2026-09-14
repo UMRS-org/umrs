@@ -113,14 +113,18 @@ def _default_service_url(host: str, port: int, tunnel_mode: bool) -> str:
 
 
 def _coerce_minio_url(profile: ConnectionProfile) -> str:
-    env_minio_url = os.environ.get("UMRS_MINIO_URL")
-    if env_minio_url:
-        return env_minio_url
+    """Resolve the object-store URL (profile key ``minio_url``, kept for the
+    on-disk profile schema). Environment precedence: ``UMRS_S3_URL`` /
+    ``UMRS_S3_HOST``+``UMRS_S3_PORT`` (ADR-055 names), then the MinIO-era
+    ``UMRS_MINIO_URL`` / ``UMRS_MINIO_HOST``+``UMRS_MINIO_PORT``."""
+    env_url = os.environ.get("UMRS_S3_URL") or os.environ.get("UMRS_MINIO_URL")
+    if env_url:
+        return env_url
 
-    env_minio_host = os.environ.get("UMRS_MINIO_HOST")
-    env_minio_port = os.environ.get("UMRS_MINIO_PORT")
-    if env_minio_host:
-        return _default_service_url(env_minio_host, int(env_minio_port or 9000), False)
+    env_host = os.environ.get("UMRS_S3_HOST") or os.environ.get("UMRS_MINIO_HOST")
+    env_port = os.environ.get("UMRS_S3_PORT") or os.environ.get("UMRS_MINIO_PORT")
+    if env_host:
+        return _default_service_url(env_host, int(env_port or 9000), False)
 
     if profile.minio_url:
         return profile.minio_url

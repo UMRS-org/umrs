@@ -932,13 +932,15 @@ if ! podman network exists "${RIVAULT_NETWORK_NAME}" 2>/dev/null; then
 	fi
 fi
 
-# ─── SSH tunnel: forward MinIO from login node to compute node ────────────────
-# The BentoML container accesses S3 via minio-host:19000 (-> host-gateway:19000).
-# Bind to 0.0.0.0 so containers (via host-gateway) can reach MinIO,
-# and use port 19000 (BENTOML_MINIO_HOST_PORT) as the local port.
+# ─── SSH tunnel: forward the S3 API from login node to compute node ──────────
+# The BentoML container reaches S3 via <UMRS_S3_TUNNEL_ALIAS>:19000
+# (-> host-gateway:19000; the alias defaults to minio-host, ADR-055 naming
+# follow-up). Bind to 0.0.0.0 so containers (via host-gateway) can reach it,
+# and use port 19000 (BENTOML_S3_HOST_PORT; BENTOML_MINIO_HOST_PORT is the
+# pre-ADR-055 name) as the local port.
 UMRS_S3_TUNNEL_PORT=${UMRS_S3_TUNNEL_PORT:-9000}
 UMRS_S3_TUNNEL_HOST=${UMRS_S3_TUNNEL_HOST:-${SLURM_SUBMIT_HOST:-localhost}}
-_S3_LOCAL_PORT="${BENTOML_MINIO_HOST_PORT:-19000}"
+_S3_LOCAL_PORT="${BENTOML_S3_HOST_PORT:-${BENTOML_MINIO_HOST_PORT:-19000}}"
 _ssh_tunnel_pids=()
 
 start_managed_ssh_tunnel() {
@@ -983,7 +985,7 @@ cleanup_ssh_tunnels() {
     _ssh_tunnel_pids=()
 }
 
-echo "[rivault] Setting up SSH tunnels for S3 (MinIO) access..."
+echo "[rivault] Setting up SSH tunnels for S3 access..."
 # Tunnel 1: 0.0.0.0:19000 → login:9000 (for containers via host-gateway)
 start_managed_ssh_tunnel "0.0.0.0:${_S3_LOCAL_PORT}:127.0.0.1:${UMRS_S3_TUNNEL_PORT}" "${UMRS_S3_TUNNEL_HOST}" \
     && echo "[rivault] SSH tunnel: 0.0.0.0:${_S3_LOCAL_PORT} → ${UMRS_S3_TUNNEL_HOST}:${UMRS_S3_TUNNEL_PORT} (for containers)" \
