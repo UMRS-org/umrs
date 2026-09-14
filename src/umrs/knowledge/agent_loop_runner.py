@@ -24,8 +24,9 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from collections.abc import Callable
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, Optional
+from typing import Any
 
 from .agent_executor import UmrsAgentIterationExecutor
 from .loop import LoopIteration, LoopPhase, LoopStatus, ResearchLoop
@@ -45,7 +46,7 @@ class AgentLoopRunner(threading.Thread):
         self,
         loop: ResearchLoop,
         *,
-        executor: Callable[[str, int, str], Dict[str, Any]],
+        executor: Callable[[str, int, str], dict[str, Any]],
         store: Any,
         poll_seconds: float = 0.5,
     ) -> None:
@@ -100,7 +101,7 @@ class AgentLoopRunner(threading.Thread):
             loop.completed_at = datetime.now(timezone.utc).isoformat()
         return loop
 
-    def _service_control(self, loop: ResearchLoop) -> "tuple[bool, ResearchLoop]":
+    def _service_control(self, loop: ResearchLoop) -> tuple[bool, ResearchLoop]:
         """Refresh the loop from the store and handle stop/pause/resume.
 
         Returns (should_advance, loop): False when the loop should exit before
@@ -162,14 +163,14 @@ class AgentLoopRunner(threading.Thread):
 
     # -- control protocol -----------------------------------------------------
 
-    def _poll_loop(self, loop_id: str) -> Optional[ResearchLoop]:
+    def _poll_loop(self, loop_id: str) -> ResearchLoop | None:
         try:
             return self._store.get(loop_id)
         except Exception as exc:  # noqa: BLE001 — treat poll failure as missing
             logger.warning("agent loop poll failed for %s: %s", loop_id, exc)
             return None
 
-    def _refresh(self, loop_id: str) -> Optional[ResearchLoop]:
+    def _refresh(self, loop_id: str) -> ResearchLoop | None:
         return self._poll_loop(loop_id)
 
     def _wait_resumed(self, loop_id: str) -> None:
@@ -194,7 +195,7 @@ _LOCK = threading.Lock()
 def register(
     loop: ResearchLoop,
     *,
-    executor: Callable[[str, int, str], Dict[str, Any]],
+    executor: Callable[[str, int, str], dict[str, Any]],
     store: Any,
     poll_seconds: float = 0.5,
 ) -> AgentLoopRunner:
@@ -215,7 +216,7 @@ def register(
     return runner
 
 
-def get(loop_id: str) -> Optional[AgentLoopRunner]:
+def get(loop_id: str) -> AgentLoopRunner | None:
     """Live runner (or None) — tests + lifecycle ops use this."""
     with _LOCK:
         runner = _RUNNERS.get(loop_id)
@@ -251,7 +252,7 @@ def stop_all(timeout_seconds: float = 5.0) -> None:
                 _RUNNERS.pop(runner._loop.loop_id, None)
 
 
-def default_executor_for_project(project: Any, model: Optional[str] = None):
+def default_executor_for_project(project: Any, model: str | None = None):
     """Default agent executor factory (knowledge-graph-liteLLM wiring)."""
     return UmrsAgentIterationExecutor(project, model=model)
 
@@ -259,7 +260,7 @@ def default_executor_for_project(project: Any, model: Optional[str] = None):
 def kick(
     loop: ResearchLoop,
     *,
-    executor: Callable[[str, int, str], Dict[str, Any]],
+    executor: Callable[[str, int, str], dict[str, Any]],
     store: Any,
 ) -> ResearchLoop:
     """Synchronous driver for tests: advance to completion in the caller's

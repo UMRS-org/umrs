@@ -105,7 +105,9 @@ class LiteLLMOCRBackend:
         self.name = f"litellm:{model}"
 
     def _transcribe_image(self, image_png: bytes) -> str:
-        data_uri = "data:image/png;base64," + base64.b64encode(image_png).decode("ascii")
+        data_uri = "data:image/png;base64," + base64.b64encode(image_png).decode(
+            "ascii"
+        )
         payload = {
             "model": self._model,
             "messages": [
@@ -122,13 +124,13 @@ class LiteLLMOCRBackend:
         headers = {"Content-Type": "application/json"}
         if self._api_key:
             headers["Authorization"] = f"Bearer {self._api_key}"
-        request = urllib.request.Request(  # noqa: S310 - internal LiteLLM URL only
+        request = urllib.request.Request(
             f"{self._base_url}/chat/completions",
             data=json.dumps(payload).encode("utf-8"),
             headers=headers,
             method="POST",
         )
-        with urllib.request.urlopen(request, timeout=self._timeout) as response:  # noqa: S310
+        with urllib.request.urlopen(request, timeout=self._timeout) as response:
             body = json.loads(response.read().decode("utf-8"))
         return body["choices"][0]["message"]["content"] or ""
 

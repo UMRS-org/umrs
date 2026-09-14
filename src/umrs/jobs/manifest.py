@@ -19,8 +19,6 @@ import logging
 import os
 import platform
 import subprocess
-import sys
-from dataclasses import dataclass
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -42,7 +40,7 @@ def _umrs_version() -> str:
 def _git_field(repo_root: str, args: list[str]) -> str:
     """One read-only git query; empty on any failure (recorded, not invented)."""
     try:
-        out = subprocess.run(  # noqa: S603 - fixed argv, no shell
+        out = subprocess.run(
             ["git", "-C", repo_root, *args],
             capture_output=True,
             text=True,

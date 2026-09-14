@@ -14,7 +14,7 @@ import importlib
 import warnings
 
 _LAZY_ROUTER_PREFIXES = ()
-__all__: tuple[str, ...] = (_LAZY_ROUTER_PREFIXES)
+__all__: tuple[str, ...] = _LAZY_ROUTER_PREFIXES
 
 
 def __getattr__(name: str):

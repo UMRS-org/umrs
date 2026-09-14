@@ -12,7 +12,6 @@ import ast
 import re
 from collections import Counter
 from dataclasses import dataclass
-from typing import Optional
 
 logger = __import__("logging").getLogger(__name__)
 
@@ -75,15 +74,17 @@ def check_syntax(source: str, file_path: str = "") -> list[LintFinding]:
     try:
         ast.parse(source)
     except SyntaxError as exc:
-        findings.append(LintFinding(
-            file=file_path,
-            line=exc.lineno or 1,
-            column=exc.offset or 0,
-            severity="BLOCKING",
-            rule="E999_syntax_error",
-            message=f"Syntax error: {exc.msg}",
-            recommendation="Fix the syntax error at the indicated location.",
-        ))
+        findings.append(
+            LintFinding(
+                file=file_path,
+                line=exc.lineno or 1,
+                column=exc.offset or 0,
+                severity="BLOCKING",
+                rule="E999_syntax_error",
+                message=f"Syntax error: {exc.msg}",
+                recommendation="Fix the syntax error at the indicated location.",
+            )
+        )
     return findings
 
 
@@ -94,11 +95,20 @@ def _walk_complexity(node: ast.AST) -> int:
     """Compute cyclomatic complexity of a function/method node."""
     complexity = 1  # base
     for child in ast.walk(node):
-        if isinstance(child, (
-            ast.If, ast.While, ast.For, ast.ExceptHandler,
-            ast.Assert, ast.With, ast.comprehension,
-            ast.IfExp, ast.BoolOp,
-        )):
+        if isinstance(
+            child,
+            (
+                ast.If,
+                ast.While,
+                ast.For,
+                ast.ExceptHandler,
+                ast.Assert,
+                ast.With,
+                ast.comprehension,
+                ast.IfExp,
+                ast.BoolOp,
+            ),
+        ):
             complexity += 1
         elif isinstance(child, ast.BoolOp):
             # Each additional boolean operator adds one path
@@ -121,15 +131,17 @@ def check_complexity(source: str, file_path: str = "") -> list[LintFinding]:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             c = _walk_complexity(node)
             if c > COMPLEXITY_THRESHOLD:
-                findings.append(LintFinding(
-                    file=file_path,
-                    line=node.lineno or 0,
-                    column=node.col_offset or 0,
-                    severity="BLOCKING",
-                    rule="C901_complexity",
-                    message=f"{node.name}: complexity {c} exceeds threshold {COMPLEXITY_THRESHOLD}",
-                    recommendation=f"Refactor {node.name} to reduce complexity below {COMPLEXITY_THRESHOLD}. Extract helper functions, reduce nesting, or simplify conditionals.",
-                ))
+                findings.append(
+                    LintFinding(
+                        file=file_path,
+                        line=node.lineno or 0,
+                        column=node.col_offset or 0,
+                        severity="BLOCKING",
+                        rule="C901_complexity",
+                        message=f"{node.name}: complexity {c} exceeds threshold {COMPLEXITY_THRESHOLD}",
+                        recommendation=f"Refactor {node.name} to reduce complexity below {COMPLEXITY_THRESHOLD}. Extract helper functions, reduce nesting, or simplify conditionals.",
+                    )
+                )
     return findings
 
 
@@ -137,6 +149,7 @@ def check_complexity(source: str, file_path: str = "") -> list[LintFinding]:
 
 
 # ── Rule: unused variables ────────────────────────────────────────────────────
+
 
 def _collect_assigned(tree: ast.AST) -> dict[str, int]:
     """Collect all assigned variable names and their line numbers."""
@@ -175,12 +188,17 @@ def check_unused_variables(source: str, file_path: str = "") -> list[LintFinding
     loaded = _collect_loaded(tree)
     for var_name, line in assigned.items():
         if var_name not in loaded and not var_name.startswith("_"):
-            findings.append(LintFinding(
-                file=file_path, line=line, column=0,
-                severity="WARNING", rule="F841_unused_variable",
-                message=f"Variable {var_name!r} assigned but never used",
-                recommendation=f"Remove unused variable {var_name!r} or prefix with underscore.",
-            ))
+            findings.append(
+                LintFinding(
+                    file=file_path,
+                    line=line,
+                    column=0,
+                    severity="WARNING",
+                    rule="F841_unused_variable",
+                    message=f"Variable {var_name!r} assigned but never used",
+                    recommendation=f"Remove unused variable {var_name!r} or prefix with underscore.",
+                )
+            )
     return findings
 
 
@@ -197,15 +215,22 @@ def _check_import_forbidden(
     for forbidden, allowed in _IMPORT_BOUNDARIES:
         if alias_name == forbidden or alias_name.startswith(forbidden + "."):
             if module_name not in allowed:
-                findings.append(LintFinding(
-                    file=file_path, line=0, column=0,
-                    severity="BLOCKING", rule="IMPORT_BOUNDARY",
-                    message=f"Module {module_name or file_path} imports forbidden module {alias_name}",
-                    recommendation=f"Remove import of {alias_name}. {forbidden} is not accessible from {module_name or file_path}.",
-                ))
+                findings.append(
+                    LintFinding(
+                        file=file_path,
+                        line=0,
+                        column=0,
+                        severity="BLOCKING",
+                        rule="IMPORT_BOUNDARY",
+                        message=f"Module {module_name or file_path} imports forbidden module {alias_name}",
+                        recommendation=f"Remove import of {alias_name}. {forbidden} is not accessible from {module_name or file_path}.",
+                    )
+                )
 
 
-def check_import_boundary(source: str, file_path: str = "", module_name: str = "") -> list[LintFinding]:
+def check_import_boundary(
+    source: str, file_path: str = "", module_name: str = ""
+) -> list[LintFinding]:
     """Detect forbidden imports based on architectural boundary rules."""
     findings: list[LintFinding] = []
     try:
@@ -218,7 +243,10 @@ def check_import_boundary(source: str, file_path: str = "", module_name: str = "
 
 
 def _check_imports_in_tree(
-    tree: ast.AST, file_path: str, module_name: str, findings: list[LintFinding],
+    tree: ast.AST,
+    file_path: str,
+    module_name: str,
+    findings: list[LintFinding],
 ) -> None:
     """Walk the AST and check all imports against boundary rules."""
     for node in ast.walk(tree):
@@ -249,15 +277,17 @@ def check_docstrings(source: str, file_path: str = "") -> list[LintFinding]:
             if not node.name.startswith("_"):
                 docstring = ast.get_docstring(node)
                 if not docstring:
-                    findings.append(LintFinding(
-                        file=file_path,
-                        line=node.lineno or 0,
-                        column=node.col_offset or 0,
-                        severity="INFO",
-                        rule="NO_DOCSTRING",
-                        message=f"{node.name} missing docstring",
-                        recommendation=f"Add a docstring explaining the purpose of {node.name}.",
-                    ))
+                    findings.append(
+                        LintFinding(
+                            file=file_path,
+                            line=node.lineno or 0,
+                            column=node.col_offset or 0,
+                            severity="INFO",
+                            rule="NO_DOCSTRING",
+                            message=f"{node.name} missing docstring",
+                            recommendation=f"Add a docstring explaining the purpose of {node.name}.",
+                        )
+                    )
 
     return findings
 
@@ -292,15 +322,17 @@ def check_duplicate_imports(source: str, file_path: str = "") -> list[LintFindin
     for name, count in imports.items():
         if count > 1:
             line = import_lines[name]
-            findings.append(LintFinding(
-                file=file_path,
-                line=line,
-                column=0,
-                severity="WARNING",
-                rule="DUPLICATE_IMPORT",
-                message=f"Module imported {count} times",
-                recommendation=f"Consolidate duplicate imports of {name} into a single import statement.",
-            ))
+            findings.append(
+                LintFinding(
+                    file=file_path,
+                    line=line,
+                    column=0,
+                    severity="WARNING",
+                    rule="DUPLICATE_IMPORT",
+                    message=f"Module imported {count} times",
+                    recommendation=f"Consolidate duplicate imports of {name} into a single import statement.",
+                )
+            )
 
     return findings
 
@@ -308,7 +340,9 @@ def check_duplicate_imports(source: str, file_path: str = "") -> list[LintFindin
 # ── Rule: content scanning ────────────────────────────────────────────────────
 
 
-def scan_content(source: str, block_patterns: Optional[list[str]] = None) -> list[LintFinding]:
+def scan_content(
+    source: str, block_patterns: list[str] | None = None
+) -> list[LintFinding]:
     """Scan source content for PII/credential patterns (informational).
 
     Same patterns as egress_fetch.py default block patterns.
@@ -320,16 +354,18 @@ def scan_content(source: str, block_patterns: Optional[list[str]] = None) -> lis
         try:
             for match in re.finditer(pat, source):
                 # Get line number for the match
-                line_no = source[:match.start()].count("\n") + 1
-                findings.append(LintFinding(
-                    file="",
-                    line=line_no,
-                    column=0,
-                    severity="WARNING",
-                    rule="SENSITIVE_PATTERN",
-                    message="Potential sensitive pattern detected",
-                    recommendation="Remove or externalize the sensitive value.",
-                ))
+                line_no = source[: match.start()].count("\n") + 1
+                findings.append(
+                    LintFinding(
+                        file="",
+                        line=line_no,
+                        column=0,
+                        severity="WARNING",
+                        rule="SENSITIVE_PATTERN",
+                        message="Potential sensitive pattern detected",
+                        recommendation="Remove or externalize the sensitive value.",
+                    )
+                )
                 if len(findings) > 20:  # cap findings
                     break
         except re.error:
@@ -348,7 +384,7 @@ class LintEngine:
     Stdlib-only — no ruff dependency.
     """
 
-    def __init__(self, include_rules: Optional[list[str]] = None) -> None:
+    def __init__(self, include_rules: list[str] | None = None) -> None:
         """Initialize lint engine with optional rule filter.
 
         Available rules:
@@ -396,13 +432,17 @@ class LintEngine:
             with open(file_path, "r", encoding="utf-8") as f:
                 source = f.read()
         except OSError as exc:
-            return [LintFinding(
-                file=file_path, line=0, column=0,
-                severity="BLOCKING",
-                rule="FILE_ERROR",
-                message=f"Cannot read file: {exc}",
-                recommendation="Ensure file is accessible and has valid encoding.",
-            )]
+            return [
+                LintFinding(
+                    file=file_path,
+                    line=0,
+                    column=0,
+                    severity="BLOCKING",
+                    rule="FILE_ERROR",
+                    message=f"Cannot read file: {exc}",
+                    recommendation="Ensure file is accessible and has valid encoding.",
+                )
+            ]
 
         return self.check_source(source, file_path, module_name)
 
@@ -419,7 +459,9 @@ class LintEngine:
             try:
                 rule_findings = checker(source, file_path, *args)
                 # Filter by rule name
-                rule_findings = [f for f in rule_findings if f.rule == rule_name or not f.rule]
+                rule_findings = [
+                    f for f in rule_findings if f.rule == rule_name or not f.rule
+                ]
                 findings.extend(rule_findings)
             except Exception as exc:
                 logger.warning("Checker %s failed on %s: %s", rule_name, file_path, exc)
@@ -430,7 +472,9 @@ class LintEngine:
 
         return findings
 
-    def check_files(self, file_paths: list[str], module_name: str = "") -> list[LintFinding]:
+    def check_files(
+        self, file_paths: list[str], module_name: str = ""
+    ) -> list[LintFinding]:
         """Check multiple files. Returns all findings."""
         all_findings: list[LintFinding] = []
         for fp in file_paths:

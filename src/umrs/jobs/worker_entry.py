@@ -37,7 +37,7 @@ def _beat_once(socket_path: str, registry_key: str) -> None:
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
         client.settimeout(1.0)
         client.connect(socket_path)
-        client.sendall(f"beat {registry_key}\n".encode("utf-8"))
+        client.sendall(f"beat {registry_key}\n".encode())
 
 
 def main() -> int:

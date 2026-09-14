@@ -17,18 +17,17 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
-
-from .typed_errors import PlatformError, raise_typed
+from fastapi import APIRouter, Query
 from pydantic import BaseModel, Field
 
 from umrs.knowledge_model import (
     InMemoryKnowledgeModelStore,
-    KnowledgeObject,
     KnowledgeObjectNotFoundError,
     KnowledgeObjectStatus,
     KnowledgeObjectType,
 )
+
+from .typed_errors import PlatformError, raise_typed
 
 logger = logging.getLogger(__name__)
 
@@ -59,9 +58,13 @@ def _get_store() -> InMemoryKnowledgeModelStore:
 
 class CreateObjectRequest(BaseModel):
     project_id: str = Field(..., description="Project ID")
-    object_type: str = Field(..., description="Object type (paper, code, hypothesis, etc.)")
+    object_type: str = Field(
+        ..., description="Object type (paper, code, hypothesis, etc.)"
+    )
     content: dict[str, Any] = Field(default_factory=dict, description="Object content")
-    metadata: dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
+    metadata: dict[str, Any] = Field(
+        default_factory=dict, description="Additional metadata"
+    )
     is_immutable: bool = Field(False, description="Whether this object can be updated")
     created_by: str = Field("", description="Who created the object")
 
@@ -206,14 +209,20 @@ async def list_objects(
         try:
             obj_type = KnowledgeObjectType(object_type)
         except ValueError:
-            raise_typed(PlatformError.knowledgemodel("bad_request", f"Invalid object type: {object_type}"))
+            raise_typed(
+                PlatformError.knowledgemodel(
+                    "bad_request", f"Invalid object type: {object_type}"
+                )
+            )
 
     obj_status: KnowledgeObjectStatus | None = None
     if status:
         try:
             obj_status = KnowledgeObjectStatus(status)
         except ValueError:
-                        raise_typed(PlatformError.knowledgemodel("bad_request", f"Invalid status: {status}"))
+            raise_typed(
+                PlatformError.knowledgemodel("bad_request", f"Invalid status: {status}")
+            )
 
     objects = store.list_objects(
         project_id=project_id,
@@ -241,7 +250,11 @@ async def search_objects(
         try:
             obj_type = KnowledgeObjectType(object_type)
         except ValueError:
-            raise_typed(PlatformError.knowledgemodel("bad_request", f"Invalid object type: {object_type}"))
+            raise_typed(
+                PlatformError.knowledgemodel(
+                    "bad_request", f"Invalid object type: {object_type}"
+                )
+            )
 
     objects = store.search_objects(
         query,

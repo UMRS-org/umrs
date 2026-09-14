@@ -69,7 +69,9 @@ def configure_cluster_hosting(loop: Any) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s"
+    )
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--loop-id", required=True)
     parser.add_argument("--job-id", default="")
@@ -95,7 +97,9 @@ def main(argv: list[str] | None = None) -> int:
         return 78
 
     configure_cluster_hosting(loop)
-    kind = loop_hosting.host(args.loop_id, job_id=args.job_id, attempt_id=args.attempt_id)
+    kind = loop_hosting.host(
+        args.loop_id, job_id=args.job_id, attempt_id=args.attempt_id
+    )
     logger.info("cluster hosting started: loop=%s kind=%s", args.loop_id, kind)
     if kind == "terminal":
         return 0
@@ -126,7 +130,9 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 0 if current.status is LoopStatus.STOPPED else 4
         time.sleep(10)
-    logger.error("loop %s did not reach a terminal state within %.0fs", args.loop_id, timeout)
+    logger.error(
+        "loop %s did not reach a terminal state within %.0fs", args.loop_id, timeout
+    )
     return 5
 
 

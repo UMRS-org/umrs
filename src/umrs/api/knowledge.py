@@ -5,7 +5,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
@@ -51,7 +51,9 @@ def set_engine(engine) -> None:
 def _get_engine():
     if _engine is None:
         raise_typed(
-            PlatformError.knowledge("unavailable", "Knowledge search engine not initialized")
+            PlatformError.knowledge(
+                "unavailable", "Knowledge search engine not initialized"
+            )
         )
     return _engine
 
@@ -81,7 +83,7 @@ class UnderstandResponse(BaseModel):
 class UnderstandRequest(BaseModel):
     """Optional body — agent-originated understand requires a proposal."""
 
-    proposal_id: Optional[str] = Field(
+    proposal_id: str | None = Field(
         default=None,
         description=(
             "Approved graph-extension proposal id — required for agent actors"
@@ -173,7 +175,10 @@ async def post_external_search(req: ExternalSearchRequest):
         source_types = [ExternalSourceType(n) for n in names]
     except ValueError:
         raise_typed(
-            PlatformError.knowledge("bad_request", f"unknown source in {names!r}; allowed: {', '.join(default)}")
+            PlatformError.knowledge(
+                "bad_request",
+                f"unknown source in {names!r}; allowed: {', '.join(default)}",
+            )
         )
 
     searcher = ExternalKnowledgeSearcher()
@@ -389,7 +394,9 @@ async def get_knowledge_object(
     await _explorer_caller(request)
     detail = _dashboard_controller.get_object_detail(object_id)
     if detail is None:
-        raise_typed(PlatformError.knowledge("not_found", f"Object {object_id} not found"))
+        raise_typed(
+            PlatformError.knowledge("not_found", f"Object {object_id} not found")
+        )
     return _build_object_detail_response(detail)
 
 
@@ -491,7 +498,7 @@ async def get_project_knowledge_graph(
             "/graph-pg path). Default False = union view."
         ),
     ),
-) -> dict[str, Any]:  # noqa: PLR0912 — branchy by design (union of two stores)
+) -> dict[str, Any]:
     """Project knowledge graph (nodes + typed edges) for the Studio/webview.
 
     Union of two sources (default): the RC1 in-memory project graph
@@ -626,7 +633,7 @@ async def submit_approval(req: ApprovalRequest, request: Request) -> dict[str, A
 @router.post("/understand", response_model=UnderstandResponse)
 async def understand_project(
     request: Request,
-    body: Optional[UnderstandRequest] = None,
+    body: UnderstandRequest | None = None,
     project_id: str = Depends(get_project_id),
     config: S3Config = Depends(get_s3_config),
 ) -> UnderstandResponse:
@@ -755,7 +762,7 @@ class ExportRequest(BaseModel):
 class VerifyJobRequest(BaseModel):
     """Trigger knowledge verification job."""
 
-    verifier_names: Optional[list[str]] = Field(
+    verifier_names: list[str] | None = Field(
         None, description="Specific verifier names to run"
     )
 
@@ -823,7 +830,9 @@ def _readiness_from_latest(latest: dict[str, Any]) -> tuple[str, float]:
 
 def _reconcile_payload(report: Any, *, sample_limit: int) -> dict[str, Any]:
     """Reconciliation report → API dict (kept async-free for unit tests)."""
-    assets = sorted(report.assets, key=lambda a: (a.state, a.document_id))[:sample_limit]
+    assets = sorted(report.assets, key=lambda a: (a.state, a.document_id))[
+        :sample_limit
+    ]
     return {
         "project_id": report.project_id,
         "catalogue_available": report.catalogue_available,
@@ -861,7 +870,9 @@ async def knowledge_reconcile(
     pool = getattr(request.app.state, "umrs_db_pool", None)
     if pool is None:
         raise_typed(
-            PlatformError.knowledge("unavailable", "reconciliation requires the shared umrs_db pool")
+            PlatformError.knowledge(
+                "unavailable", "reconciliation requires the shared umrs_db pool"
+            )
         )
     from umrs.knowledge.plane_reconciler import scan_project
 
@@ -957,9 +968,9 @@ def _finding_dict(f) -> dict[str, Any]:
 async def knowledge_findings(
     request: Request,
     project_id: str = Query(..., description="Project ID"),
-    report_id: Optional[str] = Query(None, description="Filter by report"),
-    status: Optional[str] = Query(None, description="Filter by status"),
-    severity: Optional[str] = Query(None, description="Filter by severity"),
+    report_id: str | None = Query(None, description="Filter by report"),
+    status: str | None = Query(None, description="Filter by status"),
+    severity: str | None = Query(None, description="Filter by severity"),
     _get_project_id: str = Depends(get_project_id),
 ) -> dict[str, Any]:
     """List verification findings with filters."""
@@ -1037,7 +1048,9 @@ async def approve_knowledge(
         report = await ver.get_report(report_id)
 
         if report is None:
-            raise_typed(PlatformError.knowledge("not_found", f"Report not found: {report_id}"))
+            raise_typed(
+                PlatformError.knowledge("not_found", f"Report not found: {report_id}")
+            )
 
         # Confidence check
         confidence_ok = report.confidence >= confidence_threshold
@@ -1143,7 +1156,9 @@ async def export_knowledge(
         runtime = get_runtime()
         if runtime is None:
             raise_typed(
-                PlatformError.knowledge("unavailable", "UMRS durable job runtime not available")
+                PlatformError.knowledge(
+                    "unavailable", "UMRS durable job runtime not available"
+                )
             )
 
         spec: dict[str, Any] = {
@@ -1195,7 +1210,9 @@ async def trigger_verify(
         runtime = get_runtime()
         if runtime is None:
             raise_typed(
-                PlatformError.knowledge("unavailable", "UMRS durable job runtime not available")
+                PlatformError.knowledge(
+                    "unavailable", "UMRS durable job runtime not available"
+                )
             )
 
         spec: dict[str, Any] = {

@@ -36,9 +36,11 @@ class WorkflowRunBackend(OrchestratorBackend):
         from umrs.shared.workflow_execution_access import _launch_workflow_from_catalog
 
         source_path = job.spec.get("source_path")
-        if not isinstance(source_path, str) or not source_path.strip():
-            source_path = None
-        elif not os.path.isdir(source_path):
+        if (
+            not isinstance(source_path, str)
+            or not source_path.strip()
+            or not os.path.isdir(source_path)
+        ):
             source_path = None
 
         _launch_workflow_from_catalog(
@@ -235,7 +237,7 @@ def _persist_run_artifacts(
 class _RunContext:
     """Job/attempt/record bundle carried through blob persistence."""
 
-    __slots__ = ("job", "attempt", "record")
+    __slots__ = ("attempt", "job", "record")
 
     def __init__(self, job: Job, attempt: JobAttempt, record: Any) -> None:
         self.job = job

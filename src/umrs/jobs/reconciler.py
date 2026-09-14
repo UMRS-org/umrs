@@ -16,9 +16,10 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 
+from umrs.metrics import METRICS
+
 from .models import AttemptStatus, Job, JobStatus, JobType
 from .store import JobStore
-from umrs.metrics import METRICS
 
 logger = logging.getLogger(__name__)
 

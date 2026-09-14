@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Query, status
 
 from ..artifact_registry.models import Artifact, ArtifactQuery
 from ..artifact_registry.store import (
@@ -25,8 +25,8 @@ from ..artifact_registry.store import (
 )
 from .endpoints import _caller_is_admin
 from .files import get_project_id
-from .typed_errors import PlatformError, raise_typed
 from .jobs import get_optional_job_store
+from .typed_errors import PlatformError, raise_typed
 
 
 def _scope_checked_project(
@@ -51,10 +51,7 @@ def _require_artifact_scope(artifact, caller_project: str, is_admin: bool) -> No
     if artifact is not None and artifact.project_id == caller_project:
         return
     raise_typed(
-        PlatformError.artifacts(
-            "not_found",
-            "Artifact not found"
-        ),
+        PlatformError.artifacts("not_found", "Artifact not found"),
     )
 
 
@@ -84,10 +81,7 @@ async def list_artifacts(
     job_store = get_optional_job_store()
     if not job_store or not job_store.db_pool:
         raise_typed(
-            PlatformError.artifacts(
-                "unavailable",
-                "Artifact store not available"
-            ),
+            PlatformError.artifacts("unavailable", "Artifact store not available"),
         )
 
     query = ArtifactQuery(
@@ -119,10 +113,7 @@ async def register_artifact(
     job_store = get_optional_job_store()
     if not job_store or not job_store.db_pool:
         raise_typed(
-            PlatformError.artifacts(
-                "unavailable",
-                "Artifact store not available"
-            ),
+            PlatformError.artifacts("unavailable", "Artifact store not available"),
         )
 
     # Non-admin callers can only register into their own project.
@@ -149,18 +140,14 @@ async def get_artifact(
     except ValueError:
         raise_typed(
             PlatformError.artifacts(
-                "bad_request",
-                f"Invalid artifact id: {artifact_id}"
+                "bad_request", f"Invalid artifact id: {artifact_id}"
             ),
         )
 
     job_store = get_optional_job_store()
     if not job_store or not job_store.db_pool:
         raise_typed(
-            PlatformError.artifacts(
-                "unavailable",
-                "Artifact store not available"
-            ),
+            PlatformError.artifacts("unavailable", "Artifact store not available"),
         )
 
     conn_factory = job_store.db_pool.getconn
@@ -170,8 +157,7 @@ async def get_artifact(
         if artifact is None:
             raise_typed(
                 PlatformError.artifacts(
-                    "not_found",
-                    f"Artifact {artifact_id} not found"
+                    "not_found", f"Artifact {artifact_id} not found"
                 ),
             )
         _require_artifact_scope(artifact, caller_project, is_admin)
@@ -193,18 +179,14 @@ async def get_lineage(
     except ValueError:
         raise_typed(
             PlatformError.artifacts(
-                "bad_request",
-                f"Invalid artifact id: {artifact_id}"
+                "bad_request", f"Invalid artifact id: {artifact_id}"
             ),
         )
 
     job_store = get_optional_job_store()
     if not job_store or not job_store.db_pool:
         raise_typed(
-            PlatformError.artifacts(
-                "unavailable",
-                "Artifact store not available"
-            ),
+            PlatformError.artifacts("unavailable", "Artifact store not available"),
         )
 
     conn_factory = job_store.db_pool.getconn
@@ -214,8 +196,7 @@ async def get_lineage(
         if artifact is None:
             raise_typed(
                 PlatformError.artifacts(
-                    "not_found",
-                    f"Artifact {artifact_id} not found"
+                    "not_found", f"Artifact {artifact_id} not found"
                 ),
             )
         _require_artifact_scope(artifact, caller_project, is_admin)
@@ -245,18 +226,14 @@ async def update_metadata(
     except ValueError:
         raise_typed(
             PlatformError.artifacts(
-                "bad_request",
-                f"Invalid artifact id: {artifact_id}"
+                "bad_request", f"Invalid artifact id: {artifact_id}"
             ),
         )
 
     job_store = get_optional_job_store()
     if not job_store or not job_store.db_pool:
         raise_typed(
-            PlatformError.artifacts(
-                "unavailable",
-                "Artifact store not available"
-            ),
+            PlatformError.artifacts("unavailable", "Artifact store not available"),
         )
 
     conn_factory = job_store.db_pool.getconn
@@ -285,18 +262,14 @@ async def delete_artifact(
     except ValueError:
         raise_typed(
             PlatformError.artifacts(
-                "bad_request",
-                f"Invalid artifact id: {artifact_id}"
+                "bad_request", f"Invalid artifact id: {artifact_id}"
             ),
         )
 
     job_store = get_optional_job_store()
     if not job_store or not job_store.db_pool:
         raise_typed(
-            PlatformError.artifacts(
-                "unavailable",
-                "Artifact store not available"
-            ),
+            PlatformError.artifacts("unavailable", "Artifact store not available"),
         )
 
     conn_factory = job_store.db_pool.getconn

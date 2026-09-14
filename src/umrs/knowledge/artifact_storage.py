@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from botocore.client import BaseClient
@@ -33,7 +33,7 @@ class ArtifactStorage:
 
     def __init__(
         self,
-        s3_client: "BaseClient",  # boto3 client (sync)
+        s3_client: BaseClient,  # boto3 client (sync)
         bucket: str,
     ) -> None:
         """Initialize storage with an S3 client and bucket name."""
@@ -54,7 +54,7 @@ class ArtifactStorage:
         content: bytes,
         mime_type: str = "",
         ttl_seconds: int = 0,  # 0 = no presigned URL returned
-    ) -> tuple[str, int, Optional[str]]:
+    ) -> tuple[str, int, str | None]:
         """Upload content to S3.
 
         Returns (content_hash, size_bytes, presigned_url_or_None).
@@ -87,13 +87,13 @@ class ArtifactStorage:
         logger.info("Artifact uploaded: %s (size=%d)", content_hash, len(content))
 
         # Generate presigned URL if requested
-        presigned_url: Optional[str] = None
+        presigned_url: str | None = None
         if ttl_seconds > 0:
             presigned_url = self._generate_presigned_url(key, ttl_seconds)
 
         return content_hash, len(content), presigned_url
 
-    def get_artifact(self, project_id: str, content_hash: str) -> Optional[bytes]:
+    def get_artifact(self, project_id: str, content_hash: str) -> bytes | None:
         """Download artifact by content hash.
 
         Returns None if artifact not found.
@@ -132,7 +132,7 @@ class ArtifactStorage:
         project_id: str,
         content_hash: str,
         ttl_seconds: int = _DEFAULT_PRESIGNED_TTL,
-    ) -> Optional[str]:
+    ) -> str | None:
         """Generate an internal-only presigned URL.
 
         Presigned URLs are NEVER issued to external clients — they exist
@@ -161,7 +161,7 @@ class ArtifactStorage:
         except self._s3.exceptions.ClientError:
             return []
 
-    def _head_object(self, key: str) -> Optional[dict]:
+    def _head_object(self, key: str) -> dict | None:
         """HEAD request to check object existence."""
         try:
             response = self._s3.head_object(Bucket=self._bucket, Key=key)

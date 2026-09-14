@@ -21,7 +21,7 @@ import hashlib
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -93,8 +93,8 @@ class VerificationReport:
     failed_checks: int
     skipped_checks: int
     degraded: bool = False
-    degraded_reason: Optional[str] = None
-    created_at: Optional[datetime] = None
+    degraded_reason: str | None = None
+    created_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -109,11 +109,11 @@ class VerificationFinding:
     title: str
     description: str = ""
     evidence: str = ""
-    artifact_id: Optional[str] = None
-    waived_evidence: Optional[str] = None
-    waiver_expires: Optional[datetime] = None
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
+    artifact_id: str | None = None
+    waived_evidence: str | None = None
+    waiver_expires: datetime | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
 
 
 # ── store ─────────────────────────────────────────────────────────────────────
@@ -146,7 +146,7 @@ class VerificationStore:
         failed_checks: int,
         skipped_checks: int = 0,
         degraded: bool = False,
-        degraded_reason: Optional[str] = None,
+        degraded_reason: str | None = None,
     ) -> VerificationReport:
         """Create a new versioned verification report (immutable).
 
@@ -198,7 +198,7 @@ class VerificationStore:
                     ) from exc
                 raise
 
-    async def get_report(self, report_id: str) -> Optional[VerificationReport]:
+    async def get_report(self, report_id: str) -> VerificationReport | None:
         """Fetch a single report by id."""
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
@@ -210,8 +210,8 @@ class VerificationStore:
     async def list_reports(
         self,
         *,
-        project_id: Optional[str] = None,
-        spec_name: Optional[str] = None,
+        project_id: str | None = None,
+        spec_name: str | None = None,
         limit: int = 100,
     ) -> list[VerificationReport]:
         """List reports with optional filters, newest first."""
@@ -246,7 +246,7 @@ class VerificationStore:
         status: str = "open",
         description: str = "",
         evidence: str = "",
-        artifact_id: Optional[str] = None,
+        artifact_id: str | None = None,
     ) -> VerificationFinding:
         """Upsert a finding by *finding_key*.
 
@@ -347,7 +347,7 @@ class VerificationStore:
         finding_key: str,
         evidence: str,
         *,
-        expires_after: Optional[timedelta] = None,
+        expires_after: timedelta | None = None,
     ) -> VerificationFinding:
         """Waive a finding with evidence-hash guard.
 
@@ -362,7 +362,7 @@ class VerificationStore:
             evidence_hash = hashlib.sha256(evidence.encode()).hexdigest()
             logger.debug("Waiver evidence hash: %s", evidence_hash[:16])
 
-            expires_at: Optional[datetime] = None
+            expires_at: datetime | None = None
             if expires_after is not None:
                 expires_at = ts + expires_after
 
@@ -385,7 +385,7 @@ class VerificationStore:
 
     # -- querying ---------------------------------------------------------------
 
-    async def get_finding(self, finding_key: str) -> Optional[VerificationFinding]:
+    async def get_finding(self, finding_key: str) -> VerificationFinding | None:
         """Fetch a single finding by key."""
         async with self._pool.acquire() as conn:
             return await self._find_by_key(conn, finding_key)
@@ -393,9 +393,9 @@ class VerificationStore:
     async def list_findings(
         self,
         *,
-        report_id: Optional[str] = None,
-        status: Optional[str] = None,
-        severity: Optional[str] = None,
+        report_id: str | None = None,
+        status: str | None = None,
+        severity: str | None = None,
         limit: int = 200,
     ) -> list[VerificationFinding]:
         """List findings with optional filters."""
@@ -422,7 +422,7 @@ class VerificationStore:
             return [VerificationFinding(**r) for r in rows]
 
     async def list_open_findings(
-        self, report_id: Optional[str] = None
+        self, report_id: str | None = None
     ) -> list[VerificationFinding]:
         """List all open or acknowledged findings."""
         return await self.list_findings(
@@ -509,9 +509,7 @@ class VerificationStore:
                 confidence,
             )
 
-    async def get_verification_session(
-        self, session_id: str
-    ) -> Optional[dict[str, Any]]:
+    async def get_verification_session(self, session_id: str) -> dict[str, Any] | None:
         """Fetch a single verification session by ID."""
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
@@ -523,7 +521,7 @@ class VerificationStore:
     async def list_verification_sessions(
         self,
         *,
-        project_id: Optional[str] = None,
+        project_id: str | None = None,
         limit: int = 100,
     ) -> list[dict[str, Any]]:
         """List verification sessions with optional project filter."""
@@ -543,9 +541,7 @@ class VerificationStore:
                 rows = await conn.fetch(sql, limit)
             return [dict(r) for r in rows]
 
-    async def delete_verification_session(
-        self, session_id: str
-    ) -> bool:
+    async def delete_verification_session(self, session_id: str) -> bool:
         """Delete a verification session. Returns True if found and deleted."""
         async with self._pool.acquire() as conn:
             result = await conn.execute(

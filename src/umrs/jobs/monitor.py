@@ -16,9 +16,10 @@ import os
 from datetime import datetime
 from typing import Any, Protocol
 
+from umrs.metrics import METRICS
+
 from .models import AttemptStatus, Job, JobAttempt, JobType
 from .store import JobStore
-from umrs.metrics import METRICS
 
 logger = logging.getLogger(__name__)
 

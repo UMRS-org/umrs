@@ -14,12 +14,11 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query, status
-
-from .typed_errors import PlatformError, raise_typed
+from fastapi import APIRouter, Query, status
 from pydantic import BaseModel, Field
 
 from ..jobs.workload_identity import WorkloadIdentityIssuer
+from .typed_errors import PlatformError, raise_typed
 
 logger = logging.getLogger(__name__)
 
@@ -122,7 +121,9 @@ def validate_token(req: ValidateRequest):
     issuer = get_issuer()
     identity = issuer.validate(req.token)
     if not identity:
-        raise_typed(PlatformError.workloadidentity("unauthorized", "Invalid or expired token"))
+        raise_typed(
+            PlatformError.workloadidentity("unauthorized", "Invalid or expired token")
+        )
     return IdentityResponse(**identity.to_dict())
 
 

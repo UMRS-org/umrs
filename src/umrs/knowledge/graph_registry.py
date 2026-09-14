@@ -21,10 +21,11 @@ import hashlib
 import json
 import logging
 import uuid
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Iterator, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -43,14 +44,14 @@ def default_graph_id(project_id: str) -> str:
     return "g-" + hashlib.sha256(f"project:{project_id}".encode()).hexdigest()[:16]
 
 
-def graph_id_is_default(graph_id: str, project_id: Optional[str]) -> bool:
+def graph_id_is_default(graph_id: str, project_id: str | None) -> bool:
     """True when ``graph_id`` is the deterministic default for ``project_id``."""
     if not project_id:
         return False
     return graph_id == default_graph_id(project_id)
 
 
-def _iso(value: Any) -> Optional[str]:
+def _iso(value: Any) -> str | None:
     """Serialize a datetime-ish column value; None/str pass through safely."""
     if value is None:
         return None
@@ -59,7 +60,7 @@ def _iso(value: Any) -> Optional[str]:
     return str(value)
 
 
-def _row_to_graph(row: dict[str, Any]) -> "KnowledgeGraphMeta":
+def _row_to_graph(row: dict[str, Any]) -> KnowledgeGraphMeta:
     data = dict(row)
     for key in ("provenance",):
         if isinstance(data.get(key), str):
@@ -67,9 +68,14 @@ def _row_to_graph(row: dict[str, Any]) -> "KnowledgeGraphMeta":
     return KnowledgeGraphMeta(**data)
 
 
-def _row_to_proposal(row: dict[str, Any]) -> "GraphExtensionProposal":
+def _row_to_proposal(row: dict[str, Any]) -> GraphExtensionProposal:
     data = dict(row)
-    for key in ("missing_information", "source_artifacts", "proposed_operations", "execution"):
+    for key in (
+        "missing_information",
+        "source_artifacts",
+        "proposed_operations",
+        "execution",
+    ):
         if isinstance(data.get(key), str):
             data[key] = json.loads(data[key])
     return GraphExtensionProposal(**data)
@@ -83,14 +89,14 @@ class KnowledgeGraphMeta:
     name: str
     description: str = ""
     owner_id: str = ""
-    project_id: Optional[str] = None
+    project_id: str | None = None
     kind: str = "project"
     status: str = "active"
-    ontology_id: Optional[str] = None
-    ontology_version: Optional[str] = None
+    ontology_id: str | None = None
+    ontology_version: str | None = None
     provenance: dict[str, Any] = field(default_factory=dict)
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -123,10 +129,10 @@ class GraphExtensionProposal:
     session_id: str = ""
     status: str = "pending"
     decided_by: str = ""
-    decided_at: Optional[datetime] = None
-    execution: Optional[dict[str, Any]] = None
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
+    decided_at: datetime | None = None
+    execution: dict[str, Any] | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -179,7 +185,9 @@ _GRAPH_COLUMNS = (
 class GraphRegistryStore(_SyncPoolStore):
     """Registry of first-class knowledge graphs (migration 0069)."""
 
-    def ensure_default_graph(self, project_id: str, owner_id: str = "") -> KnowledgeGraphMeta:
+    def ensure_default_graph(
+        self, project_id: str, owner_id: str = ""
+    ) -> KnowledgeGraphMeta:
         """Idempotently materialize the default project graph row."""
         gid = default_graph_id(project_id)
         with self._cursor() as cur:
@@ -188,8 +196,13 @@ class GraphRegistryStore(_SyncPoolStore):
                 "(graph_id, name, description, owner_id, project_id, kind) "
                 "VALUES (%s, %s, %s, %s, %s, 'project') "
                 "ON CONFLICT (graph_id) DO NOTHING",
-                (gid, project_id, f"Default knowledge graph for project {project_id}",
-                 owner_id, project_id),
+                (
+                    gid,
+                    project_id,
+                    f"Default knowledge graph for project {project_id}",
+                    owner_id,
+                    project_id,
+                ),
             )
         graph = self.get_graph(gid)
         assert graph is not None  # insert-on-conflict guarantees presence
@@ -201,11 +214,11 @@ class GraphRegistryStore(_SyncPoolStore):
         *,
         description: str = "",
         owner_id: str = "",
-        project_id: Optional[str] = None,
+        project_id: str | None = None,
         kind: str = "research",
-        ontology_id: Optional[str] = None,
-        ontology_version: Optional[str] = None,
-        provenance: Optional[dict[str, Any]] = None,
+        ontology_id: str | None = None,
+        ontology_version: str | None = None,
+        provenance: dict[str, Any] | None = None,
     ) -> KnowledgeGraphMeta:
         """Create a named, independent knowledge graph."""
         graph_id = "g-" + uuid.uuid4().hex[:16]
@@ -216,15 +229,22 @@ class GraphRegistryStore(_SyncPoolStore):
                 " ontology_id, ontology_version, provenance) "
                 "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)",
                 (
-                    graph_id, name, description, owner_id, project_id, kind,
-                    ontology_id, ontology_version, json.dumps(provenance or {}),
+                    graph_id,
+                    name,
+                    description,
+                    owner_id,
+                    project_id,
+                    kind,
+                    ontology_id,
+                    ontology_version,
+                    json.dumps(provenance or {}),
                 ),
             )
         graph = self.get_graph(graph_id)
         assert graph is not None
         return graph
 
-    def get_graph(self, graph_id: str) -> Optional[KnowledgeGraphMeta]:
+    def get_graph(self, graph_id: str) -> KnowledgeGraphMeta | None:
         """Fetch one graph by id; None when absent."""
         with self._cursor() as cur:
             cur.execute(
@@ -234,7 +254,7 @@ class GraphRegistryStore(_SyncPoolStore):
             row = cur.fetchone()
         return _row_to_graph(row) if row else None
 
-    def resolve_graph(self, identifier: str) -> Optional[KnowledgeGraphMeta]:
+    def resolve_graph(self, identifier: str) -> KnowledgeGraphMeta | None:
         """Resolve by exact id, else exact case-insensitive name (active first)."""
         graph = self.get_graph(identifier)
         if graph is not None:
@@ -269,8 +289,12 @@ class GraphRegistryStore(_SyncPoolStore):
         legacy_default = bool(
             meta.project_id and graph_id_is_default(meta.graph_id, meta.project_id)
         )
-        node_rows = self._content_nodes(graph_id, legacy_default, meta.project_id, node_limit)
-        edge_rows = self._content_edges(graph_id, legacy_default, meta.project_id, edge_limit)
+        node_rows = self._content_nodes(
+            graph_id, legacy_default, meta.project_id, node_limit
+        )
+        edge_rows = self._content_edges(
+            graph_id, legacy_default, meta.project_id, edge_limit
+        )
         return {
             "graph_id": meta.graph_id,
             "name": meta.name,
@@ -283,7 +307,7 @@ class GraphRegistryStore(_SyncPoolStore):
         }
 
     def _content_nodes(
-        self, graph_id: str, legacy_default: bool, project_id: Optional[str], limit: int
+        self, graph_id: str, legacy_default: bool, project_id: str | None, limit: int
     ) -> list[Any]:
         """Graph-scope (+ legacy default-fallback) node rows for graph_content."""
         with self._cursor() as cur:
@@ -297,7 +321,7 @@ class GraphRegistryStore(_SyncPoolStore):
             return cur.fetchall()
 
     def _content_edges(
-        self, graph_id: str, legacy_default: bool, project_id: Optional[str], limit: int
+        self, graph_id: str, legacy_default: bool, project_id: str | None, limit: int
     ) -> list[Any]:
         """Graph-scope (+ legacy default-fallback) edge rows for graph_content."""
         with self._cursor() as cur:
@@ -313,8 +337,8 @@ class GraphRegistryStore(_SyncPoolStore):
     def list_graphs(
         self,
         *,
-        project_id: Optional[str] = None,
-        status: Optional[str] = None,
+        project_id: str | None = None,
+        status: str | None = None,
         limit: int = 200,
     ) -> list[KnowledgeGraphMeta]:
         """List graphs with optional project/status filters."""
@@ -339,7 +363,7 @@ class GraphRegistryStore(_SyncPoolStore):
         self,
         query: str,
         *,
-        project_id: Optional[str] = None,
+        project_id: str | None = None,
         limit: int = 50,
     ) -> list[KnowledgeGraphMeta]:
         """Active graphs whose name/description match the query text."""
@@ -367,11 +391,11 @@ class GraphRegistryStore(_SyncPoolStore):
         self,
         graph_id: str,
         *,
-        description: Optional[str] = None,
-        kind: Optional[str] = None,
-        ontology_id: Optional[str] = None,
-        ontology_version: Optional[str] = None,
-    ) -> Optional[KnowledgeGraphMeta]:
+        description: str | None = None,
+        kind: str | None = None,
+        ontology_id: str | None = None,
+        ontology_version: str | None = None,
+    ) -> KnowledgeGraphMeta | None:
         """Patch mutable metadata; returns the updated row (None if absent)."""
         sets, params = [], []
         for column, value in (
@@ -392,7 +416,7 @@ class GraphRegistryStore(_SyncPoolStore):
                 )
         return self.get_graph(graph_id)
 
-    def set_status(self, graph_id: str, status: str) -> Optional[KnowledgeGraphMeta]:
+    def set_status(self, graph_id: str, status: str) -> KnowledgeGraphMeta | None:
         """Lifecycle transition (active|archived). Hard delete intentionally absent."""
         if status not in GRAPH_STATUSES:
             raise ValueError(f"invalid graph status {status!r}")
@@ -415,7 +439,7 @@ _PROPOSAL_COLUMNS = (
 class ProposalStore(_SyncPoolStore):
     """Store for staged, approval-gated graph-extension proposals."""
 
-    def _get(self, cur: Any, proposal_id: str) -> Optional[GraphExtensionProposal]:
+    def _get(self, cur: Any, proposal_id: str) -> GraphExtensionProposal | None:
         cur.execute(
             f"SELECT {_PROPOSAL_COLUMNS} FROM knowledge_graph_proposals "
             "WHERE proposal_id = %s",
@@ -429,9 +453,9 @@ class ProposalStore(_SyncPoolStore):
         target_graph_id: str,
         *,
         reason: str = "",
-        missing_information: Optional[list[Any]] = None,
-        source_artifacts: Optional[list[Any]] = None,
-        proposed_operations: Optional[list[Any]] = None,
+        missing_information: list[Any] | None = None,
+        source_artifacts: list[Any] | None = None,
+        proposed_operations: list[Any] | None = None,
         created_by: str = "",
         session_id: str = "",
     ) -> GraphExtensionProposal:
@@ -444,18 +468,21 @@ class ProposalStore(_SyncPoolStore):
                 " source_artifacts, proposed_operations, created_by, session_id) "
                 "VALUES (%s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb, %s, %s)",
                 (
-                    proposal_id, target_graph_id, reason,
+                    proposal_id,
+                    target_graph_id,
+                    reason,
                     json.dumps(missing_information or []),
                     json.dumps(source_artifacts or []),
                     json.dumps(proposed_operations or []),
-                    created_by, session_id,
+                    created_by,
+                    session_id,
                 ),
             )
             proposal = self._get(cur, proposal_id)
         assert proposal is not None
         return proposal
 
-    def get_proposal(self, proposal_id: str) -> Optional[GraphExtensionProposal]:
+    def get_proposal(self, proposal_id: str) -> GraphExtensionProposal | None:
         """Fetch one proposal; None when absent."""
         with self._cursor() as cur:
             return self._get(cur, proposal_id)
@@ -463,8 +490,8 @@ class ProposalStore(_SyncPoolStore):
     def list_proposals(
         self,
         *,
-        target_graph_id: Optional[str] = None,
-        status: Optional[str] = None,
+        target_graph_id: str | None = None,
+        status: str | None = None,
         limit: int = 100,
     ) -> list[GraphExtensionProposal]:
         """List proposals with optional target/status filters."""
@@ -491,7 +518,7 @@ class ProposalStore(_SyncPoolStore):
         *,
         approved: bool,
         decided_by: str,
-    ) -> Optional[GraphExtensionProposal]:
+    ) -> GraphExtensionProposal | None:
         """Persist an approval decision (pending-only).
 
         Returns the updated proposal, or the current row unchanged when it
@@ -512,7 +539,7 @@ class ProposalStore(_SyncPoolStore):
         self,
         proposal_id: str,
         execution: dict[str, Any],
-    ) -> Optional[GraphExtensionProposal]:
+    ) -> GraphExtensionProposal | None:
         """Record execution provenance after an approved mutation ran."""
         with self._cursor() as cur:
             cur.execute(

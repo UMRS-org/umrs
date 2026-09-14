@@ -388,7 +388,9 @@ def _result_from_metrics(
     action = metrics.get("action", "error")
     status = action if action in {"ingested", "skipped", "error"} else "error"
     meta = meta_store.get(project_id, s3_key)
-    modality = metrics.get("modality") or (meta.detected_modality if meta else "unknown")
+    modality = metrics.get("modality") or (
+        meta.detected_modality if meta else "unknown"
+    )
     return IngestionResult(
         s3_key=s3_key,
         modality=modality,

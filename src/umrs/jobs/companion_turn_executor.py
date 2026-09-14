@@ -24,8 +24,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -156,9 +157,9 @@ def kick(
     attempt_id: str,
     *,
     app: Any = None,
-    chat: Optional[ChatFn] = None,
-    model: Optional[str] = None,
-    base_url: Optional[str] = None,
+    chat: ChatFn | None = None,
+    model: str | None = None,
+    base_url: str | None = None,
     registry_key: str = "",
 ) -> asyncio.Task:
     """Schedule the roundtrip for one accepted attempt (fire-and-pin).

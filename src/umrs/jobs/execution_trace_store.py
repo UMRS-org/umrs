@@ -15,7 +15,7 @@ import hashlib
 import json
 import logging
 import uuid
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
@@ -139,7 +139,9 @@ class ExecutionTraceStore:
         """Get a database connection."""
         from umrs.shared.pg_settings import pg_connect_kwargs
 
-        return self._psycopg2.connect(self._db_url, **pg_connect_kwargs("execution-trace"))
+        return self._psycopg2.connect(
+            self._db_url, **pg_connect_kwargs("execution-trace")
+        )
 
     # ------------------------------------------------------------------
     # Core CRUD

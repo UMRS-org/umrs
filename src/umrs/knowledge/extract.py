@@ -43,8 +43,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-from .parse_code import CodeParseResult, parse_code
-from .parse_notebook import NotebookParseResult, parse_notebook
+from .parse_code import parse_code
+from .parse_notebook import parse_notebook
 
 logger = logging.getLogger(__name__)
 
@@ -54,16 +54,30 @@ _PAPER_TEXT_TYPES = frozenset({"paper", "text", "document", "structured"})
 
 _TYPE_COVERAGE_FIELDS: dict[str, list[str]] = {
     "paper": [
-        "objective", "methodology", "conclusions", "limitations",
-        "assumptions", "equations", "datasets", "experiments",
+        "objective",
+        "methodology",
+        "conclusions",
+        "limitations",
+        "assumptions",
+        "equations",
+        "datasets",
+        "experiments",
     ],
     "code": [
-        "modules", "apis", "algorithms", "dependencies",
-        "parameters", "kernels", "execution_flow",
+        "modules",
+        "apis",
+        "algorithms",
+        "dependencies",
+        "parameters",
+        "kernels",
+        "execution_flow",
     ],
     "notebook": [
-        "markdown_explanations", "figures", "generated_outputs",
-        "execution_order", "experimental_settings",
+        "markdown_explanations",
+        "figures",
+        "generated_outputs",
+        "execution_order",
+        "experimental_settings",
     ],
 }
 
@@ -75,16 +89,32 @@ _TYPE_CONFIDENCE_STRING_FIELDS: dict[str, list[str]] = {
 
 _TYPE_CONFIDENCE_LIST_FIELDS: dict[str, list[str]] = {
     "paper": [
-        "assumptions", "equations", "datasets", "experiments",
-        "conclusions", "limitations", "keywords", "tags",
+        "assumptions",
+        "equations",
+        "datasets",
+        "experiments",
+        "conclusions",
+        "limitations",
+        "keywords",
+        "tags",
     ],
     "code": [
-        "modules", "apis", "algorithms", "dependencies", "parameters",
-        "kernels", "experimental_settings", "tags",
+        "modules",
+        "apis",
+        "algorithms",
+        "dependencies",
+        "parameters",
+        "kernels",
+        "experimental_settings",
+        "tags",
     ],
     "notebook": [
-        "markdown_explanations", "figures", "generated_outputs",
-        "execution_order", "experimental_settings", "tags",
+        "markdown_explanations",
+        "figures",
+        "generated_outputs",
+        "execution_order",
+        "experimental_settings",
+        "tags",
     ],
 }
 
@@ -475,12 +505,20 @@ class KnowledgeExtractor:
         """Extract paper-like scientific fields from plain text."""
         knowledge.objective = self._extract_pattern(text, self._objective_patterns)
         knowledge.methodology = self._extract_pattern(text, self._methodology_patterns)
-        knowledge.conclusions = self._extract_all_patterns(text, self._conclusion_patterns)
-        knowledge.limitations = self._extract_all_patterns(text, self._limitation_patterns)
-        knowledge.assumptions = self._extract_all_patterns(text, self._assumption_patterns)
+        knowledge.conclusions = self._extract_all_patterns(
+            text, self._conclusion_patterns
+        )
+        knowledge.limitations = self._extract_all_patterns(
+            text, self._limitation_patterns
+        )
+        knowledge.assumptions = self._extract_all_patterns(
+            text, self._assumption_patterns
+        )
         knowledge.equations = self._extract_all_patterns(text, self._equation_patterns)
         knowledge.datasets = self._extract_all_patterns(text, self._dataset_patterns)
-        knowledge.experiments = self._extract_all_patterns(text, self._experiment_patterns)
+        knowledge.experiments = self._extract_all_patterns(
+            text, self._experiment_patterns
+        )
         knowledge.keywords = self._extract_keywords(text)
 
     def _extract_pattern(self, text: str, patterns: list[str]) -> str:
@@ -575,9 +613,12 @@ class KnowledgeExtractor:
         filled = 0
         for field_name in key_fields:
             value = getattr(knowledge, field_name, "")
-            if isinstance(value, list) and value:
-                filled += 1
-            elif isinstance(value, str) and value.strip():
+            if (
+                isinstance(value, list)
+                and value
+                or isinstance(value, str)
+                and value.strip()
+            ):
                 filled += 1
         return filled / len(key_fields)
 

@@ -17,9 +17,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-
-from .typed_errors import PlatformError, raise_typed
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
 
 from umrs.scientific_memory import (
@@ -30,6 +28,7 @@ from umrs.scientific_memory import (
 )
 
 from ._verified_headers import CallerIdentity, get_caller
+from .typed_errors import PlatformError, raise_typed
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +45,11 @@ def set_store(store: InMemoryScientificMemoryStore) -> None:
 
 def _get_store() -> InMemoryScientificMemoryStore:
     if _store is None:
-        raise_typed(PlatformError.scimem("unavailable", "Scientific memory store not initialized"))
+        raise_typed(
+            PlatformError.scimem(
+                "unavailable", "Scientific memory store not initialized"
+            )
+        )
     return _store
 
 
@@ -141,7 +144,9 @@ async def add_entry(
     try:
         entry_type = MemoryEntryType(req.entry_type)
     except ValueError:
-        raise_typed(PlatformError.scimem("bad_request", f"Invalid entry type: {req.entry_type}"))
+        raise_typed(
+            PlatformError.scimem("bad_request", f"Invalid entry type: {req.entry_type}")
+        )
     project_id = req.project_id
     created_by = req.created_by
     if caller is not None:
@@ -199,14 +204,18 @@ async def list_entries(
         try:
             etype = MemoryEntryType(entry_type)
         except ValueError:
-            raise_typed(PlatformError.scimem("bad_request", f"Invalid entry type: {entry_type}"))
+            raise_typed(
+                PlatformError.scimem("bad_request", f"Invalid entry type: {entry_type}")
+            )
 
     estatus: MemoryEntryStatus | None = None
     if status:
         try:
             estatus = MemoryEntryStatus(status)
         except ValueError:
-            raise_typed(PlatformError.scimem("bad_request", f"Invalid status: {status}"))
+            raise_typed(
+                PlatformError.scimem("bad_request", f"Invalid status: {status}")
+            )
 
     entries = store.list_entries(
         project_id=project_id,
@@ -238,7 +247,9 @@ async def search_entries(
         try:
             etype = MemoryEntryType(entry_type)
         except ValueError:
-            raise_typed(PlatformError.scimem("bad_request", f"Invalid entry type: {entry_type}"))
+            raise_typed(
+                PlatformError.scimem("bad_request", f"Invalid entry type: {entry_type}")
+            )
 
     entries = store.search(
         query,
@@ -264,12 +275,16 @@ async def update_status(
     if caller is not None:
         existing = store.get(entry_id)
         if existing is None:
-            raise_typed(PlatformError.scimem("not_found", f"Entry {entry_id} not found"))
+            raise_typed(
+                PlatformError.scimem("not_found", f"Entry {entry_id} not found")
+            )
         caller.assert_can_access(existing.project_id)
     try:
         status = MemoryEntryStatus(req.status)
     except ValueError:
-        raise_typed(PlatformError.scimem("bad_request", f"Invalid status: {req.status}"))
+        raise_typed(
+            PlatformError.scimem("bad_request", f"Invalid status: {req.status}")
+        )
     result = store.update_status(entry_id, status)
     if not result:
         raise_typed(PlatformError.scimem("not_found", f"Entry {entry_id} not found"))
@@ -292,14 +307,18 @@ async def count_entries(
         try:
             etype = MemoryEntryType(entry_type)
         except ValueError:
-            raise_typed(PlatformError.scimem("bad_request", f"Invalid entry type: {entry_type}"))
+            raise_typed(
+                PlatformError.scimem("bad_request", f"Invalid entry type: {entry_type}")
+            )
 
     estatus: MemoryEntryStatus | None = None
     if status:
         try:
             estatus = MemoryEntryStatus(status)
         except ValueError:
-            raise_typed(PlatformError.scimem("bad_request", f"Invalid status: {status}"))
+            raise_typed(
+                PlatformError.scimem("bad_request", f"Invalid status: {status}")
+            )
 
     count = store.count(
         project_id=project_id,

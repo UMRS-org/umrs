@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -73,21 +72,21 @@ class MemoryEntry:
     immutable once created (except for status changes).
     """
 
-    entry_id: str                          # Unique identifier
-    entry_type: MemoryEntryType            # Type of entry
-    project_id: str = ""                   # Project this belongs to
-    experiment_id: str = ""                # Experiment this relates to
-    source: str = "system"                 # user | agent | system
-    content: str = ""                      # The actual content (text, code, etc.)
-    content_uri: str = ""                  # S3 URI if content is large
-    summary: str = ""                      # Short summary
+    entry_id: str  # Unique identifier
+    entry_type: MemoryEntryType  # Type of entry
+    project_id: str = ""  # Project this belongs to
+    experiment_id: str = ""  # Experiment this relates to
+    source: str = "system"  # user | agent | system
+    content: str = ""  # The actual content (text, code, etc.)
+    content_uri: str = ""  # S3 URI if content is large
+    summary: str = ""  # Short summary
     metadata: dict[str, Any] = field(default_factory=dict)
     tags: list[str] = field(default_factory=list)
     status: MemoryEntryStatus = MemoryEntryStatus.ACTIVE
     created_at: str = ""
     updated_at: str = ""
-    created_by: str = ""                   # user_id or agent_id
-    confidence: float = 0.0                # 0.0–1.0
+    created_by: str = ""  # user_id or agent_id
+    confidence: float = 0.0  # 0.0–1.0
     references: list[str] = field(default_factory=list)  # Other entry_ids
 
     def __post_init__(self) -> None:
@@ -117,7 +116,7 @@ class MemoryEntry:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "MemoryEntry":
+    def from_dict(cls, data: dict[str, Any]) -> MemoryEntry:
         return cls(
             entry_id=data["entry_id"],
             entry_type=MemoryEntryType(data.get("entry_type", "note")),
@@ -259,9 +258,7 @@ class ScientificMemoryStore:
             return
         self._storage_path.parent.mkdir(parents=True, exist_ok=True)
         data = {
-            "entries": {
-                k: v.to_dict() for k, v in self._entries.items()
-            },
+            "entries": {k: v.to_dict() for k, v in self._entries.items()},
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
         self._storage_path.write_text(json.dumps(data, indent=2, default=str))
@@ -521,6 +518,7 @@ class ScientificMemoryManager:
 def _generate_id() -> str:
     """Generate a unique ID for a memory entry."""
     import uuid
+
     return uuid.uuid4().hex[:12]
 
 

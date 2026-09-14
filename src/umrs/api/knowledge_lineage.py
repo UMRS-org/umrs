@@ -96,13 +96,15 @@ async def _query_lineage(
 
         ancestors: list[dict[str, Any]] = []
         for row in rows:
-            ancestors.append({
-                "artifact_id": row["a2l_artifact_id"] or artifact_id,
-                "artifact_type": "a2l" if row["a2l_artifact_id"] else "knowledge",
-                "title": row["a2l_id"] or artifact_id[:24],
-                "edge_kind": row["edge_kind"],
-                "created_at": row["derived_at"],
-            })
+            ancestors.append(
+                {
+                    "artifact_id": row["a2l_artifact_id"] or artifact_id,
+                    "artifact_type": "a2l" if row["a2l_artifact_id"] else "knowledge",
+                    "title": row["a2l_id"] or artifact_id[:24],
+                    "edge_kind": row["edge_kind"],
+                    "created_at": row["derived_at"],
+                }
+            )
 
         # Get descendants (other knowledge artifacts linked to same A2L refs)
         a2l_ids = [r["a2l_artifact_id"] for r in rows if r["a2l_artifact_id"]]
@@ -124,13 +126,15 @@ async def _query_lineage(
                 depth,
             )
             for row in desc_rows:
-                descendants.append({
-                    "artifact_id": row["knowledge_artifact_id"],
-                    "artifact_type": "knowledge",
-                    "title": row["knowledge_artifact_id"][:24],
-                    "edge_kind": row["edge_kind"],
-                    "created_at": row["derived_at"],
-                })
+                descendants.append(
+                    {
+                        "artifact_id": row["knowledge_artifact_id"],
+                        "artifact_type": "knowledge",
+                        "title": row["knowledge_artifact_id"][:24],
+                        "edge_kind": row["edge_kind"],
+                        "created_at": row["derived_at"],
+                    }
+                )
 
         return {
             "artifact_id": artifact_id,

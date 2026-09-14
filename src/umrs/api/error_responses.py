@@ -31,7 +31,6 @@ from typing import Any
 from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
 
-
 # HTTP status → default error_id mapping
 _STATUS_ERROR_MAP: dict[int, str] = {
     400: "request.bad_request",

@@ -39,10 +39,10 @@ logger = logging.getLogger(__name__)
 class ReadinessLevel(str, Enum):
     """Overall readiness level for autonomous research."""
 
-    READY = "ready"               # Knowledge is complete enough
+    READY = "ready"  # Knowledge is complete enough
     PARTIALLY_READY = "partially_ready"  # Some gaps but can proceed
-    NOT_READY = "not_ready"       # Too many gaps
-    BLOCKED = "blocked"           # Critical blocker (e.g., no knowledge at all)
+    NOT_READY = "not_ready"  # Too many gaps
+    BLOCKED = "blocked"  # Critical blocker (e.g., no knowledge at all)
 
 
 class ConfidenceLevel(str, Enum):
@@ -57,9 +57,9 @@ class ConfidenceLevel(str, Enum):
 class IssueSeverity(str, Enum):
     """Severity of a readiness issue."""
 
-    CRITICAL = "critical"     # Must fix before research
-    WARNING = "warning"        # Should fix but can proceed
-    INFO = "info"              # Informational only
+    CRITICAL = "critical"  # Must fix before research
+    WARNING = "warning"  # Should fix but can proceed
+    INFO = "info"  # Informational only
 
 
 # ── Readiness Issue ────────────────────────────────────────────────────────
@@ -71,10 +71,10 @@ class ReadinessIssue:
 
     issue_id: str = ""
     severity: IssueSeverity = IssueSeverity.INFO
-    category: str = ""          # missing_dataset, missing_reference, etc.
+    category: str = ""  # missing_dataset, missing_reference, etc.
     description: str = ""
     affected_artifacts: list[str] = field(default_factory=list)
-    recommendation: str = ""    # How to fix it
+    recommendation: str = ""  # How to fix it
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -102,9 +102,9 @@ class ResearchReadinessReport:
     generated_at: str = ""
 
     # Overall scores
-    knowledge_completeness: float = 0.0      # 0.0–1.0
-    knowledge_confidence: float = 0.0        # 0.0–1.0
-    coverage_score: float = 0.0              # 0.0–1.0
+    knowledge_completeness: float = 0.0  # 0.0–1.0
+    knowledge_confidence: float = 0.0  # 0.0–1.0
+    coverage_score: float = 0.0  # 0.0–1.0
 
     # Qualitative assessments
     readiness_level: ReadinessLevel = ReadinessLevel.NOT_READY
@@ -224,7 +224,9 @@ class ResearchReadinessGate:
         # Copy issues
         report.missing_datasets = dashboard_data.get("missing_datasets", [])
         report.missing_references = dashboard_data.get("missing_references", [])
-        report.missing_implementations = dashboard_data.get("missing_implementations", [])
+        report.missing_implementations = dashboard_data.get(
+            "missing_implementations", []
+        )
         report.unknown_assumptions = dashboard_data.get("unknown_assumptions", [])
         report.incomplete_parsing = dashboard_data.get("incomplete_parsing", [])
         report.broken_references = dashboard_data.get("broken_references", [])
@@ -255,86 +257,100 @@ class ResearchReadinessGate:
         # Check for missing datasets
         if report.missing_datasets:
             issue_counter += 1
-            report.issues.append(ReadinessIssue(
-                issue_id=f"issue-{issue_counter}",
-                severity=IssueSeverity.WARNING,
-                category="missing_datasets",
-                description=f"{len(report.missing_datasets)} missing dataset(s)",
-                affected_artifacts=report.missing_datasets,
-                recommendation="Upload the missing datasets before starting research",
-            ))
+            report.issues.append(
+                ReadinessIssue(
+                    issue_id=f"issue-{issue_counter}",
+                    severity=IssueSeverity.WARNING,
+                    category="missing_datasets",
+                    description=f"{len(report.missing_datasets)} missing dataset(s)",
+                    affected_artifacts=report.missing_datasets,
+                    recommendation="Upload the missing datasets before starting research",
+                )
+            )
 
         # Check for missing references
         if report.missing_references:
             issue_counter += 1
-            report.issues.append(ReadinessIssue(
-                issue_id=f"issue-{issue_counter}",
-                severity=IssueSeverity.WARNING,
-                category="missing_references",
-                description=f"{len(report.missing_references)} missing reference(s)",
-                affected_artifacts=report.missing_references,
-                recommendation="Add the missing references to the knowledge base",
-            ))
+            report.issues.append(
+                ReadinessIssue(
+                    issue_id=f"issue-{issue_counter}",
+                    severity=IssueSeverity.WARNING,
+                    category="missing_references",
+                    description=f"{len(report.missing_references)} missing reference(s)",
+                    affected_artifacts=report.missing_references,
+                    recommendation="Add the missing references to the knowledge base",
+                )
+            )
 
         # Check for missing implementations
         if report.missing_implementations:
             issue_counter += 1
-            report.issues.append(ReadinessIssue(
-                issue_id=f"issue-{issue_counter}",
-                severity=IssueSeverity.WARNING,
-                category="missing_implementations",
-                description=f"{len(report.missing_implementations)} missing implementation(s)",
-                affected_artifacts=report.missing_implementations,
-                recommendation="Implement the missing algorithms or code",
-            ))
+            report.issues.append(
+                ReadinessIssue(
+                    issue_id=f"issue-{issue_counter}",
+                    severity=IssueSeverity.WARNING,
+                    category="missing_implementations",
+                    description=f"{len(report.missing_implementations)} missing implementation(s)",
+                    affected_artifacts=report.missing_implementations,
+                    recommendation="Implement the missing algorithms or code",
+                )
+            )
 
         # Check for unknown assumptions
         if report.unknown_assumptions:
             issue_counter += 1
-            report.issues.append(ReadinessIssue(
-                issue_id=f"issue-{issue_counter}",
-                severity=IssueSeverity.CRITICAL,
-                category="unknown_assumptions",
-                description=f"{len(report.unknown_assumptions)} unverified assumption(s)",
-                affected_artifacts=report.unknown_assumptions,
-                recommendation="Verify or explicitly accept all assumptions before research",
-            ))
+            report.issues.append(
+                ReadinessIssue(
+                    issue_id=f"issue-{issue_counter}",
+                    severity=IssueSeverity.CRITICAL,
+                    category="unknown_assumptions",
+                    description=f"{len(report.unknown_assumptions)} unverified assumption(s)",
+                    affected_artifacts=report.unknown_assumptions,
+                    recommendation="Verify or explicitly accept all assumptions before research",
+                )
+            )
 
         # Check for incomplete parsing
         if report.incomplete_parsing:
             issue_counter += 1
-            report.issues.append(ReadinessIssue(
-                issue_id=f"issue-{issue_counter}",
-                severity=IssueSeverity.WARNING,
-                category="incomplete_parsing",
-                description=f"{len(report.incomplete_parsing)} artifact(s) with incomplete parsing",
-                affected_artifacts=report.incomplete_parsing,
-                recommendation="Re-ingest the affected artifacts",
-            ))
+            report.issues.append(
+                ReadinessIssue(
+                    issue_id=f"issue-{issue_counter}",
+                    severity=IssueSeverity.WARNING,
+                    category="incomplete_parsing",
+                    description=f"{len(report.incomplete_parsing)} artifact(s) with incomplete parsing",
+                    affected_artifacts=report.incomplete_parsing,
+                    recommendation="Re-ingest the affected artifacts",
+                )
+            )
 
         # Check for broken references
         if report.broken_references:
             issue_counter += 1
-            report.issues.append(ReadinessIssue(
-                issue_id=f"issue-{issue_counter}",
-                severity=IssueSeverity.WARNING,
-                category="broken_references",
-                description=f"{len(report.broken_references)} broken reference(s)",
-                affected_artifacts=report.broken_references,
-                recommendation="Fix the broken references in the knowledge graph",
-            ))
+            report.issues.append(
+                ReadinessIssue(
+                    issue_id=f"issue-{issue_counter}",
+                    severity=IssueSeverity.WARNING,
+                    category="broken_references",
+                    description=f"{len(report.broken_references)} broken reference(s)",
+                    affected_artifacts=report.broken_references,
+                    recommendation="Fix the broken references in the knowledge graph",
+                )
+            )
 
         # Check for unknown formats
         if report.unknown_formats:
             issue_counter += 1
-            report.issues.append(ReadinessIssue(
-                issue_id=f"issue-{issue_counter}",
-                severity=IssueSeverity.INFO,
-                category="unknown_formats",
-                description=f"{len(report.unknown_formats)} artifact(s) with unknown format",
-                affected_artifacts=report.unknown_formats,
-                recommendation="Consider adding support for the unknown formats",
-            ))
+            report.issues.append(
+                ReadinessIssue(
+                    issue_id=f"issue-{issue_counter}",
+                    severity=IssueSeverity.INFO,
+                    category="unknown_formats",
+                    description=f"{len(report.unknown_formats)} artifact(s) with unknown format",
+                    affected_artifacts=report.unknown_formats,
+                    recommendation="Consider adding support for the unknown formats",
+                )
+            )
 
         # Count issues by severity
         report.critical_issue_count = sum(

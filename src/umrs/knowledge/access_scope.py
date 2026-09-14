@@ -176,11 +176,10 @@ def visibility_predicate(
     """
     prefix = f"{alias}." if alias else ""
     owned = owned_sql or f"{prefix}project_id = {placeholder}"
-    ambient_clause = "" if include_ambient else f" AND {prefix}visibility != '{VISIBILITY_AMBIENT}'"
-    return (
-        f"(({owned} OR {prefix}visibility = '{VISIBILITY_SYSTEM}')"
-        f"{ambient_clause})"
+    ambient_clause = (
+        "" if include_ambient else f" AND {prefix}visibility != '{VISIBILITY_AMBIENT}'"
     )
+    return f"(({owned} OR {prefix}visibility = '{VISIBILITY_SYSTEM}'){ambient_clause})"
 
 
 def visibility_clause(

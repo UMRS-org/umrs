@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
@@ -98,7 +98,9 @@ class CheckpointStore:
     def _conn(self):  # type: ignore[no-untyped-def]
         from umrs.shared.pg_settings import pg_connect_kwargs
 
-        return self._psycopg2.connect(self._db_url, **pg_connect_kwargs("checkpoint-store"))  # type: ignore[union-attr]
+        return self._psycopg2.connect(
+            self._db_url, **pg_connect_kwargs("checkpoint-store")
+        )  # type: ignore[union-attr]
 
     # ── Create ──────────────────────────────────────────────
 

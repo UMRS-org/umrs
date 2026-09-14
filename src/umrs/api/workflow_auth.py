@@ -11,7 +11,6 @@ import os
 from dataclasses import dataclass
 from typing import Any
 
-
 from ..jobs.models import Job, JobStatus, JobType
 from ..jobs.store import JobStore
 from ..server.workflow_execution_registry import ExecutionRecord
@@ -79,7 +78,9 @@ def execution_project_id(
     if job is not None and job.project_id:
         return job.project_id
     if record is not None:
-        raw = record.params.get("project_id") if isinstance(record.params, dict) else None
+        raw = (
+            record.params.get("project_id") if isinstance(record.params, dict) else None
+        )
         if isinstance(raw, str) and raw.strip():
             return raw.strip()
     if isinstance(params, dict):
@@ -161,7 +162,9 @@ def caller_from_identity(identity: CallerIdentity) -> tuple[str, str | None, boo
     )
 
 
-def zmq_caller_from_payload(client_id: str, payload: dict[str, Any] | None) -> ZmqWorkflowCaller:
+def zmq_caller_from_payload(
+    client_id: str, payload: dict[str, Any] | None
+) -> ZmqWorkflowCaller:
     payload = payload if isinstance(payload, dict) else {}
     project_id = payload.get("project_id")
     if not isinstance(project_id, str) or not project_id.strip():
@@ -196,8 +199,7 @@ def enforce_http_execution_access(
     if record is None and job is None:
         raise_typed(
             PlatformError.workflowauth(
-                "not_found",
-                f"Execution {execution_id} not found"
+                "not_found", f"Execution {execution_id} not found"
             ),
         )
 
@@ -213,10 +215,7 @@ def enforce_http_execution_access(
         return
 
     raise_typed(
-        PlatformError.workflowauth(
-            "forbidden",
-            authorization_denied_detail()
-        ),
+        PlatformError.workflowauth("forbidden", authorization_denied_detail()),
     )
 
 

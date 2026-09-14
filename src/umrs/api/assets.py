@@ -13,9 +13,9 @@ rows of its kind (see asset_index.fanout comments).
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
+from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from umrs.asset_index import build_asset_index
@@ -46,7 +46,7 @@ def _gather_stores() -> dict[str, Any]:
             value = fn()
             if value is not None:
                 stores[key] = value
-        except Exception:  # noqa: BLE001 — grab failures show as absent stores
+        except Exception:
             logger.debug("asset index: %s store unavailable", key, exc_info=True)
 
     from umrs.api import jobs as jobs_api
@@ -84,8 +84,8 @@ def _gather_stores() -> dict[str, Any]:
 
 @router.get("", response_model=AssetSnapshotResponse)
 async def snapshot(
-    kinds: Optional[str] = Query(None, description="comma-separated kind filter"),
-    project_id: Optional[str] = Query(None),
+    kinds: str | None = Query(None, description="comma-separated kind filter"),
+    project_id: str | None = Query(None),
     caller: Any = Depends(get_caller_scope),
 ) -> AssetSnapshotResponse:
     """Cross-subsystem asset index snapshot (read-model, F4).
@@ -97,8 +97,10 @@ async def snapshot(
     stores = _gather_stores()
     kind_list = [k.strip() for k in kinds.split(",") if k.strip()] if kinds else None
     # Non-admin project filter is bound to the caller's verified project.
-    bound_project = project_id if getattr(caller, "is_admin", False) else (
-        getattr(caller, "project_id", "") or project_id
+    bound_project = (
+        project_id
+        if getattr(caller, "is_admin", False)
+        else (getattr(caller, "project_id", "") or project_id)
     )
     rows, warnings = build_asset_index(
         project_id=bound_project,
@@ -141,5 +143,10 @@ async def get_asset(
             return AssetRowResponse(row=row.to_dict())
     raise HTTPException(
         status_code=404,
-        detail={"error": "asset_not_found", "kind": kind, "asset_id": asset_id, "warnings": [w.to_dict() for w in warnings]},
+        detail={
+            "error": "asset_not_found",
+            "kind": kind,
+            "asset_id": asset_id,
+            "warnings": [w.to_dict() for w in warnings],
+        },
     )

@@ -16,8 +16,7 @@ Design invariants (ADR-017 / Invariant 7.x):
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
-from typing import Any
+from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +72,10 @@ class A2lBridge:
                 )
             return None
         except Exception:
-            logger.warning("A2L resolve failed for hash %s (best-effort: continuing)", content_hash[:8])
+            logger.warning(
+                "A2L resolve failed for hash %s (best-effort: continuing)",
+                content_hash[:8],
+            )
             return None
 
     def sync_a2l_ref(self, ref: A2lRef) -> bool:
@@ -93,7 +95,9 @@ class A2lBridge:
             )
             return True
         except Exception:
-            logger.warning("A2L ref sync failed for %s (best-effort: continuing)", ref.a2l_id)
+            logger.warning(
+                "A2L ref sync failed for %s (best-effort: continuing)", ref.a2l_id
+            )
             return False
 
     def _fetch_artifacts(self, project_id: str, artifact_ids: list[str]) -> list[dict]:

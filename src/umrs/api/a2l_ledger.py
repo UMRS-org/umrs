@@ -12,11 +12,9 @@ materializes a copy of execution state.
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
+from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-
-from .typed_errors import PlatformError, raise_typed
+from fastapi import APIRouter, Depends, Query, Request, status
 from pydantic import BaseModel, Field
 
 from umrs.a2l import (
@@ -28,6 +26,7 @@ from umrs.a2l import (
 from umrs.a2l.store import ConservationStore, init_store
 
 from ._asyncpg_pool import knowledge_asyncpg_pool
+from .typed_errors import PlatformError, raise_typed
 
 logger = logging.getLogger(__name__)
 
@@ -60,8 +59,8 @@ class DeriveBody(BaseModel):
     params: dict[str, Any] = Field(default_factory=dict)
     type_schema: dict[str, Any] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
-    project_id: Optional[str] = None
-    artifact_class: Optional[str] = None
+    project_id: str | None = None
+    artifact_class: str | None = None
     job_id: str = ""
     attempt_id: str = ""
 
@@ -73,16 +72,16 @@ class ExecutionCreateBody(BaseModel):
     model_ref: str = ""
     prompt_hash: str = ""
     params: dict[str, Any] = Field(default_factory=dict)
-    project_id: Optional[str] = None
+    project_id: str | None = None
     job_id: str = ""
     attempt_id: str = ""
 
 
 class ExecutionPatchBody(BaseModel):
-    status: Optional[str] = None
-    execution_trace: Optional[dict[str, Any]] = None
-    error: Optional[str] = None
-    completed_at: Optional[str] = None
+    status: str | None = None
+    execution_trace: dict[str, Any] | None = None
+    error: str | None = None
+    completed_at: str | None = None
 
 
 class DecisionBody(BaseModel):
@@ -99,7 +98,9 @@ class DecisionBody(BaseModel):
 
 
 @router.post("/artifacts/derive", status_code=status.HTTP_201_CREATED)
-async def derive_artifact(body: DeriveBody, store=Depends(_get_store)) -> dict[str, Any]:
+async def derive_artifact(
+    body: DeriveBody, store=Depends(_get_store)
+) -> dict[str, Any]:
     """Derive a conserved artifact from parents (lineage edges atomically)."""
     req = ArtifactDerive.from_dict(body.model_dump())
     try:
@@ -111,13 +112,15 @@ async def derive_artifact(body: DeriveBody, store=Depends(_get_store)) -> dict[s
 
 @router.get("/artifacts")
 async def list_artifacts(
-    job_id: Optional[str] = Query(None),
-    user_id: Optional[str] = Query(None),
+    job_id: str | None = Query(None),
+    user_id: str | None = Query(None),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     store=Depends(_get_store),
 ) -> dict[str, Any]:
-    items = await store.list_artifacts(job_id=job_id, user_id=user_id, limit=limit, offset=offset)
+    items = await store.list_artifacts(
+        job_id=job_id, user_id=user_id, limit=limit, offset=offset
+    )
     return {"artifacts": [a.to_dict() for a in items], "limit": limit, "offset": offset}
 
 
@@ -149,7 +152,9 @@ async def patch_artifact_status(
 
 
 @router.post("/agent-executions", status_code=status.HTTP_201_CREATED)
-async def create_execution(body: ExecutionCreateBody, store=Depends(_get_store)) -> dict[str, Any]:
+async def create_execution(
+    body: ExecutionCreateBody, store=Depends(_get_store)
+) -> dict[str, Any]:
     req = AgentExecutionCreate.from_dict(body.model_dump())
     record = await store.create_execution(req)
     return record.to_dict()
@@ -157,19 +162,27 @@ async def create_execution(body: ExecutionCreateBody, store=Depends(_get_store))
 
 @router.get("/agent-executions")
 async def list_executions(
-    job_id: Optional[str] = Query(None),
-    attempt_id: Optional[str] = Query(None),
-    agent_name: Optional[str] = Query(None),
-    user_id: Optional[str] = Query(None),
+    job_id: str | None = Query(None),
+    attempt_id: str | None = Query(None),
+    agent_name: str | None = Query(None),
+    user_id: str | None = Query(None),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     store=Depends(_get_store),
 ) -> dict[str, Any]:
     items = await store.list_executions(
-        job_id=job_id, attempt_id=attempt_id, agent_name=agent_name,
-        user_id=user_id, limit=limit, offset=offset,
+        job_id=job_id,
+        attempt_id=attempt_id,
+        agent_name=agent_name,
+        user_id=user_id,
+        limit=limit,
+        offset=offset,
     )
-    return {"executions": [e.to_dict() for e in items], "limit": limit, "offset": offset}
+    return {
+        "executions": [e.to_dict() for e in items],
+        "limit": limit,
+        "offset": offset,
+    }
 
 
 @router.get("/agent-executions/{execution_id}")
@@ -196,7 +209,9 @@ async def patch_execution(
 
 
 @router.post("/decisions", status_code=status.HTTP_201_CREATED)
-async def create_decision(body: DecisionBody, store=Depends(_get_store)) -> dict[str, Any]:
+async def create_decision(
+    body: DecisionBody, store=Depends(_get_store)
+) -> dict[str, Any]:
     req = DecisionCreate(**body.model_dump())
     record = await store.create_decision(req)
     return {
@@ -211,20 +226,27 @@ async def create_decision(body: DecisionBody, store=Depends(_get_store)) -> dict
 
 @router.get("/decisions")
 async def list_decisions(
-    job_id: Optional[str] = Query(None),
+    job_id: str | None = Query(None),
     limit: int = Query(50, ge=1, le=200),
     store=Depends(_get_store),
 ) -> dict[str, Any]:
     items = await store.list_decisions(job_id=job_id, limit=limit)
-    return {"decisions": [
-        {
-            "id": d.id, "decided_by": d.decided_by, "decision": d.decision,
-            "rationale": d.rationale, "job_id": d.job_id,
-            "attempt_id": d.attempt_id, "artifact_id": d.artifact_id,
-            "payload": d.payload, "created_at": d.created_at,
-        }
-        for d in items
-    ]}
+    return {
+        "decisions": [
+            {
+                "id": d.id,
+                "decided_by": d.decided_by,
+                "decision": d.decision,
+                "rationale": d.rationale,
+                "job_id": d.job_id,
+                "attempt_id": d.attempt_id,
+                "artifact_id": d.artifact_id,
+                "payload": d.payload,
+                "created_at": d.created_at,
+            }
+            for d in items
+        ]
+    }
 
 
 # ── Compositional job view (join-not-copy read model) ─────────────────────
@@ -234,6 +256,10 @@ async def list_decisions(
 async def job_view(job_id: str, store=Depends(_get_store)) -> dict[str, Any]:
     """Compositional history view for one job: spine state + conserved rows."""
     view = await store.job_conservation_view(job_id)
-    if view["spine"] is None and not (view["artifacts"] or view["executions"] or view["decisions"]):
-        raise_typed(PlatformError.a2l("not_found", f"no conservation data for job {job_id}"))
+    if view["spine"] is None and not (
+        view["artifacts"] or view["executions"] or view["decisions"]
+    ):
+        raise_typed(
+            PlatformError.a2l("not_found", f"no conservation data for job {job_id}")
+        )
     return view

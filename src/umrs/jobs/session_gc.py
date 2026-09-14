@@ -27,9 +27,9 @@ import asyncio
 import logging
 from typing import Any
 
+from ..research_sessions.store import SessionStore
 from .models import Job, JobAttempt
 from .monitor import AttemptCheckResult, BackendStatusChecker
-from ..research_sessions.store import SessionStore
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +77,9 @@ class SessionGcBackend:
         if self.session_store is None:
             raise RuntimeError("session_gc lacks a shared umrs_db session store")
 
-        from umrs.shared.trust_store_access import get_trust_store  # archive cascade's trust ledger
+        from umrs.shared.trust_store_access import (
+            get_trust_store,  # archive cascade's trust ledger
+        )
 
         trust_store = get_trust_store()
         started = asyncio.get_running_loop().time()
@@ -112,7 +114,7 @@ class SessionGcStatusChecker(BackendStatusChecker):
         self._backend = backend
 
     @property
-    def job_type(self) -> "JobType":
+    def job_type(self) -> JobType:
         from .models import JobType
 
         return JobType.SESSION_GC
@@ -122,7 +124,9 @@ class SessionGcStatusChecker(BackendStatusChecker):
         attempt: JobAttempt,
         job: Job,
     ) -> AttemptCheckResult:
-        metrics = self._backend.report_for(job.job_id) if self._backend is not None else {}
+        metrics = (
+            self._backend.report_for(job.job_id) if self._backend is not None else {}
+        )
         return AttemptCheckResult.succeeded(metrics=metrics)
 
 

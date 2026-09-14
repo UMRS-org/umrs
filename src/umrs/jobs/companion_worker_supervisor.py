@@ -30,7 +30,6 @@ import time
 from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
 
 from .companion_worker import (
     CompanionWorkerManager,
@@ -86,9 +85,9 @@ class _WorkerInstance:
     socket_path: Path
     command_attempt: int = 0
     env_snapshot: dict[str, str] = field(default_factory=dict)
-    _beat_thread: Optional[threading.Thread] = None
+    _beat_thread: threading.Thread | None = None
     _beat_stop: threading.Event = field(default_factory=threading.Event)
-    _server_sock: Optional[socket.socket] = None
+    _server_sock: socket.socket | None = None
     beats_seen: int = 0
 
 
@@ -107,7 +106,7 @@ class CompanionWorkerSupervisor:
         self,
         manager: CompanionWorkerManager,
         *,
-        config: Optional[SpawnConfig] = None,
+        config: SpawnConfig | None = None,
     ) -> None:
         self._manager = manager
         self._config = config or SpawnConfig()
@@ -238,7 +237,7 @@ class CompanionWorkerSupervisor:
             return candidate
         return Path(f"/tmp/cw-{secrets.token_hex(6)}.sock")
 
-    def _ensure_server(self, instance: _WorkerInstance) -> Optional[socket.socket]:
+    def _ensure_server(self, instance: _WorkerInstance) -> socket.socket | None:
         if instance._server_sock is not None:
             return instance._server_sock
         server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -290,7 +289,7 @@ class CompanionWorkerSupervisor:
             session_token_fingerprint=str(row.get("session_token_fingerprint") or ""),
         )
 
-    def _fetch_row_or_none(self, registry_key: str) -> Optional[dict]:
+    def _fetch_row_or_none(self, registry_key: str) -> dict | None:
         try:
             return self._manager.get(registry_key)
         except WorkerNotFound:

@@ -22,16 +22,15 @@ from typing import Any
 from umrs.knowledge.canonical_graph_view import CanonicalGraphView, default_view
 from umrs.knowledge_model import (
     InMemoryKnowledgeModelStore,
-    KnowledgeObject,
     KnowledgeObjectType,
 )
 from umrs.scientific_memory import InMemoryScientificMemoryStore
 
 __all__ = [
-    "KnowledgeSummary",
-    "ObjectSummary",
-    "ObjectDetail",
     "KnowledgeDashboardController",
+    "KnowledgeSummary",
+    "ObjectDetail",
+    "ObjectSummary",
 ]
 
 
@@ -197,13 +196,17 @@ class KnowledgeDashboardController:
         summary.graph_edge_count = edge_count
 
         # Memory statistics
-        summary.memory_entry_count = len(self._scientific_memory.list_entries(limit=10000))
+        summary.memory_entry_count = len(
+            self._scientific_memory.list_entries(limit=10000)
+        )
 
         summary.coverage_score = self._coverage_score(summary)
         return summary
 
     @staticmethod
-    def _bump_type_count(summary: KnowledgeSummary, object_type: KnowledgeObjectType) -> None:
+    def _bump_type_count(
+        summary: KnowledgeSummary, object_type: KnowledgeObjectType
+    ) -> None:
         """Increment the per-type count bucket (extracted for the gate)."""
         bump_map = {
             KnowledgeObjectType.PAPER: "paper_count",
@@ -301,19 +304,23 @@ class KnowledgeDashboardController:
         # Get provenance (edges to/from this object)
         provenance: list[dict[str, Any]] = []
         for edge in self._knowledge_graph.get_outgoing(object_id):
-            provenance.append({
-                "direction": "outgoing",
-                "target_id": edge.target_id,
-                "relation_type": edge.relation_type.value,
-                "confidence": edge.confidence,
-            })
+            provenance.append(
+                {
+                    "direction": "outgoing",
+                    "target_id": edge.target_id,
+                    "relation_type": edge.relation_type.value,
+                    "confidence": edge.confidence,
+                }
+            )
         for edge in self._knowledge_graph.get_incoming(object_id):
-            provenance.append({
-                "direction": "incoming",
-                "source_id": edge.source_id,
-                "relation_type": edge.relation_type.value,
-                "confidence": edge.confidence,
-            })
+            provenance.append(
+                {
+                    "direction": "incoming",
+                    "source_id": edge.source_id,
+                    "relation_type": edge.relation_type.value,
+                    "confidence": edge.confidence,
+                }
+            )
 
         return ObjectDetail(
             object_id=obj.object_id,

@@ -15,7 +15,6 @@ import enum
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Optional
 
 from umrs.knowledge.store import KnowledgeStore
 from umrs.knowledge.verification_store import (
@@ -36,6 +35,7 @@ def _utcnow() -> datetime:
 
 class HealthLevel(str, enum.Enum):
     """Overall project health."""
+
     HEALTHY = "healthy"
     DEGRADED = "degraded"
     CRITICAL = "critical"
@@ -43,6 +43,7 @@ class HealthLevel(str, enum.Enum):
 
 class ActionType(str, enum.Enum):
     """Derived action categories."""
+
     RUN_LINT = "run_lint"
     RESOLVE_FINDINGS = "resolve_findings"
     APPROVE = "approve"
@@ -57,6 +58,7 @@ class ActionType(str, enum.Enum):
 @dataclass
 class ArtifactSummary:
     """Counts by kind and status."""
+
     total: int = 0
     active: int = 0
     by_kind: dict[str, int] = field(default_factory=dict)
@@ -65,6 +67,7 @@ class ArtifactSummary:
 @dataclass
 class GraphSummary:
     """Graph node/edge counts."""
+
     node_count: int = 0
     edge_count: int = 0
     by_type: dict[str, int] = field(default_factory=dict)
@@ -73,8 +76,9 @@ class GraphSummary:
 @dataclass
 class VerificationSummary:
     """Aggregated verification state."""
+
     total_reports: int = 0
-    latest_report: Optional[VerificationReport] = None
+    latest_report: VerificationReport | None = None
     total_checks: int = 0
     passed_checks: int = 0
     failed_checks: int = 0
@@ -89,6 +93,7 @@ class VerificationSummary:
 @dataclass
 class NextAction:
     """A single derived action item."""
+
     action: str  # ActionType value
     priority: int  # 1 = highest
     description: str
@@ -98,6 +103,7 @@ class NextAction:
 @dataclass
 class DashboardPayload:
     """Full dashboard aggregation payload."""
+
     project_id: str
     timestamp: str
     health: HealthLevel
@@ -166,7 +172,9 @@ class KnowledgeSummaryEngine:
                 kind = art.kind or "unknown"
                 result.by_kind[kind] = result.by_kind.get(kind, 0) + 1
         except Exception:
-            logger.warning("Artifact aggregation failed for %s", self._project_id, exc_info=True)
+            logger.warning(
+                "Artifact aggregation failed for %s", self._project_id, exc_info=True
+            )
         return result
 
     # -- graph aggregation ----------------------------------------------------
@@ -183,7 +191,9 @@ class KnowledgeSummaryEngine:
                 ntype = node.node_type or "unknown"
                 result.by_type[ntype] = result.by_type.get(ntype, 0) + 1
         except Exception:
-            logger.warning("Graph aggregation failed for %s", self._project_id, exc_info=True)
+            logger.warning(
+                "Graph aggregation failed for %s", self._project_id, exc_info=True
+            )
         return result
 
     # -- verification aggregation ----------------------------------------------
@@ -219,11 +229,19 @@ class KnowledgeSummaryEngine:
 
             for finding in project_findings:
                 sev = finding.severity or "unknown"
-                result.findings_by_severity[sev] = result.findings_by_severity.get(sev, 0) + 1
+                result.findings_by_severity[sev] = (
+                    result.findings_by_severity.get(sev, 0) + 1
+                )
                 status = finding.status or "unknown"
-                result.findings_by_status[status] = result.findings_by_status.get(status, 0) + 1
+                result.findings_by_status[status] = (
+                    result.findings_by_status.get(status, 0) + 1
+                )
         except Exception:
-            logger.warning("Verification aggregation failed for %s", self._project_id, exc_info=True)
+            logger.warning(
+                "Verification aggregation failed for %s",
+                self._project_id,
+                exc_info=True,
+            )
         return result
 
     # -- next_actions derivation -----------------------------------------------
@@ -246,10 +264,9 @@ class KnowledgeSummaryEngine:
         self, verification: VerificationSummary, add
     ) -> None:
         """Derive priority-1/2 actions from verification state."""
-        open_finding_count = (
-            verification.findings_by_status.get("open", 0)
-            + verification.findings_by_status.get("acknowledged", 0)
-        )
+        open_finding_count = verification.findings_by_status.get(
+            "open", 0
+        ) + verification.findings_by_status.get("acknowledged", 0)
         blocking_count = verification.findings_by_severity.get("blocking", 0)
         pass_rate = verification.pass_rate
 
@@ -258,26 +275,30 @@ class KnowledgeSummaryEngine:
         )
         if labels:
             add(
-                ActionType.RESOLVE_FINDINGS, 1,
+                ActionType.RESOLVE_FINDINGS,
+                1,
                 f"Resolve findings: {', '.join(sorted(labels))}",
                 "verification",
             )
 
         if 0.5 <= pass_rate < 0.8:
             add(
-                ActionType.REVIEW, 2,
+                ActionType.REVIEW,
+                2,
                 f"Review knowledge quality (pass rate {pass_rate:.0%})",
                 "verification",
             )
         if pass_rate >= 1.0 and open_finding_count == 0 and blocking_count == 0:
             add(
-                ActionType.APPROVE, 2,
+                ActionType.APPROVE,
+                2,
                 "All checks passed — ready for approval",
                 "verification",
             )
         if verification.degraded_reports:
             add(
-                ActionType.RUN_LINT, 2,
+                ActionType.RUN_LINT,
+                2,
                 f"Run lint on {len(verification.degraded_reports)} degraded source(s)",
                 "verification",
             )
@@ -310,19 +331,22 @@ class KnowledgeSummaryEngine:
             key = f"{action}:{priority}"
             if key not in seen:
                 seen.add(key)
-                actions.append(NextAction(
-                    action=action,
-                    priority=priority,
-                    description=description,
-                    source=source,
-                ))
+                actions.append(
+                    NextAction(
+                        action=action,
+                        priority=priority,
+                        description=description,
+                        source=source,
+                    )
+                )
 
         self._derive_verification_actions(verification, _add)
 
         # Priority 3: Reindex if graph empty but artifacts exist
         if graph.node_count == 0 and artifacts.total > 0:
             _add(
-                ActionType.REINDEX, 3,
+                ActionType.REINDEX,
+                3,
                 f"Reindex {artifacts.total} artifact(s) — graph is empty",
                 "graph",
             )
@@ -330,7 +354,8 @@ class KnowledgeSummaryEngine:
         # Priority 4: Ingest if no artifacts at all
         if artifacts.total == 0:
             _add(
-                ActionType.INGEST, 4,
+                ActionType.INGEST,
+                4,
                 "No artifacts — ingest knowledge sources",
                 "artifacts",
             )
@@ -357,7 +382,9 @@ class KnowledgeSummaryEngine:
                 degraded.append(f"verification/{spec}{reason}")
 
         if graph.node_count == 0 and artifacts.total > 0:
-            degraded.append("graph: 0 nodes with existing artifacts — indexing may have failed")
+            degraded.append(
+                "graph: 0 nodes with existing artifacts — indexing may have failed"
+            )
 
         if artifacts.total == 0:
             degraded.append("artifacts: no artifacts registered — check ingestion")
@@ -411,12 +438,13 @@ class KnowledgeSummaryEngine:
             graph_score = 1.0  # no artifacts expected
 
         # Findings penalty (0–1, deducted by open/binding)
-        open_count = (
-            verification.findings_by_status.get("open", 0)
-            + verification.findings_by_status.get("acknowledged", 0)
-        )
+        open_count = verification.findings_by_status.get(
+            "open", 0
+        ) + verification.findings_by_status.get("acknowledged", 0)
         blocking_count = verification.findings_by_severity.get("blocking", 0)
-        findings_penalty = min(1.0, max(0.0, 1.0 - (open_count * 0.1) - (blocking_count * 0.3)))
+        findings_penalty = min(
+            1.0, max(0.0, 1.0 - (open_count * 0.1) - (blocking_count * 0.3))
+        )
 
         score = (
             verif * 0.40

@@ -13,13 +13,12 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, Query, status
 from pydantic import BaseModel, Field
-from .typed_errors import PlatformError, raise_typed
 
 from ..jobs.routing_feedback import RoutingFeedbackStore
+from .typed_errors import PlatformError, raise_typed
 
 logger = logging.getLogger(__name__)
 

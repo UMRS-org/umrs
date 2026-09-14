@@ -433,8 +433,7 @@ def _parse_datetime(value: str | None) -> datetime | None:
     if isinstance(value, datetime):
         return value
     # Handle both with and without 'Z' suffix
-    if value.endswith("Z"):
-        value = value[:-1]
+    value = value.removesuffix("Z")
     try:
         return datetime.fromisoformat(value)
     except ValueError:

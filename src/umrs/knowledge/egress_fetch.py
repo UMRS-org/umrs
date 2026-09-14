@@ -23,19 +23,14 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Optional
 
 # ---------------------------------------------------------------------------
 # Defaults
 # ---------------------------------------------------------------------------
 
-_EGRESS_TIMEOUT_SEC: int = int(
-    os.environ.get("EGRESS_TIMEOUT_SEC", "30")
-)
+_EGRESS_TIMEOUT_SEC: int = int(os.environ.get("EGRESS_TIMEOUT_SEC", "30"))
 
-_EGRESS_MAX_BYTES: int = int(
-    os.environ.get("EGRESS_MAX_BYTES", str(10 * 1024 * 1024))
-)
+_EGRESS_MAX_BYTES: int = int(os.environ.get("EGRESS_MAX_BYTES", str(10 * 1024 * 1024)))
 
 # Default block patterns (PII, credentials, secrets).
 _DEFAULT_BLOCK_PATTERNS: list[str] = [
@@ -66,8 +61,8 @@ class FetchResult:
     """Result of an egress fetch."""
 
     url: str
-    content: Optional[bytes]
-    status_code: Optional[int]
+    content: bytes | None
+    status_code: int | None
     size_bytes: int = 0
     error: str = ""
 
@@ -79,7 +74,7 @@ class FetchResult:
 
 def scan_content(
     content: bytes,
-    block_patterns: Optional[list[str]] = None,
+    block_patterns: list[str] | None = None,
 ) -> ScanResult:
     """Scan ``content`` for PII / credential patterns.
 
@@ -117,7 +112,9 @@ def scan_content(
 
     # Additional heuristic: check for email-like addresses in non-text content.
     if len(matched) == 0 and len(content) < 100_000:
-        emails = re.findall(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}", scan_window)
+        emails = re.findall(
+            r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}", scan_window
+        )
         # If more than 5 unique emails in a short window, flag it.
         unique_emails = set(emails)
         if len(unique_emails) > 5:
@@ -145,9 +142,9 @@ def _extract_domain(url: str) -> str:
 
 def fetch_url(
     url: str,
-    allow_domains: Optional[list[str]] = None,
-    timeout: Optional[int] = None,
-    block_patterns: Optional[list[str]] = None,
+    allow_domains: list[str] | None = None,
+    timeout: int | None = None,
+    block_patterns: list[str] | None = None,
 ) -> FetchResult:
     """Fetch content from ``url`` with domain allowlist and content scan.
 
@@ -165,7 +162,9 @@ def fetch_url(
     # Domain validation
     domain = _extract_domain(url)
     if not domain:
-        return FetchResult(url=url, content=None, status_code=None, error="invalid URL: no domain")
+        return FetchResult(
+            url=url, content=None, status_code=None, error="invalid URL: no domain"
+        )
 
     domains = list(allow_domains) if allow_domains else []
     if not domains:
@@ -187,7 +186,9 @@ def fetch_url(
     # Fetch
     try:
         ctx = ssl.create_default_context()
-        req = urllib.request.Request(url, headers={"User-Agent": "UMRS-KnowledgeIngest/1.0"})
+        req = urllib.request.Request(
+            url, headers={"User-Agent": "UMRS-KnowledgeIngest/1.0"}
+        )
         resp = urllib.request.urlopen(req, timeout=timeout, context=ctx)
         raw = resp.read()
     except urllib.error.HTTPError as exc:

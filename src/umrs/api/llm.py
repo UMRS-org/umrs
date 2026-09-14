@@ -52,7 +52,7 @@ router = APIRouter(prefix="/umrs/llm", tags=["llm-proxy"])
 _usage_db_pool = None
 
 
-def set_usage_db_pool(pool) -> None:  # noqa: ANN001
+def set_usage_db_pool(pool) -> None:
     """Inject the DB pool for usage recording."""
     global _usage_db_pool
     _usage_db_pool = pool
@@ -106,7 +106,10 @@ def _recognized_model_names(endpoint: RegisteredEndpoint) -> set[str]:
     # rewrite disambiguated ids (e.g. ``GLM-5.2-FP8-pd``) back to
     # the upstream served model name.
     if endpoint.variant:
-        for base in list(names):
+        # list() snapshot is load-bearing: names grows during this loop
+        # (variant suffixes), iterating it raw raises RuntimeError
+        # 'Set changed size during iteration'. Pinned by test_llm_proxy.
+        for base in list(names):  # noqa: C408 — intentional snapshot copy
             names.add(f"{base}-{endpoint.variant}")
         names.add(f"{endpoint.model}-{endpoint.variant}")
     return names
@@ -243,7 +246,8 @@ def _discover_endpoint(
         raise_typed(
             PlatformError.llm(
                 "unavailable",
-                f"No active endpoint for model '{model}'. " "Try again later or provision an endpoint."
+                f"No active endpoint for model '{model}'. "
+                "Try again later or provision an endpoint.",
             ),
         )
 
@@ -337,16 +341,15 @@ async def _open_stream(
         await client.aclose()
         logger.error("Timeout proxying to %s", upstream_url)
         raise_typed(
-            PlatformError.llm("gateway_timeout", "Request to upstream service timed out")
+            PlatformError.llm(
+                "gateway_timeout", "Request to upstream service timed out"
+            )
         )
     except httpx.RequestError as exc:
         await client.aclose()
         logger.error("Error proxying to %s: %s", upstream_url, exc)
         raise_typed(
-            PlatformError.llm(
-                "bad_gateway",
-                "Failed to connect to upstream service"
-            ),
+            PlatformError.llm("bad_gateway", "Failed to connect to upstream service"),
             cause=exc,
         )
     return client, response
@@ -481,14 +484,15 @@ async def _proxy_oneshot(
         except httpx.TimeoutException:
             logger.error("Timeout proxying to %s", upstream_url)
             raise_typed(
-                PlatformError.llm("gateway_timeout", "Request to upstream service timed out")
+                PlatformError.llm(
+                    "gateway_timeout", "Request to upstream service timed out"
+                )
             )
         except httpx.RequestError as exc:
             logger.error("Error proxying to %s: %s", upstream_url, exc)
             raise_typed(
                 PlatformError.llm(
-                    "bad_gateway",
-                    "Failed to connect to upstream service"
+                    "bad_gateway", "Failed to connect to upstream service"
                 ),
                 cause=exc,
             )
@@ -596,10 +600,7 @@ def _extract_model(body: dict) -> str:
     model = body.get("model")
     if not model:
         raise_typed(
-            PlatformError.llm(
-                "bad_request",
-                "Missing 'model' field in request body"
-            ),
+            PlatformError.llm("bad_request", "Missing 'model' field in request body"),
         )
     return model
 

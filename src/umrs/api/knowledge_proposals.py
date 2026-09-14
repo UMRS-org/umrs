@@ -15,15 +15,15 @@ mutation call marks the proposal executed with provenance.
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
+from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, Field
-from .typed_errors import PlatformError, raise_typed
 
 from umrs.knowledge.graph_registry import GraphRegistryStore, ProposalStore
 
 from .jobs import CallerIdentity, get_caller_identity
+from .typed_errors import PlatformError, raise_typed
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +82,7 @@ async def create_proposal(
 async def list_proposals(
     graph_id: str,
     request: Request,
-    status: Optional[str] = Query(None),
+    status: str | None = Query(None),
     limit: int = Query(100, ge=1, le=500),
 ) -> dict[str, Any]:
     """List proposals for one graph (newest first)."""
@@ -98,7 +98,9 @@ async def get_proposal(proposal_id: str, request: Request) -> dict[str, Any]:
     """Fetch one proposal by id."""
     proposal = _proposal_store(request).get_proposal(proposal_id)
     if proposal is None:
-        raise_typed(PlatformError.proposals("not_found", f"Proposal {proposal_id} not found"))
+        raise_typed(
+            PlatformError.proposals("not_found", f"Proposal {proposal_id} not found")
+        )
     return proposal.to_dict()
 
 
@@ -117,12 +119,18 @@ async def decide_proposal(
     store = _proposal_store(request)
     proposal = store.get_proposal(proposal_id)
     if proposal is None:
-        raise_typed(PlatformError.proposals("not_found", f"Proposal {proposal_id} not found"))
+        raise_typed(
+            PlatformError.proposals("not_found", f"Proposal {proposal_id} not found")
+        )
     if proposal.status != "pending":
         raise_typed(
             PlatformError.proposals(
                 "conflict",
-                { "error": "proposal_already_decided", "proposal_id": proposal_id, "status": proposal.status, }
+                {
+                    "error": "proposal_already_decided",
+                    "proposal_id": proposal_id,
+                    "status": proposal.status,
+                },
             ),
         )
     decided_by = identity.user_id or "user"

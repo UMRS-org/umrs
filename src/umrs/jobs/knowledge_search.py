@@ -134,7 +134,9 @@ class KnowledgeSearchEngine:
     def _get_conn(self):
         from umrs.shared.pg_settings import pg_connect_kwargs
 
-        return self._psycopg2.connect(self._db_url, **pg_connect_kwargs("knowledge-search"))
+        return self._psycopg2.connect(
+            self._db_url, **pg_connect_kwargs("knowledge-search")
+        )
 
     def search(
         self,
@@ -254,7 +256,9 @@ class KnowledgeSearchEngine:
         namespaces: list[str] | None,
         limit: int,
     ) -> KnowledgeSearchResult:
-        candidates = _memory_candidates(self._items, query.lower(), project_id, namespaces)
+        candidates = _memory_candidates(
+            self._items, query.lower(), project_id, namespaces
+        )
 
         # Score by importance
         candidates.sort(key=lambda x: x.get("importance", 0.5), reverse=True)

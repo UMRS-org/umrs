@@ -100,7 +100,8 @@ class ProjectStore:
             params.append(owner)
         where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
         cur.execute(
-            "SELECT project_id, name, owner_id, status, retired_at, created_at,"" updated_at"
+            "SELECT project_id, name, owner_id, status, retired_at, created_at,"
+            " updated_at"
             " FROM projects" + where + " ORDER BY created_at",
             tuple(params),
         )
@@ -265,4 +266,4 @@ def patch_project(
     return {"status": "ok", "project": _row_response(row)}
 
 
-__all__ = ["ProjectStore", "ProjectNotFound", "router"]
+__all__ = ["ProjectNotFound", "ProjectStore", "router"]

@@ -805,7 +805,9 @@ async def list_models(
     from .model_visibility import is_model_visible
 
     models_with_reasons = [
-        (m, r) for (m, r) in models_with_reasons if is_model_visible(getattr(m, "name", None))
+        (m, r)
+        for (m, r) in models_with_reasons
+        if is_model_visible(getattr(m, "name", None))
     ]
 
     responses: list[ModelResponse] = []

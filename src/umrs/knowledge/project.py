@@ -34,41 +34,9 @@ from pathlib import Path
 from typing import Any
 
 from r4_contracts.research import ResearchRunStatus
+
 from umrs.knowledge.graph_types import RelationType
 
-from .coverage import (
-    CoverageCalculator,
-    CoverageDashboard,
-)
-from .external import ExternalKnowledgeSearcher
-from .extract import ExtractedKnowledge, KnowledgeExtractor
-from .ir import EXTRACTOR_VERSION, KnowledgeIR, build_knowledge_ir
-from .knowledge_driven_planner import KnowledgeDrivenPlanner
-from .link import KnowledgeGraph, KnowledgeLinker
-from .loop import AutonomousResearchLoop, LoopPhase, LoopStatus, ResearchLoop
-from .memory import ScientificMemoryManager, ScientificMemoryStore
-from .ocr import get_ocr_backend, resolve_content_with_ocr
-from .planner import AutonomousResearchPlanner, ResearchPlan
-from .readiness import (
-    ResearchReadinessGate,
-    ResearchReadinessReport,
-)
-from .run_store import ResearchRunStore
-from .ingest import IngesterConfig, KnowledgeIngester
-from .local_ingest import (
-    classify_local_file,
-    upload_local_files,
-    uploads_prefix,
-)
-from .persistence import (
-    knowledge_ir_dir,
-    read_all_local_compiled_skills,
-    read_local_skill_reviews,
-    write_local_compiled_skill,
-    write_local_knowledge_ir,
-    write_local_skill_reviews,
-)
-from .router import default_local_router
 from ..data_catalog.adapter import CatalogArtifactAdapter
 from .catalog_store import CatalogKnowledgeStore
 from .compiled_skill import (
@@ -78,6 +46,39 @@ from .compiled_skill import (
     effective_status,
     review_decision,
 )
+from .coverage import (
+    CoverageCalculator,
+    CoverageDashboard,
+)
+from .external import ExternalKnowledgeSearcher
+from .extract import ExtractedKnowledge, KnowledgeExtractor
+from .ingest import IngesterConfig, KnowledgeIngester
+from .ir import EXTRACTOR_VERSION, KnowledgeIR, build_knowledge_ir
+from .knowledge_driven_planner import KnowledgeDrivenPlanner
+from .link import KnowledgeGraph, KnowledgeLinker
+from .local_ingest import (
+    classify_local_file,
+    upload_local_files,
+    uploads_prefix,
+)
+from .loop import AutonomousResearchLoop, LoopPhase, LoopStatus, ResearchLoop
+from .memory import ScientificMemoryManager, ScientificMemoryStore
+from .ocr import get_ocr_backend, resolve_content_with_ocr
+from .persistence import (
+    knowledge_ir_dir,
+    read_all_local_compiled_skills,
+    read_local_skill_reviews,
+    write_local_compiled_skill,
+    write_local_knowledge_ir,
+    write_local_skill_reviews,
+)
+from .planner import AutonomousResearchPlanner, ResearchPlan
+from .readiness import (
+    ResearchReadinessGate,
+    ResearchReadinessReport,
+)
+from .router import default_local_router
+from .run_store import ResearchRunStore
 from .verify import (
     InMemoryKnowledgeStore,
     KnowledgeStore,
@@ -116,7 +117,6 @@ from .adapters import (
     UMRSScientificMemoryAdapter,
     UMRSSearchAdapter,
 )
-
 
 # ── Workflow Phase ─────────────────────────────────────────────────────────
 
@@ -655,7 +655,7 @@ class ResearchProject:
     def composition(self) -> ProjectComposition:
         return self._composition
 
-    def run_research(  # noqa: C901 — reason=pre-existing critical debt; named per WP tradition, not refactored this wave owner=agent-debug added=2026-09-11 expires=2026-12
+    def run_research(
         self,
         max_iterations: int = 10,
         *,
@@ -893,7 +893,7 @@ class ResearchProject:
     def _finding_statement(finding: Any) -> str:
         """Finding statement across object/dict/str shapes (original permissive casing)."""
         if hasattr(finding, "statement"):
-            return str(getattr(finding, "statement"))
+            return str(finding.statement)
         if isinstance(finding, dict):
             return str(finding.get("statement", finding))
         return str(finding)

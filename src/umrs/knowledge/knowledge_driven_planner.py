@@ -23,9 +23,7 @@ ResearchPlan is R4 orchestration state (NOT a KnowledgeObject).
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any
 
-from umrs.graph_reasoning import GraphReasoningContext
 from umrs.scientific_reasoning_engine import (
     ReasoningResult,
     ScientificReasoningEngine,
@@ -145,30 +143,36 @@ class KnowledgeDrivenPlanner:
         research_goal: str,
     ) -> None:
         """Generate research objectives."""
-        plan.objectives.append(ResearchObjective(
-            objective_id=f"obj-{_generate_id()}",
-            title=f"Understand: {research_goal[:60]}",
-            description=f"Develop a thorough understanding of: {research_goal}",
-            objective_type=ResearchObjectiveType.UNDERSTANDING,
-            success_criteria="Comprehensive understanding documented with evidence",
-            priority=2,
-        ))
-        plan.objectives.append(ResearchObjective(
-            objective_id=f"obj-{_generate_id()}",
-            title=f"Verify: {research_goal[:60]}",
-            description=f"Design and execute experiments to verify hypotheses about: {research_goal}",
-            objective_type=ResearchObjectiveType.VERIFICATION,
-            success_criteria="Hypotheses tested with statistical significance",
-            priority=2,
-        ))
-        plan.objectives.append(ResearchObjective(
-            objective_id=f"obj-{_generate_id()}",
-            title=f"Optimize: {research_goal[:60]}",
-            description=f"Identify optimal parameters for: {research_goal}",
-            objective_type=ResearchObjectiveType.OPTIMIZATION,
-            success_criteria="Optimal parameters identified with confidence intervals",
-            priority=1,
-        ))
+        plan.objectives.append(
+            ResearchObjective(
+                objective_id=f"obj-{_generate_id()}",
+                title=f"Understand: {research_goal[:60]}",
+                description=f"Develop a thorough understanding of: {research_goal}",
+                objective_type=ResearchObjectiveType.UNDERSTANDING,
+                success_criteria="Comprehensive understanding documented with evidence",
+                priority=2,
+            )
+        )
+        plan.objectives.append(
+            ResearchObjective(
+                objective_id=f"obj-{_generate_id()}",
+                title=f"Verify: {research_goal[:60]}",
+                description=f"Design and execute experiments to verify hypotheses about: {research_goal}",
+                objective_type=ResearchObjectiveType.VERIFICATION,
+                success_criteria="Hypotheses tested with statistical significance",
+                priority=2,
+            )
+        )
+        plan.objectives.append(
+            ResearchObjective(
+                objective_id=f"obj-{_generate_id()}",
+                title=f"Optimize: {research_goal[:60]}",
+                description=f"Identify optimal parameters for: {research_goal}",
+                objective_type=ResearchObjectiveType.OPTIMIZATION,
+                success_criteria="Optimal parameters identified with confidence intervals",
+                priority=1,
+            )
+        )
 
     def _generate_hypotheses(
         self,
@@ -237,7 +241,9 @@ class KnowledgeDrivenPlanner:
         """Calculate success probability from plan hypotheses."""
         if not plan.hypotheses:
             return 0.0
-        avg_confidence = sum(h.confidence for h in plan.hypotheses) / len(plan.hypotheses)
+        avg_confidence = sum(h.confidence for h in plan.hypotheses) / len(
+            plan.hypotheses
+        )
         total_evidence = sum(len(h.evidence_for) for h in plan.hypotheses)
         evidence_factor = min(1.0, total_evidence / 10.0)
         return avg_confidence * 0.6 + evidence_factor * 0.4

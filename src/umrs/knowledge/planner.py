@@ -46,33 +46,33 @@ class PlanStatus(str, Enum):
 class ResearchObjectiveType(str, Enum):
     """Types of research objectives."""
 
-    UNDERSTANDING = "understanding"       # Understand a phenomenon
-    OPTIMIZATION = "optimization"         # Optimize a parameter
-    VERIFICATION = "verification"         # Verify a hypothesis
-    EXPLORATION = "exploration"           # Explore a new area
-    REPLICATION = "replication"           # Replicate existing results
-    BENCHMARKING = "benchmarking"         # Benchmark against baselines
+    UNDERSTANDING = "understanding"  # Understand a phenomenon
+    OPTIMIZATION = "optimization"  # Optimize a parameter
+    VERIFICATION = "verification"  # Verify a hypothesis
+    EXPLORATION = "exploration"  # Explore a new area
+    REPLICATION = "replication"  # Replicate existing results
+    BENCHMARKING = "benchmarking"  # Benchmark against baselines
 
 
 class HypothesisType(str, Enum):
     """Types of hypotheses."""
 
-    NULL = "null"                         # No effect
-    ALTERNATIVE = "alternative"           # Some effect
-    DIRECTIONAL = "directional"           # Effect in a specific direction
-    CAUSAL = "causal"                      # Causal relationship
-    CORRELATIONAL = "correlational"       # Correlation only
+    NULL = "null"  # No effect
+    ALTERNATIVE = "alternative"  # Some effect
+    DIRECTIONAL = "directional"  # Effect in a specific direction
+    CAUSAL = "causal"  # Causal relationship
+    CORRELATIONAL = "correlational"  # Correlation only
 
 
 class ExperimentType(str, Enum):
     """Types of experiments."""
 
-    COMPUTATIONAL = "computational"       # Computational experiment
-    EMPIRICAL = "empirical"               # Empirical experiment
-    SIMULATION = "simulation"             # Simulation
-    BENCHMARK = "benchmark"               # Benchmark run
-    ABLATION = "ablation"                 # Ablation study
-    SENSITIVITY = "sensitivity"           # Sensitivity analysis
+    COMPUTATIONAL = "computational"  # Computational experiment
+    EMPIRICAL = "empirical"  # Empirical experiment
+    SIMULATION = "simulation"  # Simulation
+    BENCHMARK = "benchmark"  # Benchmark run
+    ABLATION = "ablation"  # Ablation study
+    SENSITIVITY = "sensitivity"  # Sensitivity analysis
 
 
 class ValidationMethod(str, Enum):
@@ -98,7 +98,7 @@ class ResearchObjective:
     description: str = ""
     objective_type: ResearchObjectiveType = ResearchObjectiveType.UNDERSTANDING
     success_criteria: str = ""
-    priority: int = 0                      # 0=low, 1=medium, 2=high
+    priority: int = 0  # 0=low, 1=medium, 2=high
     related_hypotheses: list[str] = field(default_factory=list)
     related_experiments: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -127,7 +127,7 @@ class ResearchHypothesis:
     hypothesis_type: HypothesisType = HypothesisType.ALTERNATIVE
     rationale: str = ""
     expected_outcome: str = ""
-    confidence: float = 0.5                # 0.0–1.0
+    confidence: float = 0.5  # 0.0–1.0
     evidence_for: list[str] = field(default_factory=list)
     evidence_against: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -202,7 +202,7 @@ class ResearchPlan:
 
     # Expected outcomes
     expected_outcomes: list[str] = field(default_factory=list)
-    success_probability: float = 0.5       # 0.0–1.0
+    success_probability: float = 0.5  # 0.0–1.0
 
     # Metadata
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -227,7 +227,7 @@ class ResearchPlan:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "ResearchPlan":
+    def from_dict(cls, data: dict[str, Any]) -> ResearchPlan:
         """Rehydrate a plan saved via ``to_dict`` (plus optional research_goal)."""
         objectives = [
             ResearchObjective(
@@ -504,7 +504,9 @@ class AutonomousResearchPlanner:
             return 0.0
 
         # Average confidence of hypotheses
-        avg_confidence = sum(h.confidence for h in plan.hypotheses) / len(plan.hypotheses)
+        avg_confidence = sum(h.confidence for h in plan.hypotheses) / len(
+            plan.hypotheses
+        )
 
         # Adjust based on number of experiments
         if plan.experiments:
@@ -512,12 +514,13 @@ class AutonomousResearchPlanner:
         else:
             exp_factor = 0.0
 
-        return (avg_confidence * 0.6 + exp_factor * 0.4)
+        return avg_confidence * 0.6 + exp_factor * 0.4
 
 
 def _generate_id() -> str:
     """Generate a unique ID."""
     import uuid
+
     return uuid.uuid4().hex[:12]
 
 

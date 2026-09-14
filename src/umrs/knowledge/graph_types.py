@@ -17,7 +17,6 @@ from enum import Enum
 from typing import Any
 from uuid import uuid4
 
-
 # ── Relation Types ─────────────────────────────────────────────────────────
 
 
@@ -92,7 +91,7 @@ class KnowledgeNode:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "KnowledgeNode":
+    def from_dict(cls, data: dict[str, Any]) -> KnowledgeNode:
         """Create from dictionary."""
         return cls(
             node_id=data.get("node_id", ""),
@@ -149,7 +148,7 @@ class KnowledgeEdge:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "KnowledgeEdge":
+    def from_dict(cls, data: dict[str, Any]) -> KnowledgeEdge:
         """Create from dictionary."""
         relation_type_raw = data.get("relation_type", "related_to")
         relation_type = (

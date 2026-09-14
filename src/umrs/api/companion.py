@@ -22,14 +22,15 @@ import json
 import logging
 import os
 import secrets
-from typing import Any, Iterator, Optional
+from collections.abc import Iterator
+from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
-
-from .typed_errors import PlatformError, raise_typed
 from pydantic import BaseModel, Field
 from starlette.responses import StreamingResponse
 
+from umrs.companion_trust.store import SessionArchivedError
+from umrs.jobs.companion_turn_executor import kick as kick_turn_executor
 from umrs.jobs.companion_worker import (
     CompanionTurnAttemptRegistry,
     CompanionWorkerManager,
@@ -39,12 +40,11 @@ from umrs.jobs.companion_worker import (
     WorkerExhausted,
     WorkerNotFound,
 )
-from umrs.companion_trust.store import SessionArchivedError
-from umrs.jobs.companion_turn_executor import kick as kick_turn_executor
 from umrs.jobs.companion_worker_supervisor import AtCapacity
 from umrs.shared.scope_grammar import ScopeError, fallback_chain
 from umrs.shared.scope_grammar import parse as parse_scope
 
+from .typed_errors import PlatformError, raise_typed
 from .workflows import _require_verified_workflow_identity
 
 logger = logging.getLogger(__name__)
@@ -57,6 +57,8 @@ router = APIRouter(prefix="/umrs/companion", tags=["companion"])
 # are the api-layer re-exports preserving every api caller byte-for-byte.
 from umrs.shared.trust_store_access import (
     get_trust_store as get_trust_store,
+)
+from umrs.shared.trust_store_access import (
     set_trust_store as set_trust_store,
 )
 
@@ -66,7 +68,12 @@ def _require_trust_store():
 
     store = _shared_get()
     if store is None:
-        raise_typed(PlatformError.companion("unavailable", "Companion trust store unavailable (no DB pool configured)"))
+        raise_typed(
+            PlatformError.companion(
+                "unavailable",
+                "Companion trust store unavailable (no DB pool configured)",
+            )
+        )
     return store
 
 
@@ -133,7 +140,7 @@ def _strict_caller(
 class WorkerRegisterRequest(BaseModel):
     owner_user_id: str
     project_id: str
-    job_id: Optional[str] = None
+    job_id: str | None = None
 
 
 async def _submit_companion_job(request: Request, owner: str, project: str) -> str:
@@ -146,13 +153,17 @@ async def _submit_companion_job(request: Request, owner: str, project: str) -> s
 
     runtime = get_runtime()
     if runtime is None:
-        raise_typed(PlatformError.companion("unavailable", "durable job runtime unavailable"))
+        raise_typed(
+            PlatformError.companion("unavailable", "durable job runtime unavailable")
+        )
     from umrs.api.agent_quota import enforce_spawn_budget
     from umrs.jobs.models import JobType
 
     # ADR-051 D-2: agent CPU-process budget per user — once at spawn,
     # before the durable row is created (typed 503 on the ceiling).
-    enforce_spawn_budget(getattr(request.app.state, "umrs_db_pool", None), user_id=owner)
+    enforce_spawn_budget(
+        getattr(request.app.state, "umrs_db_pool", None), user_id=owner
+    )
     return await runtime.submit_job_sync(
         job_type=JobType.COMPANION_WORKER,
         project_id=project,
@@ -174,8 +185,8 @@ class WorkerRowResponse(BaseModel):
 class TurnBeginRequest(BaseModel):
     registry_key: str
     message: str
-    session_id: Optional[str] = None
-    mode: Optional[str] = Field(
+    session_id: str | None = None
+    mode: str | None = Field(
         default=None,
         description=(
             "Permission mode captured per attempt: 'ask' (default) or 'auto'. "
@@ -183,7 +194,7 @@ class TurnBeginRequest(BaseModel):
             "surface stores it today so clients code against one shape."
         ),
     )
-    request_token: Optional[str] = Field(
+    request_token: str | None = Field(
         default=None,
         description=(
             "Client-side idempotency key. Re-issuing the same token returns "
@@ -191,8 +202,8 @@ class TurnBeginRequest(BaseModel):
             "(parent pointer) under a fresh token."
         ),
     )
-    parent_attempt_id: Optional[str] = None
-    research_session_id: Optional[str] = None
+    parent_attempt_id: str | None = None
+    research_session_id: str | None = None
 
 
 class TurnRowResponse(BaseModel):
@@ -202,11 +213,11 @@ class TurnRowResponse(BaseModel):
     session_id: str
     request_token: str
     state: str
-    committed_response_ref: Optional[str] = None
-    response_content: Optional[str] = None
+    committed_response_ref: str | None = None
+    response_content: str | None = None
     mode: str = "ask"
-    parent_attempt_id: Optional[str] = None
-    research_session_id: Optional[str] = None
+    parent_attempt_id: str | None = None
+    research_session_id: str | None = None
 
 
 class ApprovalDecisionRequest(BaseModel):
@@ -264,9 +275,19 @@ def _authorize_scope_write(scope: str, x_user_id: str, caller_project: str) -> N
             )
         )
     if claim.kind == "group":
-        raise_typed(PlatformError.companion("unprocessable", "group-scoped trust is not writable yet (no group membership authority)"))
+        raise_typed(
+            PlatformError.companion(
+                "unprocessable",
+                "group-scoped trust is not writable yet (no group membership authority)",
+            )
+        )
     if claim.kind == "user" and claim.id != x_user_id:
-        raise_typed(PlatformError.companion("forbidden", f"cannot grant trust scoped to user {claim.id!r} — not the caller"))
+        raise_typed(
+            PlatformError.companion(
+                "forbidden",
+                f"cannot grant trust scoped to user {claim.id!r} — not the caller",
+            )
+        )
 
 
 class TurnAcceptedResponse(BaseModel):
@@ -309,10 +330,12 @@ def _enforce_ownership(row: dict, x_user_id: str) -> None:
     """A registry row is reachable only by its owner user."""
     owner = str(row.get("owner_user_id") or "")
     if x_user_id and owner and owner != x_user_id:
-        raise_typed(PlatformError.companion("unauthorized", "worker ownership mismatch"))
+        raise_typed(
+            PlatformError.companion("unauthorized", "worker ownership mismatch")
+        )
 
 
-def _validated_mode(raw: Optional[str]) -> str:
+def _validated_mode(raw: str | None) -> str:
     """Permission mode is captured per attempt ('ask' | 'auto')."""
     mode = (raw or "ask").strip().lower()
     if mode not in ("ask", "auto"):
@@ -528,7 +551,9 @@ def _enforce_approval_ownership(record: dict, x_user_id: str) -> None:
     """An approval intent is decidable only by the loop owner (ownerless: anyone)."""
     owner = str(record.get("user_id") or "")
     if owner and owner != x_user_id:
-        raise_typed(PlatformError.companion("unauthorized", "approval ownership mismatch"))
+        raise_typed(
+            PlatformError.companion("unauthorized", "approval ownership mismatch")
+        )
 
 
 def _flip_loop_to_auto(loop_id: str) -> None:
@@ -539,8 +564,10 @@ def _flip_loop_to_auto(loop_id: str) -> None:
         if loop is not None:
             loop.metadata["mode"] = "auto"
             _loop_store.save(loop)
-    except Exception:  # noqa: BLE001 — mode flip is best-effort
-        logger.warning("always-decision mode flip failed for loop %s", loop_id, exc_info=True)
+    except Exception:
+        logger.warning(
+            "always-decision mode flip failed for loop %s", loop_id, exc_info=True
+        )
 
 
 def _mint_session_trust(loop_id: str, action: dict, x_user_id: str) -> None:
@@ -549,13 +576,17 @@ def _mint_session_trust(loop_id: str, action: dict, x_user_id: str) -> None:
 
     if _shared_get() is None:
         return
-    tool_name = str(action.get("workflow_name") or action.get("kind") or "workflow_trigger")
+    tool_name = str(
+        action.get("workflow_name") or action.get("kind") or "workflow_trigger"
+    )
     try:
         _shared_get().grant(
             x_user_id, tool_name, scope=f"session:{loop_id}", created_by=x_user_id
         )
-    except Exception:  # noqa: BLE001 — trust row is the durable shadow, not the gate
-        logger.warning("always-decision trust grant failed for loop %s", loop_id, exc_info=True)
+    except Exception:
+        logger.warning(
+            "always-decision trust grant failed for loop %s", loop_id, exc_info=True
+        )
 
 
 def _apply_always_decision(record: dict, x_user_id: str) -> None:
@@ -587,7 +618,9 @@ async def record_approval_decision(
 
     existing = tool_approvals.get(approval_id)
     if existing is None:
-        raise_typed(PlatformError.companion("not_found", f"approval not found: {approval_id}"))
+        raise_typed(
+            PlatformError.companion("not_found", f"approval not found: {approval_id}")
+        )
     _enforce_approval_ownership(existing, x_user_id)
     try:
         record = tool_approvals.decide(approval_id, body.decision, decided_by=x_user_id)
@@ -613,7 +646,7 @@ async def record_approval_decision(
 
 @router.get("/trust", response_model=TrustListResponse)
 async def list_trust_rows(
-    scope: Optional[str] = None,
+    scope: str | None = None,
     x_user_id: str = Depends(_strict_headers),
 ) -> TrustListResponse:
     """List the caller's unexpired allowlist rows (owner-pinned)."""
@@ -651,7 +684,7 @@ async def grant_trust_row(
 @router.get("/trust/check")
 async def check_trust_row(
     tool_name: str,
-    scope: Optional[str] = None,
+    scope: str | None = None,
     x_user_id: str = Depends(_strict_headers),
 ) -> dict:
     """Autopilot consult: is this tool allowlisted NOW for the caller+scope?
@@ -678,14 +711,13 @@ async def check_trust_row(
 @router.delete("/trust/{tool_name}", status_code=status.HTTP_204_NO_CONTENT)
 async def revoke_trust_row(
     tool_name: str,
-    scope: Optional[str] = None,
+    scope: str | None = None,
     x_user_id: str = Depends(_strict_headers),
 ) -> None:
     """Revoke a trust row (owner-pinned)."""
     store = _require_trust_store()
     resolved = _validated_scope(scope) if scope else "system"
     store.revoke(x_user_id, tool_name, scope=resolved)
-    return None
 
 
 @router.post("/sessions/{session_id}/archive")

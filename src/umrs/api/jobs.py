@@ -106,7 +106,9 @@ class CallerIdentity:
 def get_caller_identity(
     caller_user_id: str | None = Query(None, description="Caller's user ID"),
     caller_project_id: str | None = Query(None, description="Caller's project ID"),
-    is_admin: bool = Query(False, description="Admin flag (legacy, ignored in strict mode)"),
+    is_admin: bool = Query(
+        False, description="Admin flag (legacy, ignored in strict mode)"
+    ),
     x_user_id: str | None = Header(None),
     x_verified_project_id: str | None = Header(None),
     x_verified_is_admin: str | None = Header(None),
@@ -138,7 +140,8 @@ def get_caller_identity(
         ):
             raise_typed(
                 PlatformError.auth(
-                    "gateway_signature_rejected", "Gateway-verified identity signature rejected"
+                    "gateway_signature_rejected",
+                    "Gateway-verified identity signature rejected",
                 )
             )
         return CallerIdentity(
@@ -160,7 +163,8 @@ def get_caller_identity(
     if not caller_user_id or not caller_project_id:
         raise_typed(
             PlatformError.auth(
-                "caller_identity_required", "caller_user_id and caller_project_id are required"
+                "caller_identity_required",
+                "caller_user_id and caller_project_id are required",
             )
         )
 
@@ -261,7 +265,8 @@ def _resolve_job_create_identity_primitive(
         if not trusted:
             raise_typed(
                 PlatformError.auth(
-                    "gateway_signature_rejected", "Gateway-verified identity signature rejected"
+                    "gateway_signature_rejected",
+                    "Gateway-verified identity signature rejected",
                 )
             )
         return verified_project_id, verified_user_id, admin
@@ -275,7 +280,9 @@ def _resolve_job_create_identity_primitive(
     if pid and uid:
         return pid, uid, False
     raise_typed(
-        PlatformError.auth("gateway_identity_required", "Missing Gateway-verified caller identity")
+        PlatformError.auth(
+            "gateway_identity_required", "Missing Gateway-verified caller identity"
+        )
     )
 
 
@@ -345,7 +352,9 @@ class JobCreateRequest(BaseModel):
         ),
     )
 
-    enqueue_immediately: bool = Field(True, description="Immediately queue for scheduling")
+    enqueue_immediately: bool = Field(
+        True, description="Immediately queue for scheduling"
+    )
 
     @field_validator("ttl_seconds")
     @classmethod
@@ -487,9 +496,12 @@ def _job_to_response(job: Job, include_attempts: bool = False) -> JobResponse:
         remaining_alive_seconds=(
             max(
                 0,
-                job.ttl_seconds - int((datetime.utcnow() - job.updated_at).total_seconds()),
+                job.ttl_seconds
+                - int((datetime.utcnow() - job.updated_at).total_seconds()),
             )
-            if job.ttl_seconds and job.ttl_seconds > 0 and job.status == JobStatus.COMPLETED
+            if job.ttl_seconds
+            and job.ttl_seconds > 0
+            and job.status == JobStatus.COMPLETED
             else job.ttl_seconds
             if job.ttl_seconds == -1 and job.status == JobStatus.COMPLETED
             else None
@@ -542,7 +554,11 @@ def _enforce_job_access(
             job.project_id,
             job.user_id,
         )
-        raise_typed(PlatformError.jobs("forbidden", f"Not authorised to {action} job {job.job_id}"))
+        raise_typed(
+            PlatformError.jobs(
+                "forbidden", f"Not authorised to {action} job {job.job_id}"
+            )
+        )
 
 
 # =============================================================================
@@ -612,7 +628,9 @@ async def create_job(
         )
         _enforce_job_scope_policy(job_type, spec, user_id, project_id, is_admin)
 
-        create_method = store.create_fan_out_graph if request.fan_out_jobs else store.create_job
+        create_method = (
+            store.create_fan_out_graph if request.fan_out_jobs else store.create_job
+        )
         create_kwargs = dict(
             project_id=project_id,
             user_id=user_id,
@@ -688,7 +706,9 @@ def _parse_status_filter(status_filter: str | None) -> JobStatus | None:
     try:
         return JobStatus(status_filter)
     except ValueError:
-        raise_typed(PlatformError.jobs("bad_request", f"Invalid status: {status_filter}"))
+        raise_typed(
+            PlatformError.jobs("bad_request", f"Invalid status: {status_filter}")
+        )
 
 
 # #216: job types accepted by JobType enum but with no dispatch backend on the
@@ -740,7 +760,9 @@ def _parse_job_type_filter(job_type: str | None) -> JobType | None:
 )
 async def list_jobs(
     project_id: str | None = Query(None, description="Filter by project ID"),
-    status_filter: str | None = Query(None, alias="status", description="Filter by status"),
+    status_filter: str | None = Query(
+        None, alias="status", description="Filter by status"
+    ),
     job_type: str | None = Query(None, description="Filter by job type"),
     limit: int = Query(100, ge=1, le=1000, description="Max results to return"),
     offset: int = Query(0, ge=0, description="Offset for pagination"),
@@ -969,7 +991,9 @@ def _attempt_for_job(store: JobStore, job_id: str, attempt_id: str) -> Any:
         if attempt.attempt_id == attempt_id:
             return attempt
     raise_typed(
-        PlatformError.jobs("attempt_not_found", f"Attempt not found on job {job_id}: {attempt_id}")
+        PlatformError.jobs(
+            "attempt_not_found", f"Attempt not found on job {job_id}: {attempt_id}"
+        )
     )
 
 
@@ -1060,7 +1084,8 @@ async def mint_attempt_sts_credentials(
     if not raw:
         raise_typed(
             PlatformError.presign(
-                "not_minted", "No attempt credentials minted yet — POST .../credentials first"
+                "not_minted",
+                "No attempt credentials minted yet — POST .../credentials first",
             )
         )
     record = AttemptCredentials.from_dict(raw)
@@ -1077,7 +1102,8 @@ async def mint_attempt_sts_credentials(
         )
     except STSFederationError as exc:
         raise_typed(
-            PlatformError.jobs("unavailable", f"STS federation unavailable: {exc}"), cause=exc
+            PlatformError.jobs("unavailable", f"STS federation unavailable: {exc}"),
+            cause=exc,
         )
 
     # Re-mint the record with the capped STS TTL so downstream presign verbs
@@ -1130,7 +1156,8 @@ async def presign_for_attempt(
     if not raw:
         raise_typed(
             PlatformError.presign(
-                "not_minted", "No attempt credentials minted yet — POST .../credentials first"
+                "not_minted",
+                "No attempt credentials minted yet — POST .../credentials first",
             )
         )
     record = AttemptCredentials.from_dict(raw)

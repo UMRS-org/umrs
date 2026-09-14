@@ -15,11 +15,10 @@ All reads use the shared ``umrs_db_pool`` (psycopg2 ThreadedConnectionPool).
 
 from __future__ import annotations
 
-import json
 import logging
 from datetime import date, datetime, timezone
 
-from fastapi import APIRouter, HTTPException, Query, Request, status
+from fastapi import APIRouter, Query, Request
 
 from .typed_errors import PlatformError, raise_typed
 
@@ -55,9 +54,7 @@ def _is_admin(request: Request) -> bool:
     signal and fall back to ``X-User-Role`` for older sidecar
     revisions or direct-UMRS clients.
     """
-    verified_admin = request.headers.get(
-        "x-verified-is-admin", ""
-    ).strip().lower()
+    verified_admin = request.headers.get("x-verified-is-admin", "").strip().lower()
     if verified_admin == "true":
         return True
 
@@ -191,7 +188,11 @@ async def usage_billing(
     Requires admin authentication.
     """
     if not _is_admin(request):
-        raise_typed(PlatformError.auth("admin_required", "Admin token required for billing aggregation"))
+        raise_typed(
+            PlatformError.auth(
+                "admin_required", "Admin token required for billing aggregation"
+            )
+        )
 
     pool = _get_pool(request)
     _caller_user_id(request)  # validate caller identity
@@ -231,7 +232,7 @@ async def usage_billing(
         {where_clause}
         GROUP BY user_id
         ORDER BY total_tokens DESC
-    """  # noqa: S608
+    """
 
     conn = pool.getconn()
     try:
@@ -309,7 +310,7 @@ def _query_summary(
         GROUP BY {group_col}
         ORDER BY total_tokens DESC
         LIMIT 200
-    """  # noqa: S608
+    """
 
     conn = pool.getconn()
     try:
@@ -365,7 +366,7 @@ def _query_records(
         {where_clause}
         ORDER BY event_time DESC
         LIMIT %s OFFSET %s
-    """  # noqa: S608
+    """
 
     params.extend([limit, offset])
 

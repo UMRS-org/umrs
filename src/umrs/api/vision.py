@@ -18,7 +18,6 @@ from fastapi import (
     Query,
     Request,
     Response,
-    status,
 )
 from pydantic import BaseModel, Field
 
@@ -93,7 +92,9 @@ def _parse_s3_uri(image_uri: str, project_id: str, config: S3Config) -> tuple[st
         path = image_uri[5:]
         parts = path.split("/", 1)
         if len(parts) != 2 or not parts[0] or not parts[1]:
-            raise_typed(PlatformError.vision("bad_request", "Invalid image_uri S3 format"))
+            raise_typed(
+                PlatformError.vision("bad_request", "Invalid image_uri S3 format")
+            )
         bucket, key = parts
     else:
         bucket, key = config.bucket, image_uri
@@ -133,8 +134,7 @@ def _resolve_endpoint(
             return endpoint
         raise_typed(
             PlatformError.vision(
-                "not_found",
-                f"No ready vision endpoint: {endpoint_id}"
+                "not_found", f"No ready vision endpoint: {endpoint_id}"
             ),
         )
 
@@ -153,10 +153,7 @@ def _resolve_endpoint(
 
     target = model or "vision"
     raise_typed(
-        PlatformError.vision(
-            "not_found",
-            f"No ready vision endpoint for {target}"
-        ),
+        PlatformError.vision("not_found", f"No ready vision endpoint for {target}"),
     )
 
 
@@ -315,7 +312,9 @@ async def submit_inference(
             endpoint, "POST", "/infer/submit", json_payload=payload
         )
     except Exception as exc:
-        vision_durable.terminal(durable_store, durable_attempt, "failed", reason=str(exc))
+        vision_durable.terminal(
+            durable_store, durable_attempt, "failed", reason=str(exc)
+        )
         raise
     try:
         task = response.json()
@@ -323,7 +322,10 @@ async def submit_inference(
         task = {"raw": response.text}
     if response.status_code >= 400:
         vision_durable.terminal(
-            durable_store, durable_attempt, "failed", reason=f"http {response.status_code}"
+            durable_store,
+            durable_attempt,
+            "failed",
+            reason=f"http {response.status_code}",
         )
 
     registry.mark_used(endpoint.job_id)
@@ -357,7 +359,9 @@ async def get_inference_status(
     return _response_from_downstream(response)
 
 
-def _record_status_transition(http_request: Request, job_id: str | None, response: httpx.Response) -> None:
+def _record_status_transition(
+    http_request: Request, job_id: str | None, response: httpx.Response
+) -> None:
     """WP-09: best-effort attempt-terminal transition on a terminal poll."""
     if not job_id:
         return
@@ -379,7 +383,9 @@ def _record_status_transition(http_request: Request, job_id: str | None, respons
     if state in ("completed", "success", "done", "succeeded"):
         vision_durable.terminal(store, attempt_id, "succeeded")
     elif state in ("failed", "error"):
-        vision_durable.terminal(store, attempt_id, "failed", reason=f"downstream status {state}")
+        vision_durable.terminal(
+            store, attempt_id, "failed", reason=f"downstream status {state}"
+        )
     elif state in ("cancelled", "canceled"):
         vision_durable.cancel(store, job_id, reason="downstream_cancelled")
 

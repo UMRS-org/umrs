@@ -107,10 +107,7 @@ def _get_registry() -> SkillRegistry:
         return _skill_store
     if _registry is None:
         raise_typed(
-            PlatformError.skills(
-                "unavailable",
-                "Skill registry unavailable"
-            ),
+            PlatformError.skills("unavailable", "Skill registry unavailable"),
         )
     return _registry
 
@@ -194,8 +191,7 @@ def _resolve_scope(value: str) -> SkillScope:
     except ValueError:
         raise_typed(
             PlatformError.skills(
-                "bad_request",
-                "scope must be one of: system, project, user"
+                "bad_request", "scope must be one of: system, project, user"
             ),
             cause=None,
         )
@@ -247,10 +243,7 @@ async def register_skill(
     scope = _resolve_scope(request.scope)
     if scope == SkillScope.SYSTEM and not caller.is_admin:
         raise_typed(
-            PlatformError.skills(
-                "forbidden",
-                "admin required"
-            ),
+            PlatformError.skills("forbidden", "admin required"),
         )
     if scope == SkillScope.PROJECT:
         project_id = request.project_id or caller.project_id
@@ -270,10 +263,7 @@ async def register_skill(
         )
     except SkillValidationError as exc:
         raise_typed(
-            PlatformError.skills(
-                "bad_request",
-                str(exc)
-            ),
+            PlatformError.skills("bad_request", str(exc)),
             cause=exc,
         )
     return _skill_response(skill)
@@ -292,10 +282,7 @@ async def get_skill(
         ):
             return _skill_response(skill)
     raise_typed(
-        PlatformError.skills(
-            "not_found",
-            f"Skill not found: {skill_id_or_name}"
-        ),
+        PlatformError.skills("not_found", f"Skill not found: {skill_id_or_name}"),
     )
 
 
@@ -315,17 +302,11 @@ async def unregister_skill(
             break
     if target is None:
         raise_typed(
-            PlatformError.skills(
-                "not_found",
-                f"Skill not found: {skill_id_or_name}"
-            ),
+            PlatformError.skills("not_found", f"Skill not found: {skill_id_or_name}"),
         )
     if not caller.is_admin and target.owner_id != caller.user_id:
         raise_typed(
-            PlatformError.skills(
-                "forbidden",
-                "owner or admin required"
-            ),
+            PlatformError.skills("forbidden", "owner or admin required"),
         )
     _get_registry().unregister(target.skill_id)
     return {"status": "unregistered", "skill_id": target.skill_id}

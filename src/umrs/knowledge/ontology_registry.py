@@ -9,9 +9,10 @@ surfaces the conflict as a typed error instead of leaking the PG message.
 from __future__ import annotations
 
 import secrets
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Mapping, Optional
+from typing import Any
 
 from .ontology import Ontology, ontology_from_dict
 
@@ -27,9 +28,9 @@ class OntologyRecord:
     record_id: str
     ontology: Ontology
     owner_id: str
-    project_id: Optional[str]
+    project_id: str | None
     status: str
-    retired_at: Optional[datetime]
+    retired_at: datetime | None
     created_at: datetime
     updated_at: datetime
 
@@ -47,11 +48,24 @@ class OntologyRecord:
 
 
 def _row_to_record(row: Mapping[str, Any]) -> OntologyRecord:
-    raw = {k: row[k] for k in (
-        "record_id", "ontology_id", "version", "entity_types", "relation_types",
-        "transitive_relations", "description", "owner_id", "project_id",
-        "status", "retired_at", "created_at", "updated_at",
-    )}
+    raw = {
+        k: row[k]
+        for k in (
+            "record_id",
+            "ontology_id",
+            "version",
+            "entity_types",
+            "relation_types",
+            "transitive_relations",
+            "description",
+            "owner_id",
+            "project_id",
+            "status",
+            "retired_at",
+            "created_at",
+            "updated_at",
+        )
+    }
     # jsonb columns arrive as list (asyncpg codec) or string (psycopg2) — normalize.
     for key in ("entity_types", "relation_types", "transitive_relations"):
         value = raw[key]
@@ -91,7 +105,7 @@ class OntologyRegistryStore:
 
     # -- reads ---------------------------------------------------------------
 
-    def live_coordinate(self, ontology_id: str, version: str) -> Optional[OntologyRecord]:
+    def live_coordinate(self, ontology_id: str, version: str) -> OntologyRecord | None:
         cur = _execute(
             self._conn,
             """SELECT * FROM knowledge_ontologies
@@ -103,7 +117,7 @@ class OntologyRegistryStore:
             return None
         return _row_to_record(_row_mapping(cur, row))
 
-    def get_for_read(self, ontology_id: str, version: str) -> Optional[OntologyRecord]:
+    def get_for_read(self, ontology_id: str, version: str) -> OntologyRecord | None:
         """Alias for live_coordinate: exclusively live rows ever resolve."""
         return self.live_coordinate(ontology_id, version)
 
@@ -144,7 +158,9 @@ class OntologyRegistryStore:
                 f"'{ontology.ontology_id}' v{ontology.version} already registered "
                 f"live (record {live.record_id}) — retire it deliberately first"
             )
-        record_id = f"onto:{ontology.ontology_id}:{ontology.version}:{secrets.token_hex(6)}"
+        record_id = (
+            f"onto:{ontology.ontology_id}:{ontology.version}:{secrets.token_hex(6)}"
+        )
         import json
 
         now = datetime.now(timezone.utc)

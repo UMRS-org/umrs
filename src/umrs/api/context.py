@@ -31,8 +31,9 @@ from datetime import datetime, timezone
 from threading import RLock
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, Query, status
 from pydantic import BaseModel, Field
+
 from .typed_errors import PlatformError, raise_typed
 
 
@@ -41,6 +42,7 @@ def _pg_kwargs() -> dict:
     from umrs.shared.pg_settings import pg_connect_kwargs
 
     return pg_connect_kwargs("context")
+
 
 logger = logging.getLogger(__name__)
 
@@ -316,8 +318,6 @@ class _ContextStore:
         # Validate conversation exists
         conv = self.get_conversation(req.conversation_id)
         if conv is None:
-            from fastapi import HTTPException
-
             raise_typed(PlatformError.contextapi("not_found", "Conversation not found"))
 
         messages = self.get_messages(req.conversation_id, limit=req.max_tokens // 4)
@@ -352,7 +352,9 @@ class _ContextStore:
             return None, 0
         return summaries[-1].get("content"), summaries[-1].get("token_count", 0)
 
-    def _pack_memory(self, req: ContextPackRequest, conv: Any) -> tuple[list[dict[str, Any]], int]:
+    def _pack_memory(
+        self, req: ContextPackRequest, conv: Any
+    ) -> tuple[list[dict[str, Any]], int]:
         """Memory items for the pack (~4 chars per token estimate)."""
         if not (req.include_memory and req.memory_query):
             return [], 0
@@ -364,10 +366,15 @@ class _ContextStore:
                 limit=req.memory_limit,
             )
         )
-        items = [{"content": m.content, "importance": m.importance} for m in mem_results.items]
+        items = [
+            {"content": m.content, "importance": m.importance}
+            for m in mem_results.items
+        ]
         return items, sum(len(m["content"]) // 4 for m in items)
 
-    def _pack_rag(self, req: ContextPackRequest, conv: Any) -> tuple[list[dict[str, Any]], int]:
+    def _pack_rag(
+        self, req: ContextPackRequest, conv: Any
+    ) -> tuple[list[dict[str, Any]], int]:
         """RAG retrieval: keyword search over memory items with a different query."""
         if not (req.include_rag and req.rag_query):
             return [], 0

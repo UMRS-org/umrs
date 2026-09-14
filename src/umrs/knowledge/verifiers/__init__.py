@@ -26,41 +26,38 @@ from typing import Optional
 from .base import Finding, Severity, VerifierBase
 
 # -- Cheap static verifiers --
-
-from .duplicate_knowledge import (  # noqa: F401
+from .duplicate_knowledge import (
     DuplicateKnowledgeVerifier,
-)
-from .incomplete_context import (  # noqa: F401
-    IncompleteContextVerifier,
-)
-from .missing_metadata import (  # noqa: F401
-    MissingMetadataVerifier,
-)
-from .orphan_artifact import (  # noqa: F401
-    OrphanArtifactVerifier,
-)
-from .unresolved_reference import (  # noqa: F401
-    UnresolvedReferenceVerifier,
 )
 
 # -- Model-backed verifiers --
-
-from .figure_legibility import FigureLegibilityVerifier  # noqa: F401
-from .near_duplicate import NearDuplicateVerifier  # noqa: F401
-from .terminology_consistency import TerminologyConsistencyVerifier  # noqa: F401
-from .unsupported_claim import UnsupportedClaimVerifier  # noqa: F401
+from .figure_legibility import FigureLegibilityVerifier
+from .incomplete_context import (
+    IncompleteContextVerifier,
+)
 
 # -- MCP adapter verifiers --
-
-from .mcp_adapter import (  # noqa: F401
+from .mcp_adapter import (
     MCPVerifier,
     MCPVerifierConfig,
     register_mcp_verifier,
 )
+from .missing_metadata import (
+    MissingMetadataVerifier,
+)
+from .near_duplicate import NearDuplicateVerifier
+from .orphan_artifact import (
+    OrphanArtifactVerifier,
+)
+from .terminology_consistency import TerminologyConsistencyVerifier
+from .unresolved_reference import (
+    UnresolvedReferenceVerifier,
+)
+from .unsupported_claim import UnsupportedClaimVerifier
 
 # -- Registry --
 
-VERIFIER_REGISTRY: dict[str, "VerifierBase"] = {}
+VERIFIER_REGISTRY: dict[str, VerifierBase] = {}
 
 
 def register_verifier(verifier: VerifierBase) -> None:
@@ -70,7 +67,7 @@ def register_verifier(verifier: VerifierBase) -> None:
     VERIFIER_REGISTRY[verifier.name] = verifier
 
 
-def get_verifier(name: str) -> Optional[VerifierBase]:
+def get_verifier(name: str) -> VerifierBase | None:
     """Return a registered verifier by name, or None."""
     return VERIFIER_REGISTRY.get(name)
 
@@ -105,23 +102,23 @@ _register_all()
 
 
 __all__ = [
-    "Finding",
-    "Severity",
     "VERIFIER_REGISTRY",
+    "DuplicateKnowledgeVerifier",
+    "FigureLegibilityVerifier",
+    "Finding",
+    "IncompleteContextVerifier",
+    "MCPVerifier",
+    "MCPVerifierConfig",
+    "MissingMetadataVerifier",
+    "NearDuplicateVerifier",
+    "OrphanArtifactVerifier",
+    "Severity",
+    "TerminologyConsistencyVerifier",
+    "UnresolvedReferenceVerifier",
+    "UnsupportedClaimVerifier",
     "VerifierBase",
     "get_all_verifiers",
     "get_verifier",
-    "register_verifier",
-    "DuplicateKnowledgeVerifier",
-    "IncompleteContextVerifier",
-    "MissingMetadataVerifier",
-    "OrphanArtifactVerifier",
-    "UnresolvedReferenceVerifier",
-    "FigureLegibilityVerifier",
-    "NearDuplicateVerifier",
-    "TerminologyConsistencyVerifier",
-    "UnsupportedClaimVerifier",
-    "MCPVerifier",
-    "MCPVerifierConfig",
     "register_mcp_verifier",
+    "register_verifier",
 ]

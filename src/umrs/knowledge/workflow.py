@@ -35,7 +35,6 @@ from .ingest import IngesterConfig
 from .project import (
     ProjectPhase,
     ResearchProject,
-    WorkflowTransition,
 )
 
 logger = logging.getLogger(__name__)
@@ -455,12 +454,14 @@ def understand_and_verify(
     if questions:
         for question in questions:
             answer = project.verify(question)
-            answers.append({
-                "question": question,
-                "answer": answer.answer,
-                "confidence": answer.confidence,
-                "evidence_count": len(answer.evidence),
-            })
+            answers.append(
+                {
+                    "question": question,
+                    "answer": answer.answer,
+                    "confidence": answer.confidence,
+                    "evidence_count": len(answer.evidence),
+                }
+            )
 
     return {
         "project_summary": project.to_dict(),

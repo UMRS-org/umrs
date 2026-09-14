@@ -92,7 +92,8 @@ def _discover_endpoint(
     raise_typed(
         PlatformError.chatapi(
             "unavailable",
-            f"No active endpoint for project '{project_id}'. " "Try again later or provision an endpoint."
+            f"No active endpoint for project '{project_id}'. "
+            "Try again later or provision an endpoint.",
         ),
     )
 
@@ -199,8 +200,7 @@ async def chat_completions(
         logger.error("Error proxying POST %s: %s", upstream_url, exc)
         raise_typed(
             PlatformError.chatapi(
-                "bad_gateway",
-                "Failed to connect to Assistant Service"
+                "bad_gateway", "Failed to connect to Assistant Service"
             ),
             cause=exc,
         )
@@ -232,8 +232,7 @@ async def list_models(
         logger.error("Error proxying GET %s: %s", upstream_url, exc)
         raise_typed(
             PlatformError.chatapi(
-                "bad_gateway",
-                "Failed to connect to Assistant Service"
+                "bad_gateway", "Failed to connect to Assistant Service"
             ),
             cause=exc,
         )
@@ -262,8 +261,7 @@ async def get_manifest(
         logger.error("Error proxying GET %s: %s", upstream_url, exc)
         raise_typed(
             PlatformError.chatapi(
-                "bad_gateway",
-                "Failed to connect to Assistant Service"
+                "bad_gateway", "Failed to connect to Assistant Service"
             ),
             cause=exc,
         )

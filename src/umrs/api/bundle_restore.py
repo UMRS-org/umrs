@@ -69,7 +69,7 @@ def _resolve_target_project(body: RestoreRequest) -> str:
         raise_typed(
             PlatformError.bundle(
                 "bad_request",
-                f"cannot resolve restore target: unreadable manifest ({exc})"
+                f"cannot resolve restore target: unreadable manifest ({exc})",
             ),
             cause=exc,
         )
@@ -78,7 +78,7 @@ def _resolve_target_project(body: RestoreRequest) -> str:
         raise_typed(
             PlatformError.bundle(
                 "bad_request",
-                "bundle manifest has no project_id — pass project_id explicitly"
+                "bundle manifest has no project_id — pass project_id explicitly",
             ),
         )
     return str(project)

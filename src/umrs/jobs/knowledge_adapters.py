@@ -22,18 +22,17 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from umrs.knowledge.artifact_storage import ArtifactStorage
 
 import boto3
 
+# Re-export KnowledgeExportResult for consumers that need it.
+from ..knowledge.bundle_export import KnowledgeExportResult
 from .models import Job, JobAttempt, JobType
 from .scheduler import OrchestratorBackend
-
-# Re-export KnowledgeExportResult for consumers that need it.
-from ..knowledge.bundle_export import KnowledgeExportResult  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
@@ -50,9 +49,9 @@ class KnowledgeEvent:
     event_type: str  # create | ingest | verify | skip | fail
     job_id: str
     attempt_id: str
-    artifact_id: Optional[str] = None
-    ir_id: Optional[str] = None
-    source_ref: Optional[str] = None
+    artifact_id: str | None = None
+    ir_id: str | None = None
+    source_ref: str | None = None
     details: str = ""
     timestamp: str = ""
 
@@ -62,7 +61,7 @@ class KnowledgeEvent:
                 self, "timestamp", datetime.now(timezone.utc).isoformat()
             )
 
-    def emit(self) -> "KnowledgeEvent":
+    def emit(self) -> KnowledgeEvent:
         """Log and return self for chaining; also feed the SSE project feed."""
         payload = {"event": self.event_type, "job_id": self.job_id}
         if self.artifact_id:
@@ -226,7 +225,7 @@ def _resolve_knowledge_dsn() -> str:
     return f"postgresql://{user}:{password}@{host}:{port}/{name}"
 
 
-def _resolve_bucket(job_spec: Optional[dict[str, Any]] = None) -> str:
+def _resolve_bucket(job_spec: dict[str, Any] | None = None) -> str:
     """Resolve the data bucket: job spec > UMRS_DATA_S3_BUCKET > S3_BUCKET > default."""
     if job_spec and job_spec.get("bucket"):
         return str(job_spec["bucket"])
@@ -297,7 +296,8 @@ async def _open_pool() -> Any:
             from umrs.shared.pg_settings import asyncpg_pool_kwargs
 
             pool = await asyncpg.create_pool(
-                dsn=dsn, **asyncpg_pool_kwargs("knowledge-adapters", init=_init_json_codecs)
+                dsn=dsn,
+                **asyncpg_pool_kwargs("knowledge-adapters", init=_init_json_codecs),
             )
         except Exception as exc:
             logger.warning("Knowledge asyncpg pool unavailable: %s", exc)
@@ -386,9 +386,7 @@ def _build_s3_client(job_spec: dict[str, Any]) -> tuple[Any, str]:
         return None, bucket
 
 
-def _fetch_artifact_bytes(
-    s3_client: Any, bucket: str, source_ref: str
-) -> Optional[bytes]:
+def _fetch_artifact_bytes(s3_client: Any, bucket: str, source_ref: str) -> bytes | None:
     """Download real artifact bytes from S3 by source_ref key.
 
     Returns None when unreadable — callers record the failure explicitly;
@@ -406,8 +404,7 @@ def _fetch_artifact_bytes(
 
 # ── Backend Protocol ─────────────────────────────────────────────────────────
 
-from .monitor import BackendStatusChecker, AttemptCheckResult  # noqa: E402
-
+from .monitor import AttemptCheckResult, BackendStatusChecker
 
 # ── KnowledgeIngestBackend ──────────────────────────────────────────────────
 
@@ -491,7 +488,7 @@ class KnowledgeIngestBackend(OrchestratorBackend):
         attempt: JobAttempt,
         source_refs: list[dict[str, Any]],
         project_id: str,
-        allow_domains: Optional[list[str]],
+        allow_domains: list[str] | None,
     ) -> str:
 
         KnowledgeEvent(
@@ -627,7 +624,7 @@ class KnowledgeUnderstandBackend(OrchestratorBackend):
         if sources:
             try:
                 _enqueue_embed_job(project_id, job.user_id or "", job, sources)
-            except Exception:  # noqa: BLE001 — chaining must not fail understand
+            except Exception:
                 logger.warning(
                     "KNOWLEDGE_EMBED enqueue failed for job=%s",
                     job.job_id,
@@ -650,9 +647,8 @@ def _run_ingest_sync(
     bucket: str,
     source_refs: list[dict[str, Any]],
     project_id: str,
-    allow_domains: Optional[list[str]],
+    allow_domains: list[str] | None,
 ) -> tuple[str, list[dict[str, Any]]]:
-    from umrs.knowledge.sources import SourceResolver
     from umrs.knowledge.artifact_storage import ArtifactStorage
 
     result = KnowledgeIngestResult()
@@ -740,14 +736,14 @@ def _ingest_one_source(
     project_id: str,
     source_kind: str,
     uri: str,
-    allow_domains: Optional[list[str]],
+    allow_domains: list[str] | None,
     result: KnowledgeIngestResult,
     success_ids: list[str],
     success_descs: list[dict[str, Any]],
 ) -> None:
     """Resolve + store one non-inline ingest source (per-source extract)."""
-    from umrs.knowledge.sources import SourceResolver
     from umrs.knowledge.artifact_storage import ArtifactStorage
+    from umrs.knowledge.sources import SourceResolver
 
     resolver = SourceResolver()
     resolved = resolver.resolve(source_kind, uri, allow_domains=allow_domains)
@@ -842,7 +838,9 @@ def _put_inline_text_sync(
     uri = str(src_spec.get("uri") or "inline.txt")
     text = src_spec.get("content")
     if not isinstance(text, str) or not text.strip():
-        result.failed_items.append({"source": "inline_text", "uri": uri, "error": "no content"})
+        result.failed_items.append(
+            {"source": "inline_text", "uri": uri, "error": "no content"}
+        )
         return
     content = text.encode("utf-8")
     if len(content) > _INLINE_TEXT_MAX_BYTES:
@@ -1155,7 +1153,7 @@ async def _run_understand(
     return result
 
 
-async def _existing_current_ir(store: Any, artifact_id: str) -> Optional[str]:
+async def _existing_current_ir(store: Any, artifact_id: str) -> str | None:
     """Current-version IR id for the artifact, or None (probe is fail-open)."""
     try:
         return await store._pool.fetchval(  # type: ignore[union-attr]
@@ -1211,7 +1209,9 @@ async def _understand_one_artifact(
     # Parse artifact
     parsed = _parse_for_understand(artifact_id, content, kind)
     if parsed is None:
-        result.failed_items.append({"artifact_id": artifact_id, "error": "parse returned None"})
+        result.failed_items.append(
+            {"artifact_id": artifact_id, "error": "parse returned None"}
+        )
         return
 
     # Build KnowledgeIR
@@ -1268,7 +1268,9 @@ async def _understand_one_artifact(
         result.edges_created += len(edges)
     except Exception as exc:
         logger.error("Node/edge upsert failed: %s: %s", artifact_id, exc)
-        result.failed_items.append({"artifact_id": artifact_id, "error": f"graph: {exc}"})
+        result.failed_items.append(
+            {"artifact_id": artifact_id, "error": f"graph: {exc}"}
+        )
         return
 
     summary = _build_summary(parsed)
@@ -1294,7 +1296,7 @@ def _parse_for_understand(
     artifact_id: str,
     content: bytes,
     kind: str,
-) -> Optional[dict[str, Any]]:
+) -> dict[str, Any] | None:
     """Parse real artifact bytes for understanding. Returns extracted dict or None."""
     from umrs.knowledge import parse_code
 
@@ -1362,7 +1364,9 @@ def _with_excerpt(nodes: list, kind: str, content: bytes) -> list:
         import dataclasses
 
         nodes = [
-            dataclasses.replace(nodes[0], content={**nodes[0].content, "excerpt": excerpt}),
+            dataclasses.replace(
+                nodes[0], content={**nodes[0].content, "excerpt": excerpt}
+            ),
             *nodes[1:],
         ]
     return nodes
@@ -1409,7 +1413,9 @@ def _build_nodes(
                 label=cls_name,
                 node_type="class",
                 content={"artifact_id": artifact_id, "parent": file_id},
-                content_hash=_sha256_hex(f"class-{scope}{cls_name}-{artifact_id}".encode()),
+                content_hash=_sha256_hex(
+                    f"class-{scope}{cls_name}-{artifact_id}".encode()
+                ),
                 source_ir=ir_id,
                 graph_id=graph_id,
             )
@@ -1495,7 +1501,7 @@ _PROSE_EXTRACT_SYSTEM = (
     "You extract a knowledge graph from scientific/technical documents. "
     "Reply with a JSON object only, no prose outside the JSON. Schema:\n"
     '{"entities": [{"name": "short canonical name", "type": "one of: concept, '
-    'method, technique, property, process, model, paper, dataset, software, '
+    "method, technique, property, process, model, paper, dataset, software, "
     'application, person, material, finding"}], '
     '"relations": [{"source": "entity name", "target": "entity name", '
     '"relation": "short verb phrase"}]}\n'
@@ -1538,7 +1544,9 @@ def _norm_graph_nodes(raw_nodes: list) -> list[dict[str, Any]]:
             {
                 "id": _first_str(entry.get("id"), default=name),
                 "name": name,
-                "type": _first_str(entry.get("type"), entry.get("category"), default="concept"),
+                "type": _first_str(
+                    entry.get("type"), entry.get("category"), default="concept"
+                ),
             }
         )
     return nodes[:80]
@@ -1559,7 +1567,10 @@ def _norm_graph_edges(raw_edges: list) -> list[dict[str, Any]]:
                 "source": source,
                 "target": target,
                 "relation": _first_str(
-                    entry.get("label"), entry.get("relation"), entry.get("type"), default="related"
+                    entry.get("label"),
+                    entry.get("relation"),
+                    entry.get("type"),
+                    default="related",
                 ),
             }
         )
@@ -1575,7 +1586,7 @@ def _first_list(data: dict, *keys: str) -> list:
     return []
 
 
-def _normalize_graph_payload(data: Any) -> Optional[dict[str, Any]]:
+def _normalize_graph_payload(data: Any) -> dict[str, Any] | None:
     """Pre-built graph JSON → canonical {'nodes', 'edges'} shape, or None.
 
     Accepts nodes/entities + edges/relations/links arrays with the usual
@@ -1593,7 +1604,7 @@ def _normalize_graph_payload(data: Any) -> Optional[dict[str, Any]]:
     return {"nodes": nodes, "edges": _norm_graph_edges(raw_edges)}
 
 
-def _detect_graph_payload(text: str) -> Optional[dict[str, Any]]:
+def _detect_graph_payload(text: str) -> dict[str, Any] | None:
     """Artifact text that is itself a serialized knowledge graph (W3)."""
     stripped = text.strip()
     if not stripped.startswith("{"):
@@ -1604,7 +1615,7 @@ def _detect_graph_payload(text: str) -> Optional[dict[str, Any]]:
         return None
 
 
-def _llm_extract_document(text: str) -> Optional[dict[str, Any]]:
+def _llm_extract_document(text: str) -> dict[str, Any] | None:
     """Site-LLM semantic extraction for prose artifacts (W2).
 
     Disabled with UMRS_KNOWLEDGE_LLM_EXTRACT=0; any failure degrades to the
@@ -1704,7 +1715,9 @@ def _semantic_nodes_edges(
             )
         )
     for node in nodes:
-        slug = node.node_id.removeprefix(f"node-sem-{scope}").rsplit(f"-{artifact_id}", 1)[0]
+        slug = node.node_id.removeprefix(f"node-sem-{scope}").rsplit(
+            f"-{artifact_id}", 1
+        )[0]
         edges.append(
             KnowledgeEdge(
                 edge_id=f"edge-merge-{scope}{file_id.replace('node-file-', '')}-{slug}-{artifact_id}",
@@ -1733,7 +1746,9 @@ def _nodes_edges_for_artifact(
     Order matters: graph-JSON artifacts (W3) import verbatim; ordinary prose
     without code structure falls back to site-LLM extraction (W2).
     """
-    nodes = _build_nodes(artifact_id, ir_id, parsed, project_id, graph_id=target_graph_id)
+    nodes = _build_nodes(
+        artifact_id, ir_id, parsed, project_id, graph_id=target_graph_id
+    )
     nodes = _with_excerpt(nodes, kind, content)
     edges = _build_edges(nodes)
     if kind not in _PROSE_KINDS:
@@ -2074,12 +2089,16 @@ class KnowledgeEmbedBackend(OrchestratorBackend):
         result = KnowledgeEmbedResult()
         embedder = _get_node_embedder()
         if embedder is None:
-            reason = f"no embedder (set {_NODE_EMBED_MODEL_ENV} to a pre-staged model dir)"
+            reason = (
+                f"no embedder (set {_NODE_EMBED_MODEL_ENV} to a pre-staged model dir)"
+            )
             logger.info("knowledge_embed degraded (no-op): %s", reason)
             result.degraded = True
             result.degraded_reason = reason
             _write_result(attempt, result)
-            return f"knowledge_embed|mode=degraded|reason=no_embedder|project={project_id}"
+            return (
+                f"knowledge_embed|mode=degraded|reason=no_embedder|project={project_id}"
+            )
 
         s3_client, s3_bucket = _build_s3_client(job.spec)
 
@@ -2091,7 +2110,9 @@ class KnowledgeEmbedBackend(OrchestratorBackend):
                 result.degraded = True
                 result.degraded_reason = "Postgres pool unavailable"
                 _write_result(attempt, result)
-                return f"knowledge_embed|mode=degraded|reason=no_pool|project={project_id}"
+                return (
+                    f"knowledge_embed|mode=degraded|reason=no_pool|project={project_id}"
+                )
 
             store = KnowledgeStore(pool)
             for src in sources:
@@ -2180,13 +2201,12 @@ class KnowledgeVerifyBackend(OrchestratorBackend):
         job: Job,
         attempt: JobAttempt,
     ) -> str:
-        from umrs.knowledge.verifiers import get_all_verifiers
-        from umrs.knowledge.verifiers.base import VerifierResult
         from umrs.knowledge.store import KnowledgeStore
         from umrs.knowledge.verification_store import (
-            VerificationStore,
             VerificationReport,
+            VerificationStore,
         )
+        from umrs.knowledge.verifiers import get_all_verifiers
 
         project_id = self._project_id or job.spec.get("project_id", job.project_id)
         self._project_id = project_id
@@ -2211,7 +2231,9 @@ class KnowledgeVerifyBackend(OrchestratorBackend):
             findings: list[dict[str, Any]] = []
 
             for verifier in verifiers:
-                findings.extend(_run_verifier(verifier, store, project_id, job, attempt))
+                findings.extend(
+                    _run_verifier(verifier, store, project_id, job, attempt)
+                )
 
             # Compute confidence score
             confidence = self._compute_confidence(findings)
@@ -2368,9 +2390,7 @@ class _ExportIntegrityMixin:
         if secret_key and not result.degraded and result.bundle_path:
             ok = verify_fn(Path(result.bundle_path), secret_key)
             if not ok:
-                logger.error(
-                    "Bundle integrity check failed for %s", result.bundle_path
-                )
+                logger.error("Bundle integrity check failed for %s", result.bundle_path)
                 result.degraded = True
                 result.degraded_reason = "bundle integrity check failed"
         return result
@@ -2882,7 +2902,13 @@ def _create_produced_by_edges(
                 # knowledge_nodes (FK knowledge_edges_source_id_fkey —
                 # artifacts live in knowledge_artifacts, a different table).
                 await _upsert_artifact_nodes(
-                    store, deduped, project_id, job, attempt, workflow, step,
+                    store,
+                    deduped,
+                    project_id,
+                    job,
+                    attempt,
+                    workflow,
+                    step,
                     graph_id=graph_id,
                 )
 
@@ -3050,7 +3076,9 @@ def enqueue_knowledge_ingest(
         )
         return enqueued
 
-    return _enqueue_ingest_chain(deduped, bucket, project_id, user_id, job, attempt, workflow, step)
+    return _enqueue_ingest_chain(
+        deduped, bucket, project_id, user_id, job, attempt, workflow, step
+    )
 
 
 def _enqueue_ingest_chain(
@@ -3230,7 +3258,7 @@ def _bridge_a2l_ref(artifact_id: str, content_hash: str, project_id: str) -> Non
         pool = store._pool
         if pool:
 
-            async def _persist() -> None:  # noqa: D103
+            async def _persist() -> None:
                 await store.insert_a2l_ref(artifact_id, content_hash, a2l_id)
 
             asyncio.run(_persist())

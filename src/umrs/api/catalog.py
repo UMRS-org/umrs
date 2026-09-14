@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, Field
 
 from umrs.api.catalog_store import CatalogStoreUnavailable, get_catalog_meta_store
@@ -38,7 +38,10 @@ def _enforce_catalog_scope(caller: CallerScope, project_id: str) -> None:
     raise_typed(
         PlatformError.catalog(
             "forbidden",
-            { "error": "scope_denied", "message": "Project is outside the caller's access tier.", }
+            {
+                "error": "scope_denied",
+                "message": "Project is outside the caller's access tier.",
+            },
         ),
     )
 
@@ -48,10 +51,7 @@ def _require_catalog_meta_store():
         return get_catalog_meta_store()
     except CatalogStoreUnavailable as exc:
         raise_typed(
-            PlatformError.catalog(
-                "unavailable",
-                str(exc)
-            ),
+            PlatformError.catalog("unavailable", str(exc)),
             cause=exc,
         )
 
@@ -134,7 +134,7 @@ async def catalog_search(
         raise_typed(
             PlatformError.catalog(
                 "unprocessable",
-                "Provide q and/or at least one filter (modality, state, tag, prefix)"
+                "Provide q and/or at least one filter (modality, state, tag, prefix)",
             ),
         )
     meta_store = _require_catalog_meta_store()
@@ -165,7 +165,9 @@ async def catalog_search(
                 filename_signals=hit.meta.filename_signals,
                 extracted_text_ref=hit.meta.extracted_text_ref,
                 relevance_score=hit.score,
-                links=hydrate_links(pool, project_id=project_id, s3_key=hit.meta.s3_key),
+                links=hydrate_links(
+                    pool, project_id=project_id, s3_key=hit.meta.s3_key
+                ),
             )
             for hit in hits
         ],
@@ -195,8 +197,7 @@ async def catalog_read(
     if source not in {"auto", "raw", "extracted"}:
         raise_typed(
             PlatformError.catalog(
-                "unprocessable",
-                "source must be auto, raw, or extracted"
+                "unprocessable", "source must be auto, raw, or extracted"
             ),
         )
     meta_store = _require_catalog_meta_store()
@@ -214,18 +215,12 @@ async def catalog_read(
         )
     except PermissionError as exc:
         raise_typed(
-            PlatformError.catalog(
-                "forbidden",
-                str(exc)
-            ),
+            PlatformError.catalog("forbidden", str(exc)),
             cause=exc,
         )
     except ValueError as exc:
         raise_typed(
-            PlatformError.catalog(
-                "not_found",
-                str(exc)
-            ),
+            PlatformError.catalog("not_found", str(exc)),
             cause=exc,
         )
     except Exception as exc:

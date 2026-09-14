@@ -14,11 +14,11 @@ import logging
 import os
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Query, status
 from pydantic import BaseModel, Field
-from .typed_errors import PlatformError, raise_typed
 
 from ..jobs.checkpoint_store import Checkpoint, CheckpointStore
+from .typed_errors import PlatformError, raise_typed
 
 logger = logging.getLogger(__name__)
 
@@ -133,7 +133,9 @@ async def latest_checkpoint(
     """Get the latest checkpoint for job resumption."""
     ckpt = store.select_resume_checkpoint(job_id)
     if not ckpt:
-        raise_typed(PlatformError.checkpoints("not_found", "No checkpoints found for job"))
+        raise_typed(
+            PlatformError.checkpoints("not_found", "No checkpoints found for job")
+        )
     return _to_response(ckpt)
 
 

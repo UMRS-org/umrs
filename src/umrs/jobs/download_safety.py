@@ -37,7 +37,9 @@ from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
 
-_UNION_LIKE_FS = frozenset({"overlay", "overlayfs", "vfsfuse", "fuse-overlayfs", "unionfs", "aufs"})
+_UNION_LIKE_FS = frozenset(
+    {"overlay", "overlayfs", "vfsfuse", "fuse-overlayfs", "unionfs", "aufs"}
+)
 _MOUNT_FILE = "/proc/self/mounts"
 
 DEFAULT_MIN_FREE_BYTES = 20 * 1024**3  # 20 GiB
@@ -66,7 +68,10 @@ def mount_type_for(path: str) -> str:
     needle = os.path.normpath(os.path.abspath(path)) + "/"
     best_len, best_type = 0, "unknown"
     for mount_point, fs_type in _mount_entries():
-        if needle.startswith(mount_point.rstrip("/") + "/") and len(mount_point) >= best_len:
+        if (
+            needle.startswith(mount_point.rstrip("/") + "/")
+            and len(mount_point) >= best_len
+        ):
             best_len, best_type = len(mount_point), fs_type
     return best_type
 
@@ -134,7 +139,9 @@ def register_cancel_listener(fn: _CancelListener) -> None:
 def broadcast_cancel(job_id: str) -> int:
     """Fan out one durable cancel; returns listeners notified (never raises)."""
     notified = 0
-    for listener in list(_listeners):
+    # list() snapshot keeps a listener that registers/unregisters a
+    # co-listener from corrupting this broadcast pass.
+    for listener in list(_listeners):  # noqa: C408 — intentional snapshot copy
         try:
             listener(job_id)
             notified += 1

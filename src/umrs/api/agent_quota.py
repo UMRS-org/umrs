@@ -16,6 +16,7 @@ import os
 from typing import Any
 
 from fastapi import HTTPException
+
 from umrs.api.typed_errors import PlatformError
 
 
@@ -35,7 +36,7 @@ def count_active_agent_units(pool: Any, *, user_id: str) -> int:
     """Count LIVE agent jobs owned by one user (never fabricated).
 
     Uses the sync psycopg pool; the pool being absent answers 0 decently
-    (never a fabricated 503). """
+    (never a fabricated 503)."""
     if pool is None:
         return 0
     with pool.getconn() as conn:

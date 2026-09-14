@@ -19,7 +19,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, Header, status
 from pydantic import BaseModel, Field
 
 from .typed_errors import PlatformError
@@ -87,11 +87,15 @@ def _extract_jwt_identity(authorization: str | None = Header(None)) -> _JWTIdent
     from .typed_errors import raise_typed
 
     if not authorization:
-        raise_typed(PlatformError.auth("missing_header", "Missing Authorization header"))
+        raise_typed(
+            PlatformError.auth("missing_header", "Missing Authorization header")
+        )
     parts = authorization.split()
     if len(parts) != 2 or parts[0].lower() != "bearer":
         raise_typed(
-            PlatformError.auth("bad_scheme", "Authorization header must be 'Bearer <token>'")
+            PlatformError.auth(
+                "bad_scheme", "Authorization header must be 'Bearer <token>'"
+            )
         )
     token = parts[1]
     try:
@@ -215,7 +219,9 @@ async def get_server_key() -> ServerKeyResponse:
 
     cfg = ZMQSecurityConfig.from_env()
     if not cfg.enabled:
-        raise_typed(PlatformError.curve("disabled", "CURVE is not enabled on this server"))
+        raise_typed(
+            PlatformError.curve("disabled", "CURVE is not enabled on this server")
+        )
     if not cfg.server_public_key:
         raise_typed(
             PlatformError.curve(

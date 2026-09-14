@@ -13,6 +13,7 @@ from .ir import KnowledgeIR
 
 logger = logging.getLogger(__name__)
 
+
 def extracted_knowledge_dir(storage_path: str | Path) -> Path:
     """Directory for per-artifact structured knowledge JSON files."""
     return Path(storage_path) / "extracted_knowledge"

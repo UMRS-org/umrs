@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any
 
 from .graph_registry import default_graph_id
 
@@ -44,8 +44,8 @@ class KnowledgeArtifact:
     mime_type: str = ""
     status: str = "active"
     metadata: dict[str, Any] = field(default_factory=dict)
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -59,7 +59,7 @@ class KnowledgeIRRow:
     content: dict[str, Any] = field(default_factory=dict)
     content_hash: str = ""
     status: str = "current"
-    created_at: Optional[datetime] = None
+    created_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -77,9 +77,9 @@ class KnowledgeNode:
     node_type: str  # class, function, file, module, concept, entity, relationship
     content: dict[str, Any] = field(default_factory=dict)
     content_hash: str = ""
-    source_ir: Optional[str] = None
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
+    source_ir: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
     graph_id: str = ""
 
 
@@ -93,7 +93,7 @@ class KnowledgeEdge:
     target_id: str
     relation_type: str
     content: dict[str, Any] = field(default_factory=dict)
-    created_at: Optional[datetime] = None
+    created_at: datetime | None = None
     graph_id: str = ""
 
 
@@ -124,7 +124,7 @@ class KnowledgeStore:
         source_ref: str = "",
         size_bytes: int = 0,
         mime_type: str = "",
-        metadata: Optional[dict[str, Any]] = None,
+        metadata: dict[str, Any] | None = None,
     ) -> bool:
         """Insert or update artifact metadata.
 
@@ -257,8 +257,8 @@ class KnowledgeStore:
     async def truncate_nodes(
         self,
         project_id: str,
-        source_ir: Optional[str] = None,
-        graph_id: Optional[str] = None,
+        source_ir: str | None = None,
+        graph_id: str | None = None,
     ) -> int:
         """Delete nodes, optionally filtered by project + source_ir + graph.
 
@@ -303,11 +303,11 @@ class KnowledgeStore:
 
     async def truncate_edges(
         self,
-        source_id: Optional[str] = None,
-        target_id: Optional[str] = None,
+        source_id: str | None = None,
+        target_id: str | None = None,
         *,
-        project_id: Optional[str] = None,
-        graph_id: Optional[str] = None,
+        project_id: str | None = None,
+        graph_id: str | None = None,
     ) -> int:
         """Delete edges with optional source/target/project/graph filters.
 
@@ -349,7 +349,7 @@ class KnowledgeStore:
     async def list_artifacts(
         self,
         project_id: str,
-        kind: Optional[str] = None,
+        kind: str | None = None,
         status: str = "active",
         page: int = 1,
         page_size: int = 50,
@@ -398,7 +398,7 @@ class KnowledgeStore:
 
             return artifacts, total
 
-    async def get_artifact(self, artifact_id: str) -> Optional[KnowledgeArtifact]:
+    async def get_artifact(self, artifact_id: str) -> KnowledgeArtifact | None:
         """Get a single artifact by ID, or None if not found."""
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
@@ -411,7 +411,7 @@ class KnowledgeStore:
             )
             return KnowledgeArtifact(**row) if row else None
 
-    async def get_ir(self, ir_id: str) -> Optional[KnowledgeIRRow]:
+    async def get_ir(self, ir_id: str) -> KnowledgeIRRow | None:
         """Get a single IR by ID, or None if not found."""
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
@@ -447,7 +447,7 @@ class KnowledgeStore:
     async def list_irs(
         self,
         project_id: str,
-        ir_type: Optional[str] = None,
+        ir_type: str | None = None,
     ) -> list[KnowledgeIRRow]:
         """Return all IRs for a project.
 
@@ -484,7 +484,7 @@ class KnowledgeStore:
     async def list_nodes(
         self,
         project_id: str,
-        graph_id: Optional[str] = None,
+        graph_id: str | None = None,
     ) -> list[KnowledgeNode]:
         """Return all nodes for a project, optionally one graph only.
 
@@ -592,7 +592,12 @@ class KnowledgeStore:
                 ORDER BY d.depth, e2.edge_id
             """
         params: list[Any] = [
-            project_id, max_depth, start_node_id, relation_type, graph_id, is_default
+            project_id,
+            max_depth,
+            start_node_id,
+            relation_type,
+            graph_id,
+            is_default,
         ]
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(sql, *params)
@@ -609,7 +614,7 @@ class KnowledgeStore:
     async def list_edges(
         self,
         project_id: str,
-        graph_id: Optional[str] = None,
+        graph_id: str | None = None,
     ) -> list[KnowledgeEdge]:
         """Return all edges for a project, optionally one graph only.
 
@@ -639,15 +644,15 @@ class KnowledgeStore:
         attempt_id: str,
         artifact_id: str,
         source_ref: str,
-        details: Optional[dict[str, Any]] = None,
+        details: dict[str, Any] | None = None,
     ) -> str:
         """Insert a knowledge event into knowledge_events table.
 
         Returns the event_id of the inserted row.
         """
-        from .events import _utcnow  # avoid top-level import loop
-
         import uuid
+
+        from .events import _utcnow  # avoid top-level import loop
 
         event_id = uuid.uuid4().hex
         ts = _utcnow()
@@ -672,8 +677,8 @@ class KnowledgeStore:
     async def list_events(
         self,
         job_id: str,
-        artifact_id: Optional[str] = None,
-        event_type: Optional[str] = None,
+        artifact_id: str | None = None,
+        event_type: str | None = None,
     ) -> list[dict[str, Any]]:
         """List events for a job, optionally filtered by artifact and type.
 
@@ -936,7 +941,7 @@ class KnowledgeStore:
             )
             return row is not None
 
-    async def get_artifact_content(self, artifact_id: str) -> Optional[bytes]:
+    async def get_artifact_content(self, artifact_id: str) -> bytes | None:
         """Fetch raw artifact content from S3 via the artifact's source_ref.
 
         Returns None if the artifact has no content or source_ref is empty.
@@ -954,7 +959,7 @@ class KnowledgeStore:
 # TODO: This is a temporary fix. Define proper store factory.
 
 _pool: Any = None
-_instance: "KnowledgeStore | None" = None
+_instance: KnowledgeStore | None = None
 
 
 def get_store() -> KnowledgeStore:

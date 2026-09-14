@@ -5,9 +5,10 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from r4_contracts.research import ResearchRunHandle, ResearchRunStatus
 
@@ -413,7 +414,8 @@ class ResearchRunStore:
                 updated = self.update_status(
                     handle.run_id,
                     ResearchRunStatus.FAILED,
-                    error=payload.get("error") or f"workflow ended with status={status}",
+                    error=payload.get("error")
+                    or f"workflow ended with status={status}",
                 )
             reconciled.append(updated)
         return reconciled

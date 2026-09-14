@@ -34,8 +34,7 @@ def _get_registry():
     if _registry_store is None:
         raise_typed(
             PlatformError.experiments(
-                "unavailable",
-                "Experiment registry not initialized"
+                "unavailable", "Experiment registry not initialized"
             ),
         )
     return _registry_store
@@ -83,8 +82,7 @@ def get_experiment(experiment_id: str):
     if exp is None:
         raise_typed(
             PlatformError.experiments(
-                "not_found",
-                f"Experiment {experiment_id} not found"
+                "not_found", f"Experiment {experiment_id} not found"
             ),
         )
     return exp.to_dict()
@@ -113,13 +111,12 @@ def update_status(experiment_id: str, req: UpdateStatusRequest):
         ok = _get_registry().update_experiment_status(
             experiment_id, ExperimentStatus(req.status.lower())
         )
-    except Exception as exc:  # noqa: BLE001 — maps the lifecycle validator
+    except Exception as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     if not ok:
         raise_typed(
             PlatformError.experiments(
-                "not_found",
-                f"Experiment {experiment_id} not found"
+                "not_found", f"Experiment {experiment_id} not found"
             ),
         )
     return _get_registry().get_experiment(experiment_id).to_dict()

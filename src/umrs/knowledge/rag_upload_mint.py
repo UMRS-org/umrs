@@ -200,9 +200,7 @@ def mint_rag_upload(
 
     gid = default_graph_id(project_id)
     doc_node_id = f"ragdoc-{document_id}"
-    content_hash = hashlib.sha256(
-        f"{document_id}:{filename}".encode("utf-8")
-    ).hexdigest()[:16]
+    content_hash = hashlib.sha256(f"{document_id}:{filename}".encode()).hexdigest()[:16]
     artifact_id = f"artifact-rag-{document_id}"
     minted = 0
 

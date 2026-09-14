@@ -17,7 +17,8 @@ import json
 import logging
 import os
 import re
-from typing import Any, Callable, Dict, List, Optional
+from collections.abc import Callable
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +41,7 @@ AGENT_SYSTEM_PROMPT = (
 _CLUSTER_REQUIRE_KEYS = {"gpu", "cores", "cluster", "slurm", "mpi", "fugaku"}
 
 
-def normalize_iteration_requires(raw: Any) -> Dict[str, Any]:
+def normalize_iteration_requires(raw: Any) -> dict[str, Any]:
     """Cluster-flavored subset of per-iteration requires (W8 contract)."""
     if not isinstance(raw, dict):
         return {}
@@ -52,13 +53,13 @@ def normalize_iteration_requires(raw: Any) -> Dict[str, Any]:
     }
 
 
-def _resolve_litellm_service_key() -> Optional[str]:
+def _resolve_litellm_service_key() -> str | None:
     return os.environ.get("GATEWAY_LITELLM_SERVICE_KEY") or os.environ.get(
         "LITELLM_MASTER_KEY"
     )
 
 
-def _node_digest(node: Any) -> Dict[str, str]:
+def _node_digest(node: Any) -> dict[str, str]:
     """Compact node row for the LLM prompt digest (#207)."""
     node_type = getattr(node, "node_type", None)
     return {
@@ -68,7 +69,7 @@ def _node_digest(node: Any) -> Dict[str, str]:
     }
 
 
-def _edge_digest(edge: Any) -> Optional[Dict[str, str]]:
+def _edge_digest(edge: Any) -> dict[str, str] | None:
     """Compact edge row for the LLM prompt digest (#207)."""
     source = getattr(edge, "source_id", None)
     target = getattr(edge, "target_id", None)
@@ -87,7 +88,7 @@ def _default_litellm_chat(
     *,
     model: str,
     base_url: str,
-    api_key: Optional[str],
+    api_key: str | None,
     max_tokens: int = 700,
     timeout: float = 60.0,
 ) -> str:
@@ -129,11 +130,11 @@ class UmrsAgentIterationExecutor:
         self,
         project: Any,
         *,
-        chat: Optional[Callable[..., str]] = None,
-        model: Optional[str] = None,
+        chat: Callable[..., str] | None = None,
+        model: str | None = None,
         max_tokens: int = 700,
         max_nodes: int = 30,
-        project_graph_loader: Optional[Callable[[], Dict[str, Any]]] = None,
+        project_graph_loader: Callable[[], dict[str, Any]] | None = None,
     ) -> None:
         self._project = project
         self._chat = chat
@@ -141,10 +142,10 @@ class UmrsAgentIterationExecutor:
         self._max_tokens = max_tokens
         self._max_nodes = max_nodes
         self._graph_loader = project_graph_loader
-        self.hypotheses: List[Dict[str, Any]] = []
+        self.hypotheses: list[dict[str, Any]] = []
 
     # project may be a ResearchProject or a plain object with knowledge_graph attr
-    def _load_graph(self) -> Dict[str, Any]:
+    def _load_graph(self) -> dict[str, Any]:
         loader = self._graph_loader
         if loader is not None:
             try:
@@ -170,7 +171,7 @@ class UmrsAgentIterationExecutor:
 
     def __call__(
         self, loop_id: str, iteration_number: int, research_goal: str
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         del loop_id  # identity tracked via hypotheses journal
         graph = self._load_graph()
         reply = self._call_llm(research_goal, graph, iteration_number)
@@ -179,7 +180,7 @@ class UmrsAgentIterationExecutor:
     # ── llm ────────────────────────────────────────────────────────────
 
     def _messages(
-        self, goal: str, graph: Dict[str, Any], number: int
+        self, goal: str, graph: dict[str, Any], number: int
     ) -> list[dict[str, Any]]:
         context = self._graph_context(graph)
         if self.hypotheses:
@@ -196,7 +197,7 @@ class UmrsAgentIterationExecutor:
             },
         ]
 
-    def _graph_context(self, graph: Dict[str, Any]) -> str:
+    def _graph_context(self, graph: dict[str, Any]) -> str:
         nodes = graph.get("nodes") or []
         edges = graph.get("edges") or []
         lines = [f"nodes={len(nodes)} edges={len(edges)}"]
@@ -207,13 +208,13 @@ class UmrsAgentIterationExecutor:
         return "\n".join(lines)
 
     def _call_llm(
-        self, goal: str, graph: Dict[str, Any], number: int
-    ) -> Optional[Dict[str, Any]]:
+        self, goal: str, graph: dict[str, Any], number: int
+    ) -> dict[str, Any] | None:
         chat = self._chat
         if chat is None:
             base_url = os.getenv("UMRS_AGENT_LITELLM_URL", "http://127.0.0.1:11434")
             key = _resolve_litellm_service_key()
-            chat = lambda messages, model, max_tokens: _default_litellm_chat(  # noqa: E731
+            chat = lambda messages, model, max_tokens: _default_litellm_chat(
                 messages,
                 model=model,
                 base_url=base_url,
@@ -231,7 +232,7 @@ class UmrsAgentIterationExecutor:
             return {"_error": str(exc)}
 
     @staticmethod
-    def _parse_reply(text: str) -> Dict[str, Any]:
+    def _parse_reply(text: str) -> dict[str, Any]:
         match = _JSON_BLOCK_RE.search(text)
         if match is None:
             return {"_parse_error": True, "raw": text[:200]}
@@ -251,12 +252,12 @@ class UmrsAgentIterationExecutor:
         self,
         number: int,
         goal: str,
-        graph: Dict[str, Any],
-        reply: Optional[Dict[str, Any]],
-    ) -> Dict[str, Any]:
+        graph: dict[str, Any],
+        reply: dict[str, Any] | None,
+    ) -> dict[str, Any]:
         nodes = graph.get("nodes") or []
         edges = graph.get("edges") or []
-        summary: Dict[str, Any] = {
+        summary: dict[str, Any] = {
             "iteration": number,
             "phase": "agent_iteration",
             "graph_nodes": len(nodes),
@@ -271,13 +272,13 @@ class UmrsAgentIterationExecutor:
         return summary
 
     def _apply_decision(
-        self, summary: Dict[str, Any], number: int, reply: Dict[str, Any]
-    ) -> Dict[str, Any]:
+        self, summary: dict[str, Any], number: int, reply: dict[str, Any]
+    ) -> dict[str, Any]:
         """Record the LLM decision into the hypotheses journal + summary."""
         hypothesis = str(reply.get("hypothesis", "")).strip()
         requires = normalize_iteration_requires(reply.get("requires"))
         if hypothesis:
-            entry: Dict[str, Any] = {
+            entry: dict[str, Any] = {
                 "iteration": number,
                 "hypothesis": hypothesis,
                 "evidence_ids": reply.get("evidence_ids", []),

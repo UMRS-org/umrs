@@ -49,8 +49,7 @@ def _verify(headers: Any, uid: str, pid: str, admin: bool) -> None:
     ):
         raise_typed(
             PlatformError.scopeidentity(
-                "unauthorized",
-                "Gateway-verified identity signature rejected"
+                "unauthorized", "Gateway-verified identity signature rejected"
             ),
         )
 
@@ -72,16 +71,14 @@ def request_caller_scope(request: Request) -> CallerScope:
             if _strict_mode():
                 raise_typed(
                     PlatformError.scopeidentity(
-                        "unauthorized",
-                        "Missing gateway-verified caller identity"
+                        "unauthorized", "Missing gateway-verified caller identity"
                     ),
                 )
             return CallerScope(user_id="", project_id=legacy)
         if _strict_mode():
             raise_typed(
                 PlatformError.scopeidentity(
-                    "unauthorized",
-                    "Missing gateway-verified caller identity"
+                    "unauthorized", "Missing gateway-verified caller identity"
                 ),
             )
         return CallerScope(anonymous=True)

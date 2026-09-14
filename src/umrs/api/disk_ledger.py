@@ -30,7 +30,9 @@ class DiskLedger:
 
     def usage(self, user_id: str) -> int:
         cur = self._conn.cursor()
-        cur.execute("SELECT bytes_used FROM user_disk_usage WHERE user_id = %s", (user_id,))
+        cur.execute(
+            "SELECT bytes_used FROM user_disk_usage WHERE user_id = %s", (user_id,)
+        )
         row = cur.fetchone()
         return int(row[0]) if row else 0
 
@@ -42,7 +44,9 @@ class DiskLedger:
         )
         return cur.fetchone() is not None
 
-    def charge(self, user_id: str, *, content_hash: str, byte_size: int) -> dict[str, int]:
+    def charge(
+        self, user_id: str, *, content_hash: str, byte_size: int
+    ) -> dict[str, int]:
         """Charge ``byte_size`` of one unique object against one user, or
         raise typed quota.disk_bytes_exceeded (never a silent overshoot).
 
@@ -54,7 +58,9 @@ class DiskLedger:
         usage = self.usage(user_id)
         limit = disk_bytes_max()
         if limit > 0 and usage + byte_size > limit:
-            raise_typed_quota(limit=limit, usage=usage, byte_size=byte_size, user_id=user_id)
+            raise_typed_quota(
+                limit=limit, usage=usage, byte_size=byte_size, user_id=user_id
+            )
         byte_size = int(byte_size or 0)
         cur.execute(
             """INSERT INTO user_disk_usage (user_id, bytes_used, updated_at)

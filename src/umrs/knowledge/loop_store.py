@@ -130,7 +130,7 @@ class LoopStore:
         return self._pool is None and self._sync_pool is None
 
     @classmethod
-    def sync_pg(cls, conn: Any) -> "LoopStore":
+    def sync_pg(cls, conn: Any) -> LoopStore:
         """Sync psycopg2-backed store (thread-safe, no event loop required)."""
         return cls(pool=None, sync_pool=conn)
 

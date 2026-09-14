@@ -26,7 +26,6 @@ The knowledge graph uses typed edges between scientific knowledge objects:
 from __future__ import annotations
 
 import logging
-import re
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
@@ -310,9 +309,11 @@ class KnowledgeLinker:
 
         # Normalize knowledge to a dict-like accessor
         if isinstance(knowledge, dict):
+
             def get_field(name, default=None):
                 return knowledge.get(name, default)
         else:
+
             def get_field(name, default=None):
                 return getattr(knowledge, name, default)
 

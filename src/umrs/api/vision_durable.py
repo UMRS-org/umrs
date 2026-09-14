@@ -74,12 +74,16 @@ def terminal(
         if outcome == "succeeded":
             store.mark_attempt_succeeded(attempt_id, commit=True)
         elif outcome == "failed":
-            store.mark_attempt_failed(attempt_id, exit_reason=reason or "downstream_failed")
+            store.mark_attempt_failed(
+                attempt_id, exit_reason=reason or "downstream_failed"
+            )
     except InvalidTransitionError:
         # Already terminal from an earlier poll — quiet no-op.
         logger.debug("vision attempt %s already terminal", attempt_id)
     except Exception as exc:  # noqa: BLE001
-        logger.warning("vision terminal transition failed (attempt %s): %s", attempt_id, exc)
+        logger.warning(
+            "vision terminal transition failed (attempt %s): %s", attempt_id, exc
+        )
 
 
 def cancel(store: JobStore | None, job_id: str | None, *, reason: str) -> None:

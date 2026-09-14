@@ -60,7 +60,9 @@ class TerminologyConsistencyVerifier(VerifierBase):
         self._llm_available = self._llm_client is not None
         return self._llm_available
 
-    async def run(self, knowledge_store: "KnowledgeStore", project_id: str) -> list[Finding]:
+    async def run(
+        self, knowledge_store: KnowledgeStore, project_id: str
+    ) -> list[Finding]:
         """Run terminology consistency check.
 
         Returns:
@@ -123,7 +125,7 @@ class TerminologyConsistencyVerifier(VerifierBase):
         return findings
 
     async def _gather_documents(
-        self, knowledge_store: "KnowledgeStore", project_id: str
+        self, knowledge_store: KnowledgeStore, project_id: str
     ) -> str:
         """Extract document texts from the knowledge store."""
         artifacts, _ = await knowledge_store.list_artifacts(project_id)
@@ -151,13 +153,22 @@ class TerminologyConsistencyVerifier(VerifierBase):
         try:
             return json.loads(raw)
         except (json.JSONDecodeError, TypeError):
-            return {"consistent": False, "issues": ["Could not parse LLM response"], "confidence": 0.0}
+            return {
+                "consistent": False,
+                "issues": ["Could not parse LLM response"],
+                "confidence": 0.0,
+            }
 
     def _cap_confidence(self, findings: list[Finding]) -> list[Finding]:
         """Cap confidence for degraded mode."""
         for f in findings:
-            f_dict = {"verifier": f.verifier, "artifact_id": f.artifact_id,
-                      "severity": f.severity, "rule": f.rule, "message": f.message}
+            f_dict = {
+                "verifier": f.verifier,
+                "artifact_id": f.artifact_id,
+                "severity": f.severity,
+                "rule": f.rule,
+                "message": f.message,
+            }
             if "confidence" in f_dict.get("message", ""):
                 f_dict["message"] = f"{f.message} [DEGRADED: confidence capped at 0.5]"
         return findings

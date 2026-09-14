@@ -24,7 +24,7 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -85,7 +85,7 @@ def _get(field: Any, name: str, default: Any = None) -> Any:
 def _objective_to_step(
     objective: Any,
     plan_id: str,
-) -> Optional[StepMapping]:
+) -> StepMapping | None:
     """Map a single objective to a StepMapping or None (unmappable)."""
     obj_type = _get(objective, "objective_type")
     obj_id = _get(objective, "objective_id", "") or ""
@@ -117,7 +117,7 @@ def _objective_to_step(
 def _experiment_to_step(
     experiment: Any,
     plan_id: str,
-) -> Optional[StepMapping]:
+) -> StepMapping | None:
     """Map a single experiment to a StepMapping or None (unmappable)."""
     exp_type = _get(experiment, "experiment_type")
     exp_id = _get(experiment, "experiment_id", "") or ""
@@ -141,7 +141,9 @@ def _experiment_to_step(
     hypothesis_ref = _get(experiment, "hypothesis_ref", None)
     if hypothesis_ref:
         config["hypothesis_ref"] = (
-            hypothesis_ref if isinstance(hypothesis_ref, str) else getattr(hypothesis_ref, "id", None)
+            hypothesis_ref
+            if isinstance(hypothesis_ref, str)
+            else getattr(hypothesis_ref, "id", None)
         )
     validation = _get(experiment, "validation_method", None)
     if validation is not None:
@@ -156,7 +158,7 @@ def _experiment_to_step(
 def _hypothesis_to_placeholder(
     hypothesis: Any,
     plan_id: str,
-) -> Optional[ManualPlaceholder]:
+) -> ManualPlaceholder | None:
     """Unmappable hypotheses become manual placeholders."""
     title = _get(hypothesis, "title", "") or ""
     if not title:
@@ -247,9 +249,9 @@ def _build_step_dicts(
 
 def _build_project_context(
     plan_project_id: str,
-    model: Optional[str],
-    partition: Optional[str],
-    account: Optional[str],
+    model: str | None,
+    partition: str | None,
+    account: str | None,
 ) -> dict[str, Any]:
     """Build the project context prefill dict."""
     context: dict[str, Any] = {}
@@ -267,10 +269,10 @@ def _build_project_context(
 def emit_workflow(
     plan: Any,
     *,
-    project_id: Optional[str] = None,
-    model: Optional[str] = None,
-    partition: Optional[str] = None,
-    account: Optional[str] = None,
+    project_id: str | None = None,
+    model: str | None = None,
+    partition: str | None = None,
+    account: str | None = None,
 ) -> dict[str, Any]:
     """Emit a WorkflowDraft dict from a ResearchPlan object.
 
@@ -342,7 +344,7 @@ class WorkflowDraft:
     workflow_id: str
     name: str
     steps: list[StepDraft] = field(default_factory=list)
-    source: Optional[str] = None
+    source: str | None = None
     project_context: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:

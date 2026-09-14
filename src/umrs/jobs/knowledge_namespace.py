@@ -130,7 +130,9 @@ class KnowledgeNamespaceStore:
     def _get_conn(self):
         from umrs.shared.pg_settings import pg_connect_kwargs
 
-        return self._psycopg2.connect(self._db_url, **pg_connect_kwargs("knowledge-namespace"))
+        return self._psycopg2.connect(
+            self._db_url, **pg_connect_kwargs("knowledge-namespace")
+        )
 
     # =========================================================================
     # Namespace CRUD

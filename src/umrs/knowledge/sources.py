@@ -24,7 +24,7 @@ import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from umrs.orchestrator.site_config import SiteConfig
@@ -91,8 +91,8 @@ class ResolvedSource:
     """A resolved ingest source -- path, files, or config after resolution."""
 
     kind: str  # local_dir, local_file, s3_uri, http_url, git_repo
-    path: Optional[str] = None  # local filesystem path (for local sources)
-    uri: Optional[str] = None  # remote URI (for http_url, git_repo, s3_uri)
+    path: str | None = None  # local filesystem path (for local sources)
+    uri: str | None = None  # remote URI (for http_url, git_repo, s3_uri)
     allow_egress: bool = False  # Whether egress is permitted
     allow_domains: list[str] = field(
         default_factory=list
@@ -134,7 +134,7 @@ class SourceResolver:
 
     def __init__(
         self,
-        site_config: Optional[SiteConfig] = None,  # type: ignore[name-defined]
+        site_config: SiteConfig | None = None,  # type: ignore[name-defined]
     ) -> None:
         self._config = site_config
 
@@ -144,7 +144,7 @@ class SourceResolver:
         self,
         source_kind: str,
         uri: str,
-        allow_domains: Optional[list[str]] = None,
+        allow_domains: list[str] | None = None,
     ) -> ResolvedSource:
         """Resolve an ingest source specification.
 
@@ -222,7 +222,7 @@ class SourceResolver:
         return self._detect_path_kind(uri)
 
     @staticmethod
-    def _detect_uri_kind(uri: str) -> Optional[str]:
+    def _detect_uri_kind(uri: str) -> str | None:
         """Detect kind from URI scheme/pattern.  Returns None for local paths."""
         if uri.startswith("s3://"):
             return "s3_uri"
@@ -368,7 +368,7 @@ class SourceResolver:
         return not any(fname.endswith(suf) for suf in _SKIP_FILE_SUFFIXES)
 
     @staticmethod
-    def _relative(full: Path, root: Path) -> Optional[Path]:
+    def _relative(full: Path, root: Path) -> Path | None:
         """Return relative path or None if outside root."""
         try:
             return full.relative_to(root)
@@ -382,8 +382,8 @@ class SourceResolver:
 def resolve_ingest_source(
     source_kind: str,
     uri: str,
-    site_config: Optional[SiteConfig] = None,
-    allow_domains: Optional[list[str]] = None,
+    site_config: SiteConfig | None = None,
+    allow_domains: list[str] | None = None,
 ) -> ResolvedSource:
     """Resolve an ingest source specification (convenience wrapper).
 

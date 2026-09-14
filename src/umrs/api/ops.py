@@ -132,14 +132,18 @@ def require_ops_admin(
         admin = (x_verified_is_admin or "").strip() in ("true", "1")
         if not admin:
             raise_typed(
-                PlatformError.auth("admin_required", "Ops endpoints require admin privileges")
+                PlatformError.auth(
+                    "admin_required", "Ops endpoints require admin privileges"
+                )
             )
         return
 
     # Strict mode (the audit B12 default): reject if no verified headers
     if os.environ.get("UMRS_AUTH_MODE", "strict").strip().lower() == "strict":
         raise_typed(
-            PlatformError.auth("gateway_identity_required", "Missing Gateway-verified caller identity")
+            PlatformError.auth(
+                "gateway_identity_required", "Missing Gateway-verified caller identity"
+            )
         )
 
     from ._identity import warn_legacy_params_once
@@ -148,7 +152,9 @@ def require_ops_admin(
     # MVP/test mode: check query-param is_admin
     if not is_admin:
         raise_typed(
-            PlatformError.auth("admin_required", "Ops endpoints require admin privileges")
+            PlatformError.auth(
+                "admin_required", "Ops endpoints require admin privileges"
+            )
         )
     return
 
@@ -172,7 +178,9 @@ def require_authenticated(
     # Strict mode (the audit B12 default): reject if no verified headers
     if os.environ.get("UMRS_AUTH_MODE", "strict").strip().lower() == "strict":
         raise_typed(
-            PlatformError.auth("gateway_identity_required", "Missing Gateway-verified caller identity")
+            PlatformError.auth(
+                "gateway_identity_required", "Missing Gateway-verified caller identity"
+            )
         )
 
     from ._identity import warn_legacy_params_once
@@ -709,7 +717,9 @@ def _get_or_create_user_s3cfg(username: str) -> str | None:
 
         backend = get_backend()
         user_s3cfg_path = os.path.expanduser(f"~/.config/umrs/s3cfg_{username}")
-        if existing and backend.user_s3cfg_is_current(username, user_s3cfg_path, admin_s3cfg):
+        if existing and backend.user_s3cfg_is_current(
+            username, user_s3cfg_path, admin_s3cfg
+        ):
             return existing
         if existing:
             logger.warning(
@@ -717,7 +727,9 @@ def _get_or_create_user_s3cfg(username: str) -> str | None:
                 username,
                 backend.profile.display_name,
             )
-        _alias, s3cfg_content = backend.create_user(username, user_s3cfg_path, admin_s3cfg)
+        _alias, s3cfg_content = backend.create_user(
+            username, user_s3cfg_path, admin_s3cfg
+        )
         return s3cfg_content
     except Exception as e:
         # Best-effort: the object store may be unavailable; login proceeds with
@@ -1015,7 +1027,11 @@ async def governance_ownership(
 
     store = get_governance_store()
     if store is None:
-        raise_typed(PlatformError.ops("governance_unavailable", "Governance store not initialized"))
+        raise_typed(
+            PlatformError.ops(
+                "governance_unavailable", "Governance store not initialized"
+            )
+        )
 
     if owner_id:
         records = store.list_owned(
@@ -1026,7 +1042,9 @@ async def governance_ownership(
     elif project_id:
         records = store.list_by_project(project_id, resource_type=resource_type)
     else:
-        raise_typed(PlatformError.ops("bad_request", "Provide owner_id or project_id as filter"))
+        raise_typed(
+            PlatformError.ops("bad_request", "Provide owner_id or project_id as filter")
+        )
 
     return {"records": records, "count": len(records)}
 
@@ -1048,7 +1066,11 @@ async def governance_transfer(
 
     store = get_governance_store()
     if store is None:
-        raise_typed(PlatformError.ops("governance_unavailable", "Governance store not initialized"))
+        raise_typed(
+            PlatformError.ops(
+                "governance_unavailable", "Governance store not initialized"
+            )
+        )
 
     updated = store.transfer_owner(
         resource_type,
@@ -1057,7 +1079,11 @@ async def governance_transfer(
         new_project_id=new_project_id,
     )
     if not updated:
-        raise_typed(PlatformError.ops("not_found", f"No ownership record: {resource_type}/{resource_id}"))
+        raise_typed(
+            PlatformError.ops(
+                "not_found", f"No ownership record: {resource_type}/{resource_id}"
+            )
+        )
 
     from .audit_events import emit_audit
 
@@ -1087,7 +1113,11 @@ async def governance_quotas(
 
     store = get_governance_store()
     if store is None:
-        raise_typed(PlatformError.ops("governance_unavailable", "Governance store not initialized"))
+        raise_typed(
+            PlatformError.ops(
+                "governance_unavailable", "Governance store not initialized"
+            )
+        )
 
     quotas = store.list_quotas(project_id)
     return {"project_id": project_id, "quotas": quotas}
@@ -1127,7 +1157,11 @@ async def governance_set_quota(
 
     store = get_governance_store()
     if store is None:
-        raise_typed(PlatformError.ops("governance_unavailable", "Governance store not initialized"))
+        raise_typed(
+            PlatformError.ops(
+                "governance_unavailable", "Governance store not initialized"
+            )
+        )
 
     store.set_quota(project_id, resource_type, max_count, warn_count=warn_count)
 
@@ -1238,7 +1272,11 @@ def _governance_store_or_503():
 
     store = get_governance_store()
     if store is None:
-        raise_typed(PlatformError.ops("governance_unavailable", "Governance store not initialized"))
+        raise_typed(
+            PlatformError.ops(
+                "governance_unavailable", "Governance store not initialized"
+            )
+        )
     return store
 
 
@@ -1250,9 +1288,15 @@ def _governance_store_or_503():
 def _validate_share_params(granted_to_type: str, access_level: str) -> None:
     """Validate share parameters (raises 422 on invalid values)."""
     if granted_to_type not in ("user", "group"):
-        raise_typed(PlatformError.ops("unprocessable", "granted_to_type must be 'user' or 'group'"))
+        raise_typed(
+            PlatformError.ops(
+                "unprocessable", "granted_to_type must be 'user' or 'group'"
+            )
+        )
     if access_level not in ("read", "write"):
-        raise_typed(PlatformError.ops("unprocessable", "access_level must be 'read' or 'write'"))
+        raise_typed(
+            PlatformError.ops("unprocessable", "access_level must be 'read' or 'write'")
+        )
 
 
 def _require_owner_or_admin(
@@ -1270,7 +1314,11 @@ def _require_owner_or_admin(
     if not is_admin:
         owner = store.get_owner(resource_type, resource_id)
         if not owner or owner.get("owner_id") != user_id:
-            raise_typed(PlatformError.auth("admin_required", f"Only the resource owner or admin can {action}"))
+            raise_typed(
+                PlatformError.auth(
+                    "admin_required", f"Only the resource owner or admin can {action}"
+                )
+            )
 
 
 @router.post("/governance/shares")
@@ -1292,7 +1340,11 @@ async def governance_create_share(
 
     store = get_governance_store()
     if store is None:
-        raise_typed(PlatformError.ops("governance_unavailable", "Governance store not initialized"))
+        raise_typed(
+            PlatformError.ops(
+                "governance_unavailable", "Governance store not initialized"
+            )
+        )
 
     _validate_share_params(granted_to_type, access_level)
 
@@ -1342,7 +1394,11 @@ async def governance_revoke_share(
 
     store = get_governance_store()
     if store is None:
-        raise_typed(PlatformError.ops("governance_unavailable", "Governance store not initialized"))
+        raise_typed(
+            PlatformError.ops(
+                "governance_unavailable", "Governance store not initialized"
+            )
+        )
 
     expected_admin = os.environ.get("UMRS_ADMIN_TOKEN", "")
     is_admin = bool(expected_admin and admin_token == expected_admin)
@@ -1350,7 +1406,12 @@ async def governance_revoke_share(
     if not is_admin:
         owner = store.get_owner(resource_type, resource_id)
         if not owner or owner.get("owner_id") != user_id:
-            raise_typed(PlatformError.auth("admin_required", "Only the resource owner or admin can revoke shares"))
+            raise_typed(
+                PlatformError.auth(
+                    "admin_required",
+                    "Only the resource owner or admin can revoke shares",
+                )
+            )
 
     deleted = store.revoke_share(
         resource_type,
@@ -1388,7 +1449,11 @@ async def governance_list_shares(
 
     store = get_governance_store()
     if store is None:
-        raise_typed(PlatformError.ops("governance_unavailable", "Governance store not initialized"))
+        raise_typed(
+            PlatformError.ops(
+                "governance_unavailable", "Governance store not initialized"
+            )
+        )
 
     if resource_type and resource_id:
         # List shares for a specific resource (owner or admin)
@@ -1398,7 +1463,12 @@ async def governance_list_shares(
         if not is_admin:
             owner = store.get_owner(resource_type, resource_id)
             if not owner or owner.get("owner_id") != user_id:
-                raise_typed(PlatformError.auth("admin_required", "Only the resource owner or admin can list shares"))
+                raise_typed(
+                    PlatformError.auth(
+                        "admin_required",
+                        "Only the resource owner or admin can list shares",
+                    )
+                )
 
         shares = store.list_shares_for_resource(resource_type, resource_id)
     else:

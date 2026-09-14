@@ -205,7 +205,9 @@ class VectorVersionStore:
             return _PooledConnection(self._pool)
         from umrs.shared.pg_settings import pg_connect_kwargs
 
-        return self._psycopg2.connect(self._db_url, **pg_connect_kwargs("vector-versions"))
+        return self._psycopg2.connect(
+            self._db_url, **pg_connect_kwargs("vector-versions")
+        )
 
     # ------------------------------------------------------------------
     # Version tracking

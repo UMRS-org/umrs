@@ -32,7 +32,7 @@ from typing import Any
 from fastapi import APIRouter, Query, Request
 from pydantic import BaseModel, Field
 
-from ..api.jobs import get_optional_job_store, get_job_store
+from ..api.jobs import get_job_store, get_optional_job_store
 from ..api.models import get_optional_model_store
 from .typed_errors import PlatformError, raise_typed
 
@@ -322,7 +322,7 @@ def _workflow_execution_counts() -> WorkflowExecutionCounts | None:
         from ..server.workflow_execution_registry import get_execution_registry
 
         records = get_execution_registry().list()
-    except Exception:  # noqa: BLE001 — dashboard must degrade, not 500
+    except Exception:
         logger.debug("workflow execution registry unavailable", exc_info=True)
         return None
     counts = WorkflowExecutionCounts(total=len(records))
@@ -347,7 +347,7 @@ def _connector_inventory() -> ConnectorInventory | None:
     """
     try:
         from ..connectors import introspect
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.debug("connector introspection unavailable", exc_info=True)
         return ConnectorInventory(available_types=list(_CONNECTOR_TYPES))
 
@@ -380,7 +380,7 @@ def _connector_sync_view() -> dict[str, dict]:
             }
             for row in store.list()
         }
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.debug("connector sync state unavailable", exc_info=True)
         return {}
 
@@ -702,12 +702,8 @@ async def get_job_detail(job_id: str) -> JobDetailResponse:
     try:
         job = store.get_job(job_id)
     except Exception:
-
         raise_typed(
-            PlatformError.dashboard(
-                "not_found",
-                f"Job not found: {job_id}"
-            ),
+            PlatformError.dashboard("not_found", f"Job not found: {job_id}"),
         )
 
     job_summary = _job_summary(job)
@@ -733,12 +729,8 @@ async def get_model_detail(
     try:
         model = store.get_model(model_id)
     except Exception:
-
         raise_typed(
-            PlatformError.dashboard(
-                "not_found",
-                f"Model not found: {model_id}"
-            ),
+            PlatformError.dashboard("not_found", f"Model not found: {model_id}"),
         )
 
     # Get versions
@@ -780,7 +772,6 @@ async def get_model_detail(
 async def get_metrics(request: Request):
     """Proxy Prometheus metrics."""
     from fastapi.responses import Response
-
     from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
     return Response(
@@ -828,7 +819,7 @@ async def jobs_sse(request: Request):
         while True:
             # Keepalive
             yield ": keepalive\n\n"
-            await asyncio.sleep(30)  # noqa: ASYNC110
+            await asyncio.sleep(30)
 
     return StreamingResponse(
         event_generator(),

@@ -38,13 +38,15 @@ class _OneConnPool:
         return None
 
 
-def summarize_reconcile_snapshot(project_id: str, *, db_url: str = "") -> dict[str, Any] | None:
+def summarize_reconcile_snapshot(
+    project_id: str, *, db_url: str = ""
+) -> dict[str, Any] | None:
     """Summarize the reconcile scan into a manifest payload, or None."""
     dsn = db_url or os.getenv("UMRS_DB_URL") or os.getenv("DATABASE_URL", "")
     if not dsn:
         return None
     try:
-        import psycopg2  # noqa: PLC0415 - runtime dep, resolved server-side
+        import psycopg2
 
         from umrs.shared.pg_settings import pg_connect_kwargs
 
@@ -56,15 +58,14 @@ def summarize_reconcile_snapshot(project_id: str, *, db_url: str = "") -> dict[s
         finally:
             conn.close()
     except Exception as exc:  # noqa: BLE001 - snapshot is best-effort metadata
-        logger.warning("reconciliation snapshot unavailable for %s: %s", project_id, exc)
+        logger.warning(
+            "reconciliation snapshot unavailable for %s: %s", project_id, exc
+        )
         return None
 
     digest = hashlib.sha256(
         json.dumps(
-            sorted(
-                (a.document_id, _signature_for(a))
-                for a in report.assets
-            ),
+            sorted((a.document_id, _signature_for(a)) for a in report.assets),
             sort_keys=True,
         ).encode("utf-8")
     ).hexdigest()

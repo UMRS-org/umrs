@@ -13,7 +13,7 @@ Architecture:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
@@ -21,9 +21,9 @@ from umrs.knowledge.canonical_graph_view import CanonicalGraphView, default_view
 from umrs.knowledge_model import InMemoryKnowledgeModelStore
 
 __all__ = [
+    "ApprovalRecord",
     "ReadinessLevel",
     "ReadinessReport",
-    "ApprovalRecord",
     "ResearchReadinessController",
 ]
 
@@ -138,12 +138,16 @@ class ResearchReadinessController:
         report.contradictions = self._contradiction_count()
 
         # Unsupported hypotheses (hypotheses with no supporting evidence)
-        report.unsupported_hypotheses = max(0, counts["hypothesis"] - counts["evidence"])
+        report.unsupported_hypotheses = max(
+            0, counts["hypothesis"] - counts["evidence"]
+        )
 
         # Missing experiments (hypotheses without experiments)
         report.missing_experiments = max(0, counts["hypothesis"] - counts["experiment"])
 
-        level, recommendation = self._readiness_decision(report.knowledge_completeness, report.evidence_quality)
+        level, recommendation = self._readiness_decision(
+            report.knowledge_completeness, report.evidence_quality
+        )
         report.readiness_level = level
         report.recommendation = recommendation
 
@@ -154,8 +158,7 @@ class ResearchReadinessController:
         objects = self._knowledge_model.list_objects(limit=10000)
         keys = ("paper", "hypothesis", "experiment", "finding", "evidence")
         return {
-            key: sum(1 for o in objects if o.object_type.value == key)
-            for key in keys
+            key: sum(1 for o in objects if o.object_type.value == key) for key in keys
         }
 
     @staticmethod
@@ -185,14 +188,22 @@ class ResearchReadinessController:
         return contradiction_count
 
     @staticmethod
-    def _readiness_decision(completeness: float, evidence_quality: str) -> tuple[ReadinessLevel, str]:
+    def _readiness_decision(
+        completeness: float, evidence_quality: str
+    ) -> tuple[ReadinessLevel, str]:
         """Level+recommendation table (one decision rule row each)."""
         if completeness >= 0.8 and evidence_quality == "high":
             return ReadinessLevel.READY, "Ready for autonomous research."
         if completeness >= 0.6:
-            return ReadinessLevel.PARTIALLY_READY, "Partially ready. Consider adding more evidence."
+            return (
+                ReadinessLevel.PARTIALLY_READY,
+                "Partially ready. Consider adding more evidence.",
+            )
         if completeness >= 0.4:
-            return ReadinessLevel.NOT_READY, "Not ready. Upload more papers and datasets."
+            return (
+                ReadinessLevel.NOT_READY,
+                "Not ready. Upload more papers and datasets.",
+            )
         return ReadinessLevel.BLOCKED, "Blocked. Insufficient knowledge base."
 
     def approve(
