@@ -60,8 +60,12 @@ _render_seaweedfs_iam_config() {
     export S3_STS_SIGNING_KEY
     principal="admin-${S3_ROOT_USER:0:8}"
     bucket="${S3_BUCKET}"
+    # Directory 0700 keeps the signing key from other host users; the FILE is
+    # 0644 because the image runs weed as a non-root user and podman bind-
+    # mounts the file directly (run 34834502286: "open /etc/seaweedfs/iam.json:
+    # permission denied" with a 0600 file).
     mkdir -p "$dir" && chmod 700 "$dir"
-    ( umask 077; cat > "${dir}/iam.json" <<EOF_IAM
+    ( umask 022; cat > "${dir}/iam.json" <<EOF_IAM
 {
   "sts": {
     "tokenDuration": "1h",
@@ -104,6 +108,16 @@ _render_seaweedfs_iam_config() {
 }
 EOF_IAM
     )
+    # SELinux: the compose bind of a single file did not get the :z relabel on
+    # data0 (weed: "open /etc/seaweedfs/iam.json: permission denied" while the
+    # :z-mounted /data volume worked). Apply the shared container label
+    # ourselves — the same label podman applies for :z. No-op where SELinux is
+    # absent or disabled.
+    if command -v chcon >/dev/null 2>&1 && [[ "$(getenforce 2>/dev/null || echo Disabled)" != "Disabled" ]]; then
+        chcon -R -t container_file_t -l s0 "$dir" 2>/dev/null \
+            && echo "  Relabelled ${dir} as container_file_t (SELinux $(getenforce))" \
+            || echo "  WARNING: could not relabel ${dir} for containers (SELinux $(getenforce))"
+    fi
     echo "  Rendered ${dir}/iam.json (STS role umrs-attempt, trust -> ${principal})"
 }
 
@@ -325,6 +339,7 @@ if [[ "$START_MODE" != "--server" ]]; then
     done
     if [[ "$_s3_ready" -ne 1 ]]; then
         echo " ERROR: seaweedfs not ready after 180s. Diagnostics:"
+        echo "  selinux: $(getenforce 2>/dev/null || echo n/a); iam.json: $(ls -lZ "${SCRIPT_DIR}/seaweedfs/iam.json" 2>/dev/null || echo missing)"
         podman ps -a --filter name=umrs-seaweedfs --format '  container: {{.Names}} {{.Status}} ports={{.Ports}}' 2>&1 || true
         podman inspect -f '  state: {{.State.Status}} exit={{.State.ExitCode}} restarts={{.RestartCount}} started={{.State.StartedAt}} error={{.State.Error}}' umrs-seaweedfs 2>&1 || true
         echo "  --- podman logs umrs-seaweedfs (fatal/error/startup lines) ---"
