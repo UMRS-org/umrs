@@ -26,23 +26,11 @@ from umrs.shared.lanes import FAMILY_LANES
 
 # ── premise tables ─────────────────────────────────────────────────────────
 
-# Routers that exist in the source tree but are NOT mounted in the HTTP
-# sidecar (verified against umrs.server.http_sidecar._create_app). Keeping
-# them unserved is itself a premise: none of these prefixes may answer.
-DORMANT_FAMILIES: set[str] = {
-    "planning",
-    "checkpoints",
-    "context",
-    "recovery",
-    "replay",
-    "tool-cache",
-    "vectors",
-    "workload-identity",
-    "workflow-fork",
-    # "secrets" graduated to served + INTERNAL lane by the R1 secrets wave
-    # (a5ad437a, enveloped identity router-wide); user-sources source/grant
-    # routers mounted in the same wave (BETA lane).
-}
+# ADR-053 (2026-09-15): every previously unmounted router was deleted from
+# the source tree, so there are NO dormant families left to guard. The set
+# stays as the characterization table's anchor; tests below assert it is
+# empty and may only regress by adding a NEW un-mounted family here.
+DORMANT_FAMILIES: set[str] = set()
 
 # Paths not subject to family classification (sidecar probes, docs, static).
 INFRA_PATHS: set[str] = {
@@ -151,6 +139,12 @@ def test_dormant_families_not_served(app):
         "dormant router families are now served — deliberate mount "
         "decision required, then update DORMANT_FAMILIES:\n" + "\n".join(leaked)
     )
+
+
+def test_dormant_families_is_empty_after_adr053_retirement():
+    # ADR-053: the retirement wave deleted all twelve unmounted router
+    # modules; DORMANT_FAMILIES may only regain entries deliberately.
+    assert not DORMANT_FAMILIES
 
 
 # ── premise: lane assignments match the S2/S3 record ──────────────────────

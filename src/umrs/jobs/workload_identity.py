@@ -19,6 +19,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from pydantic import BaseModel, Field
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_TTL_SECONDS = 900  # 15 minutes
@@ -215,3 +217,21 @@ class WorkloadIdentityIssuer:
         if expired:
             logger.info("Cleaned up %d expired workload identities", len(expired))
         return len(expired)
+
+
+# ---------------------------------------------------------------------------
+# Wire models (living in the jobs plane since ADR-053 retired the unmounted
+# /umrs/workload-identity router; tests import the shape from here).
+# ---------------------------------------------------------------------------
+
+
+class IssueRequest(BaseModel):
+    """Workload-identity issue request (legacy HTTP shape)."""
+
+    job_id: str
+    step_name: str
+    scope: str
+    ttl_seconds: int = Field(default=900, gt=0)
+    tier: str = ""
+    owner_id: str = ""
+    metadata: dict[str, Any] | None = None
