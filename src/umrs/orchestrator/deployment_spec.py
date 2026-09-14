@@ -24,10 +24,8 @@ Lifecycle:
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
-
-from umrs.model_registry.runtime_config import RuntimeConfig
 
 if TYPE_CHECKING:
     from umrs.model_registry.models import ModelEntry
@@ -45,62 +43,62 @@ class DeploymentSpec:
     """
 
     # ── Identity ──
-    alias: str                          # "Kimi-K2.7-Code" (registered UMRS name)
-    huggingface_id: str                 # "moonshotai/Kimi-K2.7-Code"
-    model_family: str                   # "kimi_k2"
-    served_names: tuple[str, ...]       # ("Kimi-K2.7-Code", "moonshotai/Kimi-K2.7-Code")
+    alias: str  # "Kimi-K2.7-Code" (registered UMRS name)
+    huggingface_id: str  # "moonshotai/Kimi-K2.7-Code"
+    model_family: str  # "kimi_k2"
+    served_names: tuple[str, ...]  # ("Kimi-K2.7-Code", "moonshotai/Kimi-K2.7-Code")
 
     # ── Storage ──
-    storage_ref: str                    # /work/hps0/.../umrs_models/Kimi-K2.7-Code
+    storage_ref: str  # /work/hps0/.../umrs_models/Kimi-K2.7-Code
 
     # ── Topology ──
-    tp: int                             # 4
-    pp: int                             # 1
-    ep: bool                            # False (expert-parallel)
-    parallel_strategy: str              # "tp_pp" | "tep"
-    gpus_per_node: int                  # 4
-    node_count: int                     # 1
+    tp: int  # 4
+    pp: int  # 1
+    ep: bool  # False (expert-parallel)
+    parallel_strategy: str  # "tp_pp" | "tep"
+    gpus_per_node: int  # 4
+    node_count: int  # 1
 
     # ── Runtime ──
-    tool_call_parser: str | None        # None = no parser (or "hermes")
-    reasoning_parser: str | None        # None = no reasoning parser
-    kv_cache_dtype: str | None          # None = default (bf16)
-    enforce_eager: bool                 # True = no CUDA graphs
-    flashinfer_moe_fp16: bool           # False = fall back to Triton MoE
-    chat_template_format: str | None    # None = "auto"
-    mm_encoder_tp_mode: str | None      # None = not needed
+    tool_call_parser: str | None  # None = no parser (or "hermes")
+    reasoning_parser: str | None  # None = no reasoning parser
+    kv_cache_dtype: str | None  # None = default (bf16)
+    enforce_eager: bool  # True = no CUDA graphs
+    flashinfer_moe_fp16: bool  # False = fall back to Triton MoE
+    chat_template_format: str | None  # None = "auto"
+    mm_encoder_tp_mode: str | None  # None = not needed
     trust_remote_code: bool
     enable_auto_tool_choice: bool
     enable_prefix_caching: bool
 
     # ── Capacity ──
-    max_model_len: int                  # 245760
-    max_num_seqs: int                   # 32
-    max_num_batched_tokens: int         # 8192
-    gpu_memory_utilization: float       # 0.90
+    max_model_len: int  # 245760
+    max_num_seqs: int  # 32
+    max_num_batched_tokens: int  # 8192
+    gpu_memory_utilization: float  # 0.90
 
     # ── Infrastructure ──
-    partition: str                      # "4n4gpu-p"
-    slurm_account: str | None           # "ea" (site master) or per-user
-    container_image: str                # /work/.../mini-rivault-aarch64-v4.sif
-    slurm_time_limit: str               # "96:00:00"
-    slurm_cpus: int                     # 32
-    slurm_memory: str                   # "1400G"
+    partition: str  # "4n4gpu-p"
+    slurm_account: str | None  # "ea" (site master) or per-user
+    container_image: str  # /work/.../mini-rivault-aarch64-v4.sif
+    slurm_time_limit: str  # "96:00:00"
+    slurm_cpus: int  # 32
+    slurm_memory: str  # "1400G"
 
     # ── Health ──
-    readiness_probe: str                # "models" | "chat" | "http"
-    readiness_probe_model: str          # "Kimi-K2.7-Code" (alias for /v1/models check)
-    readiness_path: str | None          # "/readyz" for BentoML vision
+    readiness_probe: str  # "models" | "chat" | "http"
+    readiness_probe_model: str  # "Kimi-K2.7-Code" (alias for /v1/models check)
+    readiness_path: str | None  # "/readyz" for BentoML vision
 
     # ── Extras ──
-    env_overrides: dict[str, str]       # Pool/env var overrides (VLLM_MAX_NUM_SEQS etc.)
-    ttl_sec: int                        # 0 = no expiry
-    tier: str                           # "system" | "project" | "user"
+    env_overrides: dict[str, str]  # Pool/env var overrides (VLLM_MAX_NUM_SEQS etc.)
+    ttl_sec: int  # 0 = no expiry
+    tier: str  # "system" | "project" | "user"
 
     # ── Traceability ──
     spec_version: str = "1.0"
-    generated_at: str = ""              # ISO timestamp
-    registry_model_id: str = ""         # model_catalog_entries.model_id
+    generated_at: str = ""  # ISO timestamp
+    registry_model_id: str = ""  # model_catalog_entries.model_id
 
     def validate(self) -> list[str]:
         """Validate this spec is deployable. Returns list of errors."""
@@ -134,8 +132,7 @@ class DeploymentSpec:
             )
         if self.pp > 1 and self.node_count < self.pp:
             errors.append(
-                f"PP={self.pp} requires at least {self.pp} nodes, "
-                f"got {self.node_count}"
+                f"PP={self.pp} requires at least {self.pp} nodes, got {self.node_count}"
             )
 
         # Parallel strategy
@@ -230,12 +227,18 @@ class DeploymentSpec:
         serve.slurm can also consume this to reduce its own arg construction.
         """
         args: list[str] = [
-            "--model", "/models",  # container-internal path
-            "--served-model-name", self.huggingface_id,
-            "--host", "0.0.0.0",
-            "-tp", str(self.tp),
-            "-pp", str(self.pp),
-            "--gpu-memory-utilization", str(self.gpu_memory_utilization),
+            "--model",
+            "/models",  # container-internal path
+            "--served-model-name",
+            self.huggingface_id,
+            "--host",
+            "0.0.0.0",
+            "-tp",
+            str(self.tp),
+            "-pp",
+            str(self.pp),
+            "--gpu-memory-utilization",
+            str(self.gpu_memory_utilization),
             "--trust-remote-code",
         ]
 
@@ -292,7 +295,7 @@ class DeploymentSpec:
 
         return args
 
-    def with_overrides(self, **kwargs: Any) -> "DeploymentSpec":
+    def with_overrides(self, **kwargs: Any) -> DeploymentSpec:
         """Return a new DeploymentSpec with specific fields overridden.
 
         Because DeploymentSpec is frozen, this creates a copy.
@@ -347,12 +350,12 @@ class DeploymentSpec:
     @classmethod
     def from_registry(
         cls,
-        entry: "ModelEntry",
+        entry: ModelEntry,
         *,
         profile: dict[str, Any] | None = None,
         site_config: Any | None = None,
         overrides: dict[str, Any] | None = None,
-    ) -> "DeploymentSpec":
+    ) -> DeploymentSpec:
         """Build a DeploymentSpec from the authoritative registry entry.
 
         This is the ONLY path to creating a DeploymentSpec.
@@ -385,9 +388,23 @@ class DeploymentSpec:
         # ── Topology ──
         tp = overrides.get("tp") or sp.tensor_parallel_size or 1
         pp = overrides.get("pp") or sp.pipeline_parallel_size or 1
-        gpus_per_node = profile.get("gpu_count") or overrides.get("gpu_count") or sp.recommended_gpu_count or 1
-        node_count = profile.get("node_count") or overrides.get("node_count") or sp.recommended_node_count or 1
-        parallel_strategy = profile.get("parallel_strategy") or overrides.get("parallel_strategy") or "tp_pp"
+        gpus_per_node = (
+            profile.get("gpu_count")
+            or overrides.get("gpu_count")
+            or sp.recommended_gpu_count
+            or 1
+        )
+        node_count = (
+            profile.get("node_count")
+            or overrides.get("node_count")
+            or sp.recommended_node_count
+            or 1
+        )
+        parallel_strategy = (
+            profile.get("parallel_strategy")
+            or overrides.get("parallel_strategy")
+            or "tp_pp"
+        )
         ep = parallel_strategy == "tep"
 
         # ── Runtime ──
@@ -395,12 +412,22 @@ class DeploymentSpec:
         reasoning_parser = rc.effective_reasoning_parser()
         kv_cache_dtype = rc.kv_cache_dtype
         enforce_eager = rc.enforce_eager or False
-        flashinfer_moe_fp16 = rc.flashinfer_moe_fp16 if rc.flashinfer_moe_fp16 is not None else True
+        flashinfer_moe_fp16 = (
+            rc.flashinfer_moe_fp16 if rc.flashinfer_moe_fp16 is not None else True
+        )
         chat_template_format = rc.chat_template_format
         mm_encoder_tp_mode = rc.mm_encoder_tp_mode
-        trust_remote_code = rc.trust_remote_code if rc.trust_remote_code is not None else True
-        enable_auto_tool_choice = rc.enable_auto_tool_choice if rc.enable_auto_tool_choice is not None else True
-        enable_prefix_caching = rc.enable_prefix_caching if rc.enable_prefix_caching is not None else True
+        trust_remote_code = (
+            rc.trust_remote_code if rc.trust_remote_code is not None else True
+        )
+        enable_auto_tool_choice = (
+            rc.enable_auto_tool_choice
+            if rc.enable_auto_tool_choice is not None
+            else True
+        )
+        enable_prefix_caching = (
+            rc.enable_prefix_caching if rc.enable_prefix_caching is not None else True
+        )
 
         # ── Capacity ──
         ctx_from_profile = profile.get("max_model_len")
@@ -409,7 +436,9 @@ class DeploymentSpec:
         max_model_len = ctx_from_override or ctx_from_profile or ctx_from_sp or 8192
         max_num_seqs = profile.get("max_num_seqs") or 16
         max_num_batched_tokens = profile.get("max_num_batched_tokens") or 0
-        gpu_mem_util = overrides.get("gpu_memory_utilization") or sp.gpu_memory_utilization or 0.90
+        gpu_mem_util = (
+            overrides.get("gpu_memory_utilization") or sp.gpu_memory_utilization or 0.90
+        )
 
         # ── Infrastructure ──
         partition = profile.get("partition") or ""
@@ -429,7 +458,9 @@ class DeploymentSpec:
                 slurm_account = getattr(site_config.scheduler, "account", None)
 
         # ── Health ──
-        readiness_probe = profile.get("readiness_probe") or sp.readiness_probe or "models"
+        readiness_probe = (
+            profile.get("readiness_probe") or sp.readiness_probe or "models"
+        )
         readiness_probe_model = alias
         readiness_path = sp.readiness_path
 

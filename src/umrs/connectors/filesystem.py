@@ -6,13 +6,12 @@ yield documents. Useful for HPC shared filesystems.
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import mimetypes
 import os
+from collections.abc import Iterator
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional
 
 from . import (
     Connector,
@@ -77,8 +76,8 @@ class FilesystemConnector(Connector):
     def name(self) -> str:
         return "Filesystem"
 
-    def validate_config(self, config: ConnectorConfig) -> List[str]:
-        errors: List[str] = []
+    def validate_config(self, config: ConnectorConfig) -> list[str]:
+        errors: list[str] = []
         root = config.settings.get("root_path")
         if not root:
             errors.append("root_path is required in settings")
@@ -89,7 +88,7 @@ class FilesystemConnector(Connector):
     def fetch(
         self,
         config: ConnectorConfig,
-        checkpoint: Optional[SyncCheckpoint] = None,
+        checkpoint: SyncCheckpoint | None = None,
     ) -> Iterator[Document]:
         root = Path(config.settings["root_path"])
         extensions = set(config.settings.get("extensions", _DEFAULT_EXTENSIONS))

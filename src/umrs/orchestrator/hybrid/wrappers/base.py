@@ -227,5 +227,3 @@ class RuntimeWrapper(ABC):
 
 class LaunchError(Exception):
     """Error during container launch."""
-
-    pass

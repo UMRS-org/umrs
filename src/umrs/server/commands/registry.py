@@ -109,7 +109,7 @@ class CommandRegistry:
 
         try:
             handler.execute(payload, update_status, ctx, task_id)
-        except Exception:  # noqa: BLE001 - handlers must not crash the loop
+        except Exception:
             logger.exception("Handler for '%s' raised an unhandled exception", cmd)
             # If the handler failed before replying, the request/reply client
             # would otherwise hang until its receive timeout.  Send an error

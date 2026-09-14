@@ -264,7 +264,7 @@ class OrchestrationService:
             try:
                 job = await self.backend.get_job_status(job_id)
                 consecutive_errors = 0  # reset on success
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 consecutive_errors += 1
                 logger.warning(
                     "Transient backend error polling location for %s (%d/%d): %s",
@@ -901,9 +901,13 @@ class OrchestrationService:
             return False, None, "new_model_path is required"
 
         if endpoint.metadata.get("upgrade_in_flight"):
-            return False, None, (
-                f"upgrade already in flight for {job_id}; "
-                "wait for the pending flip to converge"
+            return (
+                False,
+                None,
+                (
+                    f"upgrade already in flight for {job_id}; "
+                    "wait for the pending flip to converge"
+                ),
             )
 
         request = self._request_from_endpoint(
@@ -986,7 +990,10 @@ class OrchestrationService:
     ) -> tuple[bool, str, str | None]:
         """Provision replacement → health-check → flip registry → retire old."""
         if on_progress:
-            on_progress("provision_replacement", {"job_id": job_id, "model_path": request.model_path})
+            on_progress(
+                "provision_replacement",
+                {"job_id": job_id, "model_path": request.model_path},
+            )
 
         result = await self.provision(request, on_progress=on_progress)
         if not result.success or result.endpoint is None:
@@ -1008,8 +1015,10 @@ class OrchestrationService:
                 new_job_id=new_job_id,
                 reason="replacement resolved to a different project",
             )
-            return False, None, (
-                f"replacement landed in wrong project ({new_endpoint.project_id})"
+            return (
+                False,
+                None,
+                (f"replacement landed in wrong project ({new_endpoint.project_id})"),
             )
 
         if on_progress:
@@ -1333,7 +1342,7 @@ class OrchestrationService:
                     ep.job_id,
                     timeout_sec=timeout_sec,
                 )
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 error_msg = str(exc)[:200]
                 result["errors"].append({"job_id": ep.job_id, "error": error_msg})
                 logger.error(

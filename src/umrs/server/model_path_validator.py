@@ -10,26 +10,25 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
-from typing import List, Tuple
 
 logger = logging.getLogger(__name__)
 
 # Model path environment variables checked at boot.
-_MODEL_PATH_VARS: List[str] = [
+_MODEL_PATH_VARS: list[str] = [
     "VLLM_MODEL_PATH",
     "VLLM_HOST_MODEL_PATH",
     "VLLM_PATH_TO_HUGGINGFACE",
 ]
 
 
-def validate_model_paths() -> Tuple[bool, List[str]]:
+def validate_model_paths() -> tuple[bool, list[str]]:
     """Validate that configured model paths exist and are readable.
 
     Returns:
         (ok, missing) where ok is True when at least one configured
         path exists, and missing is a list of paths that failed.
     """
-    missing: List[str] = []
+    missing: list[str] = []
     found: bool = False
 
     for var in _MODEL_PATH_VARS:
@@ -48,7 +47,9 @@ def validate_model_paths() -> Tuple[bool, List[str]]:
         try:
             entries = list(p.iterdir())
             if entries:
-                logger.debug("Model path %s (%s) has %d entries", var, path_str, len(entries))
+                logger.debug(
+                    "Model path %s (%s) has %d entries", var, path_str, len(entries)
+                )
         except PermissionError:
             missing.append(f"{var}={path_str} (permission denied)")
             continue

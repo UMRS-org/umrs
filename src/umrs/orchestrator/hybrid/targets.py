@@ -236,8 +236,6 @@ class ExecutionTarget(ABC):
 class SubmissionError(Exception):
     """Error during job submission."""
 
-    pass
-
 
 # =============================================================================
 # SlurmTarget Implementation (U-1102)

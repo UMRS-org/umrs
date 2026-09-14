@@ -702,10 +702,8 @@ class StepRouter:
         # this to 1.0 disables decorrelation (keep full latency
         # weight in parallel).
         lat_decorr = _env_float("UMRS_ROUTER_LATENCY_DECORR_FACTOR", 0.5)
-        if lat_decorr < 0.0:
-            lat_decorr = 0.0
-        if lat_decorr > 1.0:
-            lat_decorr = 1.0
+        lat_decorr = max(lat_decorr, 0.0)
+        lat_decorr = min(lat_decorr, 1.0)
 
         # UCB exploration (Slice 15): add an exploration bonus that
         # decays as an endpoint accumulates visits. Replaces ε-greedy.

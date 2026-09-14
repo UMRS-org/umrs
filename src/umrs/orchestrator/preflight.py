@@ -17,10 +17,9 @@ Usage:
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -35,11 +34,11 @@ logger = logging.getLogger(__name__)
 class PreflightCheck:
     """Result of a single preflight check."""
 
-    name: str                          # "registry", "storage", "parser", etc.
-    status: str                        # "pass", "fail", "warn", "skip"
-    message: str                       # Human-readable result
+    name: str  # "registry", "storage", "parser", etc.
+    status: str  # "pass", "fail", "warn", "skip"
+    message: str  # Human-readable result
     duration_ms: float = 0.0
-    detail: str | None = None          # Extra detail for failures
+    detail: str | None = None  # Extra detail for failures
 
     def symbol(self) -> str:
         if self.status == "pass":
@@ -48,7 +47,7 @@ class PreflightCheck:
             return "\u2717"  # ✗
         if self.status == "warn":
             return "\u26a0"  # ⚠
-        return "\u2014"      # —
+        return "\u2014"  # —
 
 
 @dataclass
@@ -74,9 +73,7 @@ class PreflightResult:
             "\u2500" * 60,
         ]
         for check in self.checks:
-            lines.append(
-                f"  {check.symbol()} {check.name:<15} {check.message}"
-            )
+            lines.append(f"  {check.symbol()} {check.name:<15} {check.message}")
             if check.detail and check.status != "pass":
                 lines.append(f"     {check.detail}")
         lines.append("\u2500" * 60)
@@ -102,10 +99,10 @@ class PreflightValidator:
 
     def __init__(
         self,
-        spec: "DeploymentSpec",
+        spec: DeploymentSpec,
         site_config: Any | None = None,
-        launcher_stack: "LauncherStack | None" = None,
-        ssh_manager: "SSHControlManager | None" = None,
+        launcher_stack: LauncherStack | None = None,
+        ssh_manager: SSHControlManager | None = None,
     ):
         self.spec = spec
         self.site = site_config
@@ -132,11 +129,13 @@ class PreflightValidator:
             checks.append(await self._check_partition())
             checks.append(await self._check_container_image())
         else:
-            checks.append(PreflightCheck(
-                name="remote",
-                status="warn",
-                message="No SSH connection — skipping storage, partition, image checks",
-            ))
+            checks.append(
+                PreflightCheck(
+                    name="remote",
+                    status="warn",
+                    message="No SSH connection — skipping storage, partition, image checks",
+                )
+            )
 
         # Phase C: Capacity estimation (local, after remote data gathered)
         checks.append(self._check_capacity())
@@ -174,10 +173,7 @@ class PreflightValidator:
             runtime_warnings.append(
                 "tool_call_parser not set in registry — serve.slurm will derive from model name"
             )
-        if (
-            self.spec.reasoning_parser is not None
-            and self.spec.reasoning_parser == ""
-        ):
+        if self.spec.reasoning_parser is not None and self.spec.reasoning_parser == "":
             # Explicit empty = disabled; valid
             pass
         elif not self.spec.reasoning_parser or self.spec.reasoning_parser == "":
@@ -205,7 +201,7 @@ class PreflightValidator:
                 name="registry",
                 status="warn",
                 message=f"Registry entry OK but runtime config incomplete: "
-                        f"{len(runtime_warnings)} field(s) will fall back to serve.slurm derivation",
+                f"{len(runtime_warnings)} field(s) will fall back to serve.slurm derivation",
                 detail="; ".join(runtime_warnings),
                 duration_ms=ms,
             )
@@ -223,8 +219,11 @@ class PreflightValidator:
         spec_errors = self.spec.validate()
         # Filter to topology-related errors only
         topo_errors = [
-            e for e in spec_errors
-            if any(kw in e.lower() for kw in ("tp", "pp", "node", "gpu", "parallel", "tep"))
+            e
+            for e in spec_errors
+            if any(
+                kw in e.lower() for kw in ("tp", "pp", "node", "gpu", "parallel", "tep")
+            )
         ]
 
         if not spec_errors:
@@ -243,8 +242,8 @@ class PreflightValidator:
                 name="topology",
                 status="pass",
                 message=f"TP={self.spec.tp} PP={self.spec.pp} EP={self.spec.ep} "
-                        f"({self.spec.parallel_strategy}) on "
-                        f"{self.spec.node_count}×{self.spec.gpus_per_node} GPU",
+                f"({self.spec.parallel_strategy}) on "
+                f"{self.spec.node_count}×{self.spec.gpus_per_node} GPU",
                 duration_ms=ms,
             )
 
@@ -305,7 +304,7 @@ class PreflightValidator:
         # Check for required files
         result2 = await self._ssh.run_remote(
             f"for f in config.json tokenizer.json tokenizer_config.json; do "
-            f"test -f {_sh_quote(storage)}/$f && echo \"$f:OK\" || echo \"$f:MISSING\"; done",
+            f'test -f {_sh_quote(storage)}/$f && echo "$f:OK" || echo "$f:MISSING"; done',
             timeout=15,
         )
         ms = (time.monotonic() - t0) * 1000
@@ -364,7 +363,9 @@ class PreflightValidator:
         reasoning = self.spec.reasoning_parser
         if reasoning and reasoning != "":
             if self._stack.available_reasoning_parsers is None:
-                issues.append(f"Cannot verify reasoning parser '{reasoning}' — probe failed")
+                issues.append(
+                    f"Cannot verify reasoning parser '{reasoning}' — probe failed"
+                )
             elif not self._stack.has_reasoning_parser(reasoning):
                 issues.append(
                     f"Reasoning parser '{reasoning}' not in SIF. "
@@ -408,10 +409,17 @@ class PreflightValidator:
         partition = self.spec.partition
 
         if not self._ssh:
-            return PreflightCheck(name="partition", status="skip", message="No SSH", duration_ms=0)
+            return PreflightCheck(
+                name="partition", status="skip", message="No SSH", duration_ms=0
+            )
         if not partition:
             ms = (time.monotonic() - t0) * 1000
-            return PreflightCheck(name="partition", status="fail", message="No partition specified", duration_ms=ms)
+            return PreflightCheck(
+                name="partition",
+                status="fail",
+                message="No partition specified",
+                duration_ms=ms,
+            )
 
         result = await self._ssh.run_remote(
             f"sinfo -p {_sh_quote(partition)} -h -o '%a' 2>&1 | head -1",
@@ -450,10 +458,17 @@ class PreflightValidator:
         image = self.spec.container_image
 
         if not self._ssh:
-            return PreflightCheck(name="image", status="skip", message="No SSH", duration_ms=0)
+            return PreflightCheck(
+                name="image", status="skip", message="No SSH", duration_ms=0
+            )
         if not image:
             ms = (time.monotonic() - t0) * 1000
-            return PreflightCheck(name="image", status="fail", message="No container image specified", duration_ms=ms)
+            return PreflightCheck(
+                name="image",
+                status="fail",
+                message="No container image specified",
+                duration_ms=ms,
+            )
 
         result = await self._ssh.run_remote(
             f"test -f {_sh_quote(image)} && echo OK || echo MISSING",
@@ -498,7 +513,7 @@ class PreflightValidator:
         #   = 0.125 × ctx KiB ≈ 0.12 × ctx MiB per element
         # This is approximate — a real calculation would read config.json.
         kv_bytes_per_token = 2 * 64 * 8 * 128 * 1  # ~131 KiB
-        total_kv_gib = (kv_bytes_per_token * ctx) / (1024 ** 3)
+        total_kv_gib = (kv_bytes_per_token * ctx) / (1024**3)
         kv_per_gpu_gib = total_kv_gib / tp  # KV is sharded by TP
 
         usable_mem_gib = mem_per_gpu_gb * gpu_mem_util
@@ -534,7 +549,7 @@ class PreflightValidator:
                     f"Low KV headroom: ~{headroom_gib:.1f} GiB/GPU "
                     f"(KV uses ~{kv_per_gpu_gib:.1f} GiB/GPU at {ctx} ctx)"
                 ),
-                detail=f"May be OK but leaves little margin for batch concurrency.",
+                detail="May be OK but leaves little margin for batch concurrency.",
                 duration_ms=ms,
             )
 

@@ -59,18 +59,18 @@ server-level dependencies** so handlers never access global state.
 ```python
 @dataclass
 class HandlerContext:
-    task_manager:          Any      # thread pool + task status store
-    control_mq:            Any      # ZeroMQ MessageQueue (send replies)
-    server_cfg:            Any      # ServerCfg (buckets, user map)
-    device:                str      # "cuda" or "cpu"
-    embedding_backend:     Any      # LocalEmbeddingBackend instance
-    configure_file:        str      # path to conf_umrs.json
-    job_command_backend:   Any      # durable job backend (may be None)
-    model_command_backend: Any      # model registry backend (may be None)
+    task_manager: Any  # thread pool + task status store
+    control_mq: Any  # ZeroMQ MessageQueue (send replies)
+    server_cfg: Any  # ServerCfg (buckets, user map)
+    device: str  # "cuda" or "cpu"
+    embedding_backend: Any  # LocalEmbeddingBackend instance
+    configure_file: str  # path to conf_umrs.json
+    job_command_backend: Any  # durable job backend (may be None)
+    model_command_backend: Any  # model registry backend (may be None)
 
     # convenience properties
-    ctx.buckets_cfg       # → server_cfg.buckets_cfg
-    ctx.user_config_map   # → server_cfg.user_config_map
+    ctx.buckets_cfg  # → server_cfg.buckets_cfg
+    ctx.user_config_map  # → server_cfg.user_config_map
 ```
 
 ### `CommandHandler` ABC (`base.py`)
@@ -81,10 +81,10 @@ Every handler subclasses `CommandHandler` and implements one method:
 class CommandHandler(ABC):
     def execute(
         self,
-        payload:       Any,             # raw ZeroMQ payload
+        payload: Any,  # raw ZeroMQ payload
         update_status: StatusCallback,  # call with TaskStatus.*
-        ctx:           HandlerContext,  # all server dependencies
-        task_id:       int,             # task identifier (always present)
+        ctx: HandlerContext,  # all server dependencies
+        task_id: int,  # task identifier (always present)
     ) -> None: ...
 ```
 
@@ -171,6 +171,7 @@ Create `umrs/server/commands/my_new_cmd.py`:
 <One paragraph explaining what this command does, when it is called,
 and any non-obvious behaviour (async vs sync, reply protocol, etc.)>
 """
+
 from __future__ import annotations
 import logging
 from typing import Any
@@ -190,7 +191,7 @@ class MyNewCmdHandler(CommandHandler):
         ctx: HandlerContext,
         task_id: int,
     ) -> None:
-        client_id, my_data = payload   # unpack according to your payload shape
+        client_id, my_data = payload  # unpack according to your payload shape
 
         # --- your logic here ---
 
@@ -214,13 +215,14 @@ class MyNewCmdHandler(CommandHandler):
   ```python
   from umrs.core.thread_pool import ServerOverloadedError
   import contextlib
+
   try:
       thread_ident = ctx.task_manager.active_threads.launch_my_worker(...)
       ctx.task_manager.associate_thread_with_task(thread_ident, task_id)
   except ServerOverloadedError as exc:
       logger.warning("Rejecting MY_NEW_CMD task %s: %s", task_id, exc)
       update_status(TaskStatus.ERROR)
-      with contextlib.suppress(RuntimeError):      # if a reply is expected
+      with contextlib.suppress(RuntimeError):  # if a reply is expected
           ctx.control_mq.send_string("SERVER_OVERLOADED", zmq_sender_id)
   ```
 

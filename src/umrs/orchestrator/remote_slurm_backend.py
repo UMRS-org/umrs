@@ -32,7 +32,7 @@ import os
 import re
 import shlex
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any
 
 from .base import (
     EndpointInfo,
@@ -118,9 +118,7 @@ class RemoteSlurmBackend(SlurmBackend):
     in their ~/.ssh/authorized_keys (via ``r4 onboard``).
     """
 
-    def __init__(
-        self, config: Any, ssh_config: Optional[SSHControlConfig] = None
-    ) -> None:
+    def __init__(self, config: Any, ssh_config: SSHControlConfig | None = None) -> None:
         super().__init__(config)
         # Build SSH config from site config extra section or explicit param.
         if ssh_config:
@@ -138,7 +136,7 @@ class RemoteSlurmBackend(SlurmBackend):
                     pass
             self._ssh_config = SSHControlConfig.from_site_config(extra)
 
-        self._ssh: Optional[SSHControlManager] = None
+        self._ssh: SSHControlManager | None = None
         self._tunnel_pool: TunnelPool | None = None
 
         # Per-user SSH delegation state
@@ -626,7 +624,7 @@ class RemoteSlurmBackend(SlurmBackend):
             )
         return self._tunnel_pool
 
-    async def _read_remote_job_info(self, job_id: str) -> Optional[str]:
+    async def _read_remote_job_info(self, job_id: str) -> str | None:
         """Read job info file from remote filesystem via SSH."""
         info_dir = self._job_info_dir()
         info_path = f"{info_dir}/rivault-job-{job_id}.info"
@@ -706,10 +704,7 @@ class RemoteSlurmBackend(SlurmBackend):
             stop_request = self._stop_request_path(job_id)
             control_dir = self._control_dir()
             result = await ssh.run_remote(
-                "mkdir -p {control_dir} && touch {stop_request}".format(
-                    control_dir=shlex.quote(control_dir),
-                    stop_request=shlex.quote(stop_request),
-                )
+                f"mkdir -p {shlex.quote(control_dir)} && touch {shlex.quote(stop_request)}"
             )
             if result.ok:
                 graceful_timeout = int(

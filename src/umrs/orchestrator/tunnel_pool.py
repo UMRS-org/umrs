@@ -34,7 +34,6 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass, field
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +49,7 @@ class TunnelSpec:
     remote_host: str  # Compute node hostname
     remote_port: int  # Port on compute node (e.g., 8001)
     local_port: int  # Allocated local port on front-end
-    process: Optional[asyncio.subprocess.Process] = field(
+    process: asyncio.subprocess.Process | None = field(
         default=None, repr=False, compare=False
     )
 
@@ -108,7 +107,7 @@ class TunnelPool:
         remote_host: str,
         remote_port: int,
         *,
-        local_port: Optional[int] = None,
+        local_port: int | None = None,
     ) -> int:
         """Open a forward tunnel to a compute node endpoint.
 
@@ -263,7 +262,7 @@ class TunnelPool:
             pass
         return True
 
-    def get_local_port(self, remote_host: str, remote_port: int) -> Optional[int]:
+    def get_local_port(self, remote_host: str, remote_port: int) -> int | None:
         """Get the local port for an active tunnel. Returns None if not open."""
         key = self._tunnel_key(remote_host, remote_port)
         spec = self._tunnels.get(key)
@@ -271,7 +270,7 @@ class TunnelPool:
             return spec.local_port
         return None
 
-    def get_local_url(self, remote_host: str, remote_port: int) -> Optional[str]:
+    def get_local_url(self, remote_host: str, remote_port: int) -> str | None:
         """Get the local URL (http://127.0.0.1:{port}) for an active tunnel."""
         port = self.get_local_port(remote_host, remote_port)
         if port is None:

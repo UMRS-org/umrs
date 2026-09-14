@@ -9,7 +9,8 @@ import json
 import logging
 import urllib.parse
 import urllib.request
-from typing import Any, Dict, Iterator, List, Optional
+from collections.abc import Iterator
+from typing import Any
 
 from . import (
     Connector,
@@ -46,8 +47,8 @@ class GoogleDriveConnector(Connector):
     def name(self) -> str:
         return "Google Drive"
 
-    def validate_config(self, config: ConnectorConfig) -> List[str]:
-        errors: List[str] = []
+    def validate_config(self, config: ConnectorConfig) -> list[str]:
+        errors: list[str] = []
         if not config.credentials.get("access_token"):
             errors.append("access_token credential is required")
         return errors
@@ -55,7 +56,7 @@ class GoogleDriveConnector(Connector):
     def fetch(
         self,
         config: ConnectorConfig,
-        checkpoint: Optional[SyncCheckpoint] = None,
+        checkpoint: SyncCheckpoint | None = None,
     ) -> Iterator[Document]:
         token = config.credentials["access_token"]
         folder_id = config.settings.get("folder_id", "")
@@ -63,7 +64,7 @@ class GoogleDriveConnector(Connector):
         include_shared = config.settings.get("include_shared", False)
 
         # Build query
-        query_parts: List[str] = ["trashed=false"]
+        query_parts: list[str] = ["trashed=false"]
         if folder_id:
             query_parts.append(f"'{folder_id}' in parents")
         if mime_types:
@@ -75,7 +76,7 @@ class GoogleDriveConnector(Connector):
         page_token = checkpoint.cursor if checkpoint else None
 
         while True:
-            params: Dict[str, str] = {
+            params: dict[str, str] = {
                 "q": query,
                 "fields": "nextPageToken,files(id,name,mimeType,modifiedTime,size,webViewLink)",
                 "pageSize": "100",
@@ -100,9 +101,9 @@ class GoogleDriveConnector(Connector):
 
     def _file_to_doc(
         self,
-        file_info: Dict[str, Any],
+        file_info: dict[str, Any],
         token: str,
-    ) -> Optional[Document]:
+    ) -> Document | None:
         """Convert a Drive file entry to a Document."""
         file_id = file_info.get("id", "")
         name = file_info.get("name", "")
@@ -180,8 +181,8 @@ class GoogleDriveConnector(Connector):
     def _api_get(
         url: str,
         token: str,
-        params: Dict[str, str],
-    ) -> Dict[str, Any]:
+        params: dict[str, str],
+    ) -> dict[str, Any]:
         """Authenticated GET returning JSON."""
         if params:
             url = f"{url}?{urllib.parse.urlencode(params)}"
@@ -192,14 +193,14 @@ class GoogleDriveConnector(Connector):
                 "Accept": "application/json",
             },
         )
-        with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310
+        with urllib.request.urlopen(req, timeout=30) as resp:
             return json.loads(resp.read().decode())
 
     @staticmethod
     def _api_get_text(
         url: str,
         token: str,
-        params: Dict[str, str],
+        params: dict[str, str],
     ) -> str:
         """Authenticated GET returning plain text."""
         if params:
@@ -208,7 +209,7 @@ class GoogleDriveConnector(Connector):
             url,
             headers={"Authorization": f"Bearer {token}"},
         )
-        with urllib.request.urlopen(req, timeout=60) as resp:  # noqa: S310
+        with urllib.request.urlopen(req, timeout=60) as resp:
             return resp.read().decode(errors="replace")
 
 

@@ -813,7 +813,14 @@ class PodmanExecutor:
             or os.environ.get("MINIO_ENDPOINT")
         )
         if endpoint:
-            cmd.extend(["-e", f"S3_ENDPOINT_URL={endpoint}", "-e", f"MINIO_ENDPOINT={endpoint}"])
+            cmd.extend(
+                [
+                    "-e",
+                    f"S3_ENDPOINT_URL={endpoint}",
+                    "-e",
+                    f"MINIO_ENDPOINT={endpoint}",
+                ]
+            )
         region = s3_config.get("region_name") or os.environ.get("AWS_REGION")
         if region:
             cmd.extend(["-e", f"AWS_REGION={region}"])

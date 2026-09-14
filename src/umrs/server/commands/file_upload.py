@@ -16,7 +16,9 @@ import logging
 from typing import Any
 
 from umrs.core.TaskCmdStatus import TaskStatus
-from umrs.server.file_handling import persist_uploaded_user_config as _persist_uploaded_user_config
+from umrs.server.file_handling import (
+    persist_uploaded_user_config as _persist_uploaded_user_config,
+)
 
 from .base import CommandHandler, HandlerContext, StatusCallback
 
@@ -34,7 +36,9 @@ class FileHandler(CommandHandler):
         task_id: int,
     ) -> None:
         if not payload:
-            logger.warning("FILE command received with no payload (task_id=%s)", task_id)
+            logger.warning(
+                "FILE command received with no payload (task_id=%s)", task_id
+            )
             update_status(TaskStatus.COMPLETED)
             return
 

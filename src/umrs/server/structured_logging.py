@@ -48,7 +48,7 @@ class StructuredJSONFormatter(logging.Formatter):
         super().__init__()
         self.service = service
 
-    def format(self, record: logging.LogRecord) -> str:  # noqa: A003
+    def format(self, record: logging.LogRecord) -> str:
         entry: dict[str, Any] = {
             "ts": datetime.fromtimestamp(record.created, tz=timezone.utc).isoformat(),
             "level": record.levelname,

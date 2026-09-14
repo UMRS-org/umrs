@@ -269,7 +269,9 @@ def _handle_unregister_workflow(client_id: str, payload_str: str) -> str:
         scope=payload.get("scope") if isinstance(payload, dict) else None,
     )
     if result["removed"] == 0:
-        return json.dumps({"status": "error", "message": f"Workflow '{name}' not found"})
+        return json.dumps(
+            {"status": "error", "message": f"Workflow '{name}' not found"}
+        )
     return json.dumps(result)
 
 
@@ -712,7 +714,9 @@ def _handle_workflow_executions(client_id: str, payload_str: str) -> str:
         user_filter = caller.user_id
 
     registry = get_execution_registry()
-    records = registry.list(user_id=user_filter if isinstance(user_filter, str) and user_filter else None)
+    records = registry.list(
+        user_id=user_filter if isinstance(user_filter, str) and user_filter else None
+    )
 
     visible = []
     for record in records:
@@ -1088,7 +1092,9 @@ def _handle_workflow_logs(client_id: str, payload_str: str) -> str:
 # The wrapper resolves the module-global name at every CALL, so a test
 # patching `umrs.server.workflow_registry_handler._launch_workflow_from_catalog`
 # keeps the old lazy-import semantics.
-from umrs.shared.workflow_execution_access import register_workflow_handler  # noqa: E402
+from umrs.shared.workflow_execution_access import (
+    register_workflow_handler,
+)
 
 
 def _workflow_launch_factory(**kwargs):

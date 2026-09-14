@@ -23,7 +23,9 @@ from .base import CommandHandler, HandlerContext, StatusCallback
 logger = logging.getLogger(__name__)
 
 
-def _send_reply(ctx: HandlerContext, zmq_sender_id: Any, response_json: str, label: str) -> None:
+def _send_reply(
+    ctx: HandlerContext, zmq_sender_id: Any, response_json: str, label: str
+) -> None:
     """Send *response_json* back to the ZeroMQ caller.  Log but never raise."""
     try:
         ctx.control_mq.send_string(response_json, zmq_sender_id)
@@ -34,7 +36,13 @@ def _send_reply(ctx: HandlerContext, zmq_sender_id: Any, response_json: str, lab
 class ModelRegisterHandler(CommandHandler):
     """Handle MODEL_REGISTER — register a local model with UMRS."""
 
-    def execute(self, payload: Any, update_status: StatusCallback, ctx: HandlerContext, task_id: int) -> None:
+    def execute(
+        self,
+        payload: Any,
+        update_status: StatusCallback,
+        ctx: HandlerContext,
+        task_id: int,
+    ) -> None:
         client_id, payload_str, zmq_sender_id = payload
         response_json = handle_model_command(
             "MODEL_REGISTER",
@@ -49,7 +57,13 @@ class ModelRegisterHandler(CommandHandler):
 class ModelListHandler(CommandHandler):
     """Handle MODEL_LIST — list registered models."""
 
-    def execute(self, payload: Any, update_status: StatusCallback, ctx: HandlerContext, task_id: int) -> None:
+    def execute(
+        self,
+        payload: Any,
+        update_status: StatusCallback,
+        ctx: HandlerContext,
+        task_id: int,
+    ) -> None:
         client_id, payload_str, zmq_sender_id = payload
         response_json = handle_model_command(
             "MODEL_LIST",
@@ -69,7 +83,13 @@ class ModelDownloadHandler(CommandHandler):
     is not blocked.
     """
 
-    def execute(self, payload: Any, update_status: StatusCallback, ctx: HandlerContext, task_id: int) -> None:
+    def execute(
+        self,
+        payload: Any,
+        update_status: StatusCallback,
+        ctx: HandlerContext,
+        task_id: int,
+    ) -> None:
         client_id, payload_str, zmq_sender_id = payload
         ack = handle_model_command(
             "MODEL_DOWNLOAD",

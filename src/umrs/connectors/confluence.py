@@ -9,7 +9,8 @@ import json
 import logging
 import urllib.parse
 import urllib.request
-from typing import Any, Dict, Iterator, List, Optional
+from collections.abc import Iterator
+from typing import Any
 
 from . import (
     Connector,
@@ -44,8 +45,8 @@ class ConfluenceConnector(Connector):
     def name(self) -> str:
         return "Confluence"
 
-    def validate_config(self, config: ConnectorConfig) -> List[str]:
-        errors: List[str] = []
+    def validate_config(self, config: ConnectorConfig) -> list[str]:
+        errors: list[str] = []
         if not config.settings.get("base_url"):
             errors.append("base_url is required")
         if not config.credentials.get("email"):
@@ -57,7 +58,7 @@ class ConfluenceConnector(Connector):
     def fetch(
         self,
         config: ConnectorConfig,
-        checkpoint: Optional[SyncCheckpoint] = None,
+        checkpoint: SyncCheckpoint | None = None,
     ) -> Iterator[Document]:
         base_url = config.settings["base_url"].rstrip("/")
         space_key = config.settings.get("space_key", "")
@@ -130,7 +131,7 @@ class ConfluenceConnector(Connector):
             return False
 
     @staticmethod
-    def _api_get(url: str, email: str, api_token: str) -> Dict[str, Any]:
+    def _api_get(url: str, email: str, api_token: str) -> dict[str, Any]:
         """Make an authenticated GET request to Confluence REST API."""
         import base64
 
@@ -142,7 +143,7 @@ class ConfluenceConnector(Connector):
                 "Accept": "application/json",
             },
         )
-        with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310
+        with urllib.request.urlopen(req, timeout=30) as resp:
             return json.loads(resp.read().decode())
 
 

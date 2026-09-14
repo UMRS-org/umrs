@@ -75,9 +75,7 @@ class ProcessObjectsHandler(CommandHandler):
                 )
                 ctx.task_manager.associate_thread_with_task(thread_ident, task_id)
             except ServerOverloadedError as exc:
-                logger.warning(
-                    "Rejecting PROCESS_OBJECTS task %s: %s", task_id, exc
-                )
+                logger.warning("Rejecting PROCESS_OBJECTS task %s: %s", task_id, exc)
                 update_status(TaskStatus.ERROR)
 
         thread = threading.Thread(

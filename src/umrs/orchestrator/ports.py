@@ -76,7 +76,6 @@ class PortAllocator(ABC):
         Returns:
             Allocated port number, or None if allocation failed.
         """
-        pass
 
     @abstractmethod
     def release(self, port: int, host: str) -> bool:
@@ -90,12 +89,10 @@ class PortAllocator(ABC):
         Returns:
             True if released, False if not found.
         """
-        pass
 
     @abstractmethod
     def is_allocated(self, port: int, host: str) -> bool:
         """Check if a port is allocated on a host."""
-        pass
 
 
 class StaticRangeAllocator(PortAllocator):

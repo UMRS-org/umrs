@@ -202,4 +202,4 @@ def _extension(document: Document) -> str:
     return f".{content_type.split('/')[-1]}" if "/" in content_type else ""
 
 
-__all__ = ["IntakeGate", "IntakePolicy", "GateDecision", "ScanReport"]
+__all__ = ["GateDecision", "IntakeGate", "IntakePolicy", "ScanReport"]

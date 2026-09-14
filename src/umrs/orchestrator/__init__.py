@@ -38,6 +38,10 @@ Port Allocation (U-106):
     port = get_port_manager().allocate(job_id, host)
 """
 
+from .autoscaler import (
+    AutoscalePolicy,
+    PoolAutoscaler,
+)
 from .base import (
     EndpointInfo,
     JobInfo,
@@ -91,10 +95,6 @@ from .service import (
     ProvisionRequest,
     ProvisionResult,
     get_orchestration_service,
-)
-from .autoscaler import (
-    AutoscalePolicy,
-    PoolAutoscaler,
 )
 from .site_config import (
     SiteConfig,

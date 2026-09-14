@@ -51,8 +51,7 @@ def _parse_datetime(value: str | None) -> datetime | None:
     if not value:
         return None
     # Handle both with and without 'Z' suffix
-    if value.endswith("Z"):
-        value = value[:-1]
+    value = value.removesuffix("Z")
     try:
         return datetime.fromisoformat(value)
     except ValueError:
@@ -246,12 +245,12 @@ class PostgresBackend(RegistryBackend):
         from umrs.shared.pg_settings import pg_connect_kwargs
 
         try:
-            conn = psycopg2.connect(admin_dsn, **pg_connect_kwargs("orchestrator-admin"))
+            conn = psycopg2.connect(
+                admin_dsn, **pg_connect_kwargs("orchestrator-admin")
+            )
             conn.autocommit = True
             with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT 1 FROM pg_database WHERE datname = %s", (db_name,)
-                )
+                cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", (db_name,))
                 if cur.fetchone() is None:
                     # Database doesn't exist, create it
                     cur.execute(f'CREATE DATABASE "{db_name}"')
@@ -341,7 +340,9 @@ class PostgresBackend(RegistryBackend):
             """)
             for row in cur.fetchall():
                 constraint_name = row[0]
-                cur.execute(f"ALTER TABLE endpoint_registry DROP CONSTRAINT {constraint_name}")
+                cur.execute(
+                    f"ALTER TABLE endpoint_registry DROP CONSTRAINT {constraint_name}"
+                )
                 logger.info(f"Removed legacy constraint: {constraint_name}")
 
     def _row_to_endpoint(self, row) -> RegisteredEndpoint:

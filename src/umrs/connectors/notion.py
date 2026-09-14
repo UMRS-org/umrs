@@ -8,7 +8,8 @@ from __future__ import annotations
 import json
 import logging
 import urllib.request
-from typing import Any, Dict, Iterator, List, Optional
+from collections.abc import Iterator
+from typing import Any
 
 from . import (
     Connector,
@@ -45,8 +46,8 @@ class NotionConnector(Connector):
     def name(self) -> str:
         return "Notion"
 
-    def validate_config(self, config: ConnectorConfig) -> List[str]:
-        errors: List[str] = []
+    def validate_config(self, config: ConnectorConfig) -> list[str]:
+        errors: list[str] = []
         if not config.credentials.get("api_token"):
             errors.append("api_token credential is required")
         return errors
@@ -54,7 +55,7 @@ class NotionConnector(Connector):
     def fetch(
         self,
         config: ConnectorConfig,
-        checkpoint: Optional[SyncCheckpoint] = None,
+        checkpoint: SyncCheckpoint | None = None,
     ) -> Iterator[Document]:
         token = config.credentials["api_token"]
         database_id = config.settings.get("database_id")
@@ -68,11 +69,11 @@ class NotionConnector(Connector):
         self,
         token: str,
         config: ConnectorConfig,
-        checkpoint: Optional[SyncCheckpoint],
+        checkpoint: SyncCheckpoint | None,
     ) -> Iterator[Document]:
         """Search all pages accessible to the integration."""
         cursor = checkpoint.cursor if checkpoint else None
-        body: Dict[str, Any] = {"filter": {"value": "page", "property": "object"}}
+        body: dict[str, Any] = {"filter": {"value": "page", "property": "object"}}
         if cursor:
             body["start_cursor"] = cursor
 
@@ -95,11 +96,11 @@ class NotionConnector(Connector):
         token: str,
         database_id: str,
         config: ConnectorConfig,
-        checkpoint: Optional[SyncCheckpoint],
+        checkpoint: SyncCheckpoint | None,
     ) -> Iterator[Document]:
         """Query a specific Notion database for pages."""
         cursor = checkpoint.cursor if checkpoint else None
-        body: Dict[str, Any] = {}
+        body: dict[str, Any] = {}
         if cursor:
             body["start_cursor"] = cursor
 
@@ -122,7 +123,7 @@ class NotionConnector(Connector):
             if not body["start_cursor"]:
                 break
 
-    def _page_to_doc(self, page: Dict[str, Any]) -> Optional[Document]:
+    def _page_to_doc(self, page: dict[str, Any]) -> Document | None:
         """Convert a Notion page object to a Document."""
         page_id = page.get("id", "")
         url = page.get("url", "")
@@ -172,8 +173,8 @@ class NotionConnector(Connector):
     def _api_post(
         url: str,
         token: str,
-        body: Dict[str, Any],
-    ) -> Dict[str, Any]:
+        body: dict[str, Any],
+    ) -> dict[str, Any]:
         """Make an authenticated POST request to Notion API."""
         data = json.dumps(body).encode()
         req = urllib.request.Request(
@@ -186,7 +187,7 @@ class NotionConnector(Connector):
             },
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310
+        with urllib.request.urlopen(req, timeout=30) as resp:
             return json.loads(resp.read().decode())
 
 

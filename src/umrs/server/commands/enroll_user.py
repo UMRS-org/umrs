@@ -17,9 +17,11 @@ import logging
 from typing import Any
 
 from umrs.core.TaskCmdStatus import TaskStatus
-from umrs.server.file_handling import persist_uploaded_user_config as _persist_uploaded_user_config
-from umrs.server.maintenance import filter_outcome, reload_configuration
 from umrs.server.config import ENABLE_PRETTY_PRINT
+from umrs.server.file_handling import (
+    persist_uploaded_user_config as _persist_uploaded_user_config,
+)
+from umrs.server.maintenance import filter_outcome, reload_configuration
 
 from .base import CommandHandler, HandlerContext, StatusCallback
 
@@ -37,7 +39,9 @@ class EnrollUserHandler(CommandHandler):
         task_id: int,
     ) -> None:
         if not payload:
-            logger.warning("ENROLL_USER command received with no payload (task_id=%s)", task_id)
+            logger.warning(
+                "ENROLL_USER command received with no payload (task_id=%s)", task_id
+            )
             update_status(TaskStatus.ERROR)
             return
 
@@ -50,7 +54,7 @@ class EnrollUserHandler(CommandHandler):
                 file,
                 ctx.configure_file,
                 ctx.user_config_map,
-                expected_username=None,   # admin acts on behalf of any user
+                expected_username=None,  # admin acts on behalf of any user
                 allow_create=True,
             )
             if ok:
