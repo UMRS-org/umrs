@@ -31,6 +31,13 @@ class MinioBackend:
 
         return minio_s3_create_user(username, None, user_s3cfg_path, admin_s3cfg_path)
 
+    def user_s3cfg_is_current(
+        self, username: str, user_s3cfg_path: str, admin_s3cfg_path: str
+    ) -> bool:
+        # Status quo for MinIO: identities are username-keyed and the s3cfg is
+        # the durable source of the secret; the reload path reconciles it.
+        return os.path.isfile(os.path.expanduser(user_s3cfg_path))
+
     def grant_bucket_access(
         self, username: str, bucket: str, admin_s3cfg_path: str
     ) -> None:

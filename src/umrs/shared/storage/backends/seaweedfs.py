@@ -163,6 +163,12 @@ class SeaweedFSBackend:
         logger.info("SeaweedFS identity issued for %s -> %s", username, written)
         return admin.alias, content
 
+    def user_s3cfg_is_current(
+        self, username: str, user_s3cfg_path: str, admin_s3cfg_path: str
+    ) -> bool:
+        admin = self._admin(admin_s3cfg_path)
+        return self._existing_valid_s3cfg(username, user_s3cfg_path, admin) is not None
+
     def grant_bucket_access(
         self, username: str, bucket: str, admin_s3cfg_path: str
     ) -> None:

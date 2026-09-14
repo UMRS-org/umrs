@@ -674,38 +674,42 @@ def _read_user_s3cfg(username: str) -> str | None:
 
 
 def _get_or_create_user_s3cfg(username: str) -> str | None:
-    """Return the user's s3cfg content, auto-provisioning a MinIO user if needed.
+    """Return the user's s3cfg content, provisioning an object-store identity if needed.
 
-    First tries to read an existing s3cfg from disk (via ``_read_user_s3cfg``).
-    If none exists and ``UMRS_ADMIN_S3_CONFIGURATION_FILE`` is set, creates a
-    new object-store identity with a per-user list policy and returns the generated
-    s3cfg content.  Returns ``None`` on any failure — login still succeeds
-    without s3cfg.
+    Reads the existing s3cfg from disk first (``_read_user_s3cfg``). When
+    ``UMRS_ADMIN_S3_CONFIGURATION_FILE`` is set the backend adapter (ADR-055)
+    is asked whether that credential still authenticates — an s3cfg issued
+    by a previous object store (MinIO-era key after the SeaweedFS cutover) is
+    re-provisioned instead of being delivered dead. Without the admin config
+    the file is returned as-is. Returns ``None`` on any failure — login still
+    succeeds without s3cfg.
     """
-    # Try existing file first (fast path)
     existing = _read_user_s3cfg(username)
-    if existing:
-        return existing
-
-    # Auto-provision: create the object-store identity on first login (ADR-055)
     admin_s3cfg = os.environ.get("UMRS_ADMIN_S3_CONFIGURATION_FILE", "")
     if not admin_s3cfg:
-        # No admin config → cannot auto-provision
-        return None
+        # No admin config → cannot verify or auto-provision; deliver what exists.
+        return existing
 
     try:
         from umrs.shared.storage.backends import get_backend
 
+        backend = get_backend()
         user_s3cfg_path = os.path.expanduser(f"~/.config/umrs/s3cfg_{username}")
-        _alias, s3cfg_content = get_backend().create_user(
-            username, user_s3cfg_path, admin_s3cfg
-        )
-
+        if existing and backend.user_s3cfg_is_current(username, user_s3cfg_path, admin_s3cfg):
+            return existing
+        if existing:
+            logger.warning(
+                "s3cfg for %s no longer authenticates on the %s backend; re-provisioning",
+                username,
+                backend.profile.display_name,
+            )
+        _alias, s3cfg_content = backend.create_user(username, user_s3cfg_path, admin_s3cfg)
         return s3cfg_content
     except Exception as e:
-        # Best-effort: the object store may be unavailable; login proceeds without s3cfg
+        # Best-effort: the object store may be unavailable; login proceeds with
+        # whatever s3cfg exists (possibly none).
         print(f"Warning: auto-provision s3cfg for '{username}' failed: {e}")
-        return None
+        return existing
 
 
 # ---------------------------------------------------------------------------
