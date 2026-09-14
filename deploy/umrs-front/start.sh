@@ -1088,7 +1088,7 @@ echo "╠═══════════════════════�
 echo "║  Tunnel mode:  ${UMRS_TUNNEL_MODE}                                       ║"
 echo "║  Server host:  ${UMRS_SERVER_HOST}                                   ║"
 echo "║  Postgres:     127.0.0.1:${POSTGRES_PORT:-5432}  (container)             ║"
-echo "║  MinIO:        ${MINIO_BIND}:${MINIO_PORT:-9000}  (container)                ║"
+echo "║  S3 (SeaweedFS): ${S3_BIND}:${S3_PORT}  (container umrs-seaweedfs)     ║"
 echo "║  S3 Presign:   ${S3_PRESIGN_ENDPOINT}          ║"
 echo "║                                                              ║"
 echo "║  RCCS Cloud:   (container: umrs-server-rccs)                 ║"
