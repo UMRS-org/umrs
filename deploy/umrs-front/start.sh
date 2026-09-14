@@ -241,6 +241,15 @@ if [[ "$START_MODE" != "--server" ]]; then
             podman stop "$_ctr" 2>/dev/null || true
             podman rm -f "$_ctr" 2>/dev/null || true
         fi
+        # A compose create that failed half-way leaves a storage-only entry
+        # (invisible to `podman ps -a`, listed by --external) that keeps the
+        # name reserved: "container name X is already in use by <id>"
+        # (2026-09-14 cutover, ADR-055). Data lives in the bind-backed volumes,
+        # so dropping these rw layers is safe.
+        for _sid in $(podman ps -a --external --filter "name=^${_ctr}\$" --format '{{.ID}}' 2>/dev/null); do
+            echo "  Removing leaked storage entry for $_ctr ($_sid)..."
+            podman rm -f --storage "$_sid" 2>/dev/null || true
+        done
     done
 
     podman compose -f "${SCRIPT_DIR}/docker-compose.yaml" up -d postgres seaweedfs
