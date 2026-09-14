@@ -263,14 +263,16 @@ if [[ "$START_MODE" != "--server" ]]; then
         if podman inspect "$_ctr" >/dev/null 2>&1; then
             echo "  Removing dependent container $_ctr (recreated later)..."
             podman stop -t 10 "$_ctr" 2>/dev/null || true
-            podman rm -f "$_ctr" || echo "  WARNING: podman rm $_ctr failed (see above)"
+            # --ignore: a record whose storage is already gone must not block
+            # the recreate (2026-09-14 recovery).
+            podman rm -f --ignore "$_ctr" || echo "  WARNING: podman rm $_ctr failed (see above)"
         fi
     done
     for _ctr in umrs-postgres umrs-seaweedfs umrs-minio; do
         if podman inspect "$_ctr" >/dev/null 2>&1; then
             echo "  Removing legacy container $_ctr (and dependents)..."
             podman stop "$_ctr" 2>/dev/null || true
-            podman rm -f --depend "$_ctr" || echo "  WARNING: podman rm --depend $_ctr failed (see above)"
+            podman rm -f --depend --ignore "$_ctr" || echo "  WARNING: podman rm --depend $_ctr failed (see above)"
         fi
         # A compose create that failed half-way leaves a storage-only entry
         # (invisible to `podman ps -a`, listed by --external) that keeps the
@@ -278,7 +280,9 @@ if [[ "$START_MODE" != "--server" ]]; then
         # (2026-09-14 cutover, ADR-055). Data lives in the bind-backed volumes,
         # so dropping these rw layers is safe.
         # Full IDs (--no-trunc): storage-container lookups are exact-match.
-        for _sid in $(podman ps -a --external --no-trunc --filter "name=^${_ctr}\$" --format '{{.ID}}' 2>/dev/null); do
+        # `ps -a --external` lists regular containers TOO; only entries whose
+        # status is "Storage" are the leaked storage-only ones.
+        for _sid in $(podman ps -a --external --no-trunc --filter "name=^${_ctr}\$" --format '{{.ID}} {{.Status}}' 2>/dev/null | awk '$2 == "Storage" {print $1}'); do
             echo "  Removing leaked storage entry for $_ctr ($_sid)..."
             if ! podman rm -f --storage "$_sid"; then
                 echo "  WARNING: podman rm --storage $_sid failed; retrying by name..."
