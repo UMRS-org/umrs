@@ -467,43 +467,43 @@ def _maybe_emit_template(args, store, rec) -> None:
             gw_hint = payload.get("gateway_url", "")
             if gw_hint:
                 print(
-                    f"  1. (recommended) r4 via Gateway HTTP (gateway_url embedded — no flags needed):"
+                    "  1. (recommended) r4 via Gateway HTTP (gateway_url embedded — no flags needed):"
                 )
                 print(f"       r4 auth login --api-key {token_hint}")
             else:
-                print(f"  1. (recommended) r4 via Gateway HTTP:")
+                print("  1. (recommended) r4 via Gateway HTTP:")
                 print(
                     f"       r4 auth login --gateway-url <GATEWAY_URL> --api-key {token_hint}"
                 )
             print(
-                f"  2. (alternative) umrs direct ZMQ — requires CURVE keys if CURVE auth is enabled:"
+                "  2. (alternative) umrs direct ZMQ — requires CURVE keys if CURVE auth is enabled:"
             )
             print(f"       umrs login --host <HOST> --api-key {token_hint}")
         else:
             print(
-                f"  1. Generate a token for the user (embed --gateway-url for single-flag login):"
+                "  1. Generate a token for the user (embed --gateway-url for single-flag login):"
             )
             print(
                 f"       umrs-server admin token generate-jwt --user {rec.username} --gateway-url <GATEWAY_URL>"
             )
-            print(f"  2. Give the token to the user, who runs:")
-            print(f"       r4 auth login --api-key <TOKEN>")
+            print("  2. Give the token to the user, who runs:")
+            print("       r4 auth login --api-key <TOKEN>")
             print(
-                f"     (alternative) umrs direct ZMQ — requires CURVE keys if CURVE auth is enabled:"
+                "     (alternative) umrs direct ZMQ — requires CURVE keys if CURVE auth is enabled:"
             )
-            print(f"       umrs login --host <HOST> --api-key <TOKEN>")
+            print("       umrs login --host <HOST> --api-key <TOKEN>")
         if not rec.slurm_account and not rec.slurm_accounts:
             require_acct, _ = _resolve_slurm_account_requirement()
             if require_acct:
                 print(
-                    f"  NOTE: set a Slurm account before the user can provision endpoints:"
+                    "  NOTE: set a Slurm account before the user can provision endpoints:"
                 )
                 print(
                     f"       umrs-server admin user set-slurm-account {rec.username} <ACCOUNT>"
                 )
             else:
                 print(
-                    f"  NOTE: per-user Slurm account is optional on this site; jobs use the site master account."
+                    "  NOTE: per-user Slurm account is optional on this site; jobs use the site master account."
                 )
                 print(
                     f"       to assign one anyway: umrs-server admin user set-slurm-account {rec.username} <ACCOUNT>"
@@ -563,11 +563,12 @@ def _cmd_user_delete(args: argparse.Namespace, store: UserStore) -> int:
         user_cfg = rec.to_json()
 
         # Resolve admin S3 config from the server config file.
+        import os
+
         from umrs.shared.config import (
             get_default_json_server_file,
             get_resolved_umrs_cfg_dir,
         )
-        import os
 
         server_json = os.path.join(
             get_resolved_umrs_cfg_dir(), get_default_json_server_file()
@@ -724,13 +725,13 @@ def _cmd_user_generate_template(args: argparse.Namespace, _store: UserStore) -> 
 
     print(f"Template written to {out_path}")
     print()
-    print(f"  Onboarding steps for the user:")
+    print("  Onboarding steps for the user:")
     print(f"  1. Send '{out_path.name}' to the user (or copy via scp)")
-    print(f"  2. On their local machine:")
+    print("  2. On their local machine:")
     print(
         f"       r4 config init --gateway-url <GATEWAY_URL> --umrs-username {username}"
     )
-    print(f"  3. Config is stored locally at ~/.config/r4/profiles.json")
+    print("  3. Config is stored locally at ~/.config/r4/profiles.json")
     return 0
 
 
@@ -1544,14 +1545,14 @@ def _cmd_zmq_keygen(args: argparse.Namespace, _store: UserStore) -> int:
                 f"  1. Copy {name}.key to the server's UMRS_ZMQ_CURVE_CLIENT_KEYS_DIR"
             )
             print(f"  2. Give {sec_path} to the user (keep secret!)")
-            print(f"  3. The user sets UMRS_ZMQ_CURVE_CLIENT_PUBLIC_KEY and")
+            print("  3. The user sets UMRS_ZMQ_CURVE_CLIENT_PUBLIC_KEY and")
             print(f"     UMRS_ZMQ_CURVE_CLIENT_SECRET_KEY from {sec_path}")
         else:
             print()
             print("Next steps:")
             print(f"  1. Set UMRS_ZMQ_CURVE_SERVER_PUBLIC_KEY from {pub_path}")
             print(f"  2. Set UMRS_ZMQ_CURVE_SERVER_SECRET_KEY from {sec_path}")
-            print(f"  3. Distribute the public key to all clients")
+            print("  3. Distribute the public key to all clients")
     return 0
 
 
@@ -1661,8 +1662,8 @@ def _umrs_base_url(args: argparse.Namespace) -> str:
 
 def _umrs_api_get(url: str) -> dict:
     """GET from UMRS API. Returns parsed JSON."""
-    import urllib.request
     import urllib.error
+    import urllib.request
 
     req = urllib.request.Request(url, method="GET")
     req.add_header("Accept", "application/json")
@@ -1684,8 +1685,8 @@ def _umrs_api_get(url: str) -> dict:
 
 def _umrs_api_delete(url: str) -> dict | None:
     """DELETE from UMRS API. Returns parsed JSON or None."""
-    import urllib.request
     import urllib.error
+    import urllib.request
 
     req = urllib.request.Request(url, method="DELETE")
     req.add_header("Accept", "application/json")
@@ -1806,8 +1807,8 @@ def _cmd_endpoint_stats(args: argparse.Namespace, _store: UserStore) -> int:
 def _umrs_api_post(url: str, data: dict | None = None) -> dict:
     """POST to UMRS API. Returns parsed JSON."""
     import json
-    import urllib.request
     import urllib.error
+    import urllib.request
 
     payload = json.dumps(data or {}).encode()
     req = urllib.request.Request(url, data=payload, method="POST")

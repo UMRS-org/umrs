@@ -373,9 +373,9 @@ class UserStore:
 
 
 __all__ = [
+    "VALID_ROLES",
     "UserRecord",
     "UserStore",
     "UserStoreError",
-    "VALID_ROLES",
     "validate_username",
 ]

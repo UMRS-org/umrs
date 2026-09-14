@@ -31,7 +31,8 @@ from contextlib import contextmanager
 logger = logging.getLogger(__name__)
 
 try:
-    from prometheus_client import Counter as _Counter, Histogram as _Histogram
+    from prometheus_client import Counter as _Counter
+    from prometheus_client import Histogram as _Histogram
 
     _HAS_PROMETHEUS = True
 except ImportError:  # pragma: no cover
@@ -44,10 +45,10 @@ class _NoOpCounter:
     def __init__(self, *_args: object, **_kwargs: object) -> None:
         pass
 
-    def labels(self, **_kw: object) -> "_NoOpCounter":
+    def labels(self, **_kw: object) -> _NoOpCounter:
         return self
 
-    def inc(self, amount: float = 1) -> None:  # noqa: ARG002
+    def inc(self, amount: float = 1) -> None:
         pass
 
 
@@ -57,10 +58,10 @@ class _NoOpHistogram:
     def __init__(self, *_args: object, **_kwargs: object) -> None:
         pass
 
-    def labels(self, **_kw: object) -> "_NoOpHistogram":
+    def labels(self, **_kw: object) -> _NoOpHistogram:
         return self
 
-    def observe(self, amount: float) -> None:  # noqa: ARG002
+    def observe(self, amount: float) -> None:
         pass
 
 
@@ -82,13 +83,13 @@ class _NoOpGauge:
     def __init__(self, *_args: object, **_kwargs: object) -> None:
         pass
 
-    def labels(self, **_kw: object) -> "_NoOpGauge":
+    def labels(self, **_kw: object) -> _NoOpGauge:
         return self
 
-    def set(self, value: float) -> None:  # noqa: ARG002, A003
+    def set(self, value: float) -> None:
         pass
 
-    def inc(self, amount: float = 1) -> None:  # noqa: ARG002
+    def inc(self, amount: float = 1) -> None:
         pass
 
 
@@ -668,9 +669,7 @@ class UMRSMetrics:
         s = source or self._source
         self._llm_request_duration.labels(source=s, model=model).observe(seconds)
 
-    def llm_first_token(
-        self, model: str, seconds: float, source: str = ""
-    ) -> None:
+    def llm_first_token(self, model: str, seconds: float, source: str = "") -> None:
         """Record time-to-first-streamed-chunk (P11 TTFT SLO series).
 
         Observed exactly once per streaming response at the first chunk the
@@ -683,9 +682,7 @@ class UMRSMetrics:
         s = source or self._source
         self._llm_first_token.labels(source=s, model=model).observe(seconds)
 
-    def llm_first_content(
-        self, model: str, seconds: float, source: str = ""
-    ) -> None:
+    def llm_first_content(self, model: str, seconds: float, source: str = "") -> None:
         """Record time-to-first-non-empty-content-delta (P11 decode leg).
 
         Observed exactly once per stream at the first SSE chunk carrying a

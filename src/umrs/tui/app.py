@@ -135,6 +135,7 @@ class MonitorApp(App):
         # Data layer
         self._store = MonitorStore()
         from umrs.client.control_api import UMRSControlAPI
+
         self._api = UMRSControlAPI(control_mq, client_id, config_path)
         self._fetchers = Fetchers(
             store=self._store,
@@ -195,7 +196,9 @@ class MonitorApp(App):
         self._refresh_active_tab()
         self.set_interval(self._interval, self._refresh_active_tab)
 
-    def on_tabbed_content_tab_activated(self, event: TabbedContent.TabActivated) -> None:
+    def on_tabbed_content_tab_activated(
+        self, event: TabbedContent.TabActivated
+    ) -> None:
         """Refresh the newly-activated tab immediately on switch."""
         self._refresh_active_tab()
 

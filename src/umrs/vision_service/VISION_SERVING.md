@@ -124,6 +124,7 @@ Create a `.py` file in `/adapters/user/` (or a directory pointed to by
 ```python
 from umrs.vision_service.adapters.base import VisionModelAdapter
 
+
 class MyModelAdapter(VisionModelAdapter):
     def capabilities(self):
         return {
@@ -143,9 +144,18 @@ class MyModelAdapter(VisionModelAdapter):
         # Load your model here
         ...
 
-    def infer(self, model, image, bucket, key, config, s3,
-              output_bucket, presigned_output_urls=None,
-              raw_image_bytes=None):
+    def infer(
+        self,
+        model,
+        image,
+        bucket,
+        key,
+        config,
+        s3,
+        output_bucket,
+        presigned_output_urls=None,
+        raw_image_bytes=None,
+    ):
         # Run inference here
         ...
 ```

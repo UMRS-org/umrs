@@ -16,7 +16,7 @@ state.
 from __future__ import annotations
 
 import logging
-from typing import Optional, Protocol
+from typing import Protocol
 
 logger = logging.getLogger(__name__)
 
@@ -33,9 +33,9 @@ class A2lRecorder(Protocol):
         artifact_type: str,
         user_id: str,
         content_hash: str,
-        project_id: Optional[str] = None,
-        metadata: Optional[dict] = None,
-    ) -> Optional[str]:
+        project_id: str | None = None,
+        metadata: dict | None = None,
+    ) -> str | None:
         """Conserve one attempt-produced artifact identity. Returns a2l id or None."""
         ...
 
@@ -48,8 +48,8 @@ class A2lRecorder(Protocol):
         job_id: str = "",
         attempt_id: str = "",
         artifact_id: str = "",
-        payload: Optional[dict] = None,
-    ) -> Optional[str]:
+        payload: dict | None = None,
+    ) -> str | None:
         """Conserve one human/operator decision. Returns decision id or None."""
         ...
 
@@ -86,11 +86,11 @@ def configure_recorder(recorder: A2lRecorder) -> None:
 class StoreA2lRecorder:
     """Recorder backed by the durable ConservationStore (asyncpg)."""
 
-    def __init__(self, store: "object") -> None:
+    def __init__(self, store: object) -> None:
         # typed loosely to avoid a hard import cycle with store module state
         self._store = store
 
-    async def record_attempt_artifact(self, **kwargs: object) -> Optional[str]:
+    async def record_attempt_artifact(self, **kwargs: object) -> str | None:
         from datetime import datetime, timezone
 
         from .models import ArtifactDerive, ArtifactRecord
@@ -142,7 +142,7 @@ class StoreA2lRecorder:
             )
             return None
 
-    async def record_decision(self, **kwargs: object) -> Optional[str]:
+    async def record_decision(self, **kwargs: object) -> str | None:
         from .models import DecisionCreate
 
         kw = dict(kwargs)

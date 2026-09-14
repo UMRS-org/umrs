@@ -89,7 +89,9 @@ class SealedSourceMeta:
     updated_at: Any
     tombstoned_at: Any
     active_leases: int | None = None
-    next_lease_expiry: Any = None  # latest expires_at across live leases (badge countdown)
+    next_lease_expiry: Any = (
+        None  # latest expires_at across live leases (badge countdown)
+    )
 
     def to_dict(self) -> dict[str, Any]:
         def _iso(v: Any) -> Any:
@@ -374,7 +376,9 @@ class SealedSourceStore:
             self._pool.putconn(conn)
         return [
             {
-                "created_at": r["created_at"].isoformat() if hasattr(r["created_at"], "isoformat") else r["created_at"],
+                "created_at": r["created_at"].isoformat()
+                if hasattr(r["created_at"], "isoformat")
+                else r["created_at"],
                 "action": r["action"],
                 "actor_type": r["actor_type"],
                 "owner": r["owner"],
@@ -384,7 +388,9 @@ class SealedSourceStore:
             for r in rows
         ]
 
-    def rewrap_all(self, *, old_privkey_b64: str, new_pubkey_b64: str) -> dict[str, int]:
+    def rewrap_all(
+        self, *, old_privkey_b64: str, new_pubkey_b64: str
+    ) -> dict[str, int]:
         """Rotation job (R2-5): rewrite the OLD key-epoch rows' DEK wrapping in one txn.
 
         Scope: rows with ``seal_key_id == <old pub id>`` (foreign-epoch rows
@@ -407,7 +413,10 @@ class SealedSourceStore:
                     "WHERE tombstoned_at IS NULL AND seal_key_id = %s",
                     (old_id,),
                 )
-                rows = [(str(r["id"]), bytes(r["dek_wrapped"])) for r in cur.fetchall() or []]
+                rows = [
+                    (str(r["id"]), bytes(r["dek_wrapped"]))
+                    for r in cur.fetchall() or []
+                ]
 
             # First: rewrap everything in memory (fail before any write).
             rewrapped = list(

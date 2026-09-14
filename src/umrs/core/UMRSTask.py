@@ -89,7 +89,10 @@ class UMRSTask:
                         """
                     )
                     existing_index = cur.fetchone()
-                    if existing_index is not None and "payload_hash" not in existing_index[0]:
+                    if (
+                        existing_index is not None
+                        and "payload_hash" not in existing_index[0]
+                    ):
                         cur.execute("DROP INDEX IF EXISTS tasks_active_dedup")
                     cur.execute("""
                         CREATE UNIQUE INDEX IF NOT EXISTS tasks_active_dedup

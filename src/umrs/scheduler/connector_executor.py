@@ -33,8 +33,9 @@ Schedule/job_**cfg****payload shape:
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any
 
 from ..connectors import ConnectorConfig, ConnectorType
 from ..connectors.sync_runner import SyncRunReport
@@ -42,7 +43,7 @@ from ..connectors.sync_runner import SyncRunReport
 logger = logging.getLogger(__name__)
 
 
-def _emit_tick_metric(summary: "TickSummary") -> None:
+def _emit_tick_metric(summary: TickSummary) -> None:
     """Record the X1 tick outcome; instrumentation never breaks a schedule."""
     try:
         from ..metrics import METRICS
@@ -54,7 +55,7 @@ def _emit_tick_metric(summary: "TickSummary") -> None:
         else:
             outcome = "ok"
         METRICS.connector_tick(outcome)
-    except Exception:  # noqa: BLE001 — metrics must not break schedules
+    except Exception:
         logger.debug("connector tick metric failed", exc_info=True)
 
 

@@ -6,8 +6,8 @@ Flash-Attention-compatible SDPA, and structural embeddings from quadtree depth.
 """
 
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
+from torch import nn
 
 # --- 1. RoPE (Rotary Position Embedding) ---
 

@@ -16,7 +16,6 @@ signature expected by :mod:`client_umrs` and
 :mod:`umrs.tests.test_client_monitor_bootstrap`.
 """
 
-# ruff: noqa: E402
 import warnings
 
 warnings.warn(
@@ -30,4 +29,4 @@ warnings.warn(
 from .app import MonitorApp
 from .dashboard import Dashboard
 
-__all__ = ["MonitorApp", "Dashboard"]
+__all__ = ["Dashboard", "MonitorApp"]

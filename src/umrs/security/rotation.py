@@ -12,7 +12,8 @@ from __future__ import annotations
 import base64
 import logging
 import os
-from typing import Any, Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
+from typing import Any
 
 from .seal import SealError, _crypto, _hkdf_wrap_key, seal_key_id
 

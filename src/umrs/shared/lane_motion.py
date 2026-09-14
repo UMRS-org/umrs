@@ -15,7 +15,8 @@ matching lanes.UNCLASSIFIED resolution).
 from __future__ import annotations
 
 import re
-from typing import Iterable, Protocol, Sequence
+from collections.abc import Iterable, Sequence
+from typing import Protocol
 
 _IDENTIFIER = re.compile(r"^[a-z_][a-z0-9_]*$")
 

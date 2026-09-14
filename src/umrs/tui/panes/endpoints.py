@@ -90,7 +90,9 @@ class EndpointsPane(Static):
         if not self._selected_id:
             self._detail.update("")
             return
-        ep = next((e for e in self._endpoints if e.get("job_id") == self._selected_id), None)
+        ep = next(
+            (e for e in self._endpoints if e.get("job_id") == self._selected_id), None
+        )
         if not ep:
             self._detail.update("")
             return

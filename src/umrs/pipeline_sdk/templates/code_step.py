@@ -117,9 +117,7 @@ class CodeStep(Step):
         self.language: str | None = config.get("language")
         self.chunk_size: int = int(config.get("chunk_size", 100))
         self.include_imports: bool = bool(config.get("include_imports", True))
-        self.include_docstrings: bool = bool(
-            config.get("include_docstrings", True)
-        )
+        self.include_docstrings: bool = bool(config.get("include_docstrings", True))
 
     # ------------------------------------------------------------------
     # Run
@@ -148,11 +146,13 @@ class CodeStep(Step):
 
             out_key = self._write_chunks(chunks, key, ctx)
             out_keys.append(out_key)
-            metadata_list.append({
-                "source_key": key,
-                "language": language,
-                "num_chunks": len(chunks),
-            })
+            metadata_list.append(
+                {
+                    "source_key": key,
+                    "language": language,
+                    "num_chunks": len(chunks),
+                }
+            )
 
         return StepResult(
             output_keys=out_keys,
@@ -215,14 +215,16 @@ class CodeStep(Step):
                 start = node.lineno - 1
                 end = getattr(node, "end_lineno", node.lineno)
                 text = "".join(lines[start:end])
-                chunks.append({
-                    "type": "import",
-                    "name": ast.get_source_segment(source, node) or text,
-                    "text": text,
-                    "start_line": start + 1,
-                    "end_line": end,
-                    "source_key": source_key,
-                })
+                chunks.append(
+                    {
+                        "type": "import",
+                        "name": ast.get_source_segment(source, node) or text,
+                        "text": text,
+                        "start_line": start + 1,
+                        "end_line": end,
+                        "source_key": source_key,
+                    }
+                )
 
         # Extract functions and classes
         for node in ast.walk(tree):
@@ -282,7 +284,10 @@ class CodeStep(Step):
         # Match function declarations, arrow functions, class declarations
         patterns = [
             (r"(?:export\s+)?(?:async\s+)?function\s+(\w+)\s*\(", "function"),
-            (r"(?:export\s+)?(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s*)?\(", "function"),
+            (
+                r"(?:export\s+)?(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s*)?\(",
+                "function",
+            ),
             (r"(?:export\s+)?class\s+(\w+)", "class"),
             (r"(?:export\s+)?(?:const|let|var)\s+(\w+)\s*=", "variable"),
         ]
@@ -300,14 +305,16 @@ class CodeStep(Step):
                 end_idx = self._find_block_end(lines, start_idx)
                 text = "\n".join(lines[start_idx:end_idx])
 
-                chunks.append({
-                    "type": chunk_type,
-                    "name": name,
-                    "text": text,
-                    "start_line": start_idx + 1,
-                    "end_line": end_idx,
-                    "source_key": source_key,
-                })
+                chunks.append(
+                    {
+                        "type": chunk_type,
+                        "name": name,
+                        "text": text,
+                        "start_line": start_idx + 1,
+                        "end_line": end_idx,
+                        "source_key": source_key,
+                    }
+                )
 
         return chunks
 
@@ -338,14 +345,16 @@ class CodeStep(Step):
         for i in range(0, len(lines), self.chunk_size):
             chunk_lines = lines[i : i + self.chunk_size]
             text = "".join(chunk_lines)
-            chunks.append({
-                "type": "lines",
-                "name": f"lines_{i}_{i + len(chunk_lines)}",
-                "text": text,
-                "start_line": i + 1,
-                "end_line": i + len(chunk_lines),
-                "source_key": source_key,
-            })
+            chunks.append(
+                {
+                    "type": "lines",
+                    "name": f"lines_{i}_{i + len(chunk_lines)}",
+                    "text": text,
+                    "start_line": i + 1,
+                    "end_line": i + len(chunk_lines),
+                    "source_key": source_key,
+                }
+            )
 
         return chunks
 
@@ -361,9 +370,12 @@ class CodeStep(Step):
 
         base = os.path.splitext(source_key)[0]
         out_key = f"code/{base}.json"
-        data = json.dumps({
-            "source": source_key,
-            "chunks": chunks,
-        }, indent=2).encode("utf-8")
+        data = json.dumps(
+            {
+                "source": source_key,
+                "chunks": chunks,
+            },
+            indent=2,
+        ).encode("utf-8")
         ctx.upload_bytes(out_key, data, content_type="application/json")
         return out_key

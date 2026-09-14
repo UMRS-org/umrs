@@ -32,6 +32,7 @@ from .models import OperationQueue
 from .op_api import OperationAPI
 from .panes import (
     ArtifactsPane,
+    ConfigEditorPane,
     ConnectionPane,
     DataTransferPane,
     EndpointsPane,
@@ -42,7 +43,6 @@ from .panes import (
     StatusPane,
     WorkflowLogsPane,
     WorkflowsPane,
-    ConfigEditorPane,
 )
 from .prefs import MonitorPrefs
 from .screens import (
@@ -598,10 +598,7 @@ class MonitorAppV2(App):
         if tab == "jobs":
             self._status_filter = result or None
             self._fetchers.status_filter = self._status_filter
-        elif tab == "endpoints":
-            self._prefs.project_filter = result or None
-            self._fetchers.project_filter = self._prefs.project_filter
-        elif tab == "models":
+        elif tab == "endpoints" or tab == "models":
             self._prefs.project_filter = result or None
             self._fetchers.project_filter = self._prefs.project_filter
         self._refresh_active_tab()

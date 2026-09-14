@@ -25,15 +25,15 @@ from typing import Any, Protocol
 from uuid import uuid4
 
 __all__ = [
-    "SearchScope",
-    "SearchDepth",
-    "SearchResultType",
-    "SearchResult",
-    "SearchResults",
     "CatalogSearchable",
-    "KnowledgeGraphSearchable",
     "EmbeddingsSearchable",
+    "KnowledgeGraphSearchable",
     "RAGSearchable",
+    "SearchDepth",
+    "SearchResult",
+    "SearchResultType",
+    "SearchResults",
+    "SearchScope",
     "UnifiedSearch",
 ]
 
@@ -44,19 +44,19 @@ __all__ = [
 class SearchScope(str, Enum):
     """Scope of search."""
 
-    CATALOG = "catalog"               # Only catalog search
+    CATALOG = "catalog"  # Only catalog search
     KNOWLEDGE_GRAPH = "knowledge_graph"  # Only knowledge graph search
-    EMBEDDINGS = "embeddings"         # Only embeddings search
-    RAG = "rag"                       # Only RAG search
-    ALL = "all"                       # All subsystems
+    EMBEDDINGS = "embeddings"  # Only embeddings search
+    RAG = "rag"  # Only RAG search
+    ALL = "all"  # All subsystems
 
 
 class SearchDepth(str, Enum):
     """Depth of search."""
 
-    SHALLOW = "shallow"               # Quick, single-hop
-    MODERATE = "moderate"             # Multi-hop with refinement
-    DEEP = "deep"                     # Exhaustive multi-hop
+    SHALLOW = "shallow"  # Quick, single-hop
+    MODERATE = "moderate"  # Multi-hop with refinement
+    DEEP = "deep"  # Exhaustive multi-hop
 
 
 class SearchResultType(str, Enum):
@@ -154,29 +154,33 @@ class SearchResults:
 class CatalogSearchable(Protocol):
     """Protocol for catalog search."""
 
-    def search_catalog(self, query: str, *, project_id: str | None = None, limit: int = 20) -> list[dict[str, Any]]:
-        ...
+    def search_catalog(
+        self, query: str, *, project_id: str | None = None, limit: int = 20
+    ) -> list[dict[str, Any]]: ...
 
 
 class KnowledgeGraphSearchable(Protocol):
     """Protocol for knowledge graph search."""
 
-    def search_knowledge_graph(self, query: str, *, project_id: str | None = None, limit: int = 20) -> list[dict[str, Any]]:
-        ...
+    def search_knowledge_graph(
+        self, query: str, *, project_id: str | None = None, limit: int = 20
+    ) -> list[dict[str, Any]]: ...
 
 
 class EmbeddingsSearchable(Protocol):
     """Protocol for embeddings search."""
 
-    def search_embeddings(self, query: str, *, project_id: str | None = None, limit: int = 20) -> list[dict[str, Any]]:
-        ...
+    def search_embeddings(
+        self, query: str, *, project_id: str | None = None, limit: int = 20
+    ) -> list[dict[str, Any]]: ...
 
 
 class RAGSearchable(Protocol):
     """Protocol for RAG search."""
 
-    def search_rag(self, query: str, *, project_id: str | None = None, limit: int = 20) -> list[dict[str, Any]]:
-        ...
+    def search_rag(
+        self, query: str, *, project_id: str | None = None, limit: int = 20
+    ) -> list[dict[str, Any]]: ...
 
 
 # ── Unified Search ───────────────────────────────────────────────────────
@@ -294,9 +298,7 @@ class UnifiedSearch:
         """Search only the artifact catalog."""
         if not self._catalog:
             return []
-        return self._catalog.search_catalog(
-            query, project_id=project_id, limit=limit
-        )
+        return self._catalog.search_catalog(query, project_id=project_id, limit=limit)
 
     def search_knowledge_graph(
         self,
@@ -336,9 +338,7 @@ class UnifiedSearch:
         """Search only the RAG indexes."""
         if not self._rag:
             return []
-        return self._rag.search_rag(
-            query, project_id=project_id, limit=limit
-        )
+        return self._rag.search_rag(query, project_id=project_id, limit=limit)
 
     def _get_scopes(self, scope: SearchScope) -> list[SearchScope]:
         """Get list of scopes to search based on the requested scope."""

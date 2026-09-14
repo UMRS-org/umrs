@@ -13,6 +13,7 @@ from .paths import encode_s3_key
 
 logger = logging.getLogger(__name__)
 
+
 def write_extracted_text(
     s3_client: Any,
     bucket: str,

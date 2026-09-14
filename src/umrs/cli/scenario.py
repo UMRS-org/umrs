@@ -19,8 +19,6 @@ from dataclasses import asdict, dataclass
 from enum import Enum
 from typing import Any
 
-
-
 logger = logging.getLogger(__name__)
 
 
@@ -106,7 +104,8 @@ _DEMO_PIPELINES: dict[str, list[tuple[str, str, str]]] = {
 
 
 def _simulate_step(
-    label: str, progress_interval: float = 0.05,
+    label: str,
+    progress_interval: float = 0.05,
 ) -> DemoStepResult:
     """Simulate a step by sleeping and reporting progress."""
     start = time.monotonic()
@@ -129,8 +128,8 @@ def _simulate_step(
 def _get_api() -> Any:
     """Try to import OperationAPI. Returns None if not available."""
     try:
-        from ..tui_v2.op_api import OperationAPI
         from ..tui_v2.models import OperationQueue
+        from ..tui_v2.op_api import OperationAPI
 
         op_queue = OperationQueue()
         return OperationAPI(
@@ -144,8 +143,12 @@ def _get_api() -> Any:
 
 
 def _run_scenario_step(
-    api: Any | None, queue: Any | None,
-    number: int, label: str, description: str, machine_key: str,
+    api: Any | None,
+    queue: Any | None,
+    number: int,
+    label: str,
+    description: str,
+    machine_key: str,
 ) -> DemoStepResult:
     """Run a single scenario step (real or simulated)."""
     step = DemoStepResult(number=number, label=label, status="running", progress=0.0)
@@ -212,8 +215,7 @@ def _run_scenario_step(
                     step.error = op.error or "Operation failed"
                 return step
             pct = float(op.progress.percent)
-            if pct > step.progress:
-                step.progress = pct
+            step.progress = max(step.progress, pct)
             time.sleep(0.3)
         # Timeout — mark as failed
         step.status = "failed"
@@ -313,9 +315,7 @@ def build_scenario_parser(subparsers: Any) -> None:
     scenario_parser = subparsers.add_parser(
         "scenario", help="Operational validation scenarios"
     )
-    scenario_subparsers = scenario_parser.add_subparsers(
-        dest="scenario_command"
-    )
+    scenario_subparsers = scenario_parser.add_subparsers(dest="scenario_command")
 
     # list subcommand
     list_parser = scenario_subparsers.add_parser(
@@ -327,11 +327,7 @@ def build_scenario_parser(subparsers: Any) -> None:
     list_parser.set_defaults(func=cmd_scenario_list)
 
     # run subcommand
-    run_parser = scenario_subparsers.add_parser(
-        "run", help="Run a scenario"
-    )
+    run_parser = scenario_subparsers.add_parser("run", help="Run a scenario")
     run_parser.add_argument("name", help="Scenario name")
-    run_parser.add_argument(
-        "--json", action="store_true", help="Output in JSON format"
-    )
+    run_parser.add_argument("--json", action="store_true", help="Output in JSON format")
     run_parser.set_defaults(func=cmd_scenario_run)

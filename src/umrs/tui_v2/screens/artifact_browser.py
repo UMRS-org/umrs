@@ -165,9 +165,16 @@ class ArtifactBrowser(ModalScreen[dict | None]):
     def _get_type(self, suffix: str) -> str:
         """Map file extension to type badge."""
         types: dict[str, str] = {
-            ".png": "PNG", ".jpg": "JPG", ".jpeg": "JPG", ".gif": "GIF",
-            ".json": "JSON", ".pkl": "PKL", ".pt": "PT",
-            ".pth": "PT", ".npy": "NPY", ".txt": "TXT",
+            ".png": "PNG",
+            ".jpg": "JPG",
+            ".jpeg": "JPG",
+            ".gif": "GIF",
+            ".json": "JSON",
+            ".pkl": "PKL",
+            ".pt": "PT",
+            ".pth": "PT",
+            ".npy": "NPY",
+            ".txt": "TXT",
         }
         return types.get(suffix.lower(), suffix.upper().lstrip("."))
 
@@ -228,6 +235,7 @@ class ArtifactBrowser(ModalScreen[dict | None]):
         full_path = str(self._current_path / name)
         try:
             import pyperclip
+
             pyperclip.copy(full_path)
             self.notify(f"Copied: {full_path}")
         except ImportError:

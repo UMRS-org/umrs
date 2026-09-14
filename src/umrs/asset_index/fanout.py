@@ -17,8 +17,9 @@ Lineage derivation per Review F4 (edges come from existing relations):
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from typing import Any, Callable, Iterable
+from typing import Any
 
 from .models import AssetLineageEdge, AssetRow
 
@@ -70,15 +71,17 @@ def _visible_row(row: AssetRow, caller: Any | None) -> bool:
         return False
 
 
-def _scope_of(*, scope: str | None = None, project_id: str | None = None,
-              owner: str | None = None) -> str:
+def _scope_of(
+    *, scope: str | None = None, project_id: str | None = None, owner: str | None = None
+) -> str:
     """Derive the canonical scope string for a row (umrs.shared.scope_grammar).
 
     Subsystem rows carry different owner markers; this collapses to the
     canonical grammar (system / project:<id> / group:<id> / user:<id>).
     """
     if scope:
-        from umrs.shared.scope_grammar import ScopeError, parse as parse_scope
+        from umrs.shared.scope_grammar import ScopeError
+        from umrs.shared.scope_grammar import parse as parse_scope
 
         try:
             return str(parse_scope(scope, allow_legacy=True))
@@ -91,7 +94,9 @@ def _scope_of(*, scope: str | None = None, project_id: str | None = None,
     return "system"
 
 
-def _collect(named: str, fn: Callable[[], Iterable[AssetRow]], warns: list[IndexWarning]) -> list[AssetRow]:
+def _collect(
+    named: str, fn: Callable[[], Iterable[AssetRow]], warns: list[IndexWarning]
+) -> list[AssetRow]:
     try:
         return list(fn())
     except Exception as exc:  # noqa: BLE001 — per-kind degradation is the contract
@@ -143,7 +148,10 @@ def _artifact_row(store: Any, art: Any) -> AssetRow:
         owner=str(art.owner_id or ""),
         lineage=tuple(edges),
         portable=True,  # INV-13 bundle export
-        metadata={"artifact_type": str(art.artifact_type or ""), "uri": str(art.uri or "")},
+        metadata={
+            "artifact_type": str(art.artifact_type or ""),
+            "uri": str(art.uri or ""),
+        },
     )
 
 
@@ -166,8 +174,17 @@ def _collect_models(store: Any, ctx: Any = None) -> list[AssetRow]:
         rows.append(
             AssetRow(
                 kind="model",
-                asset_id=str(getattr(model, "model_id", "") or getattr(model, "id", "")),
-                scope=_scope_of(scope=(f"project:{proj}" if meta_scope == "project" and proj else meta_scope), owner=owner),
+                asset_id=str(
+                    getattr(model, "model_id", "") or getattr(model, "id", "")
+                ),
+                scope=_scope_of(
+                    scope=(
+                        f"project:{proj}"
+                        if meta_scope == "project" and proj
+                        else meta_scope
+                    ),
+                    owner=owner,
+                ),
                 status=getattr(getattr(model, "status", ""), "value", "registered"),
                 title=str(getattr(model, "name", "") or getattr(model, "model_id", "")),
                 owner=owner,
@@ -184,7 +201,9 @@ def _collect_mcp_servers(store: Any) -> list[AssetRow]:
         rows.append(
             AssetRow(
                 kind="mcp_server",
-                asset_id=str(getattr(server, "server_id", "") or getattr(server, "id", "")),
+                asset_id=str(
+                    getattr(server, "server_id", "") or getattr(server, "id", "")
+                ),
                 scope=_scope_of(owner=str(getattr(server, "owner_id", "") or "")),
                 status=str(getattr(server, "status", "") or "registered"),
                 title=str(getattr(server, "name", "") or ""),
@@ -371,9 +390,7 @@ def build_asset_index(
 # Model collectors need an AccessContext (strict store). It derives from the
 # CALLER (never synthetic-admin in the HTTP path): in-process consumers pass
 # no caller and get the full-visibility in-process context.
-def model_access_context(
-    user_id: str = "__asset_index__", caller: Any = None
-) -> Any:
+def model_access_context(user_id: str = "__asset_index__", caller: Any = None) -> Any:
     """AccessContext for read-model fanout mirroring the caller's visibility."""
     from umrs.model_registry.store.acl import AccessContext
 
@@ -382,6 +399,5 @@ def model_access_context(
     return AccessContext(
         user_id=getattr(caller, "user_id", "") or user_id,
         is_admin=bool(getattr(caller, "is_admin", False)),
-        project_memberships={getattr(caller, "project_id", "")}
-        - {""},
+        project_memberships={getattr(caller, "project_id", "")} - {""},
     )

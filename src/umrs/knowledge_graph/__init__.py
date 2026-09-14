@@ -12,10 +12,11 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, Iterator, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -60,9 +61,9 @@ class Entity:
     entity_id: str = ""
     name: str = ""
     entity_type: EntityType = EntityType.UNKNOWN
-    aliases: List[str] = field(default_factory=list)
-    source_doc_ids: List[str] = field(default_factory=list)
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    aliases: list[str] = field(default_factory=list)
+    source_doc_ids: list[str] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
     mention_count: int = 1
 
     def __post_init__(self) -> None:
@@ -80,8 +81,8 @@ class Relation:
     target_entity_id: str = ""
     relation_type: RelationType = RelationType.RELATED_TO
     confidence: float = 0.5
-    source_doc_ids: List[str] = field(default_factory=list)
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    source_doc_ids: list[str] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -90,9 +91,9 @@ class KGStats:
 
     total_entities: int = 0
     total_relations: int = 0
-    entity_type_counts: Dict[str, int] = field(default_factory=dict)
-    relation_type_counts: Dict[str, int] = field(default_factory=dict)
-    last_updated: Optional[datetime] = None
+    entity_type_counts: dict[str, int] = field(default_factory=dict)
+    relation_type_counts: dict[str, int] = field(default_factory=dict)
+    last_updated: datetime | None = None
 
 
 # ── Entity extractor ────────────────────────────────────────────────────────
@@ -108,7 +109,7 @@ class EntityExtractor:
     """
 
     # Common patterns for scientific entities
-    _PATTERNS: List[Tuple[str, EntityType]] = [
+    _PATTERNS: list[tuple[str, EntityType]] = [
         # Software/tool names (CamelCase, known patterns)
         (r"\b([A-Z][a-z]+(?:[A-Z][a-z]+)+)\b", EntityType.SOFTWARE),
         # Method names with known suffixes
@@ -128,9 +129,9 @@ class EntityExtractor:
         ),
     ]
 
-    def extract(self, text: str, doc_id: str = "") -> List[Entity]:
+    def extract(self, text: str, doc_id: str = "") -> list[Entity]:
         """Extract entities from text."""
-        entities: Dict[str, Entity] = {}
+        entities: dict[str, Entity] = {}
 
         for pattern, etype in self._PATTERNS:
             for match in re.finditer(pattern, text):
@@ -162,11 +163,11 @@ class KnowledgeGraph:
     """
 
     def __init__(self) -> None:
-        self._entities: Dict[str, Entity] = {}
-        self._relations: List[Relation] = []
+        self._entities: dict[str, Entity] = {}
+        self._relations: list[Relation] = []
         self._extractor = EntityExtractor()
 
-    def process_document(self, doc_id: str, content: str) -> Tuple[int, int]:
+    def process_document(self, doc_id: str, content: str) -> tuple[int, int]:
         """Extract entities and infer relations from a document.
 
         Returns:
@@ -204,15 +205,15 @@ class KnowledgeGraph:
 
         return new_entities, new_relations
 
-    def get_entity(self, entity_id: str) -> Optional[Entity]:
+    def get_entity(self, entity_id: str) -> Entity | None:
         return self._entities.get(entity_id)
 
     def search_entities(
         self,
         query: str,
-        entity_type: Optional[EntityType] = None,
+        entity_type: EntityType | None = None,
         limit: int = 20,
-    ) -> List[Entity]:
+    ) -> list[Entity]:
         """Search entities by name (case-insensitive substring)."""
         q = query.lower()
         results = []
@@ -227,11 +228,11 @@ class KnowledgeGraph:
     def get_related(
         self,
         entity_id: str,
-        relation_type: Optional[RelationType] = None,
+        relation_type: RelationType | None = None,
         limit: int = 20,
-    ) -> List[Tuple[Entity, Relation]]:
+    ) -> list[tuple[Entity, Relation]]:
         """Get entities related to the given entity."""
-        results: List[Tuple[Entity, Relation]] = []
+        results: list[tuple[Entity, Relation]] = []
         for rel in self._relations:
             if rel.source_entity_id == entity_id or rel.target_entity_id == entity_id:
                 if relation_type and rel.relation_type != relation_type:
@@ -249,12 +250,12 @@ class KnowledgeGraph:
 
     def stats(self) -> KGStats:
         """Return graph statistics."""
-        entity_counts: Dict[str, int] = {}
+        entity_counts: dict[str, int] = {}
         for e in self._entities.values():
             key = e.entity_type.value
             entity_counts[key] = entity_counts.get(key, 0) + 1
 
-        rel_counts: Dict[str, int] = {}
+        rel_counts: dict[str, int] = {}
         for r in self._relations:
             key = r.relation_type.value
             rel_counts[key] = rel_counts.get(key, 0) + 1

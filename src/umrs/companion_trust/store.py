@@ -54,7 +54,7 @@ def _sqliteify(sql: str) -> str:
     """Translate the Postgres DDL to sqlite3."""
     import re
 
-    sql = re.sub(r"COMMENT ON TABLE[^;]*;", "", sql, flags=re.S)
+    sql = re.sub(r"COMMENT ON TABLE[^;]*;", "", sql, flags=re.DOTALL)
     return (
         sql.replace("JSONB", "TEXT")
         .replace("TIMESTAMPTZ", "TEXT")

@@ -43,7 +43,6 @@ from .path_validator import PathValidator
 logger = logging.getLogger(__name__)
 
 
-
 def _require_admin(ctx: AccessContext | None, target: str, action: str) -> None:
     """Admin-only guard for policy/system-model mutations (no ctx = trusted caller)."""
     if ctx and not ctx.is_admin:
@@ -73,6 +72,7 @@ def _visibility_condition(ctx: AccessContext) -> tuple[str, list[Any]]:
     parts.append("(scope = 'user' AND owner_id = %s)")
     params.append(ctx.user_id)
     return f"({' OR '.join(parts)})", params
+
 
 class ModelStore:
     """
@@ -358,7 +358,11 @@ class ModelStore:
             conditions.append(visibility_sql)
             params.extend(visibility_params)
 
-        for column, enum_value in (("scope", scope), ("model_type", model_type), ("status", status)):
+        for column, enum_value in (
+            ("scope", scope),
+            ("model_type", model_type),
+            ("status", status),
+        ):
             if enum_value:
                 conditions.append(f"{column} = %s")
                 params.append(enum_value.value)

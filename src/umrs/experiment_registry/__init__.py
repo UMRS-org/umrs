@@ -29,11 +29,11 @@ from uuid import uuid4
 logger = logging.getLogger(__name__)
 
 __all__ = [
-    "ExperimentStatus",
-    "Experiment",
-    "ExperimentResult",
-    "ExperimentNotFoundError",
     "DuplicateExperimentError",
+    "Experiment",
+    "ExperimentNotFoundError",
+    "ExperimentResult",
+    "ExperimentStatus",
     "InMemoryExperimentRegistry",
     "InvalidStatusTransitionError",
     "build_default_store",
@@ -46,13 +46,13 @@ __all__ = [
 class ExperimentStatus(str, Enum):
     """Status of an experiment."""
 
-    PENDING = "pending"          # Created but not yet designed
-    DESIGNED = "designed"        # Protocol designed, not yet submitted
-    SUBMITTED = "submitted"      # Submitted to execution backend
-    RUNNING = "running"          # Currently running
-    COMPLETED = "completed"      # Completed successfully
-    FAILED = "failed"             # Failed
-    CANCELLED = "cancelled"      # Cancelled by user
+    PENDING = "pending"  # Created but not yet designed
+    DESIGNED = "designed"  # Protocol designed, not yet submitted
+    SUBMITTED = "submitted"  # Submitted to execution backend
+    RUNNING = "running"  # Currently running
+    COMPLETED = "completed"  # Completed successfully
+    FAILED = "failed"  # Failed
+    CANCELLED = "cancelled"  # Cancelled by user
 
 
 # ── Experiment ───────────────────────────────────────────────────────────
@@ -86,7 +86,7 @@ class Experiment:
     parameters: dict[str, Any] = field(default_factory=dict)
     validation_method: str = "statistical_test"
     status: ExperimentStatus = ExperimentStatus.PENDING
-    results: list["ExperimentResult"] = field(default_factory=list)
+    results: list[ExperimentResult] = field(default_factory=list)
     created_at: str = ""
     updated_at: str = ""
     created_by: str = ""
@@ -122,13 +122,11 @@ class Experiment:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "Experiment":
+    def from_dict(cls, data: dict[str, Any]) -> Experiment:
         """Create from dictionary."""
         status_raw = data.get("status", "pending")
         status = (
-            ExperimentStatus(status_raw)
-            if isinstance(status_raw, str)
-            else status_raw
+            ExperimentStatus(status_raw) if isinstance(status_raw, str) else status_raw
         )
         results_data = data.get("results", [])
         results = [ExperimentResult.from_dict(r) for r in results_data]
@@ -197,7 +195,7 @@ class ExperimentResult:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "ExperimentResult":
+    def from_dict(cls, data: dict[str, Any]) -> ExperimentResult:
         """Create from dictionary."""
         return cls(
             result_id=data.get("result_id", ""),
@@ -238,13 +236,27 @@ class InMemoryExperimentRegistry:
 
     # Valid status transitions
     _VALID_TRANSITIONS = {
-        ExperimentStatus.PENDING: {ExperimentStatus.DESIGNED, ExperimentStatus.CANCELLED},
-        ExperimentStatus.DESIGNED: {ExperimentStatus.SUBMITTED, ExperimentStatus.CANCELLED},
-        ExperimentStatus.SUBMITTED: {ExperimentStatus.RUNNING, ExperimentStatus.FAILED, ExperimentStatus.CANCELLED},
-        ExperimentStatus.RUNNING: {ExperimentStatus.COMPLETED, ExperimentStatus.FAILED, ExperimentStatus.CANCELLED},
+        ExperimentStatus.PENDING: {
+            ExperimentStatus.DESIGNED,
+            ExperimentStatus.CANCELLED,
+        },
+        ExperimentStatus.DESIGNED: {
+            ExperimentStatus.SUBMITTED,
+            ExperimentStatus.CANCELLED,
+        },
+        ExperimentStatus.SUBMITTED: {
+            ExperimentStatus.RUNNING,
+            ExperimentStatus.FAILED,
+            ExperimentStatus.CANCELLED,
+        },
+        ExperimentStatus.RUNNING: {
+            ExperimentStatus.COMPLETED,
+            ExperimentStatus.FAILED,
+            ExperimentStatus.CANCELLED,
+        },
         ExperimentStatus.COMPLETED: set(),  # Terminal
-        ExperimentStatus.FAILED: set(),      # Terminal
-        ExperimentStatus.CANCELLED: set(),   # Terminal
+        ExperimentStatus.FAILED: set(),  # Terminal
+        ExperimentStatus.CANCELLED: set(),  # Terminal
     }
 
     def __init__(self) -> None:
@@ -367,9 +379,7 @@ class InMemoryExperimentRegistry:
         """
         exp = self._experiments.get(experiment_id)
         if not exp:
-            raise ExperimentNotFoundError(
-                f"Experiment {experiment_id} not found"
-            )
+            raise ExperimentNotFoundError(f"Experiment {experiment_id} not found")
 
         result = ExperimentResult(
             experiment_id=experiment_id,
@@ -424,8 +434,7 @@ class InMemoryExperimentRegistry:
             List of experiments sorted by created_at ascending (oldest first)
         """
         results = [
-            exp for exp in self._experiments.values()
-            if exp.project_id == project_id
+            exp for exp in self._experiments.values() if exp.project_id == project_id
         ]
         results.sort(key=lambda e: e.created_at)
         return results

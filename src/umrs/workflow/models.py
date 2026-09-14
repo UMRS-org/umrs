@@ -12,7 +12,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 
 def _utcnow() -> datetime:
@@ -71,10 +71,10 @@ class StepOutput:
     name: str
     description: str = ""
     kind: str = "artifact"  # "artifact" | "file" | "metadata" | "signal"
-    path_or_ref: Optional[str] = None
+    path_or_ref: str | None = None
     ingest: bool = False  # If true, auto-ingest output into knowledge store
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "name": self.name,
             "description": self.description,
@@ -84,7 +84,7 @@ class StepOutput:
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "StepOutput":
+    def from_dict(cls, data: dict[str, Any]) -> StepOutput:
         return cls(
             name=data["name"],
             description=data.get("description", ""),
@@ -102,10 +102,10 @@ class StepInput:
     description: str = ""
     input_type: str = "string"
     required: bool = True
-    default: Optional[Any] = None
-    source: Optional[str] = None
+    default: Any | None = None
+    source: str | None = None
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "name": self.name,
             "description": self.description,
@@ -116,7 +116,7 @@ class StepInput:
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "StepInput":
+    def from_dict(cls, data: dict[str, Any]) -> StepInput:
         return cls(
             name=data["name"],
             description=data.get("description", ""),
@@ -138,9 +138,11 @@ class WorkflowStep:
     name: str
     action: str  # The action to execute
     step_type: StepType = StepType.UMRS_JOB
-    inputs: List[StepInput] = field(default_factory=list)
-    outputs: List[StepOutput] = field(default_factory=list)  # TASK-031: per-step outputs
-    depends_on: List[str] = field(default_factory=list)
+    inputs: list[StepInput] = field(default_factory=list)
+    outputs: list[StepOutput] = field(
+        default_factory=list
+    )  # TASK-031: per-step outputs
+    depends_on: list[str] = field(default_factory=list)
     description: str = ""
     timeout_seconds: int = 3600
     retry_count: int = 0
@@ -148,17 +150,17 @@ class WorkflowStep:
 
     # Runtime state (not persisted)
     status: StepStatus = StepStatus.PENDING
-    started_at: Optional[datetime] = None
-    finished_at: Optional[datetime] = None
-    error: Optional[str] = None
-    result: Optional[Dict[str, Any]] = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    error: str | None = None
+    result: dict[str, Any] | None = None
 
     @property
     def has_outputs(self) -> bool:
         """Check if this step declares outputs."""
         return len(self.outputs) > 0
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
             "name": self.name,
@@ -173,7 +175,7 @@ class WorkflowStep:
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "WorkflowStep":
+    def from_dict(cls, data: dict[str, Any]) -> WorkflowStep:
         step_type_str = data.get("step_type", "umrs_job")
         try:
             step_type = StepType(step_type_str)
@@ -186,11 +188,15 @@ class WorkflowStep:
             action=data["action"],
             step_type=step_type,
             inputs=[StepInput.from_dict(i) for i in data.get("inputs", [])],
-            outputs=[StepOutput.from_dict(o) for o in data.get("outputs", [])],  # TASK-031
+            outputs=[
+                StepOutput.from_dict(o) for o in data.get("outputs", [])
+            ],  # TASK-031
             depends_on=data.get("depends_on", []),
             description=data.get("description", ""),
             timeout_seconds=data.get("timeout_seconds", 3600),
-            status=StepStatus(data["status"]) if data.get("status") else StepStatus.PENDING,
+            status=StepStatus(data["status"])
+            if data.get("status")
+            else StepStatus.PENDING,
         )
 
 
@@ -206,17 +212,17 @@ class WorkflowDefinition:
     name: str
     description: str = ""
     version: str = WORKFLOW_SCHEMA_VERSION
-    steps: List[WorkflowStep] = field(default_factory=list)
-    inputs: List[StepInput] = field(default_factory=list)
-    outputs: List[StepOutput] = field(default_factory=list)  # Workflow-level outputs
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    steps: list[WorkflowStep] = field(default_factory=list)
+    inputs: list[StepInput] = field(default_factory=list)
+    outputs: list[StepOutput] = field(default_factory=list)  # Workflow-level outputs
+    metadata: dict[str, Any] = field(default_factory=dict)
     status: WorkflowStatus = WorkflowStatus.DRAFT
     created_at: datetime = field(default_factory=_utcnow)
     updated_at: datetime = field(default_factory=_utcnow)
-    created_by: Optional[str] = None
+    created_by: str | None = None
 
     @property
-    def step_outputs(self) -> Dict[str, List[StepOutput]]:
+    def step_outputs(self) -> dict[str, list[StepOutput]]:
         """Map step id -> its outputs for quick lookup."""
         return {step.id: step.outputs for step in self.steps if step.has_outputs}
 
@@ -229,12 +235,12 @@ class WorkflowDefinition:
         """
         return any(step.has_outputs for step in self.steps) or len(self.outputs) > 0
 
-    def validate_outputs(self) -> List[str]:
+    def validate_outputs(self) -> list[str]:
         """Validate output references are valid.
 
         Returns list of validation errors (empty if valid).
         """
-        errors: List[str] = []
+        errors: list[str] = []
         step_ids = {s.id for s in self.steps}
 
         # Check step outputs reference valid from_step sources
@@ -253,7 +259,7 @@ class WorkflowDefinition:
 
         return errors
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
             "name": self.name,
@@ -270,7 +276,7 @@ class WorkflowDefinition:
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "WorkflowDefinition":
+    def from_dict(cls, data: dict[str, Any]) -> WorkflowDefinition:
         status_str = data.get("status", "draft")
         try:
             status = WorkflowStatus(status_str)
@@ -284,7 +290,9 @@ class WorkflowDefinition:
             version=data.get("version", WORKFLOW_SCHEMA_VERSION),
             steps=[WorkflowStep.from_dict(s) for s in data.get("steps", [])],
             inputs=[StepInput.from_dict(i) for i in data.get("inputs", [])],
-            outputs=[StepOutput.from_dict(o) for o in data.get("outputs", [])],  # TASK-031
+            outputs=[
+                StepOutput.from_dict(o) for o in data.get("outputs", [])
+            ],  # TASK-031
             metadata=data.get("metadata", {}),
             status=status,
             created_at=_parse_datetime(data.get("created_at")),
@@ -300,14 +308,16 @@ class WorkflowExecution:
     id: str
     workflow_id: str
     status: WorkflowStatus = WorkflowStatus.PENDING
-    started_at: Optional[datetime] = None
-    finished_at: Optional[datetime] = None
-    step_results: Dict[str, Dict[str, Any]] = field(default_factory=dict)
-    output_artifacts: Dict[str, str] = field(default_factory=dict)  # output_name -> artifact_ref
-    error: Optional[str] = None
-    error_step: Optional[str] = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    step_results: dict[str, dict[str, Any]] = field(default_factory=dict)
+    output_artifacts: dict[str, str] = field(
+        default_factory=dict
+    )  # output_name -> artifact_ref
+    error: str | None = None
+    error_step: str | None = None
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
             "workflow_id": self.workflow_id,
@@ -321,7 +331,7 @@ class WorkflowExecution:
         }
 
 
-def _parse_datetime(value: Optional[str]) -> Optional[datetime]:
+def _parse_datetime(value: str | None) -> datetime | None:
     """Parse ISO datetimes while tolerating missing values."""
     if not value:
         return None

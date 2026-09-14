@@ -23,4 +23,3 @@ def otel_active() -> bool:
 
 
 __all__ = ["otel_active"]
-

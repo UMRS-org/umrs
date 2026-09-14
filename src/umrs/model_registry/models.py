@@ -22,10 +22,10 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import Any
-from umrs.model_registry.runtime_config import RuntimeConfig
 
 # Re-export capabilities from the dedicated module (Phase 5)
-from umrs.model_registry.capabilities import ModelCapabilities  # noqa: F811
+from umrs.model_registry.capabilities import ModelCapabilities
+from umrs.model_registry.runtime_config import RuntimeConfig
 
 logger = logging.getLogger(__name__)
 

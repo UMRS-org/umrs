@@ -25,7 +25,6 @@ Example ``workflow.json`` snippet::
 
 from __future__ import annotations
 
-import io
 import json
 import logging
 import os
@@ -66,12 +65,14 @@ class AudioStep(Step):
 
             out_key = self._write_transcript(transcript, key, ctx)
             out_keys.append(out_key)
-            metadata_list.append({
-                "source_key": key,
-                "language": transcript.get("language"),
-                "duration_sec": transcript.get("duration_sec"),
-                "num_segments": len(transcript.get("segments", [])),
-            })
+            metadata_list.append(
+                {
+                    "source_key": key,
+                    "language": transcript.get("language"),
+                    "duration_sec": transcript.get("duration_sec"),
+                    "num_segments": len(transcript.get("segments", [])),
+                }
+            )
 
         return StepResult(
             output_keys=out_keys,
@@ -99,8 +100,9 @@ class AudioStep(Step):
 
     def _call_whisper(self, raw: bytes, source_key: str) -> dict[str, Any]:
         """Call the Whisper endpoint and parse the response."""
-        import httpx
         from pathlib import Path
+
+        import httpx
 
         ext = Path(source_key).suffix or ".wav"
         filename = Path(source_key).name

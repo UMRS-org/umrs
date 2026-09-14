@@ -90,9 +90,7 @@ class ArtifactsPane(Static):
     def _render_summary(self) -> None:
         """Render the summary line."""
         count = len(self._artifacts)
-        total_size = sum(
-            a.get("size_bytes", 0) for a in self._artifacts
-        )
+        total_size = sum(a.get("size_bytes", 0) for a in self._artifacts)
         self._summary_widget.update(
             f"  {count} artifact{'s' if count != 1 else ''}  ·  "
             f"Total: {self._format_size(total_size)}"
@@ -127,14 +125,10 @@ class ArtifactsPane(Static):
                             else "    "
                         )
                         marker = "/" if child.is_dir() else " "
-                        lines.append(
-                            f"  [{marker}] {child.name:<30} {child_size}"
-                        )
+                        lines.append(f"  [{marker}] {child.name:<30} {child_size}")
                     if len(children) > 20:
                         total = len(list(local_path.iterdir()))
-                        lines.append(
-                            f"  ... and {total - 20} more"
-                        )
+                        lines.append(f"  ... and {total - 20} more")
             self._detail.update("\n".join(lines))
         else:
             self._detail.update("Select an artifact for details")

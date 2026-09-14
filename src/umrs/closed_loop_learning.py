@@ -46,9 +46,9 @@ from umrs.scientific_memory import (
 from umrs.scientific_reasoning_engine import ScientificReasoningEngine
 
 __all__ = [
+    "ClosedLoopLearning",
     "ExperimentResult",
     "Finding",
-    "ClosedLoopLearning",
 ]
 
 

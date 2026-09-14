@@ -85,7 +85,7 @@ def _get_s3_client():
 
 def _download_image_from_s3(s3, image_url):
     """Parse an S3 URL (s3://bucket/key) and download as PIL Image."""
-    path = image_url[5:] if image_url.startswith("s3://") else image_url
+    path = image_url.removeprefix("s3://")
     parts = path.split("/", 1)
     if len(parts) != 2:
         raise ValueError(
@@ -107,7 +107,7 @@ def _download_image_from_presigned_url(presigned_url, image_url):
     ``(PIL.Image, bucket, key)`` - bucket/key are parsed from ``image_url``
     so that downstream code can still construct output keys.
     """
-    path = image_url[5:] if image_url.startswith("s3://") else image_url
+    path = image_url.removeprefix("s3://")
     parts = path.split("/", 1)
     if len(parts) != 2:
         raise ValueError(f"Invalid S3 image URL: {image_url}")
@@ -118,7 +118,7 @@ def _download_image_from_presigned_url(presigned_url, image_url):
     for attempt in range(max_retries):
         try:
             req = urllib.request.Request(presigned_url, method="GET")
-            with urllib.request.urlopen(req, timeout=120) as resp:  # noqa: S310
+            with urllib.request.urlopen(req, timeout=120) as resp:
                 image_bytes = resp.read()
             return (
                 Image.open(io.BytesIO(image_bytes)).convert("RGB"),

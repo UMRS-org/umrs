@@ -12,8 +12,8 @@ from typing import Any
 
 from umrs.knowledge.access_scope import VISIBILITY_SYSTEM, visibility_predicate
 
-from .scoring import CatalogHit, allowed, score_meta, tokenize
 from .schema import CatalogObjectMeta, CatalogState
+from .scoring import CatalogHit, allowed, score_meta, tokenize
 
 logger = logging.getLogger(__name__)
 
@@ -399,7 +399,9 @@ class CatalogMetaStore:
             meta = _row_to_meta(row)
             # System-tier rows are visible to every caller (ADR-050); the
             # project ACL re-check applies to the project tier only.
-            if row.get("visibility") != VISIBILITY_SYSTEM and not allowed(meta, project_id):
+            if row.get("visibility") != VISIBILITY_SYSTEM and not allowed(
+                meta, project_id
+            ):
                 continue
             if tokens:
                 score = score_meta(meta, tokens, query=query)
@@ -453,7 +455,9 @@ class CatalogMetaStore:
         )
         hits: list[CatalogHit] = []
         for meta in metas:
-            if not _fallback_match(meta, modality=modality, state=state, tag=tag, prefix=prefix):
+            if not _fallback_match(
+                meta, modality=modality, state=state, tag=tag, prefix=prefix
+            ):
                 continue
             score = score_meta(meta, tokens, query=query)
             if score <= 0:

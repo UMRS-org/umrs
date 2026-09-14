@@ -68,7 +68,11 @@ class WorkflowLogsPane(Static):
 
     def _add_time_lines(self, execution: dict, lines: list[str]) -> None:
         """Add submitted/started/finished times."""
-        for key, label in [("submitted_at", "Submitted"), ("started_at", "Started"), ("finished_at", "Finished")]:
+        for key, label in [
+            ("submitted_at", "Submitted"),
+            ("started_at", "Started"),
+            ("finished_at", "Finished"),
+        ]:
             val = execution.get(key)
             if val:
                 lines.append(f"  {label}: {val[:19]}")

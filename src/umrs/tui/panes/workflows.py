@@ -78,13 +78,22 @@ class WorkflowsPane(Static):
         if not self._selected_name:
             self._detail.update("")
             return
-        wf = next((w for w in self._workflows if w.get("name") == self._selected_name), None)
+        wf = next(
+            (w for w in self._workflows if w.get("name") == self._selected_name), None
+        )
         if not wf:
             self._detail.update("")
             return
         lines = [f"[bold]Workflow: {self._selected_name}[/bold]"]
-        for k in ("name", "version", "scope", "user_id", "source_path",
-                  "description", "registered_at"):
+        for k in (
+            "name",
+            "version",
+            "scope",
+            "user_id",
+            "source_path",
+            "description",
+            "registered_at",
+        ):
             v = wf.get(k)
             if v is not None:
                 lines.append(f"{k}: {v}")
@@ -92,7 +101,9 @@ class WorkflowsPane(Static):
         if steps:
             lines.append("\nSteps:")
             for i, s in enumerate(steps):
-                lines.append(f"  {i + 1}. {s.get('name', '?')} — {s.get('entrypoint', '?')}")
+                lines.append(
+                    f"  {i + 1}. {s.get('name', '?')} — {s.get('entrypoint', '?')}"
+                )
         self._detail.update("\n".join(lines))
 
     @on(DataTable.RowSelected)

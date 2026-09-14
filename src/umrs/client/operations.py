@@ -10,8 +10,9 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -229,9 +230,7 @@ class OperationSDK:
             logger.error("Cancel failed: %s", exc)
             return False
 
-    def list_artifacts(
-        self, query: dict[str, Any] | None = None
-    ) -> list[dict]:
+    def list_artifacts(self, query: dict[str, Any] | None = None) -> list[dict]:
         """List artifacts via the Gateway artifact API.
 
         Calls the artifact_registry routes exposed by UMRS.

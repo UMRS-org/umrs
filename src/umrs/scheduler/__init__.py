@@ -35,15 +35,15 @@ class ScheduleSpec:
     name: str = ""
     cron_expr: str = ""  # Standard 5-field cron: min hour dom month dow
     job_type: str = ""  # e.g. "connector_sync", "recipe_run", "maintenance"
-    job_config: Dict[str, Any] = field(default_factory=dict)
+    job_config: dict[str, Any] = field(default_factory=dict)
     owner_id: str = ""
-    project_id: Optional[str] = None
+    project_id: str | None = None
     status: ScheduleStatus = ScheduleStatus.ACTIVE
-    created_at: Optional[datetime] = None
-    last_run: Optional[datetime] = None
-    next_run: Optional[datetime] = None
+    created_at: datetime | None = None
+    last_run: datetime | None = None
+    next_run: datetime | None = None
     run_count: int = 0
-    max_runs: Optional[int] = None  # None = unlimited
+    max_runs: int | None = None  # None = unlimited
     timezone_name: str = "UTC"
 
     def __post_init__(self) -> None:
@@ -64,9 +64,9 @@ _CRON_FIELD_RANGES = [
 ]
 
 
-def validate_cron(expr: str) -> List[str]:
+def validate_cron(expr: str) -> list[str]:
     """Validate a 5-field cron expression. Returns errors."""
-    errors: List[str] = []
+    errors: list[str] = []
     parts = expr.strip().split()
     if len(parts) != 5:
         errors.append(f"Expected 5 fields, got {len(parts)}")
@@ -151,7 +151,7 @@ class ScheduleStore:
     """In-memory schedule store. Production uses Postgres."""
 
     def __init__(self) -> None:
-        self._schedules: Dict[str, ScheduleSpec] = {}
+        self._schedules: dict[str, ScheduleSpec] = {}
 
     def add(self, spec: ScheduleSpec) -> ScheduleSpec:
         errors = validate_cron(spec.cron_expr)
@@ -163,11 +163,11 @@ class ScheduleStore:
         logger.info("Added schedule: %s (id=%s)", spec.name, spec.schedule_id)
         return spec
 
-    def get(self, schedule_id: str) -> Optional[ScheduleSpec]:
+    def get(self, schedule_id: str) -> ScheduleSpec | None:
         return self._schedules.get(schedule_id)
 
-    def list_active(self, owner_id: Optional[str] = None) -> List[ScheduleSpec]:
-        results: List[ScheduleSpec] = []
+    def list_active(self, owner_id: str | None = None) -> list[ScheduleSpec]:
+        results: list[ScheduleSpec] = []
         for s in self._schedules.values():
             if s.status != ScheduleStatus.ACTIVE:
                 continue
@@ -196,11 +196,11 @@ class ScheduleStore:
             return True
         return False
 
-    def get_due(self, now: Optional[datetime] = None) -> List[ScheduleSpec]:
+    def get_due(self, now: datetime | None = None) -> list[ScheduleSpec]:
         """Return schedules that are due to run at the given time."""
         if now is None:
             now = datetime.now(timezone.utc)
-        due: List[ScheduleSpec] = []
+        due: list[ScheduleSpec] = []
         for s in self._schedules.values():
             if s.status != ScheduleStatus.ACTIVE:
                 continue
@@ -211,7 +211,7 @@ class ScheduleStore:
                 due.append(s)
         return due
 
-    def mark_run(self, schedule_id: str, run_time: Optional[datetime] = None) -> None:
+    def mark_run(self, schedule_id: str, run_time: datetime | None = None) -> None:
         s = self._schedules.get(schedule_id)
         if s:
             s.last_run = run_time or datetime.now(timezone.utc)

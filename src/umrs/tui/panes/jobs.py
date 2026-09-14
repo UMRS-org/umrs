@@ -8,8 +8,6 @@ from typing import Any
 from textual import on
 from textual.widgets import DataTable, Static
 
-from ..widgets.status_badge import status_style
-
 
 class JobsPane(Static):
     """Jobs tab pane."""
@@ -97,7 +95,9 @@ class JobsPane(Static):
         if not self._selected_job_id:
             self._detail.update("")
             return
-        job = next((j for j in self._jobs if j.get("job_id") == self._selected_job_id), None)
+        job = next(
+            (j for j in self._jobs if j.get("job_id") == self._selected_job_id), None
+        )
         if not job:
             self._detail.update("")
             return

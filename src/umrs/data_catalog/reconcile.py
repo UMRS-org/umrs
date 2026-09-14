@@ -8,7 +8,6 @@ import os
 import sys
 
 import boto3
-import psycopg2
 from botocore.config import Config as BotoConfig
 from psycopg2 import pool
 

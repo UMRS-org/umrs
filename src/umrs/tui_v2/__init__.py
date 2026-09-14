@@ -18,4 +18,4 @@ from __future__ import annotations
 from .app import MonitorAppV2
 from .dashboard import DashboardV2
 
-__all__ = ["MonitorAppV2", "DashboardV2"]
+__all__ = ["DashboardV2", "MonitorAppV2"]

@@ -53,14 +53,14 @@ from uuid import uuid4
 logger = logging.getLogger(__name__)
 
 __all__ = [
-    "KnowledgeObjectType",
-    "KnowledgeObjectStatus",
-    "KnowledgeObject",
-    "ObjectVersion",
-    "Tombstone",
-    "KnowledgeObjectNotFoundError",
     "DuplicateKnowledgeObjectError",
     "InMemoryKnowledgeModelStore",
+    "KnowledgeObject",
+    "KnowledgeObjectNotFoundError",
+    "KnowledgeObjectStatus",
+    "KnowledgeObjectType",
+    "ObjectVersion",
+    "Tombstone",
     "build_default_store",
 ]
 
@@ -176,7 +176,7 @@ class KnowledgeObject:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "KnowledgeObject":
+    def from_dict(cls, data: dict[str, Any]) -> KnowledgeObject:
         """Create from dictionary."""
         object_type_raw = data.get("object_type", "paper")
         status_raw = data.get("status", "active")
@@ -510,7 +510,9 @@ class InMemoryKnowledgeModelStore:
             obj
             for obj in self._objects.values()
             if _object_search_matches(
-                obj, query_lower, project_id=project_id,
+                obj,
+                query_lower,
+                project_id=project_id,
                 object_type=object_type,
             )
         ]
@@ -530,9 +532,7 @@ class InMemoryKnowledgeModelStore:
             KnowledgeObjectNotFoundError: If the object is not found
         """
         if object_id not in self._objects:
-            raise KnowledgeObjectNotFoundError(
-                f"Object {object_id} not found"
-            )
+            raise KnowledgeObjectNotFoundError(f"Object {object_id} not found")
         versions = self._versions.get(object_id, [])
         return sorted(versions, key=lambda v: v.version)
 

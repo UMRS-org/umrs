@@ -40,8 +40,8 @@ class RegisteredRecipe:
     )
     scope: RecipeScope = RecipeScope.USER
     owner_id: str = ""
-    project_id: Optional[str] = None
-    registered_at: Optional[datetime] = None
+    project_id: str | None = None
+    registered_at: datetime | None = None
     enabled: bool = True
 
     def __post_init__(self) -> None:
@@ -55,14 +55,14 @@ class RecipeRegistry:
     """Registry for recipe definitions."""
 
     def __init__(self) -> None:
-        self._recipes: Dict[str, RegisteredRecipe] = {}
+        self._recipes: dict[str, RegisteredRecipe] = {}
 
     def register(
         self,
         definition: RecipeDefinition,
         scope: RecipeScope = RecipeScope.USER,
         owner_id: str = "",
-        project_id: Optional[str] = None,
+        project_id: str | None = None,
     ) -> RegisteredRecipe:
         errors = definition.validate()
         if errors:
@@ -79,15 +79,15 @@ class RecipeRegistry:
         logger.info("Registered recipe: %s (id=%s)", definition.name, recipe.recipe_id)
         return recipe
 
-    def get(self, recipe_id: str) -> Optional[RegisteredRecipe]:
+    def get(self, recipe_id: str) -> RegisteredRecipe | None:
         return self._recipes.get(recipe_id)
 
     def list_recipes(
         self,
-        scope: Optional[RecipeScope] = None,
-        owner_id: Optional[str] = None,
-    ) -> List[RegisteredRecipe]:
-        results: List[RegisteredRecipe] = []
+        scope: RecipeScope | None = None,
+        owner_id: str | None = None,
+    ) -> list[RegisteredRecipe]:
+        results: list[RegisteredRecipe] = []
         for r in self._recipes.values():
             if not r.enabled:
                 continue

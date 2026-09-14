@@ -17,12 +17,12 @@ import logging
 import re
 from contextlib import contextmanager
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from . import (
+    _DEFAULT_LIMITS,
     SCHEMA_CREATE_SQL,
     SCHEMA_DROP_SQL,
-    _DEFAULT_LIMITS,
     TenantManager,
     TenantSpec,
     TenantStatus,
@@ -63,7 +63,7 @@ class PgTenantManager(TenantManager):
         # Skip the in-memory dict initialization — state lives in Postgres.
         self._pool = db_pool
         self._execute_schema_ddl = execute_schema_ddl
-        self._tenants: Dict[str, TenantSpec] = {}
+        self._tenants: dict[str, TenantSpec] = {}
 
     @contextmanager
     def _conn(self):
@@ -127,7 +127,7 @@ class PgTenantManager(TenantManager):
             )
         return spec
 
-    def get(self, tenant_id: str) -> Optional[TenantSpec]:
+    def get(self, tenant_id: str) -> TenantSpec | None:
         with self._cursor() as cur:
             cur.execute(
                 f"SELECT {_COLUMNS} FROM sat_tenants WHERE tenant_id = %s",
@@ -136,7 +136,7 @@ class PgTenantManager(TenantManager):
             row = cur.fetchone()
         return _row_to_spec(row) if row else None
 
-    def get_by_project(self, project_id: str) -> Optional[TenantSpec]:
+    def get_by_project(self, project_id: str) -> TenantSpec | None:
         with self._cursor() as cur:
             cur.execute(
                 f"SELECT {_COLUMNS} FROM sat_tenants WHERE project_id = %s",
@@ -145,7 +145,7 @@ class PgTenantManager(TenantManager):
             row = cur.fetchone()
         return _row_to_spec(row) if row else None
 
-    def list_tenants(self, owner_id: Optional[str] = None) -> List[TenantSpec]:
+    def list_tenants(self, owner_id: str | None = None) -> list[TenantSpec]:
         with self._cursor() as cur:
             if owner_id:
                 cur.execute(
@@ -190,7 +190,7 @@ class PgTenantManager(TenantManager):
             return True
         return current < limit
 
-    def get_schema_sql(self, tenant_id: str) -> Optional[str]:
+    def get_schema_sql(self, tenant_id: str) -> str | None:
         """Generate the CREATE SCHEMA SQL for a tenant (parity with in-memory)."""
         spec = self.get(tenant_id)
         if spec is None:

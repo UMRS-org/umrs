@@ -322,7 +322,7 @@ def zero_out_embeddings_for_empty_objects(embeddings, sizes, modality_name):
 
     # Get dimension from the first embedding (supports list/np/tensor)
     sample = embeddings[0][0]["embedding"]
-    if hasattr(sample, "shape") and getattr(sample, "shape") is not None:
+    if hasattr(sample, "shape") and sample.shape is not None:
         try:
             embedding_dim = int(sample.shape[0])
         except (AttributeError, IndexError, TypeError):

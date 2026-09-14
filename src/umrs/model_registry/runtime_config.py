@@ -16,7 +16,7 @@ set by case-matching on the model name.  By storing these in the registry:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 
@@ -110,7 +110,7 @@ class RuntimeConfig:
         return d
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any] | None) -> "RuntimeConfig":
+    def from_dict(cls, data: dict[str, Any] | None) -> RuntimeConfig:
         """Deserialize from a JSON-decoded dict."""
         if not data:
             return cls()

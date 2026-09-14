@@ -30,7 +30,7 @@ class Artifact:
     updated_at: datetime | None = None
 
     @classmethod
-    def from_row(cls, row: tuple | list) -> "Artifact":
+    def from_row(cls, row: tuple | list) -> Artifact:
         """Construct an Artifact from a DB row.
 
         Expected column order matches the artifacts table SELECT.

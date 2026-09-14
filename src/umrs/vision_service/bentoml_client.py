@@ -94,7 +94,7 @@ async def async_submit_and_wait(
                         f"Refusing to unpickle BentoML task {task_id} response: "
                         "BENTOML_TRUSTED=0"
                     )
-                return pickle.loads(raw)  # noqa: S301 — gated by BENTOML_TRUSTED
+                return pickle.loads(raw)
             return raw
         if status.value in {"failure", "failed"}:
             # R-16: surface BentoML's failure detail when available.

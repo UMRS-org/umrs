@@ -25,7 +25,6 @@ Example ``workflow.json`` snippet::
 
 from __future__ import annotations
 
-import io
 import json
 import logging
 from typing import Any
@@ -73,11 +72,13 @@ class NotebookStep(Step):
 
             out_key = self._write_chunks(chunks, key, ctx)
             out_keys.append(out_key)
-            metadata_list.append({
-                "source_key": key,
-                "num_chunks": len(chunks),
-                "mode": self.mode,
-            })
+            metadata_list.append(
+                {
+                    "source_key": key,
+                    "num_chunks": len(chunks),
+                    "mode": self.mode,
+                }
+            )
 
         return StepResult(
             output_keys=out_keys,
@@ -129,12 +130,14 @@ class NotebookStep(Step):
 
         if self.mode == "concat":
             combined = "\n\n---\n\n".join(c["text"] for c in chunks)
-            chunks = [{
-                "cell_index": 0,
-                "cell_type": "concat",
-                "text": combined,
-                "source_key": source_key,
-            }]
+            chunks = [
+                {
+                    "cell_index": 0,
+                    "cell_type": "concat",
+                    "text": combined,
+                    "source_key": source_key,
+                }
+            ]
 
         return chunks
 
@@ -165,10 +168,13 @@ class NotebookStep(Step):
         """Write chunks as JSON to S3."""
         base = source_key.rsplit(".", 1)[0] if "." in source_key else source_key
         out_key = f"notebook/{base}.json"
-        data = json.dumps({
-            "source": source_key,
-            "mode": self.mode,
-            "chunks": chunks,
-        }, indent=2).encode("utf-8")
+        data = json.dumps(
+            {
+                "source": source_key,
+                "mode": self.mode,
+                "chunks": chunks,
+            },
+            indent=2,
+        ).encode("utf-8")
         ctx.upload_bytes(out_key, data, content_type="application/json")
         return out_key

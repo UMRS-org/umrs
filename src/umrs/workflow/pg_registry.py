@@ -26,8 +26,9 @@ import base64
 import json
 import logging
 import time
+from collections.abc import Callable
 from contextlib import contextmanager
-from typing import Any, Callable
+from typing import Any
 
 from ..server.workflow_execution_registry import (
     ExecutionRecord,
@@ -46,7 +47,7 @@ _COLUMNS = (
 class DurableExecutionRecord(ExecutionRecord):
     """ExecutionRecord that invokes a persist hook after each mutation."""
 
-    _persist_hook: Callable[["DurableExecutionRecord"], None] | None = None
+    _persist_hook: Callable[[DurableExecutionRecord], None] | None = None
 
     def _fire_persist(self) -> None:
         hook = self._persist_hook
@@ -261,7 +262,7 @@ class PgWorkflowExecutionRegistry(WorkflowExecutionRegistry):
                         time.time(),
                     ),
                 )
-        except Exception:  # noqa: BLE001 — in-memory path stays authoritative
+        except Exception:
             logger.debug("workflow_executions persist failed", exc_info=True)
 
     def _fetch(self, execution_id: str) -> dict[str, Any] | None:
@@ -273,7 +274,7 @@ class PgWorkflowExecutionRegistry(WorkflowExecutionRegistry):
                     (execution_id,),
                 )
                 return cur.fetchone()
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.debug("workflow_executions fetch failed", exc_info=True)
             return None
 
@@ -288,7 +289,7 @@ class PgWorkflowExecutionRegistry(WorkflowExecutionRegistry):
             with self._cursor() as cur:
                 cur.execute(sql, params)
                 rows = cur.fetchall()
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.debug("workflow_executions warm failed", exc_info=True)
             return
         with self._lock:

@@ -60,7 +60,9 @@ def _vector_like(doc_id: str) -> str:
     return f"ragdoc-{doc_id}-chunk%"
 
 
-def _resolve_document_id(pool: Any, project_id: str, s3_key: str) -> tuple[str | None, str | None]:
+def _resolve_document_id(
+    pool: Any, project_id: str, s3_key: str
+) -> tuple[str | None, str | None]:
     """document_id + link_method, or (None, None) when no match."""
     conn = pool.getconn()
     try:

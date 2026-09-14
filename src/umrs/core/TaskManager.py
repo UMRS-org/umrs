@@ -5,15 +5,17 @@ from umrs.core.UMRSThreads import UMRSThreads
 
 
 class TaskManager:
-    def __init__(self, status_store, thread_dict, db_pool, thread_pool=None, reset=False):
+    def __init__(
+        self, status_store, thread_dict, db_pool, thread_pool=None, reset=False
+    ):
         self.active_threads = UMRSThreads(status_store, thread_dict, pool=thread_pool)
         self.tasks_status = UMRSTask(db_pool, reset=reset)
-        self.task_to_thread = {}    # UMRSTask_id -> thread_ident
-        self.thread_to_task = {}    # thread_ident -> UMRSTask_id
+        self.task_to_thread = {}  # UMRSTask_id -> thread_ident
+        self.thread_to_task = {}  # thread_ident -> UMRSTask_id
         self.lock = threading.Lock()
 
     def associate_thread_with_task(self, thread_ident, task_id):
-        """Associate a thread with a task """
+        """Associate a thread with a task"""
         with self.lock:
             self.task_to_thread[task_id] = thread_ident
             self.thread_to_task[thread_ident] = task_id
@@ -29,6 +31,6 @@ class TaskManager:
             return self.thread_to_task.get(thread_ident)
 
     def update_status_by_threads_ident_list(self, threads_ident_list, status):
-            for thread_ident in threads_ident_list:
-                task_id = self.get_task_from_thread(thread_ident)
-                self.tasks_status.update_status(task_id, status)
+        for thread_ident in threads_ident_list:
+            task_id = self.get_task_from_thread(thread_ident)
+            self.tasks_status.update_status(task_id, status)

@@ -38,19 +38,13 @@ class UMRSError(Exception):
 class UMRSNotFoundError(UMRSError):
     """Resource not found."""
 
-    pass
-
 
 class UMRSAccessDeniedError(UMRSError):
     """Access denied to resource."""
 
-    pass
-
 
 class UMRSRateLimitError(UMRSError):
     """Rate limit exceeded."""
-
-    pass
 
 
 class UMRSClient:

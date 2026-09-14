@@ -983,7 +983,7 @@ def _fetch_jwks(url: str) -> dict:
     import urllib.request
 
     req = urllib.request.Request(url, method="GET")
-    with urllib.request.urlopen(req, timeout=10) as resp:  # noqa: S310
+    with urllib.request.urlopen(req, timeout=10) as resp:
         return json.loads(resp.read())
 
 
@@ -1070,8 +1070,8 @@ def validate_jwt(token: str, secret: str) -> dict[str, Any]:
         JWTError: On invalid signature, expiry, or malformed token.
     """
     try:
-        from jose import jwt as jose_jwt
         from jose import JWTError as JoseJWTError
+        from jose import jwt as jose_jwt
     except ImportError:
         raise JWTError(
             "python-jose is required for JWT validation. "

@@ -33,15 +33,15 @@ from uuid import uuid4
 logger = logging.getLogger(__name__)
 
 __all__ = [
-    "EmbeddingStatus",
+    "DuplicateEmbeddingError",
+    "EmbedderProtocol",
     "Embedding",
     "EmbeddingMatch",
-    "EmbedderProtocol",
     "EmbeddingNotFoundError",
-    "DuplicateEmbeddingError",
+    "EmbeddingStatus",
     "InMemoryEmbeddingStore",
-    "hash_based_vector",
     "build_default_store",
+    "hash_based_vector",
 ]
 
 
@@ -111,13 +111,11 @@ class Embedding:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "Embedding":
+    def from_dict(cls, data: dict[str, Any]) -> Embedding:
         """Create from dictionary."""
         status_raw = data.get("status", "active")
         status = (
-            EmbeddingStatus(status_raw)
-            if isinstance(status_raw, str)
-            else status_raw
+            EmbeddingStatus(status_raw) if isinstance(status_raw, str) else status_raw
         )
         return cls(
             embedding_id=data.get("embedding_id", ""),
@@ -208,10 +206,7 @@ def hash_based_vector(text: str, dim: int = 384) -> list[float]:
     import hashlib
 
     hash_bytes = hashlib.sha256(text.encode("utf-8")).digest()
-    return [
-        (hash_bytes[i % len(hash_bytes)] / 255.0) * 2 - 1
-        for i in range(dim)
-    ]
+    return [(hash_bytes[i % len(hash_bytes)] / 255.0) * 2 - 1 for i in range(dim)]
 
 
 # ── In-Memory Embedding Store ────────────────────────────────────────────

@@ -4,9 +4,10 @@ import logging
 import os
 import threading
 import weakref
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +23,7 @@ CURVE_KEY_LEN = 40
 # Values are held weakly so an entry is dropped once the owning socket stops the
 # authenticator and releases its reference.
 _AUTHENTICATOR_REGISTRY_LOCK = threading.Lock()
-_CONTEXT_AUTHENTICATORS: "weakref.WeakValueDictionary[int, Any]" = (
+_CONTEXT_AUTHENTICATORS: weakref.WeakValueDictionary[int, Any] = (
     weakref.WeakValueDictionary()
 )
 
@@ -92,7 +93,7 @@ class ZMQSecurityConfig:
     credentials_provider: Any | None = field(default=None, compare=False, hash=False)
 
     @classmethod
-    def from_env(cls, env: Mapping[str, str] | None = None) -> "ZMQSecurityConfig":
+    def from_env(cls, env: Mapping[str, str] | None = None) -> ZMQSecurityConfig:
         source = os.environ if env is None else env
         auth_type = source.get("UMRS_ZMQ_AUTH_TYPE", "none").strip().lower()
         return cls(
@@ -130,9 +131,7 @@ class ZMQSecurityConfig:
             return None
         if self.auth_type not in ("curve", "session"):
             raise ValueError(
-                "Unsupported UMRS_ZMQ_AUTH_TYPE={!r}; expected 'none', 'curve', or 'session'".format(
-                    self.auth_type
-                )
+                f"Unsupported UMRS_ZMQ_AUTH_TYPE={self.auth_type!r}; expected 'none', 'curve', or 'session'"
             )
 
         if server:
@@ -270,7 +269,7 @@ class _SessionThreadAuthenticator:
         Falls back to the Z85-encoded pubkey if the session is not found
         (should not happen since callback already validated).
         """
-        import zmq.utils.z85 as z85
+        from zmq.utils import z85
 
         z85_key = z85.encode(client_public_key).decode("ascii")
         entry = self._credentials_provider.lookup(z85_key)
@@ -321,7 +320,7 @@ class CurveKeyMap:
     _dir: str | None = None
 
     @classmethod
-    def from_directory(cls, keys_dir: str | None) -> "CurveKeyMap":
+    def from_directory(cls, keys_dir: str | None) -> CurveKeyMap:
         km = cls(_dir=keys_dir)
         km.reload()
         return km

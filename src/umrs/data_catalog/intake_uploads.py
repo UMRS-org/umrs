@@ -296,8 +296,8 @@ def build_default_store(db_pool: Any = None) -> Any:
 
 
 __all__ = [
-    "IntakeUploadManifest",
     "InMemoryIntakeUploadStore",
+    "IntakeUploadManifest",
     "PgIntakeUploadStore",
     "build_default_store",
     "new_manifest",

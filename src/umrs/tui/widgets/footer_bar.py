@@ -7,8 +7,7 @@ import time
 from textual.widgets import Static
 
 _HELP_TEXT = (
-    "[dim]1-7 tabs │ r refresh │ q quit │ ? help │ "
-    "Ctrl+E export │ Ctrl+P palette[/dim]"
+    "[dim]1-7 tabs │ r refresh │ q quit │ ? help │ Ctrl+E export │ Ctrl+P palette[/dim]"
 )
 
 

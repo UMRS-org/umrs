@@ -11,15 +11,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from umrs.client.control_api import UMRSControlAPI
-from umrs.client.download_results import (
-    classify_wait_reply,
-    format_wait_progress,
-    incomplete_error_payload,
-    parse_process_objects_readiness,
+from umrs.cli.completion import (
+    emit_completion_if_requested,
+    install_completion,
+    print_completion_script,
+    uninstall_completion,
 )
-from umrs.client.warnings_cli import emit_cli_warning
-from umrs.shared.warnings import operation_ignored_warning, print_warning_structured
+from umrs.client.control_api import UMRSControlAPI
 from umrs.client.control_commands import (
     MODEL_SCOPE_CHOICES,
     MODEL_TYPE_CHOICES,
@@ -41,16 +39,16 @@ from umrs.client.control_commands import (
     parse_duration_seconds,
     parse_json_object_arg,
 )
-from umrs.cli.completion import (
-    emit_completion_if_requested,
-    install_completion,
-    print_completion_script,
-    uninstall_completion,
+from umrs.client.download_results import (
+    classify_wait_reply,
+    format_wait_progress,
+    incomplete_error_payload,
+    parse_process_objects_readiness,
 )
 from umrs.client.metadata import check_and_build_metadata
+from umrs.client.warnings_cli import emit_cli_warning
 from umrs.core.TaskCmdStatus import TaskCmd
 from umrs.shared.auth import create_auth_context_from_request
-from umrs.shared.utils import utc_to_local
 from umrs.shared.buckets import BucketsCfg, ClientBucketEntry
 from umrs.shared.config import (
     default_s3cfg_path,
@@ -75,7 +73,8 @@ from umrs.shared.loaded_config_profiles import (
 )
 from umrs.shared.modality import modality_category, resolve_modality_task
 from umrs.shared.sql_helpers import create_db_name, metadata_dict
-
+from umrs.shared.utils import utc_to_local
+from umrs.shared.warnings import operation_ignored_warning, print_warning_structured
 
 # ---------------------------------------------------------------------------
 # Optional heavy transport dependencies (lazy)
@@ -447,8 +446,8 @@ def _handle_info(args):
     lines.append("")
     lines.append(_section("CURVE Session"))
     try:
-        from pathlib import Path as _Path
         import time as _time
+        from pathlib import Path as _Path
 
         xdg = os.environ.get("XDG_CONFIG_HOME")
         curve_path = (
@@ -905,7 +904,7 @@ def _print_config_candidates_text(discovered, *, show_server=False):
         candidates = discovered.get(key) or []
         if not candidates:
             print(f"  {_dim('(none)')}")
-            print("")
+            print()
             continue
         active_path = resolved_paths.get(key)
         for candidate in candidates:
@@ -919,7 +918,7 @@ def _print_config_candidates_text(discovered, *, show_server=False):
             print(f"  {marker} {dot} {path_str}")
             if candidate.error:
                 print(f"      {_red(candidate.error)}")
-        print("")
+        print()
 
 
 def _build_user_config_template(username: str, fullname: str) -> dict:
@@ -971,7 +970,7 @@ def _handle_config_init(args):
         try:
             username = input("Username: ").strip()
         except (EOFError, KeyboardInterrupt):
-            print("")
+            print()
             return 1
     if not username:
         raise ValueError("Username must not be empty.")
@@ -980,7 +979,7 @@ def _handle_config_init(args):
         try:
             fullname = input("Full name: ").strip()
         except (EOFError, KeyboardInterrupt):
-            print("")
+            print()
             return 1
     if not fullname:
         raise ValueError("Full name must not be empty.")
@@ -2460,7 +2459,7 @@ def _handle_admin_command(args):
                 f"{_green('✓')} {action} admin token for {_bold(args.name)} (for umrs --admin-token / $UMRS_ADMIN_TOKEN):"
             )
             print(f"  {_yellow(token)}")
-            print("")
+            print()
             print(f"  {_dim('Save this token — it cannot be retrieved later.')}")
             print(f"  {_dim('Use with: umrs --admin-token <token> <command>')}")
             print(
@@ -2532,7 +2531,7 @@ def _handle_profile_init(args):
         try:
             name = input("Profile name: ").strip()
         except (EOFError, KeyboardInterrupt):
-            print("")
+            print()
             return 1
     if not name:
         raise ValueError("Profile name must not be empty.")
@@ -2545,7 +2544,7 @@ def _handle_profile_init(args):
             if entered:
                 host = entered
         except (EOFError, KeyboardInterrupt):
-            print("")
+            print()
             return 1
 
     mode = args.mode
@@ -2557,7 +2556,7 @@ def _handle_profile_init(args):
             elif entered:
                 print(f"Invalid mode '{entered}', using '{mode}'")
         except (EOFError, KeyboardInterrupt):
-            print("")
+            print()
             return 1
     minio_url = args.minio_url or f"http://{host}:9000"
     rag_url = args.rag_url or f"http://{host}:8081"
@@ -2655,7 +2654,7 @@ def _ensure_user_config_after_login(username: str, args) -> int:
                 input("  Overwrite with a fresh default config? [y/N] ").strip().lower()
             )
         except (EOFError, KeyboardInterrupt):
-            print("")
+            print()
             return 0
         if answer not in ("y", "yes"):
             # Keep existing, just make sure it's the current config.
@@ -3369,8 +3368,8 @@ def _disabled_admin_message():
 
 def _http_ping(gateway_url: str, api_key: str | None = None) -> dict:
     """Ping the UMRS server via the HTTP gateway."""
-    import urllib.request
     import urllib.error
+    import urllib.request
 
     url = f"{gateway_url.rstrip('/')}/gw/ops/ping"
     req = urllib.request.Request(url, method="GET")
@@ -3398,8 +3397,8 @@ def _http_reload(
     user_id: str | None = None,
 ) -> dict:
     """Trigger config reload via the HTTP gateway."""
-    import urllib.request
     import urllib.error
+    import urllib.request
 
     url = f"{gateway_url.rstrip('/')}/gw/ops/reload"
     payload: dict = {}
@@ -3426,9 +3425,9 @@ def _http_model_list(
     gateway_url: str, api_key: str | None = None, scope: str | None = None
 ) -> dict:
     """List models via the HTTP gateway endpoint."""
-    import urllib.request
     import urllib.error
     import urllib.parse
+    import urllib.request
 
     url = f"{gateway_url.rstrip('/')}/gw/models"
     if scope:
@@ -3462,9 +3461,9 @@ def _http_model_delete(
     First lists models to resolve name+scope to model_id, then sends
     DELETE /gw/models/{model_id}.
     """
-    import urllib.request
     import urllib.error
     import urllib.parse
+    import urllib.request
 
     # Resolve name+scope to model_id via list
     list_result = _http_model_list(gateway_url, api_key, scope=scope)
@@ -3528,8 +3527,8 @@ def _http_model_register(
     api_key: str | None = None,
 ) -> dict:
     """Register a model via the HTTP gateway endpoint (POST /gw/models)."""
-    import urllib.request
     import urllib.error
+    import urllib.request
 
     url = f"{gateway_url.rstrip('/')}/gw/models"
     body: dict = {
@@ -4641,14 +4640,18 @@ def _print_workflow_executions(parsed: dict) -> None:
             if status == "succeeded"
             else _red("✗")
             if status == "failed"
-            else _dim("■") if status == "cancelled" else _dim("▶")
+            else _dim("■")
+            if status == "cancelled"
+            else _dim("▶")
         )
         wid = str(row.get("execution_id", "?"))
         name = str(row.get("workflow_name", "?"))
         user = str(row.get("user_id", "?"))
         steps = f"{row.get('steps_done', 0)}/{row.get('steps_total', 0)}"
         progress = f"{float(row.get('progress', 0.0)):.0%}"
-        print(f"  {marker} {wid}  {name}  {status:10s}  steps {steps}  {progress:>4s}  {_dim(user)}")
+        print(
+            f"  {marker} {wid}  {name}  {status:10s}  steps {steps}  {progress:>4s}  {_dim(user)}"
+        )
         if row.get("error"):
             print(f"      {_red(row['error'])}")
     count = int(parsed.get("count", len(rows)))
@@ -5954,7 +5957,7 @@ def _action_maintenance(ctx):
 def _action_export_embeddings(ctx):
     args = ctx.args
     try:
-        bucket_alias_arg = getattr(args, "bucket_alias")
+        bucket_alias_arg = args.bucket_alias
         bucket_alias, _ = decompose_bucket_alias_arg(bucket_alias_arg)
         entry = ctx.buckets_cfg.get(bucket_alias)
         if entry is None:
@@ -6050,7 +6053,7 @@ def _action_export_embeddings(ctx):
 def _action_s3_transfer(ctx):
     """Handle upload_file, upload_dir, and download_results actions."""
     args = ctx.args
-    bucket_alias_arg = getattr(args, "bucket_alias")
+    bucket_alias_arg = args.bucket_alias
     bucket_alias, subdir = decompose_bucket_alias_arg(bucket_alias_arg)
 
     selected_fields = [
@@ -6237,7 +6240,7 @@ def _action_s3_transfer(ctx):
                 with open(file_path) as file:
                     nb_objects = 0
                     s3_key_list = []
-                    for line in file.readlines():
+                    for line in file:
                         line = line.strip()
                         if line != "":
                             s3_key = s3_store_txt(
@@ -6407,7 +6410,11 @@ def _action_s3_transfer(ctx):
 
             poll_timeout = 1
             wait_start = time.time()
-            print(format_wait_progress(readiness, elapsed_sec=0), flush=True, file=sys.stderr)
+            print(
+                format_wait_progress(readiness, elapsed_sec=0),
+                flush=True,
+                file=sys.stderr,
+            )
             while not readiness.ready:
                 elapsed = int(time.time() - wait_start)
                 if elapsed >= max_wait_sec:
@@ -6810,9 +6817,9 @@ def _maybe_load_saved_curve_session() -> bool:
     has already established one.  No r4 package import — reads the JSON directly.
     """
     try:
-        from pathlib import Path as _Path
         import json as _json
         import time as _time
+        from pathlib import Path as _Path
 
         xdg = os.environ.get("XDG_CONFIG_HOME")
         session_path = (
@@ -6882,8 +6889,8 @@ def _persist_curve_session(info, gateway_url: str) -> None:
     env vars set by ``bootstrap_curve_session`` already cover this invocation).
     """
     try:
-        from pathlib import Path as _Path
         import json as _json
+        from pathlib import Path as _Path
 
         xdg = os.environ.get("XDG_CONFIG_HOME")
         config_dir = _Path(xdg, "r4") if xdg else _Path.home() / ".config" / "r4"
@@ -6992,7 +6999,7 @@ def _maybe_bootstrap_curve_session(connection) -> None:
             "CURVE session bootstrap failed (non-fatal): %s",
             exc,
         )
-        pass  # logged above at DEBUG level
+        # logged above at DEBUG level
 
 
 def main():

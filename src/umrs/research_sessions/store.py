@@ -20,7 +20,7 @@ def _sqliteify(sql: str) -> str:
     import re
 
     # sqlite has no COMMENT ON TABLE syntax — drop the whole statement.
-    sql = re.sub(r"COMMENT ON TABLE[^;]*;", "", sql, flags=re.S)
+    sql = re.sub(r"COMMENT ON TABLE[^;]*;", "", sql, flags=re.DOTALL)
     return (
         sql.replace("JSONB", "TEXT")
         .replace("TIMESTAMPTZ", "TEXT")

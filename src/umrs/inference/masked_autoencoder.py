@@ -3,9 +3,9 @@ import sys
 
 import numpy as np
 import torch
-import torchvision.transforms as transforms
 import yaml
 from torch.utils.data import DataLoader, Dataset
+from torchvision import transforms
 
 from umrs.shared.storage.s3 import s3_key_exists, save_tiff_image_to_s3
 

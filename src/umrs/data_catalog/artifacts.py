@@ -101,7 +101,7 @@ def read_artifact_text(
     meta: CatalogObjectMeta | None = None,
     *,
     max_bytes: int = _DEFAULT_MAX_CONTENT_BYTES,
-    meta_store: "CatalogMetaStore | None" = None,
+    meta_store: CatalogMetaStore | None = None,
 ) -> str:
     """Read searchable text for a catalog object."""
     catalog_meta = meta

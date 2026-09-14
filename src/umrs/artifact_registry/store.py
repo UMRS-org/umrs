@@ -11,7 +11,8 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from psycopg2.extras import Json
 
@@ -73,7 +74,7 @@ class ArtifactStore:
                     "Failed to release artifact-store connection", exc_info=True
                 )
 
-    def __enter__(self) -> "ArtifactStore":
+    def __enter__(self) -> ArtifactStore:
         return self
 
     def __exit__(self, *_exc) -> None:

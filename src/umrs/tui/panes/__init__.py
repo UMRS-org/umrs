@@ -1,23 +1,23 @@
 """Per-tab panes for the UMRS monitor TUI."""
 
-from .jobs import JobsPane
-from .endpoints import EndpointsPane
-from .status import StatusPane
-from .models import ModelsPane
-from .workflows import WorkflowsPane
 from .connection import ConnectionPane
-from .logs import LogsPane
+from .endpoints import EndpointsPane
 from .errors import ErrorsPane
+from .jobs import JobsPane
+from .logs import LogsPane
+from .models import ModelsPane
+from .status import StatusPane
 from .workflow_logs import WorkflowLogsPane
+from .workflows import WorkflowsPane
 
 __all__ = [
-    "JobsPane",
-    "EndpointsPane",
-    "StatusPane",
-    "ModelsPane",
-    "WorkflowsPane",
     "ConnectionPane",
-    "LogsPane",
+    "EndpointsPane",
     "ErrorsPane",
+    "JobsPane",
+    "LogsPane",
+    "ModelsPane",
+    "StatusPane",
     "WorkflowLogsPane",
+    "WorkflowsPane",
 ]

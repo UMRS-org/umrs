@@ -15,8 +15,8 @@ from .store import ResearchSession, SessionLoopLink, SessionStore
 
 __all__ = [
     "RESEARCH_SESSION_SCHEMA_VERSION",
-    "ensure_schema",
     "ResearchSession",
     "SessionLoopLink",
     "SessionStore",
+    "ensure_schema",
 ]

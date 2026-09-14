@@ -14,7 +14,7 @@ import json
 import logging
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from r4_contracts.a2l import a2l_artifact_transition_ok
 
@@ -31,7 +31,7 @@ from .models import (
 logger = logging.getLogger(__name__)
 
 _pool = None
-_instance: "ConservationStore | None" = None
+_instance: ConservationStore | None = None
 
 
 class ConservationStoreUnavailable(RuntimeError):
@@ -118,10 +118,18 @@ class ConservationStore:
                     ) VALUES ($1,$2,$3::jsonb,$4,$5::jsonb,$6,$7,$8,$9,$10,$11,$12,$13)
                     ON CONFLICT (id) DO NOTHING
                     """,
-                    record.id, record.type, json.dumps(record.type_schema),
-                    record.uri, json.dumps(record.metadata), record.status,
-                    record.user_id, record.project_id, record.hash_version,
-                    record.artifact_class, record.job_id, record.attempt_id,
+                    record.id,
+                    record.type,
+                    json.dumps(record.type_schema),
+                    record.uri,
+                    json.dumps(record.metadata),
+                    record.status,
+                    record.user_id,
+                    record.project_id,
+                    record.hash_version,
+                    record.artifact_class,
+                    record.job_id,
+                    record.attempt_id,
                     record.created_at,
                 )
                 for parent in req.parents:
@@ -131,11 +139,12 @@ class ConservationStore:
                         VALUES ($1, $2, 'derived_from')
                         ON CONFLICT (parent_id, child_id) DO NOTHING
                         """,
-                        parent, record.id,
+                        parent,
+                        record.id,
                     )
         return record
 
-    async def get_artifact(self, artifact_id: str) -> Optional[ArtifactRecord]:
+    async def get_artifact(self, artifact_id: str) -> ArtifactRecord | None:
         row = await self._pool.fetchrow(
             "SELECT * FROM a2l_artifacts WHERE id = $1 AND deleted_at IS NULL",
             artifact_id,
@@ -149,7 +158,7 @@ class ConservationStore:
         user_id: str | None = None,
         limit: int = 50,
         offset: int = 0,
-    ) -> List[ArtifactRecord]:
+    ) -> list[ArtifactRecord]:
         clauses, params = ["deleted_at IS NULL"], []
         if job_id:
             params.append(job_id)
@@ -185,7 +194,10 @@ class ConservationStore:
                 completed_at = COALESCE($4::timestamptz, completed_at)
             WHERE id = $1
             """,
-            artifact_id, status, error or None, completed,
+            artifact_id,
+            status,
+            error or None,
+            completed,
         )
         refreshed = await self.get_artifact(artifact_id)
         if refreshed is None:  # pragma: no cover — defensive
@@ -216,13 +228,22 @@ class ConservationStore:
                 status, user_id, project_id, job_id, attempt_id, created_at
             ) VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8,$9,$10,$11,$12)
             """,
-            rec.id, rec.agent_name, rec.agent_version, rec.model_ref,
-            rec.prompt_hash, json.dumps(rec.params), rec.status, rec.user_id,
-            rec.project_id, rec.job_id, rec.attempt_id, rec.created_at,
+            rec.id,
+            rec.agent_name,
+            rec.agent_version,
+            rec.model_ref,
+            rec.prompt_hash,
+            json.dumps(rec.params),
+            rec.status,
+            rec.user_id,
+            rec.project_id,
+            rec.job_id,
+            rec.attempt_id,
+            rec.created_at,
         )
         return rec
 
-    async def get_execution(self, execution_id: str) -> Optional[AgentExecution]:
+    async def get_execution(self, execution_id: str) -> AgentExecution | None:
         row = await self._pool.fetchrow(
             "SELECT * FROM a2l_agent_executions WHERE id = $1", execution_id
         )
@@ -237,11 +258,13 @@ class ConservationStore:
         user_id: str | None = None,
         limit: int = 50,
         offset: int = 0,
-    ) -> List[AgentExecution]:
+    ) -> list[AgentExecution]:
         clauses, params = ["TRUE"], []
         for col, val in (
-            ("job_id", job_id), ("attempt_id", attempt_id),
-            ("agent_name", agent_name), ("user_id", user_id),
+            ("job_id", job_id),
+            ("attempt_id", attempt_id),
+            ("agent_name", agent_name),
+            ("user_id", user_id),
         ):
             if val:
                 params.append(val)
@@ -273,9 +296,13 @@ class ConservationStore:
             """,
             execution_id,
             patch.status,
-            json.dumps(patch.execution_trace) if patch.execution_trace is not None else None,
+            json.dumps(patch.execution_trace)
+            if patch.execution_trace is not None
+            else None,
             patch.error,
-            patch.completed_at if patch.status in ("completed", "failed", "cancelled") else None,
+            patch.completed_at
+            if patch.status in ("completed", "failed", "cancelled")
+            else None,
         )
         refreshed = await self.get_execution(execution_id)
         if refreshed is None:  # pragma: no cover — defensive
@@ -294,23 +321,36 @@ class ConservationStore:
                 rationale, payload, created_at
             ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9)
             """,
-            did, req.job_id or None, req.attempt_id or None,
-            req.artifact_id or None, req.decided_by, req.decision,
-            req.rationale, json.dumps(req.payload), created,
+            did,
+            req.job_id or None,
+            req.attempt_id or None,
+            req.artifact_id or None,
+            req.decided_by,
+            req.decision,
+            req.rationale,
+            json.dumps(req.payload),
+            created,
         )
         return DecisionRecord(
-            id=did, decided_by=req.decided_by, decision=req.decision,
-            rationale=req.rationale, job_id=req.job_id, attempt_id=req.attempt_id,
-            artifact_id=req.artifact_id, payload=req.payload, created_at=created,
+            id=did,
+            decided_by=req.decided_by,
+            decision=req.decision,
+            rationale=req.rationale,
+            job_id=req.job_id,
+            attempt_id=req.attempt_id,
+            artifact_id=req.artifact_id,
+            payload=req.payload,
+            created_at=created,
         )
 
     async def list_decisions(
         self, *, job_id: str | None = None, limit: int = 50
-    ) -> List[DecisionRecord]:
+    ) -> list[DecisionRecord]:
         if job_id:
             rows = await self._pool.fetch(
                 "SELECT * FROM a2l_decisions WHERE job_id = $1 ORDER BY created_at DESC LIMIT $2",
-                job_id, limit,
+                job_id,
+                limit,
             )
         else:
             rows = await self._pool.fetch(
@@ -318,17 +358,22 @@ class ConservationStore:
             )
         return [
             DecisionRecord(
-                id=r["id"], decided_by=r["decided_by"], decision=r["decision"],
-                rationale=r["rationale"], job_id=r["job_id"] or "",
-                attempt_id=r["attempt_id"] or "", artifact_id=r["artifact_id"] or "",
-                payload=r["payload"] or {}, created_at=str(r["created_at"]),
+                id=r["id"],
+                decided_by=r["decided_by"],
+                decision=r["decision"],
+                rationale=r["rationale"],
+                job_id=r["job_id"] or "",
+                attempt_id=r["attempt_id"] or "",
+                artifact_id=r["artifact_id"] or "",
+                payload=r["payload"] or {},
+                created_at=str(r["created_at"]),
             )
             for r in rows
         ]
 
     # ── Spine join read (ADR-034: compositional query, never a copy) ──────
 
-    async def job_conservation_view(self, job_id: str) -> Dict[str, Any]:
+    async def job_conservation_view(self, job_id: str) -> dict[str, Any]:
         """Compositional view: spine-row (if readable) + conserved additions.
 
         Joins jobs/attempts for the authoritative state and returns it beside
@@ -349,14 +394,19 @@ class ConservationStore:
             logger.debug("a2l conservation view: spine join unavailable", exc_info=True)
         artifacts = [
             {
-                "id": a.id, "type": a.type, "status": a.status,
-                "uri": a.uri, "attempt_id": a.attempt_id,
+                "id": a.id,
+                "type": a.type,
+                "status": a.status,
+                "uri": a.uri,
+                "attempt_id": a.attempt_id,
             }
             for a in await self.list_artifacts(job_id=job_id)
         ]
         executions = [
             {
-                "id": e.id, "agent_name": e.agent_name, "status": e.status,
+                "id": e.id,
+                "agent_name": e.agent_name,
+                "status": e.status,
                 "attempt_id": e.attempt_id,
             }
             for e in await self.list_executions(job_id=job_id)
@@ -383,24 +433,39 @@ class ConservationStore:
     @staticmethod
     def _to_artifact(row: Any) -> ArtifactRecord:
         return ArtifactRecord(
-            id=row["id"], type=row["type"], uri=row["uri"], user_id=row["user_id"],
-            status=str(row["status"]), type_schema=row["type_schema"] or {},
-            metadata=row["metadata"] or {}, project_id=row["project_id"],
-            hash_version=row["hash_version"], artifact_class=row["artifact_class"],
-            job_id=row["job_id"] or "", attempt_id=row["attempt_id"] or "",
+            id=row["id"],
+            type=row["type"],
+            uri=row["uri"],
+            user_id=row["user_id"],
+            status=str(row["status"]),
+            type_schema=row["type_schema"] or {},
+            metadata=row["metadata"] or {},
+            project_id=row["project_id"],
+            hash_version=row["hash_version"],
+            artifact_class=row["artifact_class"],
+            job_id=row["job_id"] or "",
+            attempt_id=row["attempt_id"] or "",
             created_at=str(row["created_at"] or ""),
-            completed_at=str(row["completed_at"] or ""), error=row["error"] or "",
+            completed_at=str(row["completed_at"] or ""),
+            error=row["error"] or "",
         )
 
     @staticmethod
     def _to_execution(row: Any) -> AgentExecution:
         return AgentExecution(
-            id=row["id"], agent_name=row["agent_name"], user_id=row["user_id"],
-            status=str(row["status"]), agent_version=row["agent_version"],
-            model_ref=row["model_ref"], prompt_hash=row["prompt_hash"],
-            params=row["params"] or {}, execution_trace=row["execution_trace"] or {},
-            project_id=row["project_id"], job_id=row["job_id"] or "",
-            attempt_id=row["attempt_id"] or "", error=row["error"] or "",
+            id=row["id"],
+            agent_name=row["agent_name"],
+            user_id=row["user_id"],
+            status=str(row["status"]),
+            agent_version=row["agent_version"],
+            model_ref=row["model_ref"],
+            prompt_hash=row["prompt_hash"],
+            params=row["params"] or {},
+            execution_trace=row["execution_trace"] or {},
+            project_id=row["project_id"],
+            job_id=row["job_id"] or "",
+            attempt_id=row["attempt_id"] or "",
+            error=row["error"] or "",
             created_at=str(row["created_at"] or ""),
             completed_at=str(row["completed_at"] or ""),
         )
@@ -438,11 +503,13 @@ async def build_pool_async(uri: str, **kwargs: Any) -> Any:
     from umrs.shared.pg_settings import asyncpg_pool_kwargs
 
     global _pool
-    _pool = await asyncpg.create_pool(dsn=uri, **asyncpg_pool_kwargs("a2l-store", **kwargs))
+    _pool = await asyncpg.create_pool(
+        dsn=uri, **asyncpg_pool_kwargs("a2l-store", **kwargs)
+    )
     return _pool
 
 
-def get_store() -> "ConservationStore":
+def get_store() -> ConservationStore:
     """Return the module singleton, building from the current pool."""
     global _instance
     if _pool is None:
@@ -452,7 +519,7 @@ def get_store() -> "ConservationStore":
     return _instance
 
 
-def init_store(pool: Any) -> "ConservationStore":
+def init_store(pool: Any) -> ConservationStore:
     """Inject an externally built pool (sidecar lifespan path)."""
     global _pool, _instance
     _pool = pool

@@ -15,7 +15,7 @@ class ServerBucketEntry:
     bucket_alias: str
     s3_username: str
     sql_username: str
-    data_base: "DataBase"
+    data_base: DataBase
     db_name: str
     table_name: str
     model: Any
@@ -106,7 +106,7 @@ class BucketsCfg:
                 }
         return result
 
-    def replace_cfg(self, other: "BucketsCfg"):
+    def replace_cfg(self, other: BucketsCfg):
         if not isinstance(other, BucketsCfg):
             raise TypeError("other must be a BucketCfg")
 

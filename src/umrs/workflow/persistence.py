@@ -8,15 +8,12 @@ from __future__ import annotations
 
 import json
 import logging
-import os
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from .models import (
     WORKFLOW_SCHEMA_VERSION,
     WorkflowDefinition,
-    WorkflowExecution,
     generate_workflow_id,
 )
 
@@ -39,7 +36,7 @@ def _workflow_path(dir_path: Path, workflow_id: str) -> Path:
 
 def save_workflow(
     workflow: WorkflowDefinition,
-    dir_path: Optional[Path] = None,
+    dir_path: Path | None = None,
 ) -> Path:
     """Save a workflow definition to disk.
 
@@ -63,8 +60,8 @@ def save_workflow(
 
 def load_workflow(
     workflow_id: str,
-    dir_path: Optional[Path] = None,
-) -> Optional[WorkflowDefinition]:
+    dir_path: Path | None = None,
+) -> WorkflowDefinition | None:
     """Load a workflow definition from disk.
 
     Handles backward-compatible loading: if the file has no outputs section,
@@ -88,13 +85,22 @@ def load_workflow(
         data = json.loads(path.read_text())
 
         # Handle schema version (v1 has none or explicit v1)
-        schema_version = data.pop("_schema_version", None) or data.get("version", "1.0.0")
+        schema_version = data.pop("_schema_version", None) or data.get(
+            "version", "1.0.0"
+        )
         if schema_version != WORKFLOW_SCHEMA_VERSION:
-            logger.info("Migrating workflow '%s' from schema %s to %s", workflow_id, schema_version, WORKFLOW_SCHEMA_VERSION)
+            logger.info(
+                "Migrating workflow '%s' from schema %s to %s",
+                workflow_id,
+                schema_version,
+                WORKFLOW_SCHEMA_VERSION,
+            )
             data = _migrate_schema(data, schema_version)
 
         workflow = WorkflowDefinition.from_dict(data)
-        logger.debug("Loaded workflow '%s' (%s) from %s", workflow_id, workflow.name, path)
+        logger.debug(
+            "Loaded workflow '%s' (%s) from %s", workflow_id, workflow.name, path
+        )
         return workflow
 
     except (json.JSONDecodeError, KeyError, ValueError) as exc:
@@ -103,8 +109,8 @@ def load_workflow(
 
 
 def list_workflows(
-    dir_path: Optional[Path] = None,
-) -> List[WorkflowDefinition]:
+    dir_path: Path | None = None,
+) -> list[WorkflowDefinition]:
     """List all saved workflow definitions.
 
     Args:
@@ -117,7 +123,7 @@ def list_workflows(
     if not dir_path.exists():
         return []
 
-    workflows: List[WorkflowDefinition] = []
+    workflows: list[WorkflowDefinition] = []
     for path in dir_path.glob("*.json"):
         wf = load_workflow(path.stem, dir_path)
         if wf is not None:
@@ -129,7 +135,7 @@ def list_workflows(
 
 def delete_workflow(
     workflow_id: str,
-    dir_path: Optional[Path] = None,
+    dir_path: Path | None = None,
 ) -> bool:
     """Delete a workflow definition.
 
@@ -151,7 +157,7 @@ def delete_workflow(
     return False
 
 
-def _migrate_schema(data: Dict[str, Any], from_version: str) -> Dict[str, Any]:
+def _migrate_schema(data: dict[str, Any], from_version: str) -> dict[str, Any]:
     """Migrate workflow data to the latest schema version.
 
     Currently handles v1 -> v2 (adding outputs section).
@@ -174,7 +180,7 @@ def generate_id() -> str:
     return generate_workflow_id()
 
 
-def validate_workflow_data(data: Dict[str, Any]) -> List[str]:
+def validate_workflow_data(data: dict[str, Any]) -> list[str]:
     """Validate workflow data before upload.
 
     Checks for required fields and output reference integrity.
@@ -182,7 +188,7 @@ def validate_workflow_data(data: Dict[str, Any]) -> List[str]:
     Returns:
         List of validation errors (empty if valid).
     """
-    errors: List[str] = []
+    errors: list[str] = []
 
     # Required fields
     if not data.get("id"):

@@ -18,9 +18,8 @@ from textual.widgets import (
     Static,
 )
 
-from ..screens.path_picker import PathPickerScreen
-
 from ..forms.screens import UploadFormScreen
+from ..screens.path_picker import PathPickerScreen
 
 
 class DataTransferPane(Static):

@@ -19,12 +19,39 @@ _VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".webm"}
 _AUDIO_EXTENSIONS = {".wav", ".mp3", ".flac", ".ogg", ".m4a"}
 _NOTEBOOK_EXTENSIONS = {".ipynb"}
 _CODE_EXTENSIONS = {
-    ".py", ".pyw", ".pyx", ".pxd",  # Python
-    ".cpp", ".cc", ".cxx", ".c++", ".hpp", ".hh", ".hxx", ".h", ".c",  # C/C++
-    ".cu", ".cuh",  # CUDA
-    ".rs", ".go", ".rb", ".js", ".ts", ".tsx", ".jsx", ".java", ".kt", ".swift",  # Other
-    ".sh", ".bash", ".zsh",  # Shell
-    ".f90", ".f95", ".f03", ".f", ".for",  # Fortran
+    ".py",
+    ".pyw",
+    ".pyx",
+    ".pxd",  # Python
+    ".cpp",
+    ".cc",
+    ".cxx",
+    ".c++",
+    ".hpp",
+    ".hh",
+    ".hxx",
+    ".h",
+    ".c",  # C/C++
+    ".cu",
+    ".cuh",  # CUDA
+    ".rs",
+    ".go",
+    ".rb",
+    ".js",
+    ".ts",
+    ".tsx",
+    ".jsx",
+    ".java",
+    ".kt",
+    ".swift",  # Other
+    ".sh",
+    ".bash",
+    ".zsh",  # Shell
+    ".f90",
+    ".f95",
+    ".f03",
+    ".f",
+    ".for",  # Fortran
 }
 
 

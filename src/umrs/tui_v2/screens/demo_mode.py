@@ -23,6 +23,7 @@ from textual.widgets import Button, Static
 
 class StepStatus(str, Enum):
     """Status of a demo step."""
+
     WAITING = "waiting"
     RUNNING = "running"
     DONE = "done"
@@ -32,6 +33,7 @@ class StepStatus(str, Enum):
 @dataclass
 class DemoStep:
     """A single step in the demo pipeline."""
+
     number: int
     label: str
     description: str = ""
@@ -197,8 +199,7 @@ class GuidedDemo(ModalScreen[bool]):
             }[step.status]
 
             progress_str = (
-                f"  {step.progress:.0f}%" if step.status == StepStatus.RUNNING
-                else ""
+                f"  {step.progress:.0f}%" if step.status == StepStatus.RUNNING else ""
             )
 
             widget.update(
@@ -223,9 +224,7 @@ class GuidedDemo(ModalScreen[bool]):
 
         progress = self.query_one("#progress-bar", Static)
         progress.update(
-            f"  Progress: [{bar}] {pct:.0%}  "
-            f"Elapsed: {elapsed:.0f}s  "
-            f"ETA: {eta:.0f}s"
+            f"  Progress: [{bar}] {pct:.0%}  Elapsed: {elapsed:.0f}s  ETA: {eta:.0f}s"
         )
 
     async def _run_pipeline(self) -> None:
@@ -303,8 +302,9 @@ class GuidedDemo(ModalScreen[bool]):
         """Skip to next step."""
         if self._current_step < len(self._steps) - 1:
             self._current_step += 1
-            self.notify(f"Jumped to step {self._current_step + 1}",
-                severity="information")
+            self.notify(
+                f"Jumped to step {self._current_step + 1}", severity="information"
+            )
 
     def on_mount(self) -> None:  # noqa: F811
         self.focus()

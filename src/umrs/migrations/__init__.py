@@ -190,7 +190,9 @@ def apply_migration(cursor, version: str, sql_path: Path) -> bool:
             cursor.execute(statement)
 
         # Record migration
-        cursor.execute("INSERT INTO schema_migrations (version) VALUES (%s)", (version,))
+        cursor.execute(
+            "INSERT INTO schema_migrations (version) VALUES (%s)", (version,)
+        )
     finally:
         if concurrent:
             conn.autocommit = False

@@ -132,9 +132,10 @@ def print_warning(message: str, *, category: WarningCategory | None = None) -> N
     if category:
         label = _WARNING_PREFIX.get(category, "WARN")
         prefix = f" {color}[{label}]{_COLOR_RESET} "
-        if category == WarningCategory.BLOCKING:
-            color = _COLOR_RED
-        elif category == WarningCategory.OPERATION_INVALID:
+        if (
+            category == WarningCategory.BLOCKING
+            or category == WarningCategory.OPERATION_INVALID
+        ):
             color = _COLOR_RED
 
     print(f"{color}{prefix}⚠ {message}{_COLOR_RESET}", file=sys.stderr)

@@ -65,9 +65,7 @@ class VideoStep(Step):
 
             for frame_idx, frame_data in enumerate(frames):
                 frame_key = self._frame_key(key, frame_idx)
-                ctx.upload_bytes(
-                    frame_key, frame_data, content_type="image/jpeg"
-                )
+                ctx.upload_bytes(frame_key, frame_data, content_type="image/jpeg")
                 out_keys.append(frame_key)
 
             manifest_key = self._write_manifest(
@@ -77,11 +75,13 @@ class VideoStep(Step):
                 ctx=ctx,
             )
             out_keys.append(manifest_key)
-            metadata_list.append({
-                "source_key": key,
-                "num_frames": len(frames),
-                "fps": self.fps,
-            })
+            metadata_list.append(
+                {
+                    "source_key": key,
+                    "num_frames": len(frames),
+                    "fps": self.fps,
+                }
+            )
 
         return StepResult(
             output_keys=out_keys,

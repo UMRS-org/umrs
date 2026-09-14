@@ -377,9 +377,7 @@ class ScientificReasoningEngine:
 
         # Weighted combination
         confidence = (
-            evidence_factor * 0.4
-            + experiment_factor * 0.3
-            + related_factor * 0.3
+            evidence_factor * 0.4 + experiment_factor * 0.3 + related_factor * 0.3
         )
 
         return min(1.0, confidence)

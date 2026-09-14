@@ -76,7 +76,10 @@ def image_perception_enabled() -> bool:
     stay on when ``perception_enabled()``; enable image captioning explicitly
     via ``UMRS_DATA_CATALOG_ENABLE_IMAGE_PERCEPTION=true``.
     """
-    return os.getenv("UMRS_DATA_CATALOG_ENABLE_IMAGE_PERCEPTION", "false").lower() == "true"
+    return (
+        os.getenv("UMRS_DATA_CATALOG_ENABLE_IMAGE_PERCEPTION", "false").lower()
+        == "true"
+    )
 
 
 def llm_tags_enabled() -> bool:
@@ -113,7 +116,10 @@ def run_perception(
                 image_bytes=image_bytes,
                 user_id=billing_user,
             )
-        if modality in ("text", "structured", "document", "code", "notebook") and extracted_text.strip():
+        if (
+            modality in ("text", "structured", "document", "code", "notebook")
+            and extracted_text.strip()
+        ):
             return summarize_text(
                 project_id,
                 filename=filename,
@@ -133,9 +139,13 @@ def caption_image(
     user_id: str,
 ) -> PerceptionResult | None:
     """Caption an image with a vision-capable chat endpoint."""
-    max_bytes = _int_env("UMRS_DATA_CATALOG_PERCEPTION_MAX_IMAGE_BYTES", _DEFAULT_MAX_IMAGE_BYTES)
+    max_bytes = _int_env(
+        "UMRS_DATA_CATALOG_PERCEPTION_MAX_IMAGE_BYTES", _DEFAULT_MAX_IMAGE_BYTES
+    )
     if len(image_bytes) > max_bytes:
-        logger.debug("image %s exceeds perception cap (%d bytes)", filename, len(image_bytes))
+        logger.debug(
+            "image %s exceeds perception cap (%d bytes)", filename, len(image_bytes)
+        )
         return None
 
     endpoint = _find_vision_endpoint(project_id)
@@ -178,7 +188,9 @@ def summarize_text(
     user_id: str,
 ) -> PerceptionResult | None:
     """Summarize already-extracted text with a chat endpoint."""
-    max_chars = _int_env("UMRS_DATA_CATALOG_SUMMARY_MAX_CHARS", _DEFAULT_SUMMARY_MAX_CHARS)
+    max_chars = _int_env(
+        "UMRS_DATA_CATALOG_SUMMARY_MAX_CHARS", _DEFAULT_SUMMARY_MAX_CHARS
+    )
     snippet = extracted_text[:max_chars]
 
     endpoint = _find_text_endpoint(project_id)
@@ -218,7 +230,9 @@ def extract_llm_tags(
     if not llm_tags_enabled() or not source_text.strip():
         return []
 
-    max_chars = _int_env("UMRS_DATA_CATALOG_SUMMARY_MAX_CHARS", _DEFAULT_SUMMARY_MAX_CHARS)
+    max_chars = _int_env(
+        "UMRS_DATA_CATALOG_SUMMARY_MAX_CHARS", _DEFAULT_SUMMARY_MAX_CHARS
+    )
     snippet = source_text[:max_chars]
     endpoint = _find_text_endpoint(project_id)
     if endpoint is None:
@@ -348,8 +362,9 @@ def _chat_completion(
     user_id: str,
     perception_kind: str,
 ) -> str | None:
-    import httpx
     import uuid
+
+    import httpx
 
     from umrs.api.llm import get_usage_db_pool
     from umrs.api.llm_usage import ProxyTimer
@@ -426,7 +441,12 @@ def _record_perception_usage(
     if pool is None:
         return
 
-    from umrs.api.llm_usage import UsageRecord, extract_usage_oneshot, fill_usage, record_usage
+    from umrs.api.llm_usage import (
+        UsageRecord,
+        extract_usage_oneshot,
+        fill_usage,
+        record_usage,
+    )
 
     metadata = endpoint.metadata or {}
     record = UsageRecord(

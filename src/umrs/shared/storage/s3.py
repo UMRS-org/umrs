@@ -20,9 +20,9 @@ from umrs.shared.utils import compute_md5, md5_of_file
 warnings.simplefilter("ignore", urllib3.exceptions.InsecureRequestWarning)
 
 
-
 class S3Mode:
     """Constants for S3 client operations."""
+
     GET = "get_object"
     PUT = "put_object"
 
@@ -43,9 +43,10 @@ def create_presigned_url(
             ExpiresIn=duration,
         )
     except ClientError as e:
-        print(f"[ERROR] Failed to generate pre-signed URL for {bucket_name}/{object_key}: {e}")
+        print(
+            f"[ERROR] Failed to generate pre-signed URL for {bucket_name}/{object_key}: {e}"
+        )
         return None
-
 
 
 def get_s3_server_name(s3):
@@ -126,7 +127,8 @@ def s3_create_users_and_buckets(
     from umrs.shared.storage.backends import PROFILES, get_backend
 
     backend_name = next(
-        (name for name, prof in PROFILES.items() if prof.display_name == server_name), None
+        (name for name, prof in PROFILES.items() if prof.display_name == server_name),
+        None,
     )
     if backend_name is None:
         raise RuntimeError(

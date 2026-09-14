@@ -40,7 +40,7 @@ Each step uses the ``VisionPerception`` envelope
 # Re-export legacy B7 pipeline-template registry symbols so existing
 # imports of ``umrs.pipeline_sdk.templates`` keep working after this
 # module became a package (was a single file before).
-from .._pipeline_templates_legacy import (  # noqa: E402
+from .._pipeline_templates_legacy import (
     ParameterType,
     PipelineTemplate,
     TemplateParameter,
@@ -51,11 +51,11 @@ from .ocr_step import OCRStep
 from .vision_step import VisionStep
 
 __all__ = [
-    "VisionStep",
     "LLMStep",
     "OCRStep",
     "ParameterType",
     "PipelineTemplate",
     "TemplateParameter",
     "TemplateRegistry",
+    "VisionStep",
 ]

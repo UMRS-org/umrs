@@ -97,9 +97,14 @@ def _infer_tls_block(cfg: ProvisionConfig) -> str:
     """
     needs_resolver = (
         cfg.infer_resolve_via
-        and not cfg.infer_host.replace("[", "").replace("]", "").replace(".", "").isdigit()
+        and not cfg.infer_host.replace("[", "")
+        .replace("]", "")
+        .replace(".", "")
+        .isdigit()
     )
-    resolver = f"    resolver {cfg.infer_resolve_via} valid=10s;\n" if needs_resolver else ""
+    resolver = (
+        f"    resolver {cfg.infer_resolve_via} valid=10s;\n" if needs_resolver else ""
+    )
     # IMPORTANT nginx semantics: `proxy_pass <variable>` with the URI in the
     # variable DROPS the request path (live-leg I-2 failure: path=/ denied).
     # Correct recipe: rewrite the path to /s/<sid>/..., then `proxy_pass
