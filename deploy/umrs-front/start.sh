@@ -308,17 +308,31 @@ if [[ "$START_MODE" != "--server" ]]; then
         _pg_cmd -d "$db" -c "CREATE EXTENSION IF NOT EXISTS vector;" || true
     done
 
-    # Wait for the S3 API (SeaweedFS answers /status)
+    # Wait for the S3 API (SeaweedFS answers /status). Everything after this
+    # point (bucket bootstrap, servers) needs it, so a store that never comes
+    # up is fatal — with the container state and logs printed first so the
+    # converge log carries the reason (2026-09-14 cutover, ADR-055).
     echo -n "  Waiting for seaweedfs..."
-    for i in $(seq 1 30); do
+    _s3_ready=0
+    for i in $(seq 1 60); do
         if curl -sf "http://127.0.0.1:${S3_PORT}/status" >/dev/null 2>&1; then
             echo " ready."
+            _s3_ready=1
             break
         fi
         echo -n "."
         sleep 1
-        [[ "$i" -eq 30 ]] && echo " WARNING: seaweedfs not ready after 30s"
     done
+    if [[ "$_s3_ready" -ne 1 ]]; then
+        echo " ERROR: seaweedfs not ready after 60s. Diagnostics:"
+        podman ps -a --filter name=umrs-seaweedfs --format '  container: {{.Names}} {{.Status}} ports={{.Ports}}' 2>&1 || true
+        podman inspect -f '  state: {{.State.Status}} exit={{.State.ExitCode}} error={{.State.Error}}' umrs-seaweedfs 2>&1 || true
+        echo "  --- podman logs --tail 60 umrs-seaweedfs ---"
+        podman logs --tail 60 umrs-seaweedfs 2>&1 | sed 's/^/  | /' || true
+        echo "  --- listeners on :${S3_PORT} ---"
+        (ss -ltnp 2>/dev/null || netstat -ltnp 2>/dev/null) | grep ":${S3_PORT} " | sed 's/^/  | /' || echo "  | (none)"
+        exit 1
+    fi
 fi
 
 # ─── Build UMRS server image (needed for utility tasks and servers) ──────────
