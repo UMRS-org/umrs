@@ -639,53 +639,51 @@ def _create_app():
 
     configure_structured_logging()
 
-    from umrs.api import (
-        a2l_ledger_router,
-        a2l_router,
-        artifact_router,
-        assets_router,
-        bundle_restore_router,
-        catalog_router,
-        chat_router,
-        companion_sessions_router,
-        egress_audit_router,
-        endpoints_router,
-        evidence_router,
-        experiment_registry_router,
-        files_router,
-        grants_router,
-        intake_uploads_router,
-        jobs_router,
-        knowledge_graphs_router,
-        knowledge_lineage_router,
-        knowledge_attrition_router,
-        knowledge_proposals_router,
-        knowledge_query_router,
-        knowledge_router,
-        knowledge_upload_router,
-        llm_router,
-        loops_router,
-        mcp_router,
-        models_router,
-        ops_router,
-        pipelines_router,
-        policy_router,
-        provenance_router,
-        rag_router,
-        reflective_memory_router,
-        research_sessions_router,
-        scientific_memory_router,
-        secret_broker_router,
-        skills_router,
-        source_grants_router,
-        traces_router,
-        usage_router,
-        user_sources_router,
-        verification_router,
-        vision_router,
-        workflows_router,
-        zmq_sessions_router,
-    )
+    from umrs.api.a2l_ledger import router as a2l_ledger_router
+    from umrs.api.a2l import router as a2l_router
+    from umrs.api.artifact_routes import router as artifact_router
+    from umrs.api.assets import router as assets_router
+    from umrs.api.bundle_restore import router as bundle_restore_router
+    from umrs.api.catalog import router as catalog_router
+    from umrs.api.chat import router as chat_router
+    from umrs.api.companion_sessions import router as companion_sessions_router
+    from umrs.api.egress_audit import router as egress_audit_router
+    from umrs.api.endpoints import router as endpoints_router
+    from umrs.api.evidence import router as evidence_router
+    from umrs.api.experiment_registry import router as experiment_registry_router
+    from umrs.api.files import router as files_router
+    from umrs.api.grants import router as grants_router
+    from umrs.api.intake_uploads import router as intake_uploads_router
+    from umrs.api.jobs import router as jobs_router
+    from umrs.api.knowledge_graphs import router as knowledge_graphs_router
+    from umrs.api.knowledge_lineage import router as knowledge_lineage_router
+    from umrs.api.knowledge_attrition import router as knowledge_attrition_router
+    from umrs.api.knowledge_proposals import router as knowledge_proposals_router
+    from umrs.api.knowledge_query import router as knowledge_query_router
+    from umrs.api.knowledge import router as knowledge_router
+    from umrs.api.knowledge_upload import router as knowledge_upload_router
+    from umrs.api.llm import router as llm_router
+    from umrs.api.loop import router as loops_router
+    from umrs.api.mcp import router as mcp_router
+    from umrs.api.models import router as models_router
+    from umrs.api.ops import router as ops_router
+    from umrs.api.pipelines import router as pipelines_router
+    from umrs.api.models import router as policy_router
+    from umrs.api.provenance import router as provenance_router
+    from umrs.api.rag import router as rag_router
+    from umrs.api.reflective_memory import router as reflective_memory_router
+    from umrs.api.research_sessions import router as research_sessions_router
+    from umrs.api.scientific_memory import router as scientific_memory_router
+    from umrs.api.secret_broker import router as secret_broker_router
+    from umrs.api.skills import router as skills_router
+    from umrs.api.source_grants import router as source_grants_router
+    from umrs.api.traces import router as traces_router
+    from umrs.api.usage import router as usage_router
+    from umrs.api.user_sources import router as user_sources_router
+    from umrs.api.verification import router as verification_router
+    from umrs.api.vision import router as vision_router
+    from umrs.api.workflows import router as workflows_router
+    from umrs.api.zmq_sessions import router as zmq_sessions_router
 
     environment = os.environ.get("GATEWAY_ENVIRONMENT", "development").lower()
     enable_docs = environment in ("development", "dev", "test")
