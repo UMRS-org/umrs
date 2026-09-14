@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import importlib.util
 
 from umrs.knowledge.project import ProjectPhase
 from umrs.knowledge.workflow import run_project_workflow
@@ -36,16 +35,7 @@ def _graphs_always_in_memory(monkeypatch):
 
 
 
-def _load_materialize_blank_project():
-    path = Path(__file__).resolve().with_name("blank_project_fixture.py")
-    spec = importlib.util.spec_from_file_location("blank_project_fixture", path)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module.materialize_blank_project
-
-
-materialize_blank_project = _load_materialize_blank_project()
+from blank_project_fixture import materialize_blank_project  # noqa: E402
 
 
 def test_understand_persists_knowledge_model_objects(tmp_path: Path):

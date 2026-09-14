@@ -1,9 +1,7 @@
-"""Cross-project ACL tests for the data catalog (search + read + API)."""
 
 from __future__ import annotations
 
 import io
-import sys
 
 import pytest
 
@@ -13,35 +11,10 @@ from umrs.data_catalog.schema import CatalogObjectMeta, CatalogState
 from catalog_store_fake import FakeCatalogMetaStore
 
 
-@pytest.fixture(autouse=True, scope="module")
-def _restore_sys_modules():
-    """Undo the manually injected module stubs after this file's tests.
-
-    ``_catalog_api_deps`` registers ``sys.modules['umrs.api.catalog*']`` (and
-    historically a bare ``umrs.api`` stub) via importlib — without a restore,
-    those entries poison any later test module that imports ``umrs.api.*``
-    (cross-file contamination seen in the 2026-08-26 audit run).
-    """
-    sentinel = object()
-    # Only the three manually-loaded SHADOW modules need teardown.
-    # The real `umrs`/`umrs.api` package entries must STAY put: package
-    # re-import is non-idempotent (prometheus clients double-register the
-    # umrs.* timeseries), and evicting the tree poisons any later
-    # patch("umrs.api.loop", ...) resolution (both classes observed
-    # 2026-09-13).
-    keys = (
-        "umrs.api.files",
-        "umrs.api.catalog_store",
-        "umrs.api.catalog",
-    )
-    before = {k: sys.modules.get(k, sentinel) for k in keys}
-    yield
-    for k in keys:
-        prior = before[k]
-        if prior is sentinel:
-            sys.modules.pop(k, None)
-        else:
-            sys.modules[k] = prior
+# NOTE (ADR-053): this file no longer registers module shadows — plain
+# imports only. The historical _restore_sys_modules teardown was removed
+# with the shadow harness: evicting real umrs.api entries is itself the
+# non-idempotent-reimport poison class (prometheus double-register).
 
 
 def _meta(
@@ -198,38 +171,18 @@ def test_read_catalog_object_denied_when_meta_missing():
 
 def _catalog_api_deps():
     pytest.importorskip("fastapi")
-    import importlib.util
-    import sys
-    import types
-    from pathlib import Path
 
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
-    api_dir = Path(__file__).resolve().parents[1] / "src" / "umrs" / "api"
+    # Plain imports (ADR-053): umrs.api.__init__ is a lazy __getattr__ shim
+    # since Phase 1.3, so the spec-load shadow harness — whose stale module
+    # objects poisoned sibling suites once, per the wave-13 comment below —
+    # is obsolete and itself harmful. One canonical module object per name.
+    import umrs.api.catalog as catalog_module
+    import umrs.api.catalog_store as catalog_store_module
+    import umrs.api.files as files_module
 
-    def _load_module(name: str, path: Path):
-        spec = importlib.util.spec_from_file_location(name, path)
-        assert spec and spec.loader
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[name] = module
-        spec.loader.exec_module(module)
-        return module
-
-    # Prefer REAL parent packages so relative imports inside the manually
-    # loaded modules resolve (``from ._scope_identity import ...``). Bare stubs
-    # are kept only as a fallback for minimal-display environments that truly
-    # lack the package — and even then the module-scoped restore fixture above
-    # removes them afterwards.
-    try:
-        import umrs  # noqa: F401
-        import umrs.api  # noqa: F401
-    except ImportError:
-        sys.modules.setdefault("umrs", types.ModuleType("umrs"))
-        sys.modules.setdefault("umrs.api", types.ModuleType("umrs.api"))
-    files_module = _load_module("umrs.api.files", api_dir / "files.py")
-    catalog_store_module = _load_module("umrs.api.catalog_store", api_dir / "catalog_store.py")
-    catalog_module = _load_module("umrs.api.catalog", api_dir / "catalog.py")
     catalog_module.CatalogReadResponse.model_rebuild()
     catalog_router = catalog_module.router
     S3Config = files_module.S3Config
@@ -352,26 +305,10 @@ def test_api_catalog_stats_returns_counts_by_state_and_modality():
 
 def test_api_catalog_search_returns_503_when_store_uninitialized():
     pytest.importorskip("fastapi")
-    import sys
 
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
-    # Real package import — the previous spec_from_file_location harness
-    # stubbed sys.modules["umrs.api"] WITHOUT __path__, so any absolute
-    # `from umrs.api.<mod> import ...` inside catalog.py died with
-    # "'umrs.api' is not a package".
-    #
-    # Drop THIS FILE's loader shadows first: sibling tests register their own
-    # fresh `umrs.api.catalog*` module objects via _catalog_api_deps, and an
-    # `import` here would happily return THAT stale object — setting the
-    # None-store on the shadow while the route reads the real one (200 not
-    # 503 once any earlier suite has initialized a real store).
-    stale = {
-        name: sys.modules.pop(name)
-        for name in ("umrs.api.catalog", "umrs.api.catalog_store")
-        if name in sys.modules
-    }
     import umrs.api.catalog as catalog_module
     import umrs.api.catalog_store as catalog_store_module
 
@@ -391,7 +328,5 @@ def test_api_catalog_search_returns_503_when_store_uninitialized():
         assert response.status_code == 503
         assert "not initialized" in response.json()["detail"].lower()
     finally:
-        # Hand state back honestly: restore the suite's store + the shadow
-        # modules the file's next tests expect to find in place.
+        # Hand state back honestly.
         catalog_store_module.set_catalog_meta_store(prior_store)
-        sys.modules.update(stale)

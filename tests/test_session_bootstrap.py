@@ -131,11 +131,7 @@ def _client_mod():
     import importlib
     import sys
 
-    # client_umrs lives on the umrs src path; import it directly.
-    src = os.path.join(os.path.dirname(__file__), "..", "src")
-    src = os.path.abspath(src)
-    if src not in sys.path:
-        sys.path.insert(0, src)
+    # client_umrs installed editable alongside umrs (ADR-053).
     return importlib.import_module("client_umrs")
 
 

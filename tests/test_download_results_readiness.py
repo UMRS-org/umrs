@@ -6,9 +6,7 @@ import argparse
 import sys
 from pathlib import Path
 
-_SRC = Path(__file__).resolve().parents[1] / "src"
-if str(_SRC) not in sys.path:
-    sys.path.insert(0, str(_SRC))
+# Splice removed (ADR-053): umrs installed editable in .venv.
 
 from umrs.client.download_results import (  # noqa: E402
     classify_wait_reply,

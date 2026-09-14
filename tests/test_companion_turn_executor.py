@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+# splice removed (ADR-053): pytest auto-inserts tests/ for sibling helpers; umrs editable
 from fake_pg_pool import FakePool  # noqa: E402
 from umrs.jobs.companion_turn_executor import (  # noqa: E402
     DEFAULT_LITELLM_URL,

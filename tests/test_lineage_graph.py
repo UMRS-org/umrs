@@ -2,39 +2,18 @@
 
 from __future__ import annotations
 
-import importlib
-import importlib.util
-import os
-import sys
-
 import pytest
 from datetime import datetime, timezone, timedelta
 
-# Direct module imports to avoid circular import through umrs.jobs.__init__
-_src = os.path.join(os.path.dirname(__file__), "..", "src")
-sys.path.insert(0, _src)
-
-_ets_spec = importlib.util.spec_from_file_location(
-    "umrs.jobs.execution_trace_store",
-    os.path.join(_src, "umrs", "jobs", "execution_trace_store.py"),
+# Plain imports (ADR-053): the umrs.jobs import cycle cited above was broken
+# in Phase 1.1; the spec-load harness is obsolete.
+from umrs.jobs.execution_trace_store import TraceRecord  # noqa: E402
+from umrs.jobs.lineage_graph import (  # noqa: E402
+    LineageGraph,
+    LineageGraphMetrics,
+    LineageNode,
+    build_lineage_graph,
 )
-_ets_mod = importlib.util.module_from_spec(_ets_spec)
-sys.modules["umrs.jobs.execution_trace_store"] = _ets_mod
-_ets_spec.loader.exec_module(_ets_mod)
-TraceRecord = _ets_mod.TraceRecord
-
-_lg_spec = importlib.util.spec_from_file_location(
-    "umrs.jobs.lineage_graph",
-    os.path.join(_src, "umrs", "jobs", "lineage_graph.py"),
-)
-_lg_mod = importlib.util.module_from_spec(_lg_spec)
-sys.modules["umrs.jobs.lineage_graph"] = _lg_mod
-_lg_spec.loader.exec_module(_lg_mod)
-
-LineageGraph = _lg_mod.LineageGraph
-LineageGraphMetrics = _lg_mod.LineageGraphMetrics
-LineageNode = _lg_mod.LineageNode
-build_lineage_graph = _lg_mod.build_lineage_graph
 
 
 def _ts(offset_seconds: int = 0) -> datetime:

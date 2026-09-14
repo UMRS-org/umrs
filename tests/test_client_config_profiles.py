@@ -6,7 +6,7 @@ from argparse import Namespace
 import pytest
 
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+# splice removed (ADR-053): umrs installed editable in .venv
 
 
 from client_umrs import _handle_config_command, _resolve_control_client_id

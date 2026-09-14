@@ -7,8 +7,7 @@ import ast  # To safely convert strings to lists
 from PIL import Image
 import os, sys
 
-# Add the parent directory of 'umrs' to sys.path
-sys.path.append(os.path.abspath("."))
+# Splice removed (ADR-053): umrs installed editable in .venv.
 from umrs.inference import *
 from types import SimpleNamespace
 

@@ -2,43 +2,19 @@
 
 from __future__ import annotations
 
-import importlib.util
-import sys
-import types
-from pathlib import Path
-
 import pytest
 
-
-def _src_root() -> Path:
-    return Path(__file__).resolve().parents[1] / "src"
+# Splice/stub machinery removed (ADR-053): umrs.api.__init__ is a lazy
+# __getattr__ shim since Phase 1.3, so plain module imports are cycle-safe.
 
 
 def _ensure_umrs_namespace() -> None:
-    src = _src_root()
-    src_str = str(src)
-    if src_str not in sys.path:
-        sys.path.insert(0, src_str)
-
-    if "umrs" not in sys.modules:
-        umrs_pkg = types.ModuleType("umrs")
-        umrs_pkg.__path__ = [str(src / "umrs")]
-        sys.modules["umrs"] = umrs_pkg
-
-    if "umrs.api" not in sys.modules:
-        api_pkg = types.ModuleType("umrs.api")
-        api_pkg.__path__ = [str(src / "umrs" / "api")]
-        sys.modules["umrs.api"] = api_pkg
+    """No-op retained for call sites; plain imports happen at module top."""
 
 
 def _load_api_module(qualname: str, filename: str):
-    path = _src_root() / "umrs" / "api" / filename
-    spec = importlib.util.spec_from_file_location(qualname, path)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[qualname] = module
-    spec.loader.exec_module(module)
-    return module
+    # Back-compat shim: plain import via the lazy umrs.api package.
+    return getattr(__import__("umrs.api", fromlist=[filename.removesuffix(".py")]), filename.removesuffix(".py"))
 
 
 def _knowledge_api_deps():
