@@ -246,9 +246,13 @@ if [[ "$START_MODE" != "--server" ]]; then
         # name reserved: "container name X is already in use by <id>"
         # (2026-09-14 cutover, ADR-055). Data lives in the bind-backed volumes,
         # so dropping these rw layers is safe.
-        for _sid in $(podman ps -a --external --filter "name=^${_ctr}\$" --format '{{.ID}}' 2>/dev/null); do
+        # Full IDs (--no-trunc): storage-container lookups are exact-match.
+        for _sid in $(podman ps -a --external --no-trunc --filter "name=^${_ctr}\$" --format '{{.ID}}' 2>/dev/null); do
             echo "  Removing leaked storage entry for $_ctr ($_sid)..."
-            podman rm -f --storage "$_sid" 2>/dev/null || true
+            if ! podman rm -f --storage "$_sid"; then
+                echo "  WARNING: podman rm --storage $_sid failed; retrying by name..."
+                podman rm -f --storage "$_ctr" || echo "  WARNING: leaked storage entry for $_ctr still present"
+            fi
         done
     done
 
