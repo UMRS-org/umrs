@@ -20,7 +20,7 @@ services:
     container_name: umrs-front-prometheus
     restart: unless-stopped
     # host.containers.internal lets Prometheus scrape host-networked services
-    # (UMRS HTTP, MinIO) that bind on the data0 host.
+    # (UMRS HTTP, SeaweedFS metrics) that bind on the data0 host.
     extra_hosts:
       - "host.containers.internal:host-gateway"
     ports:

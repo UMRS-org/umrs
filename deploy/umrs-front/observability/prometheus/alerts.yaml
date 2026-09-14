@@ -153,15 +153,17 @@ groups:
           summary: "PostgreSQL connection pool nearly exhausted"
           description: "{{ $value | humanizePercentage }} of connections in use"
 
-      - alert: MinIODown
-        expr: minio_cluster_health_status == 0
+      # Object store (ADR-055): scrape-target liveness covers both the
+      # SeaweedFS metrics port and a legacy MinIO cluster endpoint.
+      - alert: ObjectStoreDown
+        expr: up{job=~"seaweedfs|minio"} == 0 or minio_cluster_health_status == 0
         for: 1m
         labels:
           severity: critical
           team: infrastructure
         annotations:
-          summary: "MinIO is unhealthy"
-          description: "MinIO cluster is not healthy"
+          summary: "Object store is unhealthy"
+          description: "S3 object store ({{ $labels.job }}) is down or not scrapable"
 
       - alert: DiskSpaceRunningLow
         expr: |

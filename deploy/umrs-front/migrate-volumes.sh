@@ -2,7 +2,7 @@
 # =============================================================================
 # migrate-volumes.sh — relocate umrs-front data volumes onto another filesystem
 # =============================================================================
-# Moves the persistent podman volumes (Postgres + MinIO) off the rootless
+# Moves the persistent podman volumes (Postgres + object store) off the rootless
 # podman graphroot under $HOME and onto a dedicated filesystem, then re-creates
 # them as bind-backed named volumes so docker-compose.yaml keeps working
 # unchanged (both volumes are declared `external: true`).
@@ -40,7 +40,7 @@ set -euo pipefail
 
 VOLUME_ROOT=""
 COMMIT=false
-VOLUMES=(umrs_pg_data umrs_minio_data)
+VOLUMES=(umrs_pg_data umrs_s3_data umrs_minio_data)
 # Any small image with cp/find/du. Alpine is already present on umrs-front.
 MIGRATE_IMAGE="${MIGRATE_IMAGE:-docker.io/library/alpine:latest}"
 

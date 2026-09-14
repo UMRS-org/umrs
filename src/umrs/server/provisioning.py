@@ -447,16 +447,13 @@ def deprovision_user(user_cfg, admin_s3_configuration_file):
     - All S3 buckets (input + output) and their contents
     - PostgreSQL databases per experience
     - PostgreSQL roles per experience
-    - MinIO IAM user and attached policies
+    - Object-store identity and attached policies (backend adapter, ADR-055)
     - User S3 config file (~/.s3cfg_<username>)
     """
     import configparser
 
     from umrs.server.sql import create_db_name, drop_db, drop_db_user
-    from umrs.shared.storage.minio import (
-        minio_delete_user,
-        minio_remove_bucket,
-    )
+    from umrs.shared.storage.backends import get_backend
 
     username = user_cfg["username"]
     logger.info(
@@ -495,29 +492,26 @@ def deprovision_user(user_cfg, admin_s3_configuration_file):
         except Exception as e:
             logger.info(f"  Warning: failed to drop DB user '{sql_user}': {e}")
 
-    # Remove S3 buckets via MinIO CLI.
+    # Remove S3 buckets and the object-store identity through the configured
+    # backend adapter (ADR-055: MinIO via mc, SeaweedFS via its IAM API).
     admin_cfg_path = os.path.expanduser(admin_s3_configuration_file)
     if os.path.isfile(admin_cfg_path):
-        import configparser as _cp
-
-        cfg = _cp.ConfigParser(inline_comment_prefixes=("#", ";"))
-        cfg.read(admin_cfg_path)
-        alias = cfg.get("default", "alias", fallback="myminio")
-
+        backend = get_backend()
         for bucket in bucket_names:
             try:
-                minio_remove_bucket(bucket, alias)
+                backend.remove_bucket(bucket, admin_cfg_path)
             except Exception as e:
                 logger.info(f"  Warning: failed to remove bucket '{bucket}': {e}")
 
-        # Remove MinIO IAM user.
         try:
-            minio_delete_user(username, alias)
+            backend.delete_user(username, admin_cfg_path)
         except Exception as e:
-            logger.info(f"  Warning: failed to remove MinIO user '{username}': {e}")
+            logger.info(
+                f"  Warning: failed to remove {backend.profile.display_name} user '{username}': {e}"
+            )
     else:
         logger.info(
-            f"  Warning: admin S3 config not found at '{admin_cfg_path}', skipping S3/MinIO cleanup."
+            f"  Warning: admin S3 config not found at '{admin_cfg_path}', skipping S3 cleanup."
         )
 
     # Remove user S3 config file.

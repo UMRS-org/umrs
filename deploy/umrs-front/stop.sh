@@ -66,8 +66,8 @@ if [[ "${1:-}" == "--server" ]]; then
     exit 0
 fi
 
-# ─── Stop MinIO reverse tunnels ─────────────────────────────────────────────
-echo "Stopping MinIO reverse tunnels..."
+# ─── Stop S3 reverse tunnels ────────────────────────────────────────────────
+echo "Stopping S3 reverse tunnels..."
 for pidfile in *-minio-reverse-tunnel.pid; do
     [[ -f "$pidfile" ]] || continue
     pid=$(cat "$pidfile")
@@ -88,7 +88,7 @@ case "${1:-}" in
         if [[ -f "$COMPOSE_FILE" ]]; then
             podman compose -f "$COMPOSE_FILE" down 2>/dev/null || true
         else
-            podman stop umrs-postgres umrs-minio 2>/dev/null || true
+            podman stop umrs-postgres umrs-seaweedfs umrs-minio 2>/dev/null || true
         fi
         ;;
     --clean)
@@ -98,7 +98,7 @@ case "${1:-}" in
         # on a separate filesystem (see start.sh). `--clean` exists to reset a
         # scratch stack, not to wipe relocated production data, and podman's
         # own `volume rm` gives no second chance.
-        for _vol in umrs_pg_data umrs_minio_data; do
+        for _vol in umrs_pg_data umrs_s3_data umrs_minio_data; do
             _opts="$(podman volume inspect "$_vol" --format '{{.Options}}' 2>/dev/null || true)"
             if [[ "$_opts" == *device:* ]]; then
                 echo "ERROR: volume '$_vol' is bind-backed outside the podman store:" >&2
@@ -111,9 +111,9 @@ case "${1:-}" in
         if [[ -f "$COMPOSE_FILE" ]]; then
             podman compose -f "$COMPOSE_FILE" down -v 2>/dev/null || true
         else
-            podman stop umrs-postgres umrs-minio 2>/dev/null || true
-            podman rm -f umrs-postgres umrs-minio 2>/dev/null || true
-            podman volume rm umrs_pg_data umrs_minio_data 2>/dev/null || true
+            podman stop umrs-postgres umrs-seaweedfs umrs-minio 2>/dev/null || true
+            podman rm -f umrs-postgres umrs-seaweedfs umrs-minio 2>/dev/null || true
+            podman volume rm umrs_pg_data umrs_s3_data umrs_minio_data 2>/dev/null || true
         fi
         ;;
     "")

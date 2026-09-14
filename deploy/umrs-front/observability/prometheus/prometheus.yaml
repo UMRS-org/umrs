@@ -1,7 +1,7 @@
 # Ansible managed
 # Prometheus scrape config for the umrs-front observability stack.
 #
-# Targets that bind on the data0 host (UMRS HTTP servers, MinIO) are reached
+# Targets that bind on the data0 host (UMRS HTTP servers, SeaweedFS) are reached
 # through host.containers.internal (see extra_hosts in the compose template).
 # Bridge-network services are reached by their compose service name.
 
@@ -24,12 +24,12 @@ scrape_configs:
     static_configs:
       - targets: ['node-exporter:9100']
 
-  # MinIO exposes cluster metrics without auth (MINIO_PROMETHEUS_AUTH_TYPE=public).
-  - job_name: 'minio'
-    metrics_path: /minio/v2/metrics/cluster
+  # Object store (ADR-055): SeaweedFS serves Prometheus metrics on -metricsPort.
+  - job_name: 'seaweedfs'
+    metrics_path: /metrics
     scheme: http
     static_configs:
-      - targets: ['host.containers.internal:9000']
+      - targets: ['host.containers.internal:9327']
 
   - job_name: 'loki'
     metrics_path: /metrics
