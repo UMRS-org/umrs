@@ -2,7 +2,9 @@
 
 Policy: reject TTL<=0 at input validation (422 pydantic / 400 route-level)
 and at the generation layer (sidecar). jobs.py's existing validator set the
-pattern (None/-1/positive allowed); workload_identity, traces, tool_cache,
+pattern (None/-1/positive allowed); workload_identity, traces,
+(The tool-cache pin retired with the unmounted /umrs/tool-cache router —
+ADR-053; the jobs-side tool cache store is covered by test_batch5_*.)
 and the s3 presign generator get the same clamp now.
 """
 
@@ -44,7 +46,7 @@ def test_generate_presigned_url_ttl_clamp():
 
 def test_workload_identity_issue_request_ttl_422():
     from pydantic import ValidationError
-    from umrs.api.workload_identity import IssueRequest
+    from umrs.jobs.workload_identity import IssueRequest
 
     base = {"job_id": "j", "step_name": "s", "scope": "x"}
     with pytest.raises(ValidationError):
@@ -73,41 +75,3 @@ def test_trace_request_ttl_422():
     assert TraceCreateRequest(**fields).ttl_seconds is None
 
 
-def test_tool_cache_route_rejects_nonpositive_ttl():
-    from fastapi import FastAPI
-    from fastapi.testclient import TestClient
-    from umrs.api import files, tool_cache
-
-    class _Store:
-        def put(self, **kwargs):
-            from types import SimpleNamespace
-
-            return SimpleNamespace(to_dict=lambda: dict(kwargs))
-
-    app = FastAPI()
-    app.include_router(tool_cache.router)
-    app.dependency_overrides[files.get_project_id] = lambda: "proj-a"
-    client = TestClient(app)
-    tool_cache.set_store(_Store())
-    try:
-        body = {
-            "session_id": "s1",
-            "tool_name": "probe",
-            "inputs": {},
-            "output": "x",
-            "ttl_seconds": 0,
-        }
-        r = client.post("/umrs/tool-cache", json=body)
-        assert r.status_code == 400
-        body["ttl_seconds"] = -10
-        r = client.post("/umrs/tool-cache", json=body)
-        assert r.status_code == 400
-        body["ttl_seconds"] = True  # bool is not an int here
-        r = client.post("/umrs/tool-cache", json=body)
-        assert r.status_code == 400
-        body["ttl_seconds"] = 120
-        r = client.post("/umrs/tool-cache", json=body)
-        assert r.status_code == 200
-        assert r.json()["ttl_seconds"] == 120
-    finally:
-        tool_cache.set_store(None)

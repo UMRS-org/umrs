@@ -55,9 +55,24 @@ def _finding_sink():
 
 
 def _checkpoint_store():
-    from umrs.api.checkpoints import get_checkpoint_store
+    """Singleton CheckpointStore accessor (ADR-036).
 
-    return get_checkpoint_store()
+    Rehomed here by ADR-053: the unmounted ``api/checkpoints`` router was
+    the previous holder; the jobs store is the authority now. Semantics
+    byte-identical (same env-var resolution, same process singleton).
+    """
+    global _checkpoint_store_singleton
+    if _checkpoint_store_singleton is None:
+        import os
+
+        from umrs.jobs.checkpoint_store import CheckpointStore
+
+        db_url = os.environ.get("DATABASE_URL") or os.environ.get("UMRS_DB_URL")
+        _checkpoint_store_singleton = CheckpointStore(db_url=db_url)
+    return _checkpoint_store_singleton
+
+
+_checkpoint_store_singleton = None
 
 
 def _configure_hosting() -> None:
