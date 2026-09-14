@@ -75,13 +75,23 @@ class ModelsPane(Static):
         if not self._selected_name:
             self._detail.update("")
             return
-        m = next((x for x in self._models if x.get("name") == self._selected_name), None)
+        m = next(
+            (x for x in self._models if x.get("name") == self._selected_name), None
+        )
         if not m:
             self._detail.update("")
             return
         lines = [f"[bold]Model: {self._selected_name}[/bold]"]
-        for k in ("name", "model_type", "scope", "storage_ref", "huggingface_id",
-                  "description", "registered_by", "registered_at"):
+        for k in (
+            "name",
+            "model_type",
+            "scope",
+            "storage_ref",
+            "huggingface_id",
+            "description",
+            "registered_by",
+            "registered_at",
+        ):
             v = m.get(k)
             if v is not None:
                 lines.append(f"{k}: {v}")

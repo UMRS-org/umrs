@@ -20,9 +20,8 @@ New models declare capabilities.  No bash edits needed.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
-
 
 # ── Family → parser mapping (serves as default when registry empty) ──────────
 
@@ -34,7 +33,7 @@ FAMILY_TOOL_PARSER: dict[str, str] = {
     "kimi_k2": "kimi_k2",
     "kimi": "kimi_k2",
     "llm_jp": "hermes",
-    "gpt_oss": "",       # No tool-call training
+    "gpt_oss": "",  # No tool-call training
     "gemma4": "gemma4",
     "diffusion_gemma": "",  # No tool-call training
     "qwen": "hermes",
@@ -49,8 +48,8 @@ FAMILY_REASONING_PARSER: dict[str, str] = {
     "kimi": "kimi_k2",
     "gpt_oss": "gpt_oss",
     "gemma4": "gemma4",
-    "llm_jp": "",        # llmjp4 plugin not in SIF
-    "deepseek_v4": "",   # No response-gated reasoning
+    "llm_jp": "",  # llmjp4 plugin not in SIF
+    "deepseek_v4": "",  # No response-gated reasoning
     "deepseek_v3": "",
     "deepseek": "",
     "diffusion_gemma": "gemma4",
@@ -61,12 +60,12 @@ FAMILY_REASONING_PARSER: dict[str, str] = {
 }
 
 FAMILY_KV_CACHE_DTYPE: dict[str, str | None] = {
-    "deepseek_v4": "fp8",   # FlashMLA fp8 attention
+    "deepseek_v4": "fp8",  # FlashMLA fp8 attention
     "deepseek_v3": None,
     "deepseek": None,
-    "glm": None,            # bf16 default (NOT fp8 — GLM has its own DSA code path)
-    "kimi_k2": "fp8",       # CANARY: INT4 weights + fp8 KV free headroom on GB200
-    "kimi": "fp8",          # CANARY: keep in sync with kimi_k2
+    "glm": None,  # bf16 default (NOT fp8 — GLM has its own DSA code path)
+    "kimi_k2": "fp8",  # CANARY: INT4 weights + fp8 KV free headroom on GB200
+    "kimi": "fp8",  # CANARY: keep in sync with kimi_k2
     "llm_jp": None,
     "gpt_oss": None,
     "gemma4": None,
@@ -77,13 +76,13 @@ FAMILY_KV_CACHE_DTYPE: dict[str, str | None] = {
 # Families that require eager mode (no CUDA graph capture)
 FAMILY_REQUIRES_EAGER: set[str] = {
     "deepseek_v4",  # CUDA graph garbage on current build
-    "glm",          # NaN on tools path with CUDA graphs
+    "glm",  # NaN on tools path with CUDA graphs
 }
 
 # Families that must use Triton MoE fallback (FlashInfer-TRTLLM NaN)
 FAMILY_REQUIRES_TRITON_MOE: set[str] = {
-    "glm",      # NaN on GLM expert routing
-    "llm_jp",   # expert intermediate_size=64 not %128, FlashInfer rejects
+    "glm",  # NaN on GLM expert routing
+    "llm_jp",  # expert intermediate_size=64 not %128, FlashInfer rejects
 }
 
 # Families that require --chat-template-content-format string
@@ -132,8 +131,8 @@ def derive_reasoning_effort(model_name: str) -> tuple[list[str], str] | None:
 
 def resolve_capabilities(
     model_name: str,
-    caps: "ModelCapabilities | None" = None,
-) -> "ModelCapabilities":
+    caps: ModelCapabilities | None = None,
+) -> ModelCapabilities:
     """Merge explicit capabilities with derived reasoning-effort defaults."""
     caps = caps or ModelCapabilities()
     if caps.reasoning_effort_levels is None or caps.reasoning_effort_default is None:
@@ -162,20 +161,20 @@ class ModelCapabilities:
 
     supports_tool_calling: bool = False
     supports_vision: bool = False
-    supports_reasoning: bool = False        # Has  think blocks
+    supports_reasoning: bool = False  # Has  think blocks
     supports_structured_output: bool = False
 
     # ── What the model NEEDS from the runtime ────────────────────────────────
 
-    requires_eager_mode: bool = False       # --enforce-eager
+    requires_eager_mode: bool = False  # --enforce-eager
     requires_triton_moe_fallback: bool = False  # VLLM_USE_FLASHINFER_MOE_FP16=0
-    requires_fp8_kv_cache: bool = False     # --kv-cache-dtype fp8
+    requires_fp8_kv_cache: bool = False  # --kv-cache-dtype fp8
     requires_chat_template_string: bool = False  # --chat-template-content-format string
-    requires_mm_encoder_tp_data: bool = False   # --mm-encoder-tp-mode data
+    requires_mm_encoder_tp_data: bool = False  # --mm-encoder-tp-mode data
 
     # ── Identity ─────────────────────────────────────────────────────────────
 
-    model_family: str | None = None         # "glm", "deepseek_v4", "kimi_k2", etc.
+    model_family: str | None = None  # "glm", "deepseek_v4", "kimi_k2", etc.
     max_output_tokens: int | None = None
     max_position_embeddings: int | None = None
 
@@ -208,7 +207,7 @@ class ModelCapabilities:
         return d
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any] | None) -> "ModelCapabilities":
+    def from_dict(cls, data: dict[str, Any] | None) -> ModelCapabilities:
         if not data:
             return cls()
         return cls(
@@ -217,9 +216,13 @@ class ModelCapabilities:
             supports_reasoning=data.get("supports_reasoning", False),
             supports_structured_output=data.get("supports_structured_output", False),
             requires_eager_mode=data.get("requires_eager_mode", False),
-            requires_triton_moe_fallback=data.get("requires_triton_moe_fallback", False),
+            requires_triton_moe_fallback=data.get(
+                "requires_triton_moe_fallback", False
+            ),
             requires_fp8_kv_cache=data.get("requires_fp8_kv_cache", False),
-            requires_chat_template_string=data.get("requires_chat_template_string", False),
+            requires_chat_template_string=data.get(
+                "requires_chat_template_string", False
+            ),
             requires_mm_encoder_tp_data=data.get("requires_mm_encoder_tp_data", False),
             model_family=data.get("model_family"),
             max_output_tokens=data.get("max_output_tokens"),
@@ -229,7 +232,7 @@ class ModelCapabilities:
         )
 
     @classmethod
-    def from_family(cls, family: str) -> "ModelCapabilities":
+    def from_family(cls, family: str) -> ModelCapabilities:
         """Derive capabilities from model family tag.
 
         This is the transition path: use family-based defaults until
@@ -243,7 +246,8 @@ class ModelCapabilities:
             requires_eager_mode=family in FAMILY_REQUIRES_EAGER,
             requires_triton_moe_fallback=family in FAMILY_REQUIRES_TRITON_MOE,
             requires_fp8_kv_cache=FAMILY_KV_CACHE_DTYPE.get(family) == "fp8",
-            requires_chat_template_string=family in FAMILY_REQUIRES_CHAT_TEMPLATE_STRING,
+            requires_chat_template_string=family
+            in FAMILY_REQUIRES_CHAT_TEMPLATE_STRING,
             requires_mm_encoder_tp_data=family in FAMILY_REQUIRES_MM_ENCODER_TP_DATA,
             model_family=family,
         )

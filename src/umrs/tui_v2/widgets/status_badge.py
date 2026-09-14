@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from rich.text import Text
 
-
 _STATUS_STYLES = {
     "running": "[cyan]{}[/cyan]",
     "queued": "[yellow]{}[/yellow]",

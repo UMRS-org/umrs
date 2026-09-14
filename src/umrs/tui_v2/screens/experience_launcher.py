@@ -8,11 +8,10 @@ All fields visible at once; Enter submits, Esc cancels.
 
 from __future__ import annotations
 
-
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.events import Key
-from textual.widgets import Button, Input, Static, Label
+from textual.widgets import Button, Input, Label, Static
 
 from .op_dialog import FieldSpec, OpDialog
 

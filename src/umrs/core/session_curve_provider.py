@@ -27,7 +27,6 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -130,7 +129,7 @@ class SessionCredentialsProvider:
         self._by_session: dict[str, str] = {}
 
         self._lock = threading.RLock()
-        self._sweep_thread: Optional[threading.Thread] = None
+        self._sweep_thread: threading.Thread | None = None
         self._stop_event = threading.Event()
 
     # ------------------------------------------------------------------
@@ -185,8 +184,8 @@ class SessionCredentialsProvider:
         user_id: str,
         ttl_seconds: int,
         *,
-        session_id: Optional[str] = None,
-        grants: Optional[SessionGrants] = None,
+        session_id: str | None = None,
+        grants: SessionGrants | None = None,
     ) -> SessionCurveEntry:
         """Register an ephemeral CURVE public key for a session.
 
@@ -285,7 +284,7 @@ class SessionCredentialsProvider:
             )
         return len(to_remove)
 
-    def refresh(self, session_id: str, ttl_seconds: int) -> Optional[SessionCurveEntry]:
+    def refresh(self, session_id: str, ttl_seconds: int) -> SessionCurveEntry | None:
         """Extend session TTL.  Returns the updated entry, or ``None``."""
         if ttl_seconds <= 0:
             return None
@@ -315,7 +314,7 @@ class SessionCredentialsProvider:
         )
         return updated
 
-    def get_session(self, session_id: str) -> Optional[SessionCurveEntry]:
+    def get_session(self, session_id: str) -> SessionCurveEntry | None:
         """Look up a session by ID."""
         with self._lock:
             pubkey = self._by_session.get(session_id)
@@ -327,7 +326,7 @@ class SessionCredentialsProvider:
                 return None
             return entry
 
-    def user_id_for_key(self, pubkey_z85: str) -> Optional[str]:
+    def user_id_for_key(self, pubkey_z85: str) -> str | None:
         """Return the user identity bound to a CURVE public key."""
         with self._lock:
             entry = self._by_key.get(pubkey_z85)
@@ -335,7 +334,7 @@ class SessionCredentialsProvider:
                 return None
             return entry.user_id
 
-    def lookup(self, pubkey_z85: str) -> Optional[SessionCurveEntry]:
+    def lookup(self, pubkey_z85: str) -> SessionCurveEntry | None:
         """Return the full session entry for a CURVE public key.
 
         This is the primary method for identity resolution after ZAP
@@ -347,7 +346,7 @@ class SessionCredentialsProvider:
                 return None
             return entry
 
-    def active_session_count(self, user_id: Optional[str] = None) -> int:
+    def active_session_count(self, user_id: str | None = None) -> int:
         """Return the number of active (non-expired) sessions."""
         with self._lock:
             if user_id is None:
@@ -358,7 +357,7 @@ class SessionCredentialsProvider:
                 if e.user_id == user_id and not e.is_expired
             )
 
-    def list_sessions(self, user_id: Optional[str] = None) -> list[SessionCurveEntry]:
+    def list_sessions(self, user_id: str | None = None) -> list[SessionCurveEntry]:
         """List active sessions, optionally filtered by user."""
         with self._lock:
             entries = list(self._by_key.values())
@@ -451,17 +450,17 @@ class SessionCredentialsProvider:
 # the single source of truth so neither ``core`` nor ``api`` has to import the
 # other across the architecture boundary.
 
-_shared_session_provider: "SessionCredentialsProvider | None" = None
+_shared_session_provider: SessionCredentialsProvider | None = None
 
 
 def set_shared_session_provider(
-    provider: "SessionCredentialsProvider | None",
+    provider: SessionCredentialsProvider | None,
 ) -> None:
     """Install (or clear) the process-wide session CURVE provider singleton."""
     global _shared_session_provider
     _shared_session_provider = provider
 
 
-def get_shared_session_provider() -> "SessionCredentialsProvider | None":
+def get_shared_session_provider() -> SessionCredentialsProvider | None:
     """Return the process-wide session CURVE provider, or ``None`` if unset."""
     return _shared_session_provider

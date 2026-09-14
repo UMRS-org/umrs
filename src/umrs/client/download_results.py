@@ -46,7 +46,9 @@ def _bucket_matches(work_bucket: str, full_bucket_name: str) -> bool:
     """Match input or output bucket naming used by PROCESS_OBJECTS status."""
     if not work_bucket:
         return False
-    return work_bucket == full_bucket_name or full_bucket_name == f"{work_bucket}-output"
+    return (
+        work_bucket == full_bucket_name or full_bucket_name == f"{work_bucket}-output"
+    )
 
 
 def _extract_thread_entries(parsed: dict[str, Any]) -> list[dict[str, Any]] | None:
@@ -119,7 +121,8 @@ def parse_process_objects_readiness(
         if not isinstance(work_list, list):
             continue
         related = any(
-            isinstance(w, dict) and _bucket_matches(str(w.get("bucket", "")), full_bucket_name)
+            isinstance(w, dict)
+            and _bucket_matches(str(w.get("bucket", "")), full_bucket_name)
             for w in work_list
         )
         if not related:
@@ -136,8 +139,7 @@ def parse_process_objects_readiness(
             ready=True,
             status_known=True,
             message=(
-                f"No in-progress PROCESS_OBJECTS work for bucket "
-                f"'{full_bucket_name}'."
+                f"No in-progress PROCESS_OBJECTS work for bucket '{full_bucket_name}'."
             ),
             raw_message=raw_message if isinstance(raw_message, str) else None,
             matching_entries=(),
@@ -158,17 +160,14 @@ def parse_process_objects_readiness(
             matching_entries=tuple(matching),
         )
 
-    statuses = tuple(
-        dict.fromkeys(str(e.get("status", "Unknown")) for e in matching)
-    )
+    statuses = tuple(dict.fromkeys(str(e.get("status", "Unknown")) for e in matching))
     status_list = ", ".join(statuses) if statuses else "Done"
     return BucketWorkStatus(
         ready=True,
         status_known=True,
         incomplete_statuses=(),
         message=(
-            f"Results ready for bucket '{full_bucket_name}' "
-            f"(status: {status_list})."
+            f"Results ready for bucket '{full_bucket_name}' (status: {status_list})."
         ),
         raw_message=raw_message if isinstance(raw_message, str) else None,
         matching_entries=tuple(matching),
@@ -188,10 +187,7 @@ def format_wait_progress(
         status = "unknown"
     else:
         status = "pending"
-    return (
-        f"Waiting for results (status: {status}, "
-        f"elapsed: {mins}m {secs}s)..."
-    )
+    return f"Waiting for results (status: {status}, elapsed: {mins}m {secs}s)..."
 
 
 def task_status_field(readiness: BucketWorkStatus) -> list[str] | str:
@@ -244,8 +240,7 @@ def incomplete_error_payload(
     """Build the error dict returned when download cannot proceed."""
     if timed_out and max_wait_sec is not None:
         message = (
-            f"Timed out after {max_wait_sec}s waiting for results. "
-            f"{readiness.message}"
+            f"Timed out after {max_wait_sec}s waiting for results. {readiness.message}"
         )
     else:
         message = readiness.message
@@ -281,4 +276,3 @@ def classify_wait_reply(reply: str) -> str:
     if reply in ("NO_SUCH_BUCKET", "SERVER_OVERLOADED"):
         return "hard_error"
     return "unexpected"
-

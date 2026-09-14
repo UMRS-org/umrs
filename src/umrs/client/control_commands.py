@@ -538,7 +538,9 @@ def build_control_command_parser(
     configure_workflow_status_parser(workflow_status)
 
     # workflow executions
-    workflow_executions = workflow_subparsers.add_parser("executions", add_help=add_help)
+    workflow_executions = workflow_subparsers.add_parser(
+        "executions", add_help=add_help
+    )
     configure_workflow_executions_parser(workflow_executions)
 
     # workflow results
@@ -676,11 +678,11 @@ def configure_admin_user_parser(
 
 
 __all__ = [
+    "ENDPOINT_IDLE_TTL_DEFAULT",
     "JOB_MAX_ATTEMPTS_DEFAULT",
     "JOB_PROJECT_DEFAULT",
     "JOB_SPEC_DEFAULT",
     "JOB_TYPE_CHOICES",
-    "ENDPOINT_IDLE_TTL_DEFAULT",
     "MAINTENANCE_ACTIONS",
     "MODEL_DOWNLOAD_SCOPE_DEFAULT",
     "MODEL_REGISTER_SCOPE_DEFAULT",
@@ -705,17 +707,17 @@ __all__ = [
     "configure_model_register_parser",
     "configure_ping_parser",
     "configure_status_parser",
-    "configure_workflow_executions_parser",
-    "configure_workflow_list_parser",
-    "configure_workflow_run_parser",
-    "configure_workflow_upload_parser",
-    "configure_workflow_status_parser",
-    "configure_workflow_results_parser",
     "configure_workflow_cancel_parser",
     "configure_workflow_errors_parser",
+    "configure_workflow_executions_parser",
+    "configure_workflow_list_parser",
     "configure_workflow_logs_parser",
-    "configure_workflow_visualize_parser",
+    "configure_workflow_results_parser",
+    "configure_workflow_run_parser",
+    "configure_workflow_status_parser",
+    "configure_workflow_upload_parser",
     "configure_workflow_validate_sandbox_parser",
+    "configure_workflow_visualize_parser",
     "parse_duration_seconds",
     "parse_json_object_arg",
     "prepare_control_command_line",

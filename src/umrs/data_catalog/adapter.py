@@ -16,7 +16,7 @@ from .artifacts import (
     read_artifact_text,
 )
 from .pg_store import CatalogMetaStore
-from .schema import CatalogObjectMeta, CatalogState
+from .schema import CatalogObjectMeta
 from .scoring import allowed
 from .store import read_structured_knowledge, write_structured_knowledge
 
@@ -94,11 +94,7 @@ class CatalogArtifactAdapter:
     def search(self, query: str, *, limit: int = 20) -> list[CatalogObjectMeta]:
         """Lexical search over catalog metadata."""
         hits = self.meta_store.search(self.project_id, query, limit=limit)
-        return [
-            hit.meta
-            for hit in hits
-            if hit.meta.s3_key.startswith(self.prefix)
-        ]
+        return [hit.meta for hit in hits if hit.meta.s3_key.startswith(self.prefix)]
 
     def read_text(self, s3_key: str, *, max_bytes: int | None = None) -> str:
         """Read extracted or raw text for a catalog object."""
@@ -241,17 +237,11 @@ class CatalogArtifactAdapter:
             include_pending=self.include_pending,
             include_error=False,
         )
-        metas = [
-            meta
-            for meta in metas
-            if meta.s3_key.startswith(self.prefix)
-        ]
+        metas = [meta for meta in metas if meta.s3_key.startswith(self.prefix)]
 
         self._cached_metas = metas
         self._meta_by_s3_key = {meta.s3_key: meta for meta in metas}
-        self._meta_by_artifact_id = {
-            artifact_id_for_meta(meta): meta for meta in metas
-        }
+        self._meta_by_artifact_id = {artifact_id_for_meta(meta): meta for meta in metas}
         return metas
 
     def _meta_to_artifact_with_content(self, meta: CatalogObjectMeta) -> dict[str, Any]:

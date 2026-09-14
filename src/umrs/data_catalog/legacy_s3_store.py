@@ -38,7 +38,9 @@ def write_meta(s3_client: Any, bucket: str, meta: CatalogObjectMeta) -> None:
     )
 
 
-def list_legacy_meta_keys(s3_client: Any, bucket: str, *, prefix: str | None = None) -> list[str]:
+def list_legacy_meta_keys(
+    s3_client: Any, bucket: str, *, prefix: str | None = None
+) -> list[str]:
     """List legacy ``.meta.json`` sidecar keys under ``_data_catalog/objects/``."""
     from .constants import OBJECTS_PREFIX
 

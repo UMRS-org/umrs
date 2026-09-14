@@ -16,9 +16,9 @@ from .errors import (
 from .path_validator import DEFAULT_ALLOWED_PATHS, PathValidator
 
 __all__ = [
+    "DEFAULT_ALLOWED_PATHS",
     "ACLEnforcer",
     "AccessContext",
-    "DEFAULT_ALLOWED_PATHS",
     "DuplicateModelError",
     "ModelNotFoundError",
     "ModelStore",

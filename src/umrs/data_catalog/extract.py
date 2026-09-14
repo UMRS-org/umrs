@@ -101,7 +101,9 @@ def _json_keys(payload: Any, *, max_keys: int, prefix: str = "") -> list[str]:
             keys.append(f"{prefix}{key}" if prefix else str(key))
             if len(keys) >= max_keys:
                 break
-            keys.extend(_json_keys(value, max_keys=max_keys - len(keys), prefix=f"{key}."))
+            keys.extend(
+                _json_keys(value, max_keys=max_keys - len(keys), prefix=f"{key}.")
+            )
     elif isinstance(payload, list) and payload and isinstance(payload[0], dict):
         keys.extend(_json_keys(payload[0], max_keys=max_keys))
     return keys[:max_keys]

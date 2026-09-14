@@ -55,7 +55,7 @@ async def async_submit_batch(
             if status.value in {"success", "completed"}:
                 raw = await task.get()
                 if isinstance(raw, bytes):
-                    results.append(pickle.loads(raw))  # noqa: S301
+                    results.append(pickle.loads(raw))
                 else:
                     results.append(raw)
                 break

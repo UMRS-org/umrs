@@ -211,11 +211,11 @@ class ConsoleProgressBar:
     def on_progress(self, event: ProgressEvent) -> None:
         if event.state == ProgressState.COMPLETED:
             self._render(event)
-            print("", file=self.file)
+            print(file=self.file)
             return
         if event.state in (ProgressState.FAILED, ProgressState.CANCELLED):
             self._render(event)
-            print("", file=self.file)
+            print(file=self.file)
             return
         self._render(event)
 

@@ -1,6 +1,6 @@
 """Async data layer for the UMRS monitor TUI."""
 
-from .store import MonitorStore, TabSnapshot
 from .fetchers import Fetchers
+from .store import MonitorStore, TabSnapshot
 
-__all__ = ["MonitorStore", "TabSnapshot", "Fetchers"]
+__all__ = ["Fetchers", "MonitorStore", "TabSnapshot"]

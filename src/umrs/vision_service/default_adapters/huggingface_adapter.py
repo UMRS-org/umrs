@@ -53,6 +53,7 @@ from typing import Any
 
 import numpy as np
 from PIL import Image
+
 from umrs.vision_service.adapters.base import VisionModelAdapter
 
 logger = logging.getLogger(__name__)
@@ -112,7 +113,7 @@ def _upload_result(s3, dst_bucket, out_key, data, content_type, presigned_output
             method="PUT",
             headers={"Content-Type": content_type},
         )
-        urllib.request.urlopen(req, timeout=120)  # noqa: S310
+        urllib.request.urlopen(req, timeout=120)
     else:
         if _require_presigned_urls() or s3 is None:
             raise RuntimeError(f"Missing presigned PUT URL for {out_key}")

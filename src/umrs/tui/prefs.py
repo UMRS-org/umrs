@@ -11,7 +11,6 @@ flagged in the branch-separation instructions).
 from __future__ import annotations
 
 import json
-import os
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -33,14 +32,16 @@ class MonitorPrefs:
     sort_keys: dict[str, str] = field(default_factory=dict)
 
     @classmethod
-    def load(cls, path: str | None = None) -> "MonitorPrefs":
+    def load(cls, path: str | None = None) -> MonitorPrefs:
         """Load prefs from disk, returning defaults if missing/invalid."""
         p = Path(path) if path else cls._default_path()
         if not p.exists():
             return cls()
         try:
             data = json.loads(p.read_text(encoding="utf-8"))
-            return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
+            return cls(
+                **{k: v for k, v in data.items() if k in cls.__dataclass_fields__}
+            )
         except (json.JSONDecodeError, TypeError, ValueError):
             return cls()
 

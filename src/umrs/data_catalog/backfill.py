@@ -8,7 +8,6 @@ import os
 import sys
 
 import boto3
-import psycopg2
 from botocore.config import Config as BotoConfig
 from psycopg2 import pool
 
@@ -45,7 +44,9 @@ def backfill_catalog(
     s3_client = _build_s3_client()
     from umrs.shared.pg_settings import pg_connect_kwargs
 
-    db_pool = pool.SimpleConnectionPool(1, 4, db_url, **pg_connect_kwargs("catalog-backfill"))
+    db_pool = pool.SimpleConnectionPool(
+        1, 4, db_url, **pg_connect_kwargs("catalog-backfill")
+    )
     store = CatalogMetaStore(db_pool)
 
     stats = {"seen": 0, "upserted": 0, "skipped": 0, "errors": 0}
@@ -53,7 +54,9 @@ def backfill_catalog(
 
     for meta_key in meta_keys:
         stats["seen"] += 1
-        encoded = meta_key.removeprefix("_data_catalog/objects/").removesuffix(".meta.json")
+        encoded = meta_key.removeprefix("_data_catalog/objects/").removesuffix(
+            ".meta.json"
+        )
         s3_key = decode_s3_key(encoded)
         try:
             meta = read_meta(s3_client, bucket, s3_key)
@@ -79,10 +82,14 @@ def backfill_catalog(
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Backfill catalog metadata to Postgres")
+    parser = argparse.ArgumentParser(
+        description="Backfill catalog metadata to Postgres"
+    )
     parser.add_argument("--db-url", default=os.getenv("UMRS_JOBS_DB_URL", ""))
     parser.add_argument("--bucket", default=os.getenv("S3_BUCKET", ""))
-    parser.add_argument("--prefix", default=None, help="Optional object-key prefix filter")
+    parser.add_argument(
+        "--prefix", default=None, help="Optional object-key prefix filter"
+    )
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
 

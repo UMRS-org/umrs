@@ -49,9 +49,7 @@ class InvalidStateTransitionError(Exception):
         from_state: ProjectState,
         to_state: ProjectState,
     ) -> None:
-        super().__init__(
-            f"Invalid transition: {from_state.value} → {to_state.value}"
-        )
+        super().__init__(f"Invalid transition: {from_state.value} → {to_state.value}")
         self.from_state = from_state
         self.to_state = to_state
 

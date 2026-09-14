@@ -36,9 +36,13 @@ class TaskCmd:
     WORKFLOW_STATUS = "WORKFLOW_STATUS"  # show execution status for a workflow run
     WORKFLOW_RESULTS = "WORKFLOW_RESULTS"  # fetch results for a completed workflow run
     WORKFLOW_CANCEL = "WORKFLOW_CANCEL"  # cancel a running workflow execution
-    WORKFLOW_ERRORS = "WORKFLOW_ERRORS"  # show error logs for a failed workflow execution
+    WORKFLOW_ERRORS = (
+        "WORKFLOW_ERRORS"  # show error logs for a failed workflow execution
+    )
     WORKFLOW_LOGS = "WORKFLOW_LOGS"  # stream execution logs for a workflow run
-    WORKFLOW_EXECUTIONS = "WORKFLOW_EXECUTIONS"  # list workflow execution ids (own scope or admin)
+    WORKFLOW_EXECUTIONS = (
+        "WORKFLOW_EXECUTIONS"  # list workflow execution ids (own scope or admin)
+    )
     # Admin enrollment
     ENROLL_USER = "ENROLL_USER"  # admin-only: register a new user
     # Bootstrap context
@@ -50,7 +54,11 @@ class TaskCmd:
 
     @classmethod
     def all_cmd(cls):
-        return tuple(v for k, v in vars(cls).items() if not k.startswith("__") and isinstance(v, str))
+        return tuple(
+            v
+            for k, v in vars(cls).items()
+            if not k.startswith("__") and isinstance(v, str)
+        )
 
     @classmethod
     def status_cmd(cls):
@@ -82,6 +90,7 @@ class TaskStatus:
     @classmethod
     def all_status(cls):
         return [
-            v for k, v in vars(cls).items()
+            v
+            for k, v in vars(cls).items()
             if not k.startswith("__") and isinstance(v, str)
         ]

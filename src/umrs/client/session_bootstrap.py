@@ -46,8 +46,6 @@ class CurveSessionInfo:
 class SessionBootstrapError(Exception):
     """Raised when session bootstrap fails."""
 
-    pass
-
 
 def bootstrap_curve_session(
     gateway_url: str,

@@ -24,14 +24,10 @@ def format_table(title, headers, rows, empty_message="(no entries)"):
         max(len(header), *(len(row[i]) for row in str_rows))
         for i, header in enumerate(headers)
     ]
-    lines.append(
-        "  " + "  ".join(h.ljust(w) for h, w in zip(headers, widths)).rstrip()
-    )
+    lines.append("  " + "  ".join(h.ljust(w) for h, w in zip(headers, widths)).rstrip())
     lines.append("  " + "-" * (sum(widths) + 2 * (len(widths) - 1)))
     for row in str_rows:
-        lines.append(
-            "  " + "  ".join(c.ljust(w) for c, w in zip(row, widths)).rstrip()
-        )
+        lines.append("  " + "  ".join(c.ljust(w) for c, w in zip(row, widths)).rstrip())
     return "\n".join(lines)
 
 
@@ -184,9 +180,7 @@ def pretty_print_cfg_for_user(cfg_dict, username, print_output=False):
     ]
 
     # Accept dict, BucketsCfg (has .items()), or object with .buckets_cfg attr
-    if isinstance(cfg_dict, dict):
-        buckets_cfg = cfg_dict
-    elif hasattr(cfg_dict, "items"):
+    if isinstance(cfg_dict, dict) or hasattr(cfg_dict, "items"):
         buckets_cfg = cfg_dict
     else:
         buckets_cfg = cfg_dict.buckets_cfg
@@ -212,9 +206,7 @@ def pretty_print_cfg_for_user(cfg_dict, username, print_output=False):
     if not rows:
         message = f"\nNo configuration found for user '{username}'."
     else:
-        message = "\n" + format_table(
-            f"Configuration for {username}", headers, rows
-        )
+        message = "\n" + format_table(f"Configuration for {username}", headers, rows)
     if print_output:
         print(message)
     return message

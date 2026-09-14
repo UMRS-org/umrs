@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any, Dict
+from typing import Any
 
 from r4_contracts.security import ScanFinding, ScanResult, SeverityLevel
 
@@ -63,7 +63,7 @@ _NETWORK_PATTERNS = [
 class RecipeScanner:
     """Scan recipe definitions for security issues."""
 
-    def scan_recipe(self, recipe_data: Dict[str, Any]) -> ScanResult:
+    def scan_recipe(self, recipe_data: dict[str, Any]) -> ScanResult:
         """Scan a recipe definition (parsed YAML dict)."""
         name = recipe_data.get("name", "<unknown>")
         result = ScanResult(target_name=name)
@@ -74,7 +74,7 @@ class RecipeScanner:
 
         return result
 
-    def _scan_step(self, step: Dict[str, Any], index: int, result: ScanResult) -> None:
+    def _scan_step(self, step: dict[str, Any], index: int, result: ScanResult) -> None:
         step_type = step.get("type", "shell")
         location = f"step[{index}]"
 
@@ -171,7 +171,7 @@ class SkillScanner:
 
     def scan_skill(
         self,
-        config: Dict[str, Any],
+        config: dict[str, Any],
         skill_md: str = "",
     ) -> ScanResult:
         """Scan a skill config.json and SKILL.md."""
@@ -212,7 +212,7 @@ class SkillScanner:
 
         return result
 
-    def _scan_mcp_config(self, mcp: Dict[str, Any], result: ScanResult) -> None:
+    def _scan_mcp_config(self, mcp: dict[str, Any], result: ScanResult) -> None:
         entry = mcp.get("entry_point", "")
         if entry:
             for pattern, msg in _SHELL_INJECTION_PATTERNS:

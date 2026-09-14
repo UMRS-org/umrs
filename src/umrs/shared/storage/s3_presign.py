@@ -77,7 +77,7 @@ def _get_presign_client(s3_client, endpoint_override: str | None = None):
         return s3_client
 
     # Extract credentials from the existing client's session.
-    creds = s3_client._request_signer._credentials  # noqa: SLF001
+    creds = s3_client._request_signer._credentials
 
     # Cache per (endpoint, access_key): presigned URLs embed the signing
     # credentials, so a cache keyed by endpoint alone would reuse the first
@@ -243,7 +243,7 @@ def download_via_presigned_url(url: str, timeout: int = 120) -> bytes:
         urllib.error.URLError: On HTTP errors.
     """
     req = urllib.request.Request(url, method="GET")
-    with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
         return resp.read()
 
 
@@ -273,5 +273,5 @@ def upload_via_presigned_url(
         method="PUT",
         headers={"Content-Type": content_type},
     )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
         return resp.status

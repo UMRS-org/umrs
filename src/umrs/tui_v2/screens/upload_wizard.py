@@ -9,8 +9,7 @@ from __future__ import annotations
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.events import Key
-from textual.widgets import Button, Input, Static
-from textual.widgets import Label
+from textual.widgets import Button, Input, Label, Static
 
 from .op_dialog import FieldSpec, OpDialog
 
@@ -114,9 +113,7 @@ class UploadDialog(OpDialog):
 
     def on_input_updated(self, widget: Input) -> None:
         """Update preview when source path changes."""
-        if widget.id == "field_source":
-            self._check_source()
-        elif widget.id == "field_max_files":
+        if widget.id == "field_source" or widget.id == "field_max_files":
             self._check_source()
 
     def _check_source(self) -> None:

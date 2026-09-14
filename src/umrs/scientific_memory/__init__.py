@@ -42,12 +42,12 @@ from uuid import uuid4
 logger = logging.getLogger(__name__)
 
 __all__ = [
-    "MemoryEntryType",
-    "MemoryEntryStatus",
-    "MemoryEntry",
-    "MemoryEntryNotFoundError",
     "DuplicateMemoryEntryError",
     "InMemoryScientificMemoryStore",
+    "MemoryEntry",
+    "MemoryEntryNotFoundError",
+    "MemoryEntryStatus",
+    "MemoryEntryType",
     "build_default_store",
 ]
 
@@ -156,7 +156,7 @@ class MemoryEntry:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "MemoryEntry":
+    def from_dict(cls, data: dict[str, Any]) -> MemoryEntry:
         """Create from dictionary."""
         entry_type_raw = data.get("entry_type", "note")
         status_raw = data.get("status", "active")
@@ -166,9 +166,7 @@ class MemoryEntry:
             else entry_type_raw
         )
         status = (
-            MemoryEntryStatus(status_raw)
-            if isinstance(status_raw, str)
-            else status_raw
+            MemoryEntryStatus(status_raw) if isinstance(status_raw, str) else status_raw
         )
         return cls(
             entry_id=data.get("entry_id", ""),
@@ -257,9 +255,7 @@ class InMemoryScientificMemoryStore:
             DuplicateMemoryEntryError: If entry_id already exists
         """
         if entry.entry_id in self._entries:
-            raise DuplicateMemoryEntryError(
-                f"Entry {entry.entry_id} already exists"
-            )
+            raise DuplicateMemoryEntryError(f"Entry {entry.entry_id} already exists")
         self._entries[entry.entry_id] = entry
         return entry.entry_id
 
@@ -333,9 +329,7 @@ class InMemoryScientificMemoryStore:
         results: list[MemoryEntry] = [
             entry
             for entry in self._entries.values()
-            if _entry_matches(
-                entry, project_id=project_id, entry_type=entry_type
-            )
+            if _entry_matches(entry, project_id=project_id, entry_type=entry_type)
             and _entry_text_matches(entry, query_lower)
         ]
         results.sort(key=lambda e: e.created_at, reverse=True)
@@ -400,9 +394,7 @@ class InMemoryScientificMemoryStore:
             List of entries sorted by created_at ascending (oldest first)
         """
         results = [
-            entry
-            for entry in self._entries.values()
-            if entry.project_id == project_id
+            entry for entry in self._entries.values() if entry.project_id == project_id
         ]
         results.sort(key=lambda e: e.created_at)
         return results

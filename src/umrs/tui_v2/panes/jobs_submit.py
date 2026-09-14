@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from textual import on
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.widgets import (
@@ -14,8 +13,6 @@ from textual.widgets import (
     Select,
     Static,
 )
-
-from ..forms.screens import SubmitFormScreen
 
 
 class JobsSubmitPane(Static):
@@ -70,19 +67,29 @@ class JobsSubmitPane(Static):
     def __init__(self) -> None:
         super().__init__("")
         self._summary_widget = Static("", classes="summary")
-        self._actions_bar = Static("  Actions: Enter=Submit  |  Fill form below", classes="actions-bar")
+        self._actions_bar = Static(
+            "  Actions: Enter=Submit  |  Fill form below", classes="actions-bar"
+        )
 
         # Form fields
         self._job_type = Select(
-            [("embedding", "embedding"), ("inference", "inference"),
-             ("training", "training"), ("text_analysis", "text_analysis")],
+            [
+                ("embedding", "embedding"),
+                ("inference", "inference"),
+                ("training", "training"),
+                ("text_analysis", "text_analysis"),
+            ],
             value="embedding",
             id="job-type",
         )
         self._model = Input(placeholder="model_name or model_id", id="model-name")
         self._project = Input(placeholder="project_id (optional)", id="project")
-        self._partition = Input(placeholder="slurm partition (optional)", id="partition")
-        self._reservation = Input(placeholder="slurm reservation (optional)", id="reservation")
+        self._partition = Input(
+            placeholder="slurm partition (optional)", id="partition"
+        )
+        self._reservation = Input(
+            placeholder="slurm reservation (optional)", id="reservation"
+        )
         self._nodes = Input(placeholder="1", id="nodes", value="1")
         self._gpus = Input(placeholder="1", id="gpus", value="1")
         self._max_attempts = Input(placeholder="1", id="max-attempts", value="1")

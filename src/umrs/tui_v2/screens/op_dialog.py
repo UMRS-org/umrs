@@ -16,8 +16,8 @@ from textual import on
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.events import Key
-from textual.signal import Signal
 from textual.screen import ModalScreen
+from textual.signal import Signal
 from textual.widgets import Button, Input, Static
 
 

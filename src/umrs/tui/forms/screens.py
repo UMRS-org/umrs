@@ -10,15 +10,14 @@ so the user doesn't lose their work on a typo.
 
 from __future__ import annotations
 
-import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from textual import on
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
-from textual.widgets import Button, Input, Label, Select, Static, Switch
+from textual.widgets import Button, Input, Label, Select, Switch
 
 
 @dataclass
@@ -86,9 +85,7 @@ class FormScreen(ModalScreen[dict[str, Any]]):
     def __init__(self, schema: FormSchema) -> None:
         super().__init__()
         self._schema = schema
-        self._values: dict[str, Any] = {
-            f.name: f.value for f in schema.fields
-        }
+        self._values: dict[str, Any] = {f.name: f.value for f in schema.fields}
         self._error: str = ""
 
     def compose(self) -> ComposeResult:
@@ -145,6 +142,7 @@ class FormScreen(ModalScreen[dict[str, Any]]):
         if not self._schema.json_schema:
             return True
         import jsonschema
+
         try:
             jsonschema.validate(self._values, self._schema.json_schema)
         except jsonschema.ValidationError as e:

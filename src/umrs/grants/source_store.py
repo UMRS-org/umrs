@@ -36,7 +36,9 @@ class SourceGrant:
             "owner": self.owner,
             "grantee": self.grantee,
             "allow_paths": list(self.allow_paths),
-            "budget_usd": float(self.budget_usd) if self.budget_usd is not None else None,
+            "budget_usd": float(self.budget_usd)
+            if self.budget_usd is not None
+            else None,
             "expires_at": _iso(self.expires_at),
             "tombstoned_at": _iso(self.tombstoned_at),
             "created_by": self.created_by,

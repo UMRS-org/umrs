@@ -95,7 +95,10 @@ class ACLEnforcer:
             return "admin"
         if model.scope == ModelScope.SYSTEM:
             return "system"
-        if model.scope == ModelScope.PROJECT and model.project_id in ctx.project_memberships:
+        if (
+            model.scope == ModelScope.PROJECT
+            and model.project_id in ctx.project_memberships
+        ):
             return "project"
         if model.scope == ModelScope.USER and model.owner_id == ctx.user_id:
             return "user"

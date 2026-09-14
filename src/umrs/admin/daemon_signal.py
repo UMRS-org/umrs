@@ -185,7 +185,7 @@ def install_reload_signal_handler() -> None:
     Must be called from the main thread (Python requirement for ``signal``).
     """
 
-    def _handler(signum, frame):  # noqa: ARG001 - signal handler signature
+    def _handler(signum, frame):
         global _reload_requested
         _reload_requested = True
 
@@ -202,8 +202,8 @@ def consume_reload_request() -> bool:
 
 
 __all__ = [
-    "PID_FILE_ENV_VAR",
     "DEFAULT_PID_FILE_NAME",
+    "PID_FILE_ENV_VAR",
     "SignalResult",
     "consume_reload_request",
     "install_reload_signal_handler",

@@ -26,7 +26,7 @@ import os
 from dataclasses import dataclass, field
 from typing import Any
 
-from umrs.shared.auth import AuthContext, UserRole
+from umrs.shared.auth import AuthContext
 
 logger = logging.getLogger(__name__)
 

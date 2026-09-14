@@ -21,17 +21,17 @@ from .step_adapter import step_to_plugin_spec
 from .user_workflow import UserWorkflow, UserWorkflowRunner
 
 __all__ = [
-    "PluginSpec",
-    "PluginSourceType",
-    "PluginResult",
-    "PluginAuditEntry",
-    "PluginStatus",
-    "PluginRunner",
-    "SlurmPluginRunner",
     "K8sPluginRunner",
-    "PluginResultWriter",
+    "PluginAuditEntry",
     "PluginAuditLog",
-    "step_to_plugin_spec",
+    "PluginResult",
+    "PluginResultWriter",
+    "PluginRunner",
+    "PluginSourceType",
+    "PluginSpec",
+    "PluginStatus",
+    "SlurmPluginRunner",
     "UserWorkflow",
     "UserWorkflowRunner",
+    "step_to_plugin_spec",
 ]

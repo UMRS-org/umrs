@@ -20,7 +20,6 @@ Schema (new table, added in schema v7):
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -34,14 +33,14 @@ class CertificationResult:
     """Evidence that a model was tested and works on a specific LauncherStack."""
 
     # Identity
-    cert_id: str = ""                       # cert-xxxxxxxxxxxx
-    model_name: str = ""                    # Registered model name
-    model_id: str = ""                      # model_catalog_entries.model_id
+    cert_id: str = ""  # cert-xxxxxxxxxxxx
+    model_name: str = ""  # Registered model name
+    model_id: str = ""  # model_catalog_entries.model_id
 
     # Launcher stack binding
-    launcher_fingerprint: str = ""          # LauncherStack.fingerprint
-    sif_version: str = ""                   # "v4"
-    sif_sha256: str = ""                    # Content-addressable identity
+    launcher_fingerprint: str = ""  # LauncherStack.fingerprint
+    sif_version: str = ""  # "v4"
+    sif_sha256: str = ""  # Content-addressable identity
 
     # Certified configuration (what was tested and proven)
     certified_config: dict[str, Any] = field(default_factory=dict)
@@ -60,17 +59,17 @@ class CertificationResult:
     # Smoke test evidence
     smoke_test_passed: bool = False
     smoke_test_duration_ms: float = 0.0
-    smoke_test_output_hash: str = ""        # SHA256 of expected output
-    smoke_test_prompt: str = ""             # The prompt used for testing
+    smoke_test_output_hash: str = ""  # SHA256 of expected output
+    smoke_test_prompt: str = ""  # The prompt used for testing
     smoke_test_messages: list[dict] = field(default_factory=list)
 
     # Metadata
-    certified_at: str = ""                  # ISO timestamp
-    tester: str = ""                        # Who ran the certification
+    certified_at: str = ""  # ISO timestamp
+    tester: str = ""  # Who ran the certification
     notes: str = ""
 
     # Expiration
-    invalidated_at: str | None = None       # Set when superseded or SIF changes
+    invalidated_at: str | None = None  # Set when superseded or SIF changes
     invalidated_reason: str = ""
 
     def is_valid_for(self, launcher_fingerprint: str) -> bool:
@@ -109,7 +108,7 @@ class CertificationResult:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "CertificationResult":
+    def from_dict(cls, data: dict[str, Any]) -> CertificationResult:
         return cls(
             cert_id=data.get("cert_id", ""),
             model_name=data.get("model_name", ""),
@@ -131,7 +130,7 @@ class CertificationResult:
         )
 
     @classmethod
-    def from_row(cls, row: tuple) -> "CertificationResult":
+    def from_row(cls, row: tuple) -> CertificationResult:
         """Create from database row."""
         certified_config = row[6] if len(row) > 6 else {}
         smoke_result = row[7] if len(row) > 7 else {}
@@ -142,7 +141,9 @@ class CertificationResult:
             launcher_fingerprint=row[3] if len(row) > 3 else "",
             sif_version=row[4] if len(row) > 4 else "",
             sif_sha256=row[5] if len(row) > 5 else "",
-            certified_config=certified_config if isinstance(certified_config, dict) else {},
+            certified_config=certified_config
+            if isinstance(certified_config, dict)
+            else {},
             smoke_test_passed=smoke_result.get("passed", False)
             if isinstance(smoke_result, dict)
             else False,

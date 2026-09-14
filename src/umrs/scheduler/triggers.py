@@ -10,8 +10,9 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -23,10 +24,10 @@ class WebhookTrigger:
     trigger_id: str = ""
     name: str = ""
     event_type: str = ""  # e.g. "job.completed", "pipeline.completed"
-    event_filter: Dict[str, Any] = field(default_factory=dict)  # Match payload fields
+    event_filter: dict[str, Any] = field(default_factory=dict)  # Match payload fields
     schedule_id: str = ""  # Target schedule to trigger
     job_type: str = ""  # Job type to submit
-    job_config: Dict[str, Any] = field(default_factory=dict)
+    job_config: dict[str, Any] = field(default_factory=dict)
     owner_id: str = ""
     enabled: bool = True
 
@@ -42,7 +43,7 @@ class TriggerMatcher:
 
     @staticmethod
     def matches(
-        trigger: WebhookTrigger, event_type: str, payload: Dict[str, Any]
+        trigger: WebhookTrigger, event_type: str, payload: dict[str, Any]
     ) -> bool:
         """Check if an event matches a trigger's criteria."""
         if trigger.event_type and trigger.event_type != event_type:
@@ -64,7 +65,7 @@ class TriggerResult:
     trigger: WebhookTrigger
     matched: bool
     job_submitted: bool = False
-    error: Optional[str] = None
+    error: str | None = None
 
 
 class WebhookSchedulerBridge:
@@ -94,10 +95,8 @@ class WebhookSchedulerBridge:
     """
 
     def __init__(self) -> None:
-        self._triggers: Dict[str, WebhookTrigger] = {}
-        self._on_trigger: Optional[Callable[[WebhookTrigger, Dict[str, Any]], None]] = (
-            None
-        )
+        self._triggers: dict[str, WebhookTrigger] = {}
+        self._on_trigger: Callable[[WebhookTrigger, dict[str, Any]], None] | None = None
 
     def register(self, trigger: WebhookTrigger) -> None:
         """Register a webhook trigger."""
@@ -117,7 +116,7 @@ class WebhookSchedulerBridge:
 
     def set_callback(
         self,
-        callback: Callable[[WebhookTrigger, Dict[str, Any]], None],
+        callback: Callable[[WebhookTrigger, dict[str, Any]], None],
     ) -> None:
         """Set a callback invoked when a trigger fires.
 
@@ -129,14 +128,14 @@ class WebhookSchedulerBridge:
     def evaluate(
         self,
         event_type: str,
-        payload: Dict[str, Any],
-    ) -> List[TriggerResult]:
+        payload: dict[str, Any],
+    ) -> list[TriggerResult]:
         """Evaluate all triggers against an event.
 
         Returns a list of results for triggers that matched.
         Fires the callback for each match if one is set.
         """
-        results: List[TriggerResult] = []
+        results: list[TriggerResult] = []
 
         for trigger in self._triggers.values():
             if not trigger.enabled:
@@ -163,14 +162,14 @@ class WebhookSchedulerBridge:
 
         return results
 
-    def list_triggers(self, owner_id: Optional[str] = None) -> List[WebhookTrigger]:
+    def list_triggers(self, owner_id: str | None = None) -> list[WebhookTrigger]:
         """List all triggers, optionally filtered by owner."""
         triggers = list(self._triggers.values())
         if owner_id:
             triggers = [t for t in triggers if t.owner_id == owner_id]
         return triggers
 
-    def get_trigger(self, trigger_id: str) -> Optional[WebhookTrigger]:
+    def get_trigger(self, trigger_id: str) -> WebhookTrigger | None:
         return self._triggers.get(trigger_id)
 
     def enable(self, trigger_id: str) -> bool:

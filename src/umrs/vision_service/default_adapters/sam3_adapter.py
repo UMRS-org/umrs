@@ -10,6 +10,7 @@ import urllib.request
 from typing import Any
 
 from PIL import Image
+
 from umrs.vision_service.adapters.base import VisionModelAdapter
 from umrs.vision_service.output_specs import describe_output_artifacts
 
@@ -178,7 +179,7 @@ class SAM3Adapter(VisionModelAdapter):
                     method="PUT",
                     headers={"Content-Type": "image/png"},
                 )
-                urllib.request.urlopen(req, timeout=120)  # noqa: S310
+                urllib.request.urlopen(req, timeout=120)
             else:
                 if _require_presigned_urls() or s3 is None:
                     raise RuntimeError(f"Missing presigned PUT URL for {overlay_key}")
@@ -207,7 +208,7 @@ class SAM3Adapter(VisionModelAdapter):
                 method="PUT",
                 headers={"Content-Type": "application/octet-stream"},
             )
-            urllib.request.urlopen(req, timeout=120)  # noqa: S310
+            urllib.request.urlopen(req, timeout=120)
         else:
             if _require_presigned_urls() or s3 is None:
                 raise RuntimeError(f"Missing presigned PUT URL for {pkl_key}")

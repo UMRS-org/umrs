@@ -1,6 +1,5 @@
 import torch
-import torchvision.models as models
-from torchvision import transforms
+from torchvision import models, transforms
 from torchvision.models import ResNet50_Weights
 
 ################################ ResNet-50 ###########################

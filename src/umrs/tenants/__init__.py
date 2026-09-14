@@ -49,9 +49,9 @@ class TenantSpec:
     schema_name: str = ""
     owner_id: str = ""
     status: TenantStatus = TenantStatus.PROVISIONING
-    created_at: Optional[datetime] = None
-    metadata: Dict[str, Any] = field(default_factory=dict)
-    resource_limits: Dict[str, Any] = field(default_factory=dict)
+    created_at: datetime | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+    resource_limits: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not self.tenant_id and self.project_id:
@@ -176,7 +176,7 @@ class TenantManager:
     """
 
     def __init__(self) -> None:
-        self._tenants: Dict[str, TenantSpec] = {}
+        self._tenants: dict[str, TenantSpec] = {}
 
     def provision(
         self,
@@ -205,17 +205,17 @@ class TenantManager:
         self._tenants[spec.tenant_id] = spec
         return spec
 
-    def get(self, tenant_id: str) -> Optional[TenantSpec]:
+    def get(self, tenant_id: str) -> TenantSpec | None:
         return self._tenants.get(tenant_id)
 
-    def get_by_project(self, project_id: str) -> Optional[TenantSpec]:
+    def get_by_project(self, project_id: str) -> TenantSpec | None:
         for t in self._tenants.values():
             if t.project_id == project_id:
                 return t
         return None
 
-    def list_tenants(self, owner_id: Optional[str] = None) -> List[TenantSpec]:
-        results: List[TenantSpec] = []
+    def list_tenants(self, owner_id: str | None = None) -> list[TenantSpec]:
+        results: list[TenantSpec] = []
         for t in self._tenants.values():
             if owner_id and t.owner_id != owner_id:
                 continue
@@ -240,7 +240,7 @@ class TenantManager:
         del self._tenants[tenant_id]
         return True
 
-    def get_schema_sql(self, tenant_id: str) -> Optional[str]:
+    def get_schema_sql(self, tenant_id: str) -> str | None:
         """Generate the CREATE SCHEMA SQL for a tenant."""
         t = self._tenants.get(tenant_id)
         if not t:
@@ -299,10 +299,9 @@ def build_default_manager(
         return TenantManager()
 
     if execute_schema_ddl is None:
-        execute_schema_ddl = (
-            _os.environ.get("UMRS_TENANTS_EXECUTE_SCHEMA_DDL", "false").lower()
-            in ("1", "true", "yes")
-        )
+        execute_schema_ddl = _os.environ.get(
+            "UMRS_TENANTS_EXECUTE_SCHEMA_DDL", "false"
+        ).lower() in ("1", "true", "yes")
 
     from .pg_store import PgTenantManager
 

@@ -342,7 +342,9 @@ def _fetch_image_bytes(
 
 
 def _max_image_bytes() -> int:
-    raw = os.getenv("UMRS_DATA_CATALOG_PERCEPTION_MAX_IMAGE_BYTES", str(4 * 1024 * 1024))
+    raw = os.getenv(
+        "UMRS_DATA_CATALOG_PERCEPTION_MAX_IMAGE_BYTES", str(4 * 1024 * 1024)
+    )
     try:
         return max(1, int(raw))
     except ValueError:
@@ -395,7 +397,10 @@ def _load_extraction_bytes(
         offset=0,
         length=sample_cap,
     )
-    if is_document_filename(filename) or detect_modality(filename, content) == "document":
+    if (
+        is_document_filename(filename)
+        or detect_modality(filename, content) == "document"
+    ):
         doc_cap = _max_document_bytes()
         read_len = min(total_size, doc_cap)
         if read_len > len(content):

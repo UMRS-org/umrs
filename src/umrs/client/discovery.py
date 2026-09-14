@@ -22,21 +22,19 @@ Usage:
 from __future__ import annotations
 
 import json
-import os
-import subprocess
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 
 @dataclass
 class BucketAliasInfo:
     """Information about a bucket alias."""
+
     alias: str
     xp_name: str
     modality_name: str
     bucket_path: str
-    output_bucket: Optional[str] = None
+    output_bucket: str | None = None
     mime_type: str = ""
     store_embeddings: bool = False
 
@@ -44,17 +42,19 @@ class BucketAliasInfo:
 @dataclass
 class ModelInfo:
     """Information about an available model."""
+
     name: str
     model_type: str
     scope: str
     storage: str
-    vector_size: Optional[int] = None
-    vision_model_type: Optional[str] = None
+    vector_size: int | None = None
+    vision_model_type: str | None = None
 
 
 @dataclass
 class RAGPipelineInfo:
     """Information about a RAG ingestion pipeline."""
+
     name: str
     status: str
     model: str
@@ -64,6 +64,7 @@ class RAGPipelineInfo:
 @dataclass
 class EnvironmentState:
     """Complete environment state discovered from the server."""
+
     user: str = ""
     project: str = ""
     profile: str = ""
@@ -74,10 +75,10 @@ class EnvironmentState:
     rag_reachable: bool = False
 
     # Resources
-    bucket_aliases: List[BucketAliasInfo] = field(default_factory=list)
-    models: List[ModelInfo] = field(default_factory=list)
-    experiences: List[Dict[str, Any]] = field(default_factory=list)
-    rag_pipelines: List[RAGPipelineInfo] = field(default_factory=list)
+    bucket_aliases: list[BucketAliasInfo] = field(default_factory=list)
+    models: list[ModelInfo] = field(default_factory=list)
+    experiences: list[dict[str, Any]] = field(default_factory=list)
+    rag_pipelines: list[RAGPipelineInfo] = field(default_factory=list)
 
     # Status flags
     has_text_bucket: bool = False
@@ -89,7 +90,7 @@ class EnvironmentState:
     def summary(self) -> str:
         """Return a human-readable summary of the environment state."""
         lines = [
-            f"UMRS Environment Summary",
+            "UMRS Environment Summary",
             f"{'=' * 40}",
             f"  User: {self.user or '(none)'}",
             f"  Profile: {self.profile or '(none)'}",
@@ -97,11 +98,11 @@ class EnvironmentState:
             f"  Server: {'OK' if self.server_ready else 'UNREACHABLE'}",
             f"  S3/MinIO: {'OK' if self.s3_reachable else 'UNREACHABLE'}",
             f"  PostgreSQL: {'OK' if self.postgis_reachable else 'UNREACHABLE'}",
-            f"",
+            "",
             f"  Bucket aliases: {len(self.bucket_aliases)}",
             f"  Models: {len(self.models)}",
             f"  RAG pipelines: {len(self.rag_pipelines)}",
-            f"",
+            "",
         ]
 
         if self.bucket_aliases:
@@ -174,9 +175,7 @@ class EnvironmentDiscoverer:
 
             # 7. Check for vision models
             state.has_vision_model = any(
-                m.model_type == "vision" or (
-                    m.vision_model_type is not None
-                )
+                m.model_type == "vision" or (m.vision_model_type is not None)
                 for m in state.models
             )
 
@@ -193,7 +192,7 @@ class EnvironmentDiscoverer:
 
         return state
 
-    def discover_bucket_alias(self, alias: str) -> Optional[BucketAliasInfo]:
+    def discover_bucket_alias(self, alias: str) -> BucketAliasInfo | None:
         """
         Discover a specific bucket alias.
 
@@ -208,7 +207,7 @@ class EnvironmentDiscoverer:
                 return b
         return None
 
-    def discover_text_bucket(self) -> Optional[BucketAliasInfo]:
+    def discover_text_bucket(self) -> BucketAliasInfo | None:
         """
         Find the first text bucket alias.
 
@@ -220,7 +219,7 @@ class EnvironmentDiscoverer:
                 return b
         return None
 
-    def discover_embedding_model(self) -> Optional[ModelInfo]:
+    def discover_embedding_model(self) -> ModelInfo | None:
         """
         Find the first embedding model.
 
@@ -232,7 +231,7 @@ class EnvironmentDiscoverer:
                 return m
         return None
 
-    def discover_vision_model(self) -> Optional[ModelInfo]:
+    def discover_vision_model(self) -> ModelInfo | None:
         """
         Find the first vision model.
 
@@ -244,7 +243,9 @@ class EnvironmentDiscoverer:
                 return m
         return None
 
-    def find_suitable_bucket_for_modality(self, modality: str) -> Optional[BucketAliasInfo]:
+    def find_suitable_bucket_for_modality(
+        self, modality: str
+    ) -> BucketAliasInfo | None:
         """
         Find a bucket alias suitable for a given modality.
 
@@ -262,7 +263,7 @@ class EnvironmentDiscoverer:
             return self._discover_bucket_aliases()[0]
         return None
 
-    def discover_rag_pipelines(self) -> List[RAGPipelineInfo]:
+    def discover_rag_pipelines(self) -> list[RAGPipelineInfo]:
         """Discover all RAG ingestion pipelines."""
         return self._discover_rag_pipelines()
 
@@ -270,11 +271,13 @@ class EnvironmentDiscoverer:
         """Check if the UMRS server is reachable."""
         try:
             import subprocess
+
             result = subprocess.run(
                 [
                     self.ctx.executable or "umrs",
                     "ping",
-                    "--output", "json",
+                    "--output",
+                    "json",
                 ],
                 capture_output=True,
                 text=True,
@@ -303,11 +306,14 @@ class EnvironmentDiscoverer:
 
             # Get user from config
             try:
-                from umrs.shared.config import get_current_connection_profile_file
                 import json
+
+                from umrs.shared.config import get_current_connection_profile_file
+
                 profile_file = get_current_connection_profile_file()
                 if profile_file:
                     import pathlib
+
                     profile_path = pathlib.Path(profile_file)
                     if profile_path.exists():
                         profile_data = json.loads(profile_path.read_text())
@@ -328,7 +334,7 @@ class EnvironmentDiscoverer:
         except Exception:
             pass
 
-    def _discover_bucket_aliases(self) -> List[BucketAliasInfo]:
+    def _discover_bucket_aliases(self) -> list[BucketAliasInfo]:
         """Discover all bucket aliases from the client config."""
         buckets = []
 
@@ -336,7 +342,14 @@ class EnvironmentDiscoverer:
             if hasattr(self.ctx, "buckets_cfg"):
                 for alias, entry in self.ctx.buckets_cfg.items():
                     if isinstance(entry, tuple) and len(entry) >= 6:
-                        username, xp_name, modality_name, s3_file, metadata, path_to_bucket = entry[:6]
+                        (
+                            username,
+                            xp_name,
+                            modality_name,
+                            s3_file,
+                            metadata,
+                            path_to_bucket,
+                        ) = entry[:6]
                         output_bucket = None
                         mime_type = ""
                         store_embeddings = False
@@ -349,33 +362,39 @@ class EnvironmentDiscoverer:
                         if len(entry) > 6:
                             output_path = entry[6]
 
-                        buckets.append(BucketAliasInfo(
-                            alias=alias,
-                            xp_name=xp_name or "",
-                            modality_name=modality_name or "",
-                            bucket_path=path_to_bucket or "",
-                            output_bucket=output_path,
-                            mime_type=mime_type,
-                            store_embeddings=store_embeddings,
-                        ))
+                        buckets.append(
+                            BucketAliasInfo(
+                                alias=alias,
+                                xp_name=xp_name or "",
+                                modality_name=modality_name or "",
+                                bucket_path=path_to_bucket or "",
+                                output_bucket=output_path,
+                                mime_type=mime_type,
+                                store_embeddings=store_embeddings,
+                            )
+                        )
                 return buckets
         except Exception:
             pass
 
         return buckets
 
-    def _discover_models(self) -> List[ModelInfo]:
+    def _discover_models(self) -> list[ModelInfo]:
         """Discover all models via the UMRS client model list command."""
         models = []
 
         try:
             import subprocess
+
             result = subprocess.run(
                 [
                     self.ctx.executable or "umrs",
-                    "model", "list",
-                    "--scope", "system",
-                    "--output", "json",
+                    "model",
+                    "list",
+                    "--scope",
+                    "system",
+                    "--output",
+                    "json",
                 ],
                 capture_output=True,
                 text=True,
@@ -387,14 +406,16 @@ class EnvironmentDiscoverer:
                     data = json.loads(result.stdout)
                     if isinstance(data, dict) and "models" in data:
                         for m in data["models"]:
-                            models.append(ModelInfo(
-                                name=m.get("name", ""),
-                                model_type=m.get("type", ""),
-                                scope=m.get("scope", ""),
-                                storage=m.get("storage", ""),
-                                vector_size=m.get("vector_size"),
-                                vision_model_type=m.get("vision_model_type"),
-                            ))
+                            models.append(
+                                ModelInfo(
+                                    name=m.get("name", ""),
+                                    model_type=m.get("type", ""),
+                                    scope=m.get("scope", ""),
+                                    storage=m.get("storage", ""),
+                                    vector_size=m.get("vector_size"),
+                                    vision_model_type=m.get("vision_model_type"),
+                                )
+                            )
                 except json.JSONDecodeError:
                     pass
         except (FileNotFoundError, subprocess.TimeoutExpired):
@@ -403,12 +424,16 @@ class EnvironmentDiscoverer:
         # Also check user-scoped models
         try:
             import subprocess
+
             result = subprocess.run(
                 [
                     self.ctx.executable or "umrs",
-                    "model", "list",
-                    "--scope", "user",
-                    "--output", "json",
+                    "model",
+                    "list",
+                    "--scope",
+                    "user",
+                    "--output",
+                    "json",
                 ],
                 capture_output=True,
                 text=True,
@@ -420,12 +445,14 @@ class EnvironmentDiscoverer:
                     data = json.loads(result.stdout)
                     if isinstance(data, dict) and "models" in data:
                         for m in data["models"]:
-                            models.append(ModelInfo(
-                                name=m.get("name", ""),
-                                model_type=m.get("type", ""),
-                                scope=m.get("scope", ""),
-                                storage=m.get("storage", ""),
-                            ))
+                            models.append(
+                                ModelInfo(
+                                    name=m.get("name", ""),
+                                    model_type=m.get("type", ""),
+                                    scope=m.get("scope", ""),
+                                    storage=m.get("storage", ""),
+                                )
+                            )
                 except json.JSONDecodeError:
                     pass
         except (FileNotFoundError, subprocess.TimeoutExpired):
@@ -450,6 +477,7 @@ class EnvironmentDiscoverer:
                 rag_url = getattr(self.ctx.connection, "rag_url", None)
                 if rag_url:
                     import urllib.request
+
                     try:
                         urllib.request.urlopen(f"{rag_url}/health", timeout=5)
                         return True
@@ -464,17 +492,21 @@ class EnvironmentDiscoverer:
         except Exception:
             return False
 
-    def _discover_rag_pipelines(self) -> List[RAGPipelineInfo]:
+    def _discover_rag_pipelines(self) -> list[RAGPipelineInfo]:
         """Discover RAG ingestion pipelines via r4 CLI."""
         pipelines = []
 
         try:
             import subprocess
+
             result = subprocess.run(
                 [
                     self.ctx.r4_executable or "r4",
-                    "rag", "ingest", "list",
-                    "--project", getattr(self.ctx, "project_id", "default"),
+                    "rag",
+                    "ingest",
+                    "list",
+                    "--project",
+                    getattr(self.ctx, "project_id", "default"),
                 ],
                 capture_output=True,
                 text=True,
@@ -489,12 +521,14 @@ class EnvironmentDiscoverer:
                         # Try to parse pipeline info
                         parts = line.split()
                         if len(parts) >= 2:
-                            pipelines.append(RAGPipelineInfo(
-                                name=parts[0],
-                                status=parts[-1] if len(parts) > 2 else "unknown",
-                                model="",
-                                embedder="",
-                            ))
+                            pipelines.append(
+                                RAGPipelineInfo(
+                                    name=parts[0],
+                                    status=parts[-1] if len(parts) > 2 else "unknown",
+                                    model="",
+                                    embedder="",
+                                )
+                            )
         except (FileNotFoundError, subprocess.TimeoutExpired):
             pass
 
@@ -512,7 +546,7 @@ class EnvironmentHealer:
     - Missing projects
     """
 
-    def __init__(self, ctx, discoverer: Optional[EnvironmentDiscoverer] = None):
+    def __init__(self, ctx, discoverer: EnvironmentDiscoverer | None = None):
         """
         Initialize the healer.
 
@@ -587,11 +621,13 @@ class EnvironmentHealer:
         try:
             # Call umrs reload to apply changes
             import subprocess
+
             result = subprocess.run(
                 [
                     self.ctx.executable or "umrs",
                     "reload",
-                    "--output", "json",
+                    "--output",
+                    "json",
                 ],
                 capture_output=True,
                 text=True,
@@ -618,11 +654,15 @@ class EnvironmentHealer:
         """
         try:
             import subprocess
+
             result = subprocess.run(
                 [
                     self.ctx.r4_executable or "r4",
-                    "rag", "ingest", "create",
-                    "--project", "default",
+                    "rag",
+                    "ingest",
+                    "create",
+                    "--project",
+                    "default",
                 ],
                 capture_output=True,
                 text=True,
@@ -642,11 +682,13 @@ class EnvironmentHealer:
 
             # No buckets - try to reload to provision
             import subprocess
+
             result = subprocess.run(
                 [
                     self.ctx.executable or "umrs",
                     "reload",
-                    "--output", "json",
+                    "--output",
+                    "json",
                 ],
                 capture_output=True,
                 text=True,
@@ -660,11 +702,15 @@ class EnvironmentHealer:
         """Attempt to create a default RAG pipeline."""
         try:
             import subprocess
+
             result = subprocess.run(
                 [
                     self.ctx.r4_executable or "r4",
-                    "rag", "ingest", "create",
-                    "--project", "default",
+                    "rag",
+                    "ingest",
+                    "create",
+                    "--project",
+                    "default",
                 ],
                 capture_output=True,
                 text=True,
@@ -677,10 +723,10 @@ class EnvironmentHealer:
     def _create_experience(self, xp_name: str) -> bool:
         """Create a default experience."""
         try:
-            import subprocess
-
             # Try to find a demo experience.json
             import pathlib
+            import subprocess
+
             demo_dir = pathlib.Path(__file__).parent.parent.parent / "demos"
             experience_file = None
 
@@ -696,7 +742,8 @@ class EnvironmentHealer:
             result = subprocess.run(
                 [
                     self.ctx.executable or "umrs",
-                    "experience", "add",
+                    "experience",
+                    "add",
                     str(experience_file),
                     "--update",
                 ],
@@ -710,6 +757,7 @@ class EnvironmentHealer:
 
 
 # ─── CLI Integration ───────────────────────────────────────────────────
+
 
 def add_discovery_arguments(parser):
     """
@@ -749,7 +797,11 @@ def handle_discovery(ctx, args) -> int:
     Returns:
         0 on success, 1 on failure
     """
-    if not getattr(args, "discover", False) and not getattr(args, "discover_buckets", False) and not getattr(args, "discover_models", False):
+    if (
+        not getattr(args, "discover", False)
+        and not getattr(args, "discover_buckets", False)
+        and not getattr(args, "discover_models", False)
+    ):
         return 0
 
     discoverer = EnvironmentDiscoverer(ctx)
@@ -772,7 +824,9 @@ def handle_discovery(ctx, args) -> int:
     return 0
 
 
-def smart_bucket_lookup(ctx, bucket_alias_arg: str, default_modality: str = "text") -> Optional[str]:
+def smart_bucket_lookup(
+    ctx, bucket_alias_arg: str, default_modality: str = "text"
+) -> str | None:
     """
     Smart bucket alias lookup with fallback.
 

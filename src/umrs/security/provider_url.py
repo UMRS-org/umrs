@@ -115,7 +115,9 @@ def _check_shape(parts, text: str) -> None:
         raise ProviderUrlError("credential_query_key")
 
 
-def _check_scheme(scheme: str, hostname: str, trusted_http_hosts: tuple[str, ...]) -> None:
+def _check_scheme(
+    scheme: str, hostname: str, trusted_http_hosts: tuple[str, ...]
+) -> None:
     """HTTPS required unless the host is an operator-trusted on-prem (rule 1)."""
     trusted = hostname in {h.lower().rstrip(".") for h in trusted_http_hosts}
     if scheme != "https" and not (scheme == "http" and trusted):
@@ -133,7 +135,9 @@ def _check_ip_literal(parsed, hostname: str) -> None:
 
 def _normalize(parts, scheme: str, hostname: str, parsed) -> ProviderUrl:
     """Lowercased host, trailing-/ stripped path, bracketed v6 (rules 6–7)."""
-    host_str = f"[{hostname}]" if isinstance(parsed, ipaddress.IPv6Address) else hostname
+    host_str = (
+        f"[{hostname}]" if isinstance(parsed, ipaddress.IPv6Address) else hostname
+    )
     allow_host = f"{scheme}://{host_str}" + (f":{parts.port}" if parts.port else "")
     base_url = allow_host + parts.path.rstrip("/")
     if parts.query:

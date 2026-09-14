@@ -27,9 +27,9 @@ from uuid import uuid4
 logger = logging.getLogger(__name__)
 
 __all__ = [
-    "HypothesisStatus",
     "Hypothesis",
     "HypothesisLifecycle",
+    "HypothesisStatus",
     "build_default_lifecycle",
 ]
 

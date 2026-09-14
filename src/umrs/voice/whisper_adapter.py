@@ -9,7 +9,6 @@ No dependency on r4.
 from __future__ import annotations
 
 import logging
-from typing import List, Optional
 
 from . import (
     STTAdapter,
@@ -42,7 +41,7 @@ class WhisperAdapter(STTAdapter):
         return "whisper"
 
     @property
-    def supported_models(self) -> List[str]:
+    def supported_models(self) -> list[str]:
         return list(_WHISPER_MODELS)
 
     def load_model(self, config: VoiceConfig) -> None:
@@ -66,13 +65,13 @@ class WhisperAdapter(STTAdapter):
     def transcribe(
         self,
         audio_bytes: bytes,
-        language: Optional[str] = None,
+        language: str | None = None,
     ) -> STTResult:
         if self._model is None:
             raise RuntimeError("Model not loaded. Call load_model() first.")
 
-        import tempfile
         import os
+        import tempfile
 
         # Whisper expects a file path
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:

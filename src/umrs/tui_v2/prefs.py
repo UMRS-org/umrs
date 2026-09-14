@@ -31,7 +31,7 @@ class MonitorPrefs:
     auto_refresh_all: bool = False
 
     @classmethod
-    def load(cls, path: str | None = None) -> "MonitorPrefs":
+    def load(cls, path: str | None = None) -> MonitorPrefs:
         """Load prefs from disk, returning defaults if missing/invalid."""
         p = Path(path) if path else cls._default_path()
         if not p.exists():

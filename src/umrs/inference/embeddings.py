@@ -7,6 +7,7 @@ It is NOT the query-time retrieval embedder — live on the frontend, see
 ``umrs.api.rag_service.PrefixedSentenceTransformerEmbeddings`` (sync ST
 client, different process and latency class). Not to be merged (R6.1).
 """
+
 # import psycopg2
 import json
 import os
@@ -16,11 +17,10 @@ import numpy as np
 os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
 import ast  # To safely convert strings to lists
 import os
+import time as _time
 
 from sentence_transformers import SentenceTransformer
 from sklearn.cluster import KMeans
-
-import time as _time
 
 from umrs.metrics import METRICS
 from umrs.shared.storage.s3 import load_data_from_s3

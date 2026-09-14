@@ -25,7 +25,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from typing import Any, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +76,7 @@ def dumps_with_correlation_id(payload: dict[str, Any]) -> str:
     return json.dumps(create_correlation_payload(payload), ensure_ascii=False)
 
 
-def extract_correlation_id(payload: dict[str, Any]) -> Optional[str]:
+def extract_correlation_id(payload: dict[str, Any]) -> str | None:
     """Extract the correlation ID from a payload dict.
 
     Args:

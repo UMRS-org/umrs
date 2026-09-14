@@ -113,19 +113,25 @@ class Fetchers:
             gateway_url: str | None = None
 
             try:
+                import json
+                from pathlib import Path
+
                 from umrs.shared.connection_profiles import (
                     resolve_connection,
                     resolve_profile_name,
                 )
-                from pathlib import Path
-                import json
 
                 profile_name = resolve_profile_name()
                 if profile_name:
-                    profile_file = Path(
-                        __import__("umrs.shared.config", fromlist=["CONNECTION_PROFILE_DIR"])
-                        .CONNECTION_PROFILE_DIR
-                    ) / f"{profile_name}.json"
+                    profile_file = (
+                        Path(
+                            __import__(
+                                "umrs.shared.config",
+                                fromlist=["CONNECTION_PROFILE_DIR"],
+                            ).CONNECTION_PROFILE_DIR
+                        )
+                        / f"{profile_name}.json"
+                    )
                     if profile_file.exists():
                         with profile_file.open() as f:
                             profile_data = json.load(f)
@@ -141,13 +147,26 @@ class Fetchers:
                         # Extract ZMQ port info from the profile
                         if "zmq" in profile_data:
                             zmq_info = profile_data["zmq"]
-                            if "ports" in zmq_info and isinstance(zmq_info["ports"], list):
-                                control_port = zmq_info["ports"][0] if zmq_info["ports"] else None
-                                data_ports = zmq_info["ports"][1:] if len(zmq_info["ports"]) > 1 else []
+                            if "ports" in zmq_info and isinstance(
+                                zmq_info["ports"], list
+                            ):
+                                control_port = (
+                                    zmq_info["ports"][0] if zmq_info["ports"] else None
+                                )
+                                data_ports = (
+                                    zmq_info["ports"][1:]
+                                    if len(zmq_info["ports"]) > 1
+                                    else []
+                                )
                                 zmq_info["control_port"] = control_port
                                 zmq_info["data_ports"] = data_ports
-                                zmq_info["control_port"] = zmq_info.get("control_port", control_port)
-                        gateway_url = profile_data.get("gateway_url") or resolve_connection().gateway_url
+                                zmq_info["control_port"] = zmq_info.get(
+                                    "control_port", control_port
+                                )
+                        gateway_url = (
+                            profile_data.get("gateway_url")
+                            or resolve_connection().gateway_url
+                        )
             except Exception:
                 pass  # Fallback to ? values below
 
@@ -159,7 +178,10 @@ class Fetchers:
                 "zmq": {
                     "host": zmq_info.get("host", gateway_url or "localhost"),
                     "control_port": zmq_info.get(
-                        "control_port", zmq_info.get("ports", [None])[0] if "ports" in zmq_info else None
+                        "control_port",
+                        zmq_info.get("ports", [None])[0]
+                        if "ports" in zmq_info
+                        else None,
                     ),
                     "data_port_range": zmq_info.get(
                         "data_ports",
@@ -168,12 +190,16 @@ class Fetchers:
                     "tunnel_mode": tunnel_mode,
                 },
                 "services": {
-                    "minio_url": profile_data.get("minio_url") if "profile_data" in dir() else None,
-                    "rag_url": profile_data.get("rag_url") if "profile_data" in dir() else None,
+                    "minio_url": profile_data.get("minio_url")
+                    if "profile_data" in dir()
+                    else None,
+                    "rag_url": profile_data.get("rag_url")
+                    if "profile_data" in dir()
+                    else None,
                 },
             }
 
-            data = {**ping, **{"ping_ok": ping_ok, "connection_info": connection_info}}
+            data = {**ping, "ping_ok": ping_ok, "connection_info": connection_info}
             await self._store.set("connection", data)
         except Exception as exc:
             await self._store.set("connection", None, error=str(exc))

@@ -11,17 +11,19 @@ TUI:  keybinding 'g' opens this screen.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Callable
+from typing import Any
 
-from ..models import OperationQueue
 from textual import on
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.events import Key
 from textual.screen import ModalScreen
 from textual.widgets import Button, Static
+
+from ..models import OperationQueue
 
 
 class StepStatus(str, Enum):
@@ -85,9 +87,9 @@ DEMO_PIPELINES: dict[str, list[tuple[str, str, str]]] = {
 # the step (or simulates if offline).
 # ---------------------------------------------------------------------------
 
-_STEP_EXECUTORS: dict[str, Callable[
-    "ScenarioRunner", str, "DemoStep", asyncio.Future
-], None] = {}
+_STEP_EXECUTORS: dict[
+    str, Callable[ScenarioRunner, str, DemoStep, asyncio.Future], None
+] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -100,10 +102,10 @@ class OperationMonitor:
 
     def __init__(
         self,
-        queue: "OperationQueue",
+        queue: OperationQueue,
         op_id: str,
-        step: "DemoStep",
-        report: Callable[["DemoStep"], None],
+        step: DemoStep,
+        report: Callable[[DemoStep], None],
         cancelled: asyncio.Event,
     ) -> None:
         self._queue = queue
@@ -154,13 +156,20 @@ class OperationMonitor:
 def register_step_executor(
     key: str,
 ) -> Callable[
-    "ScenarioRunner", str, "DemoStep", asyncio.Future, None,
+    ScenarioRunner,
+    str,
+    DemoStep,
+    asyncio.Future,
+    None,
 ]:
     """Decorator to register a step executor function."""
 
     def wrapper(
         fn: Callable[
-            "ScenarioRunner", str, "DemoStep", asyncio.Future,
+            ScenarioRunner,
+            str,
+            DemoStep,
+            asyncio.Future,
         ],
     ) -> None:
         _STEP_EXECUTORS[key] = fn
@@ -170,8 +179,10 @@ def register_step_executor(
 
 @register_step_executor("upload_texts")
 async def _executor_upload_texts(
-    runner: "ScenarioRunner", name: str,
-    step: DemoStep, task: asyncio.Future,
+    runner: ScenarioRunner,
+    name: str,
+    step: DemoStep,
+    task: asyncio.Future,
 ) -> None:
     """Upload text documents via OperationAPI."""
     try:
@@ -209,8 +220,10 @@ async def _executor_upload_texts(
 
 @register_step_executor("upload_images")
 async def _executor_upload_images(
-    runner: "ScenarioRunner", name: str,
-    step: DemoStep, task: asyncio.Future,
+    runner: ScenarioRunner,
+    name: str,
+    step: DemoStep,
+    task: asyncio.Future,
 ) -> None:
     """Upload images via OperationAPI."""
     try:
@@ -249,8 +262,10 @@ async def _executor_upload_images(
 @register_step_executor("create_vectordb")
 @register_step_executor("create_multi_index")
 async def _executor_create_index(
-    runner: "ScenarioRunner", name: str,
-    step: DemoStep, task: asyncio.Future,
+    runner: ScenarioRunner,
+    name: str,
+    step: DemoStep,
+    task: asyncio.Future,
 ) -> None:
     """Simulate index creation."""
     for pct in range(0, 101, 25):
@@ -263,8 +278,10 @@ async def _executor_create_index(
 @register_step_executor("embed_texts")
 @register_step_executor("embed_images")
 async def _executor_embeddings(
-    runner: "ScenarioRunner", name: str,
-    step: DemoStep, task: asyncio.Future,
+    runner: ScenarioRunner,
+    name: str,
+    step: DemoStep,
+    task: asyncio.Future,
 ) -> None:
     """Simulate embedding generation."""
     for pct in range(0, 101, 10):
@@ -277,8 +294,10 @@ async def _executor_embeddings(
 @register_step_executor("query_vectordb")
 @register_step_executor("query_multimodal")
 async def _executor_query(
-    runner: "ScenarioRunner", name: str,
-    step: DemoStep, task: asyncio.Future,
+    runner: ScenarioRunner,
+    name: str,
+    step: DemoStep,
+    task: asyncio.Future,
 ) -> None:
     """Simulate vector DB query."""
     for pct in range(0, 101, 50):
@@ -291,8 +310,10 @@ async def _executor_query(
 @register_step_executor("run_rag")
 @register_step_executor("run_multimodal_rag")
 async def _executor_rag(
-    runner: "ScenarioRunner", name: str,
-    step: DemoStep, task: asyncio.Future,
+    runner: ScenarioRunner,
+    name: str,
+    step: DemoStep,
+    task: asyncio.Future,
 ) -> None:
     """Run experience via OperationAPI."""
     try:
@@ -322,8 +343,10 @@ async def _executor_rag(
 
 @register_step_executor("preprocess_images")
 async def _executor_preprocess(
-    runner: "ScenarioRunner", name: str,
-    step: DemoStep, task: asyncio.Future,
+    runner: ScenarioRunner,
+    name: str,
+    step: DemoStep,
+    task: asyncio.Future,
 ) -> None:
     """Simulate image preprocessing."""
     for pct in range(0, 101, 25):
@@ -335,8 +358,10 @@ async def _executor_preprocess(
 
 @register_step_executor("run_inference")
 async def _executor_inference(
-    runner: "ScenarioRunner", name: str,
-    step: DemoStep, task: asyncio.Future,
+    runner: ScenarioRunner,
+    name: str,
+    step: DemoStep,
+    task: asyncio.Future,
 ) -> None:
     """Run workflow via OperationAPI."""
     try:
@@ -366,8 +391,10 @@ async def _executor_inference(
 
 @register_step_executor("download_results")
 async def _executor_download(
-    runner: "ScenarioRunner", name: str,
-    step: DemoStep, task: asyncio.Future,
+    runner: ScenarioRunner,
+    name: str,
+    step: DemoStep,
+    task: asyncio.Future,
 ) -> None:
     """Download results via OperationAPI."""
     try:
@@ -405,8 +432,10 @@ async def _executor_download(
 
 @register_step_executor("verify_outputs")
 async def _executor_verify(
-    runner: "ScenarioRunner", name: str,
-    step: DemoStep, task: asyncio.Future,
+    runner: ScenarioRunner,
+    name: str,
+    step: DemoStep,
+    task: asyncio.Future,
 ) -> None:
     """Verify expected outputs exist via OperationAPI.list_artifacts."""
     try:
@@ -423,8 +452,7 @@ async def _executor_verify(
         # Verify: check that previous upload steps created operations
         ops = runner._op_queue.operations if runner._op_queue else []
         has_uploads = any(
-            o.operation_type in ("upload_file", "upload_dir")
-            for o in ops
+            o.operation_type in ("upload_file", "upload_dir") for o in ops
         )
         if has_uploads:
             step.progress = 100.0
@@ -439,9 +467,12 @@ async def _executor_verify(
 
 
 def _simulate_step(
-    runner: "ScenarioRunner", step: DemoStep, task: asyncio.Future,
+    runner: ScenarioRunner,
+    step: DemoStep,
+    task: asyncio.Future,
 ) -> None:
     """Fallback: simulate progress when no OperationAPI available."""
+
     async def _sim() -> None:
         for pct in range(0, 101, 10):
             if task.cancelled():
@@ -452,7 +483,7 @@ def _simulate_step(
     asyncio.get_event_loop().create_task(_sim())
 
 
-def _get_bucket(runner: "ScenarioRunner", default: str) -> str | None:
+def _get_bucket(runner: ScenarioRunner, default: str) -> str | None:
     """Resolve bucket alias from scenario metadata or fallback."""
     meta = getattr(runner, "_bucket", default)
     if meta and isinstance(meta, str) and meta.strip():

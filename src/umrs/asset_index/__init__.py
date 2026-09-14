@@ -10,14 +10,14 @@ Foundation-module rules (mutation-safety): NO imports from umrs.api or
 umrs.server in this package; stores arrive as constructor arguments.
 """
 
-from .models import KINDS, AssetKind, AssetLineageEdge, AssetRow
 from .fanout import IndexWarning, build_asset_index
+from .models import KINDS, AssetKind, AssetLineageEdge, AssetRow
 
 __all__ = [
+    "KINDS",
     "AssetKind",
     "AssetLineageEdge",
     "AssetRow",
     "IndexWarning",
-    "KINDS",
     "build_asset_index",
 ]

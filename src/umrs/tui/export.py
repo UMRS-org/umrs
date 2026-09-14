@@ -29,7 +29,9 @@ def export_tab(
     Returns the path to the written file.
     """
     ext = "json" if fmt == "json" else "csv"
-    out = os.path.join(out_dir or os.getcwd(), f"umrs-monitor-export-{tab}-{_timestamp()}.{ext}")
+    out = os.path.join(
+        out_dir or os.getcwd(), f"umrs-monitor-export-{tab}-{_timestamp()}.{ext}"
+    )
     if fmt == "json":
         with open(out, "w", encoding="utf-8") as fh:
             json.dump(data, fh, indent=2, default=str)

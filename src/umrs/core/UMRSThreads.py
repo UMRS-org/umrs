@@ -117,14 +117,15 @@ class UMRSThreads:
 
         future = self.pool.submit(_wrapper, *args)
 
-
         # Wait for the worker to start so we know its ident.
         if not ident_ready.wait(timeout=60):
             raise RuntimeError(f"Pool worker did not start within 60 s for '{key}'")
 
         thread_ident = ident_holder["ident"]
-        future.ident = thread_ident  # mirror Thread.ident on the Future so thread_list items
-                                    # and ident-based lookups share the same key
+        future.ident = (
+            thread_ident  # mirror Thread.ident on the Future so thread_list items
+        )
+        # and ident-based lookups share the same key
 
         # Keep a reference so waitall / clean_finished_threads still works.
         with self.lock:
@@ -249,13 +250,27 @@ class UMRSThreads:
         return thread_ident
 
     def launch_check_objects(
-        self, client_id, buckets_cfg, key, verbose, log_output, update_status_callback=None
+        self,
+        client_id,
+        buckets_cfg,
+        key,
+        verbose,
+        log_output,
+        update_status_callback=None,
     ):
         from umrs.server.maintenance import check_objects
 
         thread_ident, future = self._submit_to_pool(
             check_objects,
-            (self, client_id, buckets_cfg, key, verbose, log_output, update_status_callback),
+            (
+                self,
+                client_id,
+                buckets_cfg,
+                key,
+                verbose,
+                log_output,
+                update_status_callback,
+            ),
             key,
             update_status_callback=update_status_callback,
         )
@@ -359,7 +374,9 @@ class UMRSThreads:
             selected_fields = ["s3_username", "table_name", "modality_name", "db_name"]
             result = buckets_cfg.get(path_to_bucket, fields=selected_fields)
             if result is None:
-                logger.info(f"WARNING: No bucket config for '{path_to_bucket}', skipping")
+                logger.info(
+                    f"WARNING: No bucket config for '{path_to_bucket}', skipping"
+                )
                 continue
             user, table_name, modality_name, db_name = result
             s3_keys = keys_per_bucket[path_to_bucket]
@@ -435,7 +452,9 @@ class UMRSThreads:
                     finished_idents.append(id(item))
                 else:
                     running.append(item)
-            pretty_print_thread_status(self.thread_dict, running_only=True, print_output=ENABLE_PRETTY_PRINT)
+            pretty_print_thread_status(
+                self.thread_dict, running_only=True, print_output=ENABLE_PRETTY_PRINT
+            )
             self.thread_list = running
             return finished_idents
 
@@ -485,7 +504,7 @@ class UMRSThreads:
             if isinstance(data, (list, tuple)):
                 return [_sanitize_status_data(item) for item in data]
             if hasattr(data, "model_name"):
-                return getattr(data, "model_name")
+                return data.model_name
             if isinstance(data, (str, int, float, bool)) or data is None:
                 return data
             return str(data)
@@ -567,4 +586,6 @@ class UMRSThreads:
             self.status_store.clear()
             logger.info("thread_dict and status store dictionnary deleted")
         except Exception as e:
-            logger.info(f"Cannot close thread_dict/status_store dictionary properly: {e}")
+            logger.info(
+                f"Cannot close thread_dict/status_store dictionary properly: {e}"
+            )

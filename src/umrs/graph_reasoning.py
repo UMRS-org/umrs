@@ -24,17 +24,16 @@ the graph. This prevents reverting to `vector search → LLM`.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
 
 from umrs.knowledge.canonical_graph_view import CanonicalGraphView, default_view
 from umrs.knowledge.graph_types import KnowledgeEdge, KnowledgeNode, RelationType
 
 __all__ = [
-    "RelatedObjects",
     "EvidenceChain",
     "ExperimentChain",
     "GraphNavigator",
     "GraphReasoningContext",
+    "RelatedObjects",
 ]
 
 
@@ -248,9 +247,7 @@ class GraphNavigator:
         chain.supporting = supporting
 
         # Find evidence that CONTRADICTS this claim
-        contradicting = self._graph.get_related(
-            claim_id, RelationType.CONTRADICTS
-        )
+        contradicting = self._graph.get_related(claim_id, RelationType.CONTRADICTS)
         chain.contradicting = contradicting
 
         return chain
@@ -273,9 +270,7 @@ class GraphNavigator:
 
         # Find experiments that test this hypothesis
         # (hypothesis ← TESTS ← experiment, or hypothesis ← VALIDATES ← experiment)
-        experiments = self._graph.get_related(
-            hypothesis_id, RelationType.RELATED_TO
-        )
+        experiments = self._graph.get_related(hypothesis_id, RelationType.RELATED_TO)
         # Filter to only experiment-type nodes
         for exp_id in experiments:
             node = self._graph.get_node(exp_id)
@@ -390,7 +385,11 @@ class GraphNavigator:
         anchor_node: KnowledgeNode | None,
     ) -> None:
         """Evidence chains for the anchor (when claim-shaped) and related."""
-        if anchor_node and anchor_node.node_type in ("hypothesis", "finding", "conclusion"):
+        if anchor_node and anchor_node.node_type in (
+            "hypothesis",
+            "finding",
+            "conclusion",
+        ):
             chain = self.find_evidence_chain(anchor_id)
             context.evidence_chains.append(chain)
         for hypothesis_id in context.related.hypotheses:

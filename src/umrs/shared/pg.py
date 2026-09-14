@@ -102,7 +102,7 @@ def reset_default_sync_pool() -> None:
         if _default_pool is not None:
             try:
                 _default_pool.closeall()
-            except Exception:  # noqa: BLE001 — teardown must not raise
+            except Exception:
                 logger.warning("Failed to close shared PG pool", exc_info=True)
             _default_pool = None
 
@@ -129,7 +129,7 @@ def resolve_satellite_pool(backend: str, db_pool: Any, label: str) -> Any:
         return None
     try:
         return get_default_sync_pool()
-    except Exception:  # noqa: BLE001 — auto mode degrades to in-memory
+    except Exception:
         logger.warning(
             "%s: Postgres unavailable, falling back to in-memory store",
             label,

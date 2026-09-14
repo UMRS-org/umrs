@@ -39,11 +39,14 @@ class LogsPane(Static):
 
     def append(self, level: str, message: str) -> None:
         import time
-        self._entries.append({
-            "time": time.strftime("%H:%M:%S"),
-            "level": level,
-            "message": message,
-        })
+
+        self._entries.append(
+            {
+                "time": time.strftime("%H:%M:%S"),
+                "level": level,
+                "message": message,
+            }
+        )
         self._render_table()
         self._render_summary()
 

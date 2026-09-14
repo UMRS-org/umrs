@@ -191,7 +191,8 @@ class PgVectorOutputWriter(OutputWriter):
                 from umrs.shared.pg_settings import asyncpg_pool_kwargs
 
                 self._pool = await asyncpg.create_pool(
-                    self.connection_string, **asyncpg_pool_kwargs("plugin-result-writer")
+                    self.connection_string,
+                    **asyncpg_pool_kwargs("plugin-result-writer"),
                 )
             except ImportError:
                 raise RuntimeError(

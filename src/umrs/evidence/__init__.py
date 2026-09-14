@@ -31,11 +31,11 @@ from uuid import uuid4
 logger = logging.getLogger(__name__)
 
 __all__ = [
-    "EvidenceSourceType",
-    "EvidenceStatus",
+    "DuplicateEvidenceError",
     "Evidence",
     "EvidenceNotFoundError",
-    "DuplicateEvidenceError",
+    "EvidenceSourceType",
+    "EvidenceStatus",
     "InMemoryEvidenceStore",
     "build_default_store",
 ]
@@ -136,7 +136,7 @@ class Evidence:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "Evidence":
+    def from_dict(cls, data: dict[str, Any]) -> Evidence:
         """Create from dictionary."""
         source_type_raw = data.get("source_type", "manual")
         status_raw = data.get("status", "active")
@@ -146,9 +146,7 @@ class Evidence:
             else source_type_raw
         )
         status = (
-            EvidenceStatus(status_raw)
-            if isinstance(status_raw, str)
-            else status_raw
+            EvidenceStatus(status_raw) if isinstance(status_raw, str) else status_raw
         )
         return cls(
             evidence_id=data.get("evidence_id", ""),

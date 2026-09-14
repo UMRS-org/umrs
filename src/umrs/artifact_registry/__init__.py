@@ -94,16 +94,13 @@ def ensure_schema(conn) -> bool:
             cur.execute(CREATE_SCHEMA_VERSION_TABLE)
 
             cur.execute(
-                "SELECT version FROM "
-                "artifact_registry_schema_version WHERE id = 1"
+                "SELECT version FROM artifact_registry_schema_version WHERE id = 1"
             )
             row = cur.fetchone()
             current_version = row[0] if row else 0
 
             if current_version >= ARTIFACT_REGISTRY_SCHEMA_VERSION:
-                logger.debug(
-                    "Artifact schema already at version %s", current_version
-                )
+                logger.debug("Artifact schema already at version %s", current_version)
                 return False
 
             logger.info(

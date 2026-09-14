@@ -123,7 +123,7 @@ class SchedulerService:
             self.last_summary = self._executor.tick()
             self.tick_count += 1
             self.consecutive_errors = 0
-        except Exception as exc:  # noqa: BLE001 — loop survivability is absolute
+        except Exception as exc:
             self.consecutive_errors += 1
             logger.exception(
                 "Scheduler tick failed (%d consecutive): %s",

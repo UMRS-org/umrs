@@ -9,7 +9,6 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
-
 _NO_VALUE_ACTION_TYPES = (
     argparse._StoreTrueAction,
     argparse._StoreFalseAction,

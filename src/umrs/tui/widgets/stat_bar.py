@@ -8,8 +8,6 @@ from __future__ import annotations
 
 from textual.widgets import Static
 
-from .status_badge import status_style
-
 
 def _render_summary(stats: dict) -> str:
     """Render a compact stats summary line."""

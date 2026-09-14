@@ -34,9 +34,9 @@ class RegisteredSkill:
     manifest: SkillManifest = field(default_factory=lambda: SkillManifest(name=""))
     scope: SkillScope = SkillScope.USER
     owner_id: str = ""
-    project_id: Optional[str] = None
+    project_id: str | None = None
     skill_md: str = ""  # Content of SKILL.md
-    registered_at: Optional[datetime] = None
+    registered_at: datetime | None = None
     enabled: bool = True
 
     def __post_init__(self) -> None:
@@ -59,11 +59,11 @@ class SkillRegistry:
     """
 
     def __init__(self) -> None:
-        self._skills: Dict[str, RegisteredSkill] = {}
+        self._skills: dict[str, RegisteredSkill] = {}
 
-    def validate_manifest(self, manifest: SkillManifest) -> List[str]:
+    def validate_manifest(self, manifest: SkillManifest) -> list[str]:
         """Validate a skill manifest. Returns list of errors."""
-        errors: List[str] = []
+        errors: list[str] = []
         if not manifest.name:
             errors.append("name is required")
         if not manifest.version:
@@ -81,7 +81,7 @@ class SkillRegistry:
         skill_md: str,
         scope: SkillScope = SkillScope.USER,
         owner_id: str = "",
-        project_id: Optional[str] = None,
+        project_id: str | None = None,
     ) -> RegisteredSkill:
         """Register a skill bundle."""
         errors = self.validate_manifest(manifest)
@@ -100,17 +100,17 @@ class SkillRegistry:
         logger.info("Registered skill: %s (id=%s)", manifest.name, skill.skill_id)
         return skill
 
-    def get(self, skill_id: str) -> Optional[RegisteredSkill]:
+    def get(self, skill_id: str) -> RegisteredSkill | None:
         return self._skills.get(skill_id)
 
     def list_skills(
         self,
-        scope: Optional[SkillScope] = None,
-        owner_id: Optional[str] = None,
-        tag: Optional[str] = None,
-    ) -> List[RegisteredSkill]:
+        scope: SkillScope | None = None,
+        owner_id: str | None = None,
+        tag: str | None = None,
+    ) -> list[RegisteredSkill]:
         """List skills, optionally filtered."""
-        results: List[RegisteredSkill] = []
+        results: list[RegisteredSkill] = []
         for skill in self._skills.values():
             if not skill.enabled:
                 continue
@@ -130,10 +130,10 @@ class SkillRegistry:
             return True
         return False
 
-    def search(self, query: str, limit: int = 20) -> List[RegisteredSkill]:
+    def search(self, query: str, limit: int = 20) -> list[RegisteredSkill]:
         """Search skills by name/description/tags."""
         q = query.lower()
-        scored: List[tuple[float, RegisteredSkill]] = []
+        scored: list[tuple[float, RegisteredSkill]] = []
         for skill in self._skills.values():
             if not skill.enabled:
                 continue

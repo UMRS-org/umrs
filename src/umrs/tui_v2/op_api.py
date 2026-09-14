@@ -3,10 +3,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import shutil
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
-from .models import Operation, OperationStatus, OperationQueue
+from .models import Operation, OperationQueue, OperationStatus
 
 log = logging.getLogger(__name__)
 
@@ -46,7 +47,8 @@ class OperationAPI:
 
             self._sdk = OperationSDK(
                 gateway_url=self._api.base_url
-                if hasattr(self._api, "base_url") else None,
+                if hasattr(self._api, "base_url")
+                else None,
             )
         return self._sdk
 
@@ -364,13 +366,13 @@ class OperationAPI:
                     name=workflow_name,
                     bucket=bucket_alias,
                     params=params or {},
-                    progress_cb=lambda pct, msg: op.mark_progress(
-                        percent=pct, message=msg, current=0, total=100
-                    ) if hasattr(op, "mark_progress") else None,
+                    progress_cb=lambda pct, msg: (
+                        op.mark_progress(percent=pct, message=msg, current=0, total=100)
+                        if hasattr(op, "mark_progress")
+                        else None
+                    ),
                 )
-                op.mark_done(
-                    OperationStatus.SUCCEEDED, detail=result.detail
-                )
+                op.mark_done(OperationStatus.SUCCEEDED, detail=result.detail)
             except Exception as e:
                 op.mark_done(OperationStatus.FAILED, error=str(e))
 
@@ -396,13 +398,13 @@ class OperationAPI:
                     name=experience_name,
                     bucket=bucket_alias,
                     overrides=overrides or {},
-                    progress_cb=lambda pct, msg: op.mark_progress(
-                        percent=pct, message=msg, current=0, total=100
-                    ) if hasattr(op, "mark_progress") else None,
+                    progress_cb=lambda pct, msg: (
+                        op.mark_progress(percent=pct, message=msg, current=0, total=100)
+                        if hasattr(op, "mark_progress")
+                        else None
+                    ),
                 )
-                op.mark_done(
-                    OperationStatus.SUCCEEDED, detail=result.detail
-                )
+                op.mark_done(OperationStatus.SUCCEEDED, detail=result.detail)
             except Exception as e:
                 op.mark_done(OperationStatus.FAILED, error=str(e))
 

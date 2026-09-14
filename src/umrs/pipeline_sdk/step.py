@@ -33,7 +33,8 @@ import io
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -58,7 +59,7 @@ class StepPolicy:
     timeout_seconds: float | None = None
 
     @classmethod
-    def from_mapping(cls, spec: Mapping[str, Any]) -> "StepPolicy":
+    def from_mapping(cls, spec: Mapping[str, Any]) -> StepPolicy:
         """Parse a raw step spec (workflow.json dict) into a StepPolicy."""
         return cls(
             max_retries=_int_field(spec, "max_retries", 0, minimum=0),

@@ -22,8 +22,8 @@ if TYPE_CHECKING:
     )
     from umrs.core.TaskCmdStatus import TaskCmd, TaskStatus
     from umrs.core.TaskManager import TaskManager
-    from umrs.core.UMRSThreads import ThreadStatus, UMRSThreads
     from umrs.core.UMRSTask import UMRSTask
+    from umrs.core.UMRSThreads import ThreadStatus, UMRSThreads
 
 __all__ = [
     "BASE_PORT",
@@ -31,10 +31,10 @@ __all__ = [
     "DEFAULT_NB_MSG",
     "MessageQueue",
     "TaskCmd",
-    "TaskStatus",
     "TaskManager",
-    "UMRSTask",
+    "TaskStatus",
     "ThreadStatus",
+    "UMRSTask",
     "UMRSThreads",
 ]
 

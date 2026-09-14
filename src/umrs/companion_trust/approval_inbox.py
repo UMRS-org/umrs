@@ -73,7 +73,10 @@ def _action_dict(raw: Any) -> dict[str, Any]:
 
 def _row_to_record(row: Any) -> dict[str, Any]:
     data = dict(zip(_COLUMNS, list(row)))  # sqlite3.Row / psycopg tuples: positional
-    text = {k: (data[k] or "") for k in ("user_id", "job_id", "attempt_id", "decision", "decided_by")}
+    text = {
+        k: (data[k] or "")
+        for k in ("user_id", "job_id", "attempt_id", "decision", "decided_by")
+    }
     return {
         "id": data["approval_id"],
         "loop_id": data["loop_id"],

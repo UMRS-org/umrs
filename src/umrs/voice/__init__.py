@@ -32,7 +32,7 @@ class VoiceConfig:
     model_name: str = ""
     language: str = "en"
     sample_rate: int = 16000
-    settings: Dict[str, Any] = field(default_factory=dict)
+    settings: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -42,7 +42,7 @@ class STTResult:
     text: str = ""
     language: str = ""
     confidence: float = 0.0
-    segments: List[Dict[str, Any]] = field(default_factory=list)
+    segments: list[dict[str, Any]] = field(default_factory=list)
     duration_seconds: float = 0.0
 
 
@@ -74,7 +74,7 @@ class VoiceAdapter(ABC):
 
     @property
     @abstractmethod
-    def supported_models(self) -> List[str]:
+    def supported_models(self) -> list[str]:
         """List of model names this adapter supports."""
 
     @abstractmethod
@@ -101,7 +101,7 @@ class STTAdapter(VoiceAdapter):
     def transcribe(
         self,
         audio_bytes: bytes,
-        language: Optional[str] = None,
+        language: str | None = None,
     ) -> STTResult:
         """Transcribe audio to text."""
 
@@ -117,8 +117,8 @@ class TTSAdapter(VoiceAdapter):
     def synthesize(
         self,
         text: str,
-        language: Optional[str] = None,
-        voice: Optional[str] = None,
+        language: str | None = None,
+        voice: str | None = None,
     ) -> TTSResult:
         """Synthesize text to audio."""
 
@@ -133,29 +133,29 @@ class VoiceAdapterRegistry:
     """
 
     def __init__(self) -> None:
-        self._adapters: Dict[str, VoiceAdapter] = {}
+        self._adapters: dict[str, VoiceAdapter] = {}
 
     def register(self, adapter: VoiceAdapter) -> None:
         self._adapters[adapter.name] = adapter
         logger.info("Registered voice adapter: %s", adapter.name)
 
-    def get(self, name: str) -> Optional[VoiceAdapter]:
+    def get(self, name: str) -> VoiceAdapter | None:
         return self._adapters.get(name)
 
-    def find_for_model(self, model_name: str) -> Optional[VoiceAdapter]:
+    def find_for_model(self, model_name: str) -> VoiceAdapter | None:
         """Find an adapter that supports the given model."""
         for adapter in self._adapters.values():
             if model_name in adapter.supported_models:
                 return adapter
         return None
 
-    def list_stt(self) -> List[STTAdapter]:
+    def list_stt(self) -> list[STTAdapter]:
         return [a for a in self._adapters.values() if isinstance(a, STTAdapter)]
 
-    def list_tts(self) -> List[TTSAdapter]:
+    def list_tts(self) -> list[TTSAdapter]:
         return [a for a in self._adapters.values() if isinstance(a, TTSAdapter)]
 
-    def list_all(self) -> List[VoiceAdapter]:
+    def list_all(self) -> list[VoiceAdapter]:
         return list(self._adapters.values())
 
 
