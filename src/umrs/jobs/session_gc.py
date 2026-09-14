@@ -77,7 +77,7 @@ class SessionGcBackend:
         if self.session_store is None:
             raise RuntimeError("session_gc lacks a shared umrs_db session store")
 
-        from ..api.companion import get_trust_store  # archive cascade's trust ledger
+        from umrs.shared.trust_store_access import get_trust_store  # archive cascade's trust ledger
 
         trust_store = get_trust_store()
         started = asyncio.get_running_loop().time()

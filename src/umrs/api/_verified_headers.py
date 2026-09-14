@@ -18,19 +18,14 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-from fastapi import Header, HTTPException
+from fastapi import Header
 from .typed_errors import PlatformError, raise_typed
 
 from r4_contracts.handshake_hmac import (
-    ENV_VAR,
     verify_claims,
     verify_workflow_author_claim,
 )
-
-
-def handshake_secret() -> str | None:
-    """Shared sign/verify secret from env (empty ⇒ unset)."""
-    return os.environ.get(ENV_VAR, "").strip() or None
+from umrs.shared.handshake import handshake_secret  # re-export (ADR-053)
 
 
 def verified_headers_trusted(

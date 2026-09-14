@@ -49,7 +49,7 @@ async def test_cluster_venue_env_contains_no_secret_hex_in_returned_ref(monkeypa
 
     monkeypatch.setitem(spec, "", None)
     # Provide the gateway handshake through the umrs path the real code uses.
-    from umrs.api import _verified_headers as _vh
+    from umrs.shared import handshake as _vh
 
     monkeypatch.setattr(_vh, "handshake_secret", lambda: "super-secret")
 

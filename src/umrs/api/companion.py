@@ -53,23 +53,21 @@ router = APIRouter(prefix="/umrs/companion", tags=["companion"])
 
 # Per-user-scope TRUST allowlist (wave T3c): module-level store handle, set
 # at sidecar boot the same way the research-session store is.
-_trust_store = None
-
-
-def set_trust_store(store) -> None:
-    global _trust_store
-    _trust_store = store
-
-
-def get_trust_store():
-    """Trust store accessor for lifecycle cascades (research_sessions archive)."""
-    return _trust_store
+# ADR-053 (1.1): singleton home is `umrs.shared.trust_store_access`; these
+# are the api-layer re-exports preserving every api caller byte-for-byte.
+from umrs.shared.trust_store_access import (
+    get_trust_store as get_trust_store,
+    set_trust_store as set_trust_store,
+)
 
 
 def _require_trust_store():
-    if _trust_store is None:
+    from umrs.shared.trust_store_access import get_trust_store as _shared_get
+
+    store = _shared_get()
+    if store is None:
         raise_typed(PlatformError.companion("unavailable", "Companion trust store unavailable (no DB pool configured)"))
-    return _trust_store
+    return store
 
 
 # ── typed error mapping ─────────────────────────────────────────────────────
@@ -547,11 +545,13 @@ def _flip_loop_to_auto(loop_id: str) -> None:
 
 def _mint_session_trust(loop_id: str, action: dict, x_user_id: str) -> None:
     """ADR-036 §3: ``always`` mints a durable ``session:<loop_id>`` trust row."""
-    if _trust_store is None:
+    from umrs.shared.trust_store_access import get_trust_store as _shared_get
+
+    if _shared_get() is None:
         return
     tool_name = str(action.get("workflow_name") or action.get("kind") or "workflow_trigger")
     try:
-        _trust_store.grant(
+        _shared_get().grant(
             x_user_id, tool_name, scope=f"session:{loop_id}", created_by=x_user_id
         )
     except Exception:  # noqa: BLE001 — trust row is the durable shadow, not the gate

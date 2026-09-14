@@ -49,7 +49,7 @@ class DataIngestionBackend(OrchestratorBackend):
         if not bucket or not s3_key:
             raise ValueError("data_ingestion requires spec.bucket and spec.s3_key")
 
-        from umrs.api.catalog_store import CatalogStoreUnavailable, get_catalog_meta_store
+        from umrs.shared.catalog_store_access import CatalogStoreUnavailable, get_catalog_meta_store
 
         try:
             meta_store = get_catalog_meta_store()
