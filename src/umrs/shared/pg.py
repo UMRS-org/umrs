@@ -22,6 +22,10 @@ import os
 import threading
 from typing import Any
 
+import psycopg2
+from psycopg2 import pool as pg_pool
+from psycopg2 import sql as pg_sql
+
 logger = logging.getLogger(__name__)
 
 _pool_lock = threading.Lock()
@@ -53,8 +57,6 @@ def build_sync_pool_from_env(*, min_conn: int = 1, max_conn: int = 4) -> Any:
         ImportError: If psycopg2 is unavailable.
         psycopg2.Error: If the database is unreachable.
     """
-    from psycopg2 import pool as pg_pool
-
     from umrs.shared.pg_settings import pg_connect_kwargs
 
     dsn = os.environ.get("DATABASE_URL")
@@ -134,3 +136,64 @@ def resolve_satellite_pool(backend: str, db_pool: Any, label: str) -> Any:
             exc_info=True,
         )
         return None
+
+
+def build_durable_job_db_pool_from_env():
+    """Bootstrap a thread-safe durable jobs connection pool from process env."""
+    db_host = os.environ.get("DB_HOST", "127.0.0.1")
+    db_port = os.environ.get("DB_PORT", os.environ.get("POSTGRES_PORT", "5432"))
+    db_name = os.environ.get("UMRS_JOBS_DB", os.environ.get("POSTGRES_DB", "umrs_db"))
+    db_user = os.environ.get(
+        "DB_SUPERUSER", os.environ.get("POSTGRES_USER", "postgres")
+    )
+    db_password = os.environ.get(
+        "DB_SUPERUSER_PASSWORD",
+        os.environ.get("POSTGRES_PASSWORD", "postgres"),
+    )
+
+    # sslmode=disable: local container doesn't support SSL and the default
+    # 'prefer' mode can fail during early startup with "error response during
+    # SSL exchange".
+    from umrs.shared.pg_settings import pg_connect_kwargs
+
+    admin_conn = psycopg2.connect(
+        dbname="postgres",
+        user=db_user,
+        password=db_password,
+        host=db_host,
+        port=db_port,
+        sslmode="disable",
+        **pg_connect_kwargs("admin"),
+    )
+    admin_conn.autocommit = True
+    try:
+        with admin_conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", (db_name,))
+            exists = cur.fetchone()
+            if not exists:
+                cur.execute(
+                    pg_sql.SQL("CREATE DATABASE {}").format(pg_sql.Identifier(db_name))
+                )
+    finally:
+        admin_conn.close()
+
+    # R-14 session hygiene: application_name identifies this pool in
+    # pg_stat_activity; idle-in-transaction holders are reaped server-side.
+    db_pool = pg_pool.ThreadedConnectionPool(
+        minconn=1,
+        maxconn=10,
+        dbname=db_name,
+        user=db_user,
+        password=db_password,
+        host=db_host,
+        port=db_port,
+        sslmode="disable",
+        **pg_connect_kwargs("durable-jobs"),
+    )
+    logger.info(
+        "Durable jobs database pool ready (db=%s host=%s port=%s)",
+        db_name,
+        db_host,
+        db_port,
+    )
+    return db_pool

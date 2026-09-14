@@ -150,26 +150,20 @@ class DurableModelCommandBackend:
         )
 
 
-def _catalog_path() -> str:
-    """Return path to the JSON model catalog file."""
-    return get_resolved_umrs_subdir("model_catalog.json")
+# ADR-053: JSON catalog readers live in umrs.shared.model_catalog (foundation);
+# maintain the legacy private names as thin delegations so callers inside the
+# server tree are byte-identical.
+from umrs.shared.model_catalog import _catalog_path, load_catalog, save_catalog
 
 
 def _load_catalog() -> dict[str, Any]:
-    """Load model catalog from JSON file."""
-    path = _catalog_path()
-    if not os.path.exists(path):
-        return {"models": []}
-    with open(path, encoding="utf-8") as f:
-        return json.load(f)
+    """Legacy alias — the shared reader (ADR-053)."""
+    return load_catalog()
 
 
 def _save_catalog(catalog: dict[str, Any]) -> None:
-    """Save model catalog to JSON file."""
-    path = _catalog_path()
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(catalog, f, indent=2, ensure_ascii=False, default=str)
+    """Legacy alias — the shared writer (ADR-053)."""
+    save_catalog(catalog)
 
 
 def _project_memberships_path() -> str:

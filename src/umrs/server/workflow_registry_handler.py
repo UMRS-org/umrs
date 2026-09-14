@@ -1080,3 +1080,19 @@ def _handle_workflow_logs(client_id: str, payload_str: str) -> str:
         },
         default=str,
     )
+
+
+# ADR-053 (1.1/1.2): register the catalog launcher behind
+# shared.workflow_execution_access so jobs/workflow_run never imports
+# umrs.server.workflow_registry_handler again.
+# The wrapper resolves the module-global name at every CALL, so a test
+# patching `umrs.server.workflow_registry_handler._launch_workflow_from_catalog`
+# keeps the old lazy-import semantics.
+from umrs.shared.workflow_execution_access import register_workflow_handler  # noqa: E402
+
+
+def _workflow_launch_factory(**kwargs):
+    return _launch_workflow_from_catalog(**kwargs)
+
+
+register_workflow_handler(_workflow_launch_factory)

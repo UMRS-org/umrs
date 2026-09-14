@@ -167,7 +167,8 @@ def test_scan_finds_the_known_construction_sites():
     for expected in (
         "shared/pg.py",
         "server/sql.py",
-        "server/job_tracking_handler.py",
+        # ADR-053: builder's home moved to shared/pg.py (site list tracks truth).
+        "shared/pg.py",
         "api/_asyncpg_pool.py",
         "knowledge/store.py",
         "migrations/__main__.py",

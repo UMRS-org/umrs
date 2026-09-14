@@ -446,65 +446,7 @@ class DurableJobCommandBackend:
         )
 
 
-def build_durable_job_db_pool_from_env():
-    """Bootstrap a thread-safe durable jobs connection pool from process env."""
-    db_host = os.environ.get("DB_HOST", "127.0.0.1")
-    db_port = os.environ.get("DB_PORT", os.environ.get("POSTGRES_PORT", "5432"))
-    db_name = os.environ.get("UMRS_JOBS_DB", os.environ.get("POSTGRES_DB", "umrs_db"))
-    db_user = os.environ.get(
-        "DB_SUPERUSER", os.environ.get("POSTGRES_USER", "postgres")
-    )
-    db_password = os.environ.get(
-        "DB_SUPERUSER_PASSWORD",
-        os.environ.get("POSTGRES_PASSWORD", "postgres"),
-    )
 
-    # sslmode=disable: local container doesn't support SSL and the default
-    # 'prefer' mode can fail during early startup with "error response during
-    # SSL exchange".
-    from umrs.shared.pg_settings import pg_connect_kwargs
-
-    admin_conn = psycopg2.connect(
-        dbname="postgres",
-        user=db_user,
-        password=db_password,
-        host=db_host,
-        port=db_port,
-        sslmode="disable",
-        **pg_connect_kwargs("admin"),
-    )
-    admin_conn.autocommit = True
-    try:
-        with admin_conn.cursor() as cur:
-            cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", (db_name,))
-            exists = cur.fetchone()
-            if not exists:
-                cur.execute(
-                    pg_sql.SQL("CREATE DATABASE {}").format(pg_sql.Identifier(db_name))
-                )
-    finally:
-        admin_conn.close()
-
-    # R-14 session hygiene: application_name identifies this pool in
-    # pg_stat_activity; idle-in-transaction holders are reaped server-side.
-    db_pool = pg_pool.ThreadedConnectionPool(
-        minconn=1,
-        maxconn=10,
-        dbname=db_name,
-        user=db_user,
-        password=db_password,
-        host=db_host,
-        port=db_port,
-        sslmode="disable",
-        **pg_connect_kwargs("durable-jobs"),
-    )
-    logger.info(
-        "Durable jobs database pool ready (db=%s host=%s port=%s)",
-        db_name,
-        db_host,
-        db_port,
-    )
-    return db_pool
 
 
 def build_durable_job_backend_from_env() -> DurableJobCommandBackend | None:
@@ -596,3 +538,8 @@ def _handle_job_command_scoped(
         logger.exception("Error handling job command %s", cmd)
         METRICS.bridge_event(_BRIDGE_NAME, "error")
         return json.dumps({"status": "error", "message": str(e)})
+
+
+# ADR-053: pool builder's home is umrs.shared.pg; re-export so callers here
+# stay byte-identical.
+from umrs.shared.pg import build_durable_job_db_pool_from_env  # noqa: E402,F401

@@ -127,7 +127,7 @@ def _artifact_conn():
     same as the durable jobs runtime)."""
     from contextlib import contextmanager
 
-    from umrs.server.job_tracking_handler import build_durable_job_db_pool_from_env
+    from umrs.shared.pg import build_durable_job_db_pool_from_env
 
     @contextmanager
     def _managed():

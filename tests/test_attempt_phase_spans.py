@@ -64,7 +64,7 @@ class TestMaybeEmitAttemptSpan:
 
         otel_mod = types.ModuleType("umrs.server.otel")
         otel_mod.otel_active = lambda: True
-        monkeypatch.setitem(sys.modules, "umrs.server.otel", otel_mod)
+        monkeypatch.setitem(sys.modules, "umrs.shared.otel_flag", otel_mod)
         fake_ot = types.SimpleNamespace(get_tracer=fake_trace.get_tracer)
         otel_pkg = types.ModuleType("opentelemetry")
         otel_pkg.trace = fake_ot.trace if hasattr(fake_ot, "trace") else fake_trace
@@ -93,7 +93,7 @@ class TestMaybeEmitAttemptSpan:
 
         otel_mod = types.ModuleType("umrs.server.otel")
         otel_mod.otel_active = lambda: True
-        monkeypatch.setitem(sys.modules, "umrs.server.otel", otel_mod)
+        monkeypatch.setitem(sys.modules, "umrs.shared.otel_flag", otel_mod)
         boom_trace = MagicMock()
         boom_trace.get_tracer.side_effect = RuntimeError("sdk broken")
         otel_pkg = types.ModuleType("opentelemetry")
@@ -122,7 +122,7 @@ class TestMaybeEmitSpanGenericHook:
 
         otel_mod = types.ModuleType("umrs.server.otel")
         otel_mod.otel_active = lambda: True
-        monkeypatch.setitem(sys.modules, "umrs.server.otel", otel_mod)
+        monkeypatch.setitem(sys.modules, "umrs.shared.otel_flag", otel_mod)
         otel_pkg = types.ModuleType("opentelemetry")
         trace_mod = types.SimpleNamespace(
             get_tracer=lambda *_a, **_k: types.SimpleNamespace(start_span=_start)
