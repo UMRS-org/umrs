@@ -72,6 +72,9 @@ def test_slurm_payload_includes_nested_ctx_and_parent_results():
 
 
 def test_slurm_sbatch_forwards_credentials_and_gpu(monkeypatch):
+    # S3_ENDPOINT_URL is canonical (ADR-055) and wins over the legacy name; CI
+    # exports its own S3_ENDPOINT_URL for the MinIO service, so pin both here.
+    monkeypatch.setenv("S3_ENDPOINT_URL", "http://minio:9000")
     monkeypatch.setenv("MINIO_ENDPOINT", "http://minio:9000")
     monkeypatch.setenv("AWS_ACCESS_KEY_ID", "test-key")
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "test-secret")

@@ -172,6 +172,9 @@ def test_podman_custom_network(monkeypatch):
 def test_podman_forwards_minio_env(monkeypatch):
     fake = _FakePodman({"status": "ok", "result": StepResult()})
     monkeypatch.setattr(subprocess, "run", fake)
+    # S3_ENDPOINT_URL is canonical (ADR-055) and wins over the legacy name; CI
+    # exports its own S3_ENDPOINT_URL for the MinIO service, so pin both here.
+    monkeypatch.setenv("S3_ENDPOINT_URL", "http://minio:9000")
     monkeypatch.setenv("MINIO_ENDPOINT", "http://minio:9000")
     monkeypatch.setenv("AWS_REGION", "us-east-1")
     PodmanExecutor(image="img").execute(entrypoint="pkg.mod:Cls", config={}, ctx=_make_ctx())
