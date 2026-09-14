@@ -86,7 +86,12 @@ services:
       - "127.0.0.1:${S3_IAM_PORT:-8111}:8111"
       - "${S3_METRICS_BIND:-0.0.0.0}:${S3_METRICS_PORT:-9327}:9327"
     volumes:
-      - umrs_s3_data:/data
+      # :z — on SELinux hosts the bind-backed directory under UMRS_VOLUME_ROOT
+      # needs the shared container_file_t label before the container may write
+      # (migrate-volumes.sh relabels the migrated Postgres/MinIO directories the
+      # same way). Without it weed crash-loops on "mkdir /data/m9333: permission
+      # denied" (2026-09-14 cutover, run 34833340977).
+      - umrs_s3_data:/data:z
       # Rendered by start.sh from .env (STS signing key, role, admin principal).
       - ./seaweedfs/iam.json:/etc/seaweedfs/iam.json:ro,z
     healthcheck:
