@@ -29,7 +29,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-sys.path.insert(0, str(Path(__file__).parent))
+# splice removed (ADR-053): pytest auto-inserts tests/ for sibling helpers
 from _transport_parity_helpers import SpyAuditStore, compare_rows  # noqa: E402
 
 

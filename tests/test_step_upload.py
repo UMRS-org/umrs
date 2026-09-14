@@ -19,7 +19,7 @@ import pytest
 # Ensure src/ is on sys.path
 import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+# splice removed (ADR-053): umrs installed editable in .venv
 
 from umrs.core.TaskCmdStatus import TaskCmd, TaskStatus
 from umrs.pipeline_sdk.workflow import (

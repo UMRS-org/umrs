@@ -21,7 +21,7 @@ import asyncio
 # Test imports
 import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+# splice removed (ADR-053): umrs installed editable in .venv
 
 
 class MockConnection:

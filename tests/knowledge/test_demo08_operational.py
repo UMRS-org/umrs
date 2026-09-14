@@ -9,7 +9,6 @@ Proves one real iteration where:
 
 from __future__ import annotations
 
-import importlib.util
 from pathlib import Path
 
 from r4_contracts.research import ResearchRunStatus
@@ -44,16 +43,7 @@ def _graphs_always_in_memory(monkeypatch):
 
 
 
-def _load_materialize_blank_project():
-    path = Path(__file__).resolve().with_name("blank_project_fixture.py")
-    spec = importlib.util.spec_from_file_location("blank_project_fixture", path)
-    module = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    spec.loader.exec_module(module)
-    return module.materialize_blank_project
-
-
-materialize_blank_project = _load_materialize_blank_project()
+from blank_project_fixture import materialize_blank_project  # noqa: E402
 
 
 def _demo08_project(tmp_path: Path) -> ResearchProject:

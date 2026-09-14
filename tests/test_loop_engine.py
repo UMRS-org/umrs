@@ -16,10 +16,7 @@ from pathlib import Path
 
 import pytest
 
-# Ensure UMRS src is on path (same pattern as existing tests)
-_umrs_src = Path(__file__).resolve().parents[4] / "umrs" / "src"
-if str(_umrs_src) not in sys.path:
-    sys.path.insert(0, str(_umrs_src))
+# Splice removed (ADR-053): umrs installed editable in .venv.
 
 from umrs.knowledge.loop import (  # noqa: E402
     AutonomousResearchLoop,
