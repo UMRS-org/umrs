@@ -49,16 +49,18 @@ def create_presigned_url(
 
 
 def get_s3_server_name(s3):
+    """Identify the object store behind *s3* from its ``Server`` header.
+
+    Returns the backend display name (``"MinIO"`` / ``"SeaweedFS"``). With
+    ``S3_BACKEND`` set the configured backend wins and a mismatching header
+    raises (ADR-055 consistency assertion).
+    """
+    from umrs.shared.storage.backends import get_profile, resolve_backend_name
 
     response = s3.list_buckets()
     headers = response["ResponseMetadata"]["HTTPHeaders"]
-
-    server = headers["server"]
-
-    if "minio" in server.lower():
-        return "MinIO"
-    else:
-        raise RuntimeError(f"Do not know how to handle S3 server {server}")
+    server = headers.get("server", "")
+    return get_profile(resolve_backend_name(server)).display_name
 
 
 def s3_strong_password(length=24):
@@ -121,27 +123,23 @@ def s3_create_users_and_buckets(
                 },
             )
 
-    if server_name == "MinIO":
-        from umrs.shared.storage.minio import (
-            minio_grant_user_access,
-            minio_s3_create_user,
-        )
+    from umrs.shared.storage.backends import PROFILES, get_backend
 
-        alias, s3cfg_content = minio_s3_create_user(
-            username,
-            s3_connection,
-            user_s3_configuration_file,
-            admin_s3_configuration_file,
-        )
-        if alias:
-            for bucket in bucket_list:
-                minio_grant_user_access(username, bucket, alias)
-        return s3cfg_content
-
-    else:
+    backend_name = next(
+        (name for name, prof in PROFILES.items() if prof.display_name == server_name), None
+    )
+    if backend_name is None:
         raise RuntimeError(
             f"Do not know how to create user and buckets for server '{server_name}'"
         )
+    backend = get_backend(backend_name)
+    alias, s3cfg_content = backend.create_user(
+        username, user_s3_configuration_file, admin_s3_configuration_file
+    )
+    if alias:
+        for bucket in bucket_list:
+            backend.grant_bucket_access(username, bucket, admin_s3_configuration_file)
+    return s3cfg_content
 
 
 def connect_to_s3(config_file, *, endpoint_url_override: str | None = None):

@@ -678,7 +678,7 @@ def _get_or_create_user_s3cfg(username: str) -> str | None:
 
     First tries to read an existing s3cfg from disk (via ``_read_user_s3cfg``).
     If none exists and ``UMRS_ADMIN_S3_CONFIGURATION_FILE`` is set, creates a
-    new MinIO IAM user with a per-user list policy and returns the generated
+    new object-store identity with a per-user list policy and returns the generated
     s3cfg content.  Returns ``None`` on any failure — login still succeeds
     without s3cfg.
     """
@@ -687,32 +687,23 @@ def _get_or_create_user_s3cfg(username: str) -> str | None:
     if existing:
         return existing
 
-    # Auto-provision: create MinIO user on first login
+    # Auto-provision: create the object-store identity on first login (ADR-055)
     admin_s3cfg = os.environ.get("UMRS_ADMIN_S3_CONFIGURATION_FILE", "")
     if not admin_s3cfg:
         # No admin config → cannot auto-provision
         return None
 
     try:
-        from umrs.shared.storage.s3 import connect_to_s3
-        from umrs.shared.storage.minio import minio_s3_create_user
+        from umrs.shared.storage.backends import get_backend
 
         user_s3cfg_path = os.path.expanduser(f"~/.config/umrs/s3cfg_{username}")
-
-        s3_connection, _ = connect_to_s3(admin_s3cfg)
-        try:
-            _alias, s3cfg_content = minio_s3_create_user(
-                username,
-                s3_connection,
-                user_s3cfg_path,
-                admin_s3cfg,
-            )
-        finally:
-            s3_connection.close()
+        _alias, s3cfg_content = get_backend().create_user(
+            username, user_s3cfg_path, admin_s3cfg
+        )
 
         return s3cfg_content
     except Exception as e:
-        # Best-effort: MinIO may be unavailable; login proceeds without s3cfg
+        # Best-effort: the object store may be unavailable; login proceeds without s3cfg
         print(f"Warning: auto-provision s3cfg for '{username}' failed: {e}")
         return None
 

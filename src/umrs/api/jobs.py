@@ -1073,6 +1073,7 @@ async def mint_attempt_sts_credentials(
             endpoint_url=config.endpoint_url,
             access_key=config.access_key,
             secret_key=config.secret_key,
+            role_arn=config.sts_role_arn,
         )
     except STSFederationError as exc:
         raise_typed(

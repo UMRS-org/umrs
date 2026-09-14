@@ -1,4 +1,4 @@
-"""S3/MinIO environment configuration (foundation layer).
+"""S3 object-store environment configuration (foundation layer).
 
 Lives in shared/storage so foundation modules (jobs/*) can consume S3
 settings without importing from the api/ layer. Moved out of
@@ -14,7 +14,7 @@ from botocore.config import Config as BotoConfig
 
 
 class S3Config:
-    """S3/MinIO configuration from environment."""
+    """S3 configuration from environment (backend-neutral, ADR-055)."""
 
     def __init__(self):
         self.endpoint_url = os.getenv("S3_ENDPOINT_URL", "http://localhost:9000")
@@ -25,6 +25,19 @@ class S3Config:
         self.default_ttl = int(os.getenv("UMRS_PRESIGNED_URL_TTL_SEC", "3600"))
         self.max_ttl = int(os.getenv("UMRS_PRESIGNED_URL_MAX_TTL_SEC", "86400"))
         self.use_ssl = os.getenv("S3_USE_SSL", "false").lower() == "true"
+        # ADR-055: which object store answers (minio | seaweedfs), where its
+        # IAM management API lives (SeaweedFS only) and the STS RoleArn
+        # convention. Resolved lazily so importing this module stays cheap.
+        self.backend = (os.getenv("S3_BACKEND") or "minio").strip().lower()
+        self.iam_endpoint_url = (os.getenv("S3_IAM_ENDPOINT_URL") or "").strip() or None
+
+    @property
+    def sts_role_arn(self) -> str:
+        """RoleArn for AssumeRole: ``S3_STS_ROLE_ARN`` or the backend default."""
+        from umrs.shared.storage.backends import get_profile
+
+        override = (os.getenv("S3_STS_ROLE_ARN") or "").strip()
+        return override or get_profile(self.backend).sts_role_arn
 
     def get_client(self) -> boto3.client:
         """Create boto3 S3 client."""

@@ -3,7 +3,7 @@
 # =============================================================================
 # Brings up all services for the dual-cluster UMRS deployment:
 #   - postgres (pgvector)
-#   - minio
+#   - seaweedfs (S3 object store; replaced MinIO 2026-09-14, ADR-055)
 #   - umrs-server-rccs (RCCS Cloud UMRS server)
 #   - umrs-server-ai4s (AI4S UMRS server)
 #   - umrs-server-bdrt (bdrt / DGX-Spark UMRS server)#   - umrs-server-octopus (octopus / MI300X+H200 UMRS server)#
@@ -54,27 +54,43 @@ services:
       timeout: 3s
       retries: 10
 
-  # ─── MinIO Object Storage ─────────────────────────────────────────────────
-  minio:
-    image: docker.io/minio/minio:latest
-    container_name: umrs-minio
+  # ─── SeaweedFS Object Storage (S3 API) ──────────────────────────────────────
+  # ADR-055 (2026-09-14): replaces MinIO — its community edition was archived
+  # on 2026-04-25 with no further security releases. Same S3 port as before so
+  # every S3_ENDPOINT_URL / presign endpoint / tunnel spec is unchanged.
+  #   :9000  S3 API (+ /status health)           published on ${S3_BIND}
+  #   :8111  IAM API — per-user identities, driven by umrs-server (ADR-055
+  #          backend adapter); loopback only
+  #   :9327  Prometheus /metrics (was /minio/v2/metrics/cluster on :9000)
+  # The admin identity is bootstrapped from AWS_ACCESS_KEY_ID/SECRET (env);
+  # SeaweedFS names it "admin-<first 8 chars of the access key>", which is the
+  # principal start.sh pins in seaweedfs/iam.json for the STS role. Per-user
+  # identities and buckets live in the filer store on the /data volume.
+  seaweedfs:
+    image: ${S3_IMAGE:-docker.io/chrislusf/seaweedfs:4.47}
+    container_name: umrs-seaweedfs
     restart: unless-stopped
     environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?Set MINIO_ROOT_USER in .env}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD in .env}
-      # Expose Prometheus metrics on /minio/v2/metrics/* without a bearer
-      # token so the observability stack can scrape MinIO. Metrics are served
-      # on the same API port (9000) which is reachable only on trusted cluster
-      # paths; no object data is exposed by the metrics endpoints.
-      MINIO_PROMETHEUS_AUTH_TYPE: public
+      AWS_ACCESS_KEY_ID: ${S3_ROOT_USER:?Set S3_ROOT_USER in .env}
+      AWS_SECRET_ACCESS_KEY: ${S3_ROOT_PASSWORD:?Set S3_ROOT_PASSWORD in .env}
+    # -volume.max=0: size volumes by free disk instead of the 8x30GB default cap.
+    # -volume.index=leveldb: bounded memory for the needle index.
+    command: >
+      server -dir=/data -ip=127.0.0.1 -ip.bind=0.0.0.0
+      -volume.max=0 -volume.index=leveldb
+      -s3 -s3.port=9000 -s3.iam -s3.iam.config=/etc/seaweedfs/iam.json
+      -iam -iam.port=8111
+      -metricsPort=9327
     ports:
-      - "${MINIO_BIND:-0.0.0.0}:${MINIO_PORT:-9000}:9000"
-      - "127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001"
+      - "${S3_BIND:-0.0.0.0}:${S3_PORT:-9000}:9000"
+      - "127.0.0.1:${S3_IAM_PORT:-8111}:8111"
+      - "${S3_METRICS_BIND:-0.0.0.0}:${S3_METRICS_PORT:-9327}:9327"
     volumes:
-      - umrs_minio_data:/data
-    command: server /data --console-address ":9001"
+      - umrs_s3_data:/data
+      # Rendered by start.sh from .env (STS signing key, role, admin principal).
+      - ./seaweedfs/iam.json:/etc/seaweedfs/iam.json:ro,z
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:9000/minio/health/live"]
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:9000/status"]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -121,13 +137,15 @@ services:
       DB_SUPERUSER: ${POSTGRES_USER:-umrs}
       DB_SUPERUSER_PASSWORD: ${POSTGRES_PASSWORD}
       UMRS_REGISTRY_POSTGRES_DSN: "postgres://${POSTGRES_USER:-umrs}:${POSTGRES_PASSWORD}@127.0.0.1:${POSTGRES_PORT:-5432}/${POSTGRES_DB_RCCS:-front_rccs}"
-      S3_ENDPOINT_URL: "http://127.0.0.1:${MINIO_PORT:-9000}"
-      S3_ACCESS_KEY: ${MINIO_ROOT_USER}
-      S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      S3_BACKEND: ${S3_BACKEND:-seaweedfs}
+      S3_ENDPOINT_URL: "http://127.0.0.1:${S3_PORT:-9000}"
+      S3_IAM_ENDPOINT_URL: "http://127.0.0.1:${S3_IAM_PORT:-8111}"
+      S3_ACCESS_KEY: ${S3_ROOT_USER}
+      S3_SECRET_KEY: ${S3_ROOT_PASSWORD}
       S3_REGION: ${S3_REGION:-us-east-1}
       S3_BUCKET: ${S3_BUCKET:-r4-data}
       S3_USE_SSL: ${S3_USE_SSL:-false}
-      S3_PRESIGN_ENDPOINT: ${S3_PRESIGN_ENDPOINT:-http://127.0.0.1:${MINIO_PORT:-9000}}
+      S3_PRESIGN_ENDPOINT: ${S3_PRESIGN_ENDPOINT:-http://127.0.0.1:${S3_PORT:-9000}}
       VISION_S3_PRESIGN_ENDPOINT: ${VISION_S3_PRESIGN_ENDPOINT:-http://minio-host:19000}
       UMRS_RAG_DIRECT_URL: "http://127.0.0.1:${UMRS_RAG_PORT:-8081}"
       UMRS_ADMIN_S3_CONFIGURATION_FILE: /etc/umrs/s3cfg
@@ -165,7 +183,7 @@ services:
       # CURVE session keys (when ZMQ auth enabled)
       - ${HOME}/.config/umrs/curve-keys:/root/.config/umrs/curve-keys:ro,z
       # Writable s3cfg dir for per-user s3cfg generation (shared: both
-      # servers use the same MinIO, so credentials must be identical)
+      # servers use the same object store, so credentials must be identical)
       - umrs_config:/root/.config/umrs
       # SSH ControlMaster sockets (tmpfs for ephemeral sockets)
       - type: tmpfs
@@ -191,7 +209,7 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      minio:
+      seaweedfs:
         condition: service_healthy
 
   # ─── UMRS Server — AI4S ───────────────────────────────────────────────────
@@ -232,13 +250,15 @@ services:
       DB_SUPERUSER: ${POSTGRES_USER:-umrs}
       DB_SUPERUSER_PASSWORD: ${POSTGRES_PASSWORD}
       UMRS_REGISTRY_POSTGRES_DSN: "postgres://${POSTGRES_USER:-umrs}:${POSTGRES_PASSWORD}@127.0.0.1:${POSTGRES_PORT:-5432}/${POSTGRES_DB_AI4S:-front_ai4s}"
-      S3_ENDPOINT_URL: "http://127.0.0.1:${MINIO_PORT:-9000}"
-      S3_ACCESS_KEY: ${MINIO_ROOT_USER}
-      S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      S3_BACKEND: ${S3_BACKEND:-seaweedfs}
+      S3_ENDPOINT_URL: "http://127.0.0.1:${S3_PORT:-9000}"
+      S3_IAM_ENDPOINT_URL: "http://127.0.0.1:${S3_IAM_PORT:-8111}"
+      S3_ACCESS_KEY: ${S3_ROOT_USER}
+      S3_SECRET_KEY: ${S3_ROOT_PASSWORD}
       S3_REGION: ${S3_REGION:-us-east-1}
       S3_BUCKET: ${S3_BUCKET:-r4-data}
       S3_USE_SSL: ${S3_USE_SSL:-false}
-      S3_PRESIGN_ENDPOINT: ${S3_PRESIGN_ENDPOINT:-http://127.0.0.1:${MINIO_PORT:-9000}}
+      S3_PRESIGN_ENDPOINT: ${S3_PRESIGN_ENDPOINT:-http://127.0.0.1:${S3_PORT:-9000}}
       VISION_S3_PRESIGN_ENDPOINT: ${VISION_S3_PRESIGN_ENDPOINT:-http://minio-host:19000}
       UMRS_RAG_DIRECT_URL: "http://127.0.0.1:${UMRS_RAG_PORT:-8081}"
       UMRS_ADMIN_S3_CONFIGURATION_FILE: /etc/umrs/s3cfg
@@ -269,7 +289,7 @@ services:
       - ./models:/models:ro,z
       - ${HOME}/.ssh:/root/.ssh-host:ro,z
       - ${HOME}/.config/umrs/curve-keys:/root/.config/umrs/curve-keys:ro,z
-      # Shared config volume (same MinIO → same credentials)
+      # Shared config volume (same object store → same credentials)
       - umrs_config:/root/.config/umrs
       - type: tmpfs
         target: /run/umrs-ssh
@@ -287,7 +307,7 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      minio:
+      seaweedfs:
         condition: service_healthy
       umrs-server-rccs:
         condition: service_healthy
@@ -327,13 +347,15 @@ services:
       DB_SUPERUSER: ${POSTGRES_USER:-umrs}
       DB_SUPERUSER_PASSWORD: ${POSTGRES_PASSWORD}
       UMRS_REGISTRY_POSTGRES_DSN: "postgres://${POSTGRES_USER:-umrs}:${POSTGRES_PASSWORD}@127.0.0.1:${POSTGRES_PORT:-5432}/${POSTGRES_DB_BDRT:-front_bdrt}"
-      S3_ENDPOINT_URL: "http://127.0.0.1:${MINIO_PORT:-9000}"
-      S3_ACCESS_KEY: ${MINIO_ROOT_USER}
-      S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      S3_BACKEND: ${S3_BACKEND:-seaweedfs}
+      S3_ENDPOINT_URL: "http://127.0.0.1:${S3_PORT:-9000}"
+      S3_IAM_ENDPOINT_URL: "http://127.0.0.1:${S3_IAM_PORT:-8111}"
+      S3_ACCESS_KEY: ${S3_ROOT_USER}
+      S3_SECRET_KEY: ${S3_ROOT_PASSWORD}
       S3_REGION: ${S3_REGION:-us-east-1}
       S3_BUCKET: ${S3_BUCKET:-r4-data}
       S3_USE_SSL: ${S3_USE_SSL:-false}
-      S3_PRESIGN_ENDPOINT: ${S3_PRESIGN_ENDPOINT:-http://127.0.0.1:${MINIO_PORT:-9000}}
+      S3_PRESIGN_ENDPOINT: ${S3_PRESIGN_ENDPOINT:-http://127.0.0.1:${S3_PORT:-9000}}
       VISION_S3_PRESIGN_ENDPOINT: ${VISION_S3_PRESIGN_ENDPOINT:-http://minio-host:19000}
       UMRS_RAG_DIRECT_URL: "http://127.0.0.1:${UMRS_RAG_PORT:-8081}"
       UMRS_ADMIN_S3_CONFIGURATION_FILE: /etc/umrs/s3cfg
@@ -362,7 +384,7 @@ services:
       - ${HOME}/.ssh:/root/.ssh-host:ro,z
       # CURVE session keys (when ZMQ auth enabled)
       - ${HOME}/.config/umrs/curve-keys:/root/.config/umrs/curve-keys:ro,z
-      # Shared config volume (same MinIO → same credentials)
+      # Shared config volume (same object store → same credentials)
       - umrs_config:/root/.config/umrs
       - type: tmpfs
         target: /run/umrs-ssh
@@ -379,7 +401,7 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      minio:
+      seaweedfs:
         condition: service_healthy
       umrs-server-rccs:
         condition: service_healthy
@@ -414,13 +436,15 @@ services:
       DB_SUPERUSER: ${POSTGRES_USER:-umrs}
       DB_SUPERUSER_PASSWORD: ${POSTGRES_PASSWORD}
       UMRS_REGISTRY_POSTGRES_DSN: "postgres://${POSTGRES_USER:-umrs}:${POSTGRES_PASSWORD}@127.0.0.1:${POSTGRES_PORT:-5432}/${POSTGRES_DB_OCTOPUS:-front_octopus}"
-      S3_ENDPOINT_URL: "http://127.0.0.1:${MINIO_PORT:-9000}"
-      S3_ACCESS_KEY: ${MINIO_ROOT_USER}
-      S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      S3_BACKEND: ${S3_BACKEND:-seaweedfs}
+      S3_ENDPOINT_URL: "http://127.0.0.1:${S3_PORT:-9000}"
+      S3_IAM_ENDPOINT_URL: "http://127.0.0.1:${S3_IAM_PORT:-8111}"
+      S3_ACCESS_KEY: ${S3_ROOT_USER}
+      S3_SECRET_KEY: ${S3_ROOT_PASSWORD}
       S3_REGION: ${S3_REGION:-us-east-1}
       S3_BUCKET: ${S3_BUCKET:-r4-data}
       S3_USE_SSL: ${S3_USE_SSL:-false}
-      S3_PRESIGN_ENDPOINT: ${S3_PRESIGN_ENDPOINT:-http://127.0.0.1:${MINIO_PORT:-9000}}
+      S3_PRESIGN_ENDPOINT: ${S3_PRESIGN_ENDPOINT:-http://127.0.0.1:${S3_PORT:-9000}}
       VISION_S3_PRESIGN_ENDPOINT: ${VISION_S3_PRESIGN_ENDPOINT:-http://minio-host:19000}
       UMRS_RAG_DIRECT_URL: "http://127.0.0.1:${UMRS_RAG_PORT:-8081}"
       UMRS_ADMIN_S3_CONFIGURATION_FILE: /etc/umrs/s3cfg
@@ -461,7 +485,7 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      minio:
+      seaweedfs:
         condition: service_healthy
       umrs-server-rccs:
         condition: service_healthy
@@ -497,6 +521,7 @@ services:
 volumes:
   umrs_pg_data:
     external: true
-  umrs_minio_data:
+  # Created by start.sh (bind-backed under UMRS_VOLUME_ROOT when set).
+  umrs_s3_data:
     external: true
   umrs_config:

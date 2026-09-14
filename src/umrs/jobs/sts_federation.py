@@ -21,17 +21,33 @@ Rules (kept from round 1, now enforced at the boundary too):
   ``s3:GetObject/PutObject/DeleteObject`` to ``<bucket>/<prefix>*`` (one
   statement per recorded prefix) and ``s3:ListBucket`` conditioned off the
   prefixed; nothing wildcard-host.
+- **Backend-neutral role.** The RoleArn follows the configured object-store
+  backend (ADR-055): MinIO's placeholder ARN, or the ``umrs-attempt`` role
+  SeaweedFS's IAM config declares. The session policy is the same document.
 """
 
 from __future__ import annotations
 
 import json
+import os
 from typing import Any
 
 from .attempt_credentials import AttemptCredentials
 
 _ACTIONS = ("s3:GetObject", "s3:PutObject", "s3:DeleteObject")
-_MAX_TTL_SEC = 3600  # MinIO STS hard ceiling for AssumeRole sessions
+_MAX_TTL_SEC = 3600  # STS hard ceiling for AssumeRole sessions (MinIO and SeaweedFS)
+
+
+def default_role_arn() -> str:
+    """RoleArn convention of the configured object-store backend (ADR-055).
+
+    MinIO ignores the ARN body but requires the field; SeaweedFS resolves it
+    to a role declared in its IAM config (``umrs-attempt``, rendered by the
+    deployment). ``S3_STS_ROLE_ARN`` overrides either.
+    """
+    from umrs.shared.storage.backends import get_profile
+
+    return (os.getenv("S3_STS_ROLE_ARN") or "").strip() or get_profile().sts_role_arn
 
 
 class STSFederationError(RuntimeError):
@@ -59,57 +75,33 @@ def attempt_policy_document(
             "Action": ["s3:ListBucket"],
             "Resource": [f"arn:aws:s3:::{bucket}"],
             "Condition": {
-                "StringLike": {
-                    "s3:prefix": [f"{p}*" for p in record.scope_prefixes]
-                }
+                "StringLike": {"s3:prefix": [f"{p}*" for p in record.scope_prefixes]}
             },
         }
     )
     return {"Version": "2012-10-17", "Statement": statements}
 
 
-def assume_role_for_attempt(
-    record: AttemptCredentials,
-    *,
-    bucket: str,
-    endpoint_url: str,
-    access_key: str,
-    secret_key: str,
-    ttl_sec: int | None = None,
-    sts_client: Any | None = None,
-) -> dict[str, str]:
-    """Mint per-attempt STS credentials scoped to *record*'s key space.
+def _build_sts_client(endpoint_url: str, access_key: str, secret_key: str) -> Any:
+    """boto3 STS client against the venue (lazy import: venue dep, not module dep).
 
-    ``sts_client`` is injectable for tests; otherwise a boto3 STS client is
-    built against the ambient endpoint identity (round-1's ambient creds do
-    the signing ONE level up — the venue hands back the scoped identity).
-    Returns {access_key, secret_key, session_token, expiration}; raises
-    STSFederationError on any failure.
+    ``region_name`` is mandatory for SigV4 even against a self-hosted venue —
+    botocore raises NoRegionError otherwise (surfaced by the ADR-055
+    conformance run); the venue ignores the value.
     """
-    ttl = min(int(ttl_sec or record.ttl_sec), _MAX_TTL_SEC)
-    if ttl <= 0:
-        raise STSFederationError("STS ttl must be positive")
-    policy = attempt_policy_document(record, bucket=bucket)
-    session_name = f"umrs-{record.job_id}-{record.attempt_no}"[:64]
-    try:
-        client = sts_client
-        if client is None:
-            import boto3  # imported lazily: venue dep, not module dep
+    import boto3
 
-            client = boto3.client(
-                "sts",
-                endpoint_url=endpoint_url,
-                aws_access_key_id=access_key,
-                aws_secret_access_key=secret_key,
-            )
-        resp = client.assume_role(
-            RoleArn="arn:aws:iam:::umrs-attempt",
-            RoleSessionName=session_name,
-            Policy=json.dumps(policy),
-            DurationSeconds=ttl,
-        )
-    except Exception as exc:  # any venue failure must fail closed
-        raise STSFederationError(f"AssumeRole failed: {exc}") from exc
+    return boto3.client(
+        "sts",
+        endpoint_url=endpoint_url,
+        aws_access_key_id=access_key,
+        aws_secret_access_key=secret_key,
+        region_name=os.getenv("S3_REGION", "us-east-1"),
+    )
+
+
+def _credentials_from_response(resp: Any) -> dict[str, str]:
+    """Extract the four credential fields or fail closed on a malformed reply."""
     creds = (resp or {}).get("Credentials", {})
     missing = {"AccessKeyId", "SecretAccessKey", "SessionToken"} - set(creds)
     if missing:
@@ -125,3 +117,41 @@ def assume_role_for_attempt(
         if hasattr(expiration, "isoformat")
         else str(expiration or ""),
     }
+
+
+def assume_role_for_attempt(
+    record: AttemptCredentials,
+    *,
+    bucket: str,
+    endpoint_url: str,
+    access_key: str,
+    secret_key: str,
+    ttl_sec: int | None = None,
+    sts_client: Any | None = None,
+    role_arn: str | None = None,
+) -> dict[str, str]:
+    """Mint per-attempt STS credentials scoped to *record*'s key space.
+
+    ``sts_client`` is injectable for tests; otherwise a boto3 STS client is
+    built against the ambient endpoint identity (round-1's ambient creds do
+    the signing ONE level up — the venue hands back the scoped identity).
+    ``role_arn`` defaults to the configured backend's convention
+    (:func:`default_role_arn`). Returns {access_key, secret_key,
+    session_token, expiration}; raises STSFederationError on any failure.
+    """
+    ttl = min(int(ttl_sec or record.ttl_sec), _MAX_TTL_SEC)
+    if ttl <= 0:
+        raise STSFederationError("STS ttl must be positive")
+    policy = attempt_policy_document(record, bucket=bucket)
+    session_name = f"umrs-{record.job_id}-{record.attempt_no}"[:64]
+    try:
+        client = sts_client or _build_sts_client(endpoint_url, access_key, secret_key)
+        resp = client.assume_role(
+            RoleArn=role_arn or default_role_arn(),
+            RoleSessionName=session_name,
+            Policy=json.dumps(policy),
+            DurationSeconds=ttl,
+        )
+    except Exception as exc:  # any venue failure must fail closed
+        raise STSFederationError(f"AssumeRole failed: {exc}") from exc
+    return _credentials_from_response(resp)

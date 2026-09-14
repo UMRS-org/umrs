@@ -4,6 +4,11 @@ import os
 import subprocess
 import textwrap
 
+from umrs.shared.storage.user_s3cfg import (
+    mirror_to_user_files,
+    prune_stale_user_files,
+    user_files_dir,
+)
 from umrs.shared.utils import normalize_json
 
 MC_TIMEOUT = 30  # seconds, timeout for mc CLI subprocess calls
@@ -586,52 +591,11 @@ def minio_s3_create_user(
     return alias, s3cfg_content
 
 
-def _umrs_user_files_dir() -> str | None:
-    """Return the ``UMRS_CONFIG/user_files`` directory path if it exists."""
-    umrs_config = os.environ.get("UMRS_CONFIG")
-    if not umrs_config:
-        return None
-    path = os.path.join(os.path.expanduser(umrs_config), "user_files")
-    return path if os.path.isdir(path) else None
-
-
-def _mirror_s3cfg_to_user_files(username: str, s3cfg_content: str) -> None:
-    """Write *s3cfg_content* to ``UMRS_CONFIG/user_files/s3cfg_{username}``.
-
-    This keeps the priority-1 path in ``_read_user_s3cfg`` in sync with the
-    authoritative ``~/.config/umrs/s3cfg_{username}`` copy, preventing stale
-    credentials from being served after a MinIO user is re-provisioned.
-    """
-    target_dir = _umrs_user_files_dir()
-    if not target_dir:
-        return
-    target_path = os.path.join(target_dir, f"s3cfg_{username}")
-    try:
-        with open(target_path, "w", encoding="utf-8") as f:
-            f.write(s3cfg_content)
-    except OSError:
-        pass
-
-
-def _prune_stale_user_files_s3cfg(username: str, s3cfg_content: str) -> None:
-    """Remove ``user_files/s3cfg_{username}`` if it differs from *s3cfg_content*.
-
-    When a user is re-provisioned, the stale copy in ``UMRS_CONFIG/user_files``
-    otherwise shadows the updated credentials in ``~/.config/umrs``.
-    """
-    target_dir = _umrs_user_files_dir()
-    if not target_dir:
-        return
-    target_path = os.path.join(target_dir, f"s3cfg_{username}")
-    if not os.path.isfile(target_path):
-        return
-    try:
-        with open(target_path, encoding="utf-8") as f:
-            existing = f.read()
-        if existing.strip() != s3cfg_content.strip():
-            os.remove(target_path)
-    except OSError:
-        pass
+# ADR-055: the s3cfg mirror helpers are backend-neutral and live in
+# umrs.shared.storage.user_s3cfg; the historical names stay importable here.
+_umrs_user_files_dir = user_files_dir
+_mirror_s3cfg_to_user_files = mirror_to_user_files
+_prune_stale_user_files_s3cfg = prune_stale_user_files
 
 
 def minio_delete_user(username, target):

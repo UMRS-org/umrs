@@ -648,19 +648,15 @@ def handle_purge_buckets(
             {"status": "error", "message": "Admin S3 config not found on server"}
         )
 
-    import configparser
+    from umrs.shared.storage.backends import get_backend
 
-    cfg = configparser.ConfigParser(inline_comment_prefixes=("#", ";"))
-    cfg.read(admin_cfg_path)
-    alias = cfg.get("default", "alias", fallback="myminio")
-
-    from umrs.shared.storage.minio import minio_remove_bucket
+    backend = get_backend()
 
     deleted = []
     errors = []
     for bname in requested_buckets:
         try:
-            minio_remove_bucket(bname, alias)
+            backend.remove_bucket(bname, admin_cfg_path)
             deleted.append(bname)
         except Exception as exc:
             errors.append({"bucket": bname, "error": str(exc)})
