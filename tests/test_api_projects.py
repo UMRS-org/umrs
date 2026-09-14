@@ -49,28 +49,41 @@ class _Conn:
     def cursor(self):
         return _Cursor(self)
 
+    def _handle_insert(self, params, cur: _Cursor):
+        pid, name, owner = params
+        if pid not in self.rows:
+            self.rows[pid] = (pid, name, owner, "active", None, None, None)
+        cur._result = []
+
+    def _handle_update(self, params, cur: _Cursor):
+        pid = params[0]
+        pid, name, owner, _status, r1, r2, r3 = self.rows[pid]
+        now = datetime.now(timezone.utc)
+        self.rows[pid] = (pid, name, owner, "retired", now, r2, now)
+        cur._result = []
+
+    def _handle_select_by_id(self, params, cur: _Cursor):
+        pid = params[0]
+        row = self.rows.get(pid)
+        cur._result = [row] if row else []
+
+    def _handle_select_ordered(self, params, cur: _Cursor):
+        owner_filter = next((params[0] for row in params if isinstance(row, str)), None)
+        rows = [v for v in self.rows.values() if v[3] != "retired"]
+        if owner_filter:
+            rows = [v for v in rows if v[2] == owner_filter]
+        cur._result = rows
+
     def _handle(self, sql, params, cur: _Cursor):
-        if sql.lstrip().upper().startswith("INSERT"):
-            pid, name, owner = params
-            if pid not in self.rows:
-                self.rows[pid] = (pid, name, owner, "active", None, None, None)
-            cur._result = []
-        elif sql.lstrip().upper().startswith("UPDATE"):
-            pid = params[0]
-            pid, name, owner, _status, r1, r2, r3 = self.rows[pid]
-            now = datetime.now(timezone.utc)
-            self.rows[pid] = (pid, name, owner, "retired", now, r2, now)
-            cur._result = []
+        verb = sql.lstrip().upper()
+        if verb.startswith("INSERT"):
+            self._handle_insert(params, cur)
+        elif verb.startswith("UPDATE"):
+            self._handle_update(params, cur)
         elif "WHERE project_id = %s" in sql:
-            pid = params[0]
-            row = self.rows.get(pid)
-            cur._result = [row] if row else []
+            self._handle_select_by_id(params, cur)
         elif "ORDER BY created_at" in sql:
-            owner_filter = next((params[0] for row in params if isinstance(row, str)), None)
-            rows = [v for v in self.rows.values() if v[3] != "retired"]
-            if owner_filter:
-                rows = [v for v in rows if v[2] == owner_filter]
-            cur._result = rows
+            self._handle_select_ordered(params, cur)
         else:
             cur._result = []
 
