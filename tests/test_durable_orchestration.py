@@ -268,7 +268,7 @@ class TestAdapters:
         )
 
         backend = IndexBuildBackend()
-        with patch("umrs.server.sql.maintain_pgvector_index") as mock_maintain:
+        with patch("umrs.shared.pgvector_index.maintain_pgvector_index") as mock_maintain:
             mock_maintain.return_value = {
                 "database": "xp_demo",
                 "table": "text_embeddings",

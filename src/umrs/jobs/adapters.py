@@ -1083,8 +1083,8 @@ class IndexBuildBackend(OrchestratorBackend):
 
         rebuild = bool(spec.get("rebuild", False))
         index_name = spec.get("index_name") or None
-        from umrs.server.sql import (
-            maintain_pgvector_index,  # noqa: boundary — lazy composition
+        from umrs.shared.pgvector_index import (
+            maintain_pgvector_index,
         )
 
         metrics = maintain_pgvector_index(
@@ -1136,8 +1136,8 @@ class IndexBuildStatusChecker(BackendStatusChecker):
             return AttemptCheckResult.failed("Missing database/table metadata")
 
         try:
-            from umrs.server.sql import (
-                maintain_pgvector_index,  # noqa: boundary — lazy composition
+            from umrs.shared.pgvector_index import (
+                maintain_pgvector_index,
             )
 
             metrics = maintain_pgvector_index(
