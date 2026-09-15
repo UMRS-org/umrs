@@ -113,13 +113,14 @@ def s3_create_users_and_buckets(
 
     for bucket in bucket_list:
         if not check_bucket_path(s3_connection, bucket, indent=False):
-            print(f"\t\t\t--> Creating bucket {bucket}")
+            print(f"\t\t\t--> Creating bucket {bucket}... ", end="")
             s3_connection.create_bucket(
                 Bucket=bucket,
                 CreateBucketConfiguration={
                     "LocationConstraint": bucket_location  # Match your desired region
                 },
             )
+            print("done!")
 
     if server_name == "MinIO":
         from umrs.shared.storage.minio import (
