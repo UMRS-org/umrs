@@ -1,11 +1,10 @@
-import configparser
 import os
 
 from umrs.shared.config import get_resolved_umrs_subdir
 
 ENABLE_PRETTY_PRINT = False  # disabled by default; enable with CLI flag
 VISION_STACK = os.environ.get("VISION_STACK", "umrs")
-RIVAULT_REMOTE_PORT = int(os.environ.get("RIVAULT_REMOTE_PORT", -1))
+RIVAULT_REMOTE_PORT = int(os.environ.get("RIVAULT_REMOTE_PORT", "-1"))
 _UMRS_SERVER_DB_USER = "umrs_server_db_user"
 _UMRS_SERVER_DB_NAME = "umrs"
 _DB_HOST = "localhost"
@@ -70,8 +69,9 @@ def get_umrs_server_db_name() -> str:
     return os.environ.get("DB_UMRS_NAME", _UMRS_SERVER_DB_NAME)
 
 
-from umrs.shared.pg_config import get_db_config  # noqa: F401 — shared is canonical home (ADR-053)
-
+from umrs.shared.pg_config import (
+    get_db_config,
+)
 
 __all__ = [
     "ENABLE_PRETTY_PRINT",

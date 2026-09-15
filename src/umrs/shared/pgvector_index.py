@@ -6,11 +6,11 @@ module re-exports for its existing callers.
 
 from __future__ import annotations
 
-from umrs.shared.pg_config import get_db_config
-from umrs.shared.pg_settings import pg_connect_kwargs
-
 import psycopg2
 from psycopg2 import sql
+
+from umrs.shared.pg_config import get_db_config
+from umrs.shared.pg_settings import pg_connect_kwargs
 
 
 def ensure_pgvector_enabled(conn):
