@@ -96,6 +96,18 @@ async def _stage_upload_bytes(
     return hashlib.sha256(content).hexdigest(), len(content)
 
 
+def _cleanup_staged_bytes(*, client: Any, bucket: str, staged_key: str) -> None:
+    """Best-effort delete of bytes staged for a refused upload.
+
+    Never masks the typed quota refusal — a cleanup failure is logged and
+    swallowed (the follow-up sweep still exists for catastrophic residue).
+    """
+    try:
+        client.delete_object(Bucket=bucket, Key=staged_key)
+    except Exception:
+        logger.warning("staged-bytes cleanup failed for refused upload: %s", staged_key)
+
+
 async def _submit_upload_ingest(
     *,
     bucket: str,
@@ -207,16 +219,23 @@ async def knowledge_upload(
         client=config.get_client(),
     )
     # Disk budget: per-user, charged once per unique content hash, refusal
-    # is typed quota.disk_bytes_exceeded (staged bytes stay uncleared
-    # until the follow-up sweep — named explicitly in the ADR rollout).
+    # is typed quota.disk_bytes_exceeded. Staged bytes are cleaned up on
+    # refusal — otherwise an attacker could inflate shared S3 storage by
+    # deliberately exceeding their own quota (follow-up closed 2026-09-15).
     if user_id:
         from umrs.api.disk_ledger import DiskLedger
 
         pool = getattr(request.app.state, "umrs_db_pool", None)
         if pool is not None:
-            DiskLedger(pool.getconn()).charge(
-                user_id, content_hash=content_hash, byte_size=byte_size
-            )
+            try:
+                DiskLedger(pool.getconn()).charge(
+                    user_id, content_hash=content_hash, byte_size=byte_size
+                )
+            except Exception:
+                _cleanup_staged_bytes(
+                    client=config.get_client(), bucket=config.bucket, staged_key=staged_key
+                )
+                raise
     return await _submit_upload_ingest(
         bucket=config.bucket,
         staged_key=staged_key,
