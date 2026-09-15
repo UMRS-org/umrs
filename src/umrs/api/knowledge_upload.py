@@ -104,7 +104,7 @@ def _cleanup_staged_bytes(*, client: Any, bucket: str, staged_key: str) -> None:
     """
     try:
         client.delete_object(Bucket=bucket, Key=staged_key)
-    except Exception:
+    except Exception:  # noqa: BLE001 — never mask the typed quota refusal; sweep owns residue
         logger.warning("staged-bytes cleanup failed for refused upload: %s", staged_key)
 
 
