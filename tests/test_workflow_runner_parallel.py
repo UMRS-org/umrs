@@ -69,7 +69,7 @@ def test_independent_steps_run_concurrently(probe_module, tmp_path):
     class SleeperA(Step):
         name = "a"
 
-        def run(self, ctx: StepContext) -> StepResult:
+        def run(self, _ctx: StepContext) -> StepResult:
             with lock:
                 thread_ids.append(threading.get_ident())
             barrier.wait()  # both threads must arrive concurrently
@@ -79,7 +79,7 @@ def test_independent_steps_run_concurrently(probe_module, tmp_path):
     class SleeperB(Step):
         name = "b"
 
-        def run(self, ctx: StepContext) -> StepResult:
+        def run(self, _ctx: StepContext) -> StepResult:
             with lock:
                 thread_ids.append(threading.get_ident())
             barrier.wait()
@@ -127,13 +127,13 @@ def test_fan_in_step_sees_all_parent_results(probe_module, tmp_path):
     class A(Step):
         name = "a"
 
-        def run(self, ctx: StepContext) -> StepResult:
+        def run(self, _ctx: StepContext) -> StepResult:
             return StepResult(extra={"value": "from-a"})
 
     class B(Step):
         name = "b"
 
-        def run(self, ctx: StepContext) -> StepResult:
+        def run(self, _ctx: StepContext) -> StepResult:
             return StepResult(extra={"value": "from-b"})
 
     class Merge(Step):
@@ -185,13 +185,13 @@ def test_sibling_finishes_when_other_branch_fails(probe_module, tmp_path):
     class Boom(Step):
         name = "boom"
 
-        def run(self, ctx: StepContext) -> StepResult:
+        def run(self, _ctx: StepContext) -> StepResult:
             raise RuntimeError("nope")
 
     class SlowOk(Step):
         name = "slow_ok"
 
-        def run(self, ctx: StepContext) -> StepResult:
+        def run(self, _ctx: StepContext) -> StepResult:
             time.sleep(0.1)
             sibling_completed.set()
             return StepResult(extra={"ok": True})
@@ -199,7 +199,7 @@ def test_sibling_finishes_when_other_branch_fails(probe_module, tmp_path):
     class Dependent(Step):
         name = "dependent"
 
-        def run(self, ctx: StepContext) -> StepResult:  # pragma: no cover
+        def run(self, _ctx: StepContext) -> StepResult:  # pragma: no cover
             raise AssertionError("dependent must not run after parent failed")
 
     probe_module.Boom = Boom  # type: ignore[attr-defined]
@@ -247,19 +247,19 @@ def test_routing_log_records_every_step_in_parallel_run(probe_module, tmp_path):
     class A(Step):
         name = "a"
 
-        def run(self, ctx: StepContext) -> StepResult:
+        def run(self, _ctx: StepContext) -> StepResult:
             return StepResult()
 
     class B(Step):
         name = "b"
 
-        def run(self, ctx: StepContext) -> StepResult:
+        def run(self, _ctx: StepContext) -> StepResult:
             return StepResult()
 
     class C(Step):
         name = "c"
 
-        def run(self, ctx: StepContext) -> StepResult:
+        def run(self, _ctx: StepContext) -> StepResult:
             return StepResult()
 
     probe_module.A = A  # type: ignore[attr-defined]
@@ -305,7 +305,7 @@ def test_max_parallel_steps_env_caps_pool_size(probe_module, tmp_path, monkeypat
     class Counter(Step):
         name = "counter"
 
-        def run(self, ctx: StepContext) -> StepResult:
+        def run(self, _ctx: StepContext) -> StepResult:
             nonlocal in_flight, max_in_flight
             with lock:
                 in_flight += 1
@@ -349,7 +349,7 @@ def test_cancel_between_waves_short_circuits(probe_module, tmp_path):
     class First(Step):
         name = "first"
 
-        def run(self, ctx: StepContext) -> StepResult:
+        def run(self, _ctx: StepContext) -> StepResult:
             # Mark cancel after wave 0 completes.
             record_holder["record"].cancel_requested = True
             return StepResult()
@@ -357,7 +357,7 @@ def test_cancel_between_waves_short_circuits(probe_module, tmp_path):
     class Second(Step):
         name = "second"
 
-        def run(self, ctx: StepContext) -> StepResult:  # pragma: no cover
+        def run(self, _ctx: StepContext) -> StepResult:  # pragma: no cover
             raise AssertionError("second must not run after cancel")
 
     probe_module.First = First  # type: ignore[attr-defined]
