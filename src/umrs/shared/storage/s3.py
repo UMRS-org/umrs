@@ -116,7 +116,7 @@ def s3_create_users_and_buckets(
 
     for bucket in bucket_list:
         if not check_bucket_path(s3_connection, bucket, indent=False):
-            print("\t\t\t--> Creating bucket {bucket}")
+            print(f"\t\t\t--> Creating bucket {bucket}")
             s3_connection.create_bucket(
                 Bucket=bucket,
                 CreateBucketConfiguration={
