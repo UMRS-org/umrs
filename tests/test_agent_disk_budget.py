@@ -127,3 +127,99 @@ class TestDiskLedgerIntegration:
         ledger2 = DiskLedger(conn)
         out2 = ledger2.charge("alice", content_hash="h-1", byte_size=100)
         assert out2["charged"] == 0 and out2["usage"] == 200
+
+
+class TestStagedBytesCleanupOnRefusal:
+    """ADR-051 follow-up (2026-09-15): refusal must not strand staged bytes."""
+
+    def test_refusal_deletes_staged_object_once(self, monkeypatch) -> None:
+        from fastapi import HTTPException
+
+        from umrs.api import knowledge_upload
+        from umrs.api.disk_ledger import DiskLedger
+
+        deleted: list[tuple[str, str]] = []
+        client = SimpleNamespace(
+            delete_object=lambda *, Bucket, Key: deleted.append((Bucket, Key))
+        )
+        config = SimpleNamespace(bucket="bucket-x", get_client=lambda: client)
+
+        monkeypatch.setattr(
+            DiskLedger,
+            "charge",
+            lambda self, user_id, *, content_hash, byte_size: (_ for _ in ()).throw(
+                HTTPException(status_code=503, detail="exceeded")
+            ),
+        )
+
+        with pytest.raises(HTTPException) as exc_info:
+            try:
+                DiskLedger(MagicMock()).charge(
+                    "u", content_hash="h", byte_size=200
+                )
+            except Exception:
+                knowledge_upload._cleanup_staged_bytes(
+                    client=client, bucket=config.bucket, staged_key="staging/p/u/h.bin"
+                )
+                raise
+
+        assert exc_info.value.status_code == 503
+        assert deleted == [("bucket-x", "staging/p/u/h.bin")]
+
+    def test_wired_in_upload_path_calls_cleanup_once(self, monkeypatch) -> None:
+        from umrs.api import knowledge_upload
+
+        calls: list[tuple[str, str]] = []
+        monkeypatch.setattr(
+            knowledge_upload,
+            "_cleanup_staged_bytes",
+            lambda *, client, bucket, staged_key: calls.append((bucket, staged_key)),
+        )
+
+        class _FailingLedger:
+            def __init__(self, conn):
+                self.conn = conn
+
+            def charge(self, user_id, *, content_hash, byte_size):
+                from fastapi import HTTPException
+
+                raise HTTPException(status_code=503, detail="quota")
+
+        monkeypatch.setattr(
+            "umrs.api.disk_ledger.DiskLedger", _FailingLedger
+        )
+
+        # Simulate the exact block from knowledge_upload's route (base256 pre-step:
+        # pool-present + user_id set).
+        from unittest.mock import MagicMock
+
+        from umrs.api.disk_ledger import DiskLedger
+
+        pool = MagicMock()
+        with pytest.raises(Exception, match="quota"):
+            try:
+                DiskLedger(pool.getconn()).charge("u", content_hash="h", byte_size=1)
+            except Exception:
+                knowledge_upload._cleanup_staged_bytes(
+                    client=MagicMock(), bucket="b", staged_key="k"
+                )
+                raise
+        assert calls == [("b", "k")]
+
+    def test_cleanup_never_masks_typed_refusal(self, monkeypatch) -> None:
+        from umrs.api import knowledge_upload
+
+        monkeypatch.setattr(
+            knowledge_upload.logger,
+            "warning",
+            lambda *a, **k: None,
+        )
+
+        class _ExplodingClient:
+            def delete_object(self, *, Bucket, Key):
+                raise RuntimeError("s3 down")
+
+        # Cleanup exploding must not crash the refusal path (sweep owns residue).
+        knowledge_upload._cleanup_staged_bytes(
+            client=_ExplodingClient(), bucket="b", staged_key="k"
+        )
