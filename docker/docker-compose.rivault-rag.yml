@@ -1,0 +1,36 @@
+# Extension compose file: adds RiVault registry and RAG service on top of
+# the core UMRS stack defined in docker-compose.yml.
+#
+# Usage examples:
+#   - Core API tests only (no RiVault, no RAG):
+#       docker compose up --build
+#   - Full stack with RiVault registry + RAG:
+#       docker compose -f docker-compose.yml -f docker-compose.rivault-rag.yml up --build
+
+version: '3.8'
+
+services:
+  umrs-server:
+    environment:
+      # Point to an external RiVault endpoint (e.g. the nginx front
+      # of the genAI stack defined in docker-compose.rivault-mock.yaml).
+      # Override RIVAULT_ENDPOINT in your shell as needed.
+      - RIVAULT_ENDPOINT=${RIVAULT_ENDPOINT:-http://localhost:8000}
+
+  umrs-rag:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: umrs-rag
+    depends_on:
+      - postgres
+    environment:
+      - PYTHONUNBUFFERED=1
+      - DB_HOST=postgres
+      - DB_SUPERUSER_PASSWORD=postgres
+      - DB_USER_PASSWORD=ejeannot
+      # Optional: override embedding model for query side to match ingestion
+      # - UMRS_RAG_EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
+    ports:
+      - "8081:8081"
+    command: ["python", "-m", "umrs.api.rag_service"]

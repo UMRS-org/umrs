@@ -1,0 +1,68 @@
+# Local Full Stack: RAG + Assistant + Ollama (ADR-012, ADR-013)
+# =============================================================================
+# Runs the full RAG-augmented inference stack on a local machine.
+# No GPU needed (CPU-only inference via Ollama).
+#
+# Usage:
+#   podman-compose -f local-full-stack.yaml up -d
+#   podman-compose -f local-full-stack.yaml down
+#
+# Prerequisites:
+#   - Ollama running on host (default: http://localhost:11434)
+#   - Knowledge bundle at ./knowledge/ (optional)
+#   - Embedding model at ./models/ (optional)
+# =============================================================================
+
+services:
+  # RAG query engine (CPU-only)
+  rag-local:
+    image: ${RAG_LOCAL_IMAGE:-localhost/umrs-rag-frontend:latest}
+    command: >
+      python -m uvicorn umrs.api.rag_service:app
+      --host 0.0.0.0 --port 8003
+    ports:
+      - "8003:8003"
+    environment:
+      RAG_PORT: "8003"
+      RAG_EMBEDDING_MODEL: ${RAG_EMBEDDING_MODEL:-intfloat/e5-base-v2}
+      RAG_EMBEDDING_DIMENSION: ${RAG_EMBEDDING_DIMENSION:-768}
+      TRANSFORMERS_OFFLINE: "1"
+      HF_HUB_OFFLINE: "1"
+      TZ: ${TZ:-Asia/Tokyo}
+    volumes:
+      - type: bind
+        source: ${RAG_MODEL_PATH:-./models}
+        target: /models
+        read_only: true
+      - type: bind
+        source: ${KNOWLEDGE_BUNDLE_PATH:-./knowledge}
+        target: /knowledge
+        read_only: true
+    cap_drop: [ALL]
+    cap_add: [sys_nice]
+    restart: unless-stopped
+
+  # Assistant Service (CPU-only, proxies to Ollama)
+  assistant-local:
+    image: ${ASSISTANT_LOCAL_IMAGE:-localhost/umrs-assistant-frontend:latest}
+    command: >
+      python -m uvicorn umrs.api.assistant_service:app
+      --host 0.0.0.0 --port 8090
+    ports:
+      - "8090:8090"
+    environment:
+      ASSISTANT_UPSTREAM_BASE_URL: ${ASSISTANT_UPSTREAM_BASE_URL:-http://host.docker.internal:11434/v1}
+      ASSISTANT_UPSTREAM_API_KEY: ${ASSISTANT_UPSTREAM_API_KEY:-ollama}
+      ASSISTANT_DEFAULT_MODEL: ${ASSISTANT_DEFAULT_MODEL:-llama3}
+      ASSISTANT_REQUEST_TIMEOUT: ${ASSISTANT_REQUEST_TIMEOUT:-120}
+      ASSISTANT_RAG_URL: http://rag-local:8003
+      TRANSFORMERS_OFFLINE: "1"
+      HF_HUB_OFFLINE: "1"
+      TZ: ${TZ:-Asia/Tokyo}
+    depends_on:
+      - rag-local
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    cap_drop: [ALL]
+    cap_add: [sys_nice]
+    restart: unless-stopped

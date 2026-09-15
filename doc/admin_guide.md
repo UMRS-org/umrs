@@ -1,0 +1,713 @@
+# UMRS Admin Guide
+
+Deployment and administration of the UMRS (Unified Model Registry & Storage)
+platform on HPC systems.
+
+## Prerequisites
+
+| Requirement | Notes |
+|-------------|-------|
+| **Podman** | `podman` and `podman-compose` (≥ 1.2.0) |
+| **Slurm** | `slurmd`, `slurmctld` available on the cluster |
+| **Munge** | `munged` for Slurm authentication |
+| **GPU Drivers** | NVIDIA (`nvidia-smi`) or AMD ROCm (`rocm-smi`) |
+| **CDI support** | `nvidia-ctk cdi generate` (for NVIDIA GPU passthrough) |
+| **Network** | Outbound access for pulling container images; inbound SSH for user access |
+
+## Architecture Overview
+
+```
+┌────────────────────────────────────────────────────────┐
+│  Login Node (podman-compose)                           │
+│                                                        │
+│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐  │
+│  │ ai-login │ │ postgres │ │  minio   │ │  munge   │  │
+│  │ slurmctld│ │ pgvector │ │ S3 store │ │ auth key │  │
+│  │ UMRS srv │ │ :15432   │ │ :19000   │ │          │  │
+│  │ :5555    │ │          │ │          │ │          │  │
+│  └──────────┘ └──────────┘ └──────────┘ └──────────┘  │
+│       ↕ Slurm                                          │
+│  ┌──────────────────────┐                              │
+│  │ Host slurmd          │ ← GPU access (native)       │
+│  │ (compute-01)         │                              │
+│  └───────┬──────────────┘                              │
+│          │ sbatch                                      │
+│  ┌───────▼──────────────────────────────────┐          │
+│  │ Mini-Rivault (per-job podman-compose)     │          │
+│  │ vLLM • LiteLLM • NGINX • BentoML-vision │          │
+│  │ (genai-private-net, ephemeral)           │          │
+│  └──────────────────────────────────────────┘          │
+└────────────────────────────────────────────────────────┘
+```
+
+## Step 1: Initial Setup
+
+```bash
+cd demos/slurm-dev
+
+# Auto-detect hardware and generate all config files
+bash scripts/init-setup.sh --auto
+```
+
+This generates:
+- `.env` — Slurm, database, S3, and model configuration
+- `slurm.conf` — patched with detected CPU/RAM/GPU counts
+- `gres.conf` — GPU device mappings
+- `s3cfg_rivault_user` — S3 credentials for the demo user
+
+For interactive prompts (override detected values):
+```bash
+bash scripts/init-setup.sh
+```
+
+## Step 2: Start Core Services
+
+```bash
+# Start the control plane (ai-login, postgres, minio, munge)
+podman-compose up -d
+
+# Start the host Slurm compute daemon (requires sudo)
+sudo bash scripts/start-host-slurmd.sh
+```
+
+Verify the cluster:
+```bash
+podman exec ai-login sinfo -N
+# Expected: compute-01 in idle/mixed state
+```
+
+## Step 3: Add Users
+
+User enrollment uses the `umrs-server admin` CLI. There are two distinct JSON
+files per user with different purposes:
+
+| File | Purpose | Created by |
+|------|---------|-----------|
+| `<user_files_dir>/<username>.json` | **Admin record** — role, projects, quota (server auth) | `umrs-server admin user add` |
+| `<username>.client.json` | **Client config** — experiences, modalities, buckets (provisioning) | Auto-generated alongside admin record |
+
+### Enroll a New User
+
+```bash
+umrs-server admin user add alice \
+    --fullname "Alice Researcher" \
+    --role user \
+    --email alice@example.com \
+    --slurm-account research-gpu \
+    --project team-alpha
+```
+
+For multi-cluster deployments, use `--site` to scope the Slurm account:
+
+```bash
+umrs-server admin user set-slurm-account alice research-gpu --site rccs-front
+```
+
+This creates two files automatically:
+- `<user_files_dir>/alice.json` — server-side admin record
+- `<user_files_dir>/alice.client.json` — client config template (send to user)
+
+By default the client template goes next to the admin record. Override with:
+```bash
+# Custom template path
+umrs-server admin user add alice --fullname "Alice Researcher" \
+    --client-template /tmp/alice-for-distribution.json
+
+# Skip template generation
+umrs-server admin user add alice --fullname "Alice Researcher" \
+    --no-client-template
+```
+
+The daemon receives `SIGHUP` for a best-effort hot-reload automatically.
+
+### Distribute to User
+
+Send the user:
+1. `alice.client.json` — their client config template
+2. Their S3 credentials file (`~/.config/umrs/s3cfg_alice`, auto-generated
+   by the server during provisioning)
+3. The server IP address / connection profile
+
+The user imports the template on their machine:
+```bash
+umrs-client config init \
+    --template alice.client.json \
+    --username alice
+```
+
+### Inspect / Manage Users
+
+```bash
+umrs-server admin user list
+umrs-server admin user show alice
+umrs-server admin user disable alice
+umrs-server admin user delete alice --purge -y
+```
+
+### Regenerate Client Template
+
+If the client config template needs to be regenerated after initial enrollment:
+
+```bash
+umrs-server admin user generate-template alice \
+    --fullname "Alice Researcher" \
+    -o alice.client.json
+```
+
+### Client Config Structure
+
+The client config template generated by `user add` (or `generate-template`)
+looks like:
+
+```json
+{
+  "username": "alice",
+  "fullname": "Alice Researcher",
+  "s3_configuration_file": "~/.config/umrs/s3cfg_alice",
+  "experiences": [
+    {
+      "xp_name": "default",
+      "sql_username": "alice",
+      "modalities": [
+        {
+          "modality_name": "text",
+          "s3": {
+            "bucket_alias": "alice-text",
+            "data": { "type": "inline", "mime_type": "text/plain" }
+          },
+          "model": {
+            "model_name": "intfloat/e5-base-v2",
+            "vector_size": "768",
+            "model_type": "TransformerEncoder",
+            "return_type": null
+          },
+          "sql": {
+            "store_embeddings": "yes",
+            "table_name": "text",
+            "meta_data": [{ "name": "keywords", "type": "TEXT" }]
+          }
+        }
+      ]
+    }
+  ]
+}
+```
+
+Edit the template to add more experiences or modalities before sending it to
+the user. The user then imports it with `umrs-client config init --template`.
+
+### Trigger Provisioning
+
+After enrollment the user sends their config to the server via `reload`, which
+auto-creates:
+- PostgreSQL user + database + tables
+- S3 user + bucket with access policies
+
+```bash
+# User runs on their machine:
+umrs-client reload
+```
+
+On operator-managed sites, treat the `reload` as an operator/site action.
+
+## Step 4: Deploy Models
+
+### Embedding Models (for vLLM)
+
+Pre-stage model weights to the shared filesystem:
+
+```bash
+# Inside or outside the container
+pip install huggingface_hub
+python3 -c "
+from huggingface_hub import snapshot_download
+snapshot_download(
+    repo_id='intfloat/e5-base-v2',
+    cache_dir='./rivault/models/vllm/huggingface/hub'
+)
+"
+```
+
+Set model path in `.env`:
+```bash
+VLLM_MODEL=intfloat/e5-base-v2
+VLLM_PATH_TO_HUGGINGFACE=./rivault/models/vllm/huggingface
+```
+
+### Vision Models (SAM3 + HMAE)
+
+Vision models run inside Mini-Rivault's `bentoml-vision` service. Pre-stage weights:
+
+```bash
+# SAM3
+python3 -c "
+from huggingface_hub import snapshot_download
+snapshot_download(repo_id='facebook/sam2-hiera-small', local_dir='./rivault/models/sam3')
+"
+
+# HMAE
+mkdir -p ./rivault/models/hmae
+# Copy HMAE checkpoint and config to ./rivault/models/hmae/
+```
+
+Set paths in `.env` or export before submitting Slurm jobs:
+```bash
+SAM3_MODEL_PATH=./rivault/models/sam3
+HMAE_MODEL_PATH=./rivault/models/hmae
+HMAE_CONFIG_PATH=./rivault/models/hmae/infer_hmae_vit_b.yaml
+HMAE_CHECKPOINT=./rivault/models/hmae/latest_checkpoint.pth
+```
+
+## Step 5: Mini-Rivault Profiles
+
+Mini-Rivault uses compose profiles to select which services start per job.
+
+| Profile | Services | Use Case |
+|---------|----------|----------|
+| `harness` | NGINX, LiteLLM, postgres, CoreDNS, MCPO | Always required |
+| `vllm` | vLLM inference engine | LLM/embedding inference |
+| `vision-bentoml` | BentoML vision (SAM3 + HMAE) | Image segmentation, feature extraction |
+| `vision` | MCP-vision (SAM3 MCP server) | Agent-driven vision via MCP |
+| `egress` | EgressGuard proxy | Controlled internet access |
+| `rag` | RAG service | Retrieval-augmented generation |
+| `custom-mcp` | Custom MCP server runner | User-provided MCP tools |
+
+### Activating Profiles
+
+Profiles are controlled by `RIVAULT_PROFILES`, but in deploy-site workflows the
+default value should come from `site.yaml` `runtime.profiles`. The deploy
+wrappers and the source `serve-model.slurm` now load site-config exports before
+falling back to hardcoded profile defaults, so explicit `RIVAULT_PROFILES`
+exports are only needed when you want to override the site contract.
+
+Set it before the Slurm job is submitted when you need an explicit override:
+
+```bash
+# Default (LLM/embedding only)
+export RIVAULT_PROFILES="harness vllm"
+
+# With vision models
+export RIVAULT_PROFILES="harness vllm vision-bentoml"
+
+# Full stack
+export RIVAULT_PROFILES="harness vllm vision-bentoml rag"
+```
+
+The UMRS server passes this to `serve-model.slurm`, which converts it to
+`--profile` flags for `podman-compose`.
+
+For site deployments such as rccs-cloud, treat `site.yaml` as the canonical
+source for the default profile set, serving port, and host-side model paths.
+Use `.env` or wrapper-side exports only for explicit overrides or secrets.
+Otherwise, profile and path defaults drift between docs, wrapper scripts, the
+source launcher, and the running server.
+
+### Canonical Ownership
+
+1. `site.yaml` is the canonical source for deploy-site defaults such as
+   `runtime.profiles`, LiteLLM port/key, and host-side model/cache paths.
+2. `deploy/<site>/start.sh` and `health_check_server.sh` default to the
+   colocated `site.yaml` and `serve-model.slurm`; `.env` is for secrets and
+   explicit overrides, not for duplicating site defaults.
+3. `deploy/<site>/serve-model.slurm` is the canonical site entrypoint. It loads
+   site-config exports first, then applies wrapper-only fallback policy when no
+   explicit env override or site default exists.
+4. `src/umrs/mini-rivault-llm/serve-model.slurm` is the generic source
+   launcher. When `UMRS_SITE_CONFIG` or another discoverable `site.yaml` is
+   present, it loads the same site-config exports before falling back to its
+   generic defaults.
+
+### Supported Default Sets
+
+- `harness`: control-plane-only harness bring-up.
+- `harness vllm`: generic text/embedding default when no site config is active.
+- `harness vision-bentoml`: supported site-specific vision-only default;
+  hpbd-atom currently uses this via `site.yaml`.
+- `harness vllm vision-bentoml`: supported text+vision default; rccs-cloud
+  currently uses this via `site.yaml`.
+- `harness vllm vision-bentoml rag`: supported full-stack extension when RAG is
+  intentionally enabled.
+
+### Minimal Validation Matrix
+
+Use the same three cases whenever you need to prove the harness still launches
+the intended services after changing wrappers, `site.yaml`, or the
+`slurm-podman` backend:
+
+| Case | Profiles | Required proof |
+|------|----------|----------------|
+| `text` | `harness vllm` | Retained wrapper log summary plus authenticated `/v1/models` success |
+| `vision` | `harness vision-bentoml` | Retained wrapper log summary plus `/vision/healthz` success |
+| `full` | `harness vllm vision-bentoml` | Retained wrapper log summary plus both `/v1/models` and `/vision/healthz` |
+
+On deploy sites, run the validator from the site directory:
+
+```bash
+cd deploy/<site>
+./validate_harness.sh
+```
+
+The validator submits the real site wrapper through `slurm-podman`, overrides
+`RIVAULT_PROFILES` without relying on fragile shell quoting, waits for retained
+`slurm-<jobid>.out` launch summaries, proves the required health endpoints, and
+then cancels the Slurm job, escalating to `KILL` when a graceful `TERM`
+linger would otherwise hide cleanup regressions.
+
+Run a single case when narrowing a regression:
+
+```bash
+./validate_harness.sh --case text
+./validate_harness.sh --case vision
+./validate_harness.sh --case full
+```
+
+To prove restart, reuse, cleanup, and stale-image behavior on a live site,
+run the lifecycle case:
+
+```bash
+./validate_harness.sh --skip-matrix --lifecycle-case full
+```
+
+That path verifies an initial provision, warm reuse of the same backend job,
+explicit cleanup, a fresh restart after cleanup, and retained wrapper-log
+evidence of the vision image or tarball decision. On current `slurm-podman`
+sites, cleanup may still escalate from `TERM` to `KILL`; treat that as valid
+only when the validator finishes successfully and `squeue` is clean afterward.
+
+### Harness Invariants
+
+- `harness` is always required; no supported default omits it.
+- `RIVAULT_PROFILES` remains a space-separated contract across server, wrapper,
+  and source launcher.
+- Site-config defaults must win over wrapper/source fallbacks; explicit env vars
+  must win over both.
+- Host paths in `site.yaml` and wrappers are mount-source paths; container paths
+  remain compose/YAML concerns.
+- LiteLLM port and auth key must stay aligned between UMRS, readiness checks,
+  wrappers, and the launched stack.
+- Fallback defaults may exist for generic or non-site launches, but they must
+  never silently override a valid site-config export.
+
+### Security Properties
+
+Each Mini-Rivault instance provides:
+- **Per-job isolation** — fresh container stack per Slurm job, cleaned up on exit
+- **Controlled egress path** — Mini-RiVault receives EgressGuard proxy env;
+  direct public-network blocking depends on site network/cgroup policy
+- **Offline mode** — `TRANSFORMERS_OFFLINE=1`, `HF_HUB_OFFLINE=1`
+- **Read-only weights** — model directories mounted read-only
+- **Ephemeral scratch** — tmpfs, wiped when job ends
+- **Minimal capabilities** — `cap_drop: [ALL]`, only essential caps re-added
+- **Single entry point** — all traffic through NGINX → SSH tunnel
+
+## Step 6: Multi-User Considerations
+
+- Each user's data is isolated by S3 bucket prefix and PostgreSQL database
+- Slurm jobs run under the submitting user's UID (standard HPC isolation)
+- Mini-Rivault instances are per-job — no shared state between users
+- S3 credentials are per-user (separate `.s3cfg` files)
+- Admin should set appropriate Slurm partitions and resource limits per user/group
+
+## Monitoring and Troubleshooting
+
+### Expected Launch Log Summary
+
+When a site wrapper or the source launcher starts correctly, the Slurm/stdout
+log should show a compact launch summary before container startup. At minimum,
+you should be able to see:
+
+- Site config path in use
+- Active `RIVAULT_PROFILES`
+- Selected compose files
+- Host-side HF/SAM3/HMAE paths
+- LiteLLM port and whether the auth key is set
+- Vision image / tarball selection for deploy wrappers
+
+If those lines are missing, the wrapper or source launcher is not exposing
+enough context to debug drift cleanly.
+
+For `slurm-podman` site deployments, backend-submitted Slurm stdout/stderr is
+retained on shared storage by default under
+`deploy/<site>/logs/slurm/slurm-<jobid>.out` and `slurm-<jobid>.err`
+(`RIVAULT_OUTPUT_DIR` still overrides this when needed). That retained log is
+the authoritative place to confirm wrapper launch context after the job has
+already been cleaned up.
+
+### Check Service Status
+
+```bash
+# Control plane containers
+podman-compose ps
+
+# Slurm cluster
+podman exec ai-login sinfo -N
+podman exec ai-login squeue
+
+# UMRS server logs
+podman logs ai-login
+
+# Database
+podman exec postgres psql -U umrs -d umrs -c "SELECT datname FROM pg_database;"
+```
+
+### Check Mini-Rivault Job
+
+```bash
+# Slurm job status
+podman exec ai-login squeue -u $USER
+
+# Wrapper launch log for a specific Slurm backend job
+tail -n 80 deploy/<site>/logs/slurm/slurm-<jobid>.out
+
+# Mini-Rivault containers on compute node
+podman ps --filter network=genai-private-net
+
+# Test LLM endpoint (replace port/key)
+curl -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
+     http://localhost:$NGINX_PORT/v1/models
+
+# Test vision endpoint
+curl http://localhost:$NGINX_PORT/vision/healthz
+```
+
+### Common Issues
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| `sinfo` shows no nodes | slurmd not running on host | `sudo bash scripts/start-host-slurmd.sh` |
+| Mini-Rivault containers hang | Network conflict | Job script auto-retries subnets; check `podman network ls` |
+| Vision service unhealthy | Model weights missing | Verify `SAM3_MODEL_PATH`/`HMAE_MODEL_PATH` are pre-staged |
+| ZMQ timeout | ai-login container not running | `podman-compose up -d` |
+| S3 upload fails | Credentials mismatch | Verify user's `.s3cfg` matches server-generated credentials |
+
+### Repeatable Debugging Order
+
+1. Confirm the intended contract: which `site.yaml` is active, which wrapper is
+  being used, and what profile set should start by default.
+2. Confirm the actual launch summary in Slurm/stdout logs: site config path,
+  `RIVAULT_PROFILES`, compose files, model paths, LiteLLM port, and key state.
+3. Confirm the Slurm job and container set: a running job alone is not enough;
+  verify the expected profiles actually produced the expected services.
+4. Confirm endpoint readiness, not just process/container existence:
+  `curl /v1/models` with the LiteLLM bearer token and `vision/healthz` when
+  vision is expected.
+5. Confirm cleanup behavior: `./validate_harness.sh` should end by cancelling
+  the Slurm job cleanly, and retained wrapper logs should stay available under
+  `deploy/<site>/logs/slurm/` afterward.
+6. Confirm reuse, restart, or stale-image behavior separately when those code
+  paths are relevant: run `./validate_harness.sh --skip-matrix --lifecycle-case full`,
+  verify that the first request reuses the same job before cleanup, verify
+  that cleanup removes it, and verify that the wrapper log shows the expected
+  image or tarball reload decision on the fresh restart.
+7. Only after the above, treat the issue as a generic runtime failure rather
+  than a wrapper/site-config mismatch.
+
+## See Also
+
+- [User Guide](user_guide.md) — end-user getting started
+- [UMRS Overview](umrs_overview.md) — architecture details
+- [RAG Implementation](rag_implementation.md) — RAG pipeline setup
+- [Mini-Rivault README](../src/umrs/mini-rivault-llm/README.md) — inference stack details
+
+---
+
+## Troubleshooting: BentoML Vision Service
+
+### Common Failure Patterns
+
+#### 1. Container starts but service never becomes ready
+
+**Symptom:** `podman ps` shows `bentoml-vision` running, but `/readyz` never
+returns 200. Inference requests fail with "connection refused".
+
+**Root causes:**
+- Adapter `.py` files in `/adapters/system` or `/adapters/user` have import
+  errors (missing dependencies, syntax errors).
+- Model weight files are missing or corrupted at mount paths
+  (`SAM3_MODEL_PATH`, `HMAE_MODEL_PATH`).
+- GPU is not visible inside the container (CDI misconfiguration).
+
+**Diagnosis:**
+```bash
+podman logs rivault_bentoml-vision_1 2>&1 | grep -iE "error|failed|exception"
+podman logs rivault_bentoml-vision_1 2>&1 | grep "adapter"
+```
+
+**Fix:** Verify model paths exist and are readable. Check adapter `.py` files
+for import errors. Rebuild vision tarball if needed.
+
+#### 2. Podman state corruption ("invalid internal status")
+
+**Symptom:** `podman info` fails with "invalid internal status, try resetting
+the pause process". Compose-up fails immediately.
+
+**Root cause:** Prior Slurm job left stale pause-process references in the
+podman GraphRoot (`/var/tmp/podman_$USER/storage/`). Slurm cleaned
+`$XDG_RUNTIME_DIR` but not the persistent storage.
+
+**Diagnosis:**
+```bash
+podman info  # Will show the error message
+ls /var/tmp/podman_$USER/storage/libpod/  # Stale state files
+```
+
+**Fix:** The `serve-model.slurm` script has automatic recovery. If recovery
+fails, manual intervention:
+```bash
+podman system reset --force
+```
+
+#### 3. SSH tunnel failure (S3/MinIO unreachable)
+
+**Symptom:** BentoML service starts but inference fails with S3 connection
+errors. `urllib.error.URLError` or boto3 `ConnectionError`.
+
+**Root cause:** SSH tunnel from compute node to login node died or was never
+established. Port `19000` (container access) or `9000` (host access) not
+forwarding.
+
+**Diagnosis:**
+```bash
+# On compute node:
+ss -tlnp | grep 19000
+ss -tlnp | grep 9000
+# Try probe:
+bash -c "echo > /dev/tcp/127.0.0.1/19000"
+```
+
+**Fix:** Re-establish the tunnel manually or restart the Slurm job. The
+serve-model.slurm now verifies tunnel liveness at startup and logs warnings.
+
+#### 4. IPAM subnet poisoning
+
+**Symptom:** `podman network create` fails with "subnet already in use" for
+all candidate subnets. Stack cannot start.
+
+**Root cause:** Stale rootless IPAM allocations from crashed jobs persist
+across sessions.
+
+**Diagnosis:**
+```bash
+podman network ls
+cat /var/tmp/podman_$USER/storage/networks/*.json
+```
+
+**Fix:** Remove all podman networks and retry:
+```bash
+podman network rm -f genai-private-net
+podman network prune -f
+```
+
+#### 5. GPU memory exhausted (LRU cache pressure)
+
+**Symptom:** `CUDA out of memory` errors during inference. May affect
+subsequent requests even after the failing request completes.
+
+**Root cause:** Multiple models loaded concurrently exceed GPU VRAM.
+`torch.cuda.empty_cache()` does not free all memory on eviction.
+
+**Diagnosis:**
+```bash
+# Inside container:
+python3 -c "import torch; print(torch.cuda.memory_summary())"
+```
+
+**Fix:** Reduce `MAX_VISION_MODELS` (default: 3) or increase GPU VRAM.
+Restart the container to clear all cached models.
+
+---
+
+## Using Jens's VisionFrontend Stack
+
+UMRS supports an alternative vision backend: Jens's standalone BentoML
+VisionFrontend (`tmp/jens_stack/internal_genAI/`). This provides SAM3 and HMAE
+inference through the same `rivault://bentoml://` model type interface
+but uses a separate compose stack and Slurm wrapper.
+
+### Switching Backends
+
+The backend is selected by `vision_stack` in `site.yaml`:
+
+```yaml
+runtime:
+  vision_stack: jens        # use Jens's VisionFrontend
+  # vision_stack: umrs      # default — UMRS generic VisionModelService
+```
+
+Or via environment variable:
+
+```bash
+export VISION_STACK=jens
+```
+
+When `VISION_STACK=jens`, the UMRS server:
+1. Submits Jens's `serve-model.slurm` directly (from `jens_stack/internal_genAI/`)
+2. Creates a BentoML client talking to `/vision_task` (instead of `/infer`)
+3. Uses `make_jens_vision_compute()` adapter (pickle protocol)
+
+### Deployment
+
+UMRS runs Jens's original `serve-model.slurm` directly — no separate
+wrapper is needed. The script has been minimally patched to accept
+UMRS env var overrides (port, key, S3 host) and print the hostname
+marker that `extract_node_address()` requires.
+
+Deploy the `jens_stack/internal_genAI/` directory to the UMRS config area:
+
+```bash
+# Default location (from JENS_RIVAULT_SLURM_SCRIPT config):
+~/.config/umrs/rivault_data/jens_stack/internal_genAI/serve-model.slurm
+
+# Or override via environment variable:
+export JENS_RIVAULT_SLURM_SCRIPT=/path/to/jens_stack/internal_genAI/serve-model.slurm
+```
+
+### Port and Key Configuration
+
+Jens's script uses `${VAR:-random_default}` for these values. When UMRS
+exports them via `site_config.py`, the pinned values are used instead of
+random ones:
+
+| Variable | site.yaml path | Default (standalone) |
+|---|---|---|
+| `NGINX_LITELLM_DOCKER_PORT` | `network.litellm_port` | random port |
+| `LITELLM_MASTER_KEY` | `network.litellm_master_key` | random hex |
+| `UMRS_S3_BUCKET_HOST` | `storage.s3_tunnel_host` | localhost |
+| `UMRS_S3_BUCKET_PORT` | `storage.s3_tunnel_port` | 9000 |
+
+### S3 and SSH Tunnel
+
+Jens's script manages the S3 SSH tunnel itself. The SSH alias is
+configurable via `UMRS_SSH_ALIAS` (default: `rccscloud`). Ensure that
+alias resolves to the login node in `~/.ssh/config` on compute nodes.
+
+### User Config
+
+No changes needed in user JSON configs. The same `model_type` works for
+both stacks:
+
+```json
+{
+  "model_type": "rivault://bentoml://http://localhost:{LOCAL_PORT}/vision/infer/submit",
+  "vision_model_type": "sam3"
+}
+```
+
+An example user config is at `src/umrs_cfg_example/umrs/users/jens_vision.json`.
+
+### Verification
+
+```bash
+# 1. Check vision_stack propagation
+VISION_STACK=jens python3 -c "
+from umrs.orchestrator.site_config import load_site_config
+cfg = load_site_config()
+print('vision_stack:', cfg.runtime.vision_stack)
+env = cfg.to_env()
+print('VISION_STACK:', env.get('VISION_STACK', '(not set — using default umrs)'))
+"
+
+# 2. Run isolated Jens SAM3 demo (from local Mac, with UMRS server using Jens stack)
+source .venv/bin/activate
+bash demos_jens/11_sam3_direct/run_demo.sh
+```

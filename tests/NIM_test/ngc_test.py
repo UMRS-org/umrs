@@ -10,7 +10,7 @@ response = requests.get("https://api.ngc.nvidia.com/v2/models", headers=headers)
 if response.status_code == 200:
     data = response.json()
     print("✅ Connected to NGC\n")
-    
+
     # Directly access the "models" list
     for model in data.get("models", []):
         print(f"🔹 Name: {model.get('name')}")

@@ -1,0 +1,96 @@
+# UMRS deployment for AI4S — services on umrs-front, compute on AI4S.
+#
+# This compose file runs the same persistent services as rccs-front.
+# The UMRS server is configured with the ai4s site.yaml to route
+# Slurm commands via SSH to the AI4S login node (134.160.189.24).
+#
+# Topology:
+#   umrs-front (this host): Gateway + UMRS + Postgres + MinIO
+#   AI4S login (134.160.189.24): SSH target for sbatch (user: ea0022)
+#   AI4S compute: GB200 NVL4 nodes running Mini-RiVault via Singularity
+#
+# Usage:
+#   cd deploy/ai4s
+#   ./start.sh
+#
+# NOTE: This file is nearly identical to rccs-front/docker-compose.yml.
+# The difference is the site.yaml mounted (ai4s vs rccs-front) and the
+# SSH key for the AI4S account.
+
+services:
+  postgres:
+    image: docker.io/pgvector/pgvector:pg15
+    container_name: umrs-postgres-ai4s
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-umrs}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-umrs_ai4s}
+    command: ["postgres", "-c", "unix_socket_directories="]
+    ports:
+      - "127.0.0.1:5433:5432"      # Different port to coexist with rccs-front
+    volumes:
+      - pg_data_ai4s:/var/lib/postgresql/data
+      - ../../docker/init_pgvector.sql:/docker-entrypoint-initdb.d/init_pgvector.sql:ro
+    restart: unless-stopped
+
+  minio:
+    image: docker.io/minio/minio:latest
+    container_name: umrs-minio-ai4s
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?Set MINIO_ROOT_USER in .env}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD in .env}
+    ports:
+      - "0.0.0.0:9002:9000"        # Different port to coexist with rccs-front
+      - "127.0.0.1:9003:9001"      # Console
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio_data_ai4s:/data
+    restart: unless-stopped
+
+  umrs-server:
+    build:
+      context: ../..
+      dockerfile: docker/Dockerfile
+    container_name: umrs-server-ai4s
+    environment:
+      UMRS_SITE_CONFIG: /app/deploy/ai4s/site.yaml
+      UMRS_PROVISION_ROSTER: /app/deploy/ai4s/pool-ai4s.yaml
+      UMRS_REGISTRY_POSTGRES_DSN: "postgresql://${POSTGRES_USER:-umrs}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-umrs_ai4s}"
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}
+      RIVAULT_ORCHESTRATOR: slurm-remote
+    ports:
+      - "0.0.0.0:8002:8000"        # Different port to coexist with rccs-front
+    volumes:
+      # SSH key for AI4S account (ea0022)
+      - ${AI4S_SSH_KEY_PATH:-~/.ssh/ai4s}:/home/umrs/.ssh:ro
+      # Site config
+      - ./site.yaml:/app/deploy/ai4s/site.yaml:ro
+      # Pool roster — sizing defaults for single-endpoint provisions of large
+      # models (routes DeepSeek-V4-Pro/GLM-5.1/GLM-5.2/Kimi-K2.6 to 4n4gpu-p, etc.).
+      - ./pool-ai4s.yaml:/app/deploy/ai4s/pool-ai4s.yaml:ro
+    depends_on:
+      - postgres
+      - minio
+    restart: unless-stopped
+
+  gateway:
+    build:
+      context: ../../../gateway
+      dockerfile: Dockerfile
+    container_name: umrs-gateway-ai4s
+    environment:
+      UMRS_BASE_URL: http://umrs-server:8000
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}
+      RATE_LIMIT_RPS: ${RATE_LIMIT_RPS:-10}
+    ports:
+      - "0.0.0.0:8082:8080"        # Different port to coexist with rccs-front
+    depends_on:
+      - umrs-server
+    restart: unless-stopped
+
+volumes:
+  pg_data_ai4s:
+  minio_data_ai4s:

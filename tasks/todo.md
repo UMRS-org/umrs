@@ -1,0 +1,595 @@
+# TODO
+
+## TUI Action Unification + Data Port Range (2026-04-20)
+
+**Goal:** Add range-based data-port allocation in the ZMQ transport, remove
+the duplicated monitor `cmd` surface, and make TUI actions capability-driven
+from trusted auth context plus loaded user config.
+
+- [x] T1 Normalize connection-profile data-port config with backward-compatible range support
+- [x] T2 Make `MessageQueue` allocate a concrete data port from the configured allowed range
+- [x] T3 Pass monitor capabilities from `client_umrs.py` into the dashboard bootstrap
+- [x] T4 Remove the visible TUI command prompt and keep actions as the only user-facing control surface
+- [x] T5 Filter actions/forms by admin capability, config availability, and current tab context
+- [x] T6 Add focused regression tests for range parsing/allocation and the new TUI action contract
+
+## Model Command ACL Hardening (2026-04-19)
+
+**Goal:** Harden the active `umrs-client model {register,download,upload}` path
+so scope enforcement and allowed-path validation apply on the current ZMQ
+command path, not only in the newer API/store layer.
+
+- [ ] M1 Add `--project-id` plumbing to model CLI commands and control payloads
+- [ ] M2 Enforce scope creation rules on the active server-side model command path
+- [ ] M3 Validate model registration and staging paths against approved per-scope rules
+- [ ] M4 Support opt-in custom experimental model roots through validated path patterns
+- [ ] M5 Add focused regression tests for scope denial, project scope handling, and custom allowed paths
+
+## Vision Presigned S3 Hardening (2026-04-13)
+
+**Goal:** Remove direct S3 credentials from the BentoML vision runtime by
+switching vision input download and result upload to presigned URLs generated
+by the UMRS server.
+
+- [ ] P1 Add shared vision output artifact descriptors for built-in adapters
+- [ ] P2 Generate presigned GET/PUT URLs in the Bento task submission path
+- [ ] P3 Enforce strict presigned-only mode in the Bento vision service
+- [ ] P4 Remove S3 secret injection from the Bento deployment path
+- [ ] P5 Add focused validation for built-in SAM3 and HMAE output descriptors
+
+## Robust Orchestration — Converge & Harden (2026-07-01)
+
+**Goal:** Replace fragile rivault_launcher + site-specific shell wrapper with
+unified orchestration using the existing (but unused) infrastructure in
+`src/umrs/orchestrator/`.
+
+### Discovery: Existing infrastructure already covers Phases 2, 3, 5
+- `detection.py` — BackendDetector (Slurm/K8s/Compose auto-detect) ✅
+- `ports.py` — PortAllocator (StaticRange, RegistryLock, K8sService) ✅
+- `registry_backend.py` — PostgresBackend for endpoint persistence ✅
+- `endpoint_registry.py` — EndpointRegistry with TTL + persistence ✅
+- `service.py` — OrchestrationService with provision flow ✅
+- `readiness.py` — Authoritative readiness polling ✅
+- `durable.py` — Crash-safe provisioning via job system ✅
+
+### Phase 1 — SiteConfig (eliminate hardcoded values)
+- [x] 1a  Create `src/umrs/orchestrator/site_config.py` (SiteConfig dataclass + YAML loader)
+- [x] 1b  Create `deploy/rccs-cloud/site.yaml` (rccs-cloud site definition)
+- [x] 1c  Wire SiteConfig into `OrchestratorConfig.from_env()` + `serve-model.slurm`
+
+### Phase 4 — Slurm+Podman-Compose Backend
+- [x] 4a  Create `src/umrs/orchestrator/slurm_podman_backend.py`
+       (SlurmPodmanBackend: sbatch using site's serve-model.slurm + podman-compose)
+- [x] 4b  Register in factory.py as "slurm-podman" backend
+- [x] 4c  Tests for site_config + slurm_podman_backend (59/59 pass)
+
+### Phase 6 — Wire rivault_launcher
+- [x] 6c  Replace diskcache with EndpointRegistry in rivault_launcher
+- [x] 6d  serve-model.slurm reads from `site.yaml` instead of hardcoded paths
+- [x] 6e  `get_rivault_remote_port()` falls back to SiteConfig
+- [x] 6f  `launch_rivault_model()` injects site.yaml into env before sbatch
+- [ ] 6a  Refactor rivault_launcher to use OrchestrationService.provision() (future)
+- [ ] 6b  SSH tunnels use allocated ports from PortManager (future)
+
+---
+
+## Open Items
+
+### Architecture Follow-up (2026-04-07)
+- [x] A1 Extract client-safe SQL helpers out of `umrs.server.sql`
+      so `client_umrs.py` no longer imports server DB internals for naming
+      and metadata shaping.
+- [x] A2 Rewire `server.job_tracking_handler` from the compatibility
+      `~/.config/umrs/jobs.json` store to the durable `umrs.jobs` service once
+      server boot owns a shared PostgreSQL-backed job runtime.
+- [x] A3 Remove the JSON compatibility backend after ZMQ job commands and the
+      REST/API job surface converge on the same `JobStore` state machine.
+- [x] A4 Keep `deploy/rccs-cloud/.env` limited to secrets and explicit
+      overrides; `site.yaml` remains canonical for site defaults.
+
+#### A2 Review — Process-Owned Durable Runtime (2026-04-07)
+- [x] Start a process-owned durable jobs runtime from `server_umrs.py`
+      so scheduler and monitor loops live for the server lifetime.
+- [x] Share that runtime's `JobStore` with ZMQ job commands instead of opening
+      a separate command-only pool when full durable startup succeeds.
+- [x] Keep the durable command-backend fallback for cases where the full async
+      runtime cannot start.
+- [x] Fix latent durable startup bugs that blocked live runtime ownership:
+      thread-safe Postgres pool bootstrap, status-checker factory wiring, and
+      proper pooled connection return during schema initialization.
+
+#### A3 Review — Remove JSON Compatibility Backend (2026-04-07)
+- [x] Delete the `~/.config/umrs/jobs.json` fallback helpers from
+      `server.job_tracking_handler` so ZMQ `JOB_*` commands no longer create a
+      second source of truth for job state.
+- [x] Keep the ZMQ wire contract JSON-shaped while requiring a durable backend
+      behind `JOB_SUBMIT`, `JOB_CANCEL`, and `JOB_LIST`.
+- [x] Return a structured `{"status": "error", ...}` response when neither the
+      process-owned durable runtime nor the command-only durable backend can
+      start during server boot.
+- [x] Replace fallback-specific tests with durable bridge and dashboard
+      contract coverage.
+
+### LiteLLM / Embedding Proxy (2026-03-08)
+- [ ] Diagnose LiteLLM Prisma table errors (root cause of proxy failure)
+- [ ] Fix nginx→LiteLLM→vLLM chain so embeddings can be computed
+- [ ] Re-run e2e demo and verify embeddings in DB via phase3b
+
+### rccs-cloud Demo Execution
+- [x] Demo 00: health check (SSH tunnels + UMRS ping)
+- [x] Demo 01: text embedding (upload texts, wait for embeddings)
+- [x] Demo 02: RAG search (vector + hybrid + Q&A) — rccs-cloud now returns vector, hybrid, and reranked contexts after Demo 02 ingestion; `/rag/qa` still degrades gracefully when no vLLM backend is running.
+- [x] Demo 03: SAM3 segmentation (upload images, download results)
+- [x] Demo 04: HMAE inference (upload CT images, download results)
+
+#### rccs-cloud Demo 02 recovery (2026-04-08)
+- [x] D2.1 Persist the RiVault endpoint registry across native server restarts so legacy upload-triggered paths can reattach to existing Slurm jobs.
+- [x] D2.2 Make the legacy RiVault launcher honor `RIVAULT_STARTUP_TIMEOUT_SEC` instead of a fixed 300 second wait.
+- [x] D2.3 Make Demo 02 wait for exported embeddings to contain real rows instead of any generic completed status.
+- [x] D2.4 Re-run Demo 02 and Demo 05 on rccs-cloud, then push and pull the fix so the remote checkout matches git.
+
+#### rccs-cloud Lifecycle Follow-up (2026-04-08)
+- [x] L1 Fix `deploy/rccs-cloud/stop.sh --server` so it does not stop
+      containers or cancel Slurm jobs during a native server restart.
+- [x] L2 Validate a real `stop.sh --server && start.sh --server` cycle on
+      rccs-cloud with final health checks.
+- [x] L3 Run a live durable `endpoint_provision` smoke test on rccs-cloud using
+      the new `ng-dgx-m*` partition-selection path.
+- [x] L4 Replace raw `nc -z 127.0.0.1 5555` checks in rccs-cloud lifecycle
+      scripts with a real ZMQ handshake so readiness checks stop flapping.
+
+#### rccs-cloud Durable Endpoint Follow-up (2026-04-08)
+- [x] E1 Make durable orchestration honor the site-configured backend kind so
+      rccs-cloud uses `slurm-podman` instead of the legacy `slurm` backend.
+- [x] E2 Allow scheduler-side backend submission failures to move attempts from
+      `created` to `failed` cleanly so jobs do not stick in `running`.
+- [x] E3 Teach the durable endpoint status checker to refresh pending Slurm
+      endpoints from backend job status before polling readiness.
+- [x] E4 Re-run focused durable/orchestrator tests, then repeat the live
+      `endpoint_provision` smoke test on rccs-cloud.
+
+#### rccs-cloud QA Backend Recovery (2026-04-08)
+- [x] Q1 Fix the durable job bootstrap regression that leaves `JOB_*` commands
+      unavailable on native rccs-cloud server startup.
+- [x] Q2 Add regression coverage for env-backed durable DB pool bootstrap so
+      native startup failures are caught before deployment.
+- [x] Q3 Re-run targeted validation locally, then sync the fix to rccs-cloud
+      and restart the native server.
+- [x] Q4 Re-test durable `endpoint_provision`, then validate `/rag/qa` against
+      a live OpenAI-compatible backend.
+
+Review:
+- Root cause was a missing `import os` in `src/umrs/server/job_tracking_handler.py`,
+  which crashed both durable runtime bootstrap and the ZMQ durable fallback on
+  native server startup.
+- Local validation: targeted `tests/test_job_tracking_handler_durable.py`
+  passed after adding regression coverage for env-backed DB pool bootstrap.
+- Live validation on rccs-cloud: server restart logged `Durable job runtime
+  started`, durable `endpoint_provision` recovered, and `/rag/qa` returned a
+  generated answer once a `Qwen/Qwen3-0.6B` endpoint was warmed and the shared
+  HF cache was populated on the login node.
+- Operational caveat: the current native `rag-service` process is pointed at
+  the warmed Qwen endpoint through exported env overrides (`VLLM_BASE_URL`,
+  `VLLM_API_KEY`, `UMRS_RAG_LLM_MODEL`); a future native server restart without
+  those overrides will fall back to the static default QA backend settings.
+
+#### rccs-cloud QA Backend Hardening (2026-04-09)
+- [x] HQA1 Teach `rag_service` to resolve QA LLM endpoints dynamically from the
+      endpoint registry instead of binding a single `VLLM_BASE_URL` at startup.
+- [x] HQA2 Strip model reasoning blocks (`<think>...</think>`) from rewritten
+      queries and final QA answers before returning API responses.
+- [x] HQA3 Add focused tests for dynamic LLM candidate selection and reasoning
+      block cleanup.
+- [x] HQA4 Re-run local validation, then re-verify `/rag/qa` on rccs-cloud
+      without the manual QA base-url override.
+
+Review:
+- `src/umrs/api/rag_service.py` now resolves QA backends per request from the
+      endpoint registry, still honoring explicit env overrides first but no longer
+      depending on a single startup-bound `VLLM_BASE_URL`.
+- Query rewrites and final answers now strip model reasoning blocks before the
+      API responds, so `/rag/qa` no longer leaks `<think>...</think>` output.
+- Focused local validation passed in the repo virtualenv via
+      `PYTHONPATH=src .venv/bin/pytest tests/test_rag_service_llm_resolution.py`.
+- Live rccs-cloud validation passed after a plain `deploy/rccs-cloud/start.sh
+      --server` restart: `/rag/qa` returned a generated answer without the manual
+      QA base-url override, even though the persisted registry row for the active
+      `Qwen/Qwen3-0.6B` backend was still lagging in `status=starting`.
+
+### Harness Hardening — Multi-Partition Stability (2026-04-15)
+
+**Goal:** Eliminate runtime detection fragility across 12+ GPU partitions by
+adding declarative per-partition profiles, removing duplicated cleanup, fixing
+the httpx readiness poller, and tightening the probe script.
+
+Target partitions: a100, ai-h100l, ai-h200-brc, ai-l40s, ng-dgx-m0–m3,
+qc-mi250, mi100, ai-h100l-pu, qc-a100, qc-gh200, fs-mi300a, fs-mi300x
+
+#### 1 — Partition Profile Table (site_config.py + site.yaml)
+- [x] HP1 Add `PartitionProfile` dataclass to `site_config.py` with fields:
+      arch, gpu_vendor, oci_runtime, userns_mode, network_backend,
+      vllm_docker_tag, gpus, needs_netavark_switch
+- [x] HP2 Extend `SiteConfig` with `partition_profiles: Dict[str, PartitionProfile]`
+- [x] HP3 Add `get_partition_profile(partition)` helper for wrapper lookup
+- [x] HP4 Update `site-config.schema.json` with `partition_profiles` definition
+- [x] HP5 Add per-partition profiles to `deploy/rccs-cloud/site.yaml`
+
+#### 2 — Wrapper Profile-Driven Refactor
+- [x] HP6 Refactor wrapper `deploy/rccs-cloud/serve-model.slurm` to look up
+      `PartitionProfile` from site.yaml instead of runtime-detecting:
+      OCI runtime, userns_mode, netavark switch, vLLM docker tag, GPU count
+- [x] HP7 Add preflight gate: fail fast if partition profile is missing and
+      runtime detection would be needed
+
+#### 3 — Kill Dual Cleanup
+- [x] HP8 Remove the duplicated podman state recovery block from inner
+      `src/umrs/mini-rivault-llm/serve-model.slurm` (keep only the wrapper's)
+- [x] HP9 Guard inner script recovery to only trigger when NOT called from
+      the wrapper (direct/source launches)
+
+#### 4 — Fix httpx Readiness Poller
+- [x] HP10 Add `trust_env=False` to httpx.AsyncClient in readiness.py to
+      bypass proxy env vars that break compute-node connectivity
+- [x] HP11 Add `no_proxy` env var injection in wrapper for readiness polling
+
+#### 5 — Probe Script Enhancements
+- [x] HP12 Add OCI runtime and CDI device count to harness_probe.sh output
+- [x] HP13 Add netavark/CNI backend detection to probe output
+
+### User-Defined Model Workflows
+- [ ] U-200: Finalize UDM design document and review with stakeholder
+
+### Vision Pipeline
+- [ ] V9: Demo 09 (HMAE full pipeline) verification
+- [ ] V10: Clean up old tarballs (~27GB of stale images in mini-rivault-llm/images/)
+
+### Harness Engineering (2026-04-07)
+
+**Goal:** Make the UMRS harness a first-class runtime contract between UMRS,
+Mini-Rivault, and site-specific wrappers instead of a set of partially-aligned
+ startup conventions.
+
+#### Phase 1 — Canonical Contract
+- [x] H1  Define canonical ownership for harness defaults:
+      `site.yaml`, source `serve-model.slurm`, deploy wrappers, and docs
+- [x] H2  Decide which profile sets are officially supported by default:
+      `harness`, `harness vllm`, `harness vllm vision-bentoml`, optional `rag`
+- [x] H3  Document invariants for `RIVAULT_PROFILES`, host/container paths,
+      health readiness, and image reload behavior
+
+#### Phase 2 — Wrapper Convergence
+- [x] H4  Diff source Mini-Rivault launcher versus deploy-site wrappers and
+      list intentional divergences versus drift
+- [x] H5  Remove accidental default mismatches between source launcher,
+      deploy wrappers, and `site.yaml` export
+- [x] H6  Ensure wrapper behavior is driven by site config or documented
+      wrapper-only policy, not hidden hardcoded defaults
+
+#### Phase 3 — Validation Harness
+- [x] H7  Define a minimal harness validation matrix covering text-only,
+      vision-enabled, and full-stack profile sets
+- [x] H8  Add or strengthen checks that prove service readiness rather than
+      only process/container existence
+- [x] H9  Verify restart, cleanup, reuse, and stale-image paths in addition to
+      happy-path startup
+- [x] H9a Fix `OrchestrationService.provision()` so `slurm-podman` resolves the
+      assigned compute node before authoritative readiness polling.
+- [x] H9b Re-run lifecycle validation on rccs-cloud with unbuffered output and
+      confirm reuse, cleanup, restart, and retained stale-image evidence end to
+      end.
+
+#### Phase 4 — Observability & Debugging
+- [x] H10 Standardize what must be visible in logs: active profiles,
+      exported env overrides, selected compose files, and readiness failures
+- [x] H11 Create a repeatable debugging order for wrapper issues,
+      site-config mismatches, tunnel issues, and stale tarball/image problems
+
+### Durable Job Backend Recovery (2026-04-16)
+
+**Goal:** Make the documented durable `index_build` and `cleanup` job types
+actually executable on rccs-cloud instead of accepting them and failing later
+inside the scheduler.
+
+- [ ] DJ1 Define the canonical durable job specs and reject unsupported inputs
+      before enqueueing work.
+- [ ] DJ2 Replace the dead `embedding_worker`-style `index_build` path with
+      database-native pgvector index maintenance.
+- [ ] DJ3 Add a real durable `cleanup` backend for endpoint teardown using the
+      existing orchestration deprovision path.
+- [ ] DJ4 Wire durable startup/status-checker registration to the implemented
+      backends instead of advertising unsupported capability.
+- [ ] DJ5 Update durable-job tests and demos to match the supported contract.
+- [ ] DJ6 Re-validate locally, then clear or re-run the bad durable rows on
+      rccs-cloud so scheduler errors stop recurring.
+
+Review:
+- [x] DJ1 Define the canonical durable job specs and reject unsupported inputs
+      before enqueueing work.
+- [x] DJ2 Replace the dead `embedding_worker`-style `index_build` path with
+      database-native pgvector index maintenance.
+- [x] DJ3 Add a real durable `cleanup` backend for endpoint teardown using the
+      existing orchestration deprovision path.
+- [x] DJ4 Wire durable startup/status-checker registration to the implemented
+      backends instead of advertising unsupported capability.
+- [x] DJ5 Update durable-job tests and demos to match the supported contract.
+- [ ] DJ6 Re-validate locally, then clear or re-run the bad durable rows on
+      rccs-cloud so scheduler errors stop recurring.
+
+- Local validation: `PYTHONPATH=src .venv/bin/python -m pytest tests/test_durable_orchestration.py tests/test_job_tracking_handler_durable.py -q` passed (`32 passed`).
+- Durable `index_build` now uses direct pgvector/HNSW maintenance through `umrs.server.sql` and validates `spec.database` + `spec.table` before enqueue.
+- Durable `cleanup` now supports explicit endpoint teardown only and rejects unsupported targets such as S3 cleanup at command submission time.
+- [x] H12 Align operator docs and demos with the canonical harness behavior
+
+#### Review — Harness Ownership Audit (2026-04-07)
+
+- Source `src/umrs/mini-rivault-llm/serve-model.slurm` is still the canonical
+      compose launcher, but deploy wrappers remain authoritative for several
+      site-specific defaults.
+- `deploy/rccs-cloud/site.yaml` is the clearest canonical source for
+      rccs-cloud values, and `site_config.py` can export those values back into the
+      runtime environment.
+- `deploy/hpbd-atom/site.yaml` now exists and the deploy-side startup / health
+      scripts consume it for model-cache defaults, but hpbd-atom still relies
+      on wrapper-local policy for profile defaults and other site-specific
+      launch behavior.
+- rccs-cloud startup now defaults to the colocated
+      `deploy/rccs-cloud/serve-model.slurm`; the legacy
+      `~/.config/umrs/rivault_data/serve-model.slurm` path is fallback-only
+      unless `RIVAULT_SLURM_SCRIPT` explicitly overrides it.
+- Deploy-site wrappers now load their colocated `site.yaml` before applying
+      wrapper-local `${VAR:-default}` fallbacks, so profile sets and model-path
+      defaults follow the site contract unless the caller explicitly overrides
+      them.
+- Source `src/umrs/mini-rivault-llm/serve-model.slurm` now does the same when
+      `UMRS_SITE_CONFIG` or another discoverable `site.yaml` is available, so
+      source-launch defaults and wrapper-launch defaults converge on the same
+      site-config export path instead of diverging silently.
+- Profile defaults are intentionally divergent by site policy today:
+      rccs-cloud defaults to `harness vllm vision-bentoml`, hpbd-atom defaults
+      to `harness vision-bentoml`, and source Mini-Rivault keeps `harness vllm`
+      as the generic no-site-config fallback.
+- This means profile ownership is now canonical for site-configured deployments;
+      remaining divergence is documented site policy rather than hidden drift.
+- `slurm-podman` now retains backend stdout/stderr under
+      `deploy/<site>/logs/slurm/slurm-<jobid>.out|err` instead of ephemeral
+      `/tmp`, and routine cleanup no longer deletes those logs before operators
+      can inspect wrapper launch context.
+- `src/server_umrs.py` now enables Python logging at `INFO` by default
+      (`UMRS_LOG_LEVEL` overrides it), so durable scheduler/monitor and
+      readiness logs reach `deploy/<site>/logs/server.log`.
+- Live rccs-cloud smoke `smoke-20260408-observability-retained-5`
+      validated both sides of H10/H11: retained wrapper launch summaries in
+      `deploy/rccs-cloud/logs/slurm/slurm-164051.out` and durable readiness
+      logs in `deploy/rccs-cloud/logs/server.log` showing start, pending
+      errors (`connection error`, `HTTP 502`), and eventual ready state for
+      backend `164051`.
+- `deploy/harness_validate.py` plus the site-local
+      `deploy/rccs-cloud/validate_harness.sh` and
+      `deploy/hpbd-atom/validate_harness.sh` wrappers now provide an executable
+      harness matrix for `text`, `vision`, and `full` profile sets.
+- `SlurmPodmanBackend` now lets explicit process env and `submit_job(env=...)`
+      overrides win over `site.yaml` defaults, so `RIVAULT_PROFILES` can be
+      varied per validation run without relying on brittle shell quoting.
+- Live rccs-cloud harness validation passed for jobs `164062` (`harness vllm`),
+      `164063` (`harness vision-bentoml`), and `164066`
+      (`harness vllm vision-bentoml`). The validator proved retained wrapper
+      launch summaries, authenticated `/v1/models` readiness for text/full,
+      `/vision/healthz` readiness for vision/full, and retained `slurm-*.out`
+      logs after cleanup.
+- Cleanup on rccs-cloud did not finish within a graceful `scancel --signal=TERM`
+      window for those jobs; the validator now escalates to `KILL` and confirms
+      the jobs leave `squeue` while the retained Slurm logs remain available.
+- Lifecycle validation initially stalled because `OrchestrationService.provision()`
+      polled readiness against host `pending`; it now waits for
+      `backend.get_job_status()` to publish the assigned compute node and carries
+      the original allocated host through cleanup.
+- Live rccs-cloud lifecycle validation passed with backend jobs `164106`
+      (initial provision + reuse) and `164107` (fresh restart). Proof included
+      retained wrapper logs, authenticated `/v1/models`, `/vision/healthz`,
+      `Loading vision image from Lustre tarball` evidence on both launches, TERM→KILL
+      cleanup escalation, and a final clean `squeue` for `umrs-rivault` jobs.
+- `doc/admin_guide.md` and `deploy/rccs-cloud/README.md` now document both the
+      matrix validator and the lifecycle validator (`--skip-matrix --lifecycle-case full`).
+- Demo 11 docs/scripts now describe the validated durable path as explicit
+      endpoint warm-up, reuse, and cancel; `UMRS_SERVICE_LIFECYCLE` remains
+      documented only as the legacy upload-triggered lifecycle control.
+
+---
+
+### Source Tree Reorganization (2026-04-06)
+
+Goal: Move flat top-level `src/umrs/*.py` modules into canonical subdirectories
+so the source tree clearly communicates what code serves which purpose.
+Each moved file gets a **compatibility wrapper** at the old path.
+
+#### Phase 1 — Low-risk infrastructure moves
+- [x] 1a  `shared/`: auth, isolation, modality, cache_paths, resource_tracker, scheduler, webhooks, utils
+- [x] 1b  `server/`: job_tracking_handler, model_registry_handler, workflow_registry_handler, sql, rivault_launcher
+- [x] 1c  `core/`: mq_posix_ipc, mq_sysv_ipc, mq_zeroMQ
+- [x] 1d  `shared/storage/`: s3, s3_presign, minio
+
+#### Phase 2 — Domain-specific consolidation
+- [x] 2a  `models/`: embeddings, embedding_backend, models_loading (→loading.py), rag_pipeline
+- [x] 2b  `shared/`: data_versioning, experiment_io, result_diff
+- [x] 2c  `pipeline_sdk/`: pipeline_builder (→builder.py), pipeline_templates (→templates.py)
+- [x] 2d  `client/`: metadata, batch_upload; `shared/`: pretty_print, progress
+
+#### Phase 3 — Cleanup
+- [x] 3a  Remove all 33 compatibility wrappers (28 new + 5 legacy: config, BucketsCfg, json_utils, bentoml_client)
+- [x] 3b  Update all imports in source + test files to canonical paths
+- [x] 3c  Update mock.patch targets to canonical module paths
+- [x] 3d  Verify: 285/285 affected tests pass, all rccs-cloud demos pass
+- [ ] 3e  Move perf_test → tests/ (optional, standalone script)
+
+---
+
+## Completed Archive
+
+<details>
+<summary>Slurm-dev demo hardening (2026-03)</summary>
+
+- [x] Audit current UMRS slurm-dev demo flow and identify fragility points
+- [x] Redesign `demos/slurm-dev/scripts/run_e2e_demo.sh` for robust preflight and cleanup
+- [x] Implement script changes with safer error handling and deterministic service detection
+- [x] Verify script syntax and basic execution logic
+- [x] Investigate false-positive "All embedding tasks completed" (phase3 bug)
+- [x] Fix phase3 to detect Error status; add phase3b DB verification
+</details>
+
+<details>
+<summary>Full Demo Validation — 15/15 pass (2026-03-27)</summary>
+
+- [x] Demos 00–14 all pass (1 bug found and fixed: Demo 01 status parser)
+</details>
+
+<details>
+<summary>Library Features B1–B10 (2026-04-05)</summary>
+
+- [x] B1–B10 all implemented (progress, batch_upload, result_diff, webhooks, resource_tracker, data_versioning, pipeline_templates, pipeline_builder, experiment_io, scheduler)
+</details>
+
+<details>
+<summary>Demos 15–21 (2026-04-05)</summary>
+
+- [x] Demos 15–21 all created (complex_dag, custom_workflow, multi_user, model_lifecycle, rag_advanced, durable_jobs, remote_plugins)
+</details>
+
+<details>
+<summary>Unit Tests (2026-04-05)</summary>
+
+- [x] 10 test files, 170 tests passing
+</details>
+
+<details>
+<summary>Documentation Updates (2026-04-05)</summary>
+
+- [x] demos/README.md, Readme.md, DEVELOPMENT_OBJECTIVES.md all updated
+</details>
+
+<details>
+<summary>rccs-cloud Hybrid Deployment — server + client setup (2026-03-29)</summary>
+
+- [x] Pre-deployment: config sync, rsync
+- [x] Server setup: venv, docker-compose fixes, pgvector, health checks (10/10 pass)
+- [x] Client setup: venv, SSH tunnels (ports 5555/5556/9000/8081)
+</details>
+
+<details>
+<summary>User-Defined Model Workflows — implementation (2026-03-16)</summary>
+
+- [x] U-201–U-212 all implemented (StepInterface, WorkflowDefinition, ScriptLoader, WorkflowExecutor, sandbox execution, runners, staging cleanup)
+</details>
+
+<details>
+<summary>Pipeline Template & Demo Restructuring (2026-03-15)</summary>
+
+- [x] P1–P6: pip-installable client, Mini-Rivault vision, admin/user guides, demo directories, cleanup
+</details>
+
+<details>
+<summary>Vision Pipeline Fixes V1–V8 (2026-03-24)</summary>
+
+- [x] V1–V8: BentoML status polling, adapter path/name, SystemExit crash, dockerignore, SAM2 optimization, image rebuild, Demo 08 e2e verified (71s)
+</details>
+
+<details>
+<summary>Phase 1: Step Package Upload (2026-04-04)</summary>
+
+- [x] PH1-1–PH1-7: UPLOAD_WORKFLOW command, server handler, SourceType.UPLOADED, CLI subcommand, 15/15 tests
+</details>
+
+<details>
+<summary>Phase 2: Step Registry & Discovery (2026-04-04)</summary>
+
+- [x] PH2-1–PH2-8: LIST_WORKFLOWS command, workflow catalog, auto-register, CLI subcommand, extends field
+</details>
+- [x] PH2-9: Write unit tests in `tests/test_workflow_registry.py` (21/21 pass)
+
+<details>
+<summary>RAG service lifecycle follow-up (2026-04-08)</summary>
+
+- [x] `UMRS_RAG_ENABLE` now controls native `rag-service` lifecycle in both `deploy/rccs-cloud/` and `deploy/hpbd-atom/` (`start.sh`, `stop.sh`, `health_check_server.sh`).
+- [x] Demo docs no longer point to stale `slurm-dev` / `ai-login` guidance for Demo 05.
+- [x] Live rccs-cloud enablement completed: remote `.env` now has `UMRS_RAG_ENABLE=true`, `./start.sh --server` launches native `rag-service`, and `./health_check_server.sh` reports 16 passed / 0 failed with `RAG service docs respond on 8081`.
+- [x] Fixed RiVault OpenAI config drift so site client configs (and hpbd-atom server-side user config) use `rivault://openai://http://localhost:{LOCAL_PORT}/v1`, matching the launcher’s dynamic SSH tunnel port handling.
+- [ ] Live Demo 05 remains blocked on rccs-cloud: Demo 05 reaches `http://localhost:8081` successfully, but even after Demo 02 text ingestion reaches `PROCESS_OBJECTS=Done`, `text_embedding_usr1_text.text_file` still contains `0` rows, so vector/hybrid/reranked queries all return no results.
+</details>
+
+## Phase 3: Unified Plugin + Step Model (2026-04-10)
+
+> **Goal**: Bridge the Plugin system (Slurm/K8s runners) with the Pipeline SDK
+> (in-process Steps) via a unified `UserWorkflow` / `UserWorkflowRunner` that
+> dispatches step execution to any backend based on `execution_mode`.
+
+### Implementation
+
+- [x] PH3-1: Add `ExecutionMode` enum (IN_PROCESS, SUBPROCESS, SLURM, K8S) +
+      `execution_mode` field on `WorkflowDefinition` in `workflow.py`
+- [x] PH3-2: Create `src/umrs/plugins/user_workflow.py` —
+      `UserWorkflow` dataclass (WorkflowDefinition superset + env_vars,
+      output_destinations, user_id, project_id)
+- [x] PH3-3: Create `UserWorkflowRunner` orchestrator in same file —
+      switches on execution_mode: in_process (direct), slurm (SlurmPluginRunner),
+      k8s (K8sPluginRunner), subprocess (placeholder)
+- [x] PH3-4: Create `src/umrs/plugins/step_adapter.py` —
+      `step_to_plugin_spec()` wraps a Step as PluginSpec for remote backends
+- [x] PH3-5: Wire `WorkflowPipeline.run_as_embeddings()` to delegate to
+      `UserWorkflowRunner` for non-IN_PROCESS execution modes
+- [x] PH3-6: Add `user_workflow://` prefix handler in `models_loading.py`
+- [x] PH3-7: Export new classes from `plugins/__init__.py`
+      (UserWorkflow, UserWorkflowRunner, step_to_plugin_spec)
+- [x] PH3-8: Write unit tests in `tests/test_user_workflow.py` (24/24 pass)
+
+**67 total tests pass (21 PH2 + 22 PH1 + 24 PH3).**
+
+### Phase 4: DAG / Parallel Steps — DONE ✅
+
+- [x] PH4-1: Add `depends_on`, `max_retries`, `retry_delay` fields to `StepSpec`
+      with `to_dict()`/`from_dict()` round-trip support
+- [x] PH4-2: Create `src/umrs/pipeline_sdk/dag.py` — `DAGScheduler`
+      (Kahn's algorithm, execution levels, topological sort) + `execute_dag()`
+      (ThreadPoolExecutor for parallel levels, fan-in key merge, retry support)
+- [x] PH4-3: Update `WorkflowDefinition.validate()` — depends_on reference
+      checks (unknown step, self-dependency) + cycle detection via DAGScheduler
+- [x] PH4-4: Wire DAG execution into `WorkflowPipeline.compute()` and
+      `run_as_embeddings()` — replaced linear loops with DAGScheduler dispatch.
+      Added `_aggregate_dag_results()` helper for extracting final outputs.
+- [x] PH4-5: Write unit tests in `tests/test_dag_scheduler.py` (33/33 pass)
+      — graph construction, diamond/linear fallback, parallel execution,
+      fan-in, retry, progress reporting, _aggregate_dag_results
+
+**100 total tests pass (67 PH1-3 + 33 PH4).**
+
+### Phase 5: Robustness & Polish — DONE ✅
+
+- [x] PH5-1: Per-step retry with `max_retries` / `retry_delay` in StepSpec
+      (integrated into `execute_dag()`)
+- [x] PH5-2: Cached step imports — `_import_step_class` caches by
+      `(entrypoint, script_dir)` with thread-safe `_step_cache_lock`
+- [x] PH5-3: Replaced `sys.path` manipulation with
+      `importlib.util.spec_from_file_location()` for thread-safe loading
+- [x] PH5-4: Step progress reporting — `StepContext.report_progress(pct, msg)`
+- [x] PH5-5: Write unit tests in `tests/test_robustness.py` (11/11 pass)
+      — importlib loading, sys.path non-mutation, import cache, error handling
+
+**114 total tests pass (67 PH1-3 + 33 PH4 + 14 PH5).**
+
+---
+
+## HMAE Reconstruction Quality + Opossum Demo (2026-04-03)
+
+### Task 1: HMAE Quality Analysis & 3-Mode Demo
+
+**Findings from comparing `tmp/hmae-infer/` (reference) vs UMRS implementation:**
+
+- [x] Analyze core model code (hvit.py, engine.py) — **identical** ✓
+- [x] Analyze inference functions (infer_reconstruct/mae/features) — **identical** ✓
+- [x] Analyze visualization (visualize_reconstruction) — **identical** ✓
+- [x] **BUG: `mode` vs `task` key mismatch** — `demo_hmae_inference.py` sends `inference_config={"mode": mode}` but `hmae_adapter.py` reads `config.get("task", ...)`. Fix adapter to accept both keys.
+- [x] **BUG: Demo 03 only runs `reconstruction`** — `vision_models.json` hardcodes `"task": "reconstruction"`. Update `run_demo.sh` to support `HMAE_MODE` env var for all 3 modes.
+- [x] Write quality analysis summary in session memory
+
+### Task 2: Opossum Demo
+
+- [x] Create `demos/17_opossum_analysis/` demo directory
+- [x] Write run_demo.sh / pipeline scripts for opossum video analysis through UMRS

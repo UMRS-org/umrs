@@ -7,17 +7,28 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
     container_name: umrs-server
+    depends_on:
+      - postgres
+      - minio
     ports:
-      - "8000:8000"
+      # Map UMRS HTTP API to 8001 on the host to avoid conflicts with
+      # other stacks (e.g. RiVault/vLLM) that may also use 8000.
+      - "8001:8000"
+      - "5555:5555" # ZeroMQ control plane
     environment:
       - PYTHONUNBUFFERED=1
       - DB_HOST=postgres
       - DB_SUPERUSER_PASSWORD=postgres
       - DB_USER_PASSWORD=ejeannot
+      - UMRS_SERVER_HOST=umrs-server
+      - SENTENCE_TRANSFORMERS_HOME=/shared/models/sentence_transformers
+      - HF_HOME=/shared/models/hf
     volumes:
       - ./s3cfg:/root/.s3cfg:ro
       - $GLOBUS_DIR:/GLOBUS
+      - model_cache:/shared/models
     restart: unless-stopped
+    command: ["python", "src/server_umrs.py", "-c", "/root/conf_umrs.json"]
 
   minio:
     image: minio/minio:latest
@@ -35,13 +46,15 @@ services:
     restart: unless-stopped
 
   postgres:
-    image: ankane/pgvector:latest
+    # `ankane/pgvector:latest` breaks fresh init because the entrypoint calls
+    # `ls`, but the image does not ship the required shell/coreutils.
+    image: pgvector/pgvector:pg15
     container_name: postgres
     environment:
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=postgres
       - POSTGRES_DB=images_and_texts_ejeannot
-    ports:
+
       - "5432:5432"
     volumes:
       - pg_data:/var/lib/postgresql/data
@@ -51,3 +64,4 @@ services:
 volumes:
   minio_data:
   pg_data:
+  model_cache:

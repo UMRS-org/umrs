@@ -1,0 +1,63 @@
+# UMRS deployment for hpbd-atom login node — hybrid architecture.
+#
+# Infrastructure services (postgres, minio) run in containers.
+# The umrs-server runs NATIVELY on the login node so it has direct access
+# to Slurm CLI (sbatch, squeue, scancel) and SSH for compute-node tunnels.
+# This is the standard pattern for HPC middleware that needs Slurm integration.
+#
+# See start.sh for how the native server is launched alongside these containers.
+#
+# Usage:
+#   cd deploy/hpbd-atom
+#   ./start.sh          # starts containers + native server
+#   podman compose up -d # containers only (if managing server separately)
+#
+# Prerequisites:
+#   - Set environment variables in .env or export before running
+#   - Home directory shared between login and compute nodes
+#   - Server venv set up via ./setup_server.sh
+
+services:
+  postgres:
+    # `ankane/pgvector:latest` lacks basic shell/coreutils on fresh init and
+    # breaks the postgres entrypoint's init-script scan (`ls: command not found`).
+    image: docker.io/pgvector/pgvector:pg15
+    container_name: umrs-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-umrs}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-umrs_db}
+    # Rootless podman cannot chmod socket files → disable Unix sockets entirely.
+    # Only TCP connections needed (server connects to 127.0.0.1:5432).
+    command: ["postgres", "-c", "unix_socket_directories="]
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ../../docker/init_pgvector.sql:/docker-entrypoint-initdb.d/init_pgvector.sql:ro
+    restart: unless-stopped
+
+  minio:
+    image: docker.io/minio/minio:latest
+    container_name: umrs-minio
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?Set MINIO_ROOT_USER in .env}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD in .env}
+    ports:
+      - "${MINIO_BIND:-127.0.0.1}:9000:9000"
+      - "127.0.0.1:9001:9001"
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio_data:/data
+    restart: unless-stopped
+
+  # NOTE: umrs-server runs NATIVELY on the login node, not in a container.
+  # Reason: rivault_launcher.py calls sbatch/squeue/scancel and creates SSH
+  # tunnels to compute nodes — these require host-level Slurm CLI and SSH
+  # credentials that are impractical to mount into a container (version-
+  # coupled Slurm libraries, munge sockets, rootless-podman UID mapping).
+  # The native server is started by ./start.sh after these containers.
+
+volumes:
+  pg_data:
+  minio_data:

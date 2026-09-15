@@ -1,0 +1,75 @@
+# Pool roster: RCCS Cloud — InternScience/Agents-A1 — SINGLE endpoint
+# Usage: R4_GATEWAY_URL=https://data0.ai.r-ccs.riken.jp/rccs r4 pool up umrs/deploy/rccs/pool-rccs-agents-a1.yaml
+#
+# Target: rccs-front → SSH → rccs-cloud (DGX Spark / GB10 Blackwell, 128 GiB unified).
+#
+# Model: InternScience/Agents-A1 (hf.co/InternScience/Agents-A1)
+#   35B MoE (3B active), `qwen3_5_moe` architecture, vision-language (VLM),
+#   BF16 weights (~70 GiB), 262K native context, apache-2.0. Agentic / tool-use
+#   model. vLLM serve flags from the model card: --reasoning-parser qwen3,
+#   --tool-call-parser qwen3_coder, --language-model-only (skip the vision
+#   encoder to free KV-cache memory).
+#
+# SIZING (GB10, 128 GiB unified, ~97 GiB free after harness services):
+#   BF16 35B weights are ~70 GiB — 3.5× the co-located Qwen3.6-35B-A3B-NVFP4
+#   (~21 GiB). That leaves only ~20-25 GiB for KV cache on a single GB10, so
+#   this entry runs TEXT-ONLY (--language-model-only) at a conservative 65536
+#   context. Raise max_model_len once KV fit is measured; drop VLLM_MAX_NUM_SEQS
+#   or max_model_len first if vLLM aborts with a "less than desired GPU memory"
+#   / OOM at KV-cache profiling.
+#
+# IMAGE: `qwen3_5_moe` is a NEW architecture. The ng-dgx-m0 partition-default
+#   image (site.yaml vllm_docker_tag: cu130-nightly-aarch64) is a FROZEN vLLM
+#   0.19.2 nightly that predates it, so override to a recent vLLM release which
+#   ships the qwen3_5_moe model class. Same override the Qwen3.6-35B NVFP4 entry
+#   needs (see pool-rccs-3models.yaml).
+#
+# PREREQUISITES before `pool up`:
+#   1. WEIGHTS staged at VLLM_PATH_TO_HUGGINGFACE/Agents-A1 (below):
+#        hf download InternScience/Agents-A1 \
+#          --local-dir /lvs0/rccs-dmp/masaru.nagaso/umrs_models/Agents-A1
+#   2. CATALOG registration (name must match the `model:` field):
+#        umrs-client --profile rccs-cloud model register agents-a1 \
+#          /lvs0/rccs-dmp/masaru.nagaso/umrs_models/Agents-A1 \
+#          --type llm --scope system --huggingface-id InternScience/Agents-A1
+
+pool: rccs-agents-a1
+defaults:
+  tier: system
+  ttl_sec: 0              # never expires
+  timeout: 172800         # 2 days — HTTP submit timeout (wait=False)
+
+endpoints:
+  - name: agents-a1
+    model: agents-a1
+    tier: system
+    node_count: 1
+    # ng-dgx-m0 was saturated (Qwen3.6 + another user's Ollama); m1-11 idle.
+    partition: ng-dgx-m1
+    #max_model_len: 65536
+    max_model_len: 262144
+    env_vars:
+      VLLM_PATH_TO_HUGGINGFACE: "/lvs0/rccs-dmp/masaru.nagaso/umrs_models"
+      VLLM_MODEL: "Agents-A1"
+      # GB10 unified-memory headroom (see rccs-deployment-notes: 0.80 ≈ 97 GiB
+      # requested — tight but fits text-only; drop to 0.78 if KV profiling OOMs).
+      VLLM_GPU_MEM_UTIL: "0.80"
+      VLLM_MAX_NUM_SEQS: "2"
+      # Model-card recommended parsers. Setting a tool-call parser makes the
+      # serve wrapper add --enable-auto-tool-choice automatically.
+      VLLM_TOOL_CALL_PARSER: "qwen3_coder"
+      VLLM_REASONING_PARSER: "qwen3"
+      VLLM_TRUST_REMOTE_CODE: "1"
+      # New qwen3_5_moe arch → needs a recent vLLM (frozen partition image is
+      # too old). VLLM_DOCKER_IMAGE wins over the partition tag.
+      VLLM_DOCKER_IMAGE: "docker.io/vllm/vllm-openai:latest"
+      # Skip the vision tower — this is a VLM but we serve it text-only to keep
+      # KV-cache memory for the 65536 context on a single GB10.
+      VLLM_EXTRA_ARGS: "--language-model-only"
+      RCCS_SKIP_CDI: "1"
+      # Monitoring loop timeout (seconds). Must be < Slurm walltime (04:00:00 =
+      # 14400s). Default is 7200 (2h) — raises monitoring timeout to 3h50m so
+      # the job exits cleanly just before Slurm's 4h limit rather than after 2h.
+      # After rccs-front/site.yaml time_limit is bumped to 23:00:00 and Ansible
+      # is redeployed, raise this to "82800" (23h).
+      RIVAULT_JOB_TIMEOUT: "13800"

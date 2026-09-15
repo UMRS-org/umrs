@@ -1,0 +1,421 @@
+# =============================================================================
+# docker-compose.yaml — umrs-front full stack
+# =============================================================================
+# Brings up all services for the dual-cluster UMRS deployment:
+#   - postgres (pgvector)
+#   - minio
+#   - umrs-server-rccs (RCCS Cloud UMRS server)
+#   - umrs-server-ai4s (AI4S UMRS server)
+#   - umrs-server-bdrt (bdrt / DGX-Spark UMRS server)#   - umrs-server-octopus (octopus / MI300X+H200 UMRS server)#
+# Usage:
+#   podman compose up -d              # Start all services
+#   podman compose down               # Stop all (data preserved in volumes)
+#   podman compose down -v            # Stop and remove volumes (data lost!)
+#   podman compose logs -f umrs-server-rccs  # Follow RCCS server logs
+#   podman compose restart umrs-server-rccs  # Restart single cluster
+#
+# Prerequisites:
+#   - .env file with secrets (created by setup.sh)
+#   - Image built: podman compose build umrs-server-rccs
+#   - DB init run by start.sh before compose up
+# =============================================================================
+
+services:
+  # ─── PostgreSQL with pgvector ──────────────────────────────────────────────
+  postgres:
+    image: docker.io/pgvector/pgvector:pg15
+    container_name: umrs-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-umrs}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB_RCCS:-front_rccs}
+      POSTGRES_HOST_AUTH_METHOD: scram-sha-256
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - umrs_pg_data:/var/lib/postgresql/data
+    command: postgres -c "listen_addresses=*" -c "unix_socket_directories="
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-umrs} -h 127.0.0.1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ─── MinIO Object Storage ─────────────────────────────────────────────────
+  minio:
+    image: docker.io/minio/minio:latest
+    container_name: umrs-minio
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?Set MINIO_ROOT_USER in .env}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD in .env}
+      # Expose Prometheus metrics on /minio/v2/metrics/* without a bearer
+      # token so the observability stack can scrape MinIO. Metrics are served
+      # on the same API port (9000) which is reachable only on trusted cluster
+      # paths; no object data is exposed by the metrics endpoints.
+      MINIO_PROMETHEUS_AUTH_TYPE: public
+    ports:
+      - "${MINIO_BIND:-0.0.0.0}:${MINIO_PORT:-9000}:9000"
+      - "127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - umrs_minio_data:/data
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ─── UMRS Server — RCCS Cloud ─────────────────────────────────────────────
+  umrs-server-rccs:
+    build:
+      context: ../../../
+      dockerfile: umrs/docker/Dockerfile.server
+    image: localhost/umrs-server:latest
+    container_name: umrs-server-rccs
+    restart: unless-stopped
+    network_mode: host
+    env_file: .env
+    environment:
+      # Cluster-specific overrides
+      UMRS_SITE_CONFIG: /etc/umrs/site.yaml
+      # Model-window visibility: RCCS serves everything EXCEPT the AI4S frontier
+      # models (those run only on the GB200/AI4S cluster). Listing-only filter;
+      # provisioning a model by name is unaffected.
+      UMRS_MODEL_DENYLIST: ${UMRS_RCCS_MODEL_DENYLIST:-GLM-5.1,Kimi-K2.6,DeepSeek-V4-Pro,DeepSeek-V4-Pro-128K,DeepSeek-V4-Pro-TEP}
+      UMRS_CONFIG: /etc/umrs
+      UMRS_CERTIFICATION_MODE: ${UMRS_CERTIFICATION_MODE:-warn}
+      UMRS_PREFLIGHT_MODE: ${UMRS_PREFLIGHT_MODE:-warn}
+      UMRS_CONTROL_PORT: ${UMRS_RCCS_ZMQ_PORT:-50090}
+      UMRS_DATA_PORT_RANGE: ${UMRS_RCCS_DATA_PORT_RANGE:-50091-50098}
+      UMRS_HTTP_PORT: ${UMRS_RCCS_PORT:-8000}
+      UMRS_HTTP_HOST: ${UMRS_HTTP_HOST:-0.0.0.0}
+      DB_HOST: "127.0.0.1"
+      DB_PORT: ${POSTGRES_PORT:-5432}
+      DB_SUPERUSER: ${POSTGRES_USER:-umrs}
+      DB_SUPERUSER_PASSWORD: ${POSTGRES_PASSWORD}
+      UMRS_REGISTRY_POSTGRES_DSN: "postgres://${POSTGRES_USER:-umrs}:${POSTGRES_PASSWORD}@127.0.0.1:${POSTGRES_PORT:-5432}/${POSTGRES_DB_RCCS:-front_rccs}"
+      S3_ENDPOINT_URL: "http://127.0.0.1:${MINIO_PORT:-9000}"
+      S3_ACCESS_KEY: ${MINIO_ROOT_USER}
+      S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      S3_REGION: ${S3_REGION:-us-east-1}
+      S3_BUCKET: ${S3_BUCKET:-r4-data}
+      S3_USE_SSL: ${S3_USE_SSL:-false}
+      S3_PRESIGN_ENDPOINT: ${S3_PRESIGN_ENDPOINT:-http://127.0.0.1:${MINIO_PORT:-9000}}
+      VISION_S3_PRESIGN_ENDPOINT: ${VISION_S3_PRESIGN_ENDPOINT:-http://minio-host:19000}
+      UMRS_RAG_DIRECT_URL: "http://127.0.0.1:${UMRS_RAG_PORT:-8081}"
+      UMRS_ADMIN_S3_CONFIGURATION_FILE: /etc/umrs/s3cfg
+      UMRS_AUTH_MODE: ${UMRS_AUTH_MODE:-strict}
+      UMRS_ADVERTISE_HOST: ${UMRS_ADVERTISE_HOST:-}
+      UMRS_ZMQ_CURVE_SERVER_PUBLIC_KEY_FILE: /root/.config/umrs/curve-keys/server/server.key
+      UMRS_ZMQ_CURVE_SERVER_SECRET_KEY_FILE: /root/.config/umrs/curve-keys/server/server.key_secret
+      # Endpoint readiness budget. Large frontier models (Kimi-K2.6, GLM-5.1,
+      # DeepSeek-V4-Pro) take >10 min to load weights and capture CUDA graphs;
+      # the orchestrator default of 600s scancels them prematurely.
+      RIVAULT_STARTUP_TIMEOUT_SEC: ${RIVAULT_STARTUP_TIMEOUT_SEC:-2400}
+      # Durable-path readiness poller budget (default 300s). Must also cover
+      # the multi-minute weight load + CUDA graph capture of large models.
+      RIVAULT_READINESS_TIMEOUT_SEC: ${RIVAULT_READINESS_TIMEOUT_SEC:-2400}
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ../rccs-front/site.yaml:/etc/umrs/site.yaml:ro,z
+      - ./conf_umrs_rccs.json:/etc/umrs/conf_umrs.json:z
+      - ./user_files_rccs:/etc/umrs/user_files:z
+      - ./s3cfg:/etc/umrs/s3cfg:ro,z
+      # SSH keys for RemoteSlurmBackend
+      - ${HOME}/.ssh:/root/.ssh-host:ro,z
+      # CURVE session keys (when ZMQ auth enabled)
+      - ${HOME}/.config/umrs/curve-keys:/root/.config/umrs/curve-keys:ro,z
+      # Writable s3cfg dir for per-user s3cfg generation (shared: both
+      # servers use the same MinIO, so credentials must be identical)
+      - umrs_config:/root/.config/umrs
+      # SSH ControlMaster sockets (tmpfs for ephemeral sockets)
+      - type: tmpfs
+        target: /run/umrs-ssh
+        tmpfs:
+          size: 10485760  # 10MB
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        # Copy host SSH keys into writable location
+        cp -a /root/.ssh-host/* /root/.ssh/ 2>/dev/null || true
+        chmod 700 /root/.ssh
+        chmod 600 /root/.ssh/* 2>/dev/null || true
+        # Copy s3cfg to config dir
+        cp -f /etc/umrs/s3cfg /root/.config/umrs/s3cfg 2>/dev/null || true
+        exec python /app/umrs-src/server_umrs.py -c /etc/umrs/conf_umrs.json
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:${UMRS_HTTP_PORT:-8000}/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 60
+      start_period: 30s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+  # ─── UMRS Server — AI4S ───────────────────────────────────────────────────
+  umrs-server-ai4s:
+    build:
+      context: ../../../
+      dockerfile: umrs/docker/Dockerfile.server
+    image: localhost/umrs-server:latest
+    container_name: umrs-server-ai4s
+    restart: unless-stopped
+    network_mode: host
+    env_file: .env
+    environment:
+      # Cluster-specific overrides
+      UMRS_SITE_CONFIG: /etc/umrs/site.yaml
+      # Pool roster — sizing defaults for single-endpoint provisions of large
+      # models (routes DeepSeek-V4-Pro/GLM-5.1/Kimi-K2.6 to 4n4gpu-p with the
+      # right node/GPU/context/TTL instead of falling back to 1 node / 1 GPU).
+      UMRS_PROVISION_ROSTER: /etc/umrs/pool-ai4s.yaml
+      # Model visibility is unrestricted — all models in the catalog are
+      # discoverable via /v1/models. Operators can reinstate a curated list
+      # by setting UMRS_AI4S_MODEL_ALLOWLIST in .env.
+      UMRS_CONFIG: /etc/umrs
+      UMRS_CERTIFICATION_MODE: ${UMRS_CERTIFICATION_MODE:-warn}
+      UMRS_PREFLIGHT_MODE: ${UMRS_PREFLIGHT_MODE:-warn}
+      UMRS_CONTROL_PORT: ${UMRS_AI4S_ZMQ_PORT:-50100}
+      UMRS_DATA_PORT_RANGE: ${UMRS_AI4S_DATA_PORT_RANGE:-50101-50108}
+      UMRS_HTTP_PORT: ${UMRS_AI4S_PORT:-8002}
+      UMRS_HTTP_HOST: ${UMRS_HTTP_HOST:-0.0.0.0}
+      DB_HOST: "127.0.0.1"
+      DB_PORT: ${POSTGRES_PORT:-5432}
+      DB_SUPERUSER: ${POSTGRES_USER:-umrs}
+      DB_SUPERUSER_PASSWORD: ${POSTGRES_PASSWORD}
+      UMRS_REGISTRY_POSTGRES_DSN: "postgres://${POSTGRES_USER:-umrs}:${POSTGRES_PASSWORD}@127.0.0.1:${POSTGRES_PORT:-5432}/${POSTGRES_DB_AI4S:-front_ai4s}"
+      S3_ENDPOINT_URL: "http://127.0.0.1:${MINIO_PORT:-9000}"
+      S3_ACCESS_KEY: ${MINIO_ROOT_USER}
+      S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      S3_REGION: ${S3_REGION:-us-east-1}
+      S3_BUCKET: ${S3_BUCKET:-r4-data}
+      S3_USE_SSL: ${S3_USE_SSL:-false}
+      S3_PRESIGN_ENDPOINT: ${S3_PRESIGN_ENDPOINT:-http://127.0.0.1:${MINIO_PORT:-9000}}
+      VISION_S3_PRESIGN_ENDPOINT: ${VISION_S3_PRESIGN_ENDPOINT:-http://minio-host:19000}
+      UMRS_RAG_DIRECT_URL: "http://127.0.0.1:${UMRS_RAG_PORT:-8081}"
+      UMRS_ADMIN_S3_CONFIGURATION_FILE: /etc/umrs/s3cfg
+      UMRS_AUTH_MODE: ${UMRS_AUTH_MODE:-strict}
+      UMRS_ADVERTISE_HOST: ${UMRS_ADVERTISE_HOST:-}
+      UMRS_ZMQ_CURVE_SERVER_PUBLIC_KEY_FILE: /root/.config/umrs/curve-keys/server/server.key
+      UMRS_ZMQ_CURVE_SERVER_SECRET_KEY_FILE: /root/.config/umrs/curve-keys/server/server.key_secret
+      # Endpoint readiness budget. Large frontier models (Kimi-K2.6, GLM-5.1,
+      # DeepSeek-V4-Pro) take >10 min to load weights and capture CUDA graphs;
+      # the orchestrator default of 600s scancels them prematurely.
+      RIVAULT_STARTUP_TIMEOUT_SEC: ${RIVAULT_STARTUP_TIMEOUT_SEC:-2400}
+      # Durable-path readiness poller budget (default 300s). Must also cover
+      # the multi-minute weight load + CUDA graph capture of large models.
+      RIVAULT_READINESS_TIMEOUT_SEC: ${RIVAULT_READINESS_TIMEOUT_SEC:-2400}
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ../ai4s/site.yaml:/etc/umrs/site.yaml:ro,z
+      - ../ai4s/pool-ai4s.yaml:/etc/umrs/pool-ai4s.yaml:ro,z
+      - ./conf_umrs_ai4s.json:/etc/umrs/conf_umrs.json:z
+      - ./user_files_ai4s:/etc/umrs/user_files:z
+      - ./s3cfg:/etc/umrs/s3cfg:ro,z
+      - ${HOME}/.ssh:/root/.ssh-host:ro,z
+      - ${HOME}/.config/umrs/curve-keys:/root/.config/umrs/curve-keys:ro,z
+      # Shared config volume (same MinIO → same credentials)
+      - umrs_config:/root/.config/umrs
+      - type: tmpfs
+        target: /run/umrs-ssh
+        tmpfs:
+          size: 10485760
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        cp -a /root/.ssh-host/* /root/.ssh/ 2>/dev/null || true
+        chmod 700 /root/.ssh
+        chmod 600 /root/.ssh/* 2>/dev/null || true
+        cp -f /etc/umrs/s3cfg /root/.config/umrs/s3cfg 2>/dev/null || true
+        exec python /app/umrs-src/server_umrs.py -c /etc/umrs/conf_umrs.json
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      umrs-server-rccs:
+        condition: service_healthy
+
+  # ─── UMRS Server — bdrt (DGX-Spark, remote Slurm via SSH to nimbus-0) ──────
+  umrs-server-bdrt:
+    build:
+      context: ../../../
+      dockerfile: umrs/docker/Dockerfile.server
+    image: localhost/umrs-server:latest
+    container_name: umrs-server-bdrt
+    restart: unless-stopped
+    network_mode: host
+    env_file: .env
+    environment:
+      # Cluster-specific overrides
+      UMRS_SITE_CONFIG: /etc/umrs/site.yaml
+      UMRS_CONFIG: /etc/umrs
+      UMRS_CERTIFICATION_MODE: ${UMRS_CERTIFICATION_MODE:-warn}
+      UMRS_PREFLIGHT_MODE: ${UMRS_PREFLIGHT_MODE:-warn}
+      UMRS_CONTROL_PORT: ${UMRS_BDRT_ZMQ_PORT:-50110}
+      UMRS_DATA_PORT_RANGE: ${UMRS_BDRT_DATA_PORT_RANGE:-50111-50118}
+      UMRS_HTTP_PORT: ${UMRS_BDRT_PORT:-8004}
+      UMRS_HTTP_HOST: ${UMRS_HTTP_HOST:-0.0.0.0}
+      DB_HOST: "127.0.0.1"
+      DB_PORT: ${POSTGRES_PORT:-5432}
+      DB_SUPERUSER: ${POSTGRES_USER:-umrs}
+      DB_SUPERUSER_PASSWORD: ${POSTGRES_PASSWORD}
+      UMRS_REGISTRY_POSTGRES_DSN: "postgres://${POSTGRES_USER:-umrs}:${POSTGRES_PASSWORD}@127.0.0.1:${POSTGRES_PORT:-5432}/${POSTGRES_DB_BDRT:-front_bdrt}"
+      S3_ENDPOINT_URL: "http://127.0.0.1:${MINIO_PORT:-9000}"
+      S3_ACCESS_KEY: ${MINIO_ROOT_USER}
+      S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      S3_REGION: ${S3_REGION:-us-east-1}
+      S3_BUCKET: ${S3_BUCKET:-r4-data}
+      S3_USE_SSL: ${S3_USE_SSL:-false}
+      S3_PRESIGN_ENDPOINT: ${S3_PRESIGN_ENDPOINT:-http://127.0.0.1:${MINIO_PORT:-9000}}
+      VISION_S3_PRESIGN_ENDPOINT: ${VISION_S3_PRESIGN_ENDPOINT:-http://minio-host:19000}
+      UMRS_RAG_DIRECT_URL: "http://127.0.0.1:${UMRS_RAG_PORT:-8081}"
+      UMRS_ADMIN_S3_CONFIGURATION_FILE: /etc/umrs/s3cfg
+      UMRS_AUTH_MODE: ${UMRS_AUTH_MODE:-strict}
+      UMRS_ADVERTISE_HOST: ${UMRS_ADVERTISE_HOST:-}
+      UMRS_ZMQ_CURVE_SERVER_PUBLIC_KEY_FILE: /root/.config/umrs/curve-keys/server/server.key
+      UMRS_ZMQ_CURVE_SERVER_SECRET_KEY_FILE: /root/.config/umrs/curve-keys/server/server.key_secret
+      RIVAULT_STARTUP_TIMEOUT_SEC: ${RIVAULT_STARTUP_TIMEOUT_SEC:-2400}
+      RIVAULT_READINESS_TIMEOUT_SEC: ${RIVAULT_READINESS_TIMEOUT_SEC:-2400}
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ../bdrt-front/site.yaml:/etc/umrs/site.yaml:ro,z
+      - ./conf_umrs_bdrt.json:/etc/umrs/conf_umrs.json:z
+      - ./user_files_bdrt:/etc/umrs/user_files:z
+      - ./s3cfg:/etc/umrs/s3cfg:ro,z
+      # SSH keys for RemoteSlurmBackend
+      - ${HOME}/.ssh:/root/.ssh-host:ro,z
+      # CURVE session keys (when ZMQ auth enabled)
+      - ${HOME}/.config/umrs/curve-keys:/root/.config/umrs/curve-keys:ro,z
+      # Shared config volume (same MinIO → same credentials)
+      - umrs_config:/root/.config/umrs
+      - type: tmpfs
+        target: /run/umrs-ssh
+        tmpfs:
+          size: 10485760
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        cp -a /root/.ssh-host/* /root/.ssh/ 2>/dev/null || true
+        chmod 700 /root/.ssh
+        chmod 600 /root/.ssh/* 2>/dev/null || true
+        cp -f /etc/umrs/s3cfg /root/.config/umrs/s3cfg 2>/dev/null || true
+        exec python /app/umrs-src/server_umrs.py -c /etc/umrs/conf_umrs.json
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      umrs-server-rccs:
+        condition: service_healthy
+
+  # ─── UMRS Server — octopus (MI300X + H200, remote Slurm via SSH to mng02) ──
+  umrs-server-octopus:
+    build:
+      context: ../../../
+      dockerfile: umrs/docker/Dockerfile.server
+    image: localhost/umrs-server:latest
+    container_name: umrs-server-octopus
+    restart: unless-stopped
+    network_mode: host
+    env_file: .env
+    environment:
+      UMRS_SITE_CONFIG: /etc/umrs/site.yaml
+      UMRS_CONFIG: /etc/umrs
+      UMRS_CERTIFICATION_MODE: ${UMRS_CERTIFICATION_MODE:-warn}
+      UMRS_PREFLIGHT_MODE: ${UMRS_PREFLIGHT_MODE:-warn}
+      UMRS_CONTROL_PORT: ${UMRS_OCTOPUS_ZMQ_PORT:-50120}
+      UMRS_DATA_PORT_RANGE: ${UMRS_OCTOPUS_DATA_PORT_RANGE:-50121-50128}
+      UMRS_HTTP_PORT: ${UMRS_OCTOPUS_PORT:-8006}
+      UMRS_HTTP_HOST: ${UMRS_HTTP_HOST:-0.0.0.0}
+      DB_HOST: "127.0.0.1"
+      DB_PORT: ${POSTGRES_PORT:-5432}
+      DB_SUPERUSER: ${POSTGRES_USER:-umrs}
+      DB_SUPERUSER_PASSWORD: ${POSTGRES_PASSWORD}
+      UMRS_REGISTRY_POSTGRES_DSN: "postgres://${POSTGRES_USER:-umrs}:${POSTGRES_PASSWORD}@127.0.0.1:${POSTGRES_PORT:-5432}/${POSTGRES_DB_OCTOPUS:-front_octopus}"
+      S3_ENDPOINT_URL: "http://127.0.0.1:${MINIO_PORT:-9000}"
+      S3_ACCESS_KEY: ${MINIO_ROOT_USER}
+      S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      S3_REGION: ${S3_REGION:-us-east-1}
+      S3_BUCKET: ${S3_BUCKET:-r4-data}
+      S3_USE_SSL: ${S3_USE_SSL:-false}
+      S3_PRESIGN_ENDPOINT: ${S3_PRESIGN_ENDPOINT:-http://127.0.0.1:${MINIO_PORT:-9000}}
+      VISION_S3_PRESIGN_ENDPOINT: ${VISION_S3_PRESIGN_ENDPOINT:-http://minio-host:19000}
+      UMRS_RAG_DIRECT_URL: "http://127.0.0.1:${UMRS_RAG_PORT:-8081}"
+      UMRS_ADMIN_S3_CONFIGURATION_FILE: /etc/umrs/s3cfg
+      UMRS_AUTH_MODE: ${UMRS_AUTH_MODE:-strict}
+      UMRS_ADVERTISE_HOST: ${UMRS_ADVERTISE_HOST:-}
+      UMRS_ZMQ_CURVE_SERVER_PUBLIC_KEY_FILE: /root/.config/umrs/curve-keys/server/server.key
+      UMRS_ZMQ_CURVE_SERVER_SECRET_KEY_FILE: /root/.config/umrs/curve-keys/server/server.key_secret
+      RIVAULT_STARTUP_TIMEOUT_SEC: ${RIVAULT_STARTUP_TIMEOUT_SEC:-2400}
+      RIVAULT_READINESS_TIMEOUT_SEC: ${RIVAULT_READINESS_TIMEOUT_SEC:-2400}
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ../octopus-front/site.yaml:/etc/umrs/site.yaml:ro,z
+      - ./conf_umrs_octopus.json:/etc/umrs/conf_umrs.json:z
+      - ./user_files_octopus:/etc/umrs/user_files:z
+      - ./s3cfg:/etc/umrs/s3cfg:ro,z
+      - ${HOME}/.ssh:/root/.ssh-host:ro,z
+      - ${HOME}/.config/umrs/curve-keys:/root/.config/umrs/curve-keys:ro,z
+      - umrs_config:/root/.config/umrs
+      - type: tmpfs
+        target: /run/umrs-ssh
+        tmpfs:
+          size: 10485760
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        cp -a /root/.ssh-host/* /root/.ssh/ 2>/dev/null || true
+        chmod 700 /root/.ssh
+        chmod 600 /root/.ssh/* 2>/dev/null || true
+        cp -f /etc/umrs/s3cfg /root/.config/umrs/s3cfg 2>/dev/null || true
+        exec python /app/umrs-src/server_umrs.py -c /etc/umrs/conf_umrs.json
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      umrs-server-rccs:
+        condition: service_healthy
+
+  # ─── MCP Apps — Interactive UI server ────────────────────────────────────
+  mcp-apps:
+    build:
+      context: ../../../mcp-apps
+      dockerfile: Dockerfile
+    image: localhost/mcp-apps:latest
+    container_name: umrs-mcp-apps
+    restart: unless-stopped
+    # Expose SSE port (8085) for Gateway proxy; stdio clients do not need it
+    ports:
+      - "127.0.0.1:${MCP_APP_PORT:-8085}:8085"
+    environment:
+      NODE_ENV: production
+      MCP_TRANSPORT: ${MCP_TRANSPORT:-stdio}
+      MCP_PORT: 8085
+      SSE_ENDPOINT: /mcp
+      R4_GATEWAY_URL: http://127.0.0.1:${NGINX_PORT:-8080}
+      R4_GATEWAY_TOKEN: ${R4_GATEWAY_TOKEN:-}
+    healthcheck:
+      test: ["CMD-SHELL", "ps aux | grep -v grep | grep 'node' || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    depends_on:
+      - umrs-server-rccs
+      - umrs-server-ai4s
+      - umrs-server-bdrt
+
+volumes:
+  umrs_pg_data:
+    external: true
+  umrs_minio_data:
+    external: true
+  umrs_config:

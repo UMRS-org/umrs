@@ -1,0 +1,107 @@
+# Pool roster: bdrt (NVIDIA GB10 DGX-Spark, aarch64) — Qwen3.6-35B-A3B-NVFP4 · DeepSeek-V4-Flash · GLM-5.2 IQ1_S
+# Usage: start SSH tunnel, then pool up against the bdrt source:
+#   umrs/deploy/bdrt/ssh_tunnel.sh &            # forwards gateway 18080 + ZMQ + S3
+#   r4 source use bdrt && r4 pool up umrs/deploy/bdrt/pool-bdrt-3models.yaml
+#
+# Target: nimbus-0 login node → Slurm partitions `spark` (1 node) / `spark-double` (2 nodes).
+#         GB10 Grace-Blackwell, 128 GiB unified memory per node.
+#
+# ── STATUS (2026-07-08): bdrt is NOT ready. Do not `pool up` yet. ──────────────
+#   BLOCKERS discovered on nimbus-0:
+#     1. UMRS/gateway stack is NOT deployed (no .venv, no admin_tokens.json, no
+#        rivault_data/ Postgres, no server.pid, no umrs/vllm processes).
+#     2. Gateway moved off 8080 → 18080 (RESOLVED 2026-07-08). nimbus-0 already
+#        binds *:8080 with a system "Certificate System" (Dogtag PKI). Config now
+#        sets rccs_gateway_port: 18080 (group_vars/bdrt.yaml) + ssh_tunnel.sh +
+#        r4 source `bdrt` (http://127.0.0.1:18080).
+#     3. NO model weights are staged: /home/mnagaso/umrs_models does not exist.
+#        The rccs weights (/lvs0/rccs-dmp/...) are NOT visible here (separate FS).
+#     4. Remote repo checkout is on branch `main` (umrs submodule detached HEAD)
+#        — this pool file + latest bdrt config are not on the box yet.
+#
+#   BRINGUP RUNBOOK (in order):
+#     a. (DONE) 8080 conflict resolved → gateway on 18080 in
+#        `deploy/ansible/inventory/bdrt/group_vars/bdrt.yaml`, `ssh_tunnel.sh`,
+#        and r4 source `bdrt`.
+#     b. Deploy via Ansible (NEVER ad-hoc SSH):
+#          cd deploy/ansible
+#          ./bootstrap.sh --profile bdrt --check --diff   # dry run first
+#          ./bootstrap.sh --profile bdrt                  # live
+#     c. Stage weights onto /home/mnagaso/umrs_models (download via UMRS
+#        model-stage job with egress, or copy from source). GB10 is aarch64 —
+#        confirm the NVFP4 / GGUF artifacts match this arch.
+#     d. Register each model in the bdrt catalog (name must match `model:` below):
+#          umrs-client --profile bdrt model register <name> <path> --type llm --scope user
+#     e. r4 pool up pool-bdrt-3models.yaml   (or select just the spark-double entry)
+
+pool: bdrt-3models
+defaults:
+  tier: user
+  ttl_sec: 0              # never expires
+  timeout: 86400
+
+endpoints:
+  # ── Qwen3.6-35B-A3B-NVFP4 (single node → spark) ──────────────────────
+  #  35B MoE (3B active), NVFP4 (Blackwell-native 4-bit float). Fits 1× GB10
+  #  (128 GiB unified). qwen3_moe architecture, tool calling + reasoning.
+  - name: qwen3.6-35b-a3b-nvfp4
+    model: Qwen3.6-35B-A3B-NVFP4
+    tier: user
+    node_count: 1
+    partition: spark
+    max_model_len: 262144
+    env_vars:
+      VLLM_PATH_TO_HUGGINGFACE: "/home/mnagaso/umrs_models"
+      VLLM_MODEL: "Qwen3.6-35B-A3B-NVFP4"
+      VLLM_TOKENIZER: "Qwen3.6-35B-A3B-NVFP4"
+      VLLM_GPU_MEM_UTIL: "0.78"      # GB10 unified-memory headroom (bdrt group_vars)
+      VLLM_MAX_NUM_SEQS: "4"
+      VLLM_TOOL_CALL_PARSER: "qwen3_xml"
+      VLLM_REASONING_PARSER: "qwen3"
+      VLLM_TRUST_REMOTE_CODE: "1"
+      RCCS_SKIP_CDI: "1"
+
+  # ── DeepSeek-V4-Flash (single node → spark) ──────────────────────────
+  #  DeepSeek-V4 family MoE ("Flash" variant).
+  #  NOTE: DeepSeek-V4 produces NaN/garbage logits under CUDA-graph capture —
+  #    enforce-eager is REQUIRED regardless of context length (model property).
+  #  TODO(chat-template): checkpoint ships NO Jinja chat template. Provide one
+  #    via VLLM_CHAT_TEMPLATE=<path.jinja> before the endpoint serves /chat.
+  - name: deepseek-v4-flash
+    model: DeepSeek-V4-Flash
+    tier: user
+    node_count: 1
+    partition: spark
+    max_model_len: 262144
+    env_vars:
+      VLLM_PATH_TO_HUGGINGFACE: "/home/mnagaso/umrs_models"
+      VLLM_MODEL: "DeepSeek-V4-Flash"
+      VLLM_TOKENIZER: "DeepSeek-V4-Flash"
+      VLLM_GPU_MEM_UTIL: "0.78"
+      VLLM_MAX_NUM_SEQS: "4"
+      VLLM_ENFORCE_EAGER: "1"        # DeepSeek-V4 NaN guard (cudagraph capture unsafe)
+      VLLM_REASONING_PARSER: "deepseek_r1"
+      VLLM_TRUST_REMOTE_CODE: "1"
+      # VLLM_CHAT_TEMPLATE: "/home/mnagaso/umrs_models/DeepSeek-V4-Flash/chat_template.jinja"
+      RCCS_SKIP_CDI: "1"
+
+  # ── GLM-5.2 IQ1_S (1-bit GGUF, 2 nodes → spark-double) ───────────────
+  #  GLM-5.2 744B MoE, 1-bit GGUF (IQ1_S). Single merged .gguf served by vLLM
+  #  with tokenizer loaded separately. 2-node pipeline-parallel (PP=2) on the
+  #  spark-double partition. GLM requires enforce-eager.
+  #  DO NOT `pool up` until weights finish downloading AND the model is
+  #  registered as `glm-5.2-iq1s` in the bdrt catalog.
+  - name: glm-5.2-iq1s
+    model: glm-5.2-iq1s
+    tier: user
+    node_count: 2
+    partition: spark-double
+    max_model_len: 1048576
+    env_vars:
+      VLLM_PATH_TO_HUGGINGFACE: "/home/mnagaso/umrs_models"
+      # vLLM GGUF layout: dir with config.json + model.gguf symlink + tokenizer files
+      VLLM_MODEL: "glm-5.2-iq1s-vllm"
+      VLLM_GPU_MEM_UTIL: "0.78"
+      VLLM_MAX_NUM_SEQS: "4"
+      VLLM_ENFORCE_EAGER: "1"        # GLM-5.2 requires eager mode
+      RCCS_SKIP_CDI: "1"

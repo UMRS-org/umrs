@@ -1,0 +1,158 @@
+# yaml-language-server: $schema=../../src/umrs/orchestrator/site-config.schema.json
+# ─────────────────────────────────────────────────────────────
+# UMRS Site Configuration — octopus (AMD MI300X + NVIDIA H200 cluster)
+# ─────────────────────────────────────────────────────────────
+# Login node:  mng02 (octopus.riken.jp)
+# Compute:     Two Slurm partitions:
+#   • `mi300x` — AMD Instinct MI300X, x86_64 / ROCm, 8 GPUs/node, 192 GiB HBM3
+#                per GPU. Uses the vllm/vllm-openai-rocm image.
+#   • `h200`   — NVIDIA H200, x86_64 / CUDA, 141 GiB HBM3e per GPU. Uses the
+#                standard vllm/vllm-openai CUDA image.
+#
+# This file replaces the hardcoded paths scattered across
+# serve-model.slurm, env.example, and environment variables.
+#
+# Loading priority:
+#   1. UMRS_SITE_CONFIG=/path/to/this/file
+#   2. ./site.yaml  (in CWD when starting UMRS)
+#   3. ~/.config/umrs/site.yaml
+#
+# ─── Container runtime note (docker vs podman) ───────────────
+# The user requested Docker for octopus. The standalone harness
+# (start.sh / stop.sh) and the compute-side serve-model.slurm wrapper are
+# currently podman/podman-compose based. runtime.kind is therefore left at
+# `podman-compose` so the existing wrapper works. Migrating the login-node
+# infra and compute mini-rivault to docker-compose is a documented follow-up
+# (see deploy/ansible/inventory/octopus/group_vars/octopus.yaml). Per-partition
+# vLLM images are resolved from partition_profiles below: mi300x uses the ROCm
+# image (vllm_docker_image), h200 uses the CUDA image (vllm_docker_tag).
+# ─────────────────────────────────────────────────────────────
+
+name: octopus
+description: >-
+  RIKEN octopus — AMD Instinct MI300X (x86_64 / ROCm) on the `mi300x` partition
+  and NVIDIA H200 (x86_64 / CUDA) on the `h200` partition. Slurm scheduler on
+  login node mng02 (octopus.riken.jp).
+
+scheduler:
+  kind: slurm-podman
+  partition: "mi300x,h200"      # MI300X (AMD/ROCm) primary; H200 (NVIDIA/CUDA) secondary
+  account: ""                   # set if octopus requires a Slurm account for job accounting
+  qos: ""
+  time_limit: "2-00:00:00"   # 2 days; allows queued jobs to run uninterrupted once started
+  gpus: 1                       # one MI300X per mini-rivault (192 GiB HBM3)
+  cpus: 8
+  memory: ""                    # omit --mem; let the scheduler assign node defaults
+  require_user_slurm_account: false
+
+runtime:
+  kind: podman-compose                   # see container runtime note above (docker migration is a follow-up)
+  rivault_dir: /home/mnagaso/ai4s-platform/umrs/src/umrs/mini-rivault-llm
+  repo_dir: /home/mnagaso/ai4s-platform/umrs
+  vision_image: umrs-vision:latest
+  compose_file: ""                       # defaults to serve-model.yaml inside rivault_dir
+  profiles:
+    - harness
+    - vllm
+    - vision-bentoml
+    - litellm-db
+  gpu_passthrough: auto                  # AMD: ROCm device passthrough (/dev/kfd, /dev/dri)
+  cdi_spec: /var/run/cdi/amd.yaml
+  cgroup_manager: cgroupfs
+  storage_root: ""                       # auto-set to /var/tmp/podman_$USER/storage
+
+storage:
+  model_cache_dir: /home/${USER}/umrs_models/hf
+  sam3_model_path: /home/${USER}/umrs_models/sam3.1
+  # HMAE is a user-specific private model.
+  # Configure per-user via env overrides (HMAE_MODEL_PATH, HMAE_CONFIG_PATH, HMAE_CHECKPOINT).
+  hmae_model_path: ""
+  hmae_config_path: ""
+  hmae_checkpoint: ""
+  vision_tarball: /home/${USER}/umrs_models/umrs-vision.tar  # base path; wrapper appends -amd64.tar (octopus is x86_64)
+  user_model_path: /home/${USER}/umrs_models
+  s3_tunnel_host: ""                     # auto-set to $SLURM_SUBMIT_HOST
+  s3_tunnel_port: 9000
+
+network:
+  litellm_port: 8001
+  litellm_master_key: ""  # Set LITELLM_MASTER_KEY in .env or operator environment.
+  port_range_min: 11434
+  port_range_max: 11534
+  port_strategy: static_range
+
+vllm:
+  model: intfloat/e5-base-v2
+  # Global default vLLM image tag (CUDA). Per-partition profiles override this:
+  #   • mi300x sets vllm_docker_image to the ROCm image (repo differs).
+  #   • h200 sets vllm_docker_tag to the CUDA nightly tag.
+  # Leave empty so the wrapper's arch auto-detect picks a CUDA x86_64 tag only
+  # as a last-resort fallback for NVIDIA partitions.
+  docker_tag: ""
+  # MI300X has 192 GiB HBM3; 0.85 leaves headroom for harness + KV cache.
+  gpu_mem_util: 0.85
+  max_model_len: 512
+  max_num_seqs: 4
+  tensor_parallel_size: 1
+
+# Workflow step execution backend.
+# When kind="slurm" each workflow step is submitted as a Slurm job
+# to a GPU compute node (SlurmStepExecutor). This is the correct
+# mode for octopus where UMRS runs on the login node and steps must
+# execute on MI300X compute nodes with GPUs.
+step_executor:
+  kind: slurm                                 # Submit steps as Slurm jobs to GPU compute nodes
+  partition: mi300x                           # AMD MI300X partition
+  gpus: 1                                     # one MI300X per step
+  cpus: 8                                     # 8 CPUs per step
+  memory: ""                                  # omit --mem; let the scheduler assign node defaults
+  time_limit: "01:00:00"                      # 1 hour per step
+  account: ""                                 # set if octopus requires a Slurm account
+  image: ""                                   # No default image; use routing_hints.image
+  gpu: true                                   # Attach GPU by default
+
+database:
+  host: localhost
+  port: 5432
+  superuser: umrs
+  superuser_password: ""  # Set POSTGRES_PASSWORD or DB_SUPERUSER_PASSWORD in .env.
+  user_password: ""
+  registry_dsn: ""  # start.sh derives UMRS_REGISTRY_POSTGRES_DSN from runtime env.
+
+# ─────────────────────────────────────────────────────────────
+# Per-partition profiles — eliminates fragile runtime detection
+# of OCI runtime, userns_mode, network backend, and GPU vendor.
+#
+# The wrapper looks up the profile for the assigned Slurm
+# partition and applies the values directly instead of probing
+# podman info / nvidia-smi / rocm-smi on every job startup.
+# ─────────────────────────────────────────────────────────────
+partition_profiles:
+  # ── x86_64 AMD ROCm (Instinct MI300X) — primary octopus partition ──
+  mi300x:
+    arch: x86_64
+    gpu_vendor: amd
+    gpu_memory_gb: 192           # MI300X 192 GiB HBM3 per GPU
+    oci_runtime: crun
+    userns_mode: "keep-id:uid=0,gid=0"
+    network_backend: netavark
+    # ROCm build lives in a different repo (vllm-openai-rocm, not vllm-openai),
+    # so the full image must be overridden — tag-only override cannot express it.
+    # `docker pull vllm/vllm-openai-rocm:latest` is available on octopus.
+    vllm_docker_image: docker.io/vllm/vllm-openai-rocm:latest
+    vllm_docker_tag: ""        # ignored when vllm_docker_image is set
+    gpus: 1                    # one MI300X per mini-rivault; raise with tensor_parallel_size to shard
+    needs_netavark_switch: true
+
+  # ── x86_64 NVIDIA CUDA (H200) — secondary octopus partition ──
+  h200:
+    arch: x86_64
+    gpu_vendor: nvidia
+    gpu_memory_gb: 141           # H200 141 GiB HBM3e per GPU
+    oci_runtime: crun
+    userns_mode: "keep-id:uid=0,gid=0"
+    network_backend: netavark
+    # Standard CUDA vLLM image (vllm/vllm-openai) parameterised by tag.
+    vllm_docker_tag: cu130-nightly-x86_64
+    gpus: 1                    # one H200 per mini-rivault; raise with tensor_parallel_size to shard
+    needs_netavark_switch: true

@@ -1,0 +1,29 @@
+{
+    "name": "text-stats-pipeline",
+    "version": "1.0",
+    "description": "Demo: compute text statistics using a user step",
+    "source": {
+        "type": "local_path",
+        "path": "/PLACEHOLDER/example_scripts"
+    },
+    "requirements": [],
+    "resources": {
+        "gpu_count": 0,
+        "cpu_limit": "1",
+        "memory_limit": "512Mi",
+        "timeout_seconds": 120
+    },
+    "steps": [
+        {
+            "name": "text_stats",
+            "entrypoint": "text_stats:TextStatsStep",
+            "config": {
+                "output_prefix": "stats/"
+            }
+        }
+    ],
+    "output": {
+        "return_type": "file",
+        "embedding_vector_size": 0
+    }
+}

@@ -1,0 +1,153 @@
+# yaml-language-server: $schema=../../src/umrs/orchestrator/site-config.schema.json
+# ─────────────────────────────────────────────────────────────
+# UMRS Site Configuration — RCCS Front-End Server
+# ─────────────────────────────────────────────────────────────
+# Front-end server deployment: persistent services (UMRS, Gateway,
+# Postgres, MinIO) run here. Slurm jobs are submitted remotely via
+# SSH to the rccs-cloud login node.
+#
+# Topology (no-tunnel production):
+#   client --HTTP--> umrs-front (direct) --SSH--> rccs-cloud (login) --sbatch--> compute
+#
+# Topology (tunnel mode):
+#   client --SSH--> umrs-front --SSH--> rccs-cloud (login) --sbatch--> compute
+#
+# Key differences from rccs-cloud:
+#   - scheduler.kind = slurm-remote (SSH-based Slurm access)
+#   - No Lustre filesystem access (models only on login+compute)
+#   - Reverse tunnel for MinIO: compute→login:9000→front-end:9000
+#   - Forward tunnels per endpoint for LLM proxy traffic
+# ─────────────────────────────────────────────────────────────
+
+name: rccs-front
+description: >-
+  RIKEN RCCS front-end server — Linux VM with Podman running persistent
+  services. Slurm commands routed via SSH to rccs-cloud login node.
+  No Lustre access. Clients connect via VPN (direct HTTP).
+
+scheduler:
+  kind: slurm-remote
+  partition: ng-dgx-m0,ng-dgx-m1,ng-dgx-m2,ng-dgx-m3
+  account: cloud-users
+  qos: ""
+  time_limit: "23:00:00"  # ng-dgx-m* max is 1-00:00:00; 23h gives clean RIVAULT_JOB_TIMEOUT exit headroom
+  gpus: 0
+  cpus: 8
+  memory: ""
+  slurm_delegation: per_user_ssh
+  service_pubkey_path: /lvs0/rccs-dmp/masaru.nagaso/ai4s-platform/keys/umrs-service.pub
+  slurm_proxy_path: /lvs0/rccs-dmp/masaru.nagaso/ai4s-platform/bin/umrs-slurm-proxy
+  require_user_slurm_account: false
+
+runtime:
+  kind: podman-compose
+  rivault_dir: ""  # Not applicable — mini-rivault runs on compute nodes
+  repo_dir: ""
+  vision_image: ""
+  compose_file: docker-compose.yml  # Local services only (Gateway, UMRS, Postgres, MinIO)
+  profiles:
+    - services
+  gpu_passthrough: auto
+  cdi_spec: ""
+  cgroup_manager: cgroupfs
+  storage_root: ""
+
+storage:
+  model_cache_dir: ""  # No local model cache — models on Lustre (login+compute only)
+  sam3_model_path: /lvs0/dne1/rccs-dmp/masaru.nagaso/umrs_models/sam3.1
+  hmae_model_path: /lvs0/dne1/rccs-dmp/masaru.nagaso/umrs_models/hmae
+  hmae_config_path: ""
+  hmae_checkpoint: ""
+  vision_tarball: ""
+  user_model_path: ""
+  s3_tunnel_host: ""
+  s3_tunnel_port: 9000
+
+network:
+  litellm_port: 8001
+  litellm_master_key: ""  # Set LITELLM_MASTER_KEY in .env
+  port_range_min: 12000   # Local tunnel port range (forward tunnels to compute)
+  port_range_max: 12999
+  port_strategy: static_range
+
+vllm:
+  model: intfloat/e5-base-v2
+  docker_tag: cu130-nightly-aarch64
+  gpu_mem_util: 0.78
+  max_model_len: 512
+  max_num_seqs: 4
+  tensor_parallel_size: 1
+
+database:
+  host: localhost
+  port: 5432
+  superuser: umrs
+  superuser_password: ""  # Set POSTGRES_PASSWORD in .env
+  user_password: ""
+  registry_dsn: ""
+
+# ─────────────────────────────────────────────────────────────
+# SSH Remote Slurm Configuration
+# ─────────────────────────────────────────────────────────────
+# These values are read by SSHControlConfig.from_site_config()
+# when scheduler.kind = slurm-remote.
+extra:
+  ssh_target: rccs-cloud
+  ssh_user: "masaru.nagaso"
+  ssh_port: 22
+  ssh_connect_timeout: 15
+  ssh_command_timeout: 30
+  ssh_server_alive_interval: 30
+  ssh_server_alive_count_max: 3
+  ssh_control_path: "/run/umrs-ssh/rccs-cloud-%p"  # tmpfs inside container
+  # Reverse tunnel: expose front-end MinIO (9000) on login node so
+  # compute nodes' existing tunnel to login:9000 reaches front-end's MinIO.
+  ssh_reverse_tunnels:
+    - "127.0.0.1:9000:127.0.0.1:9000"
+  # Remote path for job info files (on Lustre, accessed via SSH cat)
+  slurm_job_info_dir: /lvs0/rccs-dmp/masaru.nagaso/ai4s-platform/umrs/deploy/rccs/jobs
+  # Wrapper script for Podman-based serve on compute nodes
+  slurm_wrapper_script: /lvs0/rccs-dmp/masaru.nagaso/ai4s-platform/umrs/deploy/rccs/serve-model.slurm
+
+# Partition profiles are identical to rccs-cloud — same compute hardware
+partition_profiles:
+  ng-dgx-m0:
+    arch: aarch64
+    gpu_vendor: nvidia
+    gpu_memory_gb: 128
+    oci_runtime: runc
+    userns_mode: host
+    network_backend: netavark
+    vllm_docker_tag: cu130-nightly-aarch64
+    gpus: 0
+    needs_netavark_switch: false
+  ng-dgx-m1:
+    arch: aarch64
+    gpu_vendor: nvidia
+    gpu_memory_gb: 128
+    oci_runtime: runc
+    userns_mode: host
+    network_backend: netavark
+    vllm_docker_tag: cu130-nightly-aarch64
+    gpus: 0
+    needs_netavark_switch: false
+  ng-dgx-m2:
+    arch: aarch64
+    gpu_vendor: nvidia
+    gpu_memory_gb: 128
+    oci_runtime: runc
+    userns_mode: host
+    network_backend: netavark
+    vllm_docker_tag: cu130-nightly-aarch64
+    gpus: 0
+    needs_netavark_switch: false
+  ng-dgx-m3:
+    arch: aarch64
+    gpu_vendor: nvidia
+    gpu_memory_gb: 128
+    oci_runtime: runc
+    userns_mode: host
+    network_backend: netavark
+    vllm_docker_tag: cu130-nightly-aarch64
+    gpus: 0
+    needs_netavark_switch: false
