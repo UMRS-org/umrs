@@ -48,7 +48,7 @@ services:
 
   # ─── MinIO (shared object store) ───────────────────────────────────────────
   minio:
-    image: docker.io/minio/minio:latest
+    image: docker.io/minio/minio:RELEASE.2025-04-22T22-12-26Z
     container_name: umrs-minio
     restart: unless-stopped
     environment:
