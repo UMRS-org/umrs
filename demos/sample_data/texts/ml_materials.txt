@@ -1,0 +1,35 @@
+Machine Learning for Materials Science
+
+The intersection of machine learning and materials science is driving a
+paradigm shift from trial-and-error experimentation to data-driven
+discovery of advanced materials.  Neural network potentials, trained on
+density-functional theory (DFT) calculations, enable molecular dynamics
+simulations that are orders of magnitude faster than ab initio methods
+while retaining near-DFT accuracy.
+
+Key approaches include:
+1. Graph Neural Networks (GNNs) that encode crystal structures as graphs,
+   with atoms as nodes and bonds as edges.  Models like MEGNet and CGCNN
+   predict formation energy, band gap, and elastic moduli directly from
+   composition and structure.
+2. Generative models (VAE, diffusion) for inverse materials design,
+   proposing new crystal structures that satisfy target properties.
+3. Transfer learning from large pre-trained models to small experimental
+   datasets — critical when only tens of measurements exist.
+
+Self-supervised methods such as Masked Auto-Encoders (MAE) learn
+representations from unlabelled image data of microstructures.
+Hierarchical MAE (HMAE) extends this to multi-scale microscopy:
+the encoder captures local texture at the patch level while a
+hierarchical decoder reconstructs global context through a
+quadtree decomposition.
+
+Segmentation models (SAM, SAM3) automate grain boundary detection,
+defect identification, and phase mapping in scanning electron microscopy
+(SEM) images.  When combined with embedding-based retrieval, researchers
+can search large image archives by visual similarity — a capability
+central to the UMRS platform's design.
+
+Active learning further reduces annotation effort: the model queries
+the oracle (human expert) only for the most informative samples,
+achieving high accuracy with minimal labelling.

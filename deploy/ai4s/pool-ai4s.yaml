@@ -1,0 +1,482 @@
+# Pool roster: AI4S Supercomputer — 3 large models
+# Usage: R4_GATEWAY_URL=http://localhost:8002 r4 pool up pool-ai4s.yaml
+#
+# Target: ai4s-front → SSH → AI4S login (GB200 NVL4, 173.2 GiB/GPU × 4)
+#
+# Model sizing notes (GB200 B200 @ 173.2 GiB/GPU, 4/node = 692.8 GiB):
+#
+#   DeepSeek-V4-Pro (deepseek-ai/DeepSeek-V4-Pro):
+#     - 1.6T total params, 49B activated (MoE)
+#     - Stored in FP4+FP8 mixed (~862B stored params)
+#     - 1M context, Hybrid Attention (CSA+HCA)
+#     - Needs 2n4gpu (8× B200 = 1385.6 GiB) for safe loading
+#     - vLLM/SGLang supported
+#
+#   GLM-5.1 (zai-org/GLM-5.1):
+#     - 754B stored params (MoE, glm_moe_dsa architecture)
+#     - BF16 weights → ~1.5 TB; FP8 → ~754 GiB
+#     - Needs 2n4gpu (8× B200) with FP8 quantization
+#     - vLLM v0.19.0+, SGLang v0.5.10+ required
+#
+#   GLM-5.2 (zai-org/GLM-5.2):
+#     - 753B stored params (MoE, glm_moe_dsa architecture)
+#     - BF16 weights → ~1.5 TB; FP8 → ~753 GiB
+#     - 1M native context (solid, per upstream)
+#     - Needs 4n4gpu (16× B200) for native 1M context
+#     - vLLM v0.23.0+, SGLang v0.5.13.post1+ required
+#
+#   Kimi K2.6 (moonshotai/Kimi-K2.6):
+#     - 1T total params, 32B activated (MoE, 384 experts, 8 active)
+#     - Native INT4 quantization → ~500 GiB
+#     - 256K context, multimodal (MoonViT vision encoder)
+#     - Fits in 1n4gpu (4× B200 = 692.8 GiB) with INT4
+#     - vLLM/SGLang/KTransformers supported
+
+#   Kimi K2.7 Code (moonshotai/Kimi-K2.7-Code):
+#     - Coding-focused agentic MoE built on K2.6 (1T total, 32B activated)
+#     - INT4 quantization → ~714 GiB (same as K2.6)
+#     - 256K context, thinking-only mode, multimodal (MoonViT)
+#     - Fits in 1n4gpu (4× B200 = 692.8 GiB) with INT4, TP=4
+#     - Uses same kimi_k2 tool-call-parser + reasoning-parser as K2.6
+#     - vLLM 0.19.1+ required, --mm-encoder-tp-mode data recommended
+
+pool: ai4s-research
+defaults:
+  tier: system            # system tier → shared, visible to all users
+  ttl_sec: 0              # 0 = never expires. 4n4gpu-p has unlimited walltime;
+                          # system-tier pool models must persist until explicitly torn down.
+  timeout: 86400          # HTTP request timeout (seconds) for `pool up`, NOT endpoint TTL.
+                          # Endpoint lifetime is controlled by ttl_sec above.
+
+endpoints:
+  - name: deepseek-v4-pro
+    model: DeepSeek-V4-Pro
+    tier: system
+    gpu_count: 4           # GPUs per node
+    node_count: 4          # validated multi-node config (TP=4 × PP=4 = 16× B200, 2770 GiB) serving 1M KV today.
+    partition: 4n4gpu-p    # unlimited walltime (MinNodes=0/MaxNodes=unlimited → node_count drives allocation, not the name)
+    max_model_len: 1048576 # native 1M context (full token size)
+    # NEXT-CANARY: GB200 recipe = 2 nodes TP=8 + --enable-expert-parallel, PP=1 (~960 GiB FP4+FP8 fits 8 GPUs).
+    #   Halves GPU count + removes pipeline bubbles, BUT halves aggregate memory → 1M KV must be re-validated
+    #   before reducing node_count to 2 (current serve.slurm would give TP=4 PP=2; recipe TP=8 PP=1+EP needs serve.slurm rework).
+
+  # ── DeepSeek-V4-Pro V2 (optimized baseline, 2026-06-22) ───────────────────
+  # Same 4n4gpu layout as baseline, with explicit throughput tuning.
+  #   max_num_seqs=16: explicit concurrency cap (was unset → vLLM default 256,
+  #     effectively limited by 1M KV memory).
+  #   max_num_batched_tokens=32768: faster prefill (was auto-derived 16384).
+  # Keeps eager mode (CUDA graphs still unsafe for DeepSeek-V4 on this build).
+
+  - name: deepseek-v4-pro-v2
+    model: DeepSeek-V4-Pro
+    tier: system
+    gpu_count: 4
+    node_count: 4
+    partition: 4n4gpu-p
+    max_model_len: 1048576 # 1M context
+    env_vars:
+      VLLM_MAX_NUM_SEQS: "16"                # explicit concurrency cap
+      VLLM_MAX_NUM_BATCHED_TOKENS: "32768"   # faster prefill (was 16384)
+
+  # ── DeepSeek-V4-Pro speedup canaries (2026-06-08) ──────────────────────────
+  # See: deepseek-v4-eager-graphs-garbage-2026-06-08 for background on
+  # eager-mode requirement (CUDA graphs produce garbled output on this build).
+
+  - name: deepseek-v4-pro-tep
+    model: DeepSeek-V4-Pro
+    tier: system
+    gpu_count: 4
+    node_count: 2          # TEP: 2 nodes × 4 GPU = 8× B200 (1385.6 GiB)
+    partition: 2n4gpu      # NVLink × 2 trays, InfiniBand between
+    max_model_len: 262144  # CANARY: start 256K, validate KV fit before 1M
+    parallel_strategy: tep # TP=8 PP=1 + expert-parallel — eliminates pipeline bubbles
+    env_vars:
+      VLLM_MAX_NUM_SEQS: "32"  # more concurrent headroom with 256K KV
+      VLLM_MAX_NUM_BATCHED_TOKENS: "32768"  # faster prefill
+
+  - name: deepseek-v4-pro-128k
+    model: DeepSeek-V4-Pro
+    tier: system
+    gpu_count: 4
+    node_count: 4          # same allocation as baseline 1M
+    partition: 4n4gpu-p
+    max_model_len: 131072  # 128K — ~8× more KV headroom vs 1M
+    env_vars:
+      VLLM_MAX_NUM_SEQS: "32"
+      VLLM_MAX_NUM_BATCHED_TOKENS: "32768"
+
+  - name: deepseek-v4-pro-tep-128k
+    model: DeepSeek-V4-Pro
+    tier: system
+    gpu_count: 4
+    node_count: 2          # TEP: 2 nodes × 4 GPU = 8× B200
+    partition: 2n4gpu
+    max_model_len: 131072  # 128K — max headroom in TEP layout
+    parallel_strategy: tep # TP=8 PP=1 — no pipeline bubbles + 128K KV
+    env_vars:
+      VLLM_MAX_NUM_SEQS: "32"
+      VLLM_MAX_NUM_BATCHED_TOKENS: "32768"
+
+  - name: glm-5.1
+    model: GLM-5.1
+    tier: system
+    gpu_count: 4
+    node_count: 4          # validated multi-node config (TP=4 × PP=4) serving native context today.
+    partition: 4n4gpu-p    # unlimited walltime; node_count drives allocation
+    max_model_len: 202752  # native context (full token size)
+    # NEXT-CANARY: GB200 recipe = 2 nodes TP=8, PP=1 (FP8 ~893 GiB fits 8 GPUs). Same memory-revalidation caveat as DeepSeek
+    #   before reducing node_count to 2. Also wire reasoning-parser glm45 (tool-parser glm47 already derived).
+
+  - name: glm-5.2
+    model: GLM-5.2
+    tier: system
+    gpu_count: 4
+    node_count: 4          # 4n4gpu for native 1M context (BF16 ~1.5TB; FP8 ~753GiB fits 4 nodes)
+    partition: 4n4gpu-p    # unlimited walltime
+    max_model_len: 1048576 # native 1M context (per upstream README: "solid 1M-token context")
+    env_vars:
+      # GLM-5.2's glm_moe_dsa DSA indexer (self_attn.indexer.k_norm) needs
+      # vLLM >= 0.23.0; the default v4 SIF ships 0.22.1rc1 and crashes with
+      # "weights were not initialized from checkpoint". Pin this model to the
+      # v6 overlay image (vLLM 0.23.1rc1 + Ray 2.48.0). serve.slurm reads
+      # RIVAULT_SIF from the job shell (--export=ALL). v4/v5 stay default for
+      # all other models. See ai4s-endpoint-restore-glm52-2026-06-17 memory.
+      RIVAULT_SIF: /work/hps0/home/ea0022/images/mini-rivault-aarch64-v6.sif
+      VLLM_MAX_NUM_SEQS: "32"                # align with v2; KV headroom available
+
+  # ── GLM-5.2 V2 (optimized baseline, 2026-06-22) ───────────────────────────
+  # Same 4n4gpu layout, with explicit throughput tuning.
+  #   max_num_seqs=32: explicit concurrency cap (raised from 16 after live KV
+  #     headroom observed; 51 % peak usage with 8 concurrent sequences).
+  #   max_num_batched_tokens=32768: faster prefill (was auto-derived 16384).
+  #   Keeps eager mode (conservative — CUDA graphs not yet validated clean for
+  #     GLM-5.2 on this vLLM build; see v2-graphs canary below).
+
+  - name: glm-5.2-v2
+    model: GLM-5.2
+    tier: system
+    gpu_count: 4
+    node_count: 4
+    partition: 4n4gpu-p
+    max_model_len: 1048576 # 1M context
+    env_vars:
+      RIVAULT_SIF: /work/hps0/home/ea0022/images/mini-rivault-aarch64-v6.sif
+      VLLM_MAX_NUM_SEQS: "32"                # explicit concurrency cap
+      VLLM_MAX_NUM_BATCHED_TOKENS: "32768"   # faster prefill (was 16384)
+
+  # ── GLM-5.2 V2 CUDA-graphs canary (2026-06-22) ────────────────────────────
+  # CANARY: Re-enable CUDA graphs for GLM-5.2. The tools "!!!!" garbage was
+  # fixed by VLLM_USE_FLASHINFER_MOE_FP16=0 (Triton MoE kernel), so CUDA graphs
+  # may now be safe. If this serves correctly, decode throughput improves
+  # 30-50%.
+  #
+  # RESULT (2026-06-23): FAILED. CUDA graphs still produce NaN/"!!!" on
+  # tool-call prompts even with Triton MoE. Eager mode required for GLM-5.2.
+  # Keep commented-out until a vLLM SIF build confirms NaN-free graph capture.
+  # Set VLLM_ENFORCE_EAGER=0 to re-enable CUDA graphs.
+
+  - name: glm-5.2-v2-graphs
+    model: GLM-5.2
+    tier: system
+    gpu_count: 4
+    node_count: 4
+    partition: 4n4gpu-p
+    max_model_len: 1048576 # 1M context
+    env_vars:
+      RIVAULT_SIF: /work/hps0/home/ea0022/images/mini-rivault-aarch64-v6.sif
+      VLLM_MAX_NUM_SEQS: "16"
+      VLLM_MAX_NUM_BATCHED_TOKENS: "32768"
+      VLLM_ENFORCE_EAGER: "0"              # CANARY: re-enable CUDA graphs
+
+  # ── GLM-5.2 throughput canaries (2026-06) ────────────────────────────────
+  # Full native 1M context on every variant that memory allows.
+  # Baseline prod: glm-5.2 (4n TP=4 × PP=4, BF16, eager, Triton MoE).
+  #
+  #   glm-5.2-graphs     — same 4n layout; decode-only CUDA graphs only
+  #   glm-5.2-tep-bf16   — 4n TEP (TP=16 PP=1 EP); BF16 ~1.5 TB needs 16 GPUs
+  #   glm-5.2-tep        — 2n TEP + FP8 + FlashInfer + graphs (~753 GiB weights)
+  #   glm-5.2-tep-4n     — 4n TEP + FP8 + FlashInfer + graphs (KV headroom vs 2n)
+
+  - name: glm-5.2-graphs
+    model: GLM-5.2
+    tier: system
+    gpu_count: 4
+    node_count: 4
+    partition: 4n4gpu-p
+    max_model_len: 1048576
+    env_vars:
+      RIVAULT_SIF: /work/hps0/home/ea0022/images/mini-rivault-aarch64-v6.sif
+      VLLM_CUDAGRAPH_MODE: FULL_DECODE_ONLY
+
+  - name: glm-5.2-tep-bf16
+    model: GLM-5.2
+    tier: system
+    gpu_count: 4
+    node_count: 4          # BF16 ~1.5 TB does not fit 2n4gpu (8× B200); TEP on full 16-GPU world
+    partition: 4n4gpu-p
+    max_model_len: 1048576
+    parallel_strategy: tep
+    env_vars:
+      RIVAULT_SIF: /work/hps0/home/ea0022/images/mini-rivault-aarch64-v6.sif
+      VLLM_MAX_NUM_SEQS: "32"
+      VLLM_MAX_NUM_BATCHED_TOKENS: "32768"
+
+  - name: glm-5.2-tep
+    model: GLM-5.2
+    tier: system
+    gpu_count: 4
+    node_count: 2          # GB200 recipe: FP8 ~753 GiB fits 8× B200; native 1M KV must validate
+    partition: 2n4gpu
+    max_model_len: 1048576
+    parallel_strategy: tep
+    env_vars:
+      RIVAULT_SIF: /work/hps0/home/ea0022/images/mini-rivault-aarch64-v6.sif
+      VLLM_QUANTIZATION: fp8
+      VLLM_FORCE_FLASHINFER_MOE: "1"
+      VLLM_CUDAGRAPH_MODE: FULL_DECODE_ONLY
+      VLLM_MAX_NUM_SEQS: "32"
+      VLLM_MAX_NUM_BATCHED_TOKENS: "32768"
+
+  - name: glm-5.2-tep-4n
+    model: GLM-5.2
+    tier: system
+    gpu_count: 4
+    node_count: 4          # FP8 + 1M with maximum KV headroom (same GPU count as prod, no PP bubbles)
+    partition: 4n4gpu-p
+    max_model_len: 1048576
+    parallel_strategy: tep
+    env_vars:
+      RIVAULT_SIF: /work/hps0/home/ea0022/images/mini-rivault-aarch64-v6.sif
+      VLLM_QUANTIZATION: fp8
+      VLLM_FORCE_FLASHINFER_MOE: "1"
+      VLLM_CUDAGRAPH_MODE: FULL_DECODE_ONLY
+      VLLM_MAX_NUM_SEQS: "32"
+      VLLM_MAX_NUM_BATCHED_TOKENS: "32768"
+
+  - name: kimi-k2.6
+    model: Kimi-K2.6
+    tier: system
+    gpu_count: 4
+    node_count: 1          # vLLM GB200 recipe: INT4 ~714 GiB fits ONE tray (4 GPUs); single-node TP=4 over NVLink avoids cross-node pipeline bubbles + Ray overhead
+    partition: 4n4gpu-p    # unlimited walltime; node_count=1 → single-node allocation on this partition
+    max_model_len: 245760  # 240K. Canary 10064 showed INT4 weights leave only 16.68 GiB/GPU KV at gpu_mem_util=0.9 → hard ceiling 254816 tokens for native 262144. Trimmed to 245760 for fragmentation margin. (orchestrator does not thread per-model gpu_memory_utilization, so raising util is not available via pool.)
+    env_vars:
+      VLLM_MAX_NUM_SEQS: "16"              # cap concurrency to the realistic KV budget
+    # 1T MoE (32B active, 384 experts), native INT4; TP=4 × PP=1 (single node)
+
+  # ── Kimi-K2.7-Code (coding-focused agentic variant of K2.6) ───────────────
+  # MoonshotAI K2.7 Code: K2.6 architecture, tuned for long-horizon SWE tasks.
+  # 1T MoE (32B active, 384 experts), thinking-only mode, 256K context.
+  # Uses same vLLM parser as K2.6 (kimi_k2 for tool + reasoning).
+  # INT4 ~714 GiB — same sizing as K2.6.
+  # Needs --mm-encoder-tp-mode data for vision encoder (small MoonViT).
+
+  - name: kimi-k2.7-code
+    model: Kimi-K2.7-Code    # registered UMRS name (HF: moonshotai/Kimi-K2.7-Code)
+    tier: system
+    gpu_count: 4
+    node_count: 1            # single-node TP=4 (same as K2.6 recipe)
+    partition: 4n4gpu-p      # unlimited walltime
+    max_model_len: 245760    # 240K (same INT4 KV headroom ceiling as K2.6)
+    env_vars:
+      VLLM_GPU_MEMORY_UTILIZATION: "0.90"
+      VLLM_MM_ENCODER_TP_MODE: "data"    # vision encoder data-parallel per recipe
+      VLLM_MAX_NUM_SEQS: "16"            # cap concurrency to the realistic KV budget
+    # Tool-call-parser + reasoning-parser = kimi_k2 (auto-derived by serve.slurm *kimi* match)
+    # thinking-only mode (preserve_thinking forced on); reasoning parser enabled.
+
+  # ── DiffusionGemma 26B-A4B-it (block-diffusion LLM) ──────────────────────
+  # Google diffusion model on Gemma 4 MoE backbone.
+  # 25.2B total / 3.8B active (128 experts, 8 active + 1 shared), 256K context.
+  # KEY CONSTRAINT: --max-num-seqs must be ≤4 — diffusion state tensors
+  #   (self_conditioning_probs) pre-allocate max_seqs × canvas_length × vocab_size
+  #   (4 × 256 × 262K = 268M floats), higher values cause OOM.
+  # Needs vllm-openai:gemma docker image (diffusion model support).
+  # Single GPU viable (BF16 ~50 GiB + diffusion buffers + KV). B200 1 GPU safe.
+  # Recommended: --generation-config vllm, --gpu-memory-utilization 0.85,
+  #   --hf-overrides '{"diffusion_sampler":"entropy_bound","diffusion_entropy_bound":0.1}'
+  # TTFT ~10× higher than autoregressive (489ms vs 53ms) but 1.9× output TPS.
+
+  - name: diffusiongemma-26b
+    model: diffusiongemma-26B-A4B-it   # registered UMRS name (HF: google/diffusiongemma-26B-A4B-it)
+    tier: system
+    gpu_count: 1           # BF16 ~50 GiB + diffusion buffers fits B200 (173.2 GiB)
+    node_count: 1
+    partition: 4n4gpu-p    # single GPU within a 4-GPU node; TP=1 adequate
+    max_model_len: 262144  # native 256K context
+    env_vars:
+      VLLM_MAX_NUM_SEQS: "4"              # hard limit — diffusion state OOM above 4
+      VLLM_GPU_MEMORY_UTILIZATION: "0.85" # headroom for denoising activations
+    # vLLM flags needed (wire via extra_args or recipe):
+    #   --generation-config vllm  (ignore checkpoint's max_tokens:256 override)
+    #   --hf-overrides '{"diffusion_sampler":"entropy_bound","diffusion_entropy_bound":0.1}'
+    # Needs vllm/vllm-openai:gemma docker image (diffusion model support).
+    # Multimodal (text+image+video), thinking mode, function calling supported.
+    # Reasoning parser: gemma4 (if thinking mode desired).
+
+  # ── GPT-OSS-Swallow 120B RL MXFP4 (bilingual JA/EN reasoning) ─────────────
+  # TokyoTech continual-pretrained GPT-OSS 120B, RLVR-aligned, MXFP4 quantized.
+  # 120B params, MXFP4 → ~60 GiB weights. GPT-OSS architecture.
+  # Single A100 viable per vLLM recipe. B200 1 GPU with ample KV headroom.
+  # 32K recommended max context (trained w/ 32K, YaRN extension available).
+  # Reasoning effort: medium (default; low/high not trained — stick to medium).
+  # No tool-call training — function calling not supported out of box.
+  # Generation params: temperature=0.6, top_p=0.95, top_k=20, min_p=0.
+
+  - name: gpt-oss-swallow-120b
+    model: GPT-OSS-Swallow-120B-RL-v0.1-MXFP4   # registered UMRS name (HF: tokyotech-llm/GPT-OSS-Swallow-120B-RL-v0.1-MXFP4)
+    tier: system
+    gpu_count: 1           # MXFP4 ~60 GiB weights fits B200 (173.2 GiB) with KV headroom
+    node_count: 1          # single-node TP=1; scale TP for throughput if needed
+    partition: 4n4gpu-p
+    max_model_len: 32768   # trained context; 32K recommended per model card
+    env_vars:
+      VLLM_MAX_NUM_SEQS: "64"               # moderate concurrency
+      VLLM_MAX_NUM_BATCHED_TOKENS: "8192"   # per GPT-OSS recipe
+      VLLM_GPU_MEMORY_UTILIZATION: "0.85"   # safe headroom
+    # No tool-call-parser needed (not trained for tools).
+    # Reasoning parser: gpt_oss (via --reasoning-parser gpt_oss).
+    # Best practices: temperature=0.6, top_p=0.95, top_k=20, min_p=0.
+    # Bilingual JA/EN, strong math/code via RLVR.
+
+  # ── llm-jp-4 32B-A3B thinking (Japanese MoE reasoning model) ──────────────
+  # NII LLM-jp-4 MoE: 32B total / 3.8B active (128 experts, 8 active), 64K context.
+  # Qwen-based architecture, Harmony response format (OpenAI-compatible).
+  # Thinking model with reasoning_effort: low|medium|high.
+  # Needs --trust-remote-code (custom tokenizer + harmony parser).
+  # Needs --reasoning-parser llmjp4 (custom parser from llm-jp-4-cookbook).
+  # Tiny model — BF16 ~64 GiB, fits single B200 with huge KV headroom.
+
+  - name: llm-jp-4-32b-thinking
+    model: llm-jp-4-32b-a3b-thinking   # registered UMRS name (HF: llm-jp/llm-jp-4-32b-a3b-thinking)
+    tier: system
+    gpu_count: 1           # BF16 ~64 GiB fits B200 (173.2 GiB) easily
+    node_count: 1
+    partition: 4n4gpu-p
+    max_model_len: 65536   # native 64K context
+    env_vars:
+      VLLM_MAX_NUM_SEQS: "64"
+      VLLM_GPU_MEMORY_UTILIZATION: "0.90"   # plenty of headroom for small model
+    # Needs: --trust-remote-code --reasoning-parser llmjp4
+    # Japanese-first MoE thinking model, Harmony response format.
+    # reasoning_effort: low|medium|high supported.
+
+  # ── Throughput / memory canaries (2026-06) ────────────────────────────────
+  # Experimental variants for the AI4S pool. Validate memory fit and output
+  # quality before promoting to the default entries above.
+
+  # Kimi K2.6 on 2 nodes (TP=8). Doubles aggregate GPU memory → native 262K
+  # context with KV headroom and a higher concurrency ceiling.
+  - name: kimi-k2.6-2n
+    model: Kimi-K2.6
+    tier: system
+    gpu_count: 4
+    node_count: 2
+    partition: 2n4gpu
+    max_model_len: 262144
+    env_vars:
+      VLLM_MAX_NUM_SEQS: "32"
+      VLLM_MAX_NUM_BATCHED_TOKENS: "32768"
+      VLLM_MM_ENCODER_TP_MODE: "data"
+
+  # Kimi K2.7 Code on 2 nodes (TP=8). Same rationale as K2.6.
+  - name: kimi-k2.7-code-2n
+    model: Kimi-K2.7-Code
+    tier: system
+    gpu_count: 4
+    node_count: 2
+    partition: 2n4gpu
+    max_model_len: 262144
+    env_vars:
+      VLLM_GPU_MEMORY_UTILIZATION: "0.90"
+      VLLM_MM_ENCODER_TP_MODE: "data"
+      VLLM_MAX_NUM_SEQS: "32"
+      VLLM_MAX_NUM_BATCHED_TOKENS: "32768"
+
+  # Kimi K2.7 Code with FP8 KV cache (single-node canary). Halves KV memory,
+  # giving large headroom on the TP=4 recipe. Validate output quality before
+  # making this the production default.
+  - name: kimi-k2.7-code-fp8
+    model: Kimi-K2.7-Code
+    tier: system
+    gpu_count: 4
+    node_count: 1
+    partition: 4n4gpu-p
+    max_model_len: 262144
+    env_vars:
+      VLLM_GPU_MEMORY_UTILIZATION: "0.90"
+      VLLM_MM_ENCODER_TP_MODE: "data"
+      VLLM_KV_CACHE_DTYPE: "fp8"
+      VLLM_MAX_NUM_SEQS: "32"
+      VLLM_MAX_NUM_BATCHED_TOKENS: "32768"
+
+  # GLM-5.2 FP8 2-node recipe. Promoted from pool-glm52-fp8.yaml; same topology
+  # as glm-5.2-tep but listed in the main AI4S pool for discoverability.
+  - name: glm-5.2-fp8
+    model: GLM-5.2-FP8
+    tier: system
+    gpu_count: 4
+    node_count: 2
+    partition: 2n4gpu
+    max_model_len: 1048576
+    env_vars:
+      RIVAULT_SIF: /work/hps0/home/ea0022/images/mini-rivault-aarch64-v6.sif
+      VLLM_KV_CACHE_DTYPE: "fp8"
+      VLLM_MAX_NUM_SEQS: "32"
+      VLLM_MAX_NUM_BATCHED_TOKENS: "32768"
+
+  # GLM-5.2 FP8 Prefill/Decode disaggregated. 4 nodes total (2 prefill + 2
+  # decode) via serve-pd.slurm. Use when glm-5.2-fp8 shows queueing or decode
+  # latency under high concurrency.
+  - name: glm-5.2-fp8-pd
+    model: GLM-5.2-FP8
+    tier: system
+    gpu_count: 4
+    node_count: 4
+    partition: 4n4gpu-p
+    max_model_len: 1048576
+    env_vars:
+      RIVAULT_SIF: /work/hps0/home/ea0022/images/mini-rivault-aarch64-v6.sif
+      VLLM_KV_CACHE_DTYPE: "fp8"
+      VLLM_MAX_NUM_SEQS: "32"
+      VLLM_MAX_NUM_BATCHED_TOKENS: "32768"
+      NIXL_PACKAGES_HOST: /work/hps0/home/ea0022/images/nixl_packages
+      SLURM_WRAPPER_SCRIPT: /work/hps0/home/ea0022/ai4s-platform/umrs/deploy/ai4s/serve-pd.slurm
+
+  # ── Ornith-1.0-397B (DeepReinforce, 397B MoE agentic coding) ──────────────
+  # HF: deepreinforce-ai/Ornith-1.0-397B
+  # 397B total params, MoE, post-trained on Gemma 4 + Qwen 3.5.
+  # vLLM recipe: TP=8, max_model_len 262K, prefix caching, auto tool choice,
+  # tool-call-parser qwen3_xml, reasoning-parser qwen3, trust-remote-code.
+  # Fits 8×80GB; on GB200 B200 use 2 nodes (8× B200) for KV headroom.
+  - name: ornith-1.0-397b
+    model: Ornith-1.0-397B
+    tier: system
+    gpu_count: 4
+    node_count: 2
+    partition: 2n4gpu
+    max_model_len: 262144
+    env_vars:
+      RIVAULT_SIF: /work/hps0/home/ea0022/images/mini-rivault-aarch64-v6.sif
+      VLLM_TOOL_CALL_PARSER: "qwen3_xml"
+      VLLM_REASONING_PARSER: "qwen3"
+      VLLM_MAX_NUM_SEQS: "16"
+      VLLM_MAX_NUM_BATCHED_TOKENS: "32768"
+      VLLM_GPU_MEMORY_UTILIZATION: "0.90"
+
+  # ── MCP-enabled example ───────────────────────────────────────────────────
+  # Users can mount custom MCP servers into mini-RiVaults via the Gateway.
+  # The endpoint provisioning API accepts mount specs under:
+  #   endpoint_provisioning.mounts.mcp_servers.  The provision request
+  #   containerizes the server directories and validates their config.json
+  #   manifest (see mcp-servers/src/r4_mcp/runners/custom_mcp.py).
+  #
+  # Example (not a persistent pool entry, shown as reference):
+  #   r4 endpoint up --tier user --model Kimi-K2.6 \
+  #     --mount-mcp /home/user/my-mcp:/mcp-servers/my-mcp
+  #
+  # Each mounted directory must contain a config.json declared per:
+  #   docs/user-manual/EXTENDING.md §11.4
+  #   example: {"name":"my-mcp","version":"1.0.0","entry_point":"python server.py",
+  #             "capabilities":{"tools":["search_db"],"sandbox":{"network":"egress_guard",
+  #             "filesystem":"read_only","max_memory_mb":512,"max_runtime_sec":30}}}

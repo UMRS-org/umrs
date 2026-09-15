@@ -1,0 +1,37 @@
+High-Performance Computing in Computational Science
+
+High-performance computing (HPC) underpins modern computational science,
+from climate modelling and drug discovery to astrophysical simulations.
+Current petascale and emerging exascale systems provide the raw
+computational power, but efficient utilisation demands co-design of
+algorithms, data structures, and software infrastructure.
+
+Memory hierarchy and data locality are critical.  L1/L2 cache misses
+dominate runtime for stencil codes, making blocking and tiling strategies
+essential.  GPU architectures add another level of complexity: global
+memory bandwidth limits throughput, so kernels must maximise occupancy
+and hide latency through warp-level parallelism.
+
+Common parallel programming models:
+- MPI (Message Passing Interface): the de-facto standard for distributed-
+  memory parallelism.  Collective operations (MPI_Allreduce) dominate
+  communication in gradient-based optimisation.
+- OpenMP: thread-level parallelism on shared-memory nodes.  Offloading
+  directives (target map) support GPU kernels.
+- CUDA / HIP: vendor-specific GPU programming.  CUDA dominates for
+  NVIDIA hardware; HIP provides source-level portability to AMD GPUs.
+- SYCL / Kokkos / Raja: portable performance abstraction layers that
+  target CPUs and GPUs from a single source.
+
+Batch scheduling (Slurm, PBS) manages resource allocation on shared
+clusters.  Users submit jobs describing resource requirements (nodes,
+GPUs, wall-time), and the scheduler optimises cluster utilisation via
+backfill and fair-share policies.
+
+Emerging trends:
+1. AI-for-HPC: neural network surrogates replace expensive PDE solvers
+   for parameter sweeps and uncertainty quantification.
+2. HPC-for-AI: training large foundation models requires thousands of
+   GPUs coordinated by NCCL and custom all-reduce topologies.
+3. Convergent computing: unified platforms (like UMRS) serve both
+   traditional simulation workloads and AI inference on the same cluster.

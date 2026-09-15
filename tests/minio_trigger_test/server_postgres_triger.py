@@ -6,8 +6,9 @@ DB_PARAMS = {
     "dbname": "minio_events",
     "user": "ejeannot",
     "host": "localhost",  # Change if necessary
-    "port": "5432"
+    "port": "5432",
 }
+
 
 def listen_for_new_entries():
     """Listens for new entries in PostgreSQL using LISTEN/NOTIFY."""
@@ -33,6 +34,7 @@ def listen_for_new_entries():
     finally:
         cur.close()
         conn.close()
+
 
 if __name__ == "__main__":
     listen_for_new_entries()

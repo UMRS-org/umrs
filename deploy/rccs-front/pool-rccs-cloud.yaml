@@ -1,0 +1,16 @@
+# Pool roster: RCCS Cloud — Bonsai endpoint
+# Usage: R4_GATEWAY_URL=http://localhost:8000 r4 pool up pool-rccs-cloud.yaml
+#
+# Target: rccs-front → SSH → rccs-cloud (GB10 Blackwell, 128 GiB VRAM)
+
+pool: rccs-cloud
+defaults:
+  tier: user
+  timeout: 600            # 10 min readiness wait
+
+endpoints:
+  - name: bonsai
+    model: cyberagent/calm3-22b-chat
+    max_model_len: 8192
+    # 22B model fits in 1× GB10 (128 GiB VRAM) with TP=1
+    # Partition: ng-dgx-m0 (default in rccs-front/site.yaml)

@@ -1,0 +1,27 @@
+# HMAE Inference Configuration (hvit_b variant)
+
+model:
+  model_type: "hvit_b"
+  img_size: 1024
+  patch_size: 32
+  in_channels: 1          # 1 for grayscale, 3 for RGB
+  mask_ratio: 0.5
+  fixed_length: 1024
+  norm_pix_loss: true
+
+inference:
+  checkpoint_path: "./checkpoints/latest_checkpoint.pth"
+  device: "cuda"           # "cuda" or "cpu" or "mps"
+  use_bf16: true
+  batch_size: 1
+
+input:
+  image_path: ""
+  image_dir: ""
+  img_extensions: [".png", ".jpg", ".jpeg", ".tif", ".tiff"]
+
+output:
+  output_dir: "./output"
+  save_reconstruction: true
+  save_features: false
+  save_quadtree_vis: true

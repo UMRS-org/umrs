@@ -1,1 +1,64 @@
 .DS_Store
+*.pyc
+__pycache__/
+*.egg-info/
+
+# Demo result/output images (auto-generated, not source)
+demos/*/results/
+demos_private/*/results/
+demos/*/.upload_staging/
+demos_private/*/.upload_staging/
+demos/14_opossum_analysis/sample_videos/
+# Demo test data images (large CT scans — stage only .gitkeep)
+demos/*/test_data/*.png
+demos/*/test_data/*.jpg
+demos/*/test_data/*.tiff
+demos/slurm-dev/test_data/images/
+
+
+#Ignore vscode AI rules
+.github/instructions/codacy.instructions.md
+
+# Ignore runtime-generated UUID-suffixed config artifacts
+src/umrs/mini-rivault-llm/nginx_fs/out-nginx.conf.*-*-*-*-*
+src/umrs/mini-rivault-llm/coredns_fs/coredns.conf.*-*-*-*-*
+src/umrs/mini-rivault-llm/litellm_fs/config.yaml.*-*-*-*-*
+src/umrs/mini-rivault-llm/env.*-*-*-*-*
+
+# Ignore site-local deploy logs generated on login nodes
+deploy/*/logs/
+
+# Ignore model binaries and large model caches
+/data/models/
+/docker/data/models/
+*.safetensors
+*.pth
+*.pth.tar
+*.pt
+models/
+*/models/
+# But keep source code under src/umrs/models/
+!src/umrs/models/
+!src/umrs/models/**
+src/umrs/models/__pycache__/
+demos/slurm-dev/rivault/models/*.safetensors
+
+# Ignore generated coredns config files (UUID-suffixed runtime artifacts)
+src/umrs/mini-rivault-llm/coredns_fs/coredns.conf.*
+
+**/.venv
+
+slurm-*.out
+.env
+
+tmp
+*.png
+
+__pycache__/
+
+# Large binary artifacts
+*.mp4
+*.tar.gz
+*.csv
+!demos/sample_data/**/*.csv
+demos_jens/internal_genAI/

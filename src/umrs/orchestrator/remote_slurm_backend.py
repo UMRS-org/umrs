@@ -1,0 +1,878 @@
+"""
+Remote Slurm Backend — SSH-based Slurm orchestration for front-end deployments.
+
+Extends the standard SlurmBackend to route all Slurm CLI commands (sbatch,
+squeue, sacct, scancel) through an SSH ControlMaster connection to the login
+node. Used when UMRS runs on a front-end server that lacks direct Slurm access.
+
+Configuration in site.yaml::
+
+    scheduler:
+      kind: slurm-remote
+      partition: ng-dgx-m0,ng-dgx-m1,ng-dgx-m2,ng-dgx-m3
+      time_limit: "04:00:00"
+      extra_sbatch: []
+
+    extra:
+      ssh_target: rccs-cloud
+      ssh_user: ""
+      ssh_control_path: ""
+      ssh_connect_timeout: 15
+      ssh_command_timeout: 30
+      ssh_reverse_tunnels:
+        - "127.0.0.1:9000:127.0.0.1:9000"
+      slurm_job_info_dir: /lvs0/rccs-dmp/masaru.nagaso/ai4s-platform/umrs/deploy/rccs-cloud
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import os
+import re
+import shlex
+from datetime import datetime
+from typing import Any, Optional
+
+from .base import (
+    EndpointInfo,
+    JobInfo,
+    JobStatus,
+)
+from .slurm_backend import SlurmBackend
+from .ssh_control import SSHControlConfig, SSHControlManager
+from .tunnel_pool import TunnelPool, TunnelPoolConfig
+
+logger = logging.getLogger(__name__)
+
+# Memory units understood in scheduler.memory (case-insensitive suffix → MB).
+_MEM_UNIT_TO_MB = {"K": 1 / 1024, "M": 1.0, "G": 1024.0, "T": 1024.0 * 1024.0}
+
+
+def _parse_mem_to_mb(value: str) -> float | None:
+    """Parse a Slurm-style memory string (e.g. ``1400G``, ``400000M``) to MB.
+
+    Returns ``None`` when the value cannot be parsed.
+    """
+    text = str(value).strip()
+    if not text:
+        return None
+    match = re.fullmatch(r"(\d+(?:\.\d+)?)\s*([KkMmGgTt]?)[Bb]?", text)
+    if not match:
+        return None
+    number = float(match.group(1))
+    unit = (match.group(2) or "M").upper()
+    return number * _MEM_UNIT_TO_MB.get(unit, 1.0)
+
+
+def _scale_memory_for_gpus(
+    memory: str, effective_gpus: int | None, max_node_gpus: int | None
+) -> str:
+    """Scale a full-node memory request down to a partial-GPU allocation.
+
+    ``scheduler.memory`` is sized for a full node (all GPUs). Sub-node Slurm
+    partitions (e.g. AI4S ``1n1gpu``) enforce a ``MaxMemPerNode`` proportional
+    to the GPU share, so a full-node ``--mem`` trips ``MaxMemPerLimit`` and the
+    job never starts. When fewer GPUs than a full node are requested, scale the
+    memory by the GPU fraction. Full-node and multi-node-per-node requests are
+    returned unchanged.
+    """
+    if not effective_gpus or not max_node_gpus or effective_gpus >= max_node_gpus:
+        return memory
+    total_mb = _parse_mem_to_mb(memory)
+    if total_mb is None:
+        return memory
+    scaled_mb = int(total_mb * effective_gpus / max_node_gpus)
+    if scaled_mb <= 0:
+        return memory
+    return f"{scaled_mb}M"
+
+
+def _resolve_sbatch_mem_arg(site: Any, effective_gpus: int | None) -> str:
+    """Return the ``--mem=`` sbatch argument for a wrapper job.
+
+    Uses ``--mem=0`` (suppress DefMemPerCPU) when no memory is configured;
+    otherwise scales the configured full-node memory by the requested GPU
+    fraction (see :func:`_scale_memory_for_gpus`).
+    """
+    if not site.scheduler.memory:
+        return "--mem=0"
+    max_node_gpus = max(
+        (p.gpus for p in site.partition_profiles.values()),
+        default=0,
+    )
+    mem = _scale_memory_for_gpus(site.scheduler.memory, effective_gpus, max_node_gpus)
+    return f"--mem={mem}"
+
+
+class RemoteSlurmBackend(SlurmBackend):
+    """
+    SSH-based remote Slurm backend for front-end server deployments.
+
+    All Slurm CLI commands are executed remotely via SSH ControlMaster.
+    Job info files on the shared filesystem are read via SSH cat.
+
+    When ``slurm_delegation`` is ``per_user_ssh``, job submission and cancellation
+    are executed as the requesting user via a per-user SSH connection using the
+    UMRS service identity key. The user must have enrolled the service public key
+    in their ~/.ssh/authorized_keys (via ``r4 onboard``).
+    """
+
+    def __init__(
+        self, config: Any, ssh_config: Optional[SSHControlConfig] = None
+    ) -> None:
+        super().__init__(config)
+        # Build SSH config from site config extra section or explicit param.
+        if ssh_config:
+            self._ssh_config = ssh_config
+        else:
+            extra = getattr(config, "extra", {}) or {}
+            if not extra.get("ssh_target"):
+                # Fallback: load extra from site config directly
+                try:
+                    from .site_config import load_site_config
+
+                    site = load_site_config()
+                    extra = site.extra or {}
+                except Exception:
+                    pass
+            self._ssh_config = SSHControlConfig.from_site_config(extra)
+
+        self._ssh: Optional[SSHControlManager] = None
+        self._tunnel_pool: TunnelPool | None = None
+
+        # Per-user SSH delegation state
+        self._delegation_mode: str = "service_account"
+        self._service_identity_file: str = ""
+        self._user_ssh_pool: dict[str, SSHControlManager] = {}
+        try:
+            from .site_config import load_site_config
+
+            site = load_site_config()
+            self._delegation_mode = site.scheduler.slurm_delegation
+            # Derive private key path from pubkey path (strip .pub suffix)
+            pubkey_path = site.scheduler.service_pubkey_path
+            if pubkey_path.endswith(".pub"):
+                self._service_identity_file = pubkey_path[:-4]
+        except Exception:
+            pass
+
+    @property
+    def backend_name(self) -> str:
+        return "slurm-remote"
+
+    async def _get_ssh(self) -> SSHControlManager:
+        """Get or create the SSH control manager."""
+        if self._ssh is None:
+            self._ssh = SSHControlManager(self._ssh_config)
+        await self._ssh.ensure_connected()
+        return self._ssh
+
+    async def _get_ssh_for_user(self, username: str) -> SSHControlManager:
+        """Get or create a per-user SSH control manager for delegated submission.
+
+        Uses the UMRS service identity key to connect as the target user.
+        The user must have enrolled the service pubkey in their authorized_keys.
+        Falls back to the service-account connection if delegation is not
+        configured **or** if the per-user connection fails (user has not
+        enrolled yet).
+        """
+        if self._delegation_mode != "per_user_ssh" or not self._service_identity_file:
+            return await self._get_ssh()
+
+        if username not in self._user_ssh_pool:
+            # Build a user-specific SSH config based on service config
+            user_config = SSHControlConfig(
+                ssh_target=self._ssh_config.ssh_target,
+                ssh_user=username,
+                ssh_port=self._ssh_config.ssh_port,
+                connect_timeout=self._ssh_config.connect_timeout,
+                command_timeout=self._ssh_config.command_timeout,
+                control_path="",  # Auto-generated per-user socket
+                server_alive_interval=self._ssh_config.server_alive_interval,
+                server_alive_count_max=self._ssh_config.server_alive_count_max,
+                reverse_tunnels=[],  # No tunnels for per-user connections
+                proxy_jump=self._ssh_config.proxy_jump,
+                identity_file=self._service_identity_file,
+                remote_env=self._ssh_config.remote_env,
+            )
+            self._user_ssh_pool[username] = SSHControlManager(user_config)
+
+        mgr = self._user_ssh_pool[username]
+        try:
+            await mgr.ensure_connected()
+        except Exception:
+            # Per-user SSH failed (user likely hasn't enrolled their key).
+            # Fall back to service account so the job can still proceed
+            # under the site master Slurm account.
+            logger.warning(
+                "Per-user SSH connection failed for %s; falling back to "
+                "service account.  The user may not have enrolled the UMRS "
+                "service key (r4 auth login / r4 onboard).",
+                username,
+            )
+            return await self._get_ssh()
+        return mgr
+
+    def _get_wrapper_script(self, env: dict | None = None) -> str | None:
+        """Get the remote wrapper script path.
+
+        Checks (in order):
+        1. env["SLURM_WRAPPER_SCRIPT"] — per-job override from pool env_vars
+        2. site.extra["slurm_wrapper_script"] — site-wide default
+        """
+        # Per-job override via env_vars (e.g. from pool YAML).
+        if env and env.get("SLURM_WRAPPER_SCRIPT"):
+            return str(env["SLURM_WRAPPER_SCRIPT"])
+        extra = getattr(self.config, "extra", {}) or {}
+        if not extra.get("slurm_wrapper_script"):
+            try:
+                from .site_config import load_site_config
+
+                site = load_site_config()
+                extra = site.extra or {}
+            except Exception:
+                pass
+        return extra.get("slurm_wrapper_script")
+
+    def _job_info_dir(self) -> str:
+        """Return the remote shared directory for Slurm job info files."""
+        info_dir = getattr(self.config, "slurm_job_info_dir", "/tmp")
+        extra = getattr(self.config, "extra", {}) or {}
+        if extra.get("slurm_job_info_dir"):
+            return str(extra["slurm_job_info_dir"])
+        try:
+            from .site_config import load_site_config
+
+            site = load_site_config()
+            return str(site.extra.get("slurm_job_info_dir", info_dir))
+        except Exception:
+            return str(info_dir)
+
+    def _control_dir(self) -> str:
+        """Return the remote shared directory for graceful stop requests."""
+        return f"{self._job_info_dir().rstrip('/')}/control"
+
+    def _stop_request_path(self, job_id: str) -> str:
+        """Return the remote shared stop request path for a Slurm job."""
+        return f"{self._control_dir()}/stop-{job_id}.request"
+
+    async def submit_job(
+        self,
+        model_path: str | None = None,
+        **kwargs: Any,
+    ) -> JobInfo:
+        """Submit a Slurm job via remote SSH sbatch.
+
+        When per-user delegation is active and ``requesting_user`` is provided,
+        the sbatch is executed as that user via the UMRS service identity key.
+        """
+        model = model_path or self.config.model_path
+        if not model:
+            raise ValueError(
+                "model_path is required (set VLLM_MODEL_PATH or pass explicitly)"
+            )
+
+        # Determine which SSH connection to use for submission
+        requesting_user = kwargs.pop("requesting_user", None)
+
+        # Peek at the env dict before popping — needed for SLURM_WRAPPER_SCRIPT check.
+        _peek_env = kwargs.get("env") or {}
+        wrapper_script = self._get_wrapper_script(env=_peek_env)
+        if wrapper_script:
+            return await self._submit_wrapper_job(
+                model, wrapper_script, requesting_user=requesting_user, **kwargs
+            )
+
+        # Legacy: generate Singularity-based sbatch script and pipe via stdin.
+        script_content = self._build_sbatch_script(model, **kwargs)
+
+        if requesting_user and self._delegation_mode == "per_user_ssh":
+            ssh = await self._get_ssh_for_user(requesting_user)
+        else:
+            ssh = await self._get_ssh()
+        result = await ssh.run_remote_with_stdin(
+            "sbatch --parsable",
+            script_content.encode(),
+            timeout=60,
+        )
+
+        if not result.ok:
+            raise RuntimeError(f"Remote sbatch failed: {result.stderr}")
+
+        job_id = result.stdout.strip().split(";")[0]
+
+        return JobInfo(
+            job_id=job_id,
+            status=JobStatus.PENDING,
+            model_path=model,
+            created_at=datetime.now(),
+            backend=self.backend_name,
+        )
+
+    @staticmethod
+    def _select_partition(
+        site: Any, gpu_count: int | None, node_count: int | None
+    ) -> str:
+        """Pick a Slurm partition from the requested GPU/node sizing.
+
+        AI4S declares partitions following a ``<nodes>n<gpus>gpu`` naming
+        convention (e.g. ``1n4gpu``, ``2n4gpu``). When such a profile exists for
+        the requested sizing, route to it so multi-GPU/multi-node jobs land on a
+        partition that can satisfy the allocation. Sites that do not follow this
+        convention (e.g. rccs-cloud) fall through to the configured default.
+        """
+        default = site.scheduler.partition.split(",")[0]
+        if not gpu_count:
+            return default
+        nodes = node_count if node_count and node_count > 1 else 1
+        candidate = f"{nodes}n{gpu_count}gpu"
+        if candidate in getattr(site, "partition_profiles", {}):
+            return candidate
+        return default
+
+    async def _submit_wrapper_job(
+        self,
+        model_path: str,
+        wrapper_script: str,
+        requesting_user: str | None = None,
+        **kwargs: Any,
+    ) -> JobInfo:
+        """Submit a site-provided wrapper script (e.g. serve-model.slurm) via remote sbatch."""
+        # Build sbatch CLI args from site config.
+        from .site_config import load_site_config
+
+        site = load_site_config()
+
+        output_dir = self._job_info_dir()
+
+        # Resource sizing (popped up-front so partition selection can use them).
+        gpu_count = kwargs.pop("gpu_count", None)
+        node_count = kwargs.pop("node_count", None)
+        partition_override = kwargs.pop("partition_override", None)
+        slurm_account = kwargs.pop("slurm_account", None) or site.scheduler.account
+        nodelist_hint = kwargs.pop("nodelist_hint", None)
+
+        sbatch_args = self._build_wrapper_sbatch_args(
+            site=site,
+            output_dir=output_dir,
+            gpu_count=gpu_count,
+            node_count=node_count,
+            partition_override=partition_override,
+            slurm_account=slurm_account,
+            nodelist_hint=nodelist_hint,
+        )
+
+        # Pop unused kwargs before building env
+        kwargs.pop("min_gpu_memory_gb", None)
+
+        # Build environment exports + sacct attribution for the job.
+        requested_env = kwargs.pop("env", None)
+        project_id = kwargs.pop("project_id", None)
+        if isinstance(requested_env, dict) and not project_id:
+            project_id = requested_env.get("PROJECT_ID", "")
+        sbatch_args.extend(
+            self._build_wrapper_job_exports(
+                model_path=model_path,
+                wrapper_script=wrapper_script,
+                output_dir=output_dir,
+                requesting_user=requesting_user,
+                project_id=project_id,
+                requested_env=requested_env,
+            )
+        )
+
+        # Append the wrapper script path
+        sbatch_args.append(shlex.quote(wrapper_script))
+
+        cmd = " ".join(sbatch_args)
+        logger.info("Submitting wrapper job: %s", cmd)
+
+        if requesting_user and self._delegation_mode == "per_user_ssh":
+            ssh = await self._get_ssh_for_user(requesting_user)
+        else:
+            ssh = await self._get_ssh()
+        result = await ssh.run_remote(cmd, timeout=60)
+
+        if not result.ok:
+            raise RuntimeError(f"Remote sbatch failed: {result.stderr}")
+
+        job_id = result.stdout.strip().split(";")[0]
+        logger.info("Submitted wrapper job %s", job_id)
+
+        return JobInfo(
+            job_id=job_id,
+            status=JobStatus.PENDING,
+            model_path=model_path,
+            created_at=datetime.now(),
+            backend=self.backend_name,
+        )
+
+    def _build_wrapper_sbatch_args(
+        self,
+        *,
+        site: Any,
+        output_dir: str,
+        gpu_count: int | None,
+        node_count: int | None,
+        partition_override: str | None,
+        slurm_account: str | None,
+        nodelist_hint: str | None,
+    ) -> list[str]:
+        """Assemble the resource-directive portion of a wrapper-job sbatch CLI.
+
+        Returns the leading ``sbatch`` argument list (output/error paths plus
+        partition/time/GPU/CPU/memory/account/qos/nodelist/nodes/extras). The
+        caller appends ``--comment``/``--export`` attribution and the wrapper
+        script path. ``scheduler.memory`` is full-node sized; it is scaled by
+        the requested GPU fraction so sub-node partitions (e.g. AI4S ``1n1gpu``)
+        do not trip ``MaxMemPerLimit``.
+        """
+        sched = site.scheduler
+        # Explicit GPU request wins; otherwise the site default.
+        effective_gpus = gpu_count if gpu_count is not None else sched.gpus
+        # Partition auto-selection honours the AI4S "<n>n<g>gpu" convention.
+        partition = partition_override or self._select_partition(
+            site, gpu_count, node_count
+        )
+        nodes = node_count if (node_count or 0) > 1 else None
+
+        sbatch_args = [
+            "sbatch",
+            "--parsable",
+            f"--output={output_dir}/slurm-%j.out",
+            f"--error={output_dir}/slurm-%j.err",
+            _resolve_sbatch_mem_arg(site, effective_gpus),
+        ]
+        # Optional scalar directives appended only when truthy.
+        optional = [
+            ("--partition=", partition),
+            ("--time=", sched.time_limit),
+            ("--gres=gpu:", effective_gpus if sched.gpus != 0 else None),
+            ("--cpus-per-task=", sched.cpus),
+            ("--account=", slurm_account),
+            ("--qos=", sched.qos),
+            ("--nodelist=", nodelist_hint),
+            ("--nodes=", nodes),
+        ]
+        for flag, value in optional:
+            if value:
+                sbatch_args.append(f"{flag}{value}")
+        sbatch_args.extend(getattr(sched, "extra_sbatch", []))
+        return sbatch_args
+
+    def _build_wrapper_job_exports(
+        self,
+        *,
+        model_path: str,
+        wrapper_script: str,
+        output_dir: str,
+        requesting_user: str | None,
+        project_id: str | None,
+        requested_env: Any,
+    ) -> list[str]:
+        """Build the ``--comment`` and ``--export`` sbatch args for a wrapper job.
+
+        The ``--export`` arg is shell-quoted because values may contain spaces
+        (e.g. ``RIVAULT_PROFILES="harness vllm"``); otherwise the remote shell
+        word-splits the comma list and sbatch treats the tail as a stray file.
+        """
+        env_overrides: dict[str, str] = {}
+        if isinstance(requested_env, dict):
+            env_overrides.update(
+                {
+                    k: str(v)
+                    for k, v in requested_env.items()
+                    if isinstance(v, (str, int, float))
+                }
+            )
+        env_overrides["VLLM_MODEL_PATH"] = model_path
+        env_overrides.setdefault(
+            "VLLM_SERVED_MODEL_NAME", env_overrides.get("MODEL_NAME", model_path)
+        )
+        env_overrides.setdefault("RIVAULT_WRAPPER_DIR", os.path.dirname(wrapper_script))
+        env_overrides.setdefault("JOB_INFO_DIR", output_dir)
+        env_overrides.setdefault("RIVAULT_CONTROL_DIR", self._control_dir())
+
+        # Attribution: export the requesting user/project identity for Slurm
+        # accounting (UMRS_* env vars) and sacct (--comment), so containers can
+        # log the originating user even when submitted via the master account.
+        args: list[str] = []
+        attribution_parts = []
+        if requesting_user:
+            env_overrides.setdefault("UMRS_USER", requesting_user)
+            attribution_parts.append(f"user={requesting_user}")
+        if project_id:
+            env_overrides.setdefault("UMRS_PROJECT", project_id)
+            attribution_parts.append(f"project={project_id}")
+        if attribution_parts:
+            args.append(f"--comment={','.join(attribution_parts)}")
+
+        export_parts = ["ALL"] + [f"{k}={v}" for k, v in env_overrides.items()]
+        args.append(shlex.quote(f"--export={','.join(export_parts)}"))
+        return args
+
+    async def get_job_status(self, job_id: str) -> JobInfo:
+        """Get status of a Slurm job via SSH."""
+        # Try job info file first (read remotely).
+        info_content = await self._read_remote_job_info(job_id)
+        if info_content is not None:
+            info = self._parse_info_content(info_content)
+            status = self._status_from_info(info)
+
+            # The info file is a startup artifact written to the shared
+            # filesystem; it is only deleted by ``cleanup()``. If the job died
+            # by walltime, preemption, node failure, or an external ``scancel``,
+            # the file is orphaned and still reports the last written status
+            # (``running`` or ``starting``). Trusting it verbatim produces a
+            # ghost endpoint. Cross-check live states against Slurm so a dead
+            # job is reported as terminal. Only override on a *positively*
+            # terminal Slurm state — a squeue miss / ``UNKNOWN`` must not
+            # delete a healthy endpoint.
+            if status in (JobStatus.READY, JobStatus.RUNNING, JobStatus.STARTING):
+                slurm_status, _reason = await self._query_slurm_job_status(job_id)
+                if slurm_status in (JobStatus.FAILED, JobStatus.STOPPED):
+                    logger.warning(
+                        "Job %s info file reports %s but Slurm reports %s; "
+                        "treating as terminal and removing stale info file",
+                        job_id,
+                        status.value,
+                        slurm_status.value,
+                    )
+                    await self._remove_stale_info_file(job_id)
+                    return JobInfo(
+                        job_id=job_id,
+                        status=slurm_status,
+                        backend=self.backend_name,
+                    )
+
+            endpoint = self._endpoint_from_info(status, info)
+            if endpoint is not None:
+                endpoint = await self._endpoint_via_tunnel(endpoint)
+            return JobInfo(
+                job_id=job_id,
+                status=status,
+                endpoint=endpoint,
+                model_path=info.get("RIVAULT_MODEL_PATH", ""),
+                backend=self.backend_name,
+                metadata=info,
+            )
+
+        # Fallback to squeue/sacct.
+        status, reason = await self._query_slurm_job_status(job_id)
+        return JobInfo(
+            job_id=job_id,
+            status=status,
+            backend=self.backend_name,
+            state_reason=reason,
+        )
+
+    async def _remove_stale_info_file(self, job_id: str) -> None:
+        """Best-effort removal of an orphaned job info file via SSH."""
+        try:
+            ssh = await self._get_ssh()
+            info_path = f"{self._job_info_dir()}/rivault-job-{job_id}.info"
+            await ssh.run_remote(f"rm -f {shlex.quote(info_path)}")
+        except Exception as exc:  # noqa: BLE001 - cleanup is best-effort
+            logger.warning(
+                "Failed to remove stale info file for job %s: %s", job_id, exc
+            )
+
+    async def _endpoint_via_tunnel(self, endpoint: EndpointInfo) -> EndpointInfo:
+        """Return a front-end local endpoint backed by an SSH forward tunnel."""
+        local_port = await self._get_tunnel_pool().open_tunnel(
+            endpoint.node,
+            endpoint.litellm_port,
+            local_port=endpoint.litellm_port,
+        )
+        return EndpointInfo(
+            node="127.0.0.1",
+            litellm_port=local_port,
+            vllm_port=endpoint.vllm_port,
+        )
+
+    def _get_tunnel_pool(self) -> TunnelPool:
+        if self._tunnel_pool is None:
+            local_port_min = 12000
+            local_port_max = 12999
+            try:
+                from .site_config import load_site_config
+
+                site = load_site_config()
+                local_port_min = site.network.port_range_min
+                local_port_max = site.network.port_range_max
+            except Exception:
+                pass
+
+            self._tunnel_pool = TunnelPool(
+                TunnelPoolConfig(
+                    ssh_target=self._ssh_config.ssh_target,
+                    ssh_user=self._ssh_config.ssh_user,
+                    ssh_port=self._ssh_config.ssh_port,
+                    local_port_min=local_port_min,
+                    local_port_max=local_port_max,
+                    control_path=self._ssh_config.control_path,
+                )
+            )
+        return self._tunnel_pool
+
+    async def _read_remote_job_info(self, job_id: str) -> Optional[str]:
+        """Read job info file from remote filesystem via SSH."""
+        info_dir = self._job_info_dir()
+        info_path = f"{info_dir}/rivault-job-{job_id}.info"
+        ssh = await self._get_ssh()
+        return await ssh.read_remote_file(info_path)
+
+    def _parse_info_content(self, content: str) -> dict[str, str]:
+        """Parse job info file content into a dict."""
+        info: dict[str, str] = {}
+        for line in content.splitlines():
+            line = line.strip()
+            if "=" in line:
+                key, value = line.split("=", 1)
+                info[key] = value
+        return info
+
+    async def _query_slurm_job_status(
+        self, job_id: str
+    ) -> tuple[JobStatus, str | None]:
+        """Query Slurm job status via remote squeue/sacct.
+
+        Returns ``(status, reason)`` where ``reason`` is the scheduler's
+        human-readable explanation for the current state (squeue ``%R`` — e.g.
+        ``MaxMemPerLimit``, ``Resources``, ``Priority``) when the job is still
+        queued, or ``None`` otherwise.
+        """
+        squeue_result = await self._query_squeue_status(job_id)
+        if squeue_result is not None:
+            return squeue_result
+        return await self._query_sacct_status(job_id), None
+
+    async def _query_squeue_status(
+        self, job_id: str
+    ) -> tuple[JobStatus, str | None] | None:
+        """Query squeue for active job status + pending reason via SSH."""
+        ssh = await self._get_ssh()
+        # %T = job state, %R = reason (for PENDING) or node list (for RUNNING).
+        result = await ssh.run_remote(f'squeue -j {job_id} -h -o "%T|%R"')
+
+        if not result.ok or not result.stdout.strip():
+            return None
+        raw = result.stdout.strip().splitlines()[0]
+        state, _, reason = raw.partition("|")
+        state = state.strip()
+        reason = reason.strip() or None
+        status = self._status_from_slurm_state(state)
+        # Only surface the reason while the job is still queued/pending. For a
+        # RUNNING job, %R holds the node list, not a diagnostic.
+        if status != JobStatus.PENDING:
+            reason = None
+        return status, reason
+
+    async def _query_sacct_status(self, job_id: str) -> JobStatus:
+        """Query sacct for completed job status via SSH."""
+        ssh = await self._get_ssh()
+        result = await ssh.run_remote(f"sacct -j {job_id} -n -o State")
+
+        state = result.stdout.strip().split("\n")[0].strip() if result.stdout else ""
+        return self._status_from_accounting_state(state)
+
+    async def cleanup(self, job_id: str, force: bool = False) -> None:
+        """Cancel a Slurm job via remote scancel."""
+        info_content = await self._read_remote_job_info(job_id)
+        if info_content is not None and self._tunnel_pool is not None:
+            info = self._parse_info_content(info_content)
+            endpoint = self._endpoint_from_info(JobStatus.RUNNING, info)
+            if endpoint is not None:
+                await self._tunnel_pool.close_tunnel(
+                    endpoint.node, endpoint.litellm_port
+                )
+
+        ssh = await self._get_ssh()
+        info_dir = self._job_info_dir()
+        info_path = f"{info_dir}/rivault-job-{job_id}.info"
+
+        if not force:
+            stop_request = self._stop_request_path(job_id)
+            control_dir = self._control_dir()
+            result = await ssh.run_remote(
+                "mkdir -p {control_dir} && touch {stop_request}".format(
+                    control_dir=shlex.quote(control_dir),
+                    stop_request=shlex.quote(stop_request),
+                )
+            )
+            if result.ok:
+                graceful_timeout = int(
+                    os.environ.get("RIVAULT_GRACEFUL_STOP_TIMEOUT", "20")
+                )
+                logger.info(
+                    "requested graceful remote compute-node stop for %s via %s",
+                    job_id,
+                    stop_request,
+                )
+                if await self._wait_for_remote_job_exit(job_id, graceful_timeout):
+                    await ssh.run_remote(f"rm -f {shlex.quote(info_path)}")
+                    return
+            else:
+                logger.warning(
+                    "failed to create remote graceful stop request for %s: %s",
+                    job_id,
+                    result.stderr.strip(),
+                )
+
+        cmd = f"scancel -Q {shlex.quote(job_id)}"
+        if force:
+            cmd = f"scancel -Q --full --signal=KILL {shlex.quote(job_id)}"
+        result = await ssh.run_remote(cmd)
+        if not result.ok:
+            logger.warning(
+                "remote scancel failed for %s (force=%s): %s",
+                job_id,
+                force,
+                result.stderr.strip(),
+            )
+
+        # Clean up remote info file.
+        await ssh.run_remote(f"rm -f {shlex.quote(info_path)}")
+
+    async def _wait_for_remote_job_exit(self, job_id: str, timeout_sec: int) -> bool:
+        """Wait briefly for a remote Slurm job to leave the active queue."""
+        for _ in range(max(timeout_sec, 0)):
+            status, _reason = await self._query_slurm_job_status(job_id)
+            if status in (JobStatus.STOPPED, JobStatus.FAILED, JobStatus.UNKNOWN):
+                return True
+            await asyncio.sleep(1)
+        return False
+
+    async def list_jobs(
+        self,
+        status_filter: list[JobStatus] | None = None,
+    ) -> list[JobInfo]:
+        """List all Mini-RiVault jobs via SSH."""
+        jobs = await self._remote_jobs_from_info_files(status_filter)
+        await self._remote_append_squeue_jobs(jobs, status_filter)
+        return jobs
+
+    async def _remote_jobs_from_info_files(
+        self,
+        status_filter: list[JobStatus] | None,
+    ) -> list[JobInfo]:
+        """List job info files on remote filesystem."""
+        info_dir = self._job_info_dir()
+        ssh = await self._get_ssh()
+        result = await ssh.run_remote(
+            f"ls {info_dir}/rivault-job-*.info 2>/dev/null || true"
+        )
+
+        jobs: list[JobInfo] = []
+        if not result.stdout.strip():
+            return jobs
+
+        for line in result.stdout.strip().splitlines():
+            match = re.search(r"rivault-job-(\d+)\.info", line)
+            if match:
+                job_id = match.group(1)
+                job = await self.get_job_status(job_id)
+                if status_filter is None or job.status in status_filter:
+                    jobs.append(job)
+        return jobs
+
+    async def _remote_append_squeue_jobs(
+        self,
+        jobs: list[JobInfo],
+        status_filter: list[JobStatus] | None,
+    ) -> None:
+        """Query squeue for running jobs via SSH."""
+        user = os.environ.get("USER", "")
+        ssh = await self._get_ssh()
+        result = await ssh.run_remote(f"squeue -u {user} -n mini-rivault -h -o %i")
+
+        if not result.stdout.strip():
+            return
+
+        for job_id in result.stdout.strip().split("\n"):
+            job_id = job_id.strip()
+            if not job_id or any(j.job_id == job_id for j in jobs):
+                continue
+            job = await self.get_job_status(job_id)
+            if status_filter is None or job.status in status_filter:
+                jobs.append(job)
+
+    async def cleanup_orphans(self) -> int:
+        """Clean up orphaned job info files via SSH."""
+        info_dir = self._job_info_dir()
+        ssh = await self._get_ssh()
+
+        result = await ssh.run_remote(
+            f"ls {info_dir}/rivault-job-*.info 2>/dev/null || true"
+        )
+        if not result.stdout.strip():
+            return 0
+
+        cleaned = 0
+        for line in result.stdout.strip().splitlines():
+            match = re.search(r"rivault-job-(\d+)\.info", line)
+            if not match:
+                continue
+            job_id = match.group(1)
+
+            # Check if job still exists in Slurm.
+            check = await ssh.run_remote(f"squeue -j {job_id} -h")
+            if not check.stdout.strip():
+                await ssh.run_remote(f"rm -f {info_dir}/rivault-job-{job_id}.info")
+                cleaned += 1
+
+        return cleaned
+
+    async def health_check(self) -> dict[str, Any]:
+        """Check if Slurm is accessible via SSH."""
+        try:
+            ssh = await self._get_ssh()
+            partition = self.config.slurm_partition
+            result = await ssh.run_remote(f"sinfo -h -p {partition} -o '%P %a %D'")
+
+            if not result.ok:
+                return {
+                    "backend": self.backend_name,
+                    "healthy": False,
+                    "message": f"Remote sinfo failed: {result.stderr}",
+                    "ssh_target": self._ssh_config.ssh_target,
+                }
+
+            return {
+                "backend": self.backend_name,
+                "healthy": True,
+                "message": "Remote Slurm cluster accessible via SSH",
+                "ssh_target": self._ssh_config.ssh_target,
+                "partition_info": result.stdout.strip(),
+            }
+        except ConnectionError as exc:
+            return {
+                "backend": self.backend_name,
+                "healthy": False,
+                "message": f"SSH connection failed: {exc}",
+                "ssh_target": self._ssh_config.ssh_target,
+            }
+
+    async def check_readiness(self, endpoint: EndpointInfo) -> bool:
+        """Check endpoint readiness via SSH curl (front-end can't reach compute directly)."""
+        ssh = await self._get_ssh()
+        url = f"http://{endpoint.node}:{endpoint.litellm_port}/v1/models"
+        result = await ssh.run_remote(
+            f"curl -sf --max-time 5 {url}",
+            timeout=10,
+        )
+        return result.ok
+
+    async def shutdown(self) -> None:
+        """Clean shutdown of SSH connection."""
+        if self._tunnel_pool is not None:
+            await self._tunnel_pool.shutdown()
+            self._tunnel_pool = None
+        # Close per-user SSH connections
+        for username, mgr in list(self._user_ssh_pool.items()):
+            await mgr.close()
+        self._user_ssh_pool.clear()
+        if self._ssh:
+            await self._ssh.close()
+            self._ssh = None

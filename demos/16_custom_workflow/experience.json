@@ -1,0 +1,25 @@
+{
+  "xp_name": "Custom Workflow",
+  "sql_username": "demo_custom",
+  "modalities": [
+    {
+      "modality_name": "text",
+      "s3": {
+        "bucket_alias": "demo-custom-text",
+        "need_output_bucket": true,
+        "data": { "type": "file", "mime_type": "text/plain" }
+      },
+      "model": {
+        "model_name": "custom-workflow",
+        "vector_size": "0",
+        "model_type": "pipeline://custom_step:CustomWorkflowStep",
+        "return_type": "file"
+      },
+      "sql": {
+        "store_embeddings": "no",
+        "table_name": "custom_wf",
+        "meta_data": []
+      }
+    }
+  ]
+}

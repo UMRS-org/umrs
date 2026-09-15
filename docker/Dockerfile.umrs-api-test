@@ -1,0 +1,38 @@
+# Dockerfile for UMRS API automated test container
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Copy requirements first for better layer caching
+COPY ./src/requirements.txt ./requirements.txt
+
+# Copy API client (source) and test script
+COPY ./src /app/src
+COPY ./docker/test_umrs_api.sh ./test_umrs_api.sh
+RUN ln -sf /app/src/client_umrs.py /app/client_umrs.py
+
+# Copy user configs into /root/user_files
+COPY ./docker/user_files /root/user_files
+
+# user specific s3cfg files
+COPY ./docker/s3cfg_user1 /root/.s3cfg_user1
+COPY ./docker/s3cfg_user2 /root/.s3cfg_user2
+
+# Copy data directory under /root to use standard path
+COPY ./data /root/data
+
+# Install runtime deps for client & test tools
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends build-essential ca-certificates curl jq && \
+    pip install --no-cache-dir -r requirements.txt && \
+    python -m spacy download en_core_web_sm && \
+    apt-get remove -y build-essential && \
+    apt-get autoremove -y && \
+    rm -rf /var/lib/apt/lists/*
+# TODO: Install umrs-cli here if available (e.g., via pip, copy, or other means)
+
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONPATH=/app/src
+
+# Run the bash test script on container start
+CMD ["/bin/bash", "-c", "chmod +x ./test_umrs_api.sh && ./test_umrs_api.sh"]

@@ -1,0 +1,215 @@
+# Pool roster: RCCS Cloud — Qwen3.6-35B-A3B-NVFP4 · DeepSeek-V4-Flash-DSpark · GLM-5.2 IQ1_S
+# Usage: R4_GATEWAY_URL=https://data0.ai.r-ccs.riken.jp/rccs r4 pool up pool-rccs-3models.yaml
+#
+# Target: rccs-front → SSH → rccs-cloud (DGX Spark / GB10 Blackwell, 128 GiB unified).
+#
+# STATUS (2026-07-09):
+#   - Qwen3.6-35B-A3B-NVFP4 : SERVING (ready). vLLM was crashing at weight-load
+#       (KeyError experts.w2_input_scale) because the NVFP4 MoE experts fell back
+#       to the Unquantized MoE backend. THREE fixes required:
+#         1. Pin VLLM_MOE_BACKEND=marlin (DGX Spark GB10 NVFP4 MoE backend).
+#         2. Override the image to vLLM 0.23.0 — the partition-default
+#            cu130-nightly-aarch64 tag is a FROZEN 0.19.2 nightly with NO
+#            ModelOpt NVFP4 MoE quant method, so the marlin flag was rejected
+#            by the unquantized-MoE oracle. 0.23.0 (CUDA 13.0, Blackwell) ships
+#            the NVFP4 MoE method; log confirms "Using 'MARLIN' NvFp4 MoE backend".
+#         3. Inject libnvidia-ptxjitcompiler.so.1 into the container (see
+#            deploy/rccs/serve-model.slurm _GPU_LIB_VOLS). vLLM 0.23.0 aarch64
+#            has an EMPTY torch.cuda.get_arch_list() (no precompiled Blackwell
+#            SASS), so the Marlin kernels JIT-compile from PTX at first launch
+#            and need the driver's PTX JIT compiler lib — without it the KV-cache
+#            profiling forward pass died with "PTX JIT compiler library not found"
+#            (cudaErrorJitCompilerNotFound). The device-based GPU override only
+#            mounted libcuda + libnvidia-ml before this.
+#       Keeping NVFP4 — ideal for GB10 Blackwell. Verified end-to-end: job 206940
+#       — "Application startup complete", KV cache 65.63 GiB, LiteLLM 200 OK,
+#       gateway reports endpoint `ready`.
+#   - DeepSeek-V4-Flash-DSpark : launch path SUPPORTED (serve-model.slurm now
+#       does cross-node TP=2 via Ray + opt-in eager). Still needs out-of-band
+#       setup before `pool up`: a locally-built DSpark NVFP4 image, the proposer
+#       source patch baked into that image, and staged+registered
+#       fraserprice/DeepSeek-V4-Flash-DSpark weights. See the full PREREQUISITES
+#       block on the endpoint entry below.
+#   - GLM-5.2 IQ1_S (GGUF)  : STILL DOWNLOADING — do not `pool up` this entry until staged.
+#
+# Each model must be registered in the rccs catalog before `pool up`:
+#   umrs-client --profile rccs-cloud model register <name> <path> --type llm --scope user
+# The `model:` field below must match the registered catalog name.
+
+pool: rccs-3models
+defaults:
+  tier: system
+  ttl_sec: 0              # never expires
+  timeout: 172800         # 2 days — HTTP submit timeout (wait=False: only bounds the sbatch call)
+
+endpoints:
+  # ── Qwen3.6-35B-A3B-NVFP4 ────────────────────────────────────────────
+  #  35B MoE (3B active), NVFP4 (Blackwell-native 4-bit float) quantization.
+  #  Fits comfortably on 1× GB10 (128 GiB unified). qwen3_moe architecture,
+  #  tool calling + reasoning.
+  - name: qwen3.6-35b-a3b-nvfp4
+    model: Qwen3.6-35B-A3B-NVFP4
+    tier: system
+    node_count: 1
+    partition: ng-dgx-m0
+    max_model_len: 262144
+    env_vars:
+      VLLM_PATH_TO_HUGGINGFACE: "/lvs0/rccs-dmp/masaru.nagaso/umrs_models"
+      VLLM_MODEL: "Qwen3.6-35B-A3B-NVFP4"
+      # Tokenizer is co-located with the weights (flat-staged dir). Do NOT set
+      # VLLM_TOKENIZER — it injects `--tokenizer=/tokenizer`, but the wrapper
+      # can only resolve a real /tokenizer mount from an HF-cache layout
+      # (hub/models--<name>/snapshots) or an absolute path. Flat-staged weights
+      # have neither, so /tokenizer stays empty (/dev/null) → vLLM fails with
+      # "Unrecognized model in /tokenizer". Leaving it unset makes vLLM load the
+      # tokenizer directly from the model dir.
+      # GB10 has 128 GiB *unified* memory shared with the co-located litellm/
+      # postgres/nginx/coredns containers (~24 GiB baseline), so only ~98 GiB is
+      # free to CUDA at startup. 0.90 (≈109 GiB) overshoots → vLLM aborts with
+      # "Free memory ... less than desired GPU memory utilization". 0.75 fits.
+      VLLM_GPU_MEM_UTIL: "0.75"
+      VLLM_MAX_NUM_SEQS: "4"
+      VLLM_TOOL_CALL_PARSER: "qwen3_xml"
+      VLLM_REASONING_PARSER: "qwen3"
+      VLLM_TRUST_REMOTE_CODE: "1"
+      # NVFP4 mixed-precision MoE checkpoint: pin the quant-aware fused-MoE
+      # backend. Without this vLLM detects quantization=modelopt_mixed for the
+      # linear/attn layers but falls back to the "Unquantized MoE backend" for
+      # the experts, which has no per-expert input_scale param → vLLM aborts
+      # weight-load with KeyError: 'layers.0.mlp.experts.w2_input_scale'.
+      # `marlin` is the DGX Spark (GB10) NVFP4 MoE backend from the vLLM recipe
+      # (recipes.vllm.ai/Qwen/Qwen3.6-35B-A3B?hardware=dgx_spark_gb10).
+      VLLM_MOE_BACKEND: "marlin"
+      # The ng-dgx-m0 partition default image (site.yaml vllm_docker_tag:
+      # cu130-nightly-aarch64) is a FROZEN vLLM 0.19.2 nightly that lacks the
+      # ModelOpt NVFP4 MoE quant method — the experts fall to the Unquantized
+      # backend and marlin is rejected as "not supported for unquantized MoE".
+      # Override to vLLM 0.23.0 (CUDA 13.0, Blackwell-native) which ships the
+      # NVFP4 MoE method. VLLM_DOCKER_IMAGE wins over the partition tag because
+      # the compose image expr is ${VLLM_DOCKER_IMAGE:-.../:${VLLM_DOCKER_TAG}}.
+      VLLM_DOCKER_IMAGE: "docker.io/vllm/vllm-openai:latest"
+      RCCS_SKIP_CDI: "1"
+      # Monitoring loop timeout. Default 7200s (2h) exits the job early; set to
+      # 3h50m (just under the 4h Slurm walltime) for a clean exit. Raise to
+      # "82800" after Ansible redeploys rccs-front/site.yaml with time_limit 23h.
+      RIVAULT_JOB_TIMEOUT: "13800"
+
+  # ── DeepSeek-V4-Flash-DSpark (1M NVFP4-KV, 2× DGX Spark, TP=2) ────────
+  #  Recipe: github.com/tonyd2wild/DeepSeek-v4-Flash-DSpark-1M-NVFP4-KV-2x-DGX-Spark
+  #  Weights: hf.co/fraserprice/DeepSeek-V4-Flash-DSpark
+  #  DSpark speculative-decode + nvfp4_ds_mla 4-bit KV cache, 1M YaRN ceiling.
+  #  Recommended default = the repo's "1M Keys-Concurrency Profile".
+  #
+  #  ⚠ PREREQUISITES — this entry CANNOT be brought up by `pool up` alone. The
+  #  DSpark recipe needs out-of-band setup that a roster env-var edit cannot do.
+  #  Run the helper on rccs-cloud to satisfy prereqs 1-3 in one shot:
+  #      ./setup_deepseek_dspark.sh --all      # then --verify
+  #  (preview first with: ./setup_deepseek_dspark.sh --all --dry-run)
+  #  The individual prerequisites, for reference:
+  #    1. CUSTOM IMAGE. There is NO public DSpark image. Build
+  #       `vllm-dspark-runtime:dspark-nvfp4-stage-c` on BOTH GB10 nodes with the
+  #       repo's ./build-dspark-vllm-runtime.sh, then set VLLM_DOCKER_IMAGE to it
+  #       (docker.io/vllm/vllm-openai does NOT ship the DSpark spec-decode /
+  #       nvfp4_ds_mla / B12X MoE kernels — vLLM will reject these flags).
+  #    2. SOURCE PATCH. The concurrency garble fix is a bind-mount of a patched
+  #       recipe/overlay/vllm/v1/spec_decode/dspark_proposer.py into the image.
+  #       The pool roster has no per-model volume-mount field — this must be
+  #       baked into the image at build time (add the overlay COPY to the
+  #       Dockerfile) since serve-model.yaml mounts only the standard volumes.
+  #    3. WEIGHTS. Stage fraserprice/DeepSeek-V4-Flash-DSpark under
+  #       VLLM_PATH_TO_HUGGINGFACE (below) and register it in the rccs catalog
+  #       via the r4 gateway client (active source must point at rccs):
+  #         r4 model register deepseek-v4-flash-dspark \
+  #           --path /lvs0/rccs-dmp/masaru.nagaso/umrs_models/DeepSeek-V4-Flash-DSpark \
+  #           --type llm --scope user
+  #    4. LAUNCH PATH (now supported). The upstream recipe runs TP=2 across 2
+  #       nodes via vLLM's `mp` backend. This platform serves it via its Ray
+  #       multi-node path instead: setting VLLM_TP=2 / VLLM_PP=1 (below) forms a
+  #       single 2-GPU tensor-parallel group across the 2×1-GPU GB10 nodes over
+  #       NCCL — functionally equivalent to the recipe's `mp` TP=2 for
+  #       correctness. serve-model.slurm now (a) advertises the real per-node
+  #       GPU count to Ray (num-gpus=1, not =TP) and derives PP=cluster_gpus/TP,
+  #       and (b) makes --enforce-eager opt-in, so this entry (no
+  #       VLLM_ENFORCE_EAGER) runs WITH CUDA graphs — required by the DSpark
+  #       garble fix (--max-cudagraph-capture-size == --max-num-seqs). Still
+  #       gated on prereqs 1-3 (image, patch, weights) before it can serve.
+  - name: deepseek-v4-flash-dspark
+    model: deepseek-v4-flash-dspark
+    tier: system
+    node_count: 2
+    partition: ng-dgx-m2
+    max_model_len: 1048576          # 1M — model's true YaRN ceiling (not 1.5M)
+    env_vars:
+      VLLM_PATH_TO_HUGGINGFACE: "/lvs0/rccs-dmp/masaru.nagaso/umrs_models"
+      VLLM_MODEL: "DeepSeek-V4-Flash-DSpark"
+      # Locally-built DSpark NVFP4 image on both GB10 nodes (mia-raf-pr1).
+      VLLM_DOCKER_IMAGE: "vllm-dspark-runtime:mia-raf-pr1"
+      # GB10 unified-memory headroom (see Qwen entry). Repo's 1M profile = 0.80.
+      VLLM_GPU_MEM_UTIL: "0.80"
+      VLLM_MAX_NUM_SEQS: "6"         # 1M ceiling pairs with 6 seqs (KV-pool sized)
+      # Cross-node TP=2 group over the 2×1-GPU GB10 nodes (see prereq #4). The
+      # launcher advertises 1 GPU/node to Ray and derives PP = 2 GPUs / TP 2 = 1.
+      VLLM_TP: "2"
+      VLLM_PP: "1"
+      VLLM_TRUST_REMOTE_CODE: "1"
+      # DSpark 1M Keys-Concurrency runtime env (from the recipe's Runtime Profile).
+      VLLM_USE_FLASHINFER_SAMPLER: "1"
+      VLLM_USE_B12X_MOE: "1"         # THE speed switch — 0 tanks decode to ~29 tok/s
+      VLLM_USE_B12X_WO_PROJECTION: "1"
+      VLLM_DSPARK_GPU_REJECTED_CONTEXT_MASK: "1"
+      VLLM_DSPARK_CONFIDENCE_SCHEDULER: "off"
+      VLLM_DSPARK_LOCAL_ARGMAX: "1"
+      VLLM_DSPARK_REPLICATE_MARKOV_W1: "1"
+      VLLM_DSPARK_FUSED_MARKOV_ARGMAX: "0"
+      VLLM_DSPARK_REFERENCE_KV_QUANT_DEQUANT: "0"
+      VLLM_DSV4_B12X_COMPRESSED_MLA: "0"
+      VLLM_DSV4_DSPARK_DEFER_TARGET_CAPTURE: "0"
+      B12X_W4A16_TC_DECODE: "0"
+      VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS: "0"
+      MTP_NUM_TOKENS: "3"            # with probabilistic draft (2026-07-03 garble fix)
+      # Core DSpark vLLM flags not covered by the launcher's own args. The
+      # multi-node serve line interpolates $VLLM_EXTRA_ARGS right after the model
+      # ref, so these are appended verbatim. --max-cudagraph-capture-size MUST
+      # equal --max-num-seqs (6); num_speculative_tokens 3 keeps the cudagraph
+      # ladder valid at seqs 6. NOTE: only effective once the launcher stops
+      # forcing --enforce-eager for this model (see prereq #4).
+      VLLM_EXTRA_ARGS: >-
+        --kv-cache-dtype nvfp4_ds_mla
+        --block-size 256
+        --max-num-batched-tokens 8192
+        --max-cudagraph-capture-size 6
+        --enable-prefix-caching
+        --async-scheduling
+        --enable-chunked-prefill
+        --generation-config vllm
+        --speculative-config {"method":"dspark","num_speculative_tokens":3,"draft_sample_method":"probabilistic"}
+      RCCS_SKIP_CDI: "1"
+
+  # ── GLM-5.2 IQ1_S (1-bit GGUF) ───────────────────
+  #  GLM-5.2 744B MoE, 1-bit GGUF (IQ1_S, 404 GB on disk). Single merged .gguf
+  #  served by vLLM with tokenizer loaded separately. PP=2 across 2× GB10 nodes.
+  #  GLM requires enforce-eager.
+  #  Note: GGUF loads via mmap so not all 404 GB needs to be resident at once.
+  #  Ray memory monitor must be disabled (RAY_memory_monitor_refresh_ms=0)
+  #  because Lustre page cache from prior failed attempts fills the 121 GB pool
+  #  before CUDA gets a chance to allocate. CUDA lazily faults pages as needed.
+  #  Updated 2026-07-11: moved to ng-dgx-m3 (proven partition for GLM-5.2).
+  - name: glm-5.2-iq1s
+    model: glm-5.2-iq1s
+    tier: system
+    node_count: 2
+    partition: ng-dgx-m3
+    max_model_len: 1048576
+    env_vars:
+      VLLM_PATH_TO_HUGGINGFACE: "/lvs0/rccs-dmp/masaru.nagaso/umrs_models"
+      # vLLM GGUF layout: directory with config.json + model.gguf symlink + tokenizer files
+      VLLM_MODEL: "glm-5.2-iq1s-vllm"
+      VLLM_GPU_MEM_UTIL: "0.75"
+      VLLM_MAX_NUM_SEQS: "4"
+      VLLM_ENFORCE_EAGER: "1"        # GLM-5.2 requires eager mode
+      # Disable Ray's system-memory OOM monitor. The 404 GB GGUF loads via mmap
+      # so peak RSS is << total file size, but Lustre page cache from prior
+      # failed attempts pushes the node past Ray's 95% kill threshold BEFORE
+      # CUDA even starts. Disabling the monitor lets CUDA handle OOM natively.
+      RAY_memory_monitor_refresh_ms: "0"
+      RCCS_SKIP_CDI: "1"
