@@ -109,7 +109,7 @@ def _stub_compute(monkeypatch) -> dict:
         called.update(database=database, table=table, rebuild=rebuild, index_name=index_name)
         return {"action": "rebuild", "index_name": "knowledge_items_v1_hnsw"}
 
-    import umrs.server.sql as server_sql
+    import umrs.shared.pgvector_index as server_sql  # canonical home post-ADR-053
 
     monkeypatch.setattr(server_sql, "maintain_pgvector_index", _maintain)
     return called
@@ -135,7 +135,7 @@ def test_submit_sweep_maintain_stamp(monkeypatch):
 def test_submit_no_stale_ref_and_no_compute(monkeypatch):
     cur = _Cur(rows=[], rowcount=0)
     monkeypatch.setattr(reindex, "_artifact_conn", lambda: _conn_scope(cur))
-    import umrs.server.sql as server_sql
+    import umrs.shared.pgvector_index as server_sql  # canonical home post-ADR-053
 
     def _boom(*_a, **_k):  # pragma: no cover - must never be called here
         raise AssertionError("maintain must not run with zero stale rows")
