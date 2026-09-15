@@ -268,7 +268,7 @@ def test_runner_records_exec_time_outcome_in_routing_log(probe_module, tmp_path,
     class _SlowStep(Step):
         name = "slow"
 
-        def run(self, ctx: StepContext) -> StepResult:
+        def run(self, _ctx: StepContext) -> StepResult:
             _time.sleep(0.02)  # ensure measurable >0
             return StepResult(extra={"ok": True})
 
@@ -321,7 +321,7 @@ def test_runner_records_outcome_into_feedback_store(probe_module, tmp_path, monk
     class _SlowStep(Step):
         name = "slow"
 
-        def run(self, ctx: StepContext) -> StepResult:
+        def run(self, _ctx: StepContext) -> StepResult:
             _time.sleep(0.02)
             return StepResult(extra={"ok": True})
 
