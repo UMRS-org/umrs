@@ -136,18 +136,21 @@ class TestMessageQueueZMQSecurity:
             "UMRS_ZMQ_CURVE_ALLOW_ANY_CLIENT_KEY": "true",
         }
         auth = MagicMock()
-        with patch.dict(os.environ, env, clear=False), patch("zmq.Context") as mock_context:
-            with patch("zmq.auth.thread.ThreadAuthenticator", return_value=auth):
-                mock_socket = MagicMock()
-                mock_context.return_value.socket.return_value = mock_socket
+        with (
+            patch.dict(os.environ, env, clear=False),
+            patch("zmq.Context") as mock_context,
+            patch("zmq.auth.thread.ThreadAuthenticator", return_value=auth),
+        ):
+            mock_socket = MagicMock()
+            mock_context.return_value.socket.return_value = mock_socket
 
-                mq = MessageQueue(role="server", queue_type="control")
+            mq = MessageQueue(role="server", queue_type="control")
 
-                assert mock_socket.curve_publickey == KEY_A.encode("ascii")
-                assert mock_socket.curve_secretkey == KEY_B.encode("ascii")
-                assert mock_socket.curve_server is True
-                mock_socket.bind.assert_called_once()
-                mq.close()
+            assert mock_socket.curve_publickey == KEY_A.encode("ascii")
+            assert mock_socket.curve_secretkey == KEY_B.encode("ascii")
+            assert mock_socket.curve_server is True
+            mock_socket.bind.assert_called_once()
+            mq.close()
 
         auth.stop.assert_called_once()
 
@@ -167,7 +170,7 @@ class TestWorkerZMQSecurity:
         context.socket.return_value = socket
 
         with patch.dict(os.environ, env, clear=False):
-            worker = _RemoteWorker(
+            _worker = _RemoteWorker(
                 address="tcp://127.0.0.1:59999",
                 zmq_context=context,
                 timeout=1.0,

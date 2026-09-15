@@ -9,11 +9,11 @@ from umrs.tui.app import MonitorApp
 
 
 def _make_app(**overrides):
-    defaults = dict(
-        control_mq=MagicMock(),
-        client_id="test-user",
-        interval=10.0,
-    )
+    defaults = {
+        "control_mq": MagicMock(),
+        "client_id": "test-user",
+        "interval": 10.0,
+    }
     defaults.update(overrides)
     return MonitorApp(**defaults)
 
