@@ -70,7 +70,7 @@ class TestHeaderParity:
         assert resp.headers.get(ERROR_CODE_HEADER) == "auth.bad_scheme"
         assert resp.json()["detail"] == "Authorization header must be 'Bearer <token>'"
 
-    def test_revoke_unknown_session_is_typed_not_found(self, client, provider):
+    def test_revoke_unknown_session_is_typed_not_found(self, client, provider):  # noqa: ARG002 — side-effect fixture wires the underlying session
         app = client.app
         from umrs.api.zmq_sessions import _require_user_id
 
@@ -81,7 +81,7 @@ class TestHeaderParity:
         assert resp.json()["detail"] == "Session s-404 not found"
         app.dependency_overrides.clear()
 
-    def test_revoke_other_users_session_is_typed_forbidden(self, client, provider):
+    def test_revoke_other_users_session_is_typed_forbidden(self, client, provider):  # noqa: ARG002 — same
         app = client.app
         from umrs.api.zmq_sessions import _extract_jwt_identity, _require_user_id
 
