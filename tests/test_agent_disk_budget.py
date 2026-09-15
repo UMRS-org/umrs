@@ -120,7 +120,7 @@ class TestDiskLedgerIntegration:
         # Same hash re-upload: free
         conn.cursor = MagicMock(
             return_value=MagicMock(
-                execute=lambda sql, params=None: None,
+                execute=lambda _sql, _params=None: None,
                 fetchone=MagicMock(side_effect=[(1,), (200,)]),
             )
         )
@@ -134,7 +134,6 @@ class TestStagedBytesCleanupOnRefusal:
 
     def test_refusal_deletes_staged_object_once(self, monkeypatch) -> None:
         from fastapi import HTTPException
-
         from umrs.api import knowledge_upload
         from umrs.api.disk_ledger import DiskLedger
 
@@ -142,12 +141,12 @@ class TestStagedBytesCleanupOnRefusal:
         client = SimpleNamespace(
             delete_object=lambda *, Bucket, Key: deleted.append((Bucket, Key))
         )
-        config = SimpleNamespace(bucket="bucket-x", get_client=lambda: client)
+        config = SimpleNamespace(bucket="bucket-x", get_client=lambda: client)  # noqa: ARG005
 
         monkeypatch.setattr(
             DiskLedger,
             "charge",
-            lambda self, user_id, *, content_hash, byte_size: (_ for _ in ()).throw(
+            lambda self, user_id, *, content_hash, byte_size: (_ for _ in ()).throw(  # noqa: ARG002,ARG005
                 HTTPException(status_code=503, detail="exceeded")
             ),
         )
@@ -173,14 +172,16 @@ class TestStagedBytesCleanupOnRefusal:
         monkeypatch.setattr(
             knowledge_upload,
             "_cleanup_staged_bytes",
-            lambda *, client, bucket, staged_key: calls.append((bucket, staged_key)),
+            lambda *, client, bucket, staged_key: calls.append(  # noqa: ARG005
+                (bucket, staged_key)
+            ),
         )
 
         class _FailingLedger:
             def __init__(self, conn):
                 self.conn = conn
 
-            def charge(self, user_id, *, content_hash, byte_size):
+            def charge(self, user_id, *, content_hash, byte_size):  # noqa: ARG002
                 from fastapi import HTTPException
 
                 raise HTTPException(status_code=503, detail="quota")
@@ -212,11 +213,12 @@ class TestStagedBytesCleanupOnRefusal:
         monkeypatch.setattr(
             knowledge_upload.logger,
             "warning",
-            lambda *a, **k: None,
+            lambda *_a, **_k: None,
         )
 
         class _ExplodingClient:
             def delete_object(self, *, Bucket, Key):
+                _ = (Bucket, Key)
                 raise RuntimeError("s3 down")
 
         # Cleanup exploding must not crash the refusal path (sweep owns residue).
