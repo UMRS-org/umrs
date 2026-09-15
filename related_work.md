@@ -1,3 +1,44 @@
+## HPC-native LLM inference serving (concurrents directs)
+
+Trois systèmes récents font une partie de ce que fait UMRS — la couche inférence sur Slurm — mais sans multimodalité, pipeline de données, ni RAG.
+
+### SAIA / Chat-AI (GWDG, Göttingen)
+
+- **Référence** : Doosthosseini, Decker, Nolte, Kunkel — *"SAIA: A Seamless Slurm-Native Solution for HPC-Based Services"*, Journal of Supercomputing 2026. Preprint arxiv 2407.00110.
+- **Code** : <https://github.com/gwdg/saia-hpc>, <https://github.com/gwdg/saia-hub>, <https://github.com/gwdg/chat-ai>
+- **Architecture** : web service sur VM cloud + backend vLLM sur nœuds Slurm, avec port assigné dynamiquement par le scheduler. Authentification HPC-native (SSO).
+- **Limites vs UMRS** : LLM uniquement (pas de multimodalité), pas de pipeline de données, pas de stockage vectoriel, pas de RAG, pas de registre de modèles.
+
+### RAMSES Scalable Engine (Trappen et al., MIND'25)
+
+- **Référence** : Trappen et al. — *"Automated Dynamic AI Inference Scaling on HPC-Infrastructure: Integrating Kubernetes, Slurm and vLLM"*, MIND'25 (1st International Workshop on Next-Gen Middleware for MLOps in Distributed Systems), Nashville, décembre 2025. DOI: 10.1145/3774902.3776632. Preprint arxiv 2511.21413.
+- **Architecture** : deux couches — Kubernetes pour le frontend, Slurm pour le compute GPU. vLLM comme backend. Scaling automatique pour requêtes bursty.
+- **Performances** : ~500 ms d'overhead end-to-end pour 100–1000 requêtes concurrentes.
+- **Limites vs UMRS** : LLM uniquement, pas de workflows multimodaux, pas de pipeline de données scientifiques.
+
+### STREAM (2026)
+
+- **Référence** : *"STREAM: Multi-Tier LLM Inference Middleware with Dual-Channel HPC Token Streaming"*, arxiv 2606.13968.
+- **Architecture** : middleware multi-tier unifiant inference locale, HPC, et cloud dans un seul système. Dual-channel relay pour streaming de tokens (TTFT HPC : 11,40 s → 0,54 s, ×21,1). Chiffrement AES-256-GCM end-to-end.
+- **Librairies publiées** : `streamrelay` et `hpc-as-api` (PyPI + Zenodo). Mode HPC-as-API : soumet des jobs Slurm et expose le résultat comme une API REST.
+- **Limites vs UMRS** : focalisé sur le streaming de tokens et la traversée de firewall, pas l'orchestration de workflows scientifiques multimodaux.
+
+### Positionnement d'UMRS
+
+| Dimension | SAIA/Chat-AI | RAMSES Engine | STREAM | UMRS |
+|---|---|---|---|---|
+| Multimodalité | ✗ | ✗ | ✗ | ✓ (text, image, video, file) |
+| Pipeline de données (S3 + pgvector) | ✗ | ✗ | ✗ | ✓ |
+| RAG intégré | ✗ | ✗ | ✗ | ✓ |
+| Registre de modèles | ✗ | partiel | ✗ | ✓ |
+| Workflows scientifiques end-to-end | ✗ | ✗ | ✗ | ✓ |
+| Déploiements réels (Spring-8, RIKEN) | ✗ | ✗ | ✗ | ✓ |
+
+UMRS est le seul système qui couple orchestration de workflows multimodaux + pipeline de données + inférence sur Slurm dans un environnement scientifique réel.
+La venue naturelle pour publication est **SC26 workshops** (MIND est exactement le bon workshop) ou **IPDPS 2027** pour une version avec évaluation quantitative complète.
+
+---
+
 ## Automatic data pipelining in science using AI models
 
 There are several tools similar to UMRS that focus on **automatic data pipelining in science using AI models** or workflow automation frameworks that can orchestrate AI/ML pipelines effectively:
