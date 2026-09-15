@@ -431,7 +431,7 @@ def main():
                         help='Max worker threads in the pool (default: UMRS_POOL_MAX_WORKERS or 16)')
     parser.add_argument('--pool-max-pending', type=int, default=None,
                         help='Max pending tasks before rejecting requests (default: UMRS_POOL_MAX_PENDING or 64)')
-    parser.add_argument("--skip-create-users", action="store_true", help="Disable MinIO and PostgresSQL checks for bucket/user configuration to speed up server startup",)
+    parser.add_argument("--skip-create-users", action="store_true", help="Disable MinIO and PostgresSQL checks for bucket/user configuration to speed up server startup.",)
     args = parser.parse_args()
     configure_file = args.conf
 
