@@ -18,6 +18,17 @@ os.environ.setdefault("UMRS_SAT_KG_QUIET", "1")
 # mode cases opt in per-test via monkeypatch.setenv("UMRS_AUTH_MODE", "strict").
 os.environ.setdefault("UMRS_AUTH_MODE", "mvp")
 
+# Knowledge-export output root (2026-09-16 dust policy): the export backend's
+# env fallback is Path(cwd)/.kb_exports — under pytest that is the checked-out
+# umrs/ tree, so every full run re-dirtied a tracked fixture
+# (.kb_exports/test-project/manifest.json, 14 mtime rewrites in two days).
+# Tests get one per-process scratch dir instead; production keeps the
+# operator-controlled default.
+os.environ.setdefault(
+    "UMRS_KB_EXPORT_DIR",
+    f"{os.environ.get('TMPDIR', '/tmp')}/umrs-test-kb-exports/{os.getpid()}",
+)
+
 # Demo/onboarding files that wrap argparse at module scope: collecting them
 # at test time makes pytest's argument parser abort with SystemExit — see the
 # `usage: __main__.py [-h] [-c CONFIG]` INTERNALERROR in full-suite runs.

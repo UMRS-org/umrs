@@ -62,3 +62,7 @@ __pycache__/
 *.csv
 !demos/sample_data/**/*.csv
 demos_jens/internal_genAI/
+
+# Test/build artifact (policy 2026-09-16): knowledge-export outputs land under
+# UMRS_KB_EXPORT_DIR pinned per-suite in tests/conftest.py; never tracked.
+.kb_exports/
