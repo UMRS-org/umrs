@@ -82,6 +82,8 @@ def create_grant(
     request: Request,
     caller: CallerScope = Depends(get_caller_scope),
 ) -> dict[str, Any]:
+    """# auth: verified
+    """
     if not caller.user_id:
         raise_typed(
             PlatformError.sourcegrants("unauthorized", "user identity required")
@@ -136,6 +138,8 @@ def list_mine(
     request: Request,
     caller: CallerScope = Depends(get_caller_scope),
 ) -> list[dict[str, Any]]:
+    """# auth: verified
+    """
     if not caller.user_id:
         raise_typed(
             PlatformError.sourcegrants("unauthorized", "user identity required")
@@ -149,6 +153,8 @@ def list_for_me(
     request: Request,
     caller: CallerScope = Depends(get_caller_scope),
 ) -> list[dict[str, Any]]:
+    """# auth: verified
+    """
     if not caller.user_id:
         raise_typed(
             PlatformError.sourcegrants("unauthorized", "user identity required")
@@ -163,6 +169,8 @@ def revoke_grant(
     request: Request,
     caller: CallerScope = Depends(get_caller_scope),
 ) -> dict[str, Any]:
+    """# auth: verified
+    """
     if not caller.user_id:
         raise_typed(
             PlatformError.sourcegrants("unauthorized", "user identity required")

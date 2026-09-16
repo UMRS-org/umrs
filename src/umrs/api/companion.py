@@ -726,6 +726,7 @@ async def archive_companion_session(
     caller: dict = Depends(_strict_caller),
 ) -> dict:
     """Archive a companion session — tombstone + session-scope trust revoke
+    # auth: verified
     + one audit row per revoked grant, ONE transaction (schema v2).
 
     This IS the client `session archive` lifecycle hook: bridge, CLI, and

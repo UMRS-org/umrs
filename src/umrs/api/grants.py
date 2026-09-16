@@ -163,6 +163,7 @@ def _asset_writable(
 @router.post("", response_model=dict[str, Any])
 async def create_grant(body: GrantBody, request: Request) -> dict[str, Any]:
     """Create a grant on an asset the caller controls (static write ladder)."""
+    # auth: verified
     caller = _caller(request)
     pool = _pool(request)
     if body.asset_kind not in ASSET_KINDS or body.grantee_kind not in GRANTEE_KINDS:
@@ -201,6 +202,7 @@ async def list_grants_for_asset(
     request: Request, asset_kind: str = "", asset_id: str = ""
 ) -> dict[str, Any]:
     """Live + tombstoned grants on one asset (asset writers only)."""
+    # auth: verified
     caller = _caller(request)
     pool = _pool(request)
     if not asset_kind or not asset_id:
@@ -222,6 +224,7 @@ async def list_grants_for_asset(
 @router.get("/mine", response_model=dict[str, Any])
 async def list_my_grants(request: Request) -> dict[str, Any]:
     """Live grants received by the caller (as user and via project)."""
+    # auth: verified
     caller = _caller(request)
     pool = _pool(request)
     conn = pool.getconn()
@@ -238,6 +241,7 @@ async def list_my_grants(request: Request) -> dict[str, Any]:
 @router.post("/{grant_id}/revoke", response_model=dict[str, Any])
 async def revoke_grant(grant_id: str, request: Request) -> dict[str, Any]:
     """Tombstone a grant. Revoke = tombstone, never DELETE (audit survives)."""
+    # auth: verified
     caller = _caller(request)
     pool = _pool(request)
     conn = pool.getconn()

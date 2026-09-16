@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from botocore.exceptions import ClientError
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Header, Request
 from fastapi import Path as FPath
 from pydantic import BaseModel, Field
 
@@ -301,7 +301,11 @@ def _merge_part_provenance(
 
 
 def _complete_manifest(
-    manifest: IntakeUploadManifest, config: S3Config
+    manifest: IntakeUploadManifest,
+    config: S3Config,
+    *,
+    uploader_user_id: str | None = None,
+    pool: Any | None = None,
 ) -> dict[str, Any]:
     """Verify + assemble + ingest. Returns the completion payload."""
     client = config.get_client()
@@ -317,6 +321,33 @@ def _complete_manifest(
     final_etag = str(final_head.get("ETag") or "").strip('"')
 
     _merge_part_provenance(manifest, present)
+
+    # Disk budget (ADR-051 D-3, remaining-lanes leg 2026-09-16): the multipart
+    # presign lane's catalog write edge. Single assembled-PUT yields a
+    # deterministic ETag, so content-dedup holds lane-internally. Charge sits
+    # BEFORE the status flip + ingest trigger: a refusal deletes the assembled
+    # object but keeps the parts and the manifest re-completable, so freeing
+    # quota and re-completing never requires re-uploading a byte (cleanup
+    # failure never masks the typed 503).
+    if uploader_user_id and pool is not None:
+        from umrs.api.disk_ledger import DiskLedger
+
+        conn = pool.getconn()
+        try:
+            DiskLedger(conn).charge(
+                uploader_user_id, content_hash=final_etag, byte_size=size_total
+            )
+        except Exception:
+            try:
+                client.delete_object(Bucket=bucket, Key=manifest.target_key)
+            except Exception:  # noqa: BLE001 — sweep must never mask the typed refusal
+                logger.warning(
+                    "quota refusal cleanup failed for %s", manifest.target_key
+                )
+            raise
+        finally:
+            pool.putconn(conn)
+
     manifest.status = "assembled"
     manifest.final_etag = final_etag
     manifest.size_bytes = size_total
@@ -345,7 +376,11 @@ def _complete_manifest(
 
 
 @router.post("/manifests/{manifest_id}/complete", response_model=dict[str, Any])
-def complete_manifest(manifest_id: str = FPath(...)) -> dict[str, Any]:
+def complete_manifest(
+    request: Request,
+    manifest_id: str = FPath(...),
+    x_user_id: str | None = Header(None),
+) -> dict[str, Any]:
     """Verify, assemble, ingest, and close the manifest (idempotent)."""
     manifest = _require_manifest(manifest_id)
     if manifest.status == "assembled":
@@ -355,4 +390,7 @@ def complete_manifest(manifest_id: str = FPath(...)) -> dict[str, Any]:
             "idempotent": True,
         }
     _require_uploading(manifest)
-    return _complete_manifest(manifest, get_s3_config())
+    pool = getattr(request.app.state, "umrs_db_pool", None)
+    return _complete_manifest(
+        manifest, get_s3_config(), uploader_user_id=x_user_id, pool=pool
+    )

@@ -29,6 +29,8 @@ CLASSIFIED_FIXED: dict[str, SurfaceLane] = {
     "user-sources": SurfaceLane.BETA,
     # ADR-051 (2026-09-14): self-service durable projects registry — BETA.
     "projects": SurfaceLane.BETA,
+    # ADR-051 read model (2026-09-16): caller-attributed quota gauge — BETA.
+    "quota": SurfaceLane.BETA,
     "ops": SurfaceLane.INTERNAL,
     "secrets": SurfaceLane.INTERNAL,
     "skills": SurfaceLane.INTERNAL,

@@ -184,6 +184,7 @@ async def knowledge_upload(
     project_id: str = Depends(get_project_id),
 ) -> dict[str, Any]:
     """Stage bytes → central durable ingest (dual-corpus dwell contract).
+    # auth: verified
 
     202 with the durable job id; the job writes knowledge_nodes/edges into
     the resolved graph (default: the project's default graph).
@@ -227,8 +228,9 @@ async def knowledge_upload(
 
         pool = getattr(request.app.state, "umrs_db_pool", None)
         if pool is not None:
+            conn = pool.getconn()
             try:
-                DiskLedger(pool.getconn()).charge(
+                DiskLedger(conn).charge(
                     user_id, content_hash=content_hash, byte_size=byte_size
                 )
             except Exception:
@@ -236,6 +238,8 @@ async def knowledge_upload(
                     client=config.get_client(), bucket=config.bucket, staged_key=staged_key
                 )
                 raise
+            finally:
+                pool.putconn(conn)
     return await _submit_upload_ingest(
         bucket=config.bucket,
         staged_key=staged_key,

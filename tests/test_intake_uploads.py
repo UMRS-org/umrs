@@ -53,6 +53,11 @@ class FakeS3Client:
         self.put_calls.append((Key, data))
         return {"ETag": '"final-etag"'}
 
+    def delete_object(self, *, Bucket: str, Key: str):
+        self._check_bucket(Bucket)
+        self.objects.pop(Key, None)
+        self.etags.pop(Key, None)
+
     def generate_presigned_url(self, *, ClientMethod: str, Params: dict, ExpiresIn: int) -> str:
         return (
             f"http://fake-s3/{Params['Bucket']}/{Params['Key']}"
@@ -240,3 +245,136 @@ class TestCompleteFlow:
             headers=_headers(),
         )
         assert presign.status_code == 409
+
+
+# ── ADR-051 D-3 remaining-lane metering (2026-09-16) ─────────────────────────
+# The complete edge is the catalog write point of the multipart presign lane:
+# charge happens after assembly, before the status flip + ingest trigger, so a
+# refusal deletes the assembled object but keeps parts + manifest re-completable.
+
+
+class _LedgerCursor:
+    def __init__(self):
+        self._result = []
+
+    def execute(self, sql, params=None):
+        if "SELECT 1 FROM user_disk_objects" in sql:
+            self._result = []
+        elif "bytes_used FROM user_disk_usage" in sql:
+            self._result = [(self._conn.usage_total,)] if self._conn.usage_total else []
+        elif "INSERT INTO user_disk_usage" in sql:
+            _uid, add1, add2 = params
+            self._conn.usage_total += add1
+            self._result = []
+        elif "INSERT INTO user_disk_objects" in sql:
+            self._conn.charges.append(params)
+            self._result = []
+        else:
+            self._result = []
+
+    def fetchone(self):
+        return self._result.pop(0) if self._result else None
+
+
+class _LedgerConn:
+    def __init__(self):
+        self.charges: list[tuple] = []
+        self.usage_total = 0
+
+    def cursor(self):
+        cur = _LedgerCursor()
+        cur._conn = self
+        return cur
+
+    def commit(self):
+        pass
+
+
+class _LedgerPool:
+    def __init__(self, conn: _LedgerConn):
+        self._conn = conn
+        self.returned = 0
+
+    def getconn(self):
+        return self._conn
+
+    def putconn(self, _conn):
+        self.returned += 1
+
+
+def _client_with_pool(store, s3, pool, monkeypatch) -> TestClient:
+    import umrs.api.intake_uploads as mod
+    import umrs.data_catalog.triggers as triggers_mod
+
+    monkeypatch.setenv("UMRS_AUTH_MODE", "mvp")
+    monkeypatch.setattr(mod, "_store", store)
+    monkeypatch.setattr(mod, "get_s3_config", lambda: _FakeConfig(s3))
+    monkeypatch.setattr(triggers_mod, "trigger_post_upload_ingestion", lambda *_a, **_kw: "job-1")
+    app = FastAPI()
+    app.include_router(router, dependencies=[])
+    app.state.umrs_db_pool = pool
+    app.state.triggered = []
+    return TestClient(app)
+
+
+class TestCompleteLaneMetering:
+    def test_complete_charges_uploader_once_per_hash(self, store, s3, monkeypatch):
+        conn = _LedgerConn()
+        client = _client_with_pool(store, s3, _LedgerPool(conn), monkeypatch)
+        manifest_id = _create(client)
+        target = "proj-a/inputs/big-dataset.tiff"
+        _seed_parts(s3, target, manifest_id)
+
+        resp = client.post(f"/umrs/uploads/manifests/{manifest_id}/complete", headers=_headers())
+        assert resp.status_code == 200, resp.text
+        assert conn.charges == [("alice", "final-etag", len(b"chunk-1\nchunk-2\n"))]
+
+        # idempotent completes never double-charge (hash-dedup on top)
+        resp2 = client.post(f"/umrs/uploads/manifests/{manifest_id}/complete", headers=_headers())
+        assert resp2.status_code == 200
+        assert len(conn.charges) == 1
+
+    def _refused_complete(self, store, s3, monkeypatch):
+        monkeypatch.setenv("UMRS_USER_DISK_BYTES_MAX", "8")  # parts total 16 bytes
+        conn = _LedgerConn()
+        client = _client_with_pool(store, s3, _LedgerPool(conn), monkeypatch)
+        manifest_id = _create(client)
+        target = "proj-a/inputs/big-dataset.tiff"
+        _seed_parts(s3, target, manifest_id)
+        resp = client.post(f"/umrs/uploads/manifests/{manifest_id}/complete", headers=_headers())
+        return client, s3, manifest_id, target, resp
+
+    def _assert_refusal_state(self, client, s3, manifest_id, target, resp):
+        assert resp.status_code == 503
+        assert resp.headers.get("x-platform-error-code") == "quota.disk_bytes_exceeded"
+        # assembled object deleted, PARTS KEPT, manifest still completable
+        assert target not in s3.objects
+        assert any(k.startswith(f"{target}.__parts/") for k in s3.objects)
+        state = client.get(f"/umrs/uploads/manifests/{manifest_id}", headers=_headers())
+        assert state.json()["manifest"]["status"] == "uploading"
+        assert client.app.state.triggered == []
+
+    def test_refusal_keeps_parts_and_manifest_completable_state(self, store, s3, monkeypatch):
+        args = self._refused_complete(store, s3, monkeypatch)
+        self._assert_refusal_state(*args)
+
+    def test_free_cap_lets_same_manifest_complete_without_reupload(self, store, s3, monkeypatch):
+        client, s3_ctx, manifest_id, target, resp = self._refused_complete(store, s3, monkeypatch)
+        self._assert_refusal_state(client, s3_ctx, manifest_id, target, resp)
+        monkeypatch.setenv("UMRS_USER_DISK_BYTES_MAX", str(1024 * 1024))
+        retry = client.post(f"/umrs/uploads/manifests/{manifest_id}/complete", headers=_headers())
+        assert retry.status_code == 200, retry.text
+        assert retry.json()["status"] == "assembled"
+        assert s3_ctx.objects[target] == b"chunk-1\nchunk-2\n"
+
+    def test_pool_conn_returned_on_refusal(self, store, s3, monkeypatch):
+        monkeypatch.setenv("UMRS_USER_DISK_BYTES_MAX", "1")
+        conn = _LedgerConn()
+        pool = _LedgerPool(conn)
+        client = _client_with_pool(store, s3, pool, monkeypatch)
+        manifest_id = _create(client)
+        target = "proj-a/inputs/big-dataset.tiff"
+        _seed_parts(s3, target, manifest_id)
+        resp = client.post(f"/umrs/uploads/manifests/{manifest_id}/complete", headers=_headers())
+        assert resp.status_code == 503
+        assert pool.returned == 1
