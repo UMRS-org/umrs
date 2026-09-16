@@ -169,7 +169,9 @@ else
         aarch64) MC_ARCH="arm64" ;;
         *)       die "Unsupported architecture for mc: ${ARCH}" ;;
     esac
-    MC_URL="https://dl.min.io/client/mc/release/linux-${MC_ARCH}/mc"
+    # dl.min.io died with the MinIO archive; mc still releases from GitHub.
+    MC_TAG="RELEASE.2025-08-13T08-35-41Z"
+    MC_URL="https://github.com/minio/mc/releases/download/${MC_TAG}/mc.linux-${MC_ARCH}.${MC_TAG}"
     if command -v curl &>/dev/null; then
         curl -fsSL "$MC_URL" -o "$MC_BIN"
     elif command -v wget &>/dev/null; then

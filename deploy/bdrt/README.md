@@ -652,7 +652,7 @@ their own scripts), create credentials for them via the MinIO admin client (`mc`
 
 ```bash
 # Install mc if not available (one-time):
-# curl -sL https://dl.min.io/client/mc/release/linux-arm64/mc -o ~/.local/bin/mc && chmod +x ~/.local/bin/mc
+# curl -sL https://github.com/minio/mc/releases/download/RELEASE.2025-08-13T08-35-41Z/mc.linux-arm64.RELEASE.2025-08-13T08-35-41Z -o ~/.local/bin/mc && chmod +x ~/.local/bin/mc
 
 # Alias for the local MinIO instance
 mc alias set local http://127.0.0.1:9000 "$S3_ROOT_USER" "$S3_ROOT_PASSWORD"
