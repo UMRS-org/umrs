@@ -162,14 +162,33 @@ def _asset_writable(
 
 @router.post("", response_model=dict[str, Any])
 async def create_grant(body: GrantBody, request: Request) -> dict[str, Any]:
-    """Create a grant on an asset the caller controls (static write ladder)."""
+    """Create a grant on an asset the caller controls (static write ladder).
     # auth: verified
+    """
     caller = _caller(request)
     pool = _pool(request)
     if body.asset_kind not in ASSET_KINDS or body.grantee_kind not in GRANTEE_KINDS:
         raise_typed(
             PlatformError.grants("bad_request", "unknown asset_kind or grantee_kind")
         )
+    if body.grantee_kind == "group":
+        from .groups import GroupNotFound, GroupsStore
+
+        gconn = pool.getconn()
+        try:
+            grow = GroupsStore(gconn).get(body.grantee_id)
+        except GroupNotFound:
+            raise_typed(
+                PlatformError.grants("not_found", f"group {body.grantee_id} not found")
+            )
+        finally:
+            pool.putconn(gconn)
+        if grow["status"] != "active":
+            raise_typed(
+                PlatformError.grants(
+                    "conflict", f"group {body.grantee_id} is retired"
+                )
+            )
     if not _asset_writable(pool, body.asset_kind, body.asset_id, caller):
         # 404-shaped: the asset is absent or not the caller's to share.
         raise_typed(PlatformError.grants("not_found", "asset not found"))
@@ -201,8 +220,9 @@ def _serialize(grants: list[AssetGrant]) -> dict[str, Any]:
 async def list_grants_for_asset(
     request: Request, asset_kind: str = "", asset_id: str = ""
 ) -> dict[str, Any]:
-    """Live + tombstoned grants on one asset (asset writers only)."""
+    """Live + tombstoned grants on one asset (asset writers only).
     # auth: verified
+    """
     caller = _caller(request)
     pool = _pool(request)
     if not asset_kind or not asset_id:
@@ -223,8 +243,9 @@ async def list_grants_for_asset(
 
 @router.get("/mine", response_model=dict[str, Any])
 async def list_my_grants(request: Request) -> dict[str, Any]:
-    """Live grants received by the caller (as user and via project)."""
+    """Live grants received by the caller (as user and via project).
     # auth: verified
+    """
     caller = _caller(request)
     pool = _pool(request)
     conn = pool.getconn()
@@ -233,6 +254,11 @@ async def list_my_grants(request: Request) -> dict[str, Any]:
         grants = store.list_for_grantee("user", caller.user_id)
         if caller.project_id:
             grants = grants + store.list_for_grantee("project", caller.project_id)
+        # ADR-050 §3: plus every grant riding an ACTIVE group the caller is in
+        from .groups import groups_for_user
+
+        for gid in groups_for_user(conn, caller.user_id):
+            grants = grants + store.list_for_grantee("group", gid)
     finally:
         pool.putconn(conn)
     return _serialize(grants)
@@ -240,8 +266,9 @@ async def list_my_grants(request: Request) -> dict[str, Any]:
 
 @router.post("/{grant_id}/revoke", response_model=dict[str, Any])
 async def revoke_grant(grant_id: str, request: Request) -> dict[str, Any]:
-    """Tombstone a grant. Revoke = tombstone, never DELETE (audit survives)."""
+    """Tombstone a grant. Revoke = tombstone, never DELETE (audit survives).
     # auth: verified
+    """
     caller = _caller(request)
     pool = _pool(request)
     conn = pool.getconn()

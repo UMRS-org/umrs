@@ -153,17 +153,24 @@ class ProjectPatchBody(BaseModel):
     action: str = Field(default="")
 
 
-def _store_for(request: Request) -> ProjectStore:
+def _store_dep(request: Request):
+    """FastAPI generator dependency — pool conn is always returned on every
+    path (the 2026-09-09 exhaustion class; the prior plain factory leaked
+    one conn per route call)."""
     app = request.app
-    pool_getter = getattr(app.state, "umrs_db_pool", None)
-    if pool_getter is None:
+    pool = getattr(app.state, "umrs_db_pool", None)
+    if pool is None:
         raise_typed(
             PlatformError.projects(
                 "unavailable",
                 "projects store unavailable — shared umrs_db pool absent",
             )
         )
-    return ProjectStore(pool_getter.getconn())
+    conn = pool.getconn()
+    try:
+        yield ProjectStore(conn)
+    finally:
+        pool.putconn(conn)
 
 
 def _row_response(row: dict[str, Any]) -> dict[str, Any]:
@@ -181,12 +188,12 @@ def _row_response(row: dict[str, Any]) -> dict[str, Any]:
 @router.post("", status_code=status.HTTP_201_CREATED)
 def create_project(
     body: ProjectCreateBody,
-    request: Request,
+    store: ProjectStore = Depends(_store_dep),
     identity: CallerIdentity = Depends(get_caller_identity),
 ) -> dict[str, Any]:
-    """Ensuring-shape creation (idempotent — existing row returned as-is)."""
+    """Ensuring-shape creation (idempotent — existing row returned as-is).
     # auth: verified
-    store = _store_for(request)
+    """
     actor = (identity.user_id or "").strip()
     if body.for_user and body.for_user != actor:
         if not identity.is_admin:
@@ -209,13 +216,13 @@ def create_project(
 
 @router.get("")
 def list_my_projects(
-    request: Request,
     include_retired: bool = False,
+    store: ProjectStore = Depends(_store_dep),
     identity: CallerIdentity = Depends(get_caller_identity),
 ) -> dict[str, Any]:
-    """Mine only; admin sees every row."""
+    """Mine only; admin sees every row.
     # auth: verified
-    store = _store_for(request)
+    """
     owner = None if identity.is_admin else (identity.user_id or "").strip()
     rows = store.list(owner=owner, include_retired=include_retired)
     return {
@@ -226,10 +233,9 @@ def list_my_projects(
 
 
 @router.get("/{project_id}")
-def get_project(project_id: str, request: Request) -> dict[str, Any]:
+def get_project(project_id: str, store: ProjectStore = Depends(_store_dep)) -> dict[str, Any]:
     """# auth: verified
     """
-    store = _store_for(request)
     try:
         row = store.get(project_id)
     except ProjectNotFound:
@@ -243,12 +249,12 @@ def get_project(project_id: str, request: Request) -> dict[str, Any]:
 def patch_project(
     project_id: str,
     body: ProjectPatchBody,
-    request: Request,
+    store: ProjectStore = Depends(_store_dep),
     identity: CallerIdentity = Depends(get_caller_identity),
 ) -> dict[str, Any]:
-    """Only 'retire' this round — owner-or-admin, tombstone, never DELETE."""
+    """Only 'retire' this round — owner-or-admin, tombstone, never DELETE.
     # auth: verified
-    store = _store_for(request)
+    """
     try:
         row = store.get(project_id)
     except ProjectNotFound:

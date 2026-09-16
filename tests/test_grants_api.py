@@ -315,3 +315,123 @@ def test_supported_asset_kinds_documented():
     # (no durable bundle-owner rows today; do not fabricate).
     assert set(ASSET_KINDS) == {"model", "knowledge_graph", "endpoint", "workflow"}
     assert "bundle" not in ASSET_KINDS
+
+
+# ── ADR-050 §3: group grantee mapping (groups authority 2026-09-16) ──────────
+
+
+class _GroupsAwareMixin:
+    """Extend the in-memory cursor with groups/group_members tables."""
+
+    def _select_groups(self, sql, params):
+        groups = getattr(self, "_groups", {})
+        members = getattr(self, "_members", set())
+        self._many = []
+        self._one = None
+        if "from group_members" in sql and "join groups" in sql:
+            # groups_for_user: only ACTIVE groups the user is a member of
+            self._many = [[g] for g in _active_groups_of(members, groups, params[0])]
+            return
+        if "from groups" in sql and "group_id = %s" in sql:
+            row = groups.get(params[0])
+            self._one = tuple(row) if row else None
+            return
+        self._base_select(sql, params)
+
+
+def _active_groups_of(members, groups, user_id):
+    joined = {gid for (gid, uid) in members if uid == user_id}
+    live = {g for g, row in groups.items() if row[3] == "active"}
+    return sorted(joined & live)
+
+
+def _patch_groups_tables(pool, *, groups=None, members=None):
+    """Duck-type the existing fake cursor with group tables."""
+    pool.groups = groups or {}
+    pool.members = members or set()
+    cur = pool.conn._cursor
+    cur._groups = pool.groups
+    cur._members = pool.members
+    if not hasattr(cur, "_base_select"):
+        cur._base_select = cur._select
+        def _select(sql, params):
+            return _GroupsAwareMixin._select_groups(cur, sql, params)
+        cur._select = _select
+
+
+def test_create_grant_group_kind_round_trip(client):
+    pool = client.app.state.umrs_db_pool
+    _patch_groups_tables(
+        pool,
+        groups={"g-lab": ("g-lab", "Lab A", "carol", "active", None, None, None)},
+        members={("g-lab", "carol")},
+    )
+    resp = client.post(
+        "/umrs/grants",
+        json={
+            "asset_kind": "model",
+            "asset_id": "mdl-1",
+            "grantee_kind": "group",
+            "grantee_id": "g-lab",
+        },
+    )
+    assert resp.status_code == 200, resp.text  # route convention: 200 for create (matches the legacy round-trip pin above)
+    row = next(iter(client.app.state.umrs_db_pool.rows.values()))
+    assert row[3] == "group" and row[4] == "g-lab"
+
+
+def test_create_grant_group_unknown_gets_404(client):
+    pool = client.app.state.umrs_db_pool
+    _patch_groups_tables(pool, groups={})
+    resp = client.post(
+        "/umrs/grants",
+        json={
+            "asset_kind": "model",
+            "asset_id": "mdl-1",
+            "grantee_kind": "group",
+            "grantee_id": "g-ghost",
+        },
+    )
+    assert resp.status_code == 404
+
+
+def test_create_grant_group_retired_gets_409(client):
+    pool = client.app.state.umrs_db_pool
+    _patch_groups_tables(
+        pool,
+        groups={"g-dead": ("g-dead", "Dead", "carol", "retired", None, None, None)},
+    )
+    resp = client.post(
+        "/umrs/grants",
+        json={
+            "asset_kind": "model",
+            "asset_id": "mdl-1",
+            "grantee_kind": "group",
+            "grantee_id": "g-dead",
+        },
+    )
+    assert resp.status_code == 409
+
+
+def test_mine_includes_grants_of_caller_active_groups(client):
+    pool = client.app.state.umrs_db_pool
+    _patch_groups_tables(
+        pool,
+        groups={
+            "g-live": ("g-live", "Live", "root", "active", None, None, None),
+            "g-dead": ("g-dead", "Dead", "root", "retired", None, None, None),
+        },
+        members={("g-live", "carol"), ("g-dead", "carol")},
+    )
+    rows = pool.rows
+    rows["grt-g1"] = [
+        "grt-g1", "model", "mdl-1", "group", "g-live", None, None, None, "root", "2026-09-07",
+    ]
+    rows["grt-g2"] = [  # retired group — must not resolve
+        "grt-g2", "model", "mdl-2", "group", "g-dead", None, None, None, "root", "2026-09-07",
+    ]
+    resp = client.get("/umrs/grants/mine")
+    assert resp.status_code == 200, resp.text
+    ids = {g["grant_id"] for g in resp.json()["grants"]}
+    assert "grt-g1" in ids
+    assert "grt-g2" not in ids

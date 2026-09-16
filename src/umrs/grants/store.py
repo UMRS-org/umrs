@@ -15,8 +15,10 @@ from typing import Any
 
 # WP-06 round 2 leg-b: two more kinds; 'bundle' stays deferred (no durable
 # bundle-owner rows exist today and fabricating one would lie).
+# WP-06 r2 leg-c (ADR-050 §3 groundwork 2026-09-16): 'group' joins the
+# ladder — the groups+membership authority (0097) exists to resolve it.
 ASSET_KINDS = ("model", "knowledge_graph", "endpoint", "workflow")
-GRANTEE_KINDS = ("user", "project")
+GRANTEE_KINDS = ("user", "project", "group")
 
 
 @dataclass(frozen=True)
