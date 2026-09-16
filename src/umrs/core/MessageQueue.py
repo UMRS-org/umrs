@@ -173,7 +173,7 @@ class MessageQueue:
         return selected_port, port_range
 
     def __init__(self, role='server', queue_type='control', server_ip="127.0.0.1", port=BASE_PORT,
-                 max_nb_messages=DEFAULT_NB_MSG, timeout_ms=20000, tmp_dir = None, task_manager = None,
+                 max_nb_messages=DEFAULT_NB_MSG, timeout_ms=250000, tmp_dir = None, task_manager = None,
                  status_store=None, tunnel_mode=None, prefer_env_server_host=True, context=None):
         """
         Initializes the MessageQueue.
