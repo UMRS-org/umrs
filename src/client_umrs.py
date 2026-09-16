@@ -6180,8 +6180,10 @@ def _action_s3_transfer(ctx):
             f"{action_label} data for:\n\tUser: '{username}'\n\tXP: '{xp_name}'\n\tModality: '{modality}'"
         )
 
-    def _notify_after_upload(username, count):
-        ok = ctx.control_mq.notify_server(username, TaskCmd.PROCESS_OBJECTS, count)
+    def _notify_after_upload(username, count, blocking=False):
+        ok = ctx.control_mq.notify_server(
+            username, TaskCmd.PROCESS_OBJECTS, count, blocking=blocking
+        )
         if ok:
             return True
         warning = operation_ignored_warning(
@@ -6203,6 +6205,7 @@ def _action_s3_transfer(ctx):
         metadata_args,
         username,
         notify_server=True,
+        blocking=False
     ):
         if not os.path.isfile(file_path):
             print(f"Error: file {file_path} is not a valid.")
@@ -6225,7 +6228,7 @@ def _action_s3_transfer(ctx):
             )
             notify_ok = True
             if s3_key and notify_server:
-                notify_ok = _notify_after_upload(username, 1)
+                notify_ok = _notify_after_upload(username, 1, blocking=blocking)
             return s3_key, 1, notify_ok
         elif category == "text_file":
             s3_key = s3_store_text_file(
@@ -6233,7 +6236,7 @@ def _action_s3_transfer(ctx):
             )
             notify_ok = True
             if s3_key and notify_server:
-                notify_ok = _notify_after_upload(username, 1)
+                notify_ok = _notify_after_upload(username, 1, blocking=blocking)
             return s3_key, 1, notify_ok
         elif category == "text":
             try:
@@ -6255,7 +6258,9 @@ def _action_s3_transfer(ctx):
                             nb_objects += 1
                     notify_ok = True
                     if notify_server and nb_objects > 0:
-                        notify_ok = _notify_after_upload(username, nb_objects)
+                        notify_ok = _notify_after_upload(
+                            username, nb_objects, blocking=blocking
+                        )
                     return s3_key_list, nb_objects, notify_ok
             except UnicodeDecodeError as e:
                 print(f"Unicode decoding error: {e}")
@@ -6270,7 +6275,7 @@ def _action_s3_transfer(ctx):
         return None, 0, True
 
     def process_dir(
-        path, s3, full_bucket_name, subdir, modality, data_mq, metadata_args, username
+        path, s3, full_bucket_name, subdir, modality, data_mq, metadata_args, username, blocking = False
     ):
         if not os.path.isdir(path):
             print(f"Error: {path} is not a valid directory.")
@@ -6329,7 +6334,7 @@ def _action_s3_transfer(ctx):
 
         notify_ok = True
         if nb_objects > 0:
-            notify_ok = _notify_after_upload(username, nb_objects)
+            notify_ok = _notify_after_upload(username, nb_objects, blocking=blocking)
         elif nb_files_seen == 0:
             print(f"Error: directory '{path}' contains no files to upload.")
         elif broken_symlinks:
@@ -6550,6 +6555,7 @@ def _action_s3_transfer(ctx):
                 metadata_args,
                 username,
                 notify_server=True,
+                blocking=args.blocking
             )
             if s3_key and not notify_ok:
                 upload_exit_code = 1
@@ -6586,6 +6592,7 @@ def _action_s3_transfer(ctx):
                 data_mq,
                 metadata_args,
                 username,
+                blocking=args.blocking
             )
             if len(s3_key_list) > 0 and not notify_ok:
                 upload_exit_code = 1
@@ -7143,6 +7150,12 @@ def main():
     du_p = data_sub.add_parser("upload", help="Upload file to a bucket")
     du_p.add_argument("file_path")
     du_p.add_argument(
+        "--blocking",
+        action="store_true",
+        default=False,
+        help="Wait indefinitely for the server acknowledgement after the upload",
+    )
+    du_p.add_argument(
         "bucket_alias",
         help=(
             "Alias of a bucket as defined in the client configuration file.\n"
@@ -7161,6 +7174,12 @@ def main():
         "dir-upload", help="Upload all files of a directory to a bucket"
     )
     ddu_p.add_argument("path")
+    ddu_p.add_argument(
+        "--blocking",
+        action="store_true",
+        default=False,
+        help="Wait indefinitely for the server acknowledgement after the upload",
+    )
     ddu_p.add_argument(
         "bucket_alias",
         help=(
