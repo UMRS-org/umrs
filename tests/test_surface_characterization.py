@@ -169,6 +169,8 @@ def test_lane_assignments_match_record(app):
         "user-sources": "v1beta",
         # ADR-051 (2026-09-14): self-service durable projects registry — BETA.
         "projects": "v1beta",
+        # ADR-051 read model (2026-09-16): caller-attributed quota gauge — BETA.
+        "quota": "v1beta",
         "ops": "internal",
         "secrets": "internal",
         "skills": "internal",

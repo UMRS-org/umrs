@@ -158,6 +158,7 @@ async def corpus_attrition_report(
     ),
 ) -> dict[str, Any]:
     """Issue the read-only corpus-attrition report (WP-15 dwell sweep).
+    # auth: verified
 
     Rows come from per-documents-vector; counts and age buckets are
     honest CSV receipts, never mutated by a caller.

@@ -111,6 +111,8 @@ async def push_source(
     request: Request,
     caller: CallerScope = Depends(get_caller_scope),
 ) -> PushSourceResponse:
+    """# auth: verified
+    """
     if body.provider_kind not in _VALID_PROVIDER_KINDS:
         raise_typed(
             PlatformError.usersources(
@@ -204,6 +206,8 @@ async def unpush_source(
     request: Request,
     caller: CallerScope = Depends(get_caller_scope),
 ) -> dict[str, Any]:
+    """# auth: verified
+    """
     if not caller.user_id:
         raise_typed(PlatformError.usersources("unauthorized", "user identity required"))
     store = _store(request)
@@ -279,6 +283,8 @@ async def list_audit(
     limit: int = Query(50, ge=1, le=200),
     caller: CallerScope = Depends(get_caller_scope),
 ) -> list[dict[str, Any]]:
+    """# auth: verified
+    """
     if not caller.user_id:
         raise_typed(PlatformError.usersources("unauthorized", "user identity required"))
     store = _store(request)

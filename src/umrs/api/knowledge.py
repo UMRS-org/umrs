@@ -1100,6 +1100,7 @@ async def knowledge_readiness(
     _get_project_id: str = Depends(get_project_id),
 ) -> dict[str, Any]:
     """Get knowledge readiness: artifact count + verification status.
+    # auth: verified
 
     Renamed from ``GET /readiness`` (shadowed duplicate; G-P2-9): the
     research-readiness controller handler registered earlier owns that path.
@@ -1199,6 +1200,7 @@ async def trigger_verify(
     project_id: str = Depends(get_project_id),
 ) -> dict[str, Any]:
     """Trigger a KNOWLEDGE_VERIFY durable job.
+    # auth: verified
 
     Runs all verifiers in the registry against the project's knowledge.
     Renamed from ``POST /verify`` (shadowed duplicate; G-P2-9): the

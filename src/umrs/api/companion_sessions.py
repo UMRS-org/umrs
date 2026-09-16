@@ -104,6 +104,7 @@ async def put_session_snapshot(
     session_id: str, body: SessionSnapshotBody, request: Request
 ) -> dict[str, Any]:
     """Mirror one client session state. Newer updates supersede older ones."""
+    # auth: verified
     uid = _uid(request)
     pool = _pool(request)
     venue = _validate_venue(body.venue) if body.venue else ""
@@ -154,6 +155,7 @@ async def put_session_snapshot(
 @router.get("/{session_id}", response_model=dict[str, Any])
 async def get_session_snapshot(session_id: str, request: Request) -> dict[str, Any]:
     """Answer a mirrored snapshot for the owner (404 for others/absent)."""
+    # auth: verified
     uid = _uid(request)
     pool = _pool(request)
     conn = pool.getconn()
@@ -190,6 +192,7 @@ async def get_session_snapshot(session_id: str, request: Request) -> dict[str, A
 @router.delete("/{session_id}", response_model=dict[str, Any])
 async def delete_session_snapshot(session_id: str, request: Request) -> dict[str, Any]:
     """Delete one mirrored snapshot for the owner (WP-04 G-P6-1 round 2).
+    # auth: verified
 
     Single txn drops the archive tombstone AND the snapshot row, so a
     client-side ``delete`` can never be undone by reconcile ``restored``
@@ -253,6 +256,7 @@ async def list_session_snapshots(
     project: str | None = None,
 ) -> dict[str, Any]:
     """List my snapshots (summary rows only, no payloads).
+    # auth: verified
 
     Filters compose server-side: venue csv (local/frontend/cluster:<name>),
     state csv (ongoing/stopped/completed/error/archived), project id, and

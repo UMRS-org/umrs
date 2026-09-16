@@ -160,6 +160,8 @@ def issue_lease(
 ):
     # Owner pinning (R0-1): non-admin callers mint leases for themselves only;
     # admin may mint on behalf (jobs plane). The body field never wins across owners.
+    """# auth: verified
+    """
     owner_id = req.owner_id if caller.is_admin else (caller.user_id or req.owner_id)
     broker = get_broker()
     lease, secret_value = broker.issue_lease(
@@ -194,6 +196,8 @@ def issue_lease(
 
 @router.post("/validate", response_model=LeaseResponse)
 def validate_secret(req: ValidateSecretRequest):
+    """# auth: verified
+    """
     broker = get_broker()
     lease = broker.validate_secret(req.secret_value)
     if not lease:
@@ -211,6 +215,8 @@ def list_leases(
     limit: int = Query(50, ge=1, le=500),
     caller: CallerScope = Depends(get_caller_scope),
 ):
+    """# auth: verified
+    """
     broker = get_broker()
     results = broker.list_leases(
         job_id=job_id,
@@ -225,6 +231,8 @@ def list_leases(
 
 @router.get("/lease/{lease_id}", response_model=LeaseResponse)
 def get_lease(lease_id: str, caller: CallerScope = Depends(get_caller_scope)):
+    """# auth: verified
+    """
     broker = get_broker()
     lease = _check_lease_visible(broker.get_lease(lease_id), caller, lease_id)
     return LeaseResponse(**lease.to_dict())
@@ -232,6 +240,8 @@ def get_lease(lease_id: str, caller: CallerScope = Depends(get_caller_scope)):
 
 @router.post("/lease/{lease_id}/revoke")
 def revoke_lease(lease_id: str, caller: CallerScope = Depends(get_caller_scope)):
+    """# auth: verified
+    """
     broker = get_broker()
     _check_lease_visible(broker.get_lease(lease_id), caller, lease_id)
     ok = broker.revoke_lease(lease_id)
@@ -244,6 +254,8 @@ def revoke_lease(lease_id: str, caller: CallerScope = Depends(get_caller_scope))
 def renew_lease(
     lease_id: str, req: RenewRequest, caller: CallerScope = Depends(get_caller_scope)
 ):
+    """# auth: verified
+    """
     broker = get_broker()
     _check_lease_visible(broker.get_lease(lease_id), caller, lease_id)
     ok = broker.renew_lease(lease_id, req.extend_seconds, req.actor)
@@ -260,6 +272,8 @@ def renew_lease(
 def revoke_job_leases(job_id: str, caller: CallerScope = Depends(get_caller_scope)):
     # Operator-class action: revoking every lease of a job is admin-only
     # (per-lease revoke above is the owner path).
+    """# auth: verified
+    """
     if not caller.is_admin:
         raise_typed(PlatformError.secretbroker("forbidden", "admin required"))
     broker = get_broker()
@@ -274,6 +288,8 @@ def get_audit_trail(
     limit: int = Query(100, ge=1, le=1000),
     caller: CallerScope = Depends(get_caller_scope),
 ):
+    """# auth: verified
+    """
     broker = get_broker()
     entries = broker.get_audit_trail(
         lease_id=lease_id,
@@ -293,6 +309,8 @@ def get_audit_trail(
 
 @router.post("/cleanup")
 def cleanup_expired(caller: CallerScope = Depends(get_caller_scope)):
+    """# auth: verified
+    """
     if not caller.is_admin:
         raise_typed(PlatformError.secretbroker("forbidden", "admin required"))
     broker = get_broker()

@@ -61,6 +61,9 @@ FAMILY_LANES: dict[str, SurfaceLane] = {
     # ADR-051 (2026-09-14): self-service durable projects registry — BETA,
     # same family as loops/research (user-facing surface).
     "projects": SurfaceLane.BETA,
+    # ADR-051 read model (2026-09-16): caller-attributed quota gauge — BETA,
+    # user-facing read surface like projects.
+    "quota": SurfaceLane.BETA,
     "ops": SurfaceLane.INTERNAL,
     # R1 secrets wave: broker/lease machinery is ops-plane, never user-facing.
     "secrets": SurfaceLane.INTERNAL,

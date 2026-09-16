@@ -11,6 +11,7 @@ Endpoints:
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import os
 import re
@@ -29,6 +30,7 @@ from fastapi import (
     Header,
     HTTPException,
     Query,
+    Request,
     UploadFile,
     status,
 )
@@ -330,6 +332,44 @@ def _upload_key(filename: str, purpose: str | None) -> str:
 # =============================================================================
 
 
+def _charge_upload_quota(
+    request: Request,
+    s3_client: Any,
+    bucket: str,
+    object_key: str,
+    content: bytes,
+    x_user_id: str | None,
+) -> None:
+    """Disk budget (ADR-051 D-3, remaining-lanes leg 2026-09-16): catalog-bound
+    bytes charged once per unique content hash; the hash needs no crypto —
+    dedup is the only consumer, so a plain md5 of the staged body matches the
+    ETag convention one hop up. Refusal deletes the just-staged bytes (cleanup
+    never masks the typed 503 — same shape as the knowledge lane; pool conns
+    always returned — the 2026-09-09 exhaustion class)."""
+    if not x_user_id:
+        return
+    from umrs.api.disk_ledger import DiskLedger
+
+    pool = getattr(request.app.state, "umrs_db_pool", None)
+    if pool is None:
+        return
+    conn = pool.getconn()
+    try:
+        DiskLedger(conn).charge(
+            x_user_id,
+            content_hash=hashlib.md5(content).hexdigest(),
+            byte_size=len(content),
+        )
+    except Exception:
+        try:
+            s3_client.delete_object(Bucket=bucket, Key=object_key)
+        except Exception:  # noqa: BLE001 — sweep must never mask the typed refusal
+            logger.warning("upload quota refusal cleanup failed for %s", object_key)
+        raise
+    finally:
+        pool.putconn(conn)
+
+
 @router.post(
     "/upload",
     response_model=UploadResponse,
@@ -337,7 +377,8 @@ def _upload_key(filename: str, purpose: str | None) -> str:
     description="Upload a file into project-scoped object storage without returning presigned URLs.",
 )
 async def upload_file(
-    file: UploadFile = File(...),
+    request: Request,
+    file: UploadFile = File(None),
     key: str | None = Form(None),
     purpose: str | None = Form("uploads"),
     project_id: str = Depends(get_project_id),
@@ -372,6 +413,9 @@ async def upload_file(
         )
 
     object_etag = (put_response.get("ETag") or "").strip('"')
+
+    _charge_upload_quota(request, s3_client, bucket, object_key, content, x_user_id)
+
     _fire_post_upload_ingest(
         s3_client, bucket, object_key, object_etag, project_id, x_user_id, file.filename
     )

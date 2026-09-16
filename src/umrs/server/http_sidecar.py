@@ -666,7 +666,6 @@ def _create_app():
     from umrs.api.loop import router as loops_router
     from umrs.api.mcp import router as mcp_router
     from umrs.api.models import router as models_router
-    from umrs.api.models import router as policy_router
     from umrs.api.ops import router as ops_router
     from umrs.api.pipelines import router as pipelines_router
     from umrs.api.provenance import router as provenance_router
@@ -777,10 +776,12 @@ def _create_app():
     app.include_router(llm_router)
     app.include_router(loops_router)
     app.include_router(mcp_router)
+    # NOTE: no separate policy_router — policy endpoints live on the models
+    # router itself; mounting it twice was a duplicate-registration of every
+    # /umrs/models route (route_inventory captured 19 dupes, belt red 2026-09-16).
     app.include_router(models_router)
     app.include_router(ops_router)
     app.include_router(pipelines_router)
-    app.include_router(policy_router)
     app.include_router(rag_router)
     app.include_router(skills_router)
     app.include_router(verification_router)
@@ -810,6 +811,11 @@ def _create_app():
     from umrs.api.projects import router as projects_router
 
     app.include_router(projects_router)
+
+    # ADR-051 (2026-09-16): caller-attributed quota gauge (D-2/D-3 read model).
+    from umrs.api.quota_status import router as quota_status_router
+
+    app.include_router(quota_status_router)
 
     # Satellite stores auto-resolve via the shared factories (Postgres when
     # a pool is resolvable, else in-memory). Routers return 503 on failure.
