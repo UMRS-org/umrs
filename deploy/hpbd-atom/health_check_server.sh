@@ -2,7 +2,7 @@
 # =============================================================================
 # Server-side health check for the hpbd-atom UMRS deployment (hybrid mode).
 # =============================================================================
-# Infrastructure (postgres, minio) — containers
+# Infrastructure (postgres, seaweedfs) — containers
 # umrs-server — native process on the login node
 #
 # Usage:
@@ -129,7 +129,7 @@ fi
 
 # ─── Container status (infrastructure only) ─────────────────────────────────
 check "postgres container running"    podman inspect --format '{{.State.Running}}' umrs-postgres
-check "minio container running"       podman inspect --format '{{.State.Running}}' umrs-minio
+check "seaweedfs container running"   podman inspect --format '{{.State.Running}}' umrs-seaweedfs
 
 # ─── PostgreSQL ───
 check "postgres accepting connections" \
@@ -144,8 +144,8 @@ else
 fi
 
 # ─── MinIO ───
-check "minio health endpoint" \
-    curl -sf http://127.0.0.1:9000/minio/health/live
+check "seaweedfs health endpoint" \
+    { curl -sf http://127.0.0.1:9000/status || curl -sf http://127.0.0.1:9000/minio/health/live; }
 
 # ─── Native umrs-server process ─────────────────────────────────────────────
 if [[ -f "$PID_FILE" ]]; then

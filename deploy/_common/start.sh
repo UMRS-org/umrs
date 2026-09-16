@@ -2,7 +2,7 @@
 # =============================================================================
 # Start the UMRS stack on an HPC login node — hybrid architecture.
 # =============================================================================
-# Infrastructure (postgres, minio) runs in podman containers.
+# Infrastructure (postgres, seaweedfs object store) runs in podman containers.
 # The umrs-server runs NATIVELY on the login node so it can call Slurm CLI
 # (sbatch, squeue, scancel) and create SSH tunnels to compute nodes.
 #
@@ -460,10 +460,25 @@ fi
 
 # ─── Start infrastructure containers ─────────────────────────────────────────
 if [[ "$START_MODE" != "--server" ]]; then
-    reconcile_infra_container umrs-postgres "$DB_PORT"
-    reconcile_infra_container umrs-minio 9000 9001
+    # SeaweedFS IAM/STS config (ADR-055 Amendment A fleet wave): rendered from
+    # this cluster's .env before compose touches the service. Accepts legacy
+    # MINIO_ROOT_USER/PASSWORD host .env files (S3_ROOT_* wins when both set).
+    # shellcheck disable=SC1091
+    source "${SCRIPT_DIR}/../_common/render_seaweedfs_iam.sh"
+    render_seaweedfs_iam "${SCRIPT_DIR}"
 
-    echo "Starting infrastructure containers (postgres, minio)..."
+    # The pre-ADR-055 object store container (umrs-minio, per-cluster profile)
+    # is stopped here for good; its volume (minio_data*) is left for the
+    # operator after the scratch-data sweep (same rule as umrs-front cutover).
+    if podman inspect --type container umrs-minio >/dev/null 2>&1; then
+        echo "Retiring legacy umrs-minio container (volume kept for operator sweep)..."
+        podman rm -f umrs-minio >/dev/null 2>&1 || true
+    fi
+
+    reconcile_infra_container umrs-postgres "$DB_PORT"
+    reconcile_infra_container umrs-seaweedfs 9000 8111
+
+    echo "Starting infrastructure containers (postgres, seaweedfs)..."
     podman compose up -d
 
     # Wait for postgres to accept connections
@@ -478,16 +493,19 @@ if [[ "$START_MODE" != "--server" ]]; then
         [[ "$i" -eq 30 ]] && echo " WARNING: postgres not ready after 30s."
     done
 
-    # Wait for minio health
-    echo -n "Waiting for minio..."
+    # Wait for the object store: SeaweedFS /status first, legacy MinIO probe
+    # kept as support fallback (S3_BACKEND=minio rescue path, same dual probe
+    # as umrs-front since the ADR-055 cutover).
+    echo -n "Waiting for seaweedfs..."
     for i in $(seq 1 30); do
-        if curl -sf http://127.0.0.1:9000/minio/health/live >/dev/null 2>&1; then
+        if curl -sf http://127.0.0.1:9000/status >/dev/null 2>&1 \
+            || curl -sf http://127.0.0.1:9000/minio/health/live >/dev/null 2>&1; then
             echo " ready."
             break
         fi
         echo -n "."
         sleep 1
-        [[ "$i" -eq 30 ]] && echo " WARNING: minio not ready after 30s."
+        [[ "$i" -eq 30 ]] && echo " WARNING: object store not ready after 30s."
     done
 fi
 
@@ -568,14 +586,14 @@ if ! postgres_catalog_check_output="$(check_postgres_catalog_ready 2>&1)"; then
     fi
     echo "  Recovery: ./stop.sh --postgres-clean && ./start.sh"
     echo "  Full reset: ./stop.sh --clean && ./start.sh"
-    echo "  Warning: --postgres-clean removes only postgres state; --clean also removes minio data."
+    echo "  Warning: --postgres-clean removes only postgres state; --clean also removes object-store (seaweedfs) data."
     echo "  Inspect postgres logs with: podman logs --tail 40 umrs-postgres"
     exit 1
 fi
 echo " ready."
 
-# S3 presigned URL endpoint — compute nodes access MinIO via SSH tunnel
-# (localhost:9000 on compute → login node MinIO).
+# S3 presigned URL endpoint — compute nodes access the object store via SSH tunnel
+# (localhost:9000 on compute → login node object store).
 export S3_PRESIGN_ENDPOINT="${S3_PRESIGN_ENDPOINT:-http://localhost:9000}"
 
 # BentoML vision runs inside a container on the compute node, so presigned
@@ -619,21 +637,22 @@ if [[ ! -f "${HOME}/.config/umrs/s3cfg" ]]; then
 fi
 
 # ─── Patch template placeholders in s3cfg with real credentials ──────────────
-# The repo-tracked s3cfg is a template with SET_MINIO_ROOT_USER / _PASSWORD.
+# The repo-tracked s3cfg is a template with SET_S3_ROOT_USER / _PASSWORD.
 # setup_server.sh copies it verbatim, so patch the live copy with the actual
 # env vars loaded from .env above.
 _s3cfg="${HOME}/.config/umrs/s3cfg"
-if grep -q 'SET_MINIO_ROOT_USER\|SET_MINIO_ROOT_PASSWORD' "$_s3cfg" 2>/dev/null; then
-    _minio_user="${MINIO_ROOT_USER:?Set MINIO_ROOT_USER in .env}"
-    _minio_pass="${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD in .env}"
+if grep -q 'SET_S3_ROOT_USER\|SET_S3_ROOT_PASSWORD' "$_s3cfg" 2>/dev/null; then
+    # S3_ROOT_* canonical since ADR-055; legacy MINIO_ROOT_* host .env accepted.
+    _s3_user="${S3_ROOT_USER:-${MINIO_ROOT_USER:?Set S3_ROOT_USER in .env}}"
+    _s3_pass="${S3_ROOT_PASSWORD:-${MINIO_ROOT_PASSWORD:?Set S3_ROOT_PASSWORD in .env}}"
     sed -i.bak \
-        -e "s|SET_MINIO_ROOT_USER|${_minio_user}|g" \
-        -e "s|SET_MINIO_ROOT_PASSWORD|${_minio_pass}|g" \
+        -e "s|SET_S3_ROOT_USER|${_s3_user}|g" \
+        -e "s|SET_S3_ROOT_PASSWORD|${_s3_pass}|g" \
         "$_s3cfg"
     rm -f "${_s3cfg}.bak"
     echo "NOTE: Patched s3cfg template placeholders with credentials from .env"
 fi
-unset _s3cfg _minio_user _minio_pass
+unset _s3cfg _s3_user _s3_pass
 
 # ─── Remove stale per-user s3cfg files ───────────────────────────────────────
 # The server regenerates these from the admin .s3cfg on startup.
@@ -718,7 +737,7 @@ fi
 echo ""
 echo "=== UMRS stack running ==="
 echo "  postgres:    localhost:${DB_PORT}      (container)"
-echo "  minio:       localhost:9000      (container, console: localhost:9001)"
+echo "  seaweedfs:   localhost:9000      (S3 API; IAM 127.0.0.1:8111, metrics 127.0.0.1:9327)"
 echo "  umrs-server: localhost:5555      (native, PID $SERVER_PID)"
 echo "  umrs-http:   localhost:${UMRS_HTTP_PORT:-8082}      (sidecar for endpoint discovery)"
 if [[ "$RAG_ENABLED" = true ]]; then

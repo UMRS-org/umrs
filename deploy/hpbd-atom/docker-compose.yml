@@ -1,6 +1,6 @@
 # UMRS deployment for hpbd-atom login node — hybrid architecture.
 #
-# Infrastructure services (postgres, minio) run in containers.
+# Infrastructure services (postgres, object store) run in containers.
 # The umrs-server runs NATIVELY on the login node so it has direct access
 # to Slurm CLI (sbatch, squeue, scancel) and SSH for compute-node tunnels.
 # This is the standard pattern for HPC middleware that needs Slurm integration.
@@ -37,18 +37,35 @@ services:
       - ../../docker/init_pgvector.sql:/docker-entrypoint-initdb.d/init_pgvector.sql:ro
     restart: unless-stopped
 
-  minio:
-    image: docker.io/minio/minio:RELEASE.2025-04-22T22-12-26Z
-    container_name: umrs-minio
+  # SeaweedFS object store (ADR-055 — replaces the archived MinIO community
+  # build; MinIO stays reachable via the backend adapter S3_BACKEND=minio for
+  # support, but no profile deploys it anymore). Fresh volume: per-cluster
+  # object data was scratch; migrate away from the old minio_data on the host
+  # before pruning it (operator leg, same as umrs-front).
+  seaweedfs:
+    image: ${S3_IMAGE:-docker.io/chrislusf/seaweedfs:4.47}
+    container_name: umrs-seaweedfs
     environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?Set MINIO_ROOT_USER in .env}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD in .env}
+      AWS_ACCESS_KEY_ID: ${S3_ROOT_USER:-${MINIO_ROOT_USER:?Set S3_ROOT_USER in .env}}
+      AWS_SECRET_ACCESS_KEY: ${S3_ROOT_PASSWORD:-${MINIO_ROOT_PASSWORD:?Set S3_ROOT_PASSWORD in .env}}
+    command: >
+      server -dir=/data -ip=127.0.0.1 -ip.bind=0.0.0.0
+      -volume.max=0 -volume.index=leveldb
+      -s3 -s3.port=9000 -s3.iam -s3.iam.config=/etc/seaweedfs/iam.json
+      -iam -iam.port=8111
+      -metricsPort=9327
     ports:
-      - "${MINIO_BIND:-127.0.0.1}:9000:9000"
-      - "127.0.0.1:9001:9001"
-    command: server /data --console-address ":9001"
+      - "${S3_BIND:-127.0.0.1}:9000:9000"
+      - "127.0.0.1:8111:8111"     # IAM API (per-user identities), loopback
+      - "127.0.0.1:9327:9327" # Prometheus /metrics, loopback
     volumes:
-      - minio_data:/data
+      - s3_data:/data:z
+      - ./seaweedfs/iam.json:/etc/seaweedfs/iam.json:ro,z
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:9000/status"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
     restart: unless-stopped
 
   # NOTE: umrs-server runs NATIVELY on the login node, not in a container.
@@ -60,4 +77,4 @@ services:
 
 volumes:
   pg_data:
-  minio_data:
+  s3_data:

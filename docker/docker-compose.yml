@@ -9,7 +9,7 @@ services:
     container_name: umrs-server
     depends_on:
       - postgres
-      - minio
+      - seaweedfs
     ports:
       # Map UMRS HTTP API to 8001 on the host to avoid conflicts with
       # other stacks (e.g. RiVault/vLLM) that may also use 8000.
@@ -30,19 +30,24 @@ services:
     restart: unless-stopped
     command: ["python", "src/server_umrs.py", "-c", "/root/conf_umrs.json"]
 
-  minio:
-    image: minio/minio:latest
-    container_name: minio
+  # SeaweedFS object store (ADR-055; MinIO adapter support stays in code,
+  # no deployment runs it anymore).
+  seaweedfs:
+    image: chrislusf/seaweedfs:4.47
+    container_name: seaweedfs
     ports:
       - "9000:9000"
-      - "9001:9001"
+      - "8111:8111"
+      - "9327:9327"
     environment:
-      - MINIO_ROOT_USER=minioadmin
-      - MINIO_ROOT_PASSWORD=minioadmin
-    command: server /data --console-address ":9001"
+      - AWS_ACCESS_KEY_ID=s3admin
+      - AWS_SECRET_ACCESS_KEY=s3admin
+    command: >
+      server -dir=/data -ip=127.0.0.1 -ip.bind=0.0.0.0
+      -volume.max=0 -volume.index=leveldb
+      -s3 -s3.port=9000 -metricsPort=9327
     volumes:
-      - minio_data:/data
-      - ./s3cfg:/config/.s3cfg:ro
+      - s3_data:/data
     restart: unless-stopped
 
   postgres:
@@ -62,6 +67,6 @@ services:
     restart: unless-stopped
 
 volumes:
-  minio_data:
+  s3_data:
   pg_data:
   model_cache:

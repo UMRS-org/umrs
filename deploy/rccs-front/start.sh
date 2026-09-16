@@ -33,6 +33,14 @@ if ! ssh -o BatchMode=yes -o ConnectTimeout=10 "${SSH_TARGET}" "echo ok" >/dev/n
 fi
 echo "SSH connectivity OK."
 
+# SeaweedFS IAM/STS config (ADR-055 fleet wave), rendered from .env.
+# shellcheck disable=SC1091
+source "${SCRIPT_DIR}/../_common/render_seaweedfs_iam.sh"
+render_seaweedfs_iam "${SCRIPT_DIR}"
+
+# Retire the pre-ADR-055 MinIO container for good (volume kept for operator).
+podman rm -f umrs-minio >/dev/null 2>&1 || true
+
 # Start services
 echo "Starting UMRS front-end services..."
 podman-compose up -d
@@ -41,7 +49,7 @@ echo ""
 echo "Services started:"
 echo "  UMRS API:    http://0.0.0.0:8000"
 echo "  Gateway:     http://0.0.0.0:8080"
-echo "  MinIO:       http://0.0.0.0:9000 (console: http://127.0.0.1:9001)"
+echo "  SeaweedFS:   http://0.0.0.0:9000 (IAM: http://127.0.0.1:8112, metrics: http://127.0.0.1:9328)"
 echo "  PostgreSQL:  127.0.0.1:5432"
 echo ""
 echo "UMRS will establish SSH ControlMaster to ${SSH_TARGET} on first job submission."

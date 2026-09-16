@@ -37,7 +37,7 @@ Distilled from the production `../rccs-cloud/` harness. Strip-and-adapt: every
 
 ```bash
 cp env.example .env
-$EDITOR .env          # set POSTGRES_PASSWORD, MINIO_ROOT_USER/PASSWORD, etc.
+$EDITOR .env          # set POSTGRES_PASSWORD, S3_ROOT_USER/PASSWORD, etc.
 $EDITOR site.yaml     # set partition, account, storage paths for your cluster
 
 ./start.sh            # infra containers + native UMRS server

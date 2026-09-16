@@ -23,7 +23,7 @@ mkdir -p "${CONFIG_DIR}/users" "${CONFIG_DIR}/connections"
 # Copy config files
 cp "${CLIENT_DIR}/conf_umrs.json" "${CONFIG_DIR}/conf_umrs.json"
 # NOTE: Do NOT copy the admin s3cfg template to the client.  It contains
-# placeholder values (SET_MINIO_ROOT_USER) and the auto-discovery logic in
+# placeholder values (SET_S3_ROOT_USER) and the auto-discovery logic in
 # the client would pick it up and override the per-user s3cfg that the
 # server provisioning creates (e.g. ~/.s3cfg_user1).  The user's s3cfg is
 # written during the first `umrs reload` and does not need seeding.
