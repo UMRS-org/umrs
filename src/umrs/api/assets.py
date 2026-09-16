@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from umrs.asset_index import build_asset_index
@@ -31,6 +31,9 @@ class AssetSnapshotResponse(BaseModel):
     rows: list[dict[str, Any]] = Field(default_factory=list)
     warnings: list[dict[str, Any]] = Field(default_factory=list)
     count: int = 0
+    # Additive (2026-09-16): snapshot-level content hash — the caller keeps it
+    # for the /patch wire rail's `base` state (never a server-held cookie).
+    snapshot_hash: str = ""
 
 
 class AssetRowResponse(BaseModel):
@@ -82,17 +85,38 @@ def _gather_stores() -> dict[str, Any]:
     return stores
 
 
+def _caller_group_ids(request: Request, caller: Any) -> frozenset[str]:
+    """Active group ids for the caller (ADR-050 §3 authority); empty without
+    a pool (groups rows stay hidden — the safe edge, never fabricated)."""
+    user_id = getattr(caller, "user_id", "") or ""
+    if not user_id:
+        return frozenset()
+    pool = getattr(request.app.state, "umrs_db_pool", None)
+    if pool is None:
+        return frozenset()
+    from .groups import groups_for_user
+
+    conn = pool.getconn()
+    try:
+        return frozenset(groups_for_user(conn, user_id))
+    finally:
+        pool.putconn(conn)
+
+
 @router.get("", response_model=AssetSnapshotResponse)
 async def snapshot(
+    request: Request,
     kinds: str | None = Query(None, description="comma-separated kind filter"),
     project_id: str | None = Query(None),
     caller: Any = Depends(get_caller_scope),
 ) -> AssetSnapshotResponse:
     """Cross-subsystem asset index snapshot (read-model, F4).
 
+    # auth: verified
+
     Callers see only rows for scopes they inhabit (system + verified project
-    + own user rows); group rows are admin-only until a group-membership
-    authority exists — fail closed, never silent leakage.
+    + own user rows + ACTIVE groups from the ADR-050 §3 membership authority);
+    nothing else ever leaks.
     """
     stores = _gather_stores()
     kind_list = [k.strip() for k in kinds.split(",") if k.strip()] if kinds else None
@@ -112,11 +136,117 @@ async def snapshot(
         loop_store=stores.get("loop_store"),
         job_store=stores.get("job_store"),
         caller=caller,
+        caller_groups=_caller_group_ids(request, caller),
     )
+    row_dicts = [r.to_dict() for r in rows]
     return AssetSnapshotResponse(
-        rows=[r.to_dict() for r in rows],
+        rows=row_dicts,
         warnings=[w.to_dict() for w in warnings],
-        count=len(rows),
+        count=len(row_dicts),
+        snapshot_hash=_snapshot_hash(
+            {f"{d['kind']}:{d['asset_id']}": _row_shape_hash(d) for d in row_dicts}
+        ),
+    )
+
+
+
+# ── catalog patch lane (2026-09-16) ─────────────────────────────────────────
+# Contract: caller keeps `base[{kind}:{asset_id}] = sha1(row-shape)`, posts it;
+# the server recomposes the same snapshot and diffs. No server-side client
+# state anywhere — the request body IS the state (honest wire rail).
+def _row_shape_hash(row_dict: dict[str, Any]) -> str:
+    import hashlib
+    import json
+
+    canonical = json.dumps(row_dict, sort_keys=True, default=str, separators=(",", ":"))
+    return hashlib.sha1(canonical.encode("utf-8")).hexdigest()[:16]
+
+
+def _snapshot_hash(pairs: dict[str, str]) -> str:
+    import hashlib
+
+    canonical = "\n".join(f"{k}={pairs[k]}" for k in sorted(pairs))
+    return hashlib.sha1(canonical.encode("utf-8")).hexdigest()[:16]
+
+
+class CatalogPatchRequest(BaseModel):
+    base: dict[str, str] = Field(
+        default_factory=dict,
+        description='caller-held map {"kind:asset_id": shape-hash} from the last snapshot it saw',
+        max_length=10_000,
+    )
+    kinds: str | None = None
+    project_id: str | None = None
+
+
+class CatalogPatchResponse(BaseModel):
+    snapshot_hash: str
+    upserts: list[dict[str, Any]]
+    tombstones: list[str]
+    same: bool
+    warnings: list[dict[str, Any]]
+    count: int
+
+
+def _gather_and_diff(
+    request: Request, body: CatalogPatchRequest, caller: Any
+) -> tuple[dict[str, dict[str, Any]], dict[str, str], list[Any]]:
+    stores = _gather_stores()
+    bound_project = (
+        body.project_id
+        if getattr(caller, "is_admin", False)
+        else (getattr(caller, "project_id", "") or body.project_id)
+    )
+    kind_list = [k.strip() for k in body.kinds.split(",") if k.strip()] if body.kinds else None
+    rows, warnings = build_asset_index(
+        project_id=bound_project,
+        kinds=kind_list,
+        artifact_store=stores.get("artifact_store"),
+        model_store=stores.get("model_store"),
+        mcp_store=stores.get("mcp_store"),
+        session_store=stores.get("session_store"),
+        loop_store=stores.get("loop_store"),
+        job_store=stores.get("job_store"),
+        caller=caller,
+        caller_groups=_caller_group_ids(request, caller),
+    )
+    shape: dict[str, dict[str, Any]] = {}
+    hashes: dict[str, str] = {}
+    for row in rows:
+        d = row.to_dict()
+        key = f"{d['kind']}:{d['asset_id']}"
+        shape[key] = d
+        hashes[key] = _row_shape_hash(d)
+    return shape, hashes, warnings
+
+
+@router.post("/patch", response_model=CatalogPatchResponse)
+async def catalog_patch(
+    body: CatalogPatchRequest,
+    request: Request,
+    caller: Any = Depends(get_caller_scope),
+) -> CatalogPatchResponse:
+    """Incmental wire rail over the catalog snapshot (F4 follow-through).
+
+    # auth: verified
+
+    Caller sends its last seen base (key -> shape hash) from a snapshot
+    materialization; server recomposes the same visible set right now and
+    returns only what changed, plus the new snapshot-level hash to keep.
+    Same visibility rules as the snapshot route.
+    """
+    shape, hashes, warnings = _gather_and_diff(request, body, caller)
+    base = body.base or {}
+    upserts = [shape[k] for k, cur in hashes.items() if base.get(k) != cur]
+    tombstones = sorted(k for k in base.keys() - set(hashes.keys()))
+    same = not upserts and not tombstones
+    return CatalogPatchResponse(
+        snapshot_hash=_snapshot_hash(hashes),
+        upserts=upserts,
+        tombstones=tombstones,
+        same=same,
+        warnings=[w.to_dict() for w in warnings],
+        count=len(shape),
     )
 
 

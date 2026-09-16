@@ -40,24 +40,35 @@ class IndexWarning:
 # ── caller visibility (read-side authorization, Review F3/F4) ───────────────
 
 
-def _visible_by_claim(claim: Any, caller: Any) -> bool:
-    """Visibility of a parsed scope claim (fail closed for unknown kinds)."""
+def _visible_by_claim(claim: Any, caller: Any, group_ids: frozenset[str] = frozenset()) -> bool:
+    """Visibility of a parsed scope claim (fail closed for unknown kinds).
+
+    Group claim resolves through the ADR-050 §3 membership authority: the
+    caller sees rows for groups they are an ACTIVE member of (ids resolved
+    upstream — retired groups never land in the set).
+    """
     if claim.kind == "system":
         return True
     if claim.kind == "project":
         return bool(getattr(caller, "project_id", "")) and claim.id == caller.project_id
+    if claim.kind == "group":
+        return claim.id in group_ids
     if claim.kind == "user":
         return bool(getattr(caller, "user_id", "")) and claim.id == caller.user_id
     return False
 
 
-def _visible_row(row: AssetRow, caller: Any | None) -> bool:
+def _visible_row(
+    row: AssetRow,
+    caller: Any | None,
+    group_ids: frozenset[str] = frozenset(),
+) -> bool:
     """Whether a caller may see this row.
 
     caller is a knowledge.access_scope.CallerScope (or None=model all-visible
     for in-process consumers). Non-admin callers see system rows, project
-    rows of their verified project, and own user rows; group rows are hidden
-    for non-admins until a group-membership authority exists (fail closed).
+    rows of their verified project, own user rows, and group rows for the
+    ACTIVE groups they belong to (ADR-050 §3 authority, resolved upstream).
     """
     if caller is None or getattr(caller, "is_admin", False):
         return True
@@ -66,7 +77,7 @@ def _visible_row(row: AssetRow, caller: Any | None) -> bool:
     try:
         from umrs.shared.scope_grammar import parse as parse_scope
 
-        return _visible_by_claim(parse_scope(row.scope, allow_legacy=True), caller)
+        return _visible_by_claim(parse_scope(row.scope, allow_legacy=True), caller, group_ids)
     except Exception:
         return False
 
@@ -348,6 +359,7 @@ def build_asset_index(
     job_store: Any = None,
     model_ctx: Any = None,
     caller: Any = None,
+    caller_groups: Iterable[str] = (),
 ) -> tuple[list[AssetRow], list[IndexWarning]]:
     """Compose the cross-subsystem asset index.
 
@@ -384,7 +396,8 @@ def build_asset_index(
         if builder is None or stores.get(kind) is None:
             continue
         rows.extend(_collect(kind, builder, warnings))
-    return [row for row in rows if _visible_row(row, caller)], warnings
+    group_ids = frozenset(caller_groups)
+    return [row for row in rows if _visible_row(row, caller, group_ids)], warnings
 
 
 # Model collectors need an AccessContext (strict store). It derives from the

@@ -260,3 +260,158 @@ class TestLoopArtifactLineage:
         rows, _ = build_asset_index(loop_store=SimpleNamespace(list_all=lambda: [loop]))
         assert rows[0].lineage == ()
         assert rows[0].metadata["hosting"] == ""
+
+
+# ── ADR-050 §3 + F4 follow-through (2026-09-16): group-aware visibility and
+# the /patch wire lane — the prior fail-closed kind got its authority.
+
+
+class TestGroupVisibilityNow:
+    """Groups stop being invisible when the caller carries memberships."""
+
+    def _caller(self):
+        return SimpleNamespace(user_id="alice", project_id="p1", is_admin=False, anonymous=False)
+
+    def _rows(self):
+        return [
+            AssetRow(kind="artifact", asset_id="grp-active", scope="group:lab", status="ok"),
+            AssetRow(kind="artifact", asset_id="grp-other", scope="group:ops", status="ok"),
+        ]
+
+    def test_group_rows_visible_for_active_memberships(self):
+        from umrs.asset_index.fanout import _visible_row
+
+        seen = [
+            r.asset_id
+            for r in self._rows()
+            if _visible_row(r, self._caller(), group_ids=frozenset({"lab"}))
+        ]
+        assert seen == ["grp-active"]
+
+    def test_builder_threads_caller_groups(self):
+        # default () keeps the fail-closed shape exactly (legacy behavior)
+        rows, _ = build_asset_index(
+            artifact_store=None,
+            caller=self._caller(),
+        )
+        assert rows == []
+        grp = AssetRow(kind="artifact", asset_id="grp", scope="group:lab", status="ok")
+        from umrs.asset_index.fanout import _visible_row
+
+        assert not _visible_row(grp, self._caller())
+        assert _visible_row(grp, self._caller(), group_ids=frozenset({"lab"}))
+
+
+class TestCatalogPatchRoute:
+    """POST /patch wire lane: caller-held base, server-side diff, no cookies."""
+
+    def _client(self, store_rows):
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        from umrs.api.assets import router as assets_router
+
+        app = FastAPI()
+        app.include_router(assets_router)
+
+        import umrs.api.assets as mod
+
+        original_gather = mod._gather_stores
+        mod._gather_stores = lambda: dict(store_rows)
+        self._restore = lambda: setattr(mod, "_gather_stores", original_gather)
+        return TestClient(app)
+
+    def teardown_method(self):
+        if hasattr(self, "_restore"):
+            self._restore()
+
+    def _caller_headers(self):
+        return {
+            "x-user-id": "alice",
+            "x-verified-project-id": "p1",
+        }
+
+    def test_patch_from_empty_base_reports_all_as_upserts_and_hash_matches(self):
+        rows = [
+            AssetRow(kind="model", asset_id="m1", scope="system", status="ok"),
+            AssetRow(kind="job", asset_id="j9", scope="project:p1", status="ok"),
+        ]
+
+        import umrs.api.assets as mod
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        app = FastAPI()
+        app.include_router(mod.router)
+        was = mod.build_asset_index
+        mod_rows = list(rows)
+        mod.build_asset_index = lambda **_kw: (mod_rows, [])
+        self._restore = lambda: setattr(mod, "build_asset_index", was)
+
+        client = TestClient(app)
+        resp = client.post("/umrs/assets/patch", json={"base": {}}, headers=self._caller_headers())
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert sorted(r["asset_id"] for r in body["upserts"]) == ["j9", "m1"]
+        assert body["tombstones"] == []
+        assert body["same"] is False
+        # snapshot route carries the same snapshot_hash additive
+        snap = client.get("/umrs/assets", headers=self._caller_headers())
+        assert snap.status_code == 200
+        assert snap.json()["snapshot_hash"] == body["snapshot_hash"]
+
+    def test_patch_same_base_short_circuits(self):
+        import umrs.api.assets as mod
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        from umrs.api.assets import _row_shape_hash
+
+        rows = [AssetRow(kind="model", asset_id="m1", scope="system", status="ok")]
+        base_rows = list(rows)
+        key = "model:m1"
+        base_hash = _row_shape_hash(base_rows[0].to_dict())
+
+        app = FastAPI()
+        app.include_router(mod.router)
+        was = mod.build_asset_index
+        mod.build_asset_index = lambda **_kw: (base_rows, [])
+        self._restore = lambda: setattr(mod, "build_asset_index", was)
+
+        client = TestClient(app)
+        resp = client.post(
+            "/umrs/assets/patch",
+            json={"base": {key: base_hash}},
+            headers=self._caller_headers(),
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["same"] is True
+        assert body["upserts"] == []
+        assert body["tombstones"] == []
+
+    def test_patch_tombstones_gone_rows(self):
+        import umrs.api.assets as mod
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        app = FastAPI()
+        app.include_router(mod.router)
+        was = mod.build_asset_index
+        mod.build_asset_index = lambda **_kw: ([], [])
+        self._restore = lambda: setattr(mod, "build_asset_index", was)
+
+        client = TestClient(app)
+        resp = client.post(
+            "/umrs/assets/patch",
+            json={"base": {"model:ghost": "abc123"}},
+            headers=self._caller_headers(),
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["tombstones"] == ["model:ghost"]
+
+    def test_row_shape_hash_is_order_stable(self):
+        from umrs.api.assets import _row_shape_hash
+
+        a = {"b": 1, "a": {"z": [1, 2], "q": None}}
+        b = {"a": {"q": None, "z": [1, 2]}, "b": 1}
+        assert _row_shape_hash(a) == _row_shape_hash(b)
