@@ -5961,6 +5961,7 @@ def _action_s3_transfer(ctx):
         metadata_args,
         username,
         notify_server=True,
+        blocking=False
     ):
         if not os.path.isfile(file_path):
             print(f"Error: file {file_path} is not a valid.")
@@ -5983,7 +5984,7 @@ def _action_s3_transfer(ctx):
             )
             if s3_key and notify_server:
                 ctx.control_mq.notify_server(
-                    username, TaskCmd.PROCESS_OBJECTS, 1
+                    username, TaskCmd.PROCESS_OBJECTS, 1, blocking=blocking
                 )
             return s3_key, 1
         elif category == "text_file":
@@ -5992,7 +5993,7 @@ def _action_s3_transfer(ctx):
             )
             if s3_key and notify_server:
                 ctx.control_mq.notify_server(
-                    username, TaskCmd.PROCESS_OBJECTS, 1
+                    username, TaskCmd.PROCESS_OBJECTS, 1, blocking=blocking
                 )
             return s3_key, 1
         elif category == "text":
@@ -6018,6 +6019,7 @@ def _action_s3_transfer(ctx):
                             username,
                             TaskCmd.PROCESS_OBJECTS,
                             nb_objects,
+                            blocking=blocking
                         )
                     return s3_key_list, nb_objects
             except UnicodeDecodeError as e:
@@ -6033,7 +6035,7 @@ def _action_s3_transfer(ctx):
         return None, 0
 
     def process_dir(
-        path, s3, full_bucket_name, subdir, modality, data_mq, metadata_args, username
+        path, s3, full_bucket_name, subdir, modality, data_mq, metadata_args, username, blocking = False
     ):
         if not os.path.isdir(path):
             print(f"Error: {path} is not a valid directory.")
@@ -6085,7 +6087,7 @@ def _action_s3_transfer(ctx):
 
         if nb_objects > 0:
             ctx.control_mq.notify_server(
-                username, TaskCmd.PROCESS_OBJECTS, nb_objects
+                username, TaskCmd.PROCESS_OBJECTS, nb_objects, blocking = blocking
             )
         return s3_key_list, file_list
 
@@ -6198,6 +6200,7 @@ def _action_s3_transfer(ctx):
                 metadata_args,
                 username,
                 notify_server=True,
+                blocking=args.blocking
             )
             if s3_key:
                 print(
@@ -6231,6 +6234,7 @@ def _action_s3_transfer(ctx):
                 data_mq,
                 metadata_args,
                 username,
+                blocking=args.blocking
             )
             if len(s3_key_list) > 0:
                 print(
@@ -6574,6 +6578,13 @@ def main():
         help="Upload file to a bucket (ommit empty lines in case of 'text' modality)",
     )
     ui_p.add_argument("file_path")
+
+    ui_p.add_argument(
+        "--blocking",
+        action="store_true",
+        default=False,
+        help="Tell the client to wait forever for the server acknowledgement when uploading a file",
+    )
     ui_p.add_argument(
         "bucket_alias",
         help=(
@@ -6593,6 +6604,13 @@ def main():
         "upload_dir", help="Upload all files of a directory to a bucket"
     )
     utf_p.add_argument("path")
+
+    utf_p.add_argument(
+        "--blocking",
+        action="store_true",
+        default=False,
+        help="Tell the client to wait forever for the server acknowledgement when uploading a directory",
+    )
     utf_p.add_argument(
         "bucket_alias",
         help=(
