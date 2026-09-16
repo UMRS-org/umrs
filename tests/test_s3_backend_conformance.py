@@ -83,7 +83,14 @@ def profile(backend_name):
 
 @pytest.fixture
 def bucket(admin):
-    name = f"umrs-conf-{uuid.uuid4().hex[:8]}"
+    # 2026-09-16: the 09-14 4.47 image treated the STS inline session policy
+    # as union-with-role (session scopes alone authorized); the current 4.47
+    # rebuild evaluates the role policy as the ceiling (safer — inline can
+    # only narrow). The production shape is one pinned bucket with sessions
+    # scoped deeper, so the conformance bucket must be role-covered: pin a
+    # name via UMRS_S3_CONFORMANCE_BUCKET that matches the iam.json render
+    # (S3_BUCKET), random only for evaluator-union backends.
+    name = os.environ.get("UMRS_S3_CONFORMANCE_BUCKET") or f"umrs-conf-{uuid.uuid4().hex[:8]}"
     admin.create_bucket(Bucket=name)
     yield name
     for page in admin.get_paginator("list_objects_v2").paginate(Bucket=name):

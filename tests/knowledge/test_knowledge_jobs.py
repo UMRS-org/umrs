@@ -256,8 +256,14 @@ class TestKnowledgeIngestBackend:
             await backend.submit_job(sample_job, sample_attempt)
 
     @pytest.mark.asyncio
-    async def test_degraded_no_s3(self, sample_job):
+    async def test_degraded_no_s3(self, sample_job, monkeypatch):
         """When S3 unavailable, job records failed items."""
+        # Premise pin (configured-env wave, 2026-09-16): "unavailable" must be
+        # explicit — the legacy premise read ambient env, so a live object
+        # store on localhost (CI's SeaweedFS lane) silently flipped the
+        # degraded branch off. Point at a guaranteed-closed port.
+        monkeypatch.setenv("S3_ENDPOINT_URL", "http://127.0.0.1:59999")
+        monkeypatch.delenv("MINIO_ENDPOINT", raising=False)
         sample_job.spec["bucket"] = "test-bucket"
         sample_attempt = JobAttempt(
             attempt_id=generate_attempt_id(),
