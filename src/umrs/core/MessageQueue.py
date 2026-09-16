@@ -518,8 +518,11 @@ class MessageQueue:
             return None, None
 
     def set_timeouts(self, recv_timeout_ms, send_timeout_ms):
+        old_recv = self.socket.RCVTIMEO
+        old_send = self.socket.SNDTIMEO
         self.socket.RCVTIMEO = recv_timeout_ms
         self.socket.SNDTIMEO = send_timeout_ms
+        return old_recv, old_send
 
     def send_file(self, send_file_path, chunk_size=4096):
         if self.role != "client" or self.type != "data":
@@ -1134,7 +1137,13 @@ class MessageQueue:
             raise RuntimeError(f"Unexpected reply from server: {reply}")
 
     def notify_server(
-        self, client_id, notification_type, nb_objects, verbose=False, admin_token=None
+        self,
+        client_id,
+        notification_type,
+        nb_objects,
+        verbose=False,
+        admin_token=None,
+        blocking=False,
     ):
         """Notify the server that objects have been uploaded to S3.
 
@@ -1150,9 +1159,14 @@ class MessageQueue:
             [notification_type, client_id, nb_objects],
             admin_token=admin_token,
         )
-
         try:
-            _, reply = self.recv_string()
+            if blocking:
+                prev_recv_timeout, prev_send_timeout = self.set_timeouts(-1, -1)
+            try:
+                _, reply = self.recv_string()
+            finally:
+                if blocking:
+                    self.set_timeouts(prev_recv_timeout, prev_send_timeout)
         except zmq.Again:
             raise TimeoutError(
                 "Timeout waiting for server response in notify_server"
