@@ -103,8 +103,9 @@ def _pool(request: Request) -> Any:
 async def put_session_snapshot(
     session_id: str, body: SessionSnapshotBody, request: Request
 ) -> dict[str, Any]:
-    """Mirror one client session state. Newer updates supersede older ones."""
+    """Mirror one client session state. Newer updates supersede older ones.
     # auth: verified
+    """
     uid = _uid(request)
     pool = _pool(request)
     venue = _validate_venue(body.venue) if body.venue else ""
@@ -154,8 +155,9 @@ async def put_session_snapshot(
 
 @router.get("/{session_id}", response_model=dict[str, Any])
 async def get_session_snapshot(session_id: str, request: Request) -> dict[str, Any]:
-    """Answer a mirrored snapshot for the owner (404 for others/absent)."""
+    """Answer a mirrored snapshot for the owner (404 for others/absent).
     # auth: verified
+    """
     uid = _uid(request)
     pool = _pool(request)
     conn = pool.getconn()

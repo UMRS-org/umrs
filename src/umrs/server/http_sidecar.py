@@ -817,6 +817,11 @@ def _create_app():
 
     app.include_router(quota_status_router)
 
+    # ADR-050 (2026-09-16): groups + membership authority (§3 deferred leg).
+    from umrs.api.groups import router as groups_router
+
+    app.include_router(groups_router)
+
     # Satellite stores auto-resolve via the shared factories (Postgres when
     # a pool is resolvable, else in-memory). Routers return 503 on failure.
     from umrs.api.evidence import set_store as set_evidence_store

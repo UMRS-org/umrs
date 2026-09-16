@@ -24,6 +24,7 @@ from umrs.grants.source_store import SourceGrantStore
 from umrs.knowledge.access_scope import CallerScope
 
 from ._scope_identity import get_caller_scope
+from .groups import GroupNotFound, GroupsStore
 from .typed_errors import PlatformError, raise_typed
 
 logger = logging.getLogger(__name__)
@@ -66,6 +67,32 @@ def _sealed_meta(request: Request, name: str, owner: str):
     return meta
 
 
+def _validate_group_grantee(request: Request, grantee: str) -> None:
+    """ADR-050 §3: group grantees must resolve to a live group — dangling
+    'group:' values must not accrete (404-shaped, never invented)."""
+    gid = grantee[len("group:"):]
+    pool = getattr(request.app.state, "umrs_db_pool", None)
+    if pool is None:
+        raise_typed(
+            PlatformError.sourcegrants(
+                "unavailable", "group grantees require the shared umrs_db pool"
+            )
+        )
+    conn = pool.getconn()
+    try:
+        grow = GroupsStore(conn).get(gid)
+    except GroupNotFound:
+        raise_typed(
+            PlatformError.sourcegrants("not_found", f"group {gid} not found")
+        )
+    finally:
+        pool.putconn(conn)
+    if grow["status"] != "active":
+        raise_typed(
+            PlatformError.sourcegrants("conflict", f"group {gid} is retired")
+        )
+
+
 class CreateGrantRequest(BaseModel):
     source_name: str = Field(..., description="pushed source the caller owns")
     grantee: str = Field(..., min_length=1, description="user id to share with")
@@ -92,6 +119,8 @@ def create_grant(
         raise_typed(
             PlatformError.sourcegrants("bad_request", "cannot grant to yourself")
         )
+    if body.grantee.startswith("group:"):
+        _validate_group_grantee(request, body.grantee)
     meta = _sealed_meta(request, body.source_name, caller.user_id)
 
     store = _store(request)
@@ -160,7 +189,20 @@ def list_for_me(
             PlatformError.sourcegrants("unauthorized", "user identity required")
         )
     store = _store(request)
-    return [g.to_dict() for g in store.list_for_grantee(caller.user_id)]
+    # ADR-050 §3: my user id plus every active group:'<id>' I am a member of.
+    from .groups import groups_for_user
+
+    pool = getattr(request.app.state, "umrs_db_pool", None)
+    grantees: list[str] = [caller.user_id]
+    if pool is not None:
+        conn = pool.getconn()
+        try:
+            grantees += [f"group:{g}" for g in groups_for_user(conn, caller.user_id)]
+        finally:
+            pool.putconn(conn)
+    if len(grantees) == 1:
+        return [g.to_dict() for g in store.list_for_grantee(caller.user_id)]
+    return [g.to_dict() for g in store.list_for_grantees(tuple(grantees))]
 
 
 @router.post("/{grant_id}/revoke")

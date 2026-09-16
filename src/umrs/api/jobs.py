@@ -858,8 +858,9 @@ async def get_job_manifest(
     caller: CallerIdentity = Depends(get_caller_identity),
     store: JobStore = Depends(get_job_store),
 ) -> dict[str, Any]:
-    """Latest ExecutionManifest for one job (404 when none is persisted yet)."""
+    """Latest ExecutionManifest for one job (404 when none is persisted yet).
     # auth: verified
+    """
     # auth: verified
     try:
         job = store.get_job(job_id)
@@ -888,8 +889,9 @@ async def list_job_manifests(
     caller: CallerIdentity = Depends(get_caller_identity),
     store: JobStore = Depends(get_job_store),
 ) -> dict[str, Any]:
-    """Per-attempt manifests for one job (older attempts pre-manifest = omitted)."""
+    """Per-attempt manifests for one job (older attempts pre-manifest = omitted).
     # auth: verified
+    """
     try:
         job = store.get_job(job_id)
     except JobNotFoundError:
@@ -1043,8 +1045,9 @@ async def mint_attempt_credentials_route(
     caller: CallerIdentity = Depends(get_caller_identity),
     store: JobStore = Depends(get_job_store),
 ) -> dict[str, Any]:
-    """Mint (idempotent) the attempt's credential record."""
+    """Mint (idempotent) the attempt's credential record.
     # auth: verified
+    """
     try:
         job = store.get_job(job_id)
     except JobNotFoundError:
@@ -1072,8 +1075,9 @@ async def mint_attempt_sts_credentials(
     caller: CallerIdentity = Depends(get_caller_identity),
     store: JobStore = Depends(get_job_store),
 ) -> dict[str, Any]:
-    """Mint real per-attempt identity via STS AssumeRole."""
+    """Mint real per-attempt identity via STS AssumeRole.
     # auth: verified
+    """
     from ..jobs.attempt_credentials import AttemptCredentials
     from ..jobs.sts_federation import STSFederationError, assume_role_for_attempt
     from ..shared.storage.s3_config import get_s3_config
@@ -1147,8 +1151,9 @@ async def presign_for_attempt(
     caller: CallerIdentity = Depends(get_caller_identity),
     store: JobStore = Depends(get_job_store),
 ) -> dict[str, Any]:
-    """Attempt-scoped presign; refuses outside the recorded prefix/expiry."""
+    """Attempt-scoped presign; refuses outside the recorded prefix/expiry.
     # auth: verified
+    """
     from ..jobs.attempt_credentials import AttemptCredentials, key_in_scope
 
     try:
@@ -1211,8 +1216,9 @@ async def reproduce_job(
     caller: CallerIdentity = Depends(get_caller_identity),
     store: JobStore = Depends(get_job_store),
 ) -> dict[str, Any]:
-    """Reproduce (replay) one job through the durable runtime (G-P7-2)."""
+    """Reproduce (replay) one job through the durable runtime (G-P7-2).
     # auth: verified
+    """
     # auth: verified
     try:
         job = store.get_job(job_id)

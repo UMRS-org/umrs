@@ -107,6 +107,9 @@ target-version = "py310"
 
 [tool.ruff.lint]
 ignore = [
+    # FastAPI route dependencies ride argument defaults by design; the parent
+    # workspace pyproject ignores the same rule globally.
+    "B008",
     # UMRS uses callback and backend interfaces where method signatures must
     # remain stable even when an implementation does not consume every argument.
     "ARG002",

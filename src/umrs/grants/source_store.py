@@ -199,6 +199,15 @@ class SourceGrantStore:
             (grantee,),
         )
 
+    def list_for_grantees(self, grantees: tuple[str, ...]) -> list[SourceGrant]:
+        """ADR-050 §3: caller's user id plus the 'group:<id>' strings of every
+        active group the caller is in (same persistence shape — grantee is a
+        plain string column; the grammar discriminates by prefix)."""
+        return self._list(
+            "grantee = ANY(%s) AND tombstoned_at IS NULL AND (expires_at IS NULL OR expires_at > now())",
+            (list(grantees),),
+        )
+
     def list_for_source(self, source_id: str) -> list[SourceGrant]:
         return self._list("source_id = %s", (source_id,))
 
