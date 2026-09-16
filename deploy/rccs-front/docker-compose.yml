@@ -35,18 +35,35 @@ services:
       - ../../docker/init_pgvector.sql:/docker-entrypoint-initdb.d/init_pgvector.sql:ro
     restart: unless-stopped
 
-  minio:
-    image: docker.io/minio/minio:RELEASE.2025-04-22T22-12-26Z
-    container_name: umrs-minio
+  # SeaweedFS object store (ADR-055 — replaces the archived MinIO community
+  # build; MinIO stays reachable via the backend adapter S3_BACKEND=minio for
+  # support, but no profile deploys it anymore). Fresh volume: per-cluster
+  # object data was scratch; migrate away from the old minio_data on the host
+  # before pruning it (operator leg, same as umrs-front).
+  seaweedfs:
+    image: ${S3_IMAGE:-docker.io/chrislusf/seaweedfs:4.47}
+    container_name: umrs-seaweedfs
     environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?Set MINIO_ROOT_USER in .env}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD in .env}
+      AWS_ACCESS_KEY_ID: ${S3_ROOT_USER:-${MINIO_ROOT_USER:?Set S3_ROOT_USER in .env}}
+      AWS_SECRET_ACCESS_KEY: ${S3_ROOT_PASSWORD:-${MINIO_ROOT_PASSWORD:?Set S3_ROOT_PASSWORD in .env}}
+    command: >
+      server -dir=/data -ip=127.0.0.1 -ip.bind=0.0.0.0
+      -volume.max=0 -volume.index=leveldb
+      -s3 -s3.port=9000 -s3.iam -s3.iam.config=/etc/seaweedfs/iam.json
+      -iam -iam.port=8111
+      -metricsPort=9327
     ports:
-      - "0.0.0.0:9000:9000"       # Accessible from VPN clients + reverse tunnel to login
-      - "127.0.0.1:9001:9001"     # Console: local only
-    command: server /data --console-address ":9001"
+      - "0.0.0.0:9000:9000"       # S3 API — preserved: VPN clients + reverse tunnel to login
+      - "127.0.0.1:8112:8111"     # IAM API (per-user identities), loopback
+      - "127.0.0.1:9328:9327" # Prometheus /metrics, loopback
     volumes:
-      - minio_data:/data
+      - s3_data:/data:z
+      - ./seaweedfs/iam.json:/etc/seaweedfs/iam.json:ro,z
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:9000/status"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
     restart: unless-stopped
 
   umrs-server:
@@ -57,9 +74,16 @@ services:
     environment:
       UMRS_SITE_CONFIG: /app/deploy/rccs-front/site.yaml
       UMRS_REGISTRY_POSTGRES_DSN: "postgresql://${POSTGRES_USER:-umrs}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-umrs_db}"
-      MINIO_ENDPOINT: http://minio:9000
-      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
-      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      # Canonical S3_* (ADR-055); MINIO_* mirror stays one wave for older
+      # step-worker env readers, then it goes (rollout note in ADR-055).
+      S3_BACKEND: seaweedfs
+      S3_ENDPOINT_URL: http://seaweedfs:9000
+      S3_IAM_ENDPOINT_URL: http://seaweedfs:8111
+      S3_ACCESS_KEY: ${S3_ROOT_USER:-${MINIO_ROOT_USER}}
+      S3_SECRET_KEY: ${S3_ROOT_PASSWORD:-${MINIO_ROOT_PASSWORD}}
+      MINIO_ENDPOINT: http://seaweedfs:9000
+      MINIO_ACCESS_KEY: ${S3_ROOT_USER:-${MINIO_ROOT_USER}}
+      MINIO_SECRET_KEY: ${S3_ROOT_PASSWORD:-${MINIO_ROOT_PASSWORD}}
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}
       RIVAULT_ORCHESTRATOR: slurm-remote
     ports:
@@ -71,7 +95,7 @@ services:
       - ./site.yaml:/app/deploy/rccs-front/site.yaml:ro
     depends_on:
       - postgres
-      - minio
+      - seaweedfs
     restart: unless-stopped
 
   gateway:
@@ -91,4 +115,4 @@ services:
 
 volumes:
   pg_data:
-  minio_data:
+  s3_data:

@@ -2,7 +2,7 @@
 # =============================================================================
 # Start the UMRS stack on hpbd-atom — hybrid architecture.
 # =============================================================================
-# Infrastructure (postgres, minio) runs in podman containers.
+# Infrastructure (postgres, seaweedfs object store) runs in podman containers.
 # The umrs-server runs NATIVELY on the login node so it can call Slurm CLI
 # (sbatch, squeue, scancel) and create SSH tunnels to compute nodes.
 #
@@ -173,7 +173,15 @@ fi
 
 # ─── Start infrastructure containers ─────────────────────────────────────────
 if [[ "${1:-}" != "--server" ]]; then
-    echo "Starting infrastructure containers (postgres, minio)..."
+    # SeaweedFS IAM/STS config (ADR-055 fleet wave), rendered from .env.
+    # shellcheck disable=SC1091
+    source "${SCRIPT_DIR}/../_common/render_seaweedfs_iam.sh"
+    render_seaweedfs_iam "${SCRIPT_DIR}"
+
+    # Retire the pre-ADR-055 MinIO container for good (volume kept for operator).
+    podman rm -f umrs-minio >/dev/null 2>&1 || true
+
+    echo "Starting infrastructure containers (postgres, seaweedfs)..."
     podman compose up -d
 
     # Wait for postgres to accept connections
@@ -188,16 +196,18 @@ if [[ "${1:-}" != "--server" ]]; then
         [[ "$i" -eq 30 ]] && echo " WARNING: postgres not ready after 30s."
     done
 
-    # Wait for minio health
-    echo -n "Waiting for minio..."
+    # Wait for the object store: SeaweedFS /status first, legacy MinIO probe
+    # kept as support fallback (S3_BACKEND=minio rescue path).
+    echo -n "Waiting for seaweedfs..."
     for i in $(seq 1 30); do
-        if curl -sf http://127.0.0.1:9000/minio/health/live >/dev/null 2>&1; then
+        if curl -sf http://127.0.0.1:9000/status >/dev/null 2>&1 \
+            || curl -sf http://127.0.0.1:9000/minio/health/live >/dev/null 2>&1; then
             echo " ready."
             break
         fi
         echo -n "."
         sleep 1
-        [[ "$i" -eq 30 ]] && echo " WARNING: minio not ready after 30s."
+        [[ "$i" -eq 30 ]] && echo " WARNING: object store not ready after 30s."
     done
 fi
 
@@ -264,8 +274,8 @@ export PYTHONUNBUFFERED=1
 
 # ─── Remove stale per-user s3cfg files ───────────────────────────────────────
 # The server regenerates these from the admin .s3cfg on startup.
-# Stale files may point to wrong host (e.g. minio:9000 from a previous
-# Docker-based deployment).
+# Stale files may point to a wrong object-store address from a previous
+# deployment.
 rm -f "${HOME}/.config/umrs/s3cfg_"* 2>/dev/null || true
 rm -f "${HOME}/.s3cfg_user"* 2>/dev/null || true  # legacy path
 
@@ -327,7 +337,7 @@ fi
 echo ""
 echo "=== UMRS stack running ==="
 echo "  postgres:    localhost:5432      (container)"
-echo "  minio:       localhost:9000      (container, console: localhost:9001)"
+echo "  seaweedfs:   localhost:9000      (S3 API; IAM 127.0.0.1:8111, metrics 127.0.0.1:9327)"
 echo "  umrs-server: localhost:5555      (native, PID $SERVER_PID)"
 if [[ "$RAG_ENABLED" = true ]]; then
     echo "  rag-service: localhost:8081      (native, PID $RAG_PID)"

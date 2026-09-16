@@ -46,22 +46,31 @@ services:
     # NOTE: additional per-cluster DBs (front_cluster_b, …) are created by
     # start.sh after postgres is healthy.
 
-  # ─── MinIO (shared object store) ───────────────────────────────────────────
-  minio:
-    image: docker.io/minio/minio:RELEASE.2025-04-22T22-12-26Z
-    container_name: umrs-minio
+  # ─── SeaweedFS (shared object store, ADR-055) ─────────────────────────────
+  # MinIO stays reachable via the backend adapter S3_BACKEND=minio for
+  # support, but no profile deploys it anymore.
+  seaweedfs:
+    image: ${S3_IMAGE:-docker.io/chrislusf/seaweedfs:4.47}
+    container_name: umrs-seaweedfs
     restart: unless-stopped
     environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?Set MINIO_ROOT_USER in .env}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD in .env}
+      AWS_ACCESS_KEY_ID: ${S3_ROOT_USER:-${MINIO_ROOT_USER:?Set S3_ROOT_USER in .env}}
+      AWS_SECRET_ACCESS_KEY: ${S3_ROOT_PASSWORD:-${MINIO_ROOT_PASSWORD:?Set S3_ROOT_PASSWORD in .env}}
+    command: >
+      server -dir=/data -ip=127.0.0.1 -ip.bind=0.0.0.0
+      -volume.max=0 -volume.index=leveldb
+      -s3 -s3.port=9000 -s3.iam -s3.iam.config=/etc/seaweedfs/iam.json
+      -iam -iam.port=8111
+      -metricsPort=9327
     ports:
-      - "${MINIO_BIND:-0.0.0.0}:${MINIO_PORT:-9000}:9000"
-      - "127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001"
+      - "${S3_BIND:-0.0.0.0}:${S3_PORT:-9000}:9000"
+      - "127.0.0.1:${S3_IAM_PORT:-8111}:8111"
+      - "127.0.0.1:${S3_METRICS_PORT:-9327}:9327"
     volumes:
-      - umrs_minio_data:/data
-    command: server /data --console-address ":9001"
+      - umrs_s3_data:/data:z
+      - ./seaweedfs/iam.json:/etc/seaweedfs/iam.json:ro,z
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:9000/minio/health/live"]
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:9000/status"]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -82,12 +91,13 @@ services:
       DB_SUPERUSER: ${POSTGRES_USER:-umrs}
       DB_SUPERUSER_PASSWORD: ${POSTGRES_PASSWORD}
       UMRS_REGISTRY_POSTGRES_DSN: "postgres://${POSTGRES_USER:-umrs}:${POSTGRES_PASSWORD}@127.0.0.1:${POSTGRES_PORT:-5432}/${POSTGRES_DB_CLUSTER_A:-front_cluster_a}"
-      S3_ENDPOINT_URL: "http://127.0.0.1:${MINIO_PORT:-9000}"
-      S3_ACCESS_KEY: ${MINIO_ROOT_USER}
-      S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      S3_BACKEND: ${S3_BACKEND:-seaweedfs}
+      S3_ENDPOINT_URL: "http://127.0.0.1:${S3_PORT:-9000}"
+      S3_ACCESS_KEY: ${S3_ROOT_USER:-${MINIO_ROOT_USER}}
+      S3_SECRET_KEY: ${S3_ROOT_PASSWORD:-${MINIO_ROOT_PASSWORD}}
       S3_BUCKET: ${S3_BUCKET:-r4-data}
       S3_USE_SSL: ${S3_USE_SSL:-false}
-      S3_PRESIGN_ENDPOINT: ${S3_PRESIGN_ENDPOINT:-http://127.0.0.1:${MINIO_PORT:-9000}}
+      S3_PRESIGN_ENDPOINT: ${S3_PRESIGN_ENDPOINT:-http://127.0.0.1:${S3_PORT:-9000}}
       PYTHONUNBUFFERED: "1"
     volumes:
       - ./site.cluster-a.yaml:/etc/umrs/site.yaml:ro,z
@@ -112,7 +122,7 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      minio:
+      seaweedfs:
         condition: service_healthy
 
   # ─── UMRS server — cluster B ───────────────────────────────────────────────
@@ -131,12 +141,13 @@ services:
       DB_SUPERUSER: ${POSTGRES_USER:-umrs}
       DB_SUPERUSER_PASSWORD: ${POSTGRES_PASSWORD}
       UMRS_REGISTRY_POSTGRES_DSN: "postgres://${POSTGRES_USER:-umrs}:${POSTGRES_PASSWORD}@127.0.0.1:${POSTGRES_PORT:-5432}/${POSTGRES_DB_CLUSTER_B:-front_cluster_b}"
-      S3_ENDPOINT_URL: "http://127.0.0.1:${MINIO_PORT:-9000}"
-      S3_ACCESS_KEY: ${MINIO_ROOT_USER}
-      S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      S3_BACKEND: ${S3_BACKEND:-seaweedfs}
+      S3_ENDPOINT_URL: "http://127.0.0.1:${S3_PORT:-9000}"
+      S3_ACCESS_KEY: ${S3_ROOT_USER:-${MINIO_ROOT_USER}}
+      S3_SECRET_KEY: ${S3_ROOT_PASSWORD:-${MINIO_ROOT_PASSWORD}}
       S3_BUCKET: ${S3_BUCKET:-r4-data}
       S3_USE_SSL: ${S3_USE_SSL:-false}
-      S3_PRESIGN_ENDPOINT: ${S3_PRESIGN_ENDPOINT:-http://127.0.0.1:${MINIO_PORT:-9000}}
+      S3_PRESIGN_ENDPOINT: ${S3_PRESIGN_ENDPOINT:-http://127.0.0.1:${S3_PORT:-9000}}
       PYTHONUNBUFFERED: "1"
     volumes:
       - ./site.cluster-b.yaml:/etc/umrs/site.yaml:ro,z
@@ -160,9 +171,9 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      minio:
+      seaweedfs:
         condition: service_healthy
 
 volumes:
   umrs_pg_data:
-  umrs_minio_data:
+  umrs_s3_data:

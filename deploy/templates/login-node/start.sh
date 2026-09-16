@@ -2,7 +2,7 @@
 # =============================================================================
 # start.sh — bring up the login-node UMRS deployment (TEMPLATE)
 # =============================================================================
-# 1. Start infra containers (postgres, minio) via podman compose.
+# 1. Start infra containers (postgres, seaweedfs object store) via podman compose.
 # 2. Launch the UMRS server NATIVELY so it can call the Slurm CLI.
 #
 #   ./start.sh            # infra + native server
@@ -40,7 +40,15 @@ mkdir -p "$LOG_DIR"
 
 # ─── Infra containers ────────────────────────────────────────────────────────
 if [[ "$START_MODE" != "--server" ]]; then
-    echo "Starting infra containers (postgres, minio)..."
+    # SeaweedFS IAM/STS config (ADR-055 fleet wave), rendered from .env.
+    # shellcheck disable=SC1091
+    source "${SCRIPT_DIR}/../../_common/render_seaweedfs_iam.sh"
+    render_seaweedfs_iam "${SCRIPT_DIR}"
+
+    # Retire the pre-ADR-055 MinIO container for good (volume kept for operator).
+    podman rm -f umrs-minio >/dev/null 2>&1 || true
+
+    echo "Starting infra containers (postgres, seaweedfs)..."
     podman compose -f "${SCRIPT_DIR}/docker-compose.yaml" up -d
 fi
 

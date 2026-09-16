@@ -53,7 +53,7 @@ containers running:
 ./start.sh --server
 ```
 
-`./stop.sh --server` leaves postgres, minio, and any active Slurm-backed
+`./stop.sh --server` leaves postgres, seaweedfs, and any active Slurm-backed
 endpoint jobs running. Use plain `./stop.sh` when you want a full stack stop.
 
 To validate the harness itself after wrapper, `site.yaml`, or orchestration
@@ -89,7 +89,7 @@ Local machine (optional)          rccs-cloud (login node)          ng-dgx-m* (co
 ────────────────────              ───────────────────────          ──────────────────────────
 umrs  ←── SSH tunnel ───►  umrs-server  (NATIVE)  ←── Slurm ───►  mini-rivault
 rag client   ←── SSH tunnel ───►  rag-service  (NATIVE, optional)        vLLM / BentoML + LiteLLM
-                                  minio     (podman container)  ◄── SSH tunnel ──┘
+                                 seaweedfs (podman container)  ◄── SSH tunnel ──┘
                                   postgres  (podman container)
                                   /lvs0/rccs-dmp/  (Lustre — shared)
 ```
@@ -242,11 +242,11 @@ Common values to adjust:
 | Variable | Default | Notes |
 |---|---|---|
 | `POSTGRES_PASSWORD` | unset | Must be set in `.env` before startup |
-| `MINIO_ROOT_PASSWORD` | unset | Must be set in `.env` before startup |
+| `S3_ROOT_PASSWORD` | unset | Must be set in `.env` before startup (legacy hosts may carry `MINIO_ROOT_PASSWORD`; `S3_*` wins when both are set) |
 | `S3_PRESIGN_ENDPOINT` | `http://localhost:9000` | Compute nodes access MinIO via an SSH tunnel (see below).  The Slurm script opens `localhost:9000` → login node MinIO automatically. |
 | `VISION_S3_PRESIGN_ENDPOINT` | `http://minio-host:19000` | BentoML vision runs inside a compute-node container, so presigned URLs for vision tasks must target the host-gateway alias rather than `localhost`. |
 | `VISION_REQUIRE_PRESIGNED_URLS` | `true` | Disables direct S3 fallback in the BentoML vision service so the container no longer needs S3 secrets. |
-| `MINIO_BIND` | `127.0.0.1` | MinIO listens on localhost only.  Compute nodes use the SSH tunnel. |
+| `S3_BIND` | `127.0.0.1` | Object store listens on localhost only.  Compute nodes use the SSH tunnel. |
 | `UMRS_SITE_CONFIG` | `~/.config/umrs/site.yaml` | Optional override for the canonical site config path |
 | `RIVAULT_SLURM_SCRIPT` | `./serve-model.slurm` | Optional override for the site-specific Slurm wrapper; the legacy `~/.config/umrs/rivault_data/serve-model.slurm` path is only a fallback |
 | `MODEL_DIR` | unset by default | Optional local override for the shared model root; otherwise `HF_HOME` comes from `site.yaml` `storage.model_cache_dir` |
@@ -263,7 +263,7 @@ This deployment uses three different credential classes. Keep them separate.
 | Credential | Where it lives | Who should control it | How to generate / rotate |
 |---|---|---|---|
 | PostgreSQL password | `.env` as `POSTGRES_PASSWORD` | RCCS operators on the login node | `openssl rand -base64 24` and restart `./start.sh` |
-| MinIO root password | `.env` as `MINIO_ROOT_PASSWORD` | RCCS operators on the login node | `openssl rand -base64 24` and restart `./start.sh` |
+| S3 root password | `.env` as `S3_ROOT_PASSWORD` | RCCS operators on the login node | `openssl rand -base64 24` and restart `./start.sh` |
 | LiteLLM service key | `.env` or operator environment as `LITELLM_MASTER_KEY` | RCCS operators only | Generate a random bearer-style secret, for example `printf 'sk-ll-%s\n' "$(openssl rand -hex 24)"` |
 | UMRS admin tokens | `~/.config/umrs/admin_tokens.json` (hashed at rest) | RCCS operators only | Generate with `umrs-server admin token generate <name> --description '<purpose>'` |
 
@@ -336,8 +336,8 @@ The script will:
 2. Resolve `UMRS_SITE_CONFIG` from `~/.config/umrs/site.yaml` (or fallback to the
   checked-in `deploy/rccs-cloud/site.yaml`).
 3. Create the shared model root and HF cache directories from `site.yaml` (or `MODEL_DIR` if you explicitly override the shared root).
-4. Start postgres and minio containers via `podman compose up -d`.
-5. Wait for postgres and minio to become healthy.
+4. Start postgres and seaweedfs containers via `podman compose up -d`.
+5. Wait for postgres and seaweedfs to become healthy.
 6. Launch `server_umrs.py` **natively** (outside any container) with the correct
    environment variables, writing output to `logs/server.log`.
 
@@ -385,7 +385,7 @@ partition:
 sbatch -p ng-dgx-m0 --time=00:05:00 --wrap='
   ssh -fN -L 9000:127.0.0.1:9000 '"$HOSTNAME"' -o StrictHostKeyChecking=no -o ExitOnForwardFailure=yes
   sleep 2
-  curl -sS -m 5 -I http://localhost:9000/minio/health/live || exit 42
+  curl -sS -m 5 -I http://localhost:9000/status || curl -sS -m 5 -I http://localhost:9000/minio/health/live || exit 42
 '
 ```
 
@@ -409,7 +409,7 @@ for part in ng-dgx-m0 ng-dgx-m1 ng-dgx-m2 ng-dgx-m3; do
   sbatch -p "$part" --time=00:05:00 -J "test-$part" --wrap='
     ssh -fN -L 9000:127.0.0.1:9000 '"$HOSTNAME"' -o StrictHostKeyChecking=no -o ExitOnForwardFailure=yes
     sleep 2
-    curl -sS -m 5 -I http://localhost:9000/minio/health/live || exit 42
+    curl -sS -m 5 -I http://localhost:9000/status || curl -sS -m 5 -I http://localhost:9000/minio/health/live || exit 42
   '
 done
 ```
@@ -655,7 +655,7 @@ their own scripts), create credentials for them via the MinIO admin client (`mc`
 # curl -sL https://dl.min.io/client/mc/release/linux-arm64/mc -o ~/.local/bin/mc && chmod +x ~/.local/bin/mc
 
 # Alias for the local MinIO instance
-mc alias set local http://127.0.0.1:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD"
+mc alias set local http://127.0.0.1:9000 "$S3_ROOT_USER" "$S3_ROOT_PASSWORD"
 
 # Create a new MinIO user
 mc admin user add local user2 <password>
@@ -681,9 +681,9 @@ mc admin policy attach local user2-policy --user user2
 Then give `user2` an `s3cfg` file pointing at `localhost:9000` (via the SSH tunnel)
 with their new credentials.
 
-> ⚠️ **Security note**: MinIO is bound on localhost only (`MINIO_BIND=127.0.0.1`).
+> ⚠️ **Security note**: SeaweedFS is bound on localhost only (`S3_BIND=127.0.0.1`).
 > Compute nodes access MinIO through an SSH tunnel set up by the Slurm script.
-> If you need to expose MinIO directly to other hosts, change `MINIO_BIND` to
+> If you need to expose the object store directly to other hosts, change `S3_BIND` to
 > `0.0.0.0` in `.env` and ensure firewall rules restrict port 9000 to trusted
 > hosts.
 
@@ -711,7 +711,7 @@ export PATH="$HOME/.local/bin:$PATH"   # add to ~/.bashrc
 
 ```bash
 podman compose logs postgres
-podman compose logs minio
+podman compose logs seaweedfs
 ```
 
 ### Server not starting / crashing
@@ -732,7 +732,7 @@ Compute nodes access MinIO via an SSH tunnel (`localhost:9000`), not directly.
 1. Ensure [Step 0b](#step-0b--enable-compute--login-ssh-required-for-slurm-jobs) is done
    (your public key is in `~/.ssh/authorized_keys`).
 2. Test self-SSH on the login node: `ssh -o BatchMode=yes localhost echo ok`
-3. Run the verification in [Step 2.5](#step-25--verify-minio-reachability-from-slurm-jobs-via-ssh-tunnel).
+3. Run the verification in [Step 2.5](#step-25--verify-object-store-reachability-from-slurm-jobs-via-ssh-tunnel).
 4. Check that `S3_PRESIGN_ENDPOINT=http://localhost:9000` in `.env`.
 5. For BentoML vision tasks, check that `VISION_S3_PRESIGN_ENDPOINT=http://minio-host:19000`
   and `VISION_REQUIRE_PRESIGNED_URLS=true` in `.env`.
@@ -767,7 +767,7 @@ If you intentionally want to wipe both postgres and MinIO, run:
 ```
 
 `--postgres-clean` removes only the postgres volume. `--clean` is fully destructive:
-it removes both the postgres and minio volumes managed by this RCCS harness.
+it removes both the postgres and object-store volumes managed by this RCCS harness.
 
 ### umrs cannot connect
 

@@ -38,6 +38,14 @@ if ! ssh -o BatchMode=yes "${AI4S_SSH_USER}@${AI4S_SSH_TARGET}" "sinfo -h -p 1n1
 fi
 echo "Slurm access verified."
 
+# SeaweedFS IAM/STS config (ADR-055 fleet wave), rendered from .env.
+# shellcheck disable=SC1091
+source "${SCRIPT_DIR}/../_common/render_seaweedfs_iam.sh"
+render_seaweedfs_iam "${SCRIPT_DIR}"
+
+# Retire the pre-ADR-055 MinIO container for good (volume kept for operator).
+podman rm -f umrs-minio-ai4s >/dev/null 2>&1 || true
+
 # Start services
 echo "Starting UMRS AI4S services..."
 podman-compose up -d
@@ -46,7 +54,7 @@ echo ""
 echo "Services started (AI4S target):"
 echo "  UMRS API:    http://0.0.0.0:8002"
 echo "  Gateway:     http://0.0.0.0:8082"
-echo "  MinIO:       http://0.0.0.0:9002 (console: http://127.0.0.1:9003)"
+echo "  SeaweedFS:   http://0.0.0.0:9002 (IAM: http://127.0.0.1:8113, metrics: http://127.0.0.1:9329)"
 echo "  PostgreSQL:  127.0.0.1:5433"
 echo ""
 echo "SSH target: ${AI4S_SSH_USER}@${AI4S_SSH_TARGET}"

@@ -2,7 +2,7 @@
 # =============================================================================
 # start.sh — bring up the frontend → multi-HPC stack (TEMPLATE)
 # =============================================================================
-# 1. Start infra (postgres, minio) and wait for readiness.
+# 1. Start infra (postgres, seaweedfs object store) and wait for readiness.
 # 2. Create the per-cluster Postgres DBs + pgvector extension.
 # 3. Start the per-cluster UMRS servers.
 #
@@ -34,8 +34,16 @@ _pg() {
 }
 
 if [[ "$START_MODE" != "--server" ]]; then
-    echo "Starting infra containers (postgres, minio)..."
-    $COMPOSE up -d postgres minio
+    # SeaweedFS IAM/STS config (ADR-055 fleet wave), rendered from .env.
+    # shellcheck disable=SC1091
+    source "${SCRIPT_DIR}/../../_common/render_seaweedfs_iam.sh"
+    render_seaweedfs_iam "${SCRIPT_DIR}"
+
+    # Retire the pre-ADR-055 MinIO container for good (volume kept for operator).
+    podman rm -f umrs-minio >/dev/null 2>&1 || true
+
+    echo "Starting infra containers (postgres, seaweedfs)..."
+    $COMPOSE up -d postgres seaweedfs
 
     echo -n "  Waiting for postgres..."
     for i in $(seq 1 30); do
@@ -53,13 +61,14 @@ if [[ "$START_MODE" != "--server" ]]; then
         _pg -d "$db" -c "CREATE EXTENSION IF NOT EXISTS vector;" || true
     done
 
-    echo -n "  Waiting for minio..."
+    echo -n "  Waiting for seaweedfs..."
     for i in $(seq 1 30); do
-        if curl -sf "http://127.0.0.1:${MINIO_PORT:-9000}/minio/health/live" >/dev/null 2>&1; then
+        if curl -sf "http://127.0.0.1:${S3_PORT:-9000}/status" >/dev/null 2>&1 \
+            || curl -sf "http://127.0.0.1:${S3_PORT:-9000}/minio/health/live" >/dev/null 2>&1; then
             echo " ready."; break
         fi
         echo -n "."; sleep 1
-        [[ "$i" -eq 30 ]] && echo " WARNING: minio not ready after 30s"
+        [[ "$i" -eq 30 ]] && echo " WARNING: object store not ready after 30s"
     done
 fi
 

@@ -154,7 +154,10 @@ ensure_symlink "$SLURM_TARGET" "$SLURM_LINK" "Slurm wrapper"
 ensure_symlink "$SITE_CONFIG_TARGET" "$SITE_CONFIG_LINK" "site config"
 
 # ─── Install MinIO Client (mc) ───────────────────────────────────────────────
-# The UMRS server calls `mc` for user/policy management in minio.py.
+# Pure S3 CLI client kept for two support legs (ADR-055 fleet wave): (1) the
+# minio backend adapter's admin plane when a host runs S3_BACKEND=minio
+# (legacy rescue), (2) operator bucket tooling on any backend — SeaweedFS
+# speaks the same SigV4 S3 API, so mc works against seaweedfs too.
 MC_BIN="${VENV_DIR}/bin/mc"
 if [[ -x "$MC_BIN" ]]; then
     log "MinIO Client (mc) already installed at ${MC_BIN}"
