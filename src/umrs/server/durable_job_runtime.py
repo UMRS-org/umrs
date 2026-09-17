@@ -232,6 +232,12 @@ def start_durable_job_runtime_from_env(
         _set_runtime(runtime)
         logger.info("Durable job runtime started")
         return runtime
+    except ModuleNotFoundError as e:
+        logger.warning(
+            "Durable job runtime disabled — optional dependency not installed: %s", e
+        )
+        _set_runtime(None)
+        return None
     except Exception:
         logger.exception("Failed to start durable job runtime")
         METRICS.bridge_event(_BRIDGE_NAME, "start_failure")

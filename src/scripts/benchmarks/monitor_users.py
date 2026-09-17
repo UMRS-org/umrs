@@ -160,7 +160,7 @@ def main():
             )
             if args.debug:
                 print(f"[bootstrap] {user}: is_running={is_running} "
-                      f"latest_status={latest_status} latest_ts={latest_ts}", flush=True)
+                                      f"latest_status={latest_status} latest_ts={latest_ts}", flush=True)
             if is_running is True:
                 state[user] = "running"
             if latest_ts is not None:
@@ -168,6 +168,8 @@ def main():
                 if bootstrap_bar is not None:
                     bootstrap_bar.update(1)
             else:
+                print(f"[Error-bootstrap] {user}: is_running={is_running} "
+                    f"latest_status={latest_status} latest_ts={latest_ts}", flush=True)
                 time.sleep(args.interval)
 
     if bootstrap_bar is not None:
