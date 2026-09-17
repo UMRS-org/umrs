@@ -17,7 +17,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-COMPANION_TRUST_SCHEMA_VERSION = 3
+COMPANION_TRUST_SCHEMA_VERSION = 4
 
 CREATE_TRUST_TABLE = """
 CREATE TABLE IF NOT EXISTS companion_trust_allowlist (
@@ -104,6 +104,32 @@ COMMENT ON TABLE companion_approval_inbox IS
     'Durable tool-grain approval intents + decisions for server-hosted research loops (ADR-036 (a)).';
 """
 
+
+CREATE_CHAT_TURN_APPROVALS_TABLE = """
+CREATE TABLE IF NOT EXISTS chat_turn_approvals (
+    approval_id  TEXT        PRIMARY KEY,
+    session_id   TEXT        NOT NULL,
+    turn_id      TEXT        NOT NULL DEFAULT '',
+    user_id      TEXT        NOT NULL DEFAULT '',
+    action       JSONB       NOT NULL DEFAULT '{}',
+    status       TEXT        NOT NULL DEFAULT 'pending'
+                 CHECK (status IN ('pending', 'approved', 'rejected')),
+    decision     TEXT        NOT NULL DEFAULT '',
+    decided_by   TEXT        NOT NULL DEFAULT '',
+    decided_at   TIMESTAMPTZ,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_chat_turn_approvals_pending
+    ON chat_turn_approvals(status, user_id, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_chat_turn_approvals_session
+    ON chat_turn_approvals(session_id, turn_id);
+
+COMMENT ON TABLE chat_turn_approvals IS
+    'Durable tool-grain approval intents + decisions for chat turns (ADR-057 D-3).';
+"""
+
 CREATE_SCHEMA_VERSION_TABLE = """
 CREATE TABLE IF NOT EXISTS schema_versions (
     component VARCHAR(64) PRIMARY KEY,
@@ -142,6 +168,7 @@ def ensure_schema(conn) -> bool:
         cur.execute(CREATE_SESSION_ARCHIVE_TABLE)
         cur.execute(CREATE_REVOKE_LOG_TABLE)
         cur.execute(CREATE_APPROVAL_INBOX_TABLE)
+        cur.execute(CREATE_CHAT_TURN_APPROVALS_TABLE)
         cur.execute(
             """
             INSERT INTO schema_versions (component, version)

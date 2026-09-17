@@ -646,6 +646,9 @@ def _create_app():
     from umrs.api.bundle_restore import router as bundle_restore_router
     from umrs.api.catalog import router as catalog_router
     from umrs.api.chat import router as chat_router
+    from umrs.api.companion_chat_approvals import (
+        router as companion_chat_approvals_router,
+    )
     from umrs.api.companion_sessions import router as companion_sessions_router
     from umrs.api.egress_audit import router as egress_audit_router
     from umrs.api.endpoints import router as endpoints_router
@@ -758,6 +761,7 @@ def _create_app():
     app.include_router(bundle_restore_router)
     app.include_router(chat_router)
     app.include_router(companion_sessions_router)
+    app.include_router(companion_chat_approvals_router)
     app.include_router(egress_audit_router)
     app.include_router(grants_router)
     app.include_router(endpoints_router)
