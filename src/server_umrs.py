@@ -731,7 +731,10 @@ def main():
     )
 
     create_umrs_server_db_user()
-    task_db_pool = create_server_db_pool()
+    # Task DB pool sized from the public pool metric (ejeannot pool-exhaustion
+    # fix): workers + headroom for STATUS/control calls outside the pool.
+    db_pool_size = thread_pool.metrics().max_workers + 15
+    task_db_pool = create_server_db_pool(pool_size=db_pool_size)
     task_manager = TaskManager(
         status_store, thread_dict, task_db_pool, thread_pool=thread_pool, reset=False
     )
