@@ -277,3 +277,37 @@ def test_slurm_wrapper_refuses_egress_profile_without_present_image():
     assert 'rivault_ensure_image "${_egress_guard_image}" "${RIVAULT_IMAGE_ARCHIVE_DIR:-}"' in text
     venue = (SERVE_MODEL_SLURM.parent / "venue.sh").read_text()
     assert "podman image exists" in venue and "podman load -i" in venue and "podman pull" in venue
+
+
+# ── 2026-09-17 localhost-image preflight guard (bdrt 5191/5195/5196 session) ─
+
+def _guard_block() -> str:
+    text = SERVE_MODEL_SLURM.read_text()
+    start = text.index("Preflight: vLLM image")
+    return text[start : start + 2600]
+
+
+def test_localhost_images_never_silently_substitute_the_default_render():
+    block = _guard_block()
+    assert "localhost/*|lcr.io/*" in block
+    assert "podman image exists" in block
+    # The previous shape allowed fallback pull for every image variant —
+    # localhost would be swapped to cu130-nightly and boot the WRONG engine.
+    head_and_fallback = block.split(";;")[0]
+    assert "cu130-nightly" not in head_and_fallback
+
+
+def test_multi_node_preflight_drops_per_node_when_slurm_present():
+    block = _guard_block()
+    assert "scontrol show hostnames" in block
+    assert "--nodelist" in block
+    # worker-spawn missing-image must be fatal BEFORE the run, named to site.
+    assert "staged on EVERY node" in block or "must be staged on every node" in block
+
+
+def test_remote_variants_keep_the_only_substitution_path():
+    block = _guard_block()
+    # fallthrough case (any non-localhost scheme) retains exactly one legal
+    # fallback — pull-then-cu130-nightly, marked WARN, never silent.
+    assert 'attempting fallback tag...' in block
+    assert block.count("cu130-nightly-aarch64") >= 2

@@ -1616,19 +1616,59 @@ elif [[ "${SLURM_JOB_NUM_NODES:-${SLURM_NNODES:-1}}" -gt 1 ]]; then
     RAY_ADDRESS="${HEAD_IP}:${RAY_PORT}"
     VLLM_IMAGE="${VLLM_DOCKER_IMAGE:-docker.io/vllm/vllm-openai:${VLLM_DOCKER_TAG:-v0.20.0}}"
 
-    # ─── Pre-pull vLLM image (ensure fully cached before container launch) ────
+    # ─── vLLM image preflight & pre-pull (2026-09-17 guard, ported from the
+    # bdrt dual-Spark session) ────────────────────────────────────────────────
     # `podman run` does an implicit pull, but for large images (~11GB) this
     # race conditions the readiness probe. Pull first so `podman run` starts
     # immediately with a cached image.
-    echo "[rivault] Pre-pulling vLLM image: ${VLLM_IMAGE}..."
-    podman pull "${VLLM_IMAGE}" >/dev/null 2>&1 || {
-        echo "[rivault] WARN: vLLM image pull failed — attempting fallback tag..."
-        podman pull "docker.io/vllm/vllm-openai:cu130-nightly-aarch64" >/dev/null 2>&1 || {
-            echo "[rivault] FATAL: could not pull vLLM image. Check network or image tag."
-            exit 1
-        }
-        VLLM_IMAGE="docker.io/vllm/vllm-openai:cu130-nightly-aarch64"
-    }
+    #
+    # Guard classes (devel-bucketed by jobs 5191/5195 on bdrt):
+    #   - 'localhost/*' images: staged on-node by compose/deploy or SIF archives
+    #     and must NEVER be pulled from a registry — those tugs always fail, and
+    #     silently swapping in the default cu130-nightly boots the WRONG engine
+    #     build (job 5195 class). Preflight `podman image exists` and FATAL fast
+    #     when absent — never substitute.
+    #   - remote images: pull once with the same one-time swap allowed on pull
+    #     failure (existing behavior preserved).
+    echo "[rivault] Preflight: vLLM image ${VLLM_IMAGE}..."
+    case "${VLLM_IMAGE}" in
+        localhost/*|lcr.io/*)
+            if podman image exists "${VLLM_IMAGE}"; then
+                echo "[rivault] localhost image present (already staged)."
+            else
+                echo "[rivault] FATAL: '${VLLM_IMAGE}' is localhost-staged and missing on $(hostname)."
+                echo "[rivault]        Load it first (compose/service-image or archive pull); automatic"
+                echo "[rivault]        registry substitution is disabled for localhost/* images (booted"
+                echo "[rivault]        the wrong engine silently, see jobs 5191/5195)."
+                exit 1
+            fi
+            # Per-node preflight on multi-node launches: every worker's srun
+            # podman run also assumes the image exists locally — it must be
+            # staged there too, or we fail at worker spawn (96s-2m later) with
+            # a different signature each time (the bdrt dual-Spark 5196 class).
+            if [[ -n "${SLURM_JOB_NODELIST:-}" ]]; then
+                local _mn_wnode
+                for _mn_wnode in $(scontrol show hostnames "${SLURM_JOB_NODELIST}"); do
+                    if ! srun --overlap --nodes=1 --ntasks=1 --nodelist="${_mn_wnode}" \
+                            podman image exists "${VLLM_IMAGE}"; then
+                        echo "[rivault] FATAL: '${VLLM_IMAGE}' missing on worker ${_mn_wnode} (localhost-staged)"
+                        echo "[rivault]        image must be staged on EVERY node before launch (compose/deploy/archive)."
+                        exit 1
+                    fi
+                done
+            fi
+            ;;
+        *)
+            podman pull "${VLLM_IMAGE}" >/dev/null 2>&1 || {
+                echo "[rivault] WARN: vLLM image pull failed — attempting fallback tag..."
+                podman pull "docker.io/vllm/vllm-openai:cu130-nightly-aarch64" >/dev/null 2>&1 || {
+                    echo "[rivault] FATAL: could not pull vLLM image. Check network or image tag."
+                    exit 1
+                }
+                VLLM_IMAGE="docker.io/vllm/vllm-openai:cu130-nightly-aarch64"
+            }
+            ;;
+    esac
     echo "[rivault] vLLM image ready (${VLLM_IMAGE})."
 
     # Default the tensor-parallel degree in the SCRIPT's shell scope. The env
