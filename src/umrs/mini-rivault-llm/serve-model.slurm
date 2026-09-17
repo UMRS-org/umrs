@@ -742,7 +742,12 @@ fi
 # PATH prefix at the top of this script already prefers it).
 _pc_ok=false
 if command -v podman-compose >/dev/null 2>&1; then
-    if podman-compose up --help 2>/dev/null | grep -q -- '--profile'; then
+    # `--profile` is a GLOBAL flag since podman-compose rewritten to 1.6
+    # (top-level parser); test the root help, never the `up` subcommand's
+    # — v1.6.0's `up --help` lists no profile entry even when the flag
+    # works (rccs m0 disco probe 2026-09-17; the shim-test used to drive
+    # everyone into the vendored-install loop for nothing).
+    if podman-compose -h 2>/dev/null | grep -q -- '--profile'; then
         _pc_ok=true
     else
         echo "[rivault] podman-compose present but cannot parse --profile (shim?)"
@@ -762,7 +767,7 @@ if ! $_pc_ok; then
         { python3 -m venv --system-site-packages /tmp/pc-venv && /tmp/pc-venv/bin/pip install --quiet 'podman-compose>=1.2.0' && export PATH="/tmp/pc-venv/bin:$PATH"; }
     fi
     # Re-check capability, never trust exit codes alone (shim survives PATH).
-    if command -v podman-compose >/dev/null 2>&1 && podman-compose up --help 2>/dev/null | grep -q -- '--profile'; then
+    if command -v podman-compose >/dev/null 2>&1 && podman-compose -h 2>/dev/null | grep -q -- '--profile'; then
         _pc_ok=true
         echo "[rivault] podman-compose ok: $(command -v podman-compose)"
     fi
