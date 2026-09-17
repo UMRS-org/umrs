@@ -37,7 +37,7 @@ def _transport_from_env() -> ClusterLoopTransport:
     return ClusterLoopTransport(
         base_url=base,
         owner_headers=_owner_headers_from_env(),
-        path_prefix="/gw/workflows",
+        path_prefix="/gw/loopjob/workflows",
     )
 
 
