@@ -311,3 +311,16 @@ def test_remote_variants_keep_the_only_substitution_path():
     # fallback — pull-then-cu130-nightly, marked WARN, never silent.
     assert 'attempting fallback tag...' in block
     assert block.count("cu130-nightly-aarch64") >= 2
+
+
+# ── 2026-09-17 --profile capability test correctness (rccs m0 discovery) ────
+
+def test_profile_capability_probes_root_help_not_subcommand_help():
+    """The wrapper's `--profile` check must read the GLOBAL `podman-compose -h`
+    (`--profile` is a top-level parser flag since 1.6.x where `up --help`
+    hides it). The previous `up --help | grep --profile` shape false-failed
+    every vendored 1.6.0 install and drove jobs 384645/384652 into the FATAL
+    abort lane."""
+    text = SERVE_MODEL_SLURM.read_text()
+    assert "podman-compose -h" in text
+    assert "up --help 2>/dev/null | grep -q -- '--profile'" not in text
