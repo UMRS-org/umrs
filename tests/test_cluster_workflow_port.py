@@ -32,9 +32,11 @@ class _FakeTransport:
         if self.durable_job_id:
             base["durable_job_id"] = self.durable_job_id
         if path.endswith("/results"):
-            # results payload uses results_status (base is status-route only)
+            # envelope variant the live route returns: top-level "ok" prefix,
+            # with "execution_status" carrying the terminal value
             res = dict(base)
-            res["status"] = self.results_status
+            res["status"] = "ok"
+            res["execution_status"] = self.results_status
             return res
         return {"execution": base}
 
@@ -52,7 +54,7 @@ def test_trigger_returns_extracted_execution_id():
 
 def test_trigger_missing_id_raises_honestly():
     class T(_FakeTransport):
-        def post(self, path: str, body: dict):
+        def post(self, path: str, body: dict):  # noqa: ARG002 — shape probe only
             return {"weird": "shape"}
 
     import pytest
@@ -90,6 +92,8 @@ def test_results_terminal_with_durable_id_passes():
     t.durable_job_id = "job-x"
     out = ClusterHttpWorkflowExecutionPort(transport=t).results("exe-123")
     assert out["durable_job_id"] == "job-x"
+    # normalized: engine reads top-level status; envelope variant surfaces it
+    assert out["status"] == "succeeded"
 
 
 def test_cancel_posts_to_cancel_route():
