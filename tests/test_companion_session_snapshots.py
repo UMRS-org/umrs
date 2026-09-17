@@ -104,6 +104,11 @@ class _FakeCursor:
             self.rowcount = 0
 
     # -- detail select ------------------------------------------------------
+    def _exec_get_payload(self, params):
+        sid, uid = params
+        row = self._table.get((uid, sid))
+        self._row = (row["payload"],) if row else None
+
     def _exec_get(self, params):
         uid, sid = params
         row = self._table.get((uid, sid))
@@ -174,6 +179,9 @@ class _FakeCursor:
             return
         if sql_l.startswith("select s.session_id"):
             self._exec_get(params)
+            return
+        if sql_l.startswith("select payload from companion_session_snapshots"):
+            self._exec_get_payload(params)
             return
         if sql_l.startswith("select session_id, name, update_marker, venue"):
             self._exec_list(sql_l, params)
@@ -411,3 +419,69 @@ class TestDegradation:
             headers={"x-user-id": "alice"},
         )
         assert resp.status_code == 503
+
+
+# ── Turn accessor (ADR-057 D-2) ────────────────────────────────────────────
+
+_PAYLOAD_TWO_TURNS = (
+    '{"messages": ['
+    '{"role": "user", "content": "hi", "timestamp": "t1", "metadata": {"turn_id": "t1"}},'
+    '{"role": "assistant", "content": "hello", "timestamp": "t2", "metadata": {"turn_id": "t1"}},'
+    '{"role": "user", "content": "next", "timestamp": "t3", "metadata": {"turn_id": "t2"}},'
+    '{"role": "assistant", "content": "answer", "timestamp": "t4", "metadata": {"turn_id": "t2"}}'
+    "]}"
+)
+
+
+class TestTurnAccessor:
+    def test_list_turns_projects_ordered_entries(self):
+        pool = _FakePool()
+        client = _client(pool)
+        _post(client, pool, sid="turns-1", payload=_PAYLOAD_TWO_TURNS)
+        resp = client.get("/umrs/companion/sessions/turns-1/turns", headers={"x-user-id": "alice"})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["count"] == 4
+        assert [e["turn_id"] for e in body["entries"]] == ["t1", "t1", "t2", "t2"]
+        assert body["entries"][0]["role"] == "user"
+
+    def test_get_turn_by_id(self):
+        pool = _FakePool()
+        client = _client(pool)
+        _post(client, pool, sid="turns-2", payload=_PAYLOAD_TWO_TURNS)
+        resp = client.get(
+            "/umrs/companion/sessions/turns-2/turns/t2", headers={"x-user-id": "alice"}
+        )
+        assert resp.status_code == 200
+        assert resp.json()["entry"]["turn_id"] == "t2"
+
+    def test_get_unknown_turn_is_404(self):
+        pool = _FakePool()
+        client = _client(pool)
+        _post(client, pool, sid="turns-3", payload=_PAYLOAD_TWO_TURNS)
+        resp = client.get(
+            "/umrs/companion/sessions/turns-3/turns/t99", headers={"x-user-id": "alice"}
+        )
+        assert resp.status_code == 404
+
+    def test_old_snapshot_without_markers_is_honestly_empty(self):
+        pool = _FakePool()
+        client = _client(pool)
+        # Legacy payloads carry no turn_id markers — no synthesis allowed (ADR-057).
+        _post(
+            client,
+            pool,
+            sid="turns-4",
+            payload='{"messages": [{"role": "user", "content": "x"}]}',
+        )
+        resp = client.get("/umrs/companion/sessions/turns-4/turns", headers={"x-user-id": "alice"})
+        assert resp.status_code == 200
+        assert resp.json()["count"] == 0
+        assert resp.json()["entries"] == []
+
+    def test_other_user_turns_is_404(self):
+        pool = _FakePool()
+        client = _client(pool)
+        _post(client, pool, sid="turns-5", payload=_PAYLOAD_TWO_TURNS)
+        resp = client.get("/umrs/companion/sessions/turns-5/turns", headers={"x-user-id": "bob"})
+        assert resp.status_code == 404

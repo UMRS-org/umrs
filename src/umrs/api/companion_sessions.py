@@ -153,11 +153,124 @@ async def put_session_snapshot(
     return {"status": "ok", "applied": applied}
 
 
+# ── Turn accessor (ADR-057 D-2) ────────────────────────────────────────────
+
+
+def _blob_messages(payload_blob: str) -> list[dict[str, Any]]:
+    """JSON-parse blob → flat message dicts (no fabrication; malformed → [])."""
+    import json
+
+    try:
+        blob = json.loads(payload_blob or "{}")
+    except (TypeError, ValueError):
+        return []
+    messages = blob.get("messages")
+    if isinstance(messages, str):
+        try:
+            messages = json.loads(messages)
+        except (TypeError, ValueError):
+            messages = []
+    if not isinstance(messages, list):
+        return []
+    return [m for m in messages if isinstance(m, dict)]
+
+
+def _turn_entries(payload_blob: str) -> list[dict[str, Any]]:
+    """Project turn-index entries from a snapshot payload blob.
+
+    Contract: only entries carrying ``metadata.turn_id`` are turns (ADR-057
+    D-1 assignment stamps users/assistants at commit; older mirrored rows
+    without the marker keep `turn_id=""` honestly — never synthesized).
+    """
+    entries: list[dict[str, Any]] = []
+    for idx, m in enumerate(_blob_messages(payload_blob)):
+        meta = m.get("metadata") or {}
+        turn_id = str(meta.get("turn_id") or "")
+        if not turn_id:
+            continue
+        entries.append(
+            {
+                "turn_id": turn_id,
+                "index": idx,
+                "role": m.get("role", ""),
+                "committed_at": str(m.get("timestamp") or ""),
+            }
+        )
+    return entries
+
+
+def _turn_by_id(entries: list[dict[str, Any]], turn_id: str) -> dict[str, Any] | None:
+    if not turn_id:
+        return None
+    return next((e for e in entries if e["turn_id"] == turn_id), None)
+
+
+def _session_payload(conn: Any, session_id: str, owner: str) -> str | None:
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT payload FROM companion_session_snapshots WHERE session_id = %s AND owner_id = %s",
+        (session_id, owner),
+    )
+    row = cur.fetchone()
+    return row[0] if row else None
+
+
+@router.get("/{session_id}/turns", response_model=dict[str, Any])
+async def list_turns(session_id: str, request: Request) -> dict[str, Any]:
+    """Ordered turn index for one session (ADR-057 D-2).
+    # auth: verified
+    """
+    uid = _uid(request)
+    pool = _pool(request)
+    conn = pool.getconn()
+    try:
+        blob = _session_payload(conn, session_id, uid)
+        if blob is None:
+            raise_typed(
+                PlatformError.companionsessions("not_found", "snapshot not found")
+            )
+        entries = _turn_entries(blob)
+        return {
+            "session_id": session_id,
+            "entries": entries,
+            "count": len(entries),
+        }
+    finally:
+        pool.putconn(conn)
+
+
+@router.get("/{session_id}/turns/{turn_id}", response_model=dict[str, Any])
+async def get_turn(session_id: str, turn_id: str, request: Request) -> dict[str, Any]:
+    """One turn's full payload (ADR-057 D-2).
+    # auth: verified
+    """
+    uid = _uid(request)
+    pool = _pool(request)
+    conn = pool.getconn()
+    try:
+        blob = _session_payload(conn, session_id, uid)
+        if blob is None:
+            raise_typed(
+                PlatformError.companionsessions("not_found", "snapshot not found")
+            )
+        entry = _turn_by_id(_turn_entries(blob), turn_id)
+        if entry is None:
+            raise_typed(
+                PlatformError.companionsessions(
+                    "not_found", f"turn {turn_id} not found in session"
+                )
+            )
+        return {"session_id": session_id, "entry": entry}
+    finally:
+        pool.putconn(conn)
+
+
 @router.get("/{session_id}", response_model=dict[str, Any])
 async def get_session_snapshot(session_id: str, request: Request) -> dict[str, Any]:
     """Answer a mirrored snapshot for the owner (404 for others/absent).
     # auth: verified
     """
+    # auth: verified
     uid = _uid(request)
     pool = _pool(request)
     conn = pool.getconn()
