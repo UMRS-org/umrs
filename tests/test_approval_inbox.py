@@ -135,10 +135,13 @@ def test_schema_module_mirrors_migration_and_bumps_version():
     from umrs.companion_trust.schema import (
         COMPANION_TRUST_SCHEMA_VERSION,
         CREATE_APPROVAL_INBOX_TABLE,
+        CREATE_CHAT_TURN_APPROVALS_TABLE,
     )
 
-    assert COMPANION_TRUST_SCHEMA_VERSION == 3
+    # v4 adds chat_turn_approvals (ADR-057 D-3 / migration 0098).
+    assert COMPANION_TRUST_SCHEMA_VERSION == 4
     assert "companion_approval_inbox" in CREATE_APPROVAL_INBOX_TABLE
+    assert "chat_turn_approvals" in CREATE_CHAT_TURN_APPROVALS_TABLE
 
 
 # ── routes ──────────────────────────────────────────────────────────────────
