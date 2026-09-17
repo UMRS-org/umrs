@@ -16,7 +16,9 @@ from pathlib import Path
 
 import pytest
 
-LIB = Path(__file__).resolve().parents[1] / "src" / "umrs" / "mini-rivault-llm" / "attempt_budget.sh"
+LIB = (
+    Path(__file__).resolve().parents[1] / "src" / "umrs" / "mini-rivault-llm" / "attempt_budget.sh"
+)
 
 
 def _sh(env: dict[str, str], script: str) -> subprocess.CompletedProcess:
@@ -205,9 +207,10 @@ def test_durable_mark_attempt_failed_requeues_other_reasons() -> None:
 
 
 def test_remote_slurm_marker_short_circuit_before_ghost_sweep(monkeypatch) -> None:
+    import asyncio
+
     """JobInfo from an exhausted wrapper: FAILED + state_reason=budget_exhausted,
     and the ghost-file sweep never gets to delete the evidence."""
-    import asyncio
 
     from umrs.orchestrator.base import JobStatus
     from umrs.orchestrator.remote_slurm_backend import RemoteSlurmBackend
@@ -228,9 +231,7 @@ def test_remote_slurm_marker_short_circuit_before_ghost_sweep(monkeypatch) -> No
     monkeypatch.setattr(backend, "_read_remote_job_info", fake_read)
     monkeypatch.setattr(backend, "_query_slurm_job_status", fake_query)
 
-    info = asyncio.get_event_loop().run_until_complete(
-        backend.get_job_status("standalone-1")
-    )
+    info = asyncio.get_event_loop().run_until_complete(backend.get_job_status("standalone-1"))
     assert info.status == JobStatus.FAILED
     assert info.state_reason == "budget_exhausted"
     assert info.metadata.get("RIVAULT_TERMINAL_REASON") == "budget_exhausted"
@@ -240,7 +241,11 @@ def test_wrapper_uses_budget_claim_and_marker_lib() -> None:
     """serve-model.slurm integration pins (shape analysis — same style as the
     egress static guards)."""
     wrapper = (
-        Path(__file__).resolve().parents[1] / "src" / "umrs" / "mini-rivault-llm" / "serve-model.slurm"
+        Path(__file__).resolve().parents[1]
+        / "src"
+        / "umrs"
+        / "mini-rivault-llm"
+        / "serve-model.slurm"
     )
     text = wrapper.read_text()
     assert "attempt_budget.sh" in text
@@ -283,7 +288,6 @@ class TestVenueFirstReadySpan:
 
     @pytest.mark.asyncio
     async def test_marker_carries_venue_stamp(self, monkeypatch):
-        import asyncio
 
         spans = []
 
@@ -294,7 +298,9 @@ class TestVenueFirstReadySpan:
         import umrs.jobs.adapters as ad
         from umrs.jobs import timing
 
-        monkeypatch.setattr(timing, "maybe_emit_span", lambda name, **kw: spans.append({"name": name, **kw}) or True)
+        monkeypatch.setattr(
+            timing, "maybe_emit_span", lambda name, **kw: spans.append({"name": name, **kw}) or True
+        )
         await ad._maybe_emit_venue_first_ready_span(attempt=self._attempt(), orchestrator=_O())
         assert spans, "no span emitted despite venue marker"
         attrs = spans[0]["attributes"]
@@ -312,7 +318,9 @@ class TestVenueFirstReadySpan:
         import umrs.jobs.adapters as ad
         from umrs.jobs import timing
 
-        monkeypatch.setattr(timing, "maybe_emit_span", lambda name, **kw: spans.append({"name": name, **kw}) or True)
+        monkeypatch.setattr(
+            timing, "maybe_emit_span", lambda name, **kw: spans.append({"name": name, **kw}) or True
+        )
         await ad._maybe_emit_venue_first_ready_span(attempt=self._attempt(), orchestrator=_O())
         assert spans[0]["attributes"]["umrs.source"] == "control"
 
@@ -326,6 +334,8 @@ class TestVenueFirstReadySpan:
         import umrs.jobs.adapters as ad
         from umrs.jobs import timing
 
-        monkeypatch.setattr(timing, "maybe_emit_span", lambda name, **kw: spans.append({"name": name, **kw}) or True)
+        monkeypatch.setattr(
+            timing, "maybe_emit_span", lambda name, **kw: spans.append({"name": name, **kw}) or True
+        )
         await ad._maybe_emit_venue_first_ready_span(attempt=self._attempt(), orchestrator=_O())
         assert spans[0]["attributes"]["umrs.source"] == "control"
