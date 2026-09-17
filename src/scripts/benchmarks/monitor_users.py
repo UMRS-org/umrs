@@ -17,7 +17,7 @@ from tqdm import tqdm
 DEFAULT_CONFIG_DIR = "~/.config/umrs/n_users/users"
 DEFAULT_CLIENT     = "./client_umrs.py"
 DEFAULT_INTERVAL   = 5.0
-ITEM_WIDTH         = 14
+ITEM_WIDTH         = 17
 
 ICON_PENDING = "⚪"
 ICON_RUNNING = "🔴"
@@ -78,7 +78,7 @@ def fmt_ts(iso_ts):
         return ""
     try:
         dt = datetime.fromisoformat(iso_ts.replace("Z", "+00:00"))
-        return dt.astimezone().strftime("%Y-%m-%d %H:%M:%S")
+        return dt.astimezone().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
     except Exception:
         return iso_ts
 
