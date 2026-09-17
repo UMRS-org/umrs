@@ -30,14 +30,22 @@ def _engine_factory_from(store: Any, *, loop: Any | None = None) -> Any:
 
     ``metadata.simulated`` on the loop record selects the sim engine (leg /
     probe loop records); anything else is the real phased engine.
+
+    The engine's record persistence travels through ``HostingWiring`` (this
+    seam is already configured by ``configure_cluster_hosting``), so the
+    constructor takes no positional store. (A positional store arg here was
+    the WP-01-era stale call ``AutonomousResearchLoop(store)`` — keyword-only
+    since before WP-14, never executed until the WP-05 r2 venue probe
+    2026-09-17: TypeError at planning.)
     """
+    del store  # unpromoted into the constructor; wiring carries persistence
     metadata = getattr(loop, "metadata", {}) or {}
     simulated = bool(metadata.get("simulated"))
 
     def _make() -> AutonomousResearchLoop:
         if simulated:
             return AutonomousResearchLoop(simulated=True)
-        return AutonomousResearchLoop(store)
+        return AutonomousResearchLoop()
 
     return _make
 
