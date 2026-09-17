@@ -31,7 +31,7 @@ echo "Monitor ready."
 
 # Lancer les N clients en parallèle
 # Date calculée juste avant le lancement
-echo "Started: $(date '+%Y-%m-%d %H:%M:%S')" >> "$LOG_FILE"
+echo "Started: $(date '+%Y-%m-%d %H:%M:%S.%3N')" >> "$LOG_FILE"
 for i in $(seq 1 "$N"); do
     ./client_umrs.py \
         -c ~/.config/umrs/n_users/users/user1_${i}.json \
