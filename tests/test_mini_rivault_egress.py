@@ -324,3 +324,13 @@ def test_profile_capability_probes_root_help_not_subcommand_help():
     text = SERVE_MODEL_SLURM.read_text()
     assert "podman-compose -h" in text
     assert "up --help 2>/dev/null | grep -q -- '--profile'" not in text
+
+
+# ── WP-12 venue leg: first-ready marker inside the info drop ────────────────
+
+def test_wrapper_writes_first_ready_marker_into_info():
+    """WP-12 venue leg: RIVAULT_FIRST_READY_AT must be written once into the
+    published info file — never at query time, never by the control plane."""
+    text = SERVE_MODEL_SLURM.read_text()
+    assert "RIVAULT_FIRST_READY_AT" in text
+    assert text.count("RIVAULT_FIRST_READY_AT") < 4  # written once (never a two-shot pattern)

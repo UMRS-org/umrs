@@ -2258,6 +2258,10 @@ if [[ -n "${SLURM_JOB_ID:-}" && -n "${_JOB_INFO_DIR_EFF}" && -d "${_JOB_INFO_DIR
         echo "RIVAULT_LITELLM_PORT=${NGINX_LITELLM_DOCKER_PORT}"
         echo "RIVAULT_VLLM_PORT=8000"
         echo "RIVAULT_MODEL_PATH=${VLLM_HOST_MODEL_PATH:-${VLLM_MODEL_PATH:-}}"
+        # WP-12 venue leg: first-ready emission at VENUE time (never by the control
+        # plane — its timestamp must be the wrapper's, so the span end-stamp is the
+        # venue's own first-ready wall-clock, not a server's observed flip).
+        echo "RIVAULT_FIRST_READY_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     } > "${_JOB_INFO_DIR_EFF}/rivault-job-${SLURM_JOB_ID}.info.tmp" \
         && mv "${_JOB_INFO_DIR_EFF}/rivault-job-${SLURM_JOB_ID}.info.tmp" \
              "${_JOB_INFO_DIR_EFF}/rivault-job-${SLURM_JOB_ID}.info" \
