@@ -456,7 +456,8 @@ def main():
     thread_pool = ThreadPoolManager(PoolConfig(**pool_kwargs)) if pool_kwargs else ThreadPoolManager()
 
     create_umrs_server_db_user()
-    task_db_pool = create_server_db_pool()
+    db_pool_size = thread_pool._config.max_workers + 15
+    task_db_pool = create_server_db_pool(pool_size=db_pool_size)
     task_manager = TaskManager(status_store, thread_dict, task_db_pool, thread_pool=thread_pool, reset=False)
 
     print("Performing initial configuration...")
