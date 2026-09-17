@@ -256,3 +256,76 @@ def test_adapters_submit_env_carries_durable_job_id() -> None:
         Path(__file__).resolve().parents[1] / "src" / "umrs" / "jobs" / "adapters.py"
     ).read_text()
     assert 'submit_env["UMRS_DURABLE_JOB_ID"] = job.job_id' in src
+
+
+# ── WP-12 venue leg: first-ready span etiquette ──────────────────────────────
+
+
+class TestVenueFirstReadySpan:
+    """WP-12 r2: span ends at the VENUE's own stamp when present, else at the
+    server's first READY transition; missing markers stay honest-fabrication-free."""
+
+    def _attempt(self):
+        from datetime import datetime
+
+        return type(
+            "Att",
+            (),
+            {
+                "attempt_id": "att-x",
+                "job_id": "job-x",
+                "backend_ref": "slurm-1",
+                "created_at": datetime(2026, 9, 17, 4, 0, 0),
+                "started_at": datetime(2026, 9, 17, 4, 0, 5),
+                "ended_at": datetime(2026, 9, 17, 4, 20, 0),
+            },
+        )()
+
+    @pytest.mark.asyncio
+    async def test_marker_carries_venue_stamp(self, monkeypatch):
+        import asyncio
+
+        spans = []
+
+        class _O:
+            async def _read_remote_job_info(self, _):
+                return "RIVAULT_STATUS=running\nRIVAULT_FIRST_READY_AT=2026-09-17T04:10:00Z\n"
+
+        import umrs.jobs.adapters as ad
+        from umrs.jobs import timing
+
+        monkeypatch.setattr(timing, "maybe_emit_span", lambda name, **kw: spans.append({"name": name, **kw}) or True)
+        await ad._maybe_emit_venue_first_ready_span(attempt=self._attempt(), orchestrator=_O())
+        assert spans, "no span emitted despite venue marker"
+        attrs = spans[0]["attributes"]
+        assert attrs["umrs.source"] == "venue"
+        assert spans[0]["transitioned_at"] == "2026-09-17T04:10:00Z"
+
+    @pytest.mark.asyncio
+    async def test_missing_marker_fallback_is_control_source(self, monkeypatch):
+        spans = []
+
+        class _O:
+            async def _read_remote_job_info(self, _):
+                return "RIVAULT_STATUS=running\n"
+
+        import umrs.jobs.adapters as ad
+        from umrs.jobs import timing
+
+        monkeypatch.setattr(timing, "maybe_emit_span", lambda name, **kw: spans.append({"name": name, **kw}) or True)
+        await ad._maybe_emit_venue_first_ready_span(attempt=self._attempt(), orchestrator=_O())
+        assert spans[0]["attributes"]["umrs.source"] == "control"
+
+    @pytest.mark.asyncio
+    async def test_absent_read_path_never_errors(self, monkeypatch):
+        spans = []
+
+        class _O:  # no _read_remote_job_info (compose backend analogy)
+            pass
+
+        import umrs.jobs.adapters as ad
+        from umrs.jobs import timing
+
+        monkeypatch.setattr(timing, "maybe_emit_span", lambda name, **kw: spans.append({"name": name, **kw}) or True)
+        await ad._maybe_emit_venue_first_ready_span(attempt=self._attempt(), orchestrator=_O())
+        assert spans[0]["attributes"]["umrs.source"] == "control"

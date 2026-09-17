@@ -776,6 +776,59 @@ class EndpointProvisionBackend(OrchestratorBackend):
         return "localhost"
 
 
+async def _maybe_emit_venue_first_ready_span(
+    *, attempt: Any, orchestrator: Any
+) -> None:
+    """WP-12 venue leg: emit `umrs.venue.first_ready` once per provision.
+
+    Start = attempt.created_at (the provision accepted). End = the wrapper's OWN
+    stamp `RIVAULT_FIRST_READY_AT` when the venue info.drop carries it (venue
+    time exactly, per the package's venue-emitted rule); otherwise the server's
+    first READY instant (attribute `umrs.source="control"`). Missing markers at
+    pre-WP-12 launchers stay honest — never invented. No-op when OTel is off or
+    the read errors — the obs path never blocks a registry transition.
+    """
+    try:
+        from umrs.jobs.timing import maybe_emit_span
+
+        job_id = str(attempt.backend_ref or "")
+        venue_marker: str | None = None
+        read = getattr(orchestrator, "_read_remote_job_info", None)
+        if callable(read) and job_id:
+            try:
+                info_content = await read(job_id)
+            except Exception:  # noqa: BLE001 — informational read, never blocks
+                info_content = None
+            if isinstance(info_content, str) and info_content:
+                for line in info_content.splitlines():
+                    if line.startswith("RIVAULT_FIRST_READY_AT="):
+                        venue_marker = line.split("=", 1)[1].strip()
+                        break
+
+        started = getattr(attempt, "created_at", None) or getattr(
+            attempt, "started_at", None
+        )
+        control_end = getattr(attempt, "ended_at", None) or getattr(
+            attempt, "started_at", None
+        )
+        end_val = venue_marker or control_end
+        if started is None or end_val is None:
+            return
+        maybe_emit_span(
+            "umrs.venue.first_ready",
+            started_at=started,
+            transitioned_at=end_val,
+            attributes={
+                "umrs.job_id": str(attempt.job_id),
+                "umrs.attempt_id": str(attempt.attempt_id),
+                "umrs.backend_ref": job_id,
+                "umrs.source": "venue" if venue_marker else "control",
+            },
+        )
+    except Exception:  # noqa: BLE001 — never block the runtime path
+        return
+
+
 class EndpointProvisionStatusChecker(BackendStatusChecker):
     """
     Status checker for endpoint provisioning jobs.
@@ -895,6 +948,9 @@ class EndpointProvisionStatusChecker(BackendStatusChecker):
                     },
                 )
                 self.registry.mark_ready(backend_ref)
+                await _maybe_emit_venue_first_ready_span(
+                    attempt=attempt, orchestrator=self.orchestrator
+                )
                 return AttemptCheckResult.succeeded(
                     metrics={
                         "host": endpoint.host,
