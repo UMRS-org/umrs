@@ -45,7 +45,11 @@ def _engine_factory_from(store: Any, *, loop: Any | None = None) -> Any:
     def _make() -> AutonomousResearchLoop:
         if simulated:
             return AutonomousResearchLoop(simulated=True)
-        return AutonomousResearchLoop()
+        from .cluster_workflow_port import ClusterHttpWorkflowExecutionPort
+
+        return AutonomousResearchLoop(
+            workflow_port=ClusterHttpWorkflowExecutionPort()
+        )
 
     return _make
 
