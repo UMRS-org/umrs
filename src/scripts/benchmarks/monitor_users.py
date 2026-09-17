@@ -12,6 +12,8 @@ import subprocess
 import time
 from datetime import datetime
 
+from tqdm import tqdm
+
 DEFAULT_CONFIG_DIR = "~/.config/umrs/n_users/users"
 DEFAULT_CLIENT     = "./client_umrs.py"
 DEFAULT_INTERVAL   = 5.0
@@ -22,9 +24,14 @@ ICON_RUNNING = "🔴"
 ICON_DONE    = "🟢"
 
 
-def query_user(user: str, config_dir: str, client: str) -> tuple:
+def query_user(user: str, config_dir: str, client: str, debug: bool = False) -> tuple:
     """
-    Returns (is_running, done_count, last_updated_at)
+    `entries` accumulates one item per run (Done stays forever, a new run
+    appends a new thread_id). The only entry that reflects the CURRENT run
+    is the most recent one (max updated_at) — summing statuses across all
+    entries mixes past and present runs.
+
+    Returns (is_running, latest_status, latest_ts)
     """
     config_file = os.path.expanduser(f"{config_dir}/{user}.json")
     cmd = [client, "-c", config_file, "--output", "json", "status", "--username", user]
@@ -35,18 +42,34 @@ def query_user(user: str, config_dir: str, client: str) -> tuple:
         if line.startswith("{"):
             try:
                 data = json.loads(line)
+
+                if debug:
+                    print(f"----- raw JSON received for {user} -----", flush=True)
+                    print(json.dumps(data, indent=2, ensure_ascii=False), flush=True)
+                    print("-" * 42, flush=True)
+
                 summaries = data.get("summaries", {})
                 entries = (summaries.get("process_objects") or
                            summaries.get("PROCESS_OBJECTS") or {}).get("data", [])
 
-                is_running = any(e.get("status") == "Running" for e in entries)
-                done_count = sum(1 for e in entries if e.get("status") == "Done")
-                timestamps = [e.get("updated_at") for e in entries if e.get("updated_at")]
-                last_ts = max(timestamps) if timestamps else None
+                dated = [e for e in entries if e.get("updated_at")]
+                if not dated:
+                    return None, None, None
 
-                return is_running, done_count, last_ts
+                latest = max(dated, key=lambda e: e["updated_at"])
+                latest_status = latest.get("status")
+                latest_ts = latest["updated_at"]
+                is_running = latest_status == "Running"
+
+                return is_running, latest_status, latest_ts
             except json.JSONDecodeError:
                 continue
+
+    if debug:
+        print(f"----- no parsable JSON for {user} -----", flush=True)
+        print(result.stdout, flush=True)
+        print("-" * 42, flush=True)
+
     return None, None, None
 
 
@@ -107,30 +130,77 @@ def main():
     parser.add_argument("--client", default=DEFAULT_CLIENT)
     parser.add_argument("--log-file", default=None,
                         help="Append 'Last finished: <date>' to this file when all users are done")
+    parser.add_argument("--debug", action="store_true",
+                        help="Print per-user raw query results and internal state each poll")
     args = parser.parse_args()
 
-    users           = [f"user1_{i}" for i in range(1, args.N + 1)]
-    state           = {u: "pending" for u in users}
-    prev_done_count = {u: None for u in users}  # None = first poll not yet done
-    done            = set()
-    last_done_ts    = None
-    start           = time.time()
-    poll_count      = 0
+    users        = [f"user1_{i}" for i in range(1, args.N + 1)]
+    state        = {u: "pending" for u in users}
+    prev_done_ts = {u: None for u in users}  # None = no valid reading yet
+    done         = set()
+    last_done_ts = None
+    start        = time.time()
+    poll_count   = 0
 
     # Erase log file at startup if it exists
     if args.log_file and os.path.exists(args.log_file):
         os.remove(args.log_file)
 
-    print("\033[2J\033[H", end="", flush=True)
+    # --- Bootstrap phase: poll each user until a valid timestamp is obtained ---
+    # Sequential and blocking: a user stuck on repeated query failures will
+    # delay the start of monitoring for every other user.
+    bootstrap_bar = None
+    if not args.debug:
+        bootstrap_bar = tqdm(total=len(users), desc="Initializing", unit="user")
+
+    for user in users:
+        while prev_done_ts[user] is None:
+            is_running, latest_status, latest_ts = query_user(
+                user, args.config_dir, args.client, debug=args.debug
+            )
+            if args.debug:
+                print(f"[bootstrap] {user}: is_running={is_running} "
+                      f"latest_status={latest_status} latest_ts={latest_ts}", flush=True)
+            if is_running is True:
+                state[user] = "running"
+            if latest_ts is not None:
+                prev_done_ts[user] = latest_ts
+                if bootstrap_bar is not None:
+                    bootstrap_bar.update(1)
+            else:
+                time.sleep(args.interval)
+
+    if bootstrap_bar is not None:
+        bootstrap_bar.close()
+
+
+    if args.log_file:
+        with open(args.log_file, "a"):
+            os.utime(args.log_file, None)
+
+    if not args.debug:
+        # Show the initial board (poll #0) so the user sees everyone pending
+        # (grey), except users already caught running during bootstrap.
+        lines = render(users, state, last_done_ts, start, poll_count)
+        print("\033[2J\033[H", end="", flush=True)
+        out = ""
+        for line in lines:
+            out += line + "\033[K\n"
+        print(out, end="", flush=True)
+        time.sleep(1)
 
     try:
         while True:
             to_scan = [u for u in users if u not in done]
+            cur_snapshot = {}
 
             for user in to_scan:
-                is_running, done_count, last_ts = query_user(
-                    user, args.config_dir, args.client
+                prev_state = state[user]
+
+                is_running, latest_status, latest_ts = query_user(
+                    user, args.config_dir, args.client, debug=args.debug
                 )
+                cur_snapshot[user] = (is_running, latest_status, latest_ts)
 
                 if is_running is True:
                     state[user] = "running"
@@ -138,34 +208,47 @@ def main():
                 elif is_running is False:
                     went_done = state[user] == "running"
 
-                    # Case 2: done_count increased since last poll (skip first poll)
+                    # Case 2: the latest entry's timestamp moved forward since
+                    # last poll -> a new run completed, even if we never saw
+                    # it as Running (full cycle happened between two polls).
                     if (not went_done
-                            and prev_done_count[user] is not None
-                            and done_count is not None
-                            and done_count > prev_done_count[user]):
+                            and prev_done_ts[user] is not None
+                            and latest_ts is not None
+                            and latest_ts > prev_done_ts[user]):
                         went_done = True
 
                     if went_done:
                         state[user] = "done"
                         done.add(user)
-                        if last_ts and (last_done_ts is None or last_ts > last_done_ts):
-                            last_done_ts = last_ts
+                        if latest_ts and (last_done_ts is None or latest_ts > last_done_ts):
+                            last_done_ts = latest_ts
 
-                if done_count is not None:
-                    prev_done_count[user] = done_count
+                if latest_ts is not None:
+                    prev_done_ts[user] = latest_ts
+
+                if state[user] != prev_state and not args.debug:
+                    lines = render(users, state, last_done_ts, start, poll_count + 1)
+                    out = "\033[H"
+                    for line in lines:
+                        out += line + "\033[K\n"
+                    print(out, end="", flush=True)
 
             poll_count += 1
 
-            # Touch log file after first poll to signal script is ready
-            if poll_count == 1 and args.log_file:
-                with open(args.log_file, "a"):
-                    os.utime(args.log_file, None)
+            if not args.debug:
+                lines = render(users, state, last_done_ts, start, poll_count)
+                out = "\033[H"
+                for line in lines:
+                    out += line + "\033[K\n"
+                print(out, end="", flush=True)
 
-            lines = render(users, state, last_done_ts, start, poll_count)
-            out = "\033[H"
-            for line in lines:
-                out += line + "\033[K\n"
-            print(out, end="", flush=True)
+            if args.debug:
+                for user in to_scan:
+                    ir, ls, ts = cur_snapshot[user]
+                    print(f"[poll {poll_count}] {user}: state={state[user]} "
+                          f"is_running={ir} latest_status={ls} "
+                          f"prev_done_ts={prev_done_ts[user]} latest_ts={ts}",
+                          flush=True)
 
             if len(done) == len(users):
                 if args.log_file and last_done_ts:
