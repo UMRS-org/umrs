@@ -776,6 +776,23 @@ class EndpointProvisionBackend(OrchestratorBackend):
         return "localhost"
 
 
+async def _venue_first_ready_marker(job_id: str, orchestrator: Any) -> str | None:
+    """Wrapper's own `RIVAULT_FIRST_READY_AT` from the venue drop, when readable."""
+    read = getattr(orchestrator, "_read_remote_job_info", None)
+    if not (job_id and callable(read)):
+        return None
+    try:
+        info_content = await read(job_id)
+    except Exception:  # noqa: BLE001 — informational read, never blocks
+        return None
+    if not isinstance(info_content, str) or not info_content:
+        return None
+    for line in info_content.splitlines():
+        if line.startswith("RIVAULT_FIRST_READY_AT="):
+            return line.split("=", 1)[1].strip()
+    return None
+
+
 async def _maybe_emit_venue_first_ready_span(
     *, attempt: Any, orchestrator: Any
 ) -> None:
@@ -788,45 +805,31 @@ async def _maybe_emit_venue_first_ready_span(
     pre-WP-12 launchers stay honest — never invented. No-op when OTel is off or
     the read errors — the obs path never blocks a registry transition.
     """
-    try:
-        from umrs.jobs.timing import maybe_emit_span
+    job_id = str(attempt.backend_ref or "")
+    from umrs.jobs.timing import maybe_emit_span
 
-        job_id = str(attempt.backend_ref or "")
-        venue_marker: str | None = None
-        read = getattr(orchestrator, "_read_remote_job_info", None)
-        if callable(read) and job_id:
-            try:
-                info_content = await read(job_id)
-            except Exception:  # noqa: BLE001 — informational read, never blocks
-                info_content = None
-            if isinstance(info_content, str) and info_content:
-                for line in info_content.splitlines():
-                    if line.startswith("RIVAULT_FIRST_READY_AT="):
-                        venue_marker = line.split("=", 1)[1].strip()
-                        break
-
-        started = getattr(attempt, "created_at", None) or getattr(
-            attempt, "started_at", None
-        )
-        control_end = getattr(attempt, "ended_at", None) or getattr(
-            attempt, "started_at", None
-        )
-        end_val = venue_marker or control_end
-        if started is None or end_val is None:
-            return
-        maybe_emit_span(
-            "umrs.venue.first_ready",
-            started_at=started,
-            transitioned_at=end_val,
-            attributes={
-                "umrs.job_id": str(attempt.job_id),
-                "umrs.attempt_id": str(attempt.attempt_id),
-                "umrs.backend_ref": job_id,
-                "umrs.source": "venue" if venue_marker else "control",
-            },
-        )
-    except Exception:  # noqa: BLE001 — never block the runtime path
+    venue_marker = await _venue_first_ready_marker(job_id, orchestrator)
+    started = getattr(attempt, "created_at", None) or getattr(
+        attempt, "started_at", None
+    )
+    end_val = (
+        venue_marker
+        or getattr(attempt, "ended_at", None)
+        or getattr(attempt, "started_at", None)
+    )
+    if started is None or end_val is None:
         return
+    maybe_emit_span(
+        "umrs.venue.first_ready",
+        started_at=started,
+        transitioned_at=end_val,
+        attributes={
+            "umrs.job_id": str(attempt.job_id),
+            "umrs.attempt_id": str(attempt.attempt_id),
+            "umrs.backend_ref": job_id,
+            "umrs.source": "venue" if venue_marker else "control",
+        },
+    )
 
 
 class EndpointProvisionStatusChecker(BackendStatusChecker):
