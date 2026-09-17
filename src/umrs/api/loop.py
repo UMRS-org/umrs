@@ -295,6 +295,15 @@ class StartLoopRequest(BaseModel):
             "listing the candidates. Discover names with `r4 workflow list`."
         ),
     )
+    venue: str = Field(
+        "frontend",
+        description=(
+            "Loop venue (WP-05 r2 start-route lane): 'frontend' (default; the "
+            "loop driver shares this server process) or 'cluster:<site>' (the "
+            "driver runs in the mini-RiVault/Slurm sandbox of that cluster — "
+            "engine driver only today). Mirrors companion venue vocabulary."
+        ),
+    )
 
 
 class LoopStatusResponse(BaseModel):
@@ -553,6 +562,51 @@ def _resolve_loop_workflow(
     return name
 
 
+def _loop_job_spec(loop: ResearchLoop, *, agentic: bool) -> dict[str, Any]:
+    """research_loop_job spec for one loop (WP-05 r2 start leg).
+
+    The cluster venue rides the spec: the store resolves jobs.venue into the
+    claim-side scoping class (jobs.venue = 'rccs-front' for cluster:rccs-front);
+    the default 'frontend' is deliberately NOT written — byte-identical to
+    pre-venue rows for every existing caller.
+    """
+    spec: dict[str, Any] = {
+        "loop_id": loop.loop_id,
+        "driver": "agent" if agentic else "engine",
+    }
+    venue = str(loop.metadata.get("venue") or "").strip()
+    if venue and venue != "frontend":
+        spec["venue"] = venue
+    return spec
+
+
+def _validate_loop_venue(request: StartLoopRequest) -> str:
+    """Start-route venue grammar (WP-05 r2 start leg).
+
+    Grammar mirrors the jobs-layer validator exactly — start must fail closed
+    with 400 here, matching research_loop_job's own rejection later. Burying
+    the rule twice would drift-fronts on vocab additions one day; keep the
+    single source of truth and map its errors onto 400.
+    """
+    venue = (request.venue or "").strip()
+    if not venue:
+        # absent: byte-identical to pre-venue semantics (today = frontend)
+        return "frontend"
+    if request.agentic and venue != "frontend":
+        raise HTTPException(
+            400,
+            "research_loop venue accepts the engine driver only on cluster "
+            "venues — agentic has cluster-side wiring parked (follow-on)",
+        )
+    from umrs.jobs.research_loop_backend import validate_research_loop_spec
+
+    try:
+        validate_research_loop_spec({"loop_id": "venue-probe", "venue": venue})
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return venue
+
+
 # ── Owner identity (ADR-036 (a): approvals are answerable by the loop owner) ─
 
 
@@ -624,6 +678,8 @@ async def start_loop(
         max_iterations=request.max_iterations,
     )
     loop.metadata["mode"] = "ask" if request.mode == "ask" else "auto"
+    venue = _validate_loop_venue(request)
+    loop.metadata["venue"] = venue
     if owner:
         loop.metadata["owner_user_id"] = owner
     workflow_name = _resolve_loop_workflow(request, engine, loop, owner)
@@ -746,7 +802,7 @@ async def _submit_loop_job(
             job_type=JobType.RESEARCH_LOOP,
             project_id=loop.project_id,
             user_id=owner,
-            spec={"loop_id": loop.loop_id, "driver": "agent" if agentic else "engine"},
+            spec=_loop_job_spec(loop, agentic=agentic),
         )
     except Exception as exc:  # noqa: BLE001 — hosting fallback, recorded on the loop
         logger.warning(

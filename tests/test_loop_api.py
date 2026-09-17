@@ -582,3 +582,80 @@ def test_engine_uses_loop_level_workflow_default():
     engine._execute_experiment(loop, iteration, ResearchExperiment(experiment_id="e1"))  # noqa: SLF001
     assert port.calls[0][1][0] == "wf-default"
     assert iteration.durable_job_id == "job-fake-durable"
+
+
+class TestLoopVenueStartLane:
+    """WP-05 r2 start leg: venue vocabulary at loop start (cluster wiring)."""
+
+    def test_cluster_venue_rides_loop_metadata_and_job_spec(self, monkeypatch):
+        from umrs.server import durable_job_runtime as djr
+
+        client = _make_app()
+        calls: list[dict] = []
+
+        class _FakeRuntime:
+            async def submit_job_sync(self, **kw):
+                calls.append(kw)
+                return "job-cluster-1"
+
+        monkeypatch.setattr(djr, "get_runtime", lambda: _FakeRuntime())
+        resp = client.post(
+            "/umrs/loops",
+            json={
+                "project_id": "proj-v",
+                "research_goal": "cluster venue probe",
+                "max_iterations": 1,
+                "mode": "auto",
+                "venue": "cluster:rccs-front",
+            },
+        )
+        assert resp.status_code == 201, resp.text
+        loop_id = resp.json()["loop_id"]
+        assert calls and calls[0]["spec"]["venue"] == "cluster:rccs-front"
+        meta = client.get(f"/umrs/loops/{loop_id}").json()["metadata"]
+        assert meta["venue"] == "cluster:rccs-front"
+        assert meta["hosting"] == "job"
+
+    def test_default_frontend_stays_byte_compatible_no_venue_key(self, monkeypatch):
+        from umrs.server import durable_job_runtime as djr
+
+        client = _make_app()
+        calls: list[dict] = []
+
+        class _FakeRuntime:
+            async def submit_job_sync(self, **kw):
+                calls.append(kw)
+                return "job-front-1"
+
+        monkeypatch.setattr(djr, "get_runtime", lambda: _FakeRuntime())
+        resp = client.post(
+            "/umrs/loops",
+            json={"project_id": "proj-f2", "research_goal": "front default"},
+        )
+        assert resp.status_code == 201, resp.text
+        assert "venue" not in calls[0]["spec"]
+        meta = client.get(f"/umrs/loops/{resp.json()['loop_id']}").json()["metadata"]
+        assert meta["venue"] == "frontend"
+
+    def test_bad_venue_rejected_closed_at_start(self):
+        client = _make_app()
+        resp = client.post(
+            "/umrs/loops",
+            json={
+                "project_id": "proj-b",
+                "research_goal": "garbage venue",
+                "venue": "cluster:",
+            },
+        )
+        assert resp.status_code == 400
+
+        agentic_cluster = client.post(
+            "/umrs/loops",
+            json={
+                "project_id": "proj-b",
+                "research_goal": "agentic on cluster",
+                "agentic": True,
+                "venue": "cluster:rccs-front",
+            },
+        )
+        assert agentic_cluster.status_code == 400
