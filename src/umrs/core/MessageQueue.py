@@ -845,6 +845,11 @@ class MessageQueue:
                 with contextlib.suppress(RuntimeError):
                     self.send_string("CMD_ERROR", zmq_sender_id)
                 continue
+            except Exception as e:
+                logger.error("Unexpected error in parser for %s: %s", cmd, e)
+                with contextlib.suppress(RuntimeError):
+                    self.send_string("SERVER_ERROR", zmq_sender_id)
+                continue
 
             if result is not None:
                 return result
@@ -1302,9 +1307,15 @@ class MessageQueue:
 
         uncompleted_key_list = None
         if self.task_manager is not None:
-            uncompleted_key_list = self.task_manager.tasks_status.all_uncompleted_task(
-                client_id, status_key
-            )
+            try:
+                uncompleted_key_list = self.task_manager.tasks_status.all_uncompleted_task(
+                    client_id, status_key
+                )
+            except Exception as e:
+                logger.warning(
+                    "Could not fetch uncompleted tasks for STATUS (pool exhausted?): %s",
+                    e,
+                )
 
         # Collect pool metrics when available
         pool_metrics = None
