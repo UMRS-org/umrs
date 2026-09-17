@@ -2273,6 +2273,28 @@ echo "[rivault] Stack is up. Monitoring containers (timeout=${RIVAULT_JOB_TIMEOU
 RIVAULT_ENGINE_RESPAWN_MAX=${RIVAULT_ENGINE_RESPAWN_MAX:-3}
 RIVAULT_ENGINE_RESPAWN_SLEEP_SEC=${RIVAULT_ENGINE_RESPAWN_SLEEP_SEC:-30}
 _ENGINE_RESPAWNS=0
+
+# ADR-048 per-JOB budget ledger (2026-09-17): claim file keyed to
+# ${UMRS_DURABLE_JOB_ID:-${SLURM_JOB_ID}} — the job lineage, never one attempt.
+# Falls back to the legacy env counter only when flock/python3 are absent
+# (named warn; respawn stays perfectly bounded by _ENGINE_RESPAWNS then).
+_RIV_BUDGET_LIB="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")" 2>/dev/null \
+    || printf '%s' "${BASH_SOURCE[0]}")" && pwd)/attempt_budget.sh"
+_BUDGET_JOB_ID="${UMRS_DURABLE_JOB_ID:-${SLURM_JOB_ID:-unknown-job}}"
+_BUDGET_VIA_LIB=false
+if [[ -f "$_RIV_BUDGET_LIB" ]] && command -v flock >/dev/null 2>&1 \
+    && command -v python3 >/dev/null 2>&1; then
+    # shellcheck disable=SC1090
+    source "$_RIV_BUDGET_LIB"
+    budget_init "$_BUDGET_JOB_ID"
+    budget_reap_lineage "$_BUDGET_JOB_ID"
+    _BUDGET_VIA_LIB=true
+    echo "[rivault] budget: per-job ledger on ${_BUDGET_JOB_ID} " \
+        "($(budget_used_read "$_BUDGET_JOB_ID")/$(budget_total_read "$_BUDGET_JOB_ID") used)"
+else
+    echo "[rivault] budget: attempt attempt ledger env-only mode" \
+        "(attempt_budget.sh missing, or flock/python3 absent; RIVAULT_ENGINE_RESPAWN_MAX=${RIVAULT_ENGINE_RESPAWN_MAX})"
+fi
 _engine_container_name() {
     if podman container exists rivault-vllm-mn 2>/dev/null; then
         echo "rivault-vllm-mn"
@@ -2340,8 +2362,20 @@ while [ "$RIVAULT_JOB_TIMEOUT" -eq 0 ] || [ "$ELAPSED" -lt "$RIVAULT_JOB_TIMEOUT
     # mid-teardown via an external kill (stop-request path is checked above).
     _engine="$(_engine_container_name)"
     if [ -n "$_engine" ] && _engine_is_dead "$_engine"; then
-        if [ "$_ENGINE_RESPAWNS" -lt "$RIVAULT_ENGINE_RESPAWN_MAX" ]; then
+        _claim_ok=true
+        if [ "$_BUDGET_VIA_LIB" = true ]; then
+            if budget_claim_job "$_BUDGET_JOB_ID" "${UMRS_DURABLE_JOB_ID:-${SLURM_JOB_ID}}"; then
+                _ENGINE_RESPAWNS=$(budget_used_read "$_BUDGET_JOB_ID")
+            else
+                _claim_ok=false
+            fi
+        elif [ "$_ENGINE_RESPAWNS" -lt "$RIVAULT_ENGINE_RESPAWN_MAX" ]; then
             _ENGINE_RESPAWNS=$(( _ENGINE_RESPAWNS + 1 ))
+        else
+            _claim_ok=false
+        fi
+
+        if [ "$_claim_ok" = true ]; then
             _exit=$(podman container inspect "$_engine" --format '{{.State.ExitCode}}' 2>/dev/null || echo "?")
             echo "[rivault] Engine dead ($_engine exit=${_exit}); respawn " \
                 "${_ENGINE_RESPAWNS}/${RIVAULT_ENGINE_RESPAWN_MAX}, sleeps ${RIVAULT_ENGINE_RESPAWN_SLEEP_SEC}s"
@@ -2359,6 +2393,9 @@ while [ "$RIVAULT_JOB_TIMEOUT" -eq 0 ] || [ "$ELAPSED" -lt "$RIVAULT_JOB_TIMEOUT
             fi
         else
             echo "[rivault] Engine budget exhausted (${RIVAULT_ENGINE_RESPAWN_MAX} respawns); tearing down stack"
+            if [ "$_BUDGET_VIA_LIB" = true ]; then
+                budget_mark_exhausted "$_BUDGET_JOB_ID" "${SLURM_JOB_ID}"
+            fi
             exit 125
         fi
     fi

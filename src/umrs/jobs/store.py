@@ -67,6 +67,22 @@ class InvalidTransitionError(JobStoreError):
     """Raised when state transition is invalid."""
 
 
+def _budget_exhausted_marker(attempt_id: str, exit_reason: str | None) -> bool:
+    """ADR-048 D-3 terminal boundary: an exit_reason carrying "budget_exhausted"
+    is the wrapper's engine-respawn budget marker (job lineage ledger per
+    attempt_budget.sh) — the durable retry chain must never requeue from that
+    class: another attempt staging on the same node would race for the very
+    resources the budget just declared exhausted. Terminal-failed, one way —
+    the jobs row still lands FAILED (marker must never leave a stale running row).
+    """
+    if "budget_exhausted" not in (exit_reason or ""):
+        return False
+    logger.warning(
+        f"Attempt {attempt_id} hit budget_exhausted — terminal, no requeue (ADR-048)"
+    )
+    return True
+
+
 class JobStore:
     """
     Durable job store with state machine enforcement.
@@ -1144,8 +1160,11 @@ class JobStore:
             job_row = cur.fetchone()
             job = self._row_to_job(job_row)
 
-            # Check if we should retry
-            if job.can_retry(attempt_no):
+            budget_exhausted = _budget_exhausted_marker(attempt_id, exit_reason)
+
+            # Check if we should retry (the D-3 marker forces the failed branch
+            # regardless of remaining retry budget).
+            if (not budget_exhausted) and job.can_retry(attempt_no):
                 delay = retry_delay or job.get_backoff_delay(attempt_no)
                 next_run = now + timedelta(seconds=delay)
 

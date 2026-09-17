@@ -621,6 +621,11 @@ class EndpointProvisionBackend(OrchestratorBackend):
         submit_env["MODEL_NAME"] = model_name
         submit_env["VLLM_MODEL_PATH"] = model_path
         submit_env["UMRS_JOB_TTL_SECONDS"] = str(job.ttl_seconds or 0)
+        # ADR-048 D-1: the durable job id rides the wrapper so its respawn
+        # budget ledger keys to the JOB lineage — one fic per job across any
+        # number of attempts. Without this key each attempt's wrapper would
+        # boot its own budget state and multiply respawn capacity.
+        submit_env["UMRS_DURABLE_JOB_ID"] = job.job_id
 
         # LiteLLM master key from orchestrator process env
         litellm_master_key = os.environ.get("LITELLM_MASTER_KEY")

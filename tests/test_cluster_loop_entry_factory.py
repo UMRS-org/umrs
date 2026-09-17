@@ -7,10 +7,24 @@ constructor that has been keyword-only since before WP-14, and no test ever
 invoked the factory body. These pins lock the constructor-callable contract
 for both branches so the class can't regress silently again.
 """
+
 from types import SimpleNamespace
 
+import pytest
 from umrs.knowledge.cluster_loop_entry import _engine_factory_from
 from umrs.knowledge.loop import AutonomousResearchLoop
+
+
+@pytest.fixture(autouse=True)
+def _cluster_env(monkeypatch):
+    # the real branch's engine ctor materializes a ClusterHttpWorkflowExecutionPort,
+    # which builds its transport from env (driver lane contract — driver-env only).
+    monkeypatch.setenv("R4_GATEWAY_BASE", "https://data0.example.test/rccs")
+    monkeypatch.setenv("UMRS_GATEWAY_HMAC_SECRET", "test-secret-for-pins")
+    monkeypatch.setenv("R4_LOOP_OWNER", "alice")
+    monkeypatch.setenv("R4_LOOP_PROJECT", "proj-x")
+    monkeypatch.setenv("R4_LOOP_ADMIN", "false")
+    yield
 
 
 def _loop_meta(simulated):

@@ -526,6 +526,21 @@ class RemoteSlurmBackend(SlurmBackend):
         info_content = await self._read_remote_job_info(job_id)
         if info_content is not None:
             info = self._parse_info_content(info_content)
+            # ADR-048 D-3: budget_exhausted is a terminal marker in the wrapper's
+            # info drop (job lineage respawn budget gone) — surface it verbatim
+            # through state_reason BEFORE the ghost-file sweep, otherwise a
+            # wrapper exit=125 + stale RIVAULT_STATUS=running would ghost-map to
+            # generic terminal without the marker name, and _remove_stale_info_file
+            # would delete the only evidence. Marker stays byte-identical to the
+            # wrapper's write shape ('budget_exhausted').
+            if str(info.get("RIVAULT_TERMINAL_REASON", "")).strip() == "budget_exhausted":
+                return JobInfo(
+                    job_id=job_id,
+                    status=JobStatus.FAILED,
+                    backend=self.backend_name,
+                    metadata=info,
+                    state_reason="budget_exhausted",
+                )
             status = self._status_from_info(info)
 
             # The info file is a startup artifact written to the shared
