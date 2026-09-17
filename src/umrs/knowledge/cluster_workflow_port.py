@@ -88,7 +88,9 @@ class ClusterHttpWorkflowExecutionPort(WorkflowExecutionPort):
         while True:
             payload = self._transport.get(f"/executions/{execution_id}")
             execution = payload.get("execution") or payload
-            status = str(execution.get("status") or "").lower()
+            status = str(
+                execution.get("status") or payload.get("execution_status") or ""
+            ).lower()
             if status in _TERMINAL_STATUS:
                 return execution
             if time.monotonic() >= goal:
@@ -99,14 +101,22 @@ class ClusterHttpWorkflowExecutionPort(WorkflowExecutionPort):
             time.sleep(self._poll)
 
     def results(self, execution_id: str) -> dict[str, Any]:
-        data = self._transport.get(f"/executions/{execution_id}/results")
-        status = str(data.get("status") or "").lower()
+        data = dict(self._transport.get(f"/executions/{execution_id}/results"))
+        # Envelope normalization (live receipts 2026-09-17): the route answers
+        # {"status": "ok", "execution_status": "succeeded", "durable_job_id": ...}
+        # while the engine reads a top-level terminal `status` + durable_job_id.
+        # Both variants fold into one shape here; the durable-id gate still
+        # refuses honestly when the linkage is absent.
+        status = str(
+            data.get("execution_status") or data.get("status") or ""
+        ).lower()
         if status in _TERMINAL_STATUS and not data.get("durable_job_id"):
             raise RuntimeError(
                 f"workflow execution {execution_id} reports terminal status "
                 f"without a durable_job_id — the engine needs the linkage to mint "
                 "lineage; do not smudge this through a fabricated value"
             )
+        data["status"] = status
         return data
 
     def cancel(self, execution_id: str) -> dict[str, Any]:
