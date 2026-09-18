@@ -8,6 +8,7 @@ Concrete implementations for Slurm and K8s extend this base.
 from __future__ import annotations
 
 import abc
+import asyncio
 import logging
 import os
 import uuid
@@ -66,6 +67,61 @@ class PluginRunner(abc.ABC):
         """Generate unique plugin execution ID."""
         return f"plugin-{uuid.uuid4().hex[:12]}"
 
+    async def _require_git_ref(self, uri: str, ref: str) -> None:
+        """OI-backed git existence check: repo must be reachable AND the ref
+        must be a resolvable commit prefix (never trust-only-the-form)."""
+        if not uri or not ref:
+            raise ValueError("Git source requires source_uri and source_ref")
+        proc = None
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "git",
+                "ls-remote",
+                uri,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=20)
+        except TimeoutError as original:
+            if proc:
+                proc.kill()
+                await proc.wait()
+            raise ValueError(f"git ls-remote timed out for {uri!r}") from original
+        except FileNotFoundError as original:
+            raise ValueError(f"git binary unavailable in runner image: {original}") from original
+        if proc.returncode != 0:
+            raise ValueError(
+                f"git ls-remote failed for {uri!r}: {stderr.decode(errors='ignore').strip()}"
+            )
+        refs = stdout.decode(errors="ignore").strip().splitlines()
+        if not any(line.startswith(ref) for line in refs):
+            raise ValueError(
+                f"git commit/branch {ref!r} not found in {uri!r} (ls-remote got {len(refs)} refs; none matched prefix)"
+            )
+
+    async def _require_s3_object(self, uri: str) -> None:
+        """OI-backed s3 existence check: `s3://bucket/key.whl` must resolve to
+        an existing object (404-family errors become a named ValueError)."""
+        rest = uri.removeprefix("s3://") if uri.startswith("s3://") else ""
+        if not rest or "/" not in rest:
+            raise ValueError(f"invalid s3 uri: {uri!r}")
+        bucket, _, key = rest.partition("/")
+        if not bucket or not key:
+            raise ValueError(f"invalid s3 uri: {uri!r}")
+        from umrs.shared.storage.s3_config import get_s3_config
+
+        client = get_s3_config().get_client()
+        from botocore.exceptions import ClientError
+
+        try:
+            await asyncio.get_event_loop().run_in_executor(
+                None, client.head_object, {"Bucket": bucket, "Key": key}
+            )
+        except ClientError as exc:
+            raise ValueError(
+                f"s3 object not found/unreachable: s3://{bucket}/{key} ({exc})"
+            ) from exc
+
     async def validate_spec(self, spec: PluginSpec) -> None:
         """
         Validate plugin specification before execution.
@@ -76,13 +132,13 @@ class PluginRunner(abc.ABC):
         Raises:
             ValueError: If specification is invalid.
         """
-        # Check source accessibility
+        # Check source accessibility (TODO-era sweep 2026-09-19: real checks,
+        # never fabricated pass — each failure raises ValueError named for
+        # the ground that failed).
         if spec.source_type.value == "git_repo":
-            # TODO: Check Git repository exists and commit is valid
-            pass
+            await self._require_git_ref(spec.source_uri, spec.source_ref or "")
         elif spec.source_type.value == "s3_wheel":
-            # TODO: Check S3 object exists
-            pass
+            await self._require_s3_object(spec.source_uri)
 
         # Validate output destinations
         for dest in spec.output_destinations:

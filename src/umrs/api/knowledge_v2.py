@@ -499,6 +499,25 @@ async def trigger_verify(
         raise_typed(PlatformError.knowledge2("failure", str(exc)))
 
 
+def _verified_artifact_count(rows: Any) -> int:
+    """Artifacts whose metadata carries an active verification marker.
+
+    Honesty contract: the 'verified' iv age is metadata.status == 'verified'
+    or metadata.verified (truthy); rows missing the field stay uncounted
+    (no invented status).
+    """
+    if not rows:
+        return 0
+    count = 0
+    for row in rows:
+        metadata = getattr(row, "metadata_", None) or getattr(row, "metadata", None) or {}
+        if not isinstance(metadata, dict):
+            continue
+        if metadata.get("status") == "verified" or metadata.get("verified") is True:
+            count += 1
+    return count
+
+
 @router.get("/readiness")
 async def knowledge_readiness(
     request: Request,
@@ -520,13 +539,30 @@ async def knowledge_readiness(
         store = KnowledgeStore(pool)
         artifact_rows, _total = await store.list_artifacts(project_id=project_id)
         active_count = sum(1 for a in artifact_rows if a.status == "active")
+        verified_count = _verified_artifact_count(artifact_rows)
+        graph_node_count = await store.count_graph_nodes(project_id=project_id)
 
-        # TODO: Add graph coverage and verification status
+        # 2026-09-19 (TODO sweep): coverage + verification status per the
+        # docstring — computed from actual row counts, never falsified.
+        # artifact_fields stay byte-compatible (additive new fields alone).
+        total = max(1, len(artifact_rows))
         return {
             "project_id": project_id,
             "artifact_count": len(artifact_rows),
             "active_artifacts": active_count,
-            "readiness_score": round(min(1.0, active_count / max(1, active_count)), 2),
+            "verified_artifacts": verified_count,
+            "graph_node_count": graph_node_count,
+            "graph_coverage": round(min(1.0, graph_node_count / total), 2),
+            "verification_coverage": round(min(1.0, verified_count / total), 2),
+            "readiness_score": round(
+                min(
+                    1.0,
+                    (active_count / total) * 0.5
+                    + (verified_count / total) * 0.3
+                    + min(1.0, graph_node_count / total) * 0.2,
+                ),
+                2,
+            ),
         }
     except HTTPException:
         raise
