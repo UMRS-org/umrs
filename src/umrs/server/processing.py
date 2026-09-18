@@ -53,7 +53,7 @@ def prepare_model_groups(
 
     for client_id, s3_objects in client_entries:
         for s3_object in s3_objects:
-            logger.info("\t\t-->%s", s3_object)
+            logger.debug("\t\t-->%s", s3_object)
             path_to_bucket, s3_key = s3_object.replace("s3://", "").split("/", 1)
             bucket_keys = keys_per_bucket.setdefault(path_to_bucket, [])
             if s3_key not in bucket_keys:
