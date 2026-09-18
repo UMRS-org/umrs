@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 from umrs.core.TaskCmdStatus import TaskCmd, TaskStatus
@@ -72,29 +73,38 @@ class ProcessObjectsBatchHandler(CommandHandler):
         for client_id, nb_objects in payload:
             merged[client_id] = merged.get(client_id, 0) + nb_objects
 
+        def _fetch_one(client_id: str, nb_objects: int):
+            """Collect S3 events for one client — runs in a thread pool."""
+            client_entry = ctx.control_mq.client_dictionary.get(client_id, {})
+            data_queue = client_entry.get("data_queue")
+            if data_queue is None:
+                logger.warning("No data queue for client=%s in batch", client_id)
+                return client_id, None
+            objects = data_queue.wait_for_s3_events(nb_objects, timeout_s=60)
+            if len(objects) < nb_objects:
+                logger.warning(
+                    "Received %s/%s S3 events for client=%s (timeout)",
+                    len(objects), nb_objects, client_id,
+                )
+            return client_id, objects or None
+
         def _collect_and_process() -> None:
             client_entries = []
             failed = []
 
-            for client_id, nb_objects in merged.items():
-                client_entry = ctx.control_mq.client_dictionary.get(client_id, {})
-                data_queue = client_entry.get("data_queue")
-                if data_queue is None:
-                    logger.warning("No data queue for client=%s in batch", client_id)
-                    failed.append(client_id)
-                    continue
-
-                objects = data_queue.wait_for_s3_events(nb_objects, timeout_s=60)
-                if len(objects) < nb_objects:
-                    logger.warning(
-                        "Received %s/%s S3 events for client=%s (timeout)",
-                        len(objects), nb_objects, client_id,
-                    )
-                if not objects:
-                    logger.warning("No S3 events for client=%s in batch", client_id)
-                    failed.append(client_id)
-                    continue
-                client_entries.append((client_id, objects))
+            # Collect S3 events for all clients in parallel so the pool thread
+            # starts as soon as the LAST client responds, not sum(all waits).
+            with ThreadPoolExecutor(max_workers=len(merged)) as fetcher:
+                futures = {
+                    fetcher.submit(_fetch_one, cid, nb): cid
+                    for cid, nb in merged.items()
+                }
+                for future in as_completed(futures):
+                    client_id, objects = future.result()
+                    if objects is None:
+                        failed.append(client_id)
+                    else:
+                        client_entries.append((client_id, objects))
 
             for cid in failed:
                 cb = client_callbacks.get(cid)
