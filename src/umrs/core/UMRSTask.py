@@ -331,8 +331,6 @@ class UMRSTask:
             finally:
                 self._put_conn(conn)
 
-        self.pretty_print_tasks(limit=20)
-
     # ------------------------------------------------------------------
     # Task creation (cmd dispatch)
     # ------------------------------------------------------------------
