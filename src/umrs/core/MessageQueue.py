@@ -611,6 +611,12 @@ class MessageQueue:
             self.send_string(payload, zmq_sender_id)
         return None
 
+    def _parse_status_all(self, splited_msg, zmq_sender_id):
+        payload = self._get_status_all_payload()
+        with contextlib.suppress(RuntimeError):
+            self.send_string(payload, zmq_sender_id)
+        return None
+
     def _parse_count_cmd(self, splited_msg, zmq_sender_id):
         """Parser for FILE, PROCESS_OBJECTS, ENROLL_USER: field[2] is an integer count."""
         cmd = splited_msg[0]
@@ -727,6 +733,7 @@ class MessageQueue:
         TaskCmd.HAND_CHECK:        "_parse_handshake",
         TaskCmd.CREATE_DATA_QUEUE: "_parse_create_data_queue",
         TaskCmd.STATUS:            "_parse_status",
+        TaskCmd.STATUS_ALL:        "_parse_status_all",
         TaskCmd.PROCESS_OBJECTS:   "_parse_count_cmd",
         TaskCmd.FILE:              "_parse_count_cmd",
         TaskCmd.ENROLL_USER:       "_parse_count_cmd",
@@ -1269,6 +1276,50 @@ class MessageQueue:
         if pool_metrics is not None:
             payload["pool"] = pool_metrics
         return json.dumps(payload, ensure_ascii=False)
+
+    def _get_status_all_payload(self) -> str:
+        """Build a single JSON response with every known client's status.
+
+        Uses one DB round-trip for uncompleted tasks (all clients) plus the
+        in-memory status_store.  The ``clients`` dict maps client_id to the
+        same structure that ``_get_status_payload`` returns per client, so
+        monitor_users.py can reuse the same parsing logic.
+        """
+        store = self.status_store or {}
+        generated_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+        db_by_client: dict = {}
+        if self.task_manager is not None:
+            with contextlib.suppress(Exception):
+                db_by_client = (
+                    self.task_manager.tasks_status.all_tasks_summary_by_client()
+                )
+
+        all_ids = set(store.keys()) | set(db_by_client.keys())
+        clients = {
+            cid: {
+                "summaries": store.get(cid, {}),
+                "uncompleted_key_list": db_by_client.get(cid, []),
+            }
+            for cid in all_ids
+        }
+        return json.dumps(
+            {"status": "ok", "generated_at": generated_at, "clients": clients},
+            ensure_ascii=False,
+        )
+
+    def request_status_all(self) -> str:
+        """Send STATUS_ALL and return the raw JSON reply (client role only)."""
+        if self.role != "client":
+            raise PermissionError("Only client can call 'request_status_all'")
+        self.send_string(TaskCmd.STATUS_ALL)
+        try:
+            _, reply = self.recv_string()
+        except zmq.Again:
+            raise TimeoutError(
+                "Timeout waiting for server response in request_status_all"
+            ) from None
+        return reply
 
     def notify_s3(self, s3_object):
         """Notify the server about a new S3 event."""
