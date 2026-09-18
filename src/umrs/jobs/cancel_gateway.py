@@ -18,10 +18,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_getter: Callable[[], "JobStore | None"] | None = None
+_getter: Callable[[], JobStore | None] | None = None
 
 
-def register_store_getter(getter: Callable[[], "JobStore | None"]) -> None:
+def register_store_getter(getter: Callable[[], JobStore | None]) -> None:
     """The api layer wires its store accessor at import boot (idempotent)."""
     global _getter
     _getter = getter
