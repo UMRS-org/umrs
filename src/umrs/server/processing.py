@@ -60,8 +60,6 @@ def prepare_model_groups(
                 bucket_keys.append(s3_key)
             bucket_to_clients[path_to_bucket].add(client_id)
 
-    active_threads.update_thread_dict(buckets_cfg, keys_per_bucket, key)
-
     # --- Resolve bucket config and group by model ---
     model_groups: dict[str, list] = {}
     bucket_errors: set[str] = set()
@@ -153,6 +151,11 @@ def process_model_group(
     ``_clients``, and ``_user`` from each item before forwarding to the
     embedding backend.
     """
+    # Register this thread in thread_dict so update_status_to_done() can locate it.
+    # Must happen before any items are popped (s3_keys and path_to_bucket are still present).
+    keys_per_bucket = {item["path_to_bucket"]: item["s3_keys"] for item in items}
+    active_threads.update_thread_dict(buckets_cfg, keys_per_bucket, key)
+
     # Signal RUNNING to all clients in this group.
     for cb in group_callbacks.values():
         cb(TaskStatus.RUNNING)
