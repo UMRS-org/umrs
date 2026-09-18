@@ -1,9 +1,8 @@
-"""Handler for the PROCESS_OBJECTS command.
+"""Handlers for PROCESS_OBJECTS and PROCESS_OBJECTS_BATCH commands.
 
-Launches a thread pool worker that fetches S3 objects and computes their
-embeddings.  On success the thread identifier is associated with task_id
-so the event loop can track completion.  If the thread pool is saturated
-the task is immediately rejected with TaskStatus.ERROR.
+PROCESS_OBJECTS handles a single client request.
+PROCESS_OBJECTS_BATCH merges requests from multiple clients into one thread
+so embeddings are computed in a single model forward pass.
 """
 
 from __future__ import annotations
@@ -81,6 +80,86 @@ class ProcessObjectsHandler(CommandHandler):
         thread = threading.Thread(
             target=_collect_and_process,
             name=f"process-objects-{task_id}",
+            daemon=True,
+        )
+        thread.start()
+
+
+class ProcessObjectsBatchHandler:
+    """Handle PROCESS_OBJECTS_BATCH — batch multi-client embedding computation.
+
+    Unlike the standard CommandHandler subclass, this is called directly from
+    server_event_loop (not via the registry) because:
+      - clients were already authorized during their individual PROCESS_OBJECTS
+      - the payload is a list, not a (client_id, ...) tuple
+      - each client has its own task_id and callback (passed via client_callbacks)
+    """
+
+    def execute(
+        self,
+        payload: list,
+        client_callbacks: dict,
+        ctx: HandlerContext,
+    ) -> None:
+        """``payload`` is ``[(client_id, nb_objects), ...]``.
+        ``client_callbacks`` is ``{client_id: update_status_callable}``.
+        """
+
+        def _collect_and_process() -> None:
+            client_entries = []
+            failed = []
+
+            for client_id, nb_objects in payload:
+                client_entry = ctx.control_mq.client_dictionary.get(client_id, {})
+                data_queue = client_entry.get("data_queue")
+                if data_queue is None:
+                    logger.warning("No data queue for client=%s in batch", client_id)
+                    failed.append(client_id)
+                    continue
+
+                objects = data_queue.wait_for_s3_events(nb_objects, timeout_s=60)
+                if len(objects) < nb_objects:
+                    logger.warning(
+                        "Received %s/%s S3 events for client=%s (timeout)",
+                        len(objects), nb_objects, client_id,
+                    )
+                if not objects:
+                    logger.warning("No S3 events for client=%s in batch", client_id)
+                    failed.append(client_id)
+                    continue
+                client_entries.append((client_id, objects))
+
+            for cid in failed:
+                cb = client_callbacks.get(cid)
+                if cb:
+                    cb(TaskStatus.ERROR)
+
+            if not client_entries:
+                return
+
+            active_callbacks = {
+                cid: client_callbacks[cid]
+                for cid, _ in client_entries
+                if cid in client_callbacks
+            }
+
+            try:
+                ctx.task_manager.active_threads.launch_s3_threads_batch(
+                    client_entries,
+                    ctx.buckets_cfg,
+                    ctx.device,
+                    ctx.embedding_backend,
+                    "process_objects",
+                    client_callbacks=active_callbacks,
+                )
+            except ServerOverloadedError as exc:
+                logger.warning("Rejecting PROCESS_OBJECTS_BATCH: %s", exc)
+                for cb in active_callbacks.values():
+                    cb(TaskStatus.ERROR)
+
+        thread = threading.Thread(
+            target=_collect_and_process,
+            name="process-objects-batch",
             daemon=True,
         )
         thread.start()

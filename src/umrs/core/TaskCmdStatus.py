@@ -1,6 +1,7 @@
 # here are values and methods to assocaite tasks with keys to be stored in dictionnaries and to get status
 class TaskCmd:
     PROCESS_OBJECTS = "PROCESS_OBJECTS"
+    PROCESS_OBJECTS_BATCH = "PROCESS_OBJECTS_BATCH"  # internal: batched multi-client
     WAIT_OUTPUT = "WAIT_OUTPUT"
     RECOMPUTE = "RECOMPUTE"
     UPDATE = "UPDATE"
