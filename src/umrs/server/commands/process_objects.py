@@ -30,16 +30,30 @@ class ProcessObjectsBatchHandler(CommandHandler):
     """
 
     def execute(self, payload: list, ctx: HandlerContext) -> None:
-        client_callbacks: dict[str, Any] = {}
+        # One task_id per payload entry (granularity preserved for STATUS queries),
+        # even when the same client appears multiple times.  Callbacks for the
+        # same client are stored as a list and fired together at completion.
+        per_client_cbs: dict[str, list] = {}
         for client_id, nb_objects in payload:
-            task_id, cb = self._make_task(ctx, TaskCmd.PROCESS_OBJECTS, (client_id, nb_objects))
-            client_callbacks[client_id] = cb
+            _, cb = self._make_task(ctx, TaskCmd.PROCESS_OBJECTS, (client_id, nb_objects))
+            per_client_cbs.setdefault(client_id, []).append(cb)
+
+        # Unified callback per unique client_id — fires all sub-task callbacks.
+        client_callbacks: dict[str, Any] = {
+            cid: (lambda status, cbs=cbs: [cb(status) for cb in cbs])
+            for cid, cbs in per_client_cbs.items()
+        }
+
+        # Total nb_objects per unique client for S3 event collection.
+        merged: dict[str, int] = {}
+        for client_id, nb_objects in payload:
+            merged[client_id] = merged.get(client_id, 0) + nb_objects
 
         def _collect_and_process() -> None:
             client_entries = []
             failed = []
 
-            for client_id, nb_objects in payload:
+            for client_id, nb_objects in merged.items():
                 client_entry = ctx.control_mq.client_dictionary.get(client_id, {})
                 data_queue = client_entry.get("data_queue")
                 if data_queue is None:
