@@ -823,8 +823,18 @@ class MessageQueue:
         if self.role != "server":
             raise PermissionError("Only server can call 'server_control_queue_loop'.")
 
+        # Lookahead deque: non-PROCESS_OBJECTS messages captured during batch drain
+        if not hasattr(self, "_lookahead"):
+            import collections
+            self._lookahead = collections.deque()
+
         while True:
-            zmq_sender_id, msg = self.recv_string()
+            # Drain lookahead first before blocking on ZMQ (ejeannot batch lane)
+            if self._lookahead:
+                zmq_sender_id, msg = self._lookahead.popleft()
+            else:
+                zmq_sender_id, msg = self.recv_string()
+
             logger.info(
                 "Received control request: %s", self._redact_control_message(msg)
             )
@@ -851,9 +861,71 @@ class MessageQueue:
                     self.send_string("SERVER_ERROR", zmq_sender_id)
                 continue
 
+            if result is None:
+                # Command handled inline, loop continues
+                continue
+
+            # Got a PROCESS_OBJECTS result — drain any additional ones from ZMQ
+            if result[0] == TaskCmd.PROCESS_OBJECTS:
+                batch = [result[1]]
+                batch.extend(self._drain_process_objects())
+                if len(batch) == 1:
+                    return result  # single request, keep original path
+                return TaskCmd.PROCESS_OBJECTS_BATCH, batch
+
+            return result
+
+    def _drain_process_objects(self):
+        """Non-blocking drain of the ZMQ control socket.
+
+        Collects additional PROCESS_OBJECTS payloads that are already queued.
+        Non-PROCESS_OBJECTS messages are pushed to the lookahead deque for the
+        next iteration of server_control_queue_loop.
+
+        Returns a list of additional PROCESS_OBJECTS payloads (may be empty).
+        """
+        extra = []
+        while True:
+            try:
+                frames = self.socket.recv_multipart(flags=zmq.NOBLOCK)
+            except zmq.Again:
+                break
+
+            # Re-parse the frame the same way recv_string does for ROUTER sockets
+            if len(frames) == 3 and frames[1] == b"":
+                zmq_sender_id, msg_bytes = frames[0], frames[2]
+                auth_frame = None
+            elif len(frames) == 3:
+                zmq_sender_id, msg_bytes = frames[0], frames[1]
+                auth_frame = frames[2]
+            elif len(frames) == 2:
+                zmq_sender_id, msg_bytes = frames[0], frames[1]
+                auth_frame = None
+            else:
+                logger.warning("_drain_process_objects: unexpected frame count %d", len(frames))
+                continue
+
+            msg = msg_bytes.decode()
+            splited_msg = msg.split(":")
+            cmd = splited_msg[0]
+
+            if cmd != TaskCmd.PROCESS_OBJECTS:
+                self._lookahead.append((zmq_sender_id, msg))
+                continue
+
+            # Parse and ACK the PROCESS_OBJECTS inline
+            try:
+                result = self._parse_count_cmd(splited_msg, zmq_sender_id)
+            except Exception as e:
+                logger.error("_drain_process_objects: parse error for %s: %s", cmd, e)
+                with contextlib.suppress(RuntimeError):
+                    self.send_string("SERVER_ERROR", zmq_sender_id)
+                continue
+
             if result is not None:
-                return result
-            # result is None → command was handled inline, loop continues
+                extra.append(result[1])
+
+        return extra
 
     def wait_for_s3_events(self, nb_objects, debug=False, timeout_s=60):
         """Block until new messages arrive, then read all available messages.

@@ -29,6 +29,7 @@ from umrs.core.TaskManager import TaskManager
 from umrs.core.thread_pool import PoolConfig, ThreadPoolManager
 from umrs.inference.embedding_backend import LocalEmbeddingBackend
 from umrs.server.commands import HandlerContext, build_registry
+from umrs.server.commands.process_objects import ProcessObjectsBatchHandler
 from umrs.server.config import ENABLE_PRETTY_PRINT
 from umrs.server.durable_job_runtime import start_durable_job_runtime_from_env
 from umrs.server.job_tracking_handler import build_durable_job_backend_from_env
@@ -420,10 +421,24 @@ def server_event_loop(
             # caller so it fails fast instead of blocking until its receive
             # timeout, and continue serving.
             try:
-                task_id = task_manager.tasks_status.create_task(cmd, payload)
-                print(f"Command: {cmd=} {payload=} {task_id=}")
-                update_status_func = make_update_status_callback(task_manager, task_id)
-                registry.dispatch(cmd, payload, update_status_func, ctx, task_id)
+                if cmd == TaskCmd.PROCESS_OBJECTS_BATCH:
+                    # payload = [(client_id, nb_objects), ...]
+                    # Each client gets its own task_id and callback.
+                    client_callbacks = {}
+                    for client_id, nb_objects in payload:
+                        task_id = task_manager.tasks_status.create_task(
+                            TaskCmd.PROCESS_OBJECTS, (client_id, nb_objects)
+                        )
+                        print(f"Command: {cmd=} {client_id=} {nb_objects=} {task_id=}")
+                        client_callbacks[client_id] = make_update_status_callback(
+                            task_manager, task_id
+                        )
+                    ProcessObjectsBatchHandler().execute(payload, client_callbacks, ctx)
+                else:
+                    task_id = task_manager.tasks_status.create_task(cmd, payload)
+                    print(f"Command: {cmd=} {payload=} {task_id=}")
+                    update_status_func = make_update_status_callback(task_manager, task_id)
+                    registry.dispatch(cmd, payload, update_status_func, ctx, task_id)
             except Exception as cmd_exc:  # noqa: BLE001 - loop must survive
                 print(f"ERROR handling command {cmd}: {cmd_exc}", flush=True)
                 traceback.print_exc()

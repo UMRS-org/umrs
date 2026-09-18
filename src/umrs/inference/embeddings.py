@@ -238,6 +238,114 @@ def compute_and_store_embedding(
             pass
 
 
+def compute_and_store_embedding_batch(items, store_fn=None):
+    """Batch variant: single model call across multiple (bucket, keys) items.
+
+    Each item in `items` is a dict with keys:
+        path_to_bucket, s3_keys, data_base, table_name, model, device,
+        modality_name, s3_connection, output_bucket, task, skip_existing,
+        indexing_job_id, model_version, model_path
+
+    All items must share the same model. Returns a list of per-item exit bools
+    (True = success).
+    """
+    if not items:
+        return []
+
+    model = items[0]["model"]
+    modality_name = items[0]["modality_name"]
+    task = items[0].get("task")
+
+    model_type = getattr(model, "type", None)
+    is_direct = (
+        model_type in DIRECT_COMPUTE_MODEL_TYPES
+        or (task is not None and task in DIRECT_COMPUTE_TASKS)
+        or (task is None and modality_name in DIRECT_COMPUTE_MODALITIES)
+    )
+
+    if is_direct:
+        # Direct-compute models manage their own I/O; process per-item.
+        results = []
+        for item in items:
+            try:
+                compute_and_store_embedding(
+                    item["path_to_bucket"], item["s3_keys"], item["data_base"],
+                    item["table_name"], item["model"], item["device"],
+                    item["modality_name"], item["s3_connection"], item["output_bucket"],
+                    task=item.get("task"), skip_existing=item.get("skip_existing", True),
+                    store_fn=store_fn,
+                )
+                results.append(True)
+            except Exception:
+                logger.exception("compute_and_store_embedding_batch: item failed")
+                results.append(False)
+        return results
+
+    # Standard path: load all data then run one model forward pass.
+    all_objects, all_checksums, all_metadata, all_saved, slices = [], [], [], [], []
+    for item in items:
+        s3_conn = item["s3_connection"]
+        bucket = item["path_to_bucket"]
+        keys = item["s3_keys"]
+        objects, metadata, checksums, sizes, has_zero = load_data_from_s3(
+            s3_conn, bucket, keys, item["modality_name"]
+        )
+        start = len(all_objects)
+        all_objects.extend(objects)
+        all_checksums.extend(checksums)
+        all_metadata.extend(metadata)
+        all_saved.extend([None] * len(keys))
+        slices.append((start, len(all_objects), sizes, has_zero))
+
+    if not all_objects:
+        return [False] * len(items)
+
+    all_embeddings = model.compute_embeddings(all_objects)
+
+    if store_fn is None:
+        from umrs.server.sql import store_embeddings_in_db
+        store_fn = store_embeddings_in_db
+
+    results = []
+    for item, (start, end, sizes, has_zero) in zip(items, slices):
+        embeddings = all_embeddings[start:end]
+        checksums = all_checksums[start:end]
+        metadata = all_metadata[start:end]
+        saved = all_saved[start:end]
+
+        if has_zero:
+            zero_out_embeddings_for_empty_objects(embeddings, sizes, item["modality_name"])
+
+        idj = item.get("indexing_job_id")
+        mv = item.get("model_version")
+        mp = item.get("model_path")
+        if idj or mv or mp:
+            dim = len(embeddings[0]) if embeddings and hasattr(embeddings[0], "__len__") else None
+            for md in metadata:
+                if idj:
+                    md["indexing_job_id"] = idj
+                if mv:
+                    md["model_version"] = mv
+                if mp:
+                    md["model_path"] = mp
+                if dim is not None:
+                    md["embedding_dimension"] = dim
+
+        try:
+            store_fn(
+                item["data_base"], embeddings, item["table_name"],
+                item["path_to_bucket"], item["s3_keys"], saved,
+                item["modality_name"], checksums, model.model_name,
+                metadata_list=metadata,
+            )
+            results.append(True)
+        except Exception:
+            logger.exception("compute_and_store_embedding_batch: store failed")
+            results.append(False)
+
+    return results
+
+
 def load_embedding_model(model_name):
 
     if not model_name:
