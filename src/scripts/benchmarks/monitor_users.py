@@ -2,6 +2,9 @@
 """
 Monitor UMRS users processing status.
 Usage: ./monitor_users.py <N> [--config-dir DIR] [--interval SEC] [--client PATH]
+
+Each poll cycle issues a single STATUS_ALL request to the server instead of
+N per-user requests, reducing monitoring overhead from O(N) to O(1) round-trips.
 """
 
 import argparse
@@ -186,7 +189,11 @@ def render(users, state, last_done_ts, start_time, poll_count):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Monitor UMRS users processing status in real time."
+        description=(
+            "Monitor UMRS users processing status in real time. "
+            "Uses a single STATUS_ALL request per poll cycle (O(1) round-trips "
+            "regardless of N)."
+        )
     )
     parser.add_argument("N", type=int, help="Number of users (user1_1 … user1_N)")
     parser.add_argument("--config-dir", default=DEFAULT_CONFIG_DIR)
