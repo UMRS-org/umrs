@@ -54,16 +54,17 @@ def recompute_all_objects(
                 entry.s3_connection, path_to_bucket
             )
             if len(s3_objects) > 0:
-                from umrs.server.processing import process_s3_objects
+                from umrs.server.processing import process_s3_objects_batch
 
                 start_time = time.perf_counter()
-                process_s3_objects(
+                process_s3_objects_batch(
                     active_threads,
-                    s3_objects,
+                    [(entry.s3_username, s3_objects)],
                     buckets_cfg,
                     device,
                     embedding_backend,
                     key,
+                    client_callbacks={},
                     update_when_done=False,
                     force_recompute=True,
                 )
@@ -146,16 +147,17 @@ def update_objects(
                     to_update_objects.append(s3_object)
 
             if len(to_update_objects) > 0:
-                from umrs.server.processing import process_s3_objects
+                from umrs.server.processing import process_s3_objects_batch
 
                 start_time = time.perf_counter()
-                process_s3_objects(
+                process_s3_objects_batch(
                     active_threads,
-                    to_update_objects,
+                    [(entry.s3_username, to_update_objects)],
                     buckets_cfg,
                     device,
                     embedding_backend,
                     key,
+                    client_callbacks={},
                     update_when_done=False,
                 )
                 duration = round(time.perf_counter() - start_time, 3)

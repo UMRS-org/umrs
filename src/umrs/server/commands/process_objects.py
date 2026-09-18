@@ -71,6 +71,7 @@ class ProcessObjectsHandler(CommandHandler):
                     ctx.embedding_backend,
                     "process_objects",
                     update_status_callback=update_status,
+                    client_id=client_id,
                 )
                 ctx.task_manager.associate_thread_with_task(thread_ident, task_id)
             except ServerOverloadedError as exc:
