@@ -1296,9 +1296,9 @@ class MessageQueue:
                         self.task_manager.tasks_status.all_tasks_summary_by_client()
                     )
 
-            # diskcache.Cache.keys() returns an iterator; materialise to a list
-            # before building the union so the cache is not iterated twice.
-            store_keys = list(store.keys()) if hasattr(store, "keys") else []
+            # diskcache.Cache has no .keys() method — use list(store) (__iter__)
+            # which works for both plain dict and diskcache.Cache.
+            store_keys = list(store)
             all_ids = set(store_keys) | set(db_by_client.keys())
             clients = {
                 cid: {
