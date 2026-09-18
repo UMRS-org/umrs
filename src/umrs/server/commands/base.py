@@ -56,7 +56,6 @@ StatusCallback = Callable[[str], None]
 def make_status_callback(task_manager: Any, task_id: int) -> StatusCallback:
     """Return a callback that updates *task_id*'s status in *task_manager*."""
     def callback(status: str) -> None:
-        logger.debug("[TASK] task_id=%d → %s", task_id, status)
         task_manager.tasks_status.update_status(task_id, status)
     return callback
 
@@ -77,7 +76,12 @@ class CommandHandler(ABC):
     ) -> tuple[int, StatusCallback]:
         """Register a new task and return ``(task_id, update_status)``."""
         task_id = ctx.task_manager.tasks_status.create_task(cmd, payload)
-        return task_id, make_status_callback(ctx.task_manager, task_id)
+        client_id = payload[0] if isinstance(payload, (tuple, list)) and payload else None
+        raw_cb = make_status_callback(ctx.task_manager, task_id)
+        def callback(status: str, _cid=client_id, _tid=task_id) -> None:
+            logger.info("[TASK] client=%s task_id=%d → %s", _cid, _tid, status)
+            raw_cb(status)
+        return task_id, callback
 
     @abstractmethod
     def execute(
