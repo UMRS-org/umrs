@@ -13,65 +13,62 @@ logger = logging.getLogger(__name__)
 # Module-level lock for rivault model launches (not re-entrant)
 rivault_lock = threading.Lock()
 
+_SELECTED_FIELDS = [
+    "s3_username", "data_base", "table_name", "model",
+    "store_embeddings_flag", "modality_name", "task",
+    "s3_connection", "output_path_to_bucket", "reentrant_lock",
+    "keep_endpoint",
+]
 
 
-def process_s3_objects_batch(
+def prepare_model_groups(
     active_threads,
     client_entries,
     buckets_cfg,
     device,
-    embedding_backend,
     key,
     client_callbacks=None,
     force_recompute=False,
-    update_when_done=True,
 ):
-    """Batch variant of process_s3_objects.
+    """Resolve bucket configs and group items by model.
 
-    ``client_entries`` is a list of ``(client_id, s3_objects)`` pairs from
-    multiple clients.  Objects from all clients are resolved against
-    ``buckets_cfg``, grouped by model, and processed with a single model call
-    per model group.  Per-client status callbacks are fired individually so
-    each client sees its own task status.
+    Runs synchronously before pool submission.  Each returned group is an
+    independent unit of work that can be submitted to a pool thread via
+    ``process_model_group``.
 
-    ``client_callbacks`` is a ``{client_id: callable}`` dict.
+    Returns a list of ``(items, group_callbacks, group_users)`` tuples, one
+    per distinct model encountered across all client entries.  Clients whose
+    bucket config cannot be resolved receive an ERROR callback here; they are
+    excluded from all returned groups.
+
+    ``items`` is a list of per-bucket dicts (one per bucket in the group).
+    Each dict carries ``reentrant_lock`` and ``_clients`` — they are consumed
+    and popped by ``process_model_group``.
     """
     if client_callbacks is None:
         client_callbacks = {}
 
-    # --- 1. Resolve bucket config for every (client, object) pair ---
-    # bucket_items[path_to_bucket] = list of (client_id, s3_key)
-    bucket_to_keys = defaultdict(list)   # bucket → [s3_key, ...]  (deduped)
-    bucket_to_clients = defaultdict(set) # bucket → {client_id, ...}
-
-    all_users = []
-    keys_per_bucket_all = defaultdict(list)
-    keep_endpoint_requested = False
+    # --- Build per-bucket key lists and client membership ---
+    keys_per_bucket: dict[str, list] = {}
+    bucket_to_clients: dict[str, set] = defaultdict(set)
 
     for client_id, s3_objects in client_entries:
         for s3_object in s3_objects:
-            logger.info(f"\t\t-->{s3_object}")
+            logger.info("\t\t-->%s", s3_object)
             path_to_bucket, s3_key = s3_object.replace("s3://", "").split("/", 1)
-            if s3_key not in keys_per_bucket_all[path_to_bucket]:
-                keys_per_bucket_all[path_to_bucket].append(s3_key)
+            bucket_keys = keys_per_bucket.setdefault(path_to_bucket, [])
+            if s3_key not in bucket_keys:
+                bucket_keys.append(s3_key)
             bucket_to_clients[path_to_bucket].add(client_id)
 
-    active_threads.update_thread_dict(buckets_cfg, keys_per_bucket_all, key)
+    active_threads.update_thread_dict(buckets_cfg, keys_per_bucket, key)
 
-    selected_fields = [
-        "s3_username", "data_base", "table_name", "model",
-        "store_embeddings_flag", "modality_name", "task",
-        "s3_connection", "output_path_to_bucket", "reentrant_lock",
-        "keep_endpoint",
-    ]
+    # --- Resolve bucket config and group by model ---
+    model_groups: dict[str, list] = {}
+    bucket_errors: set[str] = set()
 
-    # Resolve config per bucket and group by model_name
-    # model_group[model_name] = list of item dicts ready for compute_and_store_batch
-    model_groups = defaultdict(list)
-    bucket_errors = set()
-
-    for path_to_bucket, s3_keys in keys_per_bucket_all.items():
-        result = buckets_cfg.get(path_to_bucket, filter=selected_fields)
+    for path_to_bucket, s3_keys in keys_per_bucket.items():
+        result = buckets_cfg.get(path_to_bucket, filter=_SELECTED_FIELDS)
         if result is None:
             logger.warning("No bucket config for '%s', skipping", path_to_bucket)
             bucket_errors.add(path_to_bucket)
@@ -79,10 +76,6 @@ def process_s3_objects_batch(
         (user, data_base, table_name, model, store_embeddings_flag,
          modality_name, task, s3_connection, output_bucket, reentrant_lock,
          keep_endpoint) = result
-
-        all_users.append(user)
-        if keep_endpoint:
-            keep_endpoint_requested = True
 
         should_process = (
             store_embeddings_flag
@@ -94,24 +87,8 @@ def process_s3_objects_batch(
             buckets_cfg.update_num_objects(path_to_bucket)
             continue
 
-        if model.type == "rivault":
-            from umrs.server.rivault_launcher import launch_rivault_model
-            for cid in bucket_to_clients[path_to_bucket]:
-                cb = client_callbacks.get(cid)
-                if cb:
-                    cb(TaskStatus.INITIALIZING)
-            try:
-                with rivault_lock:
-                    model = launch_rivault_model(model.model.copy())
-            except Exception as e:
-                import traceback
-                logger.error("Error creating RiVault model for bucket '%s': %s", path_to_bucket, e)
-                traceback.print_exc()
-                bucket_errors.add(path_to_bucket)
-                continue
-
         model_name = getattr(model, "model_name", str(model))
-        model_groups[model_name].append({
+        model_groups.setdefault(model_name, []).append({
             "path_to_bucket": path_to_bucket,
             "s3_keys": s3_keys,
             "data_base": data_base,
@@ -125,58 +102,130 @@ def process_s3_objects_batch(
             "reentrant_lock": reentrant_lock,
             "skip_existing": not force_recompute,
             "_clients": bucket_to_clients[path_to_bucket],
+            "_user": user,
+            "keep_endpoint": bool(keep_endpoint),
         })
 
-    # --- 2. For each model group, fire one batch call ---
-    # Track per-client success: a client fails if ANY of its buckets fails.
-    client_status = {cid: TaskStatus.COMPLETED for cid, _ in client_entries}
-
-    # Signal RUNNING to all clients whose buckets resolved correctly
-    for cid in list(client_status):
-        cb = client_callbacks.get(cid)
-        if cb:
-            cb(TaskStatus.RUNNING)
-
+    # --- Fire ERROR callbacks for unresolvable buckets ---
+    errored_clients: set[str] = set()
     for bucket in bucket_errors:
         for cid in bucket_to_clients.get(bucket, set()):
-            client_status[cid] = TaskStatus.ERROR
+            errored_clients.add(cid)
+            cb = client_callbacks.get(cid)
+            if cb:
+                cb(TaskStatus.ERROR)
 
+    # --- Build per-group callback dicts (exclude errored clients) ---
+    result_groups = []
     for model_name, items in model_groups.items():
-        reentrant_locks = [item.pop("reentrant_lock") for item in items]
-        client_sets = [item.pop("_clients") for item in items]
+        group_client_ids: set[str] = set()
+        group_users: list[str] = []
+        for item in items:
+            group_client_ids.update(item["_clients"])
+            group_users.append(item["_user"])
 
-        for lock in reentrant_locks:
-            lock.acquire()
+        group_callbacks = {
+            cid: client_callbacks[cid]
+            for cid in group_client_ids
+            if cid in client_callbacks and cid not in errored_clients
+        }
+        result_groups.append((items, group_callbacks, group_users))
+
+    return result_groups
+
+
+def process_model_group(
+    active_threads,
+    items,
+    group_callbacks,
+    buckets_cfg,
+    embedding_backend,
+    key,
+    all_users,
+    update_when_done=True,
+):
+    """Process one model group in a pool thread.
+
+    Handles Rivault model launch (when needed), acquires per-bucket
+    reentrant locks, runs a single ``compute_and_store_batch`` call, fires
+    per-client status callbacks, and optionally updates the thread-dict
+    status when done.
+
+    ``items`` is the list of per-bucket dicts produced by
+    ``prepare_model_groups``; this function pops ``reentrant_lock``,
+    ``_clients``, and ``_user`` from each item before forwarding to the
+    embedding backend.
+    """
+    # Signal RUNNING to all clients in this group.
+    for cb in group_callbacks.values():
+        cb(TaskStatus.RUNNING)
+
+    model = items[0]["model"]
+
+    # --- Optional Rivault model launch ---
+    if getattr(model, "type", None) == "rivault":
+        from umrs.server.rivault_launcher import launch_rivault_model
+        for cb in group_callbacks.values():
+            cb(TaskStatus.INITIALIZING)
         try:
-            results = embedding_backend.compute_and_store_batch(items)
-        finally:
-            for lock in reentrant_locks:
-                lock.release()
+            with rivault_lock:
+                model = launch_rivault_model(model.model.copy())
+            for item in items:
+                item["model"] = model
+        except Exception as e:
+            import traceback
+            logger.error("Error launching RiVault model for group: %s", e)
+            traceback.print_exc()
+            for cb in group_callbacks.values():
+                cb(TaskStatus.ERROR)
+            return
 
-        for item, ok, clients in zip(items, results, client_sets):
-            buckets_cfg.update_num_objects(item["path_to_bucket"])
-            if not ok:
-                for cid in clients:
+    # --- Extract and acquire per-bucket locks ---
+    reentrant_locks = [item.pop("reentrant_lock") for item in items]
+    client_sets = [item.pop("_clients") for item in items]
+    # _user already used during prepare; pop to keep items clean for backend
+    for item in items:
+        item.pop("_user", None)
+
+    for lock in reentrant_locks:
+        lock.acquire()
+    try:
+        results = embedding_backend.compute_and_store_batch(items)
+    finally:
+        for lock in reentrant_locks:
+            lock.release()
+
+    # --- Per-bucket result processing ---
+    client_status = {cid: TaskStatus.COMPLETED for cid in group_callbacks}
+    for item, ok in zip(items, results):
+        buckets_cfg.update_num_objects(item["path_to_bucket"])
+        if not ok:
+            for cid in client_sets[items.index(item)]:
+                if cid in client_status:
                     client_status[cid] = TaskStatus.ERROR
 
-    # --- 3. Fire per-client callbacks with final status ---
+    # --- Fire per-client final callbacks ---
     for cid, status in client_status.items():
-        cb = client_callbacks.get(cid)
+        cb = group_callbacks.get(cid)
         if cb:
             cb(status)
 
+    # --- Thread-dict lifecycle ---
     if update_when_done:
         active_threads.update_status_to_done()
         active_threads.record_status_for_users_by_key(all_users, key)
         active_threads.remove_from_running_list()
 
-    # --- Service lifecycle: auto-release backend jobs when idle ---
+    # --- Auto-release Rivault backend jobs when the server goes idle ---
     service_lifecycle = os.environ.get("UMRS_SERVICE_LIFECYCLE", "auto_release")
+    keep_endpoint_requested = any(
+        item.get("keep_endpoint") for item in items
+    )
     if keep_endpoint_requested:
         # A processed experience opted to keep its backend endpoint warm
         # (experience.json `keep_endpoint: true`). Skip auto-release so the
         # mini-rivault endpoint stays available; the idle janitor still reaps
-        # it once it is genuinely idle (ported from process_s3_objects).
+        # it once it is genuinely idle (ai4s-platform port, pre-batch era).
         logger.info(
             "[lifecycle] keep_endpoint requested — leaving backend endpoint(s) warm"
         )
@@ -191,11 +240,40 @@ def process_s3_objects_batch(
             from umrs.server.rivault_launcher import release_all_backend_jobs
             release_all_backend_jobs()
 
-    logger.info("Batch processing done for %d client(s).", len(client_entries))
+    logger.info("Model group done. Users: %s", all_users)
     from umrs.server.config import ENABLE_PRETTY_PRINT
     with active_threads.lock:
         pretty_print_thread_status(
             active_threads.thread_dict,
             running_only=False,
             print_output=ENABLE_PRETTY_PRINT,
+        )
+
+
+def process_s3_objects_batch(
+    active_threads,
+    client_entries,
+    buckets_cfg,
+    device,
+    embedding_backend,
+    key,
+    client_callbacks=None,
+    force_recompute=False,
+    update_when_done=True,
+):
+    """Sequential wrapper used by maintenance paths.
+
+    Prepares model groups synchronously then runs each group in-thread
+    (no pool submission).  For parallel execution from the ZMQ event loop
+    use ``launch_s3_threads_batch`` in ``UMRSThreads``, which submits one
+    pool thread per model group.
+    """
+    groups = prepare_model_groups(
+        active_threads, client_entries, buckets_cfg, device, key,
+        client_callbacks, force_recompute,
+    )
+    for items, group_callbacks, group_users in groups:
+        process_model_group(
+            active_threads, items, group_callbacks, buckets_cfg,
+            embedding_backend, key, group_users, update_when_done,
         )
