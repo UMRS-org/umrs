@@ -475,6 +475,38 @@ class UMRSTask:
             for r in rows
         ]
 
+    def all_tasks_summary_by_client(self) -> dict:
+        """Single SQL query returning uncompleted tasks grouped by client_id.
+
+        Used by STATUS_ALL to answer in one DB round-trip instead of one
+        query per client.  Returns dict[client_id -> list[task_dict]].
+        """
+        query = (
+            "SELECT client_id, id, cmd, status, submitted_at, updated_at "
+            "FROM tasks "
+            "WHERE status NOT IN (%s, %s) "
+            "ORDER BY client_id, updated_at DESC"
+        )
+        conn = self._get_conn()
+        try:
+            with conn:
+                with conn.cursor() as cur:
+                    cur.execute(query, (TaskStatus.COMPLETED, TaskStatus.OVERRIDDEN))
+                    rows = cur.fetchall()
+        finally:
+            self._put_conn(conn)
+
+        result: dict = {}
+        for r in rows:
+            client_id = r[0]
+            result.setdefault(client_id, []).append({
+                "id": r[1], "client_id": r[0], "cmd": r[2],
+                "status": r[3],
+                "submitted_at": str(r[4]) if r[4] else "-",
+                "updated_at": str(r[5]) if r[5] else "-",
+            })
+        return result
+
     def pretty_print_tasks(
         self,
         status_filter=None,
