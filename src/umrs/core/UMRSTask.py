@@ -529,7 +529,7 @@ class UMRSTask:
                 message = "Tasks in DB:\n" + table
 
         if print_output:
-            logger.info(message)
+            logger.debug(message)
         return message
 
     def close(self, verbose=False):

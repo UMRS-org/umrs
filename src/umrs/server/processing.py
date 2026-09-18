@@ -156,6 +156,14 @@ def process_model_group(
     keys_per_bucket = {item["path_to_bucket"]: item["s3_keys"] for item in items}
     active_threads.update_thread_dict(buckets_cfg, keys_per_bucket, key)
 
+    model_name = getattr(items[0].get("model"), "model_name", str(items[0].get("model")))
+    logger.info(
+        "[THREAD] Starting model='%s' buckets=%s clients=%s",
+        model_name,
+        [item["path_to_bucket"] for item in items],
+        sorted(group_callbacks.keys()),
+    )
+
     # Signal RUNNING to all clients in this group.
     for cb in group_callbacks.values():
         cb(TaskStatus.RUNNING)
