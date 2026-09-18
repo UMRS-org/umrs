@@ -44,9 +44,15 @@ class ProcessObjectsBatchHandler(CommandHandler):
         # a closure that fires all N sub-task callbacks at once.  Callers are
         # unaware of this multiplicity — they just call cb(status) as usual.
         per_client_cbs: dict[str, list] = {}
+        task_ids: list[tuple[str, int]] = []
         for client_id, nb_objects in payload:
-            _, cb = self._make_task(ctx, TaskCmd.PROCESS_OBJECTS, (client_id, nb_objects))
+            task_id, cb = self._make_task(ctx, TaskCmd.PROCESS_OBJECTS, (client_id, nb_objects))
             per_client_cbs.setdefault(client_id, []).append(cb)
+            task_ids.append((client_id, task_id))
+        logger.info(
+            "[PROCESS] Tasks created: %s",
+            [(cid, tid) for cid, tid in task_ids],
+        )
 
         # Adapter closure: dict[str, callable] interface, multi-task internals.
         # The lambda captures `cbs` by value (default-arg trick) to avoid the
@@ -103,6 +109,12 @@ class ProcessObjectsBatchHandler(CommandHandler):
                 for cid, _ in client_entries
                 if cid in client_callbacks
             }
+
+            logger.info(
+                "[PROCESS] S3 events ready — launching threads for %d client(s): %s",
+                len(client_entries),
+                [(cid, len(objs)) for cid, objs in client_entries],
+            )
 
             try:
                 ctx.task_manager.active_threads.launch_s3_threads_batch(
