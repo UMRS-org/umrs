@@ -5829,6 +5829,27 @@ def _action_status(ctx):
     return 0
 
 
+def _action_status_all(ctx):
+    """Fetch the status of every client known to the server in one request."""
+    args = ctx.args
+    api = UMRSControlAPI(ctx.control_mq, "")
+    try:
+        parsed = api.request_status_all()
+        print(_json.dumps(parsed, ensure_ascii=False))
+    except Exception as e:
+        print(
+            api_json(
+                status="error",
+                action="status-all",
+                message=str(e),
+                output_format=getattr(args, "output", "text"),
+            )
+        )
+    finally:
+        ctx.control_mq.close()
+    return 0
+
+
 def _action_maintenance(ctx):
     args = ctx.args
 
@@ -6806,6 +6827,7 @@ _ACTION_HANDLERS = {
     "upload_dir": _action_s3_transfer,
     "download_results": _action_s3_transfer,
     "status": _action_status,
+    "status-all": _action_status_all,
     "recompute": _action_maintenance,
     "update": _action_maintenance,
     "check": _action_maintenance,
@@ -7279,6 +7301,12 @@ def main():
         action="store_true",
         default=False,
         help="Include full details (members, resources)",
+    )
+
+    # === STATUS_ALL (ejeannot batch lane) ===
+    subparsers.add_parser(
+        "status-all",
+        help="Fetch the status of every client known to the server in one request",
     )
 
     # === Embedding maintenance commands ===
