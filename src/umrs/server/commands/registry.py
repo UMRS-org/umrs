@@ -17,9 +17,7 @@ import json
 import logging
 from typing import Any
 
-from umrs.core.TaskCmdStatus import TaskStatus
-
-from .base import CommandHandler, HandlerContext, StatusCallback
+from .base import CommandHandler, HandlerContext
 
 logger = logging.getLogger(__name__)
 
@@ -71,23 +69,18 @@ class CommandRegistry:
         self,
         cmd: str,
         payload: Any,
-        update_status: StatusCallback,
         ctx: HandlerContext,
-        task_id: int,
     ) -> None:
         """Authorize and execute the handler for *cmd*.
 
-        1. Look up the handler — mark UNKNOWN and return if not found.
+        1. Look up the handler — reply UNKNOWN_COMMAND and return if not found.
         2. Extract client_id from payload and check authorization.
-        3. Call handler.execute(), forwarding task_id.
+        3. Call handler.execute(payload, ctx); the handler creates its own task_id(s).
         """
         handler = self._handlers.get(cmd)
         zmq_sender_id = _extract_zmq_sender_id(payload)
         if handler is None:
             logger.error("Unknown command '%s' — no handler registered", cmd)
-            # Reply so request/reply clients fail fast with a clear message
-            # instead of blocking until their receive timeout expires (which
-            # is what happens on a client/server version mismatch).
             self._reply_error(
                 ctx,
                 zmq_sender_id,
@@ -98,30 +91,23 @@ class CommandRegistry:
                     f"feature."
                 ),
             )
-            update_status(TaskStatus.UNKNOWN)
             return
 
         client_id = _extract_client_id(payload)
 
         if not self._authorize(cmd, client_id, zmq_sender_id, ctx):
-            update_status(TaskStatus.ERROR)
             return
 
         try:
-            handler.execute(payload, update_status, ctx, task_id)
+            handler.execute(payload, ctx)
         except Exception:  # noqa: BLE001 - handlers must not crash the loop
             logger.exception("Handler for '%s' raised an unhandled exception", cmd)
-            # If the handler failed before replying, the request/reply client
-            # would otherwise hang until its receive timeout.  Send an error
-            # reply as a safety net (a no-op for fire-and-forget commands that
-            # carry no sender id).
             self._reply_error(
                 ctx,
                 zmq_sender_id,
                 code="HANDLER_ERROR",
                 message=f"Server error while handling '{cmd}'.",
             )
-            update_status(TaskStatus.ERROR)
 
     def _reply_error(
         self,
