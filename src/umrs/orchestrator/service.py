@@ -18,6 +18,7 @@ import logging
 import os
 from collections.abc import Callable
 from dataclasses import dataclass, field, is_dataclass, replace
+from enum import Enum
 from typing import Any
 
 from .base import JobStatus, OrchestratorBackend
@@ -44,6 +45,24 @@ logger = logging.getLogger(__name__)
 # briefly before declaring a deprovision failed.
 _DEPROVISION_VERIFY_ATTEMPTS = 6
 _DEPROVISION_VERIFY_DELAY_SEC = 1.0
+
+
+class DeprovisionOutcome(str, Enum):
+    """ADR-058 D-3 honest surface: every deprovision ends in one of these.
+
+    ``GONE`` — backend confirmed terminally gone against its own identity.
+    ``STOPPING`` — cancel signal issued; backend still settling (the
+    registry row is kept and the janitor finalizes removal).
+    ``UNACHIEVED`` — termination could not be guaranteed: the row carried
+    no backend identity (surrogate / pre-claim lineage), or the backend
+    path failed. The surface must never render this as success.
+    ``NOT_FOUND`` — no registry row.
+    """
+
+    GONE = "gone"
+    STOPPING = "stopping"
+    UNACHIEVED = "cancellation-unachieved"
+    NOT_FOUND = "not_found"
 
 
 def _friendly_probe_detail(error: str | None, state: str) -> str:
@@ -589,6 +608,10 @@ class OrchestrationService:
                 metadata=endpoint_metadata,
                 variant=request.variant,
             )
+            # ADR-058 D-1 (WP-22): on the direct backend path the submit
+            # reply's id IS the backend identity — record it at claim time
+            # so the deprovision lane never cancels a surrogate.
+            self.registry.set_backend_job_id(job_id, job_info.job_id)
             progress("registered", {"endpoint_id": job_id})
 
             if request.wait_for_ready:
@@ -781,31 +804,62 @@ class OrchestrationService:
         self,
         job_id: str,
         force: bool = False,
-    ) -> bool:
-        """
-        Deprovision (stop) an endpoint.
+    ) -> DeprovisionOutcome:
+        """Deprovision (stop) an endpoint; ADR-058 D‑2/D‑3 honest surface.
 
-        Args:
-            job_id: Job identifier.
-            force: Force cleanup even if endpoint is in use.
+        Identity contract: the cancel targets ``endpoint.backend_job_id``
+        when the row carries it (ADR-058 D-1), never the surrogate on
+        hybrid/queued-lifecycle rows. When the identity is unavailable the
+        cleanup is still attempted with the surrogate (proven benign — a
+        no-op class) but the outcome is reported UNACHIEVED: termination is
+        by construction impossible, and the surface may not pretend
+        otherwise.
 
-        Returns:
-            True if successful.
+        Returns a ``DeprovisionOutcome`` (never a bare bool — callers must
+        see which class).
         """
         endpoint = self.registry.get_by_job_id(job_id)
         if not endpoint:
             logger.warning(f"Endpoint not found for deprovision: {job_id}")
-            return False
+            return DeprovisionOutcome.NOT_FOUND
 
-        logger.info(f"Deprovisioning endpoint: {job_id}")
+        backend_identity = endpoint.backend_job_id
+        cancel_target = backend_identity or job_id
+        identityless = backend_identity is None
+        if identityless:
+            logger.warning(
+                "deprovision %s: row carries no backend_job_id (surrogate "
+                "identity) — cancel will likely not reach the backend job",
+                job_id,
+            )
+        logger.info(f"Deprovisioning endpoint: {job_id} (target={cancel_target})")
 
         # Stop the backend job
         try:
-            await self.backend.cleanup(job_id, force=force)
+            await self.backend.cleanup(cancel_target, force=force)
         except Exception as e:
             logger.error(f"Backend cleanup failed for {job_id}: {e}")
-            return False
+            return self._end_deprovision_with(
+                job_id, DeprovisionOutcome.UNACHIEVED, identityless
+            )
 
+        return await self._finish_deprovision(
+            job_id=job_id,
+            endpoint=endpoint,
+            cancel_target=cancel_target,
+            identityless=identityless,
+        )
+
+    async def _finish_deprovision(
+        self,
+        *,
+        job_id: str,
+        endpoint: Any,
+        cancel_target: str,
+        identityless: bool,
+    ) -> DeprovisionOutcome:
+        """Verify-loop + settle bookkeeping for one deprovision (split from
+        the dispatch leg to keep cyclomatic budget honest)."""
         # Verify the backend job has actually left the active state. scancel is
         # asynchronous, so poll briefly before declaring the cleanup complete.
         # This absorbs the transient window where squeue still reports the job
@@ -819,10 +873,12 @@ class OrchestrationService:
         backend_status: JobStatus | None = None
         for attempt in range(_DEPROVISION_VERIFY_ATTEMPTS):
             try:
-                backend_info = await self.backend.get_job_status(job_id)
+                backend_info = await self.backend.get_job_status(cancel_target)
             except Exception as e:
                 logger.error(f"Backend cleanup verification failed for {job_id}: {e}")
-                return False
+                return self._end_deprovision_with(
+                    job_id, DeprovisionOutcome.UNACHIEVED, identityless
+                )
             backend_status = backend_info.status
             if backend_status not in active_states:
                 break
@@ -848,7 +904,17 @@ class OrchestrationService:
                     "cleanup_status": backend_status.value,
                 },
             )
-            return False
+            return self._end_deprovision_with(
+                job_id, DeprovisionOutcome.STOPPING, identityless
+            )
+
+        # The backend is terminally gone. If the row carried no backend
+        # identity this verdict is still only a *surrogate* verdict — the
+        # real backend job (if any) was never reached; stay honest.
+        if identityless:
+            return self._end_deprovision_with(
+                job_id, DeprovisionOutcome.UNACHIEVED, identityless
+            )
 
         # Release port
         self.port_manager.release(endpoint.port, endpoint.host)
@@ -859,7 +925,28 @@ class OrchestrationService:
         # Remove from registry
         self.registry.remove(job_id)
 
-        return True
+        return DeprovisionOutcome.GONE
+
+    @staticmethod
+    def _end_deprovision_with(
+        job_id: str,
+        outcome: DeprovisionOutcome,
+        identityless: bool,
+    ) -> DeprovisionOutcome:
+        """Mark + return the honest outcome class for one deprovision."""
+        if identityless and outcome is DeprovisionOutcome.STOPPING:
+            # A settling verdict is only meaningful when the cancel was
+            # backed by a real backend identity; surrogate-status being
+            # active means the surrogate row was never the backend job —
+            # outcome stays honestly unachieved.
+            outcome = DeprovisionOutcome.UNACHIEVED
+        logger.info(
+            "deprovision %s outcome=%s (identityless=%s)",
+            job_id,
+            outcome.value,
+            identityless,
+        )
+        return outcome
 
     async def upgrade_endpoint(
         self,

@@ -231,7 +231,7 @@ def test_remote_slurm_marker_short_circuit_before_ghost_sweep(monkeypatch) -> No
     monkeypatch.setattr(backend, "_read_remote_job_info", fake_read)
     monkeypatch.setattr(backend, "_query_slurm_job_status", fake_query)
 
-    info = asyncio.get_event_loop().run_until_complete(backend.get_job_status("standalone-1"))
+    info = asyncio.run(backend.get_job_status("standalone-1"))
     assert info.status == JobStatus.FAILED
     assert info.state_reason == "budget_exhausted"
     assert info.metadata.get("RIVAULT_TERMINAL_REASON") == "budget_exhausted"

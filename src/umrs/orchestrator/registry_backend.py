@@ -311,6 +311,33 @@ class PostgresBackend(RegistryBackend):
             """)
         logger.info("PostgreSQL registry schema initialized")
 
+    @staticmethod
+    def _select_columns() -> tuple[str, ...]:
+        """Authoritative positional column contract (ADR-058).
+
+        ``_row_to_endpoint`` indexes rows positionally; appending new
+        columns must stay *at the end* with these names so old runs of the
+        reader map identical fields. Pinned by test to catch reorderings.
+        """
+        return (
+            "job_id",
+            "project_id",
+            "model",
+            "host",
+            "port",
+            "status",
+            "backend",
+            "variant",
+            "created_at",
+            "ready_at",
+            "last_used_at",
+            "expires_at",
+            "error_message",
+            "consecutive_failures",
+            "metadata",
+            "backend_job_id",
+        )
+
     def _migrate_schema(self) -> None:
         """Apply incremental schema migrations for existing tables.
 
@@ -331,6 +358,20 @@ class PostgresBackend(RegistryBackend):
                     "ALTER TABLE endpoint_registry ADD COLUMN variant VARCHAR(255)"
                 )
                 logger.info("Added 'variant' column to endpoint_registry")
+
+            # ADR-058 D-1 (WP-22): backend's own job identity, set-once.
+            # Nullable honestly (rows pre-dating the contract or never
+            # claim-resolved keep NULL — never fabricated).
+            cur.execute("""
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'endpoint_registry'
+                AND column_name = 'backend_job_id'
+            """)
+            if cur.fetchone() is None:
+                cur.execute(
+                    "ALTER TABLE endpoint_registry ADD COLUMN backend_job_id VARCHAR(255)"
+                )
+                logger.info("Added 'backend_job_id' column to endpoint_registry")
 
             # Check for and remove legacy unique constraint
             cur.execute("""
@@ -365,6 +406,7 @@ class PostgresBackend(RegistryBackend):
             error_message=row[12],
             consecutive_failures=row[13] or 0,
             metadata=row[14] or {},
+            backend_job_id=row[15] or None,
         )
 
     def save(self, endpoint: RegisteredEndpoint) -> None:
@@ -376,9 +418,9 @@ class PostgresBackend(RegistryBackend):
                 INSERT INTO endpoint_registry (
                     job_id, project_id, model, host, port, status, backend,
                     variant, created_at, ready_at, last_used_at, expires_at,
-                    error_message, consecutive_failures, metadata
+                    error_message, consecutive_failures, metadata, backend_job_id
                 ) VALUES (
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
                 )
                 ON CONFLICT (job_id) DO UPDATE SET
                     project_id = EXCLUDED.project_id,
@@ -393,7 +435,8 @@ class PostgresBackend(RegistryBackend):
                     expires_at = EXCLUDED.expires_at,
                     error_message = EXCLUDED.error_message,
                     consecutive_failures = EXCLUDED.consecutive_failures,
-                    metadata = EXCLUDED.metadata
+                    metadata = EXCLUDED.metadata,
+                    backend_job_id = EXCLUDED.backend_job_id
                 """,
                 (
                     endpoint.job_id,
@@ -411,6 +454,7 @@ class PostgresBackend(RegistryBackend):
                     endpoint.error_message,
                     endpoint.consecutive_failures,
                     json.dumps(endpoint.metadata),
+                    endpoint.backend_job_id,
                 ),
             )
         logger.debug(f"Saved endpoint {endpoint.job_id} to Postgres")
@@ -423,7 +467,8 @@ class PostgresBackend(RegistryBackend):
                 """
                 SELECT job_id, project_id, model, host, port, status, backend,
                        variant, created_at, ready_at, last_used_at, expires_at,
-                       error_message, consecutive_failures, metadata
+                       error_message, consecutive_failures, metadata,
+                       backend_job_id
                 FROM endpoint_registry
                 WHERE project_id = %s AND model = %s
                 """,
@@ -440,7 +485,8 @@ class PostgresBackend(RegistryBackend):
                 """
                 SELECT job_id, project_id, model, host, port, status, backend,
                        variant, created_at, ready_at, last_used_at, expires_at,
-                       error_message, consecutive_failures, metadata
+                       error_message, consecutive_failures, metadata,
+                       backend_job_id
                 FROM endpoint_registry
                 WHERE job_id = %s
                 """,

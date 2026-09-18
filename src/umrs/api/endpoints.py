@@ -3102,11 +3102,74 @@ async def provision_endpoint(
     )
 
 
+def _raise_unachieved(job_id: str, backend_identity: str | None) -> None:
+    """Never render a possibly-alive backend job as "deprovisioned" (D-3).
+
+    The row's known identity is included when it exists so resolver chains
+    have something real to query — surrogate rows name nothing."""
+    detail = f"deprovision of {job_id} could not terminate the backend job"
+    if backend_identity:
+        detail += f" (backend_job_id={backend_identity})"
+    else:
+        detail += " (no backend identity assigned yet — pre-claim lineage)"
+    raise_typed(
+        PlatformError.endpoints("cancellation_unachieved", detail),
+    )
+
+
+def _surface_deprovision_outcome(
+    outcome: "Any", registry: "Any", job_id: str
+) -> "Any | None":
+    """ADR-058 D-3 honest surface for the deprovision outcome.
+
+    Returns a FastAPI response to send, or None when the outcome is GONE
+    (route continues its existing audit + governance success path)."""
+    from ..orchestrator.service import DeprovisionOutcome
+
+    if outcome is DeprovisionOutcome.UNACHIEVED:
+        still = registry.get_by_job_id(job_id)
+        _raise_unachieved(job_id, still.backend_job_id if still else None)
+    if outcome is DeprovisionOutcome.NOT_FOUND:
+        raise_typed(
+            PlatformError.endpoints("not_found", f"Endpoint not found: {job_id}"),
+        )
+    if outcome is DeprovisionOutcome.GONE:
+        return None
+
+    # STOPPING family: deprovision was issued but the backend job is still
+    # settling (e.g. Slurm COMPLETING). A job that is still tearing down is
+    # not a server error — report it as "accepted, stopping" (202) so the
+    # client does not surface a spurious 500. The janitor finalizes the
+    # registry removal once the backend job actually exits.
+    from fastapi.responses import JSONResponse
+
+    still = registry.get_by_job_id(job_id)
+    cleanup_status = (still.metadata or {}).get("cleanup_status") if still else None
+    if still is not None and cleanup_status:
+        return JSONResponse(
+            status_code=status.HTTP_202_ACCEPTED,
+            content={
+                "job_id": job_id,
+                "status": "stopping",
+                "detail": (
+                    "Deprovision initiated; backend job still stopping "
+                    f"({cleanup_status})."
+                ),
+            },
+        )
+    raise_typed(
+        PlatformError.endpoints(
+            "failure", f"Failed to deprovision endpoint: {job_id}"
+        ),
+    )
+    return None
+
+
 @router.delete(
     "/{job_id}/deprovision",
     status_code=status.HTTP_204_NO_CONTENT,
-    summary="Deprovision an endpoint (U-203)",
-    description="Stop and clean up an endpoint.",
+    summary="Deprovision an endpoint",
+    description="Stop and clean up a provisioned endpoint.",
 )
 async def deprovision_endpoint(
     job_id: str,
@@ -3127,35 +3190,10 @@ async def deprovision_endpoint(
 
     service = get_orchestration_service()
 
-    success = await service.deprovision(job_id, force=force)
-    if not success:
-        # deprovision() returns False either because the backend cancel was
-        # issued but the job is still settling (e.g. Slurm COMPLETING), or
-        # because of an unexpected failure. A job that is still tearing down is
-        # not a server error — report it as "accepted, stopping" (202) so the
-        # client does not surface a spurious 500. The janitor finalizes the
-        # registry removal once the backend job actually exits.
-        from fastapi.responses import JSONResponse
-
-        still = registry.get_by_job_id(job_id)
-        cleanup_status = (still.metadata or {}).get("cleanup_status") if still else None
-        if still is not None and cleanup_status:
-            return JSONResponse(
-                status_code=status.HTTP_202_ACCEPTED,
-                content={
-                    "job_id": job_id,
-                    "status": "stopping",
-                    "detail": (
-                        "Deprovision initiated; backend job still stopping "
-                        f"({cleanup_status})."
-                    ),
-                },
-            )
-        raise_typed(
-            PlatformError.endpoints(
-                "failure", f"Failed to deprovision endpoint: {job_id}"
-            ),
-        )
+    outcome = await service.deprovision(job_id, force=force)
+    surfaced = _surface_deprovision_outcome(outcome, registry, job_id)
+    if surfaced is not None:
+        return surfaced
 
     from .audit_events import emit_audit
 

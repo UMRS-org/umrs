@@ -85,6 +85,13 @@ class RegisteredEndpoint:
     # Backend info
     backend: str = "unknown"  # slurm, kubernetes, compose
 
+    # ADR-058 D-1 (WP-22): the backend's own job identity, set exactly once
+    # at claim time. Differs from ``job_id`` on the hybrid/queued-lifecycle
+    # paths (instance surrogate vs backend-allocated slurm number) — a row
+    # whose cancellation identity is not yet claimable keeps this None,
+    # honestly.
+    backend_job_id: str | None = None
+
     # Error tracking
     error_message: str | None = None
     consecutive_failures: int = 0
@@ -174,6 +181,7 @@ class RegisteredEndpoint:
             "host": self.host,
             "port": self.port,
             "status": self.status.value,
+            "backend_job_id": self.backend_job_id,
             "created_at": self.created_at.isoformat() + "Z",
             "ready_at": self.ready_at.isoformat() + "Z" if self.ready_at else None,
             "last_used_at": self.last_used_at.isoformat() + "Z"
@@ -391,6 +399,37 @@ class EndpointRegistry:
             f"Registered endpoint: {project_id}/{model} -> {host}:{port} (job={job_id})"
         )
         return endpoint
+
+    def set_backend_job_id(
+        self, job_id: str, backend_job_id: str
+    ) -> RegisteredEndpoint | None:
+        """ADR-058 D-1: set the backend's own id on the row, exactly once.
+
+        Returns the updated endpoint, or None when the row is absent.
+        Refuses to overwrite a *different* already-set value — the row's
+        cancellation identity is a truth, never a mutable guess: the caller
+        must log-and-forget (a wiring smell) instead of last-writer-wins.
+        """
+        if not backend_job_id:
+            raise ValueError("backend_job_id must be non-empty")
+        with self._lock:
+            endpoint = self._by_job_id.get(job_id)
+            if endpoint is None:
+                return None
+            if endpoint.backend_job_id and endpoint.backend_job_id != backend_job_id:
+                logger.error(
+                    "refusing to overwrite backend_job_id on %s: %r stays, %r dropped",
+                    job_id,
+                    endpoint.backend_job_id,
+                    backend_job_id,
+                )
+                return endpoint
+            if endpoint.backend_job_id == backend_job_id:
+                return endpoint
+            endpoint.backend_job_id = backend_job_id
+            self._persist(endpoint)
+            logger.info("backend_job_id set for %s -> %s", job_id, backend_job_id)
+            return endpoint
 
     def update_status(
         self,
