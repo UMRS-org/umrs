@@ -35,16 +35,36 @@ class OperationSDK:
     transfer logic.
     """
 
-    def __init__(self, *, gateway_url: str | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        gateway_url: str | None = None,
+        workflow_submitter: Callable[..., dict[str, Any]] | None = None,
+        experience_submitter: Callable[..., dict[str, Any]] | None = None,
+        job_canceller: Callable[..., dict[str, Any]] | None = None,
+    ) -> None:
         """Initialize the SDK.
 
         Args:
             gateway_url: Base URL for the Gateway endpoint.
                 Defaults to UMRS_GATEWAY_URL env var or localhost.
+            workflow_submitter: Optional callable translating
+                (name, params) → a workflow-submission response. When
+                absent, `run_workflow` and `run_experience` raise instead
+                of faking success (TODO-era behavior fixed 2026-09-18).
+            experience_submitter: Optional callable for the experience
+                family (same contract).
+            job_canceller: Optional callable responsible for applying a
+                durable `cancel_job` on `(job_id)`; absent ⇒ `cancel`
+                raises the same loud refusal instead of silently returning
+                a stale True.
         """
         self.gateway_url = gateway_url or os.environ.get(
             "UMRS_GATEWAY_URL", "http://localhost:8000"
         )
+        self._workflow_submitter = workflow_submitter
+        self._experience_submitter = experience_submitter
+        self._job_canceller = job_canceller
 
     # -- public operations -----------------------------------------------------
 
@@ -161,22 +181,25 @@ class OperationSDK:
         Returns:
             OperationResult with ok=True on success.
         """
-        try:
-            # TODO: Implement workflow execution via JobStore
-            # This calls handle_workflow_command or similar backend
-            return OperationResult(
-                ok=True,
-                operation_id=f"workflow-{name}",
-                detail=f"Workflow {name} submitted",
-                artifacts=[],
+        if self._workflow_submitter is None:
+            raise RuntimeError(
+                "run_workflow is not wired: no workflow_submitter was "
+                "given to OperationSDK (use ControlPlaneClient.run_workflow)"
             )
-
+        try:
+            response = self._workflow_submitter(name=name, params=params)
         except Exception as exc:
             logger.error("Run workflow failed: %s", exc)
             return OperationResult(
                 ok=False,
                 detail=str(exc),
             )
+        return OperationResult(
+            ok=True,
+            operation_id=str(response.get("operation_id") or f"workflow-{name}"),
+            detail=str(response.get("detail") or f"Workflow {name} submitted"),
+            artifacts=list(response.get("artifacts") or []),
+        )
 
     def run_experience(
         self,
@@ -197,21 +220,25 @@ class OperationSDK:
         Returns:
             OperationResult with ok=True on success.
         """
-        try:
-            # TODO: Implement experience execution via JobStore
-            return OperationResult(
-                ok=True,
-                operation_id=f"experience-{name}",
-                detail=f"Experience {name} submitted",
-                artifacts=[],
+        if self._experience_submitter is None:
+            raise RuntimeError(
+                "run_experience is not wired: no experience_submitter "
+                "was given to OperationSDK"
             )
-
+        try:
+            response = self._experience_submitter(name=name, bucket=bucket, **(overrides or {}))
         except Exception as exc:
             logger.error("Run experience failed: %s", exc)
             return OperationResult(
                 ok=False,
                 detail=str(exc),
             )
+        return OperationResult(
+            ok=True,
+            operation_id=str(response.get("operation_id") or f"experience-{name}"),
+            detail=str(response.get("detail") or f"Experience {name} submitted"),
+            artifacts=list(response.get("artifacts") or []),
+        )
 
     def cancel(self, operation_id: str) -> bool:
         """Cancel a running operation.
@@ -222,8 +249,13 @@ class OperationSDK:
         Returns:
             True if cancelled successfully, False otherwise.
         """
+        if self._job_canceller is None:
+            raise RuntimeError(
+                "cancel is not wired: no job_canceller was given to "
+                "OperationSDK (use ControlPlaneClient.cancel_job)"
+            )
         try:
-            # TODO: Implement cancel via JobStore or task cancellation
+            self._job_canceller(job_id=operation_id)
             return True
 
         except Exception as exc:

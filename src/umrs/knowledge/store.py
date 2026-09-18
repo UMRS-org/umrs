@@ -346,6 +346,18 @@ class KnowledgeStore:
             )
             return int(result.split()[-1])
 
+    async def count_graph_nodes(self, project_id: str) -> int:
+        """Row tally of knowledge_nodes within the project (used by the
+        readiness-coverage metric; table-family deterministic by design)."""
+        if not project_id:
+            return 0
+        async with self._pool.acquire() as conn:
+            val = await conn.fetchval(
+                "SELECT count(*) FROM knowledge_nodes WHERE project_id = $1",
+                project_id,
+            )
+        return int(val or 0)
+
     async def list_artifacts(
         self,
         project_id: str,
