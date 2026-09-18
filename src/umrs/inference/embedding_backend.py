@@ -1,6 +1,6 @@
 from typing import Any
 
-from umrs.inference.embeddings import compute_and_store_embedding
+from umrs.inference.embeddings import compute_and_store_embedding, compute_and_store_embedding_batch
 
 
 
@@ -38,3 +38,12 @@ class LocalEmbeddingBackend:
             task=task,
             skip_existing=skip_existing,
         )
+
+    def compute_and_store_batch(self, items: list) -> list[bool]:
+        """Batch variant: single model forward pass across multiple clients.
+
+        Each element of `items` is a dict as expected by
+        ``compute_and_store_embedding_batch``.  All items must share the same
+        model.  Returns a parallel list of per-item success bools.
+        """
+        return compute_and_store_embedding_batch(items)

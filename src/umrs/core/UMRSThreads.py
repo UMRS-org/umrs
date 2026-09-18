@@ -169,6 +169,47 @@ class UMRSThreads:
             )
         return thread_ident
 
+    def launch_s3_threads_batch(
+        self,
+        client_entries,
+        buckets_cfg,
+        device,
+        embedding_backend,
+        key,
+        client_callbacks=None,
+    ):
+        """Batch variant: one thread for multiple (client_id, s3_objects) pairs."""
+        from umrs.server.processing import process_s3_objects_batch
+
+        # _submit_to_pool expects a single update_status_callback for LAUNCHED
+        # status; we fire it for all clients here before submitting.
+        if client_callbacks:
+            for cb in client_callbacks.values():
+                cb(TaskStatus.LAUNCHED)
+
+        thread_ident, future = self._submit_to_pool(
+            process_s3_objects_batch,
+            (
+                self,
+                client_entries,
+                buckets_cfg,
+                device,
+                embedding_backend,
+                key,
+                client_callbacks,
+            ),
+            key,
+            update_status_callback=None,
+        )
+
+        try:
+            self._wait_for_key_in_dict(self.thread_dict, thread_ident)
+        except RuntimeError as exc:
+            logger.info(
+                f"WARNING: Thread {thread_ident} did not register in time for '{key}': {exc}"
+            )
+        return thread_ident
+
     def launch_export_embeddings(
         self,
         user,
