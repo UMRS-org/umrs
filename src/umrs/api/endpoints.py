@@ -3102,6 +3102,38 @@ async def provision_endpoint(
     )
 
 
+def _cancel_lineage_best_effort(endpoint: "Any | None", job_id: str) -> None:
+    """ADR-058 D-2 lineage cancel: when the backend dispatch is unachieved
+    (surrogate or backend-side failure), stop further attempts on the
+    durable lineage too — the queued-claim race dies here.
+
+    The attempt-side job status IS the marker (`cancel_job` holds the
+    advisory lock against attempt creation; claim SQL never pulls
+    CANCELLED). Never raises — the deprovision surface owns the verdict."""
+    if endpoint is None:
+        return
+    durable_job_id = (endpoint.metadata or {}).get("durable_job_id")
+    if not durable_job_id:
+        return
+    try:
+        from .jobs import get_job_store
+
+        store = get_job_store()
+        store.cancel_job(durable_job_id, reason=f"endpoint_deprovision:{job_id}")
+        logger.info(
+            "lineage cancel recorded for deprovision %s: durable_job %s cancelled",
+            job_id,
+            durable_job_id,
+        )
+    except Exception as exc:  # noqa: BLE001 — never mask the honest 409 surface
+        logger.warning(
+            "lineage cancel for deprovision %s (durable_job %s) failed: %s",
+            job_id,
+            durable_job_id,
+            exc,
+        )
+
+
 def _raise_unachieved(job_id: str, backend_identity: str | None) -> None:
     """Never render a possibly-alive backend job as "deprovisioned" (D-3).
 
@@ -3128,6 +3160,7 @@ def _surface_deprovision_outcome(
 
     if outcome is DeprovisionOutcome.UNACHIEVED:
         still = registry.get_by_job_id(job_id)
+        _cancel_lineage_best_effort(still, job_id)
         _raise_unachieved(job_id, still.backend_job_id if still else None)
     if outcome is DeprovisionOutcome.NOT_FOUND:
         raise_typed(

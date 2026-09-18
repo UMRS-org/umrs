@@ -32,6 +32,37 @@ def _has_idle_ttl(endpoint: Any) -> bool:
         return False
 
 
+def _cancel_durable_lineage(endpoint: Any) -> None:
+    """ADR-058 D-4: tombstone the durable lineage behind a reaped row.
+
+    Best-effort — the janitor's verdict is the registry row, never the
+    cancel's success; failures are explicitly logged with both identities
+    (evidence line shape pinned by fixture tests)."""
+    durable_job_id = (getattr(endpoint, "metadata", None) or {}).get("durable_job_id")
+    if not durable_job_id:
+        return
+    try:
+        from umrs.api.jobs import get_job_store
+
+        store = get_job_store()
+        store.cancel_job(
+            durable_job_id, reason=f"janitor_stuck_reaper:{endpoint.job_id}"
+        )
+        logger.info(
+            "janitor reaper lineage cancel: endpoint=%s durable_job=%s "
+            "cancelled (reason=janitor_stuck_reaper)",
+            endpoint.job_id,
+            durable_job_id,
+        )
+    except Exception as exc:  # noqa: BLE001 — reaper verdict must survive
+        logger.warning(
+            "janitor reaper lineage cancel FAILED: endpoint=%s durable_job=%s: %s",
+            endpoint.job_id,
+            durable_job_id,
+            exc,
+        )
+
+
 @dataclass
 class JanitorConfig:
     """Configuration for janitor task."""
@@ -662,6 +693,11 @@ class Janitor:
                 self.config.stuck_timeout_sec,
                 reason or "unknown",
             )
+            # ADR-058 D-4: a reaped provisioning row must also tombstone its
+            # durable lineage, else a still-QUEUED durable attempt can fire
+            # against a row the registry already declared dead (the exact
+            # 5434-descendant class).
+            _cancel_durable_lineage(endpoint)
             success = await self._cleanup_endpoint(endpoint.job_id)
             if success:
                 cleaned += 1

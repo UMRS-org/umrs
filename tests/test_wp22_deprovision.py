@@ -223,3 +223,102 @@ class TestRouteSurface:
         )
         assert resp.status_code == 202
         assert resp.json()["status"] == "stopping"
+
+
+class TestLineageCancelThrough:
+    def test_unachieved_cancels_durable_lineage(self, monkeypatch):
+        ep = _ep_with(None)
+        ep.metadata["durable_job_id"] = "job-lineage-1"
+        store = MagicMock()
+        # _cancel_lineage_best_effort lazily binds `from .jobs import get_job_store`
+        import umrs.api.jobs as jobs_mod
+
+        monkeypatch.setattr(jobs_mod, "get_job_store", lambda: store)
+        client = _route_client(
+            "cancellation-unachieved", endpoint=ep, monkeypatch=monkeypatch
+        )
+        resp = client.request(
+            "DELETE",
+            "/umrs/endpoints/5434/deprovision",
+            headers={"x-user-id": "alice"},
+        )
+        assert resp.status_code == 409
+        store.cancel_job.assert_called_once_with(
+            "job-lineage-1", reason="endpoint_deprovision:5434"
+        )
+
+    def test_unachieved_without_lineage_is_clean_409(self, monkeypatch):
+        ep = _ep_with(None)
+        client = _route_client(
+            "cancellation-unachieved", endpoint=ep, monkeypatch=monkeypatch
+        )
+        resp = client.request(
+            "DELETE",
+            "/umrs/endpoints/5434/deprovision",
+            headers={"x-user-id": "alice"},
+        )
+        assert resp.status_code == 409
+        assert "(no backend identity assigned yet" in (
+            resp.json().get("detail") or resp.json().get("error", {}).get("message", "")
+        )
+
+    def test_lineage_cancel_failure_never_masks_409(self, monkeypatch):
+        ep = _ep_with(None)
+        ep.metadata["durable_job_id"] = "job-lineage-x"
+        store = MagicMock()
+        store.cancel_job.side_effect = RuntimeError("invalid transition")
+        import umrs.api.jobs as jobs_mod
+
+        monkeypatch.setattr(jobs_mod, "get_job_store", lambda: store)
+        client = _route_client(
+            "cancellation-unachieved", endpoint=ep, monkeypatch=monkeypatch
+        )
+        resp = client.request(
+            "DELETE",
+            "/umrs/endpoints/5434/deprovision",
+            headers={"x-user-id": "alice"},
+        )
+        assert resp.status_code == 409
+
+
+class TestJanitorLineageReaper:
+    def test_cancel_durable_lineage_fires_when_metadata_present(self, monkeypatch):
+        from umrs.orchestrator.janitor import _cancel_durable_lineage
+
+        ep = MagicMock()
+        ep.job_id = "5434"
+        ep.metadata = {"durable_job_id": "job-x"}
+        store = MagicMock()
+        monkeypatch.setattr("umrs.api.jobs.get_job_store", lambda: store)
+        _cancel_durable_lineage(ep)
+        store.cancel_job.assert_called_once_with(
+            "job-x", reason="janitor_stuck_reaper:5434"
+        )
+
+    def test_cancel_durable_lineage_skips_when_no_metadata(self, monkeypatch):
+        from umrs.orchestrator.janitor import _cancel_durable_lineage
+
+        ep = MagicMock()
+        ep.job_id = "5434"
+        ep.metadata = {}
+        store = MagicMock()
+        monkeypatch.setattr("umrs.api.jobs.get_job_store", lambda: store)
+        _cancel_durable_lineage(ep)
+        store.cancel_job.assert_not_called()
+
+    def test_lineage_cancel_failure_is_swallowed_with_evidence(self, monkeypatch, caplog):
+        from umrs.orchestrator.janitor import _cancel_durable_lineage
+
+        ep = MagicMock()
+        ep.job_id = "5434"
+        ep.metadata = {"durable_job_id": "job-x"}
+        store = MagicMock()
+        store.cancel_job.side_effect = RuntimeError("invalid transition")
+        monkeypatch.setattr("umrs.api.jobs.get_job_store", lambda: store)
+        with caplog.at_level("WARNING", logger="umrs.orchestrator.janitor"):
+            _cancel_durable_lineage(ep)
+        assert any(
+            "lineage cancel FAILED" in rec.getMessage()
+            and "durable_job=job-x" in rec.getMessage()
+            for rec in caplog.records
+        )
