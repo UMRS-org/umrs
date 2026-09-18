@@ -118,7 +118,13 @@ class SSHControlManager:
             raise ValueError("ssh_target is required for SSHControlManager")
         self._config = config
         self._connected = False
-        self._lock = asyncio.Lock()
+        # Cross-event-loop safety (surfaced live 2026-09-18 on bdrt, the
+        # wave-19 knowledge cross-loop family): the ControlMaster socket
+        # itself is loop-agnostic state, but an `asyncio.Lock` binds to the
+        # loop that created it; janitor/monitor/loop services run under
+        # different loops than the boot route, so a single lock deadlocks
+        # foreign callers. Guard with a lock PER running loop instead.
+        self._locks: dict[int, asyncio.Lock] = {}
         self._reconnect_attempts = 0
         self._health_task: asyncio.Task | None = None
 
@@ -169,9 +175,18 @@ class SSHControlManager:
             args.extend(["-i", self._config.identity_file])
         return args
 
+    def _loop_lock(self) -> asyncio.Lock:
+        """Per-loop lock — the manager is shared across event loops."""
+        loop = asyncio.get_running_loop()
+        lock = self._locks.get(id(loop))
+        if lock is None or getattr(lock, "_loop", None) is not loop:
+            lock = asyncio.Lock()
+            self._locks[id(loop)] = lock
+        return lock
+
     async def ensure_connected(self) -> None:
         """Ensure the ControlMaster is established. Idempotent."""
-        async with self._lock:
+        async with self._loop_lock():
             if self._connected and await self._check_health_unlocked():
                 return
             await self._connect_unlocked()
@@ -253,7 +268,7 @@ class SSHControlManager:
 
     async def check_health(self) -> bool:
         """Public health check."""
-        async with self._lock:
+        async with self._loop_lock():
             return await self._check_health_unlocked()
 
     async def _health_loop(self) -> None:
@@ -261,7 +276,7 @@ class SSHControlManager:
         while True:
             await asyncio.sleep(_DEFAULT_HEALTH_CHECK_INTERVAL)
             try:
-                async with self._lock:
+                async with self._loop_lock():
                     alive = await self._check_health_unlocked()
                     if not alive:
                         logger.warning(
