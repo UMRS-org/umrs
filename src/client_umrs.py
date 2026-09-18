@@ -5829,13 +5829,44 @@ def _action_status(ctx):
     return 0
 
 
+def format_status_all_text(parsed):
+    """Render a STATUS_ALL response as human-readable text."""
+    if parsed.get("status") != "ok":
+        return f"{_red('✗')} {parsed.get('message', 'status unavailable')}"
+
+    clients = parsed.get("clients", {})
+    if not clients:
+        return _dim("(no clients known to server)")
+
+    generated_at = parsed.get("generated_at", "")
+    header_line = _bold("Status — all clients")
+    if generated_at:
+        header_line += f"  {_dim('(' + utc_to_local(generated_at) + ')')}"
+
+    blocks = [header_line, ""]
+    for client_id in sorted(clients.keys()):
+        if client_id == "system":
+            continue
+        entry = clients[client_id]
+        per_client = {"status": "ok", "client": client_id, "summaries": entry.get("summaries", {})}
+        blocks.append(format_status_text(per_client, "process_objects"))
+        blocks.append("")
+
+    if blocks and blocks[-1] == "":
+        blocks.pop()
+    return "\n".join(blocks)
+
+
 def _action_status_all(ctx):
     """Fetch the status of every client known to the server in one request."""
     args = ctx.args
     api = UMRSControlAPI(ctx.control_mq, "")
     try:
         parsed = api.request_status_all()
-        print(_json.dumps(parsed, ensure_ascii=False))
+        if getattr(args, "output", "text") == "json":
+            print(_json.dumps(parsed, ensure_ascii=False))
+        else:
+            print(format_status_all_text(parsed))
     except Exception as e:
         print(
             api_json(
