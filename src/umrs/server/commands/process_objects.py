@@ -30,21 +30,38 @@ class ProcessObjectsBatchHandler(CommandHandler):
     """
 
     def execute(self, payload: list, ctx: HandlerContext) -> None:
-        # One task_id per payload entry (granularity preserved for STATUS queries),
-        # even when the same client appears multiple times.  Callbacks for the
-        # same client are stored as a list and fired together at completion.
+        # --- Task creation ---
+        #
+        # The ZMQ drain may deliver several PROCESS_OBJECTS from the *same*
+        # client in one batch (e.g. the client uploaded two sets of files in
+        # quick succession).  We create one task_id per original ZMQ request
+        # so the client sees each request as a distinct entry in STATUS.
+        #
+        # Because downstream functions (process_s3_objects_batch,
+        # launch_s3_threads_batch) consume client_callbacks as
+        # dict[client_id -> callable], we keep that interface unchanged: when
+        # a client appears N times, the single callable stored in the dict is
+        # a closure that fires all N sub-task callbacks at once.  Callers are
+        # unaware of this multiplicity — they just call cb(status) as usual.
         per_client_cbs: dict[str, list] = {}
         for client_id, nb_objects in payload:
             _, cb = self._make_task(ctx, TaskCmd.PROCESS_OBJECTS, (client_id, nb_objects))
             per_client_cbs.setdefault(client_id, []).append(cb)
 
-        # Unified callback per unique client_id — fires all sub-task callbacks.
+        # Adapter closure: dict[str, callable] interface, multi-task internals.
+        # The lambda captures `cbs` by value (default-arg trick) to avoid the
+        # classic late-binding pitfall in Python loop closures.
         client_callbacks: dict[str, Any] = {
             cid: (lambda status, cbs=cbs: [cb(status) for cb in cbs])
             for cid, cbs in per_client_cbs.items()
         }
 
-        # Total nb_objects per unique client for S3 event collection.
+        # --- S3 event collection ---
+        #
+        # S3 events for the same client are queued in arrival order regardless
+        # of how many PROCESS_OBJECTS requests produced them.  We drain them in
+        # a single wait_for_s3_events call using the merged total, which is both
+        # simpler and avoids a second blocking wait on an already-drained queue.
         merged: dict[str, int] = {}
         for client_id, nb_objects in payload:
             merged[client_id] = merged.get(client_id, 0) + nb_objects
