@@ -1285,28 +1285,39 @@ class MessageQueue:
         same structure that ``_get_status_payload`` returns per client, so
         monitor_users.py can reuse the same parsing logic.
         """
-        store = self.status_store or {}
-        generated_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        try:
+            store = self.status_store or {}
+            generated_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
-        db_by_client: dict = {}
-        if self.task_manager is not None:
-            with contextlib.suppress(Exception):
-                db_by_client = (
-                    self.task_manager.tasks_status.all_tasks_summary_by_client()
-                )
+            db_by_client: dict = {}
+            if self.task_manager is not None:
+                with contextlib.suppress(Exception):
+                    db_by_client = (
+                        self.task_manager.tasks_status.all_tasks_summary_by_client()
+                    )
 
-        all_ids = set(store.keys()) | set(db_by_client.keys())
-        clients = {
-            cid: {
-                "summaries": store.get(cid, {}),
-                "uncompleted_key_list": db_by_client.get(cid, []),
+            # diskcache.Cache.keys() returns an iterator; materialise to a list
+            # before building the union so the cache is not iterated twice.
+            store_keys = list(store.keys()) if hasattr(store, "keys") else []
+            all_ids = set(store_keys) | set(db_by_client.keys())
+            clients = {
+                cid: {
+                    "summaries": store.get(cid, {}),
+                    "uncompleted_key_list": db_by_client.get(cid, []),
+                }
+                for cid in all_ids
             }
-            for cid in all_ids
-        }
-        return json.dumps(
-            {"status": "ok", "generated_at": generated_at, "clients": clients},
-            ensure_ascii=False,
-        )
+            return json.dumps(
+                {"status": "ok", "generated_at": generated_at, "clients": clients},
+                ensure_ascii=False,
+                default=str,  # diskcache values may contain datetime or custom types
+            )
+        except Exception as exc:
+            logger.exception("STATUS_ALL payload build failed: %s", exc)
+            return json.dumps(
+                {"status": "error", "message": f"STATUS_ALL build error: {exc}"},
+                ensure_ascii=False,
+            )
 
     def request_status_all(self) -> str:
         """Send STATUS_ALL and return the raw JSON reply (client role only)."""
@@ -1319,6 +1330,10 @@ class MessageQueue:
             raise TimeoutError(
                 "Timeout waiting for server response in request_status_all"
             ) from None
+        if reply is None:
+            raise TimeoutError("No response from server for STATUS_ALL")
+        if not reply.startswith("{"):
+            raise RuntimeError(f"Unexpected server reply for STATUS_ALL: {reply!r}")
         return reply
 
     def notify_s3(self, s3_object):
