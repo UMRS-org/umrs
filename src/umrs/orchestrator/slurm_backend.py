@@ -272,7 +272,20 @@ class SlurmBackend(OrchestratorBackend):
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        await proc.communicate()
+        _stdout, stderr = await proc.communicate()
+        # scancel silently succeeds rc=0 only when something was actually
+        # signalled; a still-provisioning registry id (5434-era finding,
+        # 2026-09-18) is NOT the slurm job number it must be — record the
+        # failure loudly at ERROR so the glue gap never masks again.
+        if proc.returncode != 0:
+            detail = (stderr or b"").decode(errors="replace").strip()
+            logger.error(
+                "scancel --signal=%s %s exited rc=%s: %s",
+                signal,
+                job_id,
+                proc.returncode,
+                detail,
+            )
 
         # Clean up info file
         info_path = self._job_info_path(job_id)

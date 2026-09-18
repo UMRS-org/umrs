@@ -576,6 +576,56 @@ class TestSlurmBackendMocked:
             await backend.cleanup("12345")
             mock_exec.assert_called_once()
 
+    @pytest.mark.asyncio
+    async def test_slurm_cleanup_logs_error_when_scancel_fails(self, slurm_config, caplog):
+        """2026-09-18 finding: a still-provisioning registry id is not the
+        slurm job number scancel needs; the silent no-op masked it. The
+        backend must now log the scancel failure at ERROR."""
+        try:
+            from umrs.orchestrator.slurm_backend import SlurmBackend
+        except ImportError:
+            pytest.skip("SlurmBackend not available")
+
+        backend = SlurmBackend(slurm_config)
+
+        with patch("asyncio.create_subprocess_exec") as mock_exec:
+            mock_process = AsyncMock()
+            mock_process.communicate.return_value = (
+                b"",
+                b"scancel: error: Invalid job id specified\n",
+            )
+            mock_process.returncode = 1
+            mock_exec.return_value = mock_process
+
+            with caplog.at_level("ERROR", logger="umrs.orchestrator.slurm_backend"):
+                await backend.cleanup("5434")
+
+            assert any(
+                rec.levelno == 40
+                and "scancel --signal=TERM 5434 exited rc=1" in rec.getMessage()
+                for rec in caplog.records
+            )
+
+    @pytest.mark.asyncio
+    async def test_slurm_cleanup_success_logs_no_error(self, slurm_config, caplog):
+        try:
+            from umrs.orchestrator.slurm_backend import SlurmBackend
+        except ImportError:
+            pytest.skip("SlurmBackend not available")
+
+        backend = SlurmBackend(slurm_config)
+
+        with patch("asyncio.create_subprocess_exec") as mock_exec:
+            mock_process = AsyncMock()
+            mock_process.communicate.return_value = (b"", b"")
+            mock_process.returncode = 0
+            mock_exec.return_value = mock_process
+
+            with caplog.at_level("ERROR", logger="umrs.orchestrator.slurm_backend"):
+                await backend.cleanup("384999")
+
+            assert not any(rec.levelno == 40 for rec in caplog.records)
+
 
 # =============================================================================
 # Test Kubernetes Backend (Mocked)
