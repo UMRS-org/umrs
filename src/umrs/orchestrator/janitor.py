@@ -735,10 +735,60 @@ class Janitor:
                 if cleaned >= self.config.batch_size:
                     break
 
+            self._orphan_failures_record_success()
         except Exception as e:
-            logger.error(f"Orphan cleanup failed: {e}")
+            self._orphan_failures_record_failure(e)
 
         return cleaned
+
+    # ── Consecutive-failure backoff (2026-09-18, venue health class) ────
+    #
+    # A wedged or intentionally-offline venue hits the SAME exception every
+    # janitor tick (60s: "Orphan cleanup failed: Connection closed..." on
+    # ai4s today). Log ERROR for the LOCAL first failure, enter backoff,
+    # note re-elevated boundaries at powers-of-ten streaks, and emit an
+    # info-level recovery lane line when the venue comes back. The shape
+    # deliberately never advertises a venue-health class (can't fabricate).
+    _FAIL_BLOCK_FIRST = 1
+    _FAIL_RE_LOG_EVERY = 128
+    _FAIL_SUMMARY_EVERY = 32
+
+    def _orphan_failures_record_failure(self, exc: Exception) -> None:
+        backend_name = getattr(self.backend, "backend_name", "unknown")
+        streak_map = getattr(self, "_orphan_fail_streak", None)
+        if streak_map is None:
+            streak_map = {}
+            self._orphan_fail_streak = streak_map
+        next_n = streak_map.get(backend_name, 0) + 1
+        streak_map[backend_name] = next_n
+        if next_n == self._FAIL_BLOCK_FIRST:
+            logger.error("Orphan cleanup failed (backend=%s, streak=1): %s", backend_name, exc)
+        elif next_n % self._FAIL_SUMMARY_EVERY == 0:
+            logger.error(
+                "Orphan cleanup STILL failing (backend=%s, streak=%d consecutive): %s",
+                backend_name,
+                next_n,
+                exc,
+            )
+        elif next_n % self._FAIL_RE_LOG_EVERY == 32:
+            logger.debug(
+                "orphan cleanup quiet while backend=%s down (streak=%d)",
+                backend_name,
+                next_n,
+            )
+
+    def _orphan_failures_record_success(self) -> None:
+        backend_name = getattr(self.backend, "backend_name", "unknown")
+        streak_map = getattr(self, "_orphan_fail_streak", None)
+        if not streak_map:
+            return
+        prev = streak_map.pop(backend_name, 0)
+        if prev >= self._FAIL_BLOCK_FIRST:
+            logger.info(
+                "orphan cleanup recovered (backend=%s after %d consecutive failures)",
+                backend_name,
+                prev,
+            )
 
     async def _cleanup_endpoint(self, job_id: str) -> bool:
         """
