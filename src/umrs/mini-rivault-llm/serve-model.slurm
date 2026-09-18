@@ -2261,6 +2261,11 @@ if [[ -n "${SLURM_JOB_ID:-}" && -n "${_JOB_INFO_DIR_EFF}" && -d "${_JOB_INFO_DIR
         # WP-12 venue leg: first-ready emission at VENUE time (never by the control
         # plane — its timestamp must be the wrapper's, so the span end-stamp is the
         # venue's own first-ready wall-clock, not a server's observed flip).
+        # G-P1-4 fine class note: this wrapper has no health-wait between its
+        # compose-up return and this write — venue-side stack_up == first_ready
+        # here, so no second venue stamp exists without inventing meaning; the
+        # stack_up → READY delta is instead a CONTROL-plane window owned by the
+        # provision poll loop (attributed on the gateway/span, not here).
         echo "RIVAULT_FIRST_READY_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     } > "${_JOB_INFO_DIR_EFF}/rivault-job-${SLURM_JOB_ID}.info.tmp" \
         && mv "${_JOB_INFO_DIR_EFF}/rivault-job-${SLURM_JOB_ID}.info.tmp" \
