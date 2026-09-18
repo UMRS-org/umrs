@@ -55,6 +55,7 @@ StatusCallback = Callable[[str], None]
 def make_status_callback(task_manager: Any, task_id: int) -> StatusCallback:
     """Return a callback that updates *task_id*'s status in *task_manager*."""
     def callback(status: str) -> None:
+        logger.debug("[TASK] task_id=%d → %s", task_id, status)
         task_manager.tasks_status.update_status(task_id, status)
     return callback
 
