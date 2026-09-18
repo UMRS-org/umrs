@@ -161,37 +161,37 @@ class UMRSThreads:
         key,
         client_callbacks=None,
     ):
-        """Batch variant: one thread for multiple (client_id, s3_objects) pairs."""
-        from umrs.server.processing import process_s3_objects_batch
+        """Submit one pool thread per model group across all client entries.
 
-        # _submit_to_pool expects a single update_status_callback for LAUNCHED
-        # status; we fire it for all clients here before submitting.
+        ``prepare_model_groups`` resolves bucket configs and groups items by
+        model synchronously (before pool submission), so each submitted thread
+        is independent and can run in parallel — Rivault nodes on different
+        GPUs, or simply different local models.
+        """
+        from umrs.server.processing import prepare_model_groups, process_model_group
+
         if client_callbacks:
             for cb in client_callbacks.values():
                 cb(TaskStatus.LAUNCHED)
 
-        thread_ident, future = self._submit_to_pool(
-            process_s3_objects_batch,
-            (
-                self,
-                client_entries,
-                buckets_cfg,
-                device,
-                embedding_backend,
-                key,
-                client_callbacks,
-            ),
-            key,
-            update_status_callback=None,
+        groups = prepare_model_groups(
+            self, client_entries, buckets_cfg, device, key, client_callbacks,
         )
 
-        try:
-            self._wait_for_key_in_dict(self.thread_dict, thread_ident)
-        except RuntimeError as exc:
-            logger.info(
-                f"WARNING: Thread {thread_ident} did not register in time for '{key}': {exc}"
+        for items, group_callbacks, group_users in groups:
+            thread_ident, _ = self._submit_to_pool(
+                process_model_group,
+                (self, items, group_callbacks, buckets_cfg, embedding_backend, key, group_users),
+                key,
+                update_status_callback=None,
             )
-        return thread_ident
+            try:
+                self._wait_for_key_in_dict(self.thread_dict, thread_ident)
+            except RuntimeError as exc:
+                logger.info(
+                    "WARNING: Thread %s did not register in time for '%s': %s",
+                    thread_ident, key, exc,
+                )
 
     def launch_export_embeddings(
         self,
