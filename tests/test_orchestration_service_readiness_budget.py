@@ -81,6 +81,9 @@ async def test_deprovision_passes_force_and_preserves_registry_when_backend_acti
         port=8001,
         backend="slurm-podman",
     )
+    # WP-22 leg 1: the direct-path claim writes the backend identity at
+    # provision time; mirrors the identity service.provision wires.
+    registry.set_backend_job_id("175407", "175407")
     backend = _Backend(JobStatus.RUNNING)
     port_manager = _PortManager()
     service = OrchestrationService(
@@ -89,9 +92,11 @@ async def test_deprovision_passes_force_and_preserves_registry_when_backend_acti
         backend=backend,
     )
 
-    success = await service.deprovision("175407", force=True)
+    from umrs.orchestrator.service import DeprovisionOutcome
 
-    assert success is False
+    outcome = await service.deprovision("175407", force=True)
+
+    assert outcome is DeprovisionOutcome.STOPPING
     assert backend.cleanup_calls == [("175407", True)]
     assert registry.get_by_job_id("175407") is not None
     assert registry.get_by_job_id("175407").metadata["cleanup_status"] == "running"
@@ -109,6 +114,7 @@ async def test_deprovision_removes_registry_only_after_backend_stopped():
         port=8001,
         backend="slurm-podman",
     )
+    registry.set_backend_job_id("175408", "175408")
     backend = _Backend(JobStatus.STOPPED)
     port_manager = _PortManager()
     service = OrchestrationService(
@@ -117,9 +123,11 @@ async def test_deprovision_removes_registry_only_after_backend_stopped():
         backend=backend,
     )
 
-    success = await service.deprovision("175408", force=True)
+    from umrs.orchestrator.service import DeprovisionOutcome
 
-    assert success is True
+    outcome = await service.deprovision("175408", force=True)
+
+    assert outcome is DeprovisionOutcome.GONE
     assert backend.cleanup_calls == [("175408", True)]
     assert registry.get_by_job_id("175408") is None
     assert port_manager.released == [("ng-dgx-m0-08", 8001)]

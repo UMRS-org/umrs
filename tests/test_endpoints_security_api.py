@@ -18,8 +18,10 @@ class _StubOrchestrationService:
         return ProvisionResult(success=True, job_id="job-123")
 
     async def deprovision(self, job_id, *, force=False):
+        from umrs.orchestrator.service import DeprovisionOutcome
+
         self.deprovisions.append((job_id, force))
-        return True
+        return DeprovisionOutcome.GONE
 
 
 def _new_registry():
@@ -185,7 +187,9 @@ def test_deprovision_endpoint_hides_cross_project_job_id(monkeypatch):
 def test_deprovision_returns_202_when_backend_still_stopping(monkeypatch):
     class _StoppingService:
         async def deprovision(self, job_id, *, force=False):
-            return False
+            from umrs.orchestrator.service import DeprovisionOutcome
+
+            return DeprovisionOutcome.STOPPING
 
     registry = EndpointRegistry()
     registry.register(
