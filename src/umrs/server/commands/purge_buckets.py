@@ -10,10 +10,10 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from umrs.core.TaskCmdStatus import TaskStatus
+from umrs.core.TaskCmdStatus import TaskCmd, TaskStatus
 from umrs.server.maintenance import handle_purge_buckets
 
-from .base import CommandHandler, HandlerContext, StatusCallback
+from .base import CommandHandler, HandlerContext
 
 logger = logging.getLogger(__name__)
 
@@ -31,13 +31,8 @@ def _send_reply(
 class PurgeBucketsHandler(CommandHandler):
     """Handle PURGE_BUCKETS — delete user-owned extra S3 buckets."""
 
-    def execute(
-        self,
-        payload: Any,
-        update_status: StatusCallback,
-        ctx: HandlerContext,
-        task_id: int,
-    ) -> None:
+    def execute(self, payload: Any, ctx: HandlerContext) -> None:
+        task_id, update_status = self._make_task(ctx, TaskCmd.PURGE_BUCKETS, payload)
         client_id, payload_str, zmq_sender_id = payload
         response_json = handle_purge_buckets(
             "PURGE_BUCKETS",
