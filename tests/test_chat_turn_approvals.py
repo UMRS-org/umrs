@@ -5,7 +5,6 @@ from __future__ import annotations
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-
 from umrs.api.companion_chat_approvals import router
 from umrs.companion_trust.chat_turn_approvals import ChatTurnApprovalsStore
 

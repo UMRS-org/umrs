@@ -207,4 +207,4 @@ class ChatTurnApprovalsStore:
             self._conn.commit()
 
 
-__all__ = ["ChatTurnApprovalsStore", "VALID_DECISIONS"]
+__all__ = ["VALID_DECISIONS", "ChatTurnApprovalsStore"]
