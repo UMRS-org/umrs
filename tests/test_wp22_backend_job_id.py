@@ -78,3 +78,59 @@ class TestPersistenceWireShape:
         cols = PostgresBackend._select_columns()
         assert cols[-1] == "backend_job_id"
         assert cols.index("backend_job_id") == 15
+
+
+class TestSSHControlCrossLoop:
+    def test_per_loop_locks_allow_foreign_loop_operations(self):
+        """Cross-loop family pin (surfaced live 2026-09-18 on bdrt): two
+        different event loops must each obtain a lock without the
+        'bound to a different event loop' deadlock."""
+        import asyncio
+
+        from umrs.orchestrator.ssh_control import SSHControlConfig, SSHControlManager
+
+        manager = SSHControlManager(
+            SSHControlConfig(ssh_target="dummy.invalid", ssh_user="u")
+        )
+
+        loops = []
+
+        async def grab_and_release():
+            loop = asyncio.get_running_loop()
+            loops.append(loop)
+            async with manager._loop_lock():
+                return manager._locks[id(loop)]
+
+        first = asyncio.new_event_loop()
+        second = asyncio.new_event_loop()
+        try:
+            lock_a = first.run_until_complete(grab_and_release())
+            lock_b = second.run_until_complete(grab_and_release())
+            # Each loop gets its own lock; none of them is the other loop's object.
+            assert lock_a is not lock_b
+            assert manager._locks[id(loops[0])] is lock_a
+            assert manager._locks[id(loops[1])] is lock_b
+        finally:
+            first.close()
+            second.close()
+
+    def test_same_loop_reuses_same_lock(self):
+        import asyncio
+
+        from umrs.orchestrator.ssh_control import SSHControlConfig, SSHControlManager
+
+        manager = SSHControlManager(
+            SSHControlConfig(ssh_target="dummy.invalid", ssh_user="u")
+        )
+
+        async def grab():
+            async with manager._loop_lock():
+                return 1
+
+        loop = asyncio.new_event_loop()
+        try:
+            assert loop.run_until_complete(grab()) == 1
+            assert loop.run_until_complete(grab()) == 1
+            assert len(manager._locks) == 1
+        finally:
+            loop.close()
