@@ -47,6 +47,13 @@ class UMRSControlAPI:
             raise RuntimeError("Invalid status response")
         return parsed
 
+    def request_status_all(self) -> dict[str, Any]:
+        raw = self._mq.request_status_all()
+        parsed = json.loads(raw)
+        if not isinstance(parsed, dict):
+            raise RuntimeError("Invalid status-all response")
+        return parsed
+
     def list_models(self, scope: str | None = None) -> dict[str, Any]:
         payload = dumps_with_correlation_id({"scope": scope}) if scope else ""
         raw = self._mq.request_model_command(

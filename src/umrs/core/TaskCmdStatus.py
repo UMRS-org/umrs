@@ -18,6 +18,7 @@ class TaskCmd:
     HAND_CHECK = "HAND_CHECK"
     CREATE_DATA_QUEUE = "CREATE_DATA_QUEUE"
     STATUS = "STATUS"
+    STATUS_ALL = "STATUS_ALL"  # server-wide snapshot: all clients in one response
     EXPORT_EMBEDDINGS = "EXPORT_EMBEDDINGS"
     # Model registry commands
     MODEL_REGISTER = "MODEL_REGISTER"

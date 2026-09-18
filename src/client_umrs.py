@@ -5606,6 +5606,27 @@ def _action_status(ctx):
     return 0
 
 
+def _action_status_all(ctx):
+    """Fetch the status of every client known to the server in one request."""
+    args = ctx.args
+    api = UMRSControlAPI(ctx.control_mq, "")
+    try:
+        parsed = api.request_status_all()
+        print(_json.dumps(parsed, ensure_ascii=False))
+    except Exception as e:
+        print(
+            api_json(
+                status="error",
+                action="status-all",
+                message=str(e),
+                output_format=getattr(args, "output", "text"),
+            )
+        )
+    finally:
+        ctx.control_mq.close()
+    return 0
+
+
 def _action_maintenance(ctx):
     args = ctx.args
 
@@ -6282,6 +6303,7 @@ _ACTION_HANDLERS = {
     "list_buckets": _action_list_buckets,
     "purge_remote_buckets": _action_purge_remote_buckets,
     "status": _action_status,
+    "status-all": _action_status_all,
     "recompute": _action_maintenance,
     "update": _action_maintenance,
     "check": _action_maintenance,
@@ -6697,6 +6719,11 @@ def main():
         "status", help="Fetch the latest server summary for maintenance commands"
     )
     configure_status_parser(status_p, include_username=True)
+
+    subparsers.add_parser(
+        "status-all",
+        help="Fetch the status of every client known to the server in one request",
+    )
 
     # Embedding maintenance actions
     subparsers.add_parser(
