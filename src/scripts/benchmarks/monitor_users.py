@@ -23,15 +23,18 @@ ICON_PENDING = "⚪"
 ICON_RUNNING = "🔴"
 ICON_DONE    = "🟢"
 
+# Sentinel returned by query_user when the server has no record of the client.
+NOT_FOUND = "NOT_FOUND"
+
 
 def query_user(user: str, config_dir: str, client: str, debug: bool = False) -> tuple:
-    """
-    `entries` accumulates one item per run (Done stays forever, a new run
-    appends a new thread_id). The only entry that reflects the CURRENT run
-    is the most recent one (max updated_at) — summing statuses across all
-    entries mixes past and present runs.
+    """Query the server for *user*'s processing status.
 
-    Returns (is_running, latest_status, latest_ts)
+    Returns ``(is_running, latest_status, latest_ts)`` where:
+    - ``is_running`` is True/False when a run is known, NOT_FOUND when the
+      server has no record of the client, or None on a transient error.
+    - ``latest_ts`` is the most-recent ``updated_at`` among all entries, or
+      ``generated_at`` from the summary when the server is idle (data=[]).
     """
     config_file = os.path.expanduser(f"{config_dir}/{user}.json")
     cmd = [client, "-c", config_file, "--output", "json", "status", "--username", user]
@@ -48,12 +51,23 @@ def query_user(user: str, config_dir: str, client: str, debug: bool = False) -> 
                     print(json.dumps(data, indent=2, ensure_ascii=False), flush=True)
                     print("-" * 42, flush=True)
 
+                # Case 1: server error response → client unknown to server.
+                if data.get("status") == "error":
+                    return NOT_FOUND, None, None
+
                 summaries = data.get("summaries", {})
-                entries = (summaries.get("process_objects") or
-                           summaries.get("PROCESS_OBJECTS") or {}).get("data", [])
+                po = (summaries.get("process_objects") or
+                      summaries.get("PROCESS_OBJECTS") or {})
+                entries = po.get("data", [])
 
                 dated = [e for e in entries if e.get("updated_at")]
                 if not dated:
+                    # Case 2: server is idle — no runs yet but client is known.
+                    # Use generated_at as the baseline timestamp so the bootstrap
+                    # phase can proceed (change detection compares against this).
+                    generated_at = po.get("generated_at")
+                    if generated_at:
+                        return False, "Idle", generated_at
                     return None, None, None
 
                 latest = max(dated, key=lambda e: e["updated_at"])
@@ -161,6 +175,11 @@ def main():
             if args.debug:
                 print(f"[bootstrap] {user}: is_running={is_running} "
                                       f"latest_status={latest_status} latest_ts={latest_ts}", flush=True)
+            if is_running is NOT_FOUND:
+                if bootstrap_bar is not None:
+                    bootstrap_bar.close()
+                print(f"\n[Error] {user}: client unknown to server — aborting monitor.", flush=True)
+                raise SystemExit(1)
             if is_running is True:
                 state[user] = "running"
             if latest_ts is not None:
@@ -168,8 +187,8 @@ def main():
                 if bootstrap_bar is not None:
                     bootstrap_bar.update(1)
             else:
-                print(f"[Error-bootstrap] {user}: is_running={is_running} "
-                    f"latest_status={latest_status} latest_ts={latest_ts}", flush=True)
+                if args.debug:
+                    print(f"[bootstrap] {user}: no timestamp yet, retrying…", flush=True)
                 time.sleep(args.interval)
 
     if bootstrap_bar is not None:
