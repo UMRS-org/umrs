@@ -865,12 +865,10 @@ class MessageQueue:
                 # Command handled inline, loop continues
                 continue
 
-            # Got a PROCESS_OBJECTS result — drain any additional ones from ZMQ
+            # Got a PROCESS_OBJECTS — always wrap in BATCH (N=1 is handled uniformly)
             if result[0] == TaskCmd.PROCESS_OBJECTS:
                 batch = [result[1]]
                 batch.extend(self._drain_process_objects())
-                if len(batch) == 1:
-                    return result  # single request, keep original path
                 return TaskCmd.PROCESS_OBJECTS_BATCH, batch
 
             return result

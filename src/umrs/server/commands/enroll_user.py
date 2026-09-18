@@ -16,14 +16,14 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from umrs.core.TaskCmdStatus import TaskStatus
+from umrs.core.TaskCmdStatus import TaskCmd, TaskStatus
 from umrs.server.config import ENABLE_PRETTY_PRINT
 from umrs.server.file_handling import (
     persist_uploaded_user_config as _persist_uploaded_user_config,
 )
 from umrs.server.maintenance import filter_outcome, reload_configuration
 
-from .base import CommandHandler, HandlerContext, StatusCallback
+from .base import CommandHandler, HandlerContext
 
 logger = logging.getLogger(__name__)
 
@@ -31,13 +31,8 @@ logger = logging.getLogger(__name__)
 class EnrollUserHandler(CommandHandler):
     """Handle ENROLL_USER — admin registers one or more new users."""
 
-    def execute(
-        self,
-        payload: Any,
-        update_status: StatusCallback,
-        ctx: HandlerContext,
-        task_id: int,
-    ) -> None:
+    def execute(self, payload: Any, ctx: HandlerContext) -> None:
+        task_id, update_status = self._make_task(ctx, TaskCmd.ENROLL_USER, payload)
         if not payload:
             logger.warning(
                 "ENROLL_USER command received with no payload (task_id=%s)", task_id

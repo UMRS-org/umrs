@@ -12,9 +12,9 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from umrs.core.TaskCmdStatus import TaskStatus
+from umrs.core.TaskCmdStatus import TaskCmd, TaskStatus
 
-from .base import CommandHandler, HandlerContext, StatusCallback
+from .base import CommandHandler, HandlerContext
 
 logger = logging.getLogger(__name__)
 
@@ -29,13 +29,10 @@ class UploadWorkflowHandler(CommandHandler):
     guidance instead of accepting unauthenticated code uploads.
     """
 
-    def execute(
-        self,
-        payload: Any,
-        update_status: StatusCallback,
-        ctx: HandlerContext,
-        task_id: int,
-    ) -> None:
+    def execute(self, payload: Any, ctx: HandlerContext) -> None:
+        task_id, update_status = self._make_task(
+            ctx, TaskCmd.UPLOAD_WORKFLOW, payload
+        )
         _client_id, _files, workflow_name = payload
         logger.warning(
             "UPLOAD_WORKFLOW rejected (deprecated, ADR-027) for '%s' — "

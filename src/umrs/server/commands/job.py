@@ -1,20 +1,14 @@
-"""Handlers for JOB_SUBMIT, JOB_CANCEL and JOB_LIST commands.
-
-Each handler unpacks the ZeroMQ payload, delegates to
-``handle_job_command()`` in ``umrs.server.job_tracking_handler``,
-sends the JSON response back to the caller via ZeroMQ, and marks the
-task as COMPLETED.
-"""
+"""Handlers for JOB_SUBMIT, JOB_CANCEL and JOB_LIST commands."""
 
 from __future__ import annotations
 
 import logging
 from typing import Any
 
-from umrs.core.TaskCmdStatus import TaskStatus
+from umrs.core.TaskCmdStatus import TaskCmd, TaskStatus
 from umrs.server.job_tracking_handler import handle_job_command
 
-from .base import CommandHandler, HandlerContext, StatusCallback
+from .base import CommandHandler, HandlerContext
 
 logger = logging.getLogger(__name__)
 
@@ -32,13 +26,8 @@ def _send_reply(
 class JobSubmitHandler(CommandHandler):
     """Handle JOB_SUBMIT — submit a new durable job with retry config."""
 
-    def execute(
-        self,
-        payload: Any,
-        update_status: StatusCallback,
-        ctx: HandlerContext,
-        task_id: int,
-    ) -> None:
+    def execute(self, payload: Any, ctx: HandlerContext) -> None:
+        task_id, update_status = self._make_task(ctx, TaskCmd.JOB_SUBMIT, payload)
         client_id, payload_str, zmq_sender_id = payload
         response_json = handle_job_command(
             "JOB_SUBMIT",
@@ -53,13 +42,8 @@ class JobSubmitHandler(CommandHandler):
 class JobCancelHandler(CommandHandler):
     """Handle JOB_CANCEL — cancel a submitted job by ID."""
 
-    def execute(
-        self,
-        payload: Any,
-        update_status: StatusCallback,
-        ctx: HandlerContext,
-        task_id: int,
-    ) -> None:
+    def execute(self, payload: Any, ctx: HandlerContext) -> None:
+        task_id, update_status = self._make_task(ctx, TaskCmd.JOB_CANCEL, payload)
         client_id, payload_str, zmq_sender_id = payload
         response_json = handle_job_command(
             "JOB_CANCEL",
@@ -74,13 +58,8 @@ class JobCancelHandler(CommandHandler):
 class JobListHandler(CommandHandler):
     """Handle JOB_LIST — list durable jobs with optional filters."""
 
-    def execute(
-        self,
-        payload: Any,
-        update_status: StatusCallback,
-        ctx: HandlerContext,
-        task_id: int,
-    ) -> None:
+    def execute(self, payload: Any, ctx: HandlerContext) -> None:
+        task_id, update_status = self._make_task(ctx, TaskCmd.JOB_LIST, payload)
         client_id, payload_str, zmq_sender_id = payload
         response_json = handle_job_command(
             "JOB_LIST",

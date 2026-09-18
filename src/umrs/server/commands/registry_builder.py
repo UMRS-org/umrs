@@ -17,7 +17,7 @@ from .file_upload import FileHandler
 from .job import JobCancelHandler, JobListHandler, JobSubmitHandler
 from .maintenance import CheckHandler, RecomputeHandler, ReloadHandler, UpdateHandler
 from .model import ModelDownloadHandler, ModelListHandler, ModelRegisterHandler
-from .process_objects import ProcessObjectsHandler
+from .process_objects import ProcessObjectsBatchHandler
 from .purge_buckets import PurgeBucketsHandler
 from .registry import CommandRegistry
 from .upload_workflow import UploadWorkflowHandler
@@ -42,7 +42,7 @@ def build_registry() -> CommandRegistry:
     r = CommandRegistry()
 
     # --- Ingestion --------------------------------------------------------
-    r.register(TaskCmd.PROCESS_OBJECTS, ProcessObjectsHandler())
+    r.register(TaskCmd.PROCESS_OBJECTS_BATCH, ProcessObjectsBatchHandler())
 
     # --- Maintenance (admin-only: RECOMPUTE, UPDATE, CHECK, RELOAD) -------
     r.register(TaskCmd.RECOMPUTE, RecomputeHandler())

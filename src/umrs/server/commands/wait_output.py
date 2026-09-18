@@ -21,10 +21,10 @@ import contextlib
 import logging
 from typing import Any
 
-from umrs.core.TaskCmdStatus import TaskStatus
+from umrs.core.TaskCmdStatus import TaskCmd, TaskStatus
 from umrs.core.thread_pool import ServerOverloadedError
 
-from .base import CommandHandler, HandlerContext, StatusCallback
+from .base import CommandHandler, HandlerContext
 
 logger = logging.getLogger(__name__)
 
@@ -32,13 +32,8 @@ logger = logging.getLogger(__name__)
 class WaitOutputHandler(CommandHandler):
     """Handle WAIT_OUTPUT — block until an output bucket's DB table is updated."""
 
-    def execute(
-        self,
-        payload: Any,
-        update_status: StatusCallback,
-        ctx: HandlerContext,
-        task_id: int,
-    ) -> None:
+    def execute(self, payload: Any, ctx: HandlerContext) -> None:
+        task_id, update_status = self._make_task(ctx, TaskCmd.WAIT_OUTPUT, payload)
         client_id, output_path_to_bucket, timeout, zmq_sender_id = payload
 
         path_to_bucket, entry = ctx.buckets_cfg.find_by_output_path(

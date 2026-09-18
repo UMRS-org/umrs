@@ -1,14 +1,13 @@
 """Base classes for the UMRS command-handler pattern.
 
 Each TaskCmd maps to one CommandHandler subclass.  The handler receives
-the raw ZeroMQ payload, a status-update callback, a HandlerContext that
-carries every server-level dependency (task_manager, control_mq,
-server_cfg, …), and the ``task_id`` created by the event loop.
+the raw ZeroMQ payload and a HandlerContext that carries every server-level
+dependency (task_manager, control_mq, server_cfg, …).
 
-``task_id`` is passed to every handler — even those that do not launch a
-background thread — so that all commands can be tracked uniformly.  This
-makes it straightforward to add per-command observability or audit in the
-future without changing the handler contract.
+Each handler creates its own task_id(s) via ``CommandHandler._make_task``,
+which registers the task and returns the (task_id, update_status) pair.
+This allows batch handlers to create N tasks without special-casing in the
+event loop.
 """
 
 from __future__ import annotations
@@ -50,24 +49,40 @@ class HandlerContext:
         return self.server_cfg.user_config_map
 
 
-# Type alias for the status-update callback injected by the event loop.
+# Type alias for the status-update callback.
 StatusCallback = Callable[[str], None]
+
+
+def make_status_callback(task_manager: Any, task_id: int) -> StatusCallback:
+    """Return a callback that updates *task_id*'s status in *task_manager*."""
+    def callback(status: str) -> None:
+        task_manager.tasks_status.update_status(task_id, status)
+    return callback
 
 
 class CommandHandler(ABC):
     """Abstract base for a single TaskCmd handler.
 
-    Subclasses implement ``execute()``.  Authorization has already been
-    checked by the CommandRegistry before ``execute()`` is called.
+    Subclasses implement ``execute(payload, ctx)``.  Authorization has already
+    been checked by the CommandRegistry before ``execute()`` is called.
+    Each handler creates its own task_id(s) via ``_make_task``.
     """
+
+    @staticmethod
+    def _make_task(
+        ctx: HandlerContext,
+        cmd: str,
+        payload: Any,
+    ) -> tuple[int, StatusCallback]:
+        """Register a new task and return ``(task_id, update_status)``."""
+        task_id = ctx.task_manager.tasks_status.create_task(cmd, payload)
+        return task_id, make_status_callback(ctx.task_manager, task_id)
 
     @abstractmethod
     def execute(
         self,
         payload: Any,
-        update_status: StatusCallback,
         ctx: HandlerContext,
-        task_id: int,
     ) -> None:
         """Execute the command.
 
@@ -75,14 +90,8 @@ class CommandHandler(ABC):
         ----------
         payload:
             Raw payload extracted from the ZeroMQ message.
-        update_status:
-            Callback to update the task status in the TaskManager.
-            Call with a ``TaskStatus.*`` constant.
         ctx:
-            Server-level dependencies.
-        task_id:
-            Identifier created by the event loop for this command
-            invocation.  Always provided — use it to associate a
-            background thread (``ctx.task_manager.associate_thread_with_task``)
-            or for logging/observability even when no thread is launched.
+            Server-level dependencies, including ``task_manager``.
+            Call ``self._make_task(ctx, TaskCmd.XXX, payload)`` to create the
+            task and obtain an ``update_status`` callback.
         """
