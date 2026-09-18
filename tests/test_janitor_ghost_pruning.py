@@ -7,6 +7,7 @@ still alive or cannot be verified.
 
 from dataclasses import dataclass
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 from umrs.orchestrator.endpoint_registry import EndpointRegistry
@@ -183,3 +184,70 @@ class TestJanitorGhostPruning:
         assert result.ghosts_pruned == 0
         # Endpoint preserved because liveness check was disabled
         assert registry.get_by_job_id("job-dead") is not None
+
+
+class TestOrphanFailureBackoff:
+    """Venue-health backoff (2026-09-18): a wedged venue should not produce
+    one ERROR per janitor tick — first error, then backoff, then recovery."""
+
+    def _janitor(self):
+        from umrs.orchestrator.janitor import Janitor, JanitorConfig
+
+        backend = MagicMock()
+        backend.backend_name = "slurm-remote"
+        j = Janitor.__new__(Janitor)
+        # Properties at class level back the accessor; set the underscore slot.
+        j._backend = backend
+        j.config = JanitorConfig()
+        j._locks = {}
+        return j, backend
+
+    def test_first_failure_is_one_error_line(self, caplog):
+        j, _ = self._janitor()
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="umrs.orchestrator.janitor"):
+            j._orphan_failures_record_failure(RuntimeError("Connection closed"))
+        assert len([r for r in caplog.records if r.levelno == 40]) == 1
+        message = [r.getMessage() for r in caplog.records if r.levelno == 40][0]
+        assert "streak=1" in message
+
+    def test_backoff_mid_streak_only_at_summary_boundary(self, caplog):
+        j, _ = self._janitor()
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="umrs.orchestrator.janitor"):
+            j._orphan_failures_record_failure(RuntimeError("Connection closed"))
+            j._orphan_failures_record_failure(RuntimeError("Connection closed"))
+            j._orphan_failures_record_failure(RuntimeError("Connection closed"))
+        errors = [r for r in caplog.records if r.levelno == 40]
+        # Only the FIRST failure got an ERROR; the backoff swallows mid streak
+        assert len(errors) == 1
+
+    def test_recovery_emits_info_log_with_streak_carried(self, caplog):
+        j, _ = self._janitor()
+        import logging
+
+        with caplog.at_level(logging.INFO, logger="umrs.orchestrator.janitor"):
+            j._orphan_failures_record_failure(RuntimeError("Connection closed"))
+            j._orphan_failures_record_failure(RuntimeError("Connection closed"))
+            caplog.clear()
+            j._orphan_failures_record_success()
+        lines = [r.getMessage() for r in caplog.records if r.levelno == 20]
+        assert any("recovered" in line and "2" in line for line in lines)
+        # second recovery attempt — no streak, silent.
+        caplog.clear()
+        j._orphan_failures_record_success()
+        assert not any("recovered" in r.getMessage() for r in caplog.records)
+
+    def test_streaks_are_per_backend(self, caplog):
+        j, backend = self._janitor()
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="umrs.orchestrator.janitor"):
+            j._orphan_failures_record_failure(RuntimeError("Connection closed"))
+            backend.backend_name = "k8s"
+            j._orphan_failures_record_failure(RuntimeError("dns lookup timeout"))
+        errors = [r.getMessage() for r in caplog.records if r.levelno == 40]
+        # two different backends → each got its own first-failure ERROR
+        assert len(errors) == 2
