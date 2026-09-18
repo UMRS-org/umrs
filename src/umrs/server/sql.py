@@ -1188,13 +1188,13 @@ def store_one_embedding_in_db(
         conn.commit()
 
         if not silent:
-            logger.info(
+            logger.debug(
                 f"\t--> Stored/Updated embedding in '{table_name}' for '{s3_object}'"
             )
             if metadata:
-                logger.info("\t--> metadata have been added/updated'")
+                logger.debug("\t--> metadata have been added/updated'")
             if saved_s3_object:
-                logger.info(f"\t--> Output saved in {saved_s3_object}'")
+                logger.debug(f"\t--> Output saved in {saved_s3_object}'")
 
     except Exception as e:
         try:
