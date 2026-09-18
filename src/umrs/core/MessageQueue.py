@@ -869,6 +869,11 @@ class MessageQueue:
             if result[0] == TaskCmd.PROCESS_OBJECTS:
                 batch = [result[1]]
                 batch.extend(self._drain_process_objects())
+                logger.info(
+                    "[PROCESS] Batch assembled: %d client request(s) — %s",
+                    len(batch),
+                    [(cid, nb) for cid, nb in batch],
+                )
                 return TaskCmd.PROCESS_OBJECTS_BATCH, batch
 
             return result
@@ -943,7 +948,7 @@ class MessageQueue:
             raise PermissionError("Only server can call 'wait_for_s3_events'.")
 
         messages = []
-        logger.info(
+        logger.debug(
             "Listening for %s new messages (timeout=%s)",
             nb_objects,
             timeout_s,

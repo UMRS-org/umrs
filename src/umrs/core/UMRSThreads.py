@@ -178,7 +178,19 @@ class UMRSThreads:
             self, client_entries, buckets_cfg, device, key, client_callbacks,
         )
 
+        logger.info(
+            "[PROCESS] %d model group(s) to process for key='%s'",
+            len(groups), key,
+        )
+
         for items, group_callbacks, group_users in groups:
+            model_name = getattr(items[0].get("model"), "model_name", str(items[0].get("model")))
+            logger.info(
+                "[PROCESS] Submitting pool thread — model='%s' buckets=%d clients=%s",
+                model_name,
+                len(items),
+                sorted(group_callbacks.keys()),
+            )
             thread_ident, _ = self._submit_to_pool(
                 process_model_group,
                 (self, items, group_callbacks, buckets_cfg, embedding_backend, key, group_users),
