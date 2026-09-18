@@ -99,6 +99,12 @@ class UMRSTask:
                         ON tasks (client_id, cmd, payload_hash)
                         WHERE status IN ('Submitted', 'Running')
                     """)
+                    # Index for STATUS queries: client_id + status filter used by
+                    # all_uncompleted_task and get_tasks(client_id=...).
+                    cur.execute("""
+                        CREATE INDEX IF NOT EXISTS tasks_client_status
+                        ON tasks (client_id, status)
+                    """)
         finally:
             self._put_conn(conn)
 
@@ -442,12 +448,33 @@ class UMRSTask:
         ]
 
     def all_uncompleted_task(self, client_id, status_key):
-        tasks = self.get_tasks(client_id=client_id)
+        query = (
+            "SELECT id, client_id, cmd, payload, status, submitted_at, updated_at "
+            "FROM tasks WHERE client_id = %s "
+            "AND status NOT IN (%s, %s)"
+        )
+        params = [client_id, TaskStatus.COMPLETED, TaskStatus.OVERRIDDEN]
+        if status_key not in (TaskCmd.ALL, "*"):
+            query += " AND cmd = %s"
+            params.append(status_key)
+
+        conn = self._get_conn()
+        try:
+            with conn:
+                with conn.cursor() as cur:
+                    cur.execute(query, params)
+                    rows = cur.fetchall()
+        finally:
+            self._put_conn(conn)
+
         return [
-            t
-            for t in tasks
-            if t["status"] not in (TaskStatus.COMPLETED, TaskStatus.OVERRIDDEN)
-            and (status_key in (TaskCmd.ALL, "*") or t["cmd"] == status_key)
+            {
+                "id": r[0], "client_id": r[1], "cmd": r[2],
+                "payload": r[3], "status": r[4],
+                "submitted_at": str(r[5]) if r[5] else "-",
+                "updated_at": str(r[6]) if r[6] else "-",
+            }
+            for r in rows
         ]
 
     def pretty_print_tasks(
