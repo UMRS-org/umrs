@@ -957,7 +957,11 @@ def start_http_sidecar(
     def _run():
         import uvicorn
 
-        app = _create_app()
+        try:
+            app = _create_app()
+        except Exception as exc:
+            logger.warning("HTTP sidecar disabled — app creation failed: %s", exc)
+            return
         logger.info("Starting HTTP sidecar on %s:%d", resolved_host, port)
 
         # Boot-time reconciler: re-resolve endpoints stuck in PROVISIONING/
