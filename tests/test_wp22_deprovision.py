@@ -230,10 +230,11 @@ class TestLineageCancelThrough:
         ep = _ep_with(None)
         ep.metadata["durable_job_id"] = "job-lineage-1"
         store = MagicMock()
-        # _cancel_lineage_best_effort lazily binds `from .jobs import get_job_store`
-        import umrs.api.jobs as jobs_mod
+        # seam: janitor/route cancel through the jobs-layer gateway via an
+        # api-layer registered getter — monkeypatch the getter itself.
+        import umrs.jobs.cancel_gateway as gw
 
-        monkeypatch.setattr(jobs_mod, "get_job_store", lambda: store)
+        monkeypatch.setattr(gw, "_getter", lambda: store)
         client = _route_client(
             "cancellation-unachieved", endpoint=ep, monkeypatch=monkeypatch
         )
@@ -267,9 +268,9 @@ class TestLineageCancelThrough:
         ep.metadata["durable_job_id"] = "job-lineage-x"
         store = MagicMock()
         store.cancel_job.side_effect = RuntimeError("invalid transition")
-        import umrs.api.jobs as jobs_mod
+        import umrs.jobs.cancel_gateway as gw
 
-        monkeypatch.setattr(jobs_mod, "get_job_store", lambda: store)
+        monkeypatch.setattr(gw, "_getter", lambda: store)
         client = _route_client(
             "cancellation-unachieved", endpoint=ep, monkeypatch=monkeypatch
         )
@@ -289,7 +290,7 @@ class TestJanitorLineageReaper:
         ep.job_id = "5434"
         ep.metadata = {"durable_job_id": "job-x"}
         store = MagicMock()
-        monkeypatch.setattr("umrs.api.jobs.get_job_store", lambda: store)
+        monkeypatch.setattr("umrs.jobs.cancel_gateway._getter", lambda: store)
         _cancel_durable_lineage(ep)
         store.cancel_job.assert_called_once_with(
             "job-x", reason="janitor_stuck_reaper:5434"
@@ -302,7 +303,7 @@ class TestJanitorLineageReaper:
         ep.job_id = "5434"
         ep.metadata = {}
         store = MagicMock()
-        monkeypatch.setattr("umrs.api.jobs.get_job_store", lambda: store)
+        monkeypatch.setattr("umrs.jobs.cancel_gateway._getter", lambda: store)
         _cancel_durable_lineage(ep)
         store.cancel_job.assert_not_called()
 
@@ -314,11 +315,10 @@ class TestJanitorLineageReaper:
         ep.metadata = {"durable_job_id": "job-x"}
         store = MagicMock()
         store.cancel_job.side_effect = RuntimeError("invalid transition")
-        monkeypatch.setattr("umrs.api.jobs.get_job_store", lambda: store)
-        with caplog.at_level("WARNING", logger="umrs.orchestrator.janitor"):
+        monkeypatch.setattr("umrs.jobs.cancel_gateway._getter", lambda: store)
+        with caplog.at_level("WARNING", logger="umrs.jobs.cancel_gateway"):
             _cancel_durable_lineage(ep)
         assert any(
-            "lineage cancel FAILED" in rec.getMessage()
-            and "durable_job=job-x" in rec.getMessage()
+            "cancel_job(job-x) failed" in rec.getMessage()
             for rec in caplog.records
         )

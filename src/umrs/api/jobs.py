@@ -18,6 +18,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from ..jobs.cancel_gateway import register_store_getter as _register_store_getter
 from ..jobs.models import (
     Job,
     JobAttempt,
@@ -62,6 +63,11 @@ def get_job_store() -> JobStore:
 def get_optional_job_store() -> JobStore | None:
     """Return the configured job store, if this process owns one."""
     return _job_store
+
+
+# ADR-058/WP-22: hand the orchestrator/janitor layers a jobs-layer cancel
+# seam without ever importing them from api/. See jobs.cancel_gateway.
+_register_store_getter(get_optional_job_store)
 
 
 def _strict_auth_mode() -> bool:

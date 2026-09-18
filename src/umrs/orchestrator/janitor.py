@@ -41,25 +41,17 @@ def _cancel_durable_lineage(endpoint: Any) -> None:
     durable_job_id = (getattr(endpoint, "metadata", None) or {}).get("durable_job_id")
     if not durable_job_id:
         return
-    try:
-        from umrs.api.jobs import get_job_store
+    from umrs.jobs.cancel_gateway import cancel_job_best_effort
 
-        store = get_job_store()
-        store.cancel_job(
-            durable_job_id, reason=f"janitor_stuck_reaper:{endpoint.job_id}"
-        )
+    cancelled = cancel_job_best_effort(
+        durable_job_id, reason=f"janitor_stuck_reaper:{endpoint.job_id}"
+    )
+    if cancelled:
         logger.info(
             "janitor reaper lineage cancel: endpoint=%s durable_job=%s "
             "cancelled (reason=janitor_stuck_reaper)",
             endpoint.job_id,
             durable_job_id,
-        )
-    except Exception as exc:  # noqa: BLE001 — reaper verdict must survive
-        logger.warning(
-            "janitor reaper lineage cancel FAILED: endpoint=%s durable_job=%s: %s",
-            endpoint.job_id,
-            durable_job_id,
-            exc,
         )
 
 

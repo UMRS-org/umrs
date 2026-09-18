@@ -3115,22 +3115,16 @@ def _cancel_lineage_best_effort(endpoint: "Any | None", job_id: str) -> None:
     durable_job_id = (endpoint.metadata or {}).get("durable_job_id")
     if not durable_job_id:
         return
-    try:
-        from .jobs import get_job_store
+    from ..jobs.cancel_gateway import cancel_job_best_effort
 
-        store = get_job_store()
-        store.cancel_job(durable_job_id, reason=f"endpoint_deprovision:{job_id}")
+    cancelled = cancel_job_best_effort(
+        durable_job_id, reason=f"endpoint_deprovision:{job_id}"
+    )
+    if cancelled:
         logger.info(
             "lineage cancel recorded for deprovision %s: durable_job %s cancelled",
             job_id,
             durable_job_id,
-        )
-    except Exception as exc:  # noqa: BLE001 — never mask the honest 409 surface
-        logger.warning(
-            "lineage cancel for deprovision %s (durable_job %s) failed: %s",
-            job_id,
-            durable_job_id,
-            exc,
         )
 
 
