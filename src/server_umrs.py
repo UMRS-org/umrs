@@ -31,7 +31,7 @@ from umrs.server.config import ENABLE_PRETTY_PRINT, get_default_db_subdir
 from umrs.server.durable_job_runtime import start_durable_job_runtime_from_env
 from umrs.server.model_path_validator import enforce_model_paths
 from umrs.server.commands import HandlerContext, build_registry
-from umrs.server.commands.process_objects import ProcessObjectsBatchHandler
+from umrs.server.commands.base import make_status_callback
 from umrs.server.job_tracking_handler import build_durable_job_backend_from_env
 from umrs.server.json_config import load_server_cfg_file
 from umrs.server.maintenance import (
@@ -170,15 +170,6 @@ def perform_initial_config(configure_file, status_store, skip_create_users=False
 #########################        Main server loop        #########################
 ##################################################################################
 
-def make_update_status_callback(task_manager, task_id):
-    """
-    Return a callback function that updates the task status for the given task_id.
-    The returned function accepts a `status` argument when called.
-    """
-    def callback(status):
-        task_manager.tasks_status.update_status(task_id, status)
-    return callback
-
 
 def _reply_command_error(control_mq, payload, cmd, exc):
     """Best-effort JSON error reply after a per-command dispatch failure.
@@ -282,24 +273,7 @@ def server_event_loop(
             # caller so it fails fast instead of blocking until its receive
             # timeout, and continue serving.
             try:
-                if cmd == TaskCmd.PROCESS_OBJECTS_BATCH:
-                    # payload = [(client_id, nb_objects), ...]
-                    # Each client gets its own task_id and callback.
-                    client_callbacks = {}
-                    for client_id, nb_objects in payload:
-                        task_id = task_manager.tasks_status.create_task(
-                            TaskCmd.PROCESS_OBJECTS, (client_id, nb_objects)
-                        )
-                        print(f"Command: {cmd=} {client_id=} {nb_objects=} {task_id=}")
-                        client_callbacks[client_id] = make_update_status_callback(
-                            task_manager, task_id
-                        )
-                    ProcessObjectsBatchHandler().execute(payload, client_callbacks, ctx)
-                else:
-                    task_id = task_manager.tasks_status.create_task(cmd, payload)
-                    print(f"Command: {cmd=} {payload=} {task_id=}")
-                    update_status_func = make_update_status_callback(task_manager, task_id)
-                    registry.dispatch(cmd, payload, update_status_func, ctx, task_id)
+                registry.dispatch(cmd, payload, ctx)
             except Exception as cmd_exc:  # noqa: BLE001 - loop must survive
                 print(f"ERROR handling command {cmd}: {cmd_exc}", flush=True)
                 traceback.print_exc()
@@ -358,7 +332,7 @@ def handle_maintenance_flags(task_manager, args, buckets_cfg, device, embedding_
             print(f"==> Recovering {cmd} for {client_id} with status: {status}")
 
             # create a callback with task_id embedded
-            update_status_func = make_update_status_callback(task_manager, task_id)
+            update_status_func = make_status_callback(task_manager, task_id)
 
             if not is_client_configured(client_id, server_cfg):
                 print(f"Client {client_id} is not configured. Skipping recovery.")

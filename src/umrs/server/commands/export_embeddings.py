@@ -14,10 +14,10 @@ import contextlib
 import logging
 from typing import Any
 
-from umrs.core.TaskCmdStatus import TaskStatus
+from umrs.core.TaskCmdStatus import TaskCmd, TaskStatus
 from umrs.core.thread_pool import ServerOverloadedError
 
-from .base import CommandHandler, HandlerContext, StatusCallback
+from .base import CommandHandler, HandlerContext
 
 logger = logging.getLogger(__name__)
 
@@ -25,13 +25,8 @@ logger = logging.getLogger(__name__)
 class ExportEmbeddingsHandler(CommandHandler):
     """Handle EXPORT_EMBEDDINGS — export computed vectors to a local file."""
 
-    def execute(
-        self,
-        payload: Any,
-        update_status: StatusCallback,
-        ctx: HandlerContext,
-        task_id: int,
-    ) -> None:
+    def execute(self, payload: Any, ctx: HandlerContext) -> None:
+        task_id, update_status = self._make_task(ctx, TaskCmd.EXPORT_EMBEDDINGS, payload)
         client_id, export_args, zmq_sender_id = payload
 
         try:
