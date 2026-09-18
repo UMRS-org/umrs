@@ -14,9 +14,10 @@ from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 
 from umrs.companion_trust.chat_turn_approvals import (
-    ChatTurnApprovalsStore,
     VALID_DECISIONS,
+    ChatTurnApprovalsStore,
 )
+
 from .typed_errors import PlatformError, raise_typed
 
 router = APIRouter(prefix="/umrs/companion/sessions", tags=["companion-sessions"])
