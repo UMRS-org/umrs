@@ -140,34 +140,16 @@ class UMRSThreads:
         embedding_backend,
         key,
         update_status_callback=None,
+        client_id=None,
     ):
-        from umrs.server.processing import process_s3_objects
-
-        thread_ident, future = self._submit_to_pool(
-            process_s3_objects,
-            (
-                self,
-                s3_objects,
-                buckets_cfg,
-                device,
-                embedding_backend,
-                key,
-                True,
-                update_status_callback,
-            ),
+        return self.launch_s3_threads_batch(
+            [(client_id, s3_objects)],
+            buckets_cfg,
+            device,
+            embedding_backend,
             key,
-            update_status_callback=update_status_callback,
+            client_callbacks={client_id: update_status_callback} if update_status_callback else {},
         )
-
-        try:
-            self._wait_for_key_in_dict(
-                self.thread_dict, thread_ident
-            )  # wait for the thread status to be updated
-        except RuntimeError as exc:
-            logger.info(
-                f"WARNING: Thread {thread_ident} did not register in time for '{key}': {exc}"
-            )
-        return thread_ident
 
     def launch_s3_threads_batch(
         self,
