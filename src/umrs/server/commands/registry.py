@@ -52,6 +52,7 @@ class CommandRegistry:
 
     def __init__(self) -> None:
         self._handlers: dict[str, CommandHandler] = {}
+        self._internal_cmds: set[str] = set()
 
     # ------------------------------------------------------------------
     # Registration
@@ -60,6 +61,17 @@ class CommandRegistry:
     def register(self, cmd: str, handler: CommandHandler) -> None:
         """Register *handler* for *cmd*.  Overwrites any previous mapping."""
         self._handlers[cmd] = handler
+
+    def register_internal(self, cmd: str, handler: CommandHandler) -> None:
+        """Register an internally-generated command that bypasses _authorize.
+
+        Use this for commands that are never received directly from a ZMQ
+        client — e.g. PROCESS_OBJECTS_BATCH, which is synthesised by the
+        server's ZMQ drain loop from already-authorised PROCESS_OBJECTS
+        requests.
+        """
+        self._handlers[cmd] = handler
+        self._internal_cmds.add(cmd)
 
     # ------------------------------------------------------------------
     # Dispatch
@@ -93,10 +105,10 @@ class CommandRegistry:
             )
             return
 
-        client_id = _extract_client_id(payload)
-
-        if not self._authorize(cmd, client_id, zmq_sender_id, ctx):
-            return
+        if cmd not in self._internal_cmds:
+            client_id = _extract_client_id(payload)
+            if not self._authorize(cmd, client_id, zmq_sender_id, ctx):
+                return
 
         try:
             handler.execute(payload, ctx)

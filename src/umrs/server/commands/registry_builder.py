@@ -41,7 +41,9 @@ def build_registry() -> CommandRegistry:
     r = CommandRegistry()
 
     # --- Ingestion --------------------------------------------------------
-    r.register(TaskCmd.PROCESS_OBJECTS_BATCH, ProcessObjectsBatchHandler())
+    # PROCESS_OBJECTS_BATCH is synthesised by the ZMQ drain loop from
+    # already-authorised PROCESS_OBJECTS requests — skip _authorize.
+    r.register_internal(TaskCmd.PROCESS_OBJECTS_BATCH, ProcessObjectsBatchHandler())
 
     # --- Maintenance (admin-only: RECOMPUTE, UPDATE, CHECK, RELOAD) -------
     r.register(TaskCmd.RECOMPUTE, RecomputeHandler())
