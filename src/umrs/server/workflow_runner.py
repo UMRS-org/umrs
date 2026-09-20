@@ -729,14 +729,50 @@ def _gate_timeout_seconds(spec: dict[str, Any]) -> float:
         return _GATE_DEFAULT_TIMEOUT_SECONDS
 
 
+# Cross-process gate decisions (the approve/cancel API is not guaranteed to
+# run in the process parking the runner thread) never set the local
+# threading.Event; durable records are re-polled from the store at this
+# interval so such decisions still release the gate.
+_GATE_DB_POLL_DEFAULT_SECONDS = 5.0
+
+
+def _gate_db_poll_seconds() -> float:
+    raw = os.environ.get("UMRS_GATE_DB_POLL_SECONDS")
+    if raw is None:
+        return _GATE_DB_POLL_DEFAULT_SECONDS
+    try:
+        return max(0.5, float(raw))
+    except (TypeError, ValueError):
+        return _GATE_DB_POLL_DEFAULT_SECONDS
+
+
+def _refresh_gate_state(record: ExecutionRecord) -> None:
+    """Re-read cross-process gate state (durable records only; no-op otherwise)."""
+    refresh = getattr(record, "refresh_from_store", None)
+    if callable(refresh):
+        refresh()
+
+
 def _await_gate_decision(
-    record: ExecutionRecord, event: threading.Event, timeout_seconds: float
+    record: ExecutionRecord,
+    event: threading.Event,
+    timeout_seconds: float,
+    step_name: str,
 ) -> str:
     """Block on an approval event with cancel + deadline watch.
 
     Returns ``"approved"`` / ``"timeout"`` / ``"cancelled"``.
+
+    Fast path is the in-process ``threading.Event`` (same-worker approve).
+    Because the approve API may land on a different process than the parked
+    runner — the wait event is a transient per-process primitive — durable
+    records are also re-polled from the store every
+    ``UMRS_GATE_DB_POLL_SECONDS`` (default 5s) for decisions and cancel
+    requests written by another worker.
     """
     deadline = time.monotonic() + timeout_seconds
+    poll_seconds = _gate_db_poll_seconds()
+    last_poll = time.monotonic()
     while True:
         if record.cancel_requested:
             return "cancelled"
@@ -745,6 +781,14 @@ def _await_gate_decision(
             return "timeout"
         if event.wait(timeout=min(0.5, remaining)):
             return "approved"
+        now = time.monotonic()
+        if now - last_poll >= poll_seconds:
+            last_poll = now
+            _refresh_gate_state(record)
+            if record.cancel_requested:
+                return "cancelled"
+            if record.gate_decisions.get(step_name) is not None:
+                return "approved"
 
 
 def _execute_manual_gate(
@@ -777,9 +821,17 @@ def _execute_manual_gate(
             "gate_timeout_seconds": timeout,
         }
 
+    # A decision may already be recorded — an approve that landed (possibly
+    # on another worker) before this gate parked, or a record hydrated from
+    # the durable store after a restart. Check the store once before parking.
+    _refresh_gate_state(record)
     wait_started = time.monotonic()
-    outcome = _await_gate_decision(record, event, timeout)
-    waited_seconds = time.monotonic() - wait_started
+    if record.gate_decisions.get(step_name) is not None:
+        outcome = "approved"
+        waited_seconds = 0.0
+    else:
+        outcome = _await_gate_decision(record, event, timeout, step_name)
+        waited_seconds = time.monotonic() - wait_started
     if outcome != "approved":
         reason = (
             "cancelled while waiting for approval"
