@@ -78,6 +78,22 @@ EXECUTOR_PAYLOAD_S3_METADATA_KEY = "__payload_s3__"
 # ``bool``; non-bool triggers a setup-phase error.
 EXECUTOR_GPU_METADATA_KEY = "__executor_gpu__"
 
+# Metadata key used by the runner to tell container/remote executors
+# where the uploaded workflow source tree lives (the directory holding
+# ``workflow.json`` and the step modules). Executors that spawn a
+# worker outside the server process (e.g. :class:`SlurmStepExecutor`)
+# bind-mount this path read-only at the same absolute location and
+# export it as ``UMRS_STEP_SOURCE_DIR`` so the worker can put it on
+# ``sys.path`` — without it, user step modules are not importable in
+# the worker. Value is an absolute path string; executors that cannot
+# honour it must raise a setup-phase error rather than silently
+# running without the user code.
+EXECUTOR_SOURCE_DIR_METADATA_KEY = "__executor_source_dir__"
+
+# Environment variable the executors use to carry the source dir into
+# the worker process (see ``step_worker._process_task``).
+EXECUTOR_SOURCE_DIR_ENV_VAR = "UMRS_STEP_SOURCE_DIR"
+
 # Default threshold: payloads below this size stay on local file even
 # when S3 mode is enabled. Above it, the executor uploads to S3.
 _PAYLOAD_THRESHOLD_BYTES = int(

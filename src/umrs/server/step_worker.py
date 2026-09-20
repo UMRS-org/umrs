@@ -138,6 +138,39 @@ def _read_payload() -> bytes:
     return sys.stdin.buffer.read()
 
 
+_WORKER_SOURCE_DIRS: list[str] = []
+
+
+def _prepare_worker_source_dir() -> None:
+    """Put the uploaded workflow source dir on ``sys.path``.
+
+    Container/remote executors (e.g. :class:`SlurmStepExecutor`) export
+    ``UMRS_STEP_SOURCE_DIR`` and bind-mount the tree read-only at the
+    same absolute path; without it the user step modules are not
+    importable here. One-shot workers get a fresh process per step, so
+    this is a plain insert. Pool workers reuse the process across
+    tasks: when the dir changes between tasks, modules imported from
+    the previous dir are dropped so same-named packages (two workflows
+    both shipping ``steps``) don't go stale.
+    """
+    from umrs.server.step_executor import EXECUTOR_SOURCE_DIR_ENV_VAR
+
+    source_dir = os.environ.get(EXECUTOR_SOURCE_DIR_ENV_VAR, "").strip()
+    if not source_dir or not os.path.isdir(source_dir):
+        return
+    if _WORKER_SOURCE_DIRS and _WORKER_SOURCE_DIRS[-1] == source_dir:
+        return  # already prepared for this dir
+    stale_root = _WORKER_SOURCE_DIRS[-1] if _WORKER_SOURCE_DIRS else None
+    if stale_root:
+        for name, module in list(sys.modules.items()):
+            path = getattr(module, "__file__", None)
+            if path and os.path.realpath(str(path)).startswith(stale_root):
+                del sys.modules[name]
+    if source_dir not in sys.path:
+        sys.path.insert(0, source_dir)
+    _WORKER_SOURCE_DIRS.append(source_dir)
+
+
 def _process_task(payload: dict[str, Any]) -> dict[str, Any]:
     """Run a single task and return the reply dict.
 
@@ -148,6 +181,8 @@ def _process_task(payload: dict[str, Any]) -> dict[str, Any]:
         _drive_lifecycle,
         _load_step_class,
     )
+
+    _prepare_worker_source_dir()
 
     try:
         entrypoint = payload["entrypoint"]
