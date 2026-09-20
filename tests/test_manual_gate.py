@@ -213,6 +213,151 @@ class TestRunnerGates:
 # ── Model parity ────────────────────────────────────────────────────────────
 
 
+# ── Cross-process gate release (durable refresh) ───────────────────────────
+# The approve/cancel API may be handled by a different worker than the one
+# parking the runner thread; the local threading.Event is never set in that
+# case. These tests simulate the cross-process path by injecting store
+# merges via ``refresh_from_store`` WITHOUT touching the wait event.
+
+
+class TestCrossProcessGates:
+    def test_decision_via_durable_refresh_completes_execution(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("UMRS_GATE_DB_POLL_SECONDS", "0.5")
+        registry = get_execution_registry()
+        record = registry.create(workflow_name="gate-wf", user_id="alice")
+
+        landed = threading.Event()
+
+        def _fake_refresh():  # store merge only — no event.set (other worker)
+            if landed.is_set() and "gate1" not in record.gate_decisions:
+                record.gate_decisions["gate1"] = {
+                    "step": "gate1",
+                    "approved": True,
+                    "approver": "bob",
+                    "comment": None,
+                    "decided_at": time.time(),
+                }
+
+        record.refresh_from_store = _fake_refresh
+        thread = _run_in_thread(record, tmp_path, _gate_workflow())
+        _wait_step_status(record, "gate1", "waiting_approval")
+        landed.set()  # decision "lands in the store" on another worker
+        _wait_done(thread, timeout=15.0)
+
+        assert record.status == "succeeded", record.error
+        step = record.steps["gate1"]
+        assert step.status == "succeeded"
+        assert step.extra["gate"]["approver"] == "bob"
+
+    def test_preexisting_decision_skips_wait(self, tmp_path):
+        """A decision recorded before the gate parks (e.g. hydrated record
+        after a restart) is honoured immediately — no park, no timeout."""
+        registry = get_execution_registry()
+        record = registry.create(workflow_name="gate-wf", user_id="alice")
+        record.gate_decisions["gate1"] = {
+            "step": "gate1",
+            "approved": True,
+            "approver": "carol",
+            "comment": None,
+            "decided_at": time.time(),
+        }
+        run_workflow_record(
+            record,
+            source_path=str(tmp_path),
+            workflow_json=_gate_workflow(timeout=0.2),
+        )
+        assert record.status == "succeeded", record.error
+        assert record.steps["gate1"].status == "succeeded"
+
+    def test_cross_process_cancel_during_wait(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("UMRS_GATE_DB_POLL_SECONDS", "0.5")
+        registry = get_execution_registry()
+        record = registry.create(workflow_name="gate-wf", user_id="alice")
+
+        flipped = threading.Event()
+
+        def _fake_refresh():
+            if flipped.is_set():
+                record.cancel_requested = True
+
+        record.refresh_from_store = _fake_refresh
+        thread = _run_in_thread(record, tmp_path, _gate_workflow())
+        _wait_step_status(record, "gate1", "waiting_approval")
+        flipped.set()
+        _wait_done(thread, timeout=15.0)
+
+        assert record.status == "cancelled"
+
+
+class TestDurableRefresh:
+    """DurableExecutionRecord.refresh_from_store merge semantics."""
+
+    def _record(self):
+        from umrs.workflow.pg_registry import DurableExecutionRecord
+
+        return DurableExecutionRecord(
+            execution_id="wf-x", workflow_name="w", user_id="u"
+        )
+
+    def test_merges_gates_and_cancel(self):
+        rec = self._record()
+        rec._refresh_hook = lambda r: {
+            "gates": {
+                "gate1": {
+                    "step": "gate1",
+                    "approved": True,
+                    "approver": "d",
+                    "comment": None,
+                    "decided_at": 1.0,
+                }
+            },
+            "cancel_requested": True,
+        }
+        rec.refresh_from_store()
+        assert rec.gate_decisions["gate1"]["approver"] == "d"
+        assert rec.cancel_requested is True
+
+    def test_first_decision_wins(self):
+        rec = self._record()
+        rec.gate_decisions["gate1"] = {
+            "step": "gate1",
+            "approved": False,
+            "approver": "local",
+            "comment": None,
+            "decided_at": 0.5,
+        }
+        rec._refresh_hook = lambda r: {
+            "gates": {
+                "gate1": {
+                    "step": "gate1",
+                    "approved": True,
+                    "approver": "remote",
+                    "comment": None,
+                    "decided_at": 1.0,
+                }
+            }
+        }
+        rec.refresh_from_store()
+        assert rec.gate_decisions["gate1"]["approver"] == "local"
+
+    def test_hook_failure_degrades_silently(self):
+        rec = self._record()
+
+        def _boom(r):
+            raise RuntimeError("db down")
+
+        rec._refresh_hook = _boom
+        rec.refresh_from_store()  # must not raise
+        assert rec.gate_decisions == {}
+
+    def test_no_hook_is_noop(self):
+        rec = self._record()
+        rec.refresh_from_store()  # no hook installed
+        assert rec.gate_decisions == {}
+
+
 class TestGateModel:
     def test_gate_stepspec_roundtrip(self):
         spec = StepSpec(name="review", gate=True)

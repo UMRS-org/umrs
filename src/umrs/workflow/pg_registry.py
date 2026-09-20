@@ -48,11 +48,37 @@ class DurableExecutionRecord(ExecutionRecord):
     """ExecutionRecord that invokes a persist hook after each mutation."""
 
     _persist_hook: Callable[[DurableExecutionRecord], None] | None = None
+    _refresh_hook: Callable[[DurableExecutionRecord], dict[str, Any] | None] | None = None
 
     def _fire_persist(self) -> None:
         hook = self._persist_hook
         if hook is not None:
             hook(self)
+
+    def refresh_from_store(self) -> None:
+        """Merge cross-process fields from the durable snapshot.
+
+        Gate decisions and cancel requests written by another worker (the
+        approve/cancel API is not guaranteed to run in the process parking
+        on this record's threading events) are union-merged; first decision
+        wins, matching ``resolve_gate``. DB failures degrade silently so the
+        caller's wait loop keeps its in-process semantics.
+        """
+        hook = self._refresh_hook
+        if hook is None:
+            return
+        try:
+            payload = hook(self)
+        except Exception:
+            logger.debug("workflow_executions refresh failed", exc_info=True)
+            return
+        if not payload:
+            return
+        with self._lock:
+            for step_name, decision in (payload.get("gates") or {}).items():
+                self.gate_decisions.setdefault(step_name, dict(decision))
+            if payload.get("cancel_requested"):
+                self.cancel_requested = True
 
     def update(self, **fields_: Any) -> None:
         super().update(**fields_)
@@ -172,6 +198,19 @@ class PgWorkflowExecutionRegistry(WorkflowExecutionRegistry):
         super().__init__(max_records=max_records)
         self._pool = db_pool
 
+    def _install_hooks(self, record: DurableExecutionRecord) -> None:
+        """Wire persist + refresh hooks for a durable record."""
+        record._persist_hook = self._persist
+        record._refresh_hook = lambda rec: self._fetch_payload(rec.execution_id)
+
+    def _fetch_payload(self, execution_id: str) -> dict[str, Any] | None:
+        """Return the stored ``record_json`` payload for refresh merges."""
+        row = self._fetch(execution_id)
+        if row is None:
+            return None
+        data = row.get("record_json")
+        return data if isinstance(data, dict) else None
+
     @contextmanager
     def _conn(self):
         conn = self._pool.getconn()
@@ -210,7 +249,7 @@ class PgWorkflowExecutionRegistry(WorkflowExecutionRegistry):
             durable_job_id=durable_job_id,
             identity_provenance=identity_provenance,
         )
-        record._persist_hook = self._persist
+        self._install_hooks(record)
         with self._lock:
             self._records[record.execution_id] = record
             self._gc_locked()
@@ -226,7 +265,7 @@ class PgWorkflowExecutionRegistry(WorkflowExecutionRegistry):
         if row is None:
             return None
         record = _record_from_payload(row["record_json"])
-        record._persist_hook = self._persist
+        self._install_hooks(record)
         with self._lock:
             self._records[execution_id] = record
         return record
@@ -298,7 +337,7 @@ class PgWorkflowExecutionRegistry(WorkflowExecutionRegistry):
                 if eid in self._records:
                     continue
                 record = _record_from_payload(row["record_json"])
-                record._persist_hook = self._persist
+                self._install_hooks(record)
                 self._records[eid] = record
 
 
