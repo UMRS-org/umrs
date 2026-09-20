@@ -45,6 +45,7 @@ from umrs.server.step_executor import (
     EXECUTOR_GPU_METADATA_KEY,
     EXECUTOR_IMAGE_METADATA_KEY,
     EXECUTOR_PAYLOAD_S3_METADATA_KEY,
+    EXECUTOR_SOURCE_DIR_METADATA_KEY,
     StepExecutionError,
     StepExecutor,
     build_step_executor,
@@ -151,25 +152,6 @@ class _InMemoryS3Client:
 # ----------------------------------------------------------------------
 
 
-def _is_stale_module(module: Any, source_root: str) -> bool:
-    """Whether *module* was loaded from under the upload tree."""
-    module_file = getattr(module, "__file__", None)
-    if isinstance(module_file, str) and os.path.realpath(module_file).startswith(
-        source_root
-    ):
-        return True
-    module_path = getattr(module, "__path__", None)
-    if module_path is None:
-        return False
-    try:
-        return any(
-            os.path.realpath(str(path_entry)).startswith(source_root)
-            for path_entry in module_path
-        )
-    except TypeError:
-        return False
-
-
 def _purge_workflow_modules(source_path: str) -> None:
     """Drop cached Python modules loaded from *source_path*.
 
@@ -179,12 +161,37 @@ def _purge_workflow_modules(source_path: str) -> None:
     restart.  Remove any module whose ``__file__`` or ``__path__`` lives
     under the uploaded workflow tree so the next import sees fresh code.
     """
-    source_root = os.path.realpath(source_path)
-    stale_names = [
-        name
-        for name, module in list(sys.modules.items())
-        if _is_stale_module(module, source_root)
-    ]
+    _purge_workflow_modules_under([source_path])
+
+
+def _purge_workflow_modules_under(source_roots: list[str]) -> None:
+    """Multi-root variant of :func:`_purge_workflow_modules`.
+
+    Single pass over ``sys.modules``: one ``realpath`` per module file
+    (not per module×root pair), so preparing a source path stays cheap
+    even after many distinct workflow trees have been seen.
+    """
+    real_roots = [os.path.realpath(root) for root in source_roots]
+    if not real_roots:
+        return
+    stale_names: list[str] = []
+    for name, module in list(sys.modules.items()):
+        candidates: list[str] = []
+        module_file = getattr(module, "__file__", None)
+        if isinstance(module_file, str):
+            candidates.append(module_file)
+        module_path = getattr(module, "__path__", None)
+        if module_path is not None:
+            try:
+                candidates.extend(str(entry) for entry in module_path)
+            except TypeError:
+                pass
+        for candidate in candidates:
+            resolved = os.path.realpath(candidate)
+            if any(resolved.startswith(root) for root in real_roots):
+                stale_names.append(name)
+                break
+
     for name in stale_names:
         sys.modules.pop(name, None)
 
@@ -192,7 +199,7 @@ def _purge_workflow_modules(source_path: str) -> None:
         logger.info(
             "Purged %d cached workflow module(s) from %s",
             len(stale_names),
-            source_root,
+            ", ".join(real_roots),
         )
 
     importlib.invalidate_caches()
@@ -886,6 +893,7 @@ def _execute_step(
     bucket: str,
     state_lock: threading.Lock,
     executor: StepExecutor,
+    source_path: str | None = None,
 ) -> tuple[str, StepResult | None, str | None]:
     """Execute a single step. Returns ``(step_name, result_or_None, error_or_None)``.
 
@@ -897,6 +905,12 @@ def _execute_step(
     lifecycle (Slice 8). Default is in-process; setting
     ``UMRS_STEP_EXECUTOR=subprocess`` swaps in process isolation
     without changing any other behaviour.
+
+    ``source_path`` is the uploaded workflow source tree; when present
+    it is handed to out-of-process executors via
+    ``EXECUTOR_SOURCE_DIR_METADATA_KEY`` so the worker can import the
+    user step modules (in-process executors ignore it — the runner
+    already put the directory on this process's ``sys.path``).
     """
     step_name = spec["name"]
     record.set_step(step_name, status="running", started_at=time.time())
@@ -955,6 +969,8 @@ def _execute_step(
         metadata[EXECUTOR_IMAGE_METADATA_KEY] = image_hint
     if gpu_hint is not None:
         metadata[EXECUTOR_GPU_METADATA_KEY] = gpu_hint
+    if source_path:
+        metadata[EXECUTOR_SOURCE_DIR_METADATA_KEY] = source_path
     payload_s3_enabled, payload_bucket, payload_s3_prefix = _payload_s3_hint(metadata)
     _annotate_payload_mode(
         routing_log,
@@ -1037,6 +1053,18 @@ def _emit_workflow_metric(
         logger.debug("workflow metrics emission failed", exc_info=True)
 
 
+# Every workflow source root this process has prepared. Tracked so a
+# run can drop cached modules from *other* workflows' trees too: two
+# registered workflows commonly ship identically-named packages (the
+# bundle convention is a ``steps`` package), and a same-name cache hit
+# from a foreign tree silently runs the wrong workflow's code (real
+# risk for bundle variants such as opossum-video-pipeline vs its
+# -nogate sibling, both shipping ``steps.inventory``). Deleting from
+# ``sys.modules`` never disturbs module objects already held by
+# concurrently running workflows, so widening the purge is safe.
+_KNOWN_SOURCE_ROOTS: list[str] = []
+
+
 def _prepare_source_path(source_path: str | None) -> None:
     """Insert the workflow source dir into ``sys.path`` + purge stale
     cached modules so ``_load_step_class`` sees fresh code."""
@@ -1045,7 +1073,9 @@ def _prepare_source_path(source_path: str | None) -> None:
     abs_source = os.path.abspath(source_path)
     if abs_source not in sys.path:
         sys.path.insert(0, abs_source)
-    _purge_workflow_modules(abs_source)
+    if abs_source not in _KNOWN_SOURCE_ROOTS:
+        _KNOWN_SOURCE_ROOTS.append(abs_source)
+    _purge_workflow_modules_under(_KNOWN_SOURCE_ROOTS)
 
 
 def _find_s3cfg() -> str | None:
@@ -1195,6 +1225,7 @@ def _run_wave(
     bucket: str,
     state_lock: threading.Lock,
     max_workers_cap: int,
+    source_path: str | None = None,
 ) -> list[str]:
     """Execute one DAG wave (directly when linear, pooled when parallel).
 
@@ -1226,6 +1257,7 @@ def _run_wave(
             bucket=bucket,
             state_lock=state_lock,
             executor=executor,
+            source_path=source_path,
         )
         if err is not None:
             wave_errors.append(f"{name}: {err}")
@@ -1247,6 +1279,7 @@ def _run_wave(
             s3_client=s3_client,
             bucket=bucket,
             state_lock=state_lock,
+            source_path=source_path,
         )
 
     wave_duration_ms = (time.monotonic() - wave_started) * 1000.0
@@ -1279,6 +1312,7 @@ def _run_wave_parallel(
     s3_client: Any,
     bucket: str,
     state_lock: threading.Lock,
+    source_path: str | None = None,
 ) -> None:
     """Fan a parallel wave over the thread pool and collect errors."""
     workers = min(len(level), max_workers_cap)
@@ -1303,6 +1337,7 @@ def _run_wave_parallel(
                 bucket=bucket,
                 state_lock=state_lock,
                 executor=executor,
+                source_path=source_path,
             )
             for spec in level
         ]
@@ -1492,6 +1527,7 @@ def run_workflow_record(
             bucket=bucket,
             state_lock=state_lock,
             max_workers_cap=max_workers_cap,
+            source_path=source_path,
         )
         completed += len(level)
         record.update(progress=completed / total)

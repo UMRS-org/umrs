@@ -39,6 +39,8 @@ from .step_executor import (
     EXECUTOR_GPU_METADATA_KEY,
     EXECUTOR_IMAGE_METADATA_KEY,
     EXECUTOR_PAYLOAD_S3_METADATA_KEY,
+    EXECUTOR_SOURCE_DIR_ENV_VAR,
+    EXECUTOR_SOURCE_DIR_METADATA_KEY,
     StepExecutionError,
     StepExecutor,
     _serialise_ctx_payload,
@@ -59,11 +61,22 @@ class SlurmStepExecutor(StepExecutor):
     Configuration via environment variables:
 
     * ``UMRS_SLURM_PARTITION`` — Slurm partition (default: ``gpu``)
-    * ``UMRS_SLURM_GPUS`` — Number of GPUs to request (default: ``1``)
+    * ``UMRS_SLURM_GPUS`` — Number of GPUs to request (default: ``1``);
+      ``0`` omits the ``--gres`` directive entirely (required on
+      partitions that reject explicit GPU requests, e.g. RCCS
+      ``ng-dgx-m*``) while podman GPU passthrough still applies when
+      the step wants a GPU
     * ``UMRS_SLURM_CPUS`` — CPUs per task (default: ``8``)
-    * ``UMRS_SLURM_MEM`` — Memory per node (default: ``32G``)
+    * ``UMRS_SLURM_MEM`` — Memory per node (default: ``32G``); an
+      **empty** value omits the ``--mem`` directive entirely (required
+      on partitions that reject explicit memory requests)
     * ``UMRS_SLURM_TIME`` — Time limit (default: ``01:00:00``)
     * ``UMRS_SLURM_ACCOUNT`` — Slurm account (optional)
+    * ``UMRS_SLURM_WORKDIR_ROOT`` — Parent directory for the per-step
+      working directories (default: system temp). On clusters where
+      the submit host's local temp is not visible from compute nodes
+      this MUST point at a shared filesystem (e.g. Lustre), otherwise
+      the worker never sees ``input.pkl``.
     * ``UMRS_STEP_IMAGE`` — Container image to run the step in
     * ``UMRS_STEP_GPU`` — Whether to attach GPU (default: ``0``)
     """
@@ -90,6 +103,9 @@ class SlurmStepExecutor(StepExecutor):
             os.environ.get("UMRS_STEP_EXECUTOR_TIMEOUT", "3600")
         )
     )
+    workdir_root: str = field(
+        default_factory=lambda: os.environ.get("UMRS_SLURM_WORKDIR_ROOT", "").strip()
+    )
     poll_interval: int = field(default=5)
     keep_workdir: bool = field(default=False)
 
@@ -104,13 +120,31 @@ class SlurmStepExecutor(StepExecutor):
         # Determine the container image
         image = self._resolve_image(ctx)
 
-        # Create a temporary working directory
-        workdir = tempfile.mkdtemp(prefix="slurm-step-")
+        # Uploaded workflow source tree (user step modules). The worker
+        # runs in a fresh container on a compute node, so the modules
+        # must be carried in explicitly — see _generate_sbatch_script.
+        source_dir = self._resolve_source_dir(ctx)
+
+        # Create a temporary working directory. When workdir_root is
+        # configured it must exist and be on a filesystem the compute
+        # nodes can see (e.g. Lustre) — the whole point of the knob.
+        if self.workdir_root:
+            if not os.path.isdir(self.workdir_root):
+                raise StepExecutionError(
+                    "setup",
+                    f"UMRS_SLURM_WORKDIR_ROOT={self.workdir_root!r} does not "
+                    "exist; create it (on a shared filesystem visible from "
+                    "compute nodes) or unset the variable",
+                )
+            workdir = tempfile.mkdtemp(prefix="slurm-step-", dir=self.workdir_root)
+        else:
+            workdir = tempfile.mkdtemp(prefix="slurm-step-")
         logger.info(
-            "SlurmStepExecutor: workdir=%s, image=%s, entrypoint=%s",
+            "SlurmStepExecutor: workdir=%s, image=%s, entrypoint=%s, source_dir=%s",
             workdir,
             image,
             entrypoint,
+            source_dir or "<none>",
         )
 
         try:
@@ -124,6 +158,7 @@ class SlurmStepExecutor(StepExecutor):
                 EXECUTOR_IMAGE_METADATA_KEY,
                 EXECUTOR_PAYLOAD_S3_METADATA_KEY,
                 EXECUTOR_GPU_METADATA_KEY,
+                EXECUTOR_SOURCE_DIR_METADATA_KEY,
             }
             sanitised_metadata = {
                 k: v for k, v in ctx.metadata.items() if k not in _INTERNAL_KEYS
@@ -155,6 +190,7 @@ class SlurmStepExecutor(StepExecutor):
                 input_path=input_path,
                 output_path=output_path,
                 ctx=ctx,
+                source_dir=source_dir,
             )
 
             # Write the sbatch script
@@ -212,6 +248,40 @@ class SlurmStepExecutor(StepExecutor):
             )
         return self.image
 
+    @staticmethod
+    def _resolve_source_dir(ctx: StepContext) -> str:
+        """Resolve the uploaded workflow source dir (user step modules).
+
+        Returns ``""`` when the runner did not provide one (legacy
+        callers, image-baked steps). When provided it must be an
+        absolute existing directory — the worker bind-mounts it
+        read-only at the same path and puts it on ``sys.path`` via
+        ``UMRS_STEP_SOURCE_DIR``; a wrong value would surface as a
+        confusing import error deep in the worker, so fail fast here.
+        """
+        raw = ctx.metadata.get(EXECUTOR_SOURCE_DIR_METADATA_KEY)
+        if raw is None:
+            return ""
+        if not isinstance(raw, str) or not raw.strip():
+            raise StepExecutionError(
+                "setup",
+                f"workflow source dir hint must be a non-empty string, got "
+                f"{type(raw).__name__}",
+            )
+        candidate = raw.strip()
+        if not os.path.isabs(candidate):
+            raise StepExecutionError(
+                "setup",
+                f"workflow source dir must be an absolute path, got {candidate!r}",
+            )
+        if not os.path.isdir(candidate):
+            raise StepExecutionError(
+                "setup",
+                f"workflow source dir {candidate!r} does not exist on the "
+                "submit host; re-upload the workflow or fix the registration",
+            )
+        return candidate
+
     def _generate_sbatch_script(
         self,
         *,
@@ -220,6 +290,7 @@ class SlurmStepExecutor(StepExecutor):
         input_path: str,
         output_path: str,
         ctx: StepContext,
+        source_dir: str = "",
     ) -> str:
         """Generate the sbatch script for the Slurm job."""
         # Determine if GPU is needed (metadata hint → env default).
@@ -237,14 +308,21 @@ class SlurmStepExecutor(StepExecutor):
         lines.append(f"#SBATCH --partition={self.partition}")
         lines.append(f"#SBATCH --time={time_limit}")
         lines.append(f"#SBATCH --cpus-per-task={self.cpus}")
-        lines.append(f"#SBATCH --mem={self.memory}")
+        # Empty memory means "let the partition default apply" — several
+        # partitions (e.g. RCCS ng-dgx-m*) reject explicit --mem requests.
+        if self.memory.strip():
+            lines.append(f"#SBATCH --mem={self.memory}")
         lines.append(f"#SBATCH --output={workdir}/slurm-%j.out")
         lines.append(f"#SBATCH --error={workdir}/slurm-%j.err")
 
         if self.account:
             lines.append(f"#SBATCH --account={self.account}")
 
-        if needs_gpu:
+        # gpus=0 means "no explicit GPU request" — required on partitions
+        # that reject --gres (e.g. RCCS ng-dgx-m*). Podman GPU passthrough
+        # below is independent: the node may still expose its GPU to the
+        # container via CDI when the partition allocates the whole node.
+        if needs_gpu and self.gpus > 0:
             lines.append(f"#SBATCH --gres=gpu:{self.gpus}")
 
         lines.append("")
@@ -273,6 +351,19 @@ class SlurmStepExecutor(StepExecutor):
             "-e",
             f"UMRS_STEP_OUTPUT=/work/{output_rel}",
         ]
+        if source_dir:
+            # User step modules live outside the image (uploaded bundle):
+            # mount the tree read-only at the same absolute path and tell
+            # the worker to put it on sys.path. Requires the path to be
+            # visible from the compute node (shared filesystem).
+            parts.extend(
+                [
+                    "-v",
+                    f"{shlex.quote(source_dir)}:{shlex.quote(source_dir)}:ro",
+                    "-e",
+                    f"{EXECUTOR_SOURCE_DIR_ENV_VAR}={shlex.quote(source_dir)}",
+                ]
+            )
         if needs_gpu:
             # Match PodmanExecutor device CDI form (site-dependent).
             parts.extend(["--device", "nvidia.com/gpu=all"])
