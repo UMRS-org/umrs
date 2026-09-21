@@ -300,7 +300,7 @@ def test_every_podman_call_starts_with_a_real_subcommand(tmp_path):
     podman = FakePodman()
     prov = FrontendPodmanProvisioner(broker, podman=podman, session_root=tmp_path)
     prov.provision(_cfg(session_id="argv-1"))
-    subcommands = {"network", "secret", "pod", "run", "inspect", "rm", "stop"}
+    subcommands = {"network", "secret", "pod", "run", "inspect", "rm", "stop", "info"}
     for call in podman.calls:
         assert call[0] in subcommands, call
     network = next(c for c in podman.calls if c[:2] == ("network", "create"))
