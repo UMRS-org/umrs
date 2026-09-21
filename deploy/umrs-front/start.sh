@@ -132,7 +132,8 @@ if [[ -z "${XDG_RUNTIME_DIR:-}" ]]; then
     export XDG_RUNTIME_DIR="/run/user/$(id -u)"
 fi
 mkdir -p "$XDG_RUNTIME_DIR" 2>/dev/null || true
-if ! podman info --format '{{.Host.RemoteSocket.Path}}' >/dev/null 2>&1; then
+# `.Path` is always printed; `.Exists` says whether the socket is actually there.
+if [[ "$(podman info --format '{{.Host.RemoteSocket.Exists}}' 2>/dev/null)" != "true" ]]; then
     echo "Starting rootless Podman socket..."
     systemctl --user start podman.socket 2>/dev/null || true
 fi
