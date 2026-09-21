@@ -108,6 +108,16 @@ services:
     image: localhost/umrs-server:latest
     container_name: umrs-server-rccs
     restart: unless-stopped
+    # ADR-046 A2 (2026-09-22): this API drives the host's rootless podman over
+    # the mounted API socket (frontend-venue provisioner). On an
+    # SELinux-enforcing host container_t may not connectto the user's
+    # unconfined_t API listener — diag: "dial unix /run/podman/podman.sock:
+    # connect: permission denied" with DAC satisfied (root, 0660). label=disable
+    # (spc_t) is the documented recipe for socket-driving containers; it adds no
+    # capability beyond what the socket already grants. Sidecars and sandbox
+    # workers keep their labels — they never see the socket.
+    security_opt:
+      - label=disable
     network_mode: host
     env_file: .env
     environment:
@@ -236,6 +246,16 @@ services:
     image: localhost/umrs-server:latest
     container_name: umrs-server-ai4s
     restart: unless-stopped
+    # ADR-046 A2 (2026-09-22): this API drives the host's rootless podman over
+    # the mounted API socket (frontend-venue provisioner). On an
+    # SELinux-enforcing host container_t may not connectto the user's
+    # unconfined_t API listener — diag: "dial unix /run/podman/podman.sock:
+    # connect: permission denied" with DAC satisfied (root, 0660). label=disable
+    # (spc_t) is the documented recipe for socket-driving containers; it adds no
+    # capability beyond what the socket already grants. Sidecars and sandbox
+    # workers keep their labels — they never see the socket.
+    security_opt:
+      - label=disable
     network_mode: host
     env_file: .env
     environment:
@@ -347,6 +367,16 @@ services:
     image: localhost/umrs-server:latest
     container_name: umrs-server-bdrt
     restart: unless-stopped
+    # ADR-046 A2 (2026-09-22): this API drives the host's rootless podman over
+    # the mounted API socket (frontend-venue provisioner). On an
+    # SELinux-enforcing host container_t may not connectto the user's
+    # unconfined_t API listener — diag: "dial unix /run/podman/podman.sock:
+    # connect: permission denied" with DAC satisfied (root, 0660). label=disable
+    # (spc_t) is the documented recipe for socket-driving containers; it adds no
+    # capability beyond what the socket already grants. Sidecars and sandbox
+    # workers keep their labels — they never see the socket.
+    security_opt:
+      - label=disable
     network_mode: host
     env_file: .env
     environment:
@@ -452,6 +482,16 @@ services:
     image: localhost/umrs-server:latest
     container_name: umrs-server-octopus
     restart: unless-stopped
+    # ADR-046 A2 (2026-09-22): this API drives the host's rootless podman over
+    # the mounted API socket (frontend-venue provisioner). On an
+    # SELinux-enforcing host container_t may not connectto the user's
+    # unconfined_t API listener — diag: "dial unix /run/podman/podman.sock:
+    # connect: permission denied" with DAC satisfied (root, 0660). label=disable
+    # (spc_t) is the documented recipe for socket-driving containers; it adds no
+    # capability beyond what the socket already grants. Sidecars and sandbox
+    # workers keep their labels — they never see the socket.
+    security_opt:
+      - label=disable
     network_mode: host
     env_file: .env
     environment:
