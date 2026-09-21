@@ -1,86 +1,79 @@
 ---
-description: my_instruction
-# applyTo: 'Describe when these instructions should be loaded' # when provided, instructions will automatically be added to the request context when the pattern matches an attached file
+description: Agent rules for working inside the umrs submodule (UMRS = infrastructure backbone of the R4 + UMRS platform)
+applyTo: '**'
 ---
 
-## ABSOLUTE RULE: Client Runs LOCALLY — Never on Remote
+# Working in `umrs/` (updated 2026-09-22)
 
-UMRS is a **local-client / remote-server** architecture. The `umrs`
-CLI and ALL demo scripts (`demos/`, `demos_private/`) MUST run on the
-**local Mac**, NEVER via SSH on rccs-cloud.
+## What this tree is
 
-- ❌ NEVER: `ssh rccs-cloud 'bash demos/…/run_demo.sh'`
-- ❌ NEVER: `ssh rccs-cloud 'source .venv/bin/activate && …'`
-- ❌ NEVER: Run any demo, client command, or test via SSH on the remote
-- ✅ ALWAYS: `source .venv/bin/activate && bash demos/…/run_demo.sh` (locally)
-- ✅ ALWAYS: Use the local `.venv/` at repo root (NOT `deploy/rccs-cloud/.venv/`)
-- ✅ ALWAYS: Ensure SSH tunnel (`deploy/rccs-cloud/ssh_tunnel.sh`) is running first
+UMRS is the infrastructure backbone of the R4 + UMRS platform: accounts,
+client transport, durable jobs and scheduling, self-deployed models in
+mini-RiVault sandboxes, Postgres + pgvector and S3 storage, MCP and skill
+registries, the knowledge spine. Design:
+[../../../docs/R4-UMRS-DESIGN.md](../../../docs/R4-UMRS-DESIGN.md). Gaps:
+[../../../docs/R4-UMRS-GAP-ANALYSIS-2026-09-22.md](../../../docs/R4-UMRS-GAP-ANALYSIS-2026-09-22.md)
+(rows D-01…D-24, D-42, D-47…D-56 are UMRS-side). Parent rules apply:
+[../../../CONSTITUTION.md](../../../CONSTITUTION.md), [../../../CLAUDE.md](../../../CLAUDE.md).
+Submodule-specific: [../../MERGE_CONSTITUTION.md](../../MERGE_CONSTITUTION.md),
+[../../doc/AI4S_PLATFORM_BOUNDARY.md](../../doc/AI4S_PLATFORM_BOUNDARY.md),
+[umrs-project.instructions.md](umrs-project.instructions.md) (runtime facts, gotchas).
 
-The only operations that run on rccs-cloud are:
-- `rsync` to sync source code
-- `podman build` / `podman save` to rebuild container images
-- `server_umrs.py` management (start/stop/restart via deploy scripts)
-- Slurm job management (`squeue`, `scancel`)
+## ABSOLUTE RULE: the client runs LOCALLY, never on the remote
 
-If you are about to run a demo or client command, STOP and verify it runs locally.
+UMRS is a local-client / remote-server system. The `umrs` and `r4` CLIs and
+ALL demo scripts (`demos/`, `demos_private/`) run on the **local machine**,
+never via SSH on a login node or the front-end.
 
-## SSH Connection to rccs-cloud
+- ❌ NEVER `ssh <host> 'bash demos/…/run_demo.sh'` or `ssh <host> 'source .venv/bin/activate && …'`
+- ✅ ALWAYS `source .venv/bin/activate && bash demos/…/run_demo.sh` locally, using the repo-root `.venv/`
+- Connectivity: umrs-front clusters (rccs, ai4s, bdrt, octopus) use **direct
+  TCP** ZeroMQ to `data0.ai.r-ccs.riken.jp` (50110–50118) — never an SSH
+  tunnel; `umrs info` must show `mode direct`. The login-direct `rccs-cloud`
+  profile is the one place a tunnel script exists
+  (`deploy/rccs/ssh_tunnel.sh`; the repo tree is `deploy/rccs/`, the Ansible profile name is `rccs-cloud`) because its
+  ports are firewalled.
 
-- SSH alias: `rccs-cloud`
-- Hostname: `login.cloud.r-ccs.riken.jp`
-- Login node: `login1.cloud.r-ccs.riken.jp`
-- User: `masaru.nagaso`
-- SSH tunnel script: `deploy/rccs-cloud/ssh_tunnel.sh` (ports 5555, 5556, 9000, 8081)
+The only operations that run on a remote host are repo sync and container
+builds **through Ansible** (`deploy/ansible/bootstrap.sh --profile …` in the
+parent), server lifecycle through the deploy playbooks, and read-only
+inspection (`squeue`, logs, `git status`). Hand-editing a deployed checkout
+or restarting a service by ad-hoc SSH is forbidden (ADR-019 amendment).
 
-## Workflow Orchestration
+## Submodule discipline
 
-### 1. Plan Mode Default
-- Enter plan mode for ANY non-trivial task (3+ steps or architectural decisions)
-- If something goes sideways, STOP and re-plan immediately – don't keep pushing
-- Use plan mode for verification steps, not just building
-- Write detailed specs upfront to reduce ambiguity
+- Commit inside `umrs/` on branch `ai4s-platform`; the parent then bumps the
+  pointer (`chore(umrs): bump to <sha> — <why>`). Docs citing `umrs/` paths
+  land with or after the bump.
+- Gate: `bash ../scripts/ci-lint-local.sh --umrs-changed` (lint, complexity
+  ≤ 9, fingerprint baselines that only shrink — ADR-052) and the parent
+  validators (`python ../tools/import_boundary_validator.py`).
+- Foundation modules never import `umrs.api` / `umrs.server`; every `api/`
+  router is mounted or deleted (ADR-053, `tests/test_surface_characterization.py`).
+- Tests never touch `sys.path`; E2E lanes opt in with `R4_RUN_E2E=1`.
+- Never git-operate on a sibling clone outside the parent repo; only this
+  submodule.
+- After merging `main`: run MERGE_CONSTITUTION §5 in order.
 
-### 2. Subagent Strategy
-- Use subagents liberally to keep main context window clean
-- Offload research, exploration, and parallel analysis to subagents
-- For complex problems, throw more compute at it via subagents
-- One task per subagent for focused execution
+## Workflow
 
-### 3. Self-Improvement Loop
-- After ANY correction from the user: update `tasks/lessons.md` with the pattern
-- Write rules for yourself that prevent the same mistake
-- Ruthlessly iterate on these lessons until mistake rate drops
-- Review lessons at session start for relevant project
+1. **Plan first** for non-trivial tasks (3+ steps or a design decision);
+   write the plan to `tasks/todo.md` with checkable items; name the gap rows.
+2. **Subagents** for research and parallel exploration; one task per subagent.
+3. **Verify before done**: run the tests and the gate, read logs, show the
+   evidence; diff behaviour against `main` when relevant.
+4. **Elegance, balanced**: for non-trivial changes ask whether a simpler
+   mechanism exists; do not over-engineer simple fixes.
+5. **Bugs**: fix from the logs, errors and failing tests without hand-holding.
+6. **Lessons**: after a correction, add the pattern to `tasks/lessons.md`;
+   read it at session start.
+7. **Reports**: what changed, gap rows before → after, commands run, hashes;
+   ledger entry in the parent's `docs/development/wave-ledger.md`.
 
-### 4. Verification Before Done
-- Never mark a task complete without proving it works
-- Diff behavior between main and your changes when relevant
-- Ask yourself: "Would a staff engineer approve this?"
-- Run tests, check logs, demonstrate correctness
+## Core principles
 
-### 5. Demand Elegance (Balanced)
-- For non-trivial changes: pause and ask "is there a more elegant way?"
-- If a fix feels hacky: "Knowing everything I know now, implement the elegant solution"
-- Skip this for simple, obvious fixes – don't over-engineer
-- Challenge your own work before presenting it
-
-### 6. Autonomous Bug Fixing
-- When given a bug report: just fix it. Don't ask for hand-holding
-- Point at logs, errors, failing tests – then resolve them
-- Zero context switching required from the user
-- Go fix failing CI tests without being told how
-
-## Task Management
-
-1. **Plan First**: Write plan to `tasks/todo.md` with checkable items
-2. **Verify Plan**: Check in before starting implementation
-3. **Track Progress**: Mark items complete as you go
-4. **Explain Changes**: High-level summary at each step
-5. **Document Results**: Add review section to `tasks/todo.md`
-6. **Capture Lessons**: Update `tasks/lessons.md` after corrections
-
-## Core Principles
-
-- **Simplicity First**: Make every change as simple as possible. Impact minimal code.
-- **No Laziness**: Find root causes. No temporary fixes. Senior developer standards.
-- **Minimal Impact**: Changes should only touch what's necessary. Avoid introducing bugs.
+- Simplicity first; minimal impact; root causes, no temporary fixes.
+- Fail-closed on safety (transport keys, egress, decision-gated knowledge
+  mutation); fail-degraded on user surface.
+- Everything durable is Postgres; everything launched is a Job/Attempt;
+  everything that talks out goes through EgressGuard.

@@ -3,7 +3,17 @@
 > **Audience:** Human developers and AI coding agents working in the `umrs/` submodule
 > **Status:** CANONICAL — governs every merge from `main` into `ai4s-platform`
 > **Scope:** The `umrs/` git submodule only. The repo-root [CONSTITUTION.md](../CONSTITUTION.md) still governs the wider platform.
-> **Last updated:** 2026-06-18
+> **Last updated:** 2026-09-22 (header + branch names; invariants unchanged since 2026-06-18)
+
+> **2026-09-22 note.** Branch graph per parent ADR-010: upstream `main`
+> (historically named `ejeannot/main` below) → `ai4s-platform` on
+> `UMRS-org/umrs` (canonical deployment branch) → mirror `mnagaso/umrs`
+> (`origin` of the local checkout; the parent's `.gitmodules` points at
+> `UMRS-org/umrs`). `SYNC_CHECKLIST.md` no longer exists; its
+> conflict-file table is §3 below and
+> [doc/AI4S_PLATFORM_BOUNDARY.md](doc/AI4S_PLATFORM_BOUNDARY.md) holds the
+> contracts. The platform design these merges must keep serving is
+> [../docs/R4-UMRS-DESIGN.md](../docs/R4-UMRS-DESIGN.md).
 
 This document captures the invariants that, when silently violated **by a merge**,
 have broken (or will break) the `ai4s-platform` integration in ways that do not
@@ -13,7 +23,7 @@ fine, started fine, and only failed at runtime far from the root cause.
 Read this **before** and **after** every `git merge ejeannot/main`.
 
 Related, do-not-duplicate references:
-- [SYNC_CHECKLIST.md](SYNC_CHECKLIST.md) — branch topology, conflict-prone files, sync commands.
+- `SYNC_CHECKLIST.md` (removed) — branch topology now in [doc/AI4S_PLATFORM_BOUNDARY.md](doc/AI4S_PLATFORM_BOUNDARY.md); conflict-prone files in §3 below.
 - [.github/instructions/umrs-branch-separation.instructions.md](../.github/instructions/umrs-branch-separation.instructions.md) — the config-shadowing case study and branch contract.
 - Repo-root [CONSTITUTION.md](../CONSTITUTION.md) — platform-wide architecture/security invariants.
 
@@ -185,7 +195,7 @@ set_reload_context(
 
 ## 3. Conflict-Prone Files (verify after every merge)
 
-In addition to the table in [SYNC_CHECKLIST.md](SYNC_CHECKLIST.md):
+Conflict-prone files (the former SYNC_CHECKLIST table now lives here):
 
 | File | What a merge can silently break |
 |------|----------------------------------|

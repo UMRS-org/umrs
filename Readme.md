@@ -1,183 +1,147 @@
-# UMRS — Unified Multimodal Retrieval System
+# UMRS — the infrastructure backbone
 
-UMRS is a config-driven platform for ingesting files into S3-compatible
-storage, processing them with text, vision, and workflow-based pipelines, and
-storing embeddings or derived results in PostgreSQL/pgvector. It supports
-local CPU execution, OpenAI-compatible remote models, and Slurm-backed
-Mini-RiVault launches for GPU inference.
+UMRS (Unified Multimodal Retrieval System) is the server half of the
+R4 + UMRS platform. One UMRS server runs on the front-end of an institution's
+cluster and is the single trusted backbone through which the R4 client
+reaches accounts, compute, models and storage without touching any of them
+directly. Design: [../docs/R4-UMRS-DESIGN.md](../docs/R4-UMRS-DESIGN.md)
+(§"UMRS: the infrastructure backbone"). Where the code still differs from
+the design, the row is in
+[../docs/R4-UMRS-GAP-ANALYSIS-2026-09-22.md](../docs/R4-UMRS-GAP-ANALYSIS-2026-09-22.md).
 
-## What UMRS Includes
+> This branch (`ai4s-platform`) is consumed by the
+> [ai4s-platform](https://github.com/mnagaso/ai4s-platform) repository as a
+> git submodule. Boundary and branch policy:
+> [doc/AI4S_PLATFORM_BOUNDARY.md](doc/AI4S_PLATFORM_BOUNDARY.md); merge safety:
+> [MERGE_CONSTITUTION.md](MERGE_CONSTITUTION.md).
 
-- A ZeroMQ-based control plane plus FastAPI service surface.
-- Text, image, and video workflows backed by MinIO/S3 and PostgreSQL.
-- Local models, OpenAI-compatible models, and Slurm-launched Mini-RiVault
-    runtimes for vLLM and BentoML-based vision inference.
-- A model registry, workflow upload/registration flow, durable job tracking,
-    and a TUI jobs monitor.
-- Public demos `00` to `30` plus private/demo-specific variants in
-    `demos_private/`.
-- Site-driven deployment under `deploy/` with typed `site.yaml` config.
+## Responsibilities (design → what ships, 2026-09-22)
 
-## Current Architecture
+| Responsibility (design) | Today | Gap |
+|---|---|---|
+| **Account management** — identity, authorisation, quotas, mapping to cluster accounts | user records as JSON files (`umrs-server admin enroll / token / slurm-account`), roles user/admin/service, durable projects (ADR-051), per-user agent-process and disk caps, per-user Slurm accounting (`--account=`), optional per-user SSH delegation | D-06 (accounts not in Postgres; no per-project GPU-hour budgets) |
+| **Data transfer security** — ZeroMQ + CurveZMQ + ZAP only | ZeroMQ control + per-user data sockets with CURVE/ZAP (`session` mode on umrs-front) **and** a FastAPI HTTP sidecar behind the NGINX + auth-sidecar edge (JWT) | D-01…D-05 (dual transport; decision pending) |
+| **Workflow job scheduling** on Slurm / Kubernetes / Podman | durable Job/Attempt engine; one `execution_authority` per job; Slurm + podman-compose (preferred), Kubernetes, Compose; workflow schema 2.0.0 with seven step kinds | D-08 (no Snakemake/Nextflow/CWL import) |
+| **Remote agent session scheduling** | `frontend_session` job kind: rootless-Podman worker sandbox on the front-end with a lease-token rail and credential-injecting inference proxy (ADR-046) | D-09, D-48 (no CPU-only venue, no pause/resume) |
+| **Self-deployment of models** in sandboxes on GPU nodes | `ENDPOINT_PROVISION` jobs launch vLLM + LiteLLM (text) and BentoML (vision: SAM3, MAE, HMAE) per Slurm job; model registry with scopes, versions, certification; models pre-staged, offline at boot | D-10 (VLM path undocumented), D-11 (no single inference contract) |
+| **mini-RiVault** — firewalled Podman sandbox around every job, session and model | compute stack via podman-compose profiles; remote sessions in rootless Podman; Singularity backend still present; embedding/ingest compute not sandboxed | D-12, D-13 |
+| **Raw → vector conversion** into Postgres + pgvector | `KNOWLEDGE_INGEST → UNDERSTAND → EMBED → VERIFY` jobs; `knowledge_node_embeddings`, `memory_vectors` (HNSW); image embeddings for tomography/vision | D-14, D-15 (video absent; embedding policy) |
+| **Storage** — S3 by project, Postgres + pgvector, written only through UMRS | `S3_BACKEND` abstraction (SeaweedFS on umrs-front, MinIO elsewhere), attempt-scoped STS credentials, presigned URLs internal only; per-user `s3cfg` still delivered at login | D-16, D-17 |
+| **MCP registry** | `/umrs/mcp/*` register / list / tools / call / health; capabilities from Hatch manifests | D-19, D-21, D-22 (placement, trust class, lifecycle accounting) |
+| **Process model** — UMRS is the parent of everything it launches | Slurm jobs, K8s jobs, compose stacks and frontend sandboxes are all launched and reconciled by UMRS; status relayed to the owning R4 session | — |
 
-At a high level, the current branch organizes UMRS into these layers:
+The knowledge spine (graph registry, ontology, proposals, verification,
+bundles), the data catalog, skills registry, A2L lineage and companion
+trust also live here; they are the parts of the Scientific Catalog, which is
+not yet one object (D-39).
 
-- `umrs` / `src/client_umrs.py` for CLI operations.
-- `src/server_umrs.py` as the legacy server entrypoint and runtime host.
-- `src/umrs/server/` for server-owned handlers, provisioning, SQL, and runtime.
-- `src/umrs/orchestrator/` for endpoint lifecycle, readiness, durable launch,
-    and Slurm+Podman orchestration.
-- `src/umrs/inference/` for model implementations and loading helpers.
-- `src/umrs/vision_service/` for the generic BentoML vision service and
-    pluggable adapters such as `sam3` and `hmae`.
-- `src/umrs/model_registry/`, `src/umrs/jobs/`, `src/umrs/pipeline_sdk/`,
-    `src/umrs/plugins/`, and `src/umrs/rag/` for the higher-level control plane.
+## Repository layout
 
-## Quick Start
+```text
+src/
+  server_umrs.py                 server entrypoint (ZeroMQ server + HTTP sidecar)
+  client_umrs.py                 CLI entrypoint (`umrs`)
+  umrs/
+    core/                        ZeroMQ MessageQueue, CURVE/ZAP, threads, task manager
+    server/                      http_sidecar (router registry), provisioning, handlers, SQL, runtime
+    api/                         FastAPI families (26 mounted lanes: llm, rag, mcp, knowledge*, catalog, companion*, jobs, workflows, models, endpoints, files, projects, grants, venue, …)
+    jobs/                        durable Job/Attempt schema, scheduler, reconciler, backends per JobType
+    orchestrator/                Slurm+Podman (preferred), Slurm+Singularity (legacy), Kubernetes, Compose, hybrid, site profiles
+    mini-rivault-llm/            compose stack + Slurm wrapper for GPU inference (vLLM, LiteLLM, NGINX, BentoML)
+    venues/                      frontend venue: podman sandbox, egress net, nftables render
+    infer_proxy/                 credential-injecting inference proxy for remote sessions
+    model_registry/              model catalog, scopes/ACL, versions, conversion, certification, capabilities
+    inference/                   embedding batch pipeline, model loaders (sentence-transformers, MAE, HMAE, ResNet, SAM3)
+    vision_service/              BentoML vision service + adapters
+    knowledge/, knowledge_graph/, knowledge_model/, scientific_memory/, embeddings_api/, search_api/, evidence/, experiment_registry/
+                                 knowledge spine: ingest, understand, extract, ontology, graph registry, proposals, verify, loop, bundle export/import
+    data_catalog/, asset_index/  data catalog (catalog_objects) + console read-model
+    a2l/, artifact_registry/     provenance and lineage (ADR-034)
+    skills/, mcp/                skill and MCP registries
+    admin/, tenants/, companion_trust/, grants/, security/, shared/
+                                 user records, (experimental) tenants, trust allowlist, asset grants, EgressGuard + scanners, config/storage/auth helpers
+    workflow/, workflow_events.py, pipeline_sdk/, plugins/, recipes/
+                                 workflow model, persistence, step execution, user pipelines
+    migrations/                  0001–0100 SQL migrations (`umrs-server admin migrate`)
+    tui/, tui_v2/, cli/          operator TUIs and CLI
+deploy/                          site deployment roots (umrs-front, rccs, rccs-front, ai4s, bdrt, bdrt-front, octopus, octopus-front, hpbd-atom, local, templates)
+docker/                          local standalone stack (server + Postgres + object store)
+demos/, demos_private/, demos_sp8/   demo suites
+doc/, docs/                      documentation (see map below)
+tests/                           5,1xx tests (2026-09-21)
+```
 
-> **ai4s-platform integration**: This branch is consumed by the
-> [ai4s-platform](https://github.com/mnagaso/ai4s-platform) project as a
-> git submodule. See [doc/AI4S_PLATFORM_BOUNDARY.md](doc/AI4S_PLATFORM_BOUNDARY.md)
-> for contracts and development boundaries.
+## Quick start
+
+Package manager: [uv](https://docs.astral.sh/uv/). The submodule is a uv
+workspace member of the parent repo (light defaults; `server` extra).
 
 ### Client only
 
-The recommended package manager for the repo is
-[uv](https://docs.astral.sh/uv/).
-
 ```bash
-uv venv .venv
-source .venv/bin/activate
+uv venv .venv && source .venv/bin/activate
 uv pip install -e src/
-
 umrs --help
+umrs ping                 # against a configured server profile (~/.config/umrs/)
+umrs info                 # profile, mode (must be `direct` for umrs-front clusters), ZeroMQ status
 ```
 
-If you already have a configured UMRS server reachable from your machine:
+Site setup scripts under `deploy/<site>/setup_client.sh` create the venv and
+the connection profile. Normal users do not use `umrs` directly — they use
+`r4`; `umrs` is the operator/diagnostic CLI and `umrs-server admin` the
+trusted-host administration CLI.
 
-```bash
-umrs ping
-umrs bucket list
-```
-
-Site-specific setup scripts under `deploy/<site>/`, such as
-`deploy/rccs-cloud/setup_client.sh` or `deploy/hpbd-atom/setup_client.sh`,
-create the venv, install the package, and place the expected config files
-under `~/.config/umrs/`.
-
-### Local Docker deployment
-
-For a local standalone stack with UMRS server + Postgres + MinIO:
+### Local standalone stack
 
 ```bash
 docker compose -f docker/docker-compose.yml up -d --build
 docker logs -f umrs-server
 ```
 
-See [docker/README.md](docker/README.md) for the exact container commands and
-limitations of the Docker-only setup.
+See [docker/README.md](docker/README.md).
 
-### HPC / site deployments
+### Site deployments
 
-For Slurm-backed GPU inference with Mini-RiVault, use the site deployment docs
-that match your environment:
+Deployment is by the parent repository's Ansible only
+(`deploy/ansible/bootstrap.sh --profile <umrs-front | rccs-cloud | bdrt | octopus | atom-k8s>`);
+never hand-edit a deployed checkout. Site roots: [deploy/umrs-front/](deploy/umrs-front/), [deploy/rccs/](deploy/rccs/)
+(the Ansible profile is still named `rccs-cloud`; ADR-019 renamed the tree),
+[deploy/hpbd-atom/](deploy/hpbd-atom/); operator guide [doc/admin_guide.md](doc/admin_guide.md).
 
-- [deploy/rccs-cloud/README.md](deploy/rccs-cloud/README.md)
-- [deploy/hpbd-atom/README.md](deploy/hpbd-atom/README.md)
-- [doc/admin_guide.md](doc/admin_guide.md)
+## Inference paths
 
-## Main User-Facing Capabilities
-
-### Data operations
-
-- Upload files and directories to configured buckets.
-- Export embeddings.
-- Check, update, recompute, and reload server configuration.
-
-### Model and workflow control plane
-
-- Register, upload, list, and download models.
-- Upload and list workflows.
-- Run durable jobs and cancel them explicitly.
-- Use the live TUI monitor for job inspection.
-
-### Inference paths
-
-| Path | Typical use |
+| Path | Use |
 |---|---|
-| `SentenceTransformer`, `TransformerEncoder`, `Resnet-50`, `MAE` | local CPU inference |
-| `openai://...` | any OpenAI-compatible remote model |
-| `rivault://openai://...` | Slurm-launched vLLM/LiteLLM inference |
-| `rivault://bentoml://...` | Slurm-launched vision inference via BentoML |
-| `user_script://...`, `user_workflow://...`, `pipeline://...` | user-defined workflow execution |
+| `SentenceTransformer`, `TransformerEncoder`, `Resnet-50`, `MAE` | local CPU/GPU embedding models |
+| `openai://…` | any OpenAI-compatible model (through the proxy for remote sessions) |
+| `rivault://openai://…` | Slurm-launched vLLM/LiteLLM in a mini-RiVault |
+| `rivault://bentoml://…` | Slurm-launched BentoML vision service |
+| `user_script://…`, `user_workflow://…`, `pipeline://…` | user-defined workflow execution |
 
-## Demos
+## Development
 
-The canonical demos live in [demos/README.md](demos/README.md). They are
-ordered from basic health checks to advanced workflow, jobs, and monitoring
-scenarios.
-
-Representative public demos:
-
-- [demos/01_health_check/](demos/01_health_check/)
-- [demos/02_text_embedding/](demos/02_text_embedding/)
-- [demos/03_sam3_segmentation/](demos/03_sam3_segmentation/)
-- [demos/04_vision_inference/](demos/04_vision_inference/)
-- [demos/05_rag_search/](demos/05_rag_search/)
-- [demos/07_model_registry/](demos/07_model_registry/)
-- [demos/08_user_model/](demos/08_user_model/)
-- [demos/15_complex_dag/](demos/15_complex_dag/)
-- [demos/20_durable_jobs/](demos/20_durable_jobs/)
-- [demos/22_monitor/](demos/22_monitor/)
-
-Private or proprietary variants live under [demos_private/README.md](demos_private/README.md).
-
-## Repository Layout
-
-```text
-src/
-    pyproject.toml                 Python package definition
-    client_umrs.py                 CLI entrypoint (`umrs` when installed)
-    server_umrs.py                 server entrypoint
-    umrs/
-        api/                         FastAPI services
-        core/                        message queues, task manager, command/status types
-        shared/                      common config, storage, modality, progress, helpers
-        server/                      provisioning, handlers, SQL, durable runtime
-        inference/                   model implementations and loading helpers
-        vision_service/              generic BentoML vision service + adapters
-        model_registry/              model catalog, ACL, policies, storage refs
-        orchestrator/                endpoint registry, readiness, Slurm+Podman backend
-        jobs/                        durable jobs schema, store, scheduler, monitor
-        pipeline_sdk/                pipeline/workflow primitives and connectors
-        plugins/                     plugin and user workflow execution helpers
-        rag/                         retrieval, reranking, context assembly
-        tui/                         Rich-based jobs dashboard
-        mini-rivault-llm/            compose/runtime assets for Slurm GPU inference
-
-deploy/                          site-specific deployment assets and wrappers
-demos/                           canonical public demos (01-22)
-demos_private/                   private/proprietary demo variants
-doc/                             architecture, admin, user, and design docs
-docker/                          local standalone Docker deployment
-tests/                           regression and unit tests
+```bash
+cd umrs && ../.venv/bin/python -m pytest tests -q
+bash ../scripts/ci-lint-local.sh --umrs-changed     # the gate on the submodule diff (ADR-052)
 ```
 
-## Documentation Map
+Rules: [../CONSTITUTION.md](../CONSTITUTION.md) (foundation modules never
+import `umrs.api` / `umrs.server`; every router mounted or deleted; complexity
+≤ 9; baselines only shrink), [MERGE_CONSTITUTION.md](MERGE_CONSTITUTION.md),
+[.github/instructions/](.github/instructions/) (`claude.md`, `umrs-project`,
+`demo-execution`, harness rules).
 
-Core docs:
+## Documentation map
 
-- [doc/admin_guide.md](doc/admin_guide.md)
-- [doc/user_guide.md](doc/user_guide.md)
-- [doc/umrs_overview.md](doc/umrs_overview.md)
-- [doc/zmq_api_contract.md](doc/zmq_api_contract.md)
-- [doc/design_user_defined_models.md](doc/design_user_defined_models.md)
-- [doc/rag_implementation.md](doc/rag_implementation.md)
-- [demos/README.md](demos/README.md)
+- [doc/umrs_overview.md](doc/umrs_overview.md) — runtime surfaces and packages
+- [doc/AI4S_PLATFORM_BOUNDARY.md](doc/AI4S_PLATFORM_BOUNDARY.md) — branch topology and contracts preserved for the parent
+- [DEVELOPMENT_OBJECTIVES.md](DEVELOPMENT_OBJECTIVES.md) — UMRS objectives and the design anchors referenced by docstrings
+- [doc/zmq_api_contract.md](doc/zmq_api_contract.md) — ZeroMQ control/data protocol (string commands; versioning is gap D-04)
+- [doc/admin_guide.md](doc/admin_guide.md), [doc/user_guide.md](doc/user_guide.md), [doc/onboarding.md](doc/onboarding.md), [doc/access_control.md](doc/access_control.md), [doc/multi_users.md](doc/multi_users.md), [deploy/](deploy/) site roots
+- [doc/rag_implementation.md](doc/rag_implementation.md), [doc/set-up_pgvector.md](doc/set-up_pgvector.md), [doc/design_user_defined_models.md](doc/design_user_defined_models.md), [doc/s3_requirements_for_admin.md](doc/s3_requirements_for_admin.md)
+- [src/umrs/mini-rivault-llm/README.md](src/umrs/mini-rivault-llm/README.md) — GPU runtime stack
+- [demos/README.md](demos/README.md) — canonical demos (`01_health_check` … `22_monitor`)
+- Parent-side: [../docs/R4-UMRS-PLATFORM-OVERVIEW.md](../docs/R4-UMRS-PLATFORM-OVERVIEW.md) §3.3–3.8, ADRs under [../docs/adr/](../docs/adr/README.md)
 
-Deployment and runtime docs:
-
-- [docker/README.md](docker/README.md)
-- [deploy/rccs-cloud/README.md](deploy/rccs-cloud/README.md)
-- [deploy/hpbd-atom/README.md](deploy/hpbd-atom/README.md)
-- [src/umrs/mini-rivault-llm/README.md](src/umrs/mini-rivault-llm/README.md)
+Documents in `doc/` dated before 2026-09-22 describe the implementation as of
+their date; verify against the code before citing.

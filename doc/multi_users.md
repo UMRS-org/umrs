@@ -1,4 +1,4 @@
-# UMRS: Unified Multimodal Retriever Service
+# UMRS: Unified Multimodal Retrieval System
 
 ## Multiuser Documentation
 
