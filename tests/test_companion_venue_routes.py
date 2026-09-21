@@ -463,7 +463,7 @@ class TestOwnerRoutes:
         assert _start(harness).status_code == 200
         assert harness.jobs.enqueued == ["job-1", "job-2"]
 
-    def test_idempotency_key_fits_the_column_for_uuid_sessions(self, harness):
+    def test_idempotency_key_fits_the_column_for_uuid_sessions(self):
         from umrs.venues.frontend_service import _idempotency_key
 
         key = _idempotency_key("9341f89e-d714-48be-9571-b1e9e21844cd")
