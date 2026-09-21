@@ -480,6 +480,20 @@ class TestOwnerRoutes:
         assert r.headers["x-platform-error-code"] == "companionvenue.unavailable"
         assert "RuntimeError: column job_id does not exist" in r.json()["detail"]
 
+    def test_job_dead_before_its_backend_ran_settles_the_row(self, harness):
+        harness.pool.seed("alice", "sess-1")
+        assert _start(harness).status_code == 200
+        harness.jobs.jobs["job-1"].status = _status("failed")
+        harness.jobs.attempts["job-1"] = [
+            _attempt("failed", "frontend_session lane not configured")
+        ]
+        status = harness.client.get("/umrs/companion/sessions/sess-1/venue", headers=H).json()
+        assert (status["state"], status["job"]["status"]) == ("failed", "failed")
+        assert "lane not configured" in status["reason"]
+        assert harness.pool.table[("alice", "sess-1")]["state"] == "error"
+        # a deliberate restart is allowed again
+        assert _start(harness).status_code == 200
+
     def test_start_refuses_without_job_store(self, harness):
         harness.pool.seed("alice", "sess-1")
         harness.service.job_store = None

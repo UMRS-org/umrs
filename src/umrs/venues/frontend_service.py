@@ -351,7 +351,21 @@ class FrontendVenueService:
         row = self.store.get(session_id)
         if row is None or row.user_id != owner:
             return None
-        return self._describe(row)
+        return self._describe(self._settle_dead_job(row))
+
+    def _settle_dead_job(self, row: VenueSessionRow) -> VenueSessionRow:
+        """A job that died before its backend ran (claim refused, lane absent,
+        cancelled while queued) never touches the row, which would sit in
+        ``provisioning`` forever — project the job's verdict onto it."""
+        if row.state != "provisioning" or not row.job_id:
+            return row
+        view = self._job_view(row.job_id)
+        if not view or view["status"] not in ("failed", "cancelled"):
+            return row
+        reason = view.get("attempt_detail") or f"session job {view['status']}"
+        failed = self.store.mark_failed(row.session_id, str(reason)[:400])
+        self._project_registry(row.user_id, row.session_id, state="error")
+        return failed or row
 
     def stop(
         self, *, owner: str, session_id: str, actor: str = "user"
