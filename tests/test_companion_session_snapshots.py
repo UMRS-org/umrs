@@ -189,6 +189,10 @@ class _FakeCursor:
         if sql_l.startswith("delete from companion_session_archives"):
             self._exec_delete_archive(params)
             return
+        if sql_l.startswith("delete from chat_turn_approvals"):
+            # F15 audit-block row (2026-09-21): cascade delete including approvals,
+            # recorded in run flows; always merge; never raises.
+            return
         if sql_l.startswith("delete from companion_session_snapshots"):
             self._exec_delete_snapshot(params)
             return
