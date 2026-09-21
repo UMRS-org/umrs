@@ -319,16 +319,22 @@ class UMRSTask:
                             (new_status, task_id),
                         )
                 break
+            except psycopg2.errors.UniqueViolation:
+                # Another task with the same (client, cmd, payload_hash) is
+                # already active.  The work is covered — log and return without
+                # raising so the calling thread stays alive.
+                logger.warning(
+                    "update_status task %d → %s: dedup conflict, task already "
+                    "active under the same key — skipping.",
+                    task_id, new_status,
+                )
+                break
             except psycopg2.Error as e:
-                # UniqueViolation on the partial dedup index will never be
-                # resolved by retrying — bail out immediately.
-                non_retryable = isinstance(e, psycopg2.errors.UniqueViolation)
-                if non_retryable or attempt >= self.max_attempts:
+                if attempt >= self.max_attempts:
                     logger.info(
                         f"Critical PostgreSQL error while updating task {task_id}: {type(e).__name__}: {e}"
                     )
                     traceback.print_exc()
-                    # _put_conn is called by finally below before re-raise.
                     raise
                 time.sleep(0.5)
             finally:
