@@ -33,29 +33,38 @@ NOT_FOUND = "NOT_FOUND"
 def _parse_client_entry(entry: "dict | None") -> tuple:
     """Parse one client entry from a STATUS or STATUS_ALL response.
 
-    Returns ``(is_running, latest_status, latest_ts)``:
+    Returns ``(is_running, latest_status, latest_ts, n_done)``:
     - NOT_FOUND  when entry is None (server has no record of the client)
     - True/False when a run is known
     - None       on a transient / incomplete response
+
+    ``n_done`` is the total count of Done entries in ``data`` — used to
+    detect completed rounds regardless of polling interval.
     """
     if entry is None:
-        return NOT_FOUND, None, None
+        return NOT_FOUND, None, None, 0
 
     summaries = entry.get("summaries", {})
     po = summaries.get("process_objects") or summaries.get("PROCESS_OBJECTS") or {}
     entries = po.get("data", [])
 
+    # Exclude the server-startup "snapshot" entry: it represents the initial
+    # DB state (round 0), not an actual upload_dir call.  Only numeric
+    # thread_ids correspond to real benchmark rounds.
+    n_done = sum(1 for e in entries
+                 if e.get("status") == "Done" and e.get("thread_id") != "snapshot")
+
     dated = [e for e in entries if e.get("updated_at")]
     if not dated:
         generated_at = po.get("generated_at")
         if generated_at:
-            return False, "Idle", generated_at
-        return None, None, None
+            return False, "Idle", generated_at, n_done
+        return None, None, None, 0
 
     latest = max(dated, key=lambda e: e["updated_at"])
     latest_status = latest.get("status")
     latest_ts = latest["updated_at"]
-    return latest_status == "Running", latest_status, latest_ts
+    return latest_status == "Running", latest_status, latest_ts, n_done
 
 
 def query_user(user: str, config_dir: str, client: str, debug: bool = False) -> tuple:
@@ -80,7 +89,7 @@ def query_user(user: str, config_dir: str, client: str, debug: bool = False) -> 
                     print("-" * 42, flush=True)
 
                 if data.get("status") == "error":
-                    return NOT_FOUND, None, None
+                    return NOT_FOUND, None, None, 0
 
                 return _parse_client_entry(data)
             except json.JSONDecodeError:
@@ -91,7 +100,7 @@ def query_user(user: str, config_dir: str, client: str, debug: bool = False) -> 
         print(result.stdout, flush=True)
         print("-" * 42, flush=True)
 
-    return None, None, None
+    return None, None, None, 0
 
 
 def query_all_users_once(
@@ -122,7 +131,7 @@ def query_all_users_once(
                     print("-" * 42, flush=True)
 
                 if data.get("status") != "ok":
-                    return {u: (None, None, None) for u in users}
+                    return {u: (None, None, None, 0) for u in users}
 
                 clients = data.get("clients", {})
                 return {
@@ -137,7 +146,7 @@ def query_all_users_once(
         print(result.stdout, flush=True)
         print("-" * 42, flush=True)
 
-    return {u: (None, None, None) for u in users}
+    return {u: (None, None, None, 0) for u in users}
 
 
 def fmt_ts(iso_ts):
@@ -150,7 +159,7 @@ def fmt_ts(iso_ts):
         return iso_ts
 
 
-def render(users, state, last_done_ts, start_time, poll_count, pid=None):
+def render(users, state, completions, rounds, last_done_ts, start_time, poll_count, pid=None):
     cols, _ = shutil.get_terminal_size(fallback=(80, 24))
     items_per_row = max(1, cols // ITEM_WIDTH)
 
@@ -163,10 +172,15 @@ def render(users, state, last_done_ts, start_time, poll_count, pid=None):
 
     poll_str = f"Poll #{poll_count}" if poll_count > 0 else "Poll #0 (first scan in progress...)"
     pid_str = f"PID {pid}  " if pid is not None else ""
+    rounds_str = ""
+    if rounds > 1:
+        total_completions = sum(completions[u] for u in users)
+        rounds_str = f"  🔵 {total_completions}/{len(users) * rounds} tasks"
     header = (f"{pid_str}"
               f" Done: {n_done}/{len(users)}  "
               f"🔴 Running: {n_running}  "
-              f"⚪ Pending: {n_pending}  "
+              f"⚪ Pending: {n_pending}"
+              f"{rounds_str}  "
               f"⏱ {h:02d}:{m:02d}:{s:02d}  "
               f"🔄 {poll_str}")
     lines.append(header)
@@ -203,13 +217,16 @@ def main():
     parser.add_argument("--client", default=DEFAULT_CLIENT)
     parser.add_argument("--log-file", default=None,
                         help="Append 'Last finished: <date>' to this file when all users are done")
+    parser.add_argument("--rounds", type=int, default=1,
+                        help="Number of sequential upload rounds per user to wait for (default: 1)")
     parser.add_argument("--debug", action="store_true",
                         help="Print per-user raw query results and internal state each poll")
     args = parser.parse_args()
 
     users        = [f"user1_{i}" for i in range(1, args.N + 1)]
     state        = {u: "pending" for u in users}
-    prev_done_ts = {u: None for u in users}  # None = no valid reading yet
+    base_done    = {u: 0 for u in users}  # Done-entry count at bootstrap (baseline)
+    completions  = {u: 0 for u in users}  # rounds completed since bootstrap
     done         = set()
     last_done_ts = None
     start        = time.time()
@@ -231,10 +248,13 @@ def main():
         )
         newly_resolved = set()
         for user in list(remaining):
-            is_running, latest_status, latest_ts = snapshot.get(user, (None, None, None))
+            is_running, latest_status, latest_ts, n_done = snapshot.get(
+                user, (None, None, None, 0)
+            )
             if args.debug:
                 print(f"[bootstrap] {user}: is_running={is_running} "
-                      f"latest_status={latest_status} latest_ts={latest_ts}", flush=True)
+                      f"latest_status={latest_status} latest_ts={latest_ts} "
+                      f"n_done={n_done}", flush=True)
             if is_running is NOT_FOUND:
                 if bootstrap_bar is not None:
                     bootstrap_bar.close()
@@ -246,7 +266,9 @@ def main():
             if is_running is True:
                 state[user] = "running"
             if latest_ts is not None:
-                prev_done_ts[user] = latest_ts
+                # Record baseline: pre-existing Done entries don't count as
+                # completed rounds for this benchmark run.
+                base_done[user] = n_done
                 newly_resolved.add(user)
                 if bootstrap_bar is not None:
                     bootstrap_bar.update(1)
@@ -270,7 +292,7 @@ def main():
     if not args.debug:
         # Show the initial board (poll #0) so the user sees everyone pending
         # (grey), except users already caught running during bootstrap.
-        lines = render(users, state, last_done_ts, start, poll_count, pid=os.getpid())
+        lines = render(users, state, completions, args.rounds, last_done_ts, start, poll_count, pid=os.getpid())
         print("\033[2J\033[H", end="", flush=True)
         out = ""
         for line in lines:
@@ -290,35 +312,34 @@ def main():
             for user in to_scan:
                 prev_state = state[user]
 
-                is_running, latest_status, latest_ts = bulk.get(user, (None, None, None))
-                cur_snapshot[user] = (is_running, latest_status, latest_ts)
+                is_running, latest_status, latest_ts, n_done = bulk.get(
+                    user, (None, None, None, 0)
+                )
+                cur_snapshot[user] = (is_running, latest_status, latest_ts, n_done)
 
-                if is_running is True:
-                    state[user] = "running"
-
-                elif is_running is False:
-                    went_done = state[user] == "running"
-
-                    # Case 2: the latest entry's timestamp moved forward since
-                    # last poll -> a new run completed, even if we never saw
-                    # it as Running (full cycle happened between two polls).
-                    if (not went_done
-                            and prev_done_ts[user] is not None
-                            and latest_ts is not None
-                            and latest_ts > prev_done_ts[user]):
-                        went_done = True
-
-                    if went_done:
+                # Count new completions relative to the baseline recorded at
+                # bootstrap. Using the Done-entry count from data[] is exact:
+                # even if N rounds complete between two polls, all N are
+                # captured in a single comparison — no timestamp race.
+                new_completions = max(0, n_done - base_done[user])
+                if new_completions > completions[user]:
+                    completions[user] = new_completions
+                    if latest_ts and (last_done_ts is None or latest_ts > last_done_ts):
+                        last_done_ts = latest_ts
+                    if completions[user] >= args.rounds:
                         state[user] = "done"
                         done.add(user)
-                        if latest_ts and (last_done_ts is None or latest_ts > last_done_ts):
-                            last_done_ts = latest_ts
-
-                if latest_ts is not None:
-                    prev_done_ts[user] = latest_ts
+                    else:
+                        # More rounds remain; set pending unless already running
+                        state[user] = "running" if is_running is True else "pending"
+                elif is_running is True:
+                    state[user] = "running"
+                elif is_running is False and state[user] == "running":
+                    state[user] = "pending"
+                # is_running is None → transient error, keep current state
 
                 if state[user] != prev_state and not args.debug:
-                    lines = render(users, state, last_done_ts, start, poll_count + 1, pid=os.getpid())
+                    lines = render(users, state, completions, args.rounds, last_done_ts, start, poll_count + 1, pid=os.getpid())
                     out = "\033[H"
                     for line in lines:
                         out += line + "\033[K\n"
@@ -327,7 +348,7 @@ def main():
             poll_count += 1
 
             if not args.debug:
-                lines = render(users, state, last_done_ts, start, poll_count, pid=os.getpid())
+                lines = render(users, state, completions, args.rounds, last_done_ts, start, poll_count, pid=os.getpid())
                 out = "\033[H"
                 for line in lines:
                     out += line + "\033[K\n"
@@ -335,10 +356,11 @@ def main():
 
             if args.debug:
                 for user in to_scan:
-                    ir, ls, ts = cur_snapshot[user]
+                    ir, ls, ts, nd = cur_snapshot[user]
                     print(f"[poll {poll_count}] {user}: state={state[user]} "
+                          f"completions={completions[user]}/{args.rounds} "
                           f"is_running={ir} latest_status={ls} "
-                          f"prev_done_ts={prev_done_ts[user]} latest_ts={ts}",
+                          f"n_done={nd} base_done={base_done[user]} latest_ts={ts}",
                           flush=True)
 
             if len(done) == len(users):

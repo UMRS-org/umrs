@@ -317,14 +317,17 @@ class UMRSTask:
                         )
                 break
             except psycopg2.Error as e:
-                if attempt < self.max_attempts:
-                    time.sleep(0.5)
-                else:
+                # UniqueViolation on the partial dedup index will never be
+                # resolved by retrying — bail out immediately.
+                non_retryable = isinstance(e, psycopg2.errors.UniqueViolation)
+                if non_retryable or attempt >= self.max_attempts:
                     logger.info(
                         f"Critical PostgreSQL error while updating task {task_id}: {type(e).__name__}: {e}"
                     )
                     traceback.print_exc()
+                    # _put_conn is called by finally below before re-raise.
                     raise
+                time.sleep(0.5)
             finally:
                 self._put_conn(conn)
 
@@ -338,7 +341,13 @@ class UMRSTask:
 
         if cmd == TaskCmd.PROCESS_OBJECTS:
             client_id, s3_objects = full_payload
-            str_payload = json.dumps(s3_objects)
+            # PROCESS_OBJECTS consumes S3 events from the per-client data queue
+            # and is therefore not idempotent: two successive upload_dir calls
+            # for the same client (even with the same object count) must each
+            # create a distinct task.  Append a nanosecond timestamp to ensure
+            # every invocation gets a unique payload_hash and bypasses the
+            # active-task dedup that guards other commands.
+            str_payload = json.dumps({"n": s3_objects, "_ts": time.time_ns()})
 
         elif cmd == TaskCmd.WAIT_OUTPUT:
             client_id, output_path_to_bucket, timeout, zmq_sender_id = full_payload
