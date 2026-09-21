@@ -12,8 +12,10 @@ docs/development/session-venue-selection-and-unified-listing-plan-2026-09-09.md
 
 from __future__ import annotations
 
+import json
 import logging
 import re
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Request
@@ -250,7 +252,92 @@ async def list_turns(session_id: str, request: Request) -> dict[str, Any]:
         pool.putconn(conn)
 
 
-@router.get("/{session_id}/turns/{turn_id}", response_model=dict[str, Any])
+class QueueActionBody(BaseModel):
+    """F9 design wave: server-side queue verb body (append | pop | clear)."""
+    action: str
+    content: str = ""
+    client_id: str = ""
+    updated_at: str = ""
+
+
+@router.post("/{session_id}/queue", response_model=dict[str, Any])
+async def queue_mutation(session_id: str, body: QueueActionBody, request: Request) -> dict[str, Any]:
+    """Transactional alive-mutate for session.metadata.chat_queue (owner-scope +
+     cross-client honor over the same "mirror's own journal"). Writers carry
+    their client_id stamp so resumes always know which device wrote which row.
+    Optimistic-concurrency coordination via FOR UPDATE (never fabricated side
+    effects).
+    """
+    uid = _uid(request)
+    pool = _pool(request)
+    action = (body.action or "").strip().lower()
+    if action not in {"append", "pop", "clear"}:
+        raise_typed(
+            PlatformError.companionsessions("invalid_action", f"action must be append|pop|clear, got {action!r}")
+        )
+    conn = pool.getconn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT payload FROM companion_session_snapshots
+                WHERE user_id = %s AND session_id = %s
+                FOR UPDATE
+                """,
+                (uid, session_id),
+            )
+            row = cur.fetchone()
+            if row is None:
+                raise_typed(
+                    PlatformError.companionsessions("not_found", "snapshot not found")
+                )
+            try:
+                blob = json.loads(row[0]) if isinstance(row[0], str) else row[0]
+            except json.JSONDecodeError:
+                blob = {}
+            metadata = blob.get("metadata") if isinstance(blob, dict) else {}
+            if not isinstance(metadata, dict):
+                metadata = {}
+            entries = metadata.get("chat_queue") or []
+            if not isinstance(entries, list):
+                entries = []
+            now = body.updated_at or datetime.now(timezone.utc).isoformat()
+            if action == "append":
+                content = (body.content or "").strip()
+                if not content:
+                    raise_typed(
+                        PlatformError.companionsessions("invalid_value", "content is required for append")
+                    )
+                client_id = (body.client_id or "").strip() or uid or "unknown"
+                entries.append({"id": f"q-{len(entries)+1}", "content": content, "client_id": client_id, "added_at": now})
+                front = None
+            elif action == "pop":
+                front = entries.pop(0) if entries else None
+            else:
+                front = len(entries)
+                entries = []
+            blob["metadata"] = metadata
+            metadata["chat_queue"] = entries
+            cur.execute(
+                """
+                UPDATE companion_session_snapshots
+                SET payload = %s, updated_at = now()
+                WHERE user_id = %s AND session_id = %s
+                """,
+                (json.dumps(blob), uid, session_id),
+            )
+            applied = cur.rowcount > 0
+            if applied:
+                conn.commit()
+            else:
+                conn.rollback()
+        return {
+            "applied": applied,
+            "queue": entries,
+            "front": front,
+        }
+    finally:
+        pool.putconn(conn)
 async def get_turn(session_id: str, turn_id: str, request: Request) -> dict[str, Any]:
     """One turn's full payload (ADR-057 D-2).
     # auth: verified
