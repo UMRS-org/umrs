@@ -134,7 +134,15 @@ async def put_session_snapshot(
                         ELSE companion_session_snapshots.state
                     END,
                     updated_at = now()
-                WHERE companion_session_snapshots.update_marker <= EXCLUDED.update_marker
+                -- F3 audit fix: comparing raw strings mixed naive-vs-tz-aware writer classes;
+                -- timestamptz normalizes both (epoch fallback for empty/unparseable rows).
+                WHERE COALESCE(
+                    NULLIF(trim(companion_session_snapshots.update_marker), '')::timestamptz,
+                    'epoch'::timestamptz
+                ) <= COALESCE(
+                    NULLIF(trim(EXCLUDED.update_marker), '')::timestamptz,
+                    'epoch'::timestamptz
+                )
                 """,
                 (
                     uid,
