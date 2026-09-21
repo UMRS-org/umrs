@@ -380,7 +380,10 @@ class FrontendPodmanProvisioner:
     # ── Steps ─────────────────────────────────────────────────────────
 
     def _step_network(self, cfg: ProvisionConfig, result: ProvisionResult) -> None:
+        # _run_ok(step, *podman_args): the step label is NOT a podman arg —
+        # the live receipt of 2026-09-21 ran `podman create --internal …`.
         self._run_ok(
+            "network",
             "network",
             "create",
             "--internal",
