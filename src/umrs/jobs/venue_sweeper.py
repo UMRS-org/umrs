@@ -59,11 +59,11 @@ class VenueSweeper:
 
 def build_sweeper(app: Any, config: Any | None = None) -> VenueSweeper | None:
     """Construct the sweeper from env + app state; None when disabled/unwired."""
-    from umrs.api.secret_broker import get_broker
     from umrs.venues.frontend_config import FrontendVenueConfig
     from umrs.venues.frontend_podman import FrontendPodmanProvisioner
     from umrs.venues.venue_sessions import VenueSessionStore
 
+    from .secret_broker import SecretBroker
     from .session_venue_runtime import VenueRuntimeExecutor
 
     cfg = config or FrontendVenueConfig.from_env()
@@ -73,7 +73,10 @@ def build_sweeper(app: Any, config: Any | None = None) -> VenueSweeper | None:
     if pool is None:
         logger.warning("venue sweeper enabled but no shared DB pool — not started")
         return None
-    broker = get_broker()
+    # ADR-053: jobs/ never imports api/. The sweeper reads/revokes leases on the
+    # same durable table the API's broker uses, so a pool-bound broker of its
+    # own is exact (never in-memory: the pool gate above guarantees Postgres).
+    broker = SecretBroker(db_pool=pool)
     provisioner = FrontendPodmanProvisioner(broker, session_root=cfg.session_root)
     executor = VenueRuntimeExecutor(broker, provisioner, idle_seconds=cfg.idle_seconds)
     return VenueSweeper(
