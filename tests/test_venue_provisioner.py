@@ -76,6 +76,11 @@ def _provision(fail_at: str | None = None, **cfg_over):
     return provisioner, broker, podman, result
 
 
+def _env_values(argv: tuple[str, ...]) -> list[str]:
+    """Values following each ``--env`` flag."""
+    return [argv[i + 1] for i, flag in enumerate(argv) if flag == "--env"]
+
+
 class TestHappyPath:
     def test_ordered_steps(self):
         _, _, _, result = _provision()
@@ -238,6 +243,33 @@ class TestWorkerHardening:
         assert "--security-opt no-new-privileges" in argv
         assert "--network sess-sess-t1" in argv
         assert "egress-net" not in argv  # worker attaches the session net only
+
+    def test_worker_command_and_rail_env(self):
+        argv = worker_run_args(_cfg(rail_port=8081)).argv
+        assert argv[-2:] == ("venue", "worker")
+        assert argv[-3] == "r4-companion@sha256:abc"
+        env_pairs = _env_values(argv)
+        expected = {
+            "R4_VENUE_SESSION_ID=sess-t1",
+            "R4_VENUE_RAIL_URL=http://egress:8081",
+            "R4_ENDPOINT_URL=http://egress:8080",
+            "HOME=/tmp/home",
+        }
+        assert expected <= set(env_pairs)
+        token_leaks = [e for e in env_pairs if e.startswith("R4_VENUE_SESSION_TOKEN=")]
+        assert token_leaks == []
+
+    def test_nginx_rail_listener_only_with_upstream(self):
+        without = render_nginx_conf(_cfg())
+        assert "listen 8081" not in without
+        conf = render_nginx_conf(_cfg(rail_upstream="169.254.1.2:8000"))
+        assert "listen 8081" in conf
+        assert "location /umrs/companion/sessions/sess-t1/rail/" in conf
+        assert "proxy_pass http://169.254.1.2:8000;" in conf
+        for header in ("X-User-ID", "X-Verified-Project-ID", "X-Verified-HMAC", "X-Project-ID"):
+            assert f'proxy_set_header {header} "";' in conf
+        assert "location / { return 404; }" in conf
+        assert "$http_authorization" not in conf
 
     def test_web_policy_none_skips_squid(self):
         _, _, podman, _ = _provision(web_policy="none")
