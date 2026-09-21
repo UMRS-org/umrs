@@ -150,7 +150,7 @@ def fmt_ts(iso_ts):
         return iso_ts
 
 
-def render(users, state, last_done_ts, start_time, poll_count):
+def render(users, state, last_done_ts, start_time, poll_count, pid=None):
     cols, _ = shutil.get_terminal_size(fallback=(80, 24))
     items_per_row = max(1, cols // ITEM_WIDTH)
 
@@ -162,7 +162,9 @@ def render(users, state, last_done_ts, start_time, poll_count):
     n_pending = sum(1 for u in users if state[u] == "pending")
 
     poll_str = f"Poll #{poll_count}" if poll_count > 0 else "Poll #0 (first scan in progress...)"
-    header = (f" Done: {n_done}/{len(users)}  "
+    pid_str = f"PID {pid}  " if pid is not None else ""
+    header = (f"{pid_str}"
+              f" Done: {n_done}/{len(users)}  "
               f"🔴 Running: {n_running}  "
               f"⚪ Pending: {n_pending}  "
               f"⏱ {h:02d}:{m:02d}:{s:02d}  "
@@ -268,7 +270,7 @@ def main():
     if not args.debug:
         # Show the initial board (poll #0) so the user sees everyone pending
         # (grey), except users already caught running during bootstrap.
-        lines = render(users, state, last_done_ts, start, poll_count)
+        lines = render(users, state, last_done_ts, start, poll_count, pid=os.getpid())
         print("\033[2J\033[H", end="", flush=True)
         out = ""
         for line in lines:
@@ -316,7 +318,7 @@ def main():
                     prev_done_ts[user] = latest_ts
 
                 if state[user] != prev_state and not args.debug:
-                    lines = render(users, state, last_done_ts, start, poll_count + 1)
+                    lines = render(users, state, last_done_ts, start, poll_count + 1, pid=os.getpid())
                     out = "\033[H"
                     for line in lines:
                         out += line + "\033[K\n"
@@ -325,7 +327,7 @@ def main():
             poll_count += 1
 
             if not args.debug:
-                lines = render(users, state, last_done_ts, start, poll_count)
+                lines = render(users, state, last_done_ts, start, poll_count, pid=os.getpid())
                 out = "\033[H"
                 for line in lines:
                     out += line + "\033[K\n"
@@ -341,8 +343,29 @@ def main():
 
             if len(done) == len(users):
                 if args.log_file and last_done_ts:
+                    client_start_ts = None
+                    if os.path.exists(args.log_file):
+                        with open(args.log_file) as f:
+                            for line in f:
+                                if line.startswith("Started:"):
+                                    client_start_ts = line.split(":", 1)[1].strip()
+                                    break
                     with open(args.log_file, "a") as f:
                         f.write(f"Last finished: {fmt_ts(last_done_ts)}\n")
+                        if client_start_ts:
+                            try:
+                                t0 = datetime.fromisoformat(client_start_ts)
+                                t1 = datetime.fromisoformat(fmt_ts(last_done_ts))
+                                elapsed = (t1 - t0).total_seconds()
+                                h = int(elapsed) // 3600
+                                m = (int(elapsed) % 3600) // 60
+                                s = int(elapsed) % 60
+                                ms = int((elapsed % 1) * 1000)
+                                duration_str = f"{h:02d}:{m:02d}:{s:02d}.{ms:03d}"
+                                f.write(f"Duration: {duration_str}\n")
+                                print(f"\n Total duration: {duration_str}\033[K", flush=True)
+                            except Exception:
+                                pass
                 break
 
             time.sleep(args.interval)
