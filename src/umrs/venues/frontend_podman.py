@@ -285,7 +285,28 @@ class WorkerRunArgs:
     argv: tuple[str, ...]
 
 
-def worker_run_args(cfg: ProvisionConfig) -> WorkerRunArgs:
+def _resource_limits(
+    cfg: ProvisionConfig, controllers: frozenset[str] | None
+) -> tuple[str, ...]:
+    """``--memory``/``--cpus`` only when the host delegates the cgroup controller.
+
+    Rootless user slices get ``memory pids`` by default; ``cpu`` needs a
+    systemd ``Delegate=cpu …`` drop-in (root). Without it crun refuses the
+    container outright ("controller `cpu` is not available", live receipt 6,
+    2026-09-22) — so the limit is dropped, never the session. ``None`` =
+    unknown → apply both (the pre-probe behaviour).
+    """
+    out: list[str] = []
+    if controllers is None or "memory" in controllers:
+        out += ["--memory", cfg.worker_memory]
+    if controllers is None or "cpu" in controllers:
+        out += ["--cpus", cfg.worker_cpus]
+    return tuple(out)
+
+
+def worker_run_args(
+    cfg: ProvisionConfig, *, controllers: frozenset[str] | None = None
+) -> WorkerRunArgs:
     """CPU-only sandbox. Asserted in tests: no GPU envs, devices, or mounts."""
     argv = (
         "run",
@@ -305,10 +326,7 @@ def worker_run_args(cfg: ProvisionConfig) -> WorkerRunArgs:
         "/run",
         "--pids-limit",
         "1024",
-        "--memory",
-        cfg.worker_memory,
-        "--cpus",
-        cfg.worker_cpus,
+        *_resource_limits(cfg, controllers),
         "--secret",
         f"sess-{cfg.session_id}-token,type=mount,target=/run/secrets/session_token,mode=0400",
         "--env",
@@ -360,6 +378,8 @@ class FrontendPodmanProvisioner:
         self._broker = broker
         self._podman = podman
         self._root = Path(session_root)
+        self._controllers: frozenset[str] | None = None
+        self._controllers_probed = False
 
     def provision(self, cfg: ProvisionConfig) -> ProvisionResult:
         result = ProvisionResult(session_id=cfg.session_id, state="running")
@@ -553,8 +573,25 @@ class FrontendPodmanProvisioner:
         except (json.JSONDecodeError, KeyError, IndexError, AttributeError) as exc:
             raise ProvisionStepError("bind-egress-ip", f"inspect parse: {exc}") from exc
 
+    def _cgroup_controllers(self) -> frozenset[str] | None:
+        """Controllers podman can apply for this (rootless) user; None = unknown."""
+        if self._controllers_probed:
+            return self._controllers
+        self._controllers_probed = True
+        proc = self._podman("info", "--format", "{{.Host.CgroupControllers}}")
+        if proc.returncode != 0:
+            return None
+        tokens = (proc.stdout or "").strip().strip("[]").split()
+        self._controllers = frozenset(tokens) if tokens else None
+        if self._controllers is not None and "cpu" not in self._controllers:
+            logger.warning(
+                "worker CPU limit not applied: the cpu cgroup controller is not "
+                "delegated to this user slice (systemd Delegate=cpu … drop-in, root)"
+            )
+        return self._controllers
+
     def _step_worker(self, cfg: ProvisionConfig, result: ProvisionResult) -> None:
-        args = worker_run_args(cfg)
+        args = worker_run_args(cfg, controllers=self._cgroup_controllers())
         proc = self._podman(*args.argv)
         if proc.returncode != 0:
             raise ProvisionStepError("worker", proc.stderr[:120])

@@ -172,6 +172,7 @@ class _Pool:
 class FakePodman:
     def __init__(self, fail_at: str | None = None):
         self.calls: list[tuple[str, ...]] = []
+        self.controllers = "[cpu io memory pids]"
         self.fail_at = fail_at
 
     def __call__(self, *args, input_text=None, **_):
@@ -179,6 +180,8 @@ class FakePodman:
         self.calls.append(tuple(args))
         if self.fail_at and any(self.fail_at in a for a in args):
             return subprocess.CompletedProcess(args, 1, "", f"boom {self.fail_at}")
+        if args[0] == "info":
+            return subprocess.CompletedProcess(args, 0, self.controllers + "\n", "")
         if args[:2] == ("pod", "inspect"):
             return subprocess.CompletedProcess(args, 0, "infra-abc123\n", "")
         if args[0] == "inspect":

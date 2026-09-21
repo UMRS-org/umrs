@@ -46,6 +46,7 @@ class FakePodman:
 
     def __init__(self, fail_at: str | None = None):
         self.calls: list[tuple[str, ...]] = []
+        self.controllers = "[cpu io memory pids]"
         self.fail_at = fail_at
         self.secret_stdin: str | None = None
 
@@ -55,6 +56,8 @@ class FakePodman:
             self.secret_stdin = input_text
         if self.fail_at and any(self.fail_at in a for a in args):
             return subprocess.CompletedProcess(args, 1, "", f"boom in {' '.join(args)}")
+        if args[0] == "info":
+            return subprocess.CompletedProcess(args, 0, self.controllers + "\n", "")
         if args[:2] == ("pod", "inspect"):
             return subprocess.CompletedProcess(args, 0, "infra-abc123\n", "")
         if args[0] == "inspect":
@@ -316,3 +319,26 @@ def test_egress_ip_comes_from_the_pod_infra_container(tmp_path):
     assert pod_inspect == ("pod", "inspect", "egress-ip-1", "--format", "{{.InfraContainerID}}")
     ctr_inspect = next(c for c in podman.calls if c[0] == "inspect")
     assert ctr_inspect == ("inspect", "--type", "container", "infra-abc123")
+
+
+def test_cpu_limit_is_dropped_when_the_controller_is_not_delegated(tmp_path):
+    """Rootless user slices without Delegate=cpu: crun refuses --cpus outright
+    (live receipt 6, 2026-09-22) — the limit goes, the session stays."""
+    broker = SecretBroker()
+    podman = FakePodman()
+    podman.controllers = "[memory pids]"
+    prov = FrontendPodmanProvisioner(broker, podman=podman, session_root=tmp_path)
+    result = prov.provision(_cfg(session_id="cg-1"))
+    assert result.state == "running"
+    worker = next(c for c in podman.calls if c[0] == "run" and "worker-cg-1" in c)
+    assert "--cpus" not in worker and "--memory" in worker
+
+
+def test_limits_apply_when_controllers_are_delegated_or_unknown(tmp_path):
+    broker = SecretBroker()
+    podman = FakePodman()
+    prov = FrontendPodmanProvisioner(broker, podman=podman, session_root=tmp_path)
+    prov.provision(_cfg(session_id="cg-2"))
+    worker = next(c for c in podman.calls if c[0] == "run" and "worker-cg-2" in c)
+    assert "--cpus" in worker and "--memory" in worker
+    assert "--cpus" in worker_run_args(_cfg()).argv  # no probe → both limits
