@@ -179,6 +179,8 @@ class FakePodman:
         self.calls.append(tuple(args))
         if self.fail_at and any(self.fail_at in a for a in args):
             return subprocess.CompletedProcess(args, 1, "", f"boom {self.fail_at}")
+        if args[:2] == ("pod", "inspect"):
+            return subprocess.CompletedProcess(args, 0, "infra-abc123\n", "")
         if args[0] == "inspect":
             body = [{"NetworkSettings": {"Networks": {"egress-net": {"IPAddress": "172.20.8.2"}}}}]
             return subprocess.CompletedProcess(args, 0, json.dumps(body), "")

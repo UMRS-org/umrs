@@ -55,6 +55,8 @@ class FakePodman:
             self.secret_stdin = input_text
         if self.fail_at and any(self.fail_at in a for a in args):
             return subprocess.CompletedProcess(args, 1, "", f"boom in {' '.join(args)}")
+        if args[:2] == ("pod", "inspect"):
+            return subprocess.CompletedProcess(args, 0, "infra-abc123\n", "")
         if args[0] == "inspect":
             payload = [
                 {"NetworkSettings": {"Networks": {"egress-net": {"IPAddress": "172.18.52.9"}}}}
@@ -300,3 +302,17 @@ def test_every_podman_call_starts_with_a_real_subcommand(tmp_path):
         assert call[0] in subcommands, call
     network = next(c for c in podman.calls if c[:2] == ("network", "create"))
     assert network[2:4] == ("--internal", "--subnet") and network[-1] == "sess-argv-1"
+
+
+def test_egress_ip_comes_from_the_pod_infra_container(tmp_path):
+    """podman inspect on a POD name has no NetworkSettings; the provisioner must
+    resolve the infra container id first (live receipt 5, 2026-09-22)."""
+    broker = SecretBroker()
+    podman = FakePodman()
+    prov = FrontendPodmanProvisioner(broker, podman=podman, session_root=tmp_path)
+    result = prov.provision(_cfg(session_id="ip-1"))
+    assert result.state == "running" and result.egress_ip == "172.18.52.9"
+    pod_inspect = next(c for c in podman.calls if c[:2] == ("pod", "inspect"))
+    assert pod_inspect == ("pod", "inspect", "egress-ip-1", "--format", "{{.InfraContainerID}}")
+    ctr_inspect = next(c for c in podman.calls if c[0] == "inspect")
+    assert ctr_inspect == ("inspect", "--type", "container", "infra-abc123")
