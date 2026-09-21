@@ -513,7 +513,22 @@ class FrontendPodmanProvisioner:
         self, cfg: ProvisionConfig, result: ProvisionResult, _lease: Any
     ) -> None:
         """lease unused here — bind is keyed on result.lease_id (kept in signature for step shape)."""
-        proc = self._podman("inspect", f"egress-{cfg.session_id}")
+        # The pod's own inspect JSON carries no NetworkSettings — its infra
+        # container does (live receipt 5, 2026-09-22: "egress-net address missing").
+        infra = self._podman(
+            "pod",
+            "inspect",
+            f"egress-{cfg.session_id}",
+            "--format",
+            "{{.InfraContainerID}}",
+        )
+        infra_id = (infra.stdout or "").strip().splitlines()[-1:] or [""]
+        if infra.returncode != 0 or not infra_id[0]:
+            raise ProvisionStepError(
+                "bind-egress-ip",
+                f"pod inspect: {infra.stderr[:100] or 'no infra container id'}",
+            )
+        proc = self._podman("inspect", "--type", "container", infra_id[0])
         if proc.returncode != 0:
             raise ProvisionStepError("bind-egress-ip", proc.stderr[:120])
         import json
