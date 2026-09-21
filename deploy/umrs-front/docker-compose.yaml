@@ -132,6 +132,12 @@ services:
       UMRS_CONTROL_PORT: ${UMRS_RCCS_ZMQ_PORT:-50090}
       UMRS_DATA_PORT_RANGE: ${UMRS_RCCS_DATA_PORT_RANGE:-50091-50098}
       UMRS_HTTP_PORT: ${UMRS_RCCS_PORT:-8000}
+      # Frontend venue (ADR-046 A2): this API as reachable from egress-net
+      # (sidecar rail listener → API), and the lease sweeper on ONE server.
+      UMRS_VENUE_API_UPSTREAM: "${UMRS_VENUE_HOST_LOOPBACK:-169.254.1.2}:${UMRS_RCCS_PORT:-8000}"
+      UMRS_VENUE_SWEEP_ENABLED: "1"
+      # Provisioner drives the host's rootless podman over its API socket.
+      CONTAINER_HOST: unix:///run/podman/podman.sock
       UMRS_HTTP_HOST: ${UMRS_HTTP_HOST:-0.0.0.0}
       DB_HOST: "127.0.0.1"
       # ADR-034 rollout 2026-09-07 (G-P4-4): durable-job authority is the
@@ -187,6 +193,11 @@ services:
       - ${HOME}/.ssh:/root/.ssh-host:ro,z
       # CURVE session keys (when ZMQ auth enabled)
       - ${HOME}/.config/umrs/curve-keys:/root/.config/umrs/curve-keys:ro,z
+      # Frontend venue (ADR-046 A2): rootless podman API socket for the
+      # provisioner + the session root at the SAME host path (bind mounts in
+      # `podman run` are resolved by the host podman, so paths must match).
+      - ${XDG_RUNTIME_DIR:-/run/user/1000}/podman/podman.sock:/run/podman/podman.sock:z
+      - ${UMRS_VENUE_SESSION_ROOT:-/tmp/umrs-venue-sessions}:${UMRS_VENUE_SESSION_ROOT:-/tmp/umrs-venue-sessions}:z
       # Writable s3cfg dir for per-user s3cfg generation (shared: both
       # servers use the same object store, so credentials must be identical)
       - umrs_config:/root/.config/umrs
@@ -245,6 +256,12 @@ services:
       UMRS_CONTROL_PORT: ${UMRS_AI4S_ZMQ_PORT:-50100}
       UMRS_DATA_PORT_RANGE: ${UMRS_AI4S_DATA_PORT_RANGE:-50101-50108}
       UMRS_HTTP_PORT: ${UMRS_AI4S_PORT:-8002}
+      # Frontend venue (ADR-046 A2): this API as reachable from egress-net
+      # (sidecar rail listener → API), and the lease sweeper on ONE server.
+      UMRS_VENUE_API_UPSTREAM: "${UMRS_VENUE_HOST_LOOPBACK:-169.254.1.2}:${UMRS_AI4S_PORT:-8002}"
+      UMRS_VENUE_SWEEP_ENABLED: "0"
+      # Provisioner drives the host's rootless podman over its API socket.
+      CONTAINER_HOST: unix:///run/podman/podman.sock
       UMRS_HTTP_HOST: ${UMRS_HTTP_HOST:-0.0.0.0}
       DB_HOST: "127.0.0.1"
       # ADR-034 rollout 2026-09-07 (G-P4-4): durable-job authority is the
@@ -294,6 +311,11 @@ services:
       - ./models:/models:ro,z
       - ${HOME}/.ssh:/root/.ssh-host:ro,z
       - ${HOME}/.config/umrs/curve-keys:/root/.config/umrs/curve-keys:ro,z
+      # Frontend venue (ADR-046 A2): rootless podman API socket for the
+      # provisioner + the session root at the SAME host path (bind mounts in
+      # `podman run` are resolved by the host podman, so paths must match).
+      - ${XDG_RUNTIME_DIR:-/run/user/1000}/podman/podman.sock:/run/podman/podman.sock:z
+      - ${UMRS_VENUE_SESSION_ROOT:-/tmp/umrs-venue-sessions}:${UMRS_VENUE_SESSION_ROOT:-/tmp/umrs-venue-sessions}:z
       # Shared config volume (same object store → same credentials)
       - umrs_config:/root/.config/umrs
       - type: tmpfs
@@ -342,6 +364,12 @@ services:
       UMRS_CONTROL_PORT: ${UMRS_BDRT_ZMQ_PORT:-50110}
       UMRS_DATA_PORT_RANGE: ${UMRS_BDRT_DATA_PORT_RANGE:-50111-50118}
       UMRS_HTTP_PORT: ${UMRS_BDRT_PORT:-8004}
+      # Frontend venue (ADR-046 A2): this API as reachable from egress-net
+      # (sidecar rail listener → API), and the lease sweeper on ONE server.
+      UMRS_VENUE_API_UPSTREAM: "${UMRS_VENUE_HOST_LOOPBACK:-169.254.1.2}:${UMRS_BDRT_PORT:-8004}"
+      UMRS_VENUE_SWEEP_ENABLED: "0"
+      # Provisioner drives the host's rootless podman over its API socket.
+      CONTAINER_HOST: unix:///run/podman/podman.sock
       UMRS_HTTP_HOST: ${UMRS_HTTP_HOST:-0.0.0.0}
       DB_HOST: "127.0.0.1"
       # ADR-034 rollout 2026-09-07 (G-P4-4): durable-job authority is the
@@ -389,6 +417,11 @@ services:
       - ${HOME}/.ssh:/root/.ssh-host:ro,z
       # CURVE session keys (when ZMQ auth enabled)
       - ${HOME}/.config/umrs/curve-keys:/root/.config/umrs/curve-keys:ro,z
+      # Frontend venue (ADR-046 A2): rootless podman API socket for the
+      # provisioner + the session root at the SAME host path (bind mounts in
+      # `podman run` are resolved by the host podman, so paths must match).
+      - ${XDG_RUNTIME_DIR:-/run/user/1000}/podman/podman.sock:/run/podman/podman.sock:z
+      - ${UMRS_VENUE_SESSION_ROOT:-/tmp/umrs-venue-sessions}:${UMRS_VENUE_SESSION_ROOT:-/tmp/umrs-venue-sessions}:z
       # Shared config volume (same object store → same credentials)
       - umrs_config:/root/.config/umrs
       - type: tmpfs
@@ -431,6 +464,12 @@ services:
       UMRS_CONTROL_PORT: ${UMRS_OCTOPUS_ZMQ_PORT:-50120}
       UMRS_DATA_PORT_RANGE: ${UMRS_OCTOPUS_DATA_PORT_RANGE:-50121-50128}
       UMRS_HTTP_PORT: ${UMRS_OCTOPUS_PORT:-8006}
+      # Frontend venue (ADR-046 A2): this API as reachable from egress-net
+      # (sidecar rail listener → API), and the lease sweeper on ONE server.
+      UMRS_VENUE_API_UPSTREAM: "${UMRS_VENUE_HOST_LOOPBACK:-169.254.1.2}:${UMRS_OCTOPUS_PORT:-8006}"
+      UMRS_VENUE_SWEEP_ENABLED: "0"
+      # Provisioner drives the host's rootless podman over its API socket.
+      CONTAINER_HOST: unix:///run/podman/podman.sock
       UMRS_HTTP_HOST: ${UMRS_HTTP_HOST:-0.0.0.0}
       DB_HOST: "127.0.0.1"
       # ADR-034 rollout 2026-09-07 (G-P4-4): durable-job authority is the
@@ -474,6 +513,11 @@ services:
       - ./models:/models:ro,z
       - ${HOME}/.ssh:/root/.ssh-host:ro,z
       - ${HOME}/.config/umrs/curve-keys:/root/.config/umrs/curve-keys:ro,z
+      # Frontend venue (ADR-046 A2): rootless podman API socket for the
+      # provisioner + the session root at the SAME host path (bind mounts in
+      # `podman run` are resolved by the host podman, so paths must match).
+      - ${XDG_RUNTIME_DIR:-/run/user/1000}/podman/podman.sock:/run/podman/podman.sock:z
+      - ${UMRS_VENUE_SESSION_ROOT:-/tmp/umrs-venue-sessions}:${UMRS_VENUE_SESSION_ROOT:-/tmp/umrs-venue-sessions}:z
       - umrs_config:/root/.config/umrs
       - type: tmpfs
         target: /run/umrs-ssh

@@ -98,6 +98,120 @@ def _pool(request: Request) -> Any:
     return pool
 
 
+# ── Shared row helpers (routes + the frontend-venue worker rail) ───────────
+
+
+def session_owned(conn: Any, uid: str, session_id: str) -> bool:
+    """True when a mirrored snapshot row exists for (uid, session_id)."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT 1 FROM companion_session_snapshots WHERE session_id = %s AND user_id = %s",
+            (session_id, uid),
+        )
+        return cur.fetchone() is not None
+
+
+def snapshot_detail_row(conn: Any, uid: str, session_id: str) -> dict[str, Any] | None:
+    """Owner-scoped snapshot detail (same shape as ``GET /{session_id}``)."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT s.session_id, s.name, s.payload, s.update_marker,
+                   s.venue, s.state, a.archived_at
+            FROM companion_session_snapshots s
+            LEFT JOIN companion_session_archives a
+                ON a.session_id = s.session_id
+            WHERE s.user_id = %s AND s.session_id = %s
+            """,
+            (uid, session_id),
+        )
+        row = cur.fetchone()
+    if row is None:
+        return None
+    sid, name, payload, updated, venue, state, archived_at = row
+    return {
+        "session_id": sid,
+        "name": name,
+        "payload": payload,
+        "updated_at": updated,
+        "venue": venue,
+        "state": "archived" if archived_at else state,
+        "archived_at": str(archived_at) if archived_at else "",
+    }
+
+
+def mark_session_venue(
+    conn: Any, uid: str, session_id: str, *, venue: str, state: str
+) -> bool:
+    """Project a runtime transition onto the registry columns (0084)."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE companion_session_snapshots
+            SET venue = %s, state = %s, updated_at = now()
+            WHERE user_id = %s AND session_id = %s
+            """,
+            (_validate_venue(venue), _validate_stored_state(state), uid, session_id),
+        )
+        applied = cur.rowcount > 0
+    conn.commit()
+    return applied
+
+
+def upsert_snapshot_row(
+    conn: Any,
+    uid: str,
+    session_id: str,
+    *,
+    name: str,
+    payload: str,
+    updated_at: str,
+    venue: str,
+    state: str,
+) -> bool:
+    """LWW upsert of one mirrored snapshot (validated venue/state)."""
+    venue = _validate_venue(venue) if venue else ""
+    state = _validate_stored_state(state)
+    with conn.cursor() as cur:
+        cur.execute(
+            _UPSERT_SNAPSHOT_SQL,
+            (uid, session_id, name, payload, updated_at, venue, state),
+        )
+        applied = cur.rowcount > 0
+        conn.commit()
+    return applied
+
+
+_UPSERT_SNAPSHOT_SQL = """
+                INSERT INTO companion_session_snapshots
+                    (user_id, session_id, name, payload, update_marker, venue, state)
+                VALUES (%s, %s, %s, %s, %s,
+                        COALESCE(NULLIF(%s, ''), 'local'), %s)
+                ON CONFLICT (user_id, session_id) DO UPDATE SET
+                    name = EXCLUDED.name,
+                    payload = EXCLUDED.payload,
+                    update_marker = EXCLUDED.update_marker,
+                    venue = CASE
+                        WHEN EXCLUDED.venue <> '' THEN EXCLUDED.venue
+                        ELSE companion_session_snapshots.venue
+                    END,
+                    state = CASE
+                        WHEN EXCLUDED.state <> '' THEN EXCLUDED.state
+                        ELSE companion_session_snapshots.state
+                    END,
+                    updated_at = now()
+                -- F3 audit fix: comparing raw strings mixed naive-vs-tz-aware writer classes;
+                -- timestamptz normalizes both (epoch fallback for empty/unparseable rows).
+                WHERE COALESCE(
+                    NULLIF(trim(companion_session_snapshots.update_marker), '')::timestamptz,
+                    'epoch'::timestamptz
+                ) <= COALESCE(
+                    NULLIF(trim(EXCLUDED.update_marker), '')::timestamptz,
+                    'epoch'::timestamptz
+                )
+                """
+
+
 # ── Routes ─────────────────────────────────────────────────────────────────
 
 
@@ -254,6 +368,7 @@ async def list_turns(session_id: str, request: Request) -> dict[str, Any]:
 
 class QueueActionBody(BaseModel):
     """F9 design wave: server-side queue verb body (append | pop | clear)."""
+
     action: str
     content: str = ""
     client_id: str = ""
@@ -261,83 +376,140 @@ class QueueActionBody(BaseModel):
 
 
 @router.post("/{session_id}/queue", response_model=dict[str, Any])
-async def queue_mutation(session_id: str, body: QueueActionBody, request: Request) -> dict[str, Any]:
+async def queue_mutation(
+    session_id: str, body: QueueActionBody, request: Request
+) -> dict[str, Any]:
     """Transactional alive-mutate for session.metadata.chat_queue (owner-scope +
      cross-client honor over the same "mirror's own journal"). Writers carry
     their client_id stamp so resumes always know which device wrote which row.
     Optimistic-concurrency coordination via FOR UPDATE (never fabricated side
     effects).
+    # auth: verified
     """
     uid = _uid(request)
     pool = _pool(request)
-    action = (body.action or "").strip().lower()
-    if action not in {"append", "pop", "clear"}:
-        raise_typed(
-            PlatformError.companionsessions("invalid_action", f"action must be append|pop|clear, got {action!r}")
-        )
     conn = pool.getconn()
     try:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT payload FROM companion_session_snapshots
-                WHERE user_id = %s AND session_id = %s
-                FOR UPDATE
-                """,
-                (uid, session_id),
-            )
-            row = cur.fetchone()
-            if row is None:
-                raise_typed(
-                    PlatformError.companionsessions("not_found", "snapshot not found")
-                )
-            try:
-                blob = json.loads(row[0]) if isinstance(row[0], str) else row[0]
-            except json.JSONDecodeError:
-                blob = {}
-            metadata = blob.get("metadata") if isinstance(blob, dict) else {}
-            if not isinstance(metadata, dict):
-                metadata = {}
-            entries = metadata.get("chat_queue") or []
-            if not isinstance(entries, list):
-                entries = []
-            now = body.updated_at or datetime.now(timezone.utc).isoformat()
-            if action == "append":
-                content = (body.content or "").strip()
-                if not content:
-                    raise_typed(
-                        PlatformError.companionsessions("invalid_value", "content is required for append")
-                    )
-                client_id = (body.client_id or "").strip() or uid or "unknown"
-                entries.append({"id": f"q-{len(entries)+1}", "content": content, "client_id": client_id, "added_at": now})
-                front = None
-            elif action == "pop":
-                front = entries.pop(0) if entries else None
-            else:
-                front = len(entries)
-                entries = []
-            blob["metadata"] = metadata
-            metadata["chat_queue"] = entries
-            cur.execute(
-                """
-                UPDATE companion_session_snapshots
-                SET payload = %s, updated_at = now()
-                WHERE user_id = %s AND session_id = %s
-                """,
-                (json.dumps(blob), uid, session_id),
-            )
-            applied = cur.rowcount > 0
-            if applied:
-                conn.commit()
-            else:
-                conn.rollback()
-        return {
-            "applied": applied,
-            "queue": entries,
-            "front": front,
-        }
+        return queue_mutate_row(
+            conn,
+            uid,
+            session_id,
+            action=body.action,
+            content=body.content,
+            client_id=body.client_id,
+            updated_at=body.updated_at,
+        )
     finally:
         pool.putconn(conn)
+
+
+def _queue_entries(row_payload: Any) -> tuple[dict[str, Any], dict[str, Any], list]:
+    """(blob, metadata, entries) from a snapshot payload cell — malformed → empty."""
+    try:
+        blob = json.loads(row_payload) if isinstance(row_payload, str) else row_payload
+    except json.JSONDecodeError:
+        blob = {}
+    if not isinstance(blob, dict):
+        blob = {}
+    metadata = blob.get("metadata")
+    if not isinstance(metadata, dict):
+        metadata = {}
+    entries = metadata.get("chat_queue") or []
+    return blob, metadata, (entries if isinstance(entries, list) else [])
+
+
+def _queue_apply(
+    entries: list, *, action: str, content: str, client_id: str, uid: str, now: str
+) -> tuple[list, Any]:
+    """Pure queue transition → (entries, front). append/pop/clear only."""
+    if action == "append":
+        content = (content or "").strip()
+        if not content:
+            raise_typed(
+                PlatformError.companionsessions(
+                    "invalid_value", "content is required for append"
+                )
+            )
+        stamp = (client_id or "").strip() or uid or "unknown"
+        entries.append(
+            {
+                "id": f"q-{len(entries) + 1}",
+                "content": content,
+                "client_id": stamp,
+                "added_at": now,
+            }
+        )
+        return entries, None
+    if action == "pop":
+        return entries, (entries.pop(0) if entries else None)
+    return [], len(entries)
+
+
+def queue_mutate_row(
+    conn: Any,
+    uid: str,
+    session_id: str,
+    *,
+    action: str,
+    content: str = "",
+    client_id: str = "",
+    updated_at: str = "",
+) -> dict[str, Any]:
+    """Owner-scoped queue mutation on one open connection (route + worker rail).
+
+    The rail (wave 2026-09-21) pops through the same helper with the lease
+    owner as ``uid`` so the queue semantics never fork between principals.
+    """
+    action = (action or "").strip().lower()
+    if action not in {"append", "pop", "clear"}:
+        raise_typed(
+            PlatformError.companionsessions(
+                "invalid_action", f"action must be append|pop|clear, got {action!r}"
+            )
+        )
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT payload FROM companion_session_snapshots
+            WHERE user_id = %s AND session_id = %s
+            FOR UPDATE
+            """,
+            (uid, session_id),
+        )
+        row = cur.fetchone()
+        if row is None:
+            raise_typed(
+                PlatformError.companionsessions("not_found", "snapshot not found")
+            )
+        blob, metadata, entries = _queue_entries(row[0])
+        now = updated_at or datetime.now(timezone.utc).isoformat()
+        entries, front = _queue_apply(
+            entries,
+            action=action,
+            content=content,
+            client_id=client_id,
+            uid=uid,
+            now=now,
+        )
+        blob["metadata"] = metadata
+        metadata["chat_queue"] = entries
+        cur.execute(
+            """
+            UPDATE companion_session_snapshots
+            SET payload = %s, updated_at = now()
+            WHERE user_id = %s AND session_id = %s
+            """,
+            (json.dumps(blob), uid, session_id),
+        )
+        applied = cur.rowcount > 0
+        if applied:
+            conn.commit()
+        else:
+            conn.rollback()
+    return {"applied": applied, "queue": entries, "front": front}
+
+
+@router.get("/{session_id}/turns/{turn_id}", response_model=dict[str, Any])
 async def get_turn(session_id: str, turn_id: str, request: Request) -> dict[str, Any]:
     """One turn's full payload (ADR-057 D-2).
     # auth: verified

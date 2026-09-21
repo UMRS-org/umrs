@@ -73,6 +73,14 @@ class ProvisionConfig:
     project: str = ""
     gateway_host: str = ""
     umrs_host: str = ""
+    # Worker rail (wave 2026-09-21): the sidecar proxies the worker's journal
+    # calls (queue pop, snapshot mirror, heartbeat, approvals) to this API
+    # host:port, path-anchored to /umrs/companion/sessions/<sid>/rail/.
+    # "" = no rail listener rendered (bootstrap legs without a worker loop).
+    rail_upstream: str = ""
+    rail_port: int = 8081
+    # Command appended after the worker image (image ENTRYPOINT is `r4`).
+    worker_command: tuple[str, ...] = ("venue", "worker")
 
 
 @dataclass
@@ -157,7 +165,41 @@ http {{
     listen 8443;
     return 404;  # ingress listener placeholder — gateway-side routing lands with venue wiring
   }}
-}}
+{_rail_server_block(cfg)}}}
+"""
+
+
+def _rail_server_block(cfg: ProvisionConfig) -> str:
+    """Worker rail listener (design §1.1 worker principal; flow matrix row
+    "sidecar → UMRS API (renew, journal)").
+
+    Path-anchored to this session's rail prefix; every gateway identity
+    header is cleared so the sandbox can never present one — the API
+    authenticates the rail by the lease token alone.
+    """
+    if not cfg.rail_upstream:
+        return ""
+    host = cfg.rail_upstream.split(":", 1)[0]
+    return f"""  server {{
+    listen {cfg.rail_port};
+    access_log /dev/stdout sess;
+    client_max_body_size 64m;
+    location /umrs/companion/sessions/{cfg.session_id}/rail/ {{
+      proxy_pass http://{cfg.rail_upstream};
+      proxy_http_version 1.1;
+      proxy_set_header Connection "";
+      proxy_set_header Host {host};
+      proxy_set_header X-User-ID "";
+      proxy_set_header X-Verified-Project-ID "";
+      proxy_set_header X-Verified-Is-Admin "";
+      proxy_set_header X-Verified-HMAC "";
+      proxy_set_header X-Project-ID "";
+      proxy_buffering off;
+      proxy_read_timeout 120s;
+      proxy_connect_timeout 10s;
+    }}
+    location / {{ return 404; }}
+  }}
 """
 
 
@@ -281,7 +323,24 @@ def worker_run_args(cfg: ProvisionConfig) -> WorkerRunArgs:
         "NO_PROXY=egress,localhost,127.0.0.1",
         "--env",
         "R4_VENUE_SESSION_TOKEN_FILE=/run/secrets/session_token",
+        # Worker loop identity + rail (wave 2026-09-21): references only.
+        "--env",
+        f"R4_VENUE_SESSION_ID={cfg.session_id}",
+        "--env",
+        f"R4_VENUE_RAIL_URL=http://egress:{cfg.rail_port}",
+        "--env",
+        "R4_ENDPOINT_URL=http://egress:8080",
+        # Read-only rootfs: every writable path the r4 runtime needs lives on /tmp.
+        "--env",
+        "HOME=/tmp/home",
+        "--env",
+        "XDG_CONFIG_HOME=/tmp/home/.config",
+        "--env",
+        "XDG_DATA_HOME=/tmp/home/.local/share",
+        "--env",
+        "R4_COMPANION_DB=/tmp/home/venue-sessions.db",
         cfg.worker_image,
+        *cfg.worker_command,
     )
     return WorkerRunArgs(argv=argv)
 
@@ -409,18 +468,18 @@ class FrontendPodmanProvisioner:
             "--tmpfs",
             "/var/run:rw,size=4m",
             "-v",
-            f"{session_dir}/nginx.conf:/etc/nginx/nginx.conf:ro,Z",
+            f"{session_dir}/nginx.conf:/etc/nginx/nginx.conf:ro,z",
             cfg.nginx_image,
         )
         if cfg.web_policy != "none":
             squid_volumes = [
                 "-v",
-                f"{session_dir}/squid.conf:/etc/squid/squid.conf:ro,Z",
+                f"{session_dir}/squid.conf:/etc/squid/squid.conf:ro,z",
             ]
             if cfg.web_policy == "allowlist":
                 squid_volumes += [
                     "-v",
-                    f"{session_dir}/squid-allow.txt:/etc/squid/allow.txt:ro,Z",
+                    f"{session_dir}/squid-allow.txt:/etc/squid/allow.txt:ro,z",
                 ]
             self._run_ok(
                 "squid",

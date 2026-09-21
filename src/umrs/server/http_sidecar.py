@@ -72,6 +72,26 @@ def _build_db_pool(app):
         return None
 
 
+def _start_venue_sweeper(app) -> None:
+    """Frontend-venue lease sweeper (UMRS_VENUE_SWEEP_ENABLED; best-effort)."""
+    try:
+        from umrs.jobs.venue_sweeper import start_venue_sweeper
+
+        if start_venue_sweeper(app):
+            logger.info("Frontend-venue sweeper started via lifespan hook")
+    except Exception:  # sweeper must never block boot
+        logger.warning("Frontend-venue sweeper failed to start", exc_info=True)
+
+
+def _stop_venue_sweeper() -> None:
+    try:
+        from umrs.jobs.venue_sweeper import stop_venue_sweeper
+
+        stop_venue_sweeper()
+    except Exception:
+        logger.debug("venue sweeper stop raised", exc_info=True)
+
+
 def _start_durable_runtime() -> None:
     """Start the process-owned durable jobs runtime (best-effort).
 
@@ -650,6 +670,7 @@ def _create_app():
         router as companion_chat_approvals_router,
     )
     from umrs.api.companion_sessions import router as companion_sessions_router
+    from umrs.api.companion_venue import router as companion_venue_router
     from umrs.api.egress_audit import router as egress_audit_router
     from umrs.api.endpoints import router as endpoints_router
     from umrs.api.evidence import router as evidence_router
@@ -705,9 +726,11 @@ def _create_app():
             logger.info("Scheduler service started via lifespan hook")
         _start_durable_runtime()
         _rehydrate_loop_drivers()
+        _start_venue_sweeper(application)
         try:
             yield
         finally:
+            _stop_venue_sweeper()
             stop_scheduler()
             stop_janitor()
             logger.info("Scheduler service + janitor stopped via lifespan hook")
@@ -762,6 +785,8 @@ def _create_app():
     app.include_router(chat_router)
     app.include_router(companion_sessions_router)
     app.include_router(companion_chat_approvals_router)
+    # Wave 2026-09-21 (ADR-046 A2): frontend-venue runtime + worker rail.
+    app.include_router(companion_venue_router)
     app.include_router(egress_audit_router)
     app.include_router(grants_router)
     app.include_router(endpoints_router)
