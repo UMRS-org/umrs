@@ -311,7 +311,8 @@ class FrontendVenueService:
         if self._quota_check is not None:
             self._quota_check(owner)
         try:
-            job = self.job_store.create_job(
+            # JobStore.create_job answers the job_id (str); tolerate a Job too.
+            created = self.job_store.create_job(
                 project_id=spec.get("project") or "default",
                 user_id=owner,
                 job_type=self._job_type(),
@@ -322,7 +323,10 @@ class FrontendVenueService:
             )
         except Exception as exc:  # surfaced as a typed 503
             raise VenueError("unavailable", f"session job not accepted: {exc}") from exc
-        return str(job.job_id)
+        job_id = str(getattr(created, "job_id", created) or "")
+        if not job_id:
+            raise VenueError("unavailable", "session job not accepted: empty job id")
+        return job_id
 
     def _enqueue(self, job_id: str, session_id: str) -> None:
         try:
