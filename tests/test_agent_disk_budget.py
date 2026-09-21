@@ -2,8 +2,9 @@
 
 Contracts locked:
 
-- count_active_agent_units reads the jobs table only (companion_worker_job
-  + research_loop_job, LIVE statuses); nothing fabricated, pool-absent = 0.
+- count_active_agent_units reads the jobs table only (JobType VALUES:
+  companion_worker + research_loop_job + frontend_session, LIVE statuses);
+  nothing fabricated, pool-absent = 0.
 - enforce_spawn_budget refuses when current >= limit with typed
   quota.cpu_process_exceeded.
 - DiskLedger charges byte_size exactly ONCE per (user, content_hash) —

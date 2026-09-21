@@ -72,8 +72,6 @@ class FrontendVenueConfig:
     worker_memory: str = "16g"
     worker_cpus: str = "8"
     web_policy_default: str = "public"
-    sweep_enabled: bool = False
-    sweep_interval_sec: int = 60
     idle_seconds: int = 30 * 60
     rail_ip_check: bool = True
     rail_extend_seconds: int = 900
@@ -113,8 +111,6 @@ class FrontendVenueConfig:
             web_policy_default=(
                 env.get("UMRS_VENUE_WEB_POLICY_DEFAULT", "").strip() or "public"
             ),
-            sweep_enabled=_env_bool(env, "UMRS_VENUE_SWEEP_ENABLED", False),
-            sweep_interval_sec=_env_int(env, "UMRS_VENUE_SWEEP_INTERVAL_SEC", 60),
             idle_seconds=_env_int(env, "UMRS_VENUE_IDLE_SECONDS", 30 * 60),
             rail_ip_check=_env_bool(env, "UMRS_VENUE_RAIL_IP_CHECK", True),
             rail_extend_seconds=_env_int(env, "UMRS_VENUE_RAIL_EXTEND_SECONDS", 900),

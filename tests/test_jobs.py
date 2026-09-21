@@ -270,6 +270,7 @@ class TestJobTypes:
             "knowledge_verify",
             "knowledge_export",
             "companion_worker",
+            "frontend_session",
             "knowledge_reindex",
             "research_loop_job",
             "vision_infer",

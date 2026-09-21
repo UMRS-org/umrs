@@ -3,7 +3,7 @@
 Owner routes (gateway-verified identity, same ``x-user-id`` contract as the
 sibling companion-session routers):
 
-    POST /umrs/companion/sessions/{sid}/venue/start   provision the sandbox
+    POST /umrs/companion/sessions/{sid}/venue/start   submit the session job
     GET  /umrs/companion/sessions/{sid}/venue         runtime status (+lease)
     POST /umrs/companion/sessions/{sid}/venue/stop    teardown + revoke
 
@@ -15,6 +15,13 @@ Worker rail (lease-token principal — see ``_rail_identity``):
     POST /umrs/companion/sessions/{sid}/rail/heartbeat
     POST /umrs/companion/sessions/{sid}/rail/approvals
     GET  /umrs/companion/sessions/{sid}/rail/approvals/{approval_id}
+    ANY  /umrs/companion/sessions/{sid}/rail/gw/{workflows|jobs}/…   (rail gw)
+
+Rail gw: the sandbox's platform verbs (the companion's workflow/job tools)
+are re-dispatched in-process to ``/umrs/<family>/…`` with the lease owner's
+identity minted the way the gateway sidecar mints it (HMAC over the
+identity tuple), so policy, quota and typed errors are the user path's own.
+Only the allowlisted families pass; the sandbox never carries a JWT.
 
 The rail reuses the exact row helpers of the owner routes with the lease
 owner as the principal, so queue/snapshot semantics never fork.
@@ -23,10 +30,13 @@ owner as the principal, so queue/snapshot semantics never fork.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
 from typing import Any
 
-from fastapi import APIRouter, Depends, Request
+import httpx
+from fastapi import APIRouter, Depends, Request, Response
 from pydantic import BaseModel, Field
 
 from umrs.venues.frontend_service import FrontendVenueService, VenueError
@@ -55,6 +65,26 @@ router = APIRouter(prefix="/umrs/companion/sessions", tags=["companion-sessions"
 # ── service wiring ─────────────────────────────────────────────────────────
 
 
+def _site_name() -> str:
+    """The claiming site for session jobs (the store's own site, else config)."""
+    try:
+        from umrs.orchestrator.site_config import load_site_config
+
+        return str(load_site_config().name or "")
+    except Exception:  # unresolved → the service refuses to submit
+        logger.warning("site name unresolved for frontend_session jobs", exc_info=True)
+        return ""
+
+
+def _quota_check(pool: Any) -> Any:
+    from .agent_quota import enforce_spawn_budget
+
+    def check(user_id: str) -> None:
+        enforce_spawn_budget(pool, user_id=user_id)
+
+    return check
+
+
 def get_venue_service(request: Request) -> FrontendVenueService:
     """Process-cached service (tests inject ``app.state.companion_venue_service``)."""
     cached = getattr(request.app.state, "companion_venue_service", None)
@@ -64,6 +94,7 @@ def get_venue_service(request: Request) -> FrontendVenueService:
     from umrs.venues.frontend_podman import FrontendPodmanProvisioner
     from umrs.venues.venue_sessions import VenueSessionStore
 
+    from .jobs import get_optional_job_store
     from .secret_broker import get_broker
 
     config = FrontendVenueConfig.from_env()
@@ -75,6 +106,9 @@ def get_venue_service(request: Request) -> FrontendVenueService:
         store=VenueSessionStore(pool),
         provisioner=FrontendPodmanProvisioner(broker, session_root=config.session_root),
         pool=pool,
+        job_store=get_optional_job_store(),
+        site_name=_site_name(),
+        quota_check=_quota_check(pool),
     )
     request.app.state.companion_venue_service = service
     return service
@@ -118,7 +152,8 @@ class RailApprovalBody(BaseModel):
 async def start_venue(
     session_id: str, body: VenueStartBody, request: Request
 ) -> dict[str, Any]:
-    """Provision the sandbox runtime for a mirrored session (design F-2).
+    """Submit the session's ``frontend_session`` job; returns the ``provisioning``
+    row (poll GET …/venue until running|failed). Design F-2, ADR-046 A2.
     # auth: verified
     """
     uid = _uid(request)
@@ -277,6 +312,196 @@ async def rail_heartbeat(
         partial=body.partial,
         detail=body.detail,
         extend_seconds=body.extend_seconds,
+    )
+
+
+# ── rail gw: platform verbs for the sandbox (workflows, jobs) ───────────────
+
+RAIL_GW_FAMILIES: frozenset[str] = frozenset({"workflows", "jobs"})
+RAIL_GW_METHODS: tuple[str, ...] = ("GET", "POST", "DELETE")
+_RAIL_GW_DROP_HEADERS = frozenset(
+    {
+        "host",
+        "content-length",
+        "connection",
+        "authorization",
+        "cookie",
+        "x-user-id",
+        "x-project-id",
+        "x-verified-project-id",
+        "x-verified-is-admin",
+        "x-verified-hmac",
+        "x-verified-project-memberships",
+        "x-api-key",
+    }
+)
+
+
+def _lease_project(principal: RailPrincipal) -> str:
+    return str(getattr(principal.lease, "project", "") or "").strip()
+
+
+def _snapshot_detail(request: Request, principal: RailPrincipal) -> dict[str, Any]:
+    pool = getattr(request.app.state, "umrs_db_pool", None)
+    if pool is None:
+        return {}
+    conn = pool.getconn()
+    try:
+        return snapshot_detail_row(conn, principal.owner, principal.session_id) or {}
+    finally:
+        pool.putconn(conn)
+
+
+def _snapshot_project(detail: dict[str, Any]) -> str:
+    try:
+        payload = json.loads(detail.get("payload") or "{}")
+        metadata = payload.get("metadata")
+        if isinstance(metadata, str):
+            metadata = json.loads(metadata)
+        config = (metadata or {}).get("config") or {}
+        return str(config.get("project_id") or "").strip()
+    except (TypeError, ValueError, AttributeError):
+        return ""
+
+
+def rail_project_for(principal: RailPrincipal, request: Request) -> str:
+    """Project the sandbox acts in: the lease's project (session config at
+    start), else the snapshot's recorded project, else the deployment default."""
+    return (
+        _lease_project(principal)
+        or _snapshot_project(_snapshot_detail(request, principal))
+        or os.environ.get("JWT_DEFAULT_PROJECT", "default").strip()
+        or "default"
+    )
+
+
+def mint_rail_identity(owner: str, project: str) -> dict[str, str]:
+    """Gateway-equivalent verified identity headers for the lease owner."""
+    from r4_contracts.handshake_hmac import sign_claims
+
+    from umrs.shared.handshake import handshake_secret
+
+    headers = {
+        "x-user-id": owner,
+        "x-project-id": project,
+        "x-verified-project-id": project,
+        "x-verified-is-admin": "false",
+    }
+    secret = handshake_secret()
+    if secret:
+        headers["x-verified-hmac"] = sign_claims(secret, owner, project, False)
+    return headers
+
+
+def _forwardable_headers(request: Request) -> dict[str, str]:
+    return {
+        k: v
+        for k, v in request.headers.items()
+        if k.lower() not in _RAIL_GW_DROP_HEADERS
+        and not k.lower().startswith("x-verified")
+    }
+
+
+def _created_job_id(store: Any, family: str, payload: Any) -> str:
+    """The durable job a successful platform POST created, if the body names one.
+
+    ``/umrs/jobs`` answers ``job_id``; ``/umrs/workflows/…/run`` answers an
+    ``execution_id`` whose job carries it in ``spec.execution_id``.
+    """
+    if not isinstance(payload, dict):
+        return ""
+    job_id = str(payload.get("job_id") or "")
+    if job_id or family != "workflows":
+        return job_id
+    execution_id = str(payload.get("execution_id") or "")
+    if not execution_id:
+        return ""
+    from umrs.jobs.models import JobType
+
+    return (
+        store.find_job_id_by_spec_value(
+            JobType.WORKFLOW_RUN, "execution_id", execution_id
+        )
+        or ""
+    )
+
+
+def stamp_rail_origin(store: Any, session_id: str, family: str, upstream: Any) -> str:
+    """Stamp ``spec.origin = {session_id, venue: frontend}`` on a job the sandbox
+    just created through the rail (lineage only; no cascade, ADR-046 A2).
+    Returns the stamped job id ("" when nothing applied)."""
+    if store is None:
+        return ""
+    try:
+        job_id = _created_job_id(store, family, upstream.json())
+        if job_id and store.stamp_spec_origin(
+            job_id, {"session_id": session_id, "venue": "frontend"}
+        ):
+            return job_id
+    except Exception:  # lineage is best-effort, never the response
+        logger.warning("rail gw origin stamp failed for %s", session_id, exc_info=True)
+    return ""
+
+
+@router.api_route("/{session_id}/rail/gw/{path:path}", methods=list(RAIL_GW_METHODS))
+async def rail_gateway(
+    session_id: str,
+    path: str,
+    request: Request,
+    principal: RailPrincipal = Depends(rail_principal),
+) -> Response:
+    """Re-dispatch an allowlisted platform verb with the lease owner's identity.
+    # auth: lease-token
+    """
+    family = path.split("/", 1)[0]
+    if family not in RAIL_GW_FAMILIES:
+        raise_typed(
+            PlatformError.companionvenue(
+                "forbidden", f"rail gw: /umrs/{family} is not reachable from a sandbox"
+            )
+        )
+    headers = _forwardable_headers(request)
+    headers.update(
+        mint_rail_identity(principal.owner, rail_project_for(principal, request))
+    )
+    body = await request.body()
+    transport = httpx.ASGITransport(app=request.app)
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://rail.internal"
+    ) as client:
+        upstream = await client.request(
+            request.method,
+            f"/umrs/{path}",
+            params=request.query_params,
+            content=body,
+            headers=headers,
+            timeout=httpx.Timeout(120.0),
+        )
+    logger.info(
+        "rail_gw sid=%s owner=%s %s /umrs/%s -> %s",
+        session_id,
+        principal.owner,
+        request.method,
+        path,
+        upstream.status_code,
+    )
+    hook = getattr(request.app.state, "companion_venue_rail_gw_hook", None)
+    if hook is not None:
+        try:
+            hook(principal, request.method, path, upstream)
+        except Exception:
+            logger.warning("rail gw hook failed", exc_info=True)
+    if request.method == "POST" and upstream.status_code < 300:
+        stamp_rail_origin(
+            get_venue_service(request).job_store, session_id, family, upstream
+        )
+    passthrough = {
+        k: v
+        for k, v in upstream.headers.items()
+        if k.lower() in {"content-type", "x-platform-error-code", "x-correlation-id"}
+    }
+    return Response(
+        content=upstream.content, status_code=upstream.status_code, headers=passthrough
     )
 
 

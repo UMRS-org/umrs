@@ -206,6 +206,18 @@ class DurableOrchestrationService:
             session_store = None
             session_gc_backend = None
 
+        # ADR-046 A2: frontend-session lane (remote companion sandboxes) —
+        # present only where the venue is configured; shared backend/checker.
+        frontend_session_backend = frontend_session_checker = None
+        try:
+            from umrs.jobs.frontend_session_backend import build_frontend_session_lane
+
+            lane = build_frontend_session_lane(self.db_pool)
+            if lane is not None:
+                frontend_session_backend, frontend_session_checker = lane
+        except Exception as exc:  # noqa: BLE001 — the lane never blocks the runtime
+            logger.warning("frontend_session lane wiring skipped: %s", exc)
+
         backend_factory = create_backend_factory(
             orchestrator=orch.backend,
             registry=orch.registry,
@@ -215,6 +227,7 @@ class DurableOrchestrationService:
             path_validator=path_validator,
             user_store=user_store,
             session_store=session_store,
+            frontend_session_backend=frontend_session_backend,
         )
         self._job_service.set_backend_factory(backend_factory)
 
@@ -225,6 +238,7 @@ class DurableOrchestrationService:
             orchestrator=orch.backend,
             instance_id=self._job_service.instance_id,
             session_store=session_store,
+            frontend_session_checker=frontend_session_checker,
         )
         self._job_service.set_status_checker(status_checker)
 

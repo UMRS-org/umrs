@@ -1385,6 +1385,7 @@ def create_backend_factory(
     path_validator=None,
     user_store=None,
     session_store=None,
+    frontend_session_backend=None,
 ):
     """
     Create a backend factory function for JobService.
@@ -1522,6 +1523,20 @@ def create_backend_factory(
         else:
             raise ValueError(f"Unsupported job type: {job_type}")
 
+    return _with_frontend_session(factory, frontend_session_backend)
+
+
+def _with_frontend_session(inner, backend):
+    """ADR-046 A2: serve the ``frontend_session`` lane where the venue is
+    configured (UMRS_VENUE_ENABLED); elsewhere the claim fails loudly."""
+
+    def factory(job_type: JobType) -> OrchestratorBackend:
+        if job_type != JobType.FRONTEND_SESSION:
+            return inner(job_type)
+        if backend is None:
+            raise RuntimeError("frontend_session lane not configured on this server")
+        return backend
+
     return factory
 
 
@@ -1534,6 +1549,7 @@ def create_status_checker(
     instance_id: str | None = None,
     session_store=None,
     session_gc_backend=None,
+    frontend_session_checker=None,
 ):
     """
     Create a composite status checker for JobService.
@@ -1614,6 +1630,9 @@ def create_status_checker(
     checker.register(
         JobType.RESEARCH_LOOP, ResearchLoopStatusChecker(instance_id=instance_id)
     )
+
+    if frontend_session_checker is not None:
+        checker.register(JobType.FRONTEND_SESSION, frontend_session_checker)
 
     return checker
 
