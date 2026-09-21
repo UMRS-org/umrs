@@ -409,7 +409,8 @@ class TestOwnerRoutes:
             "alice",
         )
         assert (created["max_attempts"], created["restart_policy"].value) == (1, "never")
-        assert created["idempotency_key"].startswith("frontend_session:sess-1:")
+        key = created["idempotency_key"]
+        assert key.startswith("fs:sess-1:") and len(key) <= 64
         # the request itself provisions nothing; the lane does
         assert (harness.jobs.enqueued, harness.podman.calls) == (["job-1"], [])
 
@@ -461,6 +462,12 @@ class TestOwnerRoutes:
         # failed is terminal for that job: a deliberate restart submits a new one
         assert _start(harness).status_code == 200
         assert harness.jobs.enqueued == ["job-1", "job-2"]
+
+    def test_idempotency_key_fits_the_column_for_uuid_sessions(self, harness):
+        from umrs.venues.frontend_service import _idempotency_key
+
+        key = _idempotency_key("9341f89e-d714-48be-9571-b1e9e21844cd")
+        assert len(key) <= 64 and key.startswith("fs:9341f89e-d714-48be-9571-b1e9e21844cd:")
 
     def test_start_refuses_without_job_store(self, harness):
         harness.pool.seed("alice", "sess-1")
