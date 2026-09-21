@@ -36,7 +36,7 @@ import os
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 from umrs.venues.frontend_service import FrontendVenueService, VenueError
@@ -120,6 +120,19 @@ def _typed(exc: VenueError) -> None:
     )
 
 
+def _unexpected(exc: Exception, verb: str) -> None:
+    """An unhandled failure inside the venue service answers a typed 503 naming
+    the exception (never a bare "Internal Server Error": the live receipt of
+    2026-09-21 had nothing to read); the traceback goes to the server log."""
+    logger.exception("companion venue %s failed", verb)
+    raise_typed(
+        PlatformError.companionvenue(
+            "unavailable", f"venue {verb} failed: {type(exc).__name__}: {exc}"
+        ),
+        cause=exc,
+    )
+
+
 # ── bodies ─────────────────────────────────────────────────────────────────
 
 
@@ -172,6 +185,10 @@ async def start_venue(
         )
     except VenueError as exc:
         _typed(exc)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001 — unexpected → typed 503 naming the cause
+        _unexpected(exc, "start")
 
 
 @router.get("/{session_id}/venue", response_model=dict[str, Any])
@@ -185,6 +202,10 @@ async def venue_status(session_id: str, request: Request) -> dict[str, Any]:
         status = service.status(owner=uid, session_id=session_id)
     except VenueError as exc:
         _typed(exc)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001 — unexpected → typed 503 naming the cause
+        _unexpected(exc, "status")
     if status is None:
         raise_typed(
             PlatformError.companionvenue(
@@ -205,6 +226,10 @@ async def stop_venue(session_id: str, request: Request) -> dict[str, Any]:
         return await asyncio.to_thread(service.stop, owner=uid, session_id=session_id)
     except VenueError as exc:
         _typed(exc)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001 — unexpected → typed 503 naming the cause
+        _unexpected(exc, "stop")
 
 
 # ── worker rail ────────────────────────────────────────────────────────────

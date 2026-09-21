@@ -214,11 +214,10 @@ class FakeJobStore:
         job_id = f"job-{len(self.created) + 1}"
         self.created.append(kw)
         spec = kw["spec"]
-        job = SimpleNamespace(
+        self.jobs[job_id] = SimpleNamespace(
             job_id=job_id, status=_status("planned"), venue=spec.get("venue", ""), spec=spec
         )
-        self.jobs[job_id] = job
-        return job
+        return job_id  # the real JobStore.create_job answers the id, not a Job
 
     def enqueue_job(self, job_id):
         self.enqueued.append(job_id)
@@ -468,6 +467,18 @@ class TestOwnerRoutes:
 
         key = _idempotency_key("9341f89e-d714-48be-9571-b1e9e21844cd")
         assert len(key) <= 64 and key.startswith("fs:9341f89e-d714-48be-9571-b1e9e21844cd:")
+
+    def test_unexpected_service_failure_is_a_typed_503(self, harness, monkeypatch):
+        harness.pool.seed("alice", "sess-1")
+
+        def boom(**_kw):
+            raise RuntimeError("column job_id does not exist")
+
+        monkeypatch.setattr(harness.service, "start", boom)
+        r = _start(harness)
+        assert r.status_code == 503
+        assert r.headers["x-platform-error-code"] == "companionvenue.unavailable"
+        assert "RuntimeError: column job_id does not exist" in r.json()["detail"]
 
     def test_start_refuses_without_job_store(self, harness):
         harness.pool.seed("alice", "sess-1")
