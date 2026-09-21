@@ -207,8 +207,11 @@ def _turn_by_id(entries: list[dict[str, Any]], turn_id: str) -> dict[str, Any] |
 
 def _session_payload(conn: Any, session_id: str, owner: str) -> str | None:
     cur = conn.cursor()
+    # F1 audit-fix (2026-09-21): the table's column is `user_id` — the legacy
+    # `owner_id` read broke turns/detail under PG live (constraints never saw
+    # it in pk-fake test rails). Never invent the wrong column name.
     cur.execute(
-        "SELECT payload FROM companion_session_snapshots WHERE session_id = %s AND owner_id = %s",
+        "SELECT payload FROM companion_session_snapshots WHERE session_id = %s AND user_id = %s",
         (session_id, owner),
     )
     row = cur.fetchone()

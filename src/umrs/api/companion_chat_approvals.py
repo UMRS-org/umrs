@@ -44,8 +44,10 @@ def _uid(request: Request) -> str:
 
 def _owner_session_or_404(conn: Any, session_id: str, uid: str) -> None:
     cur = conn.cursor()
+    # F1 audit-fix (2026-09-21): column is `user_id` (0080 + 0084 index);
+    # fake-cursor fakes passed otherwise — real PG raises UndefinedColumn.
     cur.execute(
-        "SELECT 1 FROM companion_session_snapshots WHERE session_id = %s AND owner_id = %s",
+        "SELECT 1 FROM companion_session_snapshots WHERE session_id = %s AND user_id = %s",
         (session_id, uid),
     )
     if cur.fetchone() is None:
