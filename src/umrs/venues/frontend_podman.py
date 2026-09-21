@@ -513,32 +513,7 @@ class FrontendPodmanProvisioner:
         self, cfg: ProvisionConfig, result: ProvisionResult, _lease: Any
     ) -> None:
         """lease unused here — bind is keyed on result.lease_id (kept in signature for step shape)."""
-        # The pod's own inspect JSON carries no NetworkSettings — its infra
-        # container does (live receipt 5, 2026-09-22: "egress-net address missing").
-        infra = self._podman(
-            "pod",
-            "inspect",
-            f"egress-{cfg.session_id}",
-            "--format",
-            "{{.InfraContainerID}}",
-        )
-        infra_id = (infra.stdout or "").strip().splitlines()[-1:] or [""]
-        if infra.returncode != 0 or not infra_id[0]:
-            raise ProvisionStepError(
-                "bind-egress-ip",
-                f"pod inspect: {infra.stderr[:100] or 'no infra container id'}",
-            )
-        proc = self._podman("inspect", "--type", "container", infra_id[0])
-        if proc.returncode != 0:
-            raise ProvisionStepError("bind-egress-ip", proc.stderr[:120])
-        import json
-
-        try:
-            payload = json.loads(proc.stdout)
-            networks = payload[0].get("NetworkSettings", {}).get("Networks", {})
-            egress_ip = (networks.get("egress-net") or {}).get("IPAddress", "")
-        except (json.JSONDecodeError, KeyError, IndexError) as exc:
-            raise ProvisionStepError("bind-egress-ip", f"inspect parse: {exc}") from exc
+        egress_ip = self._egress_ip_of(self._egress_infra_id(cfg.session_id))
         if not egress_ip:
             raise ProvisionStepError("bind-egress-ip", "egress-net address missing")
         if not self._broker.bind_egress_ip(
@@ -547,6 +522,36 @@ class FrontendPodmanProvisioner:
             raise ProvisionStepError("bind-egress-ip", "broker refused the bind")
         result.egress_ip = egress_ip
         result.steps.append("bind-egress-ip")
+
+    def _egress_infra_id(self, sid: str) -> str:
+        """The pod's own inspect JSON carries no NetworkSettings — its infra
+        container does (live receipt 5, 2026-09-22: "egress-net address missing")."""
+        infra = self._podman(
+            "pod", "inspect", f"egress-{sid}", "--format", "{{.InfraContainerID}}"
+        )
+        lines = (infra.stdout or "").strip().splitlines()
+        if infra.returncode != 0 or not lines:
+            raise ProvisionStepError(
+                "bind-egress-ip",
+                f"pod inspect: {infra.stderr[:100] or 'no infra container id'}",
+            )
+        return lines[-1].strip()
+
+    def _egress_ip_of(self, container_id: str) -> str:
+        proc = self._podman("inspect", "--type", "container", container_id)
+        if proc.returncode != 0:
+            raise ProvisionStepError("bind-egress-ip", proc.stderr[:120])
+        import json
+
+        try:
+            networks = (
+                json.loads(proc.stdout)[0]
+                .get("NetworkSettings", {})
+                .get("Networks", {})
+            )
+            return str((networks.get("egress-net") or {}).get("IPAddress", ""))
+        except (json.JSONDecodeError, KeyError, IndexError, AttributeError) as exc:
+            raise ProvisionStepError("bind-egress-ip", f"inspect parse: {exc}") from exc
 
     def _step_worker(self, cfg: ProvisionConfig, result: ProvisionResult) -> None:
         args = worker_run_args(cfg)
