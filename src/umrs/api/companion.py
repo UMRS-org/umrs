@@ -121,6 +121,38 @@ def _strict_headers(
     return (x_user_id or "").strip()
 
 
+def _assert_mirrored_session_owner_order(session_id: str, user_id: str) -> None:
+    """403 on cross-owner archive (only when a mirrored row identifies the
+    real owner; row-absent → caller's tombstone lands under its own name).
+
+    Reads `companion_session_snapshots` directly (0080/0084 lockstep — owner
+    column name is `user_id`, same F1-fix lived across routes).
+    """
+    from umrs.shared.pg import get_default_sync_pool
+
+    pool = get_default_sync_pool()
+    if pool is None:
+        return  # dev-tier without the pool: local-truth lane rules already block
+    conn = pool.getconn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT user_id FROM companion_session_snapshots WHERE session_id = %s",
+            (session_id,),
+        )
+        row = cur.fetchone()
+    finally:
+        pool.putconn(conn)
+    if row is None:
+        return  # never had a mirrored row — caller's own tombstone territory
+    if row[0] != user_id:
+        raise_typed(
+            PlatformError.companion(
+                "forbidden", "archive refused: session is not owned by this caller"
+            )
+        )
+
+
 def _strict_caller(
     x_user_id: str | None = Header(None),
     x_verified_project_id: str | None = Header(None),
@@ -733,8 +765,14 @@ async def archive_companion_session(
     ACP converge here so the cascade is enforced where the trust rows live,
     never in whichever client triggered the archive. A separate bulk-revoke
     verb (if ever added) stays an explicit user action, NOT part of archive.
+
+    F5 audit-block (2026-09-21): when a mirrored snapshot row records its
+    own user_id, cross-owner archives refuse: the caller can't permanently
+    traverse someone else's session-death OR trust cascade. No probe-row?
+    Tombstone lands under this caller's own name only.
     """
     store = _require_trust_store()
+    _assert_mirrored_session_owner_order(session_id, caller["user_id"])
     revoked = store.archive_session(session_id, archived_by=caller["user_id"])
     return {
         "session_id": session_id,
@@ -742,3 +780,4 @@ async def archive_companion_session(
         "revoked_grants": revoked,
         "revoked_count": len(revoked),
     }
+
