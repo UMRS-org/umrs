@@ -37,5 +37,6 @@ for i in $(seq 1 "$N"); do
     ./client_umrs.py \
         -c ~/.config/umrs/n_users/users/user1_${i}.json \
         --output text \
-        upload_dir --blocking ../data/img bucket-3 &
+        upload_dir --blocking ../data/img bucket-3 > /dev/null &
 done
+echo "All client launched"
