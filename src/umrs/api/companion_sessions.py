@@ -345,6 +345,13 @@ async def delete_session_snapshot(session_id: str, request: Request) -> dict[str
                 (uid, session_id),
             )
             deleted = cur.rowcount > 0
+            # F15 audit-block (2026-09-21): approvals rows for this session
+            # also die in the same transaction (dangling intents otherwise
+            # live forever — cascade kill).
+            cur.execute(
+                "DELETE FROM chat_turn_approvals WHERE session_id = %s AND user_id = %s",
+                (session_id, uid),
+            )
             if deleted:
                 conn.commit()
             else:
