@@ -8,16 +8,24 @@ fakes (FakePodman, in-memory broker/store, scripted pool).
 
 Errors are raised as ``VenueError(code, message)`` where ``code`` is the
 ``companionvenue.*`` taxonomy name; the route projects them to typed
-HTTP errors. Provisioning is synchronous (podman steps) — routes run it
-in a worker thread.
+HTTP errors.
+
+Lifecycle (ADR-046 A2, 2026-09-21): ``start`` validates, records the
+``provisioning`` row and submits ONE durable job of kind
+``frontend_session`` (``umrs/jobs/frontend_session_backend.py``); the
+durable runtime provisions on claim and its status checker owns the
+lease/idle/exit sweep. ``status`` merges the job's status + attempt detail
+onto the row; ``stop`` tears down directly (the user is waiting) and
+cancels the job so the two records agree.
 """
 
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterator
+import uuid
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from typing import Any
+from typing import Any, Protocol
 
 from .frontend_config import (
     VALID_WEB_POLICIES,
@@ -25,11 +33,26 @@ from .frontend_config import (
     SubnetPoolExhausted,
     allocate_subnet,
 )
-from .venue_sessions import VenueSessionRow, VenueSessionStore
+from .venue_sessions import VenueSessionRow, VenueSessionStore, project_session_state
 
 logger = logging.getLogger(__name__)
 
 MAX_SOURCE_REFS = 8
+JOB_TYPE = "frontend_session"
+
+
+class JobSubmitter(Protocol):
+    """The slice of ``umrs.jobs.store.JobStore`` the service depends on."""
+
+    def create_job(self, *args: Any, **kwargs: Any) -> Any: ...
+
+    def enqueue_job(self, job_id: str) -> Any: ...
+
+    def get_job(self, job_id: str) -> Any: ...
+
+    def get_attempts_for_job(self, job_id: str) -> list[Any]: ...
+
+    def cancel_job(self, job_id: str, reason: str = "") -> Any: ...
 
 
 class VenueError(Exception):
@@ -52,6 +75,9 @@ class FrontendVenueService:
         provisioner: Any,
         pool: Any,
         sealed_store: Any | None = None,
+        job_store: JobSubmitter | None = None,
+        site_name: str = "",
+        quota_check: Callable[[str], None] | None = None,
     ) -> None:
         self.config = config
         self.broker = broker
@@ -59,6 +85,13 @@ class FrontendVenueService:
         self.provisioner = provisioner
         self.pool = pool
         self._sealed = sealed_store
+        self.job_store = job_store
+        # The site whose durable runtime must claim the session job (the
+        # umrs-front container that received the start; every container on
+        # the host drives the same podman socket, so exclusivity is all that
+        # matters). "" would let ANY site claim it — never submit that.
+        self.site_name = site_name
+        self._quota_check = quota_check
 
     # ── helpers ───────────────────────────────────────────────────────
 
@@ -93,20 +126,34 @@ class FrontendVenueService:
 
     def _project_registry(self, owner: str, session_id: str, *, state: str) -> None:
         """Best-effort projection onto the 0084 venue/state columns."""
-        from umrs.api.companion_sessions import mark_session_venue
+        project_session_state(self.pool, owner, session_id, state)
 
+    def _job_view(self, job_id: str) -> dict[str, Any] | None:
+        """Status + last-attempt detail of the session job (None when unlinked)."""
+        if not job_id or self.job_store is None:
+            return None
         try:
-            with self._conn() as conn:
-                mark_session_venue(
-                    conn, owner, session_id, venue="frontend", state=state
-                )
-        except Exception:
-            logger.warning(
-                "venue registry projection failed for %s", session_id, exc_info=True
-            )
+            job = self.job_store.get_job(job_id)
+            attempts = self.job_store.get_attempts_for_job(job_id)
+        except Exception:  # the row is the fallback truth
+            logger.warning("session job lookup failed for %s", job_id, exc_info=True)
+            return None
+        last = attempts[-1] if attempts else None
+        return {
+            "job_id": job_id,
+            "status": str(getattr(job.status, "value", job.status)),
+            "venue": getattr(job, "venue", ""),
+            "attempt_status": (
+                str(getattr(last.status, "value", last.status)) if last else None
+            ),
+            "attempt_detail": (
+                (last.exit_reason or last.status_detail or None) if last else None
+            ),
+        }
 
     def _describe(self, row: VenueSessionRow) -> dict[str, Any]:
         out = row.to_dict()
+        out["job"] = self._job_view(row.job_id)
         lease = self.broker.get_lease(row.lease_id) if row.lease_id else None
         out["lease"] = (
             {
@@ -157,32 +204,63 @@ class FrontendVenueService:
         web_allow_domains: list[str] | None = None,
         project: str = "",
     ) -> dict[str, Any]:
-        cfg = self.config
-        blocked = cfg.missing()
+        """Validate, reserve the row, submit the ``frontend_session`` job."""
+        self._require_configured()
+        refs = _validated_refs(source_refs)
+        policy = self._validated_policy(web_policy)
+        default_name = _validated_default(refs, default_source)
+        self._require_startable(owner, session_id)
+        names, ids, default_id = self._resolve_default(owner, refs, default_name)
+        subnet = self._reserve_subnet()
+        spec = _session_spec(
+            session_id=session_id,
+            owner=owner,
+            ids=ids,
+            names=names,
+            default_id=default_id,
+            default_name=default_name,
+            policy=policy,
+            domains=web_allow_domains,
+            project=project,
+            site=self.site_name,
+            subnet=subnet,
+        )
+        job_id = self._submit_job(owner, session_id, spec)
+        self.store.upsert_provisioning(
+            session_id=session_id,
+            user_id=owner,
+            subnet=subnet,
+            source_names=names,
+            source_ids=ids,
+            default_source_id=default_id,
+            default_source_name=default_name,
+            web_policy=policy,
+            job_id=job_id,
+        )
+        self._enqueue(job_id, session_id)
+        row = self.store.get(session_id)
+        assert row is not None
+        return self._describe(row)
+
+    def _require_configured(self) -> None:
+        blocked = self.config.missing()
         if blocked:
             raise VenueError(
                 "unavailable",
                 "frontend venue not configured on this server: " + ", ".join(blocked),
                 missing=blocked,
             )
-        refs = [r.strip() for r in source_refs if r and r.strip()]
-        if not refs:
-            raise VenueError(
-                "bad_request", "source_refs must name at least one pushed source"
-            )
-        if len(refs) > MAX_SOURCE_REFS:
-            raise VenueError(
-                "bad_request", f"at most {MAX_SOURCE_REFS} sources per session"
-            )
-        policy = (web_policy or cfg.web_policy_default).strip()
+
+    def _validated_policy(self, web_policy: str) -> str:
+        policy = (web_policy or self.config.web_policy_default).strip()
         if policy not in VALID_WEB_POLICIES:
             raise VenueError(
                 "bad_request",
                 f"web_policy must be one of {', '.join(VALID_WEB_POLICIES)}",
             )
-        default_name = (default_source or refs[0]).strip()
-        if default_name not in refs:
-            raise VenueError("bad_request", "default_source must be one of source_refs")
+        return policy
+
+    def _require_startable(self, owner: str, session_id: str) -> None:
         if not self.session_exists(owner, session_id):
             raise VenueError(
                 "not_found",
@@ -199,6 +277,10 @@ class FrontendVenueService:
                 f"session runtime already {existing.state}",
                 state=existing.state,
             )
+
+    def _resolve_default(
+        self, owner: str, refs: list[str], default_name: str
+    ) -> tuple[tuple[str, ...], tuple[str, ...], str]:
         names, ids, missing = self._resolve_sources(owner, refs)
         if missing:
             raise VenueError(
@@ -208,49 +290,58 @@ class FrontendVenueService:
                 + " (run `r4 source push <name>`)",
                 missing=missing,
             )
-        default_id = ids[names.index(default_name)]
+        return names, ids, ids[names.index(default_name)]
+
+    def _reserve_subnet(self) -> str:
         try:
-            subnet = allocate_subnet(cfg.subnet_pool, self.store.taken_subnets())
+            return allocate_subnet(self.config.subnet_pool, self.store.taken_subnets())
         except SubnetPoolExhausted as exc:
             raise VenueError("unavailable", str(exc)) from exc
-        self.store.upsert_provisioning(
-            session_id=session_id,
-            user_id=owner,
-            subnet=subnet,
-            source_names=names,
-            source_ids=ids,
-            default_source_id=default_id,
-            default_source_name=default_name,
-            web_policy=policy,
-        )
-        provision_cfg = cfg.provision_config(
-            session_id=session_id,
-            owner=owner,
-            source_ids=ids,
-            default_source_id=default_id,
-            subnet=subnet,
-            web_policy=policy,
-            web_allow_domains=tuple(
-                d.strip() for d in (web_allow_domains or []) if d.strip()
-            ),
-            project=project,
-        )
-        result = self.provisioner.provision(provision_cfg)
-        if result.state != "running":
-            row = self.store.mark_failed(
-                session_id, result.reason or "provision failed"
-            )
+
+    def _submit_job(self, owner: str, session_id: str, spec: dict[str, Any]) -> str:
+        """Create the ``frontend_session`` job (quota first). Returns job_id."""
+        if self.job_store is None:
             raise VenueError(
-                "provision_failed",
-                f"provisioning failed at {result.reason or 'unknown step'}",
-                session=row.to_dict() if row else None,
+                "unavailable", "durable job store unavailable on this server"
             )
-        row = self.store.mark_running(
-            session_id, lease_id=result.lease_id, egress_ip=result.egress_ip
-        )
-        self._project_registry(owner, session_id, state="ongoing")
-        assert row is not None
-        return self._describe(row)
+        if not self.site_name:
+            raise VenueError(
+                "unavailable", "site name unresolved; refusing an any-site job"
+            )
+        if self._quota_check is not None:
+            self._quota_check(owner)
+        try:
+            job = self.job_store.create_job(
+                project_id=spec.get("project") or "default",
+                user_id=owner,
+                job_type=self._job_type(),
+                spec=spec,
+                idempotency_key=f"frontend_session:{session_id}:{uuid.uuid4().hex[:12]}",
+                max_attempts=1,
+                restart_policy=self._restart_never(),
+            )
+        except Exception as exc:  # surfaced as a typed 503
+            raise VenueError("unavailable", f"session job not accepted: {exc}") from exc
+        return str(job.job_id)
+
+    def _enqueue(self, job_id: str, session_id: str) -> None:
+        try:
+            self.job_store.enqueue_job(job_id)  # type: ignore[union-attr]
+        except Exception as exc:
+            self.store.mark_failed(session_id, f"enqueue: {exc}")
+            raise VenueError("unavailable", f"session job not enqueued: {exc}") from exc
+
+    @staticmethod
+    def _job_type() -> Any:
+        from umrs.jobs.models import JobType
+
+        return JobType.FRONTEND_SESSION
+
+    @staticmethod
+    def _restart_never() -> Any:
+        from umrs.jobs.models import RestartPolicy
+
+        return RestartPolicy.NEVER
 
     def status(self, *, owner: str, session_id: str) -> dict[str, Any] | None:
         row = self.store.get(session_id)
@@ -272,8 +363,18 @@ class FrontendVenueService:
             logger.warning("venue teardown raised for %s: %s", session_id, exc)
         stopped = self.store.mark_stopped(session_id, reason=f"stopped by {actor}")
         self._project_registry(owner, session_id, state="stopped")
+        self._cancel_job(row.job_id, actor)
         assert stopped is not None
         return self._describe(stopped)
+
+    def _cancel_job(self, job_id: str, actor: str) -> None:
+        """Settle the durable record after a direct stop (terminal → no-op)."""
+        if not job_id or self.job_store is None:
+            return
+        try:
+            self.job_store.cancel_job(job_id, reason=f"stopped by {actor}")
+        except Exception as exc:  # noqa: BLE001 — InvalidTransition (already terminal) etc.
+            logger.info("session job %s not cancelled: %s", job_id, exc)
 
     # ── worker rail ───────────────────────────────────────────────────
 
@@ -290,23 +391,15 @@ class FrontendVenueService:
     ) -> dict[str, Any]:
         extend = extend_seconds or self.config.rail_extend_seconds
         renewed = bool(self.broker.renew_lease(lease_id, extend, actor="worker"))
-        runtime = {
-            "phase": (phase or "idle")[:32],
-            "turn_seq": int(turn_seq or 0),
-            "partial": (partial or "")[-4000:],
-            "detail": (detail or "")[:400],
-        }
-        row = self.store.update_runtime(session_id, runtime)
+        row = self.store.update_runtime(
+            session_id, _runtime_report(phase, turn_seq, partial, detail)
+        )
         lease = self.broker.get_lease(lease_id)
         stop_requested = row is None or row.state in ("stopped", "failed")
         return {
             "ok": True,
             "renewed": renewed,
-            "lease_expires_at": (
-                lease.expires_at.isoformat()
-                if lease is not None and lease.expires_at
-                else None
-            ),
+            "lease_expires_at": _expires_iso(lease),
             "stop_requested": stop_requested,
             "state": row.state if row is not None else "unknown",
         }
@@ -318,3 +411,73 @@ class FrontendVenueService:
             self.store.update_runtime(
                 session_id, {"phase": "exited", "detail": reason[:400]}
             )
+
+
+# ── module helpers (kept flat for the ADR-052 ratchet) ────────────────────
+
+
+def _validated_refs(source_refs: list[str]) -> list[str]:
+    refs = [r.strip() for r in source_refs if r and r.strip()]
+    if not refs:
+        raise VenueError(
+            "bad_request", "source_refs must name at least one pushed source"
+        )
+    if len(refs) > MAX_SOURCE_REFS:
+        raise VenueError(
+            "bad_request", f"at most {MAX_SOURCE_REFS} sources per session"
+        )
+    return refs
+
+
+def _validated_default(refs: list[str], default_source: str) -> str:
+    default_name = (default_source or refs[0]).strip()
+    if default_name not in refs:
+        raise VenueError("bad_request", "default_source must be one of source_refs")
+    return default_name
+
+
+def _session_spec(
+    *,
+    session_id: str,
+    owner: str,
+    ids: tuple[str, ...],
+    names: tuple[str, ...],
+    default_id: str,
+    default_name: str,
+    policy: str,
+    domains: list[str] | None,
+    project: str,
+    site: str,
+    subnet: str,
+) -> dict[str, Any]:
+    """The ``frontend_session`` job spec (validated again by the backend)."""
+    return {
+        "session_id": session_id,
+        "owner": owner,
+        "source_ids": list(ids),
+        "source_names": list(names),
+        "default_source_id": default_id,
+        "default_source_name": default_name,
+        "web_policy": policy,
+        "web_allow_domains": [d.strip() for d in (domains or []) if d.strip()],
+        "project": project,
+        "venue": site,
+        "subnet_hint": subnet,
+    }
+
+
+def _runtime_report(
+    phase: str, turn_seq: int, partial: str, detail: str
+) -> dict[str, Any]:
+    return {
+        "phase": (phase or "idle")[:32],
+        "turn_seq": int(turn_seq or 0),
+        "partial": (partial or "")[-4000:],
+        "detail": (detail or "")[:400],
+    }
+
+
+def _expires_iso(lease: Any) -> str | None:
+    if lease is None or not lease.expires_at:
+        return None
+    return lease.expires_at.isoformat()

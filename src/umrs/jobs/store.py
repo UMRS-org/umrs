@@ -1296,6 +1296,59 @@ class JobStore:
             )
             conn.commit()
 
+    # ── origin lineage (ADR-046 A2: jobs spawned from a session) ────────────
+
+    def stamp_spec_origin(self, job_id: str, origin: dict[str, Any]) -> bool:
+        """Merge ``spec.origin`` onto one job (session lineage; additive, never
+        rewrites other spec keys). Returns True when a row was updated."""
+        with self._get_conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                    UPDATE jobs SET
+                        spec = COALESCE(spec, '{}')::jsonb || %s::jsonb,
+                        updated_at = NOW()
+                    WHERE job_id = %s
+                """,
+                (json.dumps({"origin": dict(origin)}), job_id),
+            )
+            updated = cur.rowcount > 0
+            conn.commit()
+        return updated
+
+    def find_job_id_by_spec_value(
+        self, job_type: JobType, key: str, value: str
+    ) -> str | None:
+        """Newest job of ``job_type`` whose top-level ``spec[key]`` equals value."""
+        with self._get_conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                    SELECT job_id FROM jobs
+                    WHERE job_type = %s AND spec->>%s = %s
+                    ORDER BY created_at DESC LIMIT 1
+                """,
+                (job_type.value, key, value),
+            )
+            row = cur.fetchone()
+        return str(row[0]) if row else None
+
+    def list_jobs_by_origin_session(
+        self, session_id: str, limit: int = 100
+    ) -> list[Job]:
+        """Jobs whose ``spec.origin.session_id`` is this session (any venue)."""
+        with (
+            self._get_conn() as conn,
+            conn.cursor(cursor_factory=RealDictCursor) as cur,
+        ):
+            cur.execute(
+                """
+                    SELECT * FROM jobs
+                    WHERE spec->'origin'->>'session_id' = %s
+                    ORDER BY created_at DESC LIMIT %s
+                """,
+                (session_id, limit),
+            )
+            return [self._row_to_job(row) for row in cur.fetchall()]
+
     # =========================================================================
     # Job Control Methods
     # =========================================================================

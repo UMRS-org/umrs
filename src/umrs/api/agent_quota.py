@@ -26,7 +26,14 @@ def agent_max_processes() -> int:
 
 
 # Job kinds counted as CPU-process units on this venue.
-AGENT_JOB_KINDS: tuple[str, ...] = ("companion_worker_job", "research_loop_job")
+# JobType VALUES (the 2026-09-21 audit found "companion_worker_job" here, which
+# never matched JobType.COMPANION_WORKER = "companion_worker" — companion units
+# were never counted). frontend_session = a remote companion sandbox (ADR-046 A2).
+AGENT_JOB_KINDS: tuple[str, ...] = (
+    "companion_worker",
+    "research_loop_job",
+    "frontend_session",
+)
 
 # Live job statuses still consuming a unit (terminal closes the claim).
 LIVE_JOB_STATUSES: tuple[str, ...] = ("planned", "queued", "running")

@@ -40,6 +40,7 @@ _COLUMNS = (
     "started_at",
     "updated_at",
     "stopped_at",
+    "job_id",
 )
 _SELECT = f"SELECT {', '.join(_COLUMNS)} FROM companion_venue_sessions"
 
@@ -75,6 +76,8 @@ class VenueSessionRow:
     started_at: datetime | None = None
     updated_at: datetime | None = None
     stopped_at: datetime | None = None
+    # Durable job carrying the lifecycle (0100; "" for rows older than the link).
+    job_id: str = ""
 
     @property
     def is_active(self) -> bool:
@@ -96,35 +99,48 @@ class VenueSessionRow:
             "started_at": _iso(self.started_at),
             "updated_at": _iso(self.updated_at),
             "stopped_at": _iso(self.stopped_at),
+            "job_id": self.job_id,
         }
+
+
+def _s(data: dict, key: str, default: str = "") -> str:
+    return str(data.get(key) or default)
+
+
+def _strs(data: dict, key: str) -> tuple[str, ...]:
+    return tuple(str(v) for v in (data.get(key) or []))
+
+
+def _runtime_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+    return dict(value) if isinstance(value, dict) else {}
 
 
 def _row_from_tuple(row: Any) -> VenueSessionRow:
     data = dict(zip(_COLUMNS, row, strict=False))
-    runtime = data.get("runtime") or {}
-    if isinstance(runtime, str):
-        try:
-            runtime = json.loads(runtime)
-        except json.JSONDecodeError:
-            runtime = {}
     return VenueSessionRow(
         session_id=str(data["session_id"]),
         user_id=str(data["user_id"]),
-        venue=str(data.get("venue") or "frontend"),
-        state=str(data.get("state") or "provisioning"),
-        reason=str(data.get("reason") or ""),
-        lease_id=str(data.get("lease_id") or ""),
-        egress_ip=str(data.get("egress_ip") or ""),
-        subnet=str(data.get("subnet") or ""),
-        source_names=tuple(str(s) for s in (data.get("source_names") or [])),
-        source_ids=tuple(str(s) for s in (data.get("source_ids") or [])),
-        default_source_id=str(data.get("default_source_id") or ""),
-        default_source_name=str(data.get("default_source_name") or ""),
-        web_policy=str(data.get("web_policy") or "public"),
-        runtime=dict(runtime) if isinstance(runtime, dict) else {},
+        venue=_s(data, "venue", "frontend"),
+        state=_s(data, "state", "provisioning"),
+        reason=_s(data, "reason"),
+        lease_id=_s(data, "lease_id"),
+        egress_ip=_s(data, "egress_ip"),
+        subnet=_s(data, "subnet"),
+        source_names=_strs(data, "source_names"),
+        source_ids=_strs(data, "source_ids"),
+        default_source_id=_s(data, "default_source_id"),
+        default_source_name=_s(data, "default_source_name"),
+        web_policy=_s(data, "web_policy", "public"),
+        runtime=_runtime_dict(data.get("runtime")),
         started_at=data.get("started_at"),
         updated_at=data.get("updated_at"),
         stopped_at=data.get("stopped_at"),
+        job_id=_s(data, "job_id"),
     )
 
 
@@ -155,6 +171,14 @@ class VenueSessionStore:
     def taken_subnets(self) -> set[str]:
         return {r.subnet for r in self.list_active() if r.subnet}
 
+    def get_by_job_id(self, job_id: str) -> VenueSessionRow | None:
+        if not job_id:
+            return None
+        if self._pool is None:
+            return next((r for r in self._rows.values() if r.job_id == job_id), None)
+        row = self._fetchone(f"{_SELECT} WHERE job_id = %s", (job_id,))
+        return _row_from_tuple(row) if row else None
+
     # ── writes ───────────────────────────────────────────────────────
 
     def upsert_provisioning(
@@ -168,6 +192,7 @@ class VenueSessionStore:
         default_source_id: str,
         default_source_name: str,
         web_policy: str,
+        job_id: str = "",
     ) -> VenueSessionRow:
         now = _now()
         row = VenueSessionRow(
@@ -182,6 +207,7 @@ class VenueSessionStore:
             web_policy=web_policy,
             started_at=now,
             updated_at=now,
+            job_id=job_id,
         )
         if self._pool is None:
             self._rows[session_id] = row
@@ -191,9 +217,9 @@ class VenueSessionStore:
             INSERT INTO companion_venue_sessions
                 (session_id, user_id, venue, state, reason, lease_id, egress_ip, subnet,
                  source_names, source_ids, default_source_id, default_source_name,
-                 web_policy, runtime, started_at, updated_at, stopped_at)
+                 web_policy, runtime, started_at, updated_at, stopped_at, job_id)
             VALUES (%s, %s, 'frontend', 'provisioning', '', '', '', %s,
-                    %s, %s::uuid[], %s::uuid, %s, %s, '{}'::jsonb, now(), now(), NULL)
+                    %s, %s::uuid[], %s::uuid, %s, %s, '{}'::jsonb, now(), now(), NULL, %s)
             ON CONFLICT (session_id) DO UPDATE SET
                 user_id = EXCLUDED.user_id,
                 state = 'provisioning', reason = '', lease_id = '', egress_ip = '',
@@ -204,7 +230,9 @@ class VenueSessionStore:
                 default_source_name = EXCLUDED.default_source_name,
                 web_policy = EXCLUDED.web_policy,
                 runtime = '{}'::jsonb,
-                started_at = now(), updated_at = now(), stopped_at = NULL
+                started_at = now(), updated_at = now(), stopped_at = NULL,
+                job_id = CASE WHEN EXCLUDED.job_id <> '' THEN EXCLUDED.job_id
+                              ELSE companion_venue_sessions.job_id END
             """,
             (
                 session_id,
@@ -215,9 +243,24 @@ class VenueSessionStore:
                 default_source_id or None,
                 default_source_name,
                 web_policy,
+                job_id,
             ),
         )
         return self.get(session_id) or row
+
+    def set_job_id(self, session_id: str, job_id: str) -> VenueSessionRow | None:
+        current = self.get(session_id)
+        if current is None:
+            return None
+        if self._pool is None:
+            current.job_id = job_id
+            return current
+        self._execute(
+            "UPDATE companion_venue_sessions SET job_id = %s, updated_at = now() "
+            "WHERE session_id = %s",
+            (job_id, session_id),
+        )
+        return self.get(session_id)
 
     def mark_running(
         self, session_id: str, *, lease_id: str, egress_ip: str
@@ -268,36 +311,10 @@ class VenueSessionStore:
         current = self.get(session_id)
         if current is None:
             return None
+        fields = {"reason": reason, "lease_id": lease_id, "egress_ip": egress_ip}
         if self._pool is None:
-            current.state = state
-            if reason is not None:
-                current.reason = reason
-            if lease_id is not None:
-                current.lease_id = lease_id
-            if egress_ip is not None:
-                current.egress_ip = egress_ip
-            current.updated_at = _now()
-            if stopped:
-                current.stopped_at = _now()
-            return current
-        sets = ["state = %s", "updated_at = now()"]
-        params: list[Any] = [state]
-        if reason is not None:
-            sets.append("reason = %s")
-            params.append(reason)
-        if lease_id is not None:
-            sets.append("lease_id = %s")
-            params.append(lease_id)
-        if egress_ip is not None:
-            sets.append("egress_ip = %s")
-            params.append(egress_ip)
-        if stopped:
-            sets.append("stopped_at = now()")
-        params.append(session_id)
-        self._execute(
-            f"UPDATE companion_venue_sessions SET {', '.join(sets)} WHERE session_id = %s",
-            tuple(params),
-        )
+            return _transition_memory(current, state, fields, stopped)
+        self._execute(*_transition_sql(session_id, state, fields, stopped))
         return self.get(session_id)
 
     # ── pool plumbing ────────────────────────────────────────────────
@@ -330,3 +347,69 @@ class VenueSessionStore:
                 commit()
         finally:
             self._pool.putconn(conn)
+
+
+def project_session_state(pool: Any, owner: str, session_id: str, state: str) -> bool:
+    """Project a runtime transition onto the session snapshot's 0084 columns.
+
+    Plain SQL here (no api/ import — jobs/ and venues/ callers, ADR-053).
+    ``state`` is one of the stored states (ongoing|stopped|error); venue is
+    pinned to ``frontend``. Best-effort: False when the row is absent or the
+    pool is missing.
+    """
+    if pool is None or state not in ("ongoing", "stopped", "completed", "error", ""):
+        return False
+    conn = pool.getconn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE companion_session_snapshots
+                SET venue = %s, state = %s, updated_at = now()
+                WHERE user_id = %s AND session_id = %s
+                """,
+                ("frontend", state, owner, session_id),
+            )
+            applied = int(getattr(cur, "rowcount", 0) or 0) > 0
+        commit = getattr(conn, "commit", None)
+        if callable(commit):
+            commit()
+        return applied
+    except Exception:  # projection never masks the runtime result
+        logger.warning(
+            "session state projection failed for %s", session_id, exc_info=True
+        )
+        return False
+    finally:
+        pool.putconn(conn)
+
+
+def _transition_memory(
+    current: VenueSessionRow, state: str, fields: dict[str, str | None], stopped: bool
+) -> VenueSessionRow:
+    current.state = state
+    for key, value in fields.items():
+        if value is not None:
+            setattr(current, key, value)
+    current.updated_at = _now()
+    if stopped:
+        current.stopped_at = _now()
+    return current
+
+
+def _transition_sql(
+    session_id: str, state: str, fields: dict[str, str | None], stopped: bool
+) -> tuple[str, tuple]:
+    sets = ["state = %s", "updated_at = now()"]
+    params: list[Any] = [state]
+    for key, value in fields.items():
+        if value is not None:
+            sets.append(f"{key} = %s")
+            params.append(value)
+    if stopped:
+        sets.append("stopped_at = now()")
+    params.append(session_id)
+    return (
+        f"UPDATE companion_venue_sessions SET {', '.join(sets)} WHERE session_id = %s",
+        tuple(params),
+    )

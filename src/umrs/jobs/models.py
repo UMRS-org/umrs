@@ -36,6 +36,9 @@ class JobType(Enum):
     KNOWLEDGE_EXPORT = "knowledge_export"  # Export knowledge bundle (.kb)
     ENDPOINT_UPGRADE = "endpoint_upgrade"  # Rolling model-version flip (Q-13)
     COMPANION_WORKER = "companion_worker"  # Durable per-user Companion venue (T3a)
+    # ADR-046 A2 (2026-09-21): remote companion session sandbox (one attempt =
+    # the sandbox's life; venue column = the claiming site).
+    FRONTEND_SESSION = "frontend_session"
     # Server-hosted autonomous research loop (ADR-036 D1): one job per loop,
     # attempt = one hosted run; iterations checkpoint into the loop store.
     RESEARCH_LOOP = "research_loop_job"
@@ -188,6 +191,12 @@ DEFAULT_BACKOFFS: dict[JobType, dict[str, Any]] = {
     JobType.RESEARCH_LOOP: {
         "delays": [5, 30, 60],
         "max_attempts": 4,
+    },
+    # Frontend session: provisioning failures are terminal by policy
+    # (restart_policy=never at submit); the entry only names the lane.
+    JobType.FRONTEND_SESSION: {
+        "delays": [30],
+        "max_attempts": 1,
     },
     # Note: CONTEXT_RETENTION and CONVERSATION_SUMMARIZE backoffs excluded
 }

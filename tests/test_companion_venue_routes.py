@@ -7,6 +7,7 @@ issue, and the sqlite T4 approvals store. No live podman, no Postgres.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import subprocess
 import tempfile
@@ -14,10 +15,11 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 from umrs.api.companion_venue import router
 from umrs.companion_trust.chat_turn_approvals import ChatTurnApprovalsStore
+from umrs.jobs.frontend_session_backend import FrontendSessionBackend
 from umrs.jobs.secret_broker import SecretBroker
 from umrs.venues.frontend_config import FrontendVenueConfig
 from umrs.venues.frontend_podman import FrontendPodmanProvisioner
@@ -52,53 +54,77 @@ class _Cursor:
     def __exit__(self, *_):
         return False
 
+    _HANDLERS = (
+        ("select 1 from companion_session_snapshots", "_exists"),
+        ("select s.session_id, s.name, s.payload", "_detail"),
+        ("select payload from companion_session_snapshots", "_payload"),
+        ("update companion_session_snapshots set venue", "_set_venue"),
+        ("update companion_session_snapshots set payload", "_set_payload"),
+        ("insert into companion_session_snapshots", "_insert"),
+    )
+
     def execute(self, sql, params=None):
         sql_l = " ".join(sql.split()).lower()
         self._recorded.append(sql_l)
-        params = params or ()
-        if sql_l.startswith("select 1 from companion_session_snapshots"):
-            sid, uid = params
-            self._row = (1,) if (uid, sid) in self._table else None
-        elif "select s.session_id, s.name, s.payload" in sql_l:
-            uid, sid = params
-            row = self._table.get((uid, sid))
-            self._row = (
-                (sid, row["name"], row["payload"], row["marker"], row["venue"], row["state"], None)
-                if row
-                else None
-            )
-        elif "select payload from companion_session_snapshots" in sql_l:
-            uid, sid = params
-            row = self._table.get((uid, sid))
-            self._row = (row["payload"],) if row else None
-        elif sql_l.startswith("update companion_session_snapshots set venue"):
-            venue, state, uid, sid = params
-            row = self._table.get((uid, sid))
-            if row:
-                row["venue"], row["state"] = venue, state
-            self.rowcount = 1 if row else 0
-        elif sql_l.startswith("update companion_session_snapshots set payload"):
-            payload, uid, sid = params
-            row = self._table.get((uid, sid))
-            if row:
-                row["payload"] = payload
-            self.rowcount = 1 if row else 0
-        elif sql_l.startswith("insert into companion_session_snapshots"):
-            uid, sid, name, payload, marker, venue, state = params
-            existing = self._table.get((uid, sid))
-            if existing is None or existing["marker"] <= marker:
-                self._table[(uid, sid)] = {
-                    "name": name,
-                    "payload": payload,
-                    "marker": marker,
-                    "venue": venue or (existing or {}).get("venue", "local"),
-                    "state": state or (existing or {}).get("state", ""),
-                }
-                self.rowcount = 1
-            else:
-                self.rowcount = 0
-        else:
-            raise AssertionError(f"unexpected SQL in venue route test: {sql_l[:80]}")
+        for needle, handler in self._HANDLERS:
+            if needle in sql_l:
+                getattr(self, handler)(params or ())
+                return
+        raise AssertionError(f"unexpected SQL in venue route test: {sql_l[:80]}")
+
+    def _exists(self, params):
+        sid, uid = params
+        self._row = (1,) if (uid, sid) in self._table else None
+
+    def _detail(self, params):
+        uid, sid = params
+        row = self._table.get((uid, sid))
+        if row is None:
+            self._row = None
+            return
+        self._row = (
+            sid,
+            row["name"],
+            row["payload"],
+            row["marker"],
+            row["venue"],
+            row["state"],
+            None,
+        )
+
+    def _payload(self, params):
+        uid, sid = params
+        row = self._table.get((uid, sid))
+        self._row = (row["payload"],) if row else None
+
+    def _set_venue(self, params):
+        venue, state, uid, sid = params
+        row = self._table.get((uid, sid))
+        if row:
+            row["venue"], row["state"] = venue, state
+        self.rowcount = 1 if row else 0
+
+    def _set_payload(self, params):
+        payload, uid, sid = params
+        row = self._table.get((uid, sid))
+        if row:
+            row["payload"] = payload
+        self.rowcount = 1 if row else 0
+
+    def _insert(self, params):
+        uid, sid, name, payload, marker, venue, state = params
+        existing = self._table.get((uid, sid)) or {}
+        if existing and existing["marker"] > marker:
+            self.rowcount = 0
+            return
+        self._table[(uid, sid)] = {
+            "name": name,
+            "payload": payload,
+            "marker": marker,
+            "venue": venue or existing.get("venue", "local"),
+            "state": state or existing.get("state", ""),
+        }
+        self.rowcount = 1
 
     def fetchone(self):
         return self._row
@@ -171,6 +197,121 @@ def _meta(name: str, *, tombstoned=None):
     return SimpleNamespace(id=SRC_ID, name=name, tombstoned_at=tombstoned)
 
 
+class FakeJobStore:
+    """The JobSubmitter slice + the origin methods the venue routes touch."""
+
+    def __init__(self):
+        self.created: list[dict] = []
+        self.jobs: dict[str, SimpleNamespace] = {}
+        self.attempts: dict[str, list] = {}
+        self.enqueued: list[str] = []
+        self.cancelled: list[tuple[str, str]] = []
+        self.stamped: list[tuple[str, dict]] = []
+        self.by_spec: dict[tuple, str] = {}
+        self.cancel_raises = False
+
+    def create_job(self, **kw):
+        job_id = f"job-{len(self.created) + 1}"
+        self.created.append(kw)
+        spec = kw["spec"]
+        job = SimpleNamespace(
+            job_id=job_id, status=_status("planned"), venue=spec.get("venue", ""), spec=spec
+        )
+        self.jobs[job_id] = job
+        return job
+
+    def enqueue_job(self, job_id):
+        self.enqueued.append(job_id)
+        self.jobs[job_id].status = _status("queued")
+
+    def get_job(self, job_id):
+        return self.jobs[job_id]
+
+    def get_attempts_for_job(self, job_id):
+        return list(self.attempts.get(job_id, []))
+
+    def cancel_job(self, job_id, reason=""):
+        if self.cancel_raises:
+            raise RuntimeError("already terminal")
+        self.cancelled.append((job_id, reason))
+        self.jobs[job_id].status = _status("cancelled")
+
+    def stamp_spec_origin(self, job_id, origin):
+        self.stamped.append((job_id, dict(origin)))
+        return True
+
+    def find_job_id_by_spec_value(self, job_type, key, value):
+        return self.by_spec.get((job_type.value, key, value))
+
+
+def _status(value: str) -> SimpleNamespace:
+    return SimpleNamespace(value=value)
+
+
+def _attempt(status: str, exit_reason=None, ref=None) -> SimpleNamespace:
+    return SimpleNamespace(
+        status=_status(status), exit_reason=exit_reason, status_detail=None, backend_ref=ref
+    )
+
+
+def _run_lane(h) -> list[tuple[str, str]]:
+    """Play the durable runtime: claim every queued session job on this harness."""
+    backend = FrontendSessionBackend(
+        config=h.service.config,
+        provisioner=h.service.provisioner,
+        store=h.service.store,
+        broker=h.broker,
+        pool=h.pool,
+    )
+    out: list[tuple[str, str]] = []
+    for job in [j for j in h.jobs.jobs.values() if j.status.value == "queued"]:
+        job.status = _status("running")
+        try:
+            ref = asyncio.run(backend.submit_job(job, SimpleNamespace(attempt_id="a1")))
+        except Exception as exc:  # noqa: BLE001 — the attempt failed
+            job.status = _status("failed")
+            h.jobs.attempts[job.job_id] = [_attempt("failed", str(exc))]
+            out.append(("failed", str(exc)))
+            continue
+        h.jobs.attempts[job.job_id] = [_attempt("running", None, ref)]
+        out.append(("running", job.job_id))
+    return out
+
+
+def _probe_routes(app: FastAPI) -> None:
+    """Fake platform families the rail gw re-dispatches to (echo identity)."""
+
+    async def _echo(request: Request, tail: str = "") -> dict:
+        return {
+            "path": request.url.path,
+            "method": request.method,
+            "query": dict(request.query_params),
+            "user": request.headers.get("x-user-id"),
+            "project": request.headers.get("x-verified-project-id"),
+            "hmac": request.headers.get("x-verified-hmac"),
+            "admin": request.headers.get("x-verified-is-admin"),
+            "auth": request.headers.get("authorization"),
+            "body": (await request.body()).decode() or None,
+        }
+
+    async def _create_job() -> dict:
+        return {"job_id": "job-9"}
+
+    async def _run_wf() -> dict:
+        return {"execution_id": "exec-1"}
+
+    # job-creating POSTs (registered first: they shadow the echo catch-alls)
+    app.add_api_route("/umrs/jobs", _create_job, methods=["POST"])
+    app.add_api_route("/umrs/workflows/wf-1/run", _run_wf, methods=["POST"])
+    app.add_api_route("/umrs/workflows/{tail:path}", _echo, methods=["GET", "POST", "DELETE"])
+    app.add_api_route("/umrs/jobs/{tail:path}", _echo, methods=["GET", "POST"])
+
+    async def _secret(request: Request) -> dict:
+        return {"leak": request.headers.get("x-user-id")}
+
+    app.add_api_route("/umrs/secrets/probe", _secret, methods=["GET"])
+
+
 @pytest.fixture
 def harness(monkeypatch):
     approvals = ChatTurnApprovalsStore()
@@ -180,6 +321,7 @@ def harness(monkeypatch):
     provisioner = FrontendPodmanProvisioner(
         broker, podman=podman, session_root=Path(tempfile.mkdtemp(prefix="venue-route-"))
     )
+    jobs = FakeJobStore()
     service = FrontendVenueService(
         config=FrontendVenueConfig.from_env(READY_ENV),
         broker=broker,
@@ -187,15 +329,24 @@ def harness(monkeypatch):
         provisioner=provisioner,
         pool=pool,
         sealed_store=FakeSealed({("alice", "openai-main"): _meta("openai-main")}),
+        job_store=jobs,
+        site_name="rccs",
     )
     app = FastAPI()
     app.include_router(router)
+    _probe_routes(app)
     app.state.umrs_db_pool = pool
     app.state.companion_venue_service = service
     app.state.companion_venue_approvals_factory = lambda _conn: approvals
     client = TestClient(app)
     return SimpleNamespace(
-        client=client, pool=pool, broker=broker, podman=podman, service=service, approvals=approvals
+        client=client,
+        pool=pool,
+        broker=broker,
+        podman=podman,
+        service=service,
+        approvals=approvals,
+        jobs=jobs,
     )
 
 
@@ -238,23 +389,53 @@ class TestOwnerRoutes:
         assert r.status_code == 503
         assert "UMRS_VENUE_ENABLED" in r.json()["detail"]
 
-    def test_start_provisions_and_projects(self, harness):
+    def test_start_submits_the_session_job(self, harness):
         harness.pool.seed("alice", "sess-1")
         r = _start(harness)
         assert r.status_code == 200, r.text
         body = r.json()
-        assert body["state"] == "running"
-        assert body["egress_ip"] == "172.20.8.2"
-        assert body["source_names"] == ["openai-main"]
-        assert body["lease"]["is_valid"] is True
+        assert (body["state"], body["source_names"]) == ("provisioning", ["openai-main"])
+        assert body["job"] == {
+            "job_id": "job-1",
+            "status": "queued",
+            "venue": "rccs",
+            "attempt_status": None,
+            "attempt_detail": None,
+        }
+        created = harness.jobs.created[0]
+        assert (created["job_type"].value, created["spec"]["venue"], created["spec"]["owner"]) == (
+            "frontend_session",
+            "rccs",
+            "alice",
+        )
+        assert (created["max_attempts"], created["restart_policy"].value) == (1, "never")
+        assert created["idempotency_key"].startswith("frontend_session:sess-1:")
+        # the request itself provisions nothing; the lane does
+        assert (harness.jobs.enqueued, harness.podman.calls) == (["job-1"], [])
+
+    def test_lane_provisions_and_projects(self, harness):
+        harness.pool.seed("alice", "sess-1")
+        assert _start(harness).status_code == 200
+        assert _run_lane(harness) == [("running", "job-1")]
+        body = harness.client.get("/umrs/companion/sessions/sess-1/venue", headers=H).json()
+        assert (body["state"], body["egress_ip"], body["lease"]["is_valid"]) == (
+            "running",
+            "172.20.8.2",
+            True,
+        )
+        assert (body["job"]["status"], body["job"]["attempt_status"]) == ("running", "running")
         # registry projection: the snapshot row now says frontend/ongoing
         row = harness.pool.table[("alice", "sess-1")]
-        assert row["venue"] == "frontend" and row["state"] == "ongoing"
+        assert (row["venue"], row["state"]) == ("frontend", "ongoing")
+
+    def test_lane_worker_argv_carries_rail_env(self, harness):
+        harness.pool.seed("alice", "sess-1")
+        _start(harness)
+        _run_lane(harness)
         # worker argv carries the loop command + rail env, never the token
         worker = next(c for c in harness.podman.calls if c[0] == "run" and "worker-sess-1" in c)
         assert worker[-2:] == ("venue", "worker")
-        assert "R4_VENUE_RAIL_URL=http://egress:8081" in worker
-        assert "R4_VENUE_SESSION_ID=sess-1" in worker
+        assert {"R4_VENUE_RAIL_URL=http://egress:8081", "R4_VENUE_SESSION_ID=sess-1"} <= set(worker)
 
     def test_second_start_is_409_already_running(self, harness):
         harness.pool.seed("alice", "sess-1")
@@ -263,18 +444,55 @@ class TestOwnerRoutes:
         assert r.status_code == 409
         assert r.headers["x-platform-error-code"] == "companionvenue.already_running"
 
-    def test_provision_failure_is_502_and_row_failed(self, harness):
+    def test_provision_failure_fails_attempt_and_row(self, harness):
         harness.pool.seed("alice", "sess-1")
         harness.podman.fail_at = "egress-sess-1"
-        r = _start(harness)
-        assert r.status_code == 502
-        assert r.headers["x-platform-error-code"] == "companionvenue.provision_failed"
+        assert _start(harness).status_code == 200
+        ((outcome, reason),) = _run_lane(harness)
+        assert (outcome, "egress" in reason) == ("failed", True)
         status = harness.client.get("/umrs/companion/sessions/sess-1/venue", headers=H).json()
-        assert status["state"] == "failed" and "egress" in status["reason"]
+        assert (status["state"], "egress" in status["reason"], status["job"]["status"]) == (
+            "failed",
+            True,
+            "failed",
+        )
+        assert "egress" in status["job"]["attempt_detail"]
+        assert harness.pool.table[("alice", "sess-1")]["state"] == "error"
+        # failed is terminal for that job: a deliberate restart submits a new one
+        assert _start(harness).status_code == 200
+        assert harness.jobs.enqueued == ["job-1", "job-2"]
+
+    def test_start_refuses_without_job_store(self, harness):
+        harness.pool.seed("alice", "sess-1")
+        harness.service.job_store = None
+        r = _start(harness)
+        assert r.status_code == 503
+        assert r.headers["x-platform-error-code"] == "companionvenue.unavailable"
+        assert harness.service.store.get("sess-1") is None
+
+    def test_start_refuses_unresolved_site(self, harness):
+        harness.pool.seed("alice", "sess-1")
+        harness.service.site_name = ""
+        r = _start(harness)
+        assert r.status_code == 503 and "site" in r.json()["detail"]
+        assert harness.jobs.created == []
+
+    def test_start_enforces_spawn_budget(self, harness, monkeypatch):
+        from umrs.api.agent_quota import enforce_spawn_budget
+
+        harness.pool.seed("alice", "sess-1")
+        monkeypatch.setenv("UMRS_AGENT_PROCESSES_PER_USER_MAX", "1")
+        monkeypatch.setattr("umrs.api.agent_quota.count_active_agent_units", lambda *_a, **_k: 1)
+        harness.service._quota_check = lambda uid: enforce_spawn_budget(None, user_id=uid)
+        r = _start(harness)
+        assert r.status_code == 503, r.text
+        assert r.headers["x-platform-error-code"] == "quota.cpu_process_exceeded"
+        assert harness.jobs.created == []
 
     def test_status_owner_scoped(self, harness):
         harness.pool.seed("alice", "sess-1")
         _start(harness)
+        _run_lane(harness)
         other = harness.client.get(
             "/umrs/companion/sessions/sess-1/venue", headers={"x-user-id": "mallory"}
         )
@@ -285,44 +503,61 @@ class TestOwnerRoutes:
     def test_stop_tears_down_and_revokes(self, harness):
         harness.pool.seed("alice", "sess-1")
         _start(harness)
+        _run_lane(harness)
         r = harness.client.post("/umrs/companion/sessions/sess-1/venue/stop", headers=H)
-        assert r.status_code == 200
-        assert r.json()["state"] == "stopped"
+        assert (r.status_code, r.json()["state"]) == (200, "stopped")
         flattened = [" ".join(c) for c in harness.podman.calls]
         assert any("rm -f worker-sess-1" in c for c in flattened)
         assert all(not lease.is_valid for lease in harness.broker.list_leases(scope="inference"))
         assert harness.pool.table[("alice", "sess-1")]["state"] == "stopped"
-        # idempotent
+
+    def test_stop_settles_the_job_and_is_idempotent(self, harness):
+        harness.pool.seed("alice", "sess-1")
+        _start(harness)
+        _run_lane(harness)
+        harness.client.post("/umrs/companion/sessions/sess-1/venue/stop", headers=H)
+        assert harness.jobs.cancelled == [("job-1", "stopped by user")]
         again = harness.client.post("/umrs/companion/sessions/sess-1/venue/stop", headers=H)
-        assert again.status_code == 200 and again.json()["state"] == "stopped"
+        assert (again.status_code, again.json()["state"]) == (200, "stopped")
+        assert len(harness.jobs.cancelled) == 1  # the second stop cancels nothing new
+
+    def test_stop_survives_a_job_already_terminal(self, harness):
+        harness.pool.seed("alice", "sess-1")
+        _start(harness)
+        _run_lane(harness)
+        harness.jobs.cancel_raises = True
+        r = harness.client.post("/umrs/companion/sessions/sess-1/venue/stop", headers=H)
+        assert r.status_code == 200 and r.json()["state"] == "stopped"
+
+
+@pytest.fixture
+def rail(harness):
+    captured = {}
+
+    class _Podman(FakePodman):
+        def __call__(self, *args, input_text=None, **kw):
+            if args[:2] == ("secret", "create"):
+                captured["token"] = input_text
+            return super().__call__(*args, input_text=input_text, **kw)
+
+    podman = _Podman()
+    harness.podman = podman
+    harness.service.provisioner = FrontendPodmanProvisioner(
+        harness.broker, podman=podman, session_root=Path(tempfile.mkdtemp(prefix="venue-rail-"))
+    )
+    harness.pool.seed(
+        "alice",
+        "sess-1",
+        queue=[{"id": "q-1", "content": "hello remote", "client_id": "tui", "added_at": "t"}],
+    )
+    assert _start(harness).status_code == 200
+    assert _run_lane(harness) == [("running", "job-1")]
+    harness.token = captured["token"]
+    harness.rail_headers = {"authorization": f"Bearer {harness.token}"}
+    return harness
 
 
 class TestRail:
-    @pytest.fixture
-    def rail(self, harness):
-        captured = {}
-
-        class _Podman(FakePodman):
-            def __call__(self, *args, input_text=None, **kw):
-                if args[:2] == ("secret", "create"):
-                    captured["token"] = input_text
-                return super().__call__(*args, input_text=input_text, **kw)
-
-        podman = _Podman()
-        harness.podman = podman
-        harness.service.provisioner = FrontendPodmanProvisioner(
-            harness.broker, podman=podman, session_root=Path(tempfile.mkdtemp(prefix="venue-rail-"))
-        )
-        harness.pool.seed(
-            "alice",
-            "sess-1",
-            queue=[{"id": "q-1", "content": "hello remote", "client_id": "tui", "added_at": "t"}],
-        )
-        assert _start(harness).status_code == 200
-        harness.token = captured["token"]
-        harness.rail_headers = {"authorization": f"Bearer {harness.token}"}
-        return harness
-
     def test_rail_rejects_without_token(self, rail):
         r = rail.client.get("/umrs/companion/sessions/sess-1/rail/snapshot")
         assert r.status_code == 401
@@ -423,3 +658,90 @@ class TestRail:
             f"/umrs/companion/sessions/other/rail/approvals/{aid}", headers=rail.rail_headers
         )
         assert cross.status_code == 401  # sid_mismatch before any lookup
+
+
+class TestRailGateway:
+    """Platform verbs for the sandbox: lease → minted gateway identity → /umrs/<family>."""
+
+    @pytest.fixture
+    def gw(self, rail, monkeypatch):
+        monkeypatch.setenv("UMRS_HANDSHAKE_HMAC_SECRET", "test-handshake-secret")
+        return rail
+
+    def test_workflows_family_reaches_the_route_with_minted_identity(self, gw):
+        r = gw.client.post(
+            "/umrs/companion/sessions/sess-1/rail/gw/workflows/run?wait=true",
+            headers={**gw.rail_headers, "x-user-id": "mallory", "x-verified-is-admin": "true"},
+            json={"workflow_name": "wf-a"},
+        )
+        assert r.status_code == 200, r.text
+        seen = r.json()
+        assert (seen["path"], seen["method"], seen["query"]) == (
+            "/umrs/workflows/run",
+            "POST",
+            {"wait": "true"},
+        )
+        # identity = the lease owner, never the sandbox's header; the session
+        # token never reaches the platform route
+        assert (seen["user"], seen["admin"], seen["auth"]) == ("alice", "false", None)
+        assert json.loads(seen["body"]) == {"workflow_name": "wf-a"}
+        from r4_contracts.handshake_hmac import verify_claims
+
+        assert verify_claims("test-handshake-secret", seen["hmac"], "alice", seen["project"], False)
+
+    def test_project_comes_from_the_lease(self, gw):
+        lease = next(iter(gw.broker.list_leases(scope="inference")))
+        lease.project = "proj-9"
+        gw.broker._leases[lease.lease_id] = lease
+        r = gw.client.get(
+            "/umrs/companion/sessions/sess-1/rail/gw/jobs/j-1", headers=gw.rail_headers
+        )
+        assert r.status_code == 200
+        assert r.json()["project"] == "proj-9"
+
+    def test_disallowed_family_is_refused(self, gw):
+        r = gw.client.get(
+            "/umrs/companion/sessions/sess-1/rail/gw/secrets/probe", headers=gw.rail_headers
+        )
+        assert r.status_code == 403
+        assert r.headers["x-platform-error-code"] == "companionvenue.forbidden"
+
+    def test_gw_requires_the_lease(self, gw):
+        r = gw.client.get("/umrs/companion/sessions/sess-1/rail/gw/jobs/j-1")
+        assert r.status_code == 401
+
+    def test_hook_sees_the_upstream_answer(self, gw):
+        seen: list = []
+        gw.client.app.state.companion_venue_rail_gw_hook = lambda p, m, path, up: seen.append(
+            (p.owner, m, path, up.status_code)
+        )
+        gw.client.post(
+            "/umrs/companion/sessions/sess-1/rail/gw/jobs/submit", headers=gw.rail_headers, json={}
+        )
+        assert seen == [("alice", "POST", "jobs/submit", 200)]
+
+    def test_created_job_gets_the_session_origin(self, gw):
+        r = gw.client.post(
+            "/umrs/companion/sessions/sess-1/rail/gw/jobs",
+            headers=gw.rail_headers,
+            json={"job_type": "workflow_run"},
+        )
+        assert r.status_code == 200 and r.json()["job_id"] == "job-9"
+        assert gw.jobs.stamped == [("job-9", {"session_id": "sess-1", "venue": "frontend"})]
+
+    def test_workflow_run_origin_resolves_via_execution_id(self, gw):
+        gw.jobs.by_spec[("workflow_run", "execution_id", "exec-1")] = "job-w"
+        r = gw.client.post(
+            "/umrs/companion/sessions/sess-1/rail/gw/workflows/wf-1/run",
+            headers=gw.rail_headers,
+            json={},
+        )
+        assert r.status_code == 200
+        assert gw.jobs.stamped == [("job-w", {"session_id": "sess-1", "venue": "frontend"})]
+
+    def test_reads_and_unresolved_answers_stamp_nothing(self, gw):
+        gw.client.get("/umrs/companion/sessions/sess-1/rail/gw/jobs/j-1", headers=gw.rail_headers)
+        gw.client.post(
+            "/umrs/companion/sessions/sess-1/rail/gw/jobs/submit", headers=gw.rail_headers, json={}
+        )
+        assert gw.jobs.stamped == []
