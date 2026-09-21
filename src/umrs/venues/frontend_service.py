@@ -316,7 +316,7 @@ class FrontendVenueService:
                 user_id=owner,
                 job_type=self._job_type(),
                 spec=spec,
-                idempotency_key=f"frontend_session:{session_id}:{uuid.uuid4().hex[:12]}",
+                idempotency_key=_idempotency_key(session_id),
                 max_attempts=1,
                 restart_policy=self._restart_never(),
             )
@@ -414,6 +414,18 @@ class FrontendVenueService:
 
 
 # ── module helpers (kept flat for the ADR-052 ratchet) ────────────────────
+
+
+IDEMPOTENCY_KEY_MAX = 64  # jobs.idempotency_key VARCHAR(64)
+
+
+def _idempotency_key(session_id: str) -> str:
+    """``fs:<session_id>:<8 hex>`` — a fresh key per start (a session may be
+    restarted after stop/failure), always within the column width. The live
+    receipt of 2026-09-21 hit ``value too long for type character varying(64)``
+    with the earlier ``frontend_session:<uuid>:<12 hex>`` (66 chars)."""
+    key = f"fs:{session_id}:{uuid.uuid4().hex[:8]}"
+    return key[:IDEMPOTENCY_KEY_MAX]
 
 
 def _validated_refs(source_refs: list[str]) -> list[str]:
