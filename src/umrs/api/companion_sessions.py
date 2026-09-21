@@ -321,9 +321,13 @@ async def delete_session_snapshot(session_id: str, request: Request) -> dict[str
     conn = pool.getconn()
     try:
         with conn.cursor() as cur:
+            # F5 audit-block (2026-09-21): tombstone-drop now rides the caller's
+            # own grant column (archived_by matching), never an unscoped id —
+            # a legit one's own session delete never strips another user's
+            # same-id tombstone.
             cur.execute(
-                "DELETE FROM companion_session_archives WHERE session_id = %s",
-                (session_id,),
+                "DELETE FROM companion_session_archives WHERE session_id = %s AND archived_by = %s",
+                (session_id, uid),
             )
             cur.execute(
                 """
