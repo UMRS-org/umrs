@@ -285,3 +285,18 @@ class TestBrokerLeaseShape:
         assert lease.owner_id == "alice"
         assert lease.source_ids == ("11111111-1111-4111-8111-111111111111",)
         assert lease.max_lifetime_at is not None
+
+
+def test_every_podman_call_starts_with_a_real_subcommand(tmp_path):
+    """`_run_ok(step, *args)` labels the step; the label is never an argv word.
+    The live receipt of 2026-09-21 failed with `podman create --internal …`
+    because the network step had dropped its leading `network`."""
+    broker = SecretBroker()
+    podman = FakePodman()
+    prov = FrontendPodmanProvisioner(broker, podman=podman, session_root=tmp_path)
+    prov.provision(_cfg(session_id="argv-1"))
+    subcommands = {"network", "secret", "pod", "run", "inspect", "rm", "stop"}
+    for call in podman.calls:
+        assert call[0] in subcommands, call
+    network = next(c for c in podman.calls if c[:2] == ("network", "create"))
+    assert network[2:4] == ("--internal", "--subnet") and network[-1] == "sess-argv-1"
