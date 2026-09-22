@@ -51,6 +51,10 @@ class RestoreRequest(BaseModel):
         default=False,
         description="Restore an unsigned/unverifiable bundle anyway (explicit opt-out)",
     )
+    write_upgrade: bool = Field(
+        default=False,
+        description="Rewrite a 1.x bundle's manifest at v1.2 after restore (D-41; drops the stale signature)",
+    )
     proposal_id: str | None = Field(
         default=None,
         description="Approved graph-extension proposal (required for agent actors, 0069)",
@@ -167,6 +171,7 @@ async def restore_bundle(request: Request, body: RestoreRequest) -> dict[str, An
                 target_project_id=body.project_id,
                 verify=body.verify,
                 allow_unsigned=body.allow_unsigned,
+                write_upgrade=body.write_upgrade,
             )
         except BundleFormatError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
