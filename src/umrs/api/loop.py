@@ -680,6 +680,9 @@ async def start_loop(
     loop.metadata["mode"] = "ask" if request.mode == "ask" else "auto"
     venue = _validate_loop_venue(request)
     loop.metadata["venue"] = venue
+    # D-52 (2026-09-22): one trace id through the loop's jobs, iterations and
+    # knowledge writes — the loop id itself is the trace anchor.
+    loop.metadata.setdefault("trace_id", loop.loop_id)
     if request.agentic:
         # ADR-064 (2026-09-22): the engine runner is the one server driver of
         # record; the agent driver is deprecated in place (runs to completion,

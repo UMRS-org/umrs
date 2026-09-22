@@ -699,3 +699,25 @@ class TestDriverNoteADR064:
 
         stored = loop_mod._loop_store.get(loop_id)
         assert "driver_note" not in stored.metadata
+
+
+class TestTraceIdD52:
+    """D-52: loops carry one trace id (= loop id) from start; findings mint
+    with it (finding_ingest metadata)."""
+
+    def test_start_stamps_trace_id(self):
+        client = _make_app()
+        resp = client.post(
+            "/umrs/loops",
+            json={
+                "project_id": "proj-trace",
+                "research_goal": "trace me",
+                "max_iterations": 2,
+            },
+        )
+        assert resp.status_code == 201
+        loop_id = resp.json()["loop_id"]
+        from umrs.api import loop as loop_mod
+
+        stored = loop_mod._loop_store.get(loop_id)
+        assert stored.metadata.get("trace_id") == loop_id
