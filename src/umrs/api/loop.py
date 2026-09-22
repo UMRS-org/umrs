@@ -829,17 +829,26 @@ def _host_on_thread(
     """
     loop.metadata["hosting"] = loop_hosting.HOSTING_THREAD
     try:
+        from umrs.knowledge import engine_loop_runner as _engine_runner
+
         if agentic:
-            from umrs.knowledge.agent_loop_runner import register as _register_runner
+            # ADR-064 fold: the agent executor hosts under the ENGINE driver
+            # (AgenticEngine adapter); the agent runner is no longer spawned.
+            from umrs.knowledge.agentic_engine import AgenticEngine
 
             project = ResearchProject(project_id=loop.project_id)
-            _register_runner(
-                loop, executor=_agent_executor_for(project), store=_loop_store
+            engine_factory = lambda: AgenticEngine(  # noqa: E731
+                executor=_agent_executor_for(project)
             )
+            _engine_runner.register(
+                loop,
+                engine_factory=engine_factory,
+                store=_loop_store,
+                on_iteration=loop_hosting.iteration_hook(),
+            )
+            loop.metadata["driver"] = "engine"
             loop.metadata["agent"] = "umrs-litellm"
         else:
-            from umrs.knowledge import engine_loop_runner as _engine_runner
-
             _engine_runner.register(
                 loop,
                 engine_factory=_engine_factory_from(engine),

@@ -613,11 +613,23 @@ def _add_connect_info_extras(result: dict[str, Any], x_user_id: str | None) -> N
         if rag_url:
             result["services"]["rag_url"] = rag_url
 
-    # Include per-user S3 credentials when caller identity is known.
-    if x_user_id:
+    # Include per-user S3 credentials when caller identity is known —
+    # legacy transition only (D-16, 2026-09-22): clients stop holding
+    # storage credentials; the r4 client already drops this payload. The
+    # emission remains behind UMRS_EMIT_S3CFG=1 for the `umrs` CLI's
+    # bucket verbs during the transition window and is removed afterwards.
+    if x_user_id and os.environ.get("UMRS_EMIT_S3CFG", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    ):
         s3cfg = _get_or_create_user_s3cfg(x_user_id)
         if s3cfg:
             result["s3cfg_content"] = s3cfg
+    elif x_user_id:
+        logger.debug(
+            "connect-info s3cfg emission skipped (D-16; UMRS_EMIT_S3CFG=1 for the legacy window)"
+        )
 
 
 def _resolve_data_port_range(
