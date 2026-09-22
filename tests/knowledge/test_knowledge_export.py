@@ -881,13 +881,12 @@ class TestCatalogBlockExport:
                         "licence": "CC-BY-4.0",
                         "contributors": '["alice"]',
                         "provenance": '{"source": "lab"}',
+                        "redaction_rules": "[]",
                     }
                 return None
 
         store._pool = _Pool()
-        engine = KnowledgeExportEngine(
-            store=store, output_dir=str(tmp_path), secret_key=""
-        )
+        engine = KnowledgeExportEngine(store=store, output_dir=str(tmp_path), secret_key="")
         record = await engine._resolve_catalog_record("proj-x")
         assert record["name"] == "mof-defects"
         assert record["contributors"] == ["alice"]
@@ -909,9 +908,7 @@ class TestCatalogBlockExport:
                 return None
 
         store._pool = _Pool()
-        engine = KnowledgeExportEngine(
-            store=store, output_dir=str(tmp_path), secret_key=""
-        )
+        engine = KnowledgeExportEngine(store=store, output_dir=str(tmp_path), secret_key="")
         record = await engine._resolve_catalog_record("proj-x")
         assert record == {}
         manifest = engine._build_manifest("proj-x", {}, {})
@@ -928,7 +925,69 @@ class TestCatalogBlockExport:
                 raise RuntimeError("no table")
 
         store._pool = _Pool()
-        engine = KnowledgeExportEngine(
-            store=store, output_dir=str(tmp_path), secret_key=""
-        )
+        engine = KnowledgeExportEngine(store=store, output_dir=str(tmp_path), secret_key="")
         assert await engine._resolve_catalog_record("proj-x") == {}
+
+
+class TestExportRedaction:
+    """D-46: the catalog record decides what leaves the site; signatures
+    cover the redacted manifest; every redaction is recorded honestly."""
+
+    @staticmethod
+    def _manifest(tmp_path) -> dict:
+        from umrs.knowledge.bundle_export import KnowledgeExportEngine
+
+        store = MagicMock()
+        store._pool = MagicMock()
+        engine = KnowledgeExportEngine(store=store, output_dir=str(tmp_path), secret_key="")
+        record = {
+            "name": "mof",
+            "contributors": ["alice", "bob"],
+            "licence": "CC-BY-4.0",
+            "provenance": {"source": "lab"},
+            "description": "d",
+        }
+        return engine._build_manifest("proj", {}, {}, catalog_record=record)
+
+    def test_drop_contributors_empties_both_blocks(self, tmp_path):
+        from umrs.knowledge.bundle_export import _apply_redaction_rules
+
+        manifest = self._manifest(tmp_path)
+        _apply_redaction_rules(manifest, [{"target": "contributors", "action": "drop"}])
+        assert manifest["catalog"]["contributors"] == []
+        assert manifest["ownership"]["contributors"] == []
+        assert manifest["catalog"]["licence"] == "CC-BY-4.0"  # untouched field stays
+        assert manifest["redacted"] == ["contributors:drop"]
+
+    def test_hash_contributors_fingerprints_each(self, tmp_path):
+        from umrs.knowledge.bundle_export import _apply_redaction_rules
+
+        manifest = self._manifest(tmp_path)
+        _apply_redaction_rules(manifest, [{"target": "contributors", "action": "hash"}])
+        for name in manifest["ownership"]["contributors"]:
+            assert name.startswith("sha256:") and len(name) == 19
+        assert manifest["catalog"]["contributors"][0].startswith("sha256:")
+
+    def test_provenance_drop_and_unknown_rules_ignored(self, tmp_path):
+        from umrs.knowledge.bundle_export import _apply_redaction_rules
+
+        manifest = self._manifest(tmp_path)
+        _apply_redaction_rules(
+            manifest,
+            [
+                {"target": "provenance", "action": "drop"},
+                {"target": "nonsense", "action": "drop"},
+                {"target": "licence", "action": "vaporize"},
+            ],
+        )
+        assert manifest["catalog"]["provenance"] == {}
+        assert manifest["catalog"]["licence"] == "CC-BY-4.0"
+        assert manifest["redacted"] == ["provenance:drop"]
+
+    def test_no_rules_marks_empty_redacted_list(self, tmp_path):
+        from umrs.knowledge.bundle_export import _apply_redaction_rules
+
+        manifest = self._manifest(tmp_path)
+        _apply_redaction_rules(manifest, None)
+        assert manifest["redacted"] == []
+        assert manifest["ownership"]["contributors"] == ["alice", "bob"]

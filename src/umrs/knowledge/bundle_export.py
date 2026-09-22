@@ -111,6 +111,55 @@ def _json_list(value: Any) -> list[Any]:
     return []
 
 
+# D-46 (2026-09-22): redaction targets map onto the manifest's catalog /
+# ownership blocks (metadata level only; integrity hash covers the result).
+_REDACT_PATHS: dict[str, tuple[tuple[str, ...], ...]] = {
+    "contributors": (("catalog", "contributors"), ("ownership", "contributors")),
+    "licence": (("catalog", "licence"), ("ownership", "licence")),
+    "provenance": (("catalog", "provenance"),),
+    "description": (("catalog", "description"),),
+    "ontology": (("catalog", "ontology"),),
+}
+
+
+def _redact_value(value: Any, action: str) -> Any:
+    """drop empties; hash replaces strings with sha256 fingerprints."""
+    if action == "drop":
+        return (
+            [] if isinstance(value, list) else ({} if isinstance(value, dict) else "")
+        )
+    if isinstance(value, str):
+        return f"sha256:{hashlib.sha256(value.encode('utf-8')).hexdigest()[:12]}"
+    if isinstance(value, list):
+        return [_redact_value(v, action) if isinstance(v, str) else v for v in value]
+    return value
+
+
+def _apply_redaction_rules(
+    manifest: dict[str, Any], rules: list[dict[str, Any]] | None
+) -> None:
+    """Apply the catalog record's redaction rules to a manifest in place.
+
+    Every application is recorded in ``manifest["redacted"]`` — an import
+    reads honest removal instead of missing data. Unknown targets/actions
+    are ignored (never a silent over-redaction).
+    """
+    applied: list[str] = []
+    for rule in rules or []:
+        if not isinstance(rule, dict):
+            continue
+        target, action = str(rule.get("target") or ""), rule.get("action")
+        if action not in ("drop", "hash"):
+            continue
+        for block, key in _REDACT_PATHS.get(target, ()):
+            section = manifest.get(block)
+            if isinstance(section, dict) and key in section:
+                section[key] = _redact_value(section[key], action)
+        if target in _REDACT_PATHS:
+            applied.append(f"{target}:{action}")
+    manifest["redacted"] = applied
+
+
 def _json_dict(value: Any) -> dict[str, Any]:
     """JSONB column → dict (same tolerance as ``_json_list``)."""
     if isinstance(value, dict):
@@ -212,6 +261,9 @@ class KnowledgeExportEngine:
             reconciliation_snapshot,
             catalog_record,
         )
+        # D-46: the catalog record's redaction rules apply to the manifest
+        # BEFORE hashing — signatures always cover the redacted content.
+        _apply_redaction_rules(self._manifest, catalog_record.get("redaction_rules"))
         await writer.write_manifest(self._manifest)
 
         # 8. Compute hash & signature
@@ -489,7 +541,7 @@ class KnowledgeExportEngine:
         try:
             row = await self._store._pool.fetchrow(  # type: ignore[union-attr]
                 "SELECT name, version, description, ontology, licence, contributors,"
-                " provenance FROM scientific_catalogs"
+                " provenance, redaction_rules FROM scientific_catalogs"
                 " WHERE project_id = $1 AND status = 'active'"
                 " ORDER BY created_at DESC LIMIT 1",
                 project_id,
@@ -504,6 +556,7 @@ class KnowledgeExportEngine:
                 "licence": str(row["licence"] or ""),
                 "contributors": _json_list(row["contributors"]),
                 "provenance": _json_dict(row["provenance"]),
+                "redaction_rules": _json_list(row["redaction_rules"]),
             }
         except Exception:  # noqa: BLE001 — catalog block is best-effort
             return {}
