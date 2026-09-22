@@ -185,6 +185,14 @@ class ServerRegistrationRequest(BaseModel):
         default_factory=list, description="Tool definitions"
     )
     project_id: str | None = Field(default=None, description="Owning project ID")
+    placement: str = Field(
+        default="local",
+        description="D-19/D-49 run placement: local | frontend | cpu:<host> | trusted:<host> (site-declared hosts only)",
+    )
+    trust_class: str = Field(
+        default="local-safe",
+        description="ADR-061 trust class: local-safe | front-end | trusted-host-only",
+    )
 
 
 class ServerResponse(BaseModel):
@@ -349,18 +357,26 @@ async def register_server(
     check_quota(req.project_id or "", "mcp_servers")
 
     store = _get_store()
-    server = store.register_server(
-        name=req.name,
-        url=req.url,
-        version=req.version,
-        transport=req.transport,
-        description=req.description,
-        auth_type=req.auth_type,
-        auth_config=req.auth_config,
-        metadata=req.metadata,
-        tools=req.tools,
-        project_id=req.project_id,
-    )
+    # D-19/D-49: undeclared host / bad class map → typed 400 with reason
+    from umrs.shared.venue_placement import PlacementError
+
+    try:
+        server = store.register_server(
+            name=req.name,
+            url=req.url,
+            version=req.version,
+            transport=req.transport,
+            description=req.description,
+            auth_type=req.auth_type,
+            auth_config=req.auth_config,
+            metadata=req.metadata,
+            tools=req.tools,
+            project_id=req.project_id,
+            placement=req.placement,
+            trust_class=req.trust_class,
+        )
+    except PlacementError as exc:
+        raise_typed(PlatformError.mcp("bad_request", str(exc)), cause=exc)
     logger.info("Registered MCP server: %s (id=%s)", server.name, server.server_id)
     _record_registration_audit(server, req)
 
