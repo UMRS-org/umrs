@@ -93,6 +93,17 @@ async def list_proposals(
     return {"proposals": [p.to_dict() for p in proposals], "total": len(proposals)}
 
 
+@router.get("/proposals/stats")
+async def proposal_stats(
+    request: Request, graph_id: str | None = None
+) -> dict[str, Any]:
+    """Proposal acceptance rate (D-44): quality signal for the knowledge
+    graph's semi-automatic growth — how often the loop's proposals survive
+    the scientist's review. rate is null when nothing was ever decided
+    (no fabricated 100%)."""
+    return _proposal_store(request).acceptance_stats(target_graph_id=graph_id)
+
+
 @router.get("/proposals/{proposal_id}")
 async def get_proposal(proposal_id: str, request: Request) -> dict[str, Any]:
     """Fetch one proposal by id."""
