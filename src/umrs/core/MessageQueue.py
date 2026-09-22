@@ -608,8 +608,13 @@ class MessageQueue:
         """Signals a malformed command; server_control_queue_loop sends CMD_ERROR."""
 
     def _parse_handshake(self, splited_msg, zmq_sender_id):
+        # D-04: liveness reply carries the wire protocol version since 1.0
+        # ("READY!:v<major.minor>"); pre-1.0 clients comparing the bare
+        # prefix keep working (client tolerates both, contract pins both).
+        from r4_contracts.protocol import handshake_reply
+
         with contextlib.suppress(RuntimeError):
-            self.send_string("READY!", zmq_sender_id)
+            self.send_string(handshake_reply(), zmq_sender_id)
 
     def _parse_create_data_queue(self, splited_msg, zmq_sender_id):
         if len(splited_msg) < 2:
