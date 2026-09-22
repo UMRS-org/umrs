@@ -680,6 +680,11 @@ async def start_loop(
     loop.metadata["mode"] = "ask" if request.mode == "ask" else "auto"
     venue = _validate_loop_venue(request)
     loop.metadata["venue"] = venue
+    if request.agentic:
+        # ADR-064 (2026-09-22): the engine runner is the one server driver of
+        # record; the agent driver is deprecated in place (runs to completion,
+        # folds into the engine driver's executor in the follow-up wave).
+        loop.metadata["driver_note"] = "agent-deprecated"
     if owner:
         loop.metadata["owner_user_id"] = owner
     workflow_name = _resolve_loop_workflow(request, engine, loop, owner)

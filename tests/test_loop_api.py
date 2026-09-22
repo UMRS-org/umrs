@@ -659,3 +659,43 @@ class TestLoopVenueStartLane:
             },
         )
         assert agentic_cluster.status_code == 400
+
+
+class TestDriverNoteADR064:
+    """ADR-064: agentic starts are stamped agent-deprecated (engine runner is
+    the one server driver of record); engine starts carry no marker."""
+
+    def test_agentic_start_marks_driver_note(self):
+        client = _make_app()
+        resp = client.post(
+            "/umrs/loops",
+            json={
+                "project_id": "proj-agentic",
+                "research_goal": "agentic loop",
+                "max_iterations": 2,
+                "agentic": True,
+            },
+        )
+        assert resp.status_code == 201
+        loop_id = resp.json()["loop_id"]
+        from umrs.api import loop as loop_mod
+
+        stored = loop_mod._loop_store.get(loop_id)
+        assert stored.metadata.get("driver_note") == "agent-deprecated"
+
+    def test_engine_start_has_no_driver_note(self):
+        client = _make_app()
+        resp = client.post(
+            "/umrs/loops",
+            json={
+                "project_id": "proj-engine",
+                "research_goal": "engine loop",
+                "max_iterations": 2,
+            },
+        )
+        assert resp.status_code == 201
+        loop_id = resp.json()["loop_id"]
+        from umrs.api import loop as loop_mod
+
+        stored = loop_mod._loop_store.get(loop_id)
+        assert "driver_note" not in stored.metadata
