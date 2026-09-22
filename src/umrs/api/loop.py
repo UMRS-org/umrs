@@ -119,6 +119,35 @@ def configure_loop_store(pool: Any) -> None:
     )
 
 
+def _project_budget_caps(project_id: str) -> dict[str, float]:
+    """Row from project_budgets (ADR-067) via the loop store's sync conn.
+
+    Empty dict when the store is not PG-backed or the read fails — an
+    unreadable budget row never blocks a loop start (fail-open is logged;
+    an over-budget loop is stoppable by hand).
+    """
+    conn = getattr(_loop_store, "_sync_pool", None)
+    if conn is None:
+        return {}
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT max_gpu_hours, max_wall_clock_hours"
+            " FROM project_budgets WHERE project_id = %s",
+            (project_id,),
+        )
+        row = cur.fetchone()
+    except Exception as exc:  # noqa: BLE001 — budget read is best-effort
+        logger.warning("project budget read failed for %s: %s", project_id, exc)
+        return {}
+    if not row:
+        return {}
+    return {
+        "max_gpu_hours": float(row[0] or 0.0),
+        "max_wall_clock_hours": float(row[1] or 0.0),
+    }
+
+
 def configure_loop_store_sync(dsn: str) -> bool:
     """Upgrade to psycopg2-backed persistence (works from any thread).
 
@@ -283,7 +312,17 @@ class StartLoopRequest(BaseModel):
         description=(
             "Tool-grain permission mode: 'auto' (default) triggers workflows "
             "immediately; 'ask' parks each trigger for a decision via the "
-            "approvals route. Mirrors the companion turn-attempt vocabulary."
+            "approvals route; 'profile' (ADR-066 D-33) parks only actions "
+            "whose trigger class is in pause_triggers. Mirrors the companion "
+            "turn-attempt vocabulary."
+        ),
+    )
+    pause_triggers: list[str] = Field(
+        default_factory=list,
+        description=(
+            "ADR-066 trigger classes for mode='profile' (ignored otherwise): "
+            "'cost', 'competing_hypotheses'; reserved: 'physical_action', "
+            "'direction_change'."
         ),
     )
     workflow_name: str = Field(
@@ -677,12 +716,25 @@ async def start_loop(
         research_goal=request.research_goal,
         max_iterations=request.max_iterations,
     )
-    loop.metadata["mode"] = "ask" if request.mode == "ask" else "auto"
+    if request.mode == "profile":
+        # ADR-066 (D-33): park only when the action's trigger class is named.
+        loop.metadata["mode"] = "profile"
+        loop.metadata["pause_profile"] = {"triggers": list(request.pause_triggers)}
+    else:
+        loop.metadata["mode"] = "ask" if request.mode == "ask" else "auto"
     venue = _validate_loop_venue(request)
     loop.metadata["venue"] = venue
     # D-52 (2026-09-22): one trace id through the loop's jobs, iterations and
     # knowledge writes — the loop id itself is the trace anchor.
     loop.metadata.setdefault("trace_id", loop.loop_id)
+    # ADR-067 (gap row D-36): per-project loop budgets — wall-clock cap is
+    # enforced by the driver at iteration boundaries; the GPU cap is recorded
+    # (leg B: job-cost accounting).
+    budget = _project_budget_caps(request.project_id)
+    if budget.get("max_wall_clock_hours", 0.0) > 0:
+        loop.metadata["max_wall_clock_hours"] = budget["max_wall_clock_hours"]
+    if budget.get("max_gpu_hours", 0.0) > 0:
+        loop.metadata["max_gpu_hours"] = budget["max_gpu_hours"]
     if request.agentic:
         # ADR-064 (2026-09-22): the engine runner is the one server driver of
         # record; the agent driver is deprecated in place (runs to completion,

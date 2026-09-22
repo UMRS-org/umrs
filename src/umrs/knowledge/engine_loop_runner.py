@@ -36,6 +36,49 @@ EngineFactory = Callable[[], AutonomousResearchLoop]
 IterationHook = Callable[[ResearchLoop, LoopIteration], None]
 
 
+def _elapsed_hours(loop: ResearchLoop) -> float:
+    """Hours since loop.started_at (0.0 when the stamp is unparseable)."""
+    try:
+        started = datetime.fromisoformat(str(loop.started_at))
+    except (TypeError, ValueError):
+        return 0.0
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=timezone.utc)
+    return max(0.0, (datetime.now(timezone.utc) - started).total_seconds() / 3600.0)
+
+
+def _wall_clock_exceeded(loop: ResearchLoop) -> bool:
+    """ADR-067: per-project wall-clock cap, checked at iteration boundaries."""
+    cap = 0.0
+    try:
+        cap = float(loop.metadata.get("max_wall_clock_hours") or 0.0)
+    except (TypeError, ValueError):
+        return False
+    return cap > 0.0 and _elapsed_hours(loop) > cap
+
+
+# ADR-066 (D-33): the ask-the-scientist trigger classes. Unknown kinds get no
+# class — profile-mode loops treat them as non-triggers (never silent-park).
+_ACTION_TRIGGER_CLASSES: dict[str, str] = {
+    "workflow_trigger": "cost",
+    "agent_iteration": "cost",
+    "competing_hypotheses": "competing_hypotheses",
+    # Reserved emitters (land with their planes; no class → no gate today):
+    #   mcp_trusted_call → physical_action
+    #   direction_change → direction_change
+}
+
+
+def _action_trigger_class(action: dict) -> str:
+    return _ACTION_TRIGGER_CLASSES.get(str(action.get("kind") or ""), "")
+
+
+def _pause_profile(loop: ResearchLoop) -> dict:
+    """Loop pause profile (mode=profile): {"triggers": [class, ...]}."""
+    profile = loop.metadata.get("pause_profile")
+    return profile if isinstance(profile, dict) else {}
+
+
 class EngineLoopRunner(threading.Thread):
     """Drive one loop through the phased engine to completion.
 
@@ -100,6 +143,14 @@ class EngineLoopRunner(threading.Thread):
         while True:
             if self._abort.is_set():
                 return True
+            if _wall_clock_exceeded(self._loop):
+                self._loop.metadata["state_reason"] = "budget_exhausted:wall_clock"
+                self._store.save(self._loop)
+                logger.info(
+                    "loop %s stopped: wall-clock budget exhausted (ADR-067)",
+                    self._loop.loop_id,
+                )
+                return True
             pending = self._poll(self._loop.loop_id)
             if pending is None or pending.status == LoopStatus.STOPPED:
                 return True
@@ -133,7 +184,14 @@ class EngineLoopRunner(threading.Thread):
             )
 
         def _gate(action: dict) -> bool:
-            if loop.metadata.get("mode", "auto") != "ask":
+            mode = loop.metadata.get("mode", "auto")
+            if mode == "profile":
+                # ADR-066 (D-33): park only when the action's trigger class is
+                # in the loop's pause profile; everything else runs.
+                triggers = set(_pause_profile(loop).get("triggers", []))
+                if _action_trigger_class(action) not in triggers:
+                    return True
+            elif mode != "ask":
                 return True
             from . import tool_approvals
 

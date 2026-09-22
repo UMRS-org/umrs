@@ -134,6 +134,54 @@ class ProjectStore:
         self._conn.commit()
         return self._row(project_id)
 
+    # -- budget caps (ADR-067, gap row D-36) --------------------------------
+
+    def get_budget(self, project_id: str) -> dict[str, Any]:
+        """Budget row for the project (zeros = uncapped when absent)."""
+        cur = self._conn.cursor()
+        cur.execute(
+            "SELECT project_id, max_gpu_hours, max_wall_clock_hours, updated_at"
+            " FROM project_budgets WHERE project_id = %s",
+            (project_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return {
+                "project_id": project_id,
+                "max_gpu_hours": 0.0,
+                "max_wall_clock_hours": 0.0,
+                "updated_at": None,
+            }
+        return {
+            "project_id": row[0],
+            "max_gpu_hours": float(row[1]),
+            "max_wall_clock_hours": float(row[2]),
+            "updated_at": row[3].isoformat() if row[3] else None,
+        }
+
+    def set_budget(
+        self,
+        project_id: str,
+        *,
+        max_gpu_hours: float,
+        max_wall_clock_hours: float,
+    ) -> dict[str, Any]:
+        """Upsert budget caps (0 = uncapped; the row says what it enforces)."""
+        self.get(project_id)  # raises ProjectNotFound — no orphan budgets
+        cur = self._conn.cursor()
+        cur.execute(
+            """INSERT INTO project_budgets (project_id, max_gpu_hours,
+                                          max_wall_clock_hours, updated_at)
+               VALUES (%s, %s, %s, NOW())
+               ON CONFLICT (project_id) DO UPDATE SET
+                   max_gpu_hours = EXCLUDED.max_gpu_hours,
+                   max_wall_clock_hours = EXCLUDED.max_wall_clock_hours,
+                   updated_at = NOW()""",
+            (project_id, max_gpu_hours, max_wall_clock_hours),
+        )
+        self._conn.commit()
+        return self.get_budget(project_id)
+
 
 # -- HTTP routes ---------------------------------------------------------------
 
@@ -275,6 +323,59 @@ def patch_project(
         )
     row = store.retire(project_id)
     return {"status": "ok", "project": _row_response(row)}
+
+
+class BudgetBody(BaseModel):
+    """Loop budget caps (0 = uncapped; ADR-067)."""
+
+    max_gpu_hours: float = Field(default=0.0, ge=0.0)
+    max_wall_clock_hours: float = Field(default=0.0, ge=0.0)
+
+
+@router.get("/{project_id}/budget")
+def get_project_budget(
+    project_id: str, store: ProjectStore = Depends(_store_dep)
+) -> dict[str, Any]:
+    """Loop budget caps for a project (zeros = uncapped when absent).
+    # auth: verified
+    """
+    try:
+        budget = store.get_budget(project_id)
+    except ProjectNotFound:
+        raise_typed(
+            PlatformError.projects("not_found", f"project {project_id} not found")
+        )
+    return {"status": "ok", "budget": budget}
+
+
+@router.put("/{project_id}/budget")
+def put_project_budget(
+    project_id: str,
+    body: BudgetBody,
+    store: ProjectStore = Depends(_store_dep),
+    identity: CallerIdentity = Depends(get_caller_identity),
+) -> dict[str, Any]:
+    """Set loop budget caps — owner-or-admin; 0 clears the cap.
+    # auth: verified
+    """
+    try:
+        row = store.get(project_id)
+    except ProjectNotFound:
+        raise_typed(
+            PlatformError.projects("not_found", f"project {project_id} not found")
+        )
+    if not identity.is_admin and (identity.user_id or "") != row["owner_id"]:
+        raise_typed(
+            PlatformError.projects(
+                "forbidden", "only the owner or an admin may set budgets"
+            )
+        )
+    budget = store.set_budget(
+        project_id,
+        max_gpu_hours=body.max_gpu_hours,
+        max_wall_clock_hours=body.max_wall_clock_hours,
+    )
+    return {"status": "ok", "budget": budget}
 
 
 __all__ = ["ProjectNotFound", "ProjectStore", "router"]
