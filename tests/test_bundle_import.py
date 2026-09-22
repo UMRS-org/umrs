@@ -108,6 +108,8 @@ def _write_bundle(
     corrupt: bool = False,
     version: str = "1.2",
     fmt: str = "r4-kb",
+    skills: list | None = None,
+    mcp_configs: list | None = None,
 ) -> Path:
     bundle = root / "bundle"
     bundle.mkdir()
@@ -117,6 +119,8 @@ def _write_bundle(
         "version": version,
         "project_id": project_id,
         "exported_at": "2026-08-02T00:00:00+00:00",
+        "skills": skills or [],
+        "mcp_configs": mcp_configs or [],
         "tables": {
             "artifacts": {"count": 2, "file": "artifacts.jsonl"},
             "documents": {"count": 2, "file": "documents.jsonl"},
@@ -573,3 +577,109 @@ class TestRestoreRoute:
             json={"bundle_dir": str(bad), "allow_unsigned": True},
         )
         assert resp.status_code == 400
+
+
+# ── V-05 / D-23: reference consumption (skills + mcp_configs) ────────────
+
+
+class _FakeSkillStore:
+    def __init__(self, have: set | None = None):
+        self.rows = have if have is not None else set()
+        self.registered = []
+
+    def get_skill_by_name(self, name, scope, owner_id):
+        return object() if (scope.value, name) in self.rows else None
+
+    def register_skill(self, *, name, version, scope, owner_id, project_id, skill_md, manifest, enabled):
+        self.registered.append(
+            {
+                "name": name,
+                "version": version,
+                "scope": scope.value,
+                "project_id": project_id,
+                "manifest": manifest,
+                "enabled": enabled,
+            }
+        )
+        self.rows.add((scope.value, name))
+
+
+class _FakeMCPStore:
+    from umrs.mcp.store import MCPServerNotFoundError as _NotFound
+
+    def __init__(self, present: set | None = None):
+        self.present = present or set()
+
+    def get_server_by_name(self, name):
+        if name not in self.present:
+            raise self._NotFound(name)
+        return object()
+
+
+_REFS = [
+    {"ref": "project:rag-literature", "version_pin": "1.0.0", "scope": "project"},
+    {"ref": "system:hpc", "version_pin": "2.1.0", "scope": "system"},
+]
+_MCPS = [
+    {"ref": "microscope-ctl", "version_pin": "0.3.0"},
+    {"ref": "unknown-tool", "version_pin": ""},
+]
+
+
+class TestReferenceConsumption:
+    """An import tells the install which skills it owns and which MCP
+    servers Hatchling still has to fetch (D-23) — never silently."""
+
+    async def test_skill_refs_registered_as_disabled_stubs(self, tmp_path):
+        bundle = _write_bundle(tmp_path, skills=_REFS)
+        skills = _FakeSkillStore()
+        engine = KnowledgeImportEngine(
+            store=_FakeStore(), secret_key="", skill_store=skills
+        )
+        result = await engine.import_project(bundle, allow_unsigned=True)
+        assert result.skill_refs_imported == 2
+        stubs = {s["name"]: s for s in skills.registered}
+        assert stubs["rag-literature"]["project_id"] == "proj-a"
+        assert stubs["rag-literature"]["version"] == "1.0.0"
+        assert stubs["rag-literature"]["enabled"] is False
+        assert stubs["rag-literature"]["manifest"]["_bundle_ref"] is True
+
+    async def test_existing_skill_rows_never_stomped(self, tmp_path):
+        bundle = _write_bundle(tmp_path, skills=_REFS)
+        skills = _FakeSkillStore(have={("project", "rag-literature")})
+        engine = KnowledgeImportEngine(
+            store=_FakeStore(), secret_key="", skill_store=skills
+        )
+        result = await engine.import_project(bundle, allow_unsigned=True)
+        assert result.skill_refs_imported == 1  # only system:hpc
+        assert result.skill_refs_existing == 1
+        assert [s["name"] for s in skills.registered] == ["hpc"]
+
+    async def test_mcp_refs_resolved_and_missing_reported(self, tmp_path):
+        bundle = _write_bundle(tmp_path, mcp_configs=_MCPS)
+        mcps = _FakeMCPStore(present={"microscope-ctl"})
+        engine = KnowledgeImportEngine(
+            store=_FakeStore(), secret_key="", mcp_store=mcps
+        )
+        result = await engine.import_project(bundle, allow_unsigned=True)
+        assert result.mcp_refs_present == 1
+        assert result.mcp_refs_missing == ["unknown-tool"]
+
+    async def test_missing_stores_defers_never_crashes(self, tmp_path):
+        bundle = _write_bundle(tmp_path, skills=_REFS, mcp_configs=_MCPS)
+        engine = KnowledgeImportEngine(store=_FakeStore())
+        result = await engine.import_project(bundle, allow_unsigned=True)
+        assert result.reference_stores_deferred is True
+        assert result.skill_refs_imported == 0
+
+    async def test_result_dict_carries_reference_counts(self, tmp_path):
+        bundle = _write_bundle(tmp_path, skills=_REFS, mcp_configs=_MCPS)
+        engine = KnowledgeImportEngine(
+            store=_FakeStore(),
+            skill_store=_FakeSkillStore(),
+            mcp_store=_FakeMCPStore(),
+        )
+        result = await engine.import_project(bundle, allow_unsigned=True)
+        d = result.to_dict()
+        assert d["skill_refs_imported"] == 2
+        assert d["mcp_refs_missing"] == ["microscope-ctl", "unknown-tool"]

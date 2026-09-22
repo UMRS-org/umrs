@@ -22,7 +22,7 @@ import json
 import logging
 import time
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -72,6 +72,12 @@ class KnowledgeImportResult:
     unsigned: bool = False
     embedding_pin: bool = False
     collision_checks_degraded: int = 0
+    # V-05/D-23: consumed skills / mcp_configs references (r4-kb >= 1.2 refs).
+    skill_refs_imported: int = 0
+    skill_refs_existing: int = 0
+    mcp_refs_present: int = 0
+    mcp_refs_missing: list[str] = field(default_factory=list)
+    reference_stores_deferred: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -92,6 +98,11 @@ class KnowledgeImportResult:
             "unsigned": self.unsigned,
             "embedding_pin": self.embedding_pin,
             "collision_checks_degraded": self.collision_checks_degraded,
+            "skill_refs_imported": self.skill_refs_imported,
+            "skill_refs_existing": self.skill_refs_existing,
+            "mcp_refs_present": self.mcp_refs_present,
+            "mcp_refs_missing": list(self.mcp_refs_missing),
+            "reference_stores_deferred": self.reference_stores_deferred,
         }
 
 
@@ -217,9 +228,20 @@ def _read_stored_signature(bundle_path: Path) -> str:
 class KnowledgeImportEngine:
     """Restore engine (mirror of ``KnowledgeExportEngine``)."""
 
-    def __init__(self, *, store: Any, secret_key: str = "") -> None:
+    def __init__(
+        self,
+        *,
+        store: Any,
+        secret_key: str = "",
+        skill_store: Any = None,
+        mcp_store: Any = None,
+    ) -> None:
         self._store = store
         self._secret_key = secret_key
+        # V-05/D-23: reference consumers. None = references resolved-byside
+        # (counted as deferred in the result, never a crash).
+        self._skill_store = skill_store
+        self._mcp_store = mcp_store
         self._collision_degraded: int = 0
         self._degraded_seen: set[str] = set()
 
@@ -271,6 +293,7 @@ class KnowledgeImportEngine:
             result.a2l_link_count,
             result.a2l_ref_count,
         ) = await self._restore_a2l(bundle_path, target)
+        self._consume_context_references(manifest, target, result)
 
         result.duration_seconds = time.monotonic() - t0
         result.collision_checks_degraded = self._collision_degraded
@@ -627,3 +650,111 @@ class KnowledgeImportEngine:
             if ok:
                 count += 1
         return count
+
+    # ── Reference consumption (V-05 / D-23, wave 2026-09-22) ─────────────
+
+    def _consume_context_references(
+        self,
+        manifest: dict[str, Any],
+        target_project: str,
+        result: KnowledgeImportResult,
+    ) -> None:
+        """Consume the manifest's ``skills`` / ``mcp_configs`` references.
+
+        Export writes these by reference (``{ref, version_pin, scope}``); a
+        restore must (a) register skill stubs the target project can resolve
+        later and (b) resolve MCP refs against the registry so an import
+        honestly reports what Hatchling still has to fetch. Missing stores
+        defer (counted, never crash); existing rows are never stomped.
+        """
+        skills = [r for r in manifest.get("skills") or [] if isinstance(r, dict)]
+        mcps = [r for r in manifest.get("mcp_configs") or [] if isinstance(r, dict)]
+        if not skills and not mcps:
+            return
+        if self._skill_store is None or (mcps and self._mcp_store is None):
+            result.reference_stores_deferred = True
+        if self._skill_store is not None:
+            imported, existing = _import_skill_refs(
+                self._skill_store, skills, target_project
+            )
+            result.skill_refs_imported = imported
+            result.skill_refs_existing = existing
+        if self._mcp_store is not None:
+            present, missing = _resolve_mcp_refs(self._mcp_store, mcps)
+            result.mcp_refs_present = present
+            result.mcp_refs_missing = missing
+
+
+def _parse_skill_ref(ref: dict[str, Any]) -> tuple[str, str, str]:
+    """(scope, name, version_pin) from one manifest skill reference."""
+    raw = str(ref.get("ref") or "")
+    scope, _, name = raw.partition(":")
+    if not name:  # ref without a scope prefix — treat as project-scoped
+        scope, name = "project", raw
+    return (scope.strip() or "project", name.strip(), str(ref.get("version_pin") or ""))
+
+
+def _import_skill_refs(
+    skill_store: Any, refs: list[dict[str, Any]], target_project: str
+) -> tuple[int, int]:
+    """Register disabled stubs for refs the target install does not have.
+
+    Stubs carry ``manifest._bundle_ref`` so a later full registration (with
+    the SKILL.md body) clearly supersedes them; a ref whose (scope, owner,
+    name) row already exists is counted as existing, never stomped.
+    """
+    from r4_contracts.skills import SkillScope
+
+    imported = 0
+    existing = 0
+    for ref in refs:
+        scope_s, name, pin = _parse_skill_ref(ref)
+        if not name:
+            continue
+        try:
+            scope = SkillScope(scope_s)
+        except ValueError:
+            logger.warning("Skipping skill ref with unknown scope %r: %s", scope_s, name)
+            continue
+        project_id = target_project if scope is SkillScope.PROJECT else None
+        if (
+            skill_store.get_skill_by_name(name, scope, owner_id="bundle-import")
+            is not None
+        ):
+            existing += 1
+            continue
+        skill_store.register_skill(
+            name=name,
+            version=pin or "0.1.0",
+            scope=scope,
+            owner_id="bundle-import",
+            project_id=project_id,
+            skill_md="",
+            manifest={"_bundle_ref": True, "version_pin": pin},
+            enabled=False,
+        )
+        imported += 1
+    return imported, existing
+
+
+def _resolve_mcp_refs(
+    mcp_store: Any, refs: list[dict[str, Any]]
+) -> tuple[int, list[str]]:
+    """Resolve MCP refs against the registry; missing ones are reported."""
+    from umrs.mcp.store import MCPServerStoreError
+
+    present = 0
+    missing: list[str] = []
+    for ref in refs:
+        name = str(ref.get("ref") or "").strip()
+        if not name:
+            continue
+        try:
+            mcp_store.get_server_by_name(name)
+            present += 1
+        except MCPServerStoreError:
+            missing.append(name)
+        except Exception:  # noqa: BLE001 — registry faults never crash a restore
+            logger.warning("MCP registry lookup failed for %r", name)
+            missing.append(name)
+    return present, missing

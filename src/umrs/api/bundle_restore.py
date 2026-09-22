@@ -84,6 +84,33 @@ def _resolve_target_project(body: RestoreRequest) -> str:
     return str(project)
 
 
+def _reference_stores(request: Request):
+    """Skill/MCP stores for the V-05 reference-consumption leg (context manager).
+
+    One pooled psycopg2 connection for the life of the ``with`` block,
+    always returned (the 2026-09-09 exhaustion class). Absent pool yields
+    an empty dict — the engine counts the refs as deferred, never crashes.
+    """
+    from contextlib import contextmanager
+
+    @contextmanager
+    def _provide():
+        pool = getattr(request.app.state, "umrs_db_pool", None)
+        if pool is None or not hasattr(pool, "getconn"):
+            yield {}
+            return
+        from umrs.mcp.store import MCPServerStore
+        from umrs.skills.store import SkillStore
+
+        conn = pool.getconn()
+        try:
+            yield {"skill_store": SkillStore(conn), "mcp_store": MCPServerStore(conn)}
+        finally:
+            pool.putconn(conn)
+
+    return _provide()
+
+
 @router.post("/restore", response_model=dict[str, Any])
 async def restore_bundle(request: Request, body: RestoreRequest) -> dict[str, Any]:
     """K4: restore a .kb bundle with manifest verification.
@@ -107,19 +134,21 @@ async def restore_bundle(request: Request, body: RestoreRequest) -> dict[str, An
     from umrs.knowledge.bundle_import import BundleFormatError, KnowledgeImportEngine
     from umrs.knowledge.store import KnowledgeStore
 
-    engine = KnowledgeImportEngine(
-        store=KnowledgeStore(pool),
-        secret_key=os.getenv("UMRS_SECRET_KEY", ""),
-    )
-    try:
-        result = await engine.import_project(
-            body.bundle_dir,
-            target_project_id=body.project_id,
-            verify=body.verify,
-            allow_unsigned=body.allow_unsigned,
+    with _reference_stores(request) as ref_stores:
+        engine = KnowledgeImportEngine(
+            store=KnowledgeStore(pool),
+            secret_key=os.getenv("UMRS_SECRET_KEY", ""),
+            **ref_stores,
         )
-    except BundleFormatError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        try:
+            result = await engine.import_project(
+                body.bundle_dir,
+                target_project_id=body.project_id,
+                verify=body.verify,
+                allow_unsigned=body.allow_unsigned,
+            )
+        except BundleFormatError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     if actor == "agent":
         mark_proposal_executed(
