@@ -859,3 +859,76 @@ class TestBundleFormat:
                 line_list = [line for line in f if line.strip()]
             for line in line_list:
                 json.loads(line)  # Should not raise
+
+
+class TestCatalogBlockExport:
+    """D-40 ties: the manifest carries the D-39 row + ownership block
+    (no invention — empty when the project has no catalog)."""
+
+    async def test_catalog_record_populates_catalog_and_ownership(self, tmp_path):
+        from umrs.knowledge.bundle_export import KnowledgeExportEngine
+
+        store = MagicMock()
+
+        class _Pool:
+            async def fetchrow(self, query, *args):
+                if "scientific_catalogs" in query:
+                    return {
+                        "name": "mof-defects",
+                        "version": "0.3.0",
+                        "description": "d",
+                        "ontology": "mof-v2",
+                        "licence": "CC-BY-4.0",
+                        "contributors": '["alice"]',
+                        "provenance": '{"source": "lab"}',
+                    }
+                return None
+
+        store._pool = _Pool()
+        engine = KnowledgeExportEngine(
+            store=store, output_dir=str(tmp_path), secret_key=""
+        )
+        record = await engine._resolve_catalog_record("proj-x")
+        assert record["name"] == "mof-defects"
+        assert record["contributors"] == ["alice"]
+        assert record["provenance"] == {"source": "lab"}
+        manifest = engine._build_manifest("proj-x", {}, {}, catalog_record=record)
+        assert manifest["catalog"]["name"] == "mof-defects"
+        assert manifest["ownership"] == {
+            "contributors": ["alice"],
+            "licence": "CC-BY-4.0",
+        }
+
+    async def test_no_catalog_row_emits_empty_blocks(self, tmp_path):
+        from umrs.knowledge.bundle_export import KnowledgeExportEngine
+
+        store = MagicMock()
+
+        class _Pool:
+            async def fetchrow(self, query, *args):
+                return None
+
+        store._pool = _Pool()
+        engine = KnowledgeExportEngine(
+            store=store, output_dir=str(tmp_path), secret_key=""
+        )
+        record = await engine._resolve_catalog_record("proj-x")
+        assert record == {}
+        manifest = engine._build_manifest("proj-x", {}, {})
+        assert manifest["catalog"] == {}
+        assert manifest["ownership"] == {"contributors": [], "licence": ""}
+
+    async def test_registry_fault_yields_empty_record(self, tmp_path):
+        from umrs.knowledge.bundle_export import KnowledgeExportEngine
+
+        store = MagicMock()
+
+        class _Pool:
+            async def fetchrow(self, query, *args):
+                raise RuntimeError("no table")
+
+        store._pool = _Pool()
+        engine = KnowledgeExportEngine(
+            store=store, output_dir=str(tmp_path), secret_key=""
+        )
+        assert await engine._resolve_catalog_record("proj-x") == {}

@@ -98,6 +98,32 @@ def _model_basename(model_path: str) -> str:
     return model_path.rstrip("/").rsplit("/", 1)[-1]
 
 
+def _json_list(value: Any) -> list[Any]:
+    """JSONB column → list (asyncpg returns decoded; tolerate raw strings)."""
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except ValueError:
+            return []
+        return parsed if isinstance(parsed, list) else []
+    return []
+
+
+def _json_dict(value: Any) -> dict[str, Any]:
+    """JSONB column → dict (same tolerance as ``_json_list``)."""
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except ValueError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
 # ── Result DTO ─────────────────────────────────────────────────────────────────
 
 
@@ -176,6 +202,7 @@ class KnowledgeExportEngine:
         skills, mcp_configs = await self._resolve_context_references(project_id)
         embedding_pin = await self._resolve_embedding_pin(project_id)
         reconciliation_snapshot = self._resolve_reconciliation_snapshot(project_id)
+        catalog_record = await self._resolve_catalog_record(project_id)
         self._manifest = self._build_manifest(
             project_id,
             table_counts,
@@ -183,6 +210,7 @@ class KnowledgeExportEngine:
             skills,
             mcp_configs,
             reconciliation_snapshot,
+            catalog_record,
         )
         await writer.write_manifest(self._manifest)
 
@@ -417,8 +445,15 @@ class KnowledgeExportEngine:
         skills: list[dict[str, Any]] | None = None,
         mcp_configs: list[dict[str, Any]] | None = None,
         reconciliation_snapshot: dict[str, Any] | None = None,
+        catalog_record: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Assemble the r4-kb v1.2 manifest (ADR-032 amendment 2026-09)."""
+        """Assemble the r4-kb v1.2 manifest (ADR-032 amendment 2026-09).
+
+        ``catalog`` carries the D-39 catalog row (when the project has one);
+        ``ownership`` is the ADR-032 ownership block — sourced from the
+        catalog row, never invented (empty when no catalog exists).
+        """
+        catalog = catalog_record or {}
         return {
             "format": _BUNDLE_FORMAT,
             "version": _BUNDLE_VERSION,
@@ -429,6 +464,11 @@ class KnowledgeExportEngine:
             "unsigned": not bool(self._secret_key),
             "skills": skills or [],
             "mcp_configs": mcp_configs or [],
+            "catalog": catalog,
+            "ownership": {
+                "contributors": list(catalog.get("contributors") or []),
+                "licence": str(catalog.get("licence") or ""),
+            },
             "collision_policy": "abort",
             "provenance_canonical": False,
             "reconciliation_snapshot": reconciliation_snapshot,
@@ -438,6 +478,35 @@ class KnowledgeExportEngine:
                 for name, (count, filename) in table_counts.items()
             },
         }
+
+    async def _resolve_catalog_record(self, project_id: str) -> dict[str, Any]:
+        """Latest active D-39 catalog row for the project (best-effort).
+
+        Read back verbatim into the manifest so an import can re-register
+        the catalog (D-40 bundle = catalog object). {} when the project has
+        no catalog row or the registry is unreachable.
+        """
+        try:
+            row = await self._store._pool.fetchrow(  # type: ignore[union-attr]
+                "SELECT name, version, description, ontology, licence, contributors,"
+                " provenance FROM scientific_catalogs"
+                " WHERE project_id = $1 AND status = 'active'"
+                " ORDER BY created_at DESC LIMIT 1",
+                project_id,
+            )
+            if row is None:
+                return {}
+            return {
+                "name": str(row["name"] or ""),
+                "version": str(row["version"] or ""),
+                "description": str(row["description"] or ""),
+                "ontology": str(row["ontology"] or ""),
+                "licence": str(row["licence"] or ""),
+                "contributors": _json_list(row["contributors"]),
+                "provenance": _json_dict(row["provenance"]),
+            }
+        except Exception:  # noqa: BLE001 — catalog block is best-effort
+            return {}
 
     def _resolve_reconciliation_snapshot(
         self, project_id: str

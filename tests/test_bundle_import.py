@@ -683,3 +683,66 @@ class TestReferenceConsumption:
         d = result.to_dict()
         assert d["skill_refs_imported"] == 2
         assert d["mcp_refs_missing"] == ["microscope-ctl", "unknown-tool"]
+
+
+# ── D-40/D-39 tie: catalog row round-trip ────────────────────────────────
+
+
+class _FakeCatalogStore:
+    def __init__(self):
+        self.registered: list[dict] = []
+
+    def register_from_bundle(self, spec, *, owner_id):
+        self.registered.append({"spec": spec, "owner_id": owner_id})
+        return {"catalog_id": "scat-x"}
+
+
+class TestCatalogRoundTrip:
+    async def test_catalog_block_registers_row(self, tmp_path):
+        bundle = _write_bundle(tmp_path)
+        import json as _json
+
+        manifest_path = bundle / "manifest.json"
+        manifest = _json.loads(manifest_path.read_text())
+        manifest["catalog"] = {
+            "name": "mof-defects",
+            "version": "0.3.0",
+            "licence": "CC-BY-4.0",
+            "contributors": ["alice"],
+            "description": "defect catalog",
+        }
+        manifest_path.write_text(_json.dumps(manifest))
+        catalogs = _FakeCatalogStore()
+        engine = KnowledgeImportEngine(store=_FakeStore(), catalog_store=catalogs)
+        result = await engine.import_project(bundle, allow_unsigned=True)
+        assert result.catalog_registered is True
+        spec, owner = catalogs.registered[0]["spec"], catalogs.registered[0]["owner_id"]
+        assert spec["name"] == "mof-defects"
+        assert spec["version"] == "0.3.0"
+        assert spec["licence"] == "CC-BY-4.0"
+        assert spec["contributors"] == ["alice"]
+        assert owner == "bundle-import"
+
+    async def test_no_block_or_store_is_quiet_noop(self, tmp_path):
+        bundle = _write_bundle(tmp_path)
+        engine = KnowledgeImportEngine(store=_FakeStore())
+        result = await engine.import_project(bundle, allow_unsigned=True)
+        assert result.catalog_registered is False
+        assert result.to_dict()["catalog_registered"] is False
+
+    async def test_store_fault_never_crash_restore(self, tmp_path):
+        bundle = _write_bundle(tmp_path)
+        import json as _json
+
+        manifest_path = bundle / "manifest.json"
+        manifest = _json.loads(manifest_path.read_text())
+        manifest["catalog"] = {"name": "broken"}
+        manifest_path.write_text(_json.dumps(manifest))
+
+        class _Boom:
+            def register_from_bundle(self, spec, *, owner_id):
+                raise RuntimeError("db down")
+
+        engine = KnowledgeImportEngine(store=_FakeStore(), catalog_store=_Boom())
+        result = await engine.import_project(bundle, allow_unsigned=True)
+        assert result.catalog_registered is False
