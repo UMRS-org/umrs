@@ -746,3 +746,45 @@ class TestCatalogRoundTrip:
         engine = KnowledgeImportEngine(store=_FakeStore(), catalog_store=_Boom())
         result = await engine.import_project(bundle, allow_unsigned=True)
         assert result.catalog_registered is False
+
+
+# ── D-41: 1.x -> 1.2 transforming upgrade ────────────────────────────────
+
+
+class TestLegacyUpgrade:
+    async def test_1_1_bundle_restores_with_backfill(self, tmp_path):
+        bundle = _write_bundle(tmp_path, version="1.1")
+        engine = KnowledgeImportEngine(store=_FakeStore())
+        result = await engine.import_project(bundle, allow_unsigned=True)
+        assert result.upgraded_from == "1.1"
+        assert result.to_dict()["upgraded_from"] == "1.1"
+        # manifest.json untouched without write_upgrade
+        import json as _json
+
+        manifest = _json.loads((bundle / "manifest.json").read_text())
+        assert manifest["version"] == "1.1"
+
+    async def test_1_2_bundle_reports_no_upgrade(self, tmp_path):
+        bundle = _write_bundle(tmp_path, version="1.2")
+        engine = KnowledgeImportEngine(store=_FakeStore())
+        result = await engine.import_project(bundle, allow_unsigned=True)
+        assert result.upgraded_from == ""
+
+    async def test_write_upgrade_rewrites_manifest_and_drops_signature(self, tmp_path):
+        import json as _json
+
+        bundle = _write_bundle(tmp_path, version="1.0", with_signature=True)
+        (bundle / "signature.sig").write_text("stale", encoding="utf-8")
+        engine = KnowledgeImportEngine(store=_FakeStore())
+        result = await engine.import_project(
+            bundle, allow_unsigned=True, write_upgrade=True
+        )
+        assert result.upgraded_from == "1.0"
+        manifest = _json.loads((bundle / "manifest.json").read_text())
+        assert manifest["version"] == "1.2"
+        assert manifest["unsigned"] is True
+        assert "hash" not in manifest and "signature" not in manifest
+        assert not (bundle / "signature.sig").exists()
+        # back-filled blocks present for the consume legs
+        assert manifest["skills"] == [] and manifest["mcp_configs"] == []
+        assert "ownership" in manifest and "embedding" in manifest

@@ -80,6 +80,8 @@ class KnowledgeImportResult:
     reference_stores_deferred: bool = False
     # D-40/D-39 tie: the D-39 catalog row re-registered from the manifest block.
     catalog_registered: bool = False
+    # D-41: source version when the bundle was upgraded on read ("" when 1.2).
+    upgraded_from: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -106,6 +108,7 @@ class KnowledgeImportResult:
             "mcp_refs_missing": list(self.mcp_refs_missing),
             "reference_stores_deferred": self.reference_stores_deferred,
             "catalog_registered": self.catalog_registered,
+            "upgraded_from": self.upgraded_from,
         }
 
 
@@ -116,6 +119,50 @@ def _iter_rows(path: Path) -> Iterator[dict[str, Any]]:
             line = line.strip()
             if line:
                 yield json.loads(line)
+
+
+_CURRENT_VERSION = "1.2"
+_LEGACY_VERSIONS = {"1.0", "1.1"}
+
+
+def _upgrade_backfill(manifest: dict[str, Any]) -> str:
+    """Back-fill v1.2 blocks missing from a 1.0/1.1 manifest (D-41).
+
+    Mutates ``manifest`` in place so the consume legs (references, catalog
+    row, embedding pin) see one shape regardless of source version. Returns
+    the original version when an upgrade happened, "" for a 1.2 bundle.
+    """
+    version = str(manifest.get("version") or "")
+    if version not in _LEGACY_VERSIONS:
+        return ""
+    manifest.setdefault("skills", [])
+    manifest.setdefault("mcp_configs", [])
+    manifest.setdefault("catalog", {})
+    manifest.setdefault("ownership", {"contributors": [], "licence": ""})
+    if "embedding" not in manifest:
+        manifest["embedding"] = {"model": "", "dimensions": 0, "pending": True}
+    return version
+
+
+def _write_upgraded_manifest(bundle_path: Path, manifest: dict[str, Any]) -> None:
+    """Rewrite manifest.json at v1.2; the stale hash/signature is dropped
+    (an upgraded bundle is unsigned until re-exported)."""
+    upgraded = dict(manifest)
+    upgraded["version"] = _CURRENT_VERSION
+    upgraded["unsigned"] = True
+    upgraded.pop("hash", None)
+    upgraded.pop("signature", None)
+    (bundle_path / "manifest.json").write_text(
+        json.dumps(upgraded, indent=2), encoding="utf-8"
+    )
+    sig = bundle_path / _SIGNATURE_FILENAME
+    if sig.exists():
+        sig.unlink()
+    logger.info(
+        "Upgraded bundle manifest to v%s at %s (unsigned until re-export)",
+        _CURRENT_VERSION,
+        bundle_path,
+    )
 
 
 def _checked_manifest(bundle_path: Path) -> dict[str, Any]:
@@ -259,18 +306,25 @@ class KnowledgeImportEngine:
         target_project_id: str | None = None,
         verify: bool = True,
         allow_unsigned: bool = False,
+        write_upgrade: bool = False,
     ) -> KnowledgeImportResult:
         """Restore one bundle directory. Raises on integrity/format errors.
 
         Unsigned bundles are refused unless ``allow_unsigned=True``, regardless
         of ``verify`` (fail-closed per ADR-032 amendment 2026-09). ``verify``
         only gates the HMAC check for signed bundles.
+
+        D-41: bundles older than 1.2 are upgraded on read (missing blocks
+        back-filled); ``write_upgrade`` additionally rewrites the bundle's
+        manifest.json at v1.2 (the old signature is dropped — upgraded
+        bundles are unsigned until re-exported).
         """
         t0 = time.monotonic()
         bundle_path = Path(bundle_dir)
         result = KnowledgeImportResult()
 
         manifest = _checked_manifest(bundle_path)
+        result.upgraded_from = _upgrade_backfill(manifest)
         embedding = manifest.get("embedding") or {}
         result.embedding_pin = bool(embedding.get("model")) and not embedding.get(
             "pending", False
@@ -302,6 +356,8 @@ class KnowledgeImportEngine:
         ) = await self._restore_a2l(bundle_path, target)
         self._consume_context_references(manifest, target, result)
         result.catalog_registered = self._register_catalog_row(manifest, target)
+        if result.upgraded_from and write_upgrade:
+            _write_upgraded_manifest(bundle_path, manifest)
 
         result.duration_seconds = time.monotonic() - t0
         result.collision_checks_degraded = self._collision_degraded
