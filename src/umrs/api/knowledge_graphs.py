@@ -26,7 +26,11 @@ from umrs.knowledge.access_scope import (
 )
 from umrs.knowledge.graph_registry import GRAPH_STATUSES, GraphRegistryStore
 
-from ._knowledge_mutation_guard import enforce_registry_write_authorization
+from ._knowledge_mutation_guard import (
+    AGENT_ACTOR,
+    enforce_registry_write_authorization,
+    request_actor,
+)
 from ._scope_identity import get_caller_scope
 from .jobs import CallerIdentity, get_caller_identity
 from .typed_errors import PlatformError, raise_typed
@@ -273,3 +277,81 @@ async def update_graph(
     )
     assert graph is not None
     return graph.to_dict()
+
+
+class EstablishResponse(BaseModel):
+    node_id: str | None = None
+    edge_id: str | None = None
+    status: str
+    established_by: str
+
+
+def _refuse_agent_promotion(request: Request) -> None:
+    """D-35: proposed → established is a human decision, never the agent's."""
+    if request_actor(request) == AGENT_ACTOR:
+        raise_typed(
+            PlatformError.knowledgegraphs(
+                "forbidden",
+                "Knowledge promotion (proposed → established) is a human "
+                "decision; agents propose, humans establish.",
+            )
+        )
+
+
+async def _establish_target(request: Request) -> "KnowledgeStore":
+    from ._asyncpg_pool import knowledge_asyncpg_pool  # noqa: PLC0415
+
+    pool = await knowledge_asyncpg_pool(request)
+    if pool is None:
+        raise_typed(
+            PlatformError.knowledgegraphs("unavailable", "Knowledge store unavailable")
+        )
+    from umrs.knowledge.store import KnowledgeStore  # noqa: PLC0415
+
+    return KnowledgeStore(pool)
+
+
+@router.post("/{graph_id}/nodes/{node_id}/establish", response_model=EstablishResponse)
+async def establish_node(
+    graph_id: str,
+    node_id: str,
+    request: Request,
+    identity: CallerIdentity = Depends(get_caller_identity),
+) -> EstablishResponse:
+    """Promote one node proposed → established (D-35 two-tier knowledge).
+
+    Human-only (agent actor refused by name); idempotent on established
+    rows; 404 when the node does not exist.
+    """
+    _refuse_agent_promotion(request)
+    store = await _establish_target(request)
+    established_by = (identity.user_id or "user").strip() or "user"
+    ok = await store.establish_node(node_id, established_by=established_by)
+    if not ok:
+        raise_typed(
+            PlatformError.knowledgegraphs("not_found", f"Node {node_id} not found")
+        )
+    return EstablishResponse(
+        node_id=node_id, status="established", established_by=established_by
+    )
+
+
+@router.post("/{graph_id}/edges/{edge_id}/establish", response_model=EstablishResponse)
+async def establish_edge(
+    graph_id: str,
+    edge_id: str,
+    request: Request,
+    identity: CallerIdentity = Depends(get_caller_identity),
+) -> EstablishResponse:
+    """Promote one edge proposed → established (same rules as nodes)."""
+    _refuse_agent_promotion(request)
+    store = await _establish_target(request)
+    established_by = (identity.user_id or "user").strip() or "user"
+    ok = await store.establish_edge(edge_id, established_by=established_by)
+    if not ok:
+        raise_typed(
+            PlatformError.knowledgegraphs("not_found", f"Edge {edge_id} not found")
+        )
+    return EstablishResponse(
+        edge_id=edge_id, status="established", established_by=established_by
+    )

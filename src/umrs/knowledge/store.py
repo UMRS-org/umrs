@@ -78,6 +78,10 @@ class KnowledgeNode:
     content: dict[str, Any] = field(default_factory=dict)
     content_hash: str = ""
     source_ir: str | None = None
+    # D-35 two-tier knowledge (0106): 'proposed' rows are agent/loop-written
+    # pending review; 'established' = human-promoted or vetted-chain ingest.
+    status: str = "established"
+    confidence: float = 0.0
     created_at: datetime | None = None
     updated_at: datetime | None = None
     graph_id: str = ""
@@ -93,6 +97,9 @@ class KnowledgeEdge:
     target_id: str
     relation_type: str
     content: dict[str, Any] = field(default_factory=dict)
+    # D-35 two-tier knowledge (0106): same tiers as nodes.
+    status: str = "established"
+    confidence: float = 0.0
     created_at: datetime | None = None
     graph_id: str = ""
 
@@ -210,14 +217,20 @@ class KnowledgeStore:
         self,
         node: KnowledgeNode,
     ) -> None:
-        """Upsert a knowledge graph node (graph-scoped; first-write wins graph)."""
+        """Upsert a knowledge graph node (graph-scoped; first-write wins graph).
+
+        D-35 (0106): status/confidence ride the row — an agent/loop-written
+        node upserted with ``status='proposed'`` stays proposed; the ON
+        CONFLICT update never silently promotes (status is only written at
+        INSERT; promotion is the human ``establish_node`` seam).
+        """
         async with self._pool.acquire() as conn:
             ts = _utcnow()
             await conn.execute(
                 """INSERT INTO knowledge_nodes
                    (node_id, project_id, label, node_type, content, content_hash,
-                    source_ir, created_at, updated_at, graph_id)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                    source_ir, created_at, updated_at, graph_id, status, confidence)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
                    ON CONFLICT (node_id) DO UPDATE
                    SET content = $5, content_hash = $6, source_ir = $7, updated_at = $9""",
                 node.node_id,
@@ -230,19 +243,21 @@ class KnowledgeStore:
                 node.created_at or ts,
                 ts,
                 node.graph_id,
+                node.status,
+                node.confidence,
             )
 
     async def upsert_edge(
         self,
         edge: KnowledgeEdge,
     ) -> None:
-        """Upsert a knowledge graph edge (graph-scoped)."""
+        """Upsert a knowledge graph edge (graph-scoped; D-35 tiers as nodes)."""
         async with self._pool.acquire() as conn:
             await conn.execute(
                 """INSERT INTO knowledge_edges
                    (edge_id, project_id, source_id, target_id, relation_type, content,
-                    graph_id)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7)
+                    graph_id, status, confidence)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
                    ON CONFLICT (edge_id) DO UPDATE
                    SET content = $6""",
                 edge.edge_id,
@@ -252,7 +267,55 @@ class KnowledgeStore:
                 edge.relation_type,
                 edge.content,
                 edge.graph_id,
+                edge.status,
+                edge.confidence,
             )
+
+    async def establish_node(self, node_id: str, *, established_by: str) -> bool:
+        """D-35 promotion: proposed → established (human decision, 0106).
+
+        Returns False when the row is absent; promoting an already-
+        established row is an idempotent no-op returning True.
+        """
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT status FROM knowledge_nodes WHERE node_id = $1", node_id
+            )
+            if row is None:
+                return False
+            if row["status"] == "established":
+                return True
+            content = await conn.fetchval(
+                "SELECT content FROM knowledge_nodes WHERE node_id = $1", node_id
+            )
+            merged = content if isinstance(content, dict) else {}
+            merged.setdefault("review", {})["established_by"] = established_by
+            await conn.execute(
+                "UPDATE knowledge_nodes SET status='established', content=$2,"
+                " updated_at=now() WHERE node_id=$1",
+                node_id,
+                merged,
+            )
+            return True
+
+    async def establish_edge(self, edge_id: str, *, established_by: str) -> bool:
+        """D-35 promotion for edges (same semantics as establish_node)."""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT status FROM knowledge_edges WHERE edge_id = $1", edge_id
+            )
+            if row is None:
+                return False
+            if row["status"] == "established":
+                return True
+            await conn.execute(
+                "UPDATE knowledge_edges SET status='established',"
+                " content = content || $2::jsonb"
+                " WHERE edge_id=$1",
+                edge_id,
+                {"review": {"established_by": established_by}},
+            )
+            return True
 
     async def truncate_nodes(
         self,
