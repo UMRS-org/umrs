@@ -222,3 +222,35 @@ def test_engine_runner_invokes_hosting_hook_per_completed_iteration():
     out = runner.drive(loop)
     assert out.status == LoopStatus.STOPPED
     assert [n for _, n, s in seen if s == "completed"] == [1, 2, 3]
+
+
+def test_finding_metadata_carries_trace_id():
+    """D-52: minted findings carry the loop's trace_id (may be empty pre-stamp)."""
+    from umrs.knowledge.finding_ingest import _finding_payload
+    from umrs.knowledge.loop import LoopIteration, LoopPhase, LoopStatus, ResearchLoop
+
+    loop = ResearchLoop(
+        loop_id="L-t",
+        project_id="proj",
+        research_goal="g",
+        status=LoopStatus.RUNNING,
+    )
+    loop.metadata["trace_id"] = "L-t"
+    iteration = LoopIteration(
+        iteration_id="it-1",
+        loop_id="L-t",
+        iteration_number=1,
+        phase=LoopPhase.EXPERIMENT_EXECUTION,
+        started_at="",
+        completed_at="",
+        hypothesis="",
+        experiment_id="",
+        results={},
+        analysis="",
+        evaluation="",
+        findings=[],
+        status="completed",
+    )
+    _, metadata = _finding_payload(loop, iteration, {"statement": "s"})
+    assert metadata["trace_id"] == "L-t"
+    assert metadata["source_loop"] == "L-t"

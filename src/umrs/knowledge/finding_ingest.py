@@ -249,6 +249,7 @@ def _finding_payload(
     metadata = {
         "asset_kind": "finding",
         "source_loop": loop.loop_id,
+        "trace_id": str(loop.metadata.get("trace_id") or ""),
         "iteration": iteration.iteration_number,
         "iteration_id": iteration.iteration_id,
         "hypothesis_id": finding.get("hypothesis_id", ""),
