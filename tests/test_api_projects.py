@@ -196,3 +196,67 @@ class TestServiceLanes:
         from umrs.shared.lanes import FAMILY_LANES, SurfaceLane
 
         assert FAMILY_LANES["projects"] == SurfaceLane.BETA
+
+
+# ── ADR-067: loop budgets ────────────────────────────────────────────────────
+
+
+class _BudgetConn(_Conn):
+    """Adds project_budgets table emulation beside the projects fake."""
+
+    def __init__(self):
+        super().__init__()
+        self.budgets: dict[str, dict] = {}
+
+    def _handle(self, sql, params, cur: _Cursor):
+        if "project_budgets" in sql:
+            self._handle_budget(sql, params, cur)
+            return
+        super()._handle(sql, params, cur)
+
+    def _handle_budget(self, sql, params, cur: _Cursor):
+        verb = sql.lstrip().upper()
+        if verb.startswith("INSERT"):
+            pid, gpu, wall = params
+            self.budgets[pid] = (pid, float(gpu), float(wall), None)
+            cur._result = []
+        else:
+            row = self.budgets.get(params[0])
+            cur._result = [row] if row else []
+
+
+class TestLoopBudget:
+    def test_default_uncapped_when_absent(self) -> None:
+        store = ProjectStore(_BudgetConn())
+        budget = store.get_budget("nope")
+        assert budget["max_gpu_hours"] == 0.0
+        assert budget["max_wall_clock_hours"] == 0.0
+
+    def test_set_and_read_back(self) -> None:
+        store = ProjectStore(_BudgetConn())
+        store.create("p-b", owner_id="alice")
+        set_row = store.set_budget(
+            "p-b", max_gpu_hours=12.5, max_wall_clock_hours=4.0
+        )
+        assert set_row["max_gpu_hours"] == 12.5
+        assert set_row["max_wall_clock_hours"] == 4.0
+        again = store.get_budget("p-b")
+        assert again["max_wall_clock_hours"] == 4.0
+
+    def test_put_requires_owner_or_admin(self) -> None:
+        store = ProjectStore(_BudgetConn())
+        store.create("p-own", owner_id="alice")
+        client = _client(store)
+        r = client.put(
+            "/umrs/projects/p-own/budget",
+            json={"max_gpu_hours": 1.0, "max_wall_clock_hours": 2.0},
+            headers=_headers("bob"),
+        )
+        assert r.status_code == 403
+        ok = client.put(
+            "/umrs/projects/p-own/budget",
+            json={"max_gpu_hours": 1.0, "max_wall_clock_hours": 2.0},
+            headers=_headers("alice"),
+        )
+        assert ok.status_code == 200
+        assert ok.json()["budget"]["max_wall_clock_hours"] == 2.0

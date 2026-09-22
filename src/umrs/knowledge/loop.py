@@ -447,14 +447,9 @@ class AutonomousResearchLoop:
 
         hypothesis_id = ""
         if loop.plan and loop.plan.hypotheses:
-            hyp = self._select_hypothesis(loop, excerpts)
-            iteration.hypothesis = hyp.statement
-            hypothesis_id = getattr(hyp, "hypothesis_id", "") or ""
-            if not hypothesis_id:
-                idx = loop.plan.hypotheses.index(hyp)
-                hypothesis_id = f"hyp-{idx}"
-            iteration.hypothesis_id = hypothesis_id
-            loop.total_hypotheses_tested += 1
+            if not self._select_and_gate_hypothesis(loop, iteration, excerpts):
+                return
+            hypothesis_id = iteration.hypothesis_id
 
         # Phase 4: Experiment design
         loop.phase = LoopPhase.EXPERIMENT_DESIGN
@@ -848,6 +843,38 @@ class AutonomousResearchLoop:
             "artifacts": results_payload.get("artifacts") or [],
         }
         loop.total_experiments_run += 1
+
+    def _select_and_gate_hypothesis(
+        self, loop: ResearchLoop, iteration: LoopIteration, excerpts: list[str]
+    ) -> bool:
+        """Hypothesis selection + the ADR-066 competing-hypotheses gate.
+
+        Several live candidates trigger the ask-the-scientist pause when the
+        loop's pause profile names the class (cost of a wrong branch is a
+        decision, not a step). Returns False when the gate denied (the
+        iteration is finalised by ``_gate_denied``); on True the iteration
+        carries hypothesis + hypothesis_id and the counter is bumped.
+        """
+        if len(loop.plan.hypotheses) > 1:
+            gate = getattr(self, "_approval_gate", None)
+            if gate is not None and not gate(
+                {
+                    "kind": "competing_hypotheses",
+                    "candidates": len(loop.plan.hypotheses),
+                    "iteration": loop.current_iteration,
+                }
+            ):
+                self._gate_denied(loop, iteration, "competing-hypotheses")
+                return False
+        hyp = self._select_hypothesis(loop, excerpts)
+        iteration.hypothesis = hyp.statement
+        hypothesis_id = getattr(hyp, "hypothesis_id", "") or ""
+        if not hypothesis_id:
+            idx = loop.plan.hypotheses.index(hyp)
+            hypothesis_id = f"hyp-{idx}"
+        iteration.hypothesis_id = hypothesis_id
+        loop.total_hypotheses_tested += 1
+        return True
 
     def _gate_denied(
         self, loop: ResearchLoop, iteration: LoopIteration, workflow_name: str
