@@ -62,6 +62,7 @@ def _tuple_from_dict(d: dict) -> tuple:
         d["contributors"],
         d["licence"],
         d["provenance"],
+        d["change_note"],
         d["owner_id"],
         d["status"],
         d["created_at"],
@@ -94,6 +95,7 @@ class _Conn:
             contribs,
             licence,
             prov,
+            change_note,
             owner,
         ) = params
         triple = (pid, name, version)
@@ -114,6 +116,7 @@ class _Conn:
                 "contributors": contribs,
                 "licence": licence,
                 "provenance": prov,
+                "change_note": change_note,
                 "owner_id": owner,
                 "status": "active",
                 "created_at": now,
@@ -125,6 +128,15 @@ class _Conn:
         if "SET status = 'retired'" in sql:
             cid = params[0]
             self.rows[cid]["status"] = "retired"
+        elif "jsonb_set" in sql:
+            import json as _json
+
+            pin_arr, cid = params
+            prov = self.rows[cid]["provenance"]
+            prov_dict = _json.loads(prov) if isinstance(prov, str) else dict(prov or {})
+            prov_dict.setdefault("pins", [])
+            prov_dict["pins"] = prov_dict["pins"] + _json.loads(pin_arr)
+            self.rows[cid]["provenance"] = _json.dumps(prov_dict)
         else:
             desc, onto, contribs, licence, prov, cid = params
             row = self.rows[cid]
@@ -142,7 +154,15 @@ class _Conn:
         cur._result = []
 
     def _handle_select(self, sql, params, cur: _Cursor) -> None:
-        if "WHERE catalog_id = %s" in sql:
+        if "ORDER BY created_at, catalog_id" in sql:
+            rows = [
+                v
+                for v in self.rows.values()
+                if v["project_id"] == params[0] and v["name"] == params[1]
+            ]
+            rows.sort(key=lambda v: v["created_at"])
+            cur._result = [_tuple_from_dict(v) for v in rows]
+        elif "WHERE catalog_id = %s" in sql:
             row = self.rows.get(params[0])
             cur._result = [_tuple_from_dict(row)] if row else []
         elif "AND name = %s" in sql:
@@ -340,3 +360,69 @@ class TestRoutes:
         client = TestClient(app)
         r = client.get("/umrs/scientific-catalogs", headers=_headers("alice"))
         assert r.status_code == 503
+
+
+# ── D-43: version chain + pins ────────────────────────────────────────────
+
+
+class TestVersionChainAndPins:
+    def test_versions_chain_oldest_first_with_change_notes(self) -> None:
+        store = ScientificCatalogStore(_Conn())
+        store.create(spec=_spec(change_note="first"), owner_id="alice")
+        store.create(
+            spec=_spec(version="0.2.0", change_note="added defect class"),
+            owner_id="alice",
+        )
+        chain = store.versions(project_id="proj-a", name="mof-defects")
+        assert [r["version"] for r in chain] == ["0.1.0", "0.2.0"]
+        assert chain[1]["change_note"] == "added defect class"
+
+    def test_create_carries_change_note(self) -> None:
+        store = ScientificCatalogStore(_Conn())
+        row = store.create(spec=_spec(change_note="initial"), owner_id="alice")
+        assert row["change_note"] == "initial"
+
+    def test_add_pin_appends_never_rewrites(self) -> None:
+        store = ScientificCatalogStore(_Conn())
+        row = store.create(spec=_spec(), owner_id="alice")
+        cid = row["catalog_id"]
+        store.add_pin(cid, kind="job", ref="5432", note="defect run")
+        row = store.add_pin(cid, kind="finding", ref="f-9")
+        pins = row["provenance"]["pins"]
+        assert [p["ref"] for p in pins] == ["5432", "f-9"]
+        assert row["member_graph_ids"] == ["kg-1"]  # membership untouched
+
+    def test_pin_unknown_raises_not_found(self) -> None:
+        store = ScientificCatalogStore(_Conn())
+        with pytest.raises(CatalogNotFound):
+            store.add_pin("scat-ghost", kind="job", ref="1")
+
+    def test_pin_route_201(self) -> None:
+        client = _client(ScientificCatalogStore(_Conn()))
+        created = client.post(
+            "/umrs/scientific-catalogs",
+            json=_spec().model_dump(),
+            headers=_headers("alice"),
+        ).json()
+        r = client.post(
+            f"/umrs/scientific-catalogs/{created['catalog_id']}/pins",
+            json={"kind": "job", "ref": "5434", "note": "n"},
+            headers=_headers("alice"),
+        )
+        assert r.status_code == 201
+        assert r.json()["provenance"]["pins"][0]["ref"] == "5434"
+
+    def test_versions_route(self) -> None:
+        client = _client(ScientificCatalogStore(_Conn()))
+        client.post(
+            "/umrs/scientific-catalogs",
+            json=_spec().model_dump(),
+            headers=_headers("alice"),
+        )
+        r = client.get(
+            "/umrs/scientific-catalogs/versions/list",
+            params={"project_id": "proj-a", "name": "mof-defects"},
+            headers=_headers("alice"),
+        )
+        assert r.status_code == 200
+        assert [v["version"] for v in r.json()["versions"]] == ["0.1.0"]

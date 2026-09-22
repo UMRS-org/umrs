@@ -32,7 +32,8 @@ from .typed_errors import PlatformError, raise_typed
 _COLUMNS = (
     "catalog_id, project_id, name, version, description, ontology,"
     " member_graph_ids, skill_ids, mcp_server_ids, embedding_model_ids,"
-    " contributors, licence, provenance, owner_id, status, created_at, updated_at"
+    " contributors, licence, provenance, change_note, owner_id, status,"
+    " created_at, updated_at"
 )
 
 
@@ -64,10 +65,11 @@ class ScientificCatalogStore:
             "contributors": _as_list(row[10]),
             "licence": row[11],
             "provenance": _as_dict(row[12]),
-            "owner_id": row[13],
-            "status": row[14],
-            "created_at": row[15].isoformat() if row[15] else None,
-            "updated_at": row[16].isoformat() if row[16] else None,
+            "change_note": row[13],
+            "owner_id": row[14],
+            "status": row[15],
+            "created_at": row[16].isoformat() if row[16] else None,
+            "updated_at": row[17].isoformat() if row[17] else None,
         }
 
     def _row(self, catalog_id: str) -> dict[str, Any] | None:
@@ -106,8 +108,9 @@ class ScientificCatalogStore:
                    catalog_id, project_id, name, version, description, ontology,
                    member_graph_ids, skill_ids, mcp_server_ids,
                    embedding_model_ids, contributors, licence, provenance,
-                   owner_id
-               ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                   change_note, owner_id
+               ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                         %s, %s)
                ON CONFLICT (project_id, name, version) DO NOTHING""",
             (
                 catalog_id,
@@ -123,6 +126,7 @@ class ScientificCatalogStore:
                 json.dumps(spec.contributors),
                 spec.licence,
                 json.dumps(spec.provenance),
+                spec.change_note,
                 owner_id,
             ),
         )
@@ -197,6 +201,40 @@ class ScientificCatalogStore:
         self._conn.commit()
         return self._row(catalog_id)
 
+    def versions(self, *, project_id: str, name: str) -> list[dict[str, Any]]:
+        """One catalog's version chain (changelog view, oldest first)."""
+        cur = self._conn.cursor()
+        cur.execute(
+            f"SELECT {_COLUMNS} FROM scientific_catalogs"
+            " WHERE project_id = %s AND name = %s"
+            " ORDER BY created_at, catalog_id",
+            (project_id, name),
+        )
+        return [self._row_dict(row) for row in cur.fetchall()]
+
+    def add_pin(
+        self, catalog_id: str, *, kind: str, ref: str, note: str = ""
+    ) -> dict[str, Any]:
+        """Append one external pin (job/result/finding/paper ref) to the
+        row's provenance.pins array — append-only, the row otherwise stays
+        immutable (D-43)."""
+        self.get(catalog_id)  # raises CatalogNotFound
+        pin = json.dumps({"kind": kind, "ref": ref, "note": note})
+        cur = self._conn.cursor()
+        cur.execute(
+            """UPDATE scientific_catalogs
+               SET provenance = jsonb_set(
+                       provenance, '{pins}',
+                       COALESCE(provenance->'pins', '[]'::jsonb) || %s::jsonb,
+                       true
+                   ),
+                   updated_at = now()
+               WHERE catalog_id = %s""",
+            (f"[{pin}]", catalog_id),
+        )
+        self._conn.commit()
+        return self._row(catalog_id)
+
 
 def _as_list(value: Any) -> list[Any]:
     if isinstance(value, list):
@@ -247,6 +285,7 @@ class CatalogSpec(BaseModel):
     contributors: list[str] = Field(default_factory=list)
     licence: str = Field(default="")
     provenance: dict[str, Any] = Field(default_factory=dict)
+    change_note: str = Field(default="")
     catalog_id: str = Field(default="")
 
 
@@ -363,6 +402,49 @@ def patch_catalog(
         )
     _require_project_scope(row["project_id"], identity)
     return store.update_metadata(catalog_id, patch=body)
+
+
+class PinBody(BaseModel):
+    """One external pin onto a catalog version (D-43)."""
+
+    kind: str = Field(..., min_length=1, description="job | result | finding | paper")
+    ref: str = Field(..., min_length=1, description="job id / artifact id / doi / url")
+    note: str = Field(default="")
+
+
+@router.post("/{catalog_id}/pins", status_code=status.HTTP_201_CREATED)
+def add_catalog_pin(
+    catalog_id: str,
+    body: PinBody,
+    store: ScientificCatalogStore = Depends(_store_dep),
+    identity: CallerIdentity = Depends(get_caller_identity),
+) -> dict[str, Any]:
+    """Append one pin (job/result/finding ref) to the catalog version row.
+    # auth: verified
+    """
+    try:
+        row = store.get(catalog_id)
+    except CatalogNotFound:
+        raise_typed(
+            PlatformError.scientificcatalogs(
+                "not_found", f"scientific catalog {catalog_id!r} not found"
+            )
+        )
+    _require_project_scope(row["project_id"], identity)
+    return store.add_pin(catalog_id, kind=body.kind, ref=body.ref, note=body.note)
+
+
+@router.get("/versions/list")
+def list_versions(
+    project_id: str,
+    name: str,
+    store: ScientificCatalogStore = Depends(_store_dep),
+    identity: CallerIdentity = Depends(get_caller_identity),
+) -> dict[str, Any]:
+    """One catalog's version chain (changelog view, oldest first).
+    # auth: verified
+    """
+    return {"versions": store.versions(project_id=project_id, name=name)}
 
 
 @router.delete("/{catalog_id}")
