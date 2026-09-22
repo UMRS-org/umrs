@@ -32,8 +32,8 @@ from .typed_errors import PlatformError, raise_typed
 _COLUMNS = (
     "catalog_id, project_id, name, version, description, ontology,"
     " member_graph_ids, skill_ids, mcp_server_ids, embedding_model_ids,"
-    " contributors, licence, provenance, change_note, owner_id, status,"
-    " created_at, updated_at"
+    " contributors, licence, provenance, change_note, redaction_rules,"
+    " owner_id, status, created_at, updated_at"
 )
 
 
@@ -66,10 +66,11 @@ class ScientificCatalogStore:
             "licence": row[11],
             "provenance": _as_dict(row[12]),
             "change_note": row[13],
-            "owner_id": row[14],
-            "status": row[15],
-            "created_at": row[16].isoformat() if row[16] else None,
-            "updated_at": row[17].isoformat() if row[17] else None,
+            "redaction_rules": _as_list(row[14]),
+            "owner_id": row[15],
+            "status": row[16],
+            "created_at": row[17].isoformat() if row[17] else None,
+            "updated_at": row[18].isoformat() if row[18] else None,
         }
 
     def _row(self, catalog_id: str) -> dict[str, Any] | None:
@@ -108,9 +109,9 @@ class ScientificCatalogStore:
                    catalog_id, project_id, name, version, description, ontology,
                    member_graph_ids, skill_ids, mcp_server_ids,
                    embedding_model_ids, contributors, licence, provenance,
-                   change_note, owner_id
+                   change_note, redaction_rules, owner_id
                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                         %s, %s)
+                         %s, %s, %s)
                ON CONFLICT (project_id, name, version) DO NOTHING""",
             (
                 catalog_id,
@@ -127,6 +128,7 @@ class ScientificCatalogStore:
                 spec.licence,
                 json.dumps(spec.provenance),
                 spec.change_note,
+                json.dumps(spec.redaction_rules),
                 owner_id,
             ),
         )
@@ -170,6 +172,7 @@ class ScientificCatalogStore:
                    contributors = COALESCE(%s, contributors),
                    licence = COALESCE(%s, licence),
                    provenance = COALESCE(%s, provenance),
+                   redaction_rules = COALESCE(%s, redaction_rules),
                    updated_at = now()
                WHERE catalog_id = %s""",
             (
@@ -180,6 +183,9 @@ class ScientificCatalogStore:
                 else None,
                 patch.licence,
                 json.dumps(patch.provenance) if patch.provenance is not None else None,
+                json.dumps(patch.redaction_rules)
+                if patch.redaction_rules is not None
+                else None,
                 catalog_id,
             ),
         )
@@ -286,6 +292,10 @@ class CatalogSpec(BaseModel):
     licence: str = Field(default="")
     provenance: dict[str, Any] = Field(default_factory=dict)
     change_note: str = Field(default="")
+    redaction_rules: list[dict[str, str]] = Field(
+        default_factory=list,
+        description='D-46 export rules: [{"target": manifest_field, "action": "drop"|"hash"}]',
+    )
     catalog_id: str = Field(default="")
 
 
@@ -297,6 +307,7 @@ class CatalogPatch(BaseModel):
     contributors: list[str] | None = None
     licence: str | None = None
     provenance: dict[str, Any] | None = None
+    redaction_rules: list[dict[str, str]] | None = None
 
 
 def _store_dep(request: Request):

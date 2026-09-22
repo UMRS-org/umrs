@@ -63,6 +63,7 @@ def _tuple_from_dict(d: dict) -> tuple:
         d["licence"],
         d["provenance"],
         d["change_note"],
+        d["redaction_rules"],
         d["owner_id"],
         d["status"],
         d["created_at"],
@@ -96,6 +97,7 @@ class _Conn:
             licence,
             prov,
             change_note,
+            redact,
             owner,
         ) = params
         triple = (pid, name, version)
@@ -117,6 +119,7 @@ class _Conn:
                 "licence": licence,
                 "provenance": prov,
                 "change_note": change_note,
+                "redaction_rules": redact,
                 "owner_id": owner,
                 "status": "active",
                 "created_at": now,
@@ -138,7 +141,7 @@ class _Conn:
             prov_dict["pins"] = prov_dict["pins"] + _json.loads(pin_arr)
             self.rows[cid]["provenance"] = _json.dumps(prov_dict)
         else:
-            desc, onto, contribs, licence, prov, cid = params
+            desc, onto, contribs, licence, prov, redact, cid = params
             row = self.rows[cid]
             if desc is not None:
                 row["description"] = desc
@@ -150,6 +153,8 @@ class _Conn:
                 row["licence"] = licence
             if prov is not None:
                 row["provenance"] = prov
+            if redact is not None:
+                row["redaction_rules"] = redact
             row["updated_at"] = datetime.now(timezone.utc)
         cur._result = []
 
