@@ -246,7 +246,12 @@ class TestStoreLifecycle:
         assert row["embedding_model_ids"] == ["intfloat/e5-base-v2"]
         assert row["contributors"] == ["alice"]
         assert row["licence"] == "CC-BY-4.0"
-        assert row["provenance"] == {"source": "lab-ingest"}
+        # D-11 pin: embedding model ids stamp into provenance at create
+        # (fake conn resolves nothing — honest registry_resolved: False).
+        assert row["provenance"]["source"] == "lab-ingest"
+        assert row["provenance"]["embedding_models"] == [
+            {"id": "intfloat/e5-base-v2", "registry_resolved": False}
+        ]
 
     def test_create_same_triple_is_idempotent(self) -> None:
         store = ScientificCatalogStore(_Conn())
@@ -431,3 +436,45 @@ class TestVersionChainAndPins:
         )
         assert r.status_code == 200
         assert [v["version"] for v in r.json()["versions"]] == ["0.1.0"]
+
+
+class TestEmbeddingModelPins:
+    """D-11: catalog create pins embedding model ids into provenance."""
+
+    def test_registry_resolved_true_when_table_knows_the_id(self) -> None:
+        conn = _Conn()
+        orig = conn._handle_select
+
+        def _select_with_registry(sql, params, cur):
+            if "model_catalog_entries" in sql:
+                cur._result = [(1,)]
+                return
+            orig(sql, params, cur)
+
+        conn._handle_select = _select_with_registry
+        store = ScientificCatalogStore(conn)
+        row = store.create(spec=_spec(), owner_id="alice")
+        assert row["provenance"]["embedding_models"] == [
+            {"id": "intfloat/e5-base-v2", "registry_resolved": True}
+        ]
+
+    def test_registry_read_failure_fails_open_with_honest_marker(self) -> None:
+        conn = _Conn()
+        orig = conn._handle_select
+
+        def _boom(sql, params, cur):
+            if "model_catalog_entries" in sql:
+                raise RuntimeError("registry table missing")
+            orig(sql, params, cur)
+
+        conn._handle_select = _boom
+        store = ScientificCatalogStore(conn)
+        row = store.create(spec=_spec(), owner_id="alice")
+        pin = row["provenance"]["embedding_models"][0]
+        assert pin["registry_resolved"] is False
+        assert pin["registry_unreachable"] is True
+
+    def test_no_embedding_models_leaves_provenance_untouched(self) -> None:
+        store = ScientificCatalogStore(_Conn())
+        row = store.create(spec=_spec(embedding_model_ids=[]), owner_id="alice")
+        assert "embedding_models" not in row["provenance"]

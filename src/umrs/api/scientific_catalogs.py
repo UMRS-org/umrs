@@ -103,6 +103,7 @@ class ScientificCatalogStore:
         if existing is not None:
             return existing
         catalog_id = spec.catalog_id or _mint_catalog_id(spec, owner_id)
+        provenance = self._pin_embedding_models(spec)
         cur = self._conn.cursor()
         cur.execute(
             """INSERT INTO scientific_catalogs (
@@ -126,7 +127,7 @@ class ScientificCatalogStore:
                 json.dumps(spec.embedding_model_ids),
                 json.dumps(spec.contributors),
                 spec.licence,
-                json.dumps(spec.provenance),
+                json.dumps(provenance),
                 spec.change_note,
                 json.dumps(spec.redaction_rules),
                 owner_id,
@@ -240,6 +241,41 @@ class ScientificCatalogStore:
         )
         self._conn.commit()
         return self._row(catalog_id)
+
+
+    def _pin_embedding_models(self, spec: "CatalogSpec") -> dict[str, Any]:
+        """D-11/D-43: resolve each embedding model id against the model
+        registry at create time and stamp the pin into provenance.
+
+        Fail-open by design: an id the registry does not know (e.g. a
+        sentence-transformers name pinned from a bundle) records
+        ``registry_resolved: False`` — the pin is honest, creation never
+        blocked; a registry read failure records the same shape with
+        ``registry_unreachable: True``.
+        """
+        if not spec.embedding_model_ids:
+            return dict(spec.provenance)
+        pins: list[dict[str, Any]] = []
+        try:
+            cur = self._conn.cursor()
+            for model_id in spec.embedding_model_ids:
+                cur.execute(
+                    "SELECT 1 FROM model_catalog_entries"
+                    " WHERE model_id = %s OR huggingface_id = %s OR name = %s"
+                    " LIMIT 1",
+                    (model_id, model_id, model_id),
+                )
+                pins.append(
+                    {"id": model_id, "registry_resolved": cur.fetchone() is not None}
+                )
+        except Exception:  # noqa: BLE001 — pin is best-effort, never a gate
+            pins = [
+                {"id": m, "registry_resolved": False, "registry_unreachable": True}
+                for m in spec.embedding_model_ids
+            ]
+        provenance = dict(spec.provenance)
+        provenance["embedding_models"] = pins
+        return provenance
 
 
 def _as_list(value: Any) -> list[Any]:
