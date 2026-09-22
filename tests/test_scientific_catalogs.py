@@ -167,6 +167,19 @@ class _Conn:
             ]
             rows.sort(key=lambda v: v["created_at"])
             cur._result = [_tuple_from_dict(v) for v in rows]
+        elif "provenance->'pins' @>" in sql:
+            ref = json.loads(params[0])[0]["ref"]
+            want_pid = params[1] if len(params) > 1 else None
+            out = []
+            for v in self.rows.values():
+                if want_pid and v["project_id"] != want_pid:
+                    continue
+                prov = v["provenance"]
+                prov = json.loads(prov) if isinstance(prov, str) else (prov or {})
+                for pin in prov.get("pins", []):
+                    if pin.get("ref") == ref:
+                        out.append((v["catalog_id"], v["project_id"], prov))
+            cur._result = out
         elif "WHERE catalog_id = %s" in sql:
             row = self.rows.get(params[0])
             cur._result = [_tuple_from_dict(row)] if row else []
@@ -407,6 +420,33 @@ class TestVersionChainAndPins:
         with pytest.raises(CatalogNotFound):
             store.add_pin("scat-ghost", kind="job", ref="1")
 
+    def test_pins_by_ref_inverse_index(self) -> None:
+        """D-45 join: the inverse pin index resolves refs to catalog ids."""
+        store = ScientificCatalogStore(_Conn())
+        row_a = store.create(spec=_spec(), owner_id="alice")
+        row_b = store.create(spec=_spec(name="other-catalog", version="9.9.9"), owner_id="alice")
+        store.add_pin(row_a["catalog_id"], kind="paper", ref="pub-1", note="draft")
+        store.add_pin(row_b["catalog_id"], kind="job", ref="5434")
+        store.add_pin(row_b["catalog_id"], kind="paper", ref="pub-1")
+
+        hits = store.pins_by_ref("pub-1")
+        assert {h["catalog_id"] for h in hits} == {
+            row_a["catalog_id"],
+            row_b["catalog_id"],
+        }
+        assert all(h["kind"] == "paper" for h in hits)
+
+        assert store.pins_by_ref("pub-unknown") == []  # never invented
+
+    def test_pins_by_ref_project_scoped(self) -> None:
+        store = ScientificCatalogStore(_Conn())
+        row_a = store.create(spec=_spec(), owner_id="alice")
+        row_b = store.create(spec=_spec(project_id="proj-b"), owner_id="bob")
+        store.add_pin(row_a["catalog_id"], kind="paper", ref="pub-1")
+        store.add_pin(row_b["catalog_id"], kind="paper", ref="pub-1")
+        hits = store.pins_by_ref("pub-1", project_id="proj-a")
+        assert [h["catalog_id"] for h in hits] == [row_a["catalog_id"]]
+
     def test_pin_route_201(self) -> None:
         client = _client(ScientificCatalogStore(_Conn()))
         created = client.post(
@@ -421,6 +461,32 @@ class TestVersionChainAndPins:
         )
         assert r.status_code == 201
         assert r.json()["provenance"]["pins"][0]["ref"] == "5434"
+
+    def test_pins_by_ref_route_scopes_non_admin(self) -> None:
+        """D-45 join route: non-admin callers only see own-project pins."""
+        client = _client(ScientificCatalogStore(_Conn()))
+        created = client.post(
+            "/umrs/scientific-catalogs",
+            json=_spec().model_dump(),
+            headers=_headers("alice"),
+        ).json()
+        client.post(
+            f"/umrs/scientific-catalogs/{created['catalog_id']}/pins",
+            json={"kind": "paper", "ref": "pub-1", "note": "draft"},
+            headers=_headers("alice"),
+        )
+        same = client.get(
+            "/umrs/scientific-catalogs/pins/by-ref/pub-1",
+            headers=_headers("alice"),
+        )
+        assert same.status_code == 200
+        assert [p["catalog_id"] for p in same.json()["pins"]] == [created["catalog_id"]]
+        other = client.get(
+            "/umrs/scientific-catalogs/pins/by-ref/pub-1",
+            headers=_headers("bob", project="proj-b"),
+        )
+        assert other.status_code == 200
+        assert other.json()["pins"] == []  # cross-project pins stay invisible
 
     def test_versions_route(self) -> None:
         client = _client(ScientificCatalogStore(_Conn()))

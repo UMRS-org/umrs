@@ -96,7 +96,7 @@ class ScientificCatalogStore:
 
     # -- CRUD -------------------------------------------------------------
 
-    def create(self, *, spec: "CatalogSpec", owner_id: str) -> dict[str, Any]:
+    def create(self, *, spec: CatalogSpec, owner_id: str) -> dict[str, Any]:
         """Ensuring-shape: identical (project, name, version) returns the
         existing row; a mismatched re-create is a typed conflict."""
         existing = self._row_by_triple(spec.project_id, spec.name, spec.version)
@@ -162,7 +162,7 @@ class ScientificCatalogStore:
         return [self._row_dict(row) for row in cur.fetchall()]
 
     def update_metadata(
-        self, catalog_id: str, *, patch: "CatalogPatch"
+        self, catalog_id: str, *, patch: CatalogPatch
     ) -> dict[str, Any]:
         row = self.get(catalog_id)  # raises CatalogNotFound
         cur = self._conn.cursor()
@@ -242,8 +242,40 @@ class ScientificCatalogStore:
         self._conn.commit()
         return self._row(catalog_id)
 
+    def pins_by_ref(
+        self, ref: str, *, project_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Inverse pin index (D-45): which catalog versions pinned ``ref``.
 
-    def _pin_embedding_models(self, spec: "CatalogSpec") -> dict[str, Any]:
+        Scans the append-only pins arrays for an exact ref match. Retired
+        versions are included — a retired catalog's pin is still provenance.
+        """
+        cur = self._conn.cursor()
+        where = " WHERE provenance->'pins' @> %s::jsonb"
+        params: list[Any] = [json.dumps([{"ref": ref}])]
+        if project_id:
+            where += " AND project_id = %s"
+            params.append(project_id)
+        cur.execute(
+            "SELECT catalog_id, project_id, provenance FROM scientific_catalogs"
+            f"{where} ORDER BY catalog_id",
+            tuple(params),
+        )
+        out: list[dict[str, Any]] = []
+        for catalog_id, pid, prov in cur.fetchall():
+            for pin in (prov or {}).get("pins", []):
+                if pin.get("ref") == ref:
+                    out.append(
+                        {
+                            "catalog_id": catalog_id,
+                            "project_id": pid,
+                            "kind": pin.get("kind", ""),
+                            "note": pin.get("note", ""),
+                        }
+                    )
+        return out
+
+    def _pin_embedding_models(self, spec: CatalogSpec) -> dict[str, Any]:
         """D-11/D-43: resolve each embedding model id against the model
         registry at create time and stamp the pin into provenance.
 
@@ -302,7 +334,7 @@ def _as_dict(value: Any) -> dict[str, Any]:
     return {}
 
 
-def _mint_catalog_id(spec: "CatalogSpec", owner_id: str) -> str:
+def _mint_catalog_id(spec: CatalogSpec, owner_id: str) -> str:
     key = f"{spec.project_id}:{spec.name}:{spec.version}:{owner_id}"
     return f"scat-{hashlib.sha256(key.encode('utf-8')).hexdigest()[:16]}"
 
@@ -479,6 +511,26 @@ def add_catalog_pin(
         )
     _require_project_scope(row["project_id"], identity)
     return store.add_pin(catalog_id, kind=body.kind, ref=body.ref, note=body.note)
+
+
+@router.get("/pins/by-ref/{ref}")
+def pins_by_ref(
+    ref: str,
+    project_id: str | None = None,
+    store: ScientificCatalogStore = Depends(_store_dep),
+    identity: CallerIdentity = Depends(get_caller_identity),
+) -> dict[str, Any]:
+    """Inverse pin index (D-45): which catalog versions pinned this ref.
+
+    The join a draft needs to stamp catalog ids into its provenance graph.
+    Project-scoped for non-admin callers (retired versions included —
+    a retired catalog's pin is still provenance).
+    # auth: verified
+    """
+    scope = project_id
+    if not identity.is_admin:
+        scope = identity.project_id or project_id
+    return {"ref": ref, "pins": store.pins_by_ref(ref, project_id=scope)}
 
 
 @router.get("/versions/list")
