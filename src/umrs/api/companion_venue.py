@@ -342,7 +342,16 @@ async def rail_heartbeat(
 
 # ── rail gw: platform verbs for the sandbox (workflows, jobs) ───────────────
 
-RAIL_GW_FAMILIES: frozenset[str] = frozenset({"workflows", "jobs"})
+# D-42 (2026-09-22): remote sessions reach knowledge/catalog/rag READ-ONLY —
+# a sandbox reads and retrieves but knowledge writes stay on the lease
+# owner's own surfaces (proposals ride the durable approval inbox, not the
+# rail). workflows/jobs keep the pre-existing write verbs for the lease rail.
+RAIL_GW_FAMILIES: frozenset[str] = frozenset(
+    {"workflows", "jobs", "knowledge", "catalog", "scientific-catalogs", "rag"}
+)
+RAIL_GW_READ_ONLY_FAMILIES: frozenset[str] = frozenset(
+    {"knowledge", "catalog", "scientific-catalogs", "rag"}
+)
 RAIL_GW_METHODS: tuple[str, ...] = ("GET", "POST", "DELETE")
 _RAIL_GW_DROP_HEADERS = frozenset(
     {
@@ -483,6 +492,14 @@ async def rail_gateway(
         raise_typed(
             PlatformError.companionvenue(
                 "forbidden", f"rail gw: /umrs/{family} is not reachable from a sandbox"
+            )
+        )
+    if request.method != "GET" and family in RAIL_GW_READ_ONLY_FAMILIES:
+        raise_typed(
+            PlatformError.companionvenue(
+                "forbidden",
+                f"rail gw: /umrs/{family} is read-only from a sandbox (D-42); "
+                "knowledge writes ride the session's approval rail",
             )
         )
     headers = _forwardable_headers(request)

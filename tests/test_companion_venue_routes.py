@@ -310,6 +310,11 @@ def _probe_routes(app: FastAPI) -> None:
     app.add_api_route("/umrs/workflows/{tail:path}", _echo, methods=["GET", "POST", "DELETE"])
     app.add_api_route("/umrs/jobs/{tail:path}", _echo, methods=["GET", "POST"])
 
+    # D-42 read-only families the rail now admits (echo GET; writes refused at
+    # the rail layer itself, so no upstream route needed for POST).
+    for _family in ("knowledge", "catalog", "scientific-catalogs", "rag"):
+        app.add_api_route(f"/umrs/{_family}/{{tail:path}}", _echo, methods=["GET"])
+
     async def _secret(request: Request) -> dict:
         return {"leak": request.headers.get("x-user-id")}
 
@@ -782,3 +787,52 @@ class TestRailGateway:
             "/umrs/companion/sessions/sess-1/rail/gw/jobs/submit", headers=gw.rail_headers, json={}
         )
         assert gw.jobs.stamped == []
+
+
+class TestRailGatewayD42ReadGating:
+    """D-42: knowledge/catalog/scientific-catalogs/rag ride the rail READ-ONLY
+    — a sandbox retrieves; writes stay on the lease owner's own surfaces."""
+
+    @pytest.fixture
+    def gw(self, rail, monkeypatch):
+        monkeypatch.setenv("UMRS_HANDSHAKE_HMAC_SECRET", "test-handshake-secret")
+        return rail
+
+    @pytest.mark.parametrize(
+        "family", ["knowledge", "catalog", "scientific-catalogs", "rag"]
+    )
+    def test_read_families_get_reaches_upstream(self, gw, family):
+        r = gw.client.get(
+            f"/umrs/companion/sessions/sess-1/rail/gw/{family}/probe",
+            headers=gw.rail_headers,
+        )
+        assert r.status_code == 200, (family, r.text)
+        assert r.json()["path"] == f"/umrs/{family}/probe"
+
+    @pytest.mark.parametrize(
+        "family", ["knowledge", "catalog", "scientific-catalogs", "rag"]
+    )
+    def test_read_families_post_refused_before_upstream(self, gw, family):
+        r = gw.client.post(
+            f"/umrs/companion/sessions/sess-1/rail/gw/{family}/probe",
+            headers=gw.rail_headers,
+            json={},
+        )
+        assert r.status_code == 403
+        assert r.headers["x-platform-error-code"] == "companionvenue.forbidden"
+
+    def test_read_families_delete_refused(self, gw):
+        r = gw.client.delete(
+            "/umrs/companion/sessions/sess-1/rail/gw/knowledge/nodes/n-1",
+            headers=gw.rail_headers,
+        )
+        assert r.status_code == 403
+
+    def test_workflows_jobs_keep_write_verbs(self, gw):
+        for family in ("workflows", "jobs"):
+            r = gw.client.post(
+                f"/umrs/companion/sessions/sess-1/rail/gw/{family}/probe",
+                headers=gw.rail_headers,
+                json={},
+            )
+            assert r.status_code == 200, (family, r.text)
