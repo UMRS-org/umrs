@@ -48,6 +48,9 @@ class MCPServer:
     metadata: dict[str, Any] = field(default_factory=dict)
     registered_by: str | None = None
     project_id: str | None = None
+    # D-19/D-49 (migration 0105): run placement + declared trust class.
+    placement: str = "local"
+    trust_class: str = "local-safe"
     tools: list[MCPTool] = field(default_factory=list)
     created_at: datetime | None = None
     updated_at: datetime | None = None
@@ -67,6 +70,8 @@ class MCPServer:
             "metadata": self.metadata,
             "registered_by": self.registered_by,
             "project_id": self.project_id,
+            "placement": self.placement,
+            "trust_class": self.trust_class,
             "tools": [
                 {
                     "name": t.name,

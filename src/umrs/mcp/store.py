@@ -57,15 +57,27 @@ class MCPServerStore:
         tools: list[dict[str, Any]] | None = None,
         registered_by: str | None = None,
         project_id: str | None = None,
+        placement: str = "local",
+        trust_class: str = "local-safe",
     ) -> MCPServer:
         """
         Register or update an MCP server and its tools.
 
         If a server with the same name exists, it is updated (upsert).
+        Placement + trust class are validated (D-19/D-49: grammar, declared
+        hosts, ADR-061 class map) before any write — a bad placement never
+        reaches the registry.
 
         Returns:
             The registered MCPServer.
         """
+        from umrs.shared.venue_placement import (
+            validate_placement,
+            validate_trust_class,
+        )
+
+        placement = validate_placement(placement)
+        trust_class = validate_trust_class(placement, trust_class)
         server_id = generate_server_id()
 
         with self.conn.cursor() as cur:
@@ -75,11 +87,12 @@ class MCPServerStore:
                 INSERT INTO mcp_servers (
                     server_id, name, version, url, transport, status,
                     description, auth_type, auth_config, metadata,
-                    registered_by, project_id, created_at, updated_at
+                    registered_by, project_id, placement, trust_class,
+                    created_at, updated_at
                 ) VALUES (
                     %s, %s, %s, %s, %s, 'healthy',
                     %s, %s, %s, %s,
-                    %s, %s, NOW(), NOW()
+                    %s, %s, %s, %s, NOW(), NOW()
                 )
                 ON CONFLICT (name) DO UPDATE SET
                     version = EXCLUDED.version,
@@ -92,6 +105,8 @@ class MCPServerStore:
                     metadata = EXCLUDED.metadata,
                     registered_by = EXCLUDED.registered_by,
                     project_id = EXCLUDED.project_id,
+                    placement = EXCLUDED.placement,
+                    trust_class = EXCLUDED.trust_class,
                     updated_at = NOW()
                 RETURNING server_id, created_at, updated_at
                 """,
@@ -107,6 +122,8 @@ class MCPServerStore:
                     json.dumps(metadata or {}),
                     registered_by,
                     project_id,
+                    placement,
+                    trust_class,
                 ),
             )
             row = cur.fetchone()
@@ -187,7 +204,8 @@ class MCPServerStore:
                 """
                 SELECT server_id, name, version, url, transport, status,
                        description, auth_type, auth_config, metadata,
-                       registered_by, project_id, created_at, updated_at
+                       registered_by, project_id, placement, trust_class,
+                       created_at, updated_at
                 FROM mcp_servers WHERE server_id = %s
                 """,
                 (server_id,),
@@ -212,7 +230,8 @@ class MCPServerStore:
                 """
                 SELECT server_id, name, version, url, transport, status,
                        description, auth_type, auth_config, metadata,
-                       registered_by, project_id, created_at, updated_at
+                       registered_by, project_id, placement, trust_class,
+                       created_at, updated_at
                 FROM mcp_servers WHERE name = %s
                 """,
                 (name,),
@@ -250,7 +269,8 @@ class MCPServerStore:
                 f"""
                 SELECT server_id, name, version, url, transport, status,
                        description, auth_type, auth_config, metadata,
-                       registered_by, project_id, created_at, updated_at
+                       registered_by, project_id, placement, trust_class,
+                       created_at, updated_at
                 FROM mcp_servers {where}
                 ORDER BY name
                 """,
@@ -422,6 +442,8 @@ class MCPServerStore:
             metadata=metadata or {},
             registered_by=row[10],
             project_id=row[11],
+            placement=row[14] if len(row) > 14 and row[14] else "local",
+            trust_class=row[15] if len(row) > 15 and row[15] else "local-safe",
             created_at=row[12],
             updated_at=row[13],
         )
