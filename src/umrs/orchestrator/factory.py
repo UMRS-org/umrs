@@ -2,10 +2,15 @@
 Orchestrator factory for selecting and instantiating backends.
 
 The backend is selected via the RIVAULT_ORCHESTRATOR environment variable:
-- "slurm" (default on HPC): Uses Slurm + Singularity
+- "slurm-remote": Slurm + Podman on the allocation (production HPC lane)
+- "slurm-podman": Slurm + podman-compose (local Slurm host)
 - "kubernetes" or "k8s": Uses Kubernetes Jobs
 - "docker-compose" or "compose": Uses Docker Compose (development)
 - "auto": Auto-detect based on available tools
+
+ADR-061 (2026-09-22): the Singularity lane is retired — the bare "slurm"
+backend name and the hybrid Singularity wrapper refuse by name; the class
+stays importable only because RemoteSlurmBackend imports it.
 """
 
 from __future__ import annotations
@@ -145,10 +150,19 @@ def get_orchestrator(
     if backend == "auto":
         backend = _detect_backend()
 
+    if backend == "slurm":
+        # ADR-061 (2026-09-22): the Singularity backend ("slurm") is retired;
+        # podman is the only compute-job sandbox path.
+        raise ValueError(
+            "Orchestrator backend 'slurm' (Singularity) is retired (ADR-061): "
+            "use 'slurm-remote' (Slurm + Podman, the production HPC lane) or "
+            "'slurm-podman' (local Slurm host)."
+        )
+
     if backend in _EXPERIMENTAL_HYBRID_BACKENDS:
         raise ValueError(
             "Hybrid Slurm orchestration is experimental, not for HPC production. "
-            "Use 'slurm-podman' or 'slurm', or instantiate HybridOrchestrator "
+            "Use 'slurm-podman' or 'slurm-remote', or instantiate HybridOrchestrator "
             "with RIVAULT_ENABLE_EXPERIMENTAL_HYBRID_SLURM=true for compatibility testing."
         )
 
