@@ -27,13 +27,38 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/umrs/companion/sessions", tags=["companion-sessions"])
 
-# Venue grammar (plan §4.1): local | frontend | cluster:<name>.
+# Venue grammar (plan §4.1 + ADR-060): local | frontend | cluster:<name> |
+# cpu:<host>. A cpu host must be declared in site.yaml extra.venues.cpu_hosts
+# — an undeclared host is refused by name, never silently placed. Execution
+# on cpu hosts is the ROADMAP 3.2 worker-rail leg (the rail layer refuses
+# honestly until then).
 # '' means absent (client did not declare; never fabricated server-side).
-_VENUE_RE = re.compile(r"^(local|frontend|cluster:[a-z0-9][a-z0-9-]{0,62})$")
+_VENUE_RE = re.compile(
+    r"^(local|frontend|cluster:[a-z0-9][a-z0-9-]{0,62}|cpu:[a-z0-9][a-z0-9.-]{0,62})$"
+)
 # Recorded states. 'archived' is computed from tombstones, never stored.
 _STATE_STORED = frozenset({"", "ongoing", "stopped", "completed", "error"})
 # Filterable computed states include 'archived'.
 _STATE_COMPUTED = _STATE_STORED | {"archived"}
+
+
+def _declared_cpu_hosts() -> set[str]:
+    """CPU hosts declared in site config (extra.venues.cpu_hosts).
+
+    Empty when the config is absent/unparseable: every cpu:<host> request is
+    then refused (fail-closed placement, never a silent frontend fallback).
+    """
+    try:
+        from umrs.orchestrator.site_config import load_site_config
+
+        cfg = load_site_config()
+    except Exception:  # noqa: BLE001 — fail-closed placement
+        return set()
+    venues = cfg.extra.get("venues") if isinstance(cfg.extra, dict) else None
+    hosts = (venues or {}).get("cpu_hosts") if isinstance(venues, dict) else None
+    if not isinstance(hosts, list):
+        return set()
+    return {str(h).strip() for h in hosts if str(h).strip()}
 
 
 def _validate_venue(value: str) -> str:
@@ -41,9 +66,20 @@ def _validate_venue(value: str) -> str:
         raise_typed(
             PlatformError.companionsessions(
                 "bad_request",
-                f"invalid venue {value!r}: expected local | frontend | cluster:<name>",
+                f"invalid venue {value!r}: expected local | frontend | "
+                "cluster:<name> | cpu:<host>",
             ),
         )
+    if value.startswith("cpu:"):
+        host = value[len("cpu:") :]
+        if host not in _declared_cpu_hosts():
+            raise_typed(
+                PlatformError.companionsessions(
+                    "bad_request",
+                    f"cpu venue host {host!r} is not declared "
+                    "(site.yaml extra.venues.cpu_hosts)",
+                ),
+            )
     return value
 
 
