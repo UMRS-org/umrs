@@ -659,6 +659,7 @@ async def create_job(
             idempotency_key=request.idempotency_key,
             **create_kwargs,
         )
+        _autopin_catalog(store, project_id, job_id)
 
         # Optionally enqueue immediately
         if request.enqueue_immediately:
@@ -684,6 +685,28 @@ async def create_job(
                 "existing_job_id": e.existing_job_id,
             },
         ) from e
+
+
+def _autopin_catalog(store: JobStore, project_id: str, job_id: str) -> None:
+    """D-43 auto-pin: when a project has exactly ONE active scientific
+    catalog, every new durable job is pinned onto it (kind=job, ref=job_id).
+
+    Zero catalogs → nothing to associate against; several → the choice is
+    ambiguous and never silently guessed (pin by hand with `r4 catalog pin`).
+    Best-effort: a store hiccup never blocks job submission.
+    """
+    try:
+        from umrs.api.scientific_catalogs import ScientificCatalogStore
+
+        with store._get_conn() as conn:
+            catalogs = ScientificCatalogStore(conn).list(project_id=project_id)
+            if len(catalogs) != 1:
+                return
+            ScientificCatalogStore(conn).add_pin(
+                catalogs[0]["catalog_id"], kind="job", ref=job_id
+            )
+    except Exception as exc:  # noqa: BLE001 — pin is best-effort, never a gate
+        logger.warning("catalog autopin skipped for job %s: %s", job_id, exc)
 
 
 def _create_fan_out_job(
