@@ -108,6 +108,9 @@ class KnowledgeUnderstandResult:
     edges_created: int = 0
     already_ir: int = 0  # Skipped (idempotent)
     failed_items: list[dict[str, Any]] = field(default_factory=list)
+    # V-09/D-35: skills compiled from the understood IRs as pending_review
+    # proposals (never auto-approved; registered disabled in the registry).
+    compiled_skill_count: int = 0
     degraded: bool = False
     degraded_reason: str = ""
 
@@ -1150,7 +1153,108 @@ async def _run_understand(
             result,
         )
 
+    # V-09/D-35 leg: promote-to-skill proposals from the freshly understood
+    # IRs. Best-effort, never fails the job; gated off a degraded run.
+    if not result.degraded:
+        try:
+            result.compiled_skill_count = await _compile_skill_proposals(
+                store, project_id
+            )
+        except Exception as exc:  # noqa: BLE001 — proposal leg is best-effort
+            logger.warning(
+                "compiled-skill proposal leg failed for %s: %s", project_id, exc
+            )
+
     return result
+
+
+async def _compile_skill_proposals(store: Any, project_id: str) -> int:
+    """Compile pending_review skills from the project's current IRs and
+    register them DISABLED in the skills registry (V-09/D-35).
+
+    The understand chain already minted the canonical IRs; the compiler
+    (`umrs.knowledge.compiled_skill`) was implemented and tested but had no
+    caller. Registered rows carry `manifest._compiled_skill` +
+    `status: pending_review` and stay disabled — a human review promotes
+    them; the platform never auto-approves learned knowledge. Registrations
+    are idempotent (skill id hashes the source IR lineage; ON CONFLICT of
+    the registry row is a no-op).
+    """
+    from umrs.knowledge.compiled_skill import compile_skills_from_irs
+    from umrs.knowledge.ir import KnowledgeIR
+
+    rows = await store._pool.fetch(  # type: ignore[union-attr]
+        "SELECT ir.ir_id, ir.artifact_id, ir.content, ir.content_hash, ir.ir_type,"
+        " ka.project_id FROM knowledge_ir ir"
+        " JOIN knowledge_artifacts ka ON ka.artifact_id = ir.artifact_id"
+        " WHERE ka.project_id = $1 AND ir.status = 'current'",
+        project_id,
+    )
+    if not rows:
+        return 0
+    irs = [
+        KnowledgeIR(
+            ir_id=str(r["ir_id"]),
+            artifact_id=str(r["artifact_id"]),
+            project_id=str(r["project_id"]),
+            artifact_type=str(r["ir_type"] or ""),
+            content_hash=str(r["content_hash"] or ""),
+            extractor_version="",
+            extracted=r["content"] if isinstance(r["content"], dict) else {},
+        )
+        for r in rows
+    ]
+    skills = compile_skills_from_irs(irs)
+    registered = 0
+    for skill in skills:
+        inserted = await store._pool.fetchval(  # type: ignore[union-attr]
+            "INSERT INTO skills (skill_id, name, version, scope, owner_id,"
+            " project_id, skill_md, manifest, enabled, registered_at, updated_at)"
+            " VALUES ($1, $2, $3, 'project', 'compile-knowledge-skills', $4,"
+            " $5, $6::jsonb, false, NOW(), NOW())"
+            " ON CONFLICT (scope, owner_id, name) DO NOTHING"
+            " RETURNING skill_id",
+            skill.skill_id,
+            skill.title[:200],
+            "1.0.0",
+            project_id,
+            _skill_md_text(skill),
+            json.dumps(_compiled_manifest(skill)),
+        )
+        if inserted:
+            registered += 1
+    if registered:
+        logger.info(
+            "compiled %d pending_review skill proposals for project %s",
+            registered,
+            project_id,
+        )
+    return registered
+
+
+def _skill_md_text(skill: Any) -> str:
+    """SKILL.md body for a compiled skill (objective + procedure steps)."""
+    lines = [f"# {skill.title}", ""]
+    if skill.objective:
+        lines += ["## Objective", skill.objective, ""]
+    if skill.procedure:
+        lines.append("## Procedure")
+        lines += [f"- {step}" for step in skill.procedure]
+    return "\n".join(lines)
+
+
+def _compiled_manifest(skill: Any) -> dict[str, Any]:
+    """Registry manifest carrying the review status + lineage (write-once)."""
+    return {
+        "_compiled_skill": True,
+        "status": "pending_review",
+        "name": skill.title,
+        "source_ir_ids": list(skill.source_ir_ids),
+        "source_artifact_ids": list(skill.source_artifact_ids),
+        "algorithms": list(skill.algorithms),
+        "apis": list(skill.apis),
+        "created_at": skill.created_at,
+    }
 
 
 async def _existing_current_ir(store: Any, artifact_id: str) -> str | None:
