@@ -168,12 +168,22 @@ def rewind_interrupted_iteration(loop: ResearchLoop) -> dict[str, int] | None:
 def _register_driver(
     loop: ResearchLoop, store: Any, *, job_id: str, attempt_id: str
 ) -> str:
-    from . import agent_loop_runner, engine_loop_runner
+    """ADR-064: one driver — the engine runner; the agent executor rides it
+    via the AgenticEngine adapter (host name stays "agent" on the loop record
+    for API parity with pre-fold loops)."""
+    from . import engine_loop_runner
 
     wiring = _wiring()
     if loop.metadata.get("agent"):
-        agent_loop_runner.register(
-            loop, executor=wiring.agent_executor(loop.project_id), store=store
+        from .agentic_engine import AgenticEngine
+
+        engine_loop_runner.register(
+            loop,
+            engine_factory=lambda: AgenticEngine(
+                executor=wiring.agent_executor(loop.project_id)
+            ),
+            store=store,
+            on_iteration=iteration_hook(job_id=job_id, attempt_id=attempt_id),
         )
         return "agent"
     engine_loop_runner.register(

@@ -119,20 +119,23 @@ def test_agentic_runner_thread_is_daemon():
 
 class TestApiStartWiring:
     def test_start_loop_agentic_registers_runner(self, monkeypatch):
+        """ADR-064 fold: agentic starts register an ENGINE runner whose
+        engine carries the agent executor (AgenticEngine); the old agent
+        runner is no longer spawned at start."""
         import umrs.api.loop as loop_mod
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
+        from umrs.knowledge import engine_loop_runner
 
-        fake_runner_module = ModuleType("umrs.knowledge.agent_loop_runner")
         recorded: dict = {}
 
-        def _fake_register(loop, *, executor, store, poll_seconds=0.5):
+        def _fake_register(loop, *, engine_factory, store, on_iteration=None, poll_seconds=0.5):
             recorded["loop_id"] = loop.loop_id
+            recorded["engine"] = engine_factory()
             recorded["store"] = store
             return MagicMock()
 
-        fake_runner_module.register = _fake_register  # type: ignore[attr-defined]
-        monkeypatch.setitem(sys.modules, "umrs.knowledge.agent_loop_runner", fake_runner_module)
+        monkeypatch.setattr(engine_loop_runner, "register", _fake_register)
 
         fake_project_module = ModuleType("umrs.knowledge.project")
 
@@ -167,6 +170,9 @@ class TestApiStartWiring:
         assert recorded["loop_id"] == payload["loop_id"]
         assert recorded["project_id"] == "proj-ag"
         assert recorded["store"] is not None
+        from umrs.knowledge.agentic_engine import AgenticEngine
+
+        assert isinstance(recorded["engine"], AgenticEngine)
 
     def test_start_loop_default_no_runner(self, monkeypatch):
         import umrs.api.loop as loop_mod
