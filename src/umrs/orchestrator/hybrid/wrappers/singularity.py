@@ -28,6 +28,13 @@ class SingularityWrapper(RuntimeWrapper):
         bind_paths: list[str] | None = None,
         nvidia_support: bool = True,
     ):
+        # ADR-061 (2026-09-22): the Singularity sandbox path is retired.
+        # The class remains importable so references fail at CONSTRUCTION
+        # with a named error instead of an ImportError smudge.
+        raise RuntimeError(
+            "SingularityWrapper is retired (ADR-061): the mini-RiVault sandbox "
+            "is Podman-only — use the podman-compose wrapper / slurm-remote lane."
+        )
         self.default_image = default_image or os.getenv(
             "SINGULARITY_IMAGE", "/opt/singularity/mini-rivault.sif"
         )

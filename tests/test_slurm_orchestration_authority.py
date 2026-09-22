@@ -24,27 +24,26 @@ def test_factory_rejects_hybrid_slurm_backend_name() -> None:
         get_orchestrator("hybrid-slurm")
 
 
-def test_hybrid_slurm_requires_explicit_experimental_opt_in(monkeypatch) -> None:
+def test_hybrid_slurm_singularity_profile_retired_adr061(monkeypatch) -> None:
+    """ADR-061: the slurm-singularity profile refuses (wrapper retired),
+    opt-in env or not."""
     from umrs.orchestrator.hybrid.composer import HybridOrchestrator
 
     monkeypatch.delenv("RIVAULT_ENABLE_EXPERIMENTAL_HYBRID_SLURM", raising=False)
+    with pytest.raises(RuntimeError):
+        HybridOrchestrator(profile="slurm-singularity")
 
-    with pytest.raises(RuntimeError, match="experimental, not for HPC production"):
+    monkeypatch.setenv("RIVAULT_ENABLE_EXPERIMENTAL_HYBRID_SLURM", "true")
+    with pytest.raises(RuntimeError, match=r"retired \(ADR-061\)"):
         HybridOrchestrator(profile="slurm-singularity")
 
 
-def test_hybrid_slurm_opt_in_is_explicit(monkeypatch) -> None:
-    from umrs.model_registry.models import ExecutionAuthority
-    from umrs.orchestrator.hybrid.composer import HybridOrchestrator
+def test_factory_slurm_backend_name_retired_adr061() -> None:
+    """ADR-061: the bare 'slurm' (Singularity) backend selection refuses by name."""
+    from umrs.orchestrator.factory import get_orchestrator
 
-    monkeypatch.setenv("RIVAULT_ENABLE_EXPERIMENTAL_HYBRID_SLURM", "true")
-
-    orchestrator = HybridOrchestrator(profile="slurm-singularity")
-    # _check_secrets was removed — just verify the instance exists
-    assert orchestrator is not None
-
-    assert orchestrator.execution_authority == ExecutionAuthority.SLURM
-    assert orchestrator.backend_name == "hybrid-slurm"
+    with pytest.raises(ValueError, match=r"retired \(ADR-061\)"):
+        get_orchestrator("slurm")
 
 
 def test_hpc_runner_defaults_to_slurm_podman() -> None:
