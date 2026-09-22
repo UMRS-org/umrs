@@ -33,6 +33,8 @@ CLASSIFIED_FIXED: dict[str, SurfaceLane] = {
     "quota": SurfaceLane.BETA,
     # ADR-050 §3 (2026-09-16): groups + membership authority — BETA.
     "groups": SurfaceLane.BETA,
+    # D-39 (2026-09-22): Scientific Catalog registry — BETA like projects.
+    "scientific-catalogs": SurfaceLane.BETA,
     "ops": SurfaceLane.INTERNAL,
     "secrets": SurfaceLane.INTERNAL,
     "skills": SurfaceLane.INTERNAL,
