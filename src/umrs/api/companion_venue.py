@@ -161,6 +161,34 @@ class RailApprovalBody(BaseModel):
 # ── owner routes ───────────────────────────────────────────────────────────
 
 
+def _refuse_cpu_venue_on_frontend_rail(
+    request: Request, uid: str, session_id: str
+) -> None:
+    """D-48 (2026-09-22): sessions whose registry venue is cpu:<host> may
+    not start on the frontend rail — the cpu worker rail is the ROADMAP
+    3.2 leg; fail honest, never a silent frontend placement."""
+    from .companion_sessions import snapshot_detail_row
+
+    pool = getattr(request.app.state, "umrs_db_pool", None)
+    if pool is None:
+        return
+    conn = pool.getconn()
+    try:
+        row = snapshot_detail_row(conn, uid, session_id)
+    except Exception:  # noqa: BLE001 — venue lookup must not block a start
+        return
+    finally:
+        pool.putconn(conn)
+    if row and str(row.get("venue") or "").startswith("cpu:"):
+        raise_typed(
+            PlatformError.companionvenue(
+                "bad_request",
+                f"session venue {row['venue']!r} may not start on the frontend rail "
+                "(cpu worker rail is the ROADMAP 3.2 leg)",
+            )
+        )
+
+
 @router.post("/{session_id}/venue/start", response_model=dict[str, Any])
 async def start_venue(
     session_id: str, body: VenueStartBody, request: Request
@@ -171,6 +199,7 @@ async def start_venue(
     """
     uid = _uid(request)
     _pool(request)
+    _refuse_cpu_venue_on_frontend_rail(request, uid, session_id)
     service = get_venue_service(request)
     try:
         return await asyncio.to_thread(
