@@ -319,6 +319,9 @@ async def trigger_ingest(
         # chain tagged nodes graph_id='' (shadow graph), making fresh
         # ingestion invisible to knowledge/query — audit B2.
         "graph_id": target_graph_id,
+        # D-35 producer leg: agent-originated extractions land their
+        # nodes/edges as 'proposed' (the understand chain reads this).
+        "origin_actor": request_actor(request),
     }
     if body.proposal_id:
         spec["proposal_id"] = body.proposal_id

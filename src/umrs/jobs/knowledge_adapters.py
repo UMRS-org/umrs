@@ -1136,6 +1136,9 @@ async def _run_understand(
 
     result = KnowledgeUnderstandResult()
     target_graph_id = str(job.spec.get("graph_id") or "")
+    # D-35 producer leg: agent-originated extractions land their graph
+    # rows as 'proposed' (humans promote via the establish seam; 0106).
+    origin_actor = str(job.spec.get("origin_actor") or "").strip().lower()
 
     for src in artifacts_to_process:
         artifact_id = src.get("artifact_id", "")
@@ -1151,6 +1154,7 @@ async def _run_understand(
             s3_client,
             bucket,
             result,
+            origin_actor=origin_actor,
         )
 
     # V-09/D-35 leg: promote-to-skill proposals from the freshly understood
@@ -1279,8 +1283,14 @@ async def _understand_one_artifact(
     s3_client: Any,
     bucket: str,
     result: KnowledgeUnderstandResult,
+    *,
+    origin_actor: str = "",
 ) -> None:
-    """Parse → IR → graph for one artifact (per-artifact extract)."""
+    """Parse → IR → graph for one artifact (per-artifact extract).
+
+    ``origin_actor`` (D-35): 'agent' origins land nodes/edges as
+    ``proposed`` — machine-authored content is never auto-established.
+    """
     from umrs.knowledge.ir import build_knowledge_ir
 
     artifact_id = src["artifact_id"]
@@ -1362,6 +1372,10 @@ async def _understand_one_artifact(
         project_id,
         target_graph_id,
     )
+    if origin_actor == "agent":
+        # D-35: agent-authored content enters the two-tier graph as
+        # proposed — the establish seam (human) is the only promotion.
+        nodes, edges = _as_proposed_tier(nodes, edges)
 
     try:
         for node in nodes:
@@ -1447,6 +1461,23 @@ def _node_id_scope(project_id: str, graph_id: str) -> str:
     if not graph_id or graph_id == default_graph_id(project_id):
         return ""
     return f"{graph_id}-"
+
+
+def _as_proposed_tier(nodes: list, edges: list) -> tuple[list, list]:
+    """D-35: stamp nodes/edges with the proposed tier (agent origin, 0106).
+
+    Frozen dataclasses → ``dataclasses.replace``; confidence stays 0.0 —
+    an unreviewed machine extraction claims no confidence it cannot show.
+    """
+    import dataclasses
+
+    def _tier(rows: list) -> list:
+        return [
+            dataclasses.replace(row, status="proposed", confidence=0.0)
+            for row in rows
+        ]
+
+    return _tier(nodes), _tier(edges)
 
 
 _PROSE_KINDS = {"document", "schema", "catalog"}
@@ -2927,6 +2958,8 @@ def _enqueue_understand_job(
                 # Named-graph ingestion (0069): the parent ingest's target graph
                 # (absent ⇒ default project graph)
                 "graph_id": job.spec.get("graph_id", ""),
+                # D-35 producer leg: agent-originated extractions land proposed.
+                "origin_actor": job.spec.get("origin_actor", ""),
             },
             priority=job.priority,
             max_attempts=3,
