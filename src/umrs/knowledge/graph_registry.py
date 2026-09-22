@@ -512,6 +512,35 @@ class ProposalStore(_SyncPoolStore):
             rows = cur.fetchall()
         return [_row_to_proposal(row) for row in rows]
 
+    def acceptance_stats(self, *, target_graph_id: str | None = None) -> dict:
+        """Proposal acceptance rate (gap row D-44).
+
+        accepted = approved + executed (executed proposals were decided yes and
+        then applied); declined counts decided-no. rate = accepted /
+        (accepted + declined) when anything was decided — 0-pending graphs
+        report rate=None (an empty past is no signal, never a fake 100%).
+        """
+        with self._cursor() as cur:
+            cur.execute(
+                "SELECT"
+                " COUNT(*) FILTER (WHERE status IN ('approved','executed')) AS accepted,"
+                " COUNT(*) FILTER (WHERE status = 'declined') AS declined,"
+                " COUNT(*) FILTER (WHERE status = 'pending') AS pending"
+                " FROM knowledge_graph_proposals"
+                " WHERE (%s::text IS NULL OR target_graph_id = %s)",
+                (target_graph_id, target_graph_id),
+            )
+            row = cur.fetchone() or (0, 0, 0)
+        accepted, declined, pending = int(row[0]), int(row[1]), int(row[2])
+        decided = accepted + declined
+        return {
+            "accepted": accepted,
+            "declined": declined,
+            "pending": pending,
+            "decided": decided,
+            "acceptance_rate": (accepted / decided) if decided else None,
+        }
+
     def decide(
         self,
         proposal_id: str,
