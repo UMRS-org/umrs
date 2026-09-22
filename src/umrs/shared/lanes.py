@@ -66,6 +66,8 @@ FAMILY_LANES: dict[str, SurfaceLane] = {
     "quota": SurfaceLane.BETA,
     # ADR-050 §3 (2026-09-16): groups + membership authority — BETA like grants.
     "groups": SurfaceLane.BETA,
+    # D-39 (2026-09-22): Scientific Catalog registry — BETA like projects.
+    "scientific-catalogs": SurfaceLane.BETA,
     "ops": SurfaceLane.INTERNAL,
     # R1 secrets wave: broker/lease machinery is ops-plane, never user-facing.
     "secrets": SurfaceLane.INTERNAL,

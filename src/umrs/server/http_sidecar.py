@@ -819,6 +819,11 @@ def _create_app():
 
     app.include_router(projects_router)
 
+    # D-39 (2026-09-22): Scientific Catalog registry (gap row D-39, Phase 1).
+    from umrs.api.scientific_catalogs import router as scientific_catalogs_router
+
+    app.include_router(scientific_catalogs_router)
+
     # ADR-051 (2026-09-16): caller-attributed quota gauge (D-2/D-3 read model).
     from umrs.api.quota_status import router as quota_status_router
 
