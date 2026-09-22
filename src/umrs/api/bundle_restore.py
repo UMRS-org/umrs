@@ -84,6 +84,21 @@ def _resolve_target_project(body: RestoreRequest) -> str:
     return str(project)
 
 
+class _CatalogRestoreAdapter:
+    """Owns the CatalogSpec shape for the import engine (ADR-053 fence:
+    ``umrs.knowledge`` never imports ``umrs.api``)."""
+
+    def __init__(self, store) -> None:  # type: ignore[no-untyped-def]
+        from .scientific_catalogs import ScientificCatalogStore
+
+        self._store: ScientificCatalogStore = store
+
+    def register_from_bundle(self, spec: dict, *, owner_id: str) -> dict:
+        from .scientific_catalogs import CatalogSpec
+
+        return self._store.create(spec=CatalogSpec(**spec), owner_id=owner_id)
+
+
 def _reference_stores(request: Request):
     """Skill/MCP stores for the V-05 reference-consumption leg (context manager).
 
@@ -102,9 +117,15 @@ def _reference_stores(request: Request):
         from umrs.mcp.store import MCPServerStore
         from umrs.skills.store import SkillStore
 
+        from .scientific_catalogs import ScientificCatalogStore
+
         conn = pool.getconn()
         try:
-            yield {"skill_store": SkillStore(conn), "mcp_store": MCPServerStore(conn)}
+            yield {
+                "skill_store": SkillStore(conn),
+                "mcp_store": MCPServerStore(conn),
+                "catalog_store": _CatalogRestoreAdapter(ScientificCatalogStore(conn)),
+            }
         finally:
             pool.putconn(conn)
 

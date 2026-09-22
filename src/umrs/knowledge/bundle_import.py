@@ -78,6 +78,8 @@ class KnowledgeImportResult:
     mcp_refs_present: int = 0
     mcp_refs_missing: list[str] = field(default_factory=list)
     reference_stores_deferred: bool = False
+    # D-40/D-39 tie: the D-39 catalog row re-registered from the manifest block.
+    catalog_registered: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -103,6 +105,7 @@ class KnowledgeImportResult:
             "mcp_refs_present": self.mcp_refs_present,
             "mcp_refs_missing": list(self.mcp_refs_missing),
             "reference_stores_deferred": self.reference_stores_deferred,
+            "catalog_registered": self.catalog_registered,
         }
 
 
@@ -235,6 +238,7 @@ class KnowledgeImportEngine:
         secret_key: str = "",
         skill_store: Any = None,
         mcp_store: Any = None,
+        catalog_store: Any = None,
     ) -> None:
         self._store = store
         self._secret_key = secret_key
@@ -242,6 +246,9 @@ class KnowledgeImportEngine:
         # (counted as deferred in the result, never a crash).
         self._skill_store = skill_store
         self._mcp_store = mcp_store
+        # D-40/D-39 tie: catalog-row adapter (api layer supplies
+        # register_from_bundle(spec_dict, owner_id=...) — never umrs.api here).
+        self._catalog_store = catalog_store
         self._collision_degraded: int = 0
         self._degraded_seen: set[str] = set()
 
@@ -294,6 +301,7 @@ class KnowledgeImportEngine:
             result.a2l_ref_count,
         ) = await self._restore_a2l(bundle_path, target)
         self._consume_context_references(manifest, target, result)
+        result.catalog_registered = self._register_catalog_row(manifest, target)
 
         result.duration_seconds = time.monotonic() - t0
         result.collision_checks_degraded = self._collision_degraded
@@ -683,6 +691,49 @@ class KnowledgeImportEngine:
             present, missing = _resolve_mcp_refs(self._mcp_store, mcps)
             result.mcp_refs_present = present
             result.mcp_refs_missing = missing
+
+    def _register_catalog_row(
+        self, manifest: dict[str, Any], target_project: str
+    ) -> bool:
+        """Re-register the D-39 catalog row from the manifest ``catalog`` block.
+
+        The catalog round-trips with the bundle (D-40: the bundle IS the
+        catalog object). Create is idempotent on (project, name, version),
+        so re-imports converge; absent block/store or catalog-less bundles
+        are a quiet no-op.
+        """
+        block = manifest.get("catalog")
+        if self._catalog_store is None or not isinstance(block, dict):
+            return False
+        name = str(block.get("name") or "").strip()
+        if not name:
+            return False
+        ownership = manifest.get("ownership") or {}
+        spec = {
+            "project_id": target_project,
+            "name": name,
+            "version": str(block.get("version") or "0.1.0"),
+            "description": str(block.get("description") or ""),
+            "ontology": str(block.get("ontology") or ""),
+            "contributors": [
+                str(c)
+                for c in (
+                    block.get("contributors") or ownership.get("contributors") or []
+                )
+            ],
+            "licence": str(block.get("licence") or ownership.get("licence") or ""),
+            "provenance": block.get("provenance")
+            if isinstance(block.get("provenance"), dict)
+            else {},
+        }
+        try:
+            # The store adapter (api layer) owns the CatalogSpec shape —
+            # knowledge never imports umrs.api (ADR-053 plane fence).
+            self._catalog_store.register_from_bundle(spec, owner_id="bundle-import")
+        except Exception:  # noqa: BLE001 — catalog reg is best-effort beside the restore
+            logger.warning("catalog row registration failed for %r", name)
+            return False
+        return True
 
 
 def _parse_skill_ref(ref: dict[str, Any]) -> tuple[str, str, str]:
