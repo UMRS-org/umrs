@@ -1553,13 +1553,22 @@ def _with_frontend_session(inner, backend):
 
 
 def _mcp_registry_factory():
-    """The MCP store singleton from the api module (lazy; None-safe)."""
-    try:
-        from ..api.mcp import _get_store
+    """The MCP store singleton (foundation-safe; None when unwired).
 
-        return _get_store()
-    except Exception:  # noqa: BLE001 — degraded ref names it downstream
-        return None
+    ADR-053: jobs must not import umrs.api — the sidecar installs the
+    store on THIS module (set_mcp_registry), mirroring set_mcp_store on
+    the api layer. Unwired → the degraded ref names it downstream.
+    """
+    return _MCP_REGISTRY
+
+
+_MCP_REGISTRY: Any = None
+
+
+def set_mcp_registry(store: Any) -> None:
+    """Sidecar boot installs the MCP store for the D-22 jobs lane."""
+    global _MCP_REGISTRY
+    _MCP_REGISTRY = store
 
 
 def create_status_checker(
