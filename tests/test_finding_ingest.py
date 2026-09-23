@@ -4,9 +4,17 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from umrs.knowledge import finding_ingest
 from umrs.knowledge.finding_ingest import InMemoryFindingSink, mint_iteration
-from umrs.knowledge.loop import LoopIteration, LoopPhase, LoopStatus, ResearchLoop
+from umrs.knowledge.loop import Finding as LoopFinding
+from umrs.knowledge.loop import (
+    LoopIteration,
+    LoopPhase,
+    LoopStatus,
+    ResearchLoop,
+)
+from umrs.knowledge.loop_hosting import HostingWiring, _pin_real_findings, configure
 
 from r4_contracts.research import EvidenceRef, EvidenceSource, Finding
 
@@ -254,3 +262,90 @@ def test_finding_metadata_carries_trace_id():
     _, metadata = _finding_payload(loop, iteration, {"statement": "s"})
     assert metadata["trace_id"] == "L-t"
     assert metadata["source_loop"] == "L-t"
+
+
+# ── D-43/D-52: real findings pin onto the single active catalog ─────────
+
+
+def _loop_iter(findings):
+    loop = ResearchLoop(loop_id="l1", project_id="p1")
+    it = LoopIteration(iteration_number=1)
+    it.findings = findings
+    it.status = "completed"
+    return loop, it
+
+
+def _mk(fid, *, simulated=False):
+    return LoopFinding(
+        finding_id=fid,
+        hypothesis_id="h-1",
+        statement="s",
+        evidence_refs=["e-1"],
+        workflow_run_id="wf-1",
+        durable_job_id="j-1",
+        confidence=0.7,
+        simulated=simulated,
+    )
+
+
+@pytest.fixture()
+def _wired_pinner(monkeypatch):
+    calls = []
+
+    def pinner(project_id, pins):
+        calls.append((project_id, list(pins)))
+
+    configure(
+        HostingWiring(
+            store=lambda: None,
+            engine_factory=lambda: lambda: None,
+            agent_executor=lambda _pid: None,
+            checkpoint_store=lambda: None,
+            finding_sink=lambda: None,
+            catalog_pinner=lambda: pinner,
+        )
+    )
+    yield calls
+    configure(None)
+
+
+def test_real_findings_pin_with_trace_note(_wired_pinner):
+    loop, it = _loop_iter([_mk("f-1"), _mk("f-sim", simulated=True)])
+    _pin_real_findings(loop, it)
+    assert _wired_pinner == [
+        ("p1", [("f-1", "h-1 wf=wf-1")])  # simulated excluded, honest provenance
+    ]
+
+
+def test_all_simulated_findings_pin_nothing(_wired_pinner):
+    loop, it = _loop_iter([_mk("f-sim", simulated=True)])
+    _pin_real_findings(loop, it)
+    assert _wired_pinner == []
+
+
+def test_unwired_pinner_reports_never_silent(caplog, monkeypatch):
+    configure(
+        HostingWiring(
+            store=lambda: None,
+            engine_factory=lambda: lambda: None,
+            agent_executor=lambda _pid: None,
+            checkpoint_store=lambda: None,
+            finding_sink=lambda: None,
+        )
+    )
+    loop, it = _loop_iter([_mk("f-1")])
+    _pin_real_findings(loop, it)  # must not raise
+    assert any("catalog pinner unwired" in r.getMessage() for r in caplog.records)
+    configure(None)
+
+
+def test_pinner_failure_never_blocks(caplog, monkeypatch, _wired_pinner):
+    def boom(project_id, pins):
+        raise RuntimeError("pool down")
+
+    import umrs.knowledge.loop_hosting as lh
+
+    monkeypatch.setattr(lh, "_safe", lambda _g, _label: boom)
+    loop, it = _loop_iter([_mk("f-1")])
+    _pin_real_findings(loop, it)  # must not raise
+    assert any("finding pin skipped" in r.getMessage() for r in caplog.records)

@@ -463,7 +463,7 @@ class TestWorkflowResolution:
             monkeypatch.setattr(loop_api, "_registered_workflow_names", _boom)
         else:
             monkeypatch.setattr(
-                loop_api, "_registered_workflow_names", lambda owner: list(registry)
+                loop_api, "_registered_workflow_names", lambda _owner: list(registry)
             )
         return client
 
@@ -721,3 +721,154 @@ class TestTraceIdD52:
 
         stored = loop_mod._loop_store.get(loop_id)
         assert stored.metadata.get("trace_id") == loop_id
+
+
+# ── D-43/D-52: findings pin onto the single active catalog (api layer) ──
+
+
+class _FakePool:
+    def __init__(self, conn):
+        self._conn = conn
+        self.leased = 0
+
+    def getconn(self):
+        self.leased += 1
+        return self._conn
+
+    def putconn(self, _conn):
+        self.leased -= 1
+
+
+def _pin_catalog_conn(catalogs):
+    import json as _json
+
+    class _Cur:
+        def __init__(self, conn):
+            self._conn = conn
+
+        def execute(self, sql, params=None):
+            if "jsonb_set" in sql:
+                pin_arr, cid = params
+                for c in self._conn.catalogs:
+                    if c["catalog_id"] == cid:
+                        prov = c.setdefault("provenance", {"pins": []})
+                        prov["pins"] = prov["pins"] + _json.loads(pin_arr)
+            elif "WHERE catalog_id = %s" in sql:
+                rows = [c for c in self._conn.catalogs if c["catalog_id"] == params[0]]
+                self._result = [
+                    (
+                        c["catalog_id"],
+                        c["project_id"],
+                        "n",
+                        "0.1.0",
+                        "",
+                        "",
+                        "[]",
+                        "[]",
+                        "[]",
+                        "[]",
+                        "[]",
+                        "",
+                        _json.dumps(c.get("provenance") or {}),
+                        "",
+                        "[]",
+                        "o",
+                        "active",
+                        None,
+                        None,
+                    )
+                    for c in rows
+                ]
+            elif "FROM scientific_catalogs" in sql:
+                rows = catalogs
+                if params:
+                    rows = [c for c in rows if c["project_id"] == params[0]]
+                self._result = [
+                    (
+                        c["catalog_id"],
+                        c["project_id"],
+                        "n",
+                        "0.1.0",
+                        "",
+                        "",
+                        "[]",
+                        "[]",
+                        "[]",
+                        "[]",
+                        "[]",
+                        "",
+                        _json.dumps(c.get("provenance") or {}),
+                        "",
+                        "[]",
+                        "o",
+                        "active",
+                        None,
+                        None,
+                    )
+                    for c in rows
+                ]
+
+        def fetchone(self):
+            return (
+                getattr(self, "_result", [None]).pop(0) if getattr(self, "_result", None) else None
+            )
+
+        def fetchall(self):
+            out = getattr(self, "_result", [])
+            self._result = []
+            return out
+
+    class _Conn:
+        def __init__(self, catalogs):
+            self.catalogs = catalogs
+
+        def cursor(self):
+            return _Cur(self)
+
+        def commit(self):
+            pass
+
+    return _Conn(catalogs)
+
+
+def _pin_findings_via_pool(catalogs, project_id, pins):
+    from umrs.api.loop import _pin_findings_onto_catalog
+
+    conn = _pin_catalog_conn(catalogs)
+    pool = _FakePool(conn)
+    _pin_findings_onto_catalog(pool, project_id, pins)
+    assert pool.leased == 0  # conn always returned
+    return conn.catalogs
+
+
+def test_findings_pin_onto_single_active_catalog():
+    catalogs = [{"catalog_id": "sc-1", "project_id": "p1", "provenance": {"pins": []}}]
+    rows = _pin_findings_via_pool(catalogs, "p1", [("f-1", "h-1 wf=wf-1"), ("f-2", "h-2 wf=wf-1")])
+    pins = rows[0]["provenance"]["pins"]
+    assert [(p["kind"], p["ref"], p["note"]) for p in pins] == [
+        ("finding", "f-1", "h-1 wf=wf-1"),
+        ("finding", "f-2", "h-2 wf=wf-1"),
+    ]
+
+
+def test_findings_pin_never_guesses_ambiguous_catalogs():
+    catalogs = [
+        {"catalog_id": "sc-1", "project_id": "p1"},
+        {"catalog_id": "sc-2", "project_id": "p1"},
+    ]
+    rows = _pin_findings_via_pool(catalogs, "p1", [("f-1", "n")])
+    assert all(not (c.get("provenance") or {}).get("pins") for c in rows)
+
+
+def test_findings_pin_dedupes_existing_refs():
+    catalogs = [
+        {
+            "catalog_id": "sc-1",
+            "project_id": "p1",
+            "provenance": {"pins": [{"kind": "finding", "ref": "f-1", "note": "old"}]},
+        }
+    ]
+    rows = _pin_findings_via_pool(catalogs, "p1", [("f-1", "new"), ("f-2", "n")])
+    pins = rows[0]["provenance"]["pins"]
+    assert [p["ref"] for p in pins] == ["f-1", "f-2"]
+    assert pins[0]["note"] == "old"  # append-only, never rewritten
