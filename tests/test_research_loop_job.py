@@ -321,3 +321,112 @@ class TestChecker:
         assert malformed.status == "failed"
         no_ref = asyncio.run(checker.check_status(_attempt(ref=None), _job({})))
         assert no_ref.status == "failed"
+
+
+class _FakeStep:
+    def __init__(self, extra=None):
+        self.extra = extra
+
+
+class _FakeExecution:
+    def __init__(self, steps):
+        self.steps = steps
+
+
+class _FakeRegistry:
+    def __init__(self, records=None, boom=False):
+        self._records = records or {}
+        self._boom = boom
+
+    def get(self, execution_id):
+        if self._boom:
+            raise RuntimeError("registry down")
+        return self._records.get(execution_id)
+
+
+class TestGpuCostAccumulation:
+    """D-36 leg B: the iteration hook accumulates MEASURED slurm cost."""
+
+    def _hook_run(self, monkeypatch, registry, loop, iteration):
+        monkeypatch.setattr(
+            "umrs.shared.workflow_execution_access.get_execution_registry",
+            lambda: registry,
+        )
+        _wire(LoopStore.memory())
+        loop_hosting.iteration_hook(job_id="", attempt_id="")(loop, iteration)
+        return loop.metadata.get("gpu_cost_iterations") or {}
+
+    def _iteration(self, workflow_run_id="wf-1", iteration_id="it-g1"):
+        return LoopIteration(
+            iteration_id=iteration_id,
+            loop_id="loop-g",
+            iteration_number=1,
+            phase=LoopPhase.MEMORY_UPDATE,
+            status="completed",
+            workflow_run_id=workflow_run_id,
+        )
+
+    def test_measured_steps_accumulate(self, monkeypatch):
+        record = _FakeExecution(
+            {
+                "train": _FakeStep(
+                    {"output_keys": [], "extra": {"slurm": {"gpu_seconds": 100.5}}}
+                ),
+                "eval": _FakeStep(
+                    {"output_keys": [], "extra": {"slurm": {"gpu_seconds": 50.0}}}
+                ),
+                "cpu-only": _FakeStep({"output_keys": [], "extra": {}}),
+            }
+        )
+        loop = _loop("loop-g")
+        ledger = self._hook_run(
+            monkeypatch, _FakeRegistry({"wf-1": record}), loop, self._iteration()
+        )
+        assert ledger["it-g1"]["gpu_seconds"] == 150.5
+        assert ledger["it-g1"]["steps_measured"] == 2
+        assert ledger["it-g1"]["steps"] == 3
+
+    def test_zero_measured_is_recorded_honestly(self, monkeypatch):
+        record = _FakeExecution({"a": _FakeStep({"extra": {}})})
+        loop = _loop("loop-g")
+        ledger = self._hook_run(
+            monkeypatch, _FakeRegistry({"wf-1": record}), loop, self._iteration()
+        )
+        assert ledger["it-g1"]["gpu_seconds"] == 0.0
+        assert ledger["it-g1"]["steps_measured"] == 0
+
+    def test_no_workflow_run_no_ledger(self, monkeypatch):
+        loop = _loop("loop-g")
+        ledger = self._hook_run(
+            monkeypatch,
+            _FakeRegistry(),
+            loop,
+            self._iteration(workflow_run_id=""),
+        )
+        assert ledger == {}
+
+    def test_registry_failure_never_crashes(self, monkeypatch):
+        loop = _loop("loop-g")
+        ledger = self._hook_run(
+            monkeypatch, _FakeRegistry(boom=True), loop, self._iteration()
+        )
+        assert ledger == {}
+
+    def test_unknown_execution_no_ledger(self, monkeypatch):
+        loop = _loop("loop-g")
+        ledger = self._hook_run(
+            monkeypatch, _FakeRegistry({}), loop, self._iteration()
+        )
+        assert ledger == {}
+
+    def test_idempotent_per_iteration(self, monkeypatch):
+        record = _FakeExecution(
+            {"train": _FakeStep({"extra": {"slurm": {"gpu_seconds": 10.0}}})}
+        )
+        registry = _FakeRegistry({"wf-1": record})
+        loop = _loop("loop-g")
+        iteration = self._iteration()
+        self._hook_run(monkeypatch, registry, loop, iteration)
+        self._hook_run(monkeypatch, registry, loop, iteration)
+        assert len(loop.metadata["gpu_cost_iterations"]) == 1
+        assert loop.metadata["gpu_cost_iterations"]["it-g1"]["gpu_seconds"] == 10.0

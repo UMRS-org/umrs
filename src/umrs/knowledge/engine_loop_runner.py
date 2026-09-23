@@ -57,6 +57,33 @@ def _wall_clock_exceeded(loop: ResearchLoop) -> bool:
     return cap > 0.0 and _elapsed_hours(loop) > cap
 
 
+def _measured_gpu_seconds(loop: ResearchLoop) -> float:
+    """D-36 leg B: the loop's accumulated MEASURED GPU-seconds (the
+    iteration hook's ledger; unmeasured work contributes nothing —
+    ADR-067's never-approximate rule)."""
+    total = 0.0
+    ledger = loop.metadata.get("gpu_cost_iterations") or {}
+    if not isinstance(ledger, dict):
+        return 0.0
+    for row in ledger.values():
+        seconds = (row or {}).get("gpu_seconds") if isinstance(row, dict) else None
+        if isinstance(seconds, (int, float)) and seconds > 0:
+            total += float(seconds)
+    return total
+
+
+def _gpu_hours_exceeded(loop: ResearchLoop) -> bool:
+    """ADR-067 leg B: per-project GPU-hour cap over MEASURED cost only."""
+    cap = 0.0
+    try:
+        cap = float(loop.metadata.get("max_gpu_hours") or 0.0)
+    except (TypeError, ValueError):
+        return False
+    if cap <= 0.0:
+        return False
+    return _measured_gpu_seconds(loop) / 3600.0 >= cap
+
+
 # ADR-066 (D-33): the ask-the-scientist trigger classes. Unknown kinds get no
 # class — profile-mode loops treat them as non-triggers (never silent-park).
 _ACTION_TRIGGER_CLASSES: dict[str, str] = {
@@ -144,13 +171,10 @@ class EngineLoopRunner(threading.Thread):
             if self._abort.is_set():
                 return True
             if _wall_clock_exceeded(self._loop):
-                self._loop.metadata["state_reason"] = "budget_exhausted:wall_clock"
-                self._store.save(self._loop)
-                logger.info(
-                    "loop %s stopped: wall-clock budget exhausted (ADR-067)",
-                    self._loop.loop_id,
-                )
-                self._notify_budget_stop()
+                self._budget_stop("wall_clock")
+                return True
+            if _gpu_hours_exceeded(self._loop):
+                self._budget_stop("gpu_hours")
                 return True
             pending = self._poll(self._loop.loop_id)
             if pending is None or pending.status == LoopStatus.STOPPED:
@@ -160,7 +184,19 @@ class EngineLoopRunner(threading.Thread):
                 continue
             return False
 
-    def _notify_budget_stop(self) -> None:
+    def _budget_stop(self, reason: str) -> None:
+        """ADR-067: stop the loop at the iteration boundary, persist the
+        honest state_reason, surface the durable admin notification."""
+        self._loop.metadata["state_reason"] = f"budget_exhausted:{reason}"
+        self._store.save(self._loop)
+        logger.info(
+            "loop %s stopped: %s budget exhausted (ADR-067)",
+            self._loop.loop_id,
+            reason,
+        )
+        self._notify_budget_stop(reason)
+
+    def _notify_budget_stop(self, reason: str) -> None:
         """D-36 leg B: the budget stop surfaces as a durable notification.
 
         Best-effort via the platform_notifications emitter seam (the api
@@ -170,13 +206,14 @@ class EngineLoopRunner(threading.Thread):
 
         notify(
             kind="budget_exhausted",
-            title=f"Loop {self._loop.loop_id} stopped: wall-clock budget exhausted",
+            title=f"Loop {self._loop.loop_id} stopped: {reason} budget exhausted",
             detail={
                 "loop_id": self._loop.loop_id,
                 "project_id": str(getattr(self._loop, "project_id", "") or ""),
-                "state_reason": "budget_exhausted:wall_clock",
+                "state_reason": f"budget_exhausted:{reason}",
                 "iterations": int(self._loop.current_iteration or 0),
                 "budget": dict(self._loop.metadata.get("budget") or {}),
+                "gpu_seconds_measured": _measured_gpu_seconds(self._loop),
             },
             project_id=str(getattr(self._loop, "project_id", "") or ""),
         )
@@ -215,8 +252,6 @@ class EngineLoopRunner(threading.Thread):
                     return True
             elif mode != "ask":
                 return True
-            from . import tool_approvals
-
             record = _request(action, loop.metadata.get("awaiting_approval") or None)
             loop.metadata["awaiting_approval"] = record["id"]
             self._store.save(loop)
@@ -226,24 +261,32 @@ class EngineLoopRunner(threading.Thread):
                 record["id"],
                 action.get("kind"),
             )
-            while True:
-                if self._abort.is_set():
-                    return False
-                current = tool_approvals.get(record["id"])
-                if current is None:
-                    current = _request(action, record["id"])
-                status = current.get("status")
-                if status == "approved":
-                    loop.metadata.pop("awaiting_approval", None)
-                    self._store.save(loop)
-                    return True
-                if status == "rejected":
-                    loop.metadata.pop("awaiting_approval", None)
-                    self._store.save(loop)
-                    return False
-                time.sleep(self._poll_seconds)
+            return self._await_approval(
+                record, loop, lambda: _request(action, record["id"])
+            )
 
         return _gate
+
+    def _await_approval(self, record: dict, loop: ResearchLoop, re_request) -> bool:
+        """Park until the durable approval is decided (True = approved)."""
+        from . import tool_approvals
+
+        while True:
+            if self._abort.is_set():
+                return False
+            current = tool_approvals.get(record["id"])
+            if current is None:
+                current = re_request()
+            status = current.get("status")
+            if status == "approved":
+                loop.metadata.pop("awaiting_approval", None)
+                self._store.save(loop)
+                return True
+            if status == "rejected":
+                loop.metadata.pop("awaiting_approval", None)
+                self._store.save(loop)
+                return False
+            time.sleep(self._poll_seconds)
 
     # -- drive --------------------------------------------------------------
 

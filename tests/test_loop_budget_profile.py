@@ -8,6 +8,8 @@ from umrs.knowledge.engine_loop_runner import (
     EngineLoopRunner,
     _action_trigger_class,
     _elapsed_hours,
+    _gpu_hours_exceeded,
+    _measured_gpu_seconds,
     _wall_clock_exceeded,
 )
 from umrs.knowledge.loop import LoopStatus, ResearchLoop
@@ -106,3 +108,51 @@ class TestPauseProfileGate:
         gate = runner._make_approval_gate(loop)
         assert gate({"kind": "workflow_trigger"}) is True
         assert gate({"kind": "competing_hypotheses"}) is True
+
+
+class TestGpuHoursBudget:
+    """D-36 leg B: the GPU-hour cap rides MEASURED cost only."""
+
+    def _ledger_loop(self, gpu_seconds, cap=1.0):
+        return _loop(
+            max_gpu_hours=cap,
+            gpu_cost_iterations={"it-1": {"gpu_seconds": gpu_seconds}},
+        )
+
+    def test_uncapped_loop_never_exceeds(self):
+        assert _gpu_hours_exceeded(_loop(gpu_cost_iterations={"it": {"gpu_seconds": 9e9}})) is False
+
+    def test_measured_over_cap_exceeds(self):
+        assert _gpu_hours_exceeded(self._ledger_loop(3610.0, cap=1.0)) is True
+
+    def test_measured_under_cap_passes(self):
+        assert _gpu_hours_exceeded(self._ledger_loop(3500.0, cap=1.0)) is False
+
+    def test_zero_measured_never_exceeds(self):
+        assert _gpu_hours_exceeded(self._ledger_loop(0.0, cap=0.001)) is False
+
+    def test_dead_ledger_fails_open(self):
+        assert _gpu_hours_exceeded(_loop(max_gpu_hours=1.0, gpu_cost_iterations="junk")) is False
+
+    def test_dead_string_cap_fails_open(self):
+        assert _gpu_hours_exceeded(_loop(max_gpu_hours="lots")) is False
+
+    def test_measured_seconds_sum_rows(self):
+        loop = _loop(
+            gpu_cost_iterations={
+                "it-1": {"gpu_seconds": 100.0},
+                "it-2": {"gpu_seconds": 50.0},
+                "it-3": {"gpu_seconds": "junk"},  # dead row contributes nothing
+                "it-4": {"steps": 1},  # no measurement contributes nothing
+            }
+        )
+        assert _measured_gpu_seconds(loop) == 150.0
+
+    def test_cancel_check_marks_gpu_reason_and_returns_true(self):
+        loop = self._ledger_loop(2 * 3600.0, cap=1.0)
+        store = _store({loop.loop_id: loop})
+        runner = EngineLoopRunner(
+            loop, engine_factory=lambda: None, store=store, poll_seconds=0.01
+        )
+        assert runner._cancel_check() is True
+        assert loop.metadata["state_reason"] == "budget_exhausted:gpu_hours"

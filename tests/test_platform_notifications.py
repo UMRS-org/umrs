@@ -43,32 +43,42 @@ class _Conn:
 
     def _handle(self, sql, params, cur):
         if "INSERT INTO platform_notifications" in sql:
-            self._seq += 1
-            self.rows.append(
-                {
-                    "id": self._seq,
-                    "kind": params[0],
-                    "title": params[1],
-                    "detail": json.loads(params[2]),
-                    "user_id": params[3],
-                    "project_id": params[4],
-                    "created_at": "2026-09-23T00:00:00+00:00",
-                    "read_at": None,
-                }
-            )
-            cur._result = [self._row_tuple(self.rows[-1])]
+            self._handle_insert(params, cur)
         elif "read_at IS NULL" in sql and "UPDATE" in sql:
-            for r in self.rows:
-                if r["id"] == params[0] and r["read_at"] is None:
-                    r["read_at"] = "2026-09-23T01:00:00+00:00"
-                    cur._result = [self._row_tuple(r)]
-                    return
-            cur._result = []
-        elif "WHERE" in sql and "user_id = %s" in sql:
+            self._handle_mark_read(params, cur)
+        else:
+            self._handle_select(sql, params, cur)
+
+    def _handle_select(self, sql, params, cur):
+        if "WHERE" in sql and "user_id = %s" in sql:
             want = params[0]
             cur._result = [self._row_tuple(r) for r in self.rows if r["user_id"] == want]
         elif sql.startswith("SELECT id, kind"):
             cur._result = [self._row_tuple(r) for r in self.rows]
+
+    def _handle_insert(self, params, cur):
+        self._seq += 1
+        self.rows.append(
+            {
+                "id": self._seq,
+                "kind": params[0],
+                "title": params[1],
+                "detail": json.loads(params[2]),
+                "user_id": params[3],
+                "project_id": params[4],
+                "created_at": "2026-09-23T00:00:00+00:00",
+                "read_at": None,
+            }
+        )
+        cur._result = [self._row_tuple(self.rows[-1])]
+
+    def _handle_mark_read(self, params, cur):
+        for r in self.rows:
+            if r["id"] == params[0] and r["read_at"] is None:
+                r["read_at"] = "2026-09-23T01:00:00+00:00"
+                cur._result = [self._row_tuple(r)]
+                return
+        cur._result = []
 
     @staticmethod
     def _row_tuple(r):
@@ -165,8 +175,13 @@ def test_budget_stop_emits_through_the_runner_seam(monkeypatch):
     )()
     driver = object.__new__(runner.EngineLoopRunner)
     driver._loop = loop
-    driver._notify_budget_stop()
+    driver._notify_budget_stop("wall_clock")
     assert calls[0]["kind"] == "budget_exhausted"
     assert calls[0]["detail"]["loop_id"] == "l-1"
     assert calls[0]["detail"]["iterations"] == 3
+    assert calls[0]["detail"]["state_reason"] == "budget_exhausted:wall_clock"
     assert calls[0]["project_id"] == "p1"
+
+    driver._notify_budget_stop("gpu_hours")
+    assert calls[1]["detail"]["state_reason"] == "budget_exhausted:gpu_hours"
+    assert calls[1]["title"] == "Loop l-1 stopped: gpu_hours budget exhausted"
