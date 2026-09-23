@@ -36,7 +36,8 @@ class ProjectStore:
     def _row(self, project_id: str) -> dict[str, Any] | None:
         cur = self._conn.cursor()
         cur.execute(
-            "SELECT project_id, name, owner_id, status, retired_at, created_at, updated_at"
+            "SELECT project_id, name, owner_id, status, retired_at, created_at,"
+            " updated_at, data_class"
             " FROM projects WHERE project_id = %s",
             (project_id,),
         )
@@ -51,6 +52,7 @@ class ProjectStore:
             "retired_at": row[4].isoformat() if row[4] else None,
             "created_at": row[5].isoformat() if row[5] else None,
             "updated_at": row[6].isoformat() if row[6] else None,
+            "data_class": row[7] if len(row) > 7 else "sensitive",
         }
 
     def create(
@@ -136,6 +138,25 @@ class ProjectStore:
 
     # -- budget caps (ADR-067, gap row D-36) --------------------------------
 
+    def set_data_class(self, project_id: str, data_class: str) -> dict[str, Any]:
+        """ADR-062: set the project's data class (widening/narrowing both
+        ride this verb; the ROUTE enforces owner-or-admin)."""
+        if data_class not in ("sensitive", "non_sensitive"):
+            raise ValueError(f"invalid data_class {data_class!r}")
+        if self._row(project_id) is None:
+            raise ProjectNotFound(project_id)
+        cur = self._conn.cursor()
+        cur.execute(
+            "UPDATE projects SET data_class = %s, updated_at = now()"
+            " WHERE project_id = %s",
+            (data_class, project_id),
+        )
+        self._conn.commit()
+        row = self._row(project_id)
+        if row is None:
+            raise RuntimeError(f"project update lost (project_id={project_id})")
+        return row
+
     def get_budget(self, project_id: str) -> dict[str, Any]:
         """Budget row for the project (zeros = uncapped when absent)."""
         cur = self._conn.cursor()
@@ -199,6 +220,10 @@ class ProjectCreateBody(BaseModel):
 
 class ProjectPatchBody(BaseModel):
     action: str = Field(default="")
+    data_class: str | None = Field(
+        default=None,
+        description="ADR-062: with action='set_data_class' — 'sensitive' | 'non_sensitive'",
+    )
 
 
 def _store_dep(request: Request):
@@ -227,6 +252,7 @@ def _row_response(row: dict[str, Any]) -> dict[str, Any]:
         "name": row.get("name", ""),
         "owner_id": row["owner_id"],
         "status": row["status"],
+        "data_class": row.get("data_class", "sensitive"),
         "retired_at": row.get("retired_at"),
         "created_at": row.get("created_at"),
         "updated_at": row.get("updated_at"),
@@ -309,18 +335,29 @@ def patch_project(
         raise_typed(
             PlatformError.projects("not_found", f"project {project_id} not found")
         )
-    if body.action != "retire":
+    if body.action not in ("retire", "set_data_class"):
         raise_typed(
             PlatformError.projects(
-                "bad_request", "action must be 'retire' for the current round"
+                "bad_request", "action must be 'retire' or 'set_data_class'"
             )
         )
     if not identity.is_admin and (identity.user_id or "") != row["owner_id"]:
         raise_typed(
             PlatformError.projects(
-                "forbidden", "only the owner or an admin may retire this project"
+                "forbidden", "only the owner or an admin may modify this project"
             )
         )
+    if body.action == "set_data_class":
+        data_class = str(body.data_class or "").strip()
+        if data_class not in ("sensitive", "non_sensitive"):
+            raise_typed(
+                PlatformError.projects(
+                    "bad_request",
+                    "set_data_class requires 'sensitive' or 'non_sensitive'",
+                )
+            )
+        row = store.set_data_class(project_id, data_class)
+        return {"status": "ok", "project": _row_response(row)}
     row = store.retire(project_id)
     return {"status": "ok", "project": _row_response(row)}
 
