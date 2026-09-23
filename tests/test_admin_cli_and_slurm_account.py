@@ -341,7 +341,7 @@ class TestAdminCLI:
                 },
             )(),
         )
-        monkeypatch.setattr(admin_main_module, "_maybe_signal_reload", lambda args: None)
+        monkeypatch.setattr(admin_main_module, "_maybe_signal_reload", lambda _args: None)
 
         assert _run(d, "user", "delete", "alice", "--purge", "--deprovision", "-y") == 0
         out = capsys.readouterr().out
