@@ -17,16 +17,16 @@ class TestMaybeEmitAttemptSpan:
     def _base_kwargs(self):
         start = datetime(2026, 9, 11, 0, 0, tzinfo=timezone.utc)
         end = start + timedelta(seconds=7)
-        return dict(
-            job_id="job-1",
-            attempt_id="att-1",
-            attempt_no=2,
-            backend="slurm",
-            job_type="endpoint_provision",
-            started_at=start,
-            transitioned_at=end,
-            fields={"queue_wait_ms": 7000},
-        )
+        return {
+            "job_id": "job-1",
+            "attempt_id": "att-1",
+            "attempt_no": 2,
+            "backend": "slurm",
+            "job_type": "endpoint_provision",
+            "started_at": start,
+            "transitioned_at": end,
+            "fields": {"queue_wait_ms": 7000},
+        }
 
     def test_noop_without_otlp_endpoint(self, monkeypatch):
         monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)
@@ -37,7 +37,7 @@ class TestMaybeEmitAttemptSpan:
         kwargs["fields"] = {}
         assert maybe_emit_attempt_span(**kwargs) is False
 
-    def test_noop_on_unparseable_window(self, monkeypatch):
+    def test_noop_on_unparseable_window(self):
         kwargs = self._base_kwargs()
         kwargs["started_at"] = "not-a-date"
         assert maybe_emit_attempt_span(**kwargs) is False
@@ -153,3 +153,76 @@ class TestMaybeEmitSpanGenericHook:
             maybe_emit_span("x", started_at="2026-09-11", transitioned_at="2026-09-11T00:01")
             is False
         )
+
+
+# ---------------------------------------------------------------------------
+# D-52: trace-id stitching — the loop's trace id rides durable-runtime spans
+# ---------------------------------------------------------------------------
+
+
+class TestTraceIdStitching:
+    def _emit(self, monkeypatch, *, trace_id=""):
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://otel:4318")
+        import sys
+        import types
+
+        calls = []
+        fake_span = MagicMock()
+
+        def _start(name, *, start_time, attributes):
+            calls.append((name, attributes))
+            return fake_span
+
+        otel_mod = types.ModuleType("umrs.server.otel")
+        otel_mod.otel_active = lambda: True
+        monkeypatch.setitem(sys.modules, "umrs.shared.otel_flag", otel_mod)
+        otel_pkg = types.ModuleType("opentelemetry")
+        trace_mod = types.SimpleNamespace(
+            get_tracer=lambda *_a, **_k: types.SimpleNamespace(start_span=_start)
+        )
+        otel_pkg.trace = trace_mod
+        monkeypatch.setitem(sys.modules, "opentelemetry", otel_pkg)
+
+        datetime(2026, 9, 11, 0, 0, tzinfo=timezone.utc)
+        kwargs = self._base_kwargs()
+        kwargs["trace_id"] = trace_id
+        assert maybe_emit_attempt_span(**kwargs) is True
+        return calls
+
+    def _base_kwargs(self):
+        start = datetime(2026, 9, 11, 0, 0, tzinfo=timezone.utc)
+        return {
+            "job_id": "job-9",
+            "attempt_id": "att-9",
+            "attempt_no": 1,
+            "backend": "in-process",
+            "job_type": "research_loop_job",
+            "started_at": start,
+            "transitioned_at": start + timedelta(seconds=5),
+            "fields": {"wall_ms": 5000},
+        }
+
+    def test_trace_id_rides_the_span(self, monkeypatch):
+        calls = self._emit(monkeypatch, trace_id="loop-d52")
+        (_, attrs) = calls[0]
+        assert attrs["umrs.trace_id"] == "loop-d52"
+
+    def test_empty_trace_id_stays_absent(self, monkeypatch):
+        calls = self._emit(monkeypatch, trace_id="")
+        (_, attrs) = calls[0]
+        assert "umrs.trace_id" not in attrs  # honest absence, never fabricated
+
+
+def test_research_loop_trace_id_extraction():
+    """Store-side extraction: loop jobs thread their loop id; others stay empty."""
+    from types import SimpleNamespace
+
+    from umrs.jobs.models import JobType
+    from umrs.jobs.store import _research_loop_trace_id
+
+    loop_job = SimpleNamespace(job_type=JobType.RESEARCH_LOOP, spec={"loop_id": "loop-d52"})
+    assert _research_loop_trace_id(loop_job) == "loop-d52"
+    other = SimpleNamespace(job_type=JobType.ENDPOINT_PROVISION, spec={})
+    assert _research_loop_trace_id(other) == ""
+    malformed = SimpleNamespace(job_type=JobType.RESEARCH_LOOP, spec=None)
+    assert _research_loop_trace_id(malformed) == ""

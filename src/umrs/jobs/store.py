@@ -19,7 +19,7 @@ import json
 import logging
 import uuid
 from contextlib import contextmanager
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import psycopg2
@@ -65,6 +65,23 @@ class AttemptNotFoundError(JobStoreError):
 
 class InvalidTransitionError(JobStoreError):
     """Raised when state transition is invalid."""
+
+
+def _research_loop_trace_id(job: Any) -> str:
+    """D-52 stitching: the research-loop job's trace id on its span.
+
+    The loop stamps ``metadata.trace_id`` (= loop id) at start; the durable
+    job's spec carries ``loop_id``. Non-loop jobs return "" (the attribute
+    stays absent — honest, never fabricated).
+    """
+    try:
+        if getattr(job, "job_type", None) != JobType.RESEARCH_LOOP:
+            return ""
+        spec = getattr(job, "spec", None) or {}
+        loop_id = spec.get("loop_id") if isinstance(spec, dict) else None
+        return str(loop_id or "")
+    except (AttributeError, TypeError):
+        return ""
 
 
 def _budget_exhausted_marker(attempt_id: str, exit_reason: str | None) -> bool:
@@ -242,9 +259,9 @@ class JobStore:
         # (or shared when site_name itself is empty).
         venue = self._resolve_venue(spec)
 
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
 
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
 
         with self._get_conn() as conn, conn.cursor() as cur:
             try:
@@ -349,7 +366,7 @@ class JobStore:
 
         for name in names:
             visit(name)
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
 
         child_rows: list[tuple[Any, ...]] = []
         for index, (child, child_id) in enumerate(
@@ -544,8 +561,8 @@ class JobStore:
         Transitions: PLANNED → QUEUED
         Holds advisory lock to prevent races with create_attempt.
         """
-        when = when or datetime.utcnow()
-        now = datetime.utcnow()
+        when = when or datetime.now(timezone.utc).replace(tzinfo=None)
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
 
         with self._get_conn() as conn, self._advisory_lock(conn, job_id):
             with conn.cursor() as cur:
@@ -584,7 +601,7 @@ class JobStore:
         - venue = '' (shared) OR venue = this scheduler's site_name
         - ordered by priority DESC, next_run_at ASC
         """
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
 
         with self._get_conn() as conn, conn.cursor() as cur:
             # Use FOR UPDATE SKIP LOCKED for concurrent schedulers
@@ -655,7 +672,7 @@ class JobStore:
         Transitions job: QUEUED → RUNNING
         """
         attempt_id = generate_attempt_id()
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
 
         with self._get_conn() as conn, self._advisory_lock(conn, job_id):
             with conn.cursor() as cur:
@@ -768,7 +785,7 @@ class JobStore:
 
         Transitions: CREATED → SUBMITTED
         """
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
 
         with self._get_conn() as conn, conn.cursor() as cur:
             cur.execute(
@@ -831,7 +848,7 @@ class JobStore:
             conn.commit()
 
         # WP-12: record the queue_wait phase span (best-effort)
-        self._record_attempt_timing(attempt_id, "running", datetime.utcnow())
+        self._record_attempt_timing(attempt_id, "running", datetime.now(timezone.utc).replace(tzinfo=None))
 
     def mark_attempt_succeeded(
         self,
@@ -845,7 +862,7 @@ class JobStore:
         Transitions: SUBMITTED/RUNNING → SUCCEEDED
         If commit=True, also sets commit_attempt_id on parent job.
         """
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
 
         with self._get_conn() as conn, conn.cursor() as cur:
             # Update attempt
@@ -951,10 +968,11 @@ class JobStore:
             from .timing import maybe_emit_attempt_span
 
             job_type = ""
+            trace_id = ""
             try:
-                job_type = str(
-                    getattr(self.get_job(attempt.job_id), "job_type", "") or ""
-                )
+                job = self.get_job(attempt.job_id)
+                job_type = str(getattr(job, "job_type", "") or "")
+                trace_id = _research_loop_trace_id(job)
             except (AttributeError, RuntimeError):
                 # span attribute enrichment only; missing job row must not block
                 job_type = ""
@@ -964,6 +982,7 @@ class JobStore:
                 attempt_no=int(getattr(attempt, "attempt_no", 0)),
                 backend=str(getattr(attempt, "backend", "")),
                 job_type=job_type,
+                trace_id=trace_id,
                 started_at=attempt.started_at,
                 transitioned_at=when,
                 fields=fields,
@@ -1089,7 +1108,7 @@ class JobStore:
             attempt = self.get_attempt(attempt_id)
             job = self.get_job(job_id)
             self._post_success_callback(job, attempt)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — post-success hook must never block the terminal state
             logger.warning(
                 "Post-success hook failed for attempt %s job %s: %s",
                 attempt_id,
@@ -1116,7 +1135,7 @@ class JobStore:
         Returns:
             True if job was requeued for retry
         """
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
         requeued = False
 
         with (
@@ -1218,7 +1237,7 @@ class JobStore:
                 try:
                     job = self.get_job(job_id)
                     self._post_failure_callback(job, attempt_no, exit_reason)
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001 — post-failure hook must never block the terminal state
                     logger.warning(
                         "Post-failure hook failed for job %s: %s", job_id, exc
                     )
@@ -1235,7 +1254,7 @@ class JobStore:
         Transitions: SUBMITTED/RUNNING → LOST
         Does NOT automatically requeue - caller must handle that.
         """
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
 
         with self._get_conn() as conn, conn.cursor() as cur:
             cur.execute(
@@ -1360,7 +1379,7 @@ class JobStore:
         Does NOT kill running backend jobs.
         Holds advisory lock to prevent races with create_attempt.
         """
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
 
         with self._get_conn() as conn, self._advisory_lock(conn, job_id):
             with conn.cursor() as cur:
@@ -1420,7 +1439,7 @@ class JobStore:
         Resets retry count and requeues immediately.
         Holds advisory lock to prevent races with create_attempt.
         """
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
 
         with self._get_conn() as conn, self._advisory_lock(conn, job_id):
             with conn.cursor() as cur:
