@@ -48,6 +48,10 @@ class HostingWiring:
     agent_executor: Callable[[str], Callable[..., Any]]
     checkpoint_store: Callable[[], Any | None]
     finding_sink: Callable[[], Any | None]
+    # D-43/D-52: pins real findings onto the project's single active
+    # catalog (kind=finding). Getter like the rest; None = unwired (no pin,
+    # reported by warning — never a silent no-op on a wired host).
+    catalog_pinner: Callable[[], Any | None] | None = None
 
 
 _WIRING: HostingWiring | None = None
@@ -91,6 +95,39 @@ def _mint_findings(loop: ResearchLoop, iteration: LoopIteration, store: Any) -> 
     outcome = finding_ingest.mint_iteration(loop, iteration, sink=sink)
     if outcome.minted or outcome.errors or iteration.artifact_ids:
         store.save(loop)
+    _pin_real_findings(loop, iteration)
+
+
+def _pin_real_findings(loop: ResearchLoop, iteration: LoopIteration) -> None:
+    """Pin the iteration's REAL findings onto the catalog (D-43/D-52).
+
+    kind=finding, ref=finding_id — findings mint with trace/lineage.
+    Simulated findings are excluded (honest provenance: a simulated
+    finding is not a claim about the world). Best-effort: a pin failure
+    never blocks the loop.
+    """
+    pins = [
+        (f.finding_id, f"{f.hypothesis_id} wf={f.workflow_run_id}")
+        for f in iteration.findings
+        if not getattr(f, "simulated", False)
+    ]
+    if not pins:
+        return
+    getter = getattr(_wiring(), "catalog_pinner", None)
+    if getter is None:
+        logger.warning(
+            "catalog pinner unwired — %d finding pin(s) skipped for loop %s",
+            len(pins),
+            loop.loop_id,
+        )
+        return
+    pinner = _safe(getter, "catalog pinner")
+    if pinner is None:
+        return
+    try:
+        pinner(loop.project_id, pins)
+    except Exception as exc:  # noqa: BLE001 — pin is best-effort, never a gate
+        logger.warning("finding pin skipped for loop %s: %s", loop.loop_id, exc)
 
 
 def _checkpoint_iteration(

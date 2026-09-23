@@ -54,6 +54,50 @@ def _finding_sink():
     return KnowledgeFindingSink() if _resolve_knowledge_dsn() else None
 
 
+def _catalog_pinner():
+    """D-43/D-52 findings pin: single-active-catalog append via the jobs pool.
+
+    None when no job service/pool is up (loop_hosting reports the skip);
+    never a silent no-op on a wired host.
+    """
+
+    from umrs.jobs.service import get_job_service
+
+    svc = get_job_service()
+    pool = getattr(svc, "db_pool", None) if svc is not None else None
+    if pool is None:
+        logger.warning("catalog pinner: no jobs pool — finding pins skipped")
+        return None
+    return lambda project_id, pins: _pin_findings_onto_catalog(pool, project_id, pins)
+
+
+def _pin_findings_onto_catalog(pool, project_id: str, pins) -> None:
+    """Append kind=finding pins; single-active-catalog rule, deduped.
+
+    Zero catalogs → nothing to associate against; several → ambiguous,
+    never silently guessed (pin by hand with `r4 catalog pin`).
+    """
+    from umrs.scientific_catalogs.store import ScientificCatalogStore
+
+    conn = pool.getconn()
+    try:
+        store = ScientificCatalogStore(conn)
+        catalogs = store.list(project_id=project_id)
+        if len(catalogs) != 1:
+            return
+        catalog_id = catalogs[0]["catalog_id"]
+        already = {
+            p.get("ref")
+            for p in (store.get(catalog_id).get("provenance") or {}).get("pins", [])
+        }
+        for ref, note in pins:
+            if ref in already:
+                continue
+            store.add_pin(catalog_id, kind="finding", ref=ref, note=note)
+    finally:
+        pool.putconn(conn)
+
+
 def _checkpoint_store():
     """Singleton CheckpointStore accessor (ADR-036).
 
@@ -92,6 +136,7 @@ def _configure_hosting() -> None:
             ),
             checkpoint_store=_checkpoint_store,
             finding_sink=_finding_sink,
+            catalog_pinner=_catalog_pinner,
         )
     )
 
@@ -110,7 +155,7 @@ def configure_loop_store(pool: Any) -> None:
     for live in _loop_store.list_all():
         try:
             incoming.save(live)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — one loop must not block boot
             logger.warning("loop migration on boot skipped %s: %s", live.loop_id, exc)
     _loop_store = incoming
     logger.info(
@@ -416,7 +461,7 @@ def _enforce_readiness_approval(request: StartLoopRequest) -> None:
         project = ResearchProject(project_id=request.project_id)
         readiness = project.check_readiness()
         gate_applies = not readiness.user_approved
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 — readiness gate failure surfaces typed
         raise_typed(
             PlatformError.loops(
                 "unavailable",
@@ -502,7 +547,7 @@ def _catalog_candidates(requested: str, owner: str) -> list[str] | None:
     """Registered names, or None when the catalog is unreachable but a name was given."""
     try:
         return _registered_workflow_names(owner)
-    except Exception as exc:  # reported as 503, never hidden
+    except Exception as exc:  # noqa: BLE001 — reported as 503, never hidden
         if requested:
             logger.warning(
                 "workflow catalog unavailable; trusting requested name: %s", exc
@@ -892,7 +937,7 @@ def _host_on_thread(
             from umrs.knowledge.agentic_engine import AgenticEngine
 
             project = ResearchProject(project_id=loop.project_id)
-            engine_factory = lambda: AgenticEngine(  # noqa: E731
+            engine_factory = lambda: AgenticEngine(
                 executor=_agent_executor_for(project)
             )
             _engine_runner.register(
