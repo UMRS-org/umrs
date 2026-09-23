@@ -63,6 +63,10 @@ class UserRecord:
     oidc_subject: str = ""
     # Preserve any other top-level keys the daemon cares about
     # (s3_configuration_file, experiences, ...) verbatim.
+    # D-03: long-lived per-user CURVE public key (Z85) — the account record
+    # is the key authority; revocation timestamp empties/declares it dead.
+    curve_public_key: str = ""
+    curve_key_revoked_at: str = ""
     extras: dict[str, Any] = field(default_factory=dict)
 
     def to_json(self) -> dict[str, Any]:
@@ -83,6 +87,10 @@ class UserRecord:
             out["slurm_account"] = self.slurm_account
         if self.slurm_accounts:
             out["slurm_accounts"] = dict(self.slurm_accounts)
+        if self.curve_public_key:
+            out["curve_public_key"] = self.curve_public_key
+        if self.curve_key_revoked_at:
+            out["curve_key_revoked_at"] = self.curve_key_revoked_at
         # Extras (s3_configuration_file, experiences, ...) are restored last so
         # they never clobber the admin-managed fields above.
         for k, v in self.extras.items():
@@ -112,6 +120,8 @@ class UserRecord:
             "created_at",
             "last_updated",
             "oidc_subject",
+            "curve_public_key",
+            "curve_key_revoked_at",
         }
         extras = {k: v for k, v in data.items() if k not in known}
         raw_accounts = data.get("slurm_accounts")
@@ -131,6 +141,8 @@ class UserRecord:
             created_at=str(data.get("created_at", "")),
             last_updated=str(data.get("last_updated", "")),
             oidc_subject=str(data.get("oidc_subject", "")),
+            curve_public_key=str(data.get("curve_public_key", "") or ""),
+            curve_key_revoked_at=str(data.get("curve_key_revoked_at", "") or ""),
             extras=extras,
         )
 

@@ -103,6 +103,19 @@ def _init_session_curve_provider():
         provider = SessionCredentialsProvider()
         provider.start()
         set_shared_session_provider(provider)
+        # D-03: the UMRS account records are the key authority — sync the
+        # long-lived account keys into the ZAP registry at boot (disabled
+        # or revoked accounts never register; best-effort: a missing user
+        # files dir leaves the registry session-only, never an error).
+        try:
+            from umrs.admin.user_store import UserStore
+
+            count = provider.sync_account_keys(UserStore().list())
+            logger.info(
+                "D-03 account keystore sync: %d long-lived key(s) registered", count
+            )
+        except Exception as exc:  # noqa: BLE001 — boot must not die on keystore sync
+            logger.warning("D-03 account keystore sync skipped: %s", exc)
         logger.info("Session CURVE provider initialized (UMRS_ZMQ_AUTH_TYPE=session)")
     except Exception:
         logger.exception("Failed to initialize session CURVE provider")
