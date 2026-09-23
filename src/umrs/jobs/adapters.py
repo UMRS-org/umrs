@@ -1524,6 +1524,10 @@ def create_backend_factory(
             from .research_loop_backend import ResearchLoopBackend
 
             return ResearchLoopBackend()
+        elif job_type == JobType.HPC_SCRIPT:
+            from .hpc_script import build_hpc_script_services
+
+            return build_hpc_script_services()["backend"]
         else:
             raise ValueError(f"Unsupported job type: {job_type}")
 
@@ -1635,6 +1639,13 @@ def create_status_checker(
 
     checker.register(
         JobType.RESEARCH_LOOP, ResearchLoopStatusChecker(instance_id=instance_id)
+    )
+
+    from .hpc_script import build_hpc_script_services
+
+    checker.register(
+        JobType.HPC_SCRIPT,
+        build_hpc_script_services()["checker"],
     )
 
     if frontend_session_checker is not None:
