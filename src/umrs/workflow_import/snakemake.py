@@ -236,36 +236,34 @@ def _build_workflow(
     for name, rule in rules.items():
         for out in rule["output"]:
             producer[out] = name
-
-    steps: list[dict[str, Any]] = []
-    for name, rule in rules.items():
-        deps = sorted({producer[f] for f in rule["input"] if f in producer})
-        command = _resolve_placeholders(rule)
-        # Child inputs are run-scoped upstream keys — aliases give the
-        # command its stable file paths (ShellStep contract).
-        aliases = {f: f"**/{f}" for f in rule["input"] if f in producer}
-        steps.append(
-            {
-                "name": name,
-                "entrypoint": SHELL_STEP_ENTRYPOINT,
-                "depends_on": deps,
-                "config": {
-                    "command": command,
-                    "output_globs": [
-                        f if f.startswith("outputs/") else f"outputs/{f}"
-                        for f in rule["output"]
-                    ],
-                    "input_aliases": aliases,
-                },
-            }
-        )
-
+    steps = [_build_one_step(name, rule, producer) for name, rule in rules.items()]
     return {
         "name": workflow_name,
         "version": "1.0",
         "description": f"Imported from Snakemake (declarative subset); {len(steps)} rules",
         "steps": steps,
         "source": {"type": "imported", "format": "snakemake"},
+    }
+
+
+def _build_one_step(
+    name: str, rule: dict[str, Any], producer: dict[str, str]
+) -> dict[str, Any]:
+    """One rule → ShellStep (deps, resolved command, aliases, globs)."""
+    deps = sorted({producer[f] for f in rule["input"] if f in producer})
+    aliases = {f: f"**/{f}" for f in rule["input"] if f in producer}
+    return {
+        "name": name,
+        "entrypoint": SHELL_STEP_ENTRYPOINT,
+        "depends_on": deps,
+        "config": {
+            "command": _resolve_placeholders(rule),
+            "output_globs": [
+                f if f.startswith("outputs/") else f"outputs/{f}"
+                for f in rule["output"]
+            ],
+            "input_aliases": aliases,
+        },
     }
 
 
