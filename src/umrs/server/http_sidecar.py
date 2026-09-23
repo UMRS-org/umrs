@@ -67,7 +67,7 @@ def _build_db_pool(app):
         db_pool = build_durable_job_db_pool_from_env()
         app.state.umrs_db_pool = db_pool
         return db_pool
-    except Exception:
+    except Exception:  # noqa: BLE001 — boot/teardown must survive per-component failures
         logger.warning("Shared DB pool unavailable in HTTP sidecar")
         return None
 
@@ -106,7 +106,7 @@ def _init_job_store(db_pool):
 
         set_job_store(JobStore(db_pool))
         logger.info("Job store initialized for HTTP sidecar")
-    except Exception:
+    except Exception:  # noqa: BLE001 — boot/teardown must survive per-component failures
         logger.warning(
             "Job store unavailable in HTTP sidecar — /umrs/jobs/* will return 503"
         )
@@ -151,7 +151,7 @@ def _init_model_store(app, db_pool):
             )
         )
         logger.info("Model store initialized for HTTP sidecar")
-    except Exception:
+    except Exception:  # noqa: BLE001 — boot/teardown must survive per-component failures
         logger.warning(
             "Model store unavailable in HTTP sidecar — /umrs/models/* will return 503"
         )
@@ -170,7 +170,7 @@ def _init_mcp_store(app, db_pool):
         app.state.umrs_mcp_store_conn = mcp_conn
         set_mcp_store(MCPServerStore(mcp_conn))
         logger.info("MCP server store initialized for HTTP sidecar")
-    except Exception:
+    except Exception:  # noqa: BLE001 — boot/teardown must survive per-component failures
         logger.warning(
             "MCP store unavailable in HTTP sidecar — /umrs/mcp/* will return 503"
         )
@@ -188,7 +188,7 @@ def _init_audit_store(app, db_pool):
         app.state.umrs_audit_store_conn = audit_conn
         set_audit_store(AuditStore(audit_conn))
         logger.info("Audit store initialized for HTTP sidecar")
-    except Exception:
+    except Exception:  # noqa: BLE001 — boot/teardown must survive per-component failures
         logger.warning("Audit store unavailable — using in-memory buffer only")
 
 
@@ -209,7 +209,7 @@ def _init_governance_store(app, db_pool):
         app.state.umrs_governance_store = gov_store
         set_governance_store(gov_store)
         logger.info("Governance store initialized for HTTP sidecar")
-    except Exception:
+    except Exception:  # noqa: BLE001 — boot/teardown must survive per-component failures
         logger.warning("Governance store unavailable — quota enforcement disabled")
 
 
@@ -226,7 +226,7 @@ def _init_research_sessions_store(app, db_pool):
         app.state.umrs_research_sessions_conn = sess_conn
         set_session_store(SessionStore(sess_conn))
         logger.info("Research session store initialized for HTTP sidecar")
-    except Exception:
+    except Exception:  # noqa: BLE001 — boot/teardown must survive per-component failures
         logger.warning(
             "Research session store unavailable in HTTP sidecar — "
             "/umrs/research/sessions/* will return 503"
@@ -264,7 +264,7 @@ def _init_companion_trust_store(app, db_pool):
         set_trust_store(TrustAllowlistStore(trust_conn))
         logger.info("Companion trust store initialized for HTTP sidecar")
         _init_approval_inbox(trust_conn)
-    except Exception:
+    except Exception:  # noqa: BLE001 — boot/teardown must survive per-component failures
         logger.warning(
             "Companion trust store unavailable in HTTP sidecar — "
             "/umrs/companion/trust* will return 503; approval inbox stays process-local"
@@ -296,7 +296,7 @@ def _init_usage_pool(db_pool):
 
         set_usage_db_pool(db_pool)
         logger.info("LLM usage recording pool initialized")
-    except Exception:
+    except Exception:  # noqa: BLE001 — boot/teardown must survive per-component failures
         logger.warning("LLM usage recording unavailable — usage will not be tracked")
 
 
@@ -313,7 +313,7 @@ def _site_capabilities() -> dict[str, str | int]:
         if site.scheduler.slurm_delegation == "per_user_ssh":
             caps["service_pubkey_path"] = site.scheduler.service_pubkey_path
             caps["slurm_proxy_path"] = site.scheduler.slurm_proxy_path
-    except Exception:
+    except Exception:  # noqa: BLE001, S110 — boot/teardown must survive per-component failures
         pass
     zmq_port = os.environ.get("UMRS_CONTROL_PORT")
     if zmq_port:
@@ -336,7 +336,7 @@ def _check_database(app):
         finally:
             db_pool.putconn(conn)
         return {"status": "ok"}
-    except Exception:
+    except Exception:  # noqa: BLE001 — boot/teardown must survive per-component failures
         return {"status": "unavailable"}
 
 
@@ -351,7 +351,7 @@ def _check_registry_health():
         for ep in all_eps:
             by_status[ep.status.value] = by_status.get(ep.status.value, 0) + 1
         return {"status": "ok", "total": len(all_eps), **by_status}
-    except Exception:
+    except Exception:  # noqa: BLE001 — boot/teardown must survive per-component failures
         return {"status": "unavailable"}
 
 
@@ -364,7 +364,7 @@ def _check_models(app):
         if store is not None:
             return {"status": "ok"}
         return {"status": "not_configured"}
-    except Exception:
+    except Exception:  # noqa: BLE001 — boot/teardown must survive per-component failures
         return {"status": "unavailable"}
 
 
@@ -384,7 +384,7 @@ def _check_durable_jobs_health():
                 return {"status": "ok", "liveness": status}
             return {"status": "ok"}
         return {"status": "not_started"}
-    except Exception:
+    except Exception:  # noqa: BLE001 — boot/teardown must survive per-component failures
         return {"status": "unavailable"}
 
 
@@ -434,7 +434,7 @@ def _check_postgres(app):
         finally:
             db_pool.putconn(conn)
         return {"status": "ok"}, False
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 — boot/teardown must survive per-component failures
         return {"status": "unavailable", "error": str(exc)[:120]}, True
 
 
@@ -455,7 +455,7 @@ def _check_job_store(app):
             "status": "ok",
             "pending_jobs": str(pending) if pending is not None else "unknown",
         }, False
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 — boot/teardown must survive per-component failures
         return {"status": "error", "error": str(exc)[:120]}, True
 
 
@@ -477,7 +477,7 @@ def _check_durable_jobs_readiness():
                 return {"status": "ok", "liveness": status}, False
             return {"status": "ok"}, False
         return {"status": "not_started"}, True
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 — boot/teardown must survive per-component failures
         return {"status": "error", "error": str(exc)[:120]}, True
 
 
@@ -494,7 +494,7 @@ def _check_registry_readiness():
             "total_endpoints": str(len(all_eps)),
             "ready_endpoints": str(ready_count),
         }
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 — boot/teardown must survive per-component failures
         return {"status": "error", "error": str(exc)[:120]}
 
 
@@ -505,7 +505,7 @@ def _check_backend():
 
         site = load_site_config()
         return {"status": "ok", "type": site.scheduler.kind}
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 — boot/teardown must survive per-component failures
         return {"status": "unknown", "error": str(exc)[:120]}
 
 
@@ -596,8 +596,38 @@ def _upgrade_loop_store() -> None:
             from umrs.api.loop import configure_loop_store_sync
 
             configure_loop_store_sync(dsn_sync)
+            # D-36 leg B: the notification emitter rides the same DSN seam
+            # (budget-stop notifications surface through the durable store).
+            import psycopg2 as _psycopg2
+
+            from umrs.platform_notifications import set_emitter
+            from umrs.shared.pg_settings import pg_connect_kwargs
+
+            set_emitter(
+                _SingleConnPool(
+                    lambda: _psycopg2.connect(
+                        dsn_sync, **pg_connect_kwargs("notifications")
+                    )
+                )
+            )
     except Exception:
         logger.warning("loop store upgrade failed", exc_info=True)
+
+
+class _SingleConnPool:
+    """Minimal psycopg2 pool: fresh conn per lease (cheap, always-returned)."""
+
+    def __init__(self, factory):
+        self._factory = factory
+
+    def getconn(self):
+        return self._factory()
+
+    def putconn(self, conn):
+        try:
+            conn.close()
+        except Exception:  # noqa: BLE001, S110 — boot/teardown must survive per-component failures
+            pass
 
 
 def _rehydrate_loop_drivers() -> None:
@@ -623,7 +653,7 @@ def _tag_metrics_source() -> None:
 
         METRICS.set_source(load_site_config().name)
         logger.info("LLM metrics source tagged: %s", METRICS._source)
-    except Exception:
+    except Exception:  # noqa: BLE001 — boot/teardown must survive per-component failures
         logger.debug("No site config available — LLM metrics will have empty source")
 
 
