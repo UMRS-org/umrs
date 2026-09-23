@@ -42,11 +42,12 @@ READY_ENV = {
 
 
 class _Cursor:
-    def __init__(self, table: dict, recorded: list):
+    def __init__(self, table: dict, recorded: list, projects: dict | None = None):
         self._table = table
         self._recorded = recorded
         self._row = None
         self.rowcount = 0
+        self._conn_projects = projects
 
     def __enter__(self):
         return self
@@ -61,7 +62,14 @@ class _Cursor:
         ("update companion_session_snapshots set venue", "_set_venue"),
         ("update companion_session_snapshots set payload", "_set_payload"),
         ("insert into companion_session_snapshots", "_insert"),
+        ("select data_class from projects", "_data_class"),
     )
+
+    def _data_class(self, params):
+        # projects dict lives on the pool (set per-test; absent row → None)
+        projects = self._conn_projects or {}
+        pid = params[0]
+        self._row = (projects.get(pid),) if pid in projects else None
 
     def execute(self, sql, params=None):
         sql_l = " ".join(sql.split()).lower()
@@ -135,9 +143,10 @@ class _Conn:
         self._table = table
         self._recorded = recorded
         self.commits = 0
+        self.projects: dict = {}
 
     def cursor(self):
-        return _Cursor(self._table, self._recorded)
+        return _Cursor(self._table, self._recorded, self.projects)
 
     def commit(self):
         self.commits += 1
@@ -151,6 +160,14 @@ class _Pool:
         self.table: dict = {}
         self.recorded: list = []
         self._conn = _Conn(self.table, self.recorded)
+
+    @property
+    def projects(self):
+        return self._conn.projects
+
+    @projects.setter
+    def projects(self, value):
+        self._conn.projects = value
 
     def getconn(self):
         return self._conn
@@ -199,7 +216,8 @@ class FakeSealed:
 
 
 def _meta(name: str, *, tombstoned=None):
-    return SimpleNamespace(id=SRC_ID, name=name, tombstoned_at=tombstoned)
+    # provider_kind: pushed sources are public providers (ADR-062's class)
+    return SimpleNamespace(id=SRC_ID, name=name, tombstoned_at=tombstoned, provider_kind="openai")
 
 
 class FakeJobStore:
@@ -871,3 +889,51 @@ class TestPauseResumeRoutes:
         harness.client.post("/umrs/companion/sessions/sess-1/venue/stop", headers=H)
         r = harness.client.post("/umrs/companion/sessions/sess-1/venue/pause", headers=H)
         assert r.status_code == 409
+
+
+class TestDataClassGate:
+    """ADR-062 (D-51 gate, first seam): sensitive projects refuse public-kind
+    sources at venue start; no project claim → no gate (pre-gate behavior)."""
+
+    def test_sensitive_project_refuses_public_sources(self, harness):
+        harness.pool.seed("alice", "sess-1")
+        harness.pool.projects = {"proj-s": "sensitive"}
+        r = harness.client.post(
+            "/umrs/companion/sessions/sess-1/venue/start",
+            json={"source_refs": ["openai-main"], "project": "proj-s"},
+            headers=H,
+        )
+        assert r.status_code == 403
+        assert r.headers["x-platform-error-code"] == "companionvenue.source_class_refused"
+        assert "sensitive" in r.json()["detail"]
+        assert "openai-main" in r.json()["detail"]
+
+    def test_non_sensitive_project_allows_public_sources(self, harness):
+        harness.pool.seed("alice", "sess-1")
+        harness.pool.projects = {"proj-n": "non_sensitive"}
+        r = harness.client.post(
+            "/umrs/companion/sessions/sess-1/venue/start",
+            json={"source_refs": ["openai-main"], "project": "proj-n"},
+            headers=H,
+        )
+        assert r.status_code == 200, r.text
+
+    def test_no_project_claim_no_gate(self, harness):
+        harness.pool.seed("alice", "sess-1")
+        harness.pool.projects = {"proj-s": "sensitive"}
+        r = harness.client.post(
+            "/umrs/companion/sessions/sess-1/venue/start",
+            json={"source_refs": ["openai-main"]},
+            headers=H,
+        )
+        assert r.status_code == 200, r.text  # no claim → pre-gate behavior
+
+    def test_unknown_project_no_gate(self, harness):
+        harness.pool.seed("alice", "sess-1")
+        harness.pool.projects = {}
+        r = harness.client.post(
+            "/umrs/companion/sessions/sess-1/venue/start",
+            json={"source_refs": ["openai-main"], "project": "proj-ghost"},
+            headers=H,
+        )
+        assert r.status_code == 200, r.text  # absent row → no gate (never invented)

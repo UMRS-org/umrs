@@ -35,6 +35,13 @@ from .frontend_config import (
 )
 from .venue_sessions import VenueSessionRow, VenueSessionStore, project_session_state
 
+# ADR-062 model locality: every user-pushable provider kind is PUBLIC; a
+# sensitive project's sessions must not reach any of them (venue sources
+# are exactly this class — self-deployed models need no pushed source).
+_PUBLIC_PROVIDER_KINDS = frozenset(
+    {"openai", "openai_compat", "anthropic", "google", "azure_openai"}
+)
+
 logger = logging.getLogger(__name__)
 
 MAX_SOURCE_REFS = 8
@@ -211,6 +218,7 @@ class FrontendVenueService:
         default_name = _validated_default(refs, default_source)
         self._require_startable(owner, session_id)
         names, ids, default_id = self._resolve_default(owner, refs, default_name)
+        self._enforce_data_class_gate(owner, project, names)
         subnet = self._reserve_subnet()
         spec = _session_spec(
             session_id=session_id,
@@ -291,6 +299,55 @@ class FrontendVenueService:
                 missing=missing,
             )
         return names, ids, ids[names.index(default_name)]
+
+    def _enforce_data_class_gate(
+        self, owner: str, project: str, names: tuple[str, ...]
+    ) -> None:
+        """ADR-062 (D-51 gate, first seam): a SENSITIVE project's session
+        must not reach public-kind inference sources — refuse by name at
+        venue start (the project claim rides the start body; no claim →
+        no gate, the pre-gate behavior)."""
+        if not project or not names:
+            return
+        data_class = self._project_data_class(project)
+        if data_class != "sensitive":
+            return
+        sealed = self._sealed_store()
+        public = [
+            n
+            for n in names
+            if (m := sealed.get_meta(owner, n))
+            and getattr(m, "provider_kind", "") in _PUBLIC_PROVIDER_KINDS
+        ]
+        if public:
+            raise VenueError(
+                "source_class_refused",
+                "project "
+                + project
+                + " is data_class=sensitive (ADR-062): public-kind sources "
+                "refused for its sessions — self-deployed models only "
+                "(offenders: " + ", ".join(public) + ")",
+                project=project,
+                data_class=data_class,
+                refused=public,
+            )
+
+    def _project_data_class(self, project: str) -> str:
+        """The project row's data_class; '' (no gate) when absent/unavailable."""
+        if self.pool is None:
+            return ""
+        try:
+            with self._conn() as conn:
+                cur = conn.cursor()
+                cur.execute(
+                    "SELECT data_class FROM projects WHERE project_id = %s",
+                    (project,),
+                )
+                row = cur.fetchone()
+                return str(row[0]) if row and row[0] else ""
+        except Exception as exc:  # noqa: BLE001 — the gate never blocks on lookup failure
+            logger.warning("data_class lookup failed for %s: %s", project, exc)
+            return ""
 
     def _reserve_subnet(self) -> str:
         try:
@@ -385,7 +442,9 @@ class FrontendVenueService:
         assert stopped is not None
         return self._describe(stopped)
 
-    def pause(self, *, owner: str, session_id: str, actor: str = "user") -> dict[str, Any]:
+    def pause(
+        self, *, owner: str, session_id: str, actor: str = "user"
+    ) -> dict[str, Any]:
         """D-09 pause verb: active → paused; idempotent on paused rows."""
         row = self.store.get(session_id)
         if row is None or row.user_id != owner:
