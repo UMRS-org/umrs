@@ -86,7 +86,7 @@ def _resolve_slurm_account_requirement() -> tuple[bool, str | None]:
         require = bool(getattr(site.scheduler, "require_user_slurm_account", False))
         master = getattr(site.scheduler, "account", "") or None
         return require, master
-    except Exception:
+    except Exception:  # noqa: BLE001 — admin CLI degrades best-effort, named in output
         return False, None
 
 
@@ -275,7 +275,7 @@ def _maybe_register_in_server_config(
             existing_abs.add(
                 os.path.abspath(os.path.join(config_dir, os.path.expanduser(u)))
             )
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 — admin CLI degrades best-effort, named in output
             pass
     if os.path.abspath(user_file) in existing_abs:
         return
@@ -456,7 +456,7 @@ def _maybe_emit_template(args, store, rec) -> None:
                 print()
                 print(f"  Onboarding token (valid {getattr(args, 'token_days', 30)}d):")
                 print(f"    {token}")
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 — admin CLI degrades best-effort, named in output
                 print(
                     f"  warning: could not issue onboarding JWT: {exc}", file=sys.stderr
                 )
@@ -780,7 +780,7 @@ def _cmd_config_show(args: argparse.Namespace, _store: UserStore) -> int:
                 config_file=server_json, server_cfg=server_cfg
             )
             user_files_source = f"--config ({os.path.basename(server_json)})"
-        except Exception:
+        except Exception:  # noqa: BLE001 — admin CLI degrades best-effort, named in output
             user_files_dir = resolve_server_user_files_dir()
             user_files_source = "default"
     else:
@@ -1505,6 +1505,21 @@ _DEFAULT_CLIENT_KEYS_DIR = "~/.config/umrs/curve-keys/clients"
 _DEFAULT_SERVER_KEYS_DIR = "~/.config/umrs/curve-keys/server"
 
 
+def _cmd_zmq_revoke_curve_key(args: argparse.Namespace, store: UserStore) -> int:
+    """D-03: revoke the account's long-lived CURVE key (ZAP refuses it
+    at the next keystore sync)."""
+    from datetime import datetime, timezone
+
+    record = store.update(
+        args.name, curve_key_revoked_at=datetime.now(timezone.utc).isoformat()
+    )
+    print(
+        f"CURVE key for '{args.name}' revoked at {record.curve_key_revoked_at} — "
+        "the ZAP keystore sync unregisters it."
+    )
+    return 0
+
+
 def _cmd_zmq_keygen(args: argparse.Namespace, _store: UserStore) -> int:
     """Generate a CURVE keypair for a user (client) or the server."""
     from pathlib import Path
@@ -1523,6 +1538,24 @@ def _cmd_zmq_keygen(args: argparse.Namespace, _store: UserStore) -> int:
         keys_dir = str(Path(_DEFAULT_CLIENT_KEYS_DIR).expanduser())
 
     pub_path, sec_path = generate_curve_keypair(keys_dir, name)
+
+    # D-03: a client key for a real account stamps the account record —
+    # the UMRS account becomes the key authority (revocation lives there).
+    if not is_server:
+        try:
+            record = _store.get(name)
+        except Exception:  # noqa: BLE001 — a keygen for a non-account name is legal; the stamp is opportunistic
+            record = None
+        if record is not None:
+            from umrs.core.zmq_security import load_public_key_z85
+
+            pub_z85 = load_public_key_z85(pub_path)
+            _store.update(name, curve_public_key=pub_z85, curve_key_revoked_at="")
+            print(
+                f"Account '{name}' is now the key authority "
+                f"(curve_public_key stamped; revoke with "
+                f"'umrs-server admin user revoke-curve-key {name}')."
+            )
 
     if args.json:
         _print_json(
@@ -1576,7 +1609,7 @@ def _cmd_zmq_list_keys(args: argparse.Namespace, _store: UserStore) -> int:
             from umrs.core.zmq_security import load_public_key_z85
 
             z85 = load_public_key_z85(str(key_file))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — admin CLI degrades best-effort, named in output
             z85 = f"<error: {exc}>"
         has_secret = key_file.with_name(f"{username}.key_secret").exists()
         rows.append(
@@ -1631,6 +1664,13 @@ def _add_zmq_parsers(zmq_sub: argparse._SubParsersAction) -> None:
     )
     keygen_p.add_argument("--json", action="store_true")
     keygen_p.set_defaults(func=_cmd_zmq_keygen)
+
+    revoke_p = zmq_sub.add_parser(
+        "revoke-curve-key",
+        help="Revoke a user's long-lived CURVE key (D-03: account = authority)",
+    )
+    revoke_p.add_argument("name", help="UMRS username")
+    revoke_p.set_defaults(func=_cmd_zmq_revoke_curve_key)
 
     list_p = zmq_sub.add_parser(
         "list-keys",

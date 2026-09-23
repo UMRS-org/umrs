@@ -221,7 +221,13 @@ class SessionCredentialsProvider:
         if ttl_seconds <= 0:
             raise ValueError("ttl_seconds must be positive")
 
-        effective_ttl = min(ttl_seconds, self._max_ttl)
+        # Account keys (D-03) are long-lived by design: their sentinel TTL
+        # bypasses the session cap — the account record's revocation is the
+        # kill switch, never the clock.
+        is_account_key = session_id is not None and session_id.startswith("account:")
+        effective_ttl = (
+            ttl_seconds if is_account_key else min(ttl_seconds, self._max_ttl)
+        )
         now = time.time()
         sid = session_id or uuid.uuid4().hex
         entry = SessionCurveEntry(
@@ -269,6 +275,59 @@ class SessionCredentialsProvider:
                 del self._by_session[session_id]
             logger.info("CURVE session revoked: session=%s", session_id)
             return True
+
+    _ACCOUNT_KEY_TTL = 10 * 365 * 86400  # ~10 years: long-lived by D-03 design
+
+    def register_account_key(
+        self, pubkey_z85: str, user_id: str, *, grants: SessionGrants | None = None
+    ) -> SessionCurveEntry:
+        """D-03: register a LONG-LIVED account key (the keystore authority).
+
+        Account keys ride the same ZAP callback path as session keys but
+        live until the account record's revocation kills them (the sync
+        seam unregisters; the TTL is a far-future sentinel, never the
+        real switch)."""
+        return self.register(
+            pubkey_z85,
+            user_id,
+            self._ACCOUNT_KEY_TTL,
+            session_id=f"account:{user_id}",
+            grants=grants,
+        )
+
+    def sync_account_keys(self, records) -> int:
+        """D-03 keystore sync: reconcile long-lived account keys from the
+        UMRS account records (the authority).
+
+        Registers new/changed keys, unregisters revoked ones. Returns the
+        number of registered account keys. Session keys are untouched.
+        """
+        wanted: dict[str, str] = {}
+        for rec in records:
+            key = str(getattr(rec, "curve_public_key", "") or "").strip()
+            if not key or getattr(rec, "disabled", False):
+                continue
+            if str(getattr(rec, "curve_key_revoked_at", "") or "").strip():
+                continue
+            wanted[key] = str(getattr(rec, "username", "") or rec.username)
+        with self._lock:
+            # drop stale account keys (revoked/changed/removed)
+            for entry in [
+                e for e in self._by_key.values() if e.session_id.startswith("account:")
+            ]:
+                if (
+                    entry.pubkey_z85 not in wanted
+                    or wanted[entry.pubkey_z85] != entry.user_id
+                ):
+                    self._remove_entry_unlocked(entry)
+            count = 0
+            for key, user in wanted.items():
+                if key not in self._by_key:
+                    self.register_account_key(key, user)
+                    count += 1
+                else:
+                    count += 1
+        return count
 
     def revoke_user(self, user_id: str) -> int:
         """Revoke all sessions for a user.  Returns the count removed."""
