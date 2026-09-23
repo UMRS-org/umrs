@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-
 import umrs.shared.venue_placement as vp
 
 
@@ -106,7 +105,6 @@ class _Scope:
 
 def test_trusted_host_only_publish_requires_admin(monkeypatch):
     from fastapi import HTTPException
-
     from umrs.api import mcp as mcp_mod
     from umrs.api.mcp import _enforce_registration_scope
 
@@ -134,3 +132,66 @@ def test_local_safe_and_front_end_stay_project_scoped(monkeypatch):
     for cls in ("local-safe", "front-end"):
         req = _enforce_registration_scope(None, _register_request(cls))
         assert req.project_id == "proj-a"  # own-project claim, no class refusal
+
+
+# ── D-19 call-time enforcement: trusted-host-only refuses by name ─────
+
+
+class _ToolServer:
+    """Server row double for the invoke gate (trust_class surface only)."""
+
+    def __init__(self, name, trust_class):
+        self.name = name
+        self.trust_class = trust_class
+
+
+def test_invoke_refuses_trusted_host_only_server():
+    """No trusted:<host> venue rail exists — every lane refuses by name."""
+    from fastapi import HTTPException
+    from umrs.api import mcp as mcp_mod
+    from umrs.api.mcp import ToolCallRequest, call_tool
+
+    class _Store:
+        def get_server_for_tool(self, _tool):
+            return _ToolServer("lab-scope-server", "trusted-host-only")
+
+    mcp_mod._store = _Store()
+    try:
+        import asyncio
+
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(call_tool(ToolCallRequest(tool="scope.run", arguments={})))
+        assert exc.value.status_code == 403
+        assert "trusted-host-only" in str(exc.value.detail)
+        assert "never approximating" in str(exc.value.detail)
+        # the taxonomy member carries the 403 (contract-side)
+        from r4_contracts.errors import MCP_ERRORS
+
+        assert MCP_ERRORS["mcp.trust_class_denied"] == 403
+    finally:
+        mcp_mod._store = None
+
+
+def test_invoke_allows_local_safe_and_front_end_servers():
+    from umrs.api import mcp as mcp_mod
+    from umrs.api.mcp import ToolCallRequest, call_tool
+
+    class _Store:
+        def __init__(self, trust_class):
+            self._cls = trust_class
+
+        def get_server_for_tool(self, _tool):
+            return _ToolServer("any-server", self._cls)
+
+    for cls in ("local-safe", "front-end"):
+        mcp_mod._store = _Store(cls)
+        try:
+            import asyncio
+
+            # the gate passes (the proxy then fails on the fake URL — the
+            # named _MCPProxyError, NOT the trust refusal)
+            with pytest.raises(Exception) as exc:
+                asyncio.run(call_tool(ToolCallRequest(tool="t.run", arguments={})))
+            assert "trust_class_denied" not in str(exc.value)
+        finally:
+            mcp_mod._store = None

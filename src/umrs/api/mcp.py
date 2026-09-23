@@ -582,11 +582,26 @@ async def call_tool(
     Invoke an MCP tool.
 
     Looks up which server owns the tool, then proxies the call directly.
+    D-19 call-time trust enforcement: a trusted-host-only server is
+    reachable only from its named trusted:<host> venue rail — no such
+    rail exists yet (mcp is not in RAIL_GW_FAMILIES either), so every
+    existing lane refuses by name rather than approximating. When the
+    trusted-host venue lane lands, the rail's venue marker becomes the
+    accepted path.
     """
     store = _get_store()
     server = store.get_server_for_tool(request.tool)
     if not server:
         raise_typed(PlatformError.mcp("not_found", f"Tool not found: {request.tool}"))
+    if (getattr(server, "trust_class", "") or "") == "trusted-host-only":
+        raise_typed(
+            PlatformError.mcp(
+                "trust_class_denied",
+                f"Tool {request.tool!r} lives on trusted-host-only server "
+                f"{server.name!r}: no trusted:<host> venue rail exists yet "
+                "(D-19) — refusing by name, never approximating.",
+            )
+        )
 
     logger.info("Invoking tool %s on server %s", request.tool, server.name)
 
