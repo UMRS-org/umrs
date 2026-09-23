@@ -127,6 +127,16 @@ class JobStore:
         # stays None anywhere the venue store is not wired and the manifest
         # builder then records spec pins ONLY (never fabricated availability).
         self.vector_version_store: Any | None = None
+        # (2026-09-23 repair: these three lines had been stranded after
+        # _resolve_venue's return by a bad merge — the store never
+        # bootstrapped its schema and the post-completion hooks were
+        # unset attributes until the adapters wired them.)
+        self._ensure_schema()
+
+        # Post-completion callbacks (set by adapters module).
+        # Called after mark_attempt_succeeded / mark_attempt_failed.
+        self._post_success_callback: Any = None
+        self._post_failure_callback: Any = None
 
     def _resolve_venue(self, spec: dict[str, Any]) -> str:
         """Cluster-set venue resolution (WP-14).
@@ -142,12 +152,6 @@ class JobStore:
 
             return split_cluster_venue_name(venue)
         return venue or self.site_name
-        self._ensure_schema()
-
-        # Post-completion callbacks (set by adapters module).
-        # Called after mark_attempt_succeeded / mark_attempt_failed.
-        self._post_success_callback: Any = None
-        self._post_failure_callback: Any = None
 
     def set_post_completion_callbacks(
         self,
