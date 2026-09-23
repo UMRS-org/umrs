@@ -104,6 +104,7 @@ def test_leased_connections_return_to_pool_on_close():
                 "owner_id": None,
                 "project_id": None,
                 "execution_id": None,
+                "job_id": None,
                 "name_prefix": None,
                 "limit": 10,
                 "offset": 0,

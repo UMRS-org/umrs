@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from contextlib import contextmanager
 
 from umrs.api import jobs as jobs_mod
@@ -22,6 +23,9 @@ class _FakeCatConn:
     def __init__(self, catalogs):
         self.catalogs = catalogs
         self.pins: list[tuple] = []
+
+    def commit(self):
+        pass
 
     def cursor(self):
         return _Cursor(self)
@@ -66,10 +70,25 @@ def _row_tuple(c: dict) -> tuple:
     import json as _json
 
     return (
-        c["catalog_id"], c["project_id"], c["name"], c["version"],
-        "", "", "[]", "[]", "[]", "[]", "[]", "",
-        _json.dumps(c.get("provenance") or {}), "", "[]", "owner", "active",
-        None, None,
+        c["catalog_id"],
+        c["project_id"],
+        c["name"],
+        c["version"],
+        "",
+        "",
+        "[]",
+        "[]",
+        "[]",
+        "[]",
+        "[]",
+        "",
+        _json.dumps(c.get("provenance") or {}),
+        "",
+        "[]",
+        "owner",
+        "active",
+        None,
+        None,
     )
 
 
@@ -110,3 +129,115 @@ def test_store_error_never_blocks(caplog) -> None:
 
     jobs_mod._autopin_catalog(_Boom(None), "p1", "j-9")
     assert any("autopin skipped" in r.getMessage() for r in caplog.records)
+
+
+# ── D-43 result-kind auto-pins (monitor, on attempt success) ──────────
+
+
+class _FakeJob:
+    project_id = "p1"
+
+
+class _FakeMonitorStore:
+    """JobStore double: project lookup + jobs-DB conn."""
+
+    def __init__(self, conn):
+        self._conn = conn
+
+    def get_job(self, _job_id):
+        return _FakeJob()
+
+    @contextmanager
+    def _get_conn(self):
+        yield self._conn
+
+
+class _Artifact:
+    def __init__(self, art_id):
+        self.id = art_id
+
+
+def _monitor(conn):
+    from umrs.jobs.monitor import AttemptMonitor
+
+    return AttemptMonitor(_FakeMonitorStore(conn), status_checker=None)
+
+
+def test_result_autopin_pins_all_artifacts() -> None:
+    conn = _FakeCatConn([_catalog("sc-1")])
+    mon = _monitor(conn)
+    mon._result_artifacts = lambda _job_id: [_Artifact("a-1"), _Artifact("a-2")]
+    mon._autopin_result_artifacts(type("A", (), {"job_id": "j-9"})())
+    kinds_refs = [(json.loads(arr)[0]["kind"], json.loads(arr)[0]["ref"]) for _, arr in conn.pins]
+    assert kinds_refs == [("result", "a-1"), ("result", "a-2")]
+    assert all(json.loads(arr)[0]["note"] == "job j-9" for _, arr in conn.pins)
+
+
+def test_result_autopin_skips_already_pinned_refs() -> None:
+    conn = _FakeCatConn([_catalog("sc-1")])
+    conn.catalogs[0]["provenance"] = {"pins": [{"kind": "result", "ref": "a-1", "note": "old"}]}
+    mon = _monitor(conn)
+    mon._result_artifacts = lambda _job_id: [_Artifact("a-1"), _Artifact("a-2")]
+    mon._autopin_result_artifacts(type("A", (), {"job_id": "j-9"})())
+    refs = [json.loads(arr)[0]["ref"] for _, arr in conn.pins]
+    assert refs == ["a-2"]  # a-1 deduped
+
+
+def test_result_autopin_never_guesses_ambiguous_catalogs() -> None:
+    conn = _FakeCatConn([_catalog("sc-1", pid="p1"), _catalog("sc-2", pid="p1")])
+    mon = _monitor(conn)
+    mon._result_artifacts = lambda _job_id: [_Artifact("a-1")]
+    mon._autopin_result_artifacts(type("A", (), {"job_id": "j-9"})())
+    assert conn.pins == []
+
+
+def test_result_autopin_no_artifacts_is_a_no_op() -> None:
+    conn = _FakeCatConn([_catalog("sc-1")])
+    mon = _monitor(conn)
+    mon._result_artifacts = lambda _job_id: []
+    mon._autopin_result_artifacts(type("A", (), {"job_id": "j-9"})())
+    assert conn.pins == []
+
+
+def test_result_autopin_registry_failure_never_blocks(caplog) -> None:
+    conn = _FakeCatConn([_catalog("sc-1")])
+
+    def _boom(_job_id):
+        raise RuntimeError("registry down")
+
+    mon = _monitor(conn)
+    mon._result_artifacts = _boom
+    mon._autopin_result_artifacts(type("A", (), {"job_id": "j-9"})())
+    assert conn.pins == []
+    assert any("result autopin skipped" in r.getMessage() for r in caplog.records)
+
+
+def test_artifact_query_supports_job_id_filter() -> None:
+    """The additive ArtifactQuery.job_id filter reaches the SQL conditions."""
+    from umrs.artifact_registry.models import ArtifactQuery
+    from umrs.artifact_registry.store import ArtifactStore
+
+    captured = {}
+
+    class _Cur:
+        def execute(self, sql, params=None):
+            captured["sql"] = sql
+            captured["params"] = params
+
+        def __enter__(self):
+            return self
+
+        def fetchall(self):
+            return []
+
+        def __exit__(self, *a):
+            return False
+
+    class _Conn:
+        def cursor(self):
+            return _Cur()
+
+    store = ArtifactStore(lambda: _Conn())
+    store.list(ArtifactQuery(artifact_type="result", job_id="j-9"))
+    assert "job_id = %s" in captured["sql"]
+    assert "j-9" in captured["params"]
