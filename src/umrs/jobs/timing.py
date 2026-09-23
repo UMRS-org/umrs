@@ -111,6 +111,7 @@ def maybe_emit_attempt_span(
     attempt_no: int,
     backend: str,
     job_type: str = "",
+    trace_id: str = "",
     started_at: Any,
     transitioned_at: Any,
     fields: dict[str, int],
@@ -129,20 +130,25 @@ def maybe_emit_attempt_span(
     """
     if not fields:
         return False
+    attributes = {
+        "umrs.job_id": str(job_id),
+        "umrs.attempt_id": str(attempt_id),
+        "umrs.attempt_no": int(attempt_no),
+        "umrs.backend": str(backend or "unknown"),
+        "umrs.job_type": str(job_type or "unknown"),
+        "umrs.authority_bounded": True,
+    }
+    # D-52 stitching: the loop's trace id rides the span when the job
+    # belongs to one — empty stays absent (honest, never fabricated).
+    if trace_id:
+        attributes["umrs.trace_id"] = str(trace_id)
     all_ok = True
     for field_name in fields:
         ok = maybe_emit_span(
             f"umrs.attempt.{field_name.removesuffix('_ms')}",
             started_at=started_at,
             transitioned_at=transitioned_at,
-            attributes={
-                "umrs.job_id": str(job_id),
-                "umrs.attempt_id": str(attempt_id),
-                "umrs.attempt_no": int(attempt_no),
-                "umrs.backend": str(backend or "unknown"),
-                "umrs.job_type": str(job_type or "unknown"),
-                "umrs.authority_bounded": True,
-            },
+            attributes=attributes,
         )
         all_ok = all_ok and ok
     return all_ok

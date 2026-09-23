@@ -212,6 +212,34 @@ class ResearchLoop:
 # ── Autonomous Research Loop Engine ───────────────────────────────────────
 
 
+def _metrics_figures(metrics: dict[str, Any]) -> dict[str, Any]:
+    """Quantitative figures the workflow metrics already carry."""
+    return {
+        key: metrics[key]
+        for key in ("yield_pct", "co2_uptake_mmol_g", "batch_id")
+        if metrics.get(key) is not None
+    }
+
+
+def _first_corpus_figure(corpus: str, *patterns: re.Pattern[str]) -> float | None:
+    """First regex figure the corpus yields; None when no pattern hits."""
+    for pattern in patterns:
+        m = pattern.search(corpus)
+        if m:
+            return float(m.group(1))
+    return None
+
+
+def _figure_details(figures: dict[str, Any]) -> str:
+    """Quantitative detail line; honest 'no quantitative figures' when absent."""
+    detail = []
+    if figures.get("yield_pct") is not None:
+        detail.append(f"yield {figures['yield_pct']}%")
+    if figures.get("co2_uptake_mmol_g") is not None:
+        detail.append(f"uptake {figures['co2_uptake_mmol_g']}")
+    return ", ".join(detail) if detail else "no quantitative figures"
+
+
 class AutonomousResearchLoop:
     """Orchestrate the autonomous research loop.
 
@@ -349,8 +377,8 @@ class AutonomousResearchLoop:
                 loop.completed_at = datetime.now(timezone.utc).isoformat()
                 loop.status = LoopStatus.STOPPED
 
-        except Exception as exc:
-            logger.error("Research loop failed: %s", exc, exc_info=True)
+        except Exception as exc:  # the loop's terminal ERROR state is the contract
+            logger.exception("Research loop failed")
             loop.status = LoopStatus.ERROR
             loop.phase = LoopPhase.FAILED
             loop.metadata["error"] = str(exc)
@@ -360,11 +388,10 @@ class AutonomousResearchLoop:
         return loop
 
     def _should_cancel(self) -> bool:
-        if self._cancel_requested:
-            return True
-        if self._cancel_check is not None and self._cancel_check():
-            return True
-        return False
+        return bool(
+            self._cancel_requested
+            or (self._cancel_check is not None and self._cancel_check())
+        )
 
     def _apply_cancel(
         self,
@@ -578,6 +605,9 @@ class AutonomousResearchLoop:
                 transitioned_at=iteration.completed_at,
                 attributes={
                     "umrs.loop_id": str(iteration.loop_id),
+                    "umrs.trace_id": str(
+                        loop.metadata.get("trace_id") or iteration.loop_id
+                    ),
                     "umrs.iteration_id": str(iteration.iteration_id),
                     "umrs.iteration_number": int(iteration.iteration_number),
                     "umrs.project_id": str(loop.project_id or ""),
@@ -898,26 +928,18 @@ class AutonomousResearchLoop:
         excerpts: list[str], results: dict[str, Any]
     ) -> dict[str, Any]:
         """Pull Demo 08-style yield / CO2 figures from evidence or workflow metrics."""
-        figures: dict[str, Any] = {}
         metrics = (results or {}).get("metrics") or {}
-        for key in ("yield_pct", "co2_uptake_mmol_g", "batch_id"):
-            if metrics.get(key) is not None:
-                figures[key] = metrics[key]
-
+        figures: dict[str, Any] = _metrics_figures(metrics)
         corpus = "\n".join(excerpts)
         if "yield_pct" not in figures:
-            m = _BATCH3_YIELD_RE.search(corpus)
-            if m:
-                figures["yield_pct"] = float(m.group(1))
+            found = _first_corpus_figure(corpus, _BATCH3_YIELD_RE, _PCT_RE)
+            if found is not None:
+                figures["yield_pct"] = found
                 figures.setdefault("batch_id", "batch-3")
-            else:
-                pct = _PCT_RE.search(corpus)
-                if pct:
-                    figures["yield_pct"] = float(pct.group(1))
         if "co2_uptake_mmol_g" not in figures:
-            co2 = _CO2_UPTAKE_RE.search(corpus)
-            if co2:
-                figures["co2_uptake_mmol_g"] = float(co2.group(1))
+            found = _first_corpus_figure(corpus, _CO2_UPTAKE_RE)
+            if found is not None:
+                figures["co2_uptake_mmol_g"] = found
         figures.setdefault("batch_id", metrics.get("batch_id") or "batch-3")
         return figures
 
@@ -947,12 +969,7 @@ class AutonomousResearchLoop:
         status = (iteration.results or {}).get("status") or "unknown"
         supporting = status in {"succeeded", "completed", "success"} and bool(figures)
         verdict = "supports" if supporting else "inconclusive"
-        detail = []
-        if figures.get("yield_pct") is not None:
-            detail.append(f"yield {figures['yield_pct']}%")
-        if figures.get("co2_uptake_mmol_g") is not None:
-            detail.append(f"uptake {figures['co2_uptake_mmol_g']}")
-        joined = ", ".join(detail) if detail else "no quantitative figures"
+        joined = _figure_details(figures)
         return (
             f"Evaluation ({verdict}): workflow status={status}; "
             f"evidence figures ({joined}) relative to hypothesis "
