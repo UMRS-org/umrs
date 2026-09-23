@@ -164,6 +164,41 @@ def configure_loop_store(pool: Any) -> None:
     )
 
 
+def _apply_project_ask_policy(http_request: Request, request: Any) -> Any:
+    """D-33: inherit the project's persisted default when mode is unset.
+
+    Explicit mode wins (auto/ask/profile); '' / absent → the project row's
+    ask_mode + pause_triggers; project row absent/unreadable → the request
+    unchanged (never invented).
+    """
+    if (request.mode or "").strip():
+        return request
+    pool = getattr(http_request.app.state, "umrs_db_pool", None)
+    if pool is None:
+        return request
+    conn = pool.getconn()
+    try:
+        from .projects import ProjectStore
+
+        row = ProjectStore(conn).get(request.project_id)
+    except Exception:  # noqa: BLE001 — the default never blocks a start
+        return request
+    finally:
+        pool.putconn(conn)
+    if row is None:
+        return request
+    ask_mode = str(row.get("ask_mode") or "").strip()
+    if not ask_mode:
+        return request
+    triggers = [
+        str(t).strip() for t in (row.get("pause_triggers") or []) if str(t).strip()
+    ]
+    updates: dict[str, Any] = {"mode": ask_mode}
+    if ask_mode == "profile" and triggers:
+        updates["pause_triggers"] = triggers
+    return request.model_copy(update=updates)
+
+
 def _project_budget_caps(project_id: str) -> dict[str, float]:
     """Row from project_budgets (ADR-067) via the loop store's sync conn.
 
@@ -754,6 +789,10 @@ async def start_loop(
     thread (``hosting == "thread"``). Both are visible on the loop record.
     """
     _enforce_readiness_approval(request)
+    # D-33 tail: the project's persisted ask-policy default fills the
+    # request when the caller left mode unset; an explicit mode always
+    # wins (the persisted default never overrides a caller's choice).
+    request = _apply_project_ask_policy(http_request, request)
 
     engine = _get_engine()
     loop = engine.start_loop(
