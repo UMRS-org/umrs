@@ -757,6 +757,9 @@ _UNDISPATCHABLE_JOB_TYPES = {
     # SESSION_GC: gated at submission (operator-side, POST /umrs/jobs requires
     # identity as every other submission; max_days is job-locked at submit-time).
     # Not in this set.
+    # D-44 domain benchmark: executor + ground-truth suite format are the
+    # named design decisions; the kind stays a phenom until they land.
+    JobType.DOMAIN_BENCHMARK,
 }
 
 

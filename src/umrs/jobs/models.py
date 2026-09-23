@@ -10,7 +10,7 @@ import hashlib
 import json
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
@@ -62,6 +62,11 @@ class JobType(Enum):
     # the ADR-035 archive cascade (never DELETE — mirror-aware delete is
     # r4's own lane; the server only archives what it owns).
     SESSION_GC = "session_gc"
+    # D-44 catalog quality measurement: run a domain benchmark suite against
+    # the project's knowledge catalog and record scores over time. ADR-047
+    # phenom — registered now, dispatch-blocked with a typed 400 at submit
+    # until the benchmark executor (and the ground-truth suite format) lands.
+    DOMAIN_BENCHMARK = "domain_benchmark"
     # Note: CONTEXT_RETENTION and CONVERSATION_SUMMARIZE excluded from selective merge
 
 
@@ -120,6 +125,12 @@ DEFAULT_BACKOFFS: dict[JobType, dict[str, Any]] = {
     },
     JobType.MODEL_EVAL: {
         "delays": [20, 40, 80],  # Bench-run retry; never auto-restart on infra stall
+        "max_attempts": 2,
+    },
+    JobType.DOMAIN_BENCHMARK: {
+        # Phenom (ADR-047): table entry required for every kind; benchmark
+        # runs are read-only scoring — patient retry, never auto-restart.
+        "delays": [30, 60, 120],
         "max_attempts": 2,
     },
     JobType.FINE_TUNE: {
@@ -340,8 +351,8 @@ class Job:
             next_run_at=_parse_datetime(data.get("next_run_at")),
             active_attempt_id=data.get("active_attempt_id"),
             commit_attempt_id=data.get("commit_attempt_id"),
-            created_at=_parse_datetime(data.get("created_at")) or datetime.utcnow(),
-            updated_at=_parse_datetime(data.get("updated_at")) or datetime.utcnow(),
+            created_at=_parse_datetime(data.get("created_at")) or datetime.now(timezone.utc).replace(tzinfo=None),
+            updated_at=_parse_datetime(data.get("updated_at")) or datetime.now(timezone.utc).replace(tzinfo=None),
             last_state_change_at=_parse_datetime(data.get("last_state_change_at")),
             last_heartbeat_at=_parse_datetime(data.get("last_heartbeat_at")),
         )
@@ -431,7 +442,7 @@ class JobAttempt:
             status_detail=data.get("status_detail"),
             ignored_at=_parse_datetime(data.get("ignored_at")),
             ignore_reason=data.get("ignore_reason"),
-            created_at=_parse_datetime(data.get("created_at")) or datetime.utcnow(),
+            created_at=_parse_datetime(data.get("created_at")) or datetime.now(timezone.utc).replace(tzinfo=None),
         )
 
 
