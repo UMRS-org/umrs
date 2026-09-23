@@ -4,9 +4,12 @@ Starlette ASGI service. Per request:
 
   1. session token → live lease read (no cache); binding checks
      (session/sid/ip/source).
-  2. Path policy per provider kind; 403 path_denied with audit on miss.
-  3. Unseal the provider key (private half lives only here).
-  4. Re-resolve allow_host, reject non-global IPs; strip all inbound
+  2. Source-class gate (ADR-062/D-51): a lease whose project is
+     ``data_class=sensitive`` never reaches a public-kind source —
+     403 ``source_class_refused`` (no project claim → no gate).
+  3. Path policy per provider kind; 403 path_denied with audit on miss.
+  4. Unseal the provider key (private half lives only here).
+  5. Re-resolve allow_host, reject non-global IPs; strip all inbound
      credential shapes; inject the provider credential; stream.
 
 Upstream 3xx never followed; off-host Location → 502 redirect_offhost.
@@ -33,6 +36,7 @@ from starlette.routing import Route
 from umrs.security.provider_url import _is_global_unicast as _ip_is_public
 from umrs.security.seal import SealedBlob, SealError, unseal_credential
 from umrs.security.sealed_sources import SealedSourceStore
+from umrs.shared.project_data_class import PUBLIC_PROVIDER_KINDS, data_class_for_project
 
 from .leases import check_lease, extract_session_token, lease_by_token
 from .policies import allows, inject_credential, policy_for, strip_credential_headers
@@ -202,11 +206,19 @@ def _prepare(request: Request) -> _Prepared:
                 verdict.reason,
             )
         )
-    lease = verdict.lease
+    return _resolve_source(request, pool, verdict.lease, verdict.source_id)
+
+
+def _resolve_source(
+    request: Request, pool: Any, lease: Any, source_id: str
+) -> _Prepared:
+    """Sealed source → class gate → policy + host check (the verdict passed)."""
     store = _store_from(request)
-    full = store.fetch_for_unseal(verdict.source_id) if store else None
+    full = store.fetch_for_unseal(source_id) if store else None
     if full is None:
         return _Prepared(error=_denied(request, lease, 410, "source_tombstoned"))
+    if _source_class_refused(pool, lease, full):
+        return _Prepared(error=_denied(request, lease, 403, "source_class_refused"))
     path = "/" + request.path_params.get("path", "")
     if request.query_params:
         path += "?" + str(request.query_params)
@@ -231,6 +243,18 @@ def _prepare(request: Request) -> _Prepared:
 def _first_ip_or_none(ips: list[str]) -> str | None:
     """Deterministic pin — sorted first; empty = host denied."""
     return ips[0] if ips else None
+
+
+def _source_class_refused(pool: Any, lease: Any, full: Any) -> bool:
+    """ADR-062 (D-51 lease seam): True when the lease's project is
+    ``data_class=sensitive`` and the resolved source is a public-kind
+    provider. No project claim on the lease → no gate (pre-gate
+    behavior); lookup failure/absent row → no gate (never invented)."""
+    if not getattr(lease, "project", ""):
+        return False
+    if full.provider_kind not in PUBLIC_PROVIDER_KINDS:
+        return False
+    return data_class_for_project(pool, lease.project) == "sensitive"
 
 
 def _unseal_api_key(request: Request, full: Any) -> str:

@@ -27,6 +27,8 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from typing import Any, Protocol
 
+from umrs.shared.project_data_class import PUBLIC_PROVIDER_KINDS, data_class_for_project
+
 from .frontend_config import (
     VALID_WEB_POLICIES,
     FrontendVenueConfig,
@@ -34,13 +36,6 @@ from .frontend_config import (
     allocate_subnet,
 )
 from .venue_sessions import VenueSessionRow, VenueSessionStore, project_session_state
-
-# ADR-062 model locality: every user-pushable provider kind is PUBLIC; a
-# sensitive project's sessions must not reach any of them (venue sources
-# are exactly this class — self-deployed models need no pushed source).
-_PUBLIC_PROVIDER_KINDS = frozenset(
-    {"openai", "openai_compat", "anthropic", "google", "azure_openai"}
-)
 
 logger = logging.getLogger(__name__)
 
@@ -309,7 +304,7 @@ class FrontendVenueService:
         no gate, the pre-gate behavior)."""
         if not project or not names:
             return
-        data_class = self._project_data_class(project)
+        data_class = data_class_for_project(self.pool, project)
         if data_class != "sensitive":
             return
         sealed = self._sealed_store()
@@ -317,7 +312,7 @@ class FrontendVenueService:
             n
             for n in names
             if (m := sealed.get_meta(owner, n))
-            and getattr(m, "provider_kind", "") in _PUBLIC_PROVIDER_KINDS
+            and getattr(m, "provider_kind", "") in PUBLIC_PROVIDER_KINDS
         ]
         if public:
             raise VenueError(
@@ -331,23 +326,6 @@ class FrontendVenueService:
                 data_class=data_class,
                 refused=public,
             )
-
-    def _project_data_class(self, project: str) -> str:
-        """The project row's data_class; '' (no gate) when absent/unavailable."""
-        if self.pool is None:
-            return ""
-        try:
-            with self._conn() as conn:
-                cur = conn.cursor()
-                cur.execute(
-                    "SELECT data_class FROM projects WHERE project_id = %s",
-                    (project,),
-                )
-                row = cur.fetchone()
-                return str(row[0]) if row and row[0] else ""
-        except Exception as exc:  # noqa: BLE001 — the gate never blocks on lookup failure
-            logger.warning("data_class lookup failed for %s: %s", project, exc)
-            return ""
 
     def _reserve_subnet(self) -> str:
         try:
