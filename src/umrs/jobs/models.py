@@ -66,6 +66,11 @@ class JobType(Enum):
     # sbatch scripts — the client hands the script to UMRS, the server
     # submits via the SSH ControlMaster (the client never runs sbatch).
     HPC_SCRIPT = "hpc_script"
+    # D-22 first lane: a durable accounting row per MCP server INSTANCE
+    # (attempt = the instance's life; the registry + health probe own
+    # the lifecycle truth; the start-on-front-end executor is the named
+    # tail gated on the mcp-trusted manifest format).
+    MCP_SERVER = "mcp_server"
     # D-44 catalog quality measurement: run a domain benchmark suite against
     # the project's knowledge catalog and record scores over time. ADR-047
     # phenom — registered now, dispatch-blocked with a typed 400 at submit
@@ -142,6 +147,13 @@ DEFAULT_BACKOFFS: dict[JobType, dict[str, Any]] = {
         # default requeue policy mirrors the Slurm default modestly.
         "delays": [30, 60, 120],
         "max_attempts": 2,
+    },
+    JobType.MCP_SERVER: {
+        # Long-lived instance (attempt = its life): restart-on-death is
+        # the hatch bridge's own lane client-side; a dead instance job
+        # fails once, named — never an auto-restart loop.
+        "delays": [30, 60, 120],
+        "max_attempts": 1,
     },
     JobType.FINE_TUNE: {
         "delays": [300, 900, 1800],  # Heavyweight training; safer manual retry path

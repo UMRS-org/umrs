@@ -280,6 +280,7 @@ class TestJobTypes:
             "session_gc",
             "domain_benchmark",
             "hpc_script",
+            "mcp_server",
         ]
         actual = [t.value for t in JobType]
         assert set(expected) == set(actual)
