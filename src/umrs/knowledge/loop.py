@@ -110,7 +110,7 @@ class LoopIteration:
     # its findings, workflow outputs) — the asset index derives the
     # loop → artifact lineage edge from them (ADR-036 D4, WP-05).
     artifact_ids: list[str] = field(default_factory=list)
-    status: str = "pending"  # pending | running | completed | failed
+    status: str = "pending"  # pending | running | completed | failed | cancelled | awaiting_decision
     simulated: bool = False
 
     def to_record(self) -> LoopIterationRecord:
@@ -428,6 +428,25 @@ class AutonomousResearchLoop:
         self._apply_cancel(loop, iteration)
         return True
 
+    def _execute_experiment_phase(
+        self,
+        loop: ResearchLoop,
+        iteration: LoopIteration,
+        experiment: Any,
+    ) -> bool:
+        """Phase 5. True = continue; False = deferred (D-34: the iteration
+        finalised as awaiting_decision — the caller unwounds the loop)."""
+        if self._simulated:
+            loop.total_experiments_run += 1
+            iteration.results = {"status": "completed", "output": "Experiment results"}
+            return True
+        if self._execute_experiment(loop, iteration, experiment) == "deferred":
+            return False
+        # Checkpoint after trigger/wait so restart reconciliation can see
+        # the in-flight durable_job_id even if the process dies next.
+        self._checkpoint(iteration)
+        return True
+
     def _run_iteration(self, loop: ResearchLoop) -> None:
         """Run a single iteration of the research loop."""
         loop.current_iteration += 1
@@ -496,14 +515,8 @@ class AutonomousResearchLoop:
         if self._check_cancel_or_abort(loop, iteration):
             return
 
-        if self._simulated:
-            loop.total_experiments_run += 1
-            iteration.results = {"status": "completed", "output": "Experiment results"}
-        else:
-            self._execute_experiment(loop, iteration, experiment)
-            # Checkpoint after trigger/wait so restart reconciliation can see
-            # the in-flight durable_job_id even if the process dies next.
-            self._checkpoint(iteration)
+        if not self._execute_experiment_phase(loop, iteration, experiment):
+            return  # D-34: awaiting_decision — iteration already finalised
 
         if self._check_cancel_or_abort(loop, iteration):
             self._checkpoint(iteration)
@@ -773,6 +786,37 @@ class AutonomousResearchLoop:
         idx = (loop.current_iteration - 1) % len(hypotheses)
         return hypotheses[idx]
 
+    def _workflow_gate_verdict(
+        self,
+        loop: ResearchLoop,
+        iteration: LoopIteration,
+        workflow_name: str,
+        params: dict[str, Any],
+    ) -> bool | str:
+        """The workflow-trigger gate's verdict.
+
+        True runs the trigger; False denied (``_gate_denied`` ran — the
+        caller unwinds via exception); ``"deferred"`` finalised the
+        iteration as awaiting_decision (D-34 first leg — the loop
+        continues on ungated work)."""
+        gate = getattr(self, "_approval_gate", None)
+        if gate is None:
+            return True
+        verdict = gate(
+            {
+                "kind": "workflow_trigger",
+                "workflow_name": workflow_name,
+                "params": dict(params),
+                "iteration": loop.current_iteration,
+            }
+        )
+        if verdict == "deferred":
+            self._gate_deferred(loop, iteration, workflow_name)
+            return "deferred"
+        if not verdict:
+            self._gate_denied(loop, iteration, workflow_name)
+        return bool(verdict)
+
     def _execute_experiment(
         self,
         loop: ResearchLoop,
@@ -813,17 +857,10 @@ class AutonomousResearchLoop:
 
         # Tool-grain enforcement: an 'ask'-mode loop gates each workflow
         # trigger through the approvals registry (injected by the driver).
-        gate = getattr(self, "_approval_gate", None)
-        if gate is not None and not gate(
-            {
-                "kind": "workflow_trigger",
-                "workflow_name": workflow_name,
-                "params": dict(params),
-                "iteration": loop.current_iteration,
-            }
+        if self._workflow_gate_verdict(loop, iteration, workflow_name, params) == (
+            "deferred"
         ):
-            self._gate_denied(loop, iteration, workflow_name)
-            return
+            return "deferred"
 
         execution_id = self._workflow_port.trigger(workflow_name, params)
         self._in_flight_execution_id = execution_id
@@ -887,15 +924,20 @@ class AutonomousResearchLoop:
         """
         if len(loop.plan.hypotheses) > 1:
             gate = getattr(self, "_approval_gate", None)
-            if gate is not None and not gate(
-                {
-                    "kind": "competing_hypotheses",
-                    "candidates": len(loop.plan.hypotheses),
-                    "iteration": loop.current_iteration,
-                }
-            ):
-                self._gate_denied(loop, iteration, "competing-hypotheses")
-                return False
+            if gate is not None:
+                verdict = gate(
+                    {
+                        "kind": "competing_hypotheses",
+                        "candidates": len(loop.plan.hypotheses),
+                        "iteration": loop.current_iteration,
+                    }
+                )
+                if verdict == "deferred":
+                    self._gate_deferred(loop, iteration, "competing-hypotheses")
+                    return False
+                if not verdict:
+                    self._gate_denied(loop, iteration, "competing-hypotheses")
+                    return False
         hyp = self._select_hypothesis(loop, excerpts)
         iteration.hypothesis = hyp.statement
         hypothesis_id = getattr(hyp, "hypothesis_id", "") or ""
@@ -905,6 +947,25 @@ class AutonomousResearchLoop:
         iteration.hypothesis_id = hypothesis_id
         loop.total_hypotheses_tested += 1
         return True
+
+    def _gate_deferred(
+        self, loop: ResearchLoop, iteration: LoopIteration, label: str
+    ) -> None:
+        """D-34 first leg (ADR-066 amendment 2026-09-24): the profile-mode
+        gate DEFERRED a pending named-class trigger — finalise the
+        iteration as ``awaiting_decision`` (nothing fabricated: no
+        experiment ran, no findings minted) and let the loop continue on
+        ungated work. The durable question stays in the inbox; the next
+        iteration re-requests idempotently under the same approval id and
+        proceeds once decided. The runner's deferral ledger bounds spin
+        (3 strikes → hard park)."""
+        now = datetime.now(timezone.utc).isoformat()
+        iteration.completed_at = now
+        iteration.status = "awaiting_decision"
+        iteration.results["deferred_gate"] = label
+        loop.iterations.append(iteration)
+        loop.updated_at = now
+        self._checkpoint(iteration)
 
     def _gate_denied(
         self, loop: ResearchLoop, iteration: LoopIteration, workflow_name: str
