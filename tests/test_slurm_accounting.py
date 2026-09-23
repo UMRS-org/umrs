@@ -105,8 +105,6 @@ class TestMeasureSlurmAccounting:
             assert measure_slurm_accounting("42") == {}
 
     def test_sacct_absent_is_unmeasured(self):
-        import subprocess
-
         def boom(cmd, **kwargs):
             raise FileNotFoundError("no sacct")
 

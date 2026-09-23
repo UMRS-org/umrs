@@ -218,15 +218,26 @@ class EngineLoopRunner(threading.Thread):
             project_id=str(getattr(self._loop, "project_id", "") or ""),
         )
 
-    def _make_approval_gate(self, loop: ResearchLoop) -> Callable[[dict], bool]:
-        """Ask-mode action gate: request approval, park until decided.
+    def _make_approval_gate(
+        self, loop: ResearchLoop
+    ) -> Callable[[dict], bool | str]:
+        """Ask-mode action gate: request approval, park until decided — or
+        DEFER (D-34 first leg, ADR-066 amendment 2026-09-24).
 
         auto-mode returns True immediately (current behavior). On rejection
-        or driver abort returns False; the engine raises on False. Intents
-        live in the durable approval inbox (ADR-036 (a)) keyed by the loop
-        owner + hosting job/attempt; a restarted loop re-requests under the
-        same id from its metadata marker and finds any decision recorded
-        while it was down (request_approval is idempotent under approval_id).
+        or driver abort returns False; the engines raise on False. In
+        PROFILE mode a PENDING named-class trigger returns ``"deferred"`` —
+        the engine finalises the iteration as ``awaiting_decision`` and
+        continues on ungated work while the durable question sits in the
+        inbox (idempotently re-requested under the same approval id);
+        after ``_DEFER_PARK_AFTER`` consecutive deferrals under the same id
+        the gate hard-parks as before (the human is away — the loop must
+        not spin its iteration budget). Ask mode always hard-parks.
+        Intents live in the durable approval inbox (ADR-036 (a)) keyed by
+        the loop owner + hosting job/attempt; a restarted loop re-requests
+        under the same id from its metadata marker and finds any decision
+        recorded while it was down (request_approval is idempotent under
+        approval_id).
         """
 
         def _request(action: dict, approval_id: str | None) -> dict:
@@ -242,11 +253,11 @@ class EngineLoopRunner(threading.Thread):
                 attempt_id=str(loop.metadata.get("attempt_id") or ""),
             )
 
-        def _gate(action: dict) -> bool:
+        def _gate(action: dict) -> bool | str:
             mode = loop.metadata.get("mode", "auto")
             if mode == "profile":
-                # ADR-066 (D-33): park only when the action's trigger class is
-                # in the loop's pause profile; everything else runs.
+                # ADR-066 (D-33): gate only when the action's trigger class
+                # is in the loop's pause profile; everything else runs.
                 triggers = set(_pause_profile(loop).get("triggers", []))
                 if _action_trigger_class(action) not in triggers:
                     return True
@@ -255,6 +266,25 @@ class EngineLoopRunner(threading.Thread):
             record = _request(action, loop.metadata.get("awaiting_approval") or None)
             loop.metadata["awaiting_approval"] = record["id"]
             self._store.save(loop)
+            decided = self._peek_decision(record, loop)
+            if decided is not None:
+                logger.info(
+                    "loop %s approval %s already decided (action=%s): %s",
+                    loop.loop_id,
+                    record["id"],
+                    action.get("kind"),
+                    "approved" if decided else "rejected",
+                )
+                return decided
+            if mode == "profile" and not self._defer_strike(loop, record):
+                logger.info(
+                    "loop %s defers approval %s (action=%s) — iteration "
+                    "awaits the decision, the loop continues (D-34)",
+                    loop.loop_id,
+                    record["id"],
+                    action.get("kind"),
+                )
+                return "deferred"
             logger.info(
                 "loop %s parked for approval %s (action=%s)",
                 loop.loop_id,
@@ -267,6 +297,44 @@ class EngineLoopRunner(threading.Thread):
 
         return _gate
 
+    _DEFER_PARK_AFTER = 3
+
+    def _defer_strike(self, loop: ResearchLoop, record: dict) -> bool:
+        """Bump the per-approval deferral ledger; True = budget spent → park.
+
+        Bounds D-34's deferred continuation: a pending question must never
+        spin the loop's iteration budget away — after 3 consecutive
+        deferrals under the SAME approval id the gate hard-parks as before.
+        A different approval id resets the ledger."""
+        ledger = loop.metadata.get("deferred_gate")
+        if not isinstance(ledger, dict) or ledger.get("approval_id") != record["id"]:
+            ledger = {"approval_id": record["id"], "count": 0}
+        ledger["count"] = int(ledger.get("count") or 0) + 1
+        loop.metadata["deferred_gate"] = ledger
+        self._store.save(loop)
+        return int(ledger["count"]) >= self._DEFER_PARK_AFTER
+
+    def _peek_decision(self, record: dict, loop: ResearchLoop) -> bool | None:
+        """The durable inbox's decision if already made; None while pending."""
+        from . import tool_approvals
+
+        try:
+            current = tool_approvals.get(record["id"])
+        except Exception:  # noqa: BLE001 — peek is best-effort; the park path re-checks
+            return None
+        if current is None:
+            return None
+        return self._apply_decision(current, loop)
+
+    def _apply_decision(self, current: dict, loop: ResearchLoop) -> bool | None:
+        """Map an inbox row to its verdict; clears the awaiting marker."""
+        status = str(current.get("status") or "")
+        if status not in ("approved", "rejected"):
+            return None
+        loop.metadata.pop("awaiting_approval", None)
+        self._store.save(loop)
+        return status == "approved"
+
     def _await_approval(self, record: dict, loop: ResearchLoop, re_request) -> bool:
         """Park until the durable approval is decided (True = approved)."""
         from . import tool_approvals
@@ -277,15 +345,9 @@ class EngineLoopRunner(threading.Thread):
             current = tool_approvals.get(record["id"])
             if current is None:
                 current = re_request()
-            status = current.get("status")
-            if status == "approved":
-                loop.metadata.pop("awaiting_approval", None)
-                self._store.save(loop)
-                return True
-            if status == "rejected":
-                loop.metadata.pop("awaiting_approval", None)
-                self._store.save(loop)
-                return False
+            decided = self._apply_decision(current, loop)
+            if decided is not None:
+                return decided
             time.sleep(self._poll_seconds)
 
     # -- drive --------------------------------------------------------------

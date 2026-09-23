@@ -26,6 +26,23 @@ logger = logging.getLogger(__name__)
 AgentExecutor = Callable[[str, int, str], dict[str, Any]]
 
 
+def _deferred_agent_iteration(loop: ResearchLoop) -> LoopIteration:
+    """D-34 first leg: an iteration awaiting the durable decision — no
+    executor ran, nothing fabricated (the runner's ledger bounds spin)."""
+    now = datetime.now(timezone.utc).isoformat()
+    return LoopIteration(
+        iteration_id=f"it-{loop.loop_id}-{loop.current_iteration}",
+        loop_id=loop.loop_id,
+        iteration_number=loop.current_iteration,
+        phase=LoopPhase.EXPERIMENT_EXECUTION,
+        started_at=now,
+        completed_at=now,
+        results={"deferred_gate": "agent_iteration"},
+        findings=[],
+        status="awaiting_decision",
+    )
+
+
 class AgenticEngine:
     """Engine-surface wrapper around one agent iteration executor."""
 
@@ -34,7 +51,9 @@ class AgenticEngine:
         # Wired by EngineLoopRunner.drive before run().
         self._iteration_hook: Callable[[LoopIteration], None] = lambda it: None
         self._cancel_check: Callable[[], bool] = lambda: False
-        self._approval_gate: Callable[[dict], bool] = lambda action: True
+        # True = run, False = decided-no (raises), "deferred" = D-34 first leg
+        # (profile-mode pending → iteration awaits the durable decision).
+        self._approval_gate: Callable[[dict], bool | str] = lambda action: True
 
     def run(self, loop: ResearchLoop) -> ResearchLoop:
         """Drive agent-decisioned iterations to completion (or cancel)."""
@@ -52,6 +71,19 @@ class AgenticEngine:
             loop.completed_at = datetime.now(timezone.utc).isoformat()
         return loop
 
+    def _advance_gated(self, loop: ResearchLoop, verdict: bool | str) -> LoopIteration:
+        """A gated verdict's outcome: False raises (decided-no — today's
+        contract); "deferred" records the awaiting_decision iteration (D-34
+        first leg — the loop continues on the next ungated iteration)."""
+        if verdict == "deferred":
+            iteration = _deferred_agent_iteration(loop)
+            loop.iterations.append(iteration)
+            loop.updated_at = datetime.now(timezone.utc).isoformat()
+            return iteration
+        raise RuntimeError(
+            f"agent iteration {loop.current_iteration} rejected by the approval gate"
+        )
+
     def _advance_one(self, loop: ResearchLoop) -> LoopIteration:
         loop.current_iteration += 1
         action = {
@@ -59,10 +91,9 @@ class AgenticEngine:
             "iteration": loop.current_iteration,
             "loop_id": loop.loop_id,
         }
-        if not self._approval_gate(action):
-            raise RuntimeError(
-                f"agent iteration {loop.current_iteration} rejected by the approval gate"
-            )
+        verdict = self._approval_gate(action)
+        if verdict is not True:
+            return self._advance_gated(loop, verdict)
         summary = (
             self._executor(loop.loop_id, loop.current_iteration, loop.research_goal)
             or {}
