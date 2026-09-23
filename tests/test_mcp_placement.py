@@ -13,9 +13,7 @@ class _Cfg:
 
 
 def _site(monkeypatch, extra):
-    monkeypatch.setattr(
-        "umrs.orchestrator.site_config.load_site_config", lambda: _Cfg(extra)
-    )
+    monkeypatch.setattr("umrs.orchestrator.site_config.load_site_config", lambda: _Cfg(extra))
 
 
 def test_local_and_frontend_always_valid():
@@ -86,3 +84,53 @@ class _NoSqlConn:
 
     def __exit__(self, *_a):
         return False
+
+
+# ── D-24 who-may-publish policy: trusted-host-only is admin-only ──────
+
+
+def _register_request(trust_class, project_id="proj-a"):
+    from umrs.api.mcp import ServerRegistrationRequest
+
+    return ServerRegistrationRequest(
+        name="srv-x", url="http://h:1", project_id=project_id, trust_class=trust_class
+    )
+
+
+class _Scope:
+    def __init__(self, is_admin, project_id="proj-a", anonymous=False):
+        self.is_admin = is_admin
+        self.project_id = project_id
+        self.anonymous = anonymous
+
+
+def test_trusted_host_only_publish_requires_admin(monkeypatch):
+    from fastapi import HTTPException
+
+    from umrs.api import mcp as mcp_mod
+    from umrs.api.mcp import _enforce_registration_scope
+
+    monkeypatch.setattr(mcp_mod, "_caller_scope", lambda _r: _Scope(is_admin=False))
+    with pytest.raises(HTTPException) as exc:
+        _enforce_registration_scope(None, _register_request("trusted-host-only"))
+    assert exc.value.status_code == 403
+    assert "trust_class_denied" in str(exc.value.detail)
+
+
+def test_admin_publishes_trusted_host(monkeypatch):
+    from umrs.api import mcp as mcp_mod
+    from umrs.api.mcp import _enforce_registration_scope
+
+    monkeypatch.setattr(mcp_mod, "_caller_scope", lambda _r: _Scope(is_admin=True))
+    req = _enforce_registration_scope(None, _register_request("trusted-host-only"))
+    assert req.trust_class == "trusted-host-only"
+
+
+def test_local_safe_and_front_end_stay_project_scoped(monkeypatch):
+    from umrs.api import mcp as mcp_mod
+    from umrs.api.mcp import _enforce_registration_scope
+
+    monkeypatch.setattr(mcp_mod, "_caller_scope", lambda _r: _Scope(is_admin=False))
+    for cls in ("local-safe", "front-end"):
+        req = _enforce_registration_scope(None, _register_request(cls))
+        assert req.project_id == "proj-a"  # own-project claim, no class refusal
