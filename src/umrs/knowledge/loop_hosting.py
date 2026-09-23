@@ -164,6 +164,59 @@ def _checkpoint_iteration(
     )
 
 
+def _step_measured_gpu_seconds(step: Any) -> float:
+    """One step's MEASURED slurm GPU-seconds (0.0 when unmeasured)."""
+    extra = getattr(step, "extra", None) or {}
+    inner = extra.get("extra") if isinstance(extra, dict) else None
+    accounting = inner.get("slurm") if isinstance(inner, dict) else None
+    seconds = (accounting or {}).get("gpu_seconds")
+    if isinstance(seconds, (int, float)) and seconds > 0:
+        return float(seconds)
+    return 0.0
+
+
+def _accumulate_gpu_cost(loop: ResearchLoop, iteration: LoopIteration) -> None:
+    """D-36 leg B: accumulate the iteration's MEASURED slurm GPU-seconds.
+
+    The step lane stamps sacct accounting (Elapsed × AllocTRES%gres) onto
+    each successful step's ``extra.slurm``; the workflow execution record
+    carries it durably (PG-backed registry). Only measured steps count —
+    unmeasured/failed steps contribute nothing and are reported by count
+    (ADR-067's never-approximate rule). Idempotent per iteration id."""
+    if not iteration.workflow_run_id:
+        return
+    try:
+        from ..shared.workflow_execution_access import get_execution_registry
+
+        record = get_execution_registry().get(iteration.workflow_run_id)
+    except Exception as exc:  # noqa: BLE001 — accounting is best-effort, never a gate
+        logger.warning(
+            "gpu-cost lookup failed for workflow %s: %s",
+            iteration.workflow_run_id,
+            exc,
+        )
+        return
+    if record is None:
+        return
+    total = 0.0
+    measured = 0
+    steps = dict(record.steps or {})
+    for step in steps.values():
+        seconds = _step_measured_gpu_seconds(step)
+        if seconds > 0:
+            total += seconds
+            measured += 1
+    ledger = loop.metadata.setdefault("gpu_cost_iterations", {})
+    if iteration.iteration_id in ledger:
+        return
+    ledger[iteration.iteration_id] = {
+        "workflow_run_id": iteration.workflow_run_id,
+        "gpu_seconds": total,
+        "steps_measured": measured,
+        "steps": len(steps),
+    }
+
+
 def iteration_hook(
     *, job_id: str = "", attempt_id: str = ""
 ) -> Callable[[ResearchLoop, LoopIteration], None]:
@@ -172,6 +225,7 @@ def iteration_hook(
     def _hook(loop: ResearchLoop, iteration: LoopIteration) -> None:
         store = _wiring().store()
         _mint_findings(loop, iteration, store)
+        _accumulate_gpu_cost(loop, iteration)
         if iteration.status == "completed":
             _checkpoint_iteration(loop, iteration, job_id=job_id, attempt_id=attempt_id)
 

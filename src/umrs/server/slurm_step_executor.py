@@ -50,6 +50,145 @@ from .step_executor import (
 logger = logging.getLogger(__name__)
 
 
+def measure_slurm_accounting(job_id: str) -> dict[str, Any]:
+    """D-36 leg B: sacct-measured cost for a FINISHED slurm job.
+
+    One ``sacct -o Elapsed,AllocTRES%gres`` read → seconds × GPUs.
+    Empty dict when sacct is unavailable or answers garbage — unmeasured,
+    never approximated (ADR-067's never-approximate rule).
+    """
+    from umrs.shared.slurm_accounting import (
+        measured_gpu_seconds,
+        parse_alloc_tres_gpus,
+        parse_slurm_elapsed,
+    )
+
+    cmd = [
+        "sacct",
+        "--job",
+        str(job_id),
+        "--format=Elapsed,AllocTRES%gres",
+        "--noheader",
+        "--parsable2",
+    ]
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=15, check=False
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return {}
+    if result.returncode != 0 or not result.stdout.strip():
+        return {}
+    parts = result.stdout.strip().splitlines()[0].split("|")
+    elapsed = parse_slurm_elapsed(parts[0]) if parts else None
+    gpus = parse_alloc_tres_gpus(parts[1]) if len(parts) > 1 else 0
+    if elapsed is None:
+        return {}
+    return {
+        "job_id": str(job_id),
+        "elapsed_seconds": elapsed,
+        "gpus": gpus,
+        "gpu_seconds": measured_gpu_seconds(elapsed, gpus),
+    }
+
+
+def stamp_slurm_accounting(result: Any, accounting: dict[str, Any]) -> Any:
+    """Stamp measured accounting onto a StepResult's ``extra`` bag.
+
+    Only stamps when the measurement is real (non-empty) — unmeasured
+    steps carry nothing, never an invented zero."""
+    if not accounting or not isinstance(result.extra, dict):
+        return result
+    result.extra["slurm"] = dict(accounting)
+    return result
+
+
+def _s3_env_args(s3_config: dict[str, Any]) -> list[str]:
+    """S3 endpoint/region/credential env passthrough for the worker pod."""
+    args: list[str] = []
+    endpoint = (
+        s3_config.get("endpoint_url")
+        or os.environ.get("S3_ENDPOINT_URL")
+        or os.environ.get("MINIO_ENDPOINT")
+    )
+    if endpoint:
+        # S3_ENDPOINT_URL is canonical (ADR-055); MINIO_ENDPOINT kept for older workers.
+        args.extend(
+            [
+                "-e",
+                f"S3_ENDPOINT_URL={endpoint}",
+                "-e",
+                f"MINIO_ENDPOINT={endpoint}",
+            ]
+        )
+    region = s3_config.get("region_name") or os.environ.get("AWS_REGION")
+    if region:
+        args.extend(["-e", f"AWS_REGION={region}"])
+    for cred_var in (
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_SESSION_TOKEN",
+    ):
+        val = os.environ.get(cred_var)
+        if val:
+            args.extend(["-e", f"{cred_var}={val}"])
+    return args
+
+
+def _podman_run_argv(
+    *,
+    network: str,
+    workdir: str,
+    input_rel: str,
+    output_rel: str,
+    source_dir: str,
+    needs_gpu: bool,
+    s3_config: dict[str, Any],
+    image: str,
+) -> list[str]:
+    """The step worker's ``podman run`` argv (env-var file transport —
+    argv paths alone are ignored by ``step_worker.main()`` unless
+    ``UMRS_STEP_*`` is set; same contract as PodmanExecutor)."""
+    parts = [
+        "podman",
+        "run",
+        "--rm",
+        f"--network={shlex.quote(network)}",
+        "-v",
+        f"{shlex.quote(workdir)}:/work",
+        "-e",
+        f"UMRS_STEP_INPUT=/work/{input_rel}",
+        "-e",
+        f"UMRS_STEP_OUTPUT=/work/{output_rel}",
+    ]
+    if source_dir:
+        # User step modules live outside the image (uploaded bundle):
+        # mount the tree read-only at the same absolute path and tell
+        # the worker to put it on sys.path. Requires the path to be
+        # visible from the compute node (shared filesystem).
+        parts.extend(
+            [
+                "-v",
+                f"{shlex.quote(source_dir)}:{shlex.quote(source_dir)}:ro",
+                "-e",
+                f"{EXECUTOR_SOURCE_DIR_ENV_VAR}={shlex.quote(source_dir)}",
+            ]
+        )
+    if needs_gpu:
+        # Match PodmanExecutor device CDI form (site-dependent).
+        parts.extend(["--device", "nvidia.com/gpu=all"])
+    parts.extend(_s3_env_args(s3_config))
+    parts.extend(
+        [
+            shlex.quote(image),
+            "python",
+            "-m",
+            "umrs.server.step_worker",
+        ]
+    )
+    return parts
+
+
 @dataclass
 class SlurmStepExecutor(StepExecutor):
     """Run workflow steps as Slurm jobs on GPU compute nodes.
@@ -337,71 +476,15 @@ class SlurmStepExecutor(StepExecutor):
         network = os.environ.get("UMRS_STEP_PODMAN_NETWORK", "host").strip() or "host"
         s3_config = _serialise_s3_client_config(ctx.s3)
 
-        # Prefer env-var file transport (same as PodmanExecutor). argv paths
-        # alone are ignored by step_worker.main() unless UMRS_STEP_* is set.
-        parts = [
-            "podman",
-            "run",
-            "--rm",
-            f"--network={shlex.quote(network)}",
-            "-v",
-            f"{shlex.quote(workdir)}:/work",
-            "-e",
-            f"UMRS_STEP_INPUT=/work/{input_rel}",
-            "-e",
-            f"UMRS_STEP_OUTPUT=/work/{output_rel}",
-        ]
-        if source_dir:
-            # User step modules live outside the image (uploaded bundle):
-            # mount the tree read-only at the same absolute path and tell
-            # the worker to put it on sys.path. Requires the path to be
-            # visible from the compute node (shared filesystem).
-            parts.extend(
-                [
-                    "-v",
-                    f"{shlex.quote(source_dir)}:{shlex.quote(source_dir)}:ro",
-                    "-e",
-                    f"{EXECUTOR_SOURCE_DIR_ENV_VAR}={shlex.quote(source_dir)}",
-                ]
-            )
-        if needs_gpu:
-            # Match PodmanExecutor device CDI form (site-dependent).
-            parts.extend(["--device", "nvidia.com/gpu=all"])
-
-        endpoint = (
-            s3_config.get("endpoint_url")
-            or os.environ.get("S3_ENDPOINT_URL")
-            or os.environ.get("MINIO_ENDPOINT")
-        )
-        if endpoint:
-            # S3_ENDPOINT_URL is canonical (ADR-055); MINIO_ENDPOINT kept for older workers.
-            parts.extend(
-                [
-                    "-e",
-                    f"S3_ENDPOINT_URL={endpoint}",
-                    "-e",
-                    f"MINIO_ENDPOINT={endpoint}",
-                ]
-            )
-        region = s3_config.get("region_name") or os.environ.get("AWS_REGION")
-        if region:
-            parts.extend(["-e", f"AWS_REGION={region}"])
-        for cred_var in (
-            "AWS_ACCESS_KEY_ID",
-            "AWS_SECRET_ACCESS_KEY",
-            "AWS_SESSION_TOKEN",
-        ):
-            val = os.environ.get(cred_var)
-            if val:
-                parts.extend(["-e", f"{cred_var}={val}"])
-
-        parts.extend(
-            [
-                shlex.quote(image),
-                "python",
-                "-m",
-                "umrs.server.step_worker",
-            ]
+        parts = _podman_run_argv(
+            network=network,
+            workdir=workdir,
+            input_rel=input_rel,
+            output_rel=output_rel,
+            source_dir=source_dir,
+            needs_gpu=needs_gpu,
+            s3_config=s3_config,
+            image=image,
         )
         podman_cmd = " ".join(parts)
 
@@ -514,6 +597,10 @@ class SlurmStepExecutor(StepExecutor):
                     "SlurmStepExecutor: job %s completed successfully",
                     job_id,
                 )
+                # D-36 leg B: the only GPU-second number that counts is a
+                # measured one — stamp the sacct accounting onto the result
+                # so it rides the step record into the execution ledger.
+                stamp_slurm_accounting(result, measure_slurm_accounting(job_id))
                 return result
 
             elif status in ("FAILED", "CANCELLED", "TIMEOUT", "OUT_OF_MEMORY"):

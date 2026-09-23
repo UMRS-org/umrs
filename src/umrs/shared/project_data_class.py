@@ -47,6 +47,6 @@ def data_class_for_project(pool: Any, project: str) -> str:
             return str(row[0]) if row and row[0] else ""
         finally:
             pool.putconn(conn)
-    except Exception:  # noqa: BLE001 — the gate never blocks on lookup failure
+    except Exception:  # the gate never blocks on lookup failure
         logger.warning("data_class lookup failed for %s", project, exc_info=True)
         return ""
