@@ -51,14 +51,16 @@ class _Conn:
     def _handle_insert(self, params, cur: _Cursor):
         pid, name, owner = params
         if pid not in self.rows:
-            self.rows[pid] = (pid, name, owner, "active", None, None, None)
+            self.rows[pid] = (pid, name, owner, "active", None, None, None, "sensitive")
         cur._result = []
 
-    def _handle_update(self, params, cur: _Cursor):
-        pid = params[0]
-        pid, name, owner, _status, r1, r2, r3 = self.rows[pid]
+    def _handle_update(self, sql, params, cur: _Cursor):
         now = datetime.now(timezone.utc)
-        self.rows[pid] = (pid, name, owner, "retired", now, r2, now)
+        pid, name, owner, status, r1, r2, r3, dc = self.rows[params[-1]]
+        if "data_class" in sql:
+            self.rows[params[-1]] = (pid, name, owner, status, r1, r2, now, params[0])
+        else:
+            self.rows[params[-1]] = (pid, name, owner, "retired", now, r2, now, dc)
         cur._result = []
 
     def _handle_select_by_id(self, params, cur: _Cursor):
@@ -78,7 +80,7 @@ class _Conn:
         if verb.startswith("INSERT"):
             self._handle_insert(params, cur)
         elif verb.startswith("UPDATE"):
-            self._handle_update(params, cur)
+            self._handle_update(sql, params, cur)
         elif "WHERE project_id = %s" in sql:
             self._handle_select_by_id(params, cur)
         elif "ORDER BY created_at" in sql:
@@ -235,9 +237,7 @@ class TestLoopBudget:
     def test_set_and_read_back(self) -> None:
         store = ProjectStore(_BudgetConn())
         store.create("p-b", owner_id="alice")
-        set_row = store.set_budget(
-            "p-b", max_gpu_hours=12.5, max_wall_clock_hours=4.0
-        )
+        set_row = store.set_budget("p-b", max_gpu_hours=12.5, max_wall_clock_hours=4.0)
         assert set_row["max_gpu_hours"] == 12.5
         assert set_row["max_wall_clock_hours"] == 4.0
         again = store.get_budget("p-b")
@@ -260,3 +260,60 @@ class TestLoopBudget:
         )
         assert ok.status_code == 200
         assert ok.json()["budget"]["max_wall_clock_hours"] == 2.0
+
+
+# ── ADR-062 (D-51): per-project data class ──────────────────────────────
+
+
+class TestDataClass:
+    def test_create_defaults_to_sensitive(self) -> None:
+        store = ProjectStore(_Conn())
+        store.create("proj-dc", owner_id="alice")
+        assert store.get("proj-dc")["data_class"] == "sensitive"
+
+    def test_owner_widens_and_narrows(self) -> None:
+        store = ProjectStore(_Conn())
+        store.create("proj-dc", owner_id="alice")
+        client = _client(store)
+        r = client.patch(
+            "/umrs/projects/proj-dc",
+            json={"action": "set_data_class", "data_class": "non_sensitive"},
+            headers=_headers("alice"),
+        )
+        assert r.status_code == 200
+        assert r.json()["project"]["data_class"] == "non_sensitive"
+        r2 = client.patch(
+            "/umrs/projects/proj-dc",
+            json={"action": "set_data_class", "data_class": "sensitive"},
+            headers=_headers("alice"),
+        )
+        assert r2.json()["project"]["data_class"] == "sensitive"
+
+    def test_non_owner_refused_even_admin_false(self) -> None:
+        store = ProjectStore(_Conn())
+        store.create("proj-dc", owner_id="alice")
+        client = _client(store)
+        r = client.patch(
+            "/umrs/projects/proj-dc",
+            json={"action": "set_data_class", "data_class": "non_sensitive"},
+            headers=_headers("mallory"),
+        )
+        assert r.status_code == 403
+
+    def test_bad_class_value_refused(self) -> None:
+        store = ProjectStore(_Conn())
+        store.create("proj-dc", owner_id="alice")
+        client = _client(store)
+        r = client.patch(
+            "/umrs/projects/proj-dc",
+            json={"action": "set_data_class", "data_class": "public"},
+            headers=_headers("alice"),
+        )
+        assert r.status_code == 400
+
+    def test_get_carries_the_class(self) -> None:
+        store = ProjectStore(_Conn())
+        store.create("proj-dc", owner_id="alice")
+        client = _client(store)
+        r = client.get("/umrs/projects/proj-dc", headers=_headers("alice"))
+        assert r.json()["project"]["data_class"] == "sensitive"
