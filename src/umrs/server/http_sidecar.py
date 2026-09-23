@@ -168,7 +168,13 @@ def _init_mcp_store(app, db_pool):
         ensure_mcp_schema(mcp_conn)
         mcp_conn.commit()
         app.state.umrs_mcp_store_conn = mcp_conn
-        set_mcp_store(MCPServerStore(mcp_conn))
+        mcp_store = MCPServerStore(mcp_conn)
+        set_mcp_store(mcp_store)
+        # ADR-053: the jobs-lane D-22 registry rides the same store instance
+        # (installed on the jobs adapters module, never an api import).
+        from umrs.jobs.adapters import set_mcp_registry
+
+        set_mcp_registry(mcp_store)
         logger.info("MCP server store initialized for HTTP sidecar")
     except Exception:  # noqa: BLE001 — boot/teardown must survive per-component failures
         logger.warning(
