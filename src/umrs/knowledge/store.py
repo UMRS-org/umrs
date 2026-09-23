@@ -209,7 +209,7 @@ class KnowledgeStore:
                 )
                 inserted = result != "INSERT 0 0"
                 return inserted
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — duplicate insert is an expected shape, reported not raised
             logger.warning("IR insert failed (likely duplicate): %s: %s", ir_id, exc)
             return False
 
@@ -408,6 +408,26 @@ class KnowledgeStore:
                 *params,
             )
             return int(result.split()[-1])
+
+    async def benchmark_node_status(
+        self, project_id: str, node_ids: list[str]
+    ) -> dict[str, str | None]:
+        """D-44 domain benchmark: node_id → row status (None = absent).
+
+        The scoring base for catalog-quality measurement — mechanically
+        real (node existence + two-tier status), no LLM in the loop.
+        """
+        if not node_ids:
+            return {}
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT node_id, status FROM knowledge_nodes"
+                " WHERE project_id = $1 AND node_id = ANY($2)",
+                project_id,
+                node_ids,
+            )
+        found = {r["node_id"]: r["status"] for r in rows}
+        return {nid: found.get(nid) for nid in node_ids}
 
     async def count_graph_nodes(self, project_id: str) -> int:
         """Row tally of knowledge_nodes within the project (used by the
@@ -1106,7 +1126,7 @@ def reset_knowledge_pool() -> None:
         from .canonical_graph_view import _reset_store_worker_for_tests
 
         _reset_store_worker_for_tests()
-    except Exception:  # noqa: BLE001 — teardown must not raise
+    except Exception:  # noqa: BLE001, S110 — teardown must not raise
         pass
     if pool is None:
         return
@@ -1116,5 +1136,5 @@ def reset_knowledge_pool() -> None:
         loop = asyncio.get_event_loop_policy().get_event_loop()
         if not loop.is_closed():
             loop.run_until_complete(pool.close())
-    except Exception:  # noqa: BLE001 — teardown must not raise
+    except Exception:  # noqa: BLE001, S110 — teardown must not raise
         pass

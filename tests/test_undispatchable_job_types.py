@@ -31,17 +31,10 @@ def test_submit_embedding_batch_fails_fast() -> None:
         service.submit_embedding_batch("p", "u", "/in", "/out")
 
 
-def test_domain_benchmark_is_a_typed_phenom() -> None:
-    """D-44: the catalog-quality benchmark lane exists, honestly gated.
-
-    The kind is registered (design surface visible) but dispatch-blocked
-    with a typed 400 — no durable attempt is born that can never finish.
-    The benchmark executor + ground-truth suite format are the named
-    design decisions that graduate it.
-    """
+def test_domain_benchmark_graduated() -> None:
+    """D-44: the benchmark lane graduated 2026-09-23 — the executor
+    (DomainBenchmarkBackend) + suite format landed, so the kind must
+    pass the submit guard (never a typed-400 phenom again)."""
     assert JobType.DOMAIN_BENCHMARK.value == "domain_benchmark"
-    assert JobType.DOMAIN_BENCHMARK in _UNDISPATCHABLE_JOB_TYPES
-    with pytest.raises(HTTPException) as excinfo:
-        _enforce_dispatchable_job_type(JobType.DOMAIN_BENCHMARK)
-    assert excinfo.value.status_code == 400
-    assert "not implemented" in excinfo.value.detail.lower()
+    assert JobType.DOMAIN_BENCHMARK not in _UNDISPATCHABLE_JOB_TYPES
+    _enforce_dispatchable_job_type(JobType.DOMAIN_BENCHMARK)  # must not raise

@@ -15,9 +15,15 @@ that other paths quietly depend on:
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 from umrs.jobs import knowledge_adapters as ka
+from umrs.jobs.knowledge_adapters import (
+    DomainBenchmarkBackend,
+    DomainBenchmarkStatusChecker,
+    _run_verifier,
+)
 
 _COMPONENT_KEYS = (
     "DB_HOST",
@@ -165,3 +171,130 @@ class TestAsyncBridge:
         with caplog.at_level(logging.WARNING, logger=ka.logger.name):
             asyncio.run(inner())
         assert any("log-task" in r.getMessage() for r in caplog.records)
+
+
+# ── D-44 graduation: DomainBenchmarkBackend (node-existence scoring) ────
+
+
+class _FakeStore:
+    def __init__(self, status_map):
+        self._map = status_map
+        self.calls = []
+
+    async def benchmark_node_status(self, project_id, node_ids):
+        self.calls.append((project_id, sorted(node_ids)))
+        return {nid: self._map.get(nid) for nid in node_ids}
+
+
+class _FakePool:
+    pass
+
+
+def _job(spec):
+    return SimpleNamespace(
+        job_id="j-1",
+        project_id="p1",
+        spec=spec,
+    )
+
+
+def _attempt():
+    return SimpleNamespace(attempt_id="a-1", metrics={}, backend_ref="")
+
+
+def _run(coro):
+    return asyncio.run(coro)
+
+
+def test_benchmark_scores_node_existence(monkeypatch):
+    backend = DomainBenchmarkBackend()
+    store = _FakeStore({"n-1": "established", "n-2": "proposed"})
+    monkeypatch.setattr("umrs.jobs.knowledge_adapters._get_pool", lambda: _FakePool())
+
+    monkeypatch.setattr("umrs.knowledge.store.KnowledgeStore", lambda _pool: store)
+    attempt = _attempt()
+    ref = _run(
+        backend.submit_job(
+            _job(
+                {
+                    "project_id": "p1",
+                    "benchmark": [
+                        {"question": "q1", "expected_node_ids": ["n-1", "n-2"]},
+                        {"question": "q2", "expected_node_ids": ["n-3"]},
+                    ],
+                }
+            ),
+            attempt,
+        )
+    )
+    assert "score=0.667" in ref
+    assert "matched=2|total=3" in ref
+    import json as _json
+
+    metrics = _json.loads(attempt.metrics["benchmark"])
+    assert metrics["score"] == pytest.approx(2 / 3)
+    assert metrics["established"] == 1
+    assert metrics["proposed"] == 1
+    assert store.calls == [("p1", ["n-1", "n-2", "n-3"])]
+
+
+def test_benchmark_bad_spec_is_a_named_error(monkeypatch):
+    backend = DomainBenchmarkBackend()
+    attempt = _attempt()
+    ref = _run(
+        backend.submit_job(_job({"project_id": "p1", "benchmark": [{"question": "q"}]}), attempt)
+    )
+    assert "error=bad_benchmark_spec" in ref
+
+
+def test_benchmark_degrades_without_pool(monkeypatch):
+    backend = DomainBenchmarkBackend()
+    monkeypatch.setattr("umrs.jobs.knowledge_adapters._get_pool", lambda: None)
+    ref = _run(
+        backend.submit_job(
+            _job(
+                {
+                    "project_id": "p1",
+                    "benchmark": [{"question": "q", "expected_node_ids": ["n-1"]}],
+                }
+            ),
+            _attempt(),
+        )
+    )
+    assert "degraded=no_pool" in ref
+
+
+def test_benchmark_checker_ref_grammar():
+    checker = DomainBenchmarkStatusChecker()
+
+    ok = _run(
+        checker.check_status(
+            SimpleNamespace(backend_ref="domain_benchmark|project=p1|score=1.000"),
+            _job({}),
+        )
+    )
+    assert ok.status == "succeeded"
+
+    bad = _run(
+        checker.check_status(
+            SimpleNamespace(backend_ref="domain_benchmark|error=bad_benchmark_spec"),
+            _job({}),
+        )
+    )
+    assert bad.status == "failed"
+
+
+def test_run_verifier_repair_is_live():
+    """2026-09-23 defect repair: _run_verifier exists and guards per-verifier."""
+
+    class _Boom:
+        name = "boom"
+
+        def can_run(self, _project_id):
+            return True
+
+        async def run(self, _store, _project_id):
+            raise RuntimeError("verifier blew up")
+
+    out = _run(_run_verifier(_Boom(), None, "p1", _job({}), _attempt()))
+    assert out == []  # one verifier failure degrades, never kills the run
