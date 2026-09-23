@@ -60,7 +60,7 @@ class SkillStore:
         Returns:
             The registered ``RegisteredSkill``.
         """
-        skill_id = f"skl-{__hash_str(f'{scope.value}:{owner_id}:{name}')}"
+        skill_id = f"skl-{_hash_str(f'{scope.value}:{owner_id}:{name}')}"
         manifest_json = json.dumps(manifest or {})
 
         with self.conn.cursor() as cur:

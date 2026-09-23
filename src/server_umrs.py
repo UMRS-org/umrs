@@ -122,7 +122,7 @@ def perform_initial_config(configure_file, status_store):
     # Task 10: model path boot check — fail fast if paths are inaccessible
     try:
         enforce_model_paths(require_at_least_one=False)
-    except Exception:
+    except Exception:  # noqa: BLE001 — server loop must survive per-command failures
         logger.warning("Model path validation failed (non-fatal without config)")
 
     # Get the directory containing configure_file
@@ -150,7 +150,7 @@ def perform_initial_config(configure_file, status_store):
     # Align MessageQueue debug with server pretty-print setting (off by default)
     try:
         control_mq.set_debug(ENABLE_PRETTY_PRINT)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — server loop must survive per-command failures
         # Debug flag is optional; log but do not raise
         print(f"Warning: failed to set debug mode on control queue: {e}")
     print("Subscribed to zeroMQ message queue")
@@ -213,6 +213,100 @@ def _reply_command_error(control_mq, payload, cmd, exc):
     )
     with contextlib.suppress(Exception):
         control_mq.send_string(body, sender_id)
+
+
+def _handle_maintenance_command(
+    active_threads,
+    cmd,
+    client_id,
+    buckets_cfg,
+    device,
+    embedding_backend,
+    configure_file,
+    user_config_map,
+    key,
+    update_status_callback=None,
+):
+    """Recovery-path maintenance dispatch (2026-09-23 repair: the definition
+    was dropped in the SQLite→PostgreSQL task migration while its call site
+    survived — RECOMPUTE/UPDATE/CHECK recovery NameError'd).
+
+    Returns the launched thread ident; RELOAD is not a recovery command
+    (the call site never passes it) and unknown commands refuse by name.
+    """
+    if cmd == TaskCmd.RECOMPUTE:
+        return active_threads.launch_recompute_all_objects(
+            client_id,
+            buckets_cfg,
+            device,
+            embedding_backend,
+            key,
+            log_output=ENABLE_PRETTY_PRINT,
+            update_status_callback=update_status_callback,
+        )
+    if cmd == TaskCmd.UPDATE:
+        return active_threads.launch_update_objects(
+            client_id,
+            buckets_cfg,
+            device,
+            embedding_backend,
+            key,
+            verbose=False,
+            log_output=ENABLE_PRETTY_PRINT,
+            update_status_callback=update_status_callback,
+        )
+    if cmd == TaskCmd.CHECK:
+        return active_threads.launch_check_objects(
+            client_id,
+            buckets_cfg,
+            key,
+            verbose=False,
+            log_output=ENABLE_PRETTY_PRINT,
+            update_status_callback=update_status_callback,
+        )
+    raise ValueError(f"unknown maintenance command in recovery: {cmd!r}")
+
+
+def _persist_uploaded_user_config(
+    tmp_path, configure_file, user_config_map, expected_username=None
+):
+    """Recovery-path FILE persist (2026-09-23 repair: same drop as above).
+
+    The upload handler already registered the user at upload time; recovery
+    only re-persists the file. Identity check: the file's username must
+    match the task owner when one is expected. Returns (ok, username, dest).
+    """
+    try:
+        with open(tmp_path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except Exception as exc:  # noqa: BLE001 — server loop must survive per-command failures
+        print(f"Warning: cannot parse uploaded config {tmp_path!r}: {exc}")
+        return False, None, None
+    username = str(data.get("username") or "").strip()
+    if not username:
+        print(f"Warning: uploaded file {tmp_path!r} missing 'username'; ignoring")
+        return False, None, None
+    if expected_username and username != expected_username:
+        print(
+            f"Warning: uploaded config username {username!r} does not match "
+            f"task owner {expected_username!r}; left in place"
+        )
+        return False, username, None
+    try:
+        from pathlib import Path
+
+        from umrs.admin.user_store import resolve_server_user_files_dir
+
+        dest_dir = Path(resolve_server_user_files_dir())
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest = dest_dir / f"{username}.json"
+        dest.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    except Exception as exc:  # noqa: BLE001 — server loop must survive per-command failures
+        print(f"Warning: cannot persist user config for {username!r}: {exc}")
+        return False, username, None
+    if isinstance(user_config_map, dict):
+        user_config_map[username] = data
+    return True, username, str(dest)
 
 
 def server_event_loop(
@@ -284,12 +378,12 @@ def server_event_loop(
                     metrics.max_workers,
                     metrics.max_pending,
                 )
-            except Exception:
+            except Exception:  # noqa: BLE001, S110 — server loop must survive per-command failures
                 pass
 
             try:
                 result = control_mq.server_control_queue_loop()
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — server loop must survive per-command failures
                 print(f"ERROR in control queue loop: {e}", flush=True)
                 traceback.print_exc()
                 continue
@@ -328,7 +422,7 @@ def server_event_loop(
                 task_manager.active_threads.record_status_for_users_by_key(
                     users, TaskCmd.PROCESS_OBJECTS
                 )
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — server loop must survive per-command failures
                 # Non-fatal: do not disrupt server loop on status recording errors
                 print(f"Warning: failed to update task status: {e}")
 
@@ -343,14 +437,14 @@ def server_event_loop(
         print("All tasks finished. Exiting now.")
         control_mq.close()
         sys.exit(0)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — server loop must survive per-command failures
         print(f"\nFATAL: Unhandled exception in server event loop: {e}", flush=True)
         traceback.print_exc()
         try:
             task_manager.active_threads.close()
             task_manager.tasks_status.close()
             control_mq.close()
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — server loop must survive per-command failures
             print(f"Warning: error during shutdown cleanup: {e}")
         sys.exit(1)
 
@@ -633,7 +727,7 @@ def main():
             server_cfg.buckets_cfg,
             getattr(server_cfg, "user_config_map", None),
         )
-    except Exception as _ctx_exc:
+    except Exception as _ctx_exc:  # noqa: BLE001 — server loop must survive per-command failures
         print(f"Warning: could not set reload context: {_ctx_exc}")
 
     # Start HTTP sidecar so the Platform Gateway can proxy REST requests
@@ -647,7 +741,7 @@ def main():
             print(f"HTTP sidecar started (thread={_sidecar_thread.name}).")
         else:
             print("HTTP sidecar disabled by configuration.")
-    except Exception as _sc_exc:
+    except Exception as _sc_exc:  # noqa: BLE001 — server loop must survive per-command failures
         print(f"Warning: HTTP sidecar failed to start: {_sc_exc}")
 
     handle_maintenance_flags(
