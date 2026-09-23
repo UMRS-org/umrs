@@ -510,8 +510,79 @@ def _maybe_emit_template(args, store, rec) -> None:
                 )
 
 
+def _pg_user_rows() -> list | None:
+    """PG-lane read for the admin CLI (D-06 tail): rows from the 0110
+    table when the DSN is configured; None when not (the JSON lane answers,
+    never an invented row)."""
+    try:
+        from umrs.api._asyncpg_pool import _resolve_knowledge_dsn
+
+        dsn, _ = _resolve_knowledge_dsn()
+        if not dsn:
+            return None
+        import psycopg2
+
+        from umrs.shared.pg_settings import pg_connect_kwargs
+
+        conn = psycopg2.connect(dsn, **pg_connect_kwargs("admin-cli"))
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT username, fullname, email, role, disabled, slurm_account,"
+                " slurm_accounts, projects, quota, oidc_subject, curve_public_key,"
+                " curve_key_revoked_at, extras, created_at, last_updated"
+                " FROM users ORDER BY username"
+            )
+            return cur.fetchall()
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001 — the JSON lane answers; PG is optional
+        return None
+
+
 def _cmd_user_list(args: argparse.Namespace, store: UserStore) -> int:
     records = store.list()
+    if getattr(args, "from_pg", False):
+        rows = _pg_user_rows()
+        if rows is None:
+            print(
+                "error: --from-pg requires the Postgres lane (knowledge DSN "
+                "unconfigured or unreachable); the JSON lane answers without it.",
+                file=sys.stderr,
+            )
+            return 2
+        if args.role:
+            rows = [r for r in rows if r[3] == args.role]
+        if args.disabled_only:
+            rows = [r for r in rows if r[4]]
+        if args.json:
+            import json as _json
+
+            _print_json(
+                [
+                    {
+                        "username": r[0],
+                        "fullname": r[1],
+                        "email": r[2],
+                        "role": r[3],
+                        "disabled": r[4],
+                        "slurm_account": r[5],
+                        "projects": r[7]
+                        if isinstance(r[7], list)
+                        else _json.loads(r[7] or "[]"),
+                        "oidc_subject": r[9],
+                        "created_at": r[13],
+                        "last_updated": r[14],
+                    }
+                    for r in rows
+                ]
+            )
+        else:
+            for r in rows:
+                dis = " (disabled)" if r[4] else ""
+                print(f"  {r[0]:20s}  {r[3]:8s}{dis}  {r[1]}")
+            print(f"\n{len(rows)} row(s) from Postgres (0110)")
+        return 0
     if args.role:
         records = [r for r in records if r.role == args.role]
     if args.disabled_only:
@@ -1287,6 +1358,11 @@ def _add_user_parsers(user_sub: argparse._SubParsersAction) -> None:
     list_p.add_argument("--role", choices=VALID_ROLES)
     list_p.add_argument("--disabled-only", action="store_true")
     list_p.add_argument("--json", action="store_true")
+    list_p.add_argument(
+        "--from-pg",
+        action="store_true",
+        help="Read the Postgres lane (0110) instead of the JSON files",
+    )
     list_p.set_defaults(func=_cmd_user_list)
 
     show_p = user_sub.add_parser("show", help="Show a user record as JSON")
