@@ -67,3 +67,11 @@ def test_unmappable_constructs_refuse_by_name(bad, reason):
 def test_rule_without_shell_refuses():
     with pytest.raises(SnakefileError, match="no shell command"):
         convert_snakemake('rule x:\n    input: "a"\n    output: "b"\n')
+
+
+def test_child_steps_carry_input_aliases():
+    """DAG contract: upstream inputs get stable-name aliases."""
+    wf = convert_snakemake(_SNAKE)
+    steps = {s["name"]: s for s in wf["steps"]}
+    assert steps["map_reads"]["config"].get("input_aliases") == {}
+    assert steps["call_vars"]["config"]["input_aliases"] == {"mapped/a.bam": "**/mapped/a.bam"}

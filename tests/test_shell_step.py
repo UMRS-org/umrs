@@ -80,3 +80,43 @@ def test_setup_refuses_empty_command_and_globs():
         step.setup({"command": "", "output_globs": ["a"]})
     with pytest.raises(ValueError, match="output_globs"):
         step.setup({"command": "true", "output_globs": []})
+
+
+def test_input_aliases_materialize_stable_names():
+    """DAG contract: run-scoped upstream keys get stable aliases (importers)."""
+    store = {"shell/r1/mapped/a.bam": b"upstream"}
+    ctx = StepContext(
+        s3=_FakeS3(store),
+        input_bucket="in",
+        input_keys=["shell/r1/mapped/a.bam"],
+        output_bucket="out",
+        config={},
+        run_id="r2",
+        parent_output_bucket="pin",
+    )
+    step = ShellStep()
+    step.setup(
+        {
+            "command": "cat $UMRS_INPUTS_DIR/mapped/a.bam > $UMRS_OUTPUTS_DIR/out/x",
+            "output_globs": ["outputs/out/x"],
+            "input_aliases": {"mapped/a.bam": "**/mapped/a.bam"},
+        }
+    )
+    result = step.run(ctx)
+    assert store[result.output_keys[0]] == b"upstream"
+
+
+def test_alias_with_no_match_refuses_by_name():
+    ctx = StepContext(
+        s3=_FakeS3({}), input_bucket="in", input_keys=[], output_bucket="out", run_id="r3"
+    )
+    step = ShellStep()
+    step.setup(
+        {
+            "command": "true",
+            "output_globs": ["outputs/x"],
+            "input_aliases": {"a.txt": "**/a.txt"},
+        }
+    )
+    with pytest.raises(RuntimeError, match="input alias 'a.txt' matched nothing"):
+        step.run(ctx)

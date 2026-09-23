@@ -241,6 +241,9 @@ def _build_workflow(
     for name, rule in rules.items():
         deps = sorted({producer[f] for f in rule["input"] if f in producer})
         command = _resolve_placeholders(rule)
+        # Child inputs are run-scoped upstream keys — aliases give the
+        # command its stable file paths (ShellStep contract).
+        aliases = {f: f"**/{f}" for f in rule["input"] if f in producer}
         steps.append(
             {
                 "name": name,
@@ -252,6 +255,7 @@ def _build_workflow(
                         f if f.startswith("outputs/") else f"outputs/{f}"
                         for f in rule["output"]
                     ],
+                    "input_aliases": aliases,
                 },
             }
         )
