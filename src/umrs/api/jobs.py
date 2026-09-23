@@ -503,7 +503,12 @@ def _job_to_response(job: Job, include_attempts: bool = False) -> JobResponse:
             max(
                 0,
                 job.ttl_seconds
-                - int((datetime.utcnow() - job.updated_at).total_seconds()),
+                - int(
+                    (
+                        datetime.now(timezone.utc)
+                        - job.updated_at.replace(tzinfo=timezone.utc)
+                    ).total_seconds()
+                ),
             )
             if job.ttl_seconds
             and job.ttl_seconds > 0
@@ -637,14 +642,14 @@ async def create_job(
         create_method = (
             store.create_fan_out_graph if request.fan_out_jobs else store.create_job
         )
-        create_kwargs = dict(
-            project_id=project_id,
-            user_id=user_id,
-            priority=request.priority,
-            max_attempts=request.max_attempts,
-            restart_policy=restart_policy,
-            ttl_seconds=request.ttl_seconds,
-        )
+        create_kwargs = {
+            "project_id": project_id,
+            "user_id": user_id,
+            "priority": request.priority,
+            "max_attempts": request.max_attempts,
+            "restart_policy": restart_policy,
+            "ttl_seconds": request.ttl_seconds,
+        }
         if request.fan_out_jobs:
             job_id = _create_fan_out_job(store, request, job_type, spec, create_kwargs)
             return JobCreateResponse(
@@ -696,7 +701,7 @@ def _autopin_catalog(store: JobStore, project_id: str, job_id: str) -> None:
     Best-effort: a store hiccup never blocks job submission.
     """
     try:
-        from umrs.api.scientific_catalogs import ScientificCatalogStore
+        from umrs.scientific_catalogs.store import ScientificCatalogStore
 
         with store._get_conn() as conn:
             catalogs = ScientificCatalogStore(conn).list(project_id=project_id)

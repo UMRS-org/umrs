@@ -95,6 +95,7 @@ class ArtifactQuery:
     owner_id: str | None = None
     project_id: str | None = None
     execution_id: str | None = None
+    job_id: str | None = None
     name_prefix: str | None = None
     limit: int = 100
     offset: int = 0

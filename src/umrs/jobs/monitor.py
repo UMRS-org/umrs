@@ -13,7 +13,7 @@ import asyncio
 import contextlib
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Protocol
 
 from umrs.metrics import METRICS
@@ -22,6 +22,26 @@ from .models import AttemptStatus, Job, JobAttempt, JobType
 from .store import JobStore
 
 logger = logging.getLogger(__name__)
+
+
+def _open_knowledge_conn():
+    """Best-effort knowledge-DSN psycopg2 conn; None when unavailable.
+
+    Mirrors ``jobs.workflow_run._open_artifact_store`` (same DSN + kwargs).
+    """
+    try:
+        import psycopg2
+
+        from umrs.shared.pg_settings import pg_connect_kwargs
+
+        from .knowledge_adapters import _resolve_knowledge_dsn
+
+        return psycopg2.connect(
+            _resolve_knowledge_dsn(), **pg_connect_kwargs("job-monitor")
+        )
+    except Exception as exc:  # noqa: BLE001 — availability probe, never a gate
+        logger.warning("knowledge registry unavailable: %s", exc)
+        return None
 
 
 class BackendStatusChecker(Protocol):
@@ -166,8 +186,8 @@ class AttemptMonitor:
         while self._running:
             try:
                 await self._poll_cycle()
-            except Exception as e:
-                logger.error(f"AttemptMonitor cycle error: {e}", exc_info=True)
+            except Exception:
+                logger.exception("AttemptMonitor cycle error")
 
             await asyncio.sleep(self.poll_interval)
 
@@ -182,7 +202,7 @@ class AttemptMonitor:
         3. Update state based on results
         """
         self._stats["cycles"] += 1
-        self._stats["last_cycle_at"] = datetime.utcnow().isoformat()
+        self._stats["last_cycle_at"] = datetime.now(timezone.utc).isoformat()
 
         # Get active attempts
         active_attempts = self.job_store.get_active_attempts()
@@ -221,10 +241,8 @@ class AttemptMonitor:
                 self._apply_running(attempt, result)
             # unknown status - no action, wait for next cycle
 
-        except Exception as e:
-            logger.error(
-                f"Error checking attempt {attempt.attempt_id}: {e}", exc_info=True
-            )
+        except Exception:
+            logger.exception(f"Error checking attempt {attempt.attempt_id}")
 
     async def _fetch_status(self, attempt: JobAttempt, job) -> Any:
         """Call the backend status checker with a timeout guard."""
@@ -279,6 +297,81 @@ class AttemptMonitor:
         self._stats["attempts_succeeded"] += 1
         METRICS.monitor_check("succeeded")
         logger.info(f"Attempt {attempt.attempt_id} succeeded")
+        self._autopin_result_artifacts(attempt)
+
+    def _autopin_result_artifacts(self, attempt: JobAttempt) -> None:
+        """D-43 result-kind auto-pin: on attempt success, pin the job's
+        result artifacts onto the project's single active catalog
+        (kind=result, ref=registry artifact id). Best-effort — a pin
+        never blocks completion.
+        """
+        try:
+            job = self.job_store.get_job(attempt.job_id)
+            project_id = (getattr(job, "project_id", "") or "").strip()
+            if not project_id:
+                return
+            artifacts = self._result_artifacts(attempt.job_id)
+            if not artifacts:
+                return
+            self._pin_results_onto_single_catalog(project_id, attempt.job_id, artifacts)
+        except Exception as exc:  # noqa: BLE001 — pin is best-effort, never a gate
+            logger.warning("result autopin skipped for job %s: %s", attempt.job_id, exc)
+
+    def _pin_results_onto_single_catalog(
+        self, project_id: str, job_id: str, artifacts: list
+    ) -> None:
+        """Append one pin per result artifact ref (deduped, never guessed).
+
+        Same never-guess rule as the submit-time auto-pin: zero catalogs →
+        nothing to associate against; several → ambiguous, pin by hand
+        with `r4 catalog pin`. Refs already on the catalog are skipped.
+        """
+        from umrs.scientific_catalogs.store import ScientificCatalogStore
+
+        with self.job_store._get_conn() as conn:  # jobs DB conn, same seam as api/jobs._autopin_catalog
+            store = ScientificCatalogStore(conn)
+            catalogs = store.list(project_id=project_id)
+            if len(catalogs) != 1:
+                return
+            catalog_id = catalogs[0]["catalog_id"]
+            row = store.get(catalog_id)
+            already = {
+                p.get("ref") for p in (row.get("provenance") or {}).get("pins", [])
+            }
+            pinned = 0
+            for art in artifacts:
+                ref = str(getattr(art, "id", "") or "")
+                if not ref or ref in already:
+                    continue
+                store.add_pin(catalog_id, kind="result", ref=ref, note=f"job {job_id}")
+                pinned += 1
+        if pinned:
+            logger.info(
+                "result autopin: %d artifact(s) of job %s onto %s",
+                pinned,
+                job_id,
+                catalog_id,
+            )
+
+    @staticmethod
+    def _result_artifacts(job_id: str) -> list:
+        """Registry result artifacts for the job (knowledge DSN, best-effort)."""
+        try:
+            from umrs.artifact_registry.models import ArtifactQuery
+            from umrs.artifact_registry.store import ArtifactStore
+
+            conn = _open_knowledge_conn()
+            if conn is None:
+                return []
+            try:
+                return ArtifactStore(lambda: conn).list(
+                    ArtifactQuery(artifact_type="result", job_id=job_id, limit=50)
+                )
+            finally:
+                conn.close()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("result artifact lookup failed for job %s: %s", job_id, exc)
+            return []
 
     def _apply_failure(self, attempt: JobAttempt, result) -> None:
         """Mark attempt failed (job store decides on requeue)."""
@@ -364,7 +457,7 @@ class EndpointProvisionChecker:
         if endpoint and endpoint.status == "ready":
             return AttemptCheckResult.succeeded(
                 metrics={
-                    "ready_at": datetime.utcnow().isoformat(),
+                    "ready_at": datetime.now(timezone.utc).isoformat(),
                     "endpoint_host": endpoint.host,
                     "endpoint_port": endpoint.port,
                 },
@@ -380,7 +473,7 @@ class EndpointProvisionChecker:
 
                 if is_ready:
                     return AttemptCheckResult.succeeded(
-                        metrics={"ready_at": datetime.utcnow().isoformat()},
+                        metrics={"ready_at": datetime.now(timezone.utc).isoformat()},
                         commit=True,
                     )
                 else:
@@ -388,7 +481,7 @@ class EndpointProvisionChecker:
                         detail=f"polling readiness ({attempt.status_detail or 'waiting'})"
                     )
 
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - readiness poll must classify any backend error
                 # Check if this is a permanent failure
                 if self._is_permanent_failure(e):
                     return AttemptCheckResult.failed(str(e))

@@ -12,9 +12,12 @@ from __future__ import annotations
 import logging
 import uuid
 from collections.abc import Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from psycopg2.extras import Json
+
+if TYPE_CHECKING:
+    from typing_extensions import Self
 
 from umrs.artifact_registry.models import (
     Artifact,
@@ -70,11 +73,9 @@ class ArtifactStore:
                 else:
                     conn.close()
             except Exception:
-                logger.warning(
-                    "Failed to release artifact-store connection", exc_info=True
-                )
+                logger.exception("Failed to release artifact-store connection")
 
-    def __enter__(self) -> ArtifactStore:
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *_exc) -> None:
@@ -162,6 +163,11 @@ class ArtifactStore:
         if query.execution_id:
             conditions.append("execution_id = %s")
             params.append(query.execution_id)
+            param_idx += 1
+
+        if query.job_id:
+            conditions.append("job_id = %s")
+            params.append(query.job_id)
             param_idx += 1
 
         if query.name_prefix:
