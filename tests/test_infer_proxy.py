@@ -163,11 +163,19 @@ def _make_fetch(priv_pub, *, provider_kind="openai"):
     )()
 
 
-def _app(monkeypatch, *, lease: SecretLease | None = None, store=None, broker=None):
+def _app(
+    monkeypatch,
+    *,
+    lease: SecretLease | None = None,
+    store=None,
+    broker=None,
+    pool=None,
+    provider_kind: str = "openai",
+):
     if lease is None:
         lease = _lease()
     priv, pub = generate_recipient_keypair()
-    fetch = _make_fetch((pub, priv))
+    fetch = _make_fetch((pub, priv), provider_kind=provider_kind)
     monkeypatch.setenv("UMRS_UNSEAL_PRIVKEY_B64", priv)
     monkeypatch.setattr("umrs.infer_proxy.app.lease_by_token", lambda _pool, _token: lease)
     monkeypatch.setattr(
@@ -188,7 +196,7 @@ def _app(monkeypatch, *, lease: SecretLease | None = None, store=None, broker=No
     http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     fake_broker = broker or _FakeBroker()
     app = create_app(
-        umrs_db_pool=None,
+        umrs_db_pool=pool,
         unseal_privkey=priv,
         sealed_store=store or _FakeStore(fetch),
         broker=fake_broker,
@@ -360,3 +368,116 @@ class TestProxyEndToEnd:
             app, "GET", "/s/sess-1/v1/models", headers={"authorization": "Bearer tok-session"}
         )
         assert resp.status_code == 410
+
+
+# ── D-51 lease seam: the ADR-062 data-class gate at the proxy ───────────
+
+
+class _FakeCur:
+    def __init__(self, rows):
+        self._rows = rows
+        self._project = ""
+
+    def execute(self, _sql, params):
+        self._project = params[0]
+
+    def fetchone(self):
+        val = self._rows.get(self._project)
+        return (val,) if val else None
+
+
+class _FakeConn:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def cursor(self):
+        return _FakeCur(self._rows)
+
+
+class _FakePool:
+    """Scripted psycopg2-style pool: {project: data_class} or getconn fails."""
+
+    def __init__(self, rows=None, *, fail=False):
+        self._rows = rows or {}
+        self._fail = fail
+
+    def getconn(self):
+        if self._fail:
+            raise RuntimeError("pool down")
+        return _FakeConn(self._rows)
+
+    def putconn(self, _conn):
+        pass
+
+
+class TestSourceClassGate:
+    def _chat(self, monkeypatch, **kw):
+        app, seen, broker = _app(monkeypatch, **kw)
+        resp = _request(
+            app,
+            "POST",
+            "/s/sess-1/v1/chat/completions",
+            json={},
+            headers={"authorization": "Bearer tok-session"},
+        )
+        return resp, seen, broker
+
+    def test_sensitive_refuses_public_source(self, monkeypatch):
+        resp, _seen, broker = self._chat(
+            monkeypatch,
+            lease=_lease(project="proj-s"),
+            pool=_FakePool({"proj-s": "sensitive"}),
+        )
+        assert resp.status_code == 403
+        assert resp.json()["error"] == "source_class_refused"
+        assert ("deny", "source_class_refused") in broker.ops
+
+    def test_gate_passes_nonpublic_kind(self):
+        """The proxy's policy registry only knows the public kinds (local
+        sources never ride the lease proxy — by design); pin the gate's
+        own vocabulary boundary at the helper: not in PUBLIC set → no
+        refusal, whatever the project class."""
+        from umrs.infer_proxy.app import _source_class_refused
+        from umrs.shared.project_data_class import PUBLIC_PROVIDER_KINDS
+
+        priv, pub = generate_recipient_keypair()
+        full = _make_fetch((pub, priv), provider_kind="vllm")
+        assert "vllm" not in PUBLIC_PROVIDER_KINDS
+        assert (
+            _source_class_refused(
+                _FakePool({"proj-s": "sensitive"}), _lease(project="proj-s"), full
+            )
+            is False
+        )
+
+    def test_nonsensitive_allows_public_source(self, monkeypatch):
+        resp, _seen, _broker = self._chat(
+            monkeypatch,
+            lease=_lease(project="proj-p"),
+            pool=_FakePool({"proj-p": "public"}),
+        )
+        assert resp.status_code == 200
+
+    def test_no_project_claim_no_gate(self, monkeypatch):
+        resp, _seen, _broker = self._chat(
+            monkeypatch,
+            lease=_lease(),
+            pool=_FakePool({"any": "sensitive"}),
+        )
+        assert resp.status_code == 200
+
+    def test_lookup_failure_never_blocks(self, monkeypatch):
+        resp, _seen, _broker = self._chat(
+            monkeypatch,
+            lease=_lease(project="proj-x"),
+            pool=_FakePool(fail=True),
+        )
+        assert resp.status_code == 200
+
+    def test_absent_row_no_gate(self, monkeypatch):
+        resp, _seen, _broker = self._chat(
+            monkeypatch,
+            lease=_lease(project="proj-unknown"),
+            pool=_FakePool({}),
+        )
+        assert resp.status_code == 200
