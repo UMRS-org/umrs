@@ -110,9 +110,16 @@ def _init_session_curve_provider():
         try:
             from umrs.admin.user_store import UserStore
 
-            count = provider.sync_account_keys(UserStore().list())
+            store = UserStore()
+            count = provider.sync_account_keys(store.list())
+            # D-03 live hook: the sweep re-reads the records every tick, so
+            # CLI revocations/re-keys land without a reboot (the JSON files
+            # are the authority lane; the CLI dual-writes PG beside them).
+            provider.attach_account_records_source(store.list)
             logger.info(
-                "D-03 account keystore sync: %d long-lived key(s) registered", count
+                "D-03 account keystore sync: %d long-lived key(s) registered "
+                "(live re-sync every sweep tick)",
+                count,
             )
         except Exception as exc:  # noqa: BLE001 — boot must not die on keystore sync
             logger.warning("D-03 account keystore sync skipped: %s", exc)

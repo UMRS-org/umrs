@@ -540,53 +540,68 @@ def _pg_user_rows() -> list | None:
         return None
 
 
-def _cmd_user_list(args: argparse.Namespace, store: UserStore) -> int:
-    records = store.list()
-    if getattr(args, "from_pg", False):
-        rows = _pg_user_rows()
-        if rows is None:
-            print(
-                "error: --from-pg requires the Postgres lane (knowledge DSN "
-                "unconfigured or unreachable); the JSON lane answers without it.",
-                file=sys.stderr,
-            )
-            return 2
-        if args.role:
-            rows = [r for r in rows if r[3] == args.role]
-        if args.disabled_only:
-            rows = [r for r in rows if r[4]]
-        if args.json:
-            import json as _json
+def _filter_user_rows(rows, role: str | None, disabled_only: bool) -> list:
+    """Apply the role/disabled filters shared by both listing lanes."""
+    if role:
+        rows = [r for r in rows if r[3] == role]
+    if disabled_only:
+        rows = [r for r in rows if r[4]]
+    return rows
 
-            _print_json(
-                [
-                    {
-                        "username": r[0],
-                        "fullname": r[1],
-                        "email": r[2],
-                        "role": r[3],
-                        "disabled": r[4],
-                        "slurm_account": r[5],
-                        "projects": r[7]
-                        if isinstance(r[7], list)
-                        else _json.loads(r[7] or "[]"),
-                        "oidc_subject": r[9],
-                        "created_at": r[13],
-                        "last_updated": r[14],
-                    }
-                    for r in rows
-                ]
-            )
-        else:
-            for r in rows:
-                dis = " (disabled)" if r[4] else ""
-                print(f"  {r[0]:20s}  {r[3]:8s}{dis}  {r[1]}")
-            print(f"\n{len(rows)} row(s) from Postgres (0110)")
-        return 0
-    if args.role:
-        records = [r for r in records if r.role == args.role]
-    if args.disabled_only:
+
+def _list_users_from_pg(args: argparse.Namespace) -> int | None:
+    """D-06 tail: the PG lane's rendering. ``None`` = lane-less (the JSON
+    lane answers; never an invented row)."""
+    rows = _pg_user_rows()
+    if rows is None:
+        return None
+    rows = _filter_user_rows(
+        rows, getattr(args, "role", None), getattr(args, "disabled_only", False)
+    )
+    if args.json:
+        import json as _json
+
+        _print_json(
+            [
+                {
+                    "username": r[0],
+                    "fullname": r[1],
+                    "email": r[2],
+                    "role": r[3],
+                    "disabled": r[4],
+                    "slurm_account": r[5],
+                    "projects": r[7]
+                    if isinstance(r[7], list)
+                    else _json.loads(r[7] or "[]"),
+                    "oidc_subject": r[9],
+                    "created_at": r[13],
+                    "last_updated": r[14],
+                }
+                for r in rows
+            ]
+        )
+    else:
+        for r in rows:
+            dis = " (disabled)" if r[4] else ""
+            print(f"  {r[0]:20s}  {r[3]:8s}{dis}  {r[1]}")
+        print(f"\n{len(rows)} row(s) from Postgres (0110)")
+    return 0
+
+
+def _filter_user_records(records, role: str | None, disabled_only: bool) -> list:
+    """Role/disabled filters for the JSON lane's UserRecord rows."""
+    if role:
+        records = [r for r in records if r.role == role]
+    if disabled_only:
         records = [r for r in records if r.disabled]
+    return records
+
+
+def _list_users_from_json(args: argparse.Namespace, store: UserStore) -> int:
+    """The offline JSON lane — byte-identical pre-0110 behavior."""
+    records = _filter_user_records(
+        store.list(), args.role, args.disabled_only
+    )
     require_acct, master_account = _resolve_slurm_account_requirement()
     rows = [
         _record_row(r, require_acct=require_acct, master_account=master_account)
@@ -597,6 +612,20 @@ def _cmd_user_list(args: argparse.Namespace, store: UserStore) -> int:
     else:
         _print_table(rows, require_acct=require_acct, master_account=master_account)
     return 0
+
+
+def _cmd_user_list(args: argparse.Namespace, store: UserStore) -> int:
+    if getattr(args, "from_pg", False):
+        result = _list_users_from_pg(args)
+        if result is None:
+            print(
+                "error: --from-pg requires the Postgres lane (knowledge DSN "
+                "unconfigured or unreachable); the JSON lane answers without it.",
+                file=sys.stderr,
+            )
+            return 2
+        return result
+    return _list_users_from_json(args, store)
 
 
 def _cmd_user_show(args: argparse.Namespace, store: UserStore) -> int:
@@ -1582,8 +1611,8 @@ _DEFAULT_SERVER_KEYS_DIR = "~/.config/umrs/curve-keys/server"
 
 
 def _cmd_zmq_revoke_curve_key(args: argparse.Namespace, store: UserStore) -> int:
-    """D-03: revoke the account's long-lived CURVE key (ZAP refuses it
-    at the next keystore sync)."""
+    """D-03: revoke the account's long-lived CURVE key (ZAP refuses it at
+    the next live keystore sync — one sweep tick, no reboot)."""
     from datetime import datetime, timezone
 
     record = store.update(
@@ -1591,9 +1620,30 @@ def _cmd_zmq_revoke_curve_key(args: argparse.Namespace, store: UserStore) -> int
     )
     print(
         f"CURVE key for '{args.name}' revoked at {record.curve_key_revoked_at} — "
-        "the ZAP keystore sync unregisters it."
+        "the live ZAP keystore sync unregisters it within one sweep tick "
+        "(no server reboot needed)."
     )
     return 0
+
+
+def _stamp_account_key_on_record(store: UserStore, name: str, pub_path: str) -> bool:
+    """D-03: a client key for a real account stamps the account record —
+    the UMRS account becomes the key authority (revocation lives there).
+    Opportunistic: a keygen for a non-account name is legal, just unstamped."""
+    try:
+        store.get(name)
+    except Exception:  # noqa: BLE001 — a keygen for a non-account name is legal
+        return False
+    from umrs.core.zmq_security import load_public_key_z85
+
+    pub_z85 = load_public_key_z85(pub_path)
+    store.update(name, curve_public_key=pub_z85, curve_key_revoked_at="")
+    print(
+        f"Account '{name}' is now the key authority "
+        f"(curve_public_key stamped; revoke with "
+        f"'umrs-server admin user revoke-curve-key {name}')."
+    )
+    return True
 
 
 def _cmd_zmq_keygen(args: argparse.Namespace, _store: UserStore) -> int:
@@ -1615,23 +1665,8 @@ def _cmd_zmq_keygen(args: argparse.Namespace, _store: UserStore) -> int:
 
     pub_path, sec_path = generate_curve_keypair(keys_dir, name)
 
-    # D-03: a client key for a real account stamps the account record —
-    # the UMRS account becomes the key authority (revocation lives there).
     if not is_server:
-        try:
-            record = _store.get(name)
-        except Exception:  # noqa: BLE001 — a keygen for a non-account name is legal; the stamp is opportunistic
-            record = None
-        if record is not None:
-            from umrs.core.zmq_security import load_public_key_z85
-
-            pub_z85 = load_public_key_z85(pub_path)
-            _store.update(name, curve_public_key=pub_z85, curve_key_revoked_at="")
-            print(
-                f"Account '{name}' is now the key authority "
-                f"(curve_public_key stamped; revoke with "
-                f"'umrs-server admin user revoke-curve-key {name}')."
-            )
+        _stamp_account_key_on_record(_store, name, pub_path)
 
     if args.json:
         _print_json(

@@ -104,3 +104,17 @@ class TestInitSessionCurveProvider:
             provider.stop()
         finally:
             set_shared_session_provider(None)
+
+    def test_boot_attaches_d03_live_sync_source(self, monkeypatch):
+        """D-03: the boot wires the account-records loader into the sweep
+        so CLI revocations land without a reboot."""
+        monkeypatch.setenv("UMRS_ZMQ_AUTH_TYPE", "session")
+        server_umrs = pytest.importorskip("server_umrs")
+        server_umrs._init_session_curve_provider()
+        provider = get_shared_session_provider()
+        assert provider is not None
+        try:
+            assert provider.account_records_source is not None  # live hook wired
+        finally:
+            provider.stop()
+            set_shared_session_provider(None)

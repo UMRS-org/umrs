@@ -131,6 +131,10 @@ class SessionCredentialsProvider:
         self._lock = threading.RLock()
         self._sweep_thread: threading.Thread | None = None
         self._stop_event = threading.Event()
+        # D-03 live hook: account-records loader (callable -> list of
+        # records with curve_public_key/disabled/curve_key_revoked_at).
+        self._account_records_source = None
+        self._account_sync_failures = 0
 
     # ------------------------------------------------------------------
     # pyzmq callback protocol
@@ -178,6 +182,32 @@ class SessionCredentialsProvider:
     # Session lifecycle
     # ------------------------------------------------------------------
 
+    def _validated_registration(
+        self, pubkey_z85: str, ttl_seconds: int, session_id: str | None
+    ) -> tuple[str, float]:
+        """Validate registration args; returns ``(sid, effective_ttl)``.
+
+        Raises
+        ------
+        ValueError
+            If *pubkey_z85* is malformed or *ttl_seconds* is not positive.
+        """
+        if not pubkey_z85 or len(pubkey_z85) != CURVE_KEY_LEN:
+            raise ValueError(
+                f"pubkey_z85 must be {CURVE_KEY_LEN} Z85 characters, "
+                f"got {len(pubkey_z85) if pubkey_z85 else 0}"
+            )
+        if ttl_seconds <= 0:
+            raise ValueError("ttl_seconds must be positive")
+        # Account keys (D-03) are long-lived by design: their sentinel TTL
+        # bypasses the session cap — the account record's revocation is the
+        # kill switch, never the clock.
+        is_account_key = session_id is not None and session_id.startswith("account:")
+        effective_ttl = (
+            ttl_seconds if is_account_key else min(ttl_seconds, self._max_ttl)
+        )
+        return session_id or uuid.uuid4().hex, effective_ttl
+
     def register(
         self,
         pubkey_z85: str,
@@ -207,29 +237,11 @@ class SessionCredentialsProvider:
         -------
         SessionCurveEntry
             The created entry.
-
-        Raises
-        ------
-        ValueError
-            If *pubkey_z85* is malformed or *ttl_seconds* is not positive.
         """
-        if not pubkey_z85 or len(pubkey_z85) != CURVE_KEY_LEN:
-            raise ValueError(
-                f"pubkey_z85 must be {CURVE_KEY_LEN} Z85 characters, "
-                f"got {len(pubkey_z85) if pubkey_z85 else 0}"
-            )
-        if ttl_seconds <= 0:
-            raise ValueError("ttl_seconds must be positive")
-
-        # Account keys (D-03) are long-lived by design: their sentinel TTL
-        # bypasses the session cap — the account record's revocation is the
-        # kill switch, never the clock.
-        is_account_key = session_id is not None and session_id.startswith("account:")
-        effective_ttl = (
-            ttl_seconds if is_account_key else min(ttl_seconds, self._max_ttl)
+        sid, effective_ttl = self._validated_registration(
+            pubkey_z85, ttl_seconds, session_id
         )
         now = time.time()
-        sid = session_id or uuid.uuid4().hex
         entry = SessionCurveEntry(
             pubkey_z85=pubkey_z85,
             session_id=sid,
@@ -258,6 +270,62 @@ class SessionCredentialsProvider:
             effective_ttl,
         )
         return entry
+
+    def attach_account_records_source(self, source) -> None:
+        """D-03 live re-sync: attach the account-records loader.
+
+        When attached, the background sweep re-runs the keystore sync
+        every tick, so admin mutations of the account records (revoke /
+        disable / re-key) take effect without a reboot. Pass ``None`` to
+        detach (boot-sync-only behavior). The loader is called lazily,
+        never at attach time.
+        """
+        self._account_records_source = source
+
+    @property
+    def account_records_source(self):
+        """Return the attached account-records loader, or ``None``."""
+        return self._account_records_source
+
+    def sync_account_keys_now(self) -> int | None:
+        """Reconcile account keys from the attached source (D-03).
+
+        Returns the registered-account-key count, or ``None`` when no
+        source is attached. Raises whatever the source raises — callers
+        that must survive failures catch (the sweep does, keeping the
+        last-known keystore).
+        """
+        if self._account_records_source is None:
+            return None
+        return self.sync_account_keys(self._account_records_source())
+
+    def _sync_account_keys_tick(self) -> None:
+        """D-03 live keystore sync: one sweep-tick reconcile.
+
+        A failing source keeps the last-known keys (never a wipe on a
+        transient read error); the first failure warns with the
+        traceback, a streak stays quiet until recovery (no 60 s spam).
+        """
+        if self._account_records_source is None:
+            return
+        try:
+            count = self.sync_account_keys_now()
+        except Exception:  # the sweep thread must survive sync failures
+            if self._account_sync_failures == 0:
+                logger.warning(
+                    "D-03 live account-keystore sync failed; "
+                    "last-known keys retained",
+                    exc_info=True,
+                )
+            self._account_sync_failures += 1
+            return
+        if self._account_sync_failures:
+            logger.info(
+                "D-03 live account-keystore sync recovered after %d failure(s)",
+                self._account_sync_failures,
+            )
+            self._account_sync_failures = 0
+        logger.debug("D-03 live account-keystore sync: %d account key(s)", count)
 
     def revoke(self, session_id: str) -> bool:
         """Revoke a single session by ID.
@@ -295,12 +363,13 @@ class SessionCredentialsProvider:
             grants=grants,
         )
 
-    def sync_account_keys(self, records) -> int:
-        """D-03 keystore sync: reconcile long-lived account keys from the
-        UMRS account records (the authority).
+    @staticmethod
+    def _wanted_account_keys(records) -> dict[str, str]:
+        """Account records → ``{pubkey: user}`` of registerable keys.
 
-        Registers new/changed keys, unregisters revoked ones. Returns the
-        number of registered account keys. Session keys are untouched.
+        The record is the authority: empty, revoked-at or disabled accounts
+        never ride (their keys are absent from ``wanted``, so the sync
+        unregisters them).
         """
         wanted: dict[str, str] = {}
         for rec in records:
@@ -310,6 +379,16 @@ class SessionCredentialsProvider:
             if str(getattr(rec, "curve_key_revoked_at", "") or "").strip():
                 continue
             wanted[key] = str(getattr(rec, "username", "") or rec.username)
+        return wanted
+
+    def sync_account_keys(self, records) -> int:
+        """D-03 keystore sync: reconcile long-lived account keys from the
+        UMRS account records (the authority).
+
+        Registers new/changed keys, unregisters revoked ones. Returns the
+        number of registered account keys. Session keys are untouched.
+        """
+        wanted = self._wanted_account_keys(records)
         with self._lock:
             # drop stale account keys (revoked/changed/removed)
             for entry in [
@@ -320,14 +399,10 @@ class SessionCredentialsProvider:
                     or wanted[entry.pubkey_z85] != entry.user_id
                 ):
                     self._remove_entry_unlocked(entry)
-            count = 0
             for key, user in wanted.items():
                 if key not in self._by_key:
                     self.register_account_key(key, user)
-                    count += 1
-                else:
-                    count += 1
-        return count
+            return len(wanted)
 
     def revoke_user(self, user_id: str) -> int:
         """Revoke all sessions for a user.  Returns the count removed."""
@@ -497,6 +572,7 @@ class SessionCredentialsProvider:
                 self.cleanup_expired()
             except Exception:
                 logger.exception("Error in CURVE session sweep")
+            self._sync_account_keys_tick()
 
 
 # ---------------------------------------------------------------------------
