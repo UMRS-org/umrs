@@ -51,16 +51,35 @@ class _Conn:
     def _handle_insert(self, params, cur: _Cursor):
         pid, name, owner = params
         if pid not in self.rows:
-            self.rows[pid] = (pid, name, owner, "active", None, None, None, "sensitive")
+            self.rows[pid] = (pid, name, owner, "active", None, None, None, "sensitive", "", "[]")
         cur._result = []
 
     def _handle_update(self, sql, params, cur: _Cursor):
         now = datetime.now(timezone.utc)
-        pid, name, owner, status, r1, r2, r3, dc = self.rows[params[-1]]
+        base = self.rows[params[-1]]
+        # row shape: (pid, name, owner, status, retired, created, updated,
+        #             data_class, ask_mode, pause_triggers)
+        pid, name, owner, status, r1, r2, r3 = base[:7]
+        dc = base[7] if len(base) > 7 else "sensitive"
+        am = base[8] if len(base) > 8 else ""
+        pt = base[9] if len(base) > 9 else "[]"
         if "data_class" in sql:
-            self.rows[params[-1]] = (pid, name, owner, status, r1, r2, now, params[0])
+            self.rows[params[-1]] = (pid, name, owner, status, r1, r2, now, params[0], am, pt)
+        elif "ask_mode" in sql:
+            self.rows[params[-1]] = (
+                pid,
+                name,
+                owner,
+                status,
+                r1,
+                r2,
+                now,
+                dc,
+                params[0],
+                params[1],
+            )
         else:
-            self.rows[params[-1]] = (pid, name, owner, "retired", now, r2, now, dc)
+            self.rows[params[-1]] = (pid, name, owner, "retired", now, r2, now, dc, am, pt)
         cur._result = []
 
     def _handle_select_by_id(self, params, cur: _Cursor):
@@ -317,3 +336,49 @@ class TestDataClass:
         client = _client(store)
         r = client.get("/umrs/projects/proj-dc", headers=_headers("alice"))
         assert r.json()["project"]["data_class"] == "sensitive"
+
+
+# ── D-33 tail: the persisted per-project ask-policy default (0111) ────
+
+
+class TestAskPolicy:
+    def test_set_and_clear_round_trip(self) -> None:
+        store = ProjectStore(_Conn())
+        store.create("proj-ask", owner_id="alice")
+        row = store.set_ask_policy("proj-ask", "profile", ["cost"])
+        assert (row["ask_mode"], row["pause_triggers"]) == ("profile", ["cost"])
+        cleared = store.set_ask_policy("proj-ask", "", [])
+        assert cleared["ask_mode"] == ""
+        assert list(cleared["pause_triggers"]) == []
+
+    def test_invalid_mode_refused(self) -> None:
+        store = ProjectStore(_Conn())
+        store.create("proj-ask", owner_id="alice")
+        with pytest.raises(ValueError, match="invalid ask_mode"):
+            store.set_ask_policy("proj-ask", "always", [])
+
+    def test_route_owner_can_set_and_non_owner_refused(self) -> None:
+        store = ProjectStore(_Conn())
+        store.create("proj-ask", owner_id="alice")
+        client = _client(store)
+        ok = client.patch(
+            "/umrs/projects/proj-ask",
+            json={
+                "action": "set_ask_policy",
+                "ask_mode": "profile",
+                "pause_triggers": ["cost", "competing_hypotheses"],
+            },
+            headers=_headers("alice"),
+        )
+        assert ok.status_code == 200, ok.text
+        assert ok.json()["project"]["ask_mode"] == "profile"
+        assert ok.json()["project"]["pause_triggers"] == [
+            "cost",
+            "competing_hypotheses",
+        ]
+        bad = client.patch(
+            "/umrs/projects/proj-ask",
+            json={"action": "set_ask_policy", "ask_mode": "ask"},
+            headers=_headers("mallory"),
+        )
+        assert bad.status_code == 403

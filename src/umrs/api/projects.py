@@ -14,6 +14,7 @@ module (no imports from umrs.api).
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request, status
@@ -27,6 +28,19 @@ class ProjectNotFound(Exception):
     """Raised when a project id does not exist (never silent)."""
 
 
+def _as_triggers(raw: Any) -> list[str]:
+    """0111 JSONB column: list through psycopg, JSON string in fakes."""
+    if isinstance(raw, list):
+        return [str(t) for t in raw]
+    if isinstance(raw, str) and raw.strip():
+        try:
+            parsed = json.loads(raw)
+            return [str(t) for t in parsed] if isinstance(parsed, list) else []
+        except ValueError:
+            return []
+    return []
+
+
 class ProjectStore:
     """psycopg2-backed durable store over the 0095 registry."""
 
@@ -37,7 +51,7 @@ class ProjectStore:
         cur = self._conn.cursor()
         cur.execute(
             "SELECT project_id, name, owner_id, status, retired_at, created_at,"
-            " updated_at, data_class"
+            " updated_at, data_class, ask_mode, pause_triggers"
             " FROM projects WHERE project_id = %s",
             (project_id,),
         )
@@ -53,6 +67,8 @@ class ProjectStore:
             "created_at": row[5].isoformat() if row[5] else None,
             "updated_at": row[6].isoformat() if row[6] else None,
             "data_class": row[7] if len(row) > 7 else "sensitive",
+            "ask_mode": row[8] if len(row) > 8 else "",
+            "pause_triggers": _as_triggers(row[9] if len(row) > 9 else None),
         }
 
     def create(
@@ -137,6 +153,31 @@ class ProjectStore:
         return self._row(project_id)
 
     # -- budget caps (ADR-067, gap row D-36) --------------------------------
+
+    def set_ask_policy(
+        self, project_id: str, ask_mode: str, pause_triggers: list[str]
+    ) -> dict[str, Any]:
+        """D-33 tail: persist the project's ask-policy default (owner-or-admin
+        enforced at the ROUTE; explicit loop requests always win)."""
+        if ask_mode not in ("", "auto", "ask", "profile"):
+            raise ValueError(f"invalid ask_mode {ask_mode!r}")
+        if not isinstance(pause_triggers, list) or not all(
+            isinstance(t, str) and t.strip() for t in pause_triggers
+        ):
+            raise ValueError("pause_triggers must be a list of non-empty strings")
+        if self._row(project_id) is None:
+            raise ProjectNotFound(project_id)
+        cur = self._conn.cursor()
+        cur.execute(
+            "UPDATE projects SET ask_mode = %s, pause_triggers = %s,"
+            " updated_at = now() WHERE project_id = %s",
+            (ask_mode, json.dumps(pause_triggers), project_id),
+        )
+        self._conn.commit()
+        row = self._row(project_id)
+        if row is None:
+            raise RuntimeError(f"project update lost (project_id={project_id})")
+        return row
 
     def set_data_class(self, project_id: str, data_class: str) -> dict[str, Any]:
         """ADR-062: set the project's data class (widening/narrowing both
@@ -224,6 +265,17 @@ class ProjectPatchBody(BaseModel):
         default=None,
         description="ADR-062: with action='set_data_class' — 'sensitive' | 'non_sensitive'",
     )
+    ask_mode: str | None = Field(
+        default=None,
+        description=(
+            "D-33: with action='set_ask_policy' — '' | 'auto' | 'ask' | 'profile'"
+            " (the project's persisted loop-start default; explicit requests win)"
+        ),
+    )
+    pause_triggers: list[str] | None = Field(
+        default=None,
+        description="D-33: trigger classes persisted for ask_mode='profile'",
+    )
 
 
 def _store_dep(request: Request):
@@ -253,6 +305,8 @@ def _row_response(row: dict[str, Any]) -> dict[str, Any]:
         "owner_id": row["owner_id"],
         "status": row["status"],
         "data_class": row.get("data_class", "sensitive"),
+        "ask_mode": row.get("ask_mode", ""),
+        "pause_triggers": row.get("pause_triggers", []),
         "retired_at": row.get("retired_at"),
         "created_at": row.get("created_at"),
         "updated_at": row.get("updated_at"),
@@ -307,9 +361,10 @@ def list_my_projects(
 
 
 @router.get("/{project_id}")
-def get_project(project_id: str, store: ProjectStore = Depends(_store_dep)) -> dict[str, Any]:
-    """# auth: verified
-    """
+def get_project(
+    project_id: str, store: ProjectStore = Depends(_store_dep)
+) -> dict[str, Any]:
+    """# auth: verified"""
     try:
         row = store.get(project_id)
     except ProjectNotFound:
@@ -335,10 +390,11 @@ def patch_project(
         raise_typed(
             PlatformError.projects("not_found", f"project {project_id} not found")
         )
-    if body.action not in ("retire", "set_data_class"):
+    if body.action not in ("retire", "set_data_class", "set_ask_policy"):
         raise_typed(
             PlatformError.projects(
-                "bad_request", "action must be 'retire' or 'set_data_class'"
+                "bad_request",
+                "action must be 'retire', 'set_data_class' or 'set_ask_policy'",
             )
         )
     if not identity.is_admin and (identity.user_id or "") != row["owner_id"]:
@@ -347,6 +403,13 @@ def patch_project(
                 "forbidden", "only the owner or an admin may modify this project"
             )
         )
+    if body.action == "set_ask_policy":
+        ask_mode = str(body.ask_mode or "").strip()
+        triggers = [
+            str(t).strip() for t in (body.pause_triggers or []) if str(t).strip()
+        ]
+        row = store.set_ask_policy(project_id, ask_mode, triggers)
+        return {"status": "ok", "project": _row_response(row)}
     if body.action == "set_data_class":
         data_class = str(body.data_class or "").strip()
         if data_class not in ("sensitive", "non_sensitive"):

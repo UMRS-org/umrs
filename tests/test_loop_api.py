@@ -872,3 +872,84 @@ def test_findings_pin_dedupes_existing_refs():
     pins = rows[0]["provenance"]["pins"]
     assert [p["ref"] for p in pins] == ["f-1", "f-2"]
     assert pins[0]["note"] == "old"  # append-only, never rewritten
+
+
+# ── D-33 tail: loops inherit the project's persisted ask-policy default ──
+
+
+def _policy_request(mode="", triggers=None):
+    from umrs.api.loop import StartLoopRequest
+
+    return StartLoopRequest(
+        project_id="proj-ask",
+        research_goal="goal",
+        mode=mode,
+        pause_triggers=triggers or [],
+    )
+
+
+def _policy_http(monkeypatch, row=None):
+    from types import SimpleNamespace
+
+    pool = SimpleNamespace()
+
+    def getconn():
+        return SimpleNamespace(cursor=lambda: _FakeAskConn(row).cursor())
+
+    pool.getconn = getconn
+    pool.putconn = lambda _c: None
+    http = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(umrs_db_pool=pool)))
+    return http
+
+
+class _FakeAskConn:
+    def __init__(self, row):
+        self._row = row
+
+    def cursor(self):
+        return self
+
+    def execute(self, sql, params=None):
+        del sql, params
+
+    def fetchone(self):
+        return self._row
+
+
+def test_unset_mode_inherits_persisted_default(monkeypatch):
+    from umrs.api.loop import _apply_project_ask_policy
+
+    row = ("proj-ask", "p", "n", "active", None, None, None, "sensitive", "profile", ["cost"])
+    http = _policy_http(monkeypatch, row)
+    req = _policy_request(mode="")
+    applied = _apply_project_ask_policy(http, req)
+    assert applied.mode == "profile"
+    assert list(applied.pause_triggers) == ["cost"]
+
+
+def test_explicit_mode_wins(monkeypatch):
+    from umrs.api.loop import _apply_project_ask_policy
+
+    row = ("proj-ask", "p", "n", "active", None, None, None, "sensitive", "ask", [])
+    http = _policy_http(monkeypatch, row)
+    req = _policy_request(mode="auto")
+    applied = _apply_project_ask_policy(http, req)
+    assert applied.mode == "auto"  # explicit wins, never overridden
+
+
+def test_absent_project_row_is_unchanged(monkeypatch):
+    from umrs.api.loop import _apply_project_ask_policy
+
+    http = _policy_http(monkeypatch, row=None)
+    req = _policy_request(mode="")
+    assert _apply_project_ask_policy(http, req).mode == ""  # never invented
+
+
+def test_unreadable_pool_is_unchanged(monkeypatch):
+    from types import SimpleNamespace
+
+    from umrs.api.loop import _apply_project_ask_policy
+
+    http = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(umrs_db_pool=None)))
+    req = _policy_request(mode="")
+    assert _apply_project_ask_policy(http, req).mode == ""
