@@ -262,7 +262,7 @@ async def get_overview(request: Request) -> OverviewResponse:
         for status_val in ("running", "queued", "completed", "failed"):
             try:
                 count = job_store.count_by_status(status_val)
-            except Exception:
+            except Exception:  # noqa: BLE001 — dashboard probes degrade to honest empty
                 count = 0
             if status_val == "running":
                 running = count
@@ -619,7 +619,7 @@ async def list_models(
             limit=limit,
             offset=offset,
         )
-    except Exception:
+    except Exception:  # noqa: BLE001 — dashboard probes degrade to honest empty
         models = []
 
     items = [_model_summary(model_store, model) for model in models]
@@ -701,7 +701,7 @@ async def get_job_detail(job_id: str) -> JobDetailResponse:
     store = get_job_store()
     try:
         job = store.get_job(job_id)
-    except Exception:
+    except Exception:  # noqa: BLE001 — dashboard probes degrade to honest empty
         raise_typed(
             PlatformError.dashboard("not_found", f"Job not found: {job_id}"),
         )
@@ -728,7 +728,7 @@ async def get_model_detail(
     store = _get_model_store()
     try:
         model = store.get_model(model_id)
-    except Exception:
+    except Exception:  # noqa: BLE001 — dashboard probes degrade to honest empty
         raise_typed(
             PlatformError.dashboard("not_found", f"Model not found: {model_id}"),
         )
@@ -741,7 +741,7 @@ async def get_model_detail(
             hist = store.get_model_versions(model_id)
             versions = [v.to_dict() for v in hist.versions]
             latest_version = hist.latest.version if hist.latest else None
-    except Exception:
+    except Exception:  # noqa: BLE001, S110 — dashboard probes degrade to honest empty
         pass
 
     model_data = (
@@ -789,13 +789,43 @@ async def get_metrics(request: Request):
 async def get_notifications(
     request: Request,
 ) -> NotificationsResponse:
-    """Return pending notifications (future: store-based)."""
-    # Currently returns empty — notifications are generated on-demand
-    # In production, store notifications and surface them here
-    return NotificationsResponse(
-        notifications=[],
-        total=0,
-    )
+    """Return pending notifications — store-backed since 0109 (D-36 leg B).
+
+    Unread rows from ``platform_notifications`` (budget-exhausted stops
+    and kindred operator-visible events), newest-first. The store being
+    absent (no pool) returns the honest empty list — never fabricated.
+    """
+    pool = getattr(request.app.state, "umrs_db_pool", None)
+    if pool is None:
+        return NotificationsResponse(notifications=[], total=0)
+    import asyncio
+
+    from umrs.platform_notifications import NotificationStore
+
+    def _load():
+        conn = pool.getconn()
+        try:
+            return NotificationStore(conn).list(unread_only=True, limit=50)
+        finally:
+            pool.putconn(conn)
+
+    rows = await asyncio.to_thread(_load)
+    items = [
+        NotificationItem(
+            category=str(row.get("kind") or ""),
+            message=str(row.get("title") or ""),
+            details={
+                "id": row.get("id"),
+                "project_id": row.get("project_id"),
+                "created_at": row.get("created_at"),
+                **(row.get("detail") or {}),
+            },
+            suggestion=None,
+            retry_after=None,
+        )
+        for row in rows
+    ]
+    return NotificationsResponse(notifications=items, total=len(items))
 
 
 @router.get(
@@ -907,7 +937,7 @@ def _workflows_panel_payload(*, recent_limit: int = 25) -> WorkflowsPanelRespons
         from ..server.workflow_execution_registry import get_execution_registry
 
         records = get_execution_registry().list()
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 — dashboard probes degrade to honest empty
         logger.warning("Workflow panel degraded: %s", exc)
         return WorkflowsPanelResponse(
             counts={},
@@ -940,7 +970,7 @@ def _connectors_panel_payload() -> ConnectorsPanelResponse:
         from ..connectors.sync_state import build_default_store
 
         rows = build_default_store().list()
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 — dashboard probes degrade to honest empty
         logger.warning("Connectors panel degraded: %s", exc)
         return ConnectorsPanelResponse(
             connectors=None,
@@ -992,7 +1022,7 @@ async def _knowledge_panel_payload(
             )
             if reports:
                 last_confidence = float(getattr(reports[0], "confidence", 0.0))
-        except Exception:
+        except Exception:  # noqa: BLE001 — dashboard probes degrade to honest empty
             logger.debug("verification store unavailable for project %s", project_id)
 
     return KnowledgePanelResponse(

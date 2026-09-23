@@ -150,6 +150,7 @@ class EngineLoopRunner(threading.Thread):
                     "loop %s stopped: wall-clock budget exhausted (ADR-067)",
                     self._loop.loop_id,
                 )
+                self._notify_budget_stop()
                 return True
             pending = self._poll(self._loop.loop_id)
             if pending is None or pending.status == LoopStatus.STOPPED:
@@ -158,6 +159,27 @@ class EngineLoopRunner(threading.Thread):
                 time.sleep(self._poll_seconds)
                 continue
             return False
+
+    def _notify_budget_stop(self) -> None:
+        """D-36 leg B: the budget stop surfaces as a durable notification.
+
+        Best-effort via the platform_notifications emitter seam (the api
+        layer wires it at boot); unwired/failure logs a warning — the stop
+        itself already persisted and never blocks on this."""
+        from umrs.platform_notifications import notify
+
+        notify(
+            kind="budget_exhausted",
+            title=f"Loop {self._loop.loop_id} stopped: wall-clock budget exhausted",
+            detail={
+                "loop_id": self._loop.loop_id,
+                "project_id": str(getattr(self._loop, "project_id", "") or ""),
+                "state_reason": "budget_exhausted:wall_clock",
+                "iterations": int(self._loop.current_iteration or 0),
+                "budget": dict(self._loop.metadata.get("budget") or {}),
+            },
+            project_id=str(getattr(self._loop, "project_id", "") or ""),
+        )
 
     def _make_approval_gate(self, loop: ResearchLoop) -> Callable[[dict], bool]:
         """Ask-mode action gate: request approval, park until decided.
