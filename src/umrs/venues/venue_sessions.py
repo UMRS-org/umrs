@@ -20,7 +20,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 ACTIVE_STATES = ("provisioning", "running")
-VALID_STATES = ("provisioning", "running", "failed", "stopped")
+VALID_STATES = ("provisioning", "running", "paused", "failed", "stopped")
 
 _COLUMNS = (
     "session_id",
@@ -277,6 +277,23 @@ class VenueSessionStore:
             session_id, state="stopped", reason=reason, stopped=True
         )
 
+    def mark_paused(self, session_id: str, reason: str = "") -> VenueSessionRow | None:
+        """D-09 pause verb: provisioning/running → paused (lease stays warm —
+        the worker keeps heartbeating while paused; the sweep only reaps
+        rows whose leases actually expire)."""
+        current = self.get(session_id)
+        if current is None or not current.is_active:
+            return None
+        return self._transition(session_id, state="paused", reason=reason)
+
+    def mark_resumed(self, session_id: str) -> VenueSessionRow | None:
+        """D-09 resume verb: paused → running (only from paused — never
+        resurrects stopped/failed rows)."""
+        current = self.get(session_id)
+        if current is None or current.state != "paused":
+            return None
+        return self._transition(session_id, state="running", reason="resumed")
+
     def update_runtime(
         self, session_id: str, runtime: dict[str, Any]
     ) -> VenueSessionRow | None:
@@ -357,7 +374,8 @@ def project_session_state(pool: Any, owner: str, session_id: str, state: str) ->
     pinned to ``frontend``. Best-effort: False when the row is absent or the
     pool is missing.
     """
-    if pool is None or state not in ("ongoing", "stopped", "completed", "error", ""):
+    # "paused" joins the vocabulary with the D-09 venue verbs (pause/resume).
+    if pool is None or state not in ("ongoing", "paused", "stopped", "completed", "error", ""):
         return False
     conn = pool.getconn()
     try:
