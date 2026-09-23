@@ -29,3 +29,19 @@ def test_submit_embedding_batch_fails_fast() -> None:
     service = object.__new__(JobService)  # guard runs before any state touch
     with pytest.raises(NotImplementedError, match="not implemented"):
         service.submit_embedding_batch("p", "u", "/in", "/out")
+
+
+def test_domain_benchmark_is_a_typed_phenom() -> None:
+    """D-44: the catalog-quality benchmark lane exists, honestly gated.
+
+    The kind is registered (design surface visible) but dispatch-blocked
+    with a typed 400 — no durable attempt is born that can never finish.
+    The benchmark executor + ground-truth suite format are the named
+    design decisions that graduate it.
+    """
+    assert JobType.DOMAIN_BENCHMARK.value == "domain_benchmark"
+    assert JobType.DOMAIN_BENCHMARK in _UNDISPATCHABLE_JOB_TYPES
+    with pytest.raises(HTTPException) as excinfo:
+        _enforce_dispatchable_job_type(JobType.DOMAIN_BENCHMARK)
+    assert excinfo.value.status_code == 400
+    assert "not implemented" in excinfo.value.detail.lower()
