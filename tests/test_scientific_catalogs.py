@@ -59,6 +59,7 @@ def _tuple_from_dict(d: dict) -> tuple:
         d["skill_ids"],
         d["mcp_server_ids"],
         d["embedding_model_ids"],
+        d.get("mcp_trust_classes", {}),
         d["contributors"],
         d["licence"],
         d["provenance"],
@@ -93,6 +94,7 @@ class _Conn:
             skills,
             mcps,
             embeds,
+            trust_classes,
             contribs,
             licence,
             prov,
@@ -115,6 +117,7 @@ class _Conn:
                 "skill_ids": skills,
                 "mcp_server_ids": mcps,
                 "embedding_model_ids": embeds,
+                "mcp_trust_classes": trust_classes,
                 "contributors": contribs,
                 "licence": licence,
                 "provenance": prov,
@@ -544,3 +547,50 @@ class TestEmbeddingModelPins:
         store = ScientificCatalogStore(_Conn())
         row = store.create(spec=_spec(embedding_model_ids=[]), owner_id="alice")
         assert "embedding_models" not in row["provenance"]
+
+
+# ── D-24: the catalog declares the trust class per member server id ───
+
+
+def test_spec_carries_trust_classes_field() -> None:
+    spec = _spec(mcp_trust_classes={"mcp-1": "front-end"})
+    assert spec.mcp_trust_classes == {"mcp-1": "front-end"}
+    assert _spec().mcp_trust_classes == {}  # default honest-empty
+
+
+def test_create_persists_the_declaration() -> None:
+    store = ScientificCatalogStore(_Conn())
+    row = store.create(spec=_spec(mcp_trust_classes={"mcp-1": "front-end"}), owner_id="alice")
+    fetched = store.get(row["catalog_id"])
+    assert fetched["mcp_trust_classes"] == {"mcp-1": "front-end"}
+
+
+def test_row_dict_reads_legacy_rows_without_declaration() -> None:
+    """Rows written before 0108 (19 columns, no declaration) read as {}."""
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc)
+    legacy = (
+        "scat-legacy",
+        "proj-a",
+        "mof",
+        "0.1.0",
+        "",
+        "",
+        "[]",
+        "[]",
+        "[]",
+        "[]",
+        '["alice"]',
+        "",
+        "{}",
+        "",
+        "[]",
+        "alice",
+        "active",
+        now,
+        now,
+    )
+    d = ScientificCatalogStore._row_dict(legacy)
+    assert d["mcp_trust_classes"] == {}
+    assert d["owner_id"] == "alice"

@@ -39,6 +39,10 @@ class CatalogSpec(BaseModel):
     member_graph_ids: list[str] = Field(default_factory=list)
     skill_ids: list[str] = Field(default_factory=list)
     mcp_server_ids: list[str] = Field(default_factory=list)
+    # D-24: the trust class each member MCP server carries (resolved from
+    # the live registry by the route; {server_id: trust_class}; absent
+    # member → "" — never invented).
+    mcp_trust_classes: dict[str, str] = Field(default_factory=dict)
     embedding_model_ids: list[str] = Field(default_factory=list)
     contributors: list[str] = Field(default_factory=list)
     licence: str = Field(default="")
@@ -54,8 +58,8 @@ class CatalogSpec(BaseModel):
 _COLUMNS = (
     "catalog_id, project_id, name, version, description, ontology,"
     " member_graph_ids, skill_ids, mcp_server_ids, embedding_model_ids,"
-    " contributors, licence, provenance, change_note, redaction_rules,"
-    " owner_id, status, created_at, updated_at"
+    " mcp_trust_classes, contributors, licence, provenance, change_note,"
+    " redaction_rules, owner_id, status, created_at, updated_at"
 )
 
 
@@ -84,6 +88,10 @@ class ScientificCatalogStore:
 
     @staticmethod
     def _row_dict(row: Any) -> dict[str, Any]:
+        """Read a catalog row; pre-0108 rows (19 cols, no declaration
+        column) read the declaration as the honest empty dict."""
+        if len(row) < 20:
+            return ScientificCatalogStore._row_dict_legacy(row)
         return {
             "catalog_id": row[0],
             "project_id": row[1],
@@ -95,6 +103,33 @@ class ScientificCatalogStore:
             "skill_ids": _as_list(row[7]),
             "mcp_server_ids": _as_list(row[8]),
             "embedding_model_ids": _as_list(row[9]),
+            "mcp_trust_classes": _as_dict(row[10]),
+            "contributors": _as_list(row[11]),
+            "licence": row[12],
+            "provenance": _as_dict(row[13]),
+            "change_note": row[14],
+            "redaction_rules": _as_list(row[15]),
+            "owner_id": row[16],
+            "status": row[17],
+            "created_at": row[18].isoformat() if row[18] else None,
+            "updated_at": row[19].isoformat() if row[19] else None,
+        }
+
+    @staticmethod
+    def _row_dict_legacy(row: Any) -> dict[str, Any]:
+        """Pre-0108 row shape (no mcp_trust_classes column)."""
+        return {
+            "catalog_id": row[0],
+            "project_id": row[1],
+            "name": row[2],
+            "version": row[3],
+            "description": row[4],
+            "ontology": row[5],
+            "member_graph_ids": _as_list(row[6]),
+            "skill_ids": _as_list(row[7]),
+            "mcp_server_ids": _as_list(row[8]),
+            "embedding_model_ids": _as_list(row[9]),
+            "mcp_trust_classes": {},
             "contributors": _as_list(row[10]),
             "licence": row[11],
             "provenance": _as_dict(row[12]),
@@ -142,10 +177,11 @@ class ScientificCatalogStore:
             """INSERT INTO scientific_catalogs (
                    catalog_id, project_id, name, version, description, ontology,
                    member_graph_ids, skill_ids, mcp_server_ids,
-                   embedding_model_ids, contributors, licence, provenance,
+                   embedding_model_ids, mcp_trust_classes,
+                   contributors, licence, provenance,
                    change_note, redaction_rules, owner_id
                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                         %s, %s, %s)
+                         %s, %s, %s, %s)
                ON CONFLICT (project_id, name, version) DO NOTHING""",
             (
                 catalog_id,
@@ -158,6 +194,7 @@ class ScientificCatalogStore:
                 json.dumps(spec.skill_ids),
                 json.dumps(spec.mcp_server_ids),
                 json.dumps(spec.embedding_model_ids),
+                json.dumps(spec.mcp_trust_classes),
                 json.dumps(spec.contributors),
                 spec.licence,
                 json.dumps(provenance),

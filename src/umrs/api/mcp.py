@@ -106,7 +106,7 @@ def _validate_mcp_url(url: str) -> None:
     """
     try:
         parsed = urllib.parse.urlparse(url)
-    except Exception:
+    except Exception:  # noqa: BLE001 — proxy/route degradation is named in the response
         raise_typed(PlatformError.mcp("unprocessable", f"Invalid URL format: {url}"))
 
     if parsed.scheme not in ("http", "https"):
@@ -294,8 +294,24 @@ def _enforce_registration_scope(
     """Mutation scoping (audit B9 write-path): verified non-admin callers may
     only register servers for their own project; an empty project_id claims
     the caller project rather than the global namespace. Admins and the
-    legacy mvp-anonymous path keep full freedom."""
+    legacy mvp-anonymous path keep full freedom.
+
+    D-24 who-may-publish policy: `trusted-host-only` is the site-
+    infrastructure class — admin-only to publish. `local-safe` and
+    `front-end` stay project-scoped (any verified caller, own project).
+    """
     scope = _caller_scope(request)
+    if (req.trust_class or "").strip() == "trusted-host-only" and not scope.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "error": "trust_class_denied",
+                "message": (
+                    "trusted-host-only is the site-infrastructure class "
+                    "(D-24): only admins may publish trusted-host servers."
+                ),
+            },
+        )
     if scope.is_admin or scope.anonymous:
         return req
     requested = (req.project_id or "").strip()
@@ -618,7 +634,7 @@ async def _discover_server_tools(url: str) -> list[dict[str, Any]]:
                 if response.status != 200:
                     return []
                 payload = await response.json()
-    except Exception:
+    except Exception:  # noqa: BLE001 — proxy/route degradation is named in the response
         return []
 
     if isinstance(payload, dict):
@@ -677,7 +693,7 @@ def _tool_call_headers() -> dict[str, str]:
         rid = get_request_id()
         if rid:
             headers["X-Request-ID"] = rid
-    except Exception:
+    except Exception:  # noqa: BLE001, S110 — proxy/route degradation is named in the response
         pass
     return headers
 

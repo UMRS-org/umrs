@@ -73,9 +73,34 @@ def _require_project_scope(body_project: str, identity: CallerIdentity) -> None:
     )
 
 
+def _resolve_mcp_trust_classes(
+    request: Request, server_ids: list[str]
+) -> dict[str, str]:
+    """D-24 declaration: resolve each member MCP server's trust class from
+    the live registry; unresolvable members carry "" — the registry stays
+    the truth, never an invented class."""
+    if not server_ids:
+        return {}
+    classes: dict[str, str] = {}
+    try:
+        from .mcp import _get_store
+
+        store = _get_store(request)
+        for sid in server_ids:
+            try:
+                server = store.get_server(sid)
+                classes[sid] = str(getattr(server, "trust_class", "") or "")
+            except Exception:  # noqa: BLE001 — declaration is fail-open
+                classes[sid] = ""
+    except Exception:  # noqa: BLE001 — the MCP registry may be unwired; declaration fails open
+        return {sid: "" for sid in server_ids}
+    return classes
+
+
 @router.post("", status_code=status.HTTP_201_CREATED)
 def create_catalog(
     body: CatalogSpec,
+    request: Request,
     store: ScientificCatalogStore = Depends(_store_dep),
     identity: CallerIdentity = Depends(get_caller_identity),
 ) -> dict[str, Any]:
@@ -83,6 +108,7 @@ def create_catalog(
     # auth: verified
     """
     _require_project_scope(body.project_id, identity)
+    body.mcp_trust_classes = _resolve_mcp_trust_classes(request, body.mcp_server_ids)
     owner = (identity.user_id or "").strip() or "unknown"
     return store.create(spec=body, owner_id=owner)
 
