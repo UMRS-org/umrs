@@ -596,12 +596,30 @@ def _upgrade_loop_store() -> None:
             from umrs.api.loop import configure_loop_store_sync
 
             configure_loop_store_sync(dsn_sync)
-            # D-36 leg B: the notification emitter rides the same DSN seam
-            # (budget-stop notifications surface through the durable store).
             import psycopg2 as _psycopg2
 
-            from umrs.platform_notifications import set_emitter
             from umrs.shared.pg_settings import pg_connect_kwargs
+
+            # D-06 accounts: sync JSON users -> Postgres; the PG lane goes
+            # read-first (the JSON files stay the bootstrap/recovery lane).
+            try:
+                from umrs.admin.user_store import configure_user_store_pg
+
+                configure_user_store_pg(
+                    _SingleConnPool(
+                        lambda: _psycopg2.connect(
+                            dsn_sync, **pg_connect_kwargs("user-store")
+                        )
+                    )
+                )
+            except Exception:  # noqa: BLE001 — accounts lane fails open to JSON by contract
+                logger.warning(
+                    "user store PG lane not wired (JSON stays authoritative)"
+                )
+
+            # D-36 leg B: the notification emitter rides the same DSN seam
+            # (budget-stop notifications surface through the durable store).
+            from umrs.platform_notifications import set_emitter
 
             set_emitter(
                 _SingleConnPool(

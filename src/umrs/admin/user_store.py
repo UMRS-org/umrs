@@ -197,6 +197,47 @@ class UserStore:
         except OSError:
             # Best-effort on shared filesystems.
             pass
+        self._pg_upsert(data)
+
+    @staticmethod
+    def _pg_upsert(data: dict[str, Any]) -> None:
+        """D--06 dual-write: JSON stays the recovery lane; PG mirrors."""
+        if _PG_POOL is None:
+            return
+        try:
+            record = UserRecord.from_json(data)
+            conn = _PG_POOL.getconn()
+            try:
+                cur = conn.cursor()
+                cur.execute(
+                    """INSERT INTO users (username, fullname, email, role, disabled,
+                           slurm_account, slurm_accounts, projects, quota, oidc_subject,
+                           curve_public_key, curve_key_revoked_at, extras,
+                           created_at, last_updated)
+                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                       ON CONFLICT (username) DO UPDATE SET
+                           fullname = EXCLUDED.fullname,
+                           email = EXCLUDED.email,
+                           role = EXCLUDED.role,
+                           disabled = EXCLUDED.disabled,
+                           slurm_account = EXCLUDED.slurm_account,
+                           slurm_accounts = EXCLUDED.slurm_accounts,
+                           projects = EXCLUDED.projects,
+                           quota = EXCLUDED.quota,
+                           oidc_subject = EXCLUDED.oidc_subject,
+                           curve_public_key = EXCLUDED.curve_public_key,
+                           curve_key_revoked_at = EXCLUDED.curve_key_revoked_at,
+                           extras = EXCLUDED.extras,
+                           last_updated = EXCLUDED.last_updated""",
+                    _pg_row(record),
+                )
+                conn.commit()
+            finally:
+                _PG_POOL.putconn(conn)
+        except Exception as exc:  # noqa: BLE001 — the JSON write already landed
+            logger.warning(
+                "user PG dual-write skipped for %s: %s", data.get("username"), exc
+            )
 
     # ----- public API -----------------------------------------------------
 
@@ -204,6 +245,14 @@ class UserStore:
         return self._path(username).is_file()
 
     def get(self, username: str) -> UserRecord:
+        # D-06: PG-first when the lane is wired; JSON stays the fallback
+        # (identical behavior unwired — every pre-0110 test rides that).
+        if pg_lane_active():
+            record = pg_get(username)
+            if record is not None:
+                return record
+            # fall through to JSON: a row not yet synced (e.g. created by
+            # the offline CLI while the server is down) must still resolve.
         path = self._path(username)
         if not path.is_file():
             raise UserStoreError(f"User {username!r} not found at {path}")
@@ -391,3 +440,140 @@ __all__ = [
     "UserStoreError",
     "validate_username",
 ]
+
+
+# ── D-06 first leg: the Postgres-backed lane (migration 0110) ────────────────
+#
+# The JSON files remain the bootstrap/recovery lane (the offline-first CLI
+# contract is unchanged). At boot the sidecar syncs JSON → Postgres; the
+# runtime read seam goes PG-first once configured; writes dual-write so the
+# JSON files never lag the truth the offline CLI needs. Unconfigured = the
+# exact pre-0110 behavior (every existing test rides that path).
+
+_PG_POOL: Any = None
+
+
+def configure_user_store_pg(pool: Any, store: UserStore | None = None) -> int:
+    """Wire the PG lane + sync JSON → Postgres; returns rows synced.
+
+    Fail-open: a sync failure leaves the JSON lane authoritative (the
+    pre-0110 behavior) — boot never dies on the accounts lane.
+    """
+    global _PG_POOL
+    _PG_POOL = pool
+    if pool is None:
+        return 0
+    synced = 0
+    try:
+        store = store or UserStore()
+        conn = pool.getconn()
+        try:
+            cur = conn.cursor()
+            for record in store.list():
+                cur.execute(
+                    """INSERT INTO users (username, fullname, email, role, disabled,
+                           slurm_account, slurm_accounts, projects, quota, oidc_subject,
+                           curve_public_key, curve_key_revoked_at, extras,
+                           created_at, last_updated)
+                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                       ON CONFLICT (username) DO UPDATE SET
+                           fullname = EXCLUDED.fullname,
+                           email = EXCLUDED.email,
+                           role = EXCLUDED.role,
+                           disabled = EXCLUDED.disabled,
+                           slurm_account = EXCLUDED.slurm_account,
+                           slurm_accounts = EXCLUDED.slurm_accounts,
+                           projects = EXCLUDED.projects,
+                           quota = EXCLUDED.quota,
+                           oidc_subject = EXCLUDED.oidc_subject,
+                           curve_public_key = EXCLUDED.curve_public_key,
+                           curve_key_revoked_at = EXCLUDED.curve_key_revoked_at,
+                           extras = EXCLUDED.extras,
+                           last_updated = EXCLUDED.last_updated""",
+                    _pg_row(record),
+                )
+                synced += 1
+            conn.commit()
+        finally:
+            pool.putconn(conn)
+        logger.info("user store PG lane synced (%d rows)", synced)
+    except Exception as exc:  # noqa: BLE001 — fail-open by contract
+        logger.warning("user store PG sync skipped (JSON stays authoritative): %s", exc)
+        _PG_POOL = None
+    return synced
+
+
+def reset_user_store_pg() -> None:
+    """Test/reset seam: unwire the PG lane."""
+    global _PG_POOL
+    _PG_POOL = None
+
+
+def _pg_row(record: UserRecord) -> tuple:
+    import json as _json
+
+    return (
+        record.username,
+        record.fullname,
+        record.email,
+        record.role,
+        bool(record.disabled),
+        record.slurm_account,
+        _json.dumps(record.slurm_accounts or {}),
+        _json.dumps(list(record.projects or [])),
+        _json.dumps(record.quota or {}),
+        record.oidc_subject,
+        record.curve_public_key,
+        record.curve_key_revoked_at,
+        _json.dumps(record.extras or {}),
+        record.created_at,
+        record.last_updated,
+    )
+
+
+def pg_lane_active() -> bool:
+    return _PG_POOL is not None
+
+
+def pg_get(username: str) -> UserRecord | None:
+    """PG-first read; None when absent/unwired (the caller falls back)."""
+    if _PG_POOL is None:
+        return None
+    import json as _json
+
+    conn = _PG_POOL.getconn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT username, fullname, email, role, disabled, slurm_account,"
+            " slurm_accounts, projects, quota, oidc_subject, curve_public_key,"
+            " curve_key_revoked_at, extras, created_at, last_updated"
+            " FROM users WHERE username = %s",
+            (username,),
+        )
+        row = cur.fetchone()
+    finally:
+        _PG_POOL.putconn(conn)
+    if row is None:
+        return None
+    return UserRecord(
+        username=row[0],
+        fullname=row[1],
+        email=row[2],
+        role=row[3],
+        slurm_account=row[5],
+        slurm_accounts=_json.loads(row[6])
+        if isinstance(row[6], str)
+        else (row[6] or {}),
+        projects=list(row[7])
+        if isinstance(row[7], list)
+        else _json.loads(row[7] or "[]"),
+        disabled=bool(row[4]),
+        quota=_json.loads(row[8]) if isinstance(row[8], str) else (row[8] or {}),
+        oidc_subject=row[9],
+        curve_public_key=row[10],
+        curve_key_revoked_at=row[11],
+        extras=_json.loads(row[12]) if isinstance(row[12], str) else (row[12] or {}),
+        created_at=row[13],
+        last_updated=row[14],
+    )
