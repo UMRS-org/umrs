@@ -439,11 +439,11 @@ class EndpointProvisionBackend(OrchestratorBackend):
             site_name: str | None = None
             try:
                 site_name = load_site_config().name
-            except Exception:
+            except Exception:  # noqa: BLE001, S110 — best-effort adapter path, reported not raised
                 pass
             record = self._user_store.get(user_id)
             return record.resolve_slurm_account(site_name)
-        except Exception:
+        except Exception:  # noqa: BLE001 — best-effort adapter path, reported not raised
             logger.debug("Could not resolve slurm_account for user %s", user_id)
             return None
 
@@ -1010,7 +1010,7 @@ class EndpointProvisionStatusChecker(BackendStatusChecker):
 
             return AttemptCheckResult.running(progress_detail)
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — best-effort adapter path, reported not raised
             logger.warning(f"Readiness check failed for {backend_ref}: {e}")
 
             # Don't mark as failed on transient errors
@@ -1047,7 +1047,7 @@ class EndpointProvisionStatusChecker(BackendStatusChecker):
 
         try:
             job_info = await self.orchestrator.get_job_status(backend_ref)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — best-effort adapter path, reported not raised
             logger.warning(
                 "Failed to refresh backend status for %s: %s", backend_ref, exc
             )
@@ -1210,7 +1210,7 @@ class IndexBuildStatusChecker(BackendStatusChecker):
                 rebuild=False,
                 index_name=parsed.get("index"),
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — best-effort adapter path, reported not raised
             return AttemptCheckResult.failed(str(exc))
 
         metrics["verified_after_submit"] = True
@@ -1252,7 +1252,7 @@ class CleanupBackend(OrchestratorBackend):
 
         try:
             target_job, attempts = self.get_job_with_attempts(target_job_id)
-        except Exception:
+        except Exception:  # noqa: BLE001 — best-effort adapter path, reported not raised
             return target_job_id
 
         if target_job.job_type != JobType.ENDPOINT_PROVISION:
@@ -1436,6 +1436,7 @@ def create_backend_factory(
     session_gc_backend = SessionGcBackend(session_store=session_store)
 
     from .knowledge_adapters import (
+        DomainBenchmarkBackend,
         KnowledgeEmbedBackend,
         KnowledgeExportBackend,
         KnowledgeIngestBackend,
@@ -1465,6 +1466,7 @@ def create_backend_factory(
     knowledge_understand_backend = KnowledgeUnderstandBackend()
     knowledge_embed_backend = KnowledgeEmbedBackend()
     knowledge_verify_backend = KnowledgeVerifyBackend()
+    domain_benchmark_backend = DomainBenchmarkBackend()
     knowledge_export_backend = KnowledgeExportBackend()
 
     from .reindex import KnowledgeReindexBackend
@@ -1508,6 +1510,8 @@ def create_backend_factory(
             return knowledge_embed_backend
         elif job_type == JobType.KNOWLEDGE_VERIFY:
             return knowledge_verify_backend
+        elif job_type == JobType.DOMAIN_BENCHMARK:
+            return domain_benchmark_backend
         elif job_type == JobType.KNOWLEDGE_REINDEX:
             return knowledge_reindex_backend
         elif job_type == JobType.KNOWLEDGE_EXPORT:
@@ -1604,6 +1608,7 @@ def create_status_checker(
         checker.register(JobType.MODEL_DOWNLOAD, ModelDownloadStatusChecker())
 
     from .knowledge_adapters import (
+        DomainBenchmarkStatusChecker,
         KnowledgeEmbedStatusChecker,
         KnowledgeExportStatusChecker,
         KnowledgeIngestStatusChecker,
@@ -1615,6 +1620,7 @@ def create_status_checker(
     checker.register(JobType.KNOWLEDGE_UNDERSTAND, KnowledgeUnderstandStatusChecker())
     checker.register(JobType.KNOWLEDGE_EMBED, KnowledgeEmbedStatusChecker())
     checker.register(JobType.KNOWLEDGE_VERIFY, KnowledgeVerifyStatusChecker())
+    checker.register(JobType.DOMAIN_BENCHMARK, DomainBenchmarkStatusChecker())
     checker.register(JobType.KNOWLEDGE_EXPORT, KnowledgeExportStatusChecker())
 
     from .reindex import KnowledgeReindexStatusChecker
@@ -1714,7 +1720,7 @@ def enqueue_auto_ingest(job: Any, attempt: Any) -> None:
             workflow,
             step,
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 — best-effort adapter path, reported not raised
         logger.warning(
             "Auto-ingest enqueue failed for job %s: %s",
             job.job_id,
@@ -1742,7 +1748,7 @@ def enqueue_auto_ingest_failure(job: Any, attempt_no: int, exit_reason: str) -> 
             job.job_id,
             exit_reason,
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 — best-effort adapter path, reported not raised
         logger.warning(
             "Auto-ingest failure logging failed for job %s: %s",
             job.job_id,

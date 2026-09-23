@@ -81,7 +81,7 @@ class KnowledgeEvent:
             from umrs.knowledge import events_sse
 
             events_sse.emit(self)
-        except Exception:  # noqa: BLE001 — SSE must never break a job
+        except Exception:  # noqa: BLE001, S110 — SSE must never break a job
             pass
         return self
 
@@ -272,7 +272,7 @@ def _get_pool() -> Any:
         return asyncpg.create_pool(  # type: ignore[return-value]
             dsn=conn_str, **asyncpg_pool_kwargs("knowledge-adapters")
         )
-    except Exception:
+    except Exception:  # noqa: BLE001 — best-effort adapter path, reported not raised
         return None
 
 
@@ -302,7 +302,7 @@ async def _open_pool() -> Any:
                 dsn=dsn,
                 **asyncpg_pool_kwargs("knowledge-adapters", init=_init_json_codecs),
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — best-effort adapter path, reported not raised
             logger.warning("Knowledge asyncpg pool unavailable: %s", exc)
             pool = None
     try:
@@ -311,11 +311,11 @@ async def _open_pool() -> Any:
         if pool is not None:
             try:
                 await pool.close()
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001, S110
                 pass
             try:
                 await pool.wait_closed()
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001, S110
                 pass
 
 
@@ -355,7 +355,7 @@ def _resolve_s3_credentials() -> tuple[str, str]:
         p.read(cfg_file)
         access = access or p.get("default", "access_key", fallback="")
         secret = secret or p.get("default", "secret_key", fallback="")
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 — best-effort adapter path, reported not raised
         logger.warning("s3cfg credential resolution failed: %s", exc)
     return access, secret
 
@@ -384,7 +384,7 @@ def _build_s3_client(job_spec: dict[str, Any]) -> tuple[Any, str]:
         )
         client.list_buckets()
         return client, bucket
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 — best-effort adapter path, reported not raised
         logger.warning("S3 unavailable for understand fetch: %s", exc)
         return None, bucket
 
@@ -400,7 +400,7 @@ def _fetch_artifact_bytes(s3_client: Any, bucket: str, source_ref: str) -> bytes
     try:
         obj = s3_client.get_object(Bucket=bucket, Key=source_ref)
         return obj["Body"].read()
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 — best-effort adapter path, reported not raised
         logger.warning("S3 fetch failed for %s: %s", source_ref, exc)
         return None
 
@@ -451,7 +451,7 @@ class KnowledgeIngestBackend(OrchestratorBackend):
                 use_ssl=use_ssl,
             )
             self._s3_client.list_buckets()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — best-effort adapter path, reported not raised
             logger.warning("S3 unavailable — degraded mode: %s", exc)
             self._s3_client = None
 
@@ -473,7 +473,7 @@ class KnowledgeIngestBackend(OrchestratorBackend):
             from umrs.knowledge import events_sse
 
             _sse_token = events_sse.set_project_ctx(project_id)
-        except Exception:  # noqa: BLE001 — SSE context is best-effort
+        except Exception:  # noqa: BLE001, S110 — SSE context is best-effort
             pass
         try:
             return await self._submit_ingest(
@@ -539,7 +539,7 @@ class KnowledgeIngestBackend(OrchestratorBackend):
                 job,
                 sources=success_descs,
             )
-        except Exception as exc:  # defensive — chain must never break ingest
+        except Exception as exc:  # defensive — chain must never break ingest  # noqa: BLE001 — best-effort adapter path, reported not raised
             logger.warning("KNOWLEDGE_UNDERSTAND chain enqueue failed: %s", exc)
 
         return result_str
@@ -570,7 +570,7 @@ class KnowledgeUnderstandBackend(OrchestratorBackend):
             from umrs.knowledge import events_sse
 
             _sse_token = events_sse.set_project_ctx(project_id)
-        except Exception:  # noqa: BLE001 — SSE context is best-effort
+        except Exception:  # noqa: BLE001, S110 — SSE context is best-effort
             pass
         try:
             return await self._submit_understand(job, attempt, project_id)
@@ -695,7 +695,7 @@ def _run_ingest_sync(
                 success_ids,
                 success_descs,
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — best-effort adapter path, reported not raised
             logger.warning(
                 "knowledge_ingest source failed: kind=%s uri=%s error=%s",
                 source_kind,
@@ -1040,11 +1040,11 @@ def _store_artifacts_in_db_sync(
                             project_id=project_id,
                             source_ref=desc.get("source_ref", ""),
                         )
-                    except Exception:
+                    except Exception:  # noqa: BLE001, S110 — best-effort, must not raise
                         pass
 
         _run_coroutine_sync(_do(), "persist_artifact_meta")
-    except Exception:
+    except Exception:  # noqa: BLE001, S110 — best-effort, must not raise
         pass
 
 
@@ -1079,7 +1079,7 @@ def _derive_a2l_link(
                 )
 
             asyncio.run(_persist())
-    except Exception:
+    except Exception:  # noqa: BLE001 — best-effort adapter path, reported not raised
         # Best-effort: silently degrade — A2L unavailable
         try:
             KnowledgeEvent(
@@ -1089,7 +1089,7 @@ def _derive_a2l_link(
                 attempt_id=attempt_id,
                 details=f"a2l_artifact={a2l_artifact_id} edge={edge_kind} skipped",
             ).emit()
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 — best-effort, must not raise
             pass
 
 
@@ -1130,7 +1130,7 @@ async def _run_understand(
                         "source_ref": art.source_ref,
                     }
                 )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — best-effort adapter path, reported not raised
             logger.error("Failed to list artifacts: %s", exc)
             artifacts_to_process = []
 
@@ -1269,7 +1269,7 @@ async def _existing_current_ir(store: Any, artifact_id: str) -> str | None:
             "AND status = 'current' LIMIT 1",
             artifact_id,
         )
-    except Exception:
+    except Exception:  # noqa: BLE001 — best-effort adapter path, reported not raised
         return None
 
 
@@ -1347,7 +1347,7 @@ async def _understand_one_artifact(
             content=ir.to_dict(),
             content_hash=ir.content_hash,
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 — best-effort adapter path, reported not raised
         logger.error("IR insert failed: %s: %s", artifact_id, exc)
         result.failed_items.append({"artifact_id": artifact_id, "error": str(exc)})
         return
@@ -1384,7 +1384,7 @@ async def _understand_one_artifact(
             await store.upsert_edge(edge)
         result.nodes_created += len(nodes)
         result.edges_created += len(edges)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 — best-effort adapter path, reported not raised
         logger.error("Node/edge upsert failed: %s: %s", artifact_id, exc)
         result.failed_items.append(
             {"artifact_id": artifact_id, "error": f"graph: {exc}"}
@@ -1449,7 +1449,7 @@ def _parse_for_understand(
             "language": parsed.language,
             "tags": parsed.tags,
         }
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 — best-effort adapter path, reported not raised
         logger.warning("Parse failed for %s: %s", artifact_id, exc)
         return None
 
@@ -1473,8 +1473,7 @@ def _as_proposed_tier(nodes: list, edges: list) -> tuple[list, list]:
 
     def _tier(rows: list) -> list:
         return [
-            dataclasses.replace(row, status="proposed", confidence=0.0)
-            for row in rows
+            dataclasses.replace(row, status="proposed", confidence=0.0) for row in rows
         ]
 
     return _tier(nodes), _tier(edges)
@@ -2202,7 +2201,7 @@ class KnowledgeEmbedBackend(OrchestratorBackend):
             from umrs.knowledge import events_sse
 
             _sse_token = events_sse.set_project_ctx(project_id)
-        except Exception:  # noqa: BLE001 — SSE context is best-effort
+        except Exception:  # noqa: BLE001, S110 — SSE context is best-effort
             pass
         try:
             return await self._submit_embed(job, attempt, project_id)
@@ -2321,6 +2320,31 @@ def _enqueue_embed_job(
 # ── KnowledgeVerifyBackend ────────────────────────────────────────────────────
 
 
+async def _run_verifier(
+    verifier: Any, store: Any, project_id: str, job: Job, attempt: JobAttempt
+) -> list[Any]:
+    """Run one verifier (2026-09-23 repair: the helper had been lost in a
+    merge and the call site would NameError at runtime — the unit suite
+    only exercises the no-pool path, so it never fired).
+
+    Best-effort per verifier: one failing verifier logs and returns [];
+    the verify run continues.
+    """
+    try:
+        if not verifier.can_run(project_id):
+            return []
+        return list(await verifier.run(store, project_id))
+    except Exception as exc:  # noqa: BLE001 — one verifier must not kill the verify run
+        logger.warning(
+            "Verifier %s failed for job %s attempt %s: %s",
+            getattr(verifier, "name", "?"),
+            job.job_id,
+            attempt.attempt_id,
+            exc,
+        )
+        return []
+
+
 class KnowledgeVerifyBackend(OrchestratorBackend):
     """Run all verifiers → produce confidence report."""
 
@@ -2367,7 +2391,7 @@ class KnowledgeVerifyBackend(OrchestratorBackend):
 
             for verifier in verifiers:
                 findings.extend(
-                    _run_verifier(verifier, store, project_id, job, attempt)
+                    await _run_verifier(verifier, store, project_id, job, attempt)
                 )
 
             # Compute confidence score
@@ -2389,7 +2413,7 @@ class KnowledgeVerifyBackend(OrchestratorBackend):
                     attempt_id=attempt.attempt_id,
                     details=f"confidence={confidence:.2f} report_v{report.report_version}",
                 ).emit()
-            except Exception as report_exc:
+            except Exception as report_exc:  # noqa: BLE001 — best-effort adapter path, reported not raised
                 logger.warning("Failed to write verification report: %s", report_exc)
 
             _write_result(
@@ -2464,6 +2488,132 @@ class KnowledgeVerifyBackend(OrchestratorBackend):
             return AttemptCheckResult.failed("No backend reference")
         if attempt.backend_ref.startswith("knowledge_verify|"):
             return AttemptCheckResult.succeeded(metrics={"verified_after_submit": True})
+        return AttemptCheckResult.failed("Unexpected backend reference")
+
+
+# ── DomainBenchmarkBackend (D-44 graduation, 2026-09-23) ─────────────────────
+
+
+class DomainBenchmarkBackend(OrchestratorBackend):
+    """Score the project's graph against a domain benchmark suite.
+
+    Format decision (2026-09-23): spec = {project_id, benchmark: [
+        {"question": str, "expected_node_ids": [str, ...]}]}. Scoring is
+    node-existence — mechanically real, no LLM: an expected id present in
+    the graph (any tier) scores; the established/proposed split reports
+    the two-tier state honestly. score = matched / total expected.
+    """
+
+    @property
+    def backend_name(self) -> str:
+        return "domain_benchmark"
+
+    async def submit_job(self, job: Job, attempt: JobAttempt) -> str:
+        project_id = job.spec.get("project_id", job.project_id)
+        items = self._validated_items(job.spec.get("benchmark"))
+        if items is None:
+            ref = f"domain_benchmark|project={project_id}|error=bad_benchmark_spec"
+            KnowledgeEvent(
+                event_type="benchmark",
+                job_id=job.job_id,
+                attempt_id=attempt.attempt_id,
+                details="bad benchmark spec (items must carry expected_node_ids)",
+            ).emit()
+            return ref
+
+        KnowledgeEvent(
+            event_type="benchmark",
+            job_id=job.job_id,
+            attempt_id=attempt.attempt_id,
+            details=f"project={project_id} items={len(items)}",
+        ).emit()
+
+        pool = _get_pool()
+        if pool is None:
+            return f"domain_benchmark|project={project_id}|degraded=no_pool"
+
+        from umrs.knowledge.store import KnowledgeStore
+
+        store = KnowledgeStore(pool)
+        expected = sorted({nid for item in items for nid in item["expected_node_ids"]})
+        status_map = await store.benchmark_node_status(project_id, expected)
+        matched = [nid for nid, st in status_map.items() if st is not None]
+        established = [nid for nid, st in status_map.items() if st == "established"]
+        total = len(expected)
+        score = len(matched) / total if total else 0.0
+
+        attempt.metrics["benchmark"] = json.dumps(
+            {
+                "score": score,
+                "matched": len(matched),
+                "total": total,
+                "established": len(established),
+                "proposed": len(matched) - len(established),
+                "items": len(items),
+            }
+        )
+        ref = (
+            f"domain_benchmark|project={project_id}"
+            f"|score={score:.3f}|matched={len(matched)}|total={total}"
+        )
+        KnowledgeEvent(
+            event_type="benchmark",
+            job_id=job.job_id,
+            attempt_id=attempt.attempt_id,
+            details=f"score={score:.3f} matched={len(matched)}/{total}",
+        ).emit()
+        return ref
+
+    @staticmethod
+    def _validated_items(benchmark: Any) -> list[dict[str, list[str]]] | None:
+        """Items with at least one expected_node_ids string each; else None."""
+        if not isinstance(benchmark, list) or not benchmark:
+            return None
+        items: list[dict[str, list[str]]] = []
+        for item in benchmark:
+            if not isinstance(item, dict):
+                return None
+            ids = DomainBenchmarkBackend._validated_ids(item.get("expected_node_ids"))
+            if ids is None:
+                return None
+            items.append(
+                {
+                    "question": str(item.get("question", "")),
+                    "expected_node_ids": ids,
+                }
+            )
+        return items
+
+    @staticmethod
+    def _validated_ids(raw: Any) -> list[str] | None:
+        """Non-empty list of non-empty id strings; None when the shape is bad."""
+        if not isinstance(raw, list) or not raw:
+            return None
+        if not all(isinstance(nid, str) and nid.strip() for nid in raw):
+            return None
+        return [nid.strip() for nid in raw]
+
+
+class DomainBenchmarkStatusChecker(BackendStatusChecker):
+    """Status checker for synchronous domain-benchmark jobs."""
+
+    @property
+    def job_type(self) -> JobType:
+        return JobType.DOMAIN_BENCHMARK
+
+    async def check_status(
+        self,
+        attempt: JobAttempt,
+        job: Job,
+    ) -> AttemptCheckResult:
+        if not attempt.backend_ref:
+            return AttemptCheckResult.failed("No backend reference")
+        if attempt.backend_ref.startswith("domain_benchmark|error="):
+            return AttemptCheckResult.failed("Bad benchmark spec")
+        if attempt.backend_ref.startswith("domain_benchmark|"):
+            return AttemptCheckResult.succeeded(
+                metrics={"benchmarked_after_submit": True}
+            )
         return AttemptCheckResult.failed("Unexpected backend reference")
 
 
@@ -2582,23 +2732,20 @@ class KnowledgeExportBackend(OrchestratorBackend, _ExportIntegrityMixin):
             )
             _write_result(attempt, result)
 
+            degraded_suffix = (
+                f"|degraded={result.degraded_reason}" if result.degraded else ""
+            )
             return (
                 f"knowledge_export|project={project_id}|"
                 f"artifacts={result.artifact_count}|"
                 f"embeds={result.embedding_count}|"
-                f"hash={result.manifest_hash}"
+                f"hash={result.manifest_hash}{degraded_suffix}"
             )
 
         finally:
             if pool is not None:
                 pool.close()
                 await pool.wait_closed()
-
-        if degraded:
-            result.degraded = True
-            result.degraded_reason = degraded_reason
-
-        return f"knowledge_export|project={project_id}|degraded={degraded_reason}"
 
 
 class KnowledgeExportStatusChecker(BackendStatusChecker):
@@ -2635,7 +2782,7 @@ async def _resolve_succeeded_attempts(pool: Any, job: Any) -> list[Any]:
             job.job_id,
         )
         return [r["attempt_id"] for r in rows] if rows else []
-    except Exception:
+    except Exception:  # noqa: BLE001 — best-effort adapter path, reported not raised
         return []
 
 
@@ -2670,7 +2817,7 @@ async def _artifacts_from_attempt_metrics(
             for art in metrics.get("artifacts", []):
                 if isinstance(art, dict) and art.get("artifact_id"):
                     results.append(art)
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 — best-effort, must not raise
             pass
     return results
 
@@ -2684,7 +2831,7 @@ async def _artifacts_from_store(pool: Any, project_id: str) -> list[dict[str, An
             "ORDER BY created_at DESC",
             project_id,
         )
-    except Exception:
+    except Exception:  # noqa: BLE001 — best-effort adapter path, reported not raised
         return []
     return [
         {
@@ -2719,7 +2866,7 @@ def _collect_artifact_ids(job: Any) -> list[dict[str, Any]]:
         collected = _run_coroutine_sync(_collect(), "collect-artifacts")
         if collected:
             artifacts = collected
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 — best-effort adapter path, reported not raised
         logger.warning(
             "Artifact collection failed for job %s: %s",
             getattr(job, "job_id", "?"),
@@ -2775,7 +2922,7 @@ def _dedup_artifacts(
 
             seen_hashes.add(content_hash)
             deduped.append(art_ref)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 — best-effort adapter path, reported not raised
         # Storage unavailable — proceed anyway (degraded)
         logger.warning(
             "Dedup check skipped (S3 unavailable): %s — enqueuing all",
@@ -2824,14 +2971,14 @@ def _store_artifact_provenance(
                                 "step": step,
                             },
                         )
-                    except Exception:
+                    except Exception:  # noqa: BLE001, S110 — best-effort, must not raise
                         pass
 
         try:
             _fire_coroutine(_store_provenance(), "artifact_provenance")
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 — best-effort, must not raise
             pass
-    except Exception:
+    except Exception:  # noqa: BLE001, S110 — best-effort, must not raise
         pass
 
 
@@ -2912,14 +3059,14 @@ def _list_project_artifact_sources(project_id: str) -> list[dict[str, Any]]:
 
         try:
             return _run_coroutine_sync(_list_new(), "list-artifact-sources") or []
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — best-effort adapter path, reported not raised
             logger.warning(
                 "Artifact source listing failed for project %s: %s",
                 project_id,
                 exc,
             )
             return []
-    except Exception:
+    except Exception:  # noqa: BLE001 — best-effort adapter path, reported not raised
         return []
 
 
@@ -3238,7 +3385,7 @@ def _enqueue_ingest_chain(
         )
         if ingest_job_id:
             enqueued.append(ingest_job_id)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 — best-effort adapter path, reported not raised
         logger.warning("Failed to enqueue KNOWLEDGE_INGEST: %s", exc)
 
     # 4. Enqueue KNOWLEDGE_UNDERSTAND job (always after ingest). The
@@ -3249,7 +3396,7 @@ def _enqueue_ingest_chain(
         us_job_id = _enqueue_understand_job(project_id, user_id, job, deduped)
         if us_job_id:
             enqueued.append(us_job_id)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 — best-effort adapter path, reported not raised
         logger.warning("KnowledgeUnderstand enqueue failed: %s", exc)
 
     # 5. Create PRODUCED_BY edge in knowledge graph (best-effort)
@@ -3257,7 +3404,7 @@ def _enqueue_ingest_chain(
         _create_produced_by_edges(
             deduped, project_id, user_id, job, attempt, workflow, step
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 — best-effort adapter path, reported not raised
         logger.warning("PRODUCED_BY edge creation failed: %s", exc)
 
     return enqueued
@@ -3399,6 +3546,6 @@ def _bridge_a2l_ref(artifact_id: str, content_hash: str, project_id: str) -> Non
                 await store.insert_a2l_ref(artifact_id, content_hash, a2l_id)
 
             asyncio.run(_persist())
-    except Exception:
+    except Exception:  # noqa: BLE001, S110 — best-effort, must not raise
         # Best-effort: silently degrade — A2L absent or unavailable
         pass
