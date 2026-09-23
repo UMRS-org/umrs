@@ -62,6 +62,10 @@ class JobType(Enum):
     # the ADR-035 archive cascade (never DELETE — mirror-aware delete is
     # r4's own lane; the server only archives what it owns).
     SESSION_GC = "session_gc"
+    # ROADMAP 3.3 / D-37 scheduler leg: the durable path for companion
+    # sbatch scripts — the client hands the script to UMRS, the server
+    # submits via the SSH ControlMaster (the client never runs sbatch).
+    HPC_SCRIPT = "hpc_script"
     # D-44 catalog quality measurement: run a domain benchmark suite against
     # the project's knowledge catalog and record scores over time. ADR-047
     # phenom — registered now, dispatch-blocked with a typed 400 at submit
@@ -130,6 +134,12 @@ DEFAULT_BACKOFFS: dict[JobType, dict[str, Any]] = {
     JobType.DOMAIN_BENCHMARK: {
         # Phenom (ADR-047): table entry required for every kind; benchmark
         # runs are read-only scoring — patient retry, never auto-restart.
+        "delays": [30, 60, 120],
+        "max_attempts": 2,
+    },
+    JobType.HPC_SCRIPT: {
+        # User sbatch scripts: the script's own semantics govern retries —
+        # default requeue policy mirrors the Slurm default modestly.
         "delays": [30, 60, 120],
         "max_attempts": 2,
     },
