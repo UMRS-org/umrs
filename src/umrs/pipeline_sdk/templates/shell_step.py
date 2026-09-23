@@ -45,6 +45,11 @@ class ShellStep(Step):
             str(g).strip() for g in (config.get("output_globs") or []) if str(g).strip()
         ]
         self.timeout = int(config.get("timeout_seconds") or _DEFAULT_TIMEOUT)
+        self.input_aliases: dict[str, str] = {
+            str(k): str(v)
+            for k, v in (config.get("input_aliases") or {}).items()
+            if str(k).strip() and str(v).strip()
+        }
         if not self.command:
             raise ValueError("ShellStep config requires a non-empty 'command'")
         if not self.output_globs:
@@ -71,6 +76,8 @@ class ShellStep(Step):
                 with open(dest, "wb") as handle:
                     handle.write(data)
 
+            self._apply_aliases_step(inputs_dir)
+
             # Pre-create the declared output directories — a redirected
             # write into outputs/<sub>/... must not fail on a missing dir.
             for pattern in self.output_globs:
@@ -82,7 +89,7 @@ class ShellStep(Step):
             env = dict(os.environ)
             env["UMRS_INPUTS_DIR"] = inputs_dir
             env["UMRS_OUTPUTS_DIR"] = outputs_dir
-            proc = subprocess.run(  # noqa: S602, PLW1510 — the command IS the workflow's payload; exit codes handled below
+            proc = subprocess.run(  # noqa: PLW1510 — the command IS the workflow's payload; exit codes handled below
                 self.command,
                 shell=True,
                 cwd=workdir,
@@ -124,6 +131,29 @@ class ShellStep(Step):
             metadata=metadata_list,
             extra={"step": "shell", "command": self.command},
         )
+
+    def _apply_aliases_step(self, inputs_dir: str) -> None:
+        """Materialize stable input names (importers' DAG contract).
+
+        Upstream ShellStep keys are run-scoped (``shell/<run>/<name>``);
+        a child step's command needs a stable path. Each alias (name →
+        glob under inputs_dir) copies the first match to ``<name>`` —
+        zero matches refuse by name, never a silent miss.
+        """
+        import glob as _glob
+        import shutil as _shutil
+
+        for alias, pattern in self.input_aliases.items():
+            dest = os.path.join(inputs_dir, alias)
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            matches = sorted(
+                _glob.glob(os.path.join(inputs_dir, pattern), recursive=True)
+            )
+            if not matches:
+                raise RuntimeError(
+                    f"input alias {alias!r} matched nothing (pattern {pattern!r})"
+                )
+            _shutil.copyfile(matches[0], dest)
 
     @staticmethod
     def _download(ctx: StepContext, key: str) -> bytes:
