@@ -798,9 +798,7 @@ class TestRailGatewayD42ReadGating:
         monkeypatch.setenv("UMRS_HANDSHAKE_HMAC_SECRET", "test-handshake-secret")
         return rail
 
-    @pytest.mark.parametrize(
-        "family", ["knowledge", "catalog", "scientific-catalogs", "rag"]
-    )
+    @pytest.mark.parametrize("family", ["knowledge", "catalog", "scientific-catalogs", "rag"])
     def test_read_families_get_reaches_upstream(self, gw, family):
         r = gw.client.get(
             f"/umrs/companion/sessions/sess-1/rail/gw/{family}/probe",
@@ -809,9 +807,7 @@ class TestRailGatewayD42ReadGating:
         assert r.status_code == 200, (family, r.text)
         assert r.json()["path"] == f"/umrs/{family}/probe"
 
-    @pytest.mark.parametrize(
-        "family", ["knowledge", "catalog", "scientific-catalogs", "rag"]
-    )
+    @pytest.mark.parametrize("family", ["knowledge", "catalog", "scientific-catalogs", "rag"])
     def test_read_families_post_refused_before_upstream(self, gw, family):
         r = gw.client.post(
             f"/umrs/companion/sessions/sess-1/rail/gw/{family}/probe",
@@ -836,3 +832,42 @@ class TestRailGatewayD42ReadGating:
                 json={},
             )
             assert r.status_code == 200, (family, r.text)
+
+
+class TestPauseResumeRoutes:
+    def test_pause_resume_round_trip(self, harness):
+        harness.pool.seed("alice", "sess-1")
+        _start(harness)
+        _run_lane(harness)
+        podman_calls_before = list(harness.podman.calls)
+        p = harness.client.post("/umrs/companion/sessions/sess-1/venue/pause", headers=H)
+        assert (p.status_code, p.json()["state"]) == (200, "paused")
+        # the sandbox stays up (pause touches NOTHING — no teardown, no job cancel)
+        assert harness.podman.calls == podman_calls_before
+        assert harness.jobs.cancelled == []
+        st = harness.client.get("/umrs/companion/sessions/sess-1/venue", headers=H).json()
+        assert st["state"] == "paused"
+        r = harness.client.post("/umrs/companion/sessions/sess-1/venue/resume", headers=H)
+        assert (r.status_code, r.json()["state"]) == (200, "running")
+        # the mirror's running-state spelling is 'ongoing' (0084 vocabulary);
+        # the venue row's own state is 'running' (VALID_STATES vocabulary).
+        assert harness.pool.table[("alice", "sess-1")]["state"] == "ongoing"
+
+    def test_pause_idempotent_and_resume_conflict(self, harness):
+        harness.pool.seed("alice", "sess-1")
+        _start(harness)
+        _run_lane(harness)
+        first = harness.client.post("/umrs/companion/sessions/sess-1/venue/pause", headers=H)
+        again = harness.client.post("/umrs/companion/sessions/sess-1/venue/pause", headers=H)
+        assert (first.status_code, again.status_code) == (200, 200)
+        resumed = harness.client.post("/umrs/companion/sessions/sess-1/venue/resume", headers=H)
+        twice = harness.client.post("/umrs/companion/sessions/sess-1/venue/resume", headers=H)
+        assert (resumed.status_code, twice.status_code) == (200, 409)
+
+    def test_pause_refused_from_terminal(self, harness):
+        harness.pool.seed("alice", "sess-1")
+        _start(harness)
+        _run_lane(harness)
+        harness.client.post("/umrs/companion/sessions/sess-1/venue/stop", headers=H)
+        r = harness.client.post("/umrs/companion/sessions/sess-1/venue/pause", headers=H)
+        assert r.status_code == 409

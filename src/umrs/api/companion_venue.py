@@ -261,6 +261,40 @@ async def stop_venue(session_id: str, request: Request) -> dict[str, Any]:
         _unexpected(exc, "stop")
 
 
+@router.post("/{session_id}/venue/pause", response_model=dict[str, Any])
+async def pause_venue(session_id: str, request: Request) -> dict[str, Any]:
+    """Pause the sandbox worker between turns (D-09 verb; idempotent).
+    # auth: verified
+    """
+    uid = _uid(request)
+    service = get_venue_service(request)
+    try:
+        return await asyncio.to_thread(service.pause, owner=uid, session_id=session_id)
+    except VenueError as exc:
+        _typed(exc)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001 — unexpected → typed 503 naming the cause
+        _unexpected(exc, "pause")
+
+
+@router.post("/{session_id}/venue/resume", response_model=dict[str, Any])
+async def resume_venue(session_id: str, request: Request) -> dict[str, Any]:
+    """Resume a paused sandbox worker (D-09 verb; only from paused).
+    # auth: verified
+    """
+    uid = _uid(request)
+    service = get_venue_service(request)
+    try:
+        return await asyncio.to_thread(service.resume, owner=uid, session_id=session_id)
+    except VenueError as exc:
+        _typed(exc)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001 — unexpected → typed 503 naming the cause
+        _unexpected(exc, "resume")
+
+
 # ── worker rail ────────────────────────────────────────────────────────────
 
 

@@ -385,6 +385,30 @@ class FrontendVenueService:
         assert stopped is not None
         return self._describe(stopped)
 
+    def pause(self, *, owner: str, session_id: str, actor: str = "user") -> dict[str, Any]:
+        """D-09 pause verb: active → paused; idempotent on paused rows."""
+        row = self.store.get(session_id)
+        if row is None or row.user_id != owner:
+            raise VenueError("not_found", "no venue runtime for this session")
+        if row.state == "paused":
+            return self._describe(row)
+        paused = self.store.mark_paused(session_id, reason=f"paused by {actor}")
+        if paused is None:
+            raise VenueError("conflict", f"cannot pause from state {row.state!r}")
+        self._project_registry(owner, session_id, state="paused")
+        return self._describe(paused)
+
+    def resume(self, *, owner: str, session_id: str) -> dict[str, Any]:
+        """D-09 resume verb: paused → running; only from paused."""
+        row = self.store.get(session_id)
+        if row is None or row.user_id != owner:
+            raise VenueError("not_found", "no venue runtime for this session")
+        resumed = self.store.mark_resumed(session_id)
+        if resumed is None:
+            raise VenueError("conflict", f"cannot resume from state {row.state!r}")
+        self._project_registry(owner, session_id, state="ongoing")
+        return self._describe(resumed)
+
     def _cancel_job(self, job_id: str, actor: str) -> None:
         """Settle the durable record after a direct stop (terminal → no-op)."""
         if not job_id or self.job_store is None:
@@ -419,6 +443,9 @@ class FrontendVenueService:
             "renewed": renewed,
             "lease_expires_at": _expires_iso(lease),
             "stop_requested": stop_requested,
+            # D-09 pause: the worker waits between turns while paused —
+            # never a stop; the lease stays warm (heartbeats keep renewing).
+            "paused": row is not None and row.state == "paused",
             "state": row.state if row is not None else "unknown",
         }
 
