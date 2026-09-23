@@ -14,10 +14,13 @@ deterministic default graph first, so existing projects appear automatically.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
+
+if TYPE_CHECKING:
+    from umrs.knowledge.store import KnowledgeStore
 
 from umrs.knowledge.access_scope import (
     CallerScope,
@@ -284,6 +287,19 @@ class EstablishResponse(BaseModel):
     edge_id: str | None = None
     status: str
     established_by: str
+    evidence_refs: list[str] = Field(default_factory=list)
+    confidence: float | None = None
+
+
+class EstablishBody(BaseModel):
+    """D-35 evidence refs on tiered rows: the human's promotion carries
+    the evidence that justified it (+ optionally the settled confidence).
+
+    Both optional — absent means the review block records the actor only
+    (never an invented ref or confidence)."""
+
+    evidence_refs: list[str] = Field(default_factory=list)
+    confidence: float | None = Field(None, ge=0.0, le=1.0)
 
 
 def _refuse_agent_promotion(request: Request) -> None:
@@ -298,15 +314,15 @@ def _refuse_agent_promotion(request: Request) -> None:
         )
 
 
-async def _establish_target(request: Request) -> "KnowledgeStore":
-    from ._asyncpg_pool import knowledge_asyncpg_pool  # noqa: PLC0415
+async def _establish_target(request: Request) -> KnowledgeStore:
+    from ._asyncpg_pool import knowledge_asyncpg_pool
 
     pool = await knowledge_asyncpg_pool(request)
     if pool is None:
         raise_typed(
             PlatformError.knowledgegraphs("unavailable", "Knowledge store unavailable")
         )
-    from umrs.knowledge.store import KnowledgeStore  # noqa: PLC0415
+    from umrs.knowledge.store import KnowledgeStore
 
     return KnowledgeStore(pool)
 
@@ -316,23 +332,37 @@ async def establish_node(
     graph_id: str,
     node_id: str,
     request: Request,
+    body: EstablishBody | None = None,
     identity: CallerIdentity = Depends(get_caller_identity),
 ) -> EstablishResponse:
     """Promote one node proposed → established (D-35 two-tier knowledge).
 
     Human-only (agent actor refused by name); idempotent on established
-    rows; 404 when the node does not exist.
+    rows; 404 when the node does not exist. The optional body carries
+    the promotion's evidence refs and settled confidence (D-35 tail:
+    evidence links on tiered rows).
     """
     _refuse_agent_promotion(request)
     store = await _establish_target(request)
     established_by = (identity.user_id or "user").strip() or "user"
-    ok = await store.establish_node(node_id, established_by=established_by)
+    refs = list(body.evidence_refs) if body else []
+    confidence = body.confidence if body else None
+    ok = await store.establish_node(
+        node_id,
+        established_by=established_by,
+        evidence_refs=refs,
+        confidence=confidence,
+    )
     if not ok:
         raise_typed(
             PlatformError.knowledgegraphs("not_found", f"Node {node_id} not found")
         )
     return EstablishResponse(
-        node_id=node_id, status="established", established_by=established_by
+        node_id=node_id,
+        status="established",
+        established_by=established_by,
+        evidence_refs=refs,
+        confidence=confidence,
     )
 
 
@@ -341,17 +371,29 @@ async def establish_edge(
     graph_id: str,
     edge_id: str,
     request: Request,
+    body: EstablishBody | None = None,
     identity: CallerIdentity = Depends(get_caller_identity),
 ) -> EstablishResponse:
     """Promote one edge proposed → established (same rules as nodes)."""
     _refuse_agent_promotion(request)
     store = await _establish_target(request)
     established_by = (identity.user_id or "user").strip() or "user"
-    ok = await store.establish_edge(edge_id, established_by=established_by)
+    refs = list(body.evidence_refs) if body else []
+    confidence = body.confidence if body else None
+    ok = await store.establish_edge(
+        edge_id,
+        established_by=established_by,
+        evidence_refs=refs,
+        confidence=confidence,
+    )
     if not ok:
         raise_typed(
             PlatformError.knowledgegraphs("not_found", f"Edge {edge_id} not found")
         )
     return EstablishResponse(
-        edge_id=edge_id, status="established", established_by=established_by
+        edge_id=edge_id,
+        status="established",
+        established_by=established_by,
+        evidence_refs=refs,
+        confidence=confidence,
     )

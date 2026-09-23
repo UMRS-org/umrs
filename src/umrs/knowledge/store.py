@@ -271,11 +271,21 @@ class KnowledgeStore:
                 edge.confidence,
             )
 
-    async def establish_node(self, node_id: str, *, established_by: str) -> bool:
+    async def establish_node(
+        self,
+        node_id: str,
+        *,
+        established_by: str,
+        evidence_refs: list[str] | None = None,
+        confidence: float | None = None,
+    ) -> bool:
         """D-35 promotion: proposed → established (human decision, 0106).
 
         Returns False when the row is absent; promoting an already-
-        established row is an idempotent no-op returning True.
+        established row is an idempotent no-op returning True. The
+        promotion records the human's evidence refs (merged, deduped) and
+        optionally the settled confidence (only when provided — an absent
+        value keeps the extraction confidence, never invented).
         """
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
@@ -283,22 +293,38 @@ class KnowledgeStore:
             )
             if row is None:
                 return False
-            if row["status"] == "established":
-                return True
             content = await conn.fetchval(
                 "SELECT content FROM knowledge_nodes WHERE node_id = $1", node_id
             )
             merged = content if isinstance(content, dict) else {}
-            merged.setdefault("review", {})["established_by"] = established_by
+            review = merged.setdefault("review", {})
+            review["established_by"] = established_by
+            if evidence_refs:
+                prior = list(review.get("evidence_refs") or [])
+                review["evidence_refs"] = sorted(set(prior) | set(evidence_refs))
+            if row["status"] == "established" and not evidence_refs and confidence is None:
+                return True  # idempotent no-op, review untouched
+            updates = ["content = $2"]
+            params: list[Any] = [merged]
+            if confidence is not None:
+                updates.append("confidence = $3")
+                params.append(max(0.0, min(1.0, float(confidence))))
+            sets = ", ".join(["status='established'"] + updates + ["updated_at=now()"])
             await conn.execute(
-                "UPDATE knowledge_nodes SET status='established', content=$2,"
-                " updated_at=now() WHERE node_id=$1",
+                f"UPDATE knowledge_nodes SET {sets} WHERE node_id=$1",
                 node_id,
-                merged,
+                *params,
             )
             return True
 
-    async def establish_edge(self, edge_id: str, *, established_by: str) -> bool:
+    async def establish_edge(
+        self,
+        edge_id: str,
+        *,
+        established_by: str,
+        evidence_refs: list[str] | None = None,
+        confidence: float | None = None,
+    ) -> bool:
         """D-35 promotion for edges (same semantics as establish_node)."""
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
@@ -306,14 +332,27 @@ class KnowledgeStore:
             )
             if row is None:
                 return False
-            if row["status"] == "established":
-                return True
+            content = await conn.fetchval(
+                "SELECT content FROM knowledge_edges WHERE edge_id = $1", edge_id
+            )
+            merged = content if isinstance(content, dict) else {}
+            review = merged.setdefault("review", {})
+            review["established_by"] = established_by
+            if evidence_refs:
+                prior = list(review.get("evidence_refs") or [])
+                review["evidence_refs"] = sorted(set(prior) | set(evidence_refs))
+            if row["status"] == "established" and not evidence_refs and confidence is None:
+                return True  # idempotent no-op, review untouched
+            updates = ["content = $2"]
+            params: list[Any] = [merged]
+            if confidence is not None:
+                updates.append("confidence = $3")
+                params.append(max(0.0, min(1.0, float(confidence))))
+            sets = ", ".join(["status='established'"] + updates + ["updated_at=now()"])
             await conn.execute(
-                "UPDATE knowledge_edges SET status='established',"
-                " content = content || $2::jsonb"
-                " WHERE edge_id=$1",
+                f"UPDATE knowledge_edges SET {sets} WHERE edge_id=$1",
                 edge_id,
-                {"review": {"established_by": established_by}},
+                *params,
             )
             return True
 
