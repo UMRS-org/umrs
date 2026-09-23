@@ -4976,7 +4976,7 @@ def _action_validate_sandbox(ctx):
     else:
         try:
             with open(wf_path, encoding="utf-8") as fh:
-                wf_data = json.load(fh)
+                wf_data = _json.load(fh)
             from umrs.pipeline_sdk.workflow import WorkflowDefinition
 
             WorkflowDefinition.from_dict(wf_data)
@@ -5136,7 +5136,7 @@ def _validate_step_scripts(src_path: str, wf_path: str) -> list[str]:
         return warnings
     try:
         with open(wf_path, encoding="utf-8") as fh:
-            wf_data = json.load(fh)
+            wf_data = _json.load(fh)
     except Exception:
         return warnings
 
@@ -6723,7 +6723,7 @@ def _action_project(ctx):
         if action == "list":
             result = api._request_json(TaskCmd.ADMIN_LIST_PROJECTS, {})
             if ctx.args.output == "json":
-                print(json.dumps(result, indent=2))
+                print(_json.dumps(result, indent=2))
             else:
                 projects = result.get("projects", [])
                 if not projects:
@@ -6770,9 +6770,9 @@ def _action_project(ctx):
                 {"project_id": ctx.args.project_id},
             )
             if ctx.args.output == "json":
-                print(json.dumps(result, indent=2))
+                print(_json.dumps(result, indent=2))
             else:
-                print(json.dumps(result, indent=2, default=str))
+                print(_json.dumps(result, indent=2, default=str))
             return 0
 
     except Exception as e:

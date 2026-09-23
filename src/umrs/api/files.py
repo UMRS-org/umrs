@@ -1088,9 +1088,3 @@ async def check_download_status(
         return await _poll_job_until_ready(job_store, job_id, timeout)
 
     return _nonblocking_job_status(job_store, job_id)
-
-    if blocking and timeout > 0:
-        return await _poll_until_ready()
-
-    # Non-blocking mode: check once
-    return _nonblocking_status()

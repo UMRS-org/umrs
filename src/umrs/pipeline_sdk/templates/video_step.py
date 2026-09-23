@@ -115,7 +115,7 @@ class VideoStep(Step):
             if self.width:
                 cmd.extend(["-vf", f"scale={self.width}:-1,fps={self.fps}"])
             cmd.extend(["-frames:v", str(self.max_frames)])
-            cmd.extend([output_path])  # type: ignore[arg-type]
+            cmd.extend([output_pattern])
 
             try:
                 subprocess.run(

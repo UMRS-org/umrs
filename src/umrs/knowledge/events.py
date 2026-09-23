@@ -52,7 +52,7 @@ _VALID_EVENT_TYPES: frozenset[str] = frozenset(
 )
 
 # Consumer callback type
-_ConsumerCallback = Callable[[KnowledgeEvent], Coroutine[Any, Any, None]]
+_ConsumerCallback = Callable[["KnowledgeEvent"], Coroutine[Any, Any, None]]
 
 
 def _utcnow() -> datetime:
