@@ -1528,6 +1528,10 @@ def create_backend_factory(
             from .hpc_script import build_hpc_script_services
 
             return build_hpc_script_services()["backend"]
+        elif job_type == JobType.MCP_SERVER:
+            from .mcp_server import build_mcp_server_services
+
+            return build_mcp_server_services(_mcp_registry_factory())["backend"]
         else:
             raise ValueError(f"Unsupported job type: {job_type}")
 
@@ -1546,6 +1550,16 @@ def _with_frontend_session(inner, backend):
         return backend
 
     return factory
+
+
+def _mcp_registry_factory():
+    """The MCP store singleton from the api module (lazy; None-safe)."""
+    try:
+        from ..api.mcp import _get_store
+
+        return _get_store()
+    except Exception:  # noqa: BLE001 — degraded ref names it downstream
+        return None
 
 
 def create_status_checker(
@@ -1646,6 +1660,13 @@ def create_status_checker(
     checker.register(
         JobType.HPC_SCRIPT,
         build_hpc_script_services()["checker"],
+    )
+
+    from .mcp_server import build_mcp_server_services
+
+    checker.register(
+        JobType.MCP_SERVER,
+        build_mcp_server_services(_mcp_registry_factory())["checker"],
     )
 
     if frontend_session_checker is not None:
