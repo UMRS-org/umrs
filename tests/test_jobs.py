@@ -539,3 +539,28 @@ class TestUndispatchableExecutorWave:
         for jt in (JobType.BATCH_INFER, JobType.MODEL_EVAL):
             assert jt not in _UNDISPATCHABLE_JOB_TYPES
             _enforce_dispatchable_job_type(jt)  # no raise
+
+
+def test_store_init_bootstraps_schema_and_callbacks(monkeypatch):
+    """2026-09-23 repair pin: the __init__ lines stranded after a return by
+    a bad merge — schema bootstrap + post-completion hooks must live in
+    __init__ (never unset attributes at first success/failure transition)."""
+    import umrs.jobs.store as store_mod
+    from umrs.jobs.store import JobStore
+
+    calls = []
+    monkeypatch.setattr(store_mod, "ensure_schema", lambda conn: calls.append(conn))
+
+    class _Pool:
+        def getconn(self):
+            return "conn"
+
+        def putconn(self, conn):
+            calls.append(("released", conn))
+
+    st = JobStore(_Pool())
+    assert calls == ["conn", ("released", "conn")]  # schema bootstrapped in __init__
+    assert st._post_success_callback is None
+    assert st._post_failure_callback is None
+    st.set_post_completion_callbacks(on_succeeded=lambda _j, _a: None)
+    assert st._post_success_callback is not None
