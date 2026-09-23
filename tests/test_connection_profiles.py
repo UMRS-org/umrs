@@ -89,3 +89,85 @@ def test_resolve_connection_prefers_env_data_port_range_override(monkeypatch):
     assert connection.data_port_range.start == 7000
     assert connection.data_port_range.end == 7002
     assert connection.to_dict()["data_port_range_label"] == "7000-7002"
+
+
+# ── OBJ-20260914-001 naming migration: profile key minio_url → s3_url ───
+
+
+def test_profile_accepts_s3_url_key(tmp_path):
+    """ADR-055 names: the object-store key is s3_url; minio_url still accepted."""
+    import json
+
+    from umrs.shared.connection_profiles import (
+        load_connection_profile_file,
+    )
+
+    profile_path = tmp_path / "s3-named.json"
+    profile_path.write_text(
+        json.dumps(
+            {
+                "name": "s3-named",
+                "mode": "direct",
+                "zmq": {"host": "data0.example"},
+                "services": {
+                    "s3_url": "https://data0.example",
+                    "rag_url": "http://data0.example:8081",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    profile = load_connection_profile_file(profile_path)
+    assert profile.s3_url == "https://data0.example"
+    assert profile.minio_url is None  # not invented from the s3 key
+
+
+def test_s3_url_wins_over_minio_url_when_both(tmp_path):
+    import json
+
+    from umrs.shared.connection_profiles import (
+        _coerce_minio_url,
+        load_connection_profile_file,
+    )
+
+    profile_path = tmp_path / "both.json"
+    profile_path.write_text(
+        json.dumps(
+            {
+                "name": "both",
+                "mode": "direct",
+                "zmq": {"host": "data0.example"},
+                "services": {
+                    "s3_url": "https://new.example",
+                    "minio_url": "https://old.example",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    profile = load_connection_profile_file(profile_path)
+    assert _coerce_minio_url(profile) == "https://new.example"
+
+
+def test_minio_url_only_profile_still_resolves(tmp_path):
+    import json
+
+    from umrs.shared.connection_profiles import (
+        _coerce_minio_url,
+        load_connection_profile_file,
+    )
+
+    profile_path = tmp_path / "legacy.json"
+    profile_path.write_text(
+        json.dumps(
+            {
+                "name": "legacy",
+                "mode": "direct",
+                "zmq": {"host": "data0.example"},
+                "services": {"minio_url": "https://old.example"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    profile = load_connection_profile_file(profile_path)
+    assert _coerce_minio_url(profile) == "https://old.example"

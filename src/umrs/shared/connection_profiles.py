@@ -126,6 +126,8 @@ def _coerce_minio_url(profile: ConnectionProfile) -> str:
     if env_host:
         return _default_service_url(env_host, int(env_port or 9000), False)
 
+    if profile.s3_url:
+        return profile.s3_url
     if profile.minio_url:
         return profile.minio_url
 
@@ -175,6 +177,10 @@ profile_schema: dict[str, Any] = {
         "services": {
             "type": "object",
             "properties": {
+                # ADR-055 names: ``s3_url`` is the object-store key;
+                # ``minio_url`` stays accepted for transition profiles
+                # (OBJ-20260914-001 naming migration).
+                "s3_url": {"type": "string", "minLength": 1},
                 "minio_url": {"type": "string", "minLength": 1},
                 "rag_url": {"type": "string", "minLength": 1},
             },
@@ -228,6 +234,7 @@ class ConnectionProfile:
     tunnel_mode: bool = False
     health_check_timeout_ms: int = 5000
     minio_url: str | None = None
+    s3_url: str | None = None
     rag_url: str | None = None
     gateway_url: str | None = None
     ssh_host: str | None = None
@@ -371,6 +378,7 @@ def _profile_from_content(content: dict[str, Any], path: Path) -> ConnectionProf
         tunnel_mode=bool(tunnel_mode),
         health_check_timeout_ms=int(zmq_cfg.get("health_check_timeout_ms", 5000)),
         minio_url=services.get("minio_url"),
+        s3_url=services.get("s3_url"),
         rag_url=services.get("rag_url"),
         gateway_url=content.get("gateway_url"),
         ssh_host=ssh_cfg.get("host"),
@@ -379,10 +387,11 @@ def _profile_from_content(content: dict[str, Any], path: Path) -> ConnectionProf
         path=str(path),
         zmq_auth_type=(zmq_cfg.get("auth_type") or "none").lower(),
     )
-    if not profile.minio_url:
-        profile.minio_url = _default_service_url(
+    if not profile.s3_url and not profile.minio_url:
+        profile.s3_url = _default_service_url(
             profile.server_host, 9000, profile.tunnel_mode
         )
+        profile.minio_url = profile.s3_url
     if not profile.rag_url:
         profile.rag_url = _default_service_url(
             profile.server_host, 8081, profile.tunnel_mode
@@ -438,7 +447,7 @@ def discover_connection_profiles() -> tuple[
     for path in sorted(directory.glob("*.json")):
         try:
             profiles.append(_profile_from_content(_load_profile_content(path), path))
-        except Exception as exc:  # pragma: no cover - defensive listing path
+        except Exception as exc:  # noqa: BLE001 — defensive listing path, one bad profile must not break the rest
             errors.append({"name": path.stem, "path": str(path), "error": str(exc)})
 
     return profiles, errors
