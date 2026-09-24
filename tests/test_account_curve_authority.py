@@ -178,3 +178,31 @@ def test_attach_none_restores_boot_only_behavior(tmp_path):
     provider.attach_account_records_source(store.list)
     provider.attach_account_records_source(None)
     assert provider.sync_account_keys_now() is None  # detached, never a crash
+
+
+def test_disabling_the_account_ends_its_session_keys(tmp_path):
+    """D-03 decision (2026-09-24): the account is the authority for BOTH key
+    kinds — disabling it ends the JWT-bootstrapped sessions at the next sync
+    instead of leaving them until their TTL."""
+    store = _store_with_key(tmp_path)
+    store.create("bob")
+    provider = SessionCredentialsProvider()
+    provider.register(_PUB_B, "alice", 3600)
+    provider.register("rq:EC[wF?(]}Q)Ha>7D0dL1kiysw!sOrkx&TPN}Y", "bob", 3600)
+    provider.sync_account_keys(store.list())
+    store.update("alice", disabled=True)
+    provider.sync_account_keys(store.list())
+    assert provider.callback("*", _PUB_B.encode()) is False
+    assert provider.callback("*", _PUB_A.encode()) is False
+    assert provider.callback("*", b"rq:EC[wF?(]}Q)Ha>7D0dL1kiysw!sOrkx&TPN}Y") is True
+
+
+def test_revoking_only_the_account_key_keeps_sessions(tmp_path):
+    store = _store_with_key(tmp_path)
+    provider = SessionCredentialsProvider()
+    provider.register(_PUB_B, "alice", 3600)
+    provider.sync_account_keys(store.list())
+    store.update("alice", curve_key_revoked_at="2026-09-24T00:00:00+00:00")
+    provider.sync_account_keys(store.list())
+    assert provider.callback("*", _PUB_A.encode()) is False
+    assert provider.callback("*", _PUB_B.encode()) is True

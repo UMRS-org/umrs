@@ -313,8 +313,7 @@ class SessionCredentialsProvider:
         except Exception:  # the sweep thread must survive sync failures
             if self._account_sync_failures == 0:
                 logger.warning(
-                    "D-03 live account-keystore sync failed; "
-                    "last-known keys retained",
+                    "D-03 live account-keystore sync failed; last-known keys retained",
                     exc_info=True,
                 )
             self._account_sync_failures += 1
@@ -385,24 +384,41 @@ class SessionCredentialsProvider:
         """D-03 keystore sync: reconcile long-lived account keys from the
         UMRS account records (the authority).
 
-        Registers new/changed keys, unregisters revoked ones. Returns the
-        number of registered account keys. Session keys are untouched.
+        Registers new/changed keys, unregisters revoked ones, and ends every
+        session of a DISABLED account (its JWT-bootstrapped session keys
+        would otherwise ride until their TTL; ADR-071). A revoked account
+        key alone leaves the user's sessions alone — it retires that key,
+        not the account. Returns the number of registered account keys.
         """
         wanted = self._wanted_account_keys(records)
+        disabled = self._disabled_users(records)
         with self._lock:
-            # drop stale account keys (revoked/changed/removed)
-            for entry in [
-                e for e in self._by_key.values() if e.session_id.startswith("account:")
-            ]:
-                if (
-                    entry.pubkey_z85 not in wanted
-                    or wanted[entry.pubkey_z85] != entry.user_id
-                ):
-                    self._remove_entry_unlocked(entry)
+            for entry in [e for e in self._by_key.values() if e.user_id in disabled]:
+                self._remove_entry_unlocked(entry)
+            for entry in self._stale_account_entries(wanted):
+                self._remove_entry_unlocked(entry)
             for key, user in wanted.items():
                 if key not in self._by_key:
                     self.register_account_key(key, user)
             return len(wanted)
+
+    @staticmethod
+    def _disabled_users(records) -> set[str]:
+        users = {
+            str(getattr(r, "username", "") or "")
+            for r in records
+            if getattr(r, "disabled", False)
+        }
+        return users - {""}
+
+    def _stale_account_entries(self, wanted: dict[str, str]) -> list[SessionCurveEntry]:
+        """Registered account keys that are revoked, changed or removed."""
+        return [
+            e
+            for e in self._by_key.values()
+            if e.session_id.startswith("account:")
+            and wanted.get(e.pubkey_z85) != e.user_id
+        ]
 
     def revoke_user(self, user_id: str) -> int:
         """Revoke all sessions for a user.  Returns the count removed."""
