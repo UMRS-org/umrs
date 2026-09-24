@@ -250,7 +250,12 @@ class KnowledgeExportEngine:
 
         writer = ExportBundleWriter(self._output_dir / project_id)
 
-        table_counts = await self._dump_core_tables(project_id, writer)
+        # ADR-032 #5: the checked snapshot is taken FIRST and gates what the
+        # canonical plane contributes; without one the export stays the
+        # documented ad-hoc read (reconciliation_snapshot: null).
+        snapshot = self._resolve_export_snapshot(project_id)
+        excluded = snapshot.excluded_node_ids if snapshot is not None else frozenset()
+        table_counts = await self._dump_core_tables(project_id, writer, excluded)
         link_rows, ref_rows = await self._dump_a2l_tables(project_id, writer)
         table_counts["a2l_links"] = (len(link_rows), "a2l_links.jsonl")
         table_counts["a2l_refs"] = (len(ref_rows), "a2l_refs.jsonl")
@@ -258,7 +263,7 @@ class KnowledgeExportEngine:
         # 8. Build manifest (r4-kb v1.2 — ADR-032 amendment 2026-09)
         skills, mcp_configs = await self._resolve_context_references(project_id)
         embedding_pin = await self._resolve_embedding_pin(project_id)
-        reconciliation_snapshot = self._resolve_reconciliation_snapshot(project_id)
+        reconciliation_snapshot = snapshot.summary if snapshot is not None else None
         catalog_record = await self._resolve_catalog_record(project_id)
         self._manifest = self._build_manifest(
             project_id,
@@ -372,9 +377,16 @@ class KnowledgeExportEngine:
         return row
 
     async def _dump_core_tables(
-        self, project_id: str, writer: ExportBundleWriter
+        self,
+        project_id: str,
+        writer: ExportBundleWriter,
+        excluded_node_ids: frozenset[str] = frozenset(),
     ) -> dict[str, tuple[int, str]]:
-        """Write artifacts/documents/nodes/edges/embeddings/catalog tables."""
+        """Write artifacts/documents/nodes/edges/embeddings/catalog tables.
+
+        ``excluded_node_ids`` (from the checked snapshot) drops ineligible
+        canonical nodes and every edge touching one.
+        """
         artifacts, artifact_total = await self._store.list_artifacts(
             project_id=project_id,
             status="active",
@@ -398,12 +410,19 @@ class KnowledgeExportEngine:
         )
 
         nodes = await self._store.list_nodes(project_id=project_id)
-        node_rows = [self._serialize_node(n) for n in nodes]
+        node_rows = [
+            self._serialize_node(n) for n in nodes if n.node_id not in excluded_node_ids
+        ]
         await writer.write_nodes(node_rows)
         logger.info("Exported %d nodes for project=%s", len(node_rows), project_id)
 
         edges = await self._store.list_edges(project_id=project_id)
-        edge_rows = [self._serialize_edge(e) for e in edges]
+        edge_rows = [
+            self._serialize_edge(e)
+            for e in edges
+            if e.source_id not in excluded_node_ids
+            and e.target_id not in excluded_node_ids
+        ]
         await writer.write_edges(edge_rows)
         logger.info("Exported %d edges for project=%s", len(edge_rows), project_id)
 
@@ -569,14 +588,13 @@ class KnowledgeExportEngine:
         except Exception:  # noqa: BLE001 — catalog block is best-effort
             return {}
 
-    def _resolve_reconciliation_snapshot(
-        self, project_id: str
-    ) -> dict[str, Any] | None:
-        """Best-effort reconciliation snapshot summary (WP-18 attach leg)."""
+    def _resolve_export_snapshot(self, project_id: str) -> Any | None:
+        """The checked reconciliation snapshot this export consumes (ADR-032
+        #5), or None when no DSN is reachable / the scan fails."""
         try:
-            from .reconcile_snapshot import summarize_reconcile_snapshot
+            from .reconcile_snapshot import take_export_snapshot
 
-            return summarize_reconcile_snapshot(project_id)
+            return take_export_snapshot(project_id)
         except Exception as exc:  # noqa: BLE001 - snapshot is best-effort metadata
             logger.warning(
                 "reconciliation snapshot skipped for %s: %s", project_id, exc

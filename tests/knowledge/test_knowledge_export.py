@@ -536,13 +536,13 @@ class _RefsStore:
     async def list_artifacts(self, **_kw):
         return ([], 0)
 
-    async def list_irs(self, project_id):
+    async def list_irs(self, **_kw):
         return []
 
-    async def list_nodes(self, project_id):
+    async def list_nodes(self, **_kw):
         return []
 
-    async def list_edges(self, project_id):
+    async def list_edges(self, **_kw):
         return []
 
 
@@ -600,19 +600,33 @@ class TestGtwop2ReferencesAndMarkers:
 
 class TestReconcileSnapshotAttach:
     @pytest.mark.asyncio
-    async def test_snapshot_embedded_when_summary_available(
+    async def test_snapshot_consumed_gates_the_canonical_plane(
         self, tmp_bundle_dir: Path, fake_store, monkeypatch
     ) -> None:
-        payload = {
-            "captured_at": "2026-09-06T00:00:00+00:00",
-            "states": {"COMPLETE": 3, "EMBEDDING_PENDING": 1, "PARTIAL": 0, "ORPHANED": 0},
-            "assets_total": 4,
+        """ADR-032 #5: the exporter consumes the checked snapshot — nodes of
+        ineligible assets and every edge touching them stay out; the manifest
+        records what was omitted and why."""
+        from umrs.knowledge.reconcile_snapshot import ExportSnapshot
+
+        summary = {
+            "captured_at": "2026-09-24T00:00:00+00:00",
+            "states": {"COMPLETE": 0, "EMBEDDING_PENDING": 0, "PARTIAL": 1, "ORPHANED": 0},
+            "assets_total": 1,
             "catalogue_available": True,
             "digest": "a" * 64,
+            "consumed": True,
+            "export_eligible_states": ["COMPLETE", "EMBEDDING_PENDING"],
+            "excluded_assets": [
+                {"document_id": "doc-1", "state": "PARTIAL", "reasons": ["zero chunks"]}
+            ],
+            "orphaned_chunks_excluded": 0,
+            "excluded_node_count": 1,
         }
         monkeypatch.setattr(
-            "umrs.knowledge.reconcile_snapshot.summarize_reconcile_snapshot",
-            lambda _pid, **_: payload,
+            "umrs.knowledge.reconcile_snapshot.take_export_snapshot",
+            lambda _pid, **_: ExportSnapshot(
+                summary=summary, excluded_node_ids=frozenset({"node-001"})
+            ),
         )
         engine = KnowledgeExportEngine(
             store=fake_store,
@@ -627,7 +641,11 @@ class TestReconcileSnapshotAttach:
             mock_cat.return_value = []
             await engine.export_project("test-project")
         manifest = json.loads((tmp_bundle_dir / "manifest.json").read_text())
-        assert manifest["reconciliation_snapshot"] == payload
+        assert manifest["reconciliation_snapshot"] == summary
+        nodes = (tmp_bundle_dir / "nodes.jsonl").read_text()
+        edges = (tmp_bundle_dir / "edges.jsonl").read_text()
+        assert "node-001" not in nodes  # the PARTIAL asset's node
+        assert edges.strip() == ""  # its only edge touched node-001
 
     @pytest.mark.asyncio
     async def test_snapshot_null_when_summary_unavailable(
@@ -820,7 +838,7 @@ class TestBundleFormat:
                     "created_at": None,
                 }
             ]
-            result = await engine.export_project("test-project")
+            await engine.export_project("test-project")
 
         # Check all files exist and are non-empty (except embeddings which may be empty)
         files_expected = [
@@ -871,7 +889,7 @@ class TestCatalogBlockExport:
         store = MagicMock()
 
         class _Pool:
-            async def fetchrow(self, query, *args):
+            async def fetchrow(self, query, *_args):
                 if "scientific_catalogs" in query:
                     return {
                         "name": "mof-defects",
@@ -904,7 +922,7 @@ class TestCatalogBlockExport:
         store = MagicMock()
 
         class _Pool:
-            async def fetchrow(self, query, *args):
+            async def fetchrow(self, _query, *_args):
                 return None
 
         store._pool = _Pool()
@@ -921,7 +939,7 @@ class TestCatalogBlockExport:
         store = MagicMock()
 
         class _Pool:
-            async def fetchrow(self, query, *args):
+            async def fetchrow(self, _query, *_args):
                 raise RuntimeError("no table")
 
         store._pool = _Pool()
