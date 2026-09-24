@@ -124,10 +124,7 @@ class UserRecord:
             "curve_key_revoked_at",
         }
         extras = {k: v for k, v in data.items() if k not in known}
-        raw_accounts = data.get("slurm_accounts")
-        slurm_accounts: dict[str, str] = {}
-        if isinstance(raw_accounts, dict):
-            slurm_accounts = {str(k): str(v) for k, v in raw_accounts.items() if v}
+        slurm_accounts = _parse_slurm_accounts(data.get("slurm_accounts"))
         return cls(
             username=str(data.get("username", "")),
             fullname=str(data.get("fullname", "")),
@@ -145,6 +142,13 @@ class UserRecord:
             curve_key_revoked_at=str(data.get("curve_key_revoked_at", "") or ""),
             extras=extras,
         )
+
+
+def _parse_slurm_accounts(raw: Any) -> dict[str, str]:
+    """Per-site account map; non-dict or empty entries read as absent."""
+    if not isinstance(raw, dict):
+        return {}
+    return {str(k): str(v) for k, v in raw.items() if v}
 
 
 def validate_username(username: str) -> None:
@@ -210,12 +214,12 @@ class UserStore:
             try:
                 cur = conn.cursor()
                 cur.execute(
-                    """INSERT INTO users (username, fullname, email, role, disabled,
+                    """INSERT INTO users (venue, username, fullname, email, role, disabled,
                            slurm_account, slurm_accounts, projects, quota, oidc_subject,
                            curve_public_key, curve_key_revoked_at, extras,
                            created_at, last_updated)
-                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                       ON CONFLICT (username) DO UPDATE SET
+                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                       ON CONFLICT (venue, username) DO UPDATE SET
                            fullname = EXCLUDED.fullname,
                            email = EXCLUDED.email,
                            role = EXCLUDED.role,
@@ -451,16 +455,26 @@ __all__ = [
 # exact pre-0110 behavior (every existing test rides that path).
 
 _PG_POOL: Any = None
+# 0113: the site whose user directory this server owns. umrs-front's four
+# servers share one umrs_db; every row read or written is scoped to it.
+_PG_VENUE: str = ""
 
 
-def configure_user_store_pg(pool: Any, store: UserStore | None = None) -> int:
+def configure_user_store_pg(
+    pool: Any, store: UserStore | None = None, *, venue: str = ""
+) -> int:
     """Wire the PG lane + sync JSON → Postgres; returns rows synced.
+
+    ``venue`` is this server's ``site.name`` (0113): rows are keyed by
+    (venue, username) so servers sharing one database never read or
+    overwrite each other's accounts.
 
     Fail-open: a sync failure leaves the JSON lane authoritative (the
     pre-0110 behavior) — boot never dies on the accounts lane.
     """
-    global _PG_POOL
+    global _PG_POOL, _PG_VENUE
     _PG_POOL = pool
+    _PG_VENUE = venue
     if pool is None:
         return 0
     synced = 0
@@ -471,12 +485,12 @@ def configure_user_store_pg(pool: Any, store: UserStore | None = None) -> int:
             cur = conn.cursor()
             for record in store.list():
                 cur.execute(
-                    """INSERT INTO users (username, fullname, email, role, disabled,
+                    """INSERT INTO users (venue, username, fullname, email, role, disabled,
                            slurm_account, slurm_accounts, projects, quota, oidc_subject,
                            curve_public_key, curve_key_revoked_at, extras,
                            created_at, last_updated)
-                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                       ON CONFLICT (username) DO UPDATE SET
+                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                       ON CONFLICT (venue, username) DO UPDATE SET
                            fullname = EXCLUDED.fullname,
                            email = EXCLUDED.email,
                            role = EXCLUDED.role,
@@ -505,14 +519,32 @@ def configure_user_store_pg(pool: Any, store: UserStore | None = None) -> int:
 
 def reset_user_store_pg() -> None:
     """Test/reset seam: unwire the PG lane."""
-    global _PG_POOL
+    global _PG_POOL, _PG_VENUE
     _PG_POOL = None
+    _PG_VENUE = ""
+
+
+def pg_venue() -> str:
+    """The site scope of the wired PG lane (0113)."""
+    return _PG_VENUE
+
+
+def site_venue() -> str:
+    """This deployment's ``site.name`` — the 0113 row scope ("" when the
+    site config names no cluster, the JobService convention)."""
+    try:
+        from umrs.orchestrator.site_config import load_site_config
+
+        return str(getattr(load_site_config(), "name", "") or "").strip()
+    except Exception:  # noqa: BLE001 — sites without a config run unscoped
+        return ""
 
 
 def _pg_row(record: UserRecord) -> tuple:
     import json as _json
 
     return (
+        _PG_VENUE,
         record.username,
         record.fullname,
         record.email,
@@ -535,12 +567,19 @@ def pg_lane_active() -> bool:
     return _PG_POOL is not None
 
 
+def _jsonb(value: Any, default: Any) -> Any:
+    """A JSONB column as psycopg returns it: decoded already, or a JSON string."""
+    if isinstance(value, str):
+        import json as _json
+
+        return _json.loads(value) if value else default
+    return value or default
+
+
 def pg_get(username: str) -> UserRecord | None:
     """PG-first read; None when absent/unwired (the caller falls back)."""
     if _PG_POOL is None:
         return None
-    import json as _json
-
     conn = _PG_POOL.getconn()
     try:
         cur = conn.cursor()
@@ -548,8 +587,8 @@ def pg_get(username: str) -> UserRecord | None:
             "SELECT username, fullname, email, role, disabled, slurm_account,"
             " slurm_accounts, projects, quota, oidc_subject, curve_public_key,"
             " curve_key_revoked_at, extras, created_at, last_updated"
-            " FROM users WHERE username = %s",
-            (username,),
+            " FROM users WHERE venue = %s AND username = %s",
+            (_PG_VENUE, username),
         )
         row = cur.fetchone()
     finally:
@@ -562,18 +601,14 @@ def pg_get(username: str) -> UserRecord | None:
         email=row[2],
         role=row[3],
         slurm_account=row[5],
-        slurm_accounts=_json.loads(row[6])
-        if isinstance(row[6], str)
-        else (row[6] or {}),
-        projects=list(row[7])
-        if isinstance(row[7], list)
-        else _json.loads(row[7] or "[]"),
+        slurm_accounts=_jsonb(row[6], {}),
+        projects=list(_jsonb(row[7], [])),
         disabled=bool(row[4]),
-        quota=_json.loads(row[8]) if isinstance(row[8], str) else (row[8] or {}),
+        quota=_jsonb(row[8], {}),
         oidc_subject=row[9],
         curve_public_key=row[10],
         curve_key_revoked_at=row[11],
-        extras=_json.loads(row[12]) if isinstance(row[12], str) else (row[12] or {}),
+        extras=_jsonb(row[12], {}),
         created_at=row[13],
         last_updated=row[14],
     )

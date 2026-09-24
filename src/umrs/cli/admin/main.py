@@ -511,10 +511,11 @@ def _maybe_emit_template(args, store, rec) -> None:
 
 
 def _pg_user_rows() -> list | None:
-    """PG-lane read for the admin CLI (D-06 tail): rows from the 0110
-    table when the DSN is configured; None when not (the JSON lane answers,
+    """PG-lane read for the admin CLI (D-06 tail): this site's rows from
+    the 0110 table (0113 venue scope) when the DSN is configured; None when not (the JSON lane answers,
     never an invented row)."""
     try:
+        from umrs.admin.user_store import site_venue
         from umrs.api._asyncpg_pool import _resolve_knowledge_dsn
 
         dsn, _ = _resolve_knowledge_dsn()
@@ -531,7 +532,8 @@ def _pg_user_rows() -> list | None:
                 "SELECT username, fullname, email, role, disabled, slurm_account,"
                 " slurm_accounts, projects, quota, oidc_subject, curve_public_key,"
                 " curve_key_revoked_at, extras, created_at, last_updated"
-                " FROM users ORDER BY username"
+                " FROM users WHERE venue = %s ORDER BY username",
+                (site_venue(),),
             )
             return cur.fetchall()
         finally:
@@ -584,7 +586,9 @@ def _list_users_from_pg(args: argparse.Namespace) -> int | None:
         for r in rows:
             dis = " (disabled)" if r[4] else ""
             print(f"  {r[0]:20s}  {r[3]:8s}{dis}  {r[1]}")
-        print(f"\n{len(rows)} row(s) from Postgres (0110)")
+        from umrs.admin.user_store import site_venue
+
+        print(f"\n{len(rows)} row(s) from Postgres (0110, venue {site_venue()!r})")
     return 0
 
 
@@ -599,9 +603,7 @@ def _filter_user_records(records, role: str | None, disabled_only: bool) -> list
 
 def _list_users_from_json(args: argparse.Namespace, store: UserStore) -> int:
     """The offline JSON lane — byte-identical pre-0110 behavior."""
-    records = _filter_user_records(
-        store.list(), args.role, args.disabled_only
-    )
+    records = _filter_user_records(store.list(), args.role, args.disabled_only)
     require_acct, master_account = _resolve_slurm_account_requirement()
     rows = [
         _record_row(r, require_acct=require_acct, master_account=master_account)
