@@ -98,3 +98,41 @@ def test_owner_and_admin_pass(alice_loop):
     admin = _client("root", admin=True)
     assert admin.get(f"/umrs/loops/{alice_loop}").status_code == 200
     assert alice_loop in {r["loop_id"] for r in admin.get("/umrs/loops").json()["loops"]}
+
+
+# ── D-52: the loop records the companion session that started it ────────────
+
+
+def _start(client: TestClient, **headers) -> str:
+    resp = client.post(
+        "/umrs/loops",
+        json={"project_id": "proj-x", "research_goal": "g", "max_iterations": 2},
+        headers=headers,
+    )
+    assert resp.status_code == 201, resp.text
+    _RUNNERS.pop(resp.json()["loop_id"], None)
+    return resp.json()["loop_id"]
+
+
+def test_start_records_the_companion_session_and_the_list_filters_by_it():
+    alice = _client("alice")
+    mine = _start(alice, **{"x-r4-session-id": "sess-a1"})
+    other = _start(alice)
+    status = alice.get(f"/umrs/loops/{mine}").json()
+    assert status["metadata"]["companion_session_id"] == "sess-a1"
+    assert status["metadata"]["trace_id"] == mine
+    rows = alice.get("/umrs/loops", params={"companion_session_id": "sess-a1"}).json()["loops"]
+    assert [r["loop_id"] for r in rows] == [mine]
+    assert other not in {r["loop_id"] for r in rows}
+
+
+def test_malformed_session_ids_are_not_recorded():
+    alice = _client("alice")
+    loop_id = _start(alice, **{"x-r4-session-id": "bad id; drop"})
+    assert "companion_session_id" not in alice.get(f"/umrs/loops/{loop_id}").json()["metadata"]
+
+
+def test_the_session_filter_never_reaches_another_users_loops():
+    _start(_client("alice"), **{"x-r4-session-id": "shared-name"})
+    rows = _client("bob").get("/umrs/loops", params={"companion_session_id": "shared-name"})
+    assert rows.json()["loops"] == []
