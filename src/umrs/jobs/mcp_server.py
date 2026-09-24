@@ -106,6 +106,24 @@ class McpServerStatusChecker(BackendStatusChecker):
     def job_type(self) -> JobType:
         return JobType.MCP_SERVER
 
+    def _server_url(self, server_id: str) -> tuple[str, AttemptCheckResult | None]:
+        """The registered instance URL, or the named failure result."""
+        if self._registry_factory is None:
+            return "", AttemptCheckResult.failed("MCP registry unavailable")
+        registry = self._registry_factory
+        if callable(registry) and not hasattr(registry, "get_server"):
+            registry = registry()
+        try:
+            server = registry.get_server(server_id)
+        except Exception:  # noqa: BLE001 — named degradation below
+            return "", AttemptCheckResult.failed(
+                f"MCP server {server_id!r} left the registry"
+            )
+        url = str(getattr(server, "url", "") or "")
+        if not url:
+            return "", AttemptCheckResult.failed(f"MCP server {server_id!r} has no URL")
+        return url, None
+
     async def check_status(self, attempt: Any, job: Job) -> AttemptCheckResult:
         ref = attempt.backend_ref or ""
         if not ref.startswith(_REF_PREFIX):
@@ -115,20 +133,9 @@ class McpServerStatusChecker(BackendStatusChecker):
                 "mcp_server submitted without a registry-resolved instance"
             )
         server_id = ref[len(_REF_PREFIX) + len("id=") :]
-        if self._registry_factory is None:
-            return AttemptCheckResult.failed("MCP registry unavailable")
-        registry = self._registry_factory
-        if callable(registry):
-            registry = registry() if not hasattr(registry, "get_server") else registry
-        try:
-            server = registry.get_server(server_id)
-        except Exception:  # noqa: BLE001 — named degradation below
-            return AttemptCheckResult.failed(
-                f"MCP server {server_id!r} left the registry"
-            )
-        url = str(getattr(server, "url", "") or "")
-        if not url:
-            return AttemptCheckResult.failed(f"MCP server {server_id!r} has no URL")
+        url, refusal = self._server_url(server_id)
+        if refusal is not None:
+            return refusal
         ok, detail = await _probe_server(url)
         if ok:
             result = AttemptCheckResult.running(detail=f"instance healthy ({detail})")

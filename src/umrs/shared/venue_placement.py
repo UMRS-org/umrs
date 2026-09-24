@@ -60,7 +60,10 @@ def validate_placement(placement: str) -> str:
             f"invalid placement {placement!r}: expected local | frontend | "
             "cluster:<name> | cpu:<host> | trusted:<host>"
         )
-    for prefix, hosts in (("cpu:", declared_cpu_hosts()), ("trusted:", declared_trusted_hosts())):
+    for prefix, hosts in (
+        ("cpu:", declared_cpu_hosts()),
+        ("trusted:", declared_trusted_hosts()),
+    ):
         if placement.startswith(prefix):
             host = placement[len(prefix) :]
             if host not in hosts:
@@ -82,9 +85,7 @@ def validate_trust_class(placement: str, trust_class: str) -> str:
             f"trust_class 'trusted-host-only' requires placement trusted:<host>, "
             f"got {placement!r}"
         )
-    if trust_class == "front-end" and (
-        placement.startswith("cpu:") or placement.startswith("trusted:")
-    ):
+    if trust_class == "front-end" and (placement.startswith(("cpu:", "trusted:"))):
         raise PlacementError(
             f"trust_class 'front-end' forbids placement {placement!r} "
             "(local | frontend only)"

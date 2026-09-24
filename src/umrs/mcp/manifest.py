@@ -42,44 +42,61 @@ def validate_manifest(data: Any) -> dict[str, Any]:
     tools = _string_list(data.get("tools"), f"manifest {name!r} tools")
     if not tools:
         raise ManifestError(f"manifest {name!r} requires at least one tool")
-
-    caps_raw = data.get("capabilities") or {}
-    if not isinstance(caps_raw, dict):
-        raise ManifestError(f"manifest {name!r} capabilities must be an object")
-    caps: dict[str, Any] = {}
-    transport = str(caps_raw.get("transport") or "stdio").strip()
-    if transport not in _VALID_TRANSPORTS:
-        raise ManifestError(
-            f"manifest {name!r} transport {transport!r} invalid (one of {sorted(_VALID_TRANSPORTS)})"
-        )
-    caps["transport"] = transport
-    risk = str(caps_raw.get("risk") or "standard").strip()
-    if risk not in _VALID_RISK:
-        raise ManifestError(
-            f"manifest {name!r} risk {risk!r} invalid (one of {sorted(_VALID_RISK)})"
-        )
-    caps["risk"] = risk
-    network_raw = caps_raw.get("network") or {}
-    if not isinstance(network_raw, dict):
-        raise ManifestError(f"manifest {name!r} capabilities.network must be an object")
+    caps_raw = _object(data.get("capabilities"), f"manifest {name!r} capabilities")
+    caps: dict[str, Any] = {
+        "transport": _choice(
+            caps_raw.get("transport"), "stdio", _VALID_TRANSPORTS, name, "transport"
+        ),
+        "risk": _choice(caps_raw.get("risk"), "standard", _VALID_RISK, name, "risk"),
+    }
+    network = _object(
+        caps_raw.get("network"), f"manifest {name!r} capabilities.network"
+    )
     caps["egress_allowlist"] = _string_list(
-        network_raw.get("outbound"), f"manifest {name!r} capabilities.network.outbound"
+        network.get("outbound"), f"manifest {name!r} capabilities.network.outbound"
     )
-    fs_raw = caps_raw.get("filesystem") or {}
-    if not isinstance(fs_raw, dict):
-        raise ManifestError(
-            f"manifest {name!r} capabilities.filesystem must be an object"
-        )
+    fs = _object(
+        caps_raw.get("filesystem"), f"manifest {name!r} capabilities.filesystem"
+    )
     caps["readonly_mounts"] = _string_list(
-        fs_raw.get("readonly"), f"manifest {name!r} capabilities.filesystem.readonly"
+        fs.get("readonly"), f"manifest {name!r} capabilities.filesystem.readonly"
     )
-    approval_raw = caps_raw.get("approval") or {}
-    if not isinstance(approval_raw, dict):
+    caps["dangerous_tools"] = _dangerous_tools(caps_raw, tools, name)
+    requires = caps_raw.get("requires")
+    caps["requires"] = (
+        _string_list(requires, f"manifest {name!r} capabilities.requires")
+        if requires is not None
+        else []
+    )
+    return {"name": name, "version": version, "tools": tools, "capabilities": caps}
+
+
+def _object(value: Any, label: str) -> dict[str, Any]:
+    """An optional object field ({} when absent); a non-object is refused."""
+    value = value or {}
+    if not isinstance(value, dict):
+        raise ManifestError(f"{label} must be an object")
+    return value
+
+
+def _choice(value: Any, default: str, valid: Any, name: str, field: str) -> str:
+    chosen = str(value or default).strip()
+    if chosen not in valid:
         raise ManifestError(
-            f"manifest {name!r} capabilities.approval must be an object"
+            f"manifest {name!r} {field} {chosen!r} invalid (one of {sorted(valid)})"
         )
+    return chosen
+
+
+def _dangerous_tools(
+    caps_raw: dict[str, Any], tools: list[str], name: str
+) -> list[str]:
+    """approval.dangerous_tools — must name only declared tools."""
+    approval = _object(
+        caps_raw.get("approval"), f"manifest {name!r} capabilities.approval"
+    )
     dangerous = _string_list(
-        approval_raw.get("dangerous_tools"),
+        approval.get("dangerous_tools"),
         f"manifest {name!r} capabilities.approval.dangerous_tools",
     )
     unknown = sorted(set(dangerous) - set(tools))
@@ -87,15 +104,7 @@ def validate_manifest(data: Any) -> dict[str, Any]:
         raise ManifestError(
             f"manifest {name!r} approval.dangerous_tools names tools absent from tools: {unknown}"
         )
-    caps["dangerous_tools"] = dangerous
-    if caps_raw.get("requires") is not None:
-        caps["requires"] = _string_list(
-            caps_raw.get("requires"), f"manifest {name!r} capabilities.requires"
-        )
-    else:
-        caps["requires"] = []
-
-    return {"name": name, "version": version, "tools": tools, "capabilities": caps}
+    return dangerous
 
 
 def _string_list(raw: Any, label: str) -> list[str]:

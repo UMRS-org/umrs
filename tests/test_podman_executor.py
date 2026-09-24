@@ -65,8 +65,14 @@ class _FakePodman:
         self.stderr = stderr
         self.raises = raises
         self.calls: list[list[str]] = []
+        # The fake replaces subprocess.run process-wide: background threads
+        # left by earlier tests (CI 2026-09-24: 3 recorded calls instead of 1)
+        # must reach the real function, and only podman calls are recorded.
+        self._real_run = subprocess.run
 
     def __call__(self, cmd, **kwargs):  # noqa: ANN001
+        if not cmd or os.path.basename(str(list(cmd)[0])) != "podman":
+            return self._real_run(cmd, **kwargs)
         self.calls.append(list(cmd))
         if self.raises is not None:
             raise self.raises

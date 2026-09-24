@@ -34,6 +34,12 @@ _SACCT_TERMINAL = {
 }
 
 
+def _valid_sbatch_args(args: object) -> bool:
+    return isinstance(args, list) and all(
+        isinstance(a, str) and a.strip() for a in args
+    )
+
+
 def validate_hpc_script_spec(spec: dict) -> dict:
     """spec: {script_path: str (required), sbatch_args: [str] (optional)}."""
     if not isinstance(spec, dict):
@@ -42,9 +48,7 @@ def validate_hpc_script_spec(spec: dict) -> dict:
     if not script_path:
         raise ValueError("hpc_script spec requires script_path")
     args = spec.get("sbatch_args") or []
-    if not isinstance(args, list) or not all(
-        isinstance(a, str) and a.strip() for a in args
-    ):
+    if not _valid_sbatch_args(args):
         raise ValueError("hpc_script sbatch_args must be a list of non-empty strings")
     return {"script_path": script_path, "sbatch_args": [str(a) for a in args]}
 

@@ -1473,6 +1473,24 @@ def create_backend_factory(
 
     knowledge_reindex_backend = KnowledgeReindexBackend()
 
+    static_backends: dict[JobType, OrchestratorBackend] = {
+        JobType.ENDPOINT_PROVISION: endpoint_backend,
+        JobType.ENDPOINT_UPGRADE: endpoint_upgrade_backend,
+        JobType.INDEX_BUILD: index_backend,
+        JobType.DATA_INGESTION: data_ingestion_backend,
+        JobType.CLEANUP: cleanup_backend,
+        JobType.WORKFLOW_RUN: workflow_run_backend,
+        JobType.BATCH_INFER: batch_infer_backend,
+        JobType.MODEL_EVAL: model_eval_backend,
+        JobType.KNOWLEDGE_INGEST: knowledge_ingest_backend,
+        JobType.KNOWLEDGE_UNDERSTAND: knowledge_understand_backend,
+        JobType.KNOWLEDGE_EMBED: knowledge_embed_backend,
+        JobType.KNOWLEDGE_VERIFY: knowledge_verify_backend,
+        JobType.DOMAIN_BENCHMARK: domain_benchmark_backend,
+        JobType.KNOWLEDGE_REINDEX: knowledge_reindex_backend,
+        JobType.KNOWLEDGE_EXPORT: knowledge_export_backend,
+    }
+
     def factory(job_type: JobType) -> OrchestratorBackend:
         if job_type == JobType.SESSION_GC:
             if session_gc_backend.session_store is None:
@@ -1480,62 +1498,53 @@ def create_backend_factory(
                     "session_gc lacks a shared umrs_db session store (wiring missing)"
                 )
             return session_gc_backend
-        if job_type == JobType.ENDPOINT_PROVISION:
-            return endpoint_backend
-        elif job_type == JobType.ENDPOINT_UPGRADE:
-            return endpoint_upgrade_backend
-        elif job_type == JobType.INDEX_BUILD:
-            return index_backend
-        elif job_type == JobType.DATA_INGESTION:
-            return data_ingestion_backend
-        elif job_type == JobType.CLEANUP:
-            return cleanup_backend
-        elif job_type == JobType.WORKFLOW_RUN:
-            return workflow_run_backend
-        elif job_type == JobType.BATCH_INFER:
-            return batch_infer_backend
-        elif job_type == JobType.MODEL_EVAL:
-            return model_eval_backend
-        elif job_type == JobType.MODEL_DOWNLOAD:
+        if job_type == JobType.MODEL_DOWNLOAD:
             if model_download_backend is None:
                 raise RuntimeError(
                     "Model download backend not configured. Provide model_store and path_validator."
                 )
             return model_download_backend
-        elif job_type == JobType.KNOWLEDGE_INGEST:
-            return knowledge_ingest_backend
-        elif job_type == JobType.KNOWLEDGE_UNDERSTAND:
-            return knowledge_understand_backend
-        elif job_type == JobType.KNOWLEDGE_EMBED:
-            return knowledge_embed_backend
-        elif job_type == JobType.KNOWLEDGE_VERIFY:
-            return knowledge_verify_backend
-        elif job_type == JobType.DOMAIN_BENCHMARK:
-            return domain_benchmark_backend
-        elif job_type == JobType.KNOWLEDGE_REINDEX:
-            return knowledge_reindex_backend
-        elif job_type == JobType.KNOWLEDGE_EXPORT:
-            return knowledge_export_backend
-        elif job_type == JobType.COMPANION_WORKER:
-            from .companion_worker_backend import CompanionWorkerBackend
-
-            return CompanionWorkerBackend()
-        elif job_type == JobType.RESEARCH_LOOP:
-            from .research_loop_backend import ResearchLoopBackend
-
-            return ResearchLoopBackend()
-        elif job_type == JobType.HPC_SCRIPT:
-            from .hpc_script import build_hpc_script_services
-
-            return build_hpc_script_services()["backend"]
-        elif job_type == JobType.MCP_SERVER:
-            from .mcp_server import build_mcp_server_services
-
-            return build_mcp_server_services(_mcp_registry_factory())["backend"]
-        else:
+        if job_type in static_backends:
+            return static_backends[job_type]
+        lazy = _LAZY_BACKENDS.get(job_type)
+        if lazy is None:
             raise ValueError(f"Unsupported job type: {job_type}")
+        return lazy()
 
     return _with_frontend_session(factory, frontend_session_backend)
+
+
+def _companion_worker_backend() -> OrchestratorBackend:
+    from .companion_worker_backend import CompanionWorkerBackend
+
+    return CompanionWorkerBackend()
+
+
+def _research_loop_backend() -> OrchestratorBackend:
+    from .research_loop_backend import ResearchLoopBackend
+
+    return ResearchLoopBackend()
+
+
+def _hpc_script_backend() -> OrchestratorBackend:
+    from .hpc_script import build_hpc_script_services
+
+    return build_hpc_script_services()["backend"]
+
+
+def _mcp_server_backend() -> OrchestratorBackend:
+    from .mcp_server import build_mcp_server_services
+
+    return build_mcp_server_services(_mcp_registry_factory())["backend"]
+
+
+# Lanes built per claim (lazy imports; a fresh backend each time, as before).
+_LAZY_BACKENDS: dict[JobType, Callable[[], OrchestratorBackend]] = {
+    JobType.COMPANION_WORKER: _companion_worker_backend,
+    JobType.RESEARCH_LOOP: _research_loop_backend,
+    JobType.HPC_SCRIPT: _hpc_script_backend,
+    JobType.MCP_SERVER: _mcp_server_backend,
+}
 
 
 def _with_frontend_session(inner, backend):

@@ -18,9 +18,7 @@ def _loop(max_iterations: int = 2) -> ResearchLoop:
 
 def test_runs_to_completion_with_hook_per_iteration():
     hooks: list[str] = []
-    engine = AgenticEngine(
-        executor=lambda _lid, n, _goal: {"hypothesis": f"h{n}", "llm": True}
-    )
+    engine = AgenticEngine(executor=lambda _lid, n, _goal: {"hypothesis": f"h{n}", "llm": True})
     engine._iteration_hook = hooks.append
     loop = engine.run(_loop(max_iterations=2))
     assert loop.current_iteration == 2
@@ -48,11 +46,11 @@ def test_cancel_check_stops_midway():
 
 def test_approval_gate_rejection_fails_the_iteration():
     engine = AgenticEngine(executor=lambda *_a: {"llm": True})
-    engine._approval_gate = lambda action: False
+    engine._approval_gate = lambda _action: False
     loop = _loop()
     try:
         engine.run(loop)
-        assert False, "rejection must raise"
+        raise AssertionError("rejection must raise")
     except RuntimeError as exc:
         assert "rejected by the approval gate" in str(exc)
     assert loop.current_iteration == 1

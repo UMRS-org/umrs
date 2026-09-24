@@ -34,6 +34,18 @@ logger = logging.getLogger(__name__)
 _DEFAULT_TIMEOUT = 3600
 
 
+def _clean_globs(raw: Any) -> list[str]:
+    return [str(g).strip() for g in (raw or []) if str(g).strip()]
+
+
+def _clean_aliases(raw: Any) -> dict[str, str]:
+    return {
+        str(k): str(v)
+        for k, v in (raw or {}).items()
+        if str(k).strip() and str(v).strip()
+    }
+
+
 class ShellStep(Step):
     """Run one shell command; upload its declared outputs."""
 
@@ -41,15 +53,9 @@ class ShellStep(Step):
 
     def setup(self, config: dict[str, Any]) -> None:
         self.command = str(config.get("command") or "").strip()
-        self.output_globs: list[str] = [
-            str(g).strip() for g in (config.get("output_globs") or []) if str(g).strip()
-        ]
+        self.output_globs: list[str] = _clean_globs(config.get("output_globs"))
         self.timeout = int(config.get("timeout_seconds") or _DEFAULT_TIMEOUT)
-        self.input_aliases: dict[str, str] = {
-            str(k): str(v)
-            for k, v in (config.get("input_aliases") or {}).items()
-            if str(k).strip() and str(v).strip()
-        }
+        self.input_aliases: dict[str, str] = _clean_aliases(config.get("input_aliases"))
         if not self.command:
             raise ValueError("ShellStep config requires a non-empty 'command'")
         if not self.output_globs:
