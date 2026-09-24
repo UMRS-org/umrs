@@ -91,13 +91,23 @@ def bucket(admin):
     # name via UMRS_S3_CONFORMANCE_BUCKET that matches the iam.json render
     # (S3_BUCKET), random only for evaluator-union backends.
     name = os.environ.get("UMRS_S3_CONFORMANCE_BUCKET") or f"umrs-conf-{uuid.uuid4().hex[:8]}"
-    admin.create_bucket(Bucket=name)
+    try:
+        admin.create_bucket(Bucket=name)
+    except admin.exceptions.BucketAlreadyOwnedByYou:
+        # The pinned name survives a run cancelled before teardown (CI
+        # 2026-09-24: 7 setup errors on the self-hosted runner) — reuse it,
+        # emptied, instead of failing every later run.
+        _empty_bucket(admin, name)
     yield name
+    _empty_bucket(admin, name)
+    admin.delete_bucket(Bucket=name)
+
+
+def _empty_bucket(admin, name):
     for page in admin.get_paginator("list_objects_v2").paginate(Bucket=name):
         objs = [{"Key": o["Key"]} for o in page.get("Contents", [])]
         if objs:
             admin.delete_objects(Bucket=name, Delete={"Objects": objs, "Quiet": True})
-    admin.delete_bucket(Bucket=name)
 
 
 @pytest.fixture
