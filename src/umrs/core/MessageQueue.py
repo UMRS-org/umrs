@@ -221,8 +221,7 @@ class MessageQueue:
         self.status_all_cache_ttl = status_all_cache_ttl
         # (timestamp, payload) — None until first build
         self._status_all_cache: tuple[float, str] | None = None
-        # Serializes concurrent send_string calls from STATUS worker threads
-        self._send_lock = threading.Lock()
+        self._status_all_cache_lock = threading.Lock()
         self.debug = False  # disable noisy send/recv logs by default
         self._auth_sessions: dict[str, AuthContext] = {}  # client_id -> AuthContext
         self._last_control_auth: dict[str, str] = {}
@@ -404,45 +403,44 @@ class MessageQueue:
                 message,
             )
 
-        with self._send_lock:
-            try:
-                # ---------- CONTROL PLANE ----------
-                if self.type == "control":
-                    if self.role == "server":
-                        # ROUTER socket - always send [client_id][empty][payload]
-                        # This format works for both REQ and DEALER clients
-                        if client_id is None:
-                            raise RuntimeError(
-                                "Server ROUTER socket requires client_id to send a message"
-                            )
-                        self.socket.send_multipart([
-                            client_id,
-                            b"",  # Empty delimiter for REQ compatibility
-                            string.encode("utf-8")
-                        ])
-                    else:
-                        # DEALER socket
-                        self.socket.send_string(string)
-
-                # ---------- DATA PLANE ----------
-                elif self.type == "data":
-                    if self.role == "server":
-                        raise RuntimeError("Server cannot send message on data plane")
-
-                    # PUSH socket (server or client, no difference)
+        try:
+            # ---------- CONTROL PLANE ----------
+            if self.type == "control":
+                if self.role == "server":
+                    # ROUTER socket - always send [client_id][empty][payload]
+                    # This format works for both REQ and DEALER clients
+                    if client_id is None:
+                        raise RuntimeError(
+                            "Server ROUTER socket requires client_id to send a message"
+                        )
+                    self.socket.send_multipart([
+                        client_id,
+                        b"",  # Empty delimiter for REQ compatibility
+                        string.encode("utf-8")
+                    ])
+                else:
+                    # DEALER socket
                     self.socket.send_string(string)
 
-                else:
-                    raise RuntimeError(f"Unknown queue type: {self.type}")
+            # ---------- DATA PLANE ----------
+            elif self.type == "data":
+                if self.role == "server":
+                    raise RuntimeError("Server cannot send message on data plane")
 
-            except zmq.Again:
-                raise RuntimeError("Timeout while sending message") from None
+                # PUSH socket (server or client, no difference)
+                self.socket.send_string(string)
 
-            except zmq.ZMQError as e:
-                raise RuntimeError(f"ZMQ error while sending: {e}") from e
+            else:
+                raise RuntimeError(f"Unknown queue type: {self.type}")
 
-            except Exception as e:
-                raise RuntimeError(f"Unexpected error while sending '{string}' from {self.role} to {self.type}: {e}") from e
+        except zmq.Again:
+            raise RuntimeError("Timeout while sending message") from None
+
+        except zmq.ZMQError as e:
+            raise RuntimeError(f"ZMQ error while sending: {e}") from e
+
+        except Exception as e:
+            raise RuntimeError(f"Unexpected error while sending '{string}' from {self.role} to {self.type}: {e}") from e
 
     def recv_string(self):
         """
@@ -619,22 +617,15 @@ class MessageQueue:
     def _parse_status(self, splited_msg, zmq_sender_id):
         client_id = splited_msg[1] if len(splited_msg) > 1 else None
         status_key = splited_msg[2] if len(splited_msg) > 2 else "all"
-
-        def _run():
-            payload = self._get_status_payload(client_id, status_key)
-            with contextlib.suppress(RuntimeError):
-                self.send_string(payload, zmq_sender_id)
-
-        threading.Thread(target=_run, daemon=True).start()
+        payload = self._get_status_payload(client_id, status_key)
+        with contextlib.suppress(RuntimeError):
+            self.send_string(payload, zmq_sender_id)
         return None
 
     def _parse_status_all(self, splited_msg, zmq_sender_id):
-        def _run():
-            payload = self._get_status_all_payload()
-            with contextlib.suppress(RuntimeError):
-                self.send_string(payload, zmq_sender_id)
-
-        threading.Thread(target=_run, daemon=True).start()
+        payload = self._get_status_all_payload()
+        with contextlib.suppress(RuntimeError):
+            self.send_string(payload, zmq_sender_id)
         return None
 
     def _parse_count_cmd(self, splited_msg, zmq_sender_id):
@@ -1346,14 +1337,21 @@ class MessageQueue:
         required).
         """
         if self.use_status_all_cache:
+            # Fast path: no lock needed for a fresh cache hit
             now = time.monotonic()
-            if self._status_all_cache is not None:
-                ts, cached = self._status_all_cache
-                if now - ts < self.status_all_cache_ttl:
-                    return cached
-            payload = self._build_status_all_payload()
-            self._status_all_cache = (now, payload)
-            return payload
+            entry = self._status_all_cache
+            if entry is not None and now - entry[0] < self.status_all_cache_ttl:
+                return entry[1]
+            # Slow path: acquire lock so only one thread rebuilds at a time
+            with self._status_all_cache_lock:
+                # Re-check: another thread may have rebuilt while we waited
+                now = time.monotonic()
+                entry = self._status_all_cache
+                if entry is not None and now - entry[0] < self.status_all_cache_ttl:
+                    return entry[1]
+                payload = self._build_status_all_payload()
+                self._status_all_cache = (time.monotonic(), payload)
+                return payload
         return self._build_status_all_payload()
 
     def request_status_all(self) -> str:
