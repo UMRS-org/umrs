@@ -13,6 +13,7 @@ Acceptance (TASK-036 / research-workflow spec §12):
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -797,6 +798,15 @@ def _loop_owner(
     return (x_user_id or "").strip()
 
 
+_COMPANION_SESSION_ID = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
+
+
+def _companion_session(request: Request) -> str:
+    """The calling companion session (``x-r4-session-id``), when well-formed."""
+    sid = (request.headers.get("x-r4-session-id") or "").strip()
+    return sid if _COMPANION_SESSION_ID.match(sid) else ""
+
+
 @dataclass(frozen=True)
 class _LoopCaller:
     user_id: str  # "" only outside strict mode (identity-less mvp caller)
@@ -876,6 +886,11 @@ async def start_loop(
     # D-52 (2026-09-22): one trace id through the loop's jobs, iterations and
     # knowledge writes — the loop id itself is the trace anchor.
     loop.metadata.setdefault("trace_id", loop.loop_id)
+    # D-52 join: the companion session that started the loop (header
+    # x-r4-session-id; distinct from the ADR-025 research session_id).
+    companion_session = _companion_session(http_request)
+    if companion_session:
+        loop.metadata.setdefault("companion_session_id", companion_session)
     # ADR-067 (gap row D-36): per-project loop budgets — wall-clock cap is
     # enforced by the driver at iteration boundaries; the GPU cap is recorded
     # (leg B: job-cost accounting).
@@ -1096,15 +1111,27 @@ def _engine_factory_from(engine: AutonomousResearchLoop):
     response_model=ListLoopsResponse,
     summary="List all research loops",
 )
-async def list_loops(caller: _LoopCaller = Depends(_loop_caller)) -> ListLoopsResponse:
+async def list_loops(
+    caller: _LoopCaller = Depends(_loop_caller),
+    companion_session_id: str | None = Query(
+        None, description="Only loops this companion session started (D-52)"
+    ),
+) -> ListLoopsResponse:
     loops = [
         {
             "loop_id": loop_obj.loop_id,
             "status": loop_obj.status.value,
             "phase": loop_obj.phase.value,
+            "companion_session_id": str(
+                loop_obj.metadata.get("companion_session_id") or ""
+            ),
         }
         for loop_obj in _loop_store.list_all()
         if _may_access(loop_obj, caller)
+        and (
+            not companion_session_id
+            or loop_obj.metadata.get("companion_session_id") == companion_session_id
+        )
     ]
     return ListLoopsResponse(loops=loops)
 
