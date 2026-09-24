@@ -379,7 +379,7 @@ def configure_user(
     buckets_cfg = server_cfg.buckets_cfg
 
     logger.info(
-        f"######################\nConfiguring {fullname} ({username})\n######################"
+        f"###################### Configuring {fullname} ({username})######################"
     )
 
     user_s3_configuration_file = _resolve_s3cfg_path(user_cfg)
