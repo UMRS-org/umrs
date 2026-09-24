@@ -5,7 +5,6 @@ import os
 import shutil
 import socket
 import tempfile
-import threading
 import time
 
 from umrs.core.TaskCmdStatus import TaskCmd
@@ -1510,21 +1509,16 @@ class MessageQueue:
         required).
         """
         if self.use_status_all_cache:
-            # Fast path: no lock needed for a fresh cache hit
+            # Single unlocked check-and-rebuild (upstream 92720901 final):
+            # the ZMQ loop is single-threaded; a lock around the rebuild was
+            # introduced then reverted upstream.
             now = time.monotonic()
             entry = self._status_all_cache
             if entry is not None and now - entry[0] < self.status_all_cache_ttl:
                 return entry[1]
-            # Slow path: acquire lock so only one thread rebuilds at a time
-            with self._status_all_cache_lock:
-                # Re-check: another thread may have rebuilt while we waited
-                now = time.monotonic()
-                entry = self._status_all_cache
-                if entry is not None and now - entry[0] < self.status_all_cache_ttl:
-                    return entry[1]
-                payload = self._build_status_all_payload()
-                self._status_all_cache = (time.monotonic(), payload)
-                return payload
+            payload = self._build_status_all_payload()
+            self._status_all_cache = (time.monotonic(), payload)
+            return payload
         return self._build_status_all_payload()
 
     def request_status_all(self) -> str:
