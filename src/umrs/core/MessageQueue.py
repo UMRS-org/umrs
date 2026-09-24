@@ -438,11 +438,11 @@ class MessageQueue:
             except zmq.Again:
                 raise RuntimeError("Timeout while sending message") from None
 
-        except zmq.ZMQError as e:
-            raise RuntimeError(f"ZMQ error while sending: {e}") from e
+            except zmq.ZMQError as e:
+                raise RuntimeError(f"ZMQ error while sending: {e}") from e
 
-        except Exception as e:
-            raise RuntimeError(f"Unexpected error while sending '{string}' from {self.role} to {self.type}: {e}") from e
+            except Exception as e:
+                raise RuntimeError(f"Unexpected error while sending '{string}' from {self.role} to {self.type}: {e}") from e
 
     def recv_string(self):
         """
