@@ -960,6 +960,13 @@ def _validate_stage_scope(scope: ModelScope, request, ctx: AccessContext) -> Non
             )
 
 
+_STAGE_ELSEWHERE_HINT = (
+    "This site stages models outside the API: download the weights on the "
+    "cluster into an allowed model directory, then run "
+    "`r4 model register <name> --path <dir>`"
+)
+
+
 def _stage_storage_ref(scope: ModelScope, request, ctx: AccessContext) -> str:
     """Compute target storage path based on scope."""
     if scope == ModelScope.SYSTEM:
@@ -1045,6 +1052,14 @@ async def stage_model(
             target_scope=scope.value,
         )
 
+    except PathNotAllowedError as e:
+        # Was an unhandled 500 (live rccs 2026-09-24). A site without a
+        # server-side model cache (rccs-front: no Lustre on the front host)
+        # stages on the cluster and registers the directory instead.
+        raise_typed(
+            PlatformError.models("bad_request", f"{e}. {_STAGE_ELSEWHERE_HINT}"),
+            cause=e,
+        )
     except DuplicateModelError as e:
         raise_typed(
             PlatformError.models("conflict", str(e)),

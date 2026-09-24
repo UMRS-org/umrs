@@ -245,3 +245,25 @@ def test_create_model_keeps_system_scope_owner_null():
     create_kwargs = store.create_model.call_args.kwargs
     assert create_kwargs["scope"] == ModelScope.SYSTEM
     assert create_kwargs["owner_id"] is None
+
+
+def test_stage_to_a_disallowed_path_is_a_typed_400_naming_the_register_flow():
+    """Live rccs 2026-09-24: the registry path validator refused the staging
+    target and the route answered a bare 500. rccs-front has no server-side
+    model cache by design — the answer names the cluster-side register flow."""
+    from umrs.model_registry.store.errors import PathNotAllowedError
+
+    store = MagicMock()
+    job_store = MagicMock()
+    store.create_model.side_effect = PathNotAllowedError(
+        "/shared/users/alice/models/q", ["/lvs0/site/umrs_models/*"]
+    )
+    with _create_test_client(store, job_store) as client:
+        response = client.post(
+            "/umrs/models/stage",
+            params={"user_id": "alice", "caller_project_id": "p"},
+            json={"huggingface_id": "org/q", "name": "q", "scope": "user", "model_type": "llm"},
+        )
+    assert response.status_code == 400
+    assert "r4 model register" in response.json()["detail"]
+    job_store.create_job.assert_not_called()
