@@ -302,7 +302,11 @@ class KnowledgeStore:
             if evidence_refs:
                 prior = list(review.get("evidence_refs") or [])
                 review["evidence_refs"] = sorted(set(prior) | set(evidence_refs))
-            if row["status"] == "established" and not evidence_refs and confidence is None:
+            if (
+                row["status"] == "established"
+                and not evidence_refs
+                and confidence is None
+            ):
                 return True  # idempotent no-op, review untouched
             updates = ["content = $2"]
             params: list[Any] = [merged]
@@ -341,7 +345,11 @@ class KnowledgeStore:
             if evidence_refs:
                 prior = list(review.get("evidence_refs") or [])
                 review["evidence_refs"] = sorted(set(prior) | set(evidence_refs))
-            if row["status"] == "established" and not evidence_refs and confidence is None:
+            if (
+                row["status"] == "established"
+                and not evidence_refs
+                and confidence is None
+            ):
                 return True  # idempotent no-op, review untouched
             updates = ["content = $2"]
             params: list[Any] = [merged]
@@ -479,6 +487,28 @@ class KnowledgeStore:
                 project_id,
             )
         return int(val or 0)
+
+    async def artifacts_by_canonical_document(
+        self, project_id: str, document_ids: list[str]
+    ) -> dict[str, list[str]]:
+        """Active artifacts whose carried canonical identity (ADR-032 #1,
+        ``metadata.canonical_identity.document_id``) is one of *document_ids*."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT artifact_id,
+                          metadata->'canonical_identity'->>'document_id' AS document_id
+                   FROM knowledge_artifacts
+                   WHERE project_id = $1 AND status = 'active'
+                     AND metadata->'canonical_identity'->>'document_id' = ANY($2::text[])""",
+                project_id,
+                document_ids,
+            )
+        found: dict[str, list[str]] = {}
+        for row in rows:
+            found.setdefault(str(row["document_id"]), []).append(
+                str(row["artifact_id"])
+            )
+        return found
 
     async def list_artifacts(
         self,
