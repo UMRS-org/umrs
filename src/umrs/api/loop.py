@@ -13,6 +13,7 @@ Acceptance (TASK-036 / research-workflow spec §12):
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
@@ -796,6 +797,42 @@ def _loop_owner(
     return (x_user_id or "").strip()
 
 
+@dataclass(frozen=True)
+class _LoopCaller:
+    user_id: str  # "" only outside strict mode (identity-less mvp caller)
+    is_admin: bool
+
+
+def _loop_caller(
+    x_user_id: str | None = Header(None),
+    x_verified_project_id: str | None = Header(None),
+    x_verified_is_admin: str | None = Header(None),
+    x_verified_hmac: str | None = Header(None),
+) -> _LoopCaller:
+    """The verified caller of a loop route (same envelope as loop start;
+    strict mode without identity is a 401)."""
+    user = _loop_owner(
+        x_user_id, x_verified_project_id, x_verified_is_admin, x_verified_hmac
+    )
+    admin = bool(user) and (x_verified_is_admin or "").strip().lower() in ("true", "1")
+    return _LoopCaller(user_id=user, is_admin=admin)
+
+
+def _may_access(loop: ResearchLoop, caller: _LoopCaller) -> bool:
+    """Owner, admin, an ownerless (mvp) loop, or an identity-less mvp caller."""
+    owner = str(loop.metadata.get("owner_user_id") or "")
+    return not owner or not caller.user_id or caller.is_admin or caller.user_id == owner
+
+
+def _owned_loop(loop_id: str, caller: _LoopCaller) -> ResearchLoop:
+    """The loop, when the caller may see it; another user's loop is a 404
+    (its existence is not disclosed)."""
+    loop = get_loop(loop_id)
+    if not _may_access(loop, caller):
+        raise_typed(PlatformError.loops("not_found", f"Loop {loop_id} not found"))
+    return loop
+
+
 # ── Endpoints ─────────────────────────────────────────────────────────────
 
 
@@ -1059,7 +1096,7 @@ def _engine_factory_from(engine: AutonomousResearchLoop):
     response_model=ListLoopsResponse,
     summary="List all research loops",
 )
-async def list_loops() -> ListLoopsResponse:
+async def list_loops(caller: _LoopCaller = Depends(_loop_caller)) -> ListLoopsResponse:
     loops = [
         {
             "loop_id": loop_obj.loop_id,
@@ -1067,6 +1104,7 @@ async def list_loops() -> ListLoopsResponse:
             "phase": loop_obj.phase.value,
         }
         for loop_obj in _loop_store.list_all()
+        if _may_access(loop_obj, caller)
     ]
     return ListLoopsResponse(loops=loops)
 
@@ -1076,8 +1114,10 @@ async def list_loops() -> ListLoopsResponse:
     response_model=LoopStatusResponse,
     summary="Get loop status",
 )
-async def get_loop_status(loop_id: str) -> LoopStatusResponse:
-    loop = get_loop(loop_id)
+async def get_loop_status(
+    loop_id: str, caller: _LoopCaller = Depends(_loop_caller)
+) -> LoopStatusResponse:
+    loop = _owned_loop(loop_id, caller)
     return LoopStatusResponse(
         loop_id=loop.loop_id,
         project_id=loop.project_id,
@@ -1105,8 +1145,9 @@ async def list_iterations(
     loop_id: str,
     phase: str | None = Query(None, description="Filter by phase"),
     limit: int = Query(50, ge=1, le=500, description="Max iterations"),
+    caller: _LoopCaller = Depends(_loop_caller),
 ) -> list[IterationResponse]:
-    loop = get_loop(loop_id)
+    loop = _owned_loop(loop_id, caller)
     iterations = loop.iterations
     if phase:
         iterations = [i for i in iterations if i.phase.value == phase]
@@ -1229,14 +1270,16 @@ async def _apply_iteration_record(
     response_model=dict[str, Any],
 )
 async def append_iteration(
-    loop_id: str, body: AppendIterationRequest
+    loop_id: str,
+    body: AppendIterationRequest,
+    caller: _LoopCaller = Depends(_loop_caller),
 ) -> dict[str, Any]:
     """Cluster-venue loop drivers write their iteration outcome here.
 
     Owner-scoped via the verified-identity envelope (same envelope as allied
     loop routes through the gateway lanes).
     """
-    loop = get_loop(loop_id)
+    loop = _owned_loop(loop_id, caller)
     if loop.status == LoopStatus.STOPPED:
         raise_typed(PlatformError.loops("conflict", "loop already finished"))
     return await _apply_iteration_record(loop, body)
@@ -1246,12 +1289,15 @@ async def append_iteration(
     "/{loop_id}/snapshot",
     summary="Checker-safe snapshot of loop runtime state",
 )
-async def get_loop_snapshot(loop_id: str) -> dict[str, Any]:
+async def get_loop_snapshot(
+    loop_id: str, caller: _LoopCaller = Depends(_loop_caller)
+) -> dict[str, Any]:
     """Mirror the loop_hosting.snapshot checker view over HTTP.
 
     Cluster-venue checkers call this to compute attempt status without a
     direct DSN (loop truth stays server-side; snapshot stays a projection).
     """
+    _owned_loop(loop_id, caller)
     from umrs.knowledge import loop_hosting
 
     if not loop_hosting.is_configured():
@@ -1288,10 +1334,12 @@ class LoopStateUpdateRequest(BaseModel):
     response_model=LoopStatusResponse,
 )
 async def update_loop_state(
-    loop_id: str, body: LoopStateUpdateRequest
+    loop_id: str,
+    body: LoopStateUpdateRequest,
+    caller: _LoopCaller = Depends(_loop_caller),
 ) -> LoopStatusResponse:
     """Driver calls `save()` after each iteration — mapped to the durable record."""
-    loop = get_loop(loop_id)
+    loop = _owned_loop(loop_id, caller)
     _apply_loop_enums(loop, body)
     _apply_loop_counters(loop, body)
     if body.error is not None:
@@ -1300,7 +1348,7 @@ async def update_loop_state(
         loop.metadata.update(body.metadata)
     loop.updated_at = datetime.now(timezone.utc).isoformat()
     _loop_store.save(loop)
-    return await get_loop_status(loop_id)
+    return await get_loop_status(loop_id, caller)
 
 
 def _apply_loop_enums(loop: Any, body: LoopStateUpdateRequest) -> None:
@@ -1349,8 +1397,10 @@ def _apply_loop_counters(loop: Any, body: LoopStateUpdateRequest) -> None:
     response_model=StopLoopResponse,
     summary="Stop a running loop",
 )
-async def stop_loop(loop_id: str) -> StopLoopResponse:
-    loop = get_loop(loop_id)
+async def stop_loop(
+    loop_id: str, caller: _LoopCaller = Depends(_loop_caller)
+) -> StopLoopResponse:
+    loop = _owned_loop(loop_id, caller)
     loop.status = LoopStatus.STOPPED
     loop.completed_at = datetime.now(timezone.utc).isoformat()
     _loop_store.save(loop)  # PG-backed stores only persist via save()
@@ -1372,8 +1422,10 @@ async def stop_loop(loop_id: str) -> StopLoopResponse:
     response_model=StopLoopResponse,
     summary="Pause a running loop",
 )
-async def pause_loop(loop_id: str) -> StopLoopResponse:
-    loop = get_loop(loop_id)
+async def pause_loop(
+    loop_id: str, caller: _LoopCaller = Depends(_loop_caller)
+) -> StopLoopResponse:
+    loop = _owned_loop(loop_id, caller)
     loop.status = LoopStatus.PAUSED
     _loop_store.save(loop)  # PG-backed stores only persist via save()
     return StopLoopResponse(
@@ -1389,8 +1441,10 @@ async def pause_loop(loop_id: str) -> StopLoopResponse:
     status_code=200,
     summary="Resume a paused loop",
 )
-async def resume_loop(loop_id: str) -> StartLoopResponse:
-    loop = get_loop(loop_id)
+async def resume_loop(
+    loop_id: str, caller: _LoopCaller = Depends(_loop_caller)
+) -> StartLoopResponse:
+    loop = _owned_loop(loop_id, caller)
     if loop.status != LoopStatus.PAUSED:
         raise_typed(
             PlatformError.loops(
