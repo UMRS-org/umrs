@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
@@ -523,6 +524,9 @@ async def trigger_verify(
         "verifier_names": body.verifier_names
         if hasattr(body, "verifier_names") and body.verifier_names
         else None,
+        # re-runnable: a spec-derived idempotency key would dedupe every
+        # later verify of the project onto the first one
+        "request_id": uuid4().hex,
     }
 
     try:

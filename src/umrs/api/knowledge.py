@@ -6,6 +6,7 @@ import dataclasses
 import logging
 from datetime import datetime, timezone
 from typing import Any
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
@@ -1178,6 +1179,10 @@ async def export_knowledge(
         spec: dict[str, Any] = {
             "project_id": body.project_id,
             "allow_unsigned": body.allow_unsigned,
+            # Each export is a new snapshot: without a per-request id the
+            # spec-derived idempotency key collided with the project's first
+            # export forever ("Job already exists", observed live 2026-09-24).
+            "request_id": uuid4().hex,
         }
 
         # Unified ingest governance (R6.4).
@@ -1237,6 +1242,7 @@ async def trigger_verify(
         spec: dict[str, Any] = {
             "project_id": project_id,
             "verifier_names": (body.verifier_names if body.verifier_names else None),
+            "request_id": uuid4().hex,  # re-runnable (see export's spec)
         }
 
         job_id = await runtime.submit_job_sync(

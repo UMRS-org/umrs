@@ -198,3 +198,18 @@ def test_publish_skips_a_degraded_export(tmp_path):
     result = _export_result(tmp_path, degraded=True, degraded_reason="pool down")
     KnowledgeExportBackend._publish_archive(result, "job-9")
     assert (result.archive_key, result.degraded_reason) == ("", "pool down")
+
+
+def test_repeat_exports_get_distinct_specs(monkeypatch):
+    """The spec-derived idempotency key deduped every later export of a
+    project onto its first one ("Job already exists", live 2026-09-24)."""
+    client, runtime = _export_client(monkeypatch)
+    for _ in range(2):
+        resp = client.post(
+            "/umrs/knowledge/export",
+            json={"project_id": "caller-proj"},
+            headers={"X-Project-ID": "caller-proj"},
+        )
+        assert resp.status_code == 200, resp.text
+    specs = [c.kwargs["spec"] for c in runtime.submit_job_sync.call_args_list]
+    assert specs[0]["request_id"] != specs[1]["request_id"]
