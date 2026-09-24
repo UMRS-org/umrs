@@ -6,7 +6,6 @@ from datetime import datetime, timedelta, timezone
 
 from umrs.knowledge.engine_loop_runner import (
     EngineLoopRunner,
-    _action_trigger_class,
     _elapsed_hours,
     _gpu_hours_exceeded,
     _measured_gpu_seconds,
@@ -61,9 +60,7 @@ class TestWallClockBudget:
         loop = _loop(max_wall_clock_hours=1.0)
         loop.started_at = past
         store = _store({loop.loop_id: loop})
-        runner = EngineLoopRunner(
-            loop, engine_factory=lambda: None, store=store, poll_seconds=0.01
-        )
+        runner = EngineLoopRunner(loop, engine_factory=lambda: None, store=store, poll_seconds=0.01)
         assert runner._cancel_check() is True
         assert loop.metadata["state_reason"] == "budget_exhausted:wall_clock"
 
@@ -76,18 +73,15 @@ class TestWallClockBudget:
 class TestPauseProfileGate:
     def _runner(self, loop):
         store = _store({loop.loop_id: loop})
-        return EngineLoopRunner(
-            loop, engine_factory=lambda: None, store=store, poll_seconds=0.1
-        )
+        return EngineLoopRunner(loop, engine_factory=lambda: None, store=store, poll_seconds=0.1)
 
     def test_trigger_class_mapping(self):
-        assert _action_trigger_class({"kind": "workflow_trigger"}) == "cost"
-        assert _action_trigger_class({"kind": "agent_iteration"}) == "cost"
-        assert (
-            _action_trigger_class({"kind": "competing_hypotheses"})
-            == "competing_hypotheses"
-        )
-        assert _action_trigger_class({"kind": "mystery"}) == ""
+        from umrs.knowledge.ask_policy import action_trigger_classes
+
+        assert action_trigger_classes({"kind": "workflow_trigger"}) == {"cost"}
+        assert action_trigger_classes({"kind": "agent_iteration"}) == {"cost"}
+        assert action_trigger_classes({"kind": "competing_hypotheses"}) == {"competing_hypotheses"}
+        assert action_trigger_classes({"kind": "mystery"}) == set()
 
     def test_profile_park_only_named_triggers(self):
         loop = _loop(mode="profile", pause_profile={"triggers": ["competing_hypotheses"]})
@@ -99,8 +93,10 @@ class TestPauseProfileGate:
         # inbox — asserted by construction, not by sleeping): we verify the
         # decision branch instead via the class map + trigger set.
         triggers = set(loop.metadata["pause_profile"]["triggers"])
-        assert _action_trigger_class({"kind": "competing_hypotheses"}) in triggers
-        assert _action_trigger_class({"kind": "workflow_trigger"}) not in triggers
+        from umrs.knowledge.ask_policy import action_trigger_classes
+
+        assert action_trigger_classes({"kind": "competing_hypotheses"}) & triggers
+        assert not action_trigger_classes({"kind": "workflow_trigger"}) & triggers
 
     def test_auto_mode_gate_passes_everything(self):
         loop = _loop(mode="auto")
@@ -151,8 +147,6 @@ class TestGpuHoursBudget:
     def test_cancel_check_marks_gpu_reason_and_returns_true(self):
         loop = self._ledger_loop(2 * 3600.0, cap=1.0)
         store = _store({loop.loop_id: loop})
-        runner = EngineLoopRunner(
-            loop, engine_factory=lambda: None, store=store, poll_seconds=0.01
-        )
+        runner = EngineLoopRunner(loop, engine_factory=lambda: None, store=store, poll_seconds=0.01)
         assert runner._cancel_check() is True
         assert loop.metadata["state_reason"] == "budget_exhausted:gpu_hours"

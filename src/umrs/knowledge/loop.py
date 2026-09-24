@@ -798,6 +798,7 @@ class AutonomousResearchLoop:
         iteration: LoopIteration,
         workflow_name: str,
         params: dict[str, Any],
+        physical: bool = False,
     ) -> bool | str:
         """The workflow-trigger gate's verdict.
 
@@ -815,6 +816,9 @@ class AutonomousResearchLoop:
                 "params": dict(params),
                 "iteration": loop.current_iteration,
                 "track_id": self._track_id,
+                # ADR-066 amendment 3: an instrument/robot experiment is also
+                # a physical_action (the experiment declares it).
+                "physical": physical,
             }
         )
         if verdict == "deferred":
@@ -864,7 +868,9 @@ class AutonomousResearchLoop:
 
         # Tool-grain enforcement: an 'ask'-mode loop gates each workflow
         # trigger through the approvals registry (injected by the driver).
-        verdict = self._workflow_gate_verdict(loop, iteration, workflow_name, params)
+        verdict = self._workflow_gate_verdict(
+            loop, iteration, workflow_name, params, physical=_is_physical(experiment)
+        )
         if verdict is not True:
             # deferred → awaiting_decision; False → the iteration was already
             # finalised (stopped loop / closed track) — never trigger then.
@@ -1042,14 +1048,43 @@ class AutonomousResearchLoop:
         if len(loop.plan.hypotheses) > 1 and not self._competing_gate(loop, iteration):
             return False
         hyp = self._select_hypothesis(loop, excerpts)
+        hyp = self._direction_checked(loop, iteration, hyp)
+        if hyp is None:
+            return False
         iteration.hypothesis = hyp.statement
-        hypothesis_id = getattr(hyp, "hypothesis_id", "") or ""
-        if not hypothesis_id:
-            idx = loop.plan.hypotheses.index(hyp)
-            hypothesis_id = f"hyp-{idx}"
-        iteration.hypothesis_id = hypothesis_id
+        iteration.hypothesis_id = loop_tracks.hypothesis_id_of(loop, hyp)
         loop.total_hypotheses_tested += 1
         return True
+
+    def _direction_checked(
+        self, loop: ResearchLoop, iteration: LoopIteration, hyp: Any
+    ) -> Any | None:
+        """ADR-066 amendment 3: switching away from the previous completed
+        iteration's hypothesis is a ``direction_change``. Approved → switch;
+        a decided "no" → stay on the previous branch; deferred / stopped →
+        None (the iteration was finalised)."""
+        previous = _previous_hypothesis(loop)
+        gate = getattr(self, "_approval_gate", None)
+        if gate is None or previous is None or previous is hyp:
+            return hyp
+        verdict = gate(
+            {
+                "kind": "direction_change",
+                "from": loop_tracks.hypothesis_id_of(loop, previous),
+                "to": loop_tracks.hypothesis_id_of(loop, hyp),
+                "iteration": loop.current_iteration,
+            }
+        )
+        if verdict == "deferred":
+            self._gate_deferred(loop, iteration, "direction-change")
+            return None
+        if verdict:
+            return hyp
+        if self._should_cancel() or loop.status != LoopStatus.RUNNING:
+            self._apply_cancel(loop, iteration)
+            return None
+        iteration.results["direction_vetoed"] = loop_tracks.hypothesis_id_of(loop, hyp)
+        return previous
 
     def _gate_deferred(
         self, loop: ResearchLoop, iteration: LoopIteration, label: str
@@ -1171,6 +1206,24 @@ class AutonomousResearchLoop:
 
 
 # ── Helper Functions ───────────────────────────────────────────────────────
+
+
+def _previous_hypothesis(loop: ResearchLoop) -> Any | None:
+    """The plan hypothesis the last COMPLETED iteration pursued, if any."""
+    for it in reversed(loop.iterations):
+        if it.status != "completed" or not it.hypothesis_id:
+            continue
+        for hyp in loop.plan.hypotheses:
+            if loop_tracks.hypothesis_id_of(loop, hyp) == it.hypothesis_id:
+                return hyp
+        return None
+    return None
+
+
+def _is_physical(experiment: Any | None) -> bool:
+    """The experiment declares it drives an instrument/robot (amendment 3)."""
+    metadata = getattr(experiment, "metadata", None) or {}
+    return bool(metadata.get("physical_action"))
 
 
 def _generate_id() -> str:

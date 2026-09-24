@@ -84,22 +84,6 @@ def _gpu_hours_exceeded(loop: ResearchLoop) -> bool:
     return _measured_gpu_seconds(loop) / 3600.0 >= cap
 
 
-# ADR-066 (D-33): the ask-the-scientist trigger classes. Unknown kinds get no
-# class — profile-mode loops treat them as non-triggers (never silent-park).
-_ACTION_TRIGGER_CLASSES: dict[str, str] = {
-    "workflow_trigger": "cost",
-    "agent_iteration": "cost",
-    "competing_hypotheses": "competing_hypotheses",
-    # Reserved emitters (land with their planes; no class → no gate today):
-    #   mcp_trusted_call → physical_action
-    #   direction_change → direction_change
-}
-
-
-def _action_trigger_class(action: dict) -> str:
-    return _ACTION_TRIGGER_CLASSES.get(str(action.get("kind") or ""), "")
-
-
 def _pause_profile(loop: ResearchLoop) -> dict:
     """Loop pause profile (mode=profile): {"triggers": [class, ...]}."""
     profile = loop.metadata.get("pause_profile")
@@ -256,8 +240,12 @@ class EngineLoopRunner(threading.Thread):
             if mode == "profile":
                 # ADR-066 (D-33): gate only when the action's trigger class
                 # is in the loop's pause profile; everything else runs.
+                # Amendment 3: an action carries a SET of classes (a physical
+                # workflow trigger is cost + physical_action).
+                from .ask_policy import action_trigger_classes
+
                 triggers = set(_pause_profile(loop).get("triggers", []))
-                if _action_trigger_class(action) not in triggers:
+                if not action_trigger_classes(action) & triggers:
                     return True
             elif mode != "ask":
                 return True

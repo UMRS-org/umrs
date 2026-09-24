@@ -276,6 +276,14 @@ class ProjectPatchBody(BaseModel):
         default=None,
         description="D-33: trigger classes persisted for ask_mode='profile'",
     )
+    maturity_stage: str | None = Field(
+        default=None,
+        description=(
+            "ADR-066 amendment 3: with action='set_ask_policy' — a named preset "
+            "('bootstrapped' | 'learning' | 'competent' | 'autonomous') that "
+            "expands to ask_mode + pause_triggers; not combinable with them"
+        ),
+    )
 
 
 def _store_dep(request: Request):
@@ -298,7 +306,51 @@ def _store_dep(request: Request):
         pool.putconn(conn)
 
 
+def _requested_ask_policy(body: ProjectPatchBody) -> tuple[str, list[str]]:
+    """(ask_mode, pause_triggers) from explicit fields or a maturity stage."""
+    from umrs.knowledge.ask_policy import stage_preset
+
+    stage = str(body.maturity_stage or "").strip()
+    if not stage:
+        return _explicit_ask_policy(body)
+    if body.ask_mode or body.pause_triggers:
+        raise_typed(
+            PlatformError.projects(
+                "bad_request",
+                "give either maturity_stage or ask_mode/pause_triggers, not both",
+            )
+        )
+    try:
+        return stage_preset(stage)
+    except KeyError as exc:
+        raise_typed(PlatformError.projects("bad_request", str(exc.args[0])))
+
+
+def _explicit_ask_policy(body: ProjectPatchBody) -> tuple[str, list[str]]:
+    triggers = [str(t).strip() for t in (body.pause_triggers or []) if str(t).strip()]
+    return str(body.ask_mode or "").strip(), triggers
+
+
+def _authorize_patch(row: dict[str, Any], action: str, identity: Any) -> None:
+    """The PATCH action is known and the caller is the owner or an admin."""
+    if action not in ("retire", "set_data_class", "set_ask_policy"):
+        raise_typed(
+            PlatformError.projects(
+                "bad_request",
+                "action must be 'retire', 'set_data_class' or 'set_ask_policy'",
+            )
+        )
+    if not identity.is_admin and (identity.user_id or "") != row["owner_id"]:
+        raise_typed(
+            PlatformError.projects(
+                "forbidden", "only the owner or an admin may modify this project"
+            )
+        )
+
+
 def _row_response(row: dict[str, Any]) -> dict[str, Any]:
+    from umrs.knowledge.ask_policy import stage_for
+
     return {
         "project_id": row["project_id"],
         "name": row.get("name", ""),
@@ -307,6 +359,10 @@ def _row_response(row: dict[str, Any]) -> dict[str, Any]:
         "data_class": row.get("data_class", "sensitive"),
         "ask_mode": row.get("ask_mode", ""),
         "pause_triggers": row.get("pause_triggers", []),
+        # ADR-066 amendment 3: the stage the stored policy corresponds to
+        "maturity_stage": stage_for(
+            row.get("ask_mode", ""), list(row.get("pause_triggers") or [])
+        ),
         "retired_at": row.get("retired_at"),
         "created_at": row.get("created_at"),
         "updated_at": row.get("updated_at"),
@@ -381,7 +437,9 @@ def patch_project(
     store: ProjectStore = Depends(_store_dep),
     identity: CallerIdentity = Depends(get_caller_identity),
 ) -> dict[str, Any]:
-    """Only 'retire' this round — owner-or-admin, tombstone, never DELETE.
+    """Owner-or-admin actions: 'retire' (tombstone, never DELETE),
+    'set_data_class' (ADR-062) and 'set_ask_policy' (D-33 default; explicit
+    fields or an ADR-066 amendment 3 maturity stage).
     # auth: verified
     """
     try:
@@ -390,24 +448,9 @@ def patch_project(
         raise_typed(
             PlatformError.projects("not_found", f"project {project_id} not found")
         )
-    if body.action not in ("retire", "set_data_class", "set_ask_policy"):
-        raise_typed(
-            PlatformError.projects(
-                "bad_request",
-                "action must be 'retire', 'set_data_class' or 'set_ask_policy'",
-            )
-        )
-    if not identity.is_admin and (identity.user_id or "") != row["owner_id"]:
-        raise_typed(
-            PlatformError.projects(
-                "forbidden", "only the owner or an admin may modify this project"
-            )
-        )
+    _authorize_patch(row, body.action, identity)
     if body.action == "set_ask_policy":
-        ask_mode = str(body.ask_mode or "").strip()
-        triggers = [
-            str(t).strip() for t in (body.pause_triggers or []) if str(t).strip()
-        ]
+        ask_mode, triggers = _requested_ask_policy(body)
         row = store.set_ask_policy(project_id, ask_mode, triggers)
         return {"status": "ok", "project": _row_response(row)}
     if body.action == "set_data_class":
