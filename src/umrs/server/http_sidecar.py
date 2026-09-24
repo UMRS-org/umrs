@@ -609,14 +609,16 @@ def _upgrade_loop_store() -> None:
             # D-06 accounts: sync JSON users -> Postgres; the PG lane goes
             # read-first (the JSON files stay the bootstrap/recovery lane).
             try:
-                from umrs.admin.user_store import configure_user_store_pg
+                from umrs.admin.user_store import configure_user_store_pg, site_venue
 
+                # 0113: rows scoped to this site (umrs-front's servers share umrs_db).
                 configure_user_store_pg(
                     _SingleConnPool(
                         lambda: _psycopg2.connect(
                             dsn_sync, **pg_connect_kwargs("user-store")
                         )
-                    )
+                    ),
+                    venue=site_venue(),
                 )
             except Exception:  # noqa: BLE001 — accounts lane fails open to JSON by contract
                 logger.warning(
