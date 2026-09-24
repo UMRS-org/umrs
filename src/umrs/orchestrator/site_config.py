@@ -201,7 +201,7 @@ class StepExecutorConfig:
     GPU.
     """
 
-    kind: str = "inproc"  # inproc | slurm | podman | subprocess
+    kind: str = "inproc"  # inproc | slurm | slurm-remote | podman | subprocess
     partition: str = ""  # Slurm partition (e.g. "1n1gpu")
     gpus: int = 1  # Number of GPUs to request
     cpus: int = 8  # CPUs per task
@@ -210,6 +210,9 @@ class StepExecutorConfig:
     account: str = ""  # Slurm account (optional)
     image: str = ""  # Default container image for steps
     gpu: bool = True  # Whether to attach GPU by default
+    # Parent of the per-step workdirs; must be on a filesystem the compute
+    # nodes see (required for slurm-remote: a path on the CLUSTER).
+    workdir_root: str = ""
 
 
 @dataclass
@@ -300,6 +303,9 @@ class SiteConfig:
             _database_env(self.database),
         ):
             env.update(layer)
+        if self.scheduler.kind == "slurm-remote":
+            # No local Slurm CLI: a workflow's `slurm` steps submit over SSH.
+            env["UMRS_SLURM_STEP_SUBMIT"] = "remote"
         return {k: v for k, v in env.items() if v}
 
     def inject_env(self, overwrite: bool = False) -> None:
@@ -405,7 +411,11 @@ def _step_executor_env(cfg: StepExecutorConfig) -> dict[str, str]:
         env["UMRS_STEP_IMAGE"] = cfg.image
     if cfg.gpu:
         env["UMRS_STEP_GPU"] = "1"
-    if cfg.kind == "slurm":
+    if cfg.workdir_root:
+        env["UMRS_SLURM_WORKDIR_ROOT"] = cfg.workdir_root
+    # Slurm knobs also when the default is inproc but a partition is set:
+    # workflows that declare execution_mode=slurm still need them.
+    if cfg.kind in ("slurm", "slurm-remote") or cfg.partition:
         if cfg.partition:
             env["UMRS_SLURM_PARTITION"] = cfg.partition
         env["UMRS_SLURM_GPUS"] = str(cfg.gpus)

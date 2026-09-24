@@ -1,0 +1,194 @@
+# AI4S site as seen from the umrs-front executor (data0). Identical to
+# ../ai4s/site.yaml except model_cache_dir (production enablement 2026-09-25).
+# Keep the two in step when editing either.
+# yaml-language-server: $schema=../../src/umrs/orchestrator/site-config.schema.json
+# ─────────────────────────────────────────────────────────────
+# UMRS Site Configuration — AI4S Supercomputer (GB200 NVL4)
+# ─────────────────────────────────────────────────────────────
+# Front-end server deployment targeting the RIKEN AI for Science
+# Supercomputer. Persistent services run on umrs-front; Slurm jobs
+# are submitted remotely via SSH to the AI4S login node.
+#
+# Topology:
+#   client --SSH--> umrs-front (mnagaso) --SSH--> AI4S login (ea0022)
+#     --sbatch--> AI4S compute (GB200 NVL4)
+#
+# Hardware (per compute node):
+#   - 2× Grace CPU (aarch64) + 4× B200 GPU
+#   - 692.8 GiB GPU memory (173.2 GiB × 4)
+#   - 960 GiB CPU memory
+#   - NVLink-C2C (450 GB/s CPU↔GPU), NVLink (600 GB/s inter-GPU)
+#   - InfiniBand XDR 800 Gbps
+#
+# Key differences from rccs-front:
+#   - Different SSH target (AI4S login: 134.160.189.24)
+#   - Different user account (ea0022 on AI4S, vs masaru.nagaso on rccs-cloud)
+#   - Apptainer/Singularity for container runtime (not Podman)
+#   - GB200 partitions (1n1gpu..4n4gpu) instead of ng-dgx-m*
+#   - Much larger GPU memory (173.2 GiB/GPU vs 128 GiB on GB10)
+# ─────────────────────────────────────────────────────────────
+
+name: ai4s
+description: >-
+  RIKEN AI for Science Supercomputer — 400× GB200 NVL4 nodes (Grace aarch64,
+  4× B200 GPU per node). Slurm via SSH from umrs-front. Apptainer containers.
+
+scheduler:
+  kind: slurm-remote
+  partition: 1n1gpu                           # Default partition; override per job
+  account: ea                                 # Slurm account (NOT the username ea0022; sacctmgr assoc = "ea")
+  qos: ""
+  time_limit: "96:00:00"                      # Max allowed: 96h (unlimited on 4n4gpu-p); long-lived system-tier endpoints
+  gpus: 1                                     # --gpus-per-node=1 for 1n1gpu
+  cpus: 32                                    # GB200 node has 144 cores; give model load + sparse-attn enough parallelism
+  memory: "1400G"                            # AI4S rejects --mem=0; node RealMemory=1562.5G. 64G OOM-killed DeepSeek-V4 at 1M context (host KV/sparse-attn structures). Request near-full node RAM.
+  slurm_delegation: per_user_ssh
+  service_pubkey_path: /work/hps0/home/ea0022/ai4s-platform/keys/umrs-service.pub
+  slurm_proxy_path: /work/hps0/home/ea0022/ai4s-platform/bin/umrs-slurm-proxy
+  require_user_slurm_account: false
+
+runtime:
+  kind: singularity                           # Apptainer on AI4S
+  rivault_dir: /work/hps0/home/ea0022/images/mini-rivault-aarch64-v4.sif  # aarch64 vLLM+LiteLLM+NGINX+Ray SIF (v4, multi-node)
+  repo_dir: ""
+  vision_image: ""
+  compose_file: ""
+  profiles: []
+  gpu_passthrough: auto
+  cdi_spec: ""
+  cgroup_manager: ""
+  storage_root: ""
+
+storage:
+  model_cache_dir: ""  # front has no Lustre: a cluster path here ghost-writes into the container overlay (rccs #120 class) — cluster-side staging + r4 model register
+  sam3_model_path: ""
+  hmae_model_path: ""
+  hmae_config_path: ""
+  hmae_checkpoint: ""
+  vision_tarball: ""
+  user_model_path: /work/hps0/home/ea0022/umrs_models
+  s3_tunnel_host: ""
+  s3_tunnel_port: 9000
+
+network:
+  litellm_port: 8001
+  litellm_master_key: ""                      # Set LITELLM_MASTER_KEY in .env
+  port_range_min: 13000                       # Local tunnel port range (distinct from rccs-front)
+  port_range_max: 13999
+  port_strategy: static_range
+
+vllm:
+  model: ""                                   # Set per deployment (e.g., Qwen/Qwen3-32B)
+  docker_tag: latest
+  gpu_mem_util: 0.90                          # B200 has 173.2 GiB; can use aggressively
+  max_model_len: 8192
+  max_num_seqs: 16                            # B200 has much more memory headroom
+  tensor_parallel_size: 1                     # 1 GPU default; set 4 for multi-GPU
+
+# Workflow step execution backend.
+# When kind="slurm" each workflow step is submitted as a Slurm job
+# to a GPU compute node (SlurmStepExecutor). This is the correct
+# mode for RCCS / AI4S deployments where UMRS runs on a login node
+# and steps must execute on compute nodes with GPUs.
+step_executor:
+  kind: slurm                                 # Submit steps as Slurm jobs to GPU compute nodes
+  partition: 1n1gpu                           # GB200 NVL4 partition (1 node, 1 GPU)
+  gpus: 1                                     # 1 B200 GPU per step
+  cpus: 32                                    # 32 CPUs per step (GB200 has 144 cores)
+  memory: "1400G"                             # Near-full node RAM
+  time_limit: "01:00:00"                      # 1 hour per step
+  account: ea                                 # Slurm account (sacctmgr assoc = "ea")
+  image: ""                                   # No default image; use routing_hints.image
+  gpu: true                                   # Attach GPU by default
+
+database:
+  host: localhost                             # Shared with umrs-front postgres
+  port: 5432
+  superuser: umrs
+  superuser_password: ""                      # Set in .env
+  user_password: ""
+  registry_dsn: ""
+
+# ─────────────────────────────────────────────────────────────
+# SSH Remote Slurm Configuration
+# ─────────────────────────────────────────────────────────────
+# Connects from umrs-front to the AI4S login node.
+# User accounts differ per hop:
+#   umrs-front: mnagaso
+#   AI4S login: ea0022
+extra:
+  ssh_target: AI4S                            # umrs-front SSH alias for AI4S login
+  ssh_user: ea0022                            # AI4S account
+  ssh_port: 22
+  ssh_connect_timeout: 15
+  ssh_command_timeout: 60                     # AI4S may be slower for large jobs
+  ssh_server_alive_interval: 30
+  ssh_server_alive_count_max: 3
+  ssh_control_path: "/run/umrs-ssh/ai4s-%p"    # tmpfs inside container
+  ssh_identity_file: ""                       # e.g., /home/mnagaso/.ssh/ai4s_ed25519
+  # ProxyJump if umrs-front cannot directly reach AI4S (route via rccs-cloud):
+  ssh_proxy_jump: ""                          # e.g., "masaru.nagaso@rccs-cloud"
+  # Reverse tunnel: expose umrs-front MinIO on AI4S login node so
+  # compute nodes can reach it via tunnel to login:9000.
+  ssh_reverse_tunnels:
+    - "127.0.0.1:9000:127.0.0.1:9000"
+  # Job info file path on AI4S Lustre (accessible from login+compute)
+  slurm_job_info_dir: /work/hps0/home/ea0022/ai4s-platform/umrs/deploy/ai4s/jobs
+  # Real Singularity/vLLM wrapper. Runs the aarch64 mini-RiVault SIF on the
+  # allocated GB200 node and serves an OpenAI-compatible endpoint.
+  # (serve-openai-smoke.slurm kept for fallback/debugging.)
+  slurm_wrapper_script: /work/hps0/home/ea0022/ai4s-platform/umrs/deploy/ai4s/serve.slurm
+  # Environment variables injected before every remote command.
+  # Required: AI4S uses configless Slurm with DNS SRV; non-login SSH
+  # sessions don't source .bashrc so SLURM_CONF_SERVER is not set.
+  ssh_remote_env:
+    SLURM_CONF_SERVER: "sv08,sv09"
+
+# ─────────────────────────────────────────────────────────────
+# Per-partition profiles — GB200 NVL4 (B200 GPUs)
+# ─────────────────────────────────────────────────────────────
+# All AI4S partitions share the same hardware; they differ in
+# node count and GPU allocation.
+partition_profiles:
+  1n1gpu:
+    arch: aarch64
+    gpu_vendor: nvidia
+    userns_mode: ""                           # Not applicable for Singularity
+    vllm_docker_tag: ""                       # Use Singularity SIF image
+    gpus: 1
+    needs_netavark_switch: false
+  1n2gpu:
+    arch: aarch64
+    gpu_vendor: nvidia
+    userns_mode: ""
+    vllm_docker_tag: ""
+    gpus: 2
+    needs_netavark_switch: false
+  1n4gpu:
+    arch: aarch64
+    gpu_vendor: nvidia
+    userns_mode: ""
+    vllm_docker_tag: ""
+    gpus: 4
+    needs_netavark_switch: false
+  2n4gpu:
+    arch: aarch64
+    gpu_vendor: nvidia
+    userns_mode: ""
+    vllm_docker_tag: ""
+    gpus: 4
+    needs_netavark_switch: false
+  4n4gpu:
+    arch: aarch64
+    gpu_vendor: nvidia
+    userns_mode: ""
+    vllm_docker_tag: ""
+    gpus: 4
+    needs_netavark_switch: false
+  4n4gpu-p:
+    arch: aarch64
+    gpu_vendor: nvidia
+    userns_mode: ""
+    vllm_docker_tag: ""
+    gpus: 4
+    needs_netavark_switch: false

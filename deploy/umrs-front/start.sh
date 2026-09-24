@@ -898,7 +898,7 @@ done
 echo ""
 echo "Starting UMRS server containers via podman compose..."
 echo "  RCCS site config: ../rccs-front/site.yaml"
-echo "  AI4S site config: ../ai4s/site.yaml"
+echo "  AI4S site config: ../ai4s-front/site.yaml"
 echo "  bdrt site config: ../bdrt-front/site.yaml"
 echo "  octopus site config: ../octopus-front/site.yaml"
 echo "  RCCS ZMQ port: ${UMRS_RCCS_ZMQ_PORT}, HTTP port: ${UMRS_RCCS_PORT:-8000}"
@@ -1110,7 +1110,7 @@ echo "║    Target:     ${RCCS_SSH_TARGET} (SSH)                              �
 echo "║                                                              ║"
 echo "║  AI4S:         (container: umrs-server-ai4s)                 ║"
 echo "║    UMRS HTTP:  0.0.0.0:${UMRS_AI4S_PORT:-8002}                            ║"
-echo "║    Site:       ai4s/site.yaml                                ║"
+echo "║    Site:       ai4s-front/site.yaml                          ║"
 echo "║    Target:     ${AI4S_SSH_TARGET} (SSH)                      ║"
 if [[ "$RAG_ENABLED" == "true" ]]; then
 echo "║                                                              ║"

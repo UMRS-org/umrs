@@ -97,6 +97,23 @@ vllm:
   max_num_seqs: 4
   tensor_parallel_size: 1
 
+# Workflow step execution (production enablement 2026-09-25). The default
+# stays in-process (existing workflows unchanged); a workflow that declares
+# execution_mode: slurm is submitted over the extra.ssh_target path
+# (RemoteSlurmStepExecutor — scheduler.kind slurm-remote marks the site).
+# workdir_root is on the cluster Lustre so the compute node sees input.pkl.
+step_executor:
+  kind: inproc
+  partition: ng-dgx-m0,ng-dgx-m1,ng-dgx-m2,ng-dgx-m3
+  gpus: 0              # ng-dgx-m* reject --gres
+  cpus: 8
+  memory: ""           # ng-dgx-m* reject --mem
+  time_limit: "01:00:00"
+  account: cloud-users
+  image: ""            # per-workflow routing_hints.image (must exist on the compute node)
+  gpu: true
+  workdir_root: /lvs0/rccs-dmp/masaru.nagaso/ai4s-platform/umrs/deploy/rccs/steps
+
 database:
   host: localhost
   port: 5432

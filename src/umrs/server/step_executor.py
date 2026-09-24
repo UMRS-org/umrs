@@ -2032,6 +2032,19 @@ class RouterPoolExecutor:
 # ----------------------------------------------------------------------
 
 
+def _build_slurm_executor(chosen: str) -> StepExecutor:
+    """Local ``sbatch`` executor, or the SSH-submitting one on a front-end
+    site (``scheduler.kind: slurm-remote`` exports UMRS_SLURM_STEP_SUBMIT=remote
+    — the same Slurm steps, but there is no local Slurm CLI)."""
+    if chosen == "slurm-remote" or os.environ.get("UMRS_SLURM_STEP_SUBMIT") == "remote":
+        from .remote_slurm_step_executor import RemoteSlurmStepExecutor
+
+        return RemoteSlurmStepExecutor()
+    from .slurm_step_executor import SlurmStepExecutor
+
+    return SlurmStepExecutor()
+
+
 def build_step_executor(
     name: str | None = None,
 ) -> StepExecutor:
@@ -2044,6 +2057,8 @@ def build_step_executor(
         ``pool``             â†’ :class:`WorkerPoolExecutor`
         ``remote``           â†’ :class:`RemotePoolExecutor`
         ``router``           â†’ :class:`RouterPoolExecutor`
+        ``slurm``            â†’ :class:`SlurmStepExecutor`
+        ``slurm-remote``     â†’ :class:`RemoteSlurmStepExecutor` (front-end host)
 
     Unknown values fall back to ``inproc`` with a warning so a typo
     in deployment config doesn't crash the workflow runner.
@@ -2051,10 +2066,8 @@ def build_step_executor(
     chosen = (name or os.environ.get("UMRS_STEP_EXECUTOR") or "inproc").lower()
     if chosen == "inproc":
         return InProcessExecutor()
-    if chosen == "slurm":
-        from .slurm_step_executor import SlurmStepExecutor
-
-        return SlurmStepExecutor()
+    if chosen in ("slurm", "slurm-remote"):
+        return _build_slurm_executor(chosen)
     if chosen == "subprocess":
         return SubprocessExecutor(timeout_seconds=_executor_timeout())
     if chosen == "podman":
