@@ -91,7 +91,7 @@ def _ingest(
     if actor:
         headers["x-r4-actor"] = actor
         headers["x-r4-session-id"] = "s-1"
-    body: dict = {"sources": [{"kind": "local_file", "uri": "/data/exp.json"}]}
+    body: dict = {"sources": [{"kind": "inline_text", "uri": "exp.json", "content": "{}"}]}
     if proposal_id:
         body["proposal_id"] = proposal_id
     if graph_id:
@@ -208,3 +208,65 @@ class TestKnowledgeMutationGuard:
             headers={"X-Project-ID": "proj-a", "x-r4-actor": "agent"},
         )
         assert resp.status_code == 404, resp.text
+
+
+@pytest.mark.usefixtures("runtime")
+class TestRemoteSafeSourceKinds:
+    """The HTTP route never lets a caller name a server path or bucket key:
+    the job runs inside UMRS, so those would read the server's files / any
+    key with server credentials into the caller's project."""
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            {"kind": "local_file", "uri": "/proc/self/environ"},
+            {"kind": "local_dir", "uri": "/run/secrets"},
+            {"kind": "local", "uri": "/etc"},
+            {"kind": "s3_uri", "uri": "s3://umrs/other-project/secret.pdf"},
+            {"uri": "/etc/passwd"},  # missing kind → the job defaults to local_file
+        ],
+    )
+    def test_server_side_kinds_refused_by_name(self, runtime, source):
+        client, _ = _client([])
+        resp = client.post(
+            "/umrs/k2/ingest", json={"sources": [source]}, headers={"X-Project-ID": "proj-a"}
+        )
+        assert resp.status_code == 400, resp.text
+        from r4_contracts.errors import ERROR_CODE_HEADER
+
+        assert resp.headers.get(ERROR_CODE_HEADER) == "knowledge2.source_kind_refused"
+        assert "/umrs/knowledge/upload" in resp.text
+        assert runtime.calls == []  # nothing submitted
+
+    def test_one_bad_source_refuses_the_whole_request(self, runtime):
+        client, _ = _client([])
+        resp = client.post(
+            "/umrs/k2/ingest",
+            json={
+                "sources": [
+                    {"kind": "inline_text", "uri": "a.txt", "content": "ok"},
+                    {"kind": "local_file", "uri": "/etc/shadow"},
+                ]
+            },
+            headers={"X-Project-ID": "proj-a"},
+        )
+        assert resp.status_code == 400
+        assert "sources[1]" in resp.text
+        assert runtime.calls == []
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            {"kind": "inline_text", "uri": "notes.md", "content": "# hi"},
+            {"kind": "http_url", "uri": "https://example.org/paper"},
+            {"kind": "git_repo", "uri": "https://github.com/o/r"},
+        ],
+    )
+    def test_remote_safe_kinds_pass(self, source):
+        client, _ = _client([])
+        resp = client.post(
+            "/umrs/k2/ingest",
+            json={"sources": [source], "allow_domains": ["example.org", "github.com"]},
+            headers={"X-Project-ID": "proj-a"},
+        )
+        assert resp.status_code == 200, resp.text
