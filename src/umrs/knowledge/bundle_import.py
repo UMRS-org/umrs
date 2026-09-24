@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass, field
@@ -44,7 +45,14 @@ _TABLE_FILES: dict[str, str] = {
     "catalog": "catalog.jsonl",
     "a2l_links": "a2l_links.jsonl",
     "a2l_refs": "a2l_refs.jsonl",
+    "node_embeddings": "node_embeddings.jsonl",
 }
+
+# ADR-032 precondition #3: the destination trusts exactly one pipeline — the
+# site's own knowledge embedder (the pre-staged directory KNOWLEDGE_EMBED
+# writes with). Same env name as jobs/knowledge_adapters (not imported: the
+# knowledge package never imports jobs).
+_DEST_EMBED_MODEL_ENV = "UMRS_KNOWLEDGE_EMBED_MODEL"
 
 
 class BundleFormatError(ValueError):
@@ -82,6 +90,10 @@ class KnowledgeImportResult:
     catalog_registered: bool = False
     # D-41: source version when the bundle was upgraded on read ("" when 1.2).
     upgraded_from: str = ""
+    # D-40: canonical node vectors (0075) imported under the destination's
+    # trusted model / left for re-embedding (ADR-032 precondition #3).
+    node_embedding_count: int = 0
+    node_embeddings_pending: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -108,6 +120,8 @@ class KnowledgeImportResult:
             "mcp_refs_missing": list(self.mcp_refs_missing),
             "reference_stores_deferred": self.reference_stores_deferred,
             "catalog_registered": self.catalog_registered,
+            "node_embedding_count": self.node_embedding_count,
+            "node_embeddings_pending": self.node_embeddings_pending,
             "upgraded_from": self.upgraded_from,
         }
 
@@ -593,6 +607,7 @@ class KnowledgeImportEngine:
     ) -> tuple[int, int]:
         embeddings = await self._restore_embeddings(bundle_path, project_id, result)
         catalog = await self._restore_catalog(bundle_path, project_id, result)
+        await self._restore_node_embeddings(bundle_path, result)
         return embeddings, catalog
 
     def _pool(self) -> Any:
@@ -635,6 +650,36 @@ class KnowledgeImportEngine:
                 except (KeyError, TypeError, ValueError) as exc:
                     logger.warning("Skipping malformed embedding row: %s", exc)
         return count
+
+    async def _restore_node_embeddings(
+        self, bundle_path: Path, result: KnowledgeImportResult
+    ) -> None:
+        """Import canonical node vectors only under the destination's trusted
+        model; every other row stays pending re-embedding (precondition #3).
+
+        Trusted = same model (basename — sites stage the same model under
+        different paths) and a vector whose length equals its declared
+        dimension. Rows land under the DESTINATION's model name so its own
+        queries find them; existing rows are never overwritten.
+        """
+        path = bundle_path / _TABLE_FILES["node_embeddings"]
+        if not path.exists():
+            return
+        rows = list(_iter_rows(path))
+        dest_model = os.environ.get(_DEST_EMBED_MODEL_ENV, "").strip()
+        pool = self._pool()
+        trusted = [r for r in rows if _trusted_node_vector(r, dest_model)]
+        result.node_embeddings_pending = len(rows) - len(trusted)
+        if not trusted:
+            return
+        if pool is None:
+            self._mark_degraded(result, "node embeddings skipped (no DB pool)")
+            result.node_embeddings_pending = len(rows)
+            return
+        result.node_embedding_count = await _insert_node_vectors(
+            pool, trusted, dest_model
+        )
+        result.node_embeddings_pending = len(rows) - result.node_embedding_count
 
     async def _restore_catalog(
         self,
@@ -731,22 +776,37 @@ class KnowledgeImportEngine:
         honestly reports what Hatchling still has to fetch. Missing stores
         defer (counted, never crash); existing rows are never stomped.
         """
-        skills = [r for r in manifest.get("skills") or [] if isinstance(r, dict)]
-        mcps = [r for r in manifest.get("mcp_configs") or [] if isinstance(r, dict)]
+        skills, mcps = _manifest_refs(manifest)
         if not skills and not mcps:
             return
-        if self._skill_store is None or (mcps and self._mcp_store is None):
-            result.reference_stores_deferred = True
-        if self._skill_store is not None:
-            imported, existing = _import_skill_refs(
-                self._skill_store, skills, target_project
-            )
-            result.skill_refs_imported = imported
-            result.skill_refs_existing = existing
-        if self._mcp_store is not None:
-            present, missing = _resolve_mcp_refs(self._mcp_store, mcps)
-            result.mcp_refs_present = present
-            result.mcp_refs_missing = missing
+        result.reference_stores_deferred = self._skill_store is None or (
+            bool(mcps) and self._mcp_store is None
+        )
+        self._consume_skill_refs(skills, target_project, result)
+        self._consume_mcp_refs(mcps, result)
+
+    def _consume_skill_refs(
+        self,
+        skills: list[dict[str, Any]],
+        target_project: str,
+        result: KnowledgeImportResult,
+    ) -> None:
+        if self._skill_store is None:
+            return
+        imported, existing = _import_skill_refs(
+            self._skill_store, skills, target_project
+        )
+        result.skill_refs_imported = imported
+        result.skill_refs_existing = existing
+
+    def _consume_mcp_refs(
+        self, mcps: list[dict[str, Any]], result: KnowledgeImportResult
+    ) -> None:
+        if self._mcp_store is None:
+            return
+        present, missing = _resolve_mcp_refs(self._mcp_store, mcps)
+        result.mcp_refs_present = present
+        result.mcp_refs_missing = missing
 
     def _register_catalog_row(
         self, manifest: dict[str, Any], target_project: str
@@ -758,38 +818,58 @@ class KnowledgeImportEngine:
         so re-imports converge; absent block/store or catalog-less bundles
         are a quiet no-op.
         """
-        block = manifest.get("catalog")
-        if self._catalog_store is None or not isinstance(block, dict):
+        if self._catalog_store is None:
             return False
-        name = str(block.get("name") or "").strip()
-        if not name:
+        spec = _catalog_spec_from_manifest(manifest, target_project)
+        if spec is None:
             return False
-        ownership = manifest.get("ownership") or {}
-        spec = {
-            "project_id": target_project,
-            "name": name,
-            "version": str(block.get("version") or "0.1.0"),
-            "description": str(block.get("description") or ""),
-            "ontology": str(block.get("ontology") or ""),
-            "contributors": [
-                str(c)
-                for c in (
-                    block.get("contributors") or ownership.get("contributors") or []
-                )
-            ],
-            "licence": str(block.get("licence") or ownership.get("licence") or ""),
-            "provenance": block.get("provenance")
-            if isinstance(block.get("provenance"), dict)
-            else {},
-        }
         try:
             # The store adapter (api layer) owns the CatalogSpec shape —
             # knowledge never imports umrs.api (ADR-053 plane fence).
             self._catalog_store.register_from_bundle(spec, owner_id="bundle-import")
         except Exception:  # noqa: BLE001 — catalog reg is best-effort beside the restore
-            logger.warning("catalog row registration failed for %r", name)
+            logger.warning("catalog row registration failed for %r", spec["name"])
             return False
         return True
+
+
+def _manifest_refs(manifest: dict[str, Any]) -> tuple[list[dict], list[dict]]:
+    """The manifest's by-reference skill + MCP blocks (dict rows only)."""
+    skills = [r for r in manifest.get("skills") or [] if isinstance(r, dict)]
+    mcps = [r for r in manifest.get("mcp_configs") or [] if isinstance(r, dict)]
+    return skills, mcps
+
+
+def _catalog_spec_from_manifest(
+    manifest: dict[str, Any], target_project: str
+) -> dict[str, Any] | None:
+    """The D-39 catalog row to re-register, or None (no block / no name)."""
+    block = manifest.get("catalog")
+    name = str(block.get("name") or "").strip() if isinstance(block, dict) else ""
+    if not name:
+        return None
+    fields = _catalog_fields(block, manifest.get("ownership") or {})
+    return {"project_id": target_project, "name": name, **fields}
+
+
+def _catalog_fields(block: dict[str, Any], ownership: dict[str, Any]) -> dict[str, Any]:
+    """Descriptive catalog fields; contributors/licence fall back to ownership."""
+    provenance = block.get("provenance")
+    return {
+        "version": str(block.get("version") or "0.1.0"),
+        "description": str(block.get("description") or ""),
+        "ontology": str(block.get("ontology") or ""),
+        "contributors": [
+            str(c) for c in _owned(block, ownership, "contributors") or []
+        ],
+        "licence": str(_owned(block, ownership, "licence") or ""),
+        "provenance": provenance if isinstance(provenance, dict) else {},
+    }
+
+
+def _owned(block: dict[str, Any], ownership: dict[str, Any], key: str) -> Any:
+    """Catalog block value, falling back to the manifest ownership block."""
+    return block.get(key) or ownership.get(key)
 
 
 def _parse_skill_ref(ref: dict[str, Any]) -> tuple[str, str, str]:
@@ -821,7 +901,9 @@ def _import_skill_refs(
         try:
             scope = SkillScope(scope_s)
         except ValueError:
-            logger.warning("Skipping skill ref with unknown scope %r: %s", scope_s, name)
+            logger.warning(
+                "Skipping skill ref with unknown scope %r: %s", scope_s, name
+            )
             continue
         project_id = target_project if scope is SkillScope.PROJECT else None
         if (
@@ -865,3 +947,46 @@ def _resolve_mcp_refs(
             logger.warning("MCP registry lookup failed for %r", name)
             missing.append(name)
     return present, missing
+
+
+def _model_base(model: str) -> str:
+    return str(model or "").rstrip("/").rsplit("/", 1)[-1]
+
+
+def _trusted_node_vector(row: dict[str, Any], dest_model: str) -> bool:
+    """Precondition #3 pin check for one exported node vector."""
+    vector = row.get("embedding") or []
+    return (
+        bool(dest_model)
+        and _model_base(row.get("model_name", "")) == _model_base(dest_model)
+        and isinstance(vector, list)
+        and len(vector) == int(row.get("dimension") or 0) > 0
+    )
+
+
+async def _insert_node_vectors(
+    pool: Any, rows: list[dict[str, Any]], dest_model: str
+) -> int:
+    """Insert trusted rows under the destination model (idempotent; the
+    node must have been restored — FK — or the row is skipped)."""
+    count = 0
+    async with pool.acquire() as conn:
+        for row in rows:
+            try:
+                await conn.execute(
+                    """INSERT INTO knowledge_node_embeddings
+                       (node_id, model_name, dimension, embedding, content_hash)
+                       VALUES ($1, $2, $3, $4::vector, $5)
+                       ON CONFLICT (node_id, model_name) DO NOTHING""",
+                    row["node_id"],
+                    dest_model,
+                    len(row["embedding"]),
+                    _vector_literal(row["embedding"]),
+                    row.get("content_hash") or "",
+                )
+                count += 1
+            except Exception as exc:  # noqa: BLE001 — per-row fault isolation (FK, shape)
+                logger.warning(
+                    "Skipping node embedding %s: %s", row.get("node_id"), exc
+                )
+    return count

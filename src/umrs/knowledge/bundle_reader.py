@@ -60,6 +60,12 @@ class ExportBundleWriter:
         await _write_jsonl(path, rows)
         logger.debug("Wrote %d embedding rows to %s", len(rows), path)
 
+    async def write_node_embeddings(self, rows: list[dict[str, Any]]) -> None:
+        """Write node_embeddings.jsonl (canonical node vectors, 0075)."""
+        path = self._dir / "node_embeddings.jsonl"
+        await _write_jsonl(path, rows)
+        logger.debug("Wrote %d node-embedding rows to %s", len(rows), path)
+
     async def write_catalog(self, rows: list[dict[str, Any]]) -> None:
         """Write catalog.jsonl."""
         path = self._dir / "catalog.jsonl"

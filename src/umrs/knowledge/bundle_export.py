@@ -91,6 +91,25 @@ def _pending_pin() -> dict[str, Any]:
     return _pin(model="", model_path="", revision="", dimensions=0, pending=True)
 
 
+def _node_vector_row(r: Any) -> dict[str, Any]:
+    """One knowledge_node_embeddings row → its bundle shape."""
+    return {
+        "node_id": r["node_id"],
+        "model_name": r.get("model_name") or "",
+        "dimension": int(r.get("dimension") or 0),
+        "embedding": _parse_vector_text(r["embedding"]),
+        "content_hash": r.get("content_hash") or "",
+    }
+
+
+def _parse_vector_text(value: Any) -> list[float]:
+    """pgvector text form ``[0.1,0.2]`` (or an already-decoded list) → floats."""
+    if isinstance(value, list):
+        return [float(v) for v in value]
+    text = str(value or "").strip().strip("[]")
+    return [float(v) for v in text.split(",") if v.strip()]
+
+
 def _model_basename(model_path: str) -> str:
     """Canonical-ish name from a pre-staged path (falls back to the value)."""
     if not model_path:
@@ -256,6 +275,10 @@ class KnowledgeExportEngine:
         snapshot = self._resolve_export_snapshot(project_id)
         excluded = snapshot.excluded_node_ids if snapshot is not None else frozenset()
         table_counts = await self._dump_core_tables(project_id, writer, excluded)
+        table_counts["node_embeddings"] = (
+            await self._dump_node_embeddings(project_id, writer, excluded),
+            "node_embeddings.jsonl",
+        )
         link_rows, ref_rows = await self._dump_a2l_tables(project_id, writer)
         table_counts["a2l_links"] = (len(link_rows), "a2l_links.jsonl")
         table_counts["a2l_refs"] = (len(ref_rows), "a2l_refs.jsonl")
@@ -454,6 +477,40 @@ class KnowledgeExportEngine:
             "embeddings": (emb_total, "embeddings.jsonl"),
             "catalog": (len(cat_rows), "catalog.jsonl"),
         }
+
+    async def _dump_node_embeddings(
+        self,
+        project_id: str,
+        writer: ExportBundleWriter,
+        excluded_node_ids: frozenset[str] = frozenset(),
+    ) -> int:
+        """Write the project's canonical node vectors (0075, KNOWLEDGE_EMBED).
+
+        Rows of snapshot-excluded nodes stay out, like the nodes themselves.
+        Best-effort: an unreadable table writes an empty file (0 rows).
+        """
+        try:
+            rows = await self._store._pool.fetch(  # type: ignore[union-attr]
+                "SELECT kne.node_id, kne.model_name, kne.dimension, "
+                "kne.embedding::text AS embedding, kne.content_hash "
+                "FROM knowledge_node_embeddings kne "
+                "JOIN knowledge_nodes kn ON kn.node_id = kne.node_id "
+                "WHERE kn.project_id = $1 ORDER BY kne.node_id, kne.model_name",
+                project_id,
+            )
+        except Exception as exc:  # noqa: BLE001 — optional table, honest empty file
+            logger.warning("node embeddings not exported for %s: %s", project_id, exc)
+            rows = []
+        out = [
+            _node_vector_row(r)
+            for r in rows
+            if r.get("node_id")
+            and r.get("embedding")
+            and r["node_id"] not in excluded_node_ids
+        ]
+        await writer.write_node_embeddings(out)
+        logger.info("Exported %d node embeddings for project=%s", len(out), project_id)
+        return len(out)
 
     async def _dump_a2l_tables(
         self, project_id: str, writer: ExportBundleWriter
