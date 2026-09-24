@@ -5,6 +5,7 @@ import os
 import shutil
 import socket
 import tempfile
+import threading
 import time
 
 from umrs.core.TaskCmdStatus import TaskCmd
@@ -200,6 +201,8 @@ class MessageQueue:
         tunnel_mode=None,
         prefer_env_server_host=True,
         context=None,
+        use_status_all_cache=True,
+        status_all_cache_ttl=0.2,
     ):
         """
         Initializes the MessageQueue.
@@ -243,6 +246,16 @@ class MessageQueue:
         self.tmp_dir = tmp_dir
         self.task_manager = task_manager
         self.status_store = status_store
+        # UMRS_STATUS_ALL_CACHE=0 disables the cache without code changes (e.g. for benchmarking)
+        env_cache = os.environ.get("UMRS_STATUS_ALL_CACHE")
+        if env_cache is not None:
+            use_status_all_cache = env_cache.strip() not in ("0", "false", "no")
+        self.use_status_all_cache = use_status_all_cache
+        self.status_all_cache_ttl = status_all_cache_ttl
+        # (timestamp, payload) — None until first build
+        self._status_all_cache: tuple[float, str] | None = None
+        # Note: the upstream per-instance _send_lock was reverted by 2ad7ee04
+        # (STATUS threads removed); sends stay synchronous on the event loop.
         self.debug = False  # disable noisy send/recv logs by default
         self._auth_sessions: dict[str, AuthContext] = {}  # client_id -> AuthContext
         self._last_control_auth: dict[str, str] = {}
@@ -654,9 +667,13 @@ class MessageQueue:
     def _parse_status(self, splited_msg, zmq_sender_id):
         client_id = splited_msg[1] if len(splited_msg) > 1 else None
         status_key = splited_msg[2] if len(splited_msg) > 2 else "all"
+        # Final upstream form (92720901): synchronous — the short-lived
+        # STATUS_ALL cache carries the concurrency load; per-call threads and
+        # the coarse send lock were introduced then reverted upstream.
         payload = self._get_status_payload(client_id, status_key)
         with contextlib.suppress(RuntimeError):
             self.send_string(payload, zmq_sender_id)
+        return None
 
     def _parse_status_all(self, splited_msg, zmq_sender_id):
         payload = self._get_status_all_payload()
@@ -1444,14 +1461,8 @@ class MessageQueue:
             payload["pool"] = pool_metrics
         return json.dumps(payload, ensure_ascii=False)
 
-    def _get_status_all_payload(self) -> str:
-        """Build a single JSON response with every known client's status.
-
-        Uses one DB round-trip for uncompleted tasks (all clients) plus the
-        in-memory status_store.  The ``clients`` dict maps client_id to the
-        same structure that ``_get_status_payload`` returns per client, so
-        monitor_users.py can reuse the same parsing logic.
-        """
+    def _build_status_all_payload(self) -> str:
+        """Build and return the raw STATUS_ALL JSON string (no caching)."""
         try:
             store = self.status_store or {}
             generated_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -1485,6 +1496,29 @@ class MessageQueue:
                 {"status": "error", "message": f"STATUS_ALL build error: {exc}"},
                 ensure_ascii=False,
             )
+
+    def _get_status_all_payload(self) -> str:
+        """Return the STATUS_ALL JSON, using a short-lived cache when enabled.
+
+        When ``use_status_all_cache`` is True (default), repeated calls within
+        ``status_all_cache_ttl`` seconds (default 0.2 s) return the same
+        pre-built payload without a DB round-trip.  This collapses N concurrent
+        status polls into a single query.
+
+        Set ``use_status_all_cache=False`` on the MessageQueue constructor to
+        disable caching (useful for benchmarking or when sub-TTL freshness is
+        required).
+        """
+        if self.use_status_all_cache:
+            now = time.monotonic()
+            if self._status_all_cache is not None:
+                ts, cached = self._status_all_cache
+                if now - ts < self.status_all_cache_ttl:
+                    return cached
+            payload = self._build_status_all_payload()
+            self._status_all_cache = (now, payload)
+            return payload
+        return self._build_status_all_payload()
 
     def request_status_all(self) -> str:
         """Send STATUS_ALL and return the raw JSON reply (client role only)."""
