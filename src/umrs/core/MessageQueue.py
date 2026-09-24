@@ -4,7 +4,6 @@ import os
 import shutil
 import socket
 import tempfile
-import threading
 import time
 
 import contextlib
@@ -221,7 +220,6 @@ class MessageQueue:
         self.status_all_cache_ttl = status_all_cache_ttl
         # (timestamp, payload) — None until first build
         self._status_all_cache: tuple[float, str] | None = None
-        self._status_all_cache_lock = threading.Lock()
         self.debug = False  # disable noisy send/recv logs by default
         self._auth_sessions: dict[str, AuthContext] = {}  # client_id -> AuthContext
         self._last_control_auth: dict[str, str] = {}
@@ -1325,33 +1323,15 @@ class MessageQueue:
             )
 
     def _get_status_all_payload(self) -> str:
-        """Return the STATUS_ALL JSON, using a short-lived cache when enabled.
-
-        When ``use_status_all_cache`` is True (default), repeated calls within
-        ``status_all_cache_ttl`` seconds (default 0.2 s) return the same
-        pre-built payload without a DB round-trip.  This collapses N concurrent
-        status polls into a single query.
-
-        Set ``use_status_all_cache=False`` on the MessageQueue constructor to
-        disable caching (useful for benchmarking or when sub-TTL freshness is
-        required).
-        """
+        """Return the STATUS_ALL JSON, using a short-lived cache when enabled."""
         if self.use_status_all_cache:
-            # Fast path: no lock needed for a fresh cache hit
             now = time.monotonic()
             entry = self._status_all_cache
             if entry is not None and now - entry[0] < self.status_all_cache_ttl:
                 return entry[1]
-            # Slow path: acquire lock so only one thread rebuilds at a time
-            with self._status_all_cache_lock:
-                # Re-check: another thread may have rebuilt while we waited
-                now = time.monotonic()
-                entry = self._status_all_cache
-                if entry is not None and now - entry[0] < self.status_all_cache_ttl:
-                    return entry[1]
-                payload = self._build_status_all_payload()
-                self._status_all_cache = (time.monotonic(), payload)
-                return payload
+            payload = self._build_status_all_payload()
+            self._status_all_cache = (time.monotonic(), payload)
+            return payload
         return self._build_status_all_payload()
 
     def request_status_all(self) -> str:
