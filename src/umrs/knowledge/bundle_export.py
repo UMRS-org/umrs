@@ -45,8 +45,6 @@ logger = logging.getLogger(__name__)
 _HMAC_ALGORITHM = "sha256"
 _SIGNATURE_FILENAME = "signature.sig"
 _PAGE_SIZE = 500
-# Artifacts above this size keep the physical identity (not read at export).
-_IDENTITY_READ_CAP = 64 * 1024 * 1024
 _BUNDLE_FORMAT = "r4-kb"
 _BUNDLE_VERSION = "1.2"
 _GENERATOR_NAME = "umrs"
@@ -370,14 +368,21 @@ class KnowledgeExportEngine:
     def _stamp_identity(self, row: dict[str, Any]) -> None:
         """ADR-032 #1: map the row to its canonical identity (``cid-1``);
         existing ids are untouched — the map travels, nothing is rewritten."""
+        block = canonical_identity.carried(row.get("metadata"))
+        if block is None:
+            block = self._compute_identity(row)
+        row["canonical_identity"] = block
+        counts = self._identity_counts
+        counts[block["normalization"]] = counts.get(block["normalization"], 0) + 1
+
+    def _compute_identity(self, row: dict[str, Any]) -> dict[str, str]:
+        """Identity from the artifact's bytes (unstamped rows only)."""
         raw = None
         size = int(row.get("size_bytes") or 0)
-        if self._artifact_reader is not None and size <= _IDENTITY_READ_CAP:
+        if self._artifact_reader is not None and size <= canonical_identity.READ_CAP:
             raw = self._artifact_reader(str(row.get("source_ref") or ""))
-        ident = canonical_identity.identity_of(raw, str(row.get("content_hash") or ""))
-        row["canonical_identity"] = ident.to_dict()
-        counts = self._identity_counts
-        counts[ident.normalization] = counts.get(ident.normalization, 0) + 1
+        digest = str(row.get("content_hash") or "")
+        return canonical_identity.identity_of(raw, digest).to_dict()
 
     def _serialize_ir(self, ir: Any) -> dict[str, Any]:
         return {

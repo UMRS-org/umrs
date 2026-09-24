@@ -229,7 +229,7 @@ def _artifact_kwargs(row: dict[str, Any], project_id: str) -> dict[str, Any]:
 def _metadata_with_identity(row: dict[str, Any]) -> dict[str, Any]:
     """Artifact metadata carrying the exported canonical identity (ADR-032 #1);
     a missing or malformed block is dropped, never trusted."""
-    metadata = dict(row.get("metadata") or {})
+    metadata = canonical_identity.metadata_dict(row.get("metadata"))
     metadata.pop("canonical_identity", None)
     block = canonical_identity.from_row(row)
     if block is not None:
