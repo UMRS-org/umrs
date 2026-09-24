@@ -304,6 +304,9 @@ class KnowledgeExportEngine:
             reconciliation_snapshot,
             catalog_record,
         )
+        # The signature must cover the table CONTENTS, not only their names
+        # and counts: each listed file's sha256 rides the signed manifest.
+        stamp_table_digests(self._manifest, writer.path)
         # D-46: the catalog record's redaction rules apply to the manifest
         # BEFORE hashing — signatures always cover the redacted content.
         _apply_redaction_rules(self._manifest, catalog_record.get("redaction_rules"))
@@ -936,6 +939,50 @@ def verify_signature(
     return hmac.compare_digest(computed_sig, stored_sig)
 
 
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def stamp_table_digests(manifest: dict[str, Any], bundle_dir: Path) -> None:
+    """Add each present table file's sha256 to its ``tables`` entry."""
+    for entry in (manifest.get("tables") or {}).values():
+        path = bundle_dir / str(entry.get("file") or "")
+        if entry.get("file") and path.is_file():
+            entry["sha256"] = _file_sha256(path)
+
+
+def _table_entry_intact(bundle_dir: Path, entry: Any) -> bool:
+    """One ``tables`` entry: unpinned passes; pinned needs its plain-named
+    file present with the pinned sha256."""
+    expected = entry.get("sha256") if isinstance(entry, dict) else None
+    if not expected:
+        return True
+    name = str(entry.get("file") or "")
+    path = bundle_dir / name
+    if not name or Path(name).name != name or not path.is_file():
+        return False
+    return _file_sha256(path) == expected
+
+
+def tables_intact(bundle_dir: Path, manifest: dict[str, Any]) -> bool:
+    """Every table the manifest pins by sha256 is present and unchanged
+    (entries without a digest — pre-2026-09-24 bundles — are not checked)."""
+    tables = manifest.get("tables") or {}
+    return all(_table_entry_intact(bundle_dir, e) for e in tables.values())
+
+
+def tables_pinned(manifest: dict[str, Any]) -> bool:
+    """Whether the manifest pins its table contents (bundles since 2026-09-24)."""
+    tables = manifest.get("tables") or {}
+    return bool(tables) and all(
+        isinstance(e, dict) and e.get("sha256") for e in tables.values()
+    )
+
+
 def verify_bundle_integrity(
     bundle_dir: Path,
     secret_key: str,
@@ -970,12 +1017,23 @@ def verify_bundle_integrity(
             return False
 
     # 2. Check HMAC signature on the full manifest (re-read with fields).
-    return verify_signature(manifest_path, signature_path, secret_key)
+    if not verify_signature(manifest_path, signature_path, secret_key):
+        return False
+    # 3. The signed manifest pins each table file's sha256: a changed row in
+    # any table fails verification (before 2026-09-24 only the manifest was
+    # covered, so edited table rows still verified).
+    if not tables_intact(bundle_dir, manifest_data):
+        logger.warning("Bundle table content mismatch — tampering detected")
+        return False
+    return True
 
 
 __all__ = [
     "KnowledgeExportEngine",
     "KnowledgeExportResult",
+    "stamp_table_digests",
+    "tables_intact",
+    "tables_pinned",
     "upload_bundle_to_s3",
     "verify_bundle_integrity",
     "verify_signature",
