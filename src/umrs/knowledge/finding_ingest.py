@@ -32,6 +32,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+from . import canonical_identity
 from .loop import LoopIteration, ResearchLoop
 
 logger = logging.getLogger(__name__)
@@ -362,7 +363,7 @@ def _mint_one(
         project_id=loop.project_id,
         source_ref=f"loop:{loop.loop_id}#iteration-{iteration.iteration_number}",
         size_bytes=len(raw),
-        metadata=metadata,
+        metadata={**metadata, **canonical_identity.stamp(raw, content_hash)},
     )
     nodes, edges = _lineage(loop, artifact_id, finding, content_hash)
     sink.link(project_id=loop.project_id, nodes=nodes, edges=edges)

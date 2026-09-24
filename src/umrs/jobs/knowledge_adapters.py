@@ -30,6 +30,7 @@ if TYPE_CHECKING:
 import boto3
 
 # Re-export KnowledgeExportResult for consumers that need it.
+from ..knowledge import canonical_identity
 from ..knowledge.bundle_export import KnowledgeExportResult
 from .models import Job, JobAttempt, JobType
 from .scheduler import OrchestratorBackend
@@ -859,6 +860,7 @@ def _put_inline_text_sync(
             "content_hash": content_hash,
             "kind": _artifact_kind_for_path(uri),
             "source_ref": storage.key(project_id, content_hash),
+            "metadata": canonical_identity.stamp(content, content_hash),
         }
     )
     result.artifact_ids.append(artifact_id)
@@ -902,6 +904,7 @@ def _put_file_sync(
             # source_ref must be the S3 key: knowledge_understand fetches
             # bytes via ArtifactStorage.key-style lookups by source_ref.
             "source_ref": storage.key(project_id, content_hash),
+            "metadata": canonical_identity.stamp(content, content_hash),
         }
     )
     result.artifact_ids.append(artifact_id)
@@ -967,6 +970,7 @@ def _fetch_and_store_remote(
             # Remote-scraped research content is overwhelmingly prose/markdown.
             "kind": "document",
             "source_ref": storage.key(project_id, content_hash),
+            "metadata": canonical_identity.stamp(fetch.content, content_hash),
         }
     )
     result.artifact_ids.append(artifact_id)
@@ -1039,6 +1043,7 @@ def _store_artifacts_in_db_sync(
                             kind=desc.get("kind", "document"),
                             project_id=project_id,
                             source_ref=desc.get("source_ref", ""),
+                            metadata=desc.get("metadata"),
                         )
                     except Exception:  # noqa: BLE001, S110 — best-effort, must not raise
                         pass

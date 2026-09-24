@@ -22,6 +22,7 @@ at export time and carried on import (never a rewrite in place).
 from __future__ import annotations
 
 import hashlib
+import json
 import unicodedata
 from dataclasses import dataclass
 from typing import Any
@@ -31,6 +32,9 @@ TEXT_V1 = "text-v1"
 BYTES = "bytes"
 PHYSICAL = "physical"
 NORMALIZATIONS = (TEXT_V1, BYTES, PHYSICAL)
+
+# Artifacts above this size are not read for an identity (export, backfill).
+READ_CAP = 64 * 1024 * 1024
 
 _BOM = b"\xef\xbb\xbf"
 _DOCUMENT_ID_PREFIX = "kdoc-"
@@ -91,14 +95,40 @@ def from_row(row: dict[str, Any]) -> dict[str, str] | None:
     return CanonicalIdentity(identity, str(block["normalization"])).to_dict()
 
 
+def metadata_dict(value: Any) -> dict[str, Any]:
+    """Artifact metadata as a dict: pools without a JSON codec return JSONB
+    as text; anything undecodable or non-object is empty."""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            return {}
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def carried(metadata: Any) -> dict[str, str] | None:
+    """The well-formed block an artifact's metadata already carries (stamped
+    at ingest, by the backfill, or by an earlier import), else None."""
+    return from_row(metadata_dict(metadata))
+
+
+def stamp(raw: bytes, physical_digest: str) -> dict[str, dict[str, str]]:
+    """Metadata fragment stamping bytes in hand at ingest time."""
+    return {"canonical_identity": identity_of(raw, physical_digest).to_dict()}
+
+
 __all__ = [
     "BYTES",
     "CONTRACT",
     "NORMALIZATIONS",
     "PHYSICAL",
+    "READ_CAP",
     "TEXT_V1",
     "CanonicalIdentity",
+    "carried",
     "from_row",
     "identity_of",
+    "metadata_dict",
     "normalize_text",
+    "stamp",
 ]

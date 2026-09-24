@@ -225,3 +225,126 @@ async def test_failed_lookup_is_degraded_not_fatal(tmp_path):
     assert result.canonical_matches == []
     assert result.collision_checks_degraded == 1
     assert result.artifact_count == 1
+
+
+# ── addendum 7: stamped at ingest, reused at export, backfilled ─────────────
+
+
+def test_carried_decodes_codecless_jsonb_text():
+    block = cid.identity_of(b"t", "").to_dict()
+    assert cid.carried(json.dumps({"canonical_identity": block})) == block
+    assert cid.carried("not json") is None
+    assert cid.carried(None) is None
+    assert cid.metadata_dict("[1, 2]") == {}
+
+
+def test_import_metadata_tolerates_text_metadata():
+    assert _metadata_with_identity({"metadata": '{"n": 1}'}) == {"n": 1}
+
+
+def test_export_reuses_a_carried_stamp_without_reading(tmp_path):
+    calls = []
+    engine = _engine(tmp_path, reader=lambda ref: calls.append(ref) or b"other")
+    stamped = cid.stamp(b"original text", "h")
+    row = {"source_ref": "k", "content_hash": "h", "size_bytes": 1, "metadata": stamped}
+    engine._stamp_identity(row)
+    assert calls == []
+    assert row["canonical_identity"] == stamped["canonical_identity"]
+
+
+class _Storage:
+    @staticmethod
+    def key(project_id, content_hash):
+        return f"projects/{project_id}/{content_hash}"
+
+    def put_artifact(self, _project_id, content):
+        return hashlib.sha256(content).hexdigest(), len(content), None
+
+
+def test_ingest_stamps_the_descriptor(monkeypatch):
+    monkeypatch.setattr(knowledge_adapters, "_bridge_a2l_ref", lambda *_a: None)
+    descs: list[dict] = []
+    result = knowledge_adapters.KnowledgeIngestResult()
+    knowledge_adapters._put_inline_text_sync(
+        "j",
+        "a",
+        _Storage(),
+        "p",
+        {"uri": "n.md", "content": "hello\r\n"},
+        "art-1",
+        result,
+        [],
+        descs,
+    )
+    assert descs[0]["metadata"]["canonical_identity"]["document_id"] == (
+        cid.identity_of(b"hello", "").document_id
+    )
+
+
+class _BackfillStore:
+    def __init__(self, rows):
+        self.rows = sorted(rows, key=lambda r: r["artifact_id"])
+        self.stamped: dict[str, dict] = {}
+        self.pages = 0
+
+    async def artifacts_missing_identity(self, project_id, after, limit):
+        assert project_id == "p"
+        self.pages += 1
+        todo = [
+            r
+            for r in self.rows
+            if r["artifact_id"] > after and r["artifact_id"] not in self.stamped
+        ]
+        return todo[:limit]
+
+    async def stamp_canonical_identity(self, artifact_id, block):
+        self.stamped[artifact_id] = block
+        return True
+
+
+def _rows(n):
+    return [
+        {"artifact_id": f"a{i:02d}", "content_hash": "h", "source_ref": f"k{i}", "size_bytes": 1}
+        for i in range(n)
+    ]
+
+
+async def test_backfill_dry_run_writes_nothing():
+    from umrs.knowledge.identity_backfill import backfill
+
+    store = _BackfillStore(_rows(3))
+    outcome = await backfill(store, lambda ref: ref.encode(), project_id="p", batch=2)
+    assert (outcome.scanned, outcome.stamped) == (3, 0)
+    assert outcome.by_normalization == {"text-v1": 3}
+    assert store.stamped == {}
+
+
+async def test_backfill_apply_stamps_readable_rows_and_terminates():
+    from umrs.knowledge.identity_backfill import backfill
+
+    store = _BackfillStore(_rows(5))
+    unreadable = {"k1", "k3"}
+    outcome = await backfill(
+        store,
+        lambda ref: None if ref in unreadable else b"\x00bin" + ref.encode(),
+        project_id="p",
+        apply=True,
+        batch=2,
+    )
+    assert outcome.to_dict() == {
+        "scanned": 5,
+        "stamped": 3,
+        "unreadable": 2,
+        "by_normalization": {"bytes": 3},
+    }
+    assert sorted(store.stamped) == ["a00", "a02", "a04"]
+    assert store.pages <= 4  # keyset paging: unreadable rows are never re-scanned
+
+
+async def test_backfill_skips_oversized_artifacts():
+    from umrs.knowledge.identity_backfill import backfill
+
+    rows = [{"artifact_id": "big", "content_hash": "h", "source_ref": "k", "size_bytes": 1 << 40}]
+    store = _BackfillStore(rows)
+    outcome = await backfill(store, lambda _r: b"x", project_id="p", apply=True)
+    assert (outcome.unreadable, outcome.stamped) == (1, 0)

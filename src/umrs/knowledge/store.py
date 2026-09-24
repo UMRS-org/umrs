@@ -510,6 +510,44 @@ class KnowledgeStore:
             )
         return found
 
+    async def artifacts_missing_identity(
+        self, project_id: str | None, after: str, limit: int
+    ) -> list[dict[str, Any]]:
+        """Active artifacts with no carried canonical identity (ADR-032 #1),
+        keyset-paged by artifact_id (``after`` = last id seen, "" = start)."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT artifact_id, content_hash, source_ref, size_bytes
+                   FROM knowledge_artifacts
+                   WHERE status = 'active'
+                     AND NOT (COALESCE(metadata, '{}'::jsonb) ? 'canonical_identity')
+                     AND ($1::text IS NULL OR project_id = $1)
+                     AND artifact_id > $2
+                   ORDER BY artifact_id
+                   LIMIT $3""",
+                project_id,
+                after,
+                limit,
+            )
+        return [dict(row) for row in rows]
+
+    async def stamp_canonical_identity(
+        self, artifact_id: str, block: dict[str, str]
+    ) -> bool:
+        """Add the identity block to one artifact's metadata; never overwrites
+        an existing block (True = stamped)."""
+        async with self._pool.acquire() as conn:
+            status = await conn.execute(
+                """UPDATE knowledge_artifacts
+                   SET metadata = COALESCE(metadata, '{}'::jsonb)
+                       || jsonb_build_object('canonical_identity', $2::jsonb)
+                   WHERE artifact_id = $1
+                     AND NOT (COALESCE(metadata, '{}'::jsonb) ? 'canonical_identity')""",
+                artifact_id,
+                block,
+            )
+        return str(status).endswith(" 1")
+
     async def list_artifacts(
         self,
         project_id: str,
