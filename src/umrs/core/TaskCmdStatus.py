@@ -20,6 +20,7 @@ class TaskCmd:
     STATUS = "STATUS"
     STATUS_ALL = "STATUS_ALL"  # server-wide snapshot: all clients in one response
     EXPORT_EMBEDDINGS = "EXPORT_EMBEDDINGS"
+    KNN = "KNN"
     # Model registry commands
     MODEL_REGISTER = "MODEL_REGISTER"
     MODEL_LIST = "MODEL_LIST"
