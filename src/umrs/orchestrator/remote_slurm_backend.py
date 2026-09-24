@@ -365,7 +365,11 @@ class RemoteSlurmBackend(SlurmBackend):
         kwargs.pop("min_gpu_memory_gb", None)
 
         # Build environment exports + sacct attribution for the job.
-        requested_env = kwargs.pop("env", None)
+        requested_env = _cap_gpu_mem_util_env(
+            site,
+            partition_override or self._select_partition(site, gpu_count, node_count),
+            kwargs.pop("env", None),
+        )
         project_id = kwargs.pop("project_id", None)
         if isinstance(requested_env, dict) and not project_id:
             project_id = requested_env.get("PROJECT_ID", "")
@@ -533,7 +537,10 @@ class RemoteSlurmBackend(SlurmBackend):
             # generic terminal without the marker name, and _remove_stale_info_file
             # would delete the only evidence. Marker stays byte-identical to the
             # wrapper's write shape ('budget_exhausted').
-            if str(info.get("RIVAULT_TERMINAL_REASON", "")).strip() == "budget_exhausted":
+            if (
+                str(info.get("RIVAULT_TERMINAL_REASON", "")).strip()
+                == "budget_exhausted"
+            ):
                 return JobInfo(
                     job_id=job_id,
                     status=JobStatus.FAILED,
@@ -908,6 +915,55 @@ class RemoteSlurmBackend(SlurmBackend):
 _PROXY_PASSTHRU = frozenset(
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._:/%-"
 )
+
+
+# The mini-rivault wrapper's own default when VLLM_GPU_MEM_UTIL is unset
+# (serve-model.yaml / serve-model.slurm: ${VLLM_GPU_MEM_UTIL:-0.95}).
+_WRAPPER_GPU_MEM_UTIL_DEFAULT = 0.95
+
+
+def _partition_util_cap(site: Any, partition: str | None) -> float:
+    """Strictest ``gpu_mem_util_max`` across the listed partitions (0 = none)."""
+    profiles = getattr(site, "partition_profiles", None) or {}
+    caps = [
+        float(getattr(profiles.get(part.strip()), "gpu_mem_util_max", 0) or 0)
+        for part in (partition or "").split(",")
+        if part.strip()
+    ]
+    return min((c for c in caps if c > 0), default=0.0)
+
+
+def _requested_util(env: dict[str, Any]) -> float:
+    try:
+        return float(env.get("VLLM_GPU_MEM_UTIL") or _WRAPPER_GPU_MEM_UTIL_DEFAULT)
+    except (TypeError, ValueError):
+        return _WRAPPER_GPU_MEM_UTIL_DEFAULT
+
+
+def _cap_gpu_mem_util_env(site: Any, partition: str | None, env: Any) -> Any:
+    """Apply the partition's ``gpu_mem_util_max`` to the launch env.
+
+    Every wrapper launch (``r4 endpoint up``, pool reconcile, warm reuse)
+    passes through this submit, so the cap lives here, not only in the
+    DeploymentSpec path (live rccs 2026-09-24: an endpoint-up launch still
+    requested 0.9 against ~98 of 121.6 GiB free and failed at startup). For
+    a comma list the strictest listed cap applies; an unset value counts as
+    the wrapper's own default (0.95), so it is capped too.
+    """
+    cap = _partition_util_cap(site, partition)
+    if cap <= 0 or not (env is None or isinstance(env, dict)):
+        return env
+    capped = dict(env or {})
+    requested = _requested_util(capped)
+    if requested > cap:
+        capped["VLLM_GPU_MEM_UTIL"] = f"{cap:g}"
+        logger.info(
+            "VLLM_GPU_MEM_UTIL %.2f capped to %.2f by partition %s",
+            requested,
+            cap,
+            partition,
+        )
+    return capped
 
 
 def _hex_export_parts(env: dict[str, str]) -> list[str]:
