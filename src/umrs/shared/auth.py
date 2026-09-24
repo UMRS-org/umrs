@@ -63,6 +63,7 @@ USER_ALLOWED_COMMANDS: set[str] = frozenset(
         "HANDSHAKE",
         "HAND_CHECK",
         "EXPORT_EMBEDDINGS",
+        "KNN",
         "MODEL_REGISTER",
         "MODEL_LIST",
         "MODEL_DOWNLOAD",
