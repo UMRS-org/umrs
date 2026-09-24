@@ -17,6 +17,12 @@ from . import RegisteredSkill, SkillScope
 
 logger = logging.getLogger(__name__)
 
+# Column list shared by every skill SELECT (order matters: `_row_to_skill`).
+_SKILL_COLUMNS = (
+    "skill_id, name, version, scope, owner_id, project_id, "
+    "skill_md, manifest, review_state, enabled, registered_at, updated_at"
+)
+
 
 class SkillStoreError(Exception):
     """Base error for skill store operations."""
@@ -121,9 +127,8 @@ class SkillStore:
         """
         with self.conn.cursor() as cur:
             cur.execute(
-                """
-                SELECT skill_id, name, version, scope, owner_id, project_id,
-                       skill_md, manifest, enabled, registered_at, updated_at
+                f"""
+                SELECT {_SKILL_COLUMNS}
                 FROM skills
                 WHERE skill_id = %s
                 """,
@@ -143,9 +148,8 @@ class SkillStore:
         """Get a skill by (scope, owner, name)."""
         with self.conn.cursor() as cur:
             cur.execute(
-                """
-                SELECT skill_id, name, version, scope, owner_id, project_id,
-                       skill_md, manifest, enabled, registered_at, updated_at
+                f"""
+                SELECT {_SKILL_COLUMNS}
                 FROM skills
                 WHERE name = %s AND scope = %s AND owner_id = %s
                 """,
@@ -179,8 +183,7 @@ class SkillStore:
         with self.conn.cursor() as cur:
             cur.execute(
                 f"""
-                SELECT skill_id, name, version, scope, owner_id, project_id,
-                       skill_md, manifest, enabled, registered_at, updated_at
+                SELECT {_SKILL_COLUMNS}
                 FROM skills{where}
                 ORDER BY name
                 """,
@@ -202,6 +205,69 @@ class SkillStore:
             row = cur.fetchone()
             self.conn.commit()
             return row is not None
+
+    def list_pending_reviews(self) -> list[RegisteredSkill]:
+        """Loop-proposed skills awaiting human review (D-27 edit plane)."""
+        with self.conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT {_SKILL_COLUMNS}
+                FROM skills
+                WHERE enabled = FALSE
+                  AND review_state->>'status' = 'pending_review'
+                ORDER BY registered_at
+                """
+            )
+            return [_row_to_skill(row) for row in cur.fetchall()]
+
+    def decide_review(
+        self,
+        skill_id: str,
+        decision: str,
+        *,
+        reviewer: str,
+        note: str = "",
+        test_receipt: dict[str, Any] | None = None,
+    ) -> RegisteredSkill | None:
+        """Merge a human review decision into a pending proposal (atomic).
+
+        The UPDATE fires only while the row is still ``pending_review``
+        (atomic guard); approve is the merge — the only transition that
+        enables a compiled proposal. Returns the updated skill, or ``None``
+        when the skill is absent or already decided (caller maps to a
+        typed conflict).
+        """
+        from . import _now_iso
+
+        block: dict[str, Any] = {
+            "status": decision,
+            "decision": decision,
+            "reviewer": reviewer,
+            "decided_at": _now_iso(),
+        }
+        if note:
+            block["note"] = note
+        if test_receipt is not None:
+            block["test_receipt"] = test_receipt
+
+        with self.conn.cursor() as cur:
+            cur.execute(
+                f"""
+                UPDATE skills
+                SET review_state = COALESCE(review_state, '{{}}'::jsonb) || %s::jsonb,
+                    enabled = CASE WHEN %s = 'approved' THEN TRUE ELSE enabled END,
+                    updated_at = NOW()
+                WHERE skill_id = %s
+                  AND review_state->>'status' = 'pending_review'
+                RETURNING {_SKILL_COLUMNS}
+                """,
+                (json.dumps(block), decision, skill_id),
+            )
+            row = cur.fetchone()
+            self.conn.commit()
+            if row is None:
+                return None
+            return _row_to_skill(row)
 
     def unregister_skill(self, skill_id: str) -> bool:
         """Delete a skill by ID. Returns True if deleted."""
@@ -258,6 +324,24 @@ def _hash_str(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()[:12]
 
 
+def _jsonb_field(raw: Any) -> dict[str, Any] | None:
+    """Parse a JSONB-ish column value (dict passthrough, JSON str, junk → None)."""
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str) and raw:
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+        return parsed if isinstance(parsed, dict) else None
+    return None
+
+
+def _manifest_data(raw: Any) -> dict[str, Any]:
+    """Manifest dict from a JSONB column (empty on junk — never raises)."""
+    return _jsonb_field(raw) or {}
+
+
 def _row_to_skill(row: tuple) -> RegisteredSkill:
     (
         skill_id,
@@ -268,21 +352,14 @@ def _row_to_skill(row: tuple) -> RegisteredSkill:
         project_id,
         skill_md,
         manifest_raw,
+        review_state_raw,
         enabled,
         registered_at,
         updated_at,
     ) = row
 
-    manifest_data: dict[str, Any]
-    if isinstance(manifest_raw, str):
-        try:
-            manifest_data = json.loads(manifest_raw)
-        except json.JSONDecodeError:
-            manifest_data = {}
-    elif isinstance(manifest_raw, dict):
-        manifest_data = manifest_raw
-    else:
-        manifest_data = {}
+    manifest_data = _manifest_data(manifest_raw)
+    review_state = _jsonb_field(review_state_raw)
 
     from r4_contracts.skills import SkillManifest
 
@@ -306,6 +383,7 @@ def _row_to_skill(row: tuple) -> RegisteredSkill:
         skill_md=skill_md,
         registered_at=registered_at,
         enabled=enabled,
+        review_state=review_state,
     )
 
 
