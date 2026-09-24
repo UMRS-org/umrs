@@ -108,11 +108,15 @@ def test_trusted_host_only_publish_requires_admin(monkeypatch):
     from umrs.api import mcp as mcp_mod
     from umrs.api.mcp import _enforce_registration_scope
 
+    from r4_contracts.errors import ERROR_CODE_HEADER
+
     monkeypatch.setattr(mcp_mod, "_caller_scope", lambda _r: _Scope(is_admin=False))
     with pytest.raises(HTTPException) as exc:
         _enforce_registration_scope(None, _register_request("trusted-host-only"))
     assert exc.value.status_code == 403
-    assert "trust_class_denied" in str(exc.value.detail)
+    # typed taxonomy member (the invoke gate's code), never an ad-hoc body
+    assert exc.value.headers[ERROR_CODE_HEADER] == "mcp.trust_class_denied"
+    assert "only admins may publish" in str(exc.value.detail)
 
 
 def test_admin_publishes_trusted_host(monkeypatch):

@@ -288,6 +288,20 @@ async def list_servers(
     ]
 
 
+def _refuse_trusted_host_publish_by_non_admin(
+    req: ServerRegistrationRequest, scope
+) -> None:
+    """D-24: trusted-host-only is the site-infrastructure class — admins only."""
+    if (req.trust_class or "").strip() == "trusted-host-only" and not scope.is_admin:
+        raise_typed(
+            PlatformError.mcp(
+                "trust_class_denied",
+                "trusted-host-only is the site-infrastructure class "
+                "(D-24): only admins may publish trusted-host servers.",
+            )
+        )
+
+
 def _enforce_registration_scope(
     request: Request, req: ServerRegistrationRequest
 ) -> ServerRegistrationRequest:
@@ -301,17 +315,7 @@ def _enforce_registration_scope(
     `front-end` stay project-scoped (any verified caller, own project).
     """
     scope = _caller_scope(request)
-    if (req.trust_class or "").strip() == "trusted-host-only" and not scope.is_admin:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail={
-                "error": "trust_class_denied",
-                "message": (
-                    "trusted-host-only is the site-infrastructure class "
-                    "(D-24): only admins may publish trusted-host servers."
-                ),
-            },
-        )
+    _refuse_trusted_host_publish_by_non_admin(req, scope)
     if scope.is_admin or scope.anonymous:
         return req
     requested = (req.project_id or "").strip()
