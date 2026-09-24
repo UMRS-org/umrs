@@ -13,7 +13,6 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 import pytest
-
 from umrs.knowledge.agentic_engine import AgenticEngine
 from umrs.knowledge.engine_loop_runner import EngineLoopRunner
 from umrs.knowledge.loop import LoopIteration, LoopPhase, LoopStatus, ResearchLoop
@@ -44,9 +43,7 @@ def _loop(**meta) -> ResearchLoop:
 
 
 def _profile_loop():
-    return _loop(
-        mode="profile", pause_profile={"triggers": ["cost", "competing_hypotheses"]}
-    )
+    return _loop(mode="profile", pause_profile={"triggers": ["cost", "competing_hypotheses"]})
 
 
 class _FakeApprovals:
@@ -59,6 +56,7 @@ class _FakeApprovals:
         self.gets = 0
 
     def request_approval(self, loop_id, iteration, action, approval_id=None, **kw):
+        del loop_id, iteration, action, kw
         self.requests += 1
         return {"id": approval_id or f"appr-{self.requests}"}
 
@@ -76,7 +74,9 @@ def _gate(monkeypatch, approvals, loop):
     )
     monkeypatch.setattr("umrs.knowledge.tool_approvals.get", approvals.get)
     runner = EngineLoopRunner(
-        loop, engine_factory=lambda: None, store=_store({loop.loop_id: loop}),
+        loop,
+        engine_factory=lambda: None,
+        store=_store({loop.loop_id: loop}),
         poll_seconds=0.01,
     )
     return runner._make_approval_gate(loop)
@@ -153,7 +153,7 @@ class TestEngineDeferredFinalisation:
             ]
         )
         engine = self._engine()
-        engine._approval_gate = lambda action: "deferred"
+        engine._approval_gate = lambda _action: "deferred"
         iteration = self._iteration(loop)
         assert engine._select_and_gate_hypothesis(loop, iteration, []) is False
         assert iteration.status == "awaiting_decision"
@@ -171,7 +171,7 @@ class TestEngineDeferredFinalisation:
             ]
         )
         engine = self._engine()
-        engine._approval_gate = lambda action: False
+        engine._approval_gate = lambda _action: False
         iteration = self._iteration(loop)
         with pytest.raises(RuntimeError):
             engine._select_and_gate_hypothesis(loop, iteration, [])
@@ -187,7 +187,7 @@ class TestAgenticDeferredIteration:
             return {"hypothesis": "h"}
 
         engine = AgenticEngine(executor=executor)
-        engine._approval_gate = lambda action: "deferred"
+        engine._approval_gate = lambda _action: "deferred"
         loop = _profile_loop()
         iteration = engine._advance_one(loop)
         assert iteration.status == "awaiting_decision"

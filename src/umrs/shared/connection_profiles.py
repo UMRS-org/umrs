@@ -387,6 +387,12 @@ def _profile_from_content(content: dict[str, Any], path: Path) -> ConnectionProf
         path=str(path),
         zmq_auth_type=(zmq_cfg.get("auth_type") or "none").lower(),
     )
+    _fill_default_service_urls(profile)
+    return profile
+
+
+def _fill_default_service_urls(profile: ConnectionProfile) -> None:
+    """S3 and RAG URLs default to the server host when the profile names none."""
     if not profile.s3_url and not profile.minio_url:
         profile.s3_url = _default_service_url(
             profile.server_host, 9000, profile.tunnel_mode
@@ -396,7 +402,6 @@ def _profile_from_content(content: dict[str, Any], path: Path) -> ConnectionProf
         profile.rag_url = _default_service_url(
             profile.server_host, 8081, profile.tunnel_mode
         )
-    return profile
 
 
 def load_connection_profile(name: str) -> ConnectionProfile:

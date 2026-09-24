@@ -17,6 +17,16 @@ from .models import MCPServer, MCPTool, generate_server_id, generate_tool_id
 logger = logging.getLogger(__name__)
 
 
+def _json_column(value):
+    """JSONB column that may arrive as text (codec-less connections)."""
+    return json.loads(value) if isinstance(value, str) else value
+
+
+def _optional_column(row, index: int, default: str):
+    """Column added by a later migration: absent or empty → the default."""
+    return row[index] if len(row) > index and row[index] else default
+
+
 class MCPServerStoreError(Exception):
     """Base error for MCP server store operations."""
 
@@ -422,13 +432,8 @@ class MCPServerStore:
 
     def _row_to_server(self, row) -> MCPServer:
         """Convert a database row to MCPServer."""
-        auth_config = row[8]
-        if isinstance(auth_config, str):
-            auth_config = json.loads(auth_config)
-        metadata = row[9]
-        if isinstance(metadata, str):
-            metadata = json.loads(metadata)
-
+        auth_config = _json_column(row[8])
+        metadata = _json_column(row[9])
         return MCPServer(
             server_id=row[0],
             name=row[1],
@@ -442,8 +447,8 @@ class MCPServerStore:
             metadata=metadata or {},
             registered_by=row[10],
             project_id=row[11],
-            placement=row[14] if len(row) > 14 and row[14] else "local",
-            trust_class=row[15] if len(row) > 15 and row[15] else "local-safe",
+            placement=_optional_column(row, 14, "local"),
+            trust_class=_optional_column(row, 15, "local-safe"),
             created_at=row[12],
             updated_at=row[13],
         )

@@ -593,25 +593,32 @@ def ops_connect_info(
     return result
 
 
-def _add_connect_info_extras(result: dict[str, Any], x_user_id: str | None) -> None:
-    """Add service URLs and per-user S3 credentials to connect-info result."""
-    # Include service URLs when configured (allows clients to discover
-    # the correct S3/RAG endpoint instead of guessing from the host).
-    # UMRS_S3_URL is the canonical knob (ADR-055); the MinIO-era names stay
-    # readable so an older .env keeps working.
+def _connect_info_services() -> dict[str, str]:
+    """Configured service URLs (S3 + RAG) for connect-info ({} when none)."""
     s3_url = (
         os.environ.get("UMRS_S3_URL")
         or os.environ.get("UMRS_MINIO_URL")
         or os.environ.get("MINIO_ENDPOINT")
     )
     rag_url = os.environ.get("RAG_URL")
-    if s3_url or rag_url:
-        result["services"] = {}
-        if s3_url:
-            result["services"]["s3_url"] = s3_url
-            result["services"]["minio_url"] = s3_url  # deprecated alias, same value
-        if rag_url:
-            result["services"]["rag_url"] = rag_url
+    services: dict[str, str] = {}
+    if s3_url:
+        services["s3_url"] = s3_url
+        services["minio_url"] = s3_url  # deprecated alias, same value
+    if rag_url:
+        services["rag_url"] = rag_url
+    return services
+
+
+def _add_connect_info_extras(result: dict[str, Any], x_user_id: str | None) -> None:
+    """Add service URLs and per-user S3 credentials to connect-info result."""
+    # Include service URLs when configured (allows clients to discover
+    # the correct S3/RAG endpoint instead of guessing from the host).
+    # UMRS_S3_URL is the canonical knob (ADR-055); the MinIO-era names stay
+    # readable so an older .env keeps working.
+    services = _connect_info_services()
+    if services:
+        result["services"] = services
 
     # Include per-user S3 credentials when caller identity is known —
     # legacy transition only (D-16, 2026-09-22): clients stop holding

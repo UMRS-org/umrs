@@ -70,6 +70,7 @@ class FakeBroker:
         return self.leases.get(lease_id)
 
     def revoke_lease(self, lease_id, actor=""):
+        del actor
         self.revoked.append(lease_id)
         self.leases[lease_id].is_valid = False
         return True

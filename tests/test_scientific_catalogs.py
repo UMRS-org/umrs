@@ -144,60 +144,69 @@ class _Conn:
             prov_dict["pins"] = prov_dict["pins"] + _json.loads(pin_arr)
             self.rows[cid]["provenance"] = _json.dumps(prov_dict)
         else:
-            desc, onto, contribs, licence, prov, redact, cid = params
+            *values, cid = params
             row = self.rows[cid]
-            if desc is not None:
-                row["description"] = desc
-            if onto is not None:
-                row["ontology"] = onto
-            if contribs is not None:
-                row["contributors"] = contribs
-            if licence is not None:
-                row["licence"] = licence
-            if prov is not None:
-                row["provenance"] = prov
-            if redact is not None:
-                row["redaction_rules"] = redact
+            fields = (
+                "description",
+                "ontology",
+                "contributors",
+                "licence",
+                "provenance",
+                "redaction_rules",
+            )
+            row.update({k: v for k, v in zip(fields, values, strict=True) if v is not None})
             row["updated_at"] = datetime.now(timezone.utc)
         cur._result = []
 
     def _handle_select(self, sql, params, cur: _Cursor) -> None:
-        if "ORDER BY created_at, catalog_id" in sql:
-            rows = [
-                v
-                for v in self.rows.values()
-                if v["project_id"] == params[0] and v["name"] == params[1]
-            ]
-            rows.sort(key=lambda v: v["created_at"])
-            cur._result = [_tuple_from_dict(v) for v in rows]
-        elif "provenance->'pins' @>" in sql:
-            ref = json.loads(params[0])[0]["ref"]
-            want_pid = params[1] if len(params) > 1 else None
-            out = []
-            for v in self.rows.values():
-                if want_pid and v["project_id"] != want_pid:
-                    continue
-                prov = v["provenance"]
-                prov = json.loads(prov) if isinstance(prov, str) else (prov or {})
-                for pin in prov.get("pins", []):
-                    if pin.get("ref") == ref:
-                        out.append((v["catalog_id"], v["project_id"], prov))
-            cur._result = out
-        elif "WHERE catalog_id = %s" in sql:
-            row = self.rows.get(params[0])
-            cur._result = [_tuple_from_dict(row)] if row else []
-        elif "AND name = %s" in sql:
-            cid = self._triples.get((params[0], params[1], params[2]))
-            row = self.rows.get(cid) if cid else None
-            cur._result = [_tuple_from_dict(row)] if row else []
-        elif "ORDER BY project_id, name, created_at" in sql:
-            want = params[0] if params else None
-            rows = [v for v in self.rows.values() if v["status"] != "retired"]
-            if want:
-                rows = [v for v in rows if v["project_id"] == want]
-            cur._result = [_tuple_from_dict(v) for v in rows]
-        else:
-            cur._result = []
+        handlers = (
+            ("ORDER BY created_at, catalog_id", self._select_versions),
+            ("provenance->'pins' @>", self._select_pinned),
+            ("WHERE catalog_id = %s", self._select_by_id),
+            ("AND name = %s", self._select_by_triple),
+            ("ORDER BY project_id, name, created_at", self._select_active),
+        )
+        handler = next((h for marker, h in handlers if marker in sql), None)
+        cur._result = handler(params) if handler else []
+
+    def _select_versions(self, params):
+        rows = [
+            v for v in self.rows.values() if v["project_id"] == params[0] and v["name"] == params[1]
+        ]
+        rows.sort(key=lambda v: v["created_at"])
+        return [_tuple_from_dict(v) for v in rows]
+
+    def _select_pinned(self, params):
+        ref = json.loads(params[0])[0]["ref"]
+        want_pid = params[1] if len(params) > 1 else None
+        out = []
+        for v in self.rows.values():
+            if want_pid and v["project_id"] != want_pid:
+                continue
+            prov = v["provenance"]
+            prov = json.loads(prov) if isinstance(prov, str) else (prov or {})
+            out.extend(
+                (v["catalog_id"], v["project_id"], prov)
+                for pin in prov.get("pins", [])
+                if pin.get("ref") == ref
+            )
+        return out
+
+    def _select_by_id(self, params):
+        row = self.rows.get(params[0])
+        return [_tuple_from_dict(row)] if row else []
+
+    def _select_by_triple(self, params):
+        cid = self._triples.get((params[0], params[1], params[2]))
+        row = self.rows.get(cid) if cid else None
+        return [_tuple_from_dict(row)] if row else []
+
+    def _select_active(self, params):
+        want = params[0] if params else None
+        rows = [v for v in self.rows.values() if v["status"] != "retired"]
+        if want:
+            rows = [v for v in rows if v["project_id"] == want]
+        return [_tuple_from_dict(v) for v in rows]
 
     def _handle(self, sql, params, cur: _Cursor) -> None:
         verb = sql.lstrip().upper()
@@ -256,12 +265,15 @@ class TestStoreLifecycle:
         store = ScientificCatalogStore(_Conn())
         row = store.create(spec=_spec(), owner_id="alice")
         assert row["catalog_id"].startswith("scat-")
-        assert row["member_graph_ids"] == ["kg-1"]
-        assert row["skill_ids"] == ["skl-1"]
-        assert row["mcp_server_ids"] == ["mcp-1"]
-        assert row["embedding_model_ids"] == ["intfloat/e5-base-v2"]
-        assert row["contributors"] == ["alice"]
-        assert row["licence"] == "CC-BY-4.0"
+        expected = {
+            "member_graph_ids": ["kg-1"],
+            "skill_ids": ["skl-1"],
+            "mcp_server_ids": ["mcp-1"],
+            "embedding_model_ids": ["intfloat/e5-base-v2"],
+            "contributors": ["alice"],
+            "licence": "CC-BY-4.0",
+        }
+        assert {k: row[k] for k in expected} == expected
         # D-11 pin: embedding model ids stamp into provenance at create
         # (fake conn resolves nothing — honest registry_resolved: False).
         assert row["provenance"]["source"] == "lab-ingest"

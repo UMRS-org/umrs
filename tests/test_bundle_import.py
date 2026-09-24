@@ -588,9 +588,13 @@ class _FakeSkillStore:
         self.registered = []
 
     def get_skill_by_name(self, name, scope, owner_id):
+        del owner_id
         return object() if (scope.value, name) in self.rows else None
 
-    def register_skill(self, *, name, version, scope, owner_id, project_id, skill_md, manifest, enabled):
+    def register_skill(
+        self, *, name, version, scope, owner_id, project_id, skill_md, manifest, enabled
+    ):
+        del owner_id, skill_md
         self.registered.append(
             {
                 "name": name,
@@ -633,9 +637,7 @@ class TestReferenceConsumption:
     async def test_skill_refs_registered_as_disabled_stubs(self, tmp_path):
         bundle = _write_bundle(tmp_path, skills=_REFS)
         skills = _FakeSkillStore()
-        engine = KnowledgeImportEngine(
-            store=_FakeStore(), secret_key="", skill_store=skills
-        )
+        engine = KnowledgeImportEngine(store=_FakeStore(), secret_key="", skill_store=skills)
         result = await engine.import_project(bundle, allow_unsigned=True)
         assert result.skill_refs_imported == 2
         stubs = {s["name"]: s for s in skills.registered}
@@ -647,9 +649,7 @@ class TestReferenceConsumption:
     async def test_existing_skill_rows_never_stomped(self, tmp_path):
         bundle = _write_bundle(tmp_path, skills=_REFS)
         skills = _FakeSkillStore(have={("project", "rag-literature")})
-        engine = KnowledgeImportEngine(
-            store=_FakeStore(), secret_key="", skill_store=skills
-        )
+        engine = KnowledgeImportEngine(store=_FakeStore(), secret_key="", skill_store=skills)
         result = await engine.import_project(bundle, allow_unsigned=True)
         assert result.skill_refs_imported == 1  # only system:hpc
         assert result.skill_refs_existing == 1
@@ -658,9 +658,7 @@ class TestReferenceConsumption:
     async def test_mcp_refs_resolved_and_missing_reported(self, tmp_path):
         bundle = _write_bundle(tmp_path, mcp_configs=_MCPS)
         mcps = _FakeMCPStore(present={"microscope-ctl"})
-        engine = KnowledgeImportEngine(
-            store=_FakeStore(), secret_key="", mcp_store=mcps
-        )
+        engine = KnowledgeImportEngine(store=_FakeStore(), secret_key="", mcp_store=mcps)
         result = await engine.import_project(bundle, allow_unsigned=True)
         assert result.mcp_refs_present == 1
         assert result.mcp_refs_missing == ["unknown-tool"]
@@ -741,6 +739,7 @@ class TestCatalogRoundTrip:
 
         class _Boom:
             def register_from_bundle(self, spec, *, owner_id):
+                del spec, owner_id
                 raise RuntimeError("db down")
 
         engine = KnowledgeImportEngine(store=_FakeStore(), catalog_store=_Boom())
@@ -776,15 +775,12 @@ class TestLegacyUpgrade:
         bundle = _write_bundle(tmp_path, version="1.0", with_signature=True)
         (bundle / "signature.sig").write_text("stale", encoding="utf-8")
         engine = KnowledgeImportEngine(store=_FakeStore())
-        result = await engine.import_project(
-            bundle, allow_unsigned=True, write_upgrade=True
-        )
+        result = await engine.import_project(bundle, allow_unsigned=True, write_upgrade=True)
         assert result.upgraded_from == "1.0"
         manifest = _json.loads((bundle / "manifest.json").read_text())
-        assert manifest["version"] == "1.2"
-        assert manifest["unsigned"] is True
-        assert "hash" not in manifest and "signature" not in manifest
+        rewritten = {k: manifest.get(k) for k in ("version", "unsigned", "skills", "mcp_configs")}
+        assert rewritten == {"version": "1.2", "unsigned": True, "skills": [], "mcp_configs": []}
+        # signature dropped; back-filled blocks present for the consume legs
+        assert {"hash", "signature"}.isdisjoint(manifest)
+        assert {"ownership", "embedding"} <= set(manifest)
         assert not (bundle / "signature.sig").exists()
-        # back-filled blocks present for the consume legs
-        assert manifest["skills"] == [] and manifest["mcp_configs"] == []
-        assert "ownership" in manifest and "embedding" in manifest

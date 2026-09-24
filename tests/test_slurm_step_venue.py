@@ -108,17 +108,13 @@ def test_positive_gpus_keeps_gres():
 
 
 def test_workdir_root_relocates_payload_dir(tmp_path):
-    executor = SlurmStepExecutor(
-        image="img:latest", keep_workdir=True, workdir_root=str(tmp_path)
-    )
+    executor = SlurmStepExecutor(image="img:latest", keep_workdir=True, workdir_root=str(tmp_path))
     captured = _run_with_fake_sbatch(executor, _ctx())
     assert Path(captured["workdir"]).parent == tmp_path
 
 
 def test_workdir_root_missing_fails_fast():
-    executor = SlurmStepExecutor(
-        image="img:latest", workdir_root="/nonexistent/umrs-test-root"
-    )
+    executor = SlurmStepExecutor(image="img:latest", workdir_root="/nonexistent/umrs-test-root")
     with pytest.raises(StepExecutionError, match="UMRS_SLURM_WORKDIR_ROOT"):
         executor.execute(entrypoint="mod:Noop", config={}, ctx=_ctx())
 
@@ -268,6 +264,7 @@ def test_runner_threads_source_path_into_step_metadata(tmp_path, _clean_runner_s
 
     class _CaptureExecutor:
         def execute(self, *, entrypoint, config, ctx):
+            del entrypoint, config
             captured["metadata"] = dict(ctx.metadata)
             return StepResult(output_keys=[])
 

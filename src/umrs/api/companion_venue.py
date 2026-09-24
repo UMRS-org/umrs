@@ -540,6 +540,36 @@ def stamp_rail_origin(store: Any, session_id: str, family: str, upstream: Any) -
     return ""
 
 
+def _refuse_rail_family(family: str, method: str) -> None:
+    """Allowlisted families only; read-only families refuse writes (D-42)."""
+    if family not in RAIL_GW_FAMILIES:
+        raise_typed(
+            PlatformError.companionvenue(
+                "forbidden", f"rail gw: /umrs/{family} is not reachable from a sandbox"
+            )
+        )
+    if method != "GET" and family in RAIL_GW_READ_ONLY_FAMILIES:
+        raise_typed(
+            PlatformError.companionvenue(
+                "forbidden",
+                f"rail gw: /umrs/{family} is read-only from a sandbox (D-42); "
+                "knowledge writes ride the session's approval rail",
+            )
+        )
+
+
+def _run_rail_gw_hook(
+    request: Request, principal: Any, path: str, upstream: Any
+) -> None:
+    hook = getattr(request.app.state, "companion_venue_rail_gw_hook", None)
+    if hook is None:
+        return
+    try:
+        hook(principal, request.method, path, upstream)
+    except Exception:
+        logger.warning("rail gw hook failed", exc_info=True)
+
+
 @router.api_route("/{session_id}/rail/gw/{path:path}", methods=list(RAIL_GW_METHODS))
 async def rail_gateway(
     session_id: str,
@@ -551,20 +581,7 @@ async def rail_gateway(
     # auth: lease-token
     """
     family = path.split("/", 1)[0]
-    if family not in RAIL_GW_FAMILIES:
-        raise_typed(
-            PlatformError.companionvenue(
-                "forbidden", f"rail gw: /umrs/{family} is not reachable from a sandbox"
-            )
-        )
-    if request.method != "GET" and family in RAIL_GW_READ_ONLY_FAMILIES:
-        raise_typed(
-            PlatformError.companionvenue(
-                "forbidden",
-                f"rail gw: /umrs/{family} is read-only from a sandbox (D-42); "
-                "knowledge writes ride the session's approval rail",
-            )
-        )
+    _refuse_rail_family(family, request.method)
     headers = _forwardable_headers(request)
     headers.update(
         mint_rail_identity(principal.owner, rail_project_for(principal, request))
@@ -590,12 +607,7 @@ async def rail_gateway(
         path,
         upstream.status_code,
     )
-    hook = getattr(request.app.state, "companion_venue_rail_gw_hook", None)
-    if hook is not None:
-        try:
-            hook(principal, request.method, path, upstream)
-        except Exception:
-            logger.warning("rail gw hook failed", exc_info=True)
+    _run_rail_gw_hook(request, principal, path, upstream)
     if request.method == "POST" and upstream.status_code < 300:
         stamp_rail_origin(
             get_venue_service(request).job_store, session_id, family, upstream

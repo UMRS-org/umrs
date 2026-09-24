@@ -26,6 +26,10 @@ def test_two_rule_pipeline_maps_with_dag():
     steps = {s["name"]: s for s in wf["steps"]}
     assert steps["call_vars"]["depends_on"] == ["map_reads"]
     assert steps["map_reads"]["depends_on"] == []
+
+
+def test_two_rule_pipeline_commands_and_entrypoint():
+    steps = {s["name"]: s for s in convert_snakemake(_SNAKE, workflow_name="bio")["steps"]}
     cmd = steps["map_reads"]["config"]["command"]
     assert "-t 2" in cmd
     assert "$UMRS_INPUTS_DIR/reads/a.fastq" in cmd

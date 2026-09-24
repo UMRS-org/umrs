@@ -141,6 +141,14 @@ def _read_payload() -> bytes:
 _WORKER_SOURCE_DIRS: list[str] = []
 
 
+def _drop_modules_under(stale_root: str) -> None:
+    """Forget modules imported from the previous task's source dir."""
+    for name, module in list(sys.modules.items()):
+        path = getattr(module, "__file__", None)
+        if path and os.path.realpath(str(path)).startswith(stale_root):
+            del sys.modules[name]
+
+
 def _prepare_worker_source_dir() -> None:
     """Put the uploaded workflow source dir on ``sys.path``.
 
@@ -160,12 +168,8 @@ def _prepare_worker_source_dir() -> None:
         return
     if _WORKER_SOURCE_DIRS and _WORKER_SOURCE_DIRS[-1] == source_dir:
         return  # already prepared for this dir
-    stale_root = _WORKER_SOURCE_DIRS[-1] if _WORKER_SOURCE_DIRS else None
-    if stale_root:
-        for name, module in list(sys.modules.items()):
-            path = getattr(module, "__file__", None)
-            if path and os.path.realpath(str(path)).startswith(stale_root):
-                del sys.modules[name]
+    if _WORKER_SOURCE_DIRS:
+        _drop_modules_under(_WORKER_SOURCE_DIRS[-1])
     if source_dir not in sys.path:
         sys.path.insert(0, source_dir)
     _WORKER_SOURCE_DIRS.append(source_dir)

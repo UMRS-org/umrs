@@ -164,7 +164,7 @@ class FrontendSessionBackend(OrchestratorBackend):
 
         try:
             self.provisioner.teardown(row.session_id)
-        except Exception:  # noqa: BLE001 — teardown is best-effort + idempotent
+        except Exception:  # teardown is best-effort + idempotent
             logger.warning(
                 "frontend_session teardown raised for %s", row.session_id, exc_info=True
             )

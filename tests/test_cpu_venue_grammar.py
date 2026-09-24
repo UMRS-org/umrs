@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import pytest
-from fastapi import HTTPException
-
 import umrs.api.companion_sessions as cs
+from fastapi import HTTPException
 
 
 class _Cfg:
@@ -14,9 +13,7 @@ class _Cfg:
 
 
 def _patch_site(monkeypatch, extra):
-    monkeypatch.setattr(
-        "umrs.orchestrator.site_config.load_site_config", lambda: _Cfg(extra)
-    )
+    monkeypatch.setattr("umrs.orchestrator.site_config.load_site_config", lambda: _Cfg(extra))
 
 
 def test_grammar_accepts_cpu_host(monkeypatch):
@@ -73,7 +70,7 @@ def test_frontend_rail_refuses_cpu_venued_session(monkeypatch):
     request.app.state.umrs_db_pool = _Pool()
     monkeypatch.setattr(
         "umrs.api.companion_sessions.snapshot_detail_row",
-        lambda conn, uid, sid: {"venue": "cpu:atom-0"},
+        lambda _conn, _uid, _sid: {"venue": "cpu:atom-0"},
     )
     with pytest.raises(HTTPException) as exc:
         cv._refuse_cpu_venue_on_frontend_rail(request, "alice", "sess-1")
@@ -97,6 +94,6 @@ def test_frontend_rail_allows_frontend_venued_session(monkeypatch):
     request.app.state.umrs_db_pool = _Pool()
     monkeypatch.setattr(
         "umrs.api.companion_sessions.snapshot_detail_row",
-        lambda conn, uid, sid: {"venue": "frontend"},
+        lambda _conn, _uid, _sid: {"venue": "frontend"},
     )
     cv._refuse_cpu_venue_on_frontend_rail(request, "alice", "sess-1")  # no raise

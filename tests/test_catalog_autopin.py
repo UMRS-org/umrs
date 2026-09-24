@@ -41,16 +41,18 @@ class _Cursor:
             pin_arr, cid = params
             self._conn.pins.append((cid, pin_arr))
             self._result = []
-        elif "WHERE catalog_id = %s" in sql:
-            row = [c for c in self._conn.catalogs if c["catalog_id"] == params[0]]
-            self._result = [_row_tuple(row[0])] if row else []
-        elif "FROM scientific_catalogs" in sql:
-            rows = self._conn.catalogs
-            if params:
-                rows = [c for c in rows if c["project_id"] == params[0]]
-            self._result = [_row_tuple(c) for c in rows]
         else:
-            self._result = []
+            self._result = self._select(sql, params)
+
+    def _select(self, sql, params):
+        if "WHERE catalog_id = %s" in sql:
+            return self._rows("catalog_id", params[0])[:1]
+        if "FROM scientific_catalogs" in sql:
+            return self._rows("project_id", params[0] if params else None)
+        return []
+
+    def _rows(self, key, value):
+        return [_row_tuple(c) for c in self._conn.catalogs if value is None or c[key] == value]
 
     def fetchone(self):
         return self._result.pop(0) if self._result else None

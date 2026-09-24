@@ -164,6 +164,29 @@ def _purge_workflow_modules(source_path: str) -> None:
     _purge_workflow_modules_under([source_path])
 
 
+def _module_locations(module: object) -> list[str]:
+    """A module's file and package path entries (tolerating odd __path__)."""
+    candidates: list[str] = []
+    module_file = getattr(module, "__file__", None)
+    if isinstance(module_file, str):
+        candidates.append(module_file)
+    module_path = getattr(module, "__path__", None)
+    if module_path is not None:
+        try:
+            candidates.extend(str(entry) for entry in module_path)
+        except TypeError:
+            pass
+    return candidates
+
+
+def _module_under(module: object, real_roots: list[str]) -> bool:
+    for candidate in _module_locations(module):
+        resolved = os.path.realpath(candidate)
+        if any(resolved.startswith(root) for root in real_roots):
+            return True
+    return False
+
+
 def _purge_workflow_modules_under(source_roots: list[str]) -> None:
     """Multi-root variant of :func:`_purge_workflow_modules`.
 
@@ -174,23 +197,11 @@ def _purge_workflow_modules_under(source_roots: list[str]) -> None:
     real_roots = [os.path.realpath(root) for root in source_roots]
     if not real_roots:
         return
-    stale_names: list[str] = []
-    for name, module in list(sys.modules.items()):
-        candidates: list[str] = []
-        module_file = getattr(module, "__file__", None)
-        if isinstance(module_file, str):
-            candidates.append(module_file)
-        module_path = getattr(module, "__path__", None)
-        if module_path is not None:
-            try:
-                candidates.extend(str(entry) for entry in module_path)
-            except TypeError:
-                pass
-        for candidate in candidates:
-            resolved = os.path.realpath(candidate)
-            if any(resolved.startswith(root) for root in real_roots):
-                stale_names.append(name)
-                break
+    stale_names = [
+        name
+        for name, module in list(sys.modules.items())
+        if _module_under(module, real_roots)
+    ]
 
     for name in stale_names:
         sys.modules.pop(name, None)
@@ -877,6 +888,20 @@ def _execute_manual_gate(
 # ----------------------------------------------------------------------
 
 
+def _executor_metadata(
+    image_hint: Any, gpu_hint: Any, source_path: str | None
+) -> dict[str, Any]:
+    """Per-step executor hints (image / GPU / uploaded source tree)."""
+    metadata: dict[str, Any] = {}
+    if image_hint is not None:
+        metadata[EXECUTOR_IMAGE_METADATA_KEY] = image_hint
+    if gpu_hint is not None:
+        metadata[EXECUTOR_GPU_METADATA_KEY] = gpu_hint
+    if source_path:
+        metadata[EXECUTOR_SOURCE_DIR_METADATA_KEY] = source_path
+    return metadata
+
+
 def _execute_step(
     spec: dict[str, Any],
     *,
@@ -964,13 +989,7 @@ def _execute_step(
 
     # ---- Build context ----------------------------------------------------
     upstream_keys = _collect_upstream_keys(spec, parent_results_snapshot)
-    metadata: dict[str, Any] = {}
-    if image_hint is not None:
-        metadata[EXECUTOR_IMAGE_METADATA_KEY] = image_hint
-    if gpu_hint is not None:
-        metadata[EXECUTOR_GPU_METADATA_KEY] = gpu_hint
-    if source_path:
-        metadata[EXECUTOR_SOURCE_DIR_METADATA_KEY] = source_path
+    metadata = _executor_metadata(image_hint, gpu_hint, source_path)
     payload_s3_enabled, payload_bucket, payload_s3_prefix = _payload_s3_hint(metadata)
     _annotate_payload_mode(
         routing_log,

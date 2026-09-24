@@ -241,7 +241,6 @@ def test_factory_and_checker_registered():
         Path(__file__).resolve().parents[1] / "src" / "umrs" / "jobs" / "adapters.py"
     ).read_text()
     assert "KnowledgeReindexBackend" in src
-    assert "JobType.KNOWLEDGE_REINDEX: {\n        return knowledge_reindex_backend" in src or (
-        "return knowledge_reindex_backend" in src
-    )
+    # The factory is a job-type table (2026-09-24 complexity paydown).
+    assert "JobType.KNOWLEDGE_REINDEX: knowledge_reindex_backend" in src
     assert "KnowledgeReindexStatusChecker" in src

@@ -739,74 +739,59 @@ class _FakePool:
         self.leased -= 1
 
 
-def _pin_catalog_conn(catalogs):
+def _catalog_row_tuple(c):
+    """The 19-column scientific_catalogs row shape the store reads."""
     import json as _json
 
+    return (
+        c["catalog_id"],
+        c["project_id"],
+        "n",
+        "0.1.0",
+        "",
+        "",
+        "[]",
+        "[]",
+        "[]",
+        "[]",
+        "[]",
+        "",
+        _json.dumps(c.get("provenance") or {}),
+        "",
+        "[]",
+        "o",
+        "active",
+        None,
+        None,
+    )
+
+
+def _catalog_rows(catalogs, key, value):
+    """Row tuples whose ``key`` equals ``value`` (None = every row)."""
+    return [_catalog_row_tuple(c) for c in catalogs if value is None or c[key] == value]
+
+
+def _append_pins(catalogs, pin_arr, cid):
+    import json as _json
+
+    for c in catalogs:
+        if c["catalog_id"] == cid:
+            prov = c.setdefault("provenance", {"pins": []})
+            prov["pins"] = prov["pins"] + _json.loads(pin_arr)
+
+
+def _pin_catalog_conn(catalogs):
     class _Cur:
         def __init__(self, conn):
             self._conn = conn
 
         def execute(self, sql, params=None):
             if "jsonb_set" in sql:
-                pin_arr, cid = params
-                for c in self._conn.catalogs:
-                    if c["catalog_id"] == cid:
-                        prov = c.setdefault("provenance", {"pins": []})
-                        prov["pins"] = prov["pins"] + _json.loads(pin_arr)
+                _append_pins(self._conn.catalogs, *params)
             elif "WHERE catalog_id = %s" in sql:
-                rows = [c for c in self._conn.catalogs if c["catalog_id"] == params[0]]
-                self._result = [
-                    (
-                        c["catalog_id"],
-                        c["project_id"],
-                        "n",
-                        "0.1.0",
-                        "",
-                        "",
-                        "[]",
-                        "[]",
-                        "[]",
-                        "[]",
-                        "[]",
-                        "",
-                        _json.dumps(c.get("provenance") or {}),
-                        "",
-                        "[]",
-                        "o",
-                        "active",
-                        None,
-                        None,
-                    )
-                    for c in rows
-                ]
+                self._result = _catalog_rows(self._conn.catalogs, "catalog_id", params[0])
             elif "FROM scientific_catalogs" in sql:
-                rows = catalogs
-                if params:
-                    rows = [c for c in rows if c["project_id"] == params[0]]
-                self._result = [
-                    (
-                        c["catalog_id"],
-                        c["project_id"],
-                        "n",
-                        "0.1.0",
-                        "",
-                        "",
-                        "[]",
-                        "[]",
-                        "[]",
-                        "[]",
-                        "[]",
-                        "",
-                        _json.dumps(c.get("provenance") or {}),
-                        "",
-                        "[]",
-                        "o",
-                        "active",
-                        None,
-                        None,
-                    )
-                    for c in rows
-                ]
+                self._result = _catalog_rows(catalogs, "project_id", params[0] if params else None)
 
         def fetchone(self):
             return (

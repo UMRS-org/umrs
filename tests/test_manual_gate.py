@@ -221,9 +221,7 @@ class TestRunnerGates:
 
 
 class TestCrossProcessGates:
-    def test_decision_via_durable_refresh_completes_execution(
-        self, tmp_path, monkeypatch
-    ):
+    def test_decision_via_durable_refresh_completes_execution(self, tmp_path, monkeypatch):
         monkeypatch.setenv("UMRS_GATE_DB_POLL_SECONDS", "0.5")
         registry = get_execution_registry()
         record = registry.create(workflow_name="gate-wf", user_id="alice")
@@ -297,13 +295,11 @@ class TestDurableRefresh:
     def _record(self):
         from umrs.workflow.pg_registry import DurableExecutionRecord
 
-        return DurableExecutionRecord(
-            execution_id="wf-x", workflow_name="w", user_id="u"
-        )
+        return DurableExecutionRecord(execution_id="wf-x", workflow_name="w", user_id="u")
 
     def test_merges_gates_and_cancel(self):
         rec = self._record()
-        rec._refresh_hook = lambda r: {
+        rec._refresh_hook = lambda _r: {
             "gates": {
                 "gate1": {
                     "step": "gate1",
@@ -328,7 +324,7 @@ class TestDurableRefresh:
             "comment": None,
             "decided_at": 0.5,
         }
-        rec._refresh_hook = lambda r: {
+        rec._refresh_hook = lambda _r: {
             "gates": {
                 "gate1": {
                     "step": "gate1",

@@ -49,6 +49,26 @@ def bearer_token(headers: Any) -> str | None:
     return parts[1].strip()
 
 
+def _lease_refusal(lease: Any, session_id: str, client_ip: str, ip_check: bool) -> str:
+    """The named reason a lease may not ride this rail ("" = accepted),
+    checked in the historical order."""
+    checks = (
+        (lease.is_revoked, "lease_revoked"),
+        (lease.is_expired, "lease_expired"),
+        (lease.scope != "inference", "scope_mismatch"),
+        (lease.session_id != session_id, "sid_mismatch"),
+        (_ip_mismatch(lease, client_ip, ip_check), "ip_mismatch"),
+        (not lease.owner_id, "token_invalid"),
+    )
+    return next((reason for failed, reason in checks if failed), "")
+
+
+def _ip_mismatch(lease: Any, client_ip: str, ip_check: bool) -> bool:
+    return bool(
+        ip_check and lease.egress_ip and client_ip and client_ip != lease.egress_ip
+    )
+
+
 def resolve_rail_principal(
     *,
     token: str | None,
@@ -58,23 +78,12 @@ def resolve_rail_principal(
     ip_check: bool = True,
 ) -> RailPrincipal:
     """Pure resolver (no HTTP): raises RailAuthError with the named reason."""
-    if not token:
-        raise RailAuthError("token_invalid")
-    lease = broker.lease_by_plaintext_token(token)
+    lease = broker.lease_by_plaintext_token(token) if token else None
     if lease is None:
         raise RailAuthError("token_invalid")
-    if lease.is_revoked:
-        raise RailAuthError("lease_revoked")
-    if lease.is_expired:
-        raise RailAuthError("lease_expired")
-    if lease.scope != "inference":
-        raise RailAuthError("scope_mismatch")
-    if lease.session_id != session_id:
-        raise RailAuthError("sid_mismatch")
-    if ip_check and lease.egress_ip and client_ip and client_ip != lease.egress_ip:
-        raise RailAuthError("ip_mismatch")
-    if not lease.owner_id:
-        raise RailAuthError("token_invalid")
+    reason = _lease_refusal(lease, session_id, client_ip, ip_check)
+    if reason:
+        raise RailAuthError(reason)
     return RailPrincipal(
         owner=str(lease.owner_id),
         session_id=session_id,
