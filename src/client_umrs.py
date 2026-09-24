@@ -5879,6 +5879,70 @@ def _action_export_embeddings(ctx):
     return 0
 
 
+def _action_knn(ctx):
+    """Upload a local file to S3 then ask the server for its k nearest neighbours."""
+    args = ctx.args
+    bucket_alias_arg = getattr(args, "bucket_alias")
+    bucket_alias, subdir = decompose_bucket_alias_arg(bucket_alias_arg)
+
+    entry = ctx.buckets_cfg.get(bucket_alias)
+    if entry is None:
+        print(api_json(status="error", message=f"Bucket alias not found: {bucket_alias}", output_format=args.output))
+        ctx.control_mq.close()
+        return 1
+
+    path_to_bucket = entry.path_to_bucket
+    s3_configuration_file = entry.s3_configuration_file
+    effective_username = getattr(args, "username", None) or (
+        ctx.user.get("username") if isinstance(ctx.user, dict) else None
+    )
+    if not effective_username:
+        print(api_json(status="error", message="No username provided and none found in config", output_format=args.output))
+        ctx.control_mq.close()
+        return 1
+
+    file_path = os.path.abspath(getattr(args, "image_path"))
+    if not os.path.isfile(file_path):
+        print(api_json(status="error", message=f"File not found: {file_path}", output_format=args.output))
+        ctx.control_mq.close()
+        return 1
+
+    try:
+        expanded_cfg = os.path.expanduser(s3_configuration_file)
+        default_docker_s3cfg = get_default_docker_s3cfg()
+        if not os.path.exists(expanded_cfg) and os.path.exists(default_docker_s3cfg):
+            expanded_cfg = default_docker_s3cfg
+
+        endpoint_override = None
+        if hasattr(ctx, "connection") and ctx.connection is not None:
+            if getattr(ctx.connection, "profile_name", None) is not None:
+                profile_minio = getattr(ctx.connection, "minio_url", None)
+                if profile_minio:
+                    endpoint_override = profile_minio
+
+        s3, _ = connect_to_s3(expanded_cfg, endpoint_url_override=endpoint_override)
+
+        s3_key = os.path.basename(file_path)
+        if subdir:
+            s3_key = f"{subdir}/{s3_key}"
+        s3.upload_file(file_path, path_to_bucket, s3_key)
+
+        raw_response = ctx.control_mq.request_knn(effective_username, args.n, s3_key, path_to_bucket)
+        response = _json.loads(raw_response)
+        if response.get("status") != "ok":
+            print(api_json(status="error", action="knn", message=response.get("message", "Server error"), output_format=args.output))
+            ctx.control_mq.close()
+            return 1
+        print(api_json(action="knn", bucket=bucket_alias, **{k: v for k, v in response.items() if k != "status"}, output_format=args.output))
+    except Exception as e:
+        print(api_json(status="error", action="knn", message=str(e), output_format=args.output))
+        if args.verbose:
+            traceback.print_exc()
+    finally:
+        ctx.control_mq.close()
+    return 0
+
+
 def _action_s3_transfer(ctx):
     """Handle upload_file, upload_dir, and download_results actions."""
     args = ctx.args
@@ -6340,6 +6404,7 @@ _ACTION_HANDLERS = {
     "check": _action_maintenance,
     "reload": _action_maintenance,
     "export_embeddings": _action_export_embeddings,
+    "knn": _action_knn,
     "upload_file": _action_s3_transfer,
     "upload_dir": _action_s3_transfer,
     "download_results": _action_s3_transfer,
@@ -6806,6 +6871,23 @@ def main():
         "username",
         nargs="?",
         help="Configured username owning the bucket (defaults to config if omitted)",
+    )
+
+    # kNN nearest-neighbour search
+    knn_p = subparsers.add_parser(
+        "knn",
+        help="Find the N nearest neighbours of a local image in a bucket's embedding table",
+    )
+    knn_p.add_argument("n", type=int, help="Number of nearest neighbours to return")
+    knn_p.add_argument("image_path", help="Path to the local image file to use as query")
+    knn_p.add_argument(
+        "bucket_alias",
+        help="Alias of the bucket to search (as defined in the client configuration file)",
+    )
+    knn_p.add_argument(
+        "username",
+        nargs="?",
+        help="Username owning the bucket (defaults to config if omitted)",
     )
 
     # --- Model registry commands ---

@@ -382,6 +382,7 @@ class UMRSTask:
             TaskCmd.JOB_SUBMIT,
             TaskCmd.JOB_CANCEL,
             TaskCmd.PURGE_BUCKETS,
+            TaskCmd.KNN,
         ):
             client_id, payload_str, _zmq_sender_id = full_payload
             str_payload = payload_str
