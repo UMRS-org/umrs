@@ -59,7 +59,13 @@ class IngestRequest(BaseModel):
 
 
 class LintRequest(BaseModel):
-    files: list[str] | None = Field(None, description="List of file paths to lint")
+    files: list[str] | None = Field(
+        None,
+        description=(
+            "REFUSED over HTTP (paths would be read on the UMRS host) — "
+            "send source_code instead"
+        ),
+    )
     source_code: dict[str, str] | None = Field(
         None, description="Map of file_path -> source_code content"
     )
@@ -424,7 +430,8 @@ def _lint_source(checks: list, source: str, file_path: str) -> list[dict[str, An
     """Run every lint check over one source blob."""
     findings: list[dict[str, Any]] = []
     for check in checks:
-        findings.extend(check(source, file_path))
+        # lint_engine checks return LintFinding objects; the route speaks dicts
+        findings.extend(f.to_dict() for f in check(source, file_path))
     return findings
 
 
@@ -451,17 +458,8 @@ def _collect_lint_findings(body: LintRequest) -> list[dict[str, Any]]:
     """Run lint checks over the request payload (source_code or files)."""
     checks = _lint_request_checks()
     findings: list[dict[str, Any]] = []
-    if body.source_code:
-        for file_path, source in body.source_code.items():
-            findings.extend(_lint_source(checks, source, file_path))
-        return findings
-    for file_path in body.files or []:
-        try:
-            with open(file_path, "r", encoding="utf-8") as f:
-                source = f.read()
-            findings.extend(_lint_source(checks, source, file_path))
-        except OSError:
-            pass
+    for file_path, source in (body.source_code or {}).items():
+        findings.extend(_lint_source(checks, source, file_path))
     return findings
 
 
@@ -475,6 +473,14 @@ async def run_lint(
     Accepts either file paths or source_code dict.
     Returns structured findings.
     """
+    if body.files:
+        raise_typed(
+            PlatformError.knowledge2(
+                "source_kind_refused",
+                "lint 'files' are paths on the UMRS host and are not read over "
+                "HTTP — send the content as source_code {path: text}",
+            )
+        )
     try:
         all_findings = _collect_lint_findings(body)
         blocking = sum(1 for f in all_findings if f["severity"] == "BLOCKING")

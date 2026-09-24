@@ -61,6 +61,25 @@ class RestoreRequest(BaseModel):
     )
 
 
+def _require_operator(request: Request) -> None:
+    """Server-path restore is an operator facility: ``bundle_dir`` names a
+    directory on the UMRS host (read with server rights; ``write_upgrade``
+    rewrites its manifest) and ``project_id`` retargets into any project —
+    so only admins (or the legacy anonymous dev scope) may call it. A
+    user-facing import takes the bundle's bytes, not a server path."""
+    from umrs.api._scope_identity import request_caller_scope
+
+    scope = request_caller_scope(request)
+    if not (scope.is_admin or scope.anonymous):
+        raise_typed(
+            PlatformError.bundle(
+                "forbidden",
+                "bundle restore from a server-side directory is admin-only "
+                "(bundle_dir resolves on the UMRS host, not your workstation)",
+            )
+        )
+
+
 def _resolve_target_project(body: RestoreRequest) -> str:
     """Project whose default graph the restore mutates (explicit retarget wins)."""
     if body.project_id:
@@ -147,6 +166,7 @@ async def restore_bundle(request: Request, body: RestoreRequest) -> dict[str, An
     """
     from umrs.api._asyncpg_pool import knowledge_asyncpg_pool
 
+    _require_operator(request)
     actor = request_actor(request)
     if actor == "agent":
         target = default_graph_id(_resolve_target_project(body))
