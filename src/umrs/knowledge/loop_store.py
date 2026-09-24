@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import threading
 from typing import Any
 
 from .loop import LoopIteration, LoopPhase, LoopStatus, ResearchLoop
@@ -110,6 +112,18 @@ def _row_to_iteration(row: Any) -> LoopIteration:
     )
 
 
+logger = logging.getLogger(__name__)
+
+
+def _is_connection_loss(exc: Exception) -> bool:
+    """psycopg2 InterfaceError / OperationalError = the session is gone."""
+    try:
+        import psycopg2
+    except ImportError:  # pragma: no cover - psycopg2 is a server dependency
+        return False
+    return isinstance(exc, (psycopg2.InterfaceError, psycopg2.OperationalError))
+
+
 class LoopStore:
     """Postgres-backed loop store with in-memory fallback mode.
 
@@ -120,9 +134,20 @@ class LoopStore:
       loop-portable and crash outside their creating event loop).
     """
 
-    def __init__(self, pool: Any | None, sync_pool: Any | None = None) -> None:
+    def __init__(
+        self,
+        pool: Any | None,
+        sync_pool: Any | None = None,
+        reconnect: Any | None = None,
+    ) -> None:
         self._pool = pool
         self._sync_pool = sync_pool
+        # Self-healing sync connection (live rccs 2026-09-24: reads left the
+        # session idle-in-transaction, the server's idle_in_transaction
+        # timeout killed it, and every call failed "connection already
+        # closed" until a restart). ``reconnect()`` returns a fresh conn.
+        self._reconnect = reconnect
+        self._sync_lock = threading.RLock()
         self._memory: dict[str, ResearchLoop] = {}
 
     @property
@@ -130,9 +155,38 @@ class LoopStore:
         return self._pool is None and self._sync_pool is None
 
     @classmethod
-    def sync_pg(cls, conn: Any) -> LoopStore:
-        """Sync psycopg2-backed store (thread-safe, no event loop required)."""
-        return cls(pool=None, sync_pool=conn)
+    def sync_pg(cls, conn: Any, reconnect: Any | None = None) -> LoopStore:
+        """Sync psycopg2-backed store (thread-safe, no event loop required);
+        ``reconnect`` (optional) rebuilds the connection when it is dead."""
+        return cls(pool=None, sync_pool=conn, reconnect=reconnect)
+
+    def _sync_call(self, fn: Any, *args: Any) -> Any:
+        """Run one sync op: serialized, on a live connection, with its read
+        transaction ended afterwards; one retry after a dropped connection."""
+        with self._sync_lock:
+            self._ensure_live()
+            try:
+                return self._run_and_end(fn, *args)
+            except Exception as exc:
+                if self._reconnect is None or not _is_connection_loss(exc):
+                    raise
+                logger.warning("loop store connection lost (%s); reconnecting", exc)
+                self._sync_pool = self._reconnect()
+                return self._run_and_end(fn, *args)
+
+    def _ensure_live(self) -> None:
+        if self._reconnect is not None and getattr(self._sync_pool, "closed", 0):
+            self._sync_pool = self._reconnect()
+
+    def _run_and_end(self, fn: Any, *args: Any) -> Any:
+        try:
+            return fn(*args)
+        finally:
+            # A SELECT opens a transaction; never leave it idle (writes have
+            # already committed, so this is a no-op for them).
+            rollback = getattr(self._sync_pool, "rollback", None)
+            if rollback is not None and not getattr(self._sync_pool, "closed", 0):
+                rollback()
 
     # -- async pool ops ---------------------------------------------------- #
 
@@ -389,7 +443,7 @@ class LoopStore:
 
     def save(self, loop: ResearchLoop) -> None:
         if self._sync_pool is not None:
-            self._save_sync(loop)
+            self._sync_call(self._save_sync, loop)
             return
         if self._pool is None:
             self._memory[loop.loop_id] = loop
@@ -398,21 +452,21 @@ class LoopStore:
 
     def get(self, loop_id: str) -> ResearchLoop | None:
         if self._sync_pool is not None:
-            return self._get_sync(loop_id)
+            return self._sync_call(self._get_sync, loop_id)
         if self._pool is None:
             return self._memory.get(loop_id)
         return self._run(self._get_pg(loop_id))
 
     def list_all(self) -> list[ResearchLoop]:
         if self._sync_pool is not None:
-            return self._list_all_sync()
+            return self._sync_call(self._list_all_sync)
         if self._pool is None:
             return list(self._memory.values())
         return self._run(self._list_all_pg())
 
     def delete(self, loop_id: str) -> None:
         if self._sync_pool is not None:
-            self._delete_sync(loop_id)
+            self._sync_call(self._delete_sync, loop_id)
             return
         if self._pool is None:
             self._memory.pop(loop_id, None)
@@ -422,7 +476,7 @@ class LoopStore:
     def clear(self) -> None:
         """Test utility: memory wipe, or full-table wipe when pool-backed."""
         if self._sync_pool is not None:
-            self._clear_sync()
+            self._sync_call(self._clear_sync)
             return
         if self._pool is None:
             self._memory.clear()

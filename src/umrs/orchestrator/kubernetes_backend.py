@@ -635,6 +635,9 @@ class KubernetesBackend(OrchestratorBackend):
 
     async def cleanup(self, job_id: str, force: bool = False) -> None:
         """Delete a Kubernetes Job, its Service, and its NetworkPolicy."""
+        from .readiness import cancel_readiness
+
+        cancel_readiness(job_id)
         await self._ensure_k8s_client()
         namespace = self.config.k8s_namespace
 

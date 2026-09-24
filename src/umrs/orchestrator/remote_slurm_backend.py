@@ -709,6 +709,9 @@ class RemoteSlurmBackend(SlurmBackend):
 
     async def cleanup(self, job_id: str, force: bool = False) -> None:
         """Cancel a Slurm job via remote scancel."""
+        from .readiness import cancel_readiness
+
+        cancel_readiness(job_id)
         info_content = await self._read_remote_job_info(job_id)
         if info_content is not None and self._tunnel_pool is not None:
             info = self._parse_info_content(info_content)
