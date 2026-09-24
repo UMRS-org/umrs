@@ -1916,6 +1916,8 @@ def _write_result(attempt: JobAttempt, result: Any) -> None:
         "degraded": getattr(result, "degraded", False),
         "degraded_reason": getattr(result, "degraded_reason", ""),
     }
+    if getattr(result, "archive_key", ""):
+        result_dict["archive_key"] = result.archive_key
     attempt.metrics["result"] = json.dumps(result_dict)
     logger.info(
         "Job result written: type=%s degraded=%s",
@@ -2680,6 +2682,38 @@ class _ExportIntegrityMixin:
                 result.degraded_reason = "bundle integrity check failed"
         return result
 
+    @staticmethod
+    def _publish_archive(result: KnowledgeExportResult, job_id: str) -> None:
+        """D-40 transport: pack the bundle and upload it under the project's
+        key prefix so the owner can download it (gateway files route).
+
+        Failure never fails the export — the result turns degraded with the
+        reason named (the bundle directory stays for an operator).
+        """
+        if result.degraded or not result.bundle_path:
+            return
+        import tempfile
+
+        from umrs.knowledge.bundle_archive import export_archive_key, pack_bundle
+        from umrs.shared.storage.s3_config import get_s3_config
+
+        key = export_archive_key(result.project_id, job_id)
+        try:
+            config = get_s3_config()
+            with tempfile.TemporaryDirectory() as tmp:
+                archive = pack_bundle(
+                    Path(result.bundle_path), Path(tmp) / "bundle.kb.tar.gz"
+                )
+                config.get_client().upload_file(str(archive), config.bucket, key)
+        except Exception as exc:  # noqa: BLE001 — honest degraded marker, never a silent success
+            logger.warning(
+                "knowledge export archive publish failed for %s: %s", key, exc
+            )
+            result.degraded = True
+            result.degraded_reason = f"archive publish failed: {exc}"
+            return
+        result.archive_key = key
+
 
 class KnowledgeExportBackend(OrchestratorBackend, _ExportIntegrityMixin):
     """Export project knowledge to a .kb bundle directory."""
@@ -2730,6 +2764,7 @@ class KnowledgeExportBackend(OrchestratorBackend, _ExportIntegrityMixin):
                 verify_bundle_integrity,
                 allow_unsigned=allow_unsigned,
             )
+            self._publish_archive(result, job.job_id)
             _write_result(attempt, result)
 
             degraded_suffix = (
@@ -2739,7 +2774,9 @@ class KnowledgeExportBackend(OrchestratorBackend, _ExportIntegrityMixin):
                 f"knowledge_export|project={project_id}|"
                 f"artifacts={result.artifact_count}|"
                 f"embeds={result.embedding_count}|"
-                f"hash={result.manifest_hash}{degraded_suffix}"
+                f"hash={result.manifest_hash}"
+                f"{f'|archive={result.archive_key}' if result.archive_key else ''}"
+                f"{degraded_suffix}"
             )
 
         finally:

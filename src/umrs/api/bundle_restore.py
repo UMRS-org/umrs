@@ -1,9 +1,12 @@
-"""K4: synchronous .kb bundle restore route.
+"""K4: synchronous .kb bundle restore + import routes.
 
 `POST /umrs/knowledge/restore` — restores an exported knowledge bundle
 from a server-side directory after manifest integrity verification
-(when `UMRS_SECRET_KEY` configures HMAC). All restores are idempotent
-(re-runnable for DR repair); rows are individually fault-isolated.
+(when `UMRS_SECRET_KEY` configures HMAC); admin-only operator facility.
+`POST /umrs/knowledge/import` — the user-facing twin: the bundle arrives
+as a ``.kb.tar.gz`` upload and lands in the caller's own project (D-40).
+All restores are idempotent (re-runnable for DR repair); rows are
+individually fault-isolated.
 
 Synchronous by design, mirroring the export route's in-process model;
 a durable-job variant can layer on later without changing the engine.
@@ -13,9 +16,10 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any
+from pathlib import Path
+from typing import IO, Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from pydantic import BaseModel, Field
 
 from umrs.knowledge.graph_registry import default_graph_id
@@ -26,6 +30,7 @@ from ._knowledge_mutation_guard import (
     request_actor,
     request_session_id,
 )
+from .files import get_project_id
 from .typed_errors import PlatformError, raise_typed
 
 router = APIRouter(prefix="/umrs/knowledge", tags=["knowledge-restore"])
@@ -155,6 +160,38 @@ def _reference_stores(request: Request):
     return _provide()
 
 
+async def _import_bundle_dir(
+    request: Request,
+    pool: Any,
+    bundle_dir: str,
+    *,
+    target_project_id: str | None,
+    verify: bool,
+    allow_unsigned: bool,
+    write_upgrade: bool,
+):
+    """Run the import engine over one bundle directory (restore + import)."""
+    from umrs.knowledge.bundle_import import BundleFormatError, KnowledgeImportEngine
+    from umrs.knowledge.store import KnowledgeStore
+
+    with _reference_stores(request) as ref_stores:
+        engine = KnowledgeImportEngine(
+            store=KnowledgeStore(pool),
+            secret_key=os.getenv("UMRS_SECRET_KEY", ""),
+            **ref_stores,
+        )
+        try:
+            return await engine.import_project(
+                bundle_dir,
+                target_project_id=target_project_id,
+                verify=verify,
+                allow_unsigned=allow_unsigned,
+                write_upgrade=write_upgrade,
+            )
+        except BundleFormatError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @router.post("/restore", response_model=dict[str, Any])
 async def restore_bundle(request: Request, body: RestoreRequest) -> dict[str, Any]:
     """K4: restore a .kb bundle with manifest verification.
@@ -175,26 +212,15 @@ async def restore_bundle(request: Request, body: RestoreRequest) -> dict[str, An
         )
 
     pool = await knowledge_asyncpg_pool(request)
-
-    from umrs.knowledge.bundle_import import BundleFormatError, KnowledgeImportEngine
-    from umrs.knowledge.store import KnowledgeStore
-
-    with _reference_stores(request) as ref_stores:
-        engine = KnowledgeImportEngine(
-            store=KnowledgeStore(pool),
-            secret_key=os.getenv("UMRS_SECRET_KEY", ""),
-            **ref_stores,
-        )
-        try:
-            result = await engine.import_project(
-                body.bundle_dir,
-                target_project_id=body.project_id,
-                verify=body.verify,
-                allow_unsigned=body.allow_unsigned,
-                write_upgrade=body.write_upgrade,
-            )
-        except BundleFormatError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    result = await _import_bundle_dir(
+        request,
+        pool,
+        body.bundle_dir,
+        target_project_id=body.project_id,
+        verify=body.verify,
+        allow_unsigned=body.allow_unsigned,
+        write_upgrade=body.write_upgrade,
+    )
 
     if actor == "agent":
         mark_proposal_executed(
@@ -206,3 +232,100 @@ async def restore_bundle(request: Request, body: RestoreRequest) -> dict[str, An
         )
 
     return {"status": "ok", "restore": result.to_dict()}
+
+
+# ── D-40 transport: import a bundle by its bytes (user-facing) ───────────────
+
+_MAX_ARCHIVE_BYTES = 2 * 1024 * 1024 * 1024  # 2 GiB
+
+
+def _stage_archive(source: IO[bytes], dest: Path) -> None:
+    """Copy the upload's spooled body to a private temp file (size-capped)."""
+    written = 0
+    with open(dest, "wb") as out:
+        while chunk := source.read(1024 * 1024):
+            written += len(chunk)
+            if written > _MAX_ARCHIVE_BYTES:
+                raise_typed(
+                    PlatformError.bundle(
+                        "bad_request",
+                        f"bundle archive exceeds {_MAX_ARCHIVE_BYTES // 2**30} GiB",
+                    )
+                )
+            out.write(chunk)
+
+
+def _unpack(archive: Path, dest: Path) -> Path:
+    from umrs.knowledge.bundle_archive import BundleArchiveError, safe_extract
+
+    try:
+        with open(archive, "rb") as handle:
+            return safe_extract(handle, dest)
+    except BundleArchiveError as exc:
+        raise_typed(PlatformError.bundle("bad_request", str(exc)), cause=exc)
+
+
+@router.post("/import", response_model=dict[str, Any])
+async def import_bundle_archive(
+    request: Request,
+    file: UploadFile = File(...),
+    allow_unsigned: bool = False,
+    project_id: str = Depends(get_project_id),
+) -> dict[str, Any]:
+    """Import a ``.kb.tar.gz`` bundle into the caller's own project.
+    # auth: verified
+
+    The user-facing half of "sharing = export/import": the archive's bytes
+    arrive in the request (never a server path), unpack into a private
+    temporary directory (hostile-input safe), and every row retargets to the
+    caller's verified project. The manifest is verified; an unsigned or
+    foreign-key bundle needs the explicit ``allow_unsigned=true`` opt-out
+    (recorded as unverified in the result). Agent actors need an approved
+    graph-extension proposal (``x-proposal-id``), as for every write.
+    """
+    import asyncio
+    import tempfile
+
+    from umrs.api._asyncpg_pool import knowledge_asyncpg_pool
+
+    from .governance import guard_ingest
+
+    actor = request_actor(request)
+    proposal_id = request.headers.get("x-proposal-id")
+    if actor == "agent":
+        enforce_graph_mutation_authorization(
+            request,
+            target_graph_id=default_graph_id(project_id),
+            proposal_id=proposal_id,
+        )
+    guard_ingest(
+        project_id,
+        "knowledge.import",
+        user_id=request.headers.get("x-user-id", ""),
+        details={"filename": file.filename, "allow_unsigned": allow_unsigned},
+    )
+    pool = await knowledge_asyncpg_pool(request)
+    with tempfile.TemporaryDirectory(prefix="kb-import-") as tmp:
+        archive = Path(tmp) / "bundle.kb.tar.gz"
+        await asyncio.to_thread(_stage_archive, file.file, archive)
+        unpacked = Path(tmp) / "unpacked"
+        unpacked.mkdir()
+        root = await asyncio.to_thread(_unpack, archive, unpacked)
+        result = await _import_bundle_dir(
+            request,
+            pool,
+            str(root),
+            target_project_id=project_id,
+            verify=True,
+            allow_unsigned=allow_unsigned,
+            write_upgrade=False,
+        )
+    if actor == "agent":
+        mark_proposal_executed(
+            request,
+            proposal_id,
+            actor=actor,
+            session_id=request_session_id(request),
+            operation="knowledge_import",
+        )
+    return {"status": "ok", "project_id": project_id, "import": result.to_dict()}
