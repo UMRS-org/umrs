@@ -2788,6 +2788,20 @@ class KnowledgeVerifyStatusChecker(BackendStatusChecker):
 # ── KnowledgeExportBackend ────────────────────────────────────────────────────
 
 
+def _lazy_artifact_reader() -> Any:
+    """``source_ref -> bytes | None`` over the ingest bucket; the S3 client is
+    built on first use (an empty project never probes S3). Unreadable = None:
+    the export keeps that row's physical identity (ADR-032 #1)."""
+    state: dict[str, Any] = {}
+
+    def read(source_ref: str) -> bytes | None:
+        if "client" not in state:
+            state["client"], state["bucket"] = _build_s3_client({})
+        return _fetch_artifact_bytes(state["client"], state["bucket"], source_ref)
+
+    return read
+
+
 class _ExportIntegrityMixin:
     """Shared export+integrity flow for the export backend's submit path."""
 
@@ -2819,6 +2833,7 @@ class _ExportIntegrityMixin:
             ),
             secret_key=secret_key,
             allow_unsigned=allow_unsigned,
+            artifact_reader=_lazy_artifact_reader(),
         )
         result = await engine.export_project(project_id)
         if secret_key and not result.degraded and result.bundle_path:

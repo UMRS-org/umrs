@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from . import canonical_identity
 from .bundle_export import verify_bundle_integrity
 from .store import KnowledgeEdge, KnowledgeNode
 
@@ -94,6 +95,10 @@ class KnowledgeImportResult:
     # trusted model / left for re-embedding (ADR-032 precondition #3).
     node_embedding_count: int = 0
     node_embeddings_pending: int = 0
+    # ADR-032 #1: incoming artifacts that are the same logical document as an
+    # existing one under another id (reported, never merged — federation is
+    # outside v1).
+    canonical_matches: list[dict[str, str]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -123,6 +128,7 @@ class KnowledgeImportResult:
             "node_embedding_count": self.node_embedding_count,
             "node_embeddings_pending": self.node_embeddings_pending,
             "upgraded_from": self.upgraded_from,
+            "canonical_matches": list(self.canonical_matches),
         }
 
 
@@ -216,8 +222,47 @@ def _artifact_kwargs(row: dict[str, Any], project_id: str) -> dict[str, Any]:
         "source_ref": str(row.get("source_ref") or ""),
         "size_bytes": int(row.get("size_bytes") or 0),
         "mime_type": str(row.get("mime_type") or ""),
-        "metadata": row.get("metadata") or {},
+        "metadata": _metadata_with_identity(row),
     }
+
+
+def _metadata_with_identity(row: dict[str, Any]) -> dict[str, Any]:
+    """Artifact metadata carrying the exported canonical identity (ADR-032 #1);
+    a missing or malformed block is dropped, never trusted."""
+    metadata = dict(row.get("metadata") or {})
+    metadata.pop("canonical_identity", None)
+    block = canonical_identity.from_row(row)
+    if block is not None:
+        metadata["canonical_identity"] = block
+    return metadata
+
+
+def _incoming_identities(path: Path) -> dict[str, list[str]]:
+    """document_id -> incoming artifact ids, from the bundle's artifact rows."""
+    incoming: dict[str, list[str]] = {}
+    if not path.exists():
+        return incoming
+    for row in _iter_rows(path):
+        block = canonical_identity.from_row(row)
+        if block is not None:
+            incoming.setdefault(block["document_id"], []).append(
+                str(row.get("artifact_id") or "")
+            )
+    return incoming
+
+
+def _match_pairs(
+    incoming: dict[str, list[str]], local: dict[str, list[str]]
+) -> list[dict[str, str]]:
+    """Same logical document under a different local id (sorted, deterministic)."""
+    pairs = [
+        {"document_id": doc, "incoming_artifact_id": mine, "local_artifact_id": theirs}
+        for doc, ids in incoming.items()
+        for mine in ids
+        for theirs in local.get(doc, [])
+        if theirs != mine
+    ]
+    return sorted(pairs, key=lambda p: (p["document_id"], p["incoming_artifact_id"]))
 
 
 def _ir_kwargs(row: dict[str, Any]) -> dict[str, Any]:
@@ -351,6 +396,7 @@ class KnowledgeImportEngine:
         if target != source_project:
             logger.info("Retargeting bundle restore: %s -> %s", source_project, target)
 
+        result.canonical_matches = await self._canonical_matches(bundle_path, target)
         (
             result.artifact_count,
             result.skipped_count,
@@ -424,6 +470,22 @@ class KnowledgeImportEngine:
         result.verified = True
 
     # ── Store-backed restores ───────────────────────────────────────────
+
+    async def _canonical_matches(
+        self, bundle_path: Path, project_id: str
+    ) -> list[dict[str, str]]:
+        """ADR-032 #1: incoming documents already present under another id,
+        looked up before the restore (a store without the lookup: none)."""
+        incoming = _incoming_identities(bundle_path / _TABLE_FILES["artifacts"])
+        lookup = getattr(self._store, "artifacts_by_canonical_document", None)
+        if not incoming or lookup is None:
+            return []
+        try:
+            local = await lookup(project_id, sorted(incoming))
+        except Exception as exc:  # noqa: BLE001 — report degraded, the restore proceeds
+            self._note_degraded("canonical_identity", f"lookup failed: {exc}")
+            return []
+        return _match_pairs(incoming, local)
 
     async def _restore_artifacts(
         self, bundle_path: Path, project_id: str

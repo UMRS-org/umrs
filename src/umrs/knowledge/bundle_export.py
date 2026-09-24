@@ -28,11 +28,13 @@ import hmac
 import json
 import logging
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from . import canonical_identity
 from .bundle_reader import ExportBundleWriter
 from .store import KnowledgeStore
 
@@ -43,6 +45,8 @@ logger = logging.getLogger(__name__)
 _HMAC_ALGORITHM = "sha256"
 _SIGNATURE_FILENAME = "signature.sig"
 _PAGE_SIZE = 500
+# Artifacts above this size keep the physical identity (not read at export).
+_IDENTITY_READ_CAP = 64 * 1024 * 1024
 _BUNDLE_FORMAT = "r4-kb"
 _BUNDLE_VERSION = "1.2"
 _GENERATOR_NAME = "umrs"
@@ -237,8 +241,13 @@ class KnowledgeExportEngine:
         secret_key: str = "",
         allow_unsigned: bool = False,
         populate_embedding_pin: bool = True,
+        artifact_reader: Callable[[str], bytes | None] | None = None,
     ) -> None:
         self._store = store
+        # ADR-032 #1: reads one artifact's raw bytes by source_ref (None =
+        # unreadable) so the export can map each row to its canonical identity.
+        self._artifact_reader = artifact_reader
+        self._identity_counts: dict[str, int] = {}
         self._output_dir = output_dir
         self._secret_key = secret_key
         self._allow_unsigned = allow_unsigned
@@ -358,6 +367,18 @@ class KnowledgeExportEngine:
             row["updated_at"] = artifact.updated_at.isoformat()
         return row
 
+    def _stamp_identity(self, row: dict[str, Any]) -> None:
+        """ADR-032 #1: map the row to its canonical identity (``cid-1``);
+        existing ids are untouched — the map travels, nothing is rewritten."""
+        raw = None
+        size = int(row.get("size_bytes") or 0)
+        if self._artifact_reader is not None and size <= _IDENTITY_READ_CAP:
+            raw = self._artifact_reader(str(row.get("source_ref") or ""))
+        ident = canonical_identity.identity_of(raw, str(row.get("content_hash") or ""))
+        row["canonical_identity"] = ident.to_dict()
+        counts = self._identity_counts
+        counts[ident.normalization] = counts.get(ident.normalization, 0) + 1
+
     def _serialize_ir(self, ir: Any) -> dict[str, Any]:
         return {
             "ir_id": ir.ir_id,
@@ -417,6 +438,8 @@ class KnowledgeExportEngine:
             page_size=_PAGE_SIZE,
         )
         artifact_rows = [self._serialize_artifact(a) for a in artifacts]
+        for row in artifact_rows:
+            self._stamp_identity(row)
         await writer.write_artifacts(artifact_rows)
         logger.info(
             "Exported %d/%d artifacts for project=%s",
@@ -607,6 +630,10 @@ class KnowledgeExportEngine:
             },
             "collision_policy": "abort",
             "provenance_canonical": False,
+            "identity": {
+                "contract": canonical_identity.CONTRACT,
+                "normalizations": dict(sorted(self._identity_counts.items())),
+            },
             "reconciliation_snapshot": reconciliation_snapshot,
             "embedding": embedding_pin,
             "tables": {
