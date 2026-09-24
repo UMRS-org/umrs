@@ -322,7 +322,7 @@ def test_build_durable_job_db_pool_reads_env(monkeypatch):
     }
     assert pool_kwargs == {
         "minconn": 1,
-        "maxconn": 10,
+        "maxconn": 32,  # 6 boot stores lease for life; 10 exhausted live (2026-09-24)
         "dbname": "jobs-db",
         "user": "jobs-user",
         "password": "jobs-pass",

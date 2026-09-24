@@ -23,6 +23,18 @@ import httpx
 logger = logging.getLogger(__name__)
 
 
+# Job ids whose endpoint was torn down while a readiness poll was running
+# (live rccs 2026-09-24: `r4 endpoint down` deprovisioned job 387426, yet the
+# poller kept probing it for 33+ minutes until its own timeout).
+_CANCELLED_JOBS: set[str] = set()
+
+
+def cancel_readiness(job_id: str) -> None:
+    """Stop any in-flight readiness poll for ``job_id`` at its next attempt."""
+    if job_id:
+        _CANCELLED_JOBS.add(str(job_id))
+
+
 class ReadinessState(str, Enum):
     """Readiness check states."""
 
@@ -434,6 +446,17 @@ class ReadinessPoller:
 
     async def _poll_ready_once(self, poll: _ReadinessPoll) -> ReadinessResult | None:
         elapsed = time.monotonic() - poll.start_time
+
+        if poll.target.job_id in _CANCELLED_JOBS:
+            _CANCELLED_JOBS.discard(poll.target.job_id)
+            poll.result.state = ReadinessState.CANCELLED
+            poll.result.elapsed_sec = elapsed
+            poll.result.error = "endpoint torn down while waiting for readiness"
+            logger.info(
+                "Readiness poll for %s cancelled (endpoint torn down)",
+                poll.target.job_id,
+            )
+            return poll.result
 
         timeout_result = self._timeout_result(poll.result, poll.target.job_id, elapsed)
         if timeout_result is not None:

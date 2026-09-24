@@ -138,6 +138,23 @@ def resolve_satellite_pool(backend: str, db_pool: Any, label: str) -> Any:
         return None
 
 
+# Six boot-time stores (model, MCP, audit, governance, session, trust) keep a
+# connection leased for the process lifetime, so the old maxconn=10 left four
+# for every request — live rccs 2026-09-24: "connection pool exhausted" 500s
+# on /umrs/knowledge/graphs. umrs-front: 4 servers x 32 fits max_connections
+# 500 with the other pools (151 connections in use at the time).
+_DURABLE_POOL_MAX_DEFAULT = 32
+
+
+def durable_pool_max() -> int:
+    """``UMRS_DB_POOL_MAX`` (default 32, floor 10)."""
+    try:
+        value = int(os.environ.get("UMRS_DB_POOL_MAX", "") or _DURABLE_POOL_MAX_DEFAULT)
+    except ValueError:
+        return _DURABLE_POOL_MAX_DEFAULT
+    return max(value, 10)
+
+
 def build_durable_job_db_pool_from_env():
     """Bootstrap a thread-safe durable jobs connection pool from process env."""
     db_host = os.environ.get("DB_HOST", "127.0.0.1")
@@ -181,7 +198,7 @@ def build_durable_job_db_pool_from_env():
     # pg_stat_activity; idle-in-transaction holders are reaped server-side.
     db_pool = pg_pool.ThreadedConnectionPool(
         minconn=1,
-        maxconn=10,
+        maxconn=durable_pool_max(),
         dbname=db_name,
         user=db_user,
         password=db_password,

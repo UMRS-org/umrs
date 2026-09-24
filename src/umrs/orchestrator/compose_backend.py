@@ -228,6 +228,9 @@ class DockerComposeBackend(OrchestratorBackend):
 
     async def cleanup(self, job_id: str, force: bool = False) -> None:
         """Stop and remove docker compose stack."""
+        from .readiness import cancel_readiness
+
+        cancel_readiness(job_id)
         args = ["down"]
         if force:
             args.extend(["--volumes", "--remove-orphans"])

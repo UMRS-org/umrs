@@ -265,8 +265,10 @@ def configure_loop_store_sync(dsn: str) -> bool:
 
     from umrs.shared.pg_settings import pg_connect_kwargs
 
-    conn = psycopg2.connect(dsn, **pg_connect_kwargs("loop-store"))
-    incoming = LoopStore.sync_pg(conn)
+    def _connect():
+        return psycopg2.connect(dsn, **pg_connect_kwargs("loop-store"))
+
+    incoming = LoopStore.sync_pg(_connect(), reconnect=_connect)
     for live in _loop_store.list_all():
         try:
             incoming.save(live)

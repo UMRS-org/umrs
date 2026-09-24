@@ -264,6 +264,9 @@ class SlurmBackend(OrchestratorBackend):
 
     async def cleanup(self, job_id: str, force: bool = False) -> None:
         """Cancel a Slurm job."""
+        from .readiness import cancel_readiness
+
+        cancel_readiness(job_id)
         signal = "KILL" if force else "TERM"
         proc = await asyncio.create_subprocess_exec(
             "scancel",
