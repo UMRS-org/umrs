@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any
 
 from . import canonical_identity
-from .bundle_export import verify_bundle_integrity
+from .bundle_export import tables_pinned, verify_bundle_integrity
 from .store import KnowledgeEdge, KnowledgeNode
 
 logger = logging.getLogger(__name__)
@@ -66,6 +66,9 @@ class KnowledgeImportResult:
 
     project_id: str = ""
     verified: bool = False
+    # The signature also covered every table's contents (bundles exported
+    # since 2026-09-24 pin each table's sha256); False on older bundles.
+    tables_verified: bool = False
     artifact_count: int = 0
     document_count: int = 0
     node_count: int = 0
@@ -104,6 +107,7 @@ class KnowledgeImportResult:
         return {
             "project_id": self.project_id,
             "verified": self.verified,
+            "tables_verified": self.tables_verified,
             "artifact_count": self.artifact_count,
             "document_count": self.document_count,
             "node_count": self.node_count,
@@ -389,6 +393,7 @@ class KnowledgeImportEngine:
             "pending", False
         )
         self._enforce_integrity(bundle_path, verify, allow_unsigned, result)
+        result.tables_verified = result.verified and tables_pinned(manifest)
 
         source_project = str(manifest["project_id"])
         target = target_project_id or source_project

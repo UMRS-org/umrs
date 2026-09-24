@@ -30,6 +30,11 @@ class ExportBundleWriter:
         self._dir = Path(output_dir)
         self._dir.mkdir(parents=True, exist_ok=True)
 
+    @property
+    def path(self) -> Path:
+        """The bundle directory being written."""
+        return self._dir
+
     async def write_artifacts(self, rows: list[dict[str, Any]]) -> None:
         """Write artifacts.jsonl."""
         path = self._dir / "artifacts.jsonl"
