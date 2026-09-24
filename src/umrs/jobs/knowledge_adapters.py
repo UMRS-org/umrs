@@ -2094,47 +2094,66 @@ def _reset_node_embedder_for_tests() -> None:
     _node_embedder_unavailable = False
 
 
-async def _embed_one_artifact(
-    store: Any,
-    src: dict[str, Any],
-    project_id: str,
-    graph_id: str,
-    embedder: Any,
-    s3_client: Any,
-    bucket: str,
-    result: KnowledgeEmbedResult,
-) -> None:
-    """Chunk one artifact's text and write chunk nodes + vector rows."""
-    from umrs.knowledge.store import KnowledgeEdge, KnowledgeNode
-    from umrs.shared.utils import _chunk_text_without_nlp, add_document_prefix
+_EMBED_BATCH_ARTIFACTS = 16  # texts per chunk+embed call (one sandbox per batch)
 
+
+def _artifact_text(
+    src: dict[str, Any], s3_client: Any, bucket: str, result: KnowledgeEmbedResult
+) -> str | None:
+    """The artifact's text, or None (failure/skip recorded on ``result``)."""
     artifact_id = src.get("artifact_id", "")
     if not artifact_id:
         result.failed_items.append({"artifact_id": "", "error": "missing artifact_id"})
-        return
-
+        return None
     content = _fetch_artifact_bytes(s3_client, bucket, src.get("source_ref", ""))
     if content is None:
         result.failed_items.append(
             {"artifact_id": artifact_id, "error": "artifact content unavailable"}
         )
-        return
+        return None
     text = content.decode("utf-8", errors="ignore").strip()
     if not text:
         result.skipped += 1
-        return
+        return None
+    return text
 
-    tokenizer = getattr(getattr(embedder, "client", None), "tokenizer", None)
-    max_tokens = int(os.environ.get(_NODE_EMBED_CHUNK_TOKENS_ENV, "256"))
-    chunks = _chunk_text_without_nlp(text, tokenizer=tokenizer, max_tokens=max_tokens)
+
+async def _embed_one_artifact(
+    store: Any,
+    src: dict[str, Any],
+    project_id: str,
+    graph_id: str,
+    chunk_embedder: Any,
+    s3_client: Any,
+    bucket: str,
+    result: KnowledgeEmbedResult,
+) -> None:
+    """Chunk + embed one artifact and write its chunk nodes + vector rows."""
+    text = _artifact_text(src, s3_client, bucket, result)
+    if text is None:
+        return
+    embedded = chunk_embedder.chunk_and_embed([text])[0]
+    await _write_embedded_chunks(
+        store, src["artifact_id"], project_id, graph_id, embedded, result
+    )
+
+
+async def _write_embedded_chunks(
+    store: Any,
+    artifact_id: str,
+    project_id: str,
+    graph_id: str,
+    embedded: dict[str, Any],
+    result: KnowledgeEmbedResult,
+) -> None:
+    """Write chunk nodes, part_of edges and node vectors for one artifact."""
+    from umrs.knowledge.store import KnowledgeEdge, KnowledgeNode
+
+    chunks, vectors = embedded.get("chunks") or [], embedded.get("vectors") or []
     if not chunks:
         result.skipped += 1
         return
-
     model_name = os.environ.get(_NODE_EMBED_MODEL_ENV, "").strip()
-    chunk_texts = [c["text"] for c in chunks]
-    vectors = embedder.embed_documents(add_document_prefix(chunk_texts, model_name))
-
     scope = _node_id_scope(project_id, graph_id)
     file_node_id = f"node-file-{scope}{artifact_id}"
     cap = int(os.environ.get(_NODE_EMBED_MAX_CHUNKS_ENV, "128"))
@@ -2176,13 +2195,78 @@ async def _embed_one_artifact(
             )
         )
         await store.upsert_node_embedding(
-            chunk_id,
-            model_name,
-            vector,
-            content_hash=chunk_md5,
+            chunk_id, model_name, vector, content_hash=chunk_md5
         )
         written += 1
     result.nodes_embedded += written
+
+
+def _chunk_embedder_for_site() -> tuple[Any | None, str]:
+    """(chunk-embedder, degraded reason). The ``embedding-job`` sandbox when
+    the site opted in (D-12 move leg; the server never loads the model then),
+    else the in-process embedder. A misconfigured sandbox raises by name."""
+    from umrs.knowledge.embed_sandbox import (
+        InProcessChunkEmbedder,
+        SandboxChunkEmbedder,
+        sandbox_config_from_env,
+    )
+
+    model_name = os.environ.get(_NODE_EMBED_MODEL_ENV, "").strip()
+    max_tokens = int(os.environ.get(_NODE_EMBED_CHUNK_TOKENS_ENV, "256"))
+    no_embedder = f"no embedder (set {_NODE_EMBED_MODEL_ENV} to a pre-staged model dir)"
+    config = sandbox_config_from_env(model_name) if model_name else None
+    if config is not None:
+        return (
+            SandboxChunkEmbedder(
+                config, prefix_model_name=model_name, max_tokens=max_tokens
+            ),
+            "",
+        )
+    embedder = _get_node_embedder()
+    if embedder is None:
+        return None, no_embedder
+    return (
+        InProcessChunkEmbedder(
+            embedder, prefix_model_name=model_name, max_tokens=max_tokens
+        ),
+        "",
+    )
+
+
+def _prepared_batch(
+    batch: list[dict[str, Any]], s3: tuple[Any, str], result: KnowledgeEmbedResult
+) -> list[tuple[dict[str, Any], str]]:
+    """(source, text) pairs of one batch; unreadable sources are recorded."""
+    pairs = [(src, _artifact_text(src, *s3, result)) for src in batch]
+    return [(src, text) for src, text in pairs if text is not None]
+
+
+async def _embed_sources(
+    store: Any,
+    sources: list[dict[str, Any]],
+    project_id: str,
+    graph_id: str,
+    chunk_embedder: Any,
+    s3: tuple[Any, str],
+    result: KnowledgeEmbedResult,
+) -> None:
+    """Embed every source in batches; a failed batch fails its artifacts by name."""
+    for i in range(0, len(sources), _EMBED_BATCH_ARTIFACTS):
+        prepared = _prepared_batch(sources[i : i + _EMBED_BATCH_ARTIFACTS], s3, result)
+        if not prepared:
+            continue
+        try:
+            embedded = chunk_embedder.chunk_and_embed([text for _, text in prepared])
+            for (src, _), res in zip(prepared, embedded):
+                await _write_embedded_chunks(
+                    store, src["artifact_id"], project_id, graph_id, res, result
+                )
+        except Exception as exc:  # noqa: BLE001 — per-batch isolation, named per artifact
+            logger.error("embed batch failed (%d artifacts): %s", len(prepared), exc)
+            result.failed_items.extend(
+                {"artifact_id": src.get("artifact_id", ""), "error": str(exc)}
+                for src, _ in prepared
+            )
 
 
 class KnowledgeEmbedBackend(OrchestratorBackend):
@@ -2223,14 +2307,11 @@ class KnowledgeEmbedBackend(OrchestratorBackend):
         graph_id = str(job.spec.get("graph_id") or "")
 
         result = KnowledgeEmbedResult()
-        embedder = _get_node_embedder()
-        if embedder is None:
-            reason = (
-                f"no embedder (set {_NODE_EMBED_MODEL_ENV} to a pre-staged model dir)"
-            )
-            logger.info("knowledge_embed degraded (no-op): %s", reason)
+        chunk_embedder, no_embedder = _chunk_embedder_for_site()
+        if chunk_embedder is None:
+            logger.info("knowledge_embed degraded (no-op): %s", no_embedder)
             result.degraded = True
-            result.degraded_reason = reason
+            result.degraded_reason = no_embedder
             _write_result(attempt, result)
             return (
                 f"knowledge_embed|mode=degraded|reason=no_embedder|project={project_id}"
@@ -2249,29 +2330,19 @@ class KnowledgeEmbedBackend(OrchestratorBackend):
                 return (
                     f"knowledge_embed|mode=degraded|reason=no_pool|project={project_id}"
                 )
-
-            store = KnowledgeStore(pool)
-            for src in sources:
-                try:
-                    await _embed_one_artifact(
-                        store,
-                        src,
-                        project_id,
-                        graph_id,
-                        embedder,
-                        s3_client,
-                        s3_bucket,
-                        result,
-                    )
-                except Exception as exc:  # noqa: BLE001 — per-artifact isolation
-                    logger.error("embed failed for %s: %s", src.get("artifact_id"), exc)
-                    result.failed_items.append(
-                        {"artifact_id": src.get("artifact_id", ""), "error": str(exc)}
-                    )
+            await _embed_sources(
+                KnowledgeStore(pool),
+                sources,
+                project_id,
+                graph_id,
+                chunk_embedder,
+                (s3_client, s3_bucket),
+                result,
+            )
 
         _write_result(attempt, result)
         return (
-            f"knowledge_embed|project={project_id}|"
+            f"knowledge_embed|project={project_id}|lane={chunk_embedder.lane}|"
             f"embedded={result.nodes_embedded}|skipped={result.skipped}|"
             f"failed={len(result.failed_items)}"
         )
