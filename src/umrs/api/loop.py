@@ -434,8 +434,8 @@ class StartLoopRequest(BaseModel):
         default_factory=list,
         description=(
             "ADR-066 trigger classes for mode='profile' (ignored otherwise): "
-            "'cost', 'competing_hypotheses'; reserved: 'physical_action', "
-            "'direction_change'."
+            "'cost', 'competing_hypotheses', 'direction_change', "
+            "'physical_action' (ADR-066 amendment 3)."
         ),
     )
     workflow_name: str = Field(
