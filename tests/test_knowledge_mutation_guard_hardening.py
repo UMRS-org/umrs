@@ -125,6 +125,83 @@ class TestRestoreGuard:
         engine.import_project.assert_awaited_once()
 
 
+class TestRestoreIsOperatorOnly:
+    """bundle_dir resolves on the UMRS host (server rights; write_upgrade
+    rewrites its manifest) and project_id retargets anywhere — so server-path
+    restore is admin-only; the legacy anonymous dev scope keeps working."""
+
+    def test_non_admin_caller_refused_by_name(self, monkeypatch, bundle_dir):
+        from r4_contracts.errors import ERROR_CODE_HEADER
+
+        engine = _engine()
+        client, _ = _restore_client(monkeypatch, [], engine)
+        resp = client.post(
+            "/umrs/knowledge/restore",
+            json={"bundle_dir": bundle_dir, "project_id": "someone-elses-project"},
+            headers={"x-user-id": "mallory", "x-verified-project-id": "proj-m"},
+        )
+        assert (resp.status_code, resp.headers.get(ERROR_CODE_HEADER)) == (403, "bundle.forbidden")
+        engine.import_project.assert_not_called()
+
+    def test_legacy_project_scope_refused(self, monkeypatch, bundle_dir):
+        engine = _engine()
+        client, _ = _restore_client(monkeypatch, [], engine)
+        resp = client.post(
+            "/umrs/knowledge/restore",
+            json={"bundle_dir": bundle_dir},
+            headers={"x-project-id": "proj-a"},
+        )
+        assert resp.status_code == 403
+        engine.import_project.assert_not_called()
+
+    def test_admin_restores(self, monkeypatch, bundle_dir):
+        engine = _engine()
+        client, _ = _restore_client(monkeypatch, [], engine)
+        resp = client.post(
+            "/umrs/knowledge/restore",
+            json={"bundle_dir": bundle_dir},
+            headers={
+                "x-user-id": "ops",
+                "x-verified-project-id": "proj-a",
+                "x-verified-is-admin": "true",
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        engine.import_project.assert_awaited_once()
+
+
+class TestLintNeverReadsServerPaths:
+    def _client(self):
+        from umrs.api.knowledge_v2 import router as k2_router
+
+        app = FastAPI()
+        app.include_router(k2_router)
+        return TestClient(app)
+
+    def test_files_lane_refused(self, tmp_path):
+        from r4_contracts.errors import ERROR_CODE_HEADER
+
+        secret = tmp_path / "server_only.py"
+        secret.write_text("def f(:\n    pass\n")  # would surface as a syntax finding
+        resp = self._client().post(
+            "/umrs/k2/lint", json={"files": [str(secret)]}, headers={"X-Project-ID": "p"}
+        )
+        assert (resp.status_code, resp.headers.get(ERROR_CODE_HEADER)) == (
+            400,
+            "knowledge2.source_kind_refused",
+        )
+        assert "server_only" not in resp.text
+
+    def test_source_code_lane_lints(self):
+        resp = self._client().post(
+            "/umrs/k2/lint",
+            json={"source_code": {"a.py": "def f(:\n    pass\n"}},
+            headers={"X-Project-ID": "p"},
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["total"] >= 1
+
+
 def _graph_client(script):
     app = FastAPI()
     app.include_router(graphs_router)
