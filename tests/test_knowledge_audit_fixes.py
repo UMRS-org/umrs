@@ -36,6 +36,7 @@ from umrs.jobs.models import (
     generate_attempt_id,
     generate_job_id,
 )
+from umrs.knowledge.embed_sandbox import InProcessChunkEmbedder
 
 # ── small fakes ──────────────────────────────────────────────────────────────
 
@@ -269,7 +270,7 @@ class TestEmbedOneArtifact:
             {"artifact_id": "art-x", "content_hash": "hh", "source_ref": "s3key"},
             "proj-a",
             "g-default-x",
-            embedder,
+            InProcessChunkEmbedder(embedder, prefix_model_name=model_dir, max_tokens=256),
             MagicMock(),
             "bucket",
             result,
@@ -299,7 +300,7 @@ class TestEmbedOneArtifact:
             {"artifact_id": "art-y", "content_hash": "hh", "source_ref": "s3key"},
             "proj-a",
             "",
-            _FakeEmbedder(),
+            InProcessChunkEmbedder(_FakeEmbedder(), prefix_model_name="", max_tokens=256),
             MagicMock(),
             "bucket",
             result,
