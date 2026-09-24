@@ -28,6 +28,7 @@ from r4_contracts.research import (
     LoopIterationRecord,
 )
 
+from . import loop_tracks
 from .planner import (
     AutonomousResearchPlanner,
     ResearchPlan,
@@ -272,6 +273,9 @@ class AutonomousResearchLoop:
         self._cancel_requested = False
         self._in_flight_execution_id: str | None = None
         self._retrieval_errors: list[str] = []
+        # ADR-066 amendment 2 (D-34): the track this iteration serves ("" =
+        # the single-branch loop). Gated actions carry it; denial closes it.
+        self._track_id = ""
 
     def _checkpoint(self, iteration: LoopIteration) -> None:
         """Persist a mid-loop / end-of-iteration snapshot when a hook is set."""
@@ -440,7 +444,10 @@ class AutonomousResearchLoop:
             loop.total_experiments_run += 1
             iteration.results = {"status": "completed", "output": "Experiment results"}
             return True
-        if self._execute_experiment(loop, iteration, experiment) == "deferred":
+        if self._execute_experiment(loop, iteration, experiment) in (
+            "deferred",
+            "halted",
+        ):
             return False
         # Checkpoint after trigger/wait so restart reconciliation can see
         # the in-flight durable_job_id even if the process dies next.
@@ -492,8 +499,10 @@ class AutonomousResearchLoop:
             return
 
         hypothesis_id = ""
+        track = None
         if loop.plan and loop.plan.hypotheses:
-            if not self._select_and_gate_hypothesis(loop, iteration, excerpts):
+            ok, track = self._hypothesis_phase(loop, iteration, excerpts)
+            if not ok:
                 return
             hypothesis_id = iteration.hypothesis_id
 
@@ -503,11 +512,7 @@ class AutonomousResearchLoop:
         if self._check_cancel_or_abort(loop, iteration):
             return
 
-        experiment = None
-        if loop.plan and loop.plan.experiments:
-            idx = (loop.current_iteration - 1) % len(loop.plan.experiments)
-            experiment = loop.plan.experiments[idx]
-            iteration.experiment_id = experiment.experiment_id
+        experiment = self._pick_experiment(loop, iteration, track)
 
         # Phase 5: Experiment execution
         loop.phase = LoopPhase.EXPERIMENT_EXECUTION
@@ -598,6 +603,7 @@ class AutonomousResearchLoop:
         # Complete iteration
         iteration.completed_at = datetime.now(timezone.utc).isoformat()
         iteration.status = "completed"
+        self._stamp_track(iteration)
         # WP-12: per-iteration wall-clock span — observable (engine label)
         # and recorded on the iteration's results for the loop detail view.
         from umrs.jobs.timing import duration_ms
@@ -808,6 +814,7 @@ class AutonomousResearchLoop:
                 "workflow_name": workflow_name,
                 "params": dict(params),
                 "iteration": loop.current_iteration,
+                "track_id": self._track_id,
             }
         )
         if verdict == "deferred":
@@ -857,10 +864,11 @@ class AutonomousResearchLoop:
 
         # Tool-grain enforcement: an 'ask'-mode loop gates each workflow
         # trigger through the approvals registry (injected by the driver).
-        if self._workflow_gate_verdict(loop, iteration, workflow_name, params) == (
-            "deferred"
-        ):
-            return "deferred"
+        verdict = self._workflow_gate_verdict(loop, iteration, workflow_name, params)
+        if verdict is not True:
+            # deferred → awaiting_decision; False → the iteration was already
+            # finalised (stopped loop / closed track) — never trigger then.
+            return "deferred" if verdict == "deferred" else "halted"
 
         execution_id = self._workflow_port.trigger(workflow_name, params)
         self._in_flight_execution_id = execution_id
@@ -911,6 +919,115 @@ class AutonomousResearchLoop:
         }
         loop.total_experiments_run += 1
 
+    def _hypothesis_phase(
+        self, loop: ResearchLoop, iteration: LoopIteration, excerpts: list[str]
+    ) -> tuple[bool, dict[str, Any] | None]:
+        """Single-branch selection, or (ADR-066 amendment 2) the next track.
+
+        (False, None) = the iteration was finalised (gate deferred/denied, or
+        every track is closed and the loop completed)."""
+        self._track_id = ""
+        if not loop_tracks.tracks_enabled(loop):
+            return self._select_and_gate_hypothesis(loop, iteration, excerpts), None
+        if not loop_tracks.tracks(loop) and not self._open_tracks(
+            loop, iteration, excerpts
+        ):
+            return False, None
+        track = loop_tracks.next_track(loop)
+        if track is None:
+            self._complete_tracks_exhausted(loop)
+            return False, None
+        self._track_id = str(track["track_id"])
+        iteration.hypothesis = str(track["hypothesis"])
+        iteration.hypothesis_id = str(track["hypothesis_id"])
+        iteration.results["track_id"] = self._track_id
+        loop.total_hypotheses_tested += 1
+        return True, track
+
+    def _open_tracks(
+        self, loop: ResearchLoop, iteration: LoopIteration, excerpts: list[str]
+    ) -> bool:
+        """Open the tracks; the competing-hypotheses question is raised only
+        when there are more candidates than tracks (a real choice)."""
+        if loop_tracks.needs_choice(loop) and not self._competing_gate(loop, iteration):
+            return False
+        loop_tracks.open_tracks(loop, self._rank_hypotheses(loop, excerpts))
+        return True
+
+    def _rank_hypotheses(self, loop: ResearchLoop, excerpts: list[str]) -> list[Any]:
+        """Plan hypotheses by evidence overlap (stable; plan order when
+        simulated or without evidence)."""
+        hypotheses = list(loop.plan.hypotheses)
+        if not excerpts or self._simulated:
+            return hypotheses
+        corpus = " ".join(excerpts).lower()
+
+        def score(hyp: Any) -> int:
+            tokens = _TOKEN_RE.findall(hyp.statement.lower())
+            bonus = 10 if hyp.statement and hyp.statement.lower() in corpus else 0
+            return sum(1 for t in tokens if t in corpus) + bonus
+
+        return sorted(hypotheses, key=score, reverse=True)
+
+    def _pick_experiment(
+        self, loop: ResearchLoop, iteration: LoopIteration, track: dict[str, Any] | None
+    ) -> Any:
+        """The track's own experiment sequence, else the loop-wide rotation."""
+        if track is not None:
+            experiment = loop_tracks.take_turn(loop, track)
+        elif loop.plan and loop.plan.experiments:
+            idx = (loop.current_iteration - 1) % len(loop.plan.experiments)
+            experiment = loop.plan.experiments[idx]
+        else:
+            experiment = None
+        if experiment is not None:
+            iteration.experiment_id = experiment.experiment_id
+        return experiment
+
+    def _stamp_track(self, iteration: LoopIteration) -> None:
+        if self._track_id:
+            iteration.results["track_id"] = self._track_id
+
+    def _close_track(self, loop: ResearchLoop, iteration: LoopIteration) -> None:
+        """A decided "no" on a track's gated action closes that track only."""
+        loop_tracks.close_track(loop, self._track_id)
+        now = datetime.now(timezone.utc).isoformat()
+        iteration.completed_at = now
+        iteration.status = "track_rejected"
+        iteration.results["track_id"] = self._track_id
+        loop.iterations.append(iteration)
+        loop.updated_at = now
+        self._checkpoint(iteration)
+
+    def _complete_tracks_exhausted(self, loop: ResearchLoop) -> None:
+        """Every track is closed: the loop completes (nothing left to pursue)."""
+        now = datetime.now(timezone.utc).isoformat()
+        loop.metadata["tracks_exhausted"] = True
+        loop.phase = LoopPhase.COMPLETED
+        loop.status = LoopStatus.STOPPED
+        loop.completed_at = now
+        loop.updated_at = now
+
+    def _competing_gate(self, loop: ResearchLoop, iteration: LoopIteration) -> bool:
+        """The ADR-066 competing-hypotheses trigger (True = proceed)."""
+        gate = getattr(self, "_approval_gate", None)
+        if gate is None:
+            return True
+        verdict = gate(
+            {
+                "kind": "competing_hypotheses",
+                "candidates": len(loop.plan.hypotheses),
+                "iteration": loop.current_iteration,
+            }
+        )
+        if verdict == "deferred":
+            self._gate_deferred(loop, iteration, "competing-hypotheses")
+            return False
+        if not verdict:
+            self._gate_denied(loop, iteration, "competing-hypotheses")
+            return False
+        return True
+
     def _select_and_gate_hypothesis(
         self, loop: ResearchLoop, iteration: LoopIteration, excerpts: list[str]
     ) -> bool:
@@ -922,22 +1039,8 @@ class AutonomousResearchLoop:
         iteration is finalised by ``_gate_denied``); on True the iteration
         carries hypothesis + hypothesis_id and the counter is bumped.
         """
-        if len(loop.plan.hypotheses) > 1:
-            gate = getattr(self, "_approval_gate", None)
-            if gate is not None:
-                verdict = gate(
-                    {
-                        "kind": "competing_hypotheses",
-                        "candidates": len(loop.plan.hypotheses),
-                        "iteration": loop.current_iteration,
-                    }
-                )
-                if verdict == "deferred":
-                    self._gate_deferred(loop, iteration, "competing-hypotheses")
-                    return False
-                if not verdict:
-                    self._gate_denied(loop, iteration, "competing-hypotheses")
-                    return False
+        if len(loop.plan.hypotheses) > 1 and not self._competing_gate(loop, iteration):
+            return False
         hyp = self._select_hypothesis(loop, excerpts)
         iteration.hypothesis = hyp.statement
         hypothesis_id = getattr(hyp, "hypothesis_id", "") or ""
@@ -979,6 +1082,9 @@ class AutonomousResearchLoop:
         """
         if self._should_cancel() or loop.status != LoopStatus.RUNNING:
             self._apply_cancel(loop, iteration)
+            return
+        if self._track_id:
+            self._close_track(loop, iteration)
             return
         raise RuntimeError(
             f"operator rejected the tool-grain action (workflow_trigger '{workflow_name}')"

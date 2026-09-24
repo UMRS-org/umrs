@@ -173,30 +173,52 @@ def _apply_project_ask_policy(http_request: Request, request: Any) -> Any:
     """
     if (request.mode or "").strip():
         return request
+    row = _project_row(http_request, request.project_id)
+    updates = _ask_policy_updates(row) if row is not None else None
+    return request.model_copy(update=updates) if updates else request
+
+
+def _project_row(http_request: Request, project_id: str) -> dict[str, Any] | None:
+    """The durable project row, or None (no pool / unreadable / absent)."""
     pool = getattr(http_request.app.state, "umrs_db_pool", None)
     if pool is None:
-        return request
+        return None
     conn = pool.getconn()
     try:
         from .projects import ProjectStore
 
-        row = ProjectStore(conn).get(request.project_id)
+        return ProjectStore(conn).get(project_id)
     except Exception:  # noqa: BLE001 — the default never blocks a start
-        return request
+        return None
     finally:
         pool.putconn(conn)
-    if row is None:
-        return request
+
+
+def _ask_policy_updates(row: dict[str, Any]) -> dict[str, Any] | None:
+    """The request fields the project's persisted ask policy supplies."""
     ask_mode = str(row.get("ask_mode") or "").strip()
     if not ask_mode:
-        return request
+        return None
     triggers = [
         str(t).strip() for t in (row.get("pause_triggers") or []) if str(t).strip()
     ]
     updates: dict[str, Any] = {"mode": ask_mode}
     if ask_mode == "profile" and triggers:
         updates["pause_triggers"] = triggers
-    return request.model_copy(update=updates)
+    return updates
+
+
+def _apply_loop_mode(loop: Any, request: Any) -> None:
+    """Permission mode + pause profile (ADR-066) and the parallel-track
+    budget (ADR-066 amendment 2) onto the new loop's metadata."""
+    if request.mode == "profile":
+        # ADR-066 (D-33): park only when the action's trigger class is named.
+        loop.metadata["mode"] = "profile"
+        loop.metadata["pause_profile"] = {"triggers": list(request.pause_triggers)}
+    else:
+        loop.metadata["mode"] = "ask" if request.mode == "ask" else "auto"
+    if request.max_tracks > 1:
+        loop.metadata["max_tracks"] = request.max_tracks
 
 
 def _project_budget_caps(project_id: str) -> dict[str, float]:
@@ -395,6 +417,17 @@ class StartLoopRequest(BaseModel):
             "approvals route; 'profile' (ADR-066 D-33) parks only actions "
             "whose trigger class is in pause_triggers. Mirrors the companion "
             "turn-attempt vocabulary."
+        ),
+    )
+    max_tracks: int = Field(
+        1,
+        ge=1,
+        le=4,
+        description=(
+            "ADR-066 amendment 2 (D-34): pursue up to N hypotheses in parallel "
+            "tracks (iterations serve active tracks round-robin; a pending "
+            "question on one track never idles the others; a rejected track "
+            "closes without failing the loop). 1 = the single-branch loop."
         ),
     )
     pause_triggers: list[str] = Field(
@@ -800,12 +833,7 @@ async def start_loop(
         research_goal=request.research_goal,
         max_iterations=request.max_iterations,
     )
-    if request.mode == "profile":
-        # ADR-066 (D-33): park only when the action's trigger class is named.
-        loop.metadata["mode"] = "profile"
-        loop.metadata["pause_profile"] = {"triggers": list(request.pause_triggers)}
-    else:
-        loop.metadata["mode"] = "ask" if request.mode == "ask" else "auto"
+    _apply_loop_mode(loop, request)
     venue = _validate_loop_venue(request)
     loop.metadata["venue"] = venue
     # D-52 (2026-09-22): one trace id through the loop's jobs, iterations and
