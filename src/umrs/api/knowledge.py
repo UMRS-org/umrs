@@ -1150,7 +1150,20 @@ async def export_knowledge(
     request: Request,
     _get_project_id: str = Depends(get_project_id),
 ) -> dict[str, Any]:
-    """Trigger knowledge bundle export (.kb format)."""
+    """Trigger knowledge bundle export (.kb format).
+
+    The export publishes a downloadable archive (D-40 transport), so it acts
+    on the caller's verified project only — a body naming another project is
+    refused, never silently exported.
+    """
+    if body.project_id != _get_project_id:
+        raise_typed(
+            PlatformError.knowledge(
+                "project_mismatch",
+                f"export of project {body.project_id!r} refused: the caller's "
+                f"verified project is {_get_project_id!r}",
+            )
+        )
     try:
         from umrs.server.durable_job_runtime import get_runtime
 
@@ -1184,10 +1197,14 @@ async def export_knowledge(
         )
 
         logger.info("Knowledge export queued: %s", job_id)
+        from umrs.knowledge.bundle_archive import export_archive_key
+
         return {
             "job_id": job_id,
             "bundle_id": job_id,
             "status": "processing",
+            # Downloadable once the job succeeds (r4 files download <key>).
+            "archive_key": export_archive_key(body.project_id, job_id),
         }
     except Exception as exc:
         logger.exception("Failed to queue knowledge export")

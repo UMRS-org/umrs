@@ -151,13 +151,18 @@ def _apply_redaction_rules(
         target, action = str(rule.get("target") or ""), rule.get("action")
         if action not in ("drop", "hash"):
             continue
-        for block, key in _REDACT_PATHS.get(target, ()):
-            section = manifest.get(block)
-            if isinstance(section, dict) and key in section:
-                section[key] = _redact_value(section[key], action)
+        _redact_target(manifest, target, action)
         if target in _REDACT_PATHS:
             applied.append(f"{target}:{action}")
     manifest["redacted"] = applied
+
+
+def _redact_target(manifest: dict[str, Any], target: str, action: str) -> None:
+    """Apply one redaction action to every manifest path of ``target``."""
+    for block, key in _REDACT_PATHS.get(target, ()):
+        section = manifest.get(block)
+        if isinstance(section, dict) and key in section:
+            section[key] = _redact_value(section[key], action)
 
 
 def _json_dict(value: Any) -> dict[str, Any]:
@@ -180,8 +185,11 @@ def _json_dict(value: Any) -> dict[str, Any]:
 class KnowledgeExportResult:
     """Result of a KNOWLEDGE_EXPORT job attempt."""
 
-    bundle_path: str = ""  # S3 key of the exported bundle
+    bundle_path: str = ""  # server-local bundle directory (export working copy)
     project_id: str = ""
+    # D-40 transport: the project-scoped .kb.tar.gz object key (gateway
+    # download route serves it; "" when not published).
+    archive_key: str = ""
     artifact_count: int = 0
     document_count: int = 0
     node_count: int = 0
