@@ -320,6 +320,11 @@ services:
       # into `reasoning_content`, so clients render raw chain-of-thought.
       # Empty default keeps the flag off for non-reasoning models.
       VLLM_REASONING_PARSER: ${VLLM_REASONING_PARSER:-}
+      # Same class as the reasoning parser: the command expands
+      # $${VLLM_SPECULATIVE_CONFIG:+--speculative-config ...} in the container
+      # shell, so an undeclared key silently dropped speculative decoding on
+      # every single-node launch (multi-node inlines it in the heredoc).
+      VLLM_SPECULATIVE_CONFIG: ${VLLM_SPECULATIVE_CONFIG:-}
       # Opt-in eager mode. Empty by default so models run WITH CUDA graphs
       # (much higher decode throughput). Models that need eager (e.g.
       # DeepSeek-V4 NaN guard, GLM-5.2) set VLLM_ENFORCE_EAGER=1 in their
