@@ -242,6 +242,29 @@ class UMRSThreads:
         )
         return thread_ident
 
+    def launch_knn(
+        self,
+        user,
+        n,
+        s3_object,
+        bucket_name,
+        buckets_cfg,
+        control_mq,
+        zmq_sender_id,
+        key,
+        update_status_callback=None,
+    ):
+        from umrs.server.sql import knn_search_worker
+
+        thread_ident, _ = self._submit_to_pool(
+            knn_search_worker,
+            (self, user, n, s3_object, bucket_name, buckets_cfg, control_mq, zmq_sender_id, key, update_status_callback),
+            key,
+            update_status_callback=update_status_callback,
+        )
+        self.update_thread_dict(buckets_cfg, {bucket_name: None}, key, thread_ident=thread_ident)
+        return thread_ident
+
     def launch_wait_table_modification_on_db(
         self,
         path_to_bucket,

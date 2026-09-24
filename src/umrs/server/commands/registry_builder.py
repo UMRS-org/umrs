@@ -13,6 +13,7 @@ from umrs.core.TaskCmdStatus import TaskCmd
 
 from .enroll_user import EnrollUserHandler
 from .export_embeddings import ExportEmbeddingsHandler
+from .knn import KnnHandler
 from .file_upload import FileHandler
 from .job import JobCancelHandler, JobListHandler, JobSubmitHandler
 from .maintenance import CheckHandler, RecomputeHandler, ReloadHandler, UpdateHandler
@@ -54,6 +55,7 @@ def build_registry() -> CommandRegistry:
     # --- File management --------------------------------------------------
     r.register(TaskCmd.FILE, FileHandler())
     r.register(TaskCmd.EXPORT_EMBEDDINGS, ExportEmbeddingsHandler())
+    r.register(TaskCmd.KNN, KnnHandler())
     r.register(TaskCmd.WAIT_OUTPUT, WaitOutputHandler())
 
     # --- User management (admin-only) -------------------------------------
