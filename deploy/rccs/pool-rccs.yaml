@@ -68,3 +68,33 @@ endpoints:
       - source: /lvs0/rccs-dmp/masaru.nagaso/umrs_models/patches/qwen3_5-latest.py
         target: /usr/local/lib/python3.12/dist-packages/vllm/model_executor/models/qwen3_5.py
         sha256: fc5037687dfa26088eec7ba0a5c5f1c614f4b0cac3e4f309e73effff8adb2fe8
+
+  # Curated: Qwen3.8-27B NVFP4 (NVIDIA modelopt NVFP4-FP8 mixed, 21.9 GiB)
+  # — vLLM recipe "dgx_spark_gb10" variant nvfp4_nvidia (recipes.vllm.ai,
+  # models/Qwen/Qwen3.8-27B.yaml, 2026-09-14), adapted to RCCS: one GB10,
+  # no TP. 0.70 x 121.6 GiB = 85 GiB sits under the ~97 GiB left after the
+  # co-located services (the partition cap 0.78 is not reached).
+  # Stage first: r4 model stage nvidia/Qwen3.8-27B-NVFP4 --name Qwen3.8-27B-NVFP4
+  - name: qwen3.8-27b-nvfp4
+    model: Qwen3.8-27B-NVFP4
+    partition: ng-dgx-m0
+    node_count: 1
+    gpu_count: 1
+    max_model_len: 262144
+    env_vars:
+      # Recipe-pinned image (multi-arch; arm64 manifest present). The stock
+      # release predates the gated-delta-net MTP fix the recipe relies on.
+      VLLM_DOCKER_IMAGE: "docker.io/vllm/vllm-openai:qwen38"
+      VLLM_GPU_MEM_UTIL: "0.70"
+      VLLM_MAX_MODEL_LEN: "262144"
+      VLLM_MAX_NUM_SEQS: "8"
+      VLLM_MAX_NUM_BATCHED_TOKENS: "8192"
+      VLLM_TOOL_CALL_PARSER: "qwen3_xml"
+      VLLM_REASONING_PARSER: "qwen3"
+      # In-checkpoint MTP head; GB10 recipe depth 5 (needs the compose
+      # VLLM_SPECULATIVE_CONFIG declaration — single-node dropped it before).
+      VLLM_SPECULATIVE_CONFIG: '{"method":"mtp","num_speculative_tokens":5}'
+      VLLM_EXTRA_ARGS: "--kv-cache-dtype fp8 --enable-chunked-prefill --async-scheduling --enable-prefix-caching --load-format fastsafetensors"
+      # Co-located LiteLLM DB container (compose ll-postgres is a profile
+      # opt-in; without this the stack wedges at create).
+      RIVAULT_PROFILES: "harness vllm litellm-db"
