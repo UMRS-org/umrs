@@ -19,6 +19,7 @@ import hashlib
 import json
 import logging
 import os
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
@@ -38,10 +39,8 @@ class _OneConnPool:
         return None
 
 
-def summarize_reconcile_snapshot(
-    project_id: str, *, db_url: str = ""
-) -> dict[str, Any] | None:
-    """Summarize the reconcile scan into a manifest payload, or None."""
+def scan_reconcile_report(project_id: str, *, db_url: str = "") -> Any | None:
+    """Run the plane reconciler for one project; None when no DSN / on failure."""
     dsn = db_url or os.getenv("UMRS_DB_URL") or os.getenv("DATABASE_URL", "")
     if not dsn:
         return None
@@ -54,7 +53,7 @@ def summarize_reconcile_snapshot(
 
         conn = psycopg2.connect(dsn, **pg_connect_kwargs("reconcile-snapshot"))
         try:
-            report = scan_project(_OneConnPool(conn), project_id)
+            return scan_project(_OneConnPool(conn), project_id)
         finally:
             conn.close()
     except Exception as exc:  # noqa: BLE001 - snapshot is best-effort metadata
@@ -63,6 +62,9 @@ def summarize_reconcile_snapshot(
         )
         return None
 
+
+def summarize_report(report: Any) -> dict[str, Any]:
+    """Deterministic manifest summary of one reconcile report."""
     digest = hashlib.sha256(
         json.dumps(
             sorted((a.document_id, _signature_for(a)) for a in report.assets),
@@ -76,6 +78,67 @@ def summarize_reconcile_snapshot(
         "catalogue_available": report.catalogue_available,
         "digest": digest,
     }
+
+
+def summarize_reconcile_snapshot(
+    project_id: str, *, db_url: str = ""
+) -> dict[str, Any] | None:
+    """Summarize the reconcile scan into a manifest payload, or None."""
+    report = scan_reconcile_report(project_id, db_url=db_url)
+    return summarize_report(report) if report is not None else None
+
+
+# ADR-032 precondition #5: export eligibility is snapshot-competent assets
+# only — COMPLETE or EMBEDDING_PENDING, never PARTIAL or ORPHANED.
+EXPORT_ELIGIBLE_STATES = ("COMPLETE", "EMBEDDING_PENDING")
+
+
+@dataclass
+class ExportSnapshot:
+    """A checked snapshot the exporter consumes (precondition #5)."""
+
+    summary: dict[str, Any]
+    excluded_node_ids: frozenset[str] = frozenset()
+
+
+def export_snapshot_from_report(report: Any) -> ExportSnapshot:
+    """Derive the exporter's exclusions from one reconcile report.
+
+    Canonical-plane rows of ineligible assets (their document + chunk nodes)
+    and orphaned chunk nodes stay out of the bundle; the summary records each
+    exclusion so the package states what it omitted and why.
+    """
+    excluded: set[str] = set(report.orphaned_chunks)
+    excluded_assets: list[dict[str, Any]] = []
+    for asset in sorted(report.assets, key=lambda a: a.document_id):
+        if asset.state in EXPORT_ELIGIBLE_STATES:
+            continue
+        excluded.update(asset.doc_node_ids)
+        excluded.update(asset.chunk_node_ids)
+        excluded_assets.append(
+            {
+                "document_id": asset.document_id,
+                "state": asset.state,
+                "reasons": asset.reasons,
+            }
+        )
+    summary = summarize_report(report)
+    summary.update(
+        {
+            "consumed": True,
+            "export_eligible_states": list(EXPORT_ELIGIBLE_STATES),
+            "excluded_assets": excluded_assets,
+            "orphaned_chunks_excluded": len(report.orphaned_chunks),
+            "excluded_node_count": len(excluded),
+        }
+    )
+    return ExportSnapshot(summary=summary, excluded_node_ids=frozenset(excluded))
+
+
+def take_export_snapshot(project_id: str, *, db_url: str = "") -> ExportSnapshot | None:
+    """The checked snapshot for an export, or None (no DSN / scan failure)."""
+    report = scan_reconcile_report(project_id, db_url=db_url)
+    return export_snapshot_from_report(report) if report is not None else None
 
 
 def _signature_for(asset: Any) -> str:
@@ -92,4 +155,11 @@ def _signature_for(asset: Any) -> str:
     )
 
 
-__all__ = ["summarize_reconcile_snapshot"]
+__all__ = [
+    "EXPORT_ELIGIBLE_STATES",
+    "ExportSnapshot",
+    "export_snapshot_from_report",
+    "scan_reconcile_report",
+    "summarize_reconcile_snapshot",
+    "take_export_snapshot",
+]
