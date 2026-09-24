@@ -7641,7 +7641,7 @@ def main():
     login_p.add_argument(
         "--gateway-url",
         default=None,
-        help="Gateway HTTP URL (e.g. http://134.160.189.136:50080). Implies --mode gateway",
+        help="Gateway URL (e.g. https://data0.ai.r-ccs.riken.jp/rccs). Implies --mode gateway",
     )
     login_p.add_argument(
         "--username", default=None, help="UMRS username (auto-extracted from JWT)"
