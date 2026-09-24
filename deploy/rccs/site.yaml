@@ -133,6 +133,7 @@ partition_profiles:
     network_backend: netavark
     vllm_docker_tag: cu130-nightly-aarch64
     gpus: 0                    # ng-dgx-m* partitions reject --gpus
+    gpu_mem_util_max: 0.78     # GB10 shared with harness + vision sidecar (~97 GiB free of 121.6)
     needs_netavark_switch: false
   ng-dgx-m1:
     arch: aarch64
@@ -143,6 +144,7 @@ partition_profiles:
     network_backend: netavark
     vllm_docker_tag: cu130-nightly-aarch64
     gpus: 0
+    gpu_mem_util_max: 0.78     # GB10 shared with harness + vision sidecar (~97 GiB free of 121.6)
     needs_netavark_switch: false
   ng-dgx-m2:
     arch: aarch64
@@ -153,6 +155,7 @@ partition_profiles:
     network_backend: netavark
     vllm_docker_tag: cu130-nightly-aarch64
     gpus: 0
+    gpu_mem_util_max: 0.78     # GB10 shared with harness + vision sidecar (~97 GiB free of 121.6)
     needs_netavark_switch: false
   ng-dgx-m3:
     arch: aarch64
@@ -163,6 +166,7 @@ partition_profiles:
     network_backend: netavark
     vllm_docker_tag: cu130-nightly-aarch64
     gpus: 0
+    gpu_mem_util_max: 0.78     # GB10 shared with harness + vision sidecar (~97 GiB free of 121.6)
     needs_netavark_switch: false
 
   # ── x86_64 NVIDIA ──

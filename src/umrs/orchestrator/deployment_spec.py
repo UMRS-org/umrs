@@ -33,6 +33,25 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _cap_gpu_mem_util(requested: float, site_config: Any, partition: str) -> float:
+    """Apply the partition's ``gpu_mem_util_max`` ceiling (0 = no cap).
+
+    Registry serving profiles carry 0.9 by default, so a site that shares the
+    GPU with co-located services needs a ceiling, not a fallback.
+    """
+    profiles = getattr(site_config, "partition_profiles", None) or {}
+    cap = float(getattr(profiles.get(partition), "gpu_mem_util_max", 0) or 0)
+    if 0 < cap < requested:
+        logger.info(
+            "gpu_memory_utilization %.2f capped to %.2f by partition %s",
+            requested,
+            cap,
+            partition,
+        )
+        return cap
+    return requested
+
+
 @dataclass(frozen=True)
 class DeploymentSpec:
     """Immutable deployment plan for a single mini-RiVault endpoint.
@@ -456,6 +475,7 @@ class DeploymentSpec:
                 partition = site_config.scheduler.partition.split(",")[0]
             if not slurm_account:
                 slurm_account = getattr(site_config.scheduler, "account", None)
+            gpu_mem_util = _cap_gpu_mem_util(gpu_mem_util, site_config, partition)
 
         # ── Health ──
         readiness_probe = (
