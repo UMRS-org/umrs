@@ -2819,6 +2819,7 @@ class _ExportIntegrityMixin:
         engine_cls: Any,
         verify_fn: Any,
         allow_unsigned: bool = False,
+        raw: dict[str, Any] | None = None,
     ) -> KnowledgeExportResult:
         """Run the export (or degraded fallback) and post-verify the bundle."""
         if pool is None:
@@ -2839,6 +2840,8 @@ class _ExportIntegrityMixin:
             secret_key=secret_key,
             allow_unsigned=allow_unsigned,
             artifact_reader=_lazy_artifact_reader(),
+            include_raw=bool((raw or {}).get("include")),
+            raw_acknowledgement=(raw or {}).get("acknowledgement"),
         )
         result = await engine.export_project(project_id)
         if secret_key and not result.degraded and result.bundle_path:
@@ -2930,6 +2933,10 @@ class KnowledgeExportBackend(OrchestratorBackend, _ExportIntegrityMixin):
                 KnowledgeExportEngine,
                 verify_bundle_integrity,
                 allow_unsigned=allow_unsigned,
+                raw={
+                    "include": bool(job.spec.get("include_raw", False)),
+                    "acknowledgement": job.spec.get("raw_acknowledgement"),
+                },
             )
             self._publish_archive(result, job.job_id)
             _write_result(attempt, result)

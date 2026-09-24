@@ -213,3 +213,69 @@ def test_repeat_exports_get_distinct_specs(monkeypatch):
         assert resp.status_code == 200, resp.text
     specs = [c.kwargs["spec"] for c in runtime.submit_job_sync.call_args_list]
     assert specs[0]["request_id"] != specs[1]["request_id"]
+
+
+# ── raw materials (ADR-032 amendment 2026-09-24): gated before the job ──────
+
+
+class _FactsPool:
+    def __init__(self, row):
+        self._row = row
+
+    def getconn(self):
+        row = self._row
+        cur = SimpleNamespace(execute=lambda *_a: None, fetchone=lambda: row)
+        return SimpleNamespace(cursor=lambda: cur)
+
+    def putconn(self, _conn):
+        pass
+
+
+def _raw_export(monkeypatch, row, user, **body):
+    client, runtime = _export_client(monkeypatch)
+    client.app.state.umrs_db_pool = _FactsPool(row)
+    headers = {"X-Project-ID": "caller-proj"}
+    if user:
+        headers.update({"X-User-ID": user, "X-Verified-Project-ID": "caller-proj"})
+    resp = client.post(
+        "/umrs/knowledge/export",
+        json={"project_id": "caller-proj", "include_raw": True, **body},
+        headers=headers,
+    )
+    return resp, runtime
+
+
+def test_raw_export_without_a_verified_caller_is_refused(monkeypatch):
+    resp, runtime = _raw_export(monkeypatch, ("alice", "non_sensitive", "MIT"), None)
+    assert resp.status_code == 401
+    runtime.submit_job_sync.assert_not_called()
+
+
+def test_raw_export_by_a_non_owner_is_refused(monkeypatch):
+    resp, runtime = _raw_export(monkeypatch, ("alice", "non_sensitive", "MIT"), "bob")
+    assert (resp.status_code, resp.headers.get(ERROR_CODE_HEADER)) == (
+        403,
+        "knowledge.raw_forbidden",
+    )
+    runtime.submit_job_sync.assert_not_called()
+
+
+def test_owner_raw_export_carries_the_acknowledgement_into_the_spec(monkeypatch):
+    resp, runtime = _raw_export(
+        monkeypatch, ("alice", "sensitive", "CC-BY-4.0"), "alice", acknowledge_sensitive=True
+    )
+    assert resp.status_code == 200, resp.text
+    spec = runtime.submit_job_sync.call_args.kwargs["spec"]
+    assert spec["include_raw"] is True
+    assert spec["raw_acknowledgement"]["by"] == "alice"
+
+
+def test_plain_export_carries_no_raw(monkeypatch):
+    client, runtime = _export_client(monkeypatch)
+    client.post(
+        "/umrs/knowledge/export",
+        json={"project_id": "caller-proj"},
+        headers={"X-Project-ID": "caller-proj"},
+    )
+    spec = runtime.submit_job_sync.call_args.kwargs["spec"]
+    assert (spec["include_raw"], spec["raw_acknowledgement"]) == (False, {})

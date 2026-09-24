@@ -160,6 +160,28 @@ def _reference_stores(request: Request):
     return _provide()
 
 
+def _raw_object_writer() -> Any:
+    """``(project_id, bytes) -> key`` into the ingest bucket at the
+    content-addressed artifact key; the S3 client is built on first use and
+    storage credentials never leave UMRS (no second credential path)."""
+    state: dict[str, Any] = {}
+
+    def write(project_id: str, content: bytes) -> str:
+        from umrs.jobs.knowledge_adapters import _build_s3_client
+        from umrs.knowledge.artifact_storage import ArtifactStorage
+
+        if "storage" not in state:
+            client, bucket = _build_s3_client({})
+            if client is None:
+                raise RuntimeError("object storage unavailable for raw objects")
+            state["storage"] = ArtifactStorage(client, bucket)
+        storage = state["storage"]
+        content_hash, _size, _url = storage.put_artifact(project_id, content)
+        return storage.key(project_id, content_hash)
+
+    return write
+
+
 async def _import_bundle_dir(
     request: Request,
     pool: Any,
@@ -169,6 +191,7 @@ async def _import_bundle_dir(
     verify: bool,
     allow_unsigned: bool,
     write_upgrade: bool,
+    accept_raw: bool = True,
 ):
     """Run the import engine over one bundle directory (restore + import)."""
     from umrs.knowledge.bundle_import import BundleFormatError, KnowledgeImportEngine
@@ -178,6 +201,7 @@ async def _import_bundle_dir(
         engine = KnowledgeImportEngine(
             store=KnowledgeStore(pool),
             secret_key=os.getenv("UMRS_SECRET_KEY", ""),
+            raw_writer=_raw_object_writer(),
             **ref_stores,
         )
         try:
@@ -187,6 +211,7 @@ async def _import_bundle_dir(
                 verify=verify,
                 allow_unsigned=allow_unsigned,
                 write_upgrade=write_upgrade,
+                accept_raw=accept_raw,
             )
         except BundleFormatError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -270,6 +295,7 @@ async def import_bundle_archive(
     request: Request,
     file: UploadFile = File(...),
     allow_unsigned: bool = False,
+    accept_raw: bool = True,
     project_id: str = Depends(get_project_id),
 ) -> dict[str, Any]:
     """Import a ``.kb.tar.gz`` bundle into the caller's own project.
@@ -319,6 +345,7 @@ async def import_bundle_archive(
             verify=True,
             allow_unsigned=allow_unsigned,
             write_upgrade=False,
+            accept_raw=accept_raw,
         )
     if actor == "agent":
         mark_proposal_executed(

@@ -488,6 +488,21 @@ class KnowledgeStore:
             )
         return int(val or 0)
 
+    async def rebind_artifact_source(
+        self, project_id: str, artifact_id: str, source_ref: str
+    ) -> bool:
+        """Point one artifact at its object in THIS installation's storage
+        (raw-materials import); ids and hashes are untouched."""
+        async with self._pool.acquire() as conn:
+            status = await conn.execute(
+                """UPDATE knowledge_artifacts SET source_ref = $3
+                   WHERE project_id = $1 AND artifact_id = $2""",
+                project_id,
+                artifact_id,
+                source_ref,
+            )
+        return str(status).endswith(" 1")
+
     async def artifacts_by_canonical_document(
         self, project_id: str, document_ids: list[str]
     ) -> dict[str, list[str]]:

@@ -34,6 +34,7 @@ from umrs.scientific_memory import InMemoryScientificMemoryStore
 from umrs.scientific_reasoning_engine import ScientificReasoningEngine
 from umrs.shared.storage.s3_config import S3Config, get_s3_config
 
+from .jobs import CallerIdentity, get_caller_identity
 from .typed_errors import PlatformError, raise_typed
 
 logger = logging.getLogger(__name__)
@@ -758,6 +759,14 @@ class ExportRequest(BaseModel):
         default=False,
         description="Produce a bundle even without UMRS_SECRET_KEY (manifest unsigned=true)",
     )
+    include_raw: bool = Field(
+        default=False,
+        description="Carry the artifacts' raw bytes (owner/admin; catalog licence required)",
+    )
+    acknowledge_sensitive: bool = Field(
+        default=False,
+        description="With include_raw on a sensitive project: explicit, audited acknowledgement",
+    )
 
 
 class VerifyJobRequest(BaseModel):
@@ -1145,6 +1154,47 @@ async def knowledge_readiness(
         raise_typed(PlatformError.knowledge("failure", str(exc)), cause=exc)
 
 
+def _raw_caller(request: Request) -> CallerIdentity:
+    """The verified caller (gateway headers, HMAC-checked in strict mode);
+    resolved only for raw exports — plain exports keep their contract."""
+    headers = request.headers
+    return get_caller_identity(
+        caller_user_id=None,
+        caller_project_id=None,
+        is_admin=False,
+        x_user_id=headers.get("x-user-id"),
+        x_verified_project_id=headers.get("x-verified-project-id"),
+        x_verified_is_admin=headers.get("x-verified-is-admin"),
+        x_verified_hmac=headers.get("x-verified-hmac"),
+    )
+
+
+def _authorize_raw(request: Request, body: ExportRequest) -> dict[str, Any]:
+    """ADR-032 raw-materials gate (before the job; typed refusals). The
+    acknowledgement of a sensitive project's raw release is audited."""
+    if not body.include_raw:
+        return {}
+    from ._raw_export_gate import authorize_raw_export
+    from .audit_events import emit_audit
+
+    identity = _raw_caller(request)
+    ack = authorize_raw_export(
+        getattr(request.app.state, "umrs_db_pool", None),
+        project_id=body.project_id,
+        user_id=identity.user_id,
+        is_admin=identity.is_admin,
+        acknowledge_sensitive=body.acknowledge_sensitive,
+    )
+    emit_audit(
+        "knowledge.export.raw",
+        actor=identity.user_id,
+        user_id=identity.user_id,
+        project_id=body.project_id,
+        details={"acknowledgement": ack} if ack else {"data_class": "non_sensitive"},
+    )
+    return ack
+
+
 @router.post("/export", response_model=dict[str, Any])
 async def export_knowledge(
     body: ExportRequest,
@@ -1165,6 +1215,7 @@ async def export_knowledge(
                 f"verified project is {_get_project_id!r}",
             )
         )
+    raw_ack = _authorize_raw(request, body)
     try:
         from umrs.server.durable_job_runtime import get_runtime
 
@@ -1183,6 +1234,8 @@ async def export_knowledge(
             # spec-derived idempotency key collided with the project's first
             # export forever ("Job already exists", observed live 2026-09-24).
             "request_id": uuid4().hex,
+            "include_raw": body.include_raw,
+            "raw_acknowledgement": raw_ack,
         }
 
         # Unified ingest governance (R6.4).
