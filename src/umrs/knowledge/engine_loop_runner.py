@@ -218,9 +218,7 @@ class EngineLoopRunner(threading.Thread):
             project_id=str(getattr(self._loop, "project_id", "") or ""),
         )
 
-    def _make_approval_gate(
-        self, loop: ResearchLoop
-    ) -> Callable[[dict], bool | str]:
+    def _make_approval_gate(self, loop: ResearchLoop) -> Callable[[dict], bool | str]:
         """Ask-mode action gate: request approval, park until decided — or
         DEFER (D-34 first leg, ADR-066 amendment 2026-09-24).
 
@@ -263,10 +261,11 @@ class EngineLoopRunner(threading.Thread):
                     return True
             elif mode != "ask":
                 return True
-            record = _request(action, loop.metadata.get("awaiting_approval") or None)
-            loop.metadata["awaiting_approval"] = record["id"]
+            track = str(action.get("track_id") or "")
+            record = _request(action, _awaiting_get(loop, track))
+            _awaiting_set(loop, track, record["id"])
             self._store.save(loop)
-            decided = self._peek_decision(record, loop)
+            decided = self._peek_decision(record, loop, track)
             if decided is not None:
                 logger.info(
                     "loop %s approval %s already decided (action=%s): %s",
@@ -276,7 +275,7 @@ class EngineLoopRunner(threading.Thread):
                     "approved" if decided else "rejected",
                 )
                 return decided
-            if mode == "profile" and not self._defer_strike(loop, record):
+            if mode == "profile" and not self._defer_strike(loop, record, track):
                 logger.info(
                     "loop %s defers approval %s (action=%s) — iteration "
                     "awaits the decision, the loop continues (D-34)",
@@ -292,29 +291,32 @@ class EngineLoopRunner(threading.Thread):
                 action.get("kind"),
             )
             return self._await_approval(
-                record, loop, lambda: _request(action, record["id"])
+                record, loop, lambda: _request(action, record["id"]), track
             )
 
         return _gate
 
     _DEFER_PARK_AFTER = 3
 
-    def _defer_strike(self, loop: ResearchLoop, record: dict) -> bool:
+    def _defer_strike(self, loop: ResearchLoop, record: dict, track: str = "") -> bool:
         """Bump the per-approval deferral ledger; True = budget spent → park.
 
         Bounds D-34's deferred continuation: a pending question must never
         spin the loop's iteration budget away — after 3 consecutive
         deferrals under the SAME approval id the gate hard-parks as before.
-        A different approval id resets the ledger."""
-        ledger = loop.metadata.get("deferred_gate")
+        A different approval id resets the ledger. Per track (ADR-066
+        amendment 2): interleaved tracks never reset each other's count."""
+        ledger = _ledger_get(loop, track)
         if not isinstance(ledger, dict) or ledger.get("approval_id") != record["id"]:
             ledger = {"approval_id": record["id"], "count": 0}
         ledger["count"] = int(ledger.get("count") or 0) + 1
-        loop.metadata["deferred_gate"] = ledger
+        _ledger_set(loop, track, ledger)
         self._store.save(loop)
         return int(ledger["count"]) >= self._DEFER_PARK_AFTER
 
-    def _peek_decision(self, record: dict, loop: ResearchLoop) -> bool | None:
+    def _peek_decision(
+        self, record: dict, loop: ResearchLoop, track: str = ""
+    ) -> bool | None:
         """The durable inbox's decision if already made; None while pending."""
         from . import tool_approvals
 
@@ -324,18 +326,22 @@ class EngineLoopRunner(threading.Thread):
             return None
         if current is None:
             return None
-        return self._apply_decision(current, loop)
+        return self._apply_decision(current, loop, track)
 
-    def _apply_decision(self, current: dict, loop: ResearchLoop) -> bool | None:
+    def _apply_decision(
+        self, current: dict, loop: ResearchLoop, track: str = ""
+    ) -> bool | None:
         """Map an inbox row to its verdict; clears the awaiting marker."""
         status = str(current.get("status") or "")
         if status not in ("approved", "rejected"):
             return None
-        loop.metadata.pop("awaiting_approval", None)
+        _awaiting_set(loop, track, None)
         self._store.save(loop)
         return status == "approved"
 
-    def _await_approval(self, record: dict, loop: ResearchLoop, re_request) -> bool:
+    def _await_approval(
+        self, record: dict, loop: ResearchLoop, re_request, track: str = ""
+    ) -> bool:
         """Park until the durable approval is decided (True = approved)."""
         from . import tool_approvals
 
@@ -345,7 +351,7 @@ class EngineLoopRunner(threading.Thread):
             current = tool_approvals.get(record["id"])
             if current is None:
                 current = re_request()
-            decided = self._apply_decision(current, loop)
+            decided = self._apply_decision(current, loop, track)
             if decided is not None:
                 return decided
             time.sleep(self._poll_seconds)
@@ -386,6 +392,49 @@ class EngineLoopRunner(threading.Thread):
             result.completed_at = datetime.now(timezone.utc).isoformat()
         result.updated_at = datetime.now(timezone.utc).isoformat()
         return result
+
+
+# ── Per-track approval slots (ADR-066 amendment 2, D-34) ──────────────────
+#
+# "" is the single-branch loop's legacy slot (unchanged keys); a track keeps
+# its own pending approval id and deferral ledger so a question pending on
+# one track is never reused, blocked on or reset by another.
+
+
+def _awaiting_get(loop: ResearchLoop, track: str) -> str | None:
+    if not track:
+        return loop.metadata.get("awaiting_approval") or None
+    return (loop.metadata.get("awaiting_approval_tracks") or {}).get(track) or None
+
+
+def _awaiting_set(loop: ResearchLoop, track: str, approval_id: str | None) -> None:
+    if not track:
+        if approval_id:
+            loop.metadata["awaiting_approval"] = approval_id
+        else:
+            loop.metadata.pop("awaiting_approval", None)
+        return
+    slots = dict(loop.metadata.get("awaiting_approval_tracks") or {})
+    if approval_id:
+        slots[track] = approval_id
+    else:
+        slots.pop(track, None)
+    loop.metadata["awaiting_approval_tracks"] = slots
+
+
+def _ledger_get(loop: ResearchLoop, track: str) -> dict | None:
+    if not track:
+        return loop.metadata.get("deferred_gate")
+    return (loop.metadata.get("deferred_gate_tracks") or {}).get(track)
+
+
+def _ledger_set(loop: ResearchLoop, track: str, ledger: dict) -> None:
+    if not track:
+        loop.metadata["deferred_gate"] = ledger
+        return
+    ledgers = dict(loop.metadata.get("deferred_gate_tracks") or {})
+    ledgers[track] = ledger
+    loop.metadata["deferred_gate_tracks"] = ledgers
 
 
 # ── Global registration table (REST router hooks up here) ─────────────────
