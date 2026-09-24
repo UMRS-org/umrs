@@ -34,7 +34,7 @@ def _row(art: str, raw: bytes, kind: str = "document", **over) -> dict:
         "artifact_id": art,
         "content_hash": _h(raw),
         "kind": kind,
-        "source_ref": f"k/{art}",
+        "source_ref": f"projects/p/knowledge/artifacts/{art}",
         "size_bytes": len(raw),
         "mime_type": "application/pdf",
         **over,
@@ -84,7 +84,11 @@ def test_env_caps_only_tighten(monkeypatch):
 
 
 def test_write_raw_verifies_bytes_and_caps(tmp_path):
-    blobs = {"k/a": _PDF, "k/b": b"tampered", "k/c": None}
+    blobs = {
+        "projects/p/knowledge/artifacts/a": _PDF,
+        "projects/p/knowledge/artifacts/b": b"tampered",
+        "projects/p/knowledge/artifacts/c": None,
+    }
     rows = [_row("a", _PDF), _row("b", _CODE), _row("c", b"gone")]
     skipped: dict[str, int] = {}
     written = bundle_raw.write_raw(tmp_path, rows, blobs.get, _CAPS, skipped)
@@ -99,7 +103,7 @@ def test_total_cap_stops_carriage(tmp_path):
     caps = bundle_raw.RawCaps(object_max=1024, total_max=len(_PDF) + 1)
     rows = [_row("a", _PDF), _row("b", _CODE)]
     skipped: dict[str, int] = {}
-    blobs = {"k/a": _PDF, "k/b": _CODE}
+    blobs = {"projects/p/knowledge/artifacts/a": _PDF, "projects/p/knowledge/artifacts/b": _CODE}
     written = bundle_raw.write_raw(tmp_path, rows, blobs.get, caps, skipped)
     assert len(written) == 1
     assert skipped == {"over_total_cap": 1}
@@ -107,7 +111,10 @@ def test_total_cap_stops_carriage(tmp_path):
 
 def test_engine_raw_block(tmp_path):
     engine = KnowledgeExportEngine(
-        store=None, output_dir=tmp_path, allow_unsigned=True, artifact_reader={"k/a": _PDF}.get
+        store=None,
+        output_dir=tmp_path,
+        allow_unsigned=True,
+        artifact_reader={"projects/p/knowledge/artifacts/a": _PDF}.get,
     )
     assert engine._dump_raw(None, {}, {}) == {"included": False}
 
@@ -118,7 +125,7 @@ def test_engine_raw_block(tmp_path):
         store=None,
         output_dir=tmp_path,
         allow_unsigned=True,
-        artifact_reader={"k/a": _PDF}.get,
+        artifact_reader={"projects/p/knowledge/artifacts/a": _PDF}.get,
         include_raw=True,
         raw_acknowledgement={"by": "alice", "data_class": "sensitive"},
     )
@@ -302,3 +309,9 @@ def test_unreachable_registry_fails_closed():
     with pytest.raises(HTTPException) as exc:
         _gate(None, pool=False)
     assert "unavailable" in _code(exc)
+
+
+def test_rows_without_a_stored_object_are_not_candidates():
+    finding = _row("f", b"finding json", source_ref="loop:L#iteration-1")
+    out, skipped = bundle_raw.plan_raw([finding], licence="MIT", redaction_rules=[], caps=_CAPS)
+    assert (out, skipped) == ([], {"no_object": 1})

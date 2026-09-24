@@ -85,12 +85,23 @@ def _engine(tmp_path: Path, reader=None) -> KnowledgeExportEngine:
 
 
 def test_export_stamps_rows_and_counts_normalizations(tmp_path):
-    blobs = {"k/text": b"hello\r\n", "k/bin": b"\x00\x01"}
+    blobs = {
+        "projects/p/knowledge/artifacts/text": b"hello\r\n",
+        "projects/p/knowledge/artifacts/bin": b"\x00\x01",
+    }
     engine = _engine(tmp_path, reader=blobs.get)
     rows = [
-        {"source_ref": "k/text", "content_hash": "h1", "size_bytes": 7},
-        {"source_ref": "k/bin", "content_hash": "h2", "size_bytes": 2},
-        {"source_ref": "k/gone", "content_hash": "c" * 64, "size_bytes": 5},
+        {
+            "source_ref": "projects/p/knowledge/artifacts/text",
+            "content_hash": "h1",
+            "size_bytes": 7,
+        },
+        {"source_ref": "projects/p/knowledge/artifacts/bin", "content_hash": "h2", "size_bytes": 2},
+        {
+            "source_ref": "projects/p/knowledge/artifacts/gone",
+            "content_hash": "c" * 64,
+            "size_bytes": 5,
+        },
     ]
     for row in rows:
         engine._stamp_identity(row)
@@ -111,7 +122,11 @@ def test_export_stamps_rows_and_counts_normalizations(tmp_path):
 
 def test_export_without_a_reader_keeps_the_physical_identity(tmp_path):
     engine = _engine(tmp_path)
-    row = {"source_ref": "k", "content_hash": "d" * 64, "size_bytes": 3}
+    row = {
+        "source_ref": "projects/p/knowledge/artifacts/k",
+        "content_hash": "d" * 64,
+        "size_bytes": 3,
+    }
     engine._stamp_identity(row)
     assert row["canonical_identity"]["normalization"] == cid.PHYSICAL
 
@@ -119,7 +134,11 @@ def test_export_without_a_reader_keeps_the_physical_identity(tmp_path):
 def test_oversized_artifacts_are_not_read(tmp_path):
     calls = []
     engine = _engine(tmp_path, reader=lambda ref: calls.append(ref) or b"x")
-    row = {"source_ref": "big", "content_hash": "e" * 64, "size_bytes": 1 << 40}
+    row = {
+        "source_ref": "projects/p/knowledge/artifacts/big",
+        "content_hash": "e" * 64,
+        "size_bytes": 1 << 40,
+    }
     engine._stamp_identity(row)
     assert calls == []
     assert row["canonical_identity"]["normalization"] == cid.PHYSICAL
@@ -304,7 +323,12 @@ class _BackfillStore:
 
 def _rows(n):
     return [
-        {"artifact_id": f"a{i:02d}", "content_hash": "h", "source_ref": f"k{i}", "size_bytes": 1}
+        {
+            "artifact_id": f"a{i:02d}",
+            "content_hash": "h",
+            "source_ref": f"projects/p/knowledge/artifacts/k{i}",
+            "size_bytes": 1,
+        }
         for i in range(n)
     ]
 
@@ -323,7 +347,7 @@ async def test_backfill_apply_stamps_readable_rows_and_terminates():
     from umrs.knowledge.identity_backfill import backfill
 
     store = _BackfillStore(_rows(5))
-    unreadable = {"k1", "k3"}
+    unreadable = {"projects/p/knowledge/artifacts/k1", "projects/p/knowledge/artifacts/k3"}
     outcome = await backfill(
         store,
         lambda ref: None if ref in unreadable else b"\x00bin" + ref.encode(),
@@ -335,6 +359,7 @@ async def test_backfill_apply_stamps_readable_rows_and_terminates():
         "scanned": 5,
         "stamped": 3,
         "unreadable": 2,
+        "no_object": 0,
         "by_normalization": {"bytes": 3},
     }
     assert sorted(store.stamped) == ["a00", "a02", "a04"]
@@ -344,7 +369,41 @@ async def test_backfill_apply_stamps_readable_rows_and_terminates():
 async def test_backfill_skips_oversized_artifacts():
     from umrs.knowledge.identity_backfill import backfill
 
-    rows = [{"artifact_id": "big", "content_hash": "h", "source_ref": "k", "size_bytes": 1 << 40}]
+    rows = [
+        {
+            "artifact_id": "big",
+            "content_hash": "h",
+            "source_ref": "projects/p/knowledge/artifacts/k",
+            "size_bytes": 1 << 40,
+        }
+    ]
     store = _BackfillStore(rows)
     outcome = await backfill(store, lambda _r: b"x", project_id="p", apply=True)
     assert (outcome.unreadable, outcome.stamped) == (1, 0)
+
+
+async def test_backfill_skips_rows_without_a_stored_object():
+    from umrs.knowledge.identity_backfill import backfill
+
+    rows = [
+        {"artifact_id": "a", "content_hash": "h", "source_ref": "rag://legacy-1", "size_bytes": 1},
+        {
+            "artifact_id": "b",
+            "content_hash": "h",
+            "source_ref": "loop:L#iteration-1",
+            "size_bytes": 1,
+        },
+    ]
+    reads = []
+    store = _BackfillStore(rows)
+    outcome = await backfill(
+        store, lambda ref: reads.append(ref) or b"x", project_id="p", apply=True
+    )
+    assert (outcome.no_object, outcome.unreadable, outcome.stamped) == (2, 0, 0)
+    assert reads == []  # nothing fetched
+
+
+def test_stored_object_recognises_artifact_keys():
+    assert cid.stored_object("projects/p/knowledge/artifacts/abc")
+    assert not cid.stored_object("rag://legacy-1")
+    assert not cid.stored_object("loop:L#iteration-1")

@@ -25,6 +25,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from . import canonical_identity
+
 RAW_DIR = "raw"
 RAW_TABLE = "raw_objects.jsonl"
 
@@ -113,15 +115,24 @@ def _ineligible(
     caps: RawCaps,
     seen: set[str],
 ) -> str:
-    digest = str(row.get("content_hash") or "")
-    if not _HEX64.match(digest):
-        return "no_bytes"  # synthetic digest: nothing content-addressed to carry
-    if digest in seen:
+    """The skip reason for one artifact row ("" = a candidate)."""
+    reason = _without_object(row)
+    if reason:
+        return reason
+    if str(row["content_hash"]) in seen:
         return "duplicate"
     if drop_all or str(row.get("kind") or "") in dropped:
         return "redacted"
     if int(row.get("size_bytes") or 0) > caps.object_max:
         return "over_object_cap"
+    return ""
+
+
+def _without_object(row: dict[str, Any]) -> str:
+    if not _HEX64.match(str(row.get("content_hash") or "")):
+        return "no_bytes"  # synthetic digest: nothing content-addressed to carry
+    if not canonical_identity.stored_object(str(row.get("source_ref") or "")):
+        return "no_object"  # minted without bytes (loop findings, legacy rows)
     return ""
 
 

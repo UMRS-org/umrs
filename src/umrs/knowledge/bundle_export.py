@@ -419,8 +419,13 @@ class KnowledgeExportEngine:
         """Identity from the artifact's bytes (unstamped rows only)."""
         raw = None
         size = int(row.get("size_bytes") or 0)
-        if self._artifact_reader is not None and size <= canonical_identity.READ_CAP:
-            raw = self._artifact_reader(str(row.get("source_ref") or ""))
+        ref = str(row.get("source_ref") or "")
+        readable = (
+            canonical_identity.stored_object(ref)
+            and size <= canonical_identity.READ_CAP
+        )
+        if self._artifact_reader is not None and readable:
+            raw = self._artifact_reader(ref)
         digest = str(row.get("content_hash") or "")
         return canonical_identity.identity_of(raw, digest).to_dict()
 

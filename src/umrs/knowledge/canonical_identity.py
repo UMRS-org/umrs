@@ -95,6 +95,14 @@ def from_row(row: dict[str, Any]) -> dict[str, str] | None:
     return CanonicalIdentity(identity, str(block["normalization"])).to_dict()
 
 
+def stored_object(source_ref: str) -> bool:
+    """Whether ``source_ref`` names an object in artifact storage
+    (``projects/<p>/knowledge/artifacts/<hash>``). Rows minted without bytes
+    (``rag://`` legacy corpus rows, ``loop:`` findings) have none — there is
+    nothing to fetch, so callers skip them instead of failing a read."""
+    return source_ref.startswith("projects/") and "/knowledge/artifacts/" in source_ref
+
+
 def metadata_dict(value: Any) -> dict[str, Any]:
     """Artifact metadata as a dict: pools without a JSON codec return JSONB
     as text; anything undecodable or non-object is empty."""
@@ -131,4 +139,5 @@ __all__ = [
     "metadata_dict",
     "normalize_text",
     "stamp",
+    "stored_object",
 ]

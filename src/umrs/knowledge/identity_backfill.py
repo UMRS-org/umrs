@@ -35,6 +35,7 @@ class BackfillOutcome:
     scanned: int = 0
     stamped: int = 0
     unreadable: int = 0
+    no_object: int = 0  # minted without bytes (rag://, loop:) — nothing to read
     by_normalization: dict[str, int] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -42,6 +43,7 @@ class BackfillOutcome:
             "scanned": self.scanned,
             "stamped": self.stamped,
             "unreadable": self.unreadable,
+            "no_object": self.no_object,
             "by_normalization": dict(sorted(self.by_normalization.items())),
         }
 
@@ -59,6 +61,9 @@ async def _stamp_row(
     outcome: BackfillOutcome,
     apply: bool,
 ) -> None:
+    if not canonical_identity.stored_object(str(row.get("source_ref") or "")):
+        outcome.no_object += 1
+        return
     raw = _read(reader, row)
     if raw is None:
         outcome.unreadable += 1
