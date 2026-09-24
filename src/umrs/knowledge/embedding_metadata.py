@@ -24,6 +24,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import datetime, timezone
+from typing import Any
 
 TARGET_MODEL_KEY = "target_model"
 INDEX_NAME_KEY = "index_name"
@@ -124,3 +125,24 @@ def mark_embeddings_stale(conn, *, previous_model: str | None = None) -> int:
             (ts,),
         )
     return int(getattr(cur, "rowcount", 0) or 0)
+
+
+async def stamp_artifact_embedded(
+    pool: Any, artifact_id: str, *, model: str, dim: int
+) -> None:
+    """Mark ONE artifact current after its vectors were actually written
+    (KNOWLEDGE_EMBED — the only honest stamper; asyncpg pool)."""
+    if not model or dim <= 0:
+        raise EmbeddingMetadataError(
+            "stamp needs the producing model and a positive dim"
+        )
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE knowledge_artifacts "
+            "SET embedding_model = $1, embedding_dim = $2, embedded_at = now(), "
+            "embedding_status = 'current', updated_at = now() "
+            "WHERE artifact_id = $3",
+            model,
+            dim,
+            artifact_id,
+        )
