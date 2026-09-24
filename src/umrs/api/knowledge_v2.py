@@ -241,6 +241,34 @@ def _resolve_ingest_target(
     return graph.graph_id
 
 
+# Source kinds a REMOTE caller may name on the HTTP ingest route. The job
+# executes inside the server, so server-path kinds (local/local_file/
+# local_dir — and a missing kind, which the job defaults to local_file) would
+# read the SERVER's filesystem into the caller's project, and a caller-named
+# s3_uri would read any bucket key with the server's credentials. Workstation
+# files ride inline_text (small UTF-8) or POST /umrs/knowledge/upload (bytes
+# staged under the caller's project prefix, which submits its own s3_uri job
+# server-side). Remote kinds stay egress-gated by allow_domains.
+REMOTE_INGEST_SOURCE_KINDS = frozenset({"inline_text", "http_url", "git_repo"})
+
+
+def _refuse_server_side_source_kinds(sources: list[dict[str, Any]]) -> None:
+    """Typed 400 naming the first source whose kind is not remote-safe."""
+    for index, src in enumerate(sources):
+        kind = str((src or {}).get("kind") or "")
+        if kind not in REMOTE_INGEST_SOURCE_KINDS:
+            raise_typed(
+                PlatformError.knowledge2(
+                    "source_kind_refused",
+                    f"sources[{index}] kind {kind or '(missing)'!r} is not accepted "
+                    f"over HTTP (accepted: {sorted(REMOTE_INGEST_SOURCE_KINDS)}). "
+                    "Paths resolve on the UMRS server, not your workstation — send "
+                    "file bytes via POST /umrs/knowledge/upload or small text as "
+                    "inline_text.",
+                )
+            )
+
+
 @router.post("/ingest")
 async def trigger_ingest(
     body: IngestRequest,
@@ -278,6 +306,8 @@ async def trigger_ingest(
                 "verified_project_id": project_id,
             },
         )
+
+    _refuse_server_side_source_kinds(body.sources or [])
 
     runtime = get_runtime()
     if runtime is None:
@@ -513,7 +543,9 @@ def _verified_artifact_count(rows: Any) -> int:
         return 0
     count = 0
     for row in rows:
-        metadata = getattr(row, "metadata_", None) or getattr(row, "metadata", None) or {}
+        metadata = (
+            getattr(row, "metadata_", None) or getattr(row, "metadata", None) or {}
+        )
         if not isinstance(metadata, dict):
             continue
         if metadata.get("status") == "verified" or metadata.get("verified") is True:
