@@ -181,6 +181,10 @@ class PartitionProfile:
     vllm_docker_image: str = ""  # full image override (repo+tag); wins over tag
     gpus: int = 1  # Slurm --gpus count
     needs_netavark_switch: bool = True  # force netavark backend file on startup
+    # Ceiling on a model server's --gpu-memory-utilization on this partition
+    # (0 = no cap). For nodes whose GPU is shared with co-located services
+    # (e.g. GB10: harness + vision sidecar take CUDA memory first).
+    gpu_mem_util_max: float = 0.0
 
 
 @dataclass

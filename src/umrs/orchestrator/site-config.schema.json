@@ -192,7 +192,13 @@
         "vllm_docker_tag": { "type": "string" },
         "vllm_docker_image": { "type": "string" },
         "gpus": { "type": "integer", "minimum": 0 },
-        "needs_netavark_switch": { "type": "boolean" }
+        "needs_netavark_switch": { "type": "boolean" },
+        "gpu_mem_util_max": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Ceiling on a model server's --gpu-memory-utilization on this partition (0 = no cap); for GPUs shared with co-located services"
+        }
       }
     }
   }
