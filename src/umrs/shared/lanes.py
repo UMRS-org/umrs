@@ -157,7 +157,7 @@ _FLAG_SCHEMA_PREFIX = "UMRS_LANE_SCHEMA_"  # e.g. UMRS_LANE_SCHEMA_STABLE
 
 
 def lane_schemas_enabled() -> bool:
-    """Rollout switch (S11 registry: expires 2026-09-30, owner stability-wave)."""
+    """Rollout switch (S11 registry: expires 2026-12-31, owner stability-wave)."""
     return feature_flags.is_enabled(_FLAG_ENABLE)
 
 

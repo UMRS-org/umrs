@@ -167,7 +167,7 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "kind": { "type": "string", "enum": ["inproc", "slurm", "podman", "subprocess"] },
+        "kind": { "type": "string", "enum": ["inproc", "slurm", "slurm-remote", "podman", "subprocess"] },
         "partition": { "type": "string" },
         "gpus": { "type": "integer", "minimum": 0 },
         "cpus": { "type": "integer", "minimum": 0 },
@@ -175,7 +175,8 @@
         "time_limit": { "type": "string" },
         "account": { "type": "string" },
         "image": { "type": "string" },
-        "gpu": { "type": "boolean" }
+        "gpu": { "type": "boolean" },
+        "workdir_root": { "type": "string" }
       }
     },
     "partition_profile": {

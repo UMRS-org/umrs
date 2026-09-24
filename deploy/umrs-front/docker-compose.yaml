@@ -321,7 +321,7 @@ services:
       UMRS_KNOWLEDGE_EMBED_MODEL: ${UMRS_AI4S_KNOWLEDGE_EMBED_MODEL:-/models/e5-base-v2}
       PYTHONUNBUFFERED: "1"
     volumes:
-      - ../ai4s/site.yaml:/etc/umrs/site.yaml:ro,z
+      - ../ai4s-front/site.yaml:/etc/umrs/site.yaml:ro,z
       - ../ai4s/pool-ai4s.yaml:/etc/umrs/pool-ai4s.yaml:ro,z
       - ./conf_umrs_ai4s.json:/etc/umrs/conf_umrs.json:z
       - ./user_files_ai4s:/etc/umrs/user_files:z

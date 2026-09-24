@@ -175,6 +175,27 @@ class SSHControlManager:
             args.extend(["-i", self._config.identity_file])
         return args
 
+    def command_argv(self, command: str) -> list[str]:
+        """``ssh`` argv running ``command`` through the shared ControlMaster.
+
+        ``ControlMaster=no`` makes it a client of an existing master socket
+        (with its reverse tunnels) and a plain connection otherwise — never a
+        new master. Synchronous callers (the remote step executor) use this
+        with ``subprocess.run``.
+        """
+        # Prefix command with any required env vars (e.g. SLURM_CONF_SERVER).
+        if self._config.remote_env:
+            env_prefix = " ".join(
+                f"{k}={v}" for k, v in self._config.remote_env.items()
+            )
+            command = f"{env_prefix} {command}"
+        return self._base_ssh_args() + [
+            "-o",
+            "ControlMaster=no",
+            self._ssh_target(),
+            command,
+        ]
+
     def _loop_lock(self) -> asyncio.Lock:
         """Per-loop lock — the manager is shared across event loops."""
         loop = asyncio.get_running_loop()
@@ -334,20 +355,7 @@ class SSHControlManager:
             asyncio.TimeoutError: If command exceeds timeout.
         """
         await self.ensure_connected()
-
-        target = self._ssh_target()
-        # Prefix command with any required env vars (e.g. SLURM_CONF_SERVER).
-        if self._config.remote_env:
-            env_prefix = " ".join(
-                f"{k}={v}" for k, v in self._config.remote_env.items()
-            )
-            command = f"{env_prefix} {command}"
-        args = self._base_ssh_args() + [
-            "-o",
-            "ControlMaster=no",
-            target,
-            command,
-        ]
+        args = self.command_argv(command)
 
         cmd_timeout = timeout or self._config.command_timeout
 

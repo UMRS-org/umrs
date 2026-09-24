@@ -50,13 +50,18 @@ def _d(iso: str) -> date:
 # Registry of flags introduced by the stability wave (S5+). Extending this
 # table with legacy env knobs is welcome but out of S11's scope — recorded
 # in the wave log.
+#
+# 2026-09-25: lane-schema knobs extended 2026-09-30 → 2026-12-31 (wave ledger,
+# production enablement). S9 has not moved any table; no deployment sets them
+# and no runtime path reads them yet, but the lapse would turn every
+# lane_db_schema() call into FeatureFlagExpired. Retire with S9, or delete.
 FLAGS: dict[str, FeatureFlag] = {
     "UMRS_LANE_SCHEMAS_ENABLED": FeatureFlag(
         name="UMRS_LANE_SCHEMAS_ENABLED",
         kind="bool",
         owner="stability-wave",
         introduced_in="S5 (lane scaffold)",
-        expires=_d("2026-09-30"),
+        expires=_d("2026-12-31"),
         purpose="Rollout switch: per-lane Postgres schema resolution. Must "
         "retire when every deployment runs lane-resolved reads (S9 moves done).",
     ),
@@ -65,7 +70,7 @@ FLAGS: dict[str, FeatureFlag] = {
         kind="value",
         owner="stability-wave",
         introduced_in="S5 (lane scaffold)",
-        expires=_d("2026-09-30"),
+        expires=_d("2026-12-31"),
         purpose="Staged-cutover schema override for the v1-stable lane.",
     ),
     "UMRS_LANE_SCHEMA_BETA": FeatureFlag(
@@ -73,7 +78,7 @@ FLAGS: dict[str, FeatureFlag] = {
         kind="value",
         owner="stability-wave",
         introduced_in="S5 (lane scaffold)",
-        expires=_d("2026-09-30"),
+        expires=_d("2026-12-31"),
         purpose="Staged-cutover schema override for the v1beta lane.",
     ),
     "UMRS_LANE_SCHEMA_INTERNAL": FeatureFlag(
@@ -81,7 +86,7 @@ FLAGS: dict[str, FeatureFlag] = {
         kind="value",
         owner="stability-wave",
         introduced_in="S5 (lane scaffold)",
-        expires=_d("2026-09-30"),
+        expires=_d("2026-12-31"),
         purpose="Staged-cutover schema override for the internal lane.",
     ),
 }

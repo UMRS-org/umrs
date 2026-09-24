@@ -50,7 +50,10 @@ from .step_executor import (
 logger = logging.getLogger(__name__)
 
 
-def measure_slurm_accounting(job_id: str) -> dict[str, Any]:
+def measure_slurm_accounting(
+    job_id: str,
+    run: Any = None,
+) -> dict[str, Any]:
     """D-36 leg B: sacct-measured cost for a FINISHED slurm job.
 
     One ``sacct -o Elapsed,AllocTRES%gres`` read → seconds × GPUs.
@@ -71,10 +74,9 @@ def measure_slurm_accounting(job_id: str) -> dict[str, Any]:
         "--noheader",
         "--parsable2",
     ]
+    runner = run or _run_local
     try:
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=15, check=False
-        )
+        result = runner(cmd, timeout=15)
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         return {}
     if result.returncode != 0 or not result.stdout.strip():
@@ -90,6 +92,13 @@ def measure_slurm_accounting(job_id: str) -> dict[str, Any]:
         "gpus": gpus,
         "gpu_seconds": measured_gpu_seconds(elapsed, gpus),
     }
+
+
+def _run_local(cmd: list[str], *, timeout: int) -> subprocess.CompletedProcess:
+    """Local Slurm CLI call (the submit host has sbatch/squeue/sacct)."""
+    return subprocess.run(
+        cmd, capture_output=True, text=True, timeout=timeout, check=False
+    )
 
 
 def stamp_slurm_accounting(result: Any, accounting: dict[str, Any]) -> Any:
@@ -264,20 +273,7 @@ class SlurmStepExecutor(StepExecutor):
         # must be carried in explicitly — see _generate_sbatch_script.
         source_dir = self._resolve_source_dir(ctx)
 
-        # Create a temporary working directory. When workdir_root is
-        # configured it must exist and be on a filesystem the compute
-        # nodes can see (e.g. Lustre) — the whole point of the knob.
-        if self.workdir_root:
-            if not os.path.isdir(self.workdir_root):
-                raise StepExecutionError(
-                    "setup",
-                    f"UMRS_SLURM_WORKDIR_ROOT={self.workdir_root!r} does not "
-                    "exist; create it (on a shared filesystem visible from "
-                    "compute nodes) or unset the variable",
-                )
-            workdir = tempfile.mkdtemp(prefix="slurm-step-", dir=self.workdir_root)
-        else:
-            workdir = tempfile.mkdtemp(prefix="slurm-step-")
+        workdir = self._new_workdir()
         logger.info(
             "SlurmStepExecutor: workdir=%s, image=%s, entrypoint=%s, source_dir=%s",
             workdir,
@@ -307,7 +303,7 @@ class SlurmStepExecutor(StepExecutor):
                 "entrypoint": entrypoint,
                 "config": dict(config),
                 "ctx": ctx_payload,
-                "s3_config": _serialise_s3_client_config(ctx.s3),
+                "s3_config": self._step_s3_config(ctx),
             }
 
             payload_blob = pickle.dumps(payload)
@@ -319,8 +315,8 @@ class SlurmStepExecutor(StepExecutor):
                     "pass large data via S3 keys, not parent_results",
                 )
 
-            with open(input_path, "wb") as f:
-                f.write(payload_blob)
+            self._write_bytes(input_path, payload_blob)
+            source_dir = self._stage_source_dir(source_dir, workdir)
 
             # Generate the sbatch script
             sbatch_script = self._generate_sbatch_script(
@@ -334,8 +330,7 @@ class SlurmStepExecutor(StepExecutor):
 
             # Write the sbatch script
             sbatch_path = os.path.join(workdir, "run_step.sbatch")
-            with open(sbatch_path, "w") as f:
-                f.write(sbatch_script)
+            self._write_bytes(sbatch_path, sbatch_script.encode("utf-8"))
 
             # Submit the Slurm job
             job_id = self._submit_sbatch(sbatch_path, workdir)
@@ -355,9 +350,52 @@ class SlurmStepExecutor(StepExecutor):
 
         finally:
             if not self.keep_workdir:
-                import shutil
+                self._remove_workdir(workdir)
 
-                shutil.rmtree(workdir, ignore_errors=True)
+    # ── I/O hooks (local submit host; RemoteSlurmStepExecutor routes them
+    #    over SSH to the cluster login node) ────────────────────────────────
+
+    def _run_cmd(self, cmd: list[str], *, timeout: int) -> subprocess.CompletedProcess:
+        return _run_local(cmd, timeout=timeout)
+
+    def _step_s3_config(self, ctx: StepContext) -> dict[str, Any]:
+        """S3 connection settings as the compute node must use them."""
+        return _serialise_s3_client_config(ctx.s3)
+
+    def _new_workdir(self) -> str:
+        """Per-step working directory. When workdir_root is configured it
+        must exist and be on a filesystem the compute nodes can see (e.g.
+        Lustre) — the whole point of the knob."""
+        if not self.workdir_root:
+            return tempfile.mkdtemp(prefix="slurm-step-")
+        if not os.path.isdir(self.workdir_root):
+            raise StepExecutionError(
+                "setup",
+                f"UMRS_SLURM_WORKDIR_ROOT={self.workdir_root!r} does not "
+                "exist; create it (on a shared filesystem visible from "
+                "compute nodes) or unset the variable",
+            )
+        return tempfile.mkdtemp(prefix="slurm-step-", dir=self.workdir_root)
+
+    def _write_bytes(self, path: str, data: bytes) -> None:
+        with open(path, "wb") as f:
+            f.write(data)
+
+    def _read_bytes(self, path: str) -> bytes | None:
+        """File content, or None when it does not exist."""
+        if not os.path.isfile(path):
+            return None
+        with open(path, "rb") as f:
+            return f.read()
+
+    def _stage_source_dir(self, source_dir: str, workdir: str) -> str:
+        """Where the compute node sees the step source tree (same path locally)."""
+        return source_dir
+
+    def _remove_workdir(self, workdir: str) -> None:
+        import shutil
+
+        shutil.rmtree(workdir, ignore_errors=True)
 
     def _resolve_image(self, ctx: StepContext) -> str:
         """Resolve the container image to use for the step."""
@@ -474,7 +512,7 @@ class SlurmStepExecutor(StepExecutor):
         input_rel = os.path.relpath(input_path, workdir)
         output_rel = os.path.relpath(output_path, workdir)
         network = os.environ.get("UMRS_STEP_PODMAN_NETWORK", "host").strip() or "host"
-        s3_config = _serialise_s3_client_config(ctx.s3)
+        s3_config = self._step_s3_config(ctx)
 
         parts = _podman_run_argv(
             network=network,
@@ -515,12 +553,7 @@ class SlurmStepExecutor(StepExecutor):
         cmd = ["sbatch", sbatch_path]
         logger.info("Submitting: %s", " ".join(cmd))
 
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
+        result = self._run_cmd(cmd, timeout=60)
 
         if result.returncode != 0:
             raise StepExecutionError(
@@ -557,15 +590,14 @@ class SlurmStepExecutor(StepExecutor):
 
             if status == "COMPLETED":
                 # Read the output pickle
-                if not os.path.isfile(output_path):
+                blob = self._read_bytes(output_path)
+                if blob is None:
                     raise StepExecutionError(
                         "worker",
                         f"Job {job_id} completed but output file "
                         f"not found: {output_path}",
                     )
-
-                with open(output_path, "rb") as f:
-                    reply = pickle.load(f)
+                reply = pickle.loads(blob)
 
                 # step_worker returns {"status": "ok", "result": StepResult}
                 # (or an error dict). Accept a bare StepResult for older
@@ -600,16 +632,16 @@ class SlurmStepExecutor(StepExecutor):
                 # D-36 leg B: the only GPU-second number that counts is a
                 # measured one — stamp the sacct accounting onto the result
                 # so it rides the step record into the execution ledger.
-                stamp_slurm_accounting(result, measure_slurm_accounting(job_id))
+                stamp_slurm_accounting(
+                    result, measure_slurm_accounting(job_id, run=self._run_cmd)
+                )
                 return result
 
             elif status in ("FAILED", "CANCELLED", "TIMEOUT", "OUT_OF_MEMORY"):
                 # Read the Slurm error log for diagnostics
                 error_log = os.path.join(workdir, f"slurm-{job_id}.err")
-                error_msg = ""
-                if os.path.isfile(error_log):
-                    with open(error_log, "r") as f:
-                        error_msg = f.read()[-1000:]
+                raw_log = self._read_bytes(error_log) or b""
+                error_msg = raw_log.decode("utf-8", "replace")[-1000:]
 
                 raise StepExecutionError(
                     "worker",
@@ -637,12 +669,7 @@ class SlurmStepExecutor(StepExecutor):
             "--noheader",
         ]
         try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=15,
-            )
+            result = self._run_cmd(cmd, timeout=15)
             if result.returncode == 0 and result.stdout.strip():
                 # Job is still in queue. Normalize identically to the sacct
                 # branch below: array/het jobs emit one line per element —
@@ -668,12 +695,7 @@ class SlurmStepExecutor(StepExecutor):
             "--parsable2",
         ]
         try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=15,
-            )
+            result = self._run_cmd(cmd, timeout=15)
             if result.returncode == 0 and result.stdout.strip():
                 state = result.stdout.strip().split("\n")[0].upper()
                 # Remove any extra info like "COMPLETED by 12345"
