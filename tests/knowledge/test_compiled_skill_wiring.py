@@ -34,10 +34,10 @@ class _Pool:
         self._rows = rows
         self.inserts: list[tuple] = []
 
-    async def fetch(self, query, *args):
+    async def fetch(self, _query, *_args):
         return self._rows
 
-    async def fetchval(self, query, *args):
+    async def fetchval(self, _query, *args):
         self.inserts.append(args)
         return args[0]  # RETURNING skill_id (insert happened)
 
@@ -59,15 +59,27 @@ async def test_procedural_irs_register_disabled_proposals(run):
     count = await run(_Store(pool), "proj-a")
     assert count == 1
     (args,) = pool.inserts
-    skill_id, name, version, project_id, skill_md, manifest = args
+    skill_id, name, version, project_id, skill_md, manifest, review_state = args
     assert name.startswith("Calibrate") or "Calibrate" in name
     assert project_id == "proj-a"
-    manifest = json.loads(manifest)
+    assert "zero the stage" in skill_md
+    assert "levenberg-marquardt" in skill_md
+
+
+async def test_proposals_carry_pending_review_blocks(run):
+    """The registry row + the D-27 review-column proposal block."""
+    pool = _Pool([_ir_row("ir-1", _PROCEDURAL)])
+    assert await run(_Store(pool), "proj-a") == 1
+    (args,) = pool.inserts
+    manifest = json.loads(args[5])
     assert manifest["_compiled_skill"] is True
     assert manifest["status"] == "pending_review"
     assert manifest["source_ir_ids"] == ["ir-1"]
-    assert "zero the stage" in skill_md
-    assert "levenberg-marquardt" in skill_md
+    # D-27 edit plane: the pending proposal block rides the review column
+    # (the review seam merges the human decision into it).
+    review = json.loads(args[6])
+    assert review["status"] == "pending_review"
+    assert review["source_ir_ids"] == ["ir-1"]
 
 
 async def test_plain_text_irs_compile_nothing(run):
@@ -84,7 +96,7 @@ async def test_no_irs_short_circuits(run):
 
 async def test_conflict_noop_counts_nothing(run):
     class _ConflictPool(_Pool):
-        async def fetchval(self, query, *args):
+        async def fetchval(self, _query, *args):
             self.inserts.append(args)
             return None  # ON CONFLICT DO NOTHING → no RETURNING
 

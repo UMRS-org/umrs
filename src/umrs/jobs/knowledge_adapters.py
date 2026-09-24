@@ -1096,6 +1096,30 @@ def _derive_a2l_link(
 # ── Internal: Understand Runner (async) ────────────────────────────────────
 
 
+async def _artifacts_to_process(
+    sources: list[dict[str, Any]] | None,
+    store: Any,
+    project_id: str,
+) -> list[dict[str, Any]]:
+    """Explicit sources, else the project's active artifacts (best-effort)."""
+    if sources:
+        return sources
+    try:
+        artifacts, _ = await store.list_artifacts(project_id)
+        return [
+            {
+                "artifact_id": art.artifact_id,
+                "content_hash": art.content_hash,
+                "kind": art.kind,
+                "source_ref": art.source_ref,
+            }
+            for art in artifacts
+        ]
+    except Exception as exc:  # noqa: BLE001 — best-effort adapter path, reported not raised
+        logger.error("Failed to list artifacts: %s", exc)
+        return []
+
+
 async def _run_understand(
     job: Job,
     attempt: JobAttempt,
@@ -1112,27 +1136,7 @@ async def _run_understand(
     from umrs.knowledge.store import KnowledgeStore
 
     store = KnowledgeStore(pool)
-
-    # Build list of artifacts to process
-    artifacts_to_process: list[dict[str, Any]] = []
-    if sources:
-        artifacts_to_process = sources
-    else:
-        # List all active artifacts for project
-        try:
-            artifacts, _ = await store.list_artifacts(project_id)
-            for art in artifacts:
-                artifacts_to_process.append(
-                    {
-                        "artifact_id": art.artifact_id,
-                        "content_hash": art.content_hash,
-                        "kind": art.kind,
-                        "source_ref": art.source_ref,
-                    }
-                )
-        except Exception as exc:  # noqa: BLE001 — best-effort adapter path, reported not raised
-            logger.error("Failed to list artifacts: %s", exc)
-            artifacts_to_process = []
+    artifacts_to_process = await _artifacts_to_process(sources, store, project_id)
 
     result = KnowledgeUnderstandResult()
     target_graph_id = str(job.spec.get("graph_id") or "")
@@ -1213,9 +1217,10 @@ async def _compile_skill_proposals(store: Any, project_id: str) -> int:
     for skill in skills:
         inserted = await store._pool.fetchval(  # type: ignore[union-attr]
             "INSERT INTO skills (skill_id, name, version, scope, owner_id,"
-            " project_id, skill_md, manifest, enabled, registered_at, updated_at)"
+            " project_id, skill_md, manifest, review_state, enabled,"
+            " registered_at, updated_at)"
             " VALUES ($1, $2, $3, 'project', 'compile-knowledge-skills', $4,"
-            " $5, $6::jsonb, false, NOW(), NOW())"
+            " $5, $6::jsonb, $7::jsonb, false, NOW(), NOW())"
             " ON CONFLICT (scope, owner_id, name) DO NOTHING"
             " RETURNING skill_id",
             skill.skill_id,
@@ -1224,6 +1229,7 @@ async def _compile_skill_proposals(store: Any, project_id: str) -> int:
             project_id,
             _skill_md_text(skill),
             json.dumps(_compiled_manifest(skill)),
+            json.dumps(_proposal_review_state(skill)),
         )
         if inserted:
             registered += 1
@@ -1261,6 +1267,24 @@ def _compiled_manifest(skill: Any) -> dict[str, Any]:
     }
 
 
+def _proposal_review_state(skill: Any) -> dict[str, Any]:
+    """D-27 edit plane: the pending proposal block on the review column.
+
+    The review seam (skills review routes) reads/merges this block; the
+    human decision (approve = merge, gated on a green test receipt) appends
+    to it. Lineage lives here so the review plane never depends on the
+    typed manifest's extra keys.
+    """
+    from datetime import datetime, timezone
+
+    return {
+        "status": "pending_review",
+        "source_ir_ids": list(skill.source_ir_ids),
+        "source_artifact_ids": list(skill.source_artifact_ids),
+        "proposed_at": skill.created_at or datetime.now(timezone.utc).isoformat(),
+    }
+
+
 async def _existing_current_ir(store: Any, artifact_id: str) -> str | None:
     """Current-version IR id for the artifact, or None (probe is fail-open)."""
     try:
@@ -1271,6 +1295,57 @@ async def _existing_current_ir(store: Any, artifact_id: str) -> str | None:
         )
     except Exception:  # noqa: BLE001 — best-effort adapter path, reported not raised
         return None
+
+
+async def _understand_input(
+    job: Job,
+    attempt: JobAttempt,
+    store: Any,
+    s3_client: Any,
+    bucket: str,
+    src: dict[str, Any],
+    result: KnowledgeUnderstandResult,
+) -> tuple[str, str, Any, Any] | None:
+    """Artifact preamble for one understand extract, or None (reason recorded).
+
+    Returns ``(artifact_id, kind, content, parsed)``; every early exit
+    records its reason on *result* — never a silent skip.
+    """
+    artifact_id = src["artifact_id"]
+    kind = src.get("kind", "document")
+
+    # Check for existing current-version IR (write-once idempotent)
+    existing = await _existing_current_ir(store, artifact_id)
+    if existing:
+        result.already_ir += 1
+        KnowledgeEvent(
+            event_type="verify",
+            job_id=job.job_id,
+            attempt_id=attempt.attempt_id,
+            artifact_id=artifact_id,
+            details=f"already has IR: {existing}",
+        ).emit()
+        return None
+
+    # Fetch real artifact bytes — never parse the hash string
+    content = _fetch_artifact_bytes(s3_client, bucket, src.get("source_ref", ""))
+    if content is None:
+        result.failed_items.append(
+            {
+                "artifact_id": artifact_id,
+                "error": "artifact content unavailable (source_ref unreadable)",
+            }
+        )
+        return None
+
+    # Parse artifact
+    parsed = _parse_for_understand(artifact_id, content, kind)
+    if parsed is None:
+        result.failed_items.append(
+            {"artifact_id": artifact_id, "error": "parse returned None"}
+        )
+        return None
+    return artifact_id, kind, content, parsed
 
 
 async def _understand_one_artifact(
@@ -1293,40 +1368,12 @@ async def _understand_one_artifact(
     """
     from umrs.knowledge.ir import build_knowledge_ir
 
-    artifact_id = src["artifact_id"]
-    kind = src.get("kind", "document")
-
-    # Check for existing current-version IR (write-once idempotent)
-    existing = await _existing_current_ir(store, artifact_id)
-    if existing:
-        result.already_ir += 1
-        KnowledgeEvent(
-            event_type="verify",
-            job_id=job.job_id,
-            attempt_id=attempt.attempt_id,
-            artifact_id=artifact_id,
-            details=f"already has IR: {existing}",
-        ).emit()
+    prepared = await _understand_input(
+        job, attempt, store, s3_client, bucket, src, result
+    )
+    if prepared is None:
         return
-
-    # Fetch real artifact bytes — never parse the hash string
-    content = _fetch_artifact_bytes(s3_client, bucket, src.get("source_ref", ""))
-    if content is None:
-        result.failed_items.append(
-            {
-                "artifact_id": artifact_id,
-                "error": "artifact content unavailable (source_ref unreadable)",
-            }
-        )
-        return
-
-    # Parse artifact
-    parsed = _parse_for_understand(artifact_id, content, kind)
-    if parsed is None:
-        result.failed_items.append(
-            {"artifact_id": artifact_id, "error": "parse returned None"}
-        )
-        return
+    artifact_id, kind, content, parsed = prepared
 
     # Build KnowledgeIR
     ir = build_knowledge_ir(
@@ -2626,6 +2673,17 @@ class DomainBenchmarkBackend(OrchestratorBackend):
         from umrs.knowledge.store import KnowledgeStore
 
         store = KnowledgeStore(pool)
+        return await self._score(store, project_id, items, job, attempt)
+
+    async def _score(
+        self,
+        store: Any,
+        project_id: str,
+        items: list[dict[str, list[str]]],
+        job: Job,
+        attempt: JobAttempt,
+    ) -> str:
+        """Node-existence scoring + metrics/event/ref (the D-44 executor core)."""
         expected = sorted({nid for item in items for nid in item["expected_node_ids"]})
         status_map = await store.benchmark_node_status(project_id, expected)
         matched = [nid for nid, st in status_map.items() if st is not None]

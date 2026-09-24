@@ -18,7 +18,7 @@ import hashlib
 import json
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from r4_contracts.skills import SkillManifest, SkillScope
@@ -38,12 +38,29 @@ class RegisteredSkill:
     skill_md: str = ""  # Content of SKILL.md
     registered_at: datetime | None = None
     enabled: bool = True
+    review_state: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if not self.skill_id and self.manifest.name:
             self.skill_id = hashlib.sha256(
                 f"{self.scope.value}:{self.owner_id}:{self.manifest.name}".encode()
             ).hexdigest()[:16]
+
+
+REVIEW_STATUS_PENDING = "pending_review"
+REVIEW_DECISIONS = frozenset({"approved", "rejected"})
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def is_pending_proposal(skill: RegisteredSkill) -> bool:
+    """A loop-proposed skill awaiting human review (D-27 edit plane)."""
+    return (
+        skill.enabled is False
+        and (skill.review_state or {}).get("status") == REVIEW_STATUS_PENDING
+    )
 
 
 class SkillValidationError(Exception):
@@ -82,6 +99,8 @@ class SkillRegistry:
         scope: SkillScope = SkillScope.USER,
         owner_id: str = "",
         project_id: str | None = None,
+        enabled: bool = True,
+        review_state: dict[str, Any] | None = None,
     ) -> RegisteredSkill:
         """Register a skill bundle."""
         errors = self.validate_manifest(manifest)
@@ -95,6 +114,8 @@ class SkillRegistry:
             project_id=project_id,
             skill_md=skill_md,
             registered_at=datetime.utcnow(),
+            enabled=enabled,
+            review_state=review_state,
         )
         self._skills[skill.skill_id] = skill
         logger.info("Registered skill: %s (id=%s)", manifest.name, skill.skill_id)
@@ -150,10 +171,49 @@ class SkillRegistry:
         scored.sort(key=lambda x: x[0], reverse=True)
         return [s for _, s in scored[:limit]]
 
+    def list_pending(self) -> list[RegisteredSkill]:
+        """Loop-proposed skills awaiting human review (D-27 edit plane)."""
+        return [s for s in self._skills.values() if is_pending_proposal(s)]
+
+    def decide_review(
+        self,
+        skill_id: str,
+        decision: str,
+        *,
+        reviewer: str,
+        note: str = "",
+        test_receipt: dict[str, Any] | None = None,
+    ) -> RegisteredSkill | None:
+        """Merge a human review decision into a pending proposal's state.
+
+        Approve is the merge: the only transition that enables a compiled
+        proposal. Returns the updated skill, or ``None`` when the skill is
+        absent or no longer pending (the caller maps that to a conflict).
+        """
+        skill = self._skills.get(skill_id)
+        if skill is None or not is_pending_proposal(skill):
+            return None
+        state = dict(skill.review_state or {})
+        state["status"] = decision
+        state["decision"] = decision
+        state["reviewer"] = reviewer
+        state["decided_at"] = _now_iso()
+        if note:
+            state["note"] = note
+        if test_receipt is not None:
+            state["test_receipt"] = test_receipt
+        skill.review_state = state
+        if decision == "approved":
+            skill.enabled = True
+        return skill
+
 
 __all__ = [
+    "REVIEW_DECISIONS",
+    "REVIEW_STATUS_PENDING",
     "RegisteredSkill",
     "SkillRegistry",
     "SkillScope",
     "SkillValidationError",
+    "is_pending_proposal",
 ]
