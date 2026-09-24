@@ -18,6 +18,7 @@ the DR/migration path (restore source bundle into a new project).
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -27,7 +28,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from . import canonical_identity
+from . import bundle_raw, canonical_identity
 from .bundle_export import tables_pinned, verify_bundle_integrity
 from .store import KnowledgeEdge, KnowledgeNode
 
@@ -98,6 +99,12 @@ class KnowledgeImportResult:
     # trusted model / left for re-embedding (ADR-032 precondition #3).
     node_embedding_count: int = 0
     node_embeddings_pending: int = 0
+    # ADR-032 raw-materials amendment: objects stored in the destination and
+    # re-bound to their artifact / carried but not bound (the artifact row
+    # deduped onto an existing one) / declined by the importer.
+    raw_restored: int = 0
+    raw_unbound: int = 0
+    raw_declined: int = 0
     # ADR-032 #1: incoming artifacts that are the same logical document as an
     # existing one under another id (reported, never merged — federation is
     # outside v1).
@@ -133,6 +140,9 @@ class KnowledgeImportResult:
             "node_embeddings_pending": self.node_embeddings_pending,
             "upgraded_from": self.upgraded_from,
             "canonical_matches": list(self.canonical_matches),
+            "raw_restored": self.raw_restored,
+            "raw_unbound": self.raw_unbound,
+            "raw_declined": self.raw_declined,
         }
 
 
@@ -349,8 +359,13 @@ class KnowledgeImportEngine:
         skill_store: Any = None,
         mcp_store: Any = None,
         catalog_store: Any = None,
+        raw_writer: Any = None,
     ) -> None:
         self._store = store
+        # ADR-032 raw-materials amendment: ``raw_writer(project_id, bytes) ->
+        # object key`` stores one verified object in the destination's own
+        # storage (the api layer supplies it; None = raw objects not restored).
+        self._raw_writer = raw_writer
         self._secret_key = secret_key
         # V-05/D-23: reference consumers. None = references resolved-byside
         # (counted as deferred in the result, never a crash).
@@ -370,6 +385,7 @@ class KnowledgeImportEngine:
         verify: bool = True,
         allow_unsigned: bool = False,
         write_upgrade: bool = False,
+        accept_raw: bool = True,
     ) -> KnowledgeImportResult:
         """Restore one bundle directory. Raises on integrity/format errors.
 
@@ -394,6 +410,7 @@ class KnowledgeImportEngine:
         )
         self._enforce_integrity(bundle_path, verify, allow_unsigned, result)
         result.tables_verified = result.verified and tables_pinned(manifest)
+        raw_rows = self._raw_rows(bundle_path, accept_raw, result)
 
         source_project = str(manifest["project_id"])
         target = target_project_id or source_project
@@ -409,6 +426,7 @@ class KnowledgeImportEngine:
         docs, doc_skipped = await self._restore_documents(bundle_path, target)
         result.document_count = docs
         result.skipped_count += doc_skipped
+        await self._restore_raw(bundle_path, raw_rows, target, result)
         result.node_count = await self._restore_nodes(bundle_path, target)
         result.edge_count = await self._restore_edges(bundle_path, target)
         (
@@ -475,6 +493,51 @@ class KnowledgeImportEngine:
         result.verified = True
 
     # ── Store-backed restores ───────────────────────────────────────────
+
+    def _raw_rows(
+        self, bundle_path: Path, accept: bool, result: KnowledgeImportResult
+    ) -> list[dict[str, Any]]:
+        """Verified raw rows BEFORE any write: one bad object refuses the
+        whole bundle. Declined (or no writer) → nothing is read or stored."""
+        if not (bundle_path / bundle_raw.RAW_TABLE).is_file():
+            return []
+        if not accept or self._raw_writer is None:
+            result.raw_declined = sum(
+                1
+                for line in (bundle_path / bundle_raw.RAW_TABLE).open()
+                if line.strip()
+            )
+            return []
+        try:
+            return bundle_raw.verified_raw_rows(bundle_path)
+        except (bundle_raw.RawBundleError, ValueError) as exc:
+            raise BundleFormatError(f"raw objects refused: {exc}") from exc
+
+    async def _restore_raw(
+        self,
+        bundle_path: Path,
+        rows: list[dict[str, Any]],
+        project_id: str,
+        result: KnowledgeImportResult,
+    ) -> None:
+        """Store each object in the destination and re-bind its artifact's
+        ``source_ref`` (the one deployment-local field; ids/hashes kept)."""
+        for row in rows:
+            content = bundle_raw.read_object(bundle_path, row)
+            try:
+                key = await asyncio.to_thread(self._raw_writer, project_id, content)
+            except Exception as exc:  # noqa: BLE001 — named degraded, rows stay restored
+                result.degraded = True
+                result.degraded_reason = f"raw objects not stored: {exc}"
+                logger.warning("raw object store failed for %s: %s", project_id, exc)
+                return
+            bound = await self._store.rebind_artifact_source(
+                project_id, str(row.get("artifact_id") or ""), key
+            )
+            if bound:
+                result.raw_restored += 1
+            else:
+                result.raw_unbound += 1
 
     async def _canonical_matches(
         self, bundle_path: Path, project_id: str

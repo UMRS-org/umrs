@@ -34,7 +34,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from . import canonical_identity
+from . import bundle_raw, canonical_identity
 from .bundle_reader import ExportBundleWriter
 from .store import KnowledgeStore
 
@@ -240,8 +240,15 @@ class KnowledgeExportEngine:
         allow_unsigned: bool = False,
         populate_embedding_pin: bool = True,
         artifact_reader: Callable[[str], bytes | None] | None = None,
+        include_raw: bool = False,
+        raw_acknowledgement: dict[str, Any] | None = None,
     ) -> None:
         self._store = store
+        # ADR-032 raw-materials amendment: opt-in carriage of artifact bytes;
+        # the acknowledgement (sensitive projects) is recorded in the manifest.
+        self._include_raw = include_raw
+        self._raw_acknowledgement = raw_acknowledgement or {}
+        self._artifact_rows: list[dict[str, Any]] = []
         # ADR-032 #1: reads one artifact's raw bytes by source_ref (None =
         # unreadable) so the export can map each row to its canonical identity.
         self._artifact_reader = artifact_reader
@@ -289,12 +296,13 @@ class KnowledgeExportEngine:
         link_rows, ref_rows = await self._dump_a2l_tables(project_id, writer)
         table_counts["a2l_links"] = (len(link_rows), "a2l_links.jsonl")
         table_counts["a2l_refs"] = (len(ref_rows), "a2l_refs.jsonl")
+        catalog_record = await self._resolve_catalog_record(project_id)
+        raw_block = self._dump_raw(writer, catalog_record, table_counts)
 
         # 8. Build manifest (r4-kb v1.2 — ADR-032 amendment 2026-09)
         skills, mcp_configs = await self._resolve_context_references(project_id)
         embedding_pin = await self._resolve_embedding_pin(project_id)
         reconciliation_snapshot = snapshot.summary if snapshot is not None else None
-        catalog_record = await self._resolve_catalog_record(project_id)
         self._manifest = self._build_manifest(
             project_id,
             table_counts,
@@ -304,6 +312,7 @@ class KnowledgeExportEngine:
             reconciliation_snapshot,
             catalog_record,
         )
+        self._manifest["raw"] = raw_block
         # The signature must cover the table CONTENTS, not only their names
         # and counts: each listed file's sha256 rides the signed manifest.
         stamp_table_digests(self._manifest, writer.path)
@@ -367,6 +376,34 @@ class KnowledgeExportEngine:
         if artifact.updated_at:
             row["updated_at"] = artifact.updated_at.isoformat()
         return row
+
+    def _dump_raw(
+        self,
+        writer: ExportBundleWriter,
+        catalog_record: dict[str, Any],
+        table_counts: dict[str, tuple[int, str]],
+    ) -> dict[str, Any]:
+        """Opt-in raw objects (ADR-032 raw-materials amendment); the manifest
+        ``raw`` block. Not requested → ``{"included": False}``."""
+        if not self._include_raw:
+            return {"included": False}
+        caps = bundle_raw.RawCaps.from_env()
+        candidates, skipped = bundle_raw.plan_raw(
+            self._artifact_rows,
+            licence=str(catalog_record.get("licence") or ""),
+            redaction_rules=catalog_record.get("redaction_rules"),
+            caps=caps,
+        )
+        rows = bundle_raw.write_raw(
+            writer.path, candidates, self._artifact_reader, caps, skipped
+        )
+        table_counts["raw_objects"] = (len(rows), bundle_raw.RAW_TABLE)
+        extra = (
+            {"acknowledgement": self._raw_acknowledgement}
+            if self._raw_acknowledgement
+            else {}
+        )
+        return bundle_raw.summary(rows, skipped, **extra)
 
     def _stamp_identity(self, row: dict[str, Any]) -> None:
         """ADR-032 #1: map the row to its canonical identity (``cid-1``);
@@ -448,6 +485,7 @@ class KnowledgeExportEngine:
         artifact_rows = [self._serialize_artifact(a) for a in artifacts]
         for row in artifact_rows:
             self._stamp_identity(row)
+        self._artifact_rows = artifact_rows
         await writer.write_artifacts(artifact_rows)
         logger.info(
             "Exported %d/%d artifacts for project=%s",
