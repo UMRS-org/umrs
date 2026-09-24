@@ -173,3 +173,60 @@ async def test_failed_batch_fails_its_artifacts_by_name(monkeypatch):
     await ka._embed_sources(object(), sources, "p", "", _Broken(), (None, "b"), result)
     assert [f["artifact_id"] for f in result.failed_items] == ["a1", "a2"]
     assert all("exit=137" in f["error"] for f in result.failed_items)
+
+
+class _StampPool:
+    def __init__(self):
+        self.updates = []
+
+    def acquire(self):
+        pool = self
+
+        class _Ctx:
+            async def __aenter__(self):
+                return pool
+
+            async def __aexit__(self, *_):
+                return False
+
+        return _Ctx()
+
+    async def execute(self, sql, *args):
+        self.updates.append((sql, args))
+
+
+class _Store:
+    def __init__(self):
+        self._pool = _StampPool()
+        self.vectors = []
+
+    async def upsert_node(self, *_a, **_k):
+        pass
+
+    async def upsert_edge(self, *_a, **_k):
+        pass
+
+    async def upsert_node_embedding(self, node_id, *_a, **_k):
+        self.vectors.append(node_id)
+
+
+@pytest.mark.asyncio
+async def test_embed_stamps_the_artifact_only_after_vectors_are_written(monkeypatch):
+    """The only honest stamper: model + real dimension, after the writes."""
+    from umrs.jobs import knowledge_adapters as ka
+    from umrs.jobs.knowledge_adapters import KnowledgeEmbedResult
+
+    monkeypatch.setenv("UMRS_KNOWLEDGE_EMBED_MODEL", "/srv/models/e5")
+    store, result = _Store(), KnowledgeEmbedResult()
+    embedded = {"chunks": [{"text": "a"}, {"text": "b"}], "vectors": [[0.1, 0.2, 0.3]] * 2}
+    await ka._write_embedded_chunks(store, "art-1", "p", "", embedded, result)
+    assert len(store.vectors) == 2
+    ((sql, args),) = store._pool.updates
+    assert "embedding_status = 'current'" in sql
+    assert args == ("/srv/models/e5", 3, "art-1")
+
+    empty_store = _Store()
+    await ka._write_embedded_chunks(
+        empty_store, "art-2", "p", "", {"chunks": [], "vectors": []}, result
+    )
+    assert empty_store._pool.updates == []  # nothing embedded → nothing stamped

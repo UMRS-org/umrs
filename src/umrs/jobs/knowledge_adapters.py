@@ -2199,6 +2199,24 @@ async def _write_embedded_chunks(
         )
         written += 1
     result.nodes_embedded += written
+    if written:
+        await _stamp_embedded(store, artifact_id, model_name, len(vectors[0]))
+
+
+async def _stamp_embedded(
+    store: Any, artifact_id: str, model_name: str, dim: int
+) -> None:
+    """The artifact's embedding metadata now tells the truth (model, dim,
+    current) — best-effort: a failed stamp never undoes written vectors."""
+    pool = getattr(store, "_pool", None)
+    if pool is None or not model_name:
+        return
+    from umrs.knowledge.embedding_metadata import stamp_artifact_embedded
+
+    try:
+        await stamp_artifact_embedded(pool, artifact_id, model=model_name, dim=dim)
+    except Exception as exc:  # noqa: BLE001 — metadata stamp is best-effort beside the vectors
+        logger.warning("embedding stamp failed for %s: %s", artifact_id, exc)
 
 
 def _chunk_embedder_for_site() -> tuple[Any | None, str]:
