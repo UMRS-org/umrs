@@ -11,8 +11,11 @@ from __future__ import annotations
 
 import logging
 import threading
+from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
+
+from psycopg2 import sql as pgsql
 
 from umrs.core.TaskCmdStatus import TaskCmd, TaskStatus
 from umrs.core.thread_pool import ServerOverloadedError
@@ -20,6 +23,77 @@ from umrs.core.thread_pool import ServerOverloadedError
 from .base import CommandHandler, HandlerContext
 
 logger = logging.getLogger(__name__)
+
+
+def filter_already_indexed(ctx, client_entries):
+    """Return client_entries with already-indexed objects removed.
+
+    For each bucket, fires head_object calls in parallel to get ETags, then
+    does a single SQL query to find objects already stored with the same checksum.
+    Objects present in DB with a matching ETag are dropped from the result.
+    """
+    # Group all s3_uris by bucket so we can batch per (data_base, table_name)
+    # s3_uri format: "s3://path_to_bucket/s3_key"
+    # DB format:      "path_to_bucket/s3_key"
+    bucket_items = defaultdict(list)  # path_to_bucket -> [(client_id, s3_uri, s3_key)]
+    for client_id, objects in client_entries:
+        for s3_uri in objects:
+            path_to_bucket, s3_key = s3_uri.replace("s3://", "").split("/", 1)
+            bucket_items[path_to_bucket].append((client_id, s3_uri, s3_key))
+
+    skip_uris = set()
+
+    for path_to_bucket, items in bucket_items.items():
+        entry = ctx.buckets_cfg.get(path_to_bucket)
+        if entry is None:
+            continue
+
+        s3 = entry.s3_connection
+        data_base = entry.data_base
+        table_name = entry.table_name
+
+        # Parallel head_object to get ETags
+        def _head(item, _bucket=path_to_bucket):
+            _, s3_uri, s3_key = item
+            try:
+                etag = s3.head_object(Bucket=_bucket, Key=s3_key)["ETag"].strip('"')
+                return s3_uri, etag
+            except Exception:
+                return s3_uri, None
+
+        with ThreadPoolExecutor(max_workers=10) as pool:
+            etag_map = dict(pool.map(_head, items))
+
+        # Single SQL batch query for this bucket
+        db_keys = [f"{path_to_bucket}/{s3_key}" for _, _, s3_key in items]
+        conn = data_base.get_conn()
+        with conn.cursor() as cur:
+            cur.execute(
+                pgsql.SQL("SELECT s3_object, checksum FROM {} WHERE s3_object = ANY(%s)")
+                .format(pgsql.Identifier(table_name)),
+                (db_keys,),
+            )
+            db_checksums = {row[0]: row[1] for row in cur.fetchall()}
+
+        # Filter: skip if ETag matches DB checksum
+        for _, s3_uri, s3_key in items:
+            db_key = f"{path_to_bucket}/{s3_key}"
+            etag = etag_map.get(s3_uri)
+            db_checksum = db_checksums.get(db_key)
+            if etag and db_checksum and etag == db_checksum:
+                skip_uris.add(s3_uri)
+
+    if skip_uris:
+        logger.info("filter_already_indexed: skipping %d already-indexed object(s)", len(skip_uris))
+
+    # Rebuild client_entries without skipped objects
+    filtered = []
+    for client_id, objects in client_entries:
+        kept = [o for o in objects if o not in skip_uris]
+        if kept:
+            filtered.append((client_id, kept))
+
+    return filtered
 
 
 class ProcessObjectsBatchHandler(CommandHandler):
@@ -30,7 +104,7 @@ class ProcessObjectsBatchHandler(CommandHandler):
     client when their individual PROCESS_OBJECTS was ACKed by the ZMQ loop.
     """
 
-    def execute(self, payload: list, ctx: HandlerContext) -> None:
+    def execute(self, payload: list, ctx: HandlerContext, filter: bool = True) -> None:
         # --- Task creation ---
         #
         # The ZMQ drain may deliver several PROCESS_OBJECTS from the *same*
@@ -113,6 +187,38 @@ class ProcessObjectsBatchHandler(CommandHandler):
 
             if not client_entries:
                 return
+
+            if filter:
+                original_entries = client_entries
+                client_entries = filter_already_indexed(ctx, client_entries)
+
+                surviving_cids = {cid for cid, _ in client_entries}
+                filtered_entries = [(cid, objs) for cid, objs in original_entries if cid not in surviving_cids]
+
+                if filtered_entries:
+                    # Register filtered clients in thread_dict and mark Done
+                    active_threads = ctx.task_manager.active_threads
+                    keys_per_bucket = {}
+                    for _, objects in filtered_entries:
+                        for s3_uri in objects:
+                            path_to_bucket, _ = s3_uri.replace("s3://", "").split("/", 1)
+                            keys_per_bucket[path_to_bucket] = keys_per_bucket.get(path_to_bucket, 0) + 1
+                    active_threads.update_thread_dict(ctx.buckets_cfg, keys_per_bucket, "process_objects")
+                    active_threads.update_status_to_done()
+                    all_users = []
+                    for path_to_bucket in keys_per_bucket:
+                        entry = ctx.buckets_cfg.get(path_to_bucket)
+                        if entry and entry.s3_username not in all_users:
+                            all_users.append(entry.s3_username)
+                    active_threads.record_status_for_users_by_key(all_users, "process_objects")
+                    for cid, _ in filtered_entries:
+                        if cid in client_callbacks:
+                            client_callbacks[cid](TaskStatus.RUNNING)
+                            client_callbacks[cid](TaskStatus.COMPLETED)
+
+                if not client_entries:
+                    logger.info("[PROCESS] All objects already indexed, nothing to do.")
+                    return
 
             active_callbacks = {
                 cid: client_callbacks[cid]
