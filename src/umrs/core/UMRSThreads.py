@@ -159,13 +159,17 @@ class UMRSThreads:
         embedding_backend,
         key,
         client_callbacks=None,
-    ):
+    ) -> dict:
         """Submit one pool thread per model group across all client entries.
 
         ``prepare_model_groups`` resolves bucket configs and groups items by
         model synchronously (before pool submission), so each submitted thread
         is independent and can run in parallel — Rivault nodes on different
         GPUs, or simply different local models.
+
+        Returns a ``{client_id: thread_ident}`` mapping so callers can link
+        threads to tasks via ``TaskManager.associate_thread_with_task`` and
+        patch thread-dict counts with ``patch_thread_nb_objects``.
         """
         from umrs.server.processing import prepare_model_groups, process_model_group
 
@@ -182,6 +186,7 @@ class UMRSThreads:
             len(groups), key,
         )
 
+        client_thread_map: dict[str, int] = {}
         for items, group_callbacks, group_users in groups:
             model_name = getattr(items[0].get("model"), "model_name", str(items[0].get("model")))
             logger.info(
@@ -203,6 +208,41 @@ class UMRSThreads:
                     "WARNING: Thread %s did not register in time for '%s': %s",
                     thread_ident, key, exc,
                 )
+            for client_id in group_callbacks:
+                client_thread_map[client_id] = thread_ident
+
+        return client_thread_map
+
+    def patch_thread_nb_objects(
+        self, thread_ident: int, original_counts_per_bucket: dict
+    ) -> None:
+        """Overwrite nb_objects in thread_dict with original submission counts.
+
+        Called after ``launch_s3_threads_batch`` returns, once the thread has
+        registered in thread_dict.  Re-records the status_store so subsequent
+        STATUS queries show the original submitted count rather than the
+        post-filter count.
+        """
+        key = None
+        users = []
+        with self.lock:
+            entry = self.thread_dict.get(thread_ident)
+            if entry is None:
+                return
+            for work in entry.get("work", []):
+                bucket = work.get("bucket")
+                if bucket in original_counts_per_bucket:
+                    work["nb_objects"] = original_counts_per_bucket[bucket]
+                if key is None:
+                    key = work.get("work_type")
+                user = work.get("user")
+                if user and user not in users:
+                    users.append(user)
+            # Persist the patched entry back (required for diskcache.Cache)
+            self.thread_dict[thread_ident] = entry
+
+        if users and key:
+            self.record_status_for_users_by_key(users, key)
 
     def launch_export_embeddings(
         self,
