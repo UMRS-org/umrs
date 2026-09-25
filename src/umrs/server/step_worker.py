@@ -74,17 +74,7 @@ def _emit(reply: dict[str, Any]) -> None:
     2. ``UMRS_STEP_OUTPUT`` — write to a local file (PodmanExecutor
        bind-mount).
     3. stdout — binary pipe for :class:`SubprocessExecutor`.
-
-    ``UMRS_STEP_OUTPUT_JSON`` additionally names a data-only JSON reply
-    (ADR-074 D-6): servers that set it read that file and never unpickle
-    what the step wrote; ``output.pkl`` stays for older servers.
     """
-    json_path = os.environ.get("UMRS_STEP_OUTPUT_JSON")
-    if json_path:
-        from umrs.server.step_reply import reply_to_json
-
-        with open(json_path, "wb") as fh:
-            fh.write(reply_to_json(reply))
     blob = pickle.dumps(reply)
 
     s3_ref = os.environ.get("UMRS_STEP_OUTPUT_S3")
