@@ -8,6 +8,8 @@ import warnings
 from io import BytesIO
 from typing import Optional
 
+import logging
+
 import boto3
 import urllib3
 from botocore.exceptions import ClientError
@@ -15,6 +17,8 @@ from charset_normalizer import from_bytes, from_path
 from PIL import Image
 
 from umrs.shared.utils import compute_md5, md5_of_file
+
+logger = logging.getLogger(__name__)
 
 # Suppress only SSL warnings from urllib3
 warnings.simplefilter("ignore", urllib3.exceptions.InsecureRequestWarning)
@@ -564,6 +568,33 @@ def is_an_image(filename):
     return is_image_by_opening(filename)
 
 
+def _upload_file(s3, path_to_bucket, s3_key, local_path, extra_args=None, check_exists=True):
+    """Upload a local file to S3, optionally skipping if the same content is already there.
+
+    Uses head_object + MD5 comparison (reliable for single-part uploads, which is
+    all we do in this codebase).  Raises FileNotFoundError when local_path is missing.
+    """
+    if not os.path.exists(local_path):
+        raise FileNotFoundError(f"Error: {local_path} not found")
+
+    if check_exists:
+        try:
+            head = s3.head_object(Bucket=path_to_bucket, Key=s3_key)
+            remote_etag = head["ETag"].strip('"')
+            local_md5 = md5_of_file(local_path)
+            if remote_etag == local_md5:
+                logger.debug(
+                    "skip upload — already in S3 with same MD5: s3://%s/%s",
+                    path_to_bucket, s3_key,
+                )
+                return
+        except ClientError as e:
+            if e.response["Error"]["Code"] not in ("404", "NoSuchKey"):
+                raise
+
+    s3.upload_file(local_path, path_to_bucket, s3_key, ExtraArgs=extra_args)
+
+
 def s3_store_image(s3, path_to_bucket, subdir, in_path, mq, metadata_args, check=True):
     if check and not is_an_image(in_path):
         print(f"Error: '{in_path}' is not an image. Skipping...")
@@ -573,10 +604,7 @@ def s3_store_image(s3, path_to_bucket, subdir, in_path, mq, metadata_args, check
     if subdir is not None:
         s3_key = f"{subdir}/{s3_key}"
 
-    if os.path.exists(in_path):
-        s3.upload_file(in_path, path_to_bucket, s3_key, ExtraArgs=metadata_args)
-    else:
-        raise FileNotFoundError(f"Error: {in_path} not found")
+    _upload_file(s3, path_to_bucket, s3_key, in_path, extra_args=metadata_args)
 
     s3_object = f"s3://{path_to_bucket}/{s3_key}"
     mq.notify_s3(s3_object)
@@ -629,10 +657,7 @@ def s3_store_text_file(s3, path_to_bucket, subdir, in_path, mq, metadata_args):
     if subdir is not None:
         s3_key = f"{subdir}/{s3_key}"
 
-    if os.path.exists(in_path):
-        s3.upload_file(in_path, path_to_bucket, s3_key, ExtraArgs=metadata_args)
-    else:
-        raise FileNotFoundError(f"Error: {in_path} not found")
+    _upload_file(s3, path_to_bucket, s3_key, in_path, extra_args=metadata_args)
 
     s3_object = f"s3://{path_to_bucket}/{s3_key}"
     mq.notify_s3(s3_object)
