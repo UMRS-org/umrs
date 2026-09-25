@@ -567,9 +567,16 @@ def _server_to_response(server) -> ServerResponse:
             }
             for t in server.tools
         ],
-        created_at=server.created_at.isoformat() if server.created_at else None,
-        updated_at=server.updated_at.isoformat() if server.updated_at else None,
+        created_at=_iso(server.created_at),
+        updated_at=_iso(server.updated_at),
     )
+
+
+def _iso(value) -> str | None:
+    """ISO text for a timestamp; tolerate a value that already is text."""
+    if not value:
+        return None
+    return value.isoformat() if hasattr(value, "isoformat") else str(value)
 
 
 # =============================================================================

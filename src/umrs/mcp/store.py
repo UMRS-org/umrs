@@ -22,11 +22,6 @@ def _json_column(value):
     return json.loads(value) if isinstance(value, str) else value
 
 
-def _optional_column(row, index: int, default: str):
-    """Column added by a later migration: absent or empty → the default."""
-    return row[index] if len(row) > index and row[index] else default
-
-
 class MCPServerStoreError(Exception):
     """Base error for MCP server store operations."""
 
@@ -197,6 +192,8 @@ class MCPServerStore:
             metadata=metadata or {},
             registered_by=registered_by,
             project_id=project_id,
+            placement=placement,
+            trust_class=trust_class,
             tools=mcp_tools,
             created_at=created_at,
             updated_at=updated_at,
@@ -397,7 +394,8 @@ class MCPServerStore:
                 """
                 SELECT s.server_id, s.name, s.version, s.url, s.transport, s.status,
                        s.description, s.auth_type, s.auth_config, s.metadata,
-                       s.registered_by, s.project_id, s.created_at, s.updated_at
+                       s.registered_by, s.project_id, s.placement, s.trust_class,
+                       s.created_at, s.updated_at
                 FROM mcp_servers s
                 JOIN mcp_tools t ON t.server_id = s.server_id
                 WHERE t.name = %s
@@ -447,10 +445,15 @@ class MCPServerStore:
             metadata=metadata or {},
             registered_by=row[10],
             project_id=row[11],
-            placement=_optional_column(row, 14, "local"),
-            trust_class=_optional_column(row, 15, "local-safe"),
-            created_at=row[12],
-            updated_at=row[13],
+            # Every server SELECT returns the same 16 columns in this order
+            # (_SERVER_COLUMNS). 2026-09-25: the mapper read created_at from
+            # the placement slot (list/get -> 500 on .isoformat()) and the
+            # call-time lookup had no trust_class column, so D-19's
+            # trusted-host-only refusal could never fire.
+            placement=row[12] or "local",
+            trust_class=row[13] or "local-safe",
+            created_at=row[14],
+            updated_at=row[15],
         )
 
     def _get_tools_for_server(self, cur, server_id: str) -> list[MCPTool]:
