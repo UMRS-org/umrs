@@ -399,6 +399,12 @@ class MCPServerStore:
                 FROM mcp_servers s
                 JOIN mcp_tools t ON t.server_id = s.server_id
                 WHERE t.name = %s
+                -- Tool names collide across servers (e.g. a user's hatch copy
+                -- of a default package): prefer a healthy, most recently
+                -- registered server instead of an arbitrary row (2026-09-25:
+                -- two stale July entries on dead ports shared names with the
+                -- default set).
+                ORDER BY (s.status = 'healthy') DESC, s.updated_at DESC
                 LIMIT 1
                 """,
                 (tool_name,),
