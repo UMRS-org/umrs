@@ -302,6 +302,7 @@ def knn_search_worker(
     control_mq,
     zmq_sender_id,
     key,
+    subdir=None,
     update_status_callback=None,
 ):
     """Worker function for the KNN command, runs in a thread pool.
@@ -363,15 +364,28 @@ def knn_search_worker(
 
         # Cosine kNN — the HNSW index uses vector_cosine_ops so <=> is indexed
         with conn.cursor() as cur:
-            cur.execute(
-                sql.SQL("""
-                    SELECT s3_object, 1.0 - (embedding <=> %s::vector) AS score
-                    FROM {}
-                    ORDER BY embedding <=> %s::vector
-                    LIMIT %s
-                """).format(sql.Identifier(table_name)),
-                (query_embedding, query_embedding, n),
-            )
+            if subdir:
+                prefix = f"s3://{bucket_name}/{subdir}/%"
+                cur.execute(
+                    sql.SQL("""
+                        SELECT s3_object, 1.0 - (embedding <=> %s::vector) AS score
+                        FROM {}
+                        WHERE s3_object LIKE %s
+                        ORDER BY embedding <=> %s::vector
+                        LIMIT %s
+                    """).format(sql.Identifier(table_name)),
+                    (query_embedding, prefix, query_embedding, n),
+                )
+            else:
+                cur.execute(
+                    sql.SQL("""
+                        SELECT s3_object, 1.0 - (embedding <=> %s::vector) AS score
+                        FROM {}
+                        ORDER BY embedding <=> %s::vector
+                        LIMIT %s
+                    """).format(sql.Identifier(table_name)),
+                    (query_embedding, query_embedding, n),
+                )
             rows = cur.fetchall()
 
         results_list = [{"object": r[0], "score": float(r[1])} for r in rows]

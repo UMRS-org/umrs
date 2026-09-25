@@ -1198,7 +1198,7 @@ class MessageQueue:
 
         return reply
 
-    def request_knn(self, client_id: str, n: int, s3_object: str, bucket: str) -> str:
+    def request_knn(self, client_id: str, n: int, s3_object: str, bucket: str, subdir: str | None = None) -> str:
         """Send a KNN request and return the raw JSON reply (client role only).
 
         Parameters
@@ -1207,13 +1207,18 @@ class MessageQueue:
         n:          number of nearest neighbours to return
         s3_object:  S3 key of the query object (must be accessible in *bucket*)
         bucket:     path_to_bucket as registered in the server config
+        subdir:     optional sub-directory prefix; when set, search results are
+                    filtered to objects whose key starts with ``subdir/``
         """
         if self.role != "client":
             raise PermissionError("Only client can call 'request_knn'")
 
         import json as _json
         safe_client_id = (client_id or "").replace(":", "_")
-        payload = _json.dumps({"n": n, "object": s3_object, "bucket": bucket})
+        body: dict = {"n": n, "object": s3_object, "bucket": bucket}
+        if subdir:
+            body["subdir"] = subdir
+        payload = _json.dumps(body)
         request_str = f"{TaskCmd.KNN}:{safe_client_id}:{payload}"
 
         old_rcv = self.socket.getsockopt(zmq.RCVTIMEO)

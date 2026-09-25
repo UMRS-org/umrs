@@ -34,6 +34,7 @@ class KnnHandler(CommandHandler):
             n = int(args["n"])
             s3_object = str(args["object"])
             bucket_name = str(args["bucket"])
+            subdir = args.get("subdir") or None
         except (KeyError, ValueError, TypeError, json.JSONDecodeError) as exc:
             logger.warning("KNN bad params from %s: %s", client_id, exc)
             update_status(TaskStatus.ERROR)
@@ -54,6 +55,7 @@ class KnnHandler(CommandHandler):
                 ctx.control_mq,
                 zmq_sender_id,
                 "knn",
+                subdir=subdir,
                 update_status_callback=update_status,
             )
             ctx.task_manager.associate_thread_with_task(thread_ident, task_id)
