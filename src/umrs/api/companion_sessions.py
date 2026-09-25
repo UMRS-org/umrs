@@ -238,7 +238,15 @@ _UPSERT_SNAPSHOT_SQL = """
                     updated_at = now()
                 -- F3 audit fix: comparing raw strings mixed naive-vs-tz-aware writer classes;
                 -- timestamptz normalizes both (epoch fallback for empty/unparseable rows).
-                WHERE COALESCE(
+                -- A naive marker reads as UTC, but clients wrote naive LOCAL time until
+                -- 2026-09-25: a JST row then outranked every later UTC write for nine
+                -- hours. An offset-carrying marker supersedes a stored naive one (the
+                -- one-way upgrade); naive-vs-naive keeps the plain comparison.
+                WHERE (
+                    companion_session_snapshots.update_marker
+                        !~ 'T[0-9:.]+(Z|[+-][0-9]{2}(:?[0-9]{2})?)$'
+                    AND EXCLUDED.update_marker ~ 'T[0-9:.]+(Z|[+-][0-9]{2}(:?[0-9]{2})?)$'
+                ) OR COALESCE(
                     NULLIF(trim(companion_session_snapshots.update_marker), '')::timestamptz,
                     'epoch'::timestamptz
                 ) <= COALESCE(
@@ -260,54 +268,20 @@ async def put_session_snapshot(
     """
     uid = _uid(request)
     pool = _pool(request)
-    venue = _validate_venue(body.venue) if body.venue else ""
-    state = _validate_stored_state(body.state)
     # Venue: a PUT that omits venue must not stomp a recorded one — absent
     # means absent, not 'local'. Local clients always declare 'local'.
     conn = pool.getconn()
     try:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO companion_session_snapshots
-                    (user_id, session_id, name, payload, update_marker, venue, state)
-                VALUES (%s, %s, %s, %s, %s,
-                        COALESCE(NULLIF(%s, ''), 'local'), %s)
-                ON CONFLICT (user_id, session_id) DO UPDATE SET
-                    name = EXCLUDED.name,
-                    payload = EXCLUDED.payload,
-                    update_marker = EXCLUDED.update_marker,
-                    venue = CASE
-                        WHEN EXCLUDED.venue <> '' THEN EXCLUDED.venue
-                        ELSE companion_session_snapshots.venue
-                    END,
-                    state = CASE
-                        WHEN EXCLUDED.state <> '' THEN EXCLUDED.state
-                        ELSE companion_session_snapshots.state
-                    END,
-                    updated_at = now()
-                -- F3 audit fix: comparing raw strings mixed naive-vs-tz-aware writer classes;
-                -- timestamptz normalizes both (epoch fallback for empty/unparseable rows).
-                WHERE COALESCE(
-                    NULLIF(trim(companion_session_snapshots.update_marker), '')::timestamptz,
-                    'epoch'::timestamptz
-                ) <= COALESCE(
-                    NULLIF(trim(EXCLUDED.update_marker), '')::timestamptz,
-                    'epoch'::timestamptz
-                )
-                """,
-                (
-                    uid,
-                    session_id,
-                    body.name,
-                    body.payload,
-                    body.updated_at,
-                    venue,
-                    state,
-                ),
-            )
-            applied = cur.rowcount > 0
-            conn.commit()
+        applied = upsert_snapshot_row(
+            conn,
+            uid,
+            session_id,
+            name=body.name,
+            payload=body.payload,
+            updated_at=body.updated_at,
+            venue=body.venue or "",
+            state=body.state,
+        )
     finally:
         pool.putconn(conn)
     return {"status": "ok", "applied": applied}
