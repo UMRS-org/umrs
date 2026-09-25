@@ -247,9 +247,9 @@ _UPSERT_SNAPSHOT_SQL = """
                     (
                         NULLIF(trim(companion_session_snapshots.update_marker), '')
                         || CASE
-                            WHEN companion_session_snapshots.update_marker
+                            WHEN trim(companion_session_snapshots.update_marker)
                                     !~ 'T[0-9:.]+(Z|[+-][0-9]{2}(:?[0-9]{2})?)$'
-                                AND EXCLUDED.update_marker
+                                AND trim(EXCLUDED.update_marker)
                                     ~ 'T[0-9:.]+(Z|[+-][0-9]{2}(:?[0-9]{2})?)$'
                             THEN substring(
                                 trim(EXCLUDED.update_marker)
