@@ -47,6 +47,13 @@ from .step_executor import (
     _serialise_ctx_payload,
     _serialise_s3_client_config,
 )
+from .step_reply import (
+    check_reply_size,
+    json_reply_path,
+    reply_max_bytes,
+    result_from_json,
+    result_from_legacy_pickle,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -186,6 +193,10 @@ def _podman_run_argv(
         f"UMRS_STEP_INPUT=/work/{input_rel}",
         "-e",
         f"UMRS_STEP_OUTPUT=/work/{output_rel}",
+        # ADR-074 D-6: the reply the server reads is data (JSON); output.pkl
+        # stays for images that predate it.
+        "-e",
+        f"UMRS_STEP_OUTPUT_JSON=/work/{os.path.splitext(output_rel)[0]}.json",
     ]
     if source_dir:
         # User step modules live outside the image (uploaded bundle):
@@ -398,12 +409,34 @@ class SlurmStepExecutor(StepExecutor):
         with open(path, "wb") as f:
             f.write(data)
 
-    def _read_bytes(self, path: str) -> bytes | None:
-        """File content, or None when it does not exist."""
+    def _read_bytes(self, path: str, max_bytes: int | None = None) -> bytes | None:
+        """File content (at most *max_bytes*), or None when it does not exist."""
         if not os.path.isfile(path):
             return None
         with open(path, "rb") as f:
-            return f.read()
+            return f.read() if max_bytes is None else f.read(max_bytes)
+
+    def _read_reply(self, job_id: str, output_path: str) -> StepResult:
+        """The step's reply as data (ADR-074 D-6): ``output.json`` first; an
+        image that predates it leaves only ``output.pkl``, read through the
+        restricted loader. Never ``pickle.loads`` on step-written bytes."""
+        cap = reply_max_bytes()
+        json_path = json_reply_path(output_path)
+        blob = self._read_bytes(json_path, max_bytes=cap + 1)
+        if blob is not None:
+            return result_from_json(check_reply_size(blob, json_path, cap))
+        blob = self._read_bytes(output_path, max_bytes=cap + 1)
+        if blob is None:
+            raise StepExecutionError(
+                "worker",
+                f"Job {job_id} completed but no reply was written: {json_path}",
+            )
+        logger.warning(
+            "SlurmStepExecutor: job %s wrote only a legacy pickle reply "
+            "(image predates JSON replies); read restricted",
+            job_id,
+        )
+        return result_from_legacy_pickle(check_reply_size(blob, output_path, cap))
 
     def _stage_source_dir(self, source_dir: str, workdir: str) -> str:
         """Where the compute node sees the step source tree (same path locally)."""
@@ -610,41 +643,7 @@ class SlurmStepExecutor(StepExecutor):
             status = self._check_job_status(job_id)
 
             if status == "COMPLETED":
-                # Read the output pickle
-                blob = self._read_bytes(output_path)
-                if blob is None:
-                    raise StepExecutionError(
-                        "worker",
-                        f"Job {job_id} completed but output file "
-                        f"not found: {output_path}",
-                    )
-                reply = pickle.loads(blob)
-
-                # step_worker returns {"status": "ok", "result": StepResult}
-                # (or an error dict). Accept a bare StepResult for older
-                # payloads.
-                if isinstance(reply, StepResult):
-                    result = reply
-                elif isinstance(reply, dict):
-                    status = reply.get("status")
-                    if status == "ok":
-                        result = reply.get("result")
-                        if not isinstance(result, StepResult):
-                            raise StepExecutionError(
-                                "worker",
-                                f"ok reply missing StepResult, got "
-                                f"{type(result).__name__}",
-                            )
-                    else:
-                        phase = str(reply.get("phase") or "worker")
-                        message = str(reply.get("message") or reply)
-                        raise StepExecutionError(phase, message)
-                else:
-                    raise StepExecutionError(
-                        "worker",
-                        f"Expected StepResult or reply dict, got "
-                        f"{type(reply).__name__}",
-                    )
+                result = self._read_reply(job_id, output_path)
 
                 logger.info(
                     "SlurmStepExecutor: job %s completed successfully",

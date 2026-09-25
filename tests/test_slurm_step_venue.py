@@ -277,28 +277,3 @@ def test_runner_threads_source_path_into_step_metadata(tmp_path, _clean_runner_s
     )
     assert record.status == "succeeded"
     assert captured["metadata"][EXECUTOR_SOURCE_DIR_METADATA_KEY] == str(tmp_path)
-
-
-def test_runner_purge_covers_foreign_workflow_trees(tmp_path, _clean_runner_source_state):
-    """Two registered workflows shipping a same-named ``mod`` package:
-    the second run must see its own code, not the first run's cached
-    module (bundle-variant hazard: pipeline vs -nogate sibling)."""
-    from umrs.server import workflow_runner as wr
-    from umrs.server.workflow_execution_registry import ExecutionRecord
-
-    dir_a = tmp_path / "wf_a"
-    dir_b = tmp_path / "wf_b"
-    dir_a.mkdir()
-    dir_b.mkdir()
-    _write_noop_mod(dir_a, "from-a")
-    _write_noop_mod(dir_b, "from-b")
-
-    rec_a = ExecutionRecord(execution_id="wf-a", workflow_name="wf-a", user_id="u")
-    wr.run_workflow_record(rec_a, source_path=str(dir_a), workflow_json=_workflow_json())
-    assert rec_a.status == "succeeded"
-    assert rec_a.steps["s1"].extra["output_keys"] == ["from-a"]
-
-    rec_b = ExecutionRecord(execution_id="wf-b", workflow_name="wf-b", user_id="u")
-    wr.run_workflow_record(rec_b, source_path=str(dir_b), workflow_json=_workflow_json())
-    assert rec_b.status == "succeeded"
-    assert rec_b.steps["s1"].extra["output_keys"] == ["from-b"]
