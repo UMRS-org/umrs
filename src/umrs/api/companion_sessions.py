@@ -240,14 +240,24 @@ _UPSERT_SNAPSHOT_SQL = """
                 -- timestamptz normalizes both (epoch fallback for empty/unparseable rows).
                 -- A naive marker reads as UTC, but clients wrote naive LOCAL time until
                 -- 2026-09-25: a JST row then outranked every later UTC write for nine
-                -- hours. An offset-carrying marker supersedes a stored naive one (the
-                -- one-way upgrade); naive-vs-naive keeps the plain comparison.
-                WHERE (
-                    companion_session_snapshots.update_marker
-                        !~ 'T[0-9:.]+(Z|[+-][0-9]{2}(:?[0-9]{2})?)$'
-                    AND EXCLUDED.update_marker ~ 'T[0-9:.]+(Z|[+-][0-9]{2}(:?[0-9]{2})?)$'
-                ) OR COALESCE(
-                    NULLIF(trim(companion_session_snapshots.update_marker), '')::timestamptz,
+                -- hours. Against an offset-carrying write, a stored naive marker reads
+                -- in THAT write's offset (a session keeps its owner's offset, so this
+                -- is the owner's wall clock); naive-vs-naive keeps the plain compare.
+                WHERE COALESCE(
+                    (
+                        NULLIF(trim(companion_session_snapshots.update_marker), '')
+                        || CASE
+                            WHEN companion_session_snapshots.update_marker
+                                    !~ 'T[0-9:.]+(Z|[+-][0-9]{2}(:?[0-9]{2})?)$'
+                                AND EXCLUDED.update_marker
+                                    ~ 'T[0-9:.]+(Z|[+-][0-9]{2}(:?[0-9]{2})?)$'
+                            THEN substring(
+                                trim(EXCLUDED.update_marker)
+                                FROM '(Z|[+-][0-9]{2}(:?[0-9]{2})?)$'
+                            )
+                            ELSE ''
+                        END
+                    )::timestamptz,
                     'epoch'::timestamptz
                 ) <= COALESCE(
                     NULLIF(trim(EXCLUDED.update_marker), '')::timestamptz,
