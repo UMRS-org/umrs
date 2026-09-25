@@ -123,3 +123,20 @@ async def test_call_tool_refuses_trusted_host_only_through_the_real_store(store,
     # Refused by name before any proxy attempt (the old mapping proxied it).
     assert excinfo.value.status_code == 403
     assert "trusted-host-only server" in str(excinfo.value.detail)
+
+
+def test_call_time_lookup_prefers_a_healthy_recent_server():
+    captured = {}
+
+    class _RecordingCursor(_Cursor):
+        def execute(self, sql, _params=None):
+            if "JOIN mcp_tools" in sql:
+                captured["sql"] = " ".join(sql.split())
+            super().execute(sql, _params)
+
+    class _Conn2(_Conn):
+        def cursor(self):
+            return _RecordingCursor()
+
+    MCPServerStore(_Conn2()).get_server_for_tool("focus")
+    assert "ORDER BY (s.status = 'healthy') DESC, s.updated_at DESC" in captured["sql"]
