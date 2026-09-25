@@ -329,6 +329,10 @@ class SlurmPodmanBackend(OrchestratorBackend):
         # the durable podman path got it only via accidental os.environ bleed.
         # Additive: setdefault only — explicit caller overrides always win.
         env_overrides.setdefault("JOB_INFO_DIR", str(self._output_dir))
+        # Same contract as remote_slurm_backend.py:504 — the spooled shim
+        # cannot see site.yaml without this (sbatch copies the script to
+        # spool, so bash-relative discovery fails).
+        env_overrides.setdefault("RIVAULT_WRAPPER_DIR", os.path.dirname(script))
         env_overrides.update(
             {
                 key: str(value)

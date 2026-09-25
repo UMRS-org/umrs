@@ -639,3 +639,19 @@ class TestJobInfoDirPropagation:
 
         env = mock_exec.call_args.kwargs["env"]
         assert env["JOB_INFO_DIR"] == "/custom/info-dir"
+
+    def test_submit_sets_wrapper_dir_for_the_spooled_shim(self, backend):
+        """sbatch spools the script, so bash-relative discovery of site.yaml
+        fails; RIVAULT_WRAPPER_DIR must point at the real wrapper dir (same
+        contract as remote_slurm_backend; BDRT hotfix upstreamed 2026-09-25)."""
+        import os
+
+        mock_proc = AsyncMock()
+        mock_proc.communicate.return_value = (b"12345\n", b"")
+        mock_proc.returncode = 0
+
+        with patch("asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
+            _run(backend.submit_job(model_path="/models/test"))
+
+        env = mock_exec.call_args.kwargs["env"]
+        assert env["RIVAULT_WRAPPER_DIR"] == os.path.dirname(backend.slurm_script)

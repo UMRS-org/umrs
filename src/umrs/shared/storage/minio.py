@@ -218,7 +218,7 @@ def minio_check_create_list_only_policy(target):
 
     policy_json = json.dumps(policy, indent=2)
     policy_name = "listonly"
-    policy_file = "/tmp/policy.json"
+    policy_file = f"/tmp/policy-{os.getuid()}.json"
 
     # Check if the policy already exists
     try:
@@ -294,7 +294,7 @@ def minio_check_create_user_list_policy(target, username):
     }
 
     policy_json = json.dumps(policy, indent=2)
-    policy_file = "/tmp/policy.json"
+    policy_file = f"/tmp/policy-{os.getuid()}.json"
 
     # Check if the policy already exists with correct content
     try:
@@ -415,7 +415,7 @@ def minio_grant_user_access(user, bucket, target):
     }
 
     policy_json = json.dumps(policy, indent=2)
-    policy_file = "/tmp/policy.json"
+    policy_file = f"/tmp/policy-{os.getuid()}.json"
 
     # Check if policy already exists with correct content AND is attached
     try:

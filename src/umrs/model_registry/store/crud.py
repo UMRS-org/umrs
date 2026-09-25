@@ -1020,9 +1020,7 @@ class ModelStore:
 
         self.path_validator.validate(storage_ref)
 
-        if self._check_duplicate(
-            name, ModelScope.SYSTEM, None, ctx.user_id if ctx else None
-        ):
+        if self._find_model_by_name(name, ModelScope.SYSTEM):
             raise DuplicateModelError(name, ModelScope.SYSTEM)
 
         model_id = generate_model_id()
