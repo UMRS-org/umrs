@@ -70,6 +70,12 @@ class ProvisionConfig:
     max_lifetime_seconds: int = 7 * 86_400
     worker_memory: str = "16g"
     worker_cpus: str = "8"
+    # The worker image's USER (r4/Dockerfile: r4user, uid 1000). The session
+    # token secret must be owned by it: a podman `type=mount` secret without
+    # uid/gid is root-owned, and at mode 0400 the worker could not read it
+    # (every front-end venue worker exited 4, "session token file unreadable",
+    # live 2026-09-25).
+    worker_uid: int = 1000
     project: str = ""
     gateway_host: str = ""
     umrs_host: str = ""
@@ -328,7 +334,10 @@ def worker_run_args(
         "1024",
         *_resource_limits(cfg, controllers),
         "--secret",
-        f"sess-{cfg.session_id}-token,type=mount,target=/run/secrets/session_token,mode=0400",
+        (
+            f"sess-{cfg.session_id}-token,type=mount,target=/run/secrets/session_token,"
+            f"uid={cfg.worker_uid},gid={cfg.worker_uid},mode=0400"
+        ),
         "--env",
         "OPENAI_BASE_URL=http://egress:8080/v1",
         "--env",

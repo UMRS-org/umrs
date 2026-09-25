@@ -125,6 +125,16 @@ class TestHappyPath:
         assert podman.secret_stdin not in env_pairs
         assert any("R4_VENUE_SESSION_TOKEN_FILE=/run/secrets/session_token" in e for e in env_pairs)
 
+    def test_token_secret_is_owned_by_the_worker_user(self):
+        """Live 2026-09-25: a type=mount secret without uid/gid is root-owned;
+        at mode 0400 the worker (image USER r4user, uid 1000) could not read
+        it and every venue worker exited 4 before consuming its queue."""
+        _, _, podman, _ = _provision()
+        worker_run = next(c for c in podman.calls if c[0] == "run" and "worker-sess-t1" in c)
+        secret = next(worker_run[i + 1] for i, v in enumerate(worker_run) if v == "--secret")
+        assert "target=/run/secrets/session_token" in secret
+        assert "uid=1000" in secret and "gid=1000" in secret and "mode=0400" in secret
+
 
 class TestFailurePaths:
     @pytest.mark.parametrize("fail_at", ["sess-sess-t1", "egress-sess-t1", "squid"])
