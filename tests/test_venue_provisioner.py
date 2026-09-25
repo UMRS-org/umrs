@@ -130,10 +130,10 @@ class TestHappyPath:
         at mode 0400 the worker (image USER r4user, uid 1000) could not read
         it and every venue worker exited 4 before consuming its queue."""
         _, _, podman, _ = _provision()
-        worker_run = next(c for c in podman.calls if c[0] == "run" and "worker-sess-t1" in c)
-        secret = next(worker_run[i + 1] for i, v in enumerate(worker_run) if v == "--secret")
-        assert "target=/run/secrets/session_token" in secret
-        assert "uid=1000" in secret and "gid=1000" in secret and "mode=0400" in secret
+        worker_run = [c for c in podman.calls if "worker-sess-t1" in c][0]
+        secret = worker_run[list(worker_run).index("--secret") + 1]
+        for part in ("target=/run/secrets/session_token", "uid=1000", "gid=1000", "mode=0400"):
+            assert part in secret
 
 
 class TestFailurePaths:
