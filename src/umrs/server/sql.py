@@ -347,11 +347,13 @@ def knn_search_worker(
     conn = entry.data_base.get_conn()
     try:
         # Fast path: reuse cached embedding if ETag matches
+        # DB stores s3_object as "bucket_name/s3_key" (no s3:// prefix)
+        db_s3_object = f"{bucket_name}/{s3_object}"
         with conn.cursor() as cur:
             cur.execute(
                 sql.SQL("SELECT embedding FROM {} WHERE s3_object = %s AND checksum = %s LIMIT 1")
                 .format(sql.Identifier(table_name)),
-                (s3_object, etag),
+                (db_s3_object, etag),
             )
             row = cur.fetchone()
 
@@ -365,7 +367,7 @@ def knn_search_worker(
         # Cosine kNN — the HNSW index uses vector_cosine_ops so <=> is indexed
         with conn.cursor() as cur:
             if subdir:
-                prefix = f"s3://{bucket_name}/{subdir}/%"
+                prefix = f"{bucket_name}/{subdir}/%"
                 cur.execute(
                     sql.SQL("""
                         SELECT s3_object, 1.0 - (embedding <=> %s::vector) AS score
