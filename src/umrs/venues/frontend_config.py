@@ -71,6 +71,7 @@ class FrontendVenueConfig:
     max_lifetime_seconds: int = 7 * 86_400
     worker_memory: str = "16g"
     worker_cpus: str = "8"
+    worker_uid: int = 1000
     web_policy_default: str = "public"
     idle_seconds: int = 30 * 60
     rail_ip_check: bool = True
@@ -108,6 +109,7 @@ class FrontendVenueConfig:
             ),
             worker_memory=(env.get("UMRS_VENUE_WORKER_MEMORY", "").strip() or "16g"),
             worker_cpus=(env.get("UMRS_VENUE_WORKER_CPUS", "").strip() or "8"),
+            worker_uid=_env_int(env, "UMRS_VENUE_WORKER_UID", 1000),
             web_policy_default=(
                 env.get("UMRS_VENUE_WEB_POLICY_DEFAULT", "").strip() or "public"
             ),
@@ -172,6 +174,7 @@ class FrontendVenueConfig:
             max_lifetime_seconds=self.max_lifetime_seconds,
             worker_memory=self.worker_memory,
             worker_cpus=self.worker_cpus,
+            worker_uid=self.worker_uid,
             project=project,
             gateway_host=self.gateway_host,
             umrs_host=self.umrs_host,
