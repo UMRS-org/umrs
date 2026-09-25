@@ -120,10 +120,14 @@ class ProcessObjectsBatchHandler(CommandHandler):
         # unaware of this multiplicity — they just call cb(status) as usual.
         per_client_cbs: dict[str, list] = {}
         task_ids: list[tuple[str, int]] = []
+        # client_task_ids maps each client_id to its most-recent task_id so
+        # we can link threads to tasks after launch_s3_threads_batch returns.
+        client_task_ids: dict[str, int] = {}
         for client_id, nb_objects in payload:
             task_id, cb = self._make_task(ctx, TaskCmd.PROCESS_OBJECTS, (client_id, nb_objects))
             per_client_cbs.setdefault(client_id, []).append(cb)
             task_ids.append((client_id, task_id))
+            client_task_ids[client_id] = task_id
         logger.info(
             "[PROCESS] Tasks created: %s",
             [(cid, tid) for cid, tid in task_ids],
@@ -232,8 +236,17 @@ class ProcessObjectsBatchHandler(CommandHandler):
                 [(cid, len(objs)) for cid, objs in client_entries],
             )
 
+            # Build original counts per bucket (before filtering) so the
+            # status table shows total submitted objects, not filtered ones.
+            original_counts: dict[str, int] = {}
+            if filter and original_entries is not client_entries:
+                for _, objects in original_entries:
+                    for s3_uri in objects:
+                        ptb, _ = s3_uri.replace("s3://", "").split("/", 1)
+                        original_counts[ptb] = original_counts.get(ptb, 0) + 1
+
             try:
-                ctx.task_manager.active_threads.launch_s3_threads_batch(
+                client_thread_map = ctx.task_manager.active_threads.launch_s3_threads_batch(
                     client_entries,
                     ctx.buckets_cfg,
                     ctx.device,
@@ -245,6 +258,19 @@ class ProcessObjectsBatchHandler(CommandHandler):
                 logger.warning("Rejecting PROCESS_OBJECTS_BATCH: %s", exc)
                 for cb in active_callbacks.values():
                     cb(TaskStatus.ERROR)
+                return
+
+            # Link each thread to its task(s) and patch nb_objects with the
+            # original submission count (stored in the task payload as "n").
+            active_threads = ctx.task_manager.active_threads
+            patched: set[int] = set()
+            for client_id, thread_ident in client_thread_map.items():
+                task_id = client_task_ids.get(client_id)
+                if task_id is not None:
+                    ctx.task_manager.associate_thread_with_task(thread_ident, task_id)
+                if original_counts and thread_ident not in patched:
+                    active_threads.patch_thread_nb_objects(thread_ident, original_counts)
+                    patched.add(thread_ident)
 
         thread = threading.Thread(
             target=_collect_and_process,

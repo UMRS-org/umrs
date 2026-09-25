@@ -297,18 +297,18 @@ class MessageQueue:
         if self.role == 'server':
             # Server uses PULL socket to receive pushed data
             self.socket = self.context.socket(zmq.PULL)
+            self.socket.setsockopt(zmq.RCVHWM, self.max_msg)  # must be set before bind
             self._apply_socket_security(self.socket, server=True)
             bind_host = "127.0.0.1" if self.tunnel_mode else "*"
             self.socket.bind(f"tcp://{bind_host}:{self.port}")  # Data channel bind
-            self.socket.setsockopt(zmq.RCVHWM, self.max_msg)  # e.g. max queued messages
             self.set_timeouts(self.timeout, self.timeout)
         else:  # client
             # Client uses PUSH socket to send data
             self.socket = self.context.socket(zmq.PUSH)
-            self.socket.setsockopt(zmq.LINGER, 0)  # Don't block on close/term
+            self.socket.setsockopt(zmq.LINGER, 30000)  # flush up to 30s on close
+            self.socket.setsockopt(zmq.SNDHWM, self.max_msg)  # must be set before connect
             self._apply_socket_security(self.socket, server=False)
             self.socket.connect(f"tcp://{self.server_ip}:{self.port}")
-            self.socket.setsockopt(zmq.SNDHWM, self.max_msg)  # e.g. max queued messages
             self.set_timeouts(self.timeout, self.timeout)
 
 
@@ -432,6 +432,13 @@ class MessageQueue:
                 raise RuntimeError(f"Unknown queue type: {self.type}")
 
         except zmq.Again:
+            if self.type == "data" and self.role == "client":
+                sndtimeo = self.socket.getsockopt(zmq.SNDTIMEO)
+                sndhwm = self.socket.getsockopt(zmq.SNDHWM)
+                raise RuntimeError(
+                    f"Data send timeout after {sndtimeo}ms on port {self.port} "
+                    f"(SNDHWM={sndhwm}) — server data queue may be full or unreachable"
+                ) from None
             raise RuntimeError("Timeout while sending message") from None
 
         except zmq.ZMQError as e:
@@ -558,6 +565,15 @@ class MessageQueue:
                     data_queue.socket.close()
                 except Exception as e:
                     logger.warning("Failed to close data socket: %s", e)
+
+        # Log total notify_s3 count before closing a client data queue
+        if self.role == "client" and self.type == "data":
+            count = getattr(self, "_notify_s3_count", 0)
+            logger.info(
+                "notify_s3: closing data queue — %d message(s) sent in total on port %s",
+                count,
+                self.port,
+            )
 
         # Close main socket
         try:
@@ -879,45 +895,61 @@ class MessageQueue:
 
         return extra
 
-    def wait_for_s3_events(self, nb_objects, debug=False, timeout_s=60):
+    def wait_for_s3_events(self, nb_objects, debug=False, timeout_s=10):
         """Block until new messages arrive, then read all available messages.
 
         Args:
             nb_objects: Number of S3 event messages to collect.
             debug: Enable debug printing.
-            timeout_s: Maximum wall-clock seconds to wait before returning
-                       with whatever messages have been collected so far.
-                       Default 60s.  Set to 0 or None for no limit.
+            timeout_s: Inactivity timeout — seconds without receiving any
+                       message before giving up.  Resets on each received
+                       message, so slow-but-steady streams are never cut off.
+                       Default 10s.  Set to 0 or None for no limit.
 
         Returns:
             List of received message strings (may be shorter than nb_objects
-            if the timeout fires).
+            if the inactivity timeout fires).
         """
         if self.role != 'server':
             raise PermissionError("Only server can call 'wait_for_s3_events'.")
 
         messages = []
         logger.debug(
-            "Listening for %s new messages (timeout=%s)",
+            "Listening for %s new messages (inactivity_timeout=%s)",
             nb_objects,
             timeout_s,
         )
         nb_received = 0
-        start = time.time()
+        last_received = time.time()
         while nb_received < nb_objects:
-            if timeout_s and (time.time() - start) > timeout_s:
+            if timeout_s and (time.time() - last_received) > timeout_s:
                 logger.warning(
-                    "wait_for_s3_events timed out after %s seconds (%s/%s received)",
+                    "wait_for_s3_events inactivity timeout after %s seconds (%s/%s received)",
                     timeout_s,
                     nb_received,
                     nb_objects,
                 )
+                # Greedy drain: grab any messages already buffered without blocking
+                while nb_received < nb_objects:
+                    try:
+                        msg = self.socket.recv_string(flags=zmq.NOBLOCK)
+                        messages.append(msg)
+                        nb_received += 1
+                    except zmq.Again:
+                        break
+                if nb_received < nb_objects:
+                    logger.warning(
+                        "wait_for_s3_events: gave up after drain — final count %s/%s",
+                        nb_received,
+                        nb_objects,
+                    )
                 break
             _, message = self.recv_string()
             if message:
                 logger.debug("Received S3 event payload_bytes=%s", len(message.encode("utf-8")))
                 messages.append(message)
                 nb_received += 1
+                last_received = time.time()
 
         return messages
 
@@ -1391,8 +1423,19 @@ class MessageQueue:
         if self.role != 'client':
             raise PermissionError("notify_s3 can only be used by the client.")
 
-        # print(f"sending data to port: {self.port}")
-        self.send_string(s3_object)
+        self._notify_s3_count = getattr(self, "_notify_s3_count", 0) + 1
+        if self._notify_s3_count % 500 == 0:
+            logger.info("notify_s3: %d messages sent so far on port %s", self._notify_s3_count, self.port)
+        try:
+            self.send_string(s3_object)
+        except RuntimeError as exc:
+            logger.error(
+                "notify_s3 failed for %s (message #%d): %s — object will NOT be indexed",
+                s3_object,
+                self._notify_s3_count,
+                exc,
+            )
+            raise
 
     def request_model_command(
         self, client_id, model_cmd, payload_json="", timeout_ms=300_000
