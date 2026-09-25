@@ -3,8 +3,9 @@
 ``update_marker::timestamptz`` reads a naive marker as UTC, but r4 clients
 wrote naive LOCAL time until 2026-09-25: a JST workstation's naive ``18:41``
 outranked the UTC venue worker's ``09:41:50+00:00`` written ten seconds later,
-so every worker save came back ``applied=False``. An offset-carrying marker
-now supersedes a stored naive one; everything else keeps the instant compare.
+so every worker save came back ``applied=False``. Against an offset-carrying
+write a stored naive marker now reads in that write's offset (a session keeps
+its owner's offset); everything else keeps the instant compare.
 
 Env-gated like ``test_catalog_pg_integration``: runs where the CI job's
 ``POSTGRES_*`` variables (or ``UMRS_TEST_DB_URL``) point at a migrated DB.
@@ -75,15 +76,20 @@ def _stored(conn, sid: str) -> str:
 @pytest.mark.parametrize(
     ("first", "second", "applied"),
     [
-        # the live defect: naive JST row, later UTC worker write
-        ("2026-09-25T18:41:40.123456", "2026-09-25T09:41:50.5+00:00", True),
+        # the live defect: naive JST row, the worker's later write in the
+        # owner's offset (a session keeps its offset)
+        ("2026-09-25T18:41:40.123456", "2026-09-25T18:41:50.5+09:00", True),
+        # the client's first save attaches its offset to the naive marker
+        ("2026-09-25T18:41:40", "2026-09-25T18:41:40+09:00", True),
+        # a stale offset write never clobbers newer naive content
+        ("2026-09-25T19:00:00", "2026-09-25T18:50:00+09:00", False),
         ("2026-09-25T18:41:40.1+09:00", "2026-09-25T09:41:50.5+00:00", True),
         ("2026-09-25T18:41:40.1+09:00", "2026-09-25T09:41:30+00:00", False),
         ("2026-09-25T18:41:40", "2026-09-25T18:41:30", False),
         ("2026-09-25T18:41:40", "2026-09-25T18:41:50", True),
-        # a naive write never supersedes an offset row by the upgrade rule
         ("2026-09-25T18:41:40+09:00", "2026-09-25T09:41:30", False),
-        ("2026-09-25T18:41:40", "2026-09-25T09:41:50Z", True),
+        ("2026-09-25T18:41:40", "2026-09-25T18:41:50Z", True),
+        ("2026-09-25T18:41:40", "2026-09-25T18:41:50+0900", True),
         ("", "2026-09-25T09:41:50+00:00", True),
     ],
 )
