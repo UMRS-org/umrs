@@ -6185,6 +6185,12 @@ def _action_s3_transfer(ctx):
             else all_files
         )
 
+        # Flush a batch to the server every NOTIFY_BATCH_SIZE files to avoid
+        # filling the ZMQ data-queue buffers (SNDHWM + RCVHWM ≈ 20 480).
+        # The server ACKs notify_server immediately so this adds negligible delay.
+        NOTIFY_BATCH_SIZE = 8000
+        batch_pending = 0
+
         for file_path, file_subdir in iterable:
             s3_key, nb_sent = process_file(
                 s3,
@@ -6206,12 +6212,21 @@ def _action_s3_transfer(ctx):
                     s3_key_list.append(s3_key)
                     file_list.append(file_path)
                 nb_objects += nb_sent
+                batch_pending += nb_sent
 
-        if nb_objects > 0:
+            if batch_pending >= NOTIFY_BATCH_SIZE:
+                ctx.control_mq.notify_server(
+                    username, TaskCmd.PROCESS_OBJECTS, batch_pending, blocking=False
+                )
+                batch_pending = 0
+
+        if batch_pending > 0:
             print(f"Sending {nb_objects} object(s) to server...")
             ctx.control_mq.notify_server(
-                username, TaskCmd.PROCESS_OBJECTS, nb_objects, blocking=blocking
+                username, TaskCmd.PROCESS_OBJECTS, batch_pending, blocking=blocking
             )
+        elif nb_objects > 0:
+            print(f"Sent {nb_objects} object(s) to server in batches.")
         return s3_key_list, file_list
 
     def download_results_fn(full_bucket_name, modality, subdir):
