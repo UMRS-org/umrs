@@ -579,9 +579,10 @@ class StepRouter:
         # authors who pin api_base have already opted out of routing;
         # affinity is silently bypassed.
         if config.get("api_base"):
+            api_base = str(config["api_base"])
             return RoutingDecision(
-                api_base=str(config["api_base"]),
-                api_key=config.get("api_key") or self._env_api_key(),
+                api_base=api_base,
+                api_key=self._explicit_key(config, api_base),
                 model=step.model or config.get("model"),
                 headers=dict(self.extra_headers),
                 resolved_via="explicit_config",
@@ -877,6 +878,23 @@ class StepRouter:
 
     def _env_api_key(self) -> str | None:
         return self.default_api_key or os.environ.get("OPENAI_API_KEY")
+
+    def _explicit_key(self, config: dict[str, Any], api_base: str) -> str | None:
+        """The step's own key, else the platform key — but the platform key
+        rides only to the platform's own base: a workflow- or param-chosen
+        host got it as a Bearer token (2026-09-25)."""
+        if config.get("api_key"):
+            return str(config["api_key"])
+        return self._env_api_key() if self._is_platform_base(api_base) else None
+
+    def _is_platform_base(self, api_base: str) -> bool:
+        """True when *api_base* is one this deployment configured itself."""
+        bases = (
+            self.default_api_base,
+            os.environ.get("OPENAI_BASE_URL"),
+            os.environ.get("R4_GATEWAY_URL"),
+        )
+        return api_base.rstrip("/") in {b.rstrip("/") for b in bases if b}
 
     def _mock_decision(self, step: StepSpec) -> RoutingDecision:
         return RoutingDecision(

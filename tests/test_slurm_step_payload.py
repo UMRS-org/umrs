@@ -141,3 +141,35 @@ def test_slurm_error_reply_raises():
             ctx,
             reply={"status": "error", "phase": "run", "message": "boom"},
         )
+
+
+def test_slurm_refuses_an_image_that_is_not_a_plain_reference():
+    """routing_hints.image landed inside `echo "Image: ..."` in the sbatch
+    script: $(...) ran on the compute node as the service account."""
+    from umrs.server.step_executor import EXECUTOR_IMAGE_METADATA_KEY
+
+    ctx = StepContext(
+        s3=None,
+        input_bucket="in",
+        input_keys=[],
+        output_bucket="out",
+        metadata={EXECUTOR_IMAGE_METADATA_KEY: "img$(touch /tmp/pwned)"},
+        run_id="run-inj",
+    )
+    executor = SlurmStepExecutor(image="video-ai-yolo:latest")
+    with pytest.raises(StepExecutionError, match="plain image reference"):
+        executor._resolve_image(ctx)
+
+
+def test_slurm_script_quotes_interpolations_and_never_echoes_credentials(monkeypatch):
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "s3cr3t with space")
+    ctx = StepContext(
+        s3=None, input_bucket="in", input_keys=[], output_bucket="out", run_id="run-q"
+    )
+    executor = SlurmStepExecutor(image="registry.example/team/step:1.0", keep_workdir=True)
+    _result, captured = _run_with_fake_sbatch(executor, ctx)
+    script = Path(captured["workdir"], "run_step.sbatch").read_text(encoding="utf-8")
+    assert "echo Image: registry.example/team/step:1.0" in script
+    assert 'echo "Running: ' not in script
+    assert "'AWS_SECRET_ACCESS_KEY=s3cr3t with space'" in script
+    assert script.count("s3cr3t") == 1  # only in the podman argv, never echoed

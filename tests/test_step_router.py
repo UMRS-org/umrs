@@ -82,9 +82,25 @@ def test_explicit_config_api_base_wins(monkeypatch):
     )
     assert decision.resolved_via == "explicit_config"
     assert decision.api_base == "http://my-vlm:1234"
-    assert decision.api_key == "sk-env"
+    # 2026-09-25: the platform key never rides to a workflow-chosen host.
+    assert decision.api_key is None
     # find_models / find_endpoint must not be called when api_base is pinned.
     assert called == []
+
+
+def test_explicit_config_keeps_the_platform_key_for_the_platform_base(monkeypatch):
+    monkeypatch.delenv("UMRS_STEP_ROUTER_MOCK", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-env")
+    monkeypatch.setenv("OPENAI_BASE_URL", "http://gateway:8080/v1/")
+    router = StepRouter()
+    decision = router.resolve(
+        _spec(name="platform", config={"api_base": "http://gateway:8080/v1"}),
+    )
+    assert decision.api_key == "sk-env"
+    own = router.resolve(
+        _spec(name="own", config={"api_base": "http://my-vlm:1234", "api_key": "sk-own"}),
+    )
+    assert own.api_key == "sk-own"
 
 
 # ---------------------------------------------------- registry capability

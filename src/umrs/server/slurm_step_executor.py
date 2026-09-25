@@ -25,6 +25,7 @@ from __future__ import annotations
 import logging
 import os
 import pickle
+import re
 import shlex
 import subprocess
 import tempfile
@@ -112,6 +113,22 @@ def stamp_slurm_accounting(result: Any, accounting: dict[str, Any]) -> Any:
     return result
 
 
+#: An OCI image reference: registry/name[:tag][@digest] characters only. The
+#: image lands in a generated shell script, so anything else is refused.
+_IMAGE_REF_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/:@+-]{0,511}")
+
+
+def _checked_image(image: str) -> str:
+    """*image* when it is a plain image reference; StepExecutionError otherwise."""
+    if not _IMAGE_REF_RE.fullmatch(image):
+        raise StepExecutionError(
+            "setup",
+            f"container image {image[:80]!r} is not a plain image reference "
+            "(registry/name[:tag][@digest])",
+        )
+    return image
+
+
 def _s3_env_args(s3_config: dict[str, Any]) -> list[str]:
     """S3 endpoint/region/credential env passthrough for the worker pod."""
     args: list[str] = []
@@ -125,14 +142,14 @@ def _s3_env_args(s3_config: dict[str, Any]) -> list[str]:
         args.extend(
             [
                 "-e",
-                f"S3_ENDPOINT_URL={endpoint}",
+                shlex.quote(f"S3_ENDPOINT_URL={endpoint}"),
                 "-e",
-                f"MINIO_ENDPOINT={endpoint}",
+                shlex.quote(f"MINIO_ENDPOINT={endpoint}"),
             ]
         )
     region = s3_config.get("region_name") or os.environ.get("AWS_REGION")
     if region:
-        args.extend(["-e", f"AWS_REGION={region}"])
+        args.extend(["-e", shlex.quote(f"AWS_REGION={region}")])
     for cred_var in (
         "AWS_ACCESS_KEY_ID",
         "AWS_SECRET_ACCESS_KEY",
@@ -140,7 +157,7 @@ def _s3_env_args(s3_config: dict[str, Any]) -> list[str]:
     ):
         val = os.environ.get(cred_var)
         if val:
-            args.extend(["-e", f"{cred_var}={val}"])
+            args.extend(["-e", shlex.quote(f"{cred_var}={val}")])
     return args
 
 
@@ -414,7 +431,7 @@ class SlurmStepExecutor(StepExecutor):
                     "per-step image override is empty; remove the hint "
                     "or supply a valid image reference",
                 )
-            return override
+            return _checked_image(override)
 
         # Fall back to deployment-wide default
         if not self.image:
@@ -423,7 +440,7 @@ class SlurmStepExecutor(StepExecutor):
                 "SlurmStepExecutor requires a container image. "
                 "Set UMRS_STEP_IMAGE or routing_hints.image.",
             )
-        return self.image
+        return _checked_image(self.image)
 
     @staticmethod
     def _resolve_source_dir(ctx: StepContext) -> str:
@@ -505,8 +522,10 @@ class SlurmStepExecutor(StepExecutor):
         lines.append("")
         lines.append("set -e")
         lines.append('echo "Starting step at $(date)"')
-        lines.append(f'echo "Workdir: {workdir}"')
-        lines.append(f'echo "Image: {image}"')
+        # Everything interpolated into this script is quoted: a
+        # double-quoted echo still expands $(...) (2026-09-25).
+        lines.append(f"echo Workdir: {shlex.quote(workdir)}")
+        lines.append(f"echo Image: {shlex.quote(image)}")
         lines.append("")
 
         input_rel = os.path.relpath(input_path, workdir)
@@ -526,7 +545,9 @@ class SlurmStepExecutor(StepExecutor):
         )
         podman_cmd = " ".join(parts)
 
-        lines.append(f'echo "Running: {podman_cmd}"')
+        # Never echo the command: it carries forwarded S3 credentials, and the
+        # .out log is readable from the step's own workdir.
+        lines.append('echo "Running the step worker container"')
         lines.append(podman_cmd)
         lines.append('echo "Step completed at $(date)"')
         lines.append("")

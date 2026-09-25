@@ -521,8 +521,29 @@ def _assemble_step_config(
     config.setdefault("step_name", spec["name"])
     config.setdefault("_workflow_params", dict(record_params))
     for key, value in (record_params or {}).items():
-        config.setdefault(key, value)
+        # Trigger params never choose where credentials go: an `api_base`
+        # param on a step without one steered the routed key to that host.
+        if key not in _PARAM_RESERVED_KEYS:
+            config.setdefault(key, value)
     return config
+
+
+#: Step-config keys a trigger param may not set (routing + credentials).
+_PARAM_RESERVED_KEYS = frozenset({"api_base", "api_key", "headers", "_routing"})
+
+
+def _redacted_decision(decision: Any) -> dict[str, Any]:
+    """The routing decision without secret values (key, header values).
+
+    It is stored in the execution's results (returned to the caller by
+    WORKFLOW_RESULTS) and carried into the step's config for introspection;
+    the step's own ``api_key`` / ``headers`` config keys still carry the values.
+    """
+    view = decision.to_dict()
+    if view.get("api_key"):
+        view["api_key"] = "<redacted>"
+    view["headers"] = {name: "<redacted>" for name in (view.get("headers") or {})}
+    return view
 
 
 def _resolve_step_decision(
@@ -978,7 +999,7 @@ def _execute_step(
         return step_name, None, f"routing failed: {routing_err}"
 
     _apply_routing_decision_to_config(config, decision)
-    decision_dict = decision.to_dict()
+    decision_dict = _redacted_decision(decision)
     decision_dict["wave_index"] = wave_index
 
     # ---- Slice 10/12: per-step image + GPU overrides ----------------------
@@ -1635,7 +1656,7 @@ def _apply_routing_decision_to_config(
     under ``_routing`` (underscore prefix = internal) so newer templates
     can introspect *how* they were resolved.
     """
-    config["_routing"] = decision.to_dict()
+    config["_routing"] = _redacted_decision(decision)
     if decision.api_base:
         config.setdefault("api_base", decision.api_base)
     if decision.api_key:
