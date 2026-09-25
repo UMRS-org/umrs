@@ -52,7 +52,6 @@ def _record() -> ExecutionRecord:
 
 
 def _sources(tmp_path) -> str:  # noqa: ANN001
-    tmp_path.mkdir(parents=True, exist_ok=True)
     (tmp_path / "mod.py").write_text(_NOOP_STEP_SRC)
     return str(tmp_path)
 
@@ -107,13 +106,10 @@ def test_run_workflow_record_propagates_execution_mode(
         return InProcessExecutor()
 
     monkeypatch.setattr(wr, "build_step_executor", _capture)
-    # Operator-installed step code (on sys.path, not in an uploaded tree):
-    # uploaded trees never run in-process (ADR-074 D-2).
-    monkeypatch.syspath_prepend(_sources(tmp_path / "installed"))
     record = _record()
     wr.run_workflow_record(
         record,
-        source_path=str(tmp_path),
+        source_path=_sources(tmp_path),
         workflow_json=_WF_IN_PROCESS,
     )
     assert captured == ["inproc"], f"executor name not propagated: {captured}"

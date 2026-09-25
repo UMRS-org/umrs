@@ -139,14 +139,11 @@ class RemoteSlurmStepExecutor(SlurmStepExecutor):
                 f"{proc.stderr.decode('utf-8', 'replace').strip()}",
             )
 
-    def _read_bytes(self, path: str, max_bytes: int | None = None) -> bytes | None:
+    def _read_bytes(self, path: str) -> bytes | None:
         quoted = shlex.quote(path)
-        reader = (
-            f"cat {quoted}"
-            if max_bytes is None
-            else f"head -c {int(max_bytes)} {quoted}"
+        proc = self._ssh_run(
+            f"test -f {quoted} && cat {quoted}", timeout=_TRANSFER_TIMEOUT
         )
-        proc = self._ssh_run(f"test -f {quoted} && {reader}", timeout=_TRANSFER_TIMEOUT)
         return proc.stdout if proc.returncode == 0 else None
 
     def _stage_source_dir(self, source_dir: str, workdir: str) -> str:

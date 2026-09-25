@@ -58,11 +58,6 @@ from umrs.server.step_router import (
     build_default_router,
     get_feedback_store,
 )
-from umrs.server.step_trust import (
-    is_uploaded_step,
-    uploaded_code_lane,
-    workflow_has_uploaded_code,
-)
 from umrs.server.workflow_execution_registry import ExecutionRecord
 
 logger = logging.getLogger(__name__)
@@ -509,23 +504,10 @@ def _execute_with_retry(
 # ----------------------------------------------------------------------
 
 
-def _validate_step_entrypoint(
-    spec: dict[str, Any], source_path: str | None = None
-) -> str | None:
-    """Fail-fast entrypoint check. Returns error message or None.
-
-    Uploaded code (ADR-074 D-2) is checked by shape only — importing it would
-    run its top-level code in this process; the worker resolves it.
-    """
-    entrypoint = str(spec.get("entrypoint") or "")
-    if is_uploaded_step(entrypoint, source_path):
-        return (
-            None
-            if _ENTRYPOINT_RE.match(entrypoint)
-            else (f"Failed to load step: invalid step entrypoint {entrypoint!r}")
-        )
+def _validate_step_entrypoint(spec: dict[str, Any]) -> str | None:
+    """Fail-fast entrypoint load check. Returns error message or None."""
     try:
-        _load_step_class(entrypoint)
+        _load_step_class(spec["entrypoint"])
     except Exception as exc:  # noqa: BLE001
         return f"Failed to load step: {exc}"
     return None
@@ -545,12 +527,6 @@ def _assemble_step_config(
             config.setdefault(key, value)
     return config
 
-
-_NO_HPC_LANE = (
-    "this workflow carries uploaded step code, which runs on a connected HPC "
-    "lane (ADR-074), and this server has none — run it on a site with a "
-    "connected HPC (execution_mode: slurm)"
-)
 
 #: Step-config keys a trigger param may not set (routing + credentials).
 _PARAM_RESERVED_KEYS = frozenset({"api_base", "api_key", "headers", "_routing"})
@@ -996,7 +972,7 @@ def _execute_step(
         )
 
     # ---- Validate entrypoint early (fail-fast for bad workflows) ---------
-    err = _validate_step_entrypoint(spec, source_path)
+    err = _validate_step_entrypoint(spec)
     if err is not None:
         record.set_step(step_name, status="failed", error=err, finished_at=time.time())
         return step_name, None, err
@@ -1230,47 +1206,6 @@ def _executor_name_from_execution_mode(mode: Any) -> str | None:
     if not isinstance(mode, str):
         return None
     return _EXECUTION_MODE_EXECUTOR.get(mode.strip().lower())
-
-
-def _settle_before_run(
-    record: ExecutionRecord,
-    workflow_json: dict[str, Any],
-    steps_spec: list[dict[str, Any]],
-    source_path: str | None,
-    executor: StepExecutor | None,
-) -> tuple[bool, str | None]:
-    """Outcomes decided before any step runs: nothing to run (succeeded), or
-    uploaded code on a server with no HPC lane (refused). Else the executor
-    name for the run."""
-    if not steps_spec:
-        record.update(status="succeeded", finished_at=time.time(), progress=1.0)
-        _emit_workflow_metric(record, executor, "succeeded")
-        return True, None
-    worker, refusal = _workflow_executor_name(
-        workflow_json, steps_spec, source_path, injected=executor is not None
-    )
-    if refusal:
-        record.update(status="failed", error=refusal, finished_at=time.time())
-        _emit_workflow_metric(record, executor, "failed")
-        return True, None
-    return False, worker
-
-
-def _workflow_executor_name(
-    workflow_json: dict[str, Any],
-    steps_spec: list[dict[str, Any]],
-    source_path: str | None,
-    *,
-    injected: bool,
-) -> tuple[str | None, str]:
-    """(executor name, refusal) for this run. Uploaded code (ADR-074
-    Amendment 1) runs on the site's connected-HPC lane, never in-process;
-    an injected executor (tests) stands as given."""
-    worker = _executor_name_from_execution_mode(workflow_json.get("execution_mode"))
-    if injected or not workflow_has_uploaded_code(steps_spec, source_path):
-        return worker, ""
-    lane = uploaded_code_lane(worker)
-    return (lane, "") if lane else (None, _NO_HPC_LANE)
 
 
 def _resolve_runner_defaults(
@@ -1554,16 +1489,19 @@ def run_workflow_record(
     spawning real subprocesses.
     """
     record.update(status="running", started_at=time.time())
-    # ADR-074 D-2: the uploaded tree never joins this process's sys.path (a
-    # later import of any name it carries would run its code here); the
-    # out-of-process workers get it through the executor metadata.
+    _prepare_source_path(source_path)
 
     steps_spec: list[dict[str, Any]] = list(workflow_json.get("steps", []))
-    settled, worker = _settle_before_run(
-        record, workflow_json, steps_spec, source_path, executor
-    )
-    if settled:
+    if not steps_spec:
+        record.update(
+            status="succeeded",
+            finished_at=time.time(),
+            progress=1.0,
+        )
+        _emit_workflow_metric(record, executor, "succeeded")
         return
+
+    worker = _executor_name_from_execution_mode(workflow_json.get("execution_mode"))
     router, executor = _resolve_runner_defaults(router, executor, name=worker)
 
     try:
