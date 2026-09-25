@@ -6191,42 +6191,46 @@ def _action_s3_transfer(ctx):
         NOTIFY_BATCH_SIZE = 8000
         batch_pending = 0
 
-        for file_path, file_subdir in iterable:
-            s3_key, nb_sent = process_file(
-                s3,
-                full_bucket_name,
-                file_subdir,
-                file_path,
-                modality,
-                data_mq,
-                metadata_args,
-                username,
-                notify_server=False,
-            )
-            if s3_key:
-                if isinstance(s3_key, list):
-                    s3_key_list.extend(s3_key)
-                    assert len(s3_key) == nb_sent
-                    file_list.extend([file_path] * nb_sent)
-                else:
-                    s3_key_list.append(s3_key)
-                    file_list.append(file_path)
-                nb_objects += nb_sent
-                batch_pending += nb_sent
-
-            if batch_pending >= NOTIFY_BATCH_SIZE:
-                ctx.control_mq.notify_server(
-                    username, TaskCmd.PROCESS_OBJECTS, batch_pending, blocking=False
+        try:
+            for file_path, file_subdir in iterable:
+                s3_key, nb_sent = process_file(
+                    s3,
+                    full_bucket_name,
+                    file_subdir,
+                    file_path,
+                    modality,
+                    data_mq,
+                    metadata_args,
+                    username,
+                    notify_server=False,
                 )
-                batch_pending = 0
+                if s3_key:
+                    if isinstance(s3_key, list):
+                        s3_key_list.extend(s3_key)
+                        assert len(s3_key) == nb_sent
+                        file_list.extend([file_path] * nb_sent)
+                    else:
+                        s3_key_list.append(s3_key)
+                        file_list.append(file_path)
+                    nb_objects += nb_sent
+                    batch_pending += nb_sent
 
-        if batch_pending > 0:
-            print(f"Sending {nb_objects} object(s) to server...")
-            ctx.control_mq.notify_server(
-                username, TaskCmd.PROCESS_OBJECTS, batch_pending, blocking=blocking
-            )
-        elif nb_objects > 0:
-            print(f"Sent {nb_objects} object(s) to server in batches.")
+                if batch_pending >= NOTIFY_BATCH_SIZE:
+                    ctx.control_mq.notify_server(
+                        username, TaskCmd.PROCESS_OBJECTS, batch_pending, blocking=False
+                    )
+                    batch_pending = 0
+        finally:
+            # Always flush URIs already queued in the ZMQ data channel, even if
+            # the loop aborted (e.g. data queue full): without this notify_server
+            # call the server never reads those URIs and the files are lost.
+            if batch_pending > 0:
+                print(f"Sending {nb_objects} object(s) to server...")
+                ctx.control_mq.notify_server(
+                    username, TaskCmd.PROCESS_OBJECTS, batch_pending, blocking=blocking
+                )
+            elif nb_objects > 0:
+                print(f"Sent {nb_objects} object(s) to server in batches.")
         return s3_key_list, file_list
 
     def download_results_fn(full_bucket_name, modality, subdir):
