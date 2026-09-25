@@ -5927,7 +5927,7 @@ def _action_knn(ctx):
             s3_key = f"{subdir}/{s3_key}"
         s3.upload_file(file_path, path_to_bucket, s3_key)
 
-        raw_response = ctx.control_mq.request_knn(effective_username, args.n, s3_key, path_to_bucket)
+        raw_response = ctx.control_mq.request_knn(effective_username, args.n, s3_key, path_to_bucket, subdir=subdir or None)
         response = _json.loads(raw_response)
         if response.get("status") != "ok":
             print(api_json(status="error", action="knn", message=response.get("message", "Server error"), output_format=args.output))

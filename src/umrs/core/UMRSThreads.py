@@ -252,13 +252,14 @@ class UMRSThreads:
         control_mq,
         zmq_sender_id,
         key,
+        subdir=None,
         update_status_callback=None,
     ):
         from umrs.server.sql import knn_search_worker
 
         thread_ident, _ = self._submit_to_pool(
             knn_search_worker,
-            (self, user, n, s3_object, bucket_name, buckets_cfg, control_mq, zmq_sender_id, key, update_status_callback),
+            (self, user, n, s3_object, bucket_name, buckets_cfg, control_mq, zmq_sender_id, key, subdir, update_status_callback),
             key,
             update_status_callback=update_status_callback,
         )
