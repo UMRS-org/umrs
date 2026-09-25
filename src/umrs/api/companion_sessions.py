@@ -209,6 +209,19 @@ def upsert_snapshot_row(
     venue = _validate_venue(venue) if venue else ""
     state = _validate_stored_state(state)
     with conn.cursor() as cur:
+        # Lock the row and keep its server-owned queue (see _with_server_queue);
+        # queue_mutate_row takes the same lock, so neither write loses the other.
+        cur.execute(
+            """
+            SELECT payload FROM companion_session_snapshots
+            WHERE user_id = %s AND session_id = %s
+            FOR UPDATE
+            """,
+            (uid, session_id),
+        )
+        stored = cur.fetchone()
+        if stored is not None:
+            payload = _with_server_queue(payload, stored[0])
         cur.execute(
             _UPSERT_SNAPSHOT_SQL,
             (uid, session_id, name, payload, updated_at, venue, state),
@@ -423,19 +436,61 @@ async def queue_mutation(
         pool.putconn(conn)
 
 
+def _json_dict(raw: Any) -> dict[str, Any] | None:
+    """*raw* as a dict — a dict, or a JSON string of one; else None."""
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            value = json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+        return value if isinstance(value, dict) else None
+    return None
+
+
 def _queue_entries(row_payload: Any) -> tuple[dict[str, Any], dict[str, Any], list]:
-    """(blob, metadata, entries) from a snapshot payload cell — malformed → empty."""
-    try:
-        blob = json.loads(row_payload) if isinstance(row_payload, str) else row_payload
-    except json.JSONDecodeError:
-        blob = {}
-    if not isinstance(blob, dict):
-        blob = {}
-    metadata = blob.get("metadata")
-    if not isinstance(metadata, dict):
-        metadata = {}
+    """(blob, metadata, entries) from a snapshot payload cell — malformed → empty.
+
+    r4 writes ``metadata`` as a JSON *string* inside the payload; reading only
+    a dict saw an empty queue and wrote back ``{"chat_queue": …}`` in its
+    place, dropping venue/state/turn_seq/config (live review 2026-09-25).
+    """
+    blob = _json_dict(row_payload) or {}
+    metadata = _json_dict(blob.get("metadata")) or {}
     entries = metadata.get("chat_queue") or []
     return blob, metadata, (entries if isinstance(entries, list) else [])
+
+
+def _set_metadata(blob: dict[str, Any], metadata: dict[str, Any]) -> None:
+    """Write *metadata* back in the form the payload already uses."""
+    blob["metadata"] = (
+        json.dumps(metadata) if isinstance(blob.get("metadata"), str) else metadata
+    )
+
+
+def _with_server_queue(payload: str, stored_payload: Any) -> str:
+    """*payload* with the journal's own ``chat_queue`` in place of the incoming one.
+
+    The queue is server-owned: the TUI appends and pops through ``/queue``
+    (remote-first for every session) and the venue worker pops through the
+    rail, so a snapshot's copy is at best stale. Taking it verbatim erased
+    turns queued while a save was in flight and could resurrect popped ones.
+    A payload that is not a JSON object passes through untouched.
+    """
+    blob = _json_dict(payload)
+    if blob is None:
+        return payload
+    raw = blob.get("metadata")
+    metadata = _json_dict(raw) if raw is not None else {}
+    if metadata is None:
+        return payload
+    _, _, server_entries = _queue_entries(stored_payload)
+    if (metadata.get("chat_queue") or []) == server_entries:
+        return payload
+    metadata["chat_queue"] = server_entries
+    _set_metadata(blob, metadata)
+    return json.dumps(blob)
 
 
 def _queue_apply(
@@ -502,6 +557,15 @@ def queue_mutate_row(
                 PlatformError.companionsessions("not_found", "snapshot not found")
             )
         blob, metadata, entries = _queue_entries(row[0])
+        if action != "append" and not entries:
+            # Nothing to pop or clear: write nothing (the worker pops after
+            # every turn and every idle tick) and release the row lock.
+            conn.rollback()
+            return {
+                "applied": True,
+                "queue": [],
+                "front": None if action == "pop" else 0,
+            }
         now = updated_at or datetime.now(timezone.utc).isoformat()
         entries, front = _queue_apply(
             entries,
@@ -511,8 +575,8 @@ def queue_mutate_row(
             uid=uid,
             now=now,
         )
-        blob["metadata"] = metadata
         metadata["chat_queue"] = entries
+        _set_metadata(blob, metadata)
         cur.execute(
             """
             UPDATE companion_session_snapshots

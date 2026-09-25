@@ -104,8 +104,8 @@ class _FakeCursor:
             self.rowcount = 0
 
     # -- detail select ------------------------------------------------------
-    def _exec_get_payload(self, params):
-        sid, uid = params
+    def _exec_get_payload(self, params, *, owner_first: bool = False):
+        uid, sid = params if owner_first else params[::-1]
         row = self._table.get((uid, sid))
         self._row = (row["payload"],) if row else None
 
@@ -181,7 +181,8 @@ class _FakeCursor:
             self._exec_get(params)
             return
         if sql_l.startswith("select payload from companion_session_snapshots"):
-            self._exec_get_payload(params)
+            # the upsert's row lock and the queue mutation bind (user, session)
+            self._exec_get_payload(params, owner_first="for update" in sql_l)
             return
         if sql_l.startswith("select session_id, name, update_marker, venue"):
             self._exec_list(sql_l, params)

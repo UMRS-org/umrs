@@ -13,11 +13,12 @@ Env-gated like ``test_catalog_pg_integration``: runs where the CI job's
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
 import pytest
-from umrs.api.companion_sessions import upsert_snapshot_row
+from umrs.api.companion_sessions import queue_mutate_row, upsert_snapshot_row
 
 _MIGRATIONS = Path(__file__).resolve().parents[1] / "src" / "umrs" / "migrations"
 _USER = "lww-pg-test"
@@ -101,3 +102,93 @@ def test_lww_marker_upgrade(conn, first, second, applied):
     _put(conn, sid, first)
     assert _put(conn, sid, second) is applied
     assert _stored(conn, sid) == (second if applied else first)
+
+
+# ── the server-owned queue against r4's payload shape (review 2026-09-25) ──
+
+
+def _r4_payload(queue: list, **metadata) -> str:
+    meta = {"venue": "frontend", "turn_seq": 3, "chat_queue": queue, **metadata}
+    return json.dumps({"id": "q", "messages": "[]", "metadata": json.dumps(meta)})
+
+
+def _stored_metadata(conn, sid: str) -> dict:
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT payload FROM companion_session_snapshots"
+            " WHERE user_id = %s AND session_id = %s",
+            (_USER, sid),
+        )
+        return json.loads(json.loads(cur.fetchone()[0])["metadata"])
+
+
+def _row_touched_at(conn, sid: str):
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT updated_at FROM companion_session_snapshots"
+            " WHERE user_id = %s AND session_id = %s",
+            (_USER, sid),
+        )
+        return cur.fetchone()[0]
+
+
+def test_queue_append_keeps_r4_string_metadata(conn):
+    upsert_snapshot_row(
+        conn,
+        _USER,
+        "q1",
+        name="n",
+        payload=_r4_payload([]),
+        updated_at="2026-09-25T10:00:00+00:00",
+        venue="",
+        state="",
+    )
+    queue_mutate_row(conn, _USER, "q1", action="append", content="next")
+    meta = _stored_metadata(conn, "q1")
+    assert meta["venue"] == "frontend" and meta["turn_seq"] == 3
+    assert [e["content"] for e in meta["chat_queue"]] == ["next"]
+
+
+def test_snapshot_upsert_keeps_the_server_queue(conn):
+    upsert_snapshot_row(
+        conn,
+        _USER,
+        "q2",
+        name="n",
+        payload=_r4_payload([]),
+        updated_at="2026-09-25T10:00:00+00:00",
+        venue="",
+        state="",
+    )
+    queue_mutate_row(conn, _USER, "q2", action="append", content="queued mid-turn")
+    applied = upsert_snapshot_row(
+        conn,
+        _USER,
+        "q2",
+        name="n",
+        payload=_r4_payload([], turn_seq=4),
+        updated_at="2026-09-25T10:00:05+00:00",
+        venue="",
+        state="",
+    )
+    assert applied is True
+    meta = _stored_metadata(conn, "q2")
+    assert meta["turn_seq"] == 4
+    assert [e["content"] for e in meta["chat_queue"]] == ["queued mid-turn"]
+
+
+def test_empty_pop_does_not_touch_the_row(conn):
+    upsert_snapshot_row(
+        conn,
+        _USER,
+        "q3",
+        name="n",
+        payload=_r4_payload([]),
+        updated_at="2026-09-25T10:00:00+00:00",
+        venue="",
+        state="",
+    )
+    before = _row_touched_at(conn, "q3")
+    result = queue_mutate_row(conn, _USER, "q3", action="pop")
+    assert result["front"] is None
+    assert _row_touched_at(conn, "q3") == before
