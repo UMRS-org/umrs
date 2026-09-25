@@ -91,6 +91,9 @@ def _stored(conn, sid: str) -> str:
         ("2026-09-25T18:41:40", "2026-09-25T18:41:50Z", True),
         ("2026-09-25T18:41:40", "2026-09-25T18:41:50+0900", True),
         ("", "2026-09-25T09:41:50+00:00", True),
+        # the regex and the concat both see the trimmed value (a padded
+        # offset marker once concatenated a second offset and raised)
+        ("2026-09-25T18:41:40+09:00 ", "2026-09-25T18:41:50+09:00", True),
     ],
 )
 def test_lww_marker_upgrade(conn, first, second, applied):
