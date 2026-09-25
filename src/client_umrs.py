@@ -6084,9 +6084,6 @@ def _action_s3_transfer(ctx):
             return None, 0
 
         category = modality_category(modality)
-        print(
-            f"Processing file '{file_path}' for modality '{modality}' (category: {category})"
-        )
 
         if category == "image":
             s3_key = s3_store_image(
@@ -6160,50 +6157,60 @@ def _action_s3_transfer(ctx):
         s3_key_list = []
         file_list = []
         nb_objects = 0
-        # Recursively walk *path* so deeply nested data (e.g. the
-        # opossum ``opossum_NNN_X/opossumX/Schedule/YYYYMMDD/HH/*.mp4``
-        # hierarchy) is uploaded. Each file's relative directory becomes
-        # part of the S3 key prefix, preserving the camera/Schedule date
-        # hierarchy expected by the workflow step.
+
+        # Collect all files first so tqdm can show a total
         norm_path = os.path.abspath(path)
+        all_files = []
         for root, _dirs, files in os.walk(norm_path):
-            for fname in files:
-                file_path = os.path.join(root, fname)
-                if not os.path.isfile(file_path):
-                    continue
-
-                rel_dir = os.path.relpath(root, norm_path)
-                if rel_dir in (".", ""):
-                    file_subdir = subdir
-                elif subdir:
-                    file_subdir = f"{subdir}/{rel_dir}"
-                else:
-                    file_subdir = rel_dir
-
-                s3_key, nb_sent = process_file(
-                    s3,
-                    full_bucket_name,
-                    file_subdir,
-                    file_path,
-                    modality,
-                    data_mq,
-                    metadata_args,
-                    username,
-                    notify_server=False,
-                )
-                if s3_key:
-                    if isinstance(s3_key, list):
-                        s3_key_list.extend(s3_key)
-                        assert len(s3_key) == nb_sent
-                        file_list.extend([file_path] * nb_sent)
+            for fname in sorted(files):
+                fp = os.path.join(root, fname)
+                if os.path.isfile(fp):
+                    rel_dir = os.path.relpath(root, norm_path)
+                    if rel_dir in (".", ""):
+                        fsubdir = subdir
+                    elif subdir:
+                        fsubdir = f"{subdir}/{rel_dir}"
                     else:
-                        s3_key_list.append(s3_key)
-                        file_list.append(file_path)
-                    nb_objects += nb_sent
+                        fsubdir = rel_dir
+                    all_files.append((fp, fsubdir))
+
+        try:
+            from tqdm import tqdm as _tqdm
+        except ImportError:
+            _tqdm = None
+
+        iterable = (
+            _tqdm(all_files, desc="Uploading to S3", unit="file")
+            if _tqdm is not None
+            else all_files
+        )
+
+        for file_path, file_subdir in iterable:
+            s3_key, nb_sent = process_file(
+                s3,
+                full_bucket_name,
+                file_subdir,
+                file_path,
+                modality,
+                data_mq,
+                metadata_args,
+                username,
+                notify_server=False,
+            )
+            if s3_key:
+                if isinstance(s3_key, list):
+                    s3_key_list.extend(s3_key)
+                    assert len(s3_key) == nb_sent
+                    file_list.extend([file_path] * nb_sent)
+                else:
+                    s3_key_list.append(s3_key)
+                    file_list.append(file_path)
+                nb_objects += nb_sent
 
         if nb_objects > 0:
+            print(f"Sending {nb_objects} object(s) to server...")
             ctx.control_mq.notify_server(
-                username, TaskCmd.PROCESS_OBJECTS, nb_objects, blocking = blocking
+                username, TaskCmd.PROCESS_OBJECTS, nb_objects, blocking=blocking
             )
         return s3_key_list, file_list
 
@@ -6355,8 +6362,7 @@ def _action_s3_transfer(ctx):
             if len(s3_key_list) > 0:
                 print(
                     api_json(
-                        s3_key_list=s3_key_list,
-                        file_list=file_list,
+                        nb_objects=len(s3_key_list),
                         bucket=full_bucket_name,
                         subdir=subdir,
                         modality=modality,

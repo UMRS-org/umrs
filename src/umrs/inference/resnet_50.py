@@ -56,8 +56,9 @@ def preprocess_images_batch(images):
         ]
     )
 
-    # Apply transform to each image and stack them
-    image_tensors = [transform(image) for image in images]
+    # Apply transform to each image and stack them (.convert ensures RGB for
+    # grayscale or RGBA inputs — ResNet expects 3-channel tensors)
+    image_tensors = [transform(image.convert("RGB")) for image in images]
     batch_tensor = torch.stack(image_tensors)  # Shape: (batch_size, 3, 224, 224)
 
     return batch_tensor
