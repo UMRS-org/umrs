@@ -164,11 +164,16 @@ def _init_mcp_store(app, db_pool):
         from umrs.mcp import ensure_schema as ensure_mcp_schema
         from umrs.mcp.store import MCPServerStore
 
-        mcp_conn = db_pool.getconn()
-        ensure_mcp_schema(mcp_conn)
-        mcp_conn.commit()
-        app.state.umrs_mcp_store_conn = mcp_conn
-        mcp_store = MCPServerStore(mcp_conn)
+        schema_conn = db_pool.getconn()
+        try:
+            ensure_mcp_schema(schema_conn)
+            schema_conn.commit()
+        finally:
+            db_pool.putconn(schema_conn)
+        # Borrow per call, never a boot lease: the leased connection sat idle
+        # in a read transaction until the R-14 reaper killed it and every
+        # /umrs/mcp/* call 500'd (live bdrt 2026-09-27).
+        mcp_store = MCPServerStore(pool=db_pool)
         set_mcp_store(mcp_store)
         # ADR-053: the jobs-lane D-22 registry rides the same store instance
         # (installed on the jobs adapters module, never an api import).

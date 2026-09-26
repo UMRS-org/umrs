@@ -138,9 +138,10 @@ def resolve_satellite_pool(backend: str, db_pool: Any, label: str) -> Any:
         return None
 
 
-# Six boot-time stores (model, MCP, audit, governance, session, trust) keep a
+# Six boot-time stores (model, MCP, audit, governance, session, trust) kept a
 # connection leased for the process lifetime, so the old maxconn=10 left four
-# for every request — live rccs 2026-09-24: "connection pool exhausted" 500s
+# for every request (2026-09-27: MCP now borrows per call, five leases remain)
+# — live rccs 2026-09-24: "connection pool exhausted" 500s
 # on /umrs/knowledge/graphs. umrs-front: 4 servers x 32 fits max_connections
 # 500 with the other pools (151 connections in use at the time).
 _DURABLE_POOL_MAX_DEFAULT = 32
