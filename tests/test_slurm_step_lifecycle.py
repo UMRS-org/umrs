@@ -229,6 +229,54 @@ def test_a_live_earlier_job_is_cancelled_before_the_one_submit(cluster, tree):
     assert cluster.jobs()["901"]["states"] == ["CANCELLED"]
 
 
+def test_a_live_earlier_job_on_the_same_inputs_is_resumed_not_rerun(cluster, tree):
+    # Peer review B1 (2026-09-26): a retry after an outage or a restart
+    # cancelled the job it had lost sight of and ran the step twice.
+    _completed_earlier(cluster, _tag(cluster, tree), job_id="907", states=("RUNNING", "COMPLETED"))
+    stale = _earlier_workdir(cluster)  # an older attempt on no tag: cancelled
+    cluster.add_job("906", JOB_NAME, str(stale), ["RUNNING"])
+    s3, ex, recorded = FakeS3(), cluster.executor(), []
+    ex.bind_run(RUN, on_job=lambda _step, job: recorded.append(dict(job)))
+    result = ex.execute(entrypoint="steps.lane:Upper", config={}, ctx=_ctx(tree, s3))
+    assert result.extra["slurm_job"]["job_id"] == "907"
+    assert s3.objects == {(OUT_BUCKET, f"runs/{RUN}/s1/r.txt"): b"earlier"}
+    assert cluster.calls("sbatch") == []
+    assert [c[1:] for c in cluster.calls("scancel")] == [["906"]]
+    assert recorded[0]["job_id"] == "907"  # on record before the first poll
+    _join(ex)
+    assert cluster.workdirs() == []
+
+
+def _find_jobs_down(ex, down):
+    local = ex._remote_argv
+
+    def flaky(command):
+        if " find-jobs " in command and down["calls"] != 0:
+            down["calls"] -= 1
+            return ["bash", "-c", "exit 255"]
+        return local(command)
+
+    ex._remote_argv = flaky
+
+
+def test_reconcile_rides_out_a_login_node_outage(cluster, tree):
+    # Peer review B2 (2026-09-26): one unanswered find-jobs failed the
+    # attempt at once and burnt a durable run's retries in minutes.
+    ex, down = cluster.executor(unreachable_budget=30.0), {"calls": 2}
+    _find_jobs_down(ex, down)
+    result = _run(cluster, tree, ex)
+    assert result.output_keys == [f"runs/{RUN}/s1/result/out.txt"]
+    assert down["calls"] == 0 and len(cluster.calls("sbatch")) == 1
+
+
+def test_an_outage_past_the_reconcile_budget_submits_nothing(cluster, tree):
+    ex = cluster.executor(unreachable_budget=0.2)
+    _find_jobs_down(ex, {"calls": -1})  # never answers
+    with pytest.raises(StepExecutionError, match="find-jobs"):
+        _run(cluster, tree, ex)
+    assert cluster.calls("sbatch") == [] and cluster.workdirs() == []
+
+
 def test_an_earlier_job_that_cannot_be_cancelled_blocks_the_submit(cluster, tree):
     wd = _earlier_workdir(cluster)
     cluster.add_job("901", JOB_NAME, str(wd), ["PENDING"])
