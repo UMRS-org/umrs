@@ -437,6 +437,17 @@ def _launch_workflow_from_catalog(
     from umrs.server.workflow_runner import run_workflow_record
 
     registry = get_execution_registry()
+    # A second dispatch of a run still running here (a scheduler requeue after
+    # a lost submit acknowledgement, a boot reconcile) attaches to it: two live
+    # runs of one execution id would cancel each other's step jobs and race on
+    # the record (peer review 2026-09-26).
+    live = registry.running_here(execution_id) if execution_id else None
+    if live is not None:
+        logger.info(
+            "workflow execution %s is still running in this process; the dispatch attaches to it",
+            execution_id,
+        )
+        return live, source_path, step_count
     # A durable re-dispatch reuses the execution id: the record it replaces
     # (read through to Postgres after a restart) may name step jobs still on
     # the cluster.

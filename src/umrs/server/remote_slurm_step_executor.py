@@ -495,10 +495,12 @@ class RemoteSlurmStepExecutor(SlurmStepExecutor):
         return max(1, int(min(limits)))
 
     def _needs_gpu(self, ctx: StepContext) -> bool:
+        """Only a step that asks for a GPU (a real true, not the string
+        "false") on a site that enables GPUs (site.yaml ``gpu``) gets one."""
+        if _env("UMRS_STEP_GPU", "0") != "1":
+            return False
         hint = ctx.metadata.get(EXECUTOR_GPU_METADATA_KEY)
-        if hint is None:
-            return _env("UMRS_STEP_GPU", "0") == "1"
-        return bool(hint)
+        return hint is True or str(hint).strip().lower() in ("1", "true", "yes")
 
     def _job_script(self, job: _StepJob, ctx: StepContext, image: str) -> str:
         caps = self.caps
@@ -1432,6 +1434,14 @@ def _pump(
         return value, None, proc.stdout.read(64 * 1024)
     except StepExecutionError as exc:
         return value, exc, b""
+    except (BrokenPipeError, ConnectionResetError) as exc:
+        # The remote side ended first (ssh failed, the helper refused): its
+        # exit status and stderr name the cause, not the pipe error.
+        return (
+            value,
+            StageStreamError("setup", f"stream closed by the remote side: {exc}"),
+            b"",
+        )
 
 
 def _close(proc: subprocess.Popen) -> int:

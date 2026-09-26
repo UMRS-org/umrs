@@ -335,6 +335,16 @@ class WorkflowExecutionRegistry:
             self._workers[record.execution_id] = thread
         thread.start()
 
+    def running_here(self, execution_id: str) -> ExecutionRecord | None:
+        """The record of *execution_id* whose runner thread is still alive in
+        this process, else None (after a restart the old thread is gone)."""
+        with self._lock:
+            thread = self._workers.get(execution_id)
+        if thread is None or not thread.is_alive():
+            return None
+        record = self.get(execution_id)
+        return record if record is not None and not record.is_terminal() else None
+
     def join(self, execution_id: str, timeout: float | None = None) -> bool:
         """Wait for ``execution_id`` to leave the running state.
 
