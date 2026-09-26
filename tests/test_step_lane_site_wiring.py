@@ -175,10 +175,16 @@ def test_rccs_step_jobs_ask_for_no_memory_and_no_gres(monkeypatch):
     assert "#SBATCH --mem" not in script and "#SBATCH --gres" not in script
     assert "#SBATCH --partition=ng-dgx-m0,ng-dgx-m1,ng-dgx-m2,ng-dgx-m3" in script
     assert "#SBATCH --account=cloud-users" in script
+
+
+def test_rccs_steps_run_without_a_cgroup_bounded_by_nproc(monkeypatch):
     # R2: no cgroup for the container on these nodes; RLIMIT_NPROC instead.
-    assert "--cgroups=disabled" in script and "--ulimit nproc=4096" in script
-    assert "podman --cgroup-manager=cgroupfs run" in script
-    assert "--pids-limit" not in script and "pids.max" not in script
+    script = _rendered(_site_executor(monkeypatch, "rccs-front"))
+    for part in ("podman --cgroup-manager=cgroupfs run", "--cgroups=disabled",
+                 "--ulimit nproc=4096"):  # fmt: skip
+        assert part in script
+    for part in ("--pids-limit", "pids.max"):
+        assert part not in script
 
 
 def test_a_site_asking_for_cgroups_gets_the_pids_limit_and_its_probe(monkeypatch):
