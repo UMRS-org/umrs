@@ -369,6 +369,9 @@ class StagedJob:
     image_archive_dir: str
     venue_script: str
     needs_gpu: bool
+    #: ``step_executor.gpu_form`` — the devices a step that needs a GPU gets
+    #: (:data:`STAGED_GPU_DEVICES`).
+    gpu_form: str = "cdi"
     #: ``--pids-limit`` (0 omits it and its check).
     pids_limit: int = 512
     #: ``--cgroups=disabled``: the venue grants the job no cgroup to create
@@ -454,6 +457,25 @@ _STAGED_ENV = (
 )
 
 
+#: ``step_executor.gpu_form`` -> the ``podman run`` devices of a step that
+#: needs a GPU: the NVIDIA CDI spec, or the ROCm device nodes (AMD).
+STAGED_GPU_DEVICES: dict[str, tuple[str, ...]] = {
+    "cdi": ("--device", "nvidia.com/gpu=all"),
+    "rocm": ("--device", "/dev/kfd", "--device", "/dev/dri"),
+}
+
+
+def _staged_gpu_devices(job: StagedJob) -> tuple[str, ...]:
+    devices = STAGED_GPU_DEVICES.get(job.gpu_form)
+    if devices is None:
+        raise StepExecutionError(
+            "setup",
+            f"step_executor.gpu_form {job.gpu_form!r} is not "
+            f"{'|'.join(STAGED_GPU_DEVICES)}",
+        )
+    return devices
+
+
 def staged_podman_argv(job: StagedJob) -> list[str]:
     """``podman run`` for a staged step; ``${_step_image}`` is set by the
     image-ensure lines. No other ``-e`` — the step gets files only."""
@@ -463,7 +485,7 @@ def staged_podman_argv(job: StagedJob) -> list[str]:
     for assignment in _STAGED_ENV:
         parts += ["-e", assignment]
     if job.needs_gpu:
-        parts += ["--device", "nvidia.com/gpu=all"]
+        parts += _staged_gpu_devices(job)
     return [*parts, '"${_step_image}"', "python", "-m", "umrs.server.step_worker"]
 
 

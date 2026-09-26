@@ -84,12 +84,48 @@ vllm:
   max_num_seqs: 4
   tensor_parallel_size: 1
 
-# Workflow step execution: platform-template steps in-process. Uploaded step
-# code (ADR-074, 2026-09-26) needs this site's HPC lane, which is not built
-# here yet, so it is refused by name.
+# Workflow step execution (step lane wiring 2026-09-27, ADR-074 +
+# docs/development/rccs-step-lane-spec-2026-09-26.md; the rccs-front block is
+# the model). Platform-template steps stay in-process. Uploaded step code never
+# runs in the server: it goes to this site's HPC lane (RemoteSlurmStepExecutor
+# over extra.ssh_target) when the lane is available, else uploaded_code decides
+# (refuse = refused by name). The umrs-front converge sets the image
+# (UMRS_BDRT_STEP_*) only after it staged and verified the aarch64 step image
+# archive on nimbus-0, so image stays "" here.
+# - remote_enabled: false until the bdrt receipts (maintainer flips it).
+# - partition: spark-double, off edge-double (which carries serving).
+# - gpu: false — plain-podman CDI on GB10 is unproven here as on rccs;
+#   gpu_form cdi is the form a smoke job would prove.
+# - The lane paths are declared only when bdrt is onboarded (2026-09-27
+#   review): with helper_path + workdir_root set, the server starts the step
+#   reaper, which SSHes to nimbus-0 hourly (helper sweep) with the lane off.
+#   The survey's paths (2026-09-26), for then:
+#     workdir_root: /home/mnagaso/umrs_steps (nimbus-0 home, outside the
+#       checkout, which is read-only by rule; the compute nodes see it)
+#     image_archive_dir: /home/mnagaso/umrs_models/images
+#     helper_path: /home/mnagaso/ai4s-platform/umrs/deploy/_common/umrs_step_helper.py
+#     venue_script: /home/mnagaso/ai4s-platform/umrs/src/umrs/mini-rivault-llm/venue.sh
+#   (helper and venue in the pinned checkout hpc-code-sync keeps,
+#   umrs_front_bdrt_hpc_repo_dir).
 step_executor:
+  kind: inproc
+  partition: spark-double
+  gpus: 0              # single GB10 per node; allocate implicitly
+  cpus: 8
+  memory: ""           # omit --mem; scheduler assigns node defaults
+  time_limit: "01:00:00"
+  account: ""          # no Slurm account required on DGX-Spark
+  image: ""            # composed by the converge after the archive verifies (see above)
+  gpu: false
+  gpu_form: cdi
   remote_enabled: false
   uploaded_code: refuse
+  # Posture: the defaults (cgroups enabled, pids_limit 512, no nproc_limit)
+  # until the maintainer's R2 probe job on a spark-double node (podman 4.9.3 +
+  # runc). The rccs failure mode is expected (Slurm cgroup v2 grants the job
+  # no cgroup of its own); cgroups / pids_limit / nproc_limit are set from
+  # that receipt, not guessed here. Until then the job's posture probe fails a
+  # step by name if the runtime cannot hold these.
 
 database:
   host: localhost
@@ -135,6 +171,18 @@ partition_profiles:
     gpus: 0                    # single GB10 per node; allocate implicitly
     needs_netavark_switch: false
   spark-double:
+    arch: aarch64
+    gpu_vendor: nvidia
+    gpu_memory_gb: 128
+    oci_runtime: runc
+    userns_mode: host
+    network_backend: netavark
+    vllm_docker_tag: cu130-nightly-aarch64
+    gpus: 0
+    needs_netavark_switch: false
+  # edge-double is in scheduler.partition and carries serving; aarch64 GB10
+  # like the others (read-only survey 2026-09-26), same shape as bdrt/site.yaml.
+  edge-double:
     arch: aarch64
     gpu_vendor: nvidia
     gpu_memory_gb: 128

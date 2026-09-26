@@ -162,6 +162,43 @@ def test_gpu_mem_and_gres_only_when_asked():
     assert "#SBATCH --gres=gpu:2" in render_staged_job_script(_job(needs_gpu=True, gres_gpus=2))
 
 
+def test_the_gpu_form_picks_the_devices_of_a_step_that_needs_a_gpu():
+    # step_executor.gpu_form: the NVIDIA CDI spec, or the ROCm device nodes.
+    rocm = _podman_run_line(render_staged_job_script(_job(needs_gpu=True, gpu_form="rocm")))
+    assert "--device /dev/kfd --device /dev/dri" in rocm and "nvidia.com" not in rocm
+    cdi = _podman_run_line(render_staged_job_script(_job(needs_gpu=True, gpu_form="cdi")))
+    assert "--device nvidia.com/gpu=all" in cdi and "/dev/kfd" not in cdi
+    assert _tokens(render_staged_job_script(_job(needs_gpu=True, gpu_form="rocm")))[-4:] == [
+        "IMG", "python", "-m", "umrs.server.step_worker",
+    ]  # fmt: skip
+    # No GPU asked: no device, whatever the form.
+    assert "--device" not in render_staged_job_script(_job(gpu_form="rocm"))
+
+
+def test_a_gpu_form_the_script_cannot_render_is_refused_by_name():
+    with pytest.raises(StepExecutionError, match="gpu_form 'opencl'"):
+        render_staged_job_script(_job(needs_gpu=True, gpu_form="opencl"))
+
+
+def test_the_executor_takes_the_gpu_form_from_the_site_env(monkeypatch):
+    monkeypatch.setenv("UMRS_STEP_GPU", "1")
+    monkeypatch.delenv("UMRS_STEP_GPU_FORM", raising=False)
+
+    def executor() -> RemoteSlurmStepExecutor:
+        return RemoteSlurmStepExecutor(ssh_config=SSHControlConfig(ssh_target="login"),
+                                       workdir_root="/r", image=IMAGE, image_archive_dir="/a",
+                                       venue_script="/v.sh")  # fmt: skip
+
+    assert executor().gpu_form == "cdi"
+    monkeypatch.setenv("UMRS_STEP_GPU_FORM", "rocm")
+    ex = executor()
+    assert ex.gpu_form == "rocm"
+    job = _StepJob("wf-1", "s1", 1, "umrs-step-wf-1-s1", "wf-1-s1-1-", workdir=WD)
+    ctx = StepContext(s3=None, input_bucket="b", input_keys=[], output_bucket="b-output",
+                      metadata={EXECUTOR_GPU_METADATA_KEY: True}, run_id="wf-1")  # fmt: skip
+    assert "--device /dev/kfd --device /dev/dri" in ex._job_script(job, ctx, IMAGE)
+
+
 def test_every_python_value_is_quoted_in_the_script():
     hostile = "/lvs0/x $(touch /tmp/pwned)/wf-1-s-1-abcdefgh"
     script = render_staged_job_script(

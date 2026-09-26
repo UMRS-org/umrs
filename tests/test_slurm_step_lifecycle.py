@@ -218,6 +218,7 @@ def test_the_tag_ignores_a_parents_job_facts_and_routed_values(cluster, tree):
     [
         ({"cgroups": "disabled", "pids_limit": 512}, "pids_limit 512 cannot apply"),
         ({"cgroups": "off"}, "is not enabled|disabled"),
+        ({"gpu_form": "opencl"}, r"gpu_form 'opencl' is not cdi\|rocm"),
     ],
 )
 def test_a_posture_the_venue_cannot_hold_is_refused_before_any_ssh(

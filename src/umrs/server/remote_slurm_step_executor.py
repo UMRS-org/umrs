@@ -62,6 +62,7 @@ from umrs.orchestrator.ssh_control import SSHControlConfig, SSHControlManager
 from umrs.pipeline_sdk.step import StepContext, StepResult
 
 from .slurm_step_executor import (
+    STAGED_GPU_DEVICES,
     TERMINAL_FAILURES,
     TERMINAL_STATES,
     UNKNOWN,
@@ -325,6 +326,9 @@ class RemoteSlurmStepExecutor(SlurmStepExecutor):
     nproc_limit: int = field(
         default_factory=lambda: int(_env("UMRS_STEP_NPROC_LIMIT") or 0)
     )
+    #: ``step_executor.gpu_form``: the devices a step that needs a GPU gets
+    #: ("cdi" NVIDIA, "rocm" AMD); any other value refuses before any SSH.
+    gpu_form: str = field(default_factory=lambda: _env("UMRS_STEP_GPU_FORM") or "cdi")
     helper_python: str = "python3"
     caps: StageCaps = DEFAULT_CAPS
     reply_cap: int = REPLY_CAP_BYTES
@@ -426,7 +430,14 @@ class RemoteSlurmStepExecutor(SlurmStepExecutor):
 
     def _check_posture(self) -> None:
         """A container without a cgroup cannot hold a pids limit: say so
-        rather than run a step with less than the site asked for."""
+        rather than run a step with less than the site asked for. A GPU form
+        the job script cannot render is refused here, before any SSH."""
+        if self.gpu_form not in STAGED_GPU_DEVICES:
+            raise StepExecutionError(
+                "setup",
+                f"step_executor.gpu_form {self.gpu_form!r} is not "
+                f"{'|'.join(STAGED_GPU_DEVICES)}; nothing was submitted",
+            )
         if self.cgroups not in ("enabled", "disabled"):
             raise StepExecutionError(
                 "setup",
@@ -598,6 +609,7 @@ class RemoteSlurmStepExecutor(SlurmStepExecutor):
                 image_archive_dir=self.image_archive_dir,
                 venue_script=self.venue_script,
                 needs_gpu=self._needs_gpu(ctx),
+                gpu_form=self.gpu_form,
                 pids_limit=self.pids_limit,
                 cgroups_disabled=self.cgroups == "disabled",
                 nproc_limit=self.nproc_limit,

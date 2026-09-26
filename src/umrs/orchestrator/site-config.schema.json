@@ -176,6 +176,11 @@
         "account": { "type": "string" },
         "image": { "type": "string" },
         "gpu": { "type": "boolean" },
+        "gpu_form": {
+          "type": "string",
+          "enum": ["cdi", "rocm"],
+          "description": "How the HPC lane gives a step that needs a GPU its devices: cdi (NVIDIA, --device nvidia.com/gpu=all) or rocm (AMD, --device /dev/kfd --device /dev/dri)"
+        },
         "workdir_root": { "type": "string" },
         "remote_enabled": {
           "type": "boolean",

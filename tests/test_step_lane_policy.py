@@ -77,6 +77,7 @@ def test_step_executor_defaults_keep_the_lane_closed():
     assert cfg.uploaded_code == "refuse"
     assert cfg.queue_timeout == "06:00:00"
     assert cfg.allowed_images == [] and cfg.helper_path == "" and cfg.venue_script == ""
+    assert cfg.gpu_form == "cdi"
 
 
 def _site_yaml(tmp_path: Path, step_executor: dict) -> Path:
@@ -104,6 +105,7 @@ _FULL_LANE = {
     "helper_path": "/lvs0/x/umrs/deploy/_common/umrs_step_helper.py",
     "venue_script": "/lvs0/x/umrs/src/umrs/mini-rivault-llm/venue.sh",
     "queue_timeout": "02:00:00",
+    "gpu_form": "rocm",
 }
 
 
@@ -121,6 +123,13 @@ def test_site_yaml_exports_every_lane_knob(tmp_path):
     assert env["UMRS_SLURM_STEP_SUBMIT"] == "remote"
 
 
+def test_site_yaml_exports_the_gpu_form_cdi_by_default(tmp_path):
+    env = load_site_config(str(_site_yaml(tmp_path, _FULL_LANE))).to_env()
+    assert env["UMRS_STEP_GPU_FORM"] == "rocm"
+    default = load_site_config(str(_site_yaml(tmp_path, {}))).to_env()
+    assert default["UMRS_STEP_GPU_FORM"] == "cdi"
+
+
 def test_default_site_exports_refuse_and_no_lane(tmp_path):
     env = load_site_config(str(_site_yaml(tmp_path, {}))).to_env()
     assert "UMRS_STEP_REMOTE_ENABLED" not in env
@@ -135,6 +144,9 @@ def test_schema_accepts_the_lane_block_and_refuses_an_unknown_switch():
     doc = {"name": "s", "step_executor": dict(_FULL_LANE)}
     jsonschema.validate(doc, schema)
     doc["step_executor"]["uploaded_code"] = "allow"
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(doc, schema)
+    doc["step_executor"].update(uploaded_code="refuse", gpu_form="opencl")
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate(doc, schema)
 

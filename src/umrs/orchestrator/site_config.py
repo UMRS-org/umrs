@@ -210,6 +210,10 @@ class StepExecutorConfig:
     account: str = ""  # Slurm account (optional)
     image: str = ""  # Default container image for steps
     gpu: bool = True  # Whether to attach GPU by default
+    # How the HPC lane hands a step that needs a GPU its devices: "cdi"
+    # (NVIDIA, --device nvidia.com/gpu=all) or "rocm" (AMD, --device /dev/kfd
+    # --device /dev/dri). The lane refuses any other value before submitting.
+    gpu_form: str = "cdi"
     # Parent of the per-step workdirs; must be on a filesystem the compute
     # nodes see (required for slurm-remote: a path on the CLUSTER).
     workdir_root: str = ""
@@ -471,6 +475,7 @@ def _step_lane_env(cfg: StepExecutorConfig) -> dict[str, str]:
         "UMRS_STEP_PIDS_LIMIT": str(int(cfg.pids_limit)),
         "UMRS_STEP_CGROUPS": cfg.cgroups,
         "UMRS_STEP_NPROC_LIMIT": str(int(cfg.nproc_limit)),
+        "UMRS_STEP_GPU_FORM": cfg.gpu_form,
     }
 
 

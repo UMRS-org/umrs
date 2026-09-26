@@ -327,6 +327,14 @@ services:
       # KNOWLEDGE_EMBED lane (audit B3 activation): pre-staged local
       # SentenceTransformer dir — degraded no-op when unset (umrs/a75d909).
       UMRS_KNOWLEDGE_EMBED_MODEL: ${UMRS_AI4S_KNOWLEDGE_EMBED_MODEL:-/models/e5-base-v2}
+      # Uploaded-workflow step lane (ADR-074; rccs step-lane spec §10): this
+      # site's own UMRS_AI4S_STEP_* only, never another cluster's (an image
+      # staged for one cluster's arch must not reach another). Empty until the
+      # converge verified this cluster's staged step image: no lane.
+      UMRS_STEP_IMAGE: ${UMRS_AI4S_STEP_IMAGE:-}
+      UMRS_STEP_IMAGE_ARCHIVE_DIR: ${UMRS_AI4S_STEP_IMAGE_ARCHIVE_DIR:-}
+      UMRS_STEP_HELPER: ${UMRS_AI4S_STEP_HELPER:-}
+      UMRS_STEP_VENUE_SCRIPT: ${UMRS_AI4S_STEP_VENUE_SCRIPT:-}
       PYTHONUNBUFFERED: "1"
     volumes:
       - ../ai4s-front/site.yaml:/etc/umrs/site.yaml:ro,z
@@ -440,6 +448,14 @@ services:
       # KNOWLEDGE_EMBED lane (audit B3 activation): pre-staged local
       # SentenceTransformer dir — degraded no-op when unset (umrs/a75d909).
       UMRS_KNOWLEDGE_EMBED_MODEL: ${UMRS_BDRT_KNOWLEDGE_EMBED_MODEL:-/models/e5-base-v2}
+      # Uploaded-workflow step lane (ADR-074; rccs step-lane spec §10): this
+      # site's own UMRS_BDRT_STEP_* only, never another cluster's (an image
+      # staged for one cluster's arch must not reach another). Empty until the
+      # converge verified this cluster's staged step image: no lane.
+      UMRS_STEP_IMAGE: ${UMRS_BDRT_STEP_IMAGE:-}
+      UMRS_STEP_IMAGE_ARCHIVE_DIR: ${UMRS_BDRT_STEP_IMAGE_ARCHIVE_DIR:-}
+      UMRS_STEP_HELPER: ${UMRS_BDRT_STEP_HELPER:-}
+      UMRS_STEP_VENUE_SCRIPT: ${UMRS_BDRT_STEP_VENUE_SCRIPT:-}
       PYTHONUNBUFFERED: "1"
     volumes:
       - ../bdrt-front/site.yaml:/etc/umrs/site.yaml:ro,z
@@ -550,6 +566,14 @@ services:
       # KNOWLEDGE_EMBED lane (audit B3 activation): pre-staged local
       # SentenceTransformer dir — degraded no-op when unset (umrs/a75d909).
       UMRS_KNOWLEDGE_EMBED_MODEL: ${UMRS_OCTOPUS_KNOWLEDGE_EMBED_MODEL:-/models/e5-base-v2}
+      # Uploaded-workflow step lane (ADR-074; rccs step-lane spec §10): this
+      # site's own UMRS_OCTOPUS_STEP_* only, never another cluster's (an image
+      # staged for one cluster's arch must not reach another). Empty until the
+      # converge verified this cluster's staged step image: no lane.
+      UMRS_STEP_IMAGE: ${UMRS_OCTOPUS_STEP_IMAGE:-}
+      UMRS_STEP_IMAGE_ARCHIVE_DIR: ${UMRS_OCTOPUS_STEP_IMAGE_ARCHIVE_DIR:-}
+      UMRS_STEP_HELPER: ${UMRS_OCTOPUS_STEP_HELPER:-}
+      UMRS_STEP_VENUE_SCRIPT: ${UMRS_OCTOPUS_STEP_VENUE_SCRIPT:-}
       PYTHONUNBUFFERED: "1"
     volumes:
       - ../octopus-front/site.yaml:/etc/umrs/site.yaml:ro,z
