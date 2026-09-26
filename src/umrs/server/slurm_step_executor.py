@@ -411,6 +411,16 @@ _POD_POSTURE = (
 )
 
 
+def _podman_run(job: StagedJob) -> list[str]:
+    """``podman run`` — without a cgroup, with the cgroupfs manager pinned: the
+    systemd manager (the containers.conf default on systemd hosts) would put
+    conmon in a user@ scope outside the job's Slurm cgroup, and the container
+    would outlive scancel (peer review 2026-09-26)."""
+    if job.cgroups_disabled:
+        return ["podman", "--cgroup-manager=cgroupfs", "run"]
+    return ["podman", "run"]
+
+
 def _pod_posture(job: StagedJob, name: str, *, seccomp: bool = True) -> list[str]:
     """``podman run`` options for container *name* (a shell word); with
     *seccomp*, the node's default profile in which ``fallocate`` fails
@@ -447,7 +457,7 @@ _STAGED_ENV = (
 def staged_podman_argv(job: StagedJob) -> list[str]:
     """``podman run`` for a staged step; ``${_step_image}`` is set by the
     image-ensure lines. No other ``-e`` — the step gets files only."""
-    parts = ["podman", "run", *_pod_posture(job, '"${_step_ctr}"')]
+    parts = [*_podman_run(job), *_pod_posture(job, '"${_step_ctr}"')]
     for entry, target, mode in _STAGED_MOUNTS:
         parts += ["-v", shlex.quote(f"{job.workdir}/{entry}:{target}:{mode}")]
     for assignment in _STAGED_ENV:
@@ -621,7 +631,7 @@ def _staged_seccomp_lines(job: StagedJob) -> list[str]:
     info = "podman info --format '{{.Host.Security.SECCOMPProfilePath}}'"
     transform = " ".join(
         [
-            "podman run",
+            *_podman_run(job),
             *_pod_posture(job, '"${_step_ctr}-seccomp"', seccomp=False),
             '-v "${_step_seccomp_base}:/umrs-seccomp-base.json:ro"',
             '"${_step_image}" python -I -c',
@@ -656,7 +666,7 @@ def _staged_pids_lines(job: StagedJob) -> list[str]:
     limit = int(job.pids_limit)
     probe = " ".join(
         [
-            "podman run",
+            *_podman_run(job),
             *_pod_posture(job, '"${_step_ctr}-pids"'),
             '"${_step_image}" cat /sys/fs/cgroup/pids.max',
         ]

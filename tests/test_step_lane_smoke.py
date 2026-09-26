@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import glob
+import json
 import socket
+import subprocess
+import time
+from types import SimpleNamespace
 
 import pytest
 from step_lane_harness import make_cluster
 from umrs.server import step_lane_smoke as smoke
-from umrs.server.step_lane_probe import probe
+from umrs.server.step_executor import StepExecutionError
+from umrs.server.step_lane_probe import SLEEP_MARKER, probe
 from umrs.server.step_staging import register_bucket_registry
 
 GOOD = {
@@ -114,6 +119,7 @@ def test_usage():
         ("probe", "m1", False),
         ("probe", "m0", True),
         ("chain", "m0", False),
+        ("kill", "m1", False),
     ]
     assert smoke.main(["--partitions", ","]) == 2
 
@@ -129,3 +135,98 @@ def test_the_chain_hands_a_live_parent_to_b_and_its_tag_holds(tmp_path, monkeypa
     assert report["ok"], report
     assert report["tag_stable"] is True and all(report["jobs"])
     assert len(cluster.calls("sbatch")) == 2 and cluster.workdirs() == []
+
+
+class _StubLane:
+    """What the kill check drives: the sleeping step runs until the run is
+    cancelled; its log carries the marker (when *started*); it settles as
+    *final*; the inspector job reports *report* from node gb10-m3."""
+
+    workdir_root, partition, account = "/r", "ng-dgx-m3", "cloud-users"
+    venue_script = "/c/umrs/src/umrs/mini-rivault-llm/venue.sh"
+
+    def __init__(self, report, *, started=True, final="CANCELLED"):
+        self.report, self.started, self.final = report, started, final
+        self._settlers, self.scripts, self.removed = [], [], []
+
+    def bind_run(self, _run_id, *, cancelled, on_job):
+        self.cancelled, self.on_job = cancelled, on_job
+
+    def execute(self, *, entrypoint, config, **_ctx):
+        assert config["sleep_seconds"] > 0 and entrypoint == smoke.PROBE_ENTRYPOINT
+        self.on_job("sleeper", {"job_id": "901", "workdir": "/r/wd-sleep", "state": "RUNNING"})
+        while not self.cancelled():
+            time.sleep(0.01)
+        raise StepExecutionError("run", "step sleeper cancelled: the workflow run was cancelled")
+
+    def _helper(self, verb, *_args, **_kw):
+        assert verb == "tail-log"
+        return SimpleNamespace(returncode=0, stdout=(SLEEP_MARKER if self.started else "").encode())
+
+    def _job_state(self, job_id):
+        return self.final if job_id == "901" else "COMPLETED"
+
+    def _mkwd(self, _job):
+        return "/r/wd-inspect"
+
+    def _run_cmd(self, _cmd, **_kw):
+        return SimpleNamespace(returncode=0, stdout="gb10-m3\n")
+
+    def _put(self, _job, _name, data):
+        self.scripts.append(data.decode())
+
+    def _submit(self, job):
+        job.job_id = "902"
+
+    def _read_reply_at(self, _workdir, _job):
+        return json.dumps(self.report).encode()
+
+    def _rmwd(self, workdir):
+        self.removed.append(workdir)
+        return True
+
+
+CLEAN = {"host": "gb10-m3", "containers": [], "processes": [], "workdir_left": False}
+
+
+def _kill(lane, **kw):
+    return smoke.run_kill_check(
+        "ng-dgx-m3", timeout=60, make_executor=lambda _p: lane, poll=0.01, **kw
+    )
+
+
+def test_a_cancelled_step_that_leaves_nothing_passes_the_kill_check():
+    lane = _StubLane(CLEAN)
+    report = _kill(lane)
+    assert report["ok"], report
+    assert report["state"] == "CANCELLED" and report["inspect"]["node"] == "gb10-m3"
+    [script] = lane.scripts
+    assert "#SBATCH --nodelist=gb10-m3" in script and "ctr=umrs-step-901" in script
+    assert "[[ -e /r/wd-sleep ]]" in script and "rivault_venue_prepare" in script
+    assert lane.removed == ["/r/wd-inspect"]  # the inspector cleans up after itself
+
+
+def test_the_inspector_script_is_valid_bash():
+    lane = _StubLane(CLEAN)
+    _kill(lane)
+    proc = subprocess.run(["bash", "-n"], input=lane.scripts[0].encode(), capture_output=True)
+    assert proc.returncode == 0, proc.stderr
+
+
+@pytest.mark.parametrize(
+    ("report", "kw", "problem"),
+    [
+        ({**CLEAN, "containers": ["umrs-step-901|Exited (137)"]}, {}, "containers left"),
+        ({**CLEAN, "processes": ["4242 conmon -n umrs-step-901"]}, {}, "processes survived"),
+        ({**CLEAN, "workdir_left": True}, {}, "the workdir survived"),
+        (CLEAN, {"final": "COMPLETED"}, "settled as COMPLETED"),
+    ],
+)
+def test_anything_that_outlives_the_cancel_fails_the_kill_check(report, kw, problem):
+    result = _kill(_StubLane(report, **kw))
+    assert not result["ok"] and any(problem in p for p in result["problems"]), result
+
+
+def test_a_step_that_never_starts_fails_the_kill_check():
+    result = _kill(_StubLane(CLEAN, started=False), start_timeout=0.2)
+    assert "the step container never started" in result["problems"]

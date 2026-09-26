@@ -14,20 +14,29 @@ import os
 import platform
 import resource
 import socket
+import time
 from typing import Any
 
 from umrs.pipeline_sdk.step import Step, StepContext, StepResult
 
 _CONNECT_TIMEOUT = 3.0
+#: Printed (to the job's log) before a sleeping probe sleeps: the smoke's
+#: kill check cancels only once the step container runs.
+SLEEP_MARKER = "umrs-probe: sleeping"
 
 
 class ProbeStep(Step):
-    """``config["connect"]``: ``[[host, port], ...]`` that must be unreachable."""
+    """``config["connect"]``: ``[[host, port], ...]`` that must be unreachable;
+    ``config["sleep_seconds"]``: sleep that long first (the kill check)."""
 
     def setup(self, config: dict) -> None:
         self._targets = [(str(h), int(p)) for h, p in config.get("connect") or []]
+        self._sleep = float(config.get("sleep_seconds") or 0)
 
     def run(self, ctx: StepContext) -> StepResult:
+        if self._sleep > 0:
+            print(SLEEP_MARKER, flush=True)
+            time.sleep(self._sleep)
         return StepResult(extra={"probe": probe(self._targets)})
 
     def teardown(self) -> None:

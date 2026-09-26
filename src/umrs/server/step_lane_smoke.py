@@ -25,6 +25,8 @@ import json
 import logging
 import os
 import sys
+import threading
+import time
 import uuid
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -295,6 +297,215 @@ def _rerun_parent(ctx: Any, parent: Any) -> Any:
     return dataclasses.replace(ctx, parent_results={"a": rerun})
 
 
+# ── the kill check: scancel still ends the step (peer review 2026-09-26) ────
+
+#: The inspector job: on the node the cancelled step ran on, as the job user,
+#: with the step's podman venue — any step container left in podman's store,
+#: any process of the container or the worker still alive, the workdir.
+_INSPECT_SCRIPT = """#!/bin/bash
+#SBATCH --job-name={name}
+#SBATCH --comment={comment}1
+#SBATCH --partition={partition}
+#SBATCH --account={account}
+{nodelist}#SBATCH --time=00:05:00
+#SBATCH --no-requeue
+#SBATCH --output={workdir}/log/slurm.out
+#SBATCH --error={workdir}/log/slurm.err
+set -uo pipefail
+if [[ -n "${{XDG_RUNTIME_DIR:-}}" && ! -w "${{XDG_RUNTIME_DIR}}" ]]; then unset XDG_RUNTIME_DIR; fi
+source {venue} && rivault_venue_prepare "umrs-inspect-${{SLURM_JOB_ID}}" >/dev/null 2>&1
+ctr={ctr}
+ps_out="$(podman ps -a --filter "name=^${{ctr}}" --format '{{{{.Names}}}}|{{{{.Status}}}}' 2>&1 | head -n 20)"
+procs="$(pgrep -u "$(id -u)" -af -- "${{ctr}}|umrs[.]server[.]step_worker" | head -n 20)"
+left=0
+[[ -e {killed_workdir} ]] && left=1
+python3 -c '{report_py}' "$(hostname)" "$ps_out" "$procs" "$left" > {workdir}/reply/output.json
+"""
+_INSPECT_REPORT_PY = (
+    "import json,sys; h,c,p,w=sys.argv[1:5]; "
+    "print(json.dumps(dict(host=h, containers=[x for x in c.splitlines() if x], "
+    "processes=[x for x in p.splitlines() if x], workdir_left=w=='1')))"
+)
+_START_TIMEOUT = 900.0
+_INSPECT_TIMEOUT = 1200.0
+
+
+def inspect_script(
+    executor: Any, job: Any, *, killed_job: str, killed_workdir: str, node: str
+) -> str:
+    import shlex
+
+    return _INSPECT_SCRIPT.format(
+        name=job.job_name,
+        comment=job.comment,
+        partition=executor.partition,
+        account=executor.account,
+        nodelist=f"#SBATCH --nodelist={node}\n" if node else "",
+        workdir=job.workdir,
+        venue=shlex.quote(executor.venue_script),
+        ctr=shlex.quote(f"umrs-step-{killed_job}"),
+        killed_workdir=shlex.quote(killed_workdir),
+        report_py=_INSPECT_REPORT_PY,
+    )
+
+
+def run_kill_check(
+    partition: str,
+    *,
+    timeout: int,
+    make_executor: Callable[[str], Any],
+    poll: float = 5.0,
+    start_timeout: float = _START_TIMEOUT,
+) -> dict[str, Any]:
+    """A sleeping probe step, cancelled once its container runs; then the
+    job must settle CANCELLED, and an inspector job on the same node must
+    find no step container, no container or worker process and no workdir."""
+    run_id = f"smoke-{uuid.uuid4().hex[:12]}"
+    report: dict[str, Any] = {
+        "partition": partition,
+        "kill_check": True,
+        "run_id": run_id,
+    }
+    executor = _lane(make_executor, partition, report)
+    if executor is None:
+        return report
+    facts: dict[str, Any] = {}
+    cancel = threading.Event()
+    executor.bind_run(
+        run_id, cancelled=cancel.is_set, on_job=lambda _s, job: facts.update(job)
+    )
+    ctx = _probe_ctx(run_id, "sleeper", targets=[], timeout=timeout)
+    ctx.config["sleep_seconds"] = timeout * 2  # never ends by itself
+    outcome: list[tuple[Any, list[str]]] = []
+    worker = threading.Thread(target=lambda: outcome.append(_run_step(executor, ctx)))
+    worker.start()
+    started = _await_start(executor, facts, worker, poll, start_timeout)
+    cancel.set()
+    worker.join(timeout=_START_TIMEOUT)
+    _join_settlers(executor)
+    report.update(_kill_verdict(executor, facts, started, outcome))
+    return report
+
+
+def _await_start(
+    executor: Any, facts: dict[str, Any], worker: Any, poll: float, timeout: float
+) -> bool:
+    """True once the sleeping step's marker is in its job's log."""
+    from .step_lane_probe import SLEEP_MARKER
+
+    deadline = time.monotonic() + timeout
+    while worker.is_alive() and time.monotonic() < deadline:
+        if facts.get("job_id") and SLEEP_MARKER in _log_tail(
+            executor, facts.get("workdir", "")
+        ):
+            return True
+        time.sleep(poll)
+    return False
+
+
+def _log_tail(executor: Any, workdir: str) -> str:
+    try:
+        proc = executor._helper(
+            "tail-log", executor.workdir_root, workdir, 8192, phase="worker"
+        )
+    except Exception:  # unreachable: not started yet, as far as we know
+        logger.warning("step-lane smoke: tail-log failed", exc_info=True)
+        return ""
+    return proc.stdout.decode("utf-8", "replace") if proc.returncode == 0 else ""
+
+
+def _join_settlers(executor: Any) -> None:
+    for thread in list(getattr(executor, "_settlers", [])):
+        thread.join(timeout=_START_TIMEOUT)
+
+
+def _kill_verdict(
+    executor: Any,
+    facts: dict[str, Any],
+    started: bool,
+    outcome: list[tuple[Any, list[str]]],
+) -> dict[str, Any]:
+    job_id, workdir = str(facts.get("job_id") or ""), str(facts.get("workdir") or "")
+    state = executor._job_state(job_id) if job_id else ""
+    inspect = _inspect(executor, job_id, workdir) if job_id else {"error": "no job"}
+    problems = [p for p in _kill_problems(started, outcome, state, inspect) if p]
+    return {"ok": not problems, "problems": problems, "job": job_id, "state": state,
+            "inspect": inspect}  # fmt: skip
+
+
+def _kill_problems(
+    started: bool,
+    outcome: list[tuple[Any, list[str]]],
+    state: str,
+    inspect: dict[str, Any],
+) -> list[str]:
+    result = outcome[0][0] if outcome else None
+    return [
+        "" if started else "the step container never started",
+        "the cancelled step completed" if result is not None else "",
+        ""
+        if state == "CANCELLED"
+        else f"the job settled as {state or 'unknown'}, not CANCELLED",
+        f"inspector: {inspect['error']}" if inspect.get("error") else "",
+        _left("containers left", inspect.get("containers")),
+        _left("processes survived", inspect.get("processes")),
+        "the workdir survived the cancel" if inspect.get("workdir_left") else "",
+    ]
+
+
+def _left(what: str, items: Any) -> str:
+    return f"{what}: {'; '.join(str(i) for i in items)[:400]}" if items else ""
+
+
+def _inspect(executor: Any, killed_job: str, killed_workdir: str) -> dict[str, Any]:
+    """The inspector job's report ({"error": ...} when it could not run)."""
+    from .remote_slurm_step_executor import _job_identity
+    from .slurm_step_executor import TERMINAL_STATES
+
+    job = _job_identity(f"smoke-{uuid.uuid4().hex[:12]}", "inspect", 1)
+    try:
+        job.workdir = executor._mkwd(job)
+        node = _node_of(executor, killed_job)
+        script = inspect_script(executor, job, killed_job=killed_job,
+                                killed_workdir=killed_workdir, node=node)  # fmt: skip
+        executor._put(job, "job.sbatch", script.encode("utf-8"))
+        executor._submit(job)
+        deadline = time.monotonic() + _INSPECT_TIMEOUT
+        state = executor._job_state(job.job_id)
+        while state not in TERMINAL_STATES and time.monotonic() < deadline:
+            time.sleep(5.0)
+            state = executor._job_state(job.job_id)
+        blob = executor._read_reply_at(job.workdir, job)
+        return (
+            {**json.loads(blob), "node": node}
+            if blob
+            else {"error": f"no report ({state})"}
+        )
+    except Exception as exc:  # the report names it
+        logger.warning("step-lane smoke: inspector failed", exc_info=True)
+        return {"error": f"{type(exc).__name__}: {exc}"[:400]}
+    finally:
+        if job.workdir:
+            executor._rmwd(job.workdir)
+
+
+def _node_of(executor: Any, job_id: str) -> str:
+    """The node the job ran on (sacct NodeList), "" when unreadable."""
+    try:
+        proc = executor._run_cmd(
+            ["sacct", "-n", "-X", "-P", "-j", job_id, "-o", "NodeList"], timeout=30
+        )
+    except Exception:  # a forced-command key refuses raw sacct
+        logger.warning("step-lane smoke: sacct NodeList failed", exc_info=True)
+        return ""
+    node = (proc.stdout or "").strip().splitlines()
+    return (
+        node[0].strip()
+        if proc.returncode == 0 and node and node[0].strip().isascii()
+        else ""
+    )
+
+
 def _target(text: str) -> tuple[str, int]:
     host, _, port = text.rpartition(":")
     if not host or not port.isdigit():
@@ -341,13 +552,15 @@ def main(argv: list[str] | None = None) -> int:
 
 def _plan(partitions: str, gpu_partition: str) -> list[tuple[str, str, bool]]:
     """(kind, partition, gpu) runs: a probe per partition, one more with a
-    GPU, and the two-step chain on the first partition."""
-    plan = [("probe", p, False) for p in partitions.split(",") if p]
-    if plan and gpu_partition:
+    GPU, the two-step chain on the first partition and the kill check on
+    the last."""
+    names = [p for p in partitions.split(",") if p]
+    if not names:
+        return []
+    plan = [("probe", p, False) for p in names]
+    if gpu_partition:
         plan.append(("probe", gpu_partition, True))
-    if plan:
-        plan.append(("chain", plan[0][1], False))
-    return plan
+    return [*plan, ("chain", names[0], False), ("kill", names[-1], False)]
 
 
 def run_plan(
@@ -365,6 +578,10 @@ def run_plan(
         if kind == "chain":
             return run_chain(
                 partition, targets=targets, timeout=timeout, make_executor=make_executor
+            )
+        if kind == "kill":
+            return run_kill_check(
+                partition, timeout=timeout, make_executor=make_executor
             )
         return run_probe(
             partition,
