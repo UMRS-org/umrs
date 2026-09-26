@@ -75,6 +75,13 @@ vllm:
   max_num_seqs: 4
   tensor_parallel_size: 1
 
+# Workflow step execution: platform-template steps in-process. Uploaded step
+# code (ADR-074, 2026-09-26) needs this site's HPC lane, which is not built
+# here yet, so it is refused by name.
+step_executor:
+  remote_enabled: false
+  uploaded_code: refuse
+
 database:
   host: localhost
   port: 5432

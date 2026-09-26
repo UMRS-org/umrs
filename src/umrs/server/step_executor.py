@@ -840,17 +840,7 @@ class PodmanExecutor:
         region = s3_config.get("region_name") or os.environ.get("AWS_REGION")
         if region:
             cmd.extend(["-e", f"AWS_REGION={region}"])
-
-        # Forward AWS/MinIO credentials so the worker can authenticate.
-        # boto3 reads these from env; we never embed them in the payload.
-        for cred_var in (
-            "AWS_ACCESS_KEY_ID",
-            "AWS_SECRET_ACCESS_KEY",
-            "AWS_SESSION_TOKEN",
-        ):
-            val = os.environ.get(cred_var)
-            if val:
-                cmd.extend(["-e", f"{cred_var}={val}"])
+        # No credential value is forwarded into the container (ADR-074).
 
         if gpu:
             cmd.extend(["--device", "nvidia.com/gpu=all"])
@@ -1279,14 +1269,12 @@ class WorkerPoolExecutor:
             "--security-opt=no-new-privileges",
         ]
 
-        # Forward S3 credentials so the worker can build a boto3 client.
+        # S3 endpoint/region only: no credential value enters the container
+        # (ADR-074).
         for env_var in (
             "S3_ENDPOINT_URL",
             "MINIO_ENDPOINT",
             "AWS_REGION",
-            "AWS_ACCESS_KEY_ID",
-            "AWS_SECRET_ACCESS_KEY",
-            "AWS_SESSION_TOKEN",
         ):
             val = os.environ.get(env_var)
             if val:

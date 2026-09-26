@@ -1,9 +1,10 @@
 """Slice 10 runner-side tests: per-step image hint plumbing.
 
-The runner is a thin transport: it lifts ``routing_hints.image`` from
-the StepSpec into ``StepContext.metadata`` under
-``EXECUTOR_IMAGE_METADATA_KEY`` and records the resolved image in the
-``_routing`` log. Validation lives in the executor.
+The runner lifts ``routing_hints.image`` from the StepSpec into
+``StepContext.metadata`` under ``EXECUTOR_IMAGE_METADATA_KEY`` and records
+the resolved image in the ``_routing`` log. Since ADR-074 D-7 (2026-09-26)
+it first refuses a hint that is neither the platform image nor on the
+site's ``allowed_images``; reference validation still lives in the executor.
 """
 
 from __future__ import annotations
@@ -25,6 +26,11 @@ from umrs.server.workflow_execution_registry import (
     reset_execution_registry_for_tests,
 )
 from umrs.server.workflow_runner import run_workflow_record
+
+
+@pytest.fixture(autouse=True)
+def _allow_test_image(monkeypatch):
+    monkeypatch.setenv("UMRS_STEP_ALLOWED_IMAGES", "vlm:cuda")
 
 
 @pytest.fixture(autouse=True)
@@ -138,10 +144,9 @@ def test_no_routing_hints_no_metadata_key(tmp_path):
     assert EXECUTOR_IMAGE_METADATA_KEY not in executor.calls[0]["metadata"]
 
 
-def test_non_string_image_hint_surfaces_setup_error(tmp_path):
-    """A non-string ``routing_hints.image`` is forwarded as-is and the
-    executor raises a setup-phase error, which the runner must surface
-    as a step failure."""
+def test_non_string_image_hint_is_refused_before_the_executor(tmp_path):
+    """A non-string ``routing_hints.image`` is no allowed image: the runner
+    fails the step by name (ADR-074 D-7) before the executor sees it."""
     record = get_execution_registry().create(workflow_name="wf", user_id="alice")
     run_workflow_record(
         record,
@@ -152,8 +157,7 @@ def test_non_string_image_hint_surfaces_setup_error(tmp_path):
     assert record.status == "failed"
     step = record.steps["probe"]
     assert step.status == "failed"
-    assert "setup" in (step.error or "")
-    assert "string" in (step.error or "").lower()
+    assert "is not an allowed step image" in (step.error or "")
 
 
 def test_resolved_image_recorded_in_routing_log(tmp_path):

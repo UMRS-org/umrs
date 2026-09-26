@@ -7,9 +7,14 @@ this port maps the protocol onto the durable job runtime plus the
 in-process workflow execution registry.
 
 Semantics:
-  - ``trigger`` creates one durable ``WORKFLOW_RUN`` job; the scheduler/
-    monitor then routes it to ``WorkflowRunBackend`` exactly like a
-    client-triggered run (attempt-scoped outputs, commit pointer intact).
+  - ``trigger_as`` creates one durable ``WORKFLOW_RUN`` job for the loop's
+    verified owner, with the workflow resolved owner-scoped up front (ADR-074
+    D-8: a ``user`` workflow only for its owner, ``system`` for anyone) and
+    its ``source_path`` in the spec; the scheduler/monitor then routes it to
+    ``WorkflowRunBackend`` exactly like a client-triggered run
+    (attempt-scoped outputs, commit pointer intact). The owner never comes
+    from ``params``: the experiment planner writes those. ``trigger`` (the
+    protocol entry, no verified owner) runs only a ``system`` workflow.
   - ``wait`` blocks (the caller — the engine runner thread — is designed
     for blocking) until the execution registry reports a terminal status.
   - ``results`` mirrors the registry record, augmented with ``durable_job_id``
@@ -52,18 +57,34 @@ class UmrsWorkflowExecutionPort(WorkflowExecutionPort):
     # -- registration --------------------------------------------------------
 
     def trigger(self, workflow_name: str, params: dict) -> str:
+        return self.trigger_as(workflow_name, params, owner="")
+
+    def trigger_as(self, workflow_name: str, params: dict, *, owner: str) -> str:
+        """Start *workflow_name* as *owner* (the loop's verified owner; ""
+        for an ownerless loop). A workflow the owner may not run fails here
+        by name, before any job exists that ``wait`` would wait out."""
+        from umrs.server.workflow_registry_handler import resolve_workflow_for_caller
+
+        entry = resolve_workflow_for_caller(workflow_name, owner) or {}
+        source_path = str(entry.get("source_path") or "")
+        if not source_path:
+            raise RuntimeError(
+                f"workflow {workflow_name!r} is not one the loop's owner "
+                f"{owner or '(none)'!r} may run: a user workflow runs only for "
+                "its owner, a system workflow for anyone (ADR-074 D-8)"
+            )
         execution_id = f"exec-{uuid4().hex}"
-        params = dict(params)
-        user_id = str(params.pop("user_id", "") or "research-loop")
+        params = {k: v for k, v in params.items() if k != "user_id"}
         project_id = str(params.get("project_id") or "research")
         spec = {
             "workflow_name": workflow_name,
             "params": params,
             "execution_id": execution_id,
+            "source_path": source_path,
         }
         job_id = self._store.create_job(
             project_id=project_id,
-            user_id=user_id,
+            user_id=owner or "research-loop",
             job_type=JobType.WORKFLOW_RUN,
             spec=spec,
             # research iterations are deterministic replays — re-executing a

@@ -97,11 +97,23 @@ vllm:
   max_num_seqs: 4
   tensor_parallel_size: 1
 
-# Workflow step execution (production enablement 2026-09-25). The default
-# stays in-process (existing workflows unchanged); a workflow that declares
-# execution_mode: slurm is submitted over the extra.ssh_target path
-# (RemoteSlurmStepExecutor — scheduler.kind slurm-remote marks the site).
-# workdir_root is on the cluster Lustre so the compute node sees input.pkl.
+# Workflow step execution (production enablement 2026-09-25; step lane
+# 2026-09-26, ADR-074 + docs/development/rccs-step-lane-spec-2026-09-26.md).
+# Platform-template steps stay in-process. Uploaded step code never runs in
+# the server: it goes to this site's HPC lane (RemoteSlurmStepExecutor over
+# extra.ssh_target) when the lane is available, else uploaded_code decides
+# (refuse = refused by name). The lane is available only with remote_enabled,
+# workdir_root, helper_path and a platform image; the umrs-front converge
+# sets that image (UMRS_STEP_IMAGE, plus the archive dir, helper and venue
+# paths) only after it staged and verified the step image archive on the
+# cluster, so image stays "" here.
+# - remote_enabled: false until the rccs receipts (maintainer flips it).
+# - gpu: false — plain-podman CDI on GB10 is unproven; a step asks for a GPU
+#   with routing_hints.gpu once a smoke job proves the form.
+# - workdir_root: on Lustre (the compute node sees it), outside the git
+#   checkout (read-only by rule).
+# - helper_path / venue_script: the pinned cluster checkout hpc-code-sync
+#   keeps (umrs_front_rccs_hpc_repo_dir).
 step_executor:
   kind: inproc
   partition: ng-dgx-m0,ng-dgx-m1,ng-dgx-m2,ng-dgx-m3
@@ -110,9 +122,14 @@ step_executor:
   memory: ""           # ng-dgx-m* reject --mem
   time_limit: "01:00:00"
   account: cloud-users
-  image: ""            # per-workflow routing_hints.image (must exist on the compute node)
-  gpu: true
-  workdir_root: /lvs0/rccs-dmp/masaru.nagaso/ai4s-platform/umrs/deploy/rccs/steps
+  image: ""            # composed by the converge after the archive verifies (see above)
+  gpu: false
+  workdir_root: /lvs0/rccs-dmp/masaru.nagaso/umrs_steps
+  remote_enabled: false
+  uploaded_code: refuse
+  image_archive_dir: /lvs0/rccs-dmp/masaru.nagaso/umrs_models/images
+  helper_path: /lvs0/rccs-dmp/masaru.nagaso/ai4s-platform/umrs/deploy/_common/umrs_step_helper.py
+  venue_script: /lvs0/rccs-dmp/masaru.nagaso/ai4s-platform/umrs/src/umrs/mini-rivault-llm/venue.sh
 
 database:
   host: localhost

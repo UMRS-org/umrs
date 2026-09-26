@@ -35,12 +35,13 @@ from ..core.TaskCmdStatus import TaskCmd
 from ..core.zmq_correlation import dumps_with_correlation_id
 from ..jobs.models import JobStatus
 from ..jobs.store import InvalidTransitionError, JobNotFoundError, JobStore
-from ..server.file_handling import handle_upload_workflow
+from ..server.file_handling import handle_upload_workflow, workflow_name_refusal
 from ..server.job_tracking_handler import DurableJobCommandBackend
 from ..server.workflow_registry_handler import (
     _resolve_workflow_catalog_entry,
     handle_workflow_command,
     register_workflow,
+    resolve_workflow_for_caller,
     unregister_workflow,
 )
 from .jobs import CallerIdentity, get_caller_identity, get_optional_job_store
@@ -617,7 +618,11 @@ async def save_run_definition(
     from ..server.run_definition_registry import save_definition
 
     caller = _header_str(x_user_id) or ""
-    workflow_entry = _resolve_workflow_catalog_entry(request.workflow_name, caller)
+    workflow_entry = resolve_workflow_for_caller(
+        request.workflow_name,
+        caller,
+        is_admin=_header_str(x_verified_is_admin) == "true",
+    )
     if workflow_entry is None:
         raise_typed(
             PlatformError.workflows(
@@ -761,7 +766,9 @@ async def list_workflow_triggers(
         x_user_id, x_verified_project_id, x_verified_is_admin, x_verified_hmac
     )
     caller = _header_str(x_user_id) or ""
-    entry = _resolve_workflow_catalog_entry(workflow_name, caller)
+    entry = resolve_workflow_for_caller(
+        workflow_name, caller, is_admin=_header_str(x_verified_is_admin) == "true"
+    )
     if entry is None:
         raise_typed(
             PlatformError.workflows(
@@ -852,12 +859,18 @@ async def describe_workflow(
     x_verified_is_admin: str | None = Header(None),
     x_verified_hmac: str | None = Header(None),
 ):
-    """Return declared parameter schema and metadata for a workflow."""
+    """Return declared parameter schema and metadata for a workflow.
+
+    Owner-scoped (ADR-074 D-8): the caller's own or a system workflow;
+    another owner's only for admins.
+    """
     _require_verified_workflow_identity(
         x_user_id, x_verified_project_id, x_verified_is_admin, x_verified_hmac
     )
     caller = _header_str(x_user_id) or ""
-    entry = _resolve_workflow_catalog_entry(workflow_name, caller)
+    entry = resolve_workflow_for_caller(
+        workflow_name, caller, is_admin=_header_str(x_verified_is_admin) == "true"
+    )
     if entry is None:
         raise_typed(
             PlatformError.workflows(
@@ -886,6 +899,9 @@ def _resolved_upload_name(filename: str, workflow_name: str | None) -> str:
     resolved = workflow_name or Path(filename).stem
     if not resolved:
         raise_typed(PlatformError.workflows("bad_request", "workflow_name is required"))
+    refusal = workflow_name_refusal(resolved)
+    if refusal:
+        raise_typed(PlatformError.workflows("bad_request", refusal))
     return resolved
 
 
@@ -944,6 +960,11 @@ def _register_uploaded_workflow(
     )
 
 
+def _upload_message(workflow_name: str, notice: str | None) -> str:
+    message = f"Workflow '{workflow_name}' uploaded and registered"
+    return f"{message}; {notice}" if notice else message
+
+
 @router.post(
     "/upload",
     response_model=WorkflowUploadResponse,
@@ -982,11 +1003,11 @@ async def upload_workflow(
         temp_path = temp_file.name
         temp_file.write(await file.read())
 
-    ok, dest, err = handle_upload_workflow(
+    ok, dest, notice = handle_upload_workflow(
         resolved_user_id, temp_path, resolved_workflow_name
     )
     if not ok:
-        _raise_upload_error(err or "Workflow upload failed")
+        _raise_upload_error(notice or "Workflow upload failed")
 
     version, workflow_json = _load_extracted_workflow_json(dest)
     _register_uploaded_workflow(
@@ -1013,7 +1034,7 @@ async def upload_workflow(
         workflow_name=resolved_workflow_name,
         accepted=True,
         source_path=dest,
-        message=f"Workflow '{resolved_workflow_name}' uploaded and registered",
+        message=_upload_message(resolved_workflow_name, notice),
     )
 
 
@@ -1037,7 +1058,9 @@ async def trigger_workflow(
         x_verified_project_memberships,
         x_verified_is_admin,
     )
-    entry = _resolve_workflow_catalog_entry(workflow_name, user_id)
+    # ADR-074 D-8: owner-scoped, the same resolution the run below uses.
+    is_admin = _header_str(x_verified_is_admin) == "true"
+    entry = resolve_workflow_for_caller(workflow_name, user_id, is_admin=is_admin)
     if entry is None:
         raise_typed(
             PlatformError.workflows(
@@ -1083,6 +1106,7 @@ async def trigger_workflow(
         # `_identity_verified` is False, so this no longer uprates a forged
         # tuple into `gateway_verified` truth downstream.
         trusted_identity=identity_verified,
+        caller_is_admin=is_admin,
     )
     return _parse_command_response(raw, action="trigger")
 

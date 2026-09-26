@@ -21,6 +21,7 @@ import os
 import re
 from typing import Any
 
+from umrs.pipeline_sdk.staged_s3 import is_staged
 from umrs.pipeline_sdk.step import Step, StepContext, StepResult
 
 logger = logging.getLogger(__name__)
@@ -66,7 +67,13 @@ class LLMStep(Step):
         else:
             try:
                 response_text = self._call_llm(prompt)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
+                if is_staged():
+                    # ADR-074 D-5: a denial must never read as a success.
+                    raise RuntimeError(
+                        "LLMStep: the model call failed on the staged HPC lane, "
+                        f"which has no network ({exc}); no mock answer is returned"
+                    ) from exc
                 logger.warning(
                     "LLMStep: LLM call failed (%s), returning mock response", exc
                 )

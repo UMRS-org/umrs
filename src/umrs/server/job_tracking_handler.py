@@ -179,6 +179,25 @@ def _validate_job_spec(job_type: JobType, spec: Any) -> dict[str, Any]:
     return spec
 
 
+#: Only the server creates workflow_run jobs, from a trigger it resolved for
+#: the caller (ADR-074 D-8): a caller-built spec chose another owner's
+#: workflow (by name or source_path) and a live run's execution_id.
+WORKFLOW_RUN_SERVER_ONLY = (
+    "workflow_run jobs are created by the server from a workflow trigger "
+    "(RUN_WORKFLOW or POST /umrs/workflows/{name}/trigger), never submitted "
+    "directly (ADR-074 D-8)"
+)
+
+
+def _check_submit_surface(job_type: JobType, internal: bool) -> None:
+    if (job_type == JobType.WORKFLOW_RUN) != internal:
+        raise ValueError(
+            WORKFLOW_RUN_SERVER_ONLY
+            if not internal
+            else "the internal submit creates workflow_run jobs only"
+        )
+
+
 def _serialize_attempt(attempt) -> dict[str, Any]:
     data = attempt.to_dict()
     data.setdefault("exit_reason", None)
@@ -291,6 +310,15 @@ class DurableJobCommandBackend:
         )
 
     def submit(self, client_id: str, payload_str: str) -> str:
+        """JOB_SUBMIT from a client: any job type but ``workflow_run``."""
+        return self._submit(client_id, payload_str, internal=False)
+
+    def submit_workflow_run(self, client_id: str, payload_str: str) -> str:
+        """The server's own entry for a ``workflow_run`` job whose spec it
+        built from an owner-scoped resolution (never a client payload)."""
+        return self._submit(client_id, payload_str, internal=True)
+
+    def _submit(self, client_id: str, payload_str: str, *, internal: bool) -> str:
         try:
             payload = _parse_payload(payload_str)
         except json.JSONDecodeError as exc:
@@ -298,6 +326,7 @@ class DurableJobCommandBackend:
 
         try:
             job_type = _parse_job_type((payload.get("job_type") or "").strip())
+            _check_submit_surface(job_type, internal)
 
             # Guard: reject endpoint_provision from users without a Slurm
             # account when the execution backend requires one.

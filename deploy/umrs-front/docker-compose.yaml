@@ -188,6 +188,14 @@ services:
       # the durable ingest → understand → embed chain (offline rule: never
       # an HF id, only this host path).
       UMRS_KNOWLEDGE_EMBED_MODEL: ${UMRS_RCCS_KNOWLEDGE_EMBED_MODEL:-/models/e5-base-v2}
+      # Uploaded-workflow step lane (ADR-074; rccs step-lane spec §10): the
+      # converge writes UMRS_RCCS_STEP_* into .env only after it verified the
+      # staged step image on the cluster. Empty (the default) means no
+      # platform step image, so the HPC lane stays unavailable.
+      UMRS_STEP_IMAGE: ${UMRS_RCCS_STEP_IMAGE:-}
+      UMRS_STEP_IMAGE_ARCHIVE_DIR: ${UMRS_RCCS_STEP_IMAGE_ARCHIVE_DIR:-}
+      UMRS_STEP_HELPER: ${UMRS_RCCS_STEP_HELPER:-}
+      UMRS_STEP_VENUE_SCRIPT: ${UMRS_RCCS_STEP_VENUE_SCRIPT:-}
       PYTHONUNBUFFERED: "1"
     volumes:
       - ../rccs-front/site.yaml:/etc/umrs/site.yaml:ro,z

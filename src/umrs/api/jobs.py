@@ -614,6 +614,7 @@ async def create_job(
         # path — otherwise a durable job is accepted and only explodes with
         # "not yet implemented" at dispatch time.
         _enforce_dispatchable_job_type(job_type)
+        _enforce_client_job_types(job_type, request.fan_out_jobs)
 
         # Parse restart policy
         try:
@@ -778,6 +779,21 @@ def _enforce_dispatchable_job_type(job_type: JobType) -> None:
                 ),
             )
         )
+
+
+def _enforce_client_job_types(
+    job_type: JobType, fan_out_jobs: list[dict[str, Any]] | None
+) -> None:
+    """``workflow_run`` jobs only come from the server's own trigger path,
+    which resolves the workflow for the caller (ADR-074 D-8); a client-built
+    spec picked another owner's workflow and a live run's execution_id."""
+    from ..server.job_tracking_handler import WORKFLOW_RUN_SERVER_ONLY
+
+    children = [
+        str((child or {}).get("job_type") or "") for child in fan_out_jobs or []
+    ]
+    if job_type == JobType.WORKFLOW_RUN or JobType.WORKFLOW_RUN.value in children:
+        raise_typed(PlatformError.jobs("bad_request", WORKFLOW_RUN_SERVER_ONLY))
 
 
 def _parse_job_type_filter(job_type: str | None) -> JobType | None:

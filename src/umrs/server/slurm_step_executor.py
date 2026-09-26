@@ -18,6 +18,15 @@ Flow:
     5. Read ``output.pkl`` reply dict and return the :class:`StepResult`
 
 The executor is selected by setting ``UMRS_STEP_EXECUTOR=slurm``.
+
+This module also holds what the front-end lane
+(:mod:`umrs.server.remote_slurm_step_executor`, ADR-074) shares with it: the
+terminal Slurm states, the queue/run :class:`PollClock` and the staged job
+script (:func:`render_staged_job_script`, build spec 2026-09-26 §7) — the
+hardened podman argv that mounts only the workdir's ``in``/``out``/``reply``/
+``src`` and ``input.pkl``, never the workdir itself, and bounds what the step
+can write to the shared filesystem while it runs (a per-file size limit, a
+capped log, a watchdog on ``out/`` and ``reply/``).
 """
 
 from __future__ import annotations
@@ -56,6 +65,33 @@ from .step_reply import (
 )
 
 logger = logging.getLogger(__name__)
+
+#: States a job never leaves once Slurm reports them (build spec §8). The
+#: lane asks ``--no-requeue``, so NODE_FAIL / PREEMPTED do not come back.
+TERMINAL_FAILURES = frozenset(
+    {
+        "FAILED",
+        "CANCELLED",
+        "TIMEOUT",
+        "OUT_OF_MEMORY",
+        "NODE_FAIL",
+        "PREEMPTED",
+        "BOOT_FAIL",
+        "DEADLINE",
+    }
+)
+TERMINAL_STATES = TERMINAL_FAILURES | {"COMPLETED"}
+#: Waiting for a node; a job seen here again after RUNNING was requeued.
+QUEUED_STATES = frozenset(
+    {"PENDING", "CONFIGURING", "REQUEUED", "REQUEUE_HOLD", "REQUEUE_FED"}
+)
+UNKNOWN = "UNKNOWN"
+UNREACHABLE = "UNREACHABLE"
+#: Past the job's own ``--time`` before the executor gives up on it: above
+#: RCCS KillWait (120 s) plus the epilog, so a Slurm TIMEOUT settles first.
+WALL_GRACE_SEC = 300
+#: How long the job state may stay unreadable over SSH before giving up.
+UNREACHABLE_BUDGET_SEC = 600
 
 
 def measure_slurm_accounting(
@@ -137,7 +173,7 @@ def _checked_image(image: str) -> str:
 
 
 def _s3_env_args(s3_config: dict[str, Any]) -> list[str]:
-    """S3 endpoint/region/credential env passthrough for the worker pod."""
+    """S3 endpoint/region env for the worker pod (never a credential)."""
     args: list[str] = []
     endpoint = (
         s3_config.get("endpoint_url")
@@ -157,14 +193,7 @@ def _s3_env_args(s3_config: dict[str, Any]) -> list[str]:
     region = s3_config.get("region_name") or os.environ.get("AWS_REGION")
     if region:
         args.extend(["-e", shlex.quote(f"AWS_REGION={region}")])
-    for cred_var in (
-        "AWS_ACCESS_KEY_ID",
-        "AWS_SECRET_ACCESS_KEY",
-        "AWS_SESSION_TOKEN",
-    ):
-        val = os.environ.get(cred_var)
-        if val:
-            args.extend(["-e", shlex.quote(f"{cred_var}={val}")])
+    # No credential value ever reaches the job script or the pod (ADR-074).
     return args
 
 
@@ -224,6 +253,518 @@ def _podman_run_argv(
         ]
     )
     return parts
+
+
+def slurm_duration_seconds(text: str) -> float | None:
+    """A Slurm duration (``[D-]HH:MM:SS``, ``MM:SS``, bare minutes) in seconds."""
+    from umrs.shared.slurm_accounting import parse_slurm_elapsed
+
+    raw = str(text or "").strip()
+    if raw.isdigit():  # Slurm reads a bare number as minutes
+        return float(int(raw) * 60)
+    return parse_slurm_elapsed(raw)
+
+
+@dataclass
+class PollClock:
+    """Separate queue and run clocks (build spec §8).
+
+    Queue wait is bounded by ``queue_timeout``; Slurm's ``--time`` counts from
+    job start, so the run clock starts at the first state past the queue and
+    allows the job's own limit plus :data:`WALL_GRACE_SEC`. A job seen queued
+    again after it ran was requeued, and Slurm grants the re-run a fresh
+    ``--time``, so both clocks restart. An unreadable state (SSH or the Slurm
+    CLI failing) is bounded by ``unreachable_budget`` on its own.
+    """
+
+    queue_timeout: float
+    wall_seconds: float
+    unreachable_budget: float = UNREACHABLE_BUDGET_SEC
+    submitted: float = field(default_factory=time.monotonic)
+    running_since: float | None = None
+    unreachable_since: float | None = None
+
+    def observe(self, state: str) -> None:
+        now = time.monotonic()
+        if state != UNREACHABLE:
+            self.unreachable_since = None
+        elif self.unreachable_since is None:
+            self.unreachable_since = now
+        if state in QUEUED_STATES:
+            if self.running_since is not None:
+                logger.warning("Slurm step job requeued; its clocks restart")
+                self.running_since, self.submitted = None, now
+        elif state not in (UNKNOWN, UNREACHABLE) and self.running_since is None:
+            self.running_since = now
+
+    def expired(self) -> str | None:
+        """Why polling must stop now, or None."""
+        now = time.monotonic()
+        if self.unreachable_since is not None:
+            lasted = now - self.unreachable_since
+            if lasted >= self.unreachable_budget:
+                return f"state unreadable over SSH for {int(lasted)}s"
+        if self.running_since is None:
+            if now - self.submitted > self.queue_timeout:
+                return f"still queued after {int(self.queue_timeout)}s (queue_timeout)"
+            return None
+        if now - self.running_since > self.wall_seconds + WALL_GRACE_SEC:
+            return (
+                f"ran past its {int(self.wall_seconds)}s time limit "
+                f"(+{WALL_GRACE_SEC}s grace)"
+            )
+        return None
+
+
+#: The step container's contract label (``docker/Containerfile.step``).
+STEP_CONTRACT_LABEL = "org.umrs.step-contract"
+STEP_CONTRACT_VERSION = "1"
+#: Exit codes of the job script: 75 = transient, 78 = configuration.
+_EX_TEMPFAIL = 75
+_EX_CONFIG = 78
+_ARCHIVE_PART_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+_RUN_TAG_RE = re.compile(r"[A-Za-z0-9._-]{1,64}")
+#: What the step container may write to the job's Slurm log (Lustre): the
+#: head live, the tail (where a traceback lands) at the end; the middle of an
+#: over-long log is dropped.
+LOG_HEAD_BYTES = 63 * 1024 * 1024
+LOG_TAIL_BYTES = 1024 * 1024
+#: How often the job's watchdog measures ``out/`` and ``reply/``.
+WATCH_SECONDS = 15
+
+
+def image_archive_stem(image: str) -> str:
+    """``<name>-<tag>`` of the archive a node loads *image* from: the stager
+    saves ``localhost/umrs-step:<sha12>`` as ``umrs-step-<sha12>-<arch>.tar``."""
+    leaf = image.rsplit("/", 1)[-1]
+    name, _, tag = leaf.partition(":")
+    tag = tag or "latest"
+    if "@" in leaf or not (
+        _ARCHIVE_PART_RE.fullmatch(name) and _ARCHIVE_PART_RE.fullmatch(tag)
+    ):
+        raise StepExecutionError(
+            "setup",
+            f"image {image!r} has no archive name on this lane "
+            "(expected [registry/]name:tag, no digest)",
+        )
+    return f"{name}-{tag}"
+
+
+@dataclass(frozen=True)
+class StagedJob:
+    """Everything the staged job script is rendered from."""
+
+    workdir: str
+    job_name: str
+    attempt: int
+    #: The run id as ``--comment`` carries it (reconciliation matches it).
+    run_tag: str
+    partition: str
+    account: str
+    cpus: int
+    memory: str
+    time_limit: str
+    gres_gpus: int
+    image: str
+    image_archive_dir: str
+    venue_script: str
+    needs_gpu: bool
+    #: ``--pids-limit`` (0 omits it and its check).
+    pids_limit: int = 512
+    #: ``--ulimit fsize``: no file the step writes grows past this.
+    max_file_bytes: int = 8 * 1024**3
+    #: The watchdog stops the step once ``out/`` + ``reply/`` pass these.
+    max_out_entries: int = 40_008
+    max_out_bytes: int = 32 * 1024**3 + 4 * 1024**2
+    #: The watchdog stops the step below this much free space on the
+    #: workdir's filesystem (0: no floor) — a bound no permission can hide.
+    min_free_bytes: int = 0
+    #: ``--deadline=now+N``: Slurm itself ends a job that could no longer
+    #: finish N s after submission (0: none), even one no server chases.
+    deadline_seconds: int = 0
+    watch_seconds: int = WATCH_SECONDS
+    log_head_bytes: int = LOG_HEAD_BYTES
+    log_tail_bytes: int = LOG_TAIL_BYTES
+
+
+#: The step container's posture (ADR-074 D-4, build spec §7). ``--user``
+#: must be explicit: the image's USER 65534 cannot read the 0700 workdir.
+#: ``--http-proxy=false``: podman would copy the job's (login session's)
+#: ``*_proxy`` variables into the container, a proxy URL may carry a password.
+_POD_POSTURE = (
+    "--rm",
+    "--init",
+    "--pull=never",
+    "--network=none",
+    "--http-proxy=false",
+    "--read-only",
+    "--tmpfs /tmp:rw,size=4g",
+    "--cap-drop=all",
+    "--security-opt no-new-privileges",
+    "--userns=keep-id",
+    '--user "$(id -u):$(id -g)"',
+)
+
+
+def _pod_posture(job: StagedJob, name: str, *, seccomp: bool = True) -> list[str]:
+    """``podman run`` options for container *name* (a shell word); with
+    *seccomp*, the node's default profile in which ``fallocate`` fails
+    (``${_step_seccomp}``, :func:`_staged_seccomp_lines`)."""
+    parts = [*_POD_POSTURE[:2], f"--name {name}", *_POD_POSTURE[2:]]
+    if seccomp:
+        parts.append('--security-opt seccomp="${_step_seccomp}"')
+    if job.pids_limit > 0:
+        parts.append(f"--pids-limit={int(job.pids_limit)}")
+    return [*parts, f"--ulimit fsize={int(job.max_file_bytes)}"]
+
+
+#: (workdir entry, container path, mode) — the workdir itself, its job
+#: script and its Slurm logs are never mounted.
+_STAGED_MOUNTS = (
+    ("in", "/work/in", "ro"),
+    ("out", "/work/out", "rw"),
+    ("reply", "/work/reply", "rw"),
+    ("src", "/src", "ro"),
+    ("input.pkl", "/work/input.pkl", "ro"),
+)
+_STAGED_ENV = (
+    "UMRS_STEP_INPUT=/work/input.pkl",
+    "UMRS_STEP_OUTPUT_JSON=/work/reply/output.json",
+    "UMRS_STEP_STAGED=1",
+    "UMRS_STEP_SOURCE_DIR=/src",
+)
+
+
+def staged_podman_argv(job: StagedJob) -> list[str]:
+    """``podman run`` for a staged step; ``${_step_image}`` is set by the
+    image-ensure lines. No other ``-e`` — the step gets files only."""
+    parts = ["podman", "run", *_pod_posture(job, '"${_step_ctr}"')]
+    for entry, target, mode in _STAGED_MOUNTS:
+        parts += ["-v", shlex.quote(f"{job.workdir}/{entry}:{target}:{mode}")]
+    for assignment in _STAGED_ENV:
+        parts += ["-e", assignment]
+    if job.needs_gpu:
+        parts += ["--device", "nvidia.com/gpu=all"]
+    return [*parts, '"${_step_image}"', "python", "-m", "umrs.server.step_worker"]
+
+
+def _staged_directives(job: StagedJob) -> list[str]:
+    if not _RUN_TAG_RE.fullmatch(job.run_tag):
+        raise StepExecutionError(
+            "setup", f"run tag {job.run_tag[:80]!r} cannot go into --comment"
+        )
+    lines = [
+        "#!/bin/bash",
+        f"#SBATCH --job-name={job.job_name}",
+        f"#SBATCH --comment=umrs-step:{job.run_tag}:{int(job.attempt)}",
+        "#SBATCH --no-requeue",
+        f"#SBATCH --time={job.time_limit}",
+        f"#SBATCH --partition={job.partition}",
+    ]
+    if job.account:
+        lines.append(f"#SBATCH --account={job.account}")
+    lines.append(f"#SBATCH --cpus-per-task={int(job.cpus)}")
+    # Partitions such as RCCS ng-dgx-m* reject --mem and --gres.
+    if job.memory.strip():
+        lines.append(f"#SBATCH --mem={job.memory}")
+    if job.needs_gpu and job.gres_gpus > 0:
+        lines.append(f"#SBATCH --gres=gpu:{int(job.gres_gpus)}")
+    if job.deadline_seconds > 0:
+        lines.append(f"#SBATCH --deadline=now+{int(job.deadline_seconds)}")
+    lines += [
+        f"#SBATCH --output={job.workdir}/log/slurm.out",
+        f"#SBATCH --error={job.workdir}/log/slurm.err",
+    ]
+    return lines
+
+
+def _staged_prologue() -> list[str]:
+    return [
+        "",
+        "set -euo pipefail",
+        "umask 077",
+        '_step_ctr="umrs-step-${SLURM_JOB_ID}"',
+        '_step_watch_pid=""',
+        "_step_fatal() {",
+        "    printf '[umrs-step] FATAL: %s\\n' \"$2\" >&2",
+        '    exit "$1"',
+        "}",
+        "# scancel / TIMEOUT send TERM: exit through the trap so the pod goes too",
+        "# (the epilog's pkill backstops it on exclusive nodes).",
+        "_step_cleanup() {",
+        "    trap '' TERM INT",
+        '    if [[ -n "${_step_watch_pid}" ]]; then',
+        '        kill "${_step_watch_pid}" 2>/dev/null || true',
+        "    fi",
+        '    podman kill "${_step_ctr}" >/dev/null 2>&1 || true',
+        "}",
+        "trap _step_cleanup EXIT",
+        "trap 'exit 143' TERM",
+        "trap 'exit 130' INT",
+        "",
+    ]
+
+
+def _or_fatal(command: str, code: int, message: str) -> str:
+    """``command || _step_fatal code "message"`` (*message* may expand vars)."""
+    return f'{command} || _step_fatal {code} "{message}"'
+
+
+def _staged_venue_lines(venue_script: str) -> list[str]:
+    """Job-private podman configuration (ADR-045 D1: venue.sh)."""
+    return [
+        "# sbatch over SSH exports the login session's runtime dir, which the",
+        "# compute node may not have; venue.sh then picks its own.",
+        'if [[ -n "${XDG_RUNTIME_DIR:-}" && ! -w "${XDG_RUNTIME_DIR}" ]]; then',
+        "    unset XDG_RUNTIME_DIR",
+        "fi",
+        f"_step_venue={shlex.quote(venue_script)}",
+        _or_fatal(
+            '[[ -f "${_step_venue}" ]]',
+            _EX_CONFIG,
+            "venue script not found: ${_step_venue}",
+        ),
+        "# shellcheck disable=SC1090",
+        'source "${_step_venue}"',
+        _or_fatal(
+            'rivault_venue_prepare "umrs-step-${SLURM_JOB_ID}"',
+            _EX_TEMPFAIL,
+            "podman venue could not be prepared on $(hostname)",
+        ),
+        "",
+    ]
+
+
+def _staged_image_lines(image: str, archive_dir: str) -> list[str]:
+    """Image ensure: the node's image must carry the archive's recorded id,
+    else it is removed and loaded from the archive; never pulled."""
+    stem = image_archive_stem(image)
+    archive = shlex.quote(f"{archive_dir.rstrip('/')}/{stem}-")
+    label = "'{{ index .Config.Labels \"" + STEP_CONTRACT_LABEL + "\" }}'"
+    inspect = "podman image inspect --format"
+    image_id = f"$({inspect} '{{{{.Id}}}}' \"${{_step_image}}\" 2>/dev/null || true)"
+    contract = f'$({inspect} {label} "${{_step_image}}" 2>/dev/null || true)'
+    return [
+        f"_step_image={shlex.quote(image)}",
+        f'_step_archive={archive}"$(uname -m).tar"',
+        _or_fatal(
+            '[[ -f "${_step_archive}" && -f "${_step_archive}.id" ]]',
+            _EX_CONFIG,
+            "no step image archive ${_step_archive} (+ .id)",
+        ),
+        '_step_want="$(head -c 200 "${_step_archive}.id" | tr -d \'[:space:]\')"',
+        f'_step_have="{image_id}"',
+        'if [[ -z "${_step_want}" || "${_step_have}" != "${_step_want}" ]]; then',
+        '    podman rmi -f "${_step_image}" >/dev/null 2>&1 || true',
+        "    "
+        + _or_fatal(
+            'podman load -i "${_step_archive}" >&2',
+            _EX_CONFIG,
+            "podman load ${_step_archive} failed",
+        ),
+        f'    _step_have="{image_id}"',
+        "    "
+        + _or_fatal(
+            '[[ -n "${_step_want}" && "${_step_have}" == "${_step_want}" ]]',
+            _EX_CONFIG,
+            "image ${_step_image} does not match ${_step_archive}.id",
+        ),
+        "    echo '[umrs-step] image loaded from archive'",
+        "fi",
+        f'_step_contract="{contract}"',
+        _or_fatal(
+            f'[[ "${{_step_contract}}" == "{STEP_CONTRACT_VERSION}" ]]',
+            _EX_CONFIG,
+            f"image ${{_step_image}} lacks {STEP_CONTRACT_LABEL}={STEP_CONTRACT_VERSION}",
+        ),
+        "",
+    ]
+
+
+#: Rewrites the node's default seccomp profile (argv[1]) so that
+#: ``fallocate`` fails with EOPNOTSUPP: a step could otherwise reserve the
+#: shared filesystem's free space in one call the watchdog's size checks
+#: never see (``FALLOC_FL_KEEP_SIZE`` keeps the apparent size, and
+#: ``RLIMIT_FSIZE`` does not apply to it). glibc's ``posix_fallocate`` then
+#: falls back to writing, which the file size limit and the watchdog bound.
+#: Runs as ``python -I -c`` inside the step image (no single quote in it).
+SECCOMP_FILTER_PY = """import json, sys
+profile = json.load(open(sys.argv[1]))
+kept = []
+for rule in profile.get("syscalls") or []:
+    if rule.get("name") == "fallocate":
+        continue
+    if "names" in rule:
+        rule["names"] = [n for n in rule["names"] if n != "fallocate"]
+        if not rule["names"]:
+            continue
+    kept.append(rule)
+kept.append({"names": ["fallocate"], "action": "SCMP_ACT_ERRNO", "errnoRet": 95})
+profile["syscalls"] = kept
+json.dump(profile, sys.stdout)
+"""
+
+
+def _staged_seccomp_lines(job: StagedJob) -> list[str]:
+    """``${_step_seccomp}``: the node's default profile plus the fallocate
+    rule, written by the step image's Python next to the job script (the
+    workdir itself is never mounted). No profile file, no step."""
+    info = "podman info --format '{{.Host.Security.SECCOMPProfilePath}}'"
+    transform = " ".join(
+        [
+            "podman run",
+            *_pod_posture(job, '"${_step_ctr}-seccomp"', seccomp=False),
+            '-v "${_step_seccomp_base}:/umrs-seccomp-base.json:ro"',
+            '"${_step_image}" python -I -c',
+            shlex.quote(SECCOMP_FILTER_PY),
+            "/umrs-seccomp-base.json",
+        ]
+    )
+    return [
+        f'_step_seccomp_base="$({info} 2>/dev/null || true)"',
+        _or_fatal(
+            '[[ -f "${_step_seccomp_base}" ]]',
+            _EX_CONFIG,
+            "no default seccomp profile on $(hostname) (${_step_seccomp_base:0:200})",
+        ),
+        f"_step_seccomp={shlex.quote(job.workdir + '/seccomp.json')}",
+        _or_fatal(
+            f'{transform} > "${{_step_seccomp}}"',
+            _EX_CONFIG,
+            "the step seccomp profile could not be written on $(hostname)",
+        ),
+        "",
+    ]
+
+
+def _staged_pids_lines(job: StagedJob) -> list[str]:
+    """``--pids-limit`` must hold before the step runs: rootless podman on a
+    cgroupfs node without a delegated cgroup drops it with a warning ("PIDs
+    limit discarded"), or its runtime refuses the container. A probe in the
+    same posture reads the limit back, so neither passes silently."""
+    if job.pids_limit <= 0:
+        return []
+    limit = int(job.pids_limit)
+    probe = " ".join(
+        [
+            "podman run",
+            *_pod_posture(job, '"${_step_ctr}-pids"'),
+            '"${_step_image}" cat /sys/fs/cgroup/pids.max',
+        ]
+    )
+    tail = "$(printf '%s' \"${_step_pids}\" | tail -c 300)"
+    return [
+        _or_fatal(
+            f'_step_pids="$({probe} 2>&1)"',
+            _EX_CONFIG,
+            f"the step posture was refused on $(hostname): {tail}",
+        ),
+        '_step_pids_max="$(printf \'%s\\n\' "${_step_pids}" | tail -n 1)"',
+        _or_fatal(
+            f'[[ "${{_step_pids_max}}" == "{limit}" ]]',
+            _EX_CONFIG,
+            f"--pids-limit={limit} is not applied on $(hostname) "
+            "(pids.max ${_step_pids_max:0:40})",
+        ),
+        "",
+    ]
+
+
+def _watch_stop(condition: str, why: str) -> list[str]:
+    """``if condition`` then name *why* in the log and kill the pod."""
+    return [
+        f"        if {condition}; then",
+        f"            printf '[umrs-step] FATAL: %s\\n' \"{why}; the step was stopped\" >&2",
+        '            podman kill "${_step_ctr}" >/dev/null 2>&1',
+        "            return",
+        "        fi",
+    ]
+
+
+def _watch_floor_lines(job: StagedJob) -> list[str]:
+    if job.min_free_bytes <= 0:
+        return []
+    floor = int(job.min_free_bytes)
+    workdir = shlex.quote(job.workdir)
+    return [
+        (
+            f'        avail="$(df -B1 --output=avail -- {workdir} 2>/dev/null'
+            ' | tail -n 1 | tr -dc 0-9)"'
+        ),
+        *_watch_stop(
+            f'[[ -n "${{avail}}" ]] && (( avail < {floor} ))',
+            f"the workdir filesystem has ${{avail}} bytes free (floor {floor})",
+        ),
+    ]
+
+
+#: One bounded pass over ``out/`` and ``reply/``: the entry count (at most
+#: the cap + 1: a tree past it is not walked further) and the bytes, each
+#: entry counted at the larger of its apparent and its allocated size, so
+#: neither a sparse nor a preallocated file hides what it holds.
+_WATCH_STATS_AWK = (
+    "awk '{n += 1; b = $2 * 512; t += ($1 > b ? $1 : b)} "
+    'END {printf "%.0f %.0f\\n", n, t}\''
+)
+
+
+def _staged_watch_lines(job: StagedJob) -> list[str]:
+    """A watchdog stops the step once the filesystem drops below its floor
+    (checked first on every tick: a tree the step shaped cannot delay it),
+    once ``out/`` and ``reply/`` pass their caps (the shared filesystem has
+    no quota, and the collect caps apply only after the job), or once the
+    step hides a directory there from it (the watchdog has no DAC override:
+    ``find`` cannot see into a 0300 directory the step may still fill). The
+    pod's output reaches the Slurm log capped."""
+    out, reply = (shlex.quote(f"{job.workdir}/{d}") for d in ("out", "reply"))
+    hidden = r"-type d \( ! -readable -o ! -executable \) -print -quit"
+    cap = int(job.max_out_entries)
+    return [
+        "_step_watch() {",
+        "    set +eo pipefail",
+        "    local stats used entries hidden avail",
+        # The sleep holds no stdio: killed with the watchdog, it may linger.
+        f"    while sleep {int(job.watch_seconds)} </dev/null >/dev/null 2>&1; do",
+        *_watch_floor_lines(job),
+        (
+            f"        stats=\"$(find {out} {reply} -printf '%s %b\\n' 2>/dev/null"
+            f' | head -n {cap + 1} | {_WATCH_STATS_AWK})"'
+        ),
+        '        entries="${stats%% *}"',
+        '        used="${stats##* }"',
+        *_watch_stop(
+            f"(( used > {int(job.max_out_bytes)} || entries > {cap} ))",
+            "out/ and reply/ passed their caps (${used} bytes, ${entries} entries)",
+        ),
+        f'        hidden="$(find {out} {reply} {hidden} 2>/dev/null)"',
+        *_watch_stop(
+            '[[ -n "${hidden}" ]]',
+            "a directory under out/ or reply/ is hidden from the watchdog (not u+rx)",
+        ),
+        "    done",
+        "}",
+        "_step_watch &",
+        "_step_watch_pid=$!",
+        "_step_log() {",
+        f"    head -c {int(job.log_head_bytes)}",
+        f"    tail -c {int(job.log_tail_bytes)}",
+        "}",
+        "",
+    ]
+
+
+def render_staged_job_script(job: StagedJob) -> str:
+    """The staged step's sbatch script (build spec §7). Nothing interpolated
+    is echoed and every value from Python is quoted or validated. The pod's
+    stdout and stderr go capped to ``log/slurm.err`` (the tail the server
+    reads); the job's exit code is the pod's (``pipefail``)."""
+    lines = _staged_directives(job) + _staged_prologue()
+    lines += _staged_venue_lines(job.venue_script)
+    lines += _staged_image_lines(job.image, job.image_archive_dir)
+    lines += _staged_seccomp_lines(job)
+    lines += _staged_pids_lines(job) + _staged_watch_lines(job)
+    lines += [" ".join(staged_podman_argv(job)) + " 2>&1 | _step_log >&2", ""]
+    return "\n".join(lines)
 
 
 @dataclass
@@ -657,7 +1198,7 @@ class SlurmStepExecutor(StepExecutor):
                 )
                 return result
 
-            elif status in ("FAILED", "CANCELLED", "TIMEOUT", "OUT_OF_MEMORY"):
+            elif status in TERMINAL_FAILURES:
                 # Read the Slurm error log for diagnostics
                 error_log = os.path.join(workdir, f"slurm-{job_id}.err")
                 raw_log = self._read_bytes(error_log) or b""

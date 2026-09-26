@@ -76,12 +76,38 @@ class FakeJobStore:
         self.jobs[job_id].status = JobStatus.CANCELLED
 
 
+def test_client_submit_refuses_a_workflow_run_job() -> None:
+    """ADR-074 D-8: only the server's trigger path creates workflow_run jobs."""
+    store = FakeJobStore()
+    result = json.loads(
+        DurableJobCommandBackend(store).submit(
+            "alice",
+            json.dumps(
+                {
+                    "job_type": "workflow_run",
+                    "spec": {"workflow_name": "ct-analysis", "execution_id": "wf-123"},
+                }
+            ),
+        )
+    )
+    assert result["status"] == "error" and "never submitted directly" in result["message"]
+    assert store.jobs == {}
+
+
+def test_the_internal_submit_creates_workflow_run_jobs_only() -> None:
+    backend = DurableJobCommandBackend(FakeJobStore())
+    result = json.loads(
+        backend.submit_workflow_run("alice", json.dumps({"job_type": "index_build", "spec": {}}))
+    )
+    assert result["status"] == "error" and "workflow_run jobs only" in result["message"]
+
+
 def test_durable_backend_accepts_workflow_run_job_type() -> None:
     store = FakeJobStore()
     backend = DurableJobCommandBackend(store)
 
     result = json.loads(
-        backend.submit(
+        backend.submit_workflow_run(
             "alice",
             json.dumps(
                 {
@@ -107,7 +133,7 @@ def test_workflow_run_spec_requires_execution_id() -> None:
     backend = DurableJobCommandBackend(FakeJobStore())
 
     result = json.loads(
-        backend.submit(
+        backend.submit_workflow_run(
             "alice",
             json.dumps(
                 {
@@ -127,7 +153,7 @@ def test_workflow_run_spec_requires_params_object() -> None:
     backend = DurableJobCommandBackend(FakeJobStore())
 
     result = json.loads(
-        backend.submit(
+        backend.submit_workflow_run(
             "alice",
             json.dumps(
                 {

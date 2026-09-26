@@ -16,6 +16,7 @@ stderr.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import pickle
@@ -23,10 +24,12 @@ import shutil
 import signal
 import struct
 import sys
+import tempfile
 import traceback
 from typing import Any
 
 from umrs.core.zmq_security import ZMQSecurityConfig
+from umrs.pipeline_sdk.staged_s3 import StagedS3Client, is_staged
 from umrs.pipeline_sdk.step import StepContext
 
 # Logging to stderr keeps stdout clean for the pickle reply.
@@ -42,7 +45,13 @@ def _build_s3_client(s3_config: dict[str, Any]) -> Any:
     Returns ``None`` when boto3 is unavailable; the step itself is
     responsible for handling a missing client (most steps do not need
     one if they only operate on ``parent_results``).
+
+    On the staged HPC lane (``UMRS_STEP_STAGED=1``) the client is the
+    file-backed :class:`StagedS3Client` over ``/work/in`` and ``/work/out``:
+    no credential, no endpoint, no boto3 (ADR-074 D-5).
     """
+    if is_staged():
+        return StagedS3Client()
     try:
         import boto3  # type: ignore
     except Exception as exc:  # noqa: BLE001
@@ -77,14 +86,14 @@ def _emit(reply: dict[str, Any]) -> None:
 
     ``UMRS_STEP_OUTPUT_JSON`` additionally names a data-only JSON reply
     (ADR-074 D-6): servers that set it read that file and never unpickle
-    what the step wrote; ``output.pkl`` stays for older servers.
+    what the step wrote; ``output.pkl`` stays for older servers. The staged
+    HPC lane reads only the JSON reply, so a staged worker writes no pickle.
     """
     json_path = os.environ.get("UMRS_STEP_OUTPUT_JSON")
     if json_path:
-        from umrs.server.step_reply import reply_to_json
-
-        with open(json_path, "wb") as fh:
-            fh.write(reply_to_json(reply))
+        _write_json_reply(json_path, reply)
+    if is_staged():
+        return
     blob = pickle.dumps(reply)
 
     s3_ref = os.environ.get("UMRS_STEP_OUTPUT_S3")
@@ -111,6 +120,27 @@ def _emit(reply: dict[str, Any]) -> None:
         return
     sys.stdout.buffer.write(blob)
     sys.stdout.buffer.flush()
+
+
+def _write_json_reply(path: str, reply: dict[str, Any]) -> None:
+    """Write the JSON reply by atomic rename: the server never sees half."""
+    from umrs.server.step_reply import reply_to_json
+
+    blob = reply_to_json(reply)
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path) or ".", prefix=".output-")
+    # mkstemp makes 0600; keep the mode open() gave (a server outside the
+    # container's uid mapping may need to read it).
+    mask = os.umask(0)
+    os.umask(mask)
+    try:
+        os.fchmod(fd, 0o666 & ~mask)
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(blob)
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
 
 
 def _read_payload() -> bytes:

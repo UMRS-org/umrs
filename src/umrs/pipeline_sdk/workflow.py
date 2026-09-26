@@ -51,6 +51,7 @@ from umrs.pipeline_sdk.base import (
     Result,
     TaskHandle,
 )
+from umrs.pipeline_sdk.staged_s3 import parse_stage_inputs
 from umrs.pipeline_sdk.step import Step, StepPolicy
 
 logger = logging.getLogger(__name__)
@@ -205,6 +206,9 @@ class StepSpec:
     # (HPC pre-staged images) instead of smuggling them through config dicts.
     image: str = ""
     routing_hints: dict[str, Any] = field(default_factory=dict)
+    # Trigger inputs the server stages for this step on the HPC lane
+    # (ADR-074 D-5): {"params": [...], "prefixes": [...]}.
+    stage_inputs: dict[str, Any] = field(default_factory=dict)
 
     def validate(self) -> None:
         if not self.name:
@@ -220,6 +224,13 @@ class StepSpec:
             )
         self._validate_requires()
         self._validate_model_type()
+        self._validate_stage_inputs()
+
+    def _validate_stage_inputs(self) -> None:
+        try:
+            parse_stage_inputs(self.stage_inputs)
+        except ValueError as exc:
+            raise ValueError(f"Step '{self.name}': {exc}") from exc
 
     def _validate_requires(self) -> None:
         """Capability-tag shape check (+ advisory warning for unknown tags)."""
@@ -292,6 +303,8 @@ class StepSpec:
             d["image"] = self.image
         if self.routing_hints:
             d["routing_hints"] = dict(self.routing_hints)
+        if self.stage_inputs:
+            d["stage_inputs"] = parse_stage_inputs(self.stage_inputs)
         return d
 
     @classmethod
@@ -312,7 +325,16 @@ class StepSpec:
             model_type=data.get("model_type"),
             image=data.get("image", ""),
             routing_hints=dict(data.get("routing_hints") or {}),
+            stage_inputs=_step_stage_inputs(data),
         )
+
+
+def _step_stage_inputs(data: dict[str, Any]) -> dict[str, Any]:
+    """Parsed at load so an upload with a malformed block is refused by name."""
+    try:
+        return parse_stage_inputs(data.get("stage_inputs"))
+    except ValueError as exc:
+        raise ValueError(f"Step '{data.get('name')}': {exc}") from exc
 
 
 def _normalize_execution_parallel_steps(

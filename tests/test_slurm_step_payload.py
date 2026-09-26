@@ -71,7 +71,7 @@ def test_slurm_payload_includes_nested_ctx_and_parent_results():
     assert "--network=host" in script
 
 
-def test_slurm_sbatch_forwards_credentials_and_gpu(monkeypatch):
+def test_slurm_sbatch_forwards_endpoint_and_gpu_never_credentials(monkeypatch):
     # S3_ENDPOINT_URL is canonical (ADR-055) and wins over the legacy name; CI
     # exports its own S3_ENDPOINT_URL for the MinIO service, so pin both here.
     monkeypatch.setenv("S3_ENDPOINT_URL", "http://minio:9000")
@@ -98,8 +98,10 @@ def test_slurm_sbatch_forwards_credentials_and_gpu(monkeypatch):
     assert "--device nvidia.com/gpu=all" in script
     assert "S3_ENDPOINT_URL=http://minio:9000" in script  # canonical (ADR-055)
     assert "MINIO_ENDPOINT=http://minio:9000" in script  # legacy name still forwarded
-    assert "AWS_ACCESS_KEY_ID=test-key" in script
-    assert "AWS_SECRET_ACCESS_KEY=test-secret" in script
+    # ADR-074: no credential value reaches the job script (it sits beside
+    # the step's workdir on the cluster).
+    assert "test-key" not in script
+    assert "test-secret" not in script
 
 
 def test_slurm_rejects_oversized_payload(monkeypatch):
@@ -171,5 +173,4 @@ def test_slurm_script_quotes_interpolations_and_never_echoes_credentials(monkeyp
     script = Path(captured["workdir"], "run_step.sbatch").read_text(encoding="utf-8")
     assert "echo Image: registry.example/team/step:1.0" in script
     assert 'echo "Running: ' not in script
-    assert "'AWS_SECRET_ACCESS_KEY=s3cr3t with space'" in script
-    assert script.count("s3cr3t") == 1  # only in the podman argv, never echoed
+    assert "s3cr3t" not in script  # never forwarded, never echoed (ADR-074)

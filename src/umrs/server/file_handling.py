@@ -3,7 +3,10 @@
 import json
 import logging
 import os
-import subprocess
+import re
+import shutil
+import struct
+import zipfile
 
 from umrs.shared.auth import sanitize_username, validate_config_identity
 from umrs.shared.config import (
@@ -16,94 +19,21 @@ from umrs.shared.json_config import load_client_cfg_file
 logger = logging.getLogger(__name__)
 
 
-def _build_workflow_image(dest_dir: str, workflow_name: str) -> str | None:
-    """Build a container image from a Dockerfile in the workflow directory.
+#: Upload notice when the tree carries a Dockerfile (ADR-074 D-7).
+DOCKERFILE_IGNORED_NOTICE = (
+    "Dockerfile ignored: the server no longer builds images from uploaded "
+    "workflows (ADR-074 D-7); steps run in the platform step image or one on "
+    "the site's allowed_images list"
+)
 
-    If a ``Dockerfile`` is found in *dest_dir*, this function runs
-    ``podman build`` to create an image tagged
-    ``<workflow_name>:latest``.  The image tag is then injected into
-    ``workflow.json`` as ``routing_hints.image`` on every step that
-    does not already declare an image override.
 
-    Returns the image tag on success, or ``None`` if no Dockerfile was
-    found or the build failed (failures are logged but non-fatal so
-    the workflow can still run with the in-process executor).
-    """
-    dockerfile_path = os.path.join(dest_dir, "Dockerfile")
-    if not os.path.isfile(dockerfile_path):
+def _dockerfile_notice(dest_dir: str, workflow_name: str) -> str | None:
+    """The upload's notice when it carries a Dockerfile, which is never built:
+    a build runs the upload's own instructions on the server host."""
+    if not os.path.isfile(os.path.join(dest_dir, "Dockerfile")):
         return None
-
-    image_tag = f"{workflow_name}:latest"
-    cmd = [
-        "podman",
-        "build",
-        "--userns=host",
-        "-t",
-        image_tag,
-        "-f",
-        dockerfile_path,
-        dest_dir,
-    ]
-    try:
-        logger.info("Building workflow image %s from %s", image_tag, dest_dir)
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=600,
-        )
-        if result.returncode != 0:
-            logger.warning(
-                "podman build failed for %s (rc=%d): %s",
-                image_tag,
-                result.returncode,
-                result.stderr[-500:] if result.stderr else "",
-            )
-            return None
-        logger.info("Workflow image %s built successfully", image_tag)
-        return image_tag
-    except FileNotFoundError:
-        logger.warning("podman not found — skipping image build for %s", workflow_name)
-        return None
-    except subprocess.TimeoutExpired:
-        logger.warning("podman build timed out for %s (600s)", image_tag)
-        return None
-    except Exception as exc:
-        logger.warning("Unexpected error building %s: %s", image_tag, exc)
-        return None
-
-
-def _inject_image_into_workflow(dest_dir: str, image_tag: str) -> None:
-    """Inject *image_tag* into ``routing_hints.image`` for all steps.
-
-    Steps that already declare ``routing_hints.image`` are left
-    untouched — this allows a mixed workflow where some steps have
-    pre-built images and others use the workflow-level Dockerfile.
-    """
-    wf_path = os.path.join(dest_dir, "workflow.json")
-    if not os.path.isfile(wf_path):
-        return
-    try:
-        with open(wf_path, encoding="utf-8") as fh:
-            wf_data = json.load(fh)
-    except (json.JSONDecodeError, OSError) as exc:
-        logger.warning("Cannot read workflow.json for image injection: %s", exc)
-        return
-
-    modified = False
-    for step in wf_data.get("steps", []):
-        hints = step.get("routing_hints")
-        if hints is None:
-            step["routing_hints"] = {"image": image_tag}
-            modified = True
-        elif "image" not in hints:
-            hints["image"] = image_tag
-            modified = True
-
-    if modified:
-        with open(wf_path, "w", encoding="utf-8") as fh:
-            json.dump(wf_data, fh, indent=2, ensure_ascii=False)
-        logger.info("Injected routing_hints.image=%s into workflow.json", image_tag)
+    logger.warning("workflow upload %r: %s", workflow_name, DOCKERFILE_IGNORED_NOTICE)
+    return DOCKERFILE_IGNORED_NOTICE
 
 
 def ensure_user_file_in_conf(conf_path, username, canonical_user_path):
@@ -188,39 +118,98 @@ def ensure_user_file_in_conf(conf_path, username, canonical_user_path):
     return True
 
 
-def handle_upload_workflow(client_id, zip_path, workflow_name):
-    """Validate and extract an uploaded workflow zip to the user_workflows directory.
+#: An uploaded workflow's name is one directory under its owner's extracted
+#: tree: an absolute name or ``..`` put the upload's files wherever the server
+#: may write (its own modules, another owner's workflow tree).
+WORKFLOW_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+_MAX_UPLOAD_BYTES = 500 * 1024 * 1024
+MAX_WORKFLOW_JSON_BYTES = 1024 * 1024
 
-    The zip must contain a ``workflow.json`` at its root (or one level deep)
-    with a parseable :class:`WorkflowDefinition`.
 
-    Returns ``(success: bool, dest_dir: str | None, error: str | None)``.
-    """
-    import zipfile
+class _UploadRefused(Exception):
+    """Ends an upload with this message."""
 
-    from umrs.pipeline_sdk.workflow import WorkflowDefinition
 
+def workflow_name_refusal(workflow_name: object) -> str | None:
+    """Why *workflow_name* cannot name an uploaded workflow, or None."""
+    if isinstance(workflow_name, str) and WORKFLOW_NAME_RE.fullmatch(workflow_name):
+        return None
+    return (
+        f"Invalid workflow_name {str(workflow_name)[:80]!r}: 1-128 characters of "
+        "[A-Za-z0-9._-], starting with a letter or digit"
+    )
+
+
+def _within(root: str, path: str) -> bool:
+    """*path* is *root* or below it (both real paths); unlike a prefix test,
+    ``<root>2`` is not below ``<root>``."""
+    return os.path.commonpath([root, path]) == root
+
+
+def _precheck_upload(zip_path: str, workflow_name: object) -> None:
+    refusal = workflow_name_refusal(workflow_name)
+    if refusal:
+        raise _UploadRefused(refusal)
     if not os.path.isfile(zip_path):
-        return False, None, f"Uploaded file not found: {zip_path}"
-
-    # Basic size sanity check (reject > 500 MB)
-    max_size = 500 * 1024 * 1024
-    if os.path.getsize(zip_path) > max_size:
-        return (
-            False,
-            None,
-            f"Zip file too large ({os.path.getsize(zip_path)} bytes, max {max_size})",
+        raise _UploadRefused(f"Uploaded file not found: {zip_path}")
+    size = os.path.getsize(zip_path)
+    if size > _MAX_UPLOAD_BYTES:
+        raise _UploadRefused(
+            f"Zip file too large ({size} bytes, max {_MAX_UPLOAD_BYTES})"
         )
-
     if not zipfile.is_zipfile(zip_path):
-        return False, None, f"Uploaded file is not a valid zip archive: {zip_path}"
+        raise _UploadRefused(f"Uploaded file is not a valid zip archive: {zip_path}")
 
-    # Determine destination — use an ABSOLUTE path so that the
-    # stored ``source_path`` resolves correctly regardless of the
-    # working directory of the process that later reads it (e.g.
-    # the durable-job backend running in a different cwd than the
-    # UMRS server). UMRS_WORKFLOW_STATE_DIR relocates extracted workflows
-    # to a durable bind-mounted dir on deployed servers.
+
+#: ``(filename, extra, comment)`` lengths in a central directory header.
+_CD_NAME_LENGTHS = struct.Struct("<3H")
+_CD_NAME_LENGTHS_AT = 28
+
+
+def _directory_records(data: bytes, cap: int) -> int:
+    """Central directory records at the start of *data*, walked as
+    ``ZipFile`` walks them (to the first bad magic number); stops past
+    *cap*."""
+    count = pos = 0
+    while (
+        count <= cap
+        and len(data) - pos >= zipfile.sizeCentralDir
+        and data[pos : pos + 4] == zipfile.stringCentralDir
+    ):
+        count += 1
+        lengths = _CD_NAME_LENGTHS.unpack_from(data, pos + _CD_NAME_LENGTHS_AT)
+        pos += zipfile.sizeCentralDir + sum(lengths)
+    return count
+
+
+class _CountedDirectory:
+    """The upload as ``ZipFile`` opens it. ``ZipFile`` reads the central
+    directory in one ``read`` after seeking to it (every CPython from 3.8 to
+    3.14; where it is depends on the version) and then builds one object per
+    record, whatever the end record's entry count says: a 500 MB zip of
+    minimal entries was ~6M objects before any cap applied. The records are
+    counted in that read, and more than *cap* refused before one object is
+    built. Disarmed once the archive is open: member reads are not
+    directory reads."""
+
+    def __init__(self, raw, cap: int) -> None:
+        self._raw, self._cap, self.armed = raw, cap, True
+
+    def read(self, size: int = -1) -> bytes:
+        data = self._raw.read(size)
+        if self.armed and _directory_records(data, self._cap) > self._cap:
+            raise _UploadRefused(f"Zip holds more than {self._cap} entries")
+        return data
+
+    def __getattr__(self, name: str):
+        return getattr(self._raw, name)
+
+
+def _upload_dest(client_id: str, workflow_name: str) -> str:
+    """The extraction directory, an ABSOLUTE path so that the stored
+    ``source_path`` resolves regardless of the reader's working directory
+    (the durable-job backend). UMRS_WORKFLOW_STATE_DIR relocates extracted
+    workflows to a durable bind-mounted dir on deployed servers."""
     state_dir = os.environ.get("UMRS_WORKFLOW_STATE_DIR", "").strip()
     if state_dir:
         workflows_root: str = os.path.join(state_dir, "extracted", client_id)
@@ -228,83 +217,145 @@ def handle_upload_workflow(client_id, zip_path, workflow_name):
         workflows_root = get_resolved_umrs_subdir(
             get_default_tmp_subdir(), "user_workflows", client_id
         )
-    dest_dir = os.path.realpath(os.path.join(workflows_root, workflow_name))
+    root = os.path.realpath(workflows_root)
+    dest_dir = os.path.realpath(os.path.join(root, workflow_name))
+    if dest_dir == root or not _within(root, dest_dir):
+        raise _UploadRefused(
+            f"workflow_name {workflow_name!r} leaves the upload directory"
+        )
+    return dest_dir
+
+
+_S_IFMT = 0o170000
+_ZIP_MEMBER_TYPES = (0, 0o100000, 0o040000)  # unset (DOS), regular file, directory
+
+
+def _check_zip_size(zf) -> None:
+    """The extracted tree fits the source caps the step lane stages (spec §5),
+    checked before anything is written: a small zip of compressible members
+    expands to whatever it declares in the server's workflow state dir,
+    which every server on the host shares. ``zipfile`` never writes more
+    than a member's declared ``file_size``."""
+    from umrs.server.step_staging import DEFAULT_CAPS
+
+    infos = zf.infolist()
+    files = [info for info in infos if not info.is_dir()]
+    total = sum(info.file_size for info in files)
+    if (
+        len(infos) > 2 * DEFAULT_CAPS.max_src_files
+        or len(files) > DEFAULT_CAPS.max_src_files
+    ):
+        raise _UploadRefused(
+            f"Zip holds {len(files)} files in {len(infos)} entries (max "
+            f"{DEFAULT_CAPS.max_src_files} files)"
+        )
+    if total > DEFAULT_CAPS.max_src_bytes:
+        raise _UploadRefused(
+            f"Zip expands to {total} bytes (max {DEFAULT_CAPS.max_src_bytes})"
+        )
+    for info in infos:
+        if ((info.external_attr >> 16) & _S_IFMT) not in _ZIP_MEMBER_TYPES:
+            raise _UploadRefused(
+                f"Zip member {info.filename!r} is not a regular file or directory"
+            )
+
+
+def _extract_checked(zf, dest_dir: str) -> None:
+    """Extract after every member is checked to stay inside *dest_dir*, the
+    archive fits the source caps and a ``workflow.json`` (root or one level
+    deep) parses."""
+    from umrs.pipeline_sdk.workflow import WorkflowDefinition
+
+    _check_zip_size(zf)
+    for member in zf.namelist():
+        if not _within(dest_dir, os.path.realpath(os.path.join(dest_dir, member))):
+            raise _UploadRefused(f"Zip contains unsafe path: {member}")
+    candidates = [n for n in zf.namelist() if os.path.basename(n) == "workflow.json"]
+    if not candidates:
+        raise _UploadRefused("Zip archive does not contain a workflow.json")
+    for name in candidates:
+        # Parsed whole into server memory: a small zip of a compressible
+        # one expanded to max_src_bytes of JSON objects (~20 GiB of Python).
+        declared = zf.getinfo(name).file_size
+        if declared > MAX_WORKFLOW_JSON_BYTES:
+            raise _UploadRefused(
+                f"{name} is {declared} bytes (max {MAX_WORKFLOW_JSON_BYTES})"
+            )
+    try:
+        WorkflowDefinition.from_dict(json.loads(zf.read(candidates[0])))
+    except (json.JSONDecodeError, KeyError, ValueError) as e:
+        raise _UploadRefused(f"Invalid workflow.json: {e}") from e
+    os.makedirs(dest_dir, exist_ok=True)
+    zf.extractall(dest_dir)
+
+
+def _flatten_nested(dest_dir: str) -> None:
+    """A workflow.json one level deep (``myworkflow/workflow.json``): its
+    directory's contents move up so *dest_dir* holds workflow.json."""
+    if os.path.isfile(os.path.join(dest_dir, "workflow.json")):
+        return
+    for name in os.listdir(dest_dir):
+        sub_dir = os.path.join(dest_dir, name)
+        if os.path.isfile(os.path.join(sub_dir, "workflow.json")):
+            for item in os.listdir(sub_dir):
+                shutil.move(os.path.join(sub_dir, item), dest_dir)
+            os.rmdir(sub_dir)
+            return
+
+
+def _mark_uploaded(dest_dir: str) -> None:
+    """Rewrite workflow.json's source to the UPLOADED tree, which must lie
+    inside *dest_dir*."""
+    actual_wf = os.path.join(dest_dir, "workflow.json")
+    if not os.path.isfile(actual_wf):
+        return
+    with open(actual_wf, encoding="utf-8") as fh:
+        wf_data = json.load(fh)
+    source_path = (wf_data.get("source") or {}).get("path") or "."
+    # An absolute source path replaces dest_dir in the join.
+    resolved_source = os.path.realpath(os.path.join(dest_dir, source_path))
+    if not _within(dest_dir, resolved_source):
+        raise _UploadRefused(
+            f"Workflow source path escapes extracted directory: {source_path}"
+        )
+    if not os.path.isdir(resolved_source):
+        raise _UploadRefused(
+            f"Workflow source directory missing after extraction: {resolved_source}"
+        )
+    wf_data["source"] = {"type": "uploaded", "path": resolved_source}
+    with open(actual_wf, "w", encoding="utf-8") as fh:
+        json.dump(wf_data, fh, indent=2)
+
+
+def handle_upload_workflow(client_id, zip_path, workflow_name):
+    """Validate and extract an uploaded workflow zip to the user_workflows directory.
+
+    The zip must contain a ``workflow.json`` at its root (or one level deep)
+    with a parseable :class:`WorkflowDefinition`; *workflow_name* must match
+    :data:`WORKFLOW_NAME_RE` (one directory under the owner's tree).
+
+    Returns ``(success: bool, dest_dir: str | None, message: str | None)``:
+    the error on failure; on success an optional notice for the uploader
+    (a Dockerfile in the upload is ignored, never built — ADR-074 D-7).
+    """
+    try:
+        _precheck_upload(zip_path, workflow_name)
+        dest_dir = _upload_dest(client_id, workflow_name)
+    except _UploadRefused as refused:
+        return False, None, str(refused)
+
+    from umrs.server.step_staging import DEFAULT_CAPS
 
     try:
-        with zipfile.ZipFile(zip_path, "r") as zf:
-            # Security: reject paths that escape the extraction directory
-            for member in zf.namelist():
-                resolved = os.path.realpath(os.path.join(dest_dir, member))
-                if not resolved.startswith(os.path.realpath(dest_dir)):
-                    return False, None, f"Zip contains unsafe path: {member}"
-
-            # Look for workflow.json at root or one level deep
-            candidates = [
-                n for n in zf.namelist() if os.path.basename(n) == "workflow.json"
-            ]
-            if not candidates:
-                return False, None, "Zip archive does not contain a workflow.json"
-
-            # Validate workflow.json contents before extracting
-            wf_entry = candidates[0]
-            try:
-                wf_data = json.loads(zf.read(wf_entry))
-                WorkflowDefinition.from_dict(wf_data)
-            except (json.JSONDecodeError, KeyError, ValueError) as e:
-                return False, None, f"Invalid workflow.json: {e}"
-
-            # Extract
-            os.makedirs(dest_dir, exist_ok=True)
-            zf.extractall(dest_dir)
-
-        # If workflow.json was nested one level (e.g., myworkflow/workflow.json),
-        # move contents up so dest_dir directly contains workflow.json
-        actual_wf = os.path.join(dest_dir, "workflow.json")
-        if not os.path.isfile(actual_wf):
-            # Try to find it one level deep
-            for name in os.listdir(dest_dir):
-                candidate = os.path.join(dest_dir, name, "workflow.json")
-                if os.path.isfile(candidate):
-                    # Move everything from the subdirectory up
-                    sub_dir = os.path.join(dest_dir, name)
-                    import shutil
-
-                    for item in os.listdir(sub_dir):
-                        shutil.move(os.path.join(sub_dir, item), dest_dir)
-                    os.rmdir(sub_dir)
-                    break
-
-        # Rewrite workflow.json source to UPLOADED type
-        actual_wf = os.path.join(dest_dir, "workflow.json")
-        if os.path.isfile(actual_wf):
-            with open(actual_wf, encoding="utf-8") as fh:
-                wf_data = json.load(fh)
-
-            source_cfg = wf_data.get("source") or {}
-            source_path = source_cfg.get("path") or "."
-            if os.path.isabs(source_path):
-                resolved_source = os.path.realpath(source_path)
-            else:
-                resolved_source = os.path.realpath(os.path.join(dest_dir, source_path))
-
-            dest_root = os.path.realpath(dest_dir)
-            if not resolved_source.startswith(dest_root):
-                return (
-                    False,
-                    None,
-                    f"Workflow source path escapes extracted directory: {source_path}",
-                )
-            if not os.path.isdir(resolved_source):
-                return (
-                    False,
-                    None,
-                    f"Workflow source directory missing after extraction: "
-                    f"{resolved_source}",
-                )
-
-            wf_data["source"] = {"type": "uploaded", "path": resolved_source}
-            with open(actual_wf, "w", encoding="utf-8") as fh:
-                json.dump(wf_data, fh, indent=2)
+        with open(zip_path, "rb") as raw:
+            guarded = _CountedDirectory(raw, 2 * DEFAULT_CAPS.max_src_files)
+            with zipfile.ZipFile(guarded) as zf:
+                guarded.armed = False
+                _extract_checked(zf, dest_dir)
+        _flatten_nested(dest_dir)
+        _mark_uploaded(dest_dir)
+    except _UploadRefused as refused:
+        return False, None, str(refused)
     except zipfile.BadZipFile:
         return False, None, f"Corrupted zip archive: {zip_path}"
     except Exception as e:
@@ -320,18 +371,7 @@ def handle_upload_workflow(client_id, zip_path, workflow_name):
         f"Workflow '{workflow_name}' for user '{client_id}' extracted to {dest_dir}"
     )
 
-    # ---- Dockerfile-in-workflow: build image if Dockerfile present ----
-    # If a Dockerfile exists in the extracted directory, build a
-    # container image and inject routing_hints.image into workflow.json.
-    # Steps that already declare routing_hints.image are left untouched,
-    # supporting a mixed model (some steps pre-built, some from Dockerfile).
-    dockerfile_path = os.path.join(dest_dir, "Dockerfile")
-    if os.path.isfile(dockerfile_path):
-        image_tag = _build_workflow_image(dest_dir, workflow_name)
-        if image_tag is not None:
-            _inject_image_into_workflow(dest_dir, image_tag)
-
-    return True, dest_dir, None
+    return True, dest_dir, _dockerfile_notice(dest_dir, workflow_name)
 
 
 def persist_uploaded_user_config(
