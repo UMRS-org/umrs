@@ -232,6 +232,14 @@ class StepExecutorConfig:
     # --pids-limit of the step container; 0 drops it for a venue whose
     # runtime cannot apply it (the job refuses to run a step otherwise).
     pids_limit: int = 512
+    # "disabled": the venue grants the step job no cgroup of its own (Slurm
+    # cgroup v2 without delegation, as the rccs GB10 nodes — R2, 2026-09-26),
+    # so the container runs with --cgroups=disabled inside the job's Slurm
+    # cgroup (scancel and the job's limits still hold); pids_limit must be 0.
+    cgroups: str = "enabled"
+    # RLIMIT_NPROC of the step container (--ulimit nproc): a process bound
+    # that needs no cgroup. 0 omits it.
+    nproc_limit: int = 0
 
 
 @dataclass
@@ -461,6 +469,8 @@ def _step_lane_env(cfg: StepExecutorConfig) -> dict[str, str]:
         "UMRS_STEP_VENUE_SCRIPT": cfg.venue_script,
         "UMRS_SLURM_QUEUE_TIMEOUT": cfg.queue_timeout,
         "UMRS_STEP_PIDS_LIMIT": str(int(cfg.pids_limit)),
+        "UMRS_STEP_CGROUPS": cfg.cgroups,
+        "UMRS_STEP_NPROC_LIMIT": str(int(cfg.nproc_limit)),
     }
 
 

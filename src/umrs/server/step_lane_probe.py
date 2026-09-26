@@ -12,6 +12,7 @@ from __future__ import annotations
 import glob
 import os
 import platform
+import resource
 import socket
 from typing import Any
 
@@ -42,6 +43,7 @@ def probe(targets: list[tuple[str, int]]) -> dict[str, Any]:
         "connect": {f"{h}:{p}": _connect(h, p) for h, p in targets},
         "gpu_devices": sorted(glob.glob("/dev/nvidia*")),
         "pids_max": _read("/sys/fs/cgroup/pids.max"),
+        "nproc_soft": resource.getrlimit(resource.RLIMIT_NPROC)[0],
         "arch": platform.machine(),
     }
 

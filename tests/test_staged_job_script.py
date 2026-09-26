@@ -413,6 +413,19 @@ def test_pids_limit_zero_drops_the_flag_and_its_probe(node):
     assert not any("pids.max" in x for x in node["log"]())
 
 
+def test_a_venue_without_a_cgroup_runs_the_step_without_one_and_bounds_processes(node):
+    # R2 on the rccs GB10 nodes (2026-09-26): Slurm's cgroup v2 grants the
+    # job no cgroup to create the container's in, so runc refuses any
+    # container that asks for one. The step then runs with --cgroups=disabled
+    # inside the job's cgroup, RLIMIT_NPROC bounding its processes.
+    (node["state"] / "have_id").write_text("f" * 64)
+    assert node["run"](pids_limit=0, cgroups_disabled=True, nproc_limit=4096).returncode == 0
+    [step] = _step_runs(node["log"]())
+    assert "--cgroups=disabled" in step and "--ulimit nproc=4096" in step
+    assert "--pids-limit" not in step and "--ulimit fsize=" in step
+    assert not any("pids.max" in x for x in node["log"]())
+
+
 def test_the_pods_output_reaches_the_log_capped_with_its_tail(node):
     (node["state"] / "have_id").write_text("f" * 64)
     (node["state"] / "run_script").write_text(
