@@ -67,10 +67,18 @@ class _Cursor:
 
 
 class _Conn:
+    closed = 0
+
+    def get_transaction_status(self):
+        return 0  # TRANSACTION_STATUS_IDLE
+
     def cursor(self):
         return _Cursor()
 
     def commit(self):
+        pass
+
+    def rollback(self):
         pass
 
 

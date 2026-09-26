@@ -8,13 +8,31 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any
+from collections.abc import Callable
+from typing import Any, TypeVar
 
 import psycopg2
+from psycopg2.extensions import TRANSACTION_STATUS_IDLE
 
 from .models import MCPServer, MCPTool, generate_server_id, generate_tool_id
 
 logger = logging.getLogger(__name__)
+
+_T = TypeVar("_T")
+
+# Exception classes a dead session raises (Postgres restart, network cut, the
+# R-14 idle_in_transaction_session_timeout reaper). Only a session psycopg2
+# has marked ``closed`` counts as lost: QueryCanceled, deadlock, serialization
+# and lock-timeout errors subclass OperationalError on a live session.
+_CONNECTION_LOSS = (psycopg2.OperationalError, psycopg2.InterfaceError)
+
+
+def _session_lost(conn, exc: BaseException) -> bool:
+    return isinstance(exc, _CONNECTION_LOSS) and bool(conn.closed)
+
+
+class _SessionLost(Exception):
+    """Internal: the first attempt's session died before any commit."""
 
 
 def _json_column(value):
@@ -41,8 +59,99 @@ class MCPServerStore:
     Provides CRUD operations for MCP server and tool registrations.
     """
 
-    def __init__(self, conn: psycopg2.extensions.connection):
+    def __init__(
+        self,
+        conn: psycopg2.extensions.connection | None = None,
+        *,
+        pool: Any | None = None,
+    ):
+        """``pool`` (preferred): every call borrows its own connection and
+        hands it back. ``conn``: a caller-owned connection the store never
+        replaces (per-request callers). Writes commit, as they always did; a
+        read ends only a transaction it opened itself, so a caller's open
+        transaction on ``conn`` (bundle_restore's uncommitted skill stubs)
+        is left for the caller to commit or roll back."""
+        if conn is None and pool is None:
+            raise ValueError("MCPServerStore needs a connection or a pool")
         self.conn = conn
+        self._pool = pool
+
+    # -------------------------------------------------------------------------
+    # Transaction plumbing
+    # -------------------------------------------------------------------------
+
+    def _run(self, work: Callable[[Any], _T], *, write: bool = False) -> _T:
+        """Run ``work(cursor)``; a transaction the store opened always ends.
+
+        Live bdrt 2026-09-27: reads never ended their implicit transaction,
+        the boot-leased connection sat ``idle in transaction`` until R-14's
+        reaper killed it, and GET /umrs/mcp/servers answered 500 ("server
+        closed the connection unexpectedly", then "connection already closed"
+        on every later call). Now writes commit and reads roll back what they
+        opened. A session lost before the commit is dropped and the work
+        retried once on a fresh pooled connection (nothing was committed); a
+        loss during the commit is raised, never retried (the commit may have
+        landed).
+        """
+        try:
+            conn, owned, result = self._attempt(work, retry_on_loss=True)
+        except _SessionLost as lost:
+            logger.warning(
+                "MCP store connection lost (%s); retrying once on a fresh one",
+                lost.__cause__,
+            )
+            conn, owned, result = self._attempt(work, retry_on_loss=False)
+        if write:
+            self._commit(conn, owned)
+        self._release(conn, owned=owned)  # a read's rollback ends its transaction
+        return result
+
+    def _attempt(self, work: Callable[[Any], _T], *, retry_on_loss: bool):
+        """``(conn, owned, work(cursor))``; on failure ``conn`` is released.
+
+        A lost pooled session raises ``_SessionLost`` when ``retry_on_loss``
+        (only ``_run`` sees it); every other failure is raised as-is.
+        """
+        conn = self._acquire()
+        owned = self._owns_transaction(conn)
+        try:
+            with conn.cursor() as cur:
+                return conn, owned, work(cur)
+        except BaseException as exc:
+            lost = _session_lost(conn, exc)
+            self._release(conn, owned=owned)
+            if lost and retry_on_loss and self._pool is not None:
+                raise _SessionLost from exc
+            raise
+
+    def _acquire(self):
+        return self._pool.getconn() if self._pool is not None else self.conn
+
+    def _owns_transaction(self, conn) -> bool:
+        """A pooled connection is the store's own; a caller's connection only
+        while the caller has no transaction open on it."""
+        if self._pool is not None:
+            return True
+        return conn.get_transaction_status() == TRANSACTION_STATUS_IDLE
+
+    def _commit(self, conn, owned: bool) -> None:
+        try:
+            conn.commit()
+        except BaseException:
+            self._release(conn, owned=owned)
+            raise
+
+    def _release(self, conn, *, owned: bool) -> None:
+        """End the store's own transaction; hand a pooled conn back (closed
+        when the session is gone, so the pool never reissues it)."""
+        broken = bool(conn.closed)
+        if owned and not broken:
+            try:
+                conn.rollback()
+            except psycopg2.Error:
+                broken = True
+        if self._pool is not None:
+            self._pool.putconn(conn, close=broken or bool(conn.closed))
 
     # -------------------------------------------------------------------------
     # Server CRUD
@@ -85,7 +194,7 @@ class MCPServerStore:
         trust_class = validate_trust_class(placement, trust_class)
         server_id = generate_server_id()
 
-        with self.conn.cursor() as cur:
+        def _upsert(cur) -> tuple[Any, list[MCPTool]]:
             # Upsert server
             cur.execute(
                 """
@@ -133,8 +242,6 @@ class MCPServerStore:
             )
             row = cur.fetchone()
             actual_server_id = row[0]
-            created_at = row[1]
-            updated_at = row[2]
 
             # Replace tools: delete old, insert new
             cur.execute(
@@ -176,9 +283,10 @@ class MCPServerStore:
                         input_schema=input_schema,
                     )
                 )
+            return row, mcp_tools
 
-            self.conn.commit()
-
+        row, mcp_tools = self._run(_upsert, write=True)
+        actual_server_id, created_at, updated_at = row[0], row[1], row[2]
         return MCPServer(
             server_id=actual_server_id,
             name=name,
@@ -206,7 +314,8 @@ class MCPServerStore:
         Raises:
             MCPServerNotFoundError: If server not found.
         """
-        with self.conn.cursor() as cur:
+
+        def _select(cur) -> MCPServer:
             cur.execute(
                 """
                 SELECT server_id, name, version, url, transport, status,
@@ -225,6 +334,8 @@ class MCPServerStore:
             server.tools = self._get_tools_for_server(cur, server_id)
             return server
 
+        return self._run(_select)
+
     def get_server_by_name(self, name: str) -> MCPServer:
         """
         Get a server by name.
@@ -232,7 +343,8 @@ class MCPServerStore:
         Raises:
             MCPServerNotFoundError: If server not found.
         """
-        with self.conn.cursor() as cur:
+
+        def _select(cur) -> MCPServer:
             cur.execute(
                 """
                 SELECT server_id, name, version, url, transport, status,
@@ -250,6 +362,8 @@ class MCPServerStore:
             server = self._row_to_server(row)
             server.tools = self._get_tools_for_server(cur, server.server_id)
             return server
+
+        return self._run(_select)
 
     def list_servers(
         self,
@@ -271,7 +385,7 @@ class MCPServerStore:
         if conditions:
             where = "WHERE " + " AND ".join(conditions)
 
-        with self.conn.cursor() as cur:
+        def _select(cur) -> list[MCPServer]:
             cur.execute(
                 f"""
                 SELECT server_id, name, version, url, transport, status,
@@ -291,6 +405,8 @@ class MCPServerStore:
 
             return servers
 
+        return self._run(_select)
+
     def unregister_server(self, name: str) -> bool:
         """
         Unregister a server by name. Tools are cascade-deleted.
@@ -298,17 +414,18 @@ class MCPServerStore:
         Returns:
             True if deleted, False if not found.
         """
-        with self.conn.cursor() as cur:
+
+        def _delete(cur):
             cur.execute(
                 "DELETE FROM mcp_servers WHERE name = %s RETURNING server_id",
                 (name,),
             )
-            row = cur.fetchone()
-            self.conn.commit()
-            if row:
-                logger.info("Unregistered MCP server: %s", name)
-                return True
-            return False
+            return cur.fetchone()
+
+        if self._run(_delete, write=True):
+            logger.info("Unregistered MCP server: %s", name)
+            return True
+        return False
 
     def unregister_server_by_id(self, server_id: str) -> bool:
         """
@@ -317,21 +434,24 @@ class MCPServerStore:
         Returns:
             True if deleted, False if not found.
         """
-        with self.conn.cursor() as cur:
+
+        def _delete(cur):
             cur.execute(
                 "DELETE FROM mcp_servers WHERE server_id = %s RETURNING name",
                 (server_id,),
             )
-            row = cur.fetchone()
-            self.conn.commit()
-            if row:
-                logger.info("Unregistered MCP server: %s (id=%s)", row[0], server_id)
-                return True
-            return False
+            return cur.fetchone()
+
+        row = self._run(_delete, write=True)
+        if row:
+            logger.info("Unregistered MCP server: %s (id=%s)", row[0], server_id)
+            return True
+        return False
 
     def update_status(self, server_id: str, status: str) -> None:
         """Update a server's status."""
-        with self.conn.cursor() as cur:
+
+        def _update(cur) -> None:
             cur.execute(
                 """
                 UPDATE mcp_servers SET status = %s, updated_at = NOW()
@@ -339,7 +459,8 @@ class MCPServerStore:
                 """,
                 (status, server_id),
             )
-            self.conn.commit()
+
+        self._run(_update, write=True)
 
     # -------------------------------------------------------------------------
     # Tool queries
@@ -354,7 +475,8 @@ class MCPServerStore:
 
         Returns list of tool dicts with server name attached.
         """
-        with self.conn.cursor() as cur:
+
+        def _select(cur) -> list[dict[str, Any]]:
             if server_name:
                 cur.execute(
                     """
@@ -387,9 +509,12 @@ class MCPServerStore:
                 for row in cur.fetchall()
             ]
 
+        return self._run(_select)
+
     def get_server_for_tool(self, tool_name: str) -> MCPServer | None:
         """Find which server provides a given tool."""
-        with self.conn.cursor() as cur:
+
+        def _select(cur) -> MCPServer | None:
             cur.execute(
                 """
                 SELECT s.server_id, s.name, s.version, s.url, s.transport, s.status,
@@ -417,18 +542,23 @@ class MCPServerStore:
             server.tools = self._get_tools_for_server(cur, server.server_id)
             return server
 
+        return self._run(_select)
+
     # -------------------------------------------------------------------------
     # Stats
     # -------------------------------------------------------------------------
 
     def get_stats(self) -> dict[str, int]:
         """Get registry statistics."""
-        with self.conn.cursor() as cur:
+
+        def _select(cur) -> dict[str, int]:
             cur.execute("SELECT COUNT(*) FROM mcp_servers")
             server_count = cur.fetchone()[0]
             cur.execute("SELECT COUNT(*) FROM mcp_tools")
             tool_count = cur.fetchone()[0]
             return {"servers": server_count, "tools": tool_count}
+
+        return self._run(_select)
 
     # -------------------------------------------------------------------------
     # Internal helpers
