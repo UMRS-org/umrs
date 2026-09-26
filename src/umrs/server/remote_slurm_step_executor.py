@@ -42,6 +42,7 @@ workflow on a ``slurm-remote`` site.
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import logging
@@ -81,6 +82,7 @@ from .step_executor import (
     EXECUTOR_GPU_METADATA_KEY,
     EXECUTOR_IMAGE_METADATA_KEY,
     EXECUTOR_PAYLOAD_S3_METADATA_KEY,
+    EXECUTOR_ROUTED_KEYS_METADATA_KEY,
     EXECUTOR_SOURCE_DIR_METADATA_KEY,
     StepExecutionError,
     _serialise_ctx_payload,
@@ -124,6 +126,8 @@ _SWEEP_TIMEOUT = 1800
 _STREAM_BYTES_PER_SEC = 10 * 1024 * 1024
 _MANIFEST_ALLOWANCE = 16 * 1024 * 1024
 _SSH_FAILURE_RC = 255
+#: The helper's exit code when squeue / sacct failed (helper EXIT_SCHEDULER).
+_SCHEDULER_RC = 5
 _HELPER_ABSENT = 3
 _HELPER_REFUSED = 4
 _SAFE_SEGMENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,39}")
@@ -143,6 +147,7 @@ _INTERNAL_METADATA_KEYS = frozenset(
     {
         EXECUTOR_IMAGE_METADATA_KEY,
         EXECUTOR_PAYLOAD_S3_METADATA_KEY,
+        EXECUTOR_ROUTED_KEYS_METADATA_KEY,
         EXECUTOR_GPU_METADATA_KEY,
         EXECUTOR_SOURCE_DIR_METADATA_KEY,
         STAGE_REQUEST_METADATA_KEY,
@@ -153,6 +158,11 @@ _INTERNAL_METADATA_KEYS = frozenset(
 _PLATFORM_CONFIG_KEYS = ("api_key", "headers", "_routing")
 #: ``result.extra`` keys only the executor writes (a step cannot forge them).
 _EXECUTOR_EXTRA_KEYS = ("slurm", "slurm_job")
+#: A parent result's ``extra`` values that differ between two runs of the
+#: same parent on the same inputs (its job, its accounting, a gate's wait).
+#: Left out of a step's payload, so a durable re-dispatch that recomputes or
+#: re-adopts the parents gives the step the same inputs tag (peer review F1).
+_VOLATILE_PARENT_EXTRA = (*_EXECUTOR_EXTRA_KEYS, "waited_seconds")
 _TRUE = frozenset({"1", "true", "yes", "on"})
 
 
@@ -187,6 +197,12 @@ def safe_segment(name: str, fallback: str) -> str:
 
 class _Unreachable(StepExecutionError):
     """The login node did not answer (ssh rc 255, a hang)."""
+
+
+class _SchedulerDown(_Unreachable):
+    """The login node answered but Slurm did not (slurmctld / slurmdbd down:
+    the helper exits ``_SCHEDULER_RC``) — as transient as an unreachable
+    node, never a verdict on a job."""
 
 
 @dataclass
@@ -484,17 +500,22 @@ class RemoteSlurmStepExecutor(SlurmStepExecutor):
         self, entrypoint: str, config: dict[str, Any], ctx: StepContext
     ) -> bytes:
         """``input.pkl``: the worker's payload with no executor-internal
-        metadata, no platform routing value and no object-store endpoint
-        (the worker's ``ctx.s3`` is the staged file shim)."""
+        metadata, no platform routing value (key, headers, routing record,
+        and an ``api_base`` / ``model`` the router filled in), no
+        object-store endpoint (the worker's ``ctx.s3`` is the staged file
+        shim) and no volatile parent facts (its inputs tag stays the same
+        across a durable re-dispatch)."""
         metadata = {
             k: v for k, v in ctx.metadata.items() if k not in _INTERNAL_METADATA_KEYS
         }
+        dropped = (*_PLATFORM_CONFIG_KEYS, *_routed_keys(ctx))
         ctx_payload = _serialise_ctx_payload(ctx, metadata=metadata)
-        ctx_payload["config"] = _without_platform_keys(ctx_payload["config"])
+        ctx_payload["config"] = _without(ctx_payload["config"], dropped)
+        ctx_payload["parent_results"] = _stable_parents(ctx.parent_results)
         blob = pickle.dumps(
             {
                 "entrypoint": entrypoint,
-                "config": _without_platform_keys(config),
+                "config": _without(config, dropped),
                 "ctx": ctx_payload,
                 "s3_config": {},
             }
@@ -617,6 +638,10 @@ class RemoteSlurmStepExecutor(SlurmStepExecutor):
 
     def _checked(self, verb: str, *args: Any, phase: str = "setup", **kw: Any) -> bytes:
         proc = self._helper(verb, *args, phase=phase, **kw)
+        if proc.returncode == _SCHEDULER_RC:
+            raise _SchedulerDown(
+                phase, f"helper {verb}: Slurm did not answer: {_reason(proc.stderr)}"
+            )
         if proc.returncode != 0:
             raise StepExecutionError(
                 phase,
@@ -1042,9 +1067,9 @@ class RemoteSlurmStepExecutor(SlurmStepExecutor):
         return max(same, key=lambda f: int(f.job_id)) if same else None
 
     def _find_jobs_patiently(self, job_name: str) -> list[_FoundJob]:
-        """find-jobs, riding out a login-node outage for the unreachable
-        budget: failing at once burnt a durable run's retries in minutes and
-        never adopted a job that finished meanwhile."""
+        """find-jobs, riding out a login-node or Slurm outage for the
+        unreachable budget: failing at once burnt a durable run's retries in
+        minutes and never adopted a job that finished meanwhile."""
         started = time.monotonic()
         while True:
             try:
@@ -1418,8 +1443,26 @@ def _settling(job_id: str) -> bool:
         return job_id in _SETTLING
 
 
-def _without_platform_keys(config: dict[str, Any]) -> dict[str, Any]:
-    return {k: v for k, v in dict(config).items() if k not in _PLATFORM_CONFIG_KEYS}
+def _without(config: dict[str, Any], keys: tuple[str, ...]) -> dict[str, Any]:
+    return {k: v for k, v in dict(config).items() if k not in keys}
+
+
+def _routed_keys(ctx: StepContext) -> tuple[str, ...]:
+    raw = ctx.metadata.get(EXECUTOR_ROUTED_KEYS_METADATA_KEY) or ()
+    return tuple(k for k in raw if isinstance(k, str))
+
+
+def _stable_parents(parents: dict[str, Any]) -> dict[str, Any]:
+    """The parent results without their volatile ``extra`` values."""
+    stable: dict[str, Any] = {}
+    for name, result in dict(parents).items():
+        extra = getattr(result, "extra", None)
+        if isinstance(result, StepResult) and isinstance(extra, dict):
+            result = dataclasses.replace(
+                result, extra=_without(extra, _VOLATILE_PARENT_EXTRA)
+            )
+        stable[name] = result
+    return stable
 
 
 def _step_timeout(ctx: StepContext) -> float | None:

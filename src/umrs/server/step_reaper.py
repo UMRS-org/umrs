@@ -151,12 +151,16 @@ def reap_record(
     reaper: Any,
     record: Any,
     durable_status: Callable[[str], str | None] | None = None,
+    for_retry: bool | None = None,
 ) -> None:
     """Reap each step of *record* that left something; a step with nothing
     left is recorded ``cleaned`` (the next boot skips it). Stops once a
     durable retry replaced the record: the retry carries its uncleaned jobs
-    (:func:`carry_step_jobs`) and reconciles or reaps them itself."""
-    for_retry = _may_retry(record, durable_status)
+    (:func:`carry_step_jobs`) and reconciles or reaps them itself.
+    *for_retry* None asks :func:`_may_retry`; False (a cancel, a refused
+    dispatch — a kill switch must still kill) ends every job."""
+    if for_retry is None:
+        for_retry = _may_retry(record, durable_status)
     for name, left in unreaped_steps(record).items():
         if live_record(record) is not record:
             logger.info(
@@ -186,9 +190,11 @@ def _may_retry(
 ) -> bool:
     """A failed (not cancelled) run with a durable job may be dispatched again,
     and that dispatch's reconcile resumes a live job on the same inputs or
-    adopts a COMPLETED one's outputs; --time and the workdir sweep bound them
-    if no retry comes. Given *durable_status* (at boot), only while the
-    scheduler still dispatches that job: a spent one's jobs are reaped."""
+    adopts a COMPLETED one's outputs. Only while the job store says so: at
+    boot (*durable_status*) the durable job is still planned, queued or
+    running; at run end it is not cancelled and has attempts left. A spent
+    job's jobs are reaped at once; an unreadable store leaves them (--time
+    and the workdir sweep bound them)."""
     job = getattr(record, "durable_job_id", None)
     if (
         str(getattr(record, "status", "")) != "failed"
@@ -196,7 +202,35 @@ def _may_retry(
         or not job
     ):
         return False
-    return durable_status is None or _job_status(record, durable_status) in _DISPATCHED
+    if durable_status is None:
+        return _durable_attempts_left(str(job))
+    try:
+        status = durable_status(str(job))
+    except Exception:  # unreadable: leave the jobs, as _redispatched does
+        logger.warning("step lane: durable job %s unreadable", job, exc_info=True)
+        return True
+    return str(status or "").lower() in _DISPATCHED
+
+
+def _durable_attempts_left(job_id: str) -> bool:
+    """The job store's view at run end: False when the durable job is gone,
+    cancelled or out of attempts; True when it may run again or the store
+    is not there or not readable."""
+    try:
+        from umrs.api.jobs import get_optional_job_store
+
+        store = get_optional_job_store()
+        if store is None:
+            return True
+        job = store.get_job(job_id)
+        if job is None:
+            return False
+        if str(getattr(job.status, "value", job.status)).lower() == "cancelled":
+            return False
+        return bool(job.can_retry(len(store.get_attempts_for_job(job_id))))
+    except Exception:
+        logger.warning("step lane: durable job %s unreadable", job_id, exc_info=True)
+        return True
 
 
 def _mark_cleaned(record: Any, step: str, left: list[dict[str, Any]]) -> None:
@@ -209,9 +243,12 @@ def _mark_cleaned(record: Any, step: str, left: list[dict[str, Any]]) -> None:
             live.update_step_entry(step, JOBS_KEY, _entry(facts), {"cleaned": True})
 
 
-def reap_run_jobs(record: Any) -> threading.Thread | None:
+def reap_run_jobs(
+    record: Any, for_retry: bool | None = None
+) -> threading.Thread | None:
     """The run ended or was refused: no attempt of its steps will reconcile
-    their jobs any more. They are reaped off the caller's thread."""
+    their jobs any more. They are reaped off the caller's thread
+    (*for_retry*: :func:`reap_record`)."""
     if not unreaped_steps(record):
         return None
     reaper = step_lane_reaper()
@@ -224,7 +261,7 @@ def reap_run_jobs(record: Any) -> threading.Thread | None:
         return None
     thread = threading.Thread(
         target=reap_record,
-        args=(reaper, record),
+        args=(reaper, record, None, for_retry),
         name=f"umrs-step-reap-{record.execution_id}",
         daemon=True,
     )

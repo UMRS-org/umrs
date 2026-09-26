@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import dataclasses
 import os
+import pickle
 import subprocess
 import sys
 import time
@@ -41,7 +42,11 @@ from umrs.server.slurm_step_executor import (
     PollClock,
     SlurmStepExecutor,
 )
-from umrs.server.step_executor import EXECUTOR_SOURCE_DIR_METADATA_KEY, StepExecutionError
+from umrs.server.step_executor import (
+    EXECUTOR_ROUTED_KEYS_METADATA_KEY,
+    EXECUTOR_SOURCE_DIR_METADATA_KEY,
+    StepExecutionError,
+)
 from umrs.server.step_reply import reply_to_json
 from umrs.server.step_staging import (
     DEFAULT_CAPS,
@@ -77,7 +82,7 @@ def tree(tmp_path):
     return write_step_tree(tmp_path / "bundle")
 
 
-def _ctx(tree, s3=None, **metadata) -> StepContext:
+def _ctx(tree, s3=None, parents=None, **metadata) -> StepContext:
     meta = {
         EXECUTOR_SOURCE_DIR_METADATA_KEY: str(tree),
         STAGE_REQUEST_METADATA_KEY: {"owner": OWNER, "step": "s1"},
@@ -90,6 +95,7 @@ def _ctx(tree, s3=None, **metadata) -> StepContext:
         output_bucket=OUT_BUCKET,
         metadata=meta,
         run_id=RUN,
+        parent_results=dict(parents or {}),
     )
 
 
@@ -101,9 +107,9 @@ def _run(cluster, tree, ex=None, **metadata):
     return ex.execute(entrypoint="steps.lane:Upper", config={}, ctx=_ctx(tree, **metadata))
 
 
-def _tag(cluster, tree, s3=None, config=None) -> str:
+def _tag(cluster, tree, s3=None, config=None, parents=None, **metadata) -> str:
     """The inputs tag the executor gives this step (its workdir name carries it)."""
-    ex, ctx = cluster.executor(), _ctx(tree, s3)
+    ex, ctx = cluster.executor(), _ctx(tree, s3, parents, **metadata)
     payload = ex._payload("steps.lane:Upper", config or {}, ctx)
     return inputs_tag(build_stage_plan(ctx, caps=ex.caps), payload, str(tree), ex.caps)
 
@@ -169,6 +175,66 @@ def test_a_completed_job_that_ran_on_other_inputs_is_not_adopted(cluster, tree):
     assert result.output_keys == [f"runs/{RUN}/s1/result/out.txt"]
     assert len(cluster.calls("sbatch")) == 1
     assert not wd.exists() and cluster.workdirs() == []
+
+
+def _parent(job_id: str, keys=("runs/r/s0/a.txt",), **extra) -> StepResult:
+    """A lane parent's result as the runner hands it on: its own reply extra
+    plus the executor's job facts and accounting."""
+    return StepResult(
+        output_keys=list(keys),
+        extra={"score": 1, **extra, "slurm": {"elapsed_seconds": int(job_id)},
+               "slurm_job": {"job_id": job_id, "workdir": f"/w/{job_id}"}},
+    )  # fmt: skip
+
+
+def test_the_tag_ignores_a_parents_job_facts_and_routed_values(cluster, tree):
+    # Peer review F1 (2026-09-26): a durable re-dispatch re-runs (or
+    # re-adopts) the parents; their job id, accounting and a gate's wait
+    # differ, and the router may pick another endpoint — none of that is an
+    # input of the step.
+    first = _tag(cluster, tree, parents={"s0": _parent("900", waited_seconds=3.0)},
+                 config={"api_base": "http://a", "model": "m1", "k": 1},
+                 **{EXECUTOR_ROUTED_KEYS_METADATA_KEY: ["api_base", "model"]})  # fmt: skip
+    again = _tag(cluster, tree, parents={"s0": _parent("950", waited_seconds=9.0)},
+                 config={"api_base": "http://b", "model": "m2", "k": 1},
+                 **{EXECUTOR_ROUTED_KEYS_METADATA_KEY: ["api_base", "model"]})  # fmt: skip
+    assert again == first
+    # ... but what the parent produced, and what the author set, are inputs
+    assert _tag(cluster, tree, parents={"s0": _parent("900", keys=["runs/r/s0/b.txt"])}) != _tag(
+        cluster, tree, parents={"s0": _parent("900")}
+    )
+    assert _tag(cluster, tree, parents={"s0": _parent("900", score=2)}) != _tag(
+        cluster, tree, parents={"s0": _parent("900")}
+    )
+    assert _tag(cluster, tree, config={"model": "m1"}) != _tag(
+        cluster, tree, config={"model": "m2"}
+    )
+
+
+def test_the_payload_carries_no_routed_value_and_no_parent_job_facts(cluster, tree):
+    ex = cluster.executor()
+    ctx = _ctx(tree, parents={"s0": _parent("900")},
+               **{EXECUTOR_ROUTED_KEYS_METADATA_KEY: ["api_base"]})  # fmt: skip
+    ctx.config.update({"api_base": "http://platform", "model": "authored"})
+    payload = pickle.loads(ex._payload("steps.lane:Upper", dict(ctx.config), ctx))
+    for config in (payload["config"], payload["ctx"]["config"]):
+        assert "api_base" not in config and config["model"] == "authored"
+    parent = payload["ctx"]["parent_results"]["s0"]
+    assert parent.extra == {"score": 1} and parent.output_keys == ["runs/r/s0/a.txt"]
+    assert EXECUTOR_ROUTED_KEYS_METADATA_KEY not in payload["ctx"]["metadata"]
+
+
+def test_a_downstream_job_is_resumed_across_a_redispatch_that_reran_its_parent(cluster, tree):
+    # F1 end to end: A -> B, SSH lost while B runs, the retry re-runs A (a
+    # new job id) and reaches B, whose earlier job must be resumed, not
+    # cancelled and run again.
+    tag = _tag(cluster, tree, parents={"s0": _parent("900")})
+    _completed_earlier(cluster, tag, job_id="907", states=("RUNNING", "COMPLETED"))
+    s3, ex = FakeS3(), cluster.executor()
+    ctx = _ctx(tree, s3, parents={"s0": _parent("950")})
+    result = ex.execute(entrypoint="steps.lane:Upper", config={}, ctx=ctx)
+    assert result.extra["slurm_job"]["job_id"] == "907"
+    assert cluster.calls("sbatch") == [] and cluster.calls("scancel") == []
 
 
 def test_the_inputs_tag_follows_what_the_job_computes_from(cluster, tree):
@@ -247,13 +313,15 @@ def test_a_live_earlier_job_on_the_same_inputs_is_resumed_not_rerun(cluster, tre
     assert cluster.workdirs() == []
 
 
-def _find_jobs_down(ex, down):
+def _find_jobs_down(ex, down, rc=255):
+    """find-jobs fails *down["calls"]* times (-1: always): rc 255 is the login
+    node unreachable, rc 5 the helper reporting Slurm down."""
     local = ex._remote_argv
 
     def flaky(command):
         if " find-jobs " in command and down["calls"] != 0:
             down["calls"] -= 1
-            return ["bash", "-c", "exit 255"]
+            return ["bash", "-c", f"echo 'squeue failed' >&2; exit {rc}"]
         return local(command)
 
     ex._remote_argv = flaky
@@ -264,6 +332,16 @@ def test_reconcile_rides_out_a_login_node_outage(cluster, tree):
     # attempt at once and burnt a durable run's retries in minutes.
     ex, down = cluster.executor(unreachable_budget=30.0), {"calls": 2}
     _find_jobs_down(ex, down)
+    result = _run(cluster, tree, ex)
+    assert result.output_keys == [f"runs/{RUN}/s1/result/out.txt"]
+    assert down["calls"] == 0 and len(cluster.calls("sbatch")) == 1
+
+
+def test_reconcile_rides_out_a_slurm_outage_too(cluster, tree):
+    # Peer review F3 (2026-09-26): slurmctld / slurmdbd down with SSH up
+    # failed find-jobs at once; the helper now says "Slurm down" (rc 5).
+    ex, down = cluster.executor(unreachable_budget=30.0), {"calls": 2}
+    _find_jobs_down(ex, down, rc=5)
     result = _run(cluster, tree, ex)
     assert result.output_keys == [f"runs/{RUN}/s1/result/out.txt"]
     assert down["calls"] == 0 and len(cluster.calls("sbatch")) == 1
@@ -301,9 +379,9 @@ def test_a_failed_earlier_job_leaves_no_workdir_and_a_foreign_one_is_untouched(
 
 
 def test_find_jobs_failing_means_no_submit_at_all(cluster, tree):
-    cluster.behave(find_rc=1)
-    with pytest.raises(StepExecutionError, match="find-jobs failed"):
-        _run(cluster, tree)
+    cluster.behave(find_rc=1)  # squeue fails: the helper reports Slurm down
+    with pytest.raises(StepExecutionError, match="find-jobs: Slurm did not answer"):
+        _run(cluster, tree, cluster.executor(unreachable_budget=0.2))
     assert cluster.calls("sbatch") == [] and cluster.workdirs() == []
 
 
@@ -311,8 +389,8 @@ def test_a_sacct_outage_never_reruns_a_step_whose_outputs_are_kept(cluster, tree
     # The kept COMPLETED job is past squeue's MinJobAge: only sacct knows it.
     wd = _completed_earlier(cluster, _tag(cluster, tree))
     cluster.behave(find_sacct_rc=1)
-    with pytest.raises(StepExecutionError, match="find-jobs failed.*sacct failed"):
-        _run(cluster, tree)
+    with pytest.raises(StepExecutionError, match="find-jobs: Slurm did not answer.*sacct failed"):
+        _run(cluster, tree, cluster.executor(unreachable_budget=0.2))
     assert cluster.calls("sbatch") == [] and cluster.workdirs() == [wd]
     cluster.behave()  # slurmdbd back: the next attempt adopts it
     assert _run(cluster, tree).output_keys == [f"runs/{RUN}/s1/r.txt"]

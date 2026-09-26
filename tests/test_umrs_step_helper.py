@@ -736,7 +736,8 @@ def test_find_jobs_reports_a_physical_workdir_under_the_named_root(tmp_path, slu
 def test_find_jobs_fails_when_squeue_cannot_list_and_refuses_other_names(slurm):
     env, answer, _calls = slurm
     answer("squeue", rc=1, err="slurm_load_jobs error: Unable to contact slurm controller")
-    assert run("find-jobs", "umrs-step-wf-s1", env=env).returncode == helper.EXIT_FAILED
+    # Slurm down is its own exit code: the server rides it out (peer review F3).
+    assert run("find-jobs", "umrs-step-wf-s1", env=env).returncode == helper.EXIT_SCHEDULER
     assert run("find-jobs", "some-other-job", env=env).returncode == helper.EXIT_REFUSED
 
 
@@ -747,7 +748,7 @@ def test_find_jobs_fails_when_sacct_cannot_list(slurm):
     answer("squeue", out="")
     answer("sacct", rc=1, err="sacct: error: Problem talking to the database")
     proc = run("find-jobs", "umrs-step-wf-s1", env=env)
-    assert proc.returncode == helper.EXIT_FAILED
+    assert proc.returncode == helper.EXIT_SCHEDULER
     assert "sacct failed" in reason(proc) and proc.stdout == b""
 
 
@@ -809,7 +810,7 @@ def test_sweep_removes_nothing_when_squeue_fails_or_the_age_is_short(root, wd, s
     _age(wd, 7200)
     assert run("sweep", root, "--older-than", 60, env=env).returncode == helper.EXIT_REFUSED
     answer("squeue", rc=1, err="slurm_load_jobs error: Unable to contact slurm controller")
-    assert run("sweep", root, "--older-than", 3600, env=env).returncode == helper.EXIT_FAILED
+    assert run("sweep", root, "--older-than", 3600, env=env).returncode == helper.EXIT_SCHEDULER
     assert wd.exists()
 
 

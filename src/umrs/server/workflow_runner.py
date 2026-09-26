@@ -46,6 +46,7 @@ from umrs.server.step_executor import (
     EXECUTOR_GPU_METADATA_KEY,
     EXECUTOR_IMAGE_METADATA_KEY,
     EXECUTOR_PAYLOAD_S3_METADATA_KEY,
+    EXECUTOR_ROUTED_KEYS_METADATA_KEY,
     EXECUTOR_SOURCE_DIR_METADATA_KEY,
     StepExecutionError,
     StepExecutor,
@@ -989,10 +990,16 @@ def _execute_manual_gate(
 
 
 def _executor_metadata(
-    image_hint: Any, gpu_hint: Any, source_path: str | None
+    image_hint: Any,
+    gpu_hint: Any,
+    source_path: str | None,
+    routed_keys: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Per-step executor hints (image / GPU / uploaded source tree)."""
+    """Per-step executor hints (image / GPU / uploaded source tree / the
+    config keys the router filled in)."""
     metadata: dict[str, Any] = {}
+    if routed_keys:
+        metadata[EXECUTOR_ROUTED_KEYS_METADATA_KEY] = list(routed_keys)
     if image_hint is not None:
         metadata[EXECUTOR_IMAGE_METADATA_KEY] = image_hint
     if gpu_hint is not None:
@@ -1058,6 +1065,8 @@ def _is_manual_gate(spec: dict[str, Any]) -> bool:
 #: Step-config keys that carry platform routing values (key, header values,
 #: the routing record); uploaded code never receives them (build spec §2).
 _PLATFORM_CREDENTIAL_KEYS = ("api_key", "headers", "_routing")
+#: Config values a routing decision fills in when the author did not.
+_ROUTED_CONFIG_KEYS = ("api_base", "model")
 
 
 def _apply_step_routing(
@@ -1065,14 +1074,19 @@ def _apply_step_routing(
     decision: RoutingDecision,
     spec: dict[str, Any],
     source_path: str | None,
-) -> None:
+) -> list[str]:
     """Merge the routing decision into the step config; an uploaded step's
     config then loses the routed key, headers and routing record — it is
-    written into the step's workdir, readable by the step."""
+    written into the step's workdir, readable by the step. Returns the
+    config keys the decision filled in (the author set none of them)."""
+    routed = [
+        k for k in _ROUTED_CONFIG_KEYS if k not in config and getattr(decision, k, None)
+    ]
     _apply_routing_decision_to_config(config, decision)
     if is_uploaded_step(str(spec.get("entrypoint") or ""), source_path):
         for key in _PLATFORM_CREDENTIAL_KEYS:
             config.pop(key, None)
+    return routed
 
 
 def _execute_step(
@@ -1151,7 +1165,7 @@ def _execute_step(
         )
         return step_name, None, f"routing failed: {routing_err}"
 
-    _apply_step_routing(config, decision, spec, source_path)
+    routed_keys = _apply_step_routing(config, decision, spec, source_path)
     decision_dict = _redacted_decision(decision)
     decision_dict["wave_index"] = wave_index
 
@@ -1170,7 +1184,7 @@ def _execute_step(
 
     # ---- Build context ----------------------------------------------------
     upstream_keys = _collect_upstream_keys(spec, parent_results_snapshot)
-    metadata = _executor_metadata(image_hint, gpu_hint, source_path)
+    metadata = _executor_metadata(image_hint, gpu_hint, source_path, routed_keys)
     _bind_step_lane(executor, spec, metadata, record)
     payload_s3_enabled, payload_bucket, payload_s3_prefix = _payload_s3_hint(metadata)
     _annotate_payload_mode(
@@ -1393,12 +1407,14 @@ def _settle_before_run(
     if refusal:
         record.update(status="failed", error=refusal, finished_at=time.time())
         _emit_workflow_metric(record, executor, "failed")
-        _reap_step_jobs(record)  # a refused re-dispatch reconciles nothing
+        # A refused re-dispatch reconciles nothing, and a refusal is a kill
+        # switch (the lane off, no verified image): end the earlier jobs.
+        _reap_step_jobs(record, for_retry=False)
         return True, None
     return False, worker
 
 
-def _reap_step_jobs(record: ExecutionRecord) -> None:
+def _reap_step_jobs(record: ExecutionRecord, for_retry: bool | None = None) -> None:
     """The run ended or was refused: no attempt of its steps will reconcile
     the Slurm jobs and workdirs they left (a restart, a skipped step, the
     lane switched off) — the step lane's reaper ends them."""
@@ -1406,7 +1422,7 @@ def _reap_step_jobs(record: ExecutionRecord) -> None:
         from umrs.server.step_reaper import reap_run_jobs, unreaped_steps
 
         if unreaped_steps(record):
-            reap_run_jobs(record)
+            reap_run_jobs(record, for_retry=for_retry)
     except Exception:
         logger.warning(
             "step lane: reaping the jobs of run %s failed",
