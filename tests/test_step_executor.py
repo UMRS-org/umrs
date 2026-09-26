@@ -290,6 +290,32 @@ def test_subprocess_executor_timeout(step_module, monkeypatch, tmp_path):
     assert "timed out" in excinfo.value.message
 
 
+def test_subprocess_payload_carries_no_executor_key_names(monkeypatch):
+    """Peer review (2026-09-26): the subprocess worker got ``ctx.metadata``
+    unfiltered, so the runner's executor-internal key names (and the server
+    path of the source dir, which the worker takes from its environment)
+    reached its payload."""
+    import subprocess
+
+    from umrs.server import step_executor as se
+
+    captured: dict = {}
+
+    def _capturing_run(cmd, *, input, **_kw):  # noqa: A002, ANN001
+        captured["payload"] = pickle.loads(input)
+        reply = pickle.dumps({"status": "ok", "result": StepResult()})
+        return types.SimpleNamespace(returncode=0, stdout=reply, stderr=b"")
+
+    monkeypatch.setattr(subprocess, "run", _capturing_run)
+    ctx = _make_ctx()
+    ctx.metadata.update({se.EXECUTOR_ROUTED_KEYS_METADATA_KEY: ["model"],
+                         se.EXECUTOR_UPSTREAM_METADATA_KEY: ["s0"],
+                         se.EXECUTOR_SOURCE_DIR_METADATA_KEY: "/srv/wf-src",
+                         se.EXECUTOR_IMAGE_METADATA_KEY: "img", "user_key": "kept"})  # fmt: skip
+    SubprocessExecutor().execute(entrypoint="pkg.mod:Cls", config={}, ctx=ctx)
+    assert captured["payload"]["ctx"]["metadata"] == {"user_key": "kept"}
+
+
 # ----------------------------------------------------------------------
 # Result is picklable across the boundary
 # ----------------------------------------------------------------------

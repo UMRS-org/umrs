@@ -96,6 +96,32 @@ EXECUTOR_SOURCE_DIR_METADATA_KEY = "__executor_source_dir__"
 # endpoint is useless there, and a re-dispatch may route elsewhere.
 EXECUTOR_ROUTED_KEYS_METADATA_KEY = "__executor_routed_keys__"
 
+# The step's dependency closure (every step it depends on, directly or
+# through its parents; the linear fallback's implicit chain included). The
+# staged HPC lane hands the step only these parents' results: an unrelated
+# earlier step that varies per run never re-tags its job.
+EXECUTOR_UPSTREAM_METADATA_KEY = "__executor_upstream_steps__"
+
+# Executor-internal keys a worker never sees in its ``ctx.metadata``.
+_WORKER_INTERNAL_KEYS = frozenset(
+    {
+        EXECUTOR_IMAGE_METADATA_KEY,
+        EXECUTOR_PAYLOAD_S3_METADATA_KEY,
+        EXECUTOR_GPU_METADATA_KEY,
+        EXECUTOR_ROUTED_KEYS_METADATA_KEY,
+        EXECUTOR_UPSTREAM_METADATA_KEY,
+    }
+)
+
+
+def _worker_metadata(ctx: StepContext) -> dict[str, Any]:
+    """*ctx*'s metadata as a one-shot worker gets it: without the
+    executor-internal keys, the source dir included (the worker takes it
+    from its environment, ``step_worker._prepare_worker_source_dir``)."""
+    hidden = _WORKER_INTERNAL_KEYS | {EXECUTOR_SOURCE_DIR_METADATA_KEY}
+    return {k: v for k, v in ctx.metadata.items() if k not in hidden}
+
+
 # Environment variable the executors use to carry the source dir into
 # the worker process (see ``step_worker._process_task``).
 EXECUTOR_SOURCE_DIR_ENV_VAR = "UMRS_STEP_SOURCE_DIR"
@@ -336,7 +362,7 @@ class SubprocessExecutor:
         # connection pool. ``parent_results`` may contain numpy
         # arrays — pickle handles those natively.
         s3_config = _serialise_s3_client_config(ctx.s3)
-        ctx_payload = _serialise_ctx_payload(ctx)
+        ctx_payload = _serialise_ctx_payload(ctx, metadata=_worker_metadata(ctx))
         payload = {
             "entrypoint": entrypoint,
             "config": dict(config),
@@ -514,13 +540,8 @@ class PodmanExecutor:
 
         # Strip executor-internal keys from the metadata that crosses
         # into the worker — user steps never need to see them.
-        _INTERNAL_KEYS = {
-            EXECUTOR_IMAGE_METADATA_KEY,
-            EXECUTOR_PAYLOAD_S3_METADATA_KEY,
-            EXECUTOR_GPU_METADATA_KEY,
-        }
         sanitised_metadata = {
-            k: v for k, v in ctx.metadata.items() if k not in _INTERNAL_KEYS
+            k: v for k, v in ctx.metadata.items() if k not in _WORKER_INTERNAL_KEYS
         }
 
         s3_config = _serialise_s3_client_config(ctx.s3)
@@ -1064,13 +1085,8 @@ class WorkerPoolExecutor:
         gpu = self._resolve_gpu(ctx)
 
         # Strip executor-internal keys from worker-visible metadata.
-        _INTERNAL_KEYS = {
-            EXECUTOR_IMAGE_METADATA_KEY,
-            EXECUTOR_PAYLOAD_S3_METADATA_KEY,
-            EXECUTOR_GPU_METADATA_KEY,
-        }
         sanitised_metadata = {
-            k: v for k, v in ctx.metadata.items() if k not in _INTERNAL_KEYS
+            k: v for k, v in ctx.metadata.items() if k not in _WORKER_INTERNAL_KEYS
         }
 
         s3_config = _serialise_s3_client_config(ctx.s3)
@@ -1653,13 +1669,8 @@ class RemotePoolExecutor:
         config: dict[str, Any],
         ctx: StepContext,
     ) -> StepResult:
-        _INTERNAL_KEYS = {
-            EXECUTOR_IMAGE_METADATA_KEY,
-            EXECUTOR_PAYLOAD_S3_METADATA_KEY,
-            EXECUTOR_GPU_METADATA_KEY,
-        }
         sanitised_metadata = {
-            k: v for k, v in ctx.metadata.items() if k not in _INTERNAL_KEYS
+            k: v for k, v in ctx.metadata.items() if k not in _WORKER_INTERNAL_KEYS
         }
 
         s3_config = _serialise_s3_client_config(ctx.s3)
@@ -1929,13 +1940,8 @@ class RouterPoolExecutor:
         config: dict[str, Any],
         ctx: StepContext,
     ) -> StepResult:
-        _INTERNAL_KEYS = {
-            EXECUTOR_IMAGE_METADATA_KEY,
-            EXECUTOR_PAYLOAD_S3_METADATA_KEY,
-            EXECUTOR_GPU_METADATA_KEY,
-        }
         sanitised_metadata = {
-            k: v for k, v in ctx.metadata.items() if k not in _INTERNAL_KEYS
+            k: v for k, v in ctx.metadata.items() if k not in _WORKER_INTERNAL_KEYS
         }
 
         s3_config = _serialise_s3_client_config(ctx.s3)

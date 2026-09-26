@@ -10,7 +10,6 @@ existing workflow registry command handlers used by the ZMQ server.
 
 from __future__ import annotations
 
-import contextlib
 import json
 import logging
 import os
@@ -34,7 +33,7 @@ from pydantic import BaseModel, Field, model_validator
 from ..core.TaskCmdStatus import TaskCmd
 from ..core.zmq_correlation import dumps_with_correlation_id
 from ..jobs.models import JobStatus
-from ..jobs.store import InvalidTransitionError, JobNotFoundError, JobStore
+from ..jobs.store import JobNotFoundError, JobStore
 from ..server.file_handling import handle_upload_workflow, workflow_name_refusal
 from ..server.job_tracking_handler import DurableJobCommandBackend
 from ..server.workflow_registry_handler import (
@@ -1198,9 +1197,11 @@ async def cancel_execution(
     identity: CallerIdentity = Depends(get_caller_identity),
 ):
     """Request cancellation of a workflow execution."""
-    from ..server.workflow_execution_registry import get_execution_registry
+    from ..jobs.workflow_run import cancel_workflow_execution
+    from ..server.step_reaper import durable_job_store
 
-    store = get_optional_job_store()
+    # The sidecar's job store, else the durable runtime's (peer review F2).
+    store = durable_job_store()
     record, job = resolve_execution_context(execution_id, store=store)
     enforce_http_execution_access(
         identity,
@@ -1209,16 +1210,16 @@ async def cancel_execution(
         execution_id=execution_id,
     )
 
-    registry = get_execution_registry()
-    cancelled_record = registry.cancel(execution_id) if record is not None else None
-    if cancelled_record is not None:
-        record = cancelled_record
     linked_job = job
     if record is not None and linked_job is None:
         linked_job = _get_job_for_record(store, record)
-    if linked_job is not None and store is not None:
-        with contextlib.suppress(InvalidTransitionError):
-            store.cancel_job(linked_job.job_id, reason="workflow_execution_cancelled")
+    # The durable job, then the registry record whatever the lookup above
+    # found: a dispatch may have registered it since (peer review F2).
+    cancelled_record = cancel_workflow_execution(
+        execution_id, store=store, job=linked_job
+    )
+    if cancelled_record is not None:
+        record = cancelled_record
 
     if record is not None:
         return {"status": "ok", "execution": _execution_payload(record, linked_job)}

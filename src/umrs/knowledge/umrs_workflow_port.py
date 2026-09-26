@@ -151,15 +151,16 @@ class UmrsWorkflowExecutionPort(WorkflowExecutionPort):
         }
 
     def cancel(self, execution_id: str) -> dict:
-        from umrs.jobs.workflow_run import cancel_workflow_execution_for_job
+        from umrs.jobs.workflow_run import cancel_job_and_run
 
         job_id = self._jobs.get(execution_id, "")
         if not job_id:
             return {"status": "unknown", "detail": "job not registered in this process"}
         try:
             job, _attempts = self._store.get_job_with_attempts(job_id)
-            cancel_workflow_execution_for_job(job)
-            self._store.cancel_job(job_id)
+            # The durable job first, then the run (also when the job had
+            # ended; never after another store error: peer review F2).
+            cancel_job_and_run(self._store, job)
         except Exception as exc:  # noqa: BLE001 — cancel is best-effort
             return {"status": "error", "detail": str(exc)}
         return {

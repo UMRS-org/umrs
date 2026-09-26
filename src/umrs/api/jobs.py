@@ -985,11 +985,11 @@ async def cancel_job(
         job = store.get_job(job_id)
         _enforce_job_access(caller, job, action="cancel")
 
-        store.cancel_job(job_id, reason)
-        if job.job_type == JobType.WORKFLOW_RUN:
-            from ..jobs.workflow_run import cancel_workflow_execution_for_job
+        from ..jobs.workflow_run import cancel_job_and_run
 
-            cancel_workflow_execution_for_job(job)
+        # A workflow_run's run is cancelled too, also when the durable job had
+        # ended (the 409 below); never after another store error (F2).
+        cancel_job_and_run(store, job, reason=reason)
         # 6b-3b (2026-09-11): durable cancel ALSO broadcasts to in-process
         # back-end listeners (model download, etc.) so a running job is
         # interrupted — never only re-labeled cancelled while it keeps

@@ -104,6 +104,24 @@ def test_slurm_sbatch_forwards_endpoint_and_gpu_never_credentials(monkeypatch):
     assert "test-secret" not in script
 
 
+def test_slurm_payload_carries_no_runner_key_names():
+    # Peer review (2026-09-26, cosmetic): the runner's routed-keys and
+    # dependency-closure keys are executor-internal too.
+    from umrs.server.step_executor import (
+        EXECUTOR_ROUTED_KEYS_METADATA_KEY,
+        EXECUTOR_UPSTREAM_METADATA_KEY,
+    )
+
+    ctx = StepContext(
+        s3=None, input_bucket="in", input_keys=[], output_bucket="out", run_id="run-keys",
+        metadata={EXECUTOR_ROUTED_KEYS_METADATA_KEY: ["model"],
+                  EXECUTOR_UPSTREAM_METADATA_KEY: ["s0"], "user_key": "kept"},
+    )  # fmt: skip
+    executor = SlurmStepExecutor(image="video-ai-yolo:latest", keep_workdir=True)
+    _result, captured = _run_with_fake_sbatch(executor, ctx)
+    assert captured["payload"]["ctx"]["metadata"] == {"user_key": "kept"}
+
+
 def test_slurm_rejects_oversized_payload(monkeypatch):
     monkeypatch.setenv("UMRS_STEP_PAYLOAD_MAX_BYTES", "64")
     # Re-import constant path used by executor via module attribute.

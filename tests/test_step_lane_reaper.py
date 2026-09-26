@@ -658,6 +658,55 @@ def test_a_cancel_between_durable_retries_ends_the_jobs_left_for_the_retry(clust
     assert not wd.exists()
 
 
+def _wait_for(condition, timeout: float = 5.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while not condition() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    return bool(condition())
+
+
+def _redispatched(registry):
+    """An ended run that left a live job, and the durable re-dispatch that
+    replaced its record and carried the job over."""
+    prior = registry.create("w", "alice", execution_id=RUN, durable_job_id="job-1")
+    prior.update(status="failed", finished_at=time.time())
+    step_reaper.record_step_job(prior, "s1", _facts(Path("/r/wd")))
+    record = registry.create("w", "alice", execution_id=RUN, durable_job_id="job-1")
+    step_reaper.carry_step_jobs(prior, record)
+    return prior, record
+
+
+def test_a_cancel_in_the_redispatch_submitted_window_ends_the_carried_jobs(reaped):
+    """Peer review F2 (2026-09-26): a cancel between the re-dispatch's record
+    and its launch marked the run cancelled, and the launch returned without
+    reaping the jobs it carried."""
+    from umrs.server.workflow_execution_registry import WorkflowExecutionRegistry
+
+    registry = WorkflowExecutionRegistry()
+    _prior, record = _redispatched(registry)
+    assert registry.cancel(RUN) is record and record.status == "cancelled"
+    ran = []
+    registry.launch(record, ran.append)
+    assert _wait_for(lambda: record in reaped), reaped
+    assert ran == [] and reaped.for_retry[reaped.index(record)] is False
+
+
+def test_a_cancel_racing_a_redispatch_cancels_the_record_it_put_in_place(reaped):
+    """Peer review F2 (2026-09-26): the cancel read the old record, the
+    re-dispatch (which found the durable job not yet cancelled) replaced it,
+    and the new run resumed the live job although the user cancelled."""
+    from umrs.server.workflow_execution_registry import WorkflowExecutionRegistry
+
+    registry = WorkflowExecutionRegistry()
+    prior, record = _redispatched(registry)
+    reads = iter([prior])  # the cancel's first read predates the replacement
+    live_get = registry.get
+    registry.get = lambda eid: next(reads, None) or live_get(eid)
+    assert registry.cancel(RUN) is record
+    assert (prior, False) == (reaped[0], reaped.for_retry[0])  # the ended run's jobs
+    assert record.cancel_requested and record.status == "cancelled"  # its launch runs nothing
+
+
 def test_the_run_end_reap_of_a_spent_durable_job_ends_its_jobs(monkeypatch):
     """Peer review (2026-09-26): the last retry's reap kept the job to --time."""
     from umrs.api import jobs as api_jobs
@@ -691,6 +740,28 @@ def test_the_run_end_reap_of_a_spent_durable_job_ends_its_jobs(monkeypatch):
 
     store.get_job = unreadable
     assert step_reaper._may_retry(ok)  # unreadable: leave the jobs to --time and the sweep
+
+
+def test_without_a_sidecar_store_the_durable_runtimes_store_decides(monkeypatch):
+    """Peer review (2026-09-26): with no in-process sidecar store every
+    attempt kept its jobs, though the durable runtime's store knew the job
+    was spent."""
+    from umrs.api import jobs as api_jobs
+    from umrs.server import durable_job_runtime
+
+    ok = SimpleNamespace(status="failed", cancel_requested=False, durable_job_id="job-1")
+    job = SimpleNamespace(status="cancelled", can_retry=lambda n: n < 3)
+    store = SimpleNamespace(get_job=lambda _id: job, get_attempts_for_job=lambda _id: [1])
+    runtime = durable_job_runtime.DurableJobRuntime(None, service=SimpleNamespace(
+        job_service=SimpleNamespace(job_store=store)))  # fmt: skip
+    monkeypatch.setattr(api_jobs, "get_optional_job_store", lambda: None)
+    monkeypatch.setattr(durable_job_runtime, "_global_runtime", runtime)
+    assert durable_job_runtime.get_runtime_job_store() is store
+    assert not step_reaper._may_retry(ok)
+    job.status = "queued"
+    assert step_reaper._may_retry(ok)
+    monkeypatch.setattr(durable_job_runtime, "_global_runtime", None)
+    assert step_reaper._may_retry(ok)  # neither store: leave the jobs
 
 
 def test_only_a_failed_uncancelled_durable_run_may_retry():

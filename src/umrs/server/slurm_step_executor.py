@@ -48,13 +48,13 @@ from .step_executor import (
     _PAYLOAD_MAX_BYTES,
     EXECUTOR_GPU_METADATA_KEY,
     EXECUTOR_IMAGE_METADATA_KEY,
-    EXECUTOR_PAYLOAD_S3_METADATA_KEY,
     EXECUTOR_SOURCE_DIR_ENV_VAR,
     EXECUTOR_SOURCE_DIR_METADATA_KEY,
     StepExecutionError,
     StepExecutor,
     _serialise_ctx_payload,
     _serialise_s3_client_config,
+    _worker_metadata,
 )
 from .step_reply import (
     check_reply_size,
@@ -902,16 +902,7 @@ class SlurmStepExecutor(StepExecutor):
             input_path = os.path.join(workdir, "input.pkl")
             output_path = os.path.join(workdir, "output.pkl")
 
-            _INTERNAL_KEYS = {
-                EXECUTOR_IMAGE_METADATA_KEY,
-                EXECUTOR_PAYLOAD_S3_METADATA_KEY,
-                EXECUTOR_GPU_METADATA_KEY,
-                EXECUTOR_SOURCE_DIR_METADATA_KEY,
-            }
-            sanitised_metadata = {
-                k: v for k, v in ctx.metadata.items() if k not in _INTERNAL_KEYS
-            }
-            ctx_payload = _serialise_ctx_payload(ctx, metadata=sanitised_metadata)
+            ctx_payload = _serialise_ctx_payload(ctx, metadata=_worker_metadata(ctx))
             payload = {
                 "entrypoint": entrypoint,
                 "config": dict(config),

@@ -45,6 +45,7 @@ from umrs.server.slurm_step_executor import (
 from umrs.server.step_executor import (
     EXECUTOR_ROUTED_KEYS_METADATA_KEY,
     EXECUTOR_SOURCE_DIR_METADATA_KEY,
+    EXECUTOR_UPSTREAM_METADATA_KEY,
     StepExecutionError,
 )
 from umrs.server.step_reply import reply_to_json
@@ -272,6 +273,87 @@ def test_the_payload_carries_no_routed_value_and_no_parent_job_facts(cluster, tr
     parent = payload["ctx"]["parent_results"]["s0"]
     assert parent.extra == {"score": 1} and parent.output_keys == ["runs/r/s0/a.txt"]
     assert EXECUTOR_ROUTED_KEYS_METADATA_KEY not in payload["ctx"]["metadata"]
+
+
+def test_the_tag_carries_only_the_steps_dependency_closure(cluster, tree):
+    # Peer review (2026-09-26): every earlier step's result reached the
+    # payload, so an unrelated step that varies per run (an LLM step's reply)
+    # re-tagged the job and a durable re-dispatch cancelled its healthy job.
+    def parents(reply, score=1):
+        return {"s0": _parent("900", score=score),
+                "llm": StepResult(extra={"response_text": reply})}  # fmt: skip
+
+    closure = {EXECUTOR_UPSTREAM_METADATA_KEY: ["s0"]}
+    first = _tag(cluster, tree, parents=parents("a"), **closure)
+    assert _tag(cluster, tree, parents=parents("b"), **closure) == first
+    assert _tag(cluster, tree, parents=parents("a", score=2), **closure) != first
+    # a caller that names no closure keeps every parent, as before
+    assert _tag(cluster, tree, parents=parents("a")) != _tag(cluster, tree, parents=parents("b"))
+    ex, ctx = cluster.executor(), _ctx(tree, parents=parents("a"), **closure)
+    payload = pickle.loads(ex._payload("steps.lane:Upper", {}, ctx))
+    assert list(payload["ctx"]["parent_results"]) == ["s0"]
+    assert EXECUTOR_UPSTREAM_METADATA_KEY not in payload["ctx"]["metadata"]
+
+
+class _Recorder:
+    """An injected executor that records each step's context; with *lane*
+    it carries the staged lane's runner hook (``bind_run``)."""
+
+    name = "slurm"
+
+    def __init__(self, lane: bool) -> None:
+        self.seen: dict[str, StepContext] = {}
+        if lane:
+            self.bind_run = lambda _run_id, **_hooks: None
+
+    def execute(self, *, config, ctx, **_kw):
+        self.seen[config["step_name"]] = ctx
+        return StepResult(extra={"response_text": config["step_name"]})
+
+
+def _steps(*deps):
+    return [{"name": name, "entrypoint": "umrs.pipeline_sdk.step:Step", **rest}
+            for name, rest in deps]  # fmt: skip
+
+
+_DAG = _steps(("a", {"depends_on": []}), ("llm", {"depends_on": []}),
+              ("b", {"depends_on": ["a"]}), ("c", {"depends_on": ["b"]}))  # fmt: skip
+#: No step declares depends_on: the linear fallback chains them.
+_LINEAR = _steps(("s1", {}), ("s2", {}), ("s3", {}))
+
+
+def _recorded_run(steps, lane: bool) -> _Recorder:
+    from umrs.server import workflow_runner as wr
+    from umrs.server.workflow_execution_registry import ExecutionRecord
+
+    ex = _Recorder(lane)
+    record = ExecutionRecord(execution_id=RUN, workflow_name="w", user_id=OWNER)
+    wr.run_workflow_record(record, source_path=None, workflow_json={"steps": steps},
+                           executor=ex)  # fmt: skip
+    assert record.status == "succeeded", record.error
+    # the runner still hands every earlier result on; only the lane filters
+    last = ex.seen[steps[-1]["name"]]
+    assert sorted(last.parent_results) == sorted(s["name"] for s in steps[:-1])
+    return ex
+
+
+@pytest.mark.parametrize(
+    ("steps", "closures"),
+    [
+        (_DAG, {"a": [], "llm": [], "b": ["a"], "c": ["a", "b"]}),
+        (_LINEAR, {"s1": [], "s2": ["s1"], "s3": ["s1", "s2"]}),
+    ],
+)
+def test_the_runner_names_each_lane_steps_dependency_closure(steps, closures):
+    ex = _recorded_run(steps, lane=True)
+    got = {name: ctx.metadata[EXECUTOR_UPSTREAM_METADATA_KEY] for name, ctx in ex.seen.items()}
+    assert got == closures
+
+
+@pytest.mark.parametrize("steps", [_DAG, _LINEAR])
+def test_another_executor_gets_no_closure_key(steps):
+    ex = _recorded_run(steps, lane=False)
+    assert [n for n, c in ex.seen.items() if EXECUTOR_UPSTREAM_METADATA_KEY in c.metadata] == []
 
 
 def test_a_downstream_job_is_resumed_across_a_redispatch_that_reran_its_parent(cluster, tree):

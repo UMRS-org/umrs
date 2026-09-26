@@ -386,3 +386,107 @@ def test_durable_jobs_default_db_is_umrs_db(monkeypatch):
 
     assert pool is sentinel_pool
     assert pool_kwargs["dbname"] == "umrs_db"
+
+
+# ── an ended workflow_run job's run is still cancelled (peer review F2) ────
+
+
+def _ended_workflow_run(monkeypatch):
+    """A failed durable workflow_run job whose ended run left a live step job
+    for a retry that will not come; the reaper records what it is asked."""
+    from umrs.server import step_reaper
+    from umrs.server.workflow_execution_registry import WorkflowExecutionRegistry
+
+    store = FakeJobStore()
+    job_id = store.create_job(project_id="default", user_id="testuser",
+                              job_type=JobType.WORKFLOW_RUN,
+                              spec={"execution_id": "wf-ended", "workflow_name": "w"})  # fmt: skip
+    store.jobs[job_id].status = JobStatus.FAILED
+    registry, reaped = WorkflowExecutionRegistry(), []
+    monkeypatch.setattr(
+        "umrs.server.workflow_execution_registry.get_execution_registry", lambda: registry
+    )
+    monkeypatch.setattr(
+        step_reaper, "reap_run_jobs", lambda r, for_retry=None: reaped.append((r, for_retry))
+    )
+    record = registry.create("w", "testuser", execution_id="wf-ended", durable_job_id=job_id)
+    record.update(status="failed")
+    step_reaper.record_step_job(record, "s1", {"job_id": "900", "workdir": "/r/wd"})
+    return store, job_id, record, reaped
+
+
+def test_cancelling_an_ended_workflow_run_job_still_ends_its_step_jobs(monkeypatch):
+    # The registry hook ran only when the durable cancel succeeded, so the
+    # step jobs of an already-terminal job's run ran on to --time.
+    store, job_id, record, reaped = _ended_workflow_run(monkeypatch)
+    backend = DurableJobCommandBackend(store)
+    result = json.loads(backend.cancel("testuser", json.dumps({"job_id": job_id})))
+    assert result["status"] == "error" and "already terminal" in result["message"]
+    assert reaped == [(record, False)]  # its step jobs end for real
+
+
+def test_the_http_cancel_of_an_ended_workflow_run_job_still_ends_its_step_jobs(monkeypatch):
+    import asyncio
+
+    import pytest
+    from fastapi import HTTPException
+    from umrs.api import jobs as api_jobs
+
+    store, job_id, record, reaped = _ended_workflow_run(monkeypatch)
+    caller = api_jobs.CallerIdentity(user_id="testuser", project_id="default")
+    with pytest.raises(HTTPException) as refused:
+        asyncio.run(api_jobs.cancel_job(job_id, reason="r", caller=caller, store=store))
+    assert refused.value.status_code == 409
+    assert reaped == [(record, False)]  # its step jobs end for real
+
+
+# ── a durable cancel that failed leaves the run alone (peer review F2) ─────
+
+
+def _lock_held_workflow_run(monkeypatch):
+    """A running workflow_run job whose store cancel fails for another reason
+    than an ended job (the scheduler's create_attempt holds its lock)."""
+    from umrs.jobs.store import JobStoreError
+    from umrs.server.workflow_execution_registry import WorkflowExecutionRegistry
+
+    store = FakeJobStore()
+    job_id = store.create_job(project_id="default", user_id="testuser",
+                              job_type=JobType.WORKFLOW_RUN,
+                              spec={"execution_id": "wf-live", "workflow_name": "w"})  # fmt: skip
+    store.jobs[job_id].status = JobStatus.RUNNING
+
+    def lock_held(*_a, **_k):
+        raise JobStoreError(f"Could not acquire lock for job {job_id}")
+
+    store.cancel_job = lock_held
+    registry = WorkflowExecutionRegistry()
+    monkeypatch.setattr(
+        "umrs.server.workflow_execution_registry.get_execution_registry", lambda: registry
+    )
+    record = registry.create("w", "testuser", execution_id="wf-live", durable_job_id=job_id)
+    record.update(status="running")
+    return store, job_id, record
+
+
+def test_a_failed_durable_cancel_never_cancels_the_run_alone(monkeypatch):
+    # The registry hook ran in a `finally`: the run stopped while its durable
+    # job lived on, the monitor requeued the failed attempt and the workflow
+    # reran from scratch.
+    import asyncio
+
+    import pytest
+    from umrs.api import jobs as api_jobs
+    from umrs.jobs.store import JobStoreError
+    from umrs.knowledge.umrs_workflow_port import UmrsWorkflowExecutionPort
+
+    store, job_id, record = _lock_held_workflow_run(monkeypatch)
+    with pytest.raises(JobStoreError):
+        DurableJobCommandBackend(store).cancel("testuser", json.dumps({"job_id": job_id}))
+    caller = api_jobs.CallerIdentity(user_id="testuser", project_id="default")
+    with pytest.raises(JobStoreError):
+        asyncio.run(api_jobs.cancel_job(job_id, reason="r", caller=caller, store=store))
+    store.get_job_with_attempts = lambda _id: (store.jobs[_id], [])
+    port = UmrsWorkflowExecutionPort(store)
+    port._jobs["wf-live"] = job_id
+    assert port.cancel("wf-live")["status"] == "error"
+    assert not record.cancel_requested and record.status == "running"

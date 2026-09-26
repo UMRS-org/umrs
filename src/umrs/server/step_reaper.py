@@ -227,14 +227,42 @@ def _stored_job(store: Any, job_id: str) -> Any:
         return None
 
 
+def durable_job_store() -> Any:
+    """This process's job store: the HTTP sidecar's, else the durable
+    runtime's (it dispatches the runs even when the sidecar never set up its
+    own store); None when there is neither."""
+    from umrs.api.jobs import get_optional_job_store
+
+    store = get_optional_job_store()
+    if store is not None:
+        return store
+    from umrs.server.durable_job_runtime import get_runtime_job_store
+
+    return get_runtime_job_store()
+
+
+def durable_job_cancelled(job_id: str | None) -> bool:
+    """Whether the job store says durable job *job_id* was cancelled (a
+    dispatch that raced the cancel runs nothing); False when there is no
+    such job or no readable store."""
+    if not job_id:
+        return False
+    try:
+        store = durable_job_store()
+        job = _stored_job(store, str(job_id)) if store is not None else None
+    except Exception:
+        logger.warning("step lane: durable job %s unreadable", job_id, exc_info=True)
+        return False
+    status = getattr(job, "status", None)
+    return str(getattr(status, "value", status) or "").lower() == "cancelled"
+
+
 def _durable_attempts_left(job_id: str) -> bool:
     """The job store's view at run end: False when the durable job is gone,
     cancelled or out of attempts; True when it may run again or the store
     is not there or not readable."""
     try:
-        from umrs.api.jobs import get_optional_job_store
-
-        store = get_optional_job_store()
+        store = durable_job_store()
         if store is None:
             return True
         job = _stored_job(store, job_id)
