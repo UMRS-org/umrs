@@ -163,6 +163,7 @@ _EXECUTOR_EXTRA_KEYS = ("slurm", "slurm_job")
 #: Left out of a step's payload, so a durable re-dispatch that recomputes or
 #: re-adopts the parents gives the step the same inputs tag (peer review F1).
 _VOLATILE_PARENT_EXTRA = (*_EXECUTOR_EXTRA_KEYS, "waited_seconds")
+_VOLATILE_GATE_KEYS = ("decided_at",)
 _TRUE = frozenset({"1", "true", "yes", "on"})
 
 
@@ -375,7 +376,7 @@ class RemoteSlurmStepExecutor(SlurmStepExecutor):
         plan = build_stage_plan(ctx, caps=self.caps)
         source_dir = self._resolve_source_dir(ctx)
         payload = self._payload(entrypoint, config, ctx)
-        tag = inputs_tag(plan, payload, source_dir or None, self.caps)
+        tag = inputs_tag(plan, payload, source_dir or None, self.caps, image=image)
         job = self._begin(ctx, plan.step, tag)
         earlier = self._reconcile(job, ctx, plan)
         if isinstance(earlier, StepResult):
@@ -1022,7 +1023,7 @@ class RemoteSlurmStepExecutor(SlurmStepExecutor):
         SSH outage): a COMPLETED one with its reply still on disk is adopted;
         else a live one on the same inputs is returned to resume; other live
         ones are cancelled and finished ones without a reply cleaned up."""
-        completed, live = self._earlier_jobs(job)
+        completed, live = self._earlier_jobs(job, ctx)
         for found in sorted(completed, key=lambda f: int(f.job_id), reverse=True):
             adopted = self._adopt(found, job, ctx, plan)
             if adopted is not None:
@@ -1035,12 +1036,14 @@ class RemoteSlurmStepExecutor(SlurmStepExecutor):
                 self._cancel_earlier(other)
         return resume
 
-    def _earlier_jobs(self, job: _StepJob) -> tuple[list[_FoundJob], list[_FoundJob]]:
+    def _earlier_jobs(
+        self, job: _StepJob, ctx: StepContext
+    ) -> tuple[list[_FoundJob], list[_FoundJob]]:
         """(COMPLETED, live) earlier jobs of this run's step; failed ones'
         workdirs are removed, other runs' jobs left alone."""
         completed: list[_FoundJob] = []
         live: list[_FoundJob] = []
-        for found in self._find_jobs_patiently(job.job_name):
+        for found in self._find_jobs_patiently(job, ctx):
             if not self._own_workdir(found, job):
                 logger.warning(
                     "step lane: job %s is not this run's (workdir %s, comment %r); "
@@ -1066,17 +1069,23 @@ class RemoteSlurmStepExecutor(SlurmStepExecutor):
         same = [f for f in live if _workdir_tag(f.workdir, job) == job.tag]
         return max(same, key=lambda f: int(f.job_id)) if same else None
 
-    def _find_jobs_patiently(self, job_name: str) -> list[_FoundJob]:
+    def _find_jobs_patiently(self, job: _StepJob, ctx: StepContext) -> list[_FoundJob]:
         """find-jobs, riding out a login-node or Slurm outage for the
         unreachable budget: failing at once burnt a durable run's retries in
-        minutes and never adopted a job that finished meanwhile."""
+        minutes and never adopted a job that finished meanwhile. A cancel of
+        the run ends the wait."""
         started = time.monotonic()
         while True:
             try:
-                return self._find_jobs(job_name)
+                return self._find_jobs(job.job_name)
             except _Unreachable:
                 if time.monotonic() - started >= self.unreachable_budget:
                     raise
+                reason = self._stop_reason(job, ctx, None)
+                if reason:
+                    raise StepExecutionError(
+                        "run", f"step {job.step} not submitted: {reason}"
+                    ) from None
                 time.sleep(min(self.poll_interval * 4, 60.0))
 
     def _after_completing(self, found: _FoundJob) -> _FoundJob:
@@ -1453,15 +1462,26 @@ def _routed_keys(ctx: StepContext) -> tuple[str, ...]:
 
 
 def _stable_parents(parents: dict[str, Any]) -> dict[str, Any]:
-    """The parent results without their volatile ``extra`` values."""
+    """The parent results by step name (a parallel wave fills them in
+    completion order), without their volatile ``extra`` values."""
     stable: dict[str, Any] = {}
-    for name, result in dict(parents).items():
+    for name in sorted(parents):
+        result = parents[name]
         extra = getattr(result, "extra", None)
         if isinstance(result, StepResult) and isinstance(extra, dict):
-            result = dataclasses.replace(
-                result, extra=_without(extra, _VOLATILE_PARENT_EXTRA)
-            )
+            result = dataclasses.replace(result, extra=_stable_extra(extra))
         stable[name] = result
+    return stable
+
+
+def _stable_extra(extra: dict[str, Any]) -> dict[str, Any]:
+    """*extra* without the executor's job facts and a gate's timing: a
+    re-dispatch re-parks a manual gate, and its new decision carries a new
+    ``decided_at`` (peer review T2)."""
+    stable = _without(extra, _VOLATILE_PARENT_EXTRA)
+    gate = stable.get("gate")
+    if isinstance(gate, dict):
+        stable["gate"] = _without(gate, _VOLATILE_GATE_KEYS)
     return stable
 
 

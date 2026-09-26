@@ -111,7 +111,8 @@ def _tag(cluster, tree, s3=None, config=None, parents=None, **metadata) -> str:
     """The inputs tag the executor gives this step (its workdir name carries it)."""
     ex, ctx = cluster.executor(), _ctx(tree, s3, parents, **metadata)
     payload = ex._payload("steps.lane:Upper", config or {}, ctx)
-    return inputs_tag(build_stage_plan(ctx, caps=ex.caps), payload, str(tree), ex.caps)
+    plan = build_stage_plan(ctx, caps=ex.caps)
+    return inputs_tag(plan, payload, str(tree), ex.caps, image=ex.image)
 
 
 def _earlier_workdir(cluster, attempt=1, tag=""):
@@ -209,6 +210,40 @@ def test_the_tag_ignores_a_parents_job_facts_and_routed_values(cluster, tree):
     assert _tag(cluster, tree, config={"model": "m1"}) != _tag(
         cluster, tree, config={"model": "m2"}
     )
+
+
+def test_the_tag_ignores_parent_order_and_a_gates_decision_time(cluster, tree):
+    # Peer review T1/T2 (2026-09-26): a parallel wave fills the parents in
+    # completion order, and a re-dispatch re-parks a manual gate whose new
+    # decision carries a new decided_at.
+    def gate(at, approved=True):
+        decision = {"step": "g", "approved": approved, "approver": "bob", "decided_at": at}
+        return StepResult(extra={"gate": decision, "waited_seconds": at})
+
+    a, b = _parent("900"), _parent("901", keys=["runs/r/s1/b.txt"])
+    first = _tag(cluster, tree, parents={"a": a, "b": b, "g": gate(1.0)})
+    assert _tag(cluster, tree, parents={"g": gate(99.0), "b": b, "a": a}) == first
+    assert _tag(cluster, tree, parents={"a": a, "b": b, "g": gate(1.0, approved=False)}) != first
+
+
+def test_the_tag_follows_the_step_image(cluster, tree):
+    ex, ctx = cluster.executor(), _ctx(tree)
+    payload = ex._payload("steps.lane:Upper", {}, ctx)
+    plan = build_stage_plan(ctx, caps=ex.caps)
+    tags = {inputs_tag(plan, payload, str(tree), ex.caps, image=i) for i in ("x:1", "x:2")}
+    assert len(tags) == 2  # a newer image never adopts or resumes an older job
+
+
+def test_a_cancel_ends_the_reconcile_wait(cluster, tree):
+    ex = cluster.executor(unreachable_budget=60.0)
+    _find_jobs_down(ex, {"calls": -1})
+    polls = []
+    ex.bind_run(RUN, cancelled=lambda: polls.append(1) or len(polls) > 1)
+    started = time.monotonic()
+    with pytest.raises(StepExecutionError, match="not submitted: cancelled"):
+        _run(cluster, tree, ex)
+    assert time.monotonic() - started < 30
+    assert cluster.calls("sbatch") == []
 
 
 def test_the_payload_carries_no_routed_value_and_no_parent_job_facts(cluster, tree):

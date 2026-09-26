@@ -140,6 +140,65 @@ def lane_executor(partition: str, queue_timeout: str) -> Any:
     )
 
 
+def _probe_ctx(
+    run_id: str,
+    step: str,
+    *,
+    targets: list[tuple[str, int]],
+    timeout: int,
+    gpu: bool = False,
+    parents: dict[str, Any] | None = None,
+) -> Any:
+    from umrs.pipeline_sdk.step import StepContext
+
+    from .remote_slurm_step_executor import STEP_TIMEOUT_METADATA_KEY
+    from .step_executor import EXECUTOR_GPU_METADATA_KEY
+    from .step_staging import IN_MEMORY_BUCKET, STAGE_REQUEST_METADATA_KEY
+
+    metadata: dict[str, Any] = {
+        STAGE_REQUEST_METADATA_KEY: {"owner": "umrs-smoke", "step": step},
+        STEP_TIMEOUT_METADATA_KEY: timeout,
+    }
+    if gpu:
+        metadata[EXECUTOR_GPU_METADATA_KEY] = True
+    return StepContext(
+        s3=_RunStore(),
+        input_bucket=IN_MEMORY_BUCKET,
+        input_keys=[],
+        output_bucket=IN_MEMORY_BUCKET + "-output",
+        config={"connect": [[h, p] for h, p in targets]},
+        metadata=metadata,
+        run_id=run_id,
+        parent_results=dict(parents or {}),
+    )
+
+
+def _run_step(executor: Any, ctx: Any) -> tuple[Any, list[str]]:
+    """(result, []) or (None, [the failure])."""
+    try:
+        result = executor.execute(
+            entrypoint=PROBE_ENTRYPOINT, config=dict(ctx.config), ctx=ctx
+        )
+    except Exception as exc:  # the report names it; the smoke goes on
+        logger.warning("step-lane smoke step failed", exc_info=True)
+        return None, [f"{type(exc).__name__}: {exc}"[:600]]
+    return result, []
+
+
+def _lane(make_executor: Callable[[str], Any], partition: str, report: dict) -> Any:
+    """The lane for *partition*, or None with the failure in *report*."""
+    try:
+        return make_executor(partition)
+    except Exception as exc:  # no lane on this server: named, the smoke goes on
+        logger.warning("step-lane smoke on %s has no lane", partition, exc_info=True)
+        report.update(ok=False, problems=[f"{type(exc).__name__}: {exc}"[:600]])
+        return None
+
+
+def _job_id(result: Any) -> str:
+    return str((result.extra.get("slurm_job") or {}).get("job_id", ""))
+
+
 def run_probe(
     partition: str,
     *,
@@ -149,46 +208,80 @@ def run_probe(
     make_executor: Callable[[str], Any],
 ) -> dict[str, Any]:
     """One probe step through the lane on *partition*; its report."""
-    from umrs.pipeline_sdk.step import StepContext
-
-    from .remote_slurm_step_executor import STEP_TIMEOUT_METADATA_KEY
-    from .step_executor import EXECUTOR_GPU_METADATA_KEY
-    from .step_staging import IN_MEMORY_BUCKET, STAGE_REQUEST_METADATA_KEY
-
     run_id = f"smoke-{uuid.uuid4().hex[:12]}"
     report: dict[str, Any] = {"partition": partition, "gpu": gpu, "run_id": run_id}
-    config = {"connect": [[h, p] for h, p in targets]}
-    metadata: dict[str, Any] = {
-        STAGE_REQUEST_METADATA_KEY: {"owner": "umrs-smoke", "step": "probe"},
-        STEP_TIMEOUT_METADATA_KEY: timeout,
-    }
-    if gpu:
-        metadata[EXECUTOR_GPU_METADATA_KEY] = True
-    ctx = StepContext(
-        s3=_RunStore(),
-        input_bucket=IN_MEMORY_BUCKET,
-        input_keys=[],
-        output_bucket=IN_MEMORY_BUCKET + "-output",
-        config=config,
-        metadata=metadata,
-        run_id=run_id,
-    )
-    try:
-        executor = make_executor(partition)
-        result = executor.execute(entrypoint=PROBE_ENTRYPOINT, config=config, ctx=ctx)
-    except Exception as exc:  # the report names it; the smoke goes on
-        logger.warning("step-lane smoke on %s failed", partition, exc_info=True)
-        report.update(ok=False, problems=[f"{type(exc).__name__}: {exc}"[:600]])
+    ctx = _probe_ctx(run_id, "probe", targets=targets, timeout=timeout, gpu=gpu)
+    executor = _lane(make_executor, partition, report)
+    if executor is None:
+        return report
+    result, problems = _run_step(executor, ctx)
+    if result is None:
+        report.update(ok=False, problems=problems)
         return report
     probe = dict(result.extra.get("probe") or {})
     problems = check(probe, gpu=gpu)
+    report.update(ok=not problems, problems=problems, job=_job_id(result), probe=probe)
+    return report
+
+
+def run_chain(
+    partition: str,
+    *,
+    targets: list[tuple[str, int]],
+    timeout: int,
+    make_executor: Callable[[str], Any],
+) -> dict[str, Any]:
+    """Step a, then step b of the same run with a's result as its parent
+    (the staged parent path, live); b's inputs tag must not move when a's
+    job facts do, as a durable re-dispatch that re-runs a would change them
+    (peer review F1/T1)."""
+    run_id = f"smoke-{uuid.uuid4().hex[:12]}"
+    report: dict[str, Any] = {"partition": partition, "chain": "a->b", "run_id": run_id}
+    executor = _lane(make_executor, partition, report)
+    if executor is None:
+        return report
+    a, problems = _run_step(
+        executor, _probe_ctx(run_id, "a", targets=targets, timeout=timeout)
+    )
+    if a is None:
+        report.update(ok=False, problems=[f"step a: {p}" for p in problems])
+        return report
+    b_ctx = _probe_ctx(run_id, "b", targets=targets, timeout=timeout, parents={"a": a})
+    stable = _tag_of(executor, b_ctx) == _tag_of(executor, _rerun_parent(b_ctx, a))
+    b, problems = _run_step(executor, b_ctx)
+    problems = [f"step b: {p}" for p in problems]
+    if b is not None:
+        problems += check(dict(b.extra.get("probe") or {}), gpu=False)
+    if not stable:
+        problems.append("b's inputs tag follows a's job facts")
     report.update(
         ok=not problems,
         problems=problems,
-        job=result.extra.get("slurm_job", {}).get("job_id", ""),
-        probe=probe,
+        jobs=[_job_id(a), _job_id(b) if b is not None else ""],
+        tag_stable=stable,
     )
     return report
+
+
+def _tag_of(executor: Any, ctx: Any) -> str:
+    from .step_staging import build_stage_plan, inputs_tag
+
+    payload = executor._payload(PROBE_ENTRYPOINT, dict(ctx.config), ctx)
+    plan = build_stage_plan(ctx, caps=executor.caps)
+    return inputs_tag(plan, payload, None, executor.caps, image=executor.image)
+
+
+def _rerun_parent(ctx: Any, parent: Any) -> Any:
+    """*ctx* with its parent as a re-run would hand it on: another job."""
+    import dataclasses
+
+    extra = {
+        **parent.extra,
+        "slurm_job": {"job_id": "0", "workdir": "/rerun"},
+        "slurm": {},
+    }
+    rerun = dataclasses.replace(parent, extra=extra)
+    return dataclasses.replace(ctx, parent_results={"a": rerun})
 
 
 def _target(text: str) -> tuple[str, int]:
@@ -235,26 +328,33 @@ def main(argv: list[str] | None = None) -> int:
     return 0 if passed == len(reports) else 1
 
 
-def _plan(partitions: str, gpu_partition: str) -> list[tuple[str, bool]]:
-    """(partition, gpu) runs: one per partition, one more with a GPU."""
-    plan = [(p, False) for p in partitions.split(",") if p]
+def _plan(partitions: str, gpu_partition: str) -> list[tuple[str, str, bool]]:
+    """(kind, partition, gpu) runs: a probe per partition, one more with a
+    GPU, and the two-step chain on the first partition."""
+    plan = [("probe", p, False) for p in partitions.split(",") if p]
     if plan and gpu_partition:
-        plan.append((gpu_partition, True))
+        plan.append(("probe", gpu_partition, True))
+    if plan:
+        plan.append(("chain", plan[0][1], False))
     return plan
 
 
 def run_plan(
-    plan: list[tuple[str, bool]],
+    plan: list[tuple[str, str, bool]],
     *,
     targets: list[tuple[str, int]],
     timeout: int,
     make_executor: Callable[[str], Any],
 ) -> list[dict[str, Any]]:
-    """Every (partition, gpu) run, in parallel: an exclusive node busy with a
-    serve job queues its own run only."""
+    """Every run, in parallel: an exclusive node busy with a serve job
+    queues its own run only."""
 
-    def one(item: tuple[str, bool]) -> dict[str, Any]:
-        partition, gpu = item
+    def one(item: tuple[str, str, bool]) -> dict[str, Any]:
+        kind, partition, gpu = item
+        if kind == "chain":
+            return run_chain(
+                partition, targets=targets, timeout=timeout, make_executor=make_executor
+            )
         return run_probe(
             partition,
             gpu=gpu,

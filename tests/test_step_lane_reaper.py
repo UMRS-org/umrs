@@ -663,7 +663,7 @@ def test_the_run_end_reap_of_a_spent_durable_job_ends_its_jobs(monkeypatch):
     from umrs.api import jobs as api_jobs
 
     ok = SimpleNamespace(status="failed", cancel_requested=False, durable_job_id="job-1")
-    job = SimpleNamespace(status="failed", can_retry=lambda n: n < 3)
+    job = SimpleNamespace(status="queued", can_retry=lambda n: n < 3)  # a retry pending
     store = SimpleNamespace(get_job=lambda _id: job, get_attempts_for_job=lambda _id: [1, 2])
     monkeypatch.setattr(api_jobs, "get_optional_job_store", lambda: store)
     assert step_reaper._may_retry(ok)  # attempt 2 of 3: a retry may come
@@ -673,6 +673,17 @@ def test_the_run_end_reap_of_a_spent_durable_job_ends_its_jobs(monkeypatch):
     job.status = "cancelled"
     assert not step_reaper._may_retry(ok)
     store.get_job = lambda _id: None
+    assert not step_reaper._may_retry(ok)
+    job.status = "failed"  # job-level: every retry spent (budget exhausted too)
+    store.get_job = lambda _id: job
+    assert not step_reaper._may_retry(ok)
+
+    def missing(_id):
+        from umrs.jobs.store import JobNotFoundError
+
+        raise JobNotFoundError(_id)  # what JobStore.get_job does in production
+
+    store.get_job = missing
     assert not step_reaper._may_retry(ok)
 
     def unreadable(_id):

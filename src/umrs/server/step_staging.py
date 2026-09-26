@@ -633,13 +633,16 @@ def inputs_tag(
     payload: bytes,
     source_dir: str | None,
     caps: StageCaps = DEFAULT_CAPS,
+    image: str = "",
 ) -> str:
     """12 hex digits of what a step's job computes from: the staged objects
-    with their etags, the payload (entrypoint, config, parent results) and
-    the uploaded source tree (names, sizes, mtimes). An earlier COMPLETED job
-    is adopted only when it ran on the current attempt's inputs (build spec
-    §8): a re-dispatched run may have recomputed an upstream output."""
+    with their etags, the payload (entrypoint, config, parent results), the
+    uploaded source tree (names, sizes, mtimes) and the step image (its tag
+    names the umrs commit). An earlier COMPLETED job is adopted only when it
+    ran on the current attempt's inputs (build spec §8): a re-dispatched run
+    may have recomputed an upstream output, or run on a newer image."""
     digest = hashlib.sha256(b"umrs-step-inputs-1\0")
+    digest.update(f"{image}\0".encode("utf-8", "surrogateescape"))
     digest.update(plan.manifest_bytes())
     digest.update(hashlib.sha256(payload).digest())
     for path, member, size in _source_files(source_dir, caps) if source_dir else ():

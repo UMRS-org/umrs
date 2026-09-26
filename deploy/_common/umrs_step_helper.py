@@ -629,8 +629,17 @@ def _slurm(
             check=False,
             stdin=subprocess.DEVNULL,
         )
-    except (OSError, subprocess.SubprocessError) as exc:
+    except subprocess.TimeoutExpired as exc:  # a hung controller: Slurm down
+        return subprocess.CompletedProcess(argv, 124, "", str(exc))
+    except (OSError, subprocess.SubprocessError) as exc:  # no such binary
         return subprocess.CompletedProcess(argv, 127, "", str(exc))
+
+
+def _listing_failure(tool: str, proc: subprocess.CompletedProcess) -> HelperError:
+    """Slurm did not answer (the server rides that out) — unless the tool
+    itself is missing, which waiting never fixes."""
+    detail = f"{tool} failed (rc={proc.returncode}): {proc.stderr.strip()[-300:]}"
+    return HelperError(detail) if proc.returncode == 127 else SchedulerUnavailable(detail)
 
 
 def _check_job_id(job_id: str) -> str:
@@ -730,9 +739,7 @@ def find_jobs(name: str, root: str | None = None) -> list[str]:
     root = check_root(root) if root is not None else None
     queued = _slurm(["squeue", "--me", "-h", f"--name={name}", "-o", "%i|%T|%j|%Z|%k"])
     if queued.returncode != 0:
-        raise SchedulerUnavailable(
-            f"squeue failed (rc={queued.returncode}): {queued.stderr.strip()[-300:]}"
-        )
+        raise _listing_failure("squeue", queued)
     finished = _slurm(
         [
             "sacct",
@@ -749,9 +756,7 @@ def find_jobs(name: str, root: str | None = None) -> list[str]:
     # A partial list would hide a COMPLETED job whose kept workdir holds the
     # only copy of its outputs: the server would then run the step again.
     if finished.returncode != 0:
-        raise SchedulerUnavailable(
-            f"sacct failed (rc={finished.returncode}): {finished.stderr.strip()[-300:]}"
-        )
+        raise _listing_failure("sacct", finished)
     rows = _job_rows(finished.stdout, name, root)
     rows.update(_job_rows(queued.stdout, name, root))
     return [
@@ -766,9 +771,7 @@ def _live_workdirs(root: str) -> set[str]:
     """Workdirs of this account's queued or running jobs (any name)."""
     proc = _slurm(["squeue", "--me", "-h", "-o", "%i|%T|%j|%Z|%k"])
     if proc.returncode != 0:
-        raise SchedulerUnavailable(
-            f"squeue failed (rc={proc.returncode}): {proc.stderr.strip()[-300:]}"
-        )
+        raise _listing_failure("squeue", proc)
     live = set()
     for line in proc.stdout.splitlines():
         fields = line.strip().split("|")
