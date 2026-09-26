@@ -228,6 +228,7 @@ FAKE_PODMAN = r"""#!/usr/bin/env bash
 state="${FAKE_STATE:?}"
 all="$*"
 printf '%s\n' "${all//$'\n'/ }" >> "$state/podman.log"
+while [[ "${1:-}" == --* ]]; do shift; done  # global flags (--cgroup-manager=...)
 case "$1" in
   info)
     if [[ -f "$state/seccomp_base.json" ]]; then echo "$state/seccomp_base.json"; fi ;;
@@ -313,7 +314,8 @@ def node(tmp_path):
 def _step_runs(log: list[str]) -> list[str]:
     return [
         x for x in log
-        if x.startswith("run ") and "pids.max" not in x and "umrs-seccomp-base" not in x
+        if x.removeprefix("--cgroup-manager=cgroupfs ").startswith("run ")
+        and "pids.max" not in x and "umrs-seccomp-base" not in x
     ]  # fmt: skip
 
 
@@ -421,7 +423,10 @@ def test_a_venue_without_a_cgroup_runs_the_step_without_one_and_bounds_processes
     (node["state"] / "have_id").write_text("f" * 64)
     assert node["run"](pids_limit=0, cgroups_disabled=True, nproc_limit=4096).returncode == 0
     [step] = _step_runs(node["log"]())
+    assert step.startswith("--cgroup-manager=cgroupfs run ")  # conmon stays in the job
     assert "--cgroups=disabled" in step and "--ulimit nproc=4096" in step
+    seccomp = [x for x in node["log"]() if "umrs-seccomp-base" in x]
+    assert seccomp and all(x.startswith("--cgroup-manager=cgroupfs run ") for x in seccomp)
     assert "--pids-limit" not in step and "--ulimit fsize=" in step
     assert not any("pids.max" in x for x in node["log"]())
 

@@ -177,6 +177,7 @@ def test_rccs_step_jobs_ask_for_no_memory_and_no_gres(monkeypatch):
     assert "#SBATCH --account=cloud-users" in script
     # R2: no cgroup for the container on these nodes; RLIMIT_NPROC instead.
     assert "--cgroups=disabled" in script and "--ulimit nproc=4096" in script
+    assert "podman --cgroup-manager=cgroupfs run" in script
     assert "--pids-limit" not in script and "pids.max" not in script
 
 
