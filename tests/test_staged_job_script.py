@@ -179,7 +179,7 @@ def test_an_image_without_an_archive_name_is_refused(image):
         render_staged_job_script(_job(image=image))
 
 
-def test_executor_time_is_the_least_of_site_step_and_executor_limits():
+def test_executor_time_is_the_least_of_site_step_and_executor_limits(monkeypatch):
     ex = RemoteSlurmStepExecutor(
         ssh_config=SSHControlConfig(ssh_target="login"),
         time_limit="02:00:00",
@@ -203,6 +203,9 @@ def test_executor_time_is_the_least_of_site_step_and_executor_limits():
     assert "#SBATCH --time=00:05:00" in ex._job_script(
         job, ctx({STEP_TIMEOUT_METADATA_KEY: 600}), IMAGE
     )
+    # A GPU needs the step's hint AND a site that enables GPUs (site.yaml gpu).
+    assert "--device" not in ex._job_script(job, ctx({EXECUTOR_GPU_METADATA_KEY: True}), IMAGE)
+    monkeypatch.setenv("UMRS_STEP_GPU", "1")
     assert "--device" in ex._job_script(job, ctx({EXECUTOR_GPU_METADATA_KEY: True}), IMAGE)
 
 

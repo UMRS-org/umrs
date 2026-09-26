@@ -288,6 +288,11 @@ class TestLayerScan:
             "opt/app/s3cfg_user1",
             "home/u/.ssh/id_ed25519",
             "etc/tls/server.pem",
+            "opt/app/.env.production",
+            "opt/app/API.KEY",
+            "home/u/.netrc",
+            "home/u/.aws/credentials",
+            "opt/app/ENV.prod",
         ],
     )
     def test_forbidden_name_in_an_added_layer_refuses(self, lane, name):

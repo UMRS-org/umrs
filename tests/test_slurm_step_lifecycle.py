@@ -936,3 +936,38 @@ def test_a_site_rewritten_comment_falls_back_to_the_workdir_stem(cluster, tree):
     _run(cluster, tree, ex)
     assert [c[1:] for c in cluster.calls("scancel")] == [["908"]]
     _join(ex)
+
+
+@pytest.mark.parametrize(
+    ("site_gpu", "hint", "expected"),
+    [("1", True, True), ("1", "true", True), ("1", "false", False), ("1", None, False),
+     ("0", True, False), ("", "true", False)],
+)  # fmt: skip
+def test_a_gpu_needs_a_true_hint_on_a_gpu_site(cluster, monkeypatch, site_gpu, hint, expected):
+    """Peer review 2026-09-26: bool("false") asked for a GPU, and the site's
+    gpu: false was ignored whenever a step carried any hint."""
+    from umrs.pipeline_sdk.step import StepContext
+    from umrs.server.step_executor import EXECUTOR_GPU_METADATA_KEY
+
+    monkeypatch.setenv("UMRS_STEP_GPU", site_gpu)
+    metadata = {} if hint is None else {EXECUTOR_GPU_METADATA_KEY: hint}
+    ctx = StepContext(s3=None, input_bucket="in", input_keys=[], output_bucket="out",
+                      metadata=metadata)  # fmt: skip
+    assert cluster.executor()._needs_gpu(ctx) is expected
+
+
+def test_a_broken_pipe_while_feeding_becomes_a_stream_error():
+    """CI 36225352647: the remote exited before stage-in read its stdin, and
+    the step failed with a bare BrokenPipeError instead of the named cause.
+    A broken pipe is a broken stream: the remote's rc and stderr explain it."""
+    from types import SimpleNamespace
+
+    from umrs.server.step_staging import StageStreamError
+
+    def feed(_pipe):
+        raise BrokenPipeError(32, "Broken pipe")
+
+    proc = SimpleNamespace(stdin=None, stdout=None)
+    value, error, stdout = rse._pump(proc, feed, None)
+    assert isinstance(error, StageStreamError) and stdout == b""
+    assert isinstance(error, StepExecutionError)

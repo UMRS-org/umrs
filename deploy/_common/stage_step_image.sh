@@ -25,8 +25,9 @@
 # with the hash-pinned docker/step-requirements.txt into a site-packages dir
 # for <arch>-manylinux_2_28 (binary wheels only); `podman build` the COPY-only
 # docker/Containerfile.step in a throwaway store under /var/tmp; refuse the
-# image when a layer it adds holds a file named env.*, *.env, .env, s3cfg,
-# s3cfg_*, .s3cfg, id_* or *.pem (the base layers are digest-pinned and carry
+# image when a layer it adds holds a file named (case-insensitively) env.*,
+# *.env, .env, .env.*, s3cfg, s3cfg_*, .s3cfg, id_*, *.pem, *.key, .netrc,
+# credentials[.*] or .git-credentials (the base layers are digest-pinned and carry
 # the CA bundle's *.pem); `podman save` to a temp name in the archive dir, then
 # rename it into place next to its .sha256 and .id; keep the newest 3
 # archives per arch.
@@ -40,7 +41,7 @@ umask 077
 
 readonly KEEP=3
 readonly CONTRACT=1
-readonly SCAN_PATTERNS='env.* *.env .env s3cfg s3cfg_* .s3cfg id_* *.pem'
+readonly SCAN_PATTERNS='env.* *.env .env .env.* s3cfg s3cfg_* .s3cfg id_* *.pem *.key .netrc credentials credentials.* .git-credentials'
 
 ARCH=""
 ARCHIVE_DIR=""
@@ -184,9 +185,11 @@ pm() { podman --root "${WS}/root" --runroot "${WS}/run" "$@"; }
 
 prepare_site_packages() {
     local site="${WS}/ctx/site-packages" wheel
-    git -C "${CHECKOUT}" archive --format=tar HEAD src | tar -x -C "${WS}/tree"
-    cp "${CHECKOUT}/docker/Containerfile.step" "${WS}/ctx/Containerfile.step"
-    cp "${CHECKOUT}/docker/step-requirements.txt" "${WS}/step-requirements.txt"
+    # Everything from the recorded commit, nothing from the worktree.
+    git -C "${CHECKOUT}" archive --format=tar "${SHA}" src docker/Containerfile.step \
+        docker/step-requirements.txt | tar -x -C "${WS}/tree"
+    cp "${WS}/tree/docker/Containerfile.step" "${WS}/ctx/Containerfile.step"
+    cp "${WS}/tree/docker/step-requirements.txt" "${WS}/step-requirements.txt"
     log "building the umrs wheel from ${SHA12}"
     (cd "${WS}" && uv build --no-config --quiet --wheel --python 3.11 --out-dir "${WS}/wheel" "${WS}/tree/src") >&2
     wheel="$(find "${WS}/wheel" -maxdepth 1 -name 'umrs-*.whl' | head -1)"
@@ -257,7 +260,7 @@ with tarfile.open(archive) as outer:
             for member in layer:
                 members += 1
                 base = os.path.basename(member.name.rstrip("/"))
-                if any(fnmatch.fnmatchcase(base, p) for p in patterns):
+                if any(fnmatch.fnmatchcase(base.lower(), p) for p in patterns):
                     hits.append(member.name)
 for hit in hits[:20]:
     sys.stderr.write("  forbidden: %s\n" % hit)
