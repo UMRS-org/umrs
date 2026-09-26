@@ -56,3 +56,21 @@ def test_a_second_dispatch_attaches_instead_of_launching(monkeypatch):
     finally:
         release.set()
         registry.join("wf-attach", timeout=5)
+
+
+def test_an_ending_runner_never_drops_a_newer_launch_of_the_same_id():
+    # Peer review (2026-09-26): the finally of run A deleted the entry by id,
+    # so run B (a requeue that launched meanwhile) lost it and a later
+    # dispatch started a second run instead of attaching.
+    registry, release = WorkflowExecutionRegistry(), threading.Event()
+    _running(registry, release)
+    newer = threading.Thread(target=release.wait, args=(10,))
+    newer.start()
+    with registry._lock:
+        older = registry._workers["wf-attach"]
+        registry._workers["wf-attach"] = newer
+    release.set()
+    older.join(timeout=5)  # run A's finally has run
+    newer.join(timeout=5)
+    with registry._lock:
+        assert registry._workers.get("wf-attach") is newer

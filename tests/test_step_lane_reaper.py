@@ -277,10 +277,22 @@ def test_no_reaper_on_a_server_without_a_remote_lane(monkeypatch):
 # ── the runner reaps when a run ends or is refused ──────────────────────────
 
 
+class _Reaped(list):
+    """The records reaped, and the ``for_retry`` each reap was given."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.for_retry: list = []
+
+    def __call__(self, record, for_retry=None) -> None:
+        self.append(record)
+        self.for_retry.append(for_retry)
+
+
 @pytest.fixture
 def reaped(monkeypatch):
-    calls: list = []
-    monkeypatch.setattr(step_reaper, "reap_run_jobs", lambda record: calls.append(record))
+    calls = _Reaped()
+    monkeypatch.setattr(step_reaper, "reap_run_jobs", calls)
     return calls
 
 
@@ -298,6 +310,9 @@ def test_a_refused_redispatch_reaps_what_the_earlier_process_left(tmp_path, monk
     wr.run_workflow_record(record, source_path=_upload(tmp_path / "wf"), workflow_json=workflow)
     assert record.status == "failed" and "connected HPC" in record.error
     assert reaped == [record]
+    # A refusal is a kill switch: the earlier jobs end even for a durable run
+    # a retry would re-dispatch (peer review F2).
+    assert reaped.for_retry == [False]
 
 
 class _Fails:
@@ -518,7 +533,9 @@ def test_a_retry_never_loses_the_first_attempts_job_to_the_reaper(cluster, tmp_p
     ex._remote_argv = outage
     step_reaper.set_step_lane_reaper(cluster.executor())
     threads, real = [], step_reaper.reap_run_jobs
-    monkeypatch.setattr(step_reaper, "reap_run_jobs", lambda r: threads.append(real(r)))
+    monkeypatch.setattr(
+        step_reaper, "reap_run_jobs", lambda r, for_retry=None: threads.append(real(r, for_retry))
+    )
     record = ExecutionRecord(execution_id=RUN, workflow_name="w", user_id="alice")
     step = {"name": "s1", "entrypoint": "steps.lane:Upper", "max_retries": 1, "retry_delay": 0}
     wr.run_workflow_record(record, source_path=str(tree), workflow_json={"steps": [step]},
@@ -616,6 +633,55 @@ def test_a_failed_job_is_reaped_even_for_a_retry(cluster):
     assert not wd.exists()
 
 
+def test_a_cancel_between_durable_retries_ends_the_jobs_left_for_the_retry(cluster):
+    """Peer review F2 (2026-09-26): the record had ended, so cancel returned
+    early and the live job kept for the retry ran on to --time."""
+    from umrs.server.workflow_execution_registry import WorkflowExecutionRegistry
+
+    wd = _workdir(cluster)
+    cluster.add_job("912", JOB_NAME, str(wd), ["RUNNING"])
+    step_reaper.set_step_lane_reaper(_off(cluster))
+    registry = WorkflowExecutionRegistry()
+    record = registry.create(workflow_name="w", user_id="alice", execution_id=RUN,
+                             durable_job_id="job-1")  # fmt: skip
+    record.update(status="failed", finished_at=time.time())
+    step_reaper.record_step_job(record, "s1", _facts(wd, job_id="912"))
+    threads, real = [], step_reaper.reap_run_jobs
+    step_reaper.reap_run_jobs = lambda r, for_retry=None: threads.append(real(r, for_retry))
+    try:
+        assert registry.cancel(RUN) is record
+    finally:
+        step_reaper.reap_run_jobs = real
+    for thread in threads:
+        thread.join(timeout=60)
+    assert threads and cluster.jobs()["912"]["states"] == ["CANCELLED"]
+    assert not wd.exists()
+
+
+def test_the_run_end_reap_of_a_spent_durable_job_ends_its_jobs(monkeypatch):
+    """Peer review (2026-09-26): the last retry's reap kept the job to --time."""
+    from umrs.api import jobs as api_jobs
+
+    ok = SimpleNamespace(status="failed", cancel_requested=False, durable_job_id="job-1")
+    job = SimpleNamespace(status="failed", can_retry=lambda n: n < 3)
+    store = SimpleNamespace(get_job=lambda _id: job, get_attempts_for_job=lambda _id: [1, 2])
+    monkeypatch.setattr(api_jobs, "get_optional_job_store", lambda: store)
+    assert step_reaper._may_retry(ok)  # attempt 2 of 3: a retry may come
+    store.get_attempts_for_job = lambda _id: [1, 2, 3]
+    assert not step_reaper._may_retry(ok)  # spent
+    store.get_attempts_for_job = lambda _id: [1]
+    job.status = "cancelled"
+    assert not step_reaper._may_retry(ok)
+    store.get_job = lambda _id: None
+    assert not step_reaper._may_retry(ok)
+
+    def unreadable(_id):
+        raise RuntimeError("db down")
+
+    store.get_job = unreadable
+    assert step_reaper._may_retry(ok)  # unreadable: leave the jobs to --time and the sweep
+
+
 def test_only_a_failed_uncancelled_durable_run_may_retry():
     ok = SimpleNamespace(status="failed", cancel_requested=False, durable_job_id="job-1")
     assert step_reaper._may_retry(ok)
@@ -626,3 +692,8 @@ def test_only_a_failed_uncancelled_durable_run_may_retry():
     assert step_reaper._may_retry(ok, lambda _job: "queued")
     assert not step_reaper._may_retry(ok, lambda _job: "failed")
     assert not step_reaper._may_retry(ok, lambda _job: None)
+
+    def unreadable(_job):
+        raise RuntimeError("db down")
+
+    assert step_reaper._may_retry(ok, unreadable)  # as _redispatched: leave them

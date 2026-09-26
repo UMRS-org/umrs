@@ -90,6 +90,12 @@ EXECUTOR_GPU_METADATA_KEY = "__executor_gpu__"
 # running without the user code.
 EXECUTOR_SOURCE_DIR_METADATA_KEY = "__executor_source_dir__"
 
+# Config keys the platform router filled in for this step (``api_base``,
+# ``model``) rather than the workflow author. An executor whose step has no
+# network (the staged HPC lane) leaves them out of the payload: a platform
+# endpoint is useless there, and a re-dispatch may route elsewhere.
+EXECUTOR_ROUTED_KEYS_METADATA_KEY = "__executor_routed_keys__"
+
 # Environment variable the executors use to carry the source dir into
 # the worker process (see ``step_worker._process_task``).
 EXECUTOR_SOURCE_DIR_ENV_VAR = "UMRS_STEP_SOURCE_DIR"

@@ -1065,8 +1065,12 @@ class SlurmStepExecutor(StepExecutor):
         gpu_hint = ctx.metadata.get(EXECUTOR_GPU_METADATA_KEY)
         if gpu_hint is None:
             needs_gpu = os.environ.get("UMRS_STEP_GPU", "0").strip() == "1"
-        else:
-            needs_gpu = bool(gpu_hint)
+        else:  # a real true, not the string "false" (as the staged lane)
+            needs_gpu = gpu_hint is True or str(gpu_hint).strip().lower() in (
+                "1",
+                "true",
+                "yes",
+            )
 
         time_limit = self._format_time_limit(self.timeout_seconds) or self.time_limit
 

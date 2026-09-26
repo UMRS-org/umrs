@@ -38,6 +38,7 @@ EXIT_FAILED = 1
 EXIT_USAGE = 2
 EXIT_ABSENT = 3
 EXIT_REFUSED = 4
+EXIT_SCHEDULER = 5  # squeue / sacct failed: Slurm is down, not the job
 
 WORKDIR_DIRS = ("in", "out", "reply", "src", "log")
 STAGE_TOPS = ("in", "src")
@@ -89,6 +90,13 @@ class HelperError(Exception):
     def __init__(self, detail: str) -> None:
         super().__init__(detail)
         self.detail = detail
+
+
+class SchedulerUnavailable(HelperError):
+    """Slurm did not answer; the caller retries rather than decides."""
+
+    code = EXIT_SCHEDULER
+    kind = "scheduler"
 
 
 class Refused(HelperError):
@@ -722,7 +730,9 @@ def find_jobs(name: str, root: str | None = None) -> list[str]:
     root = check_root(root) if root is not None else None
     queued = _slurm(["squeue", "--me", "-h", f"--name={name}", "-o", "%i|%T|%j|%Z|%k"])
     if queued.returncode != 0:
-        raise HelperError(f"squeue failed (rc={queued.returncode}): {queued.stderr.strip()[-300:]}")
+        raise SchedulerUnavailable(
+            f"squeue failed (rc={queued.returncode}): {queued.stderr.strip()[-300:]}"
+        )
     finished = _slurm(
         [
             "sacct",
@@ -739,7 +749,7 @@ def find_jobs(name: str, root: str | None = None) -> list[str]:
     # A partial list would hide a COMPLETED job whose kept workdir holds the
     # only copy of its outputs: the server would then run the step again.
     if finished.returncode != 0:
-        raise HelperError(
+        raise SchedulerUnavailable(
             f"sacct failed (rc={finished.returncode}): {finished.stderr.strip()[-300:]}"
         )
     rows = _job_rows(finished.stdout, name, root)
@@ -756,7 +766,9 @@ def _live_workdirs(root: str) -> set[str]:
     """Workdirs of this account's queued or running jobs (any name)."""
     proc = _slurm(["squeue", "--me", "-h", "-o", "%i|%T|%j|%Z|%k"])
     if proc.returncode != 0:
-        raise HelperError(f"squeue failed (rc={proc.returncode}): {proc.stderr.strip()[-300:]}")
+        raise SchedulerUnavailable(
+            f"squeue failed (rc={proc.returncode}): {proc.stderr.strip()[-300:]}"
+        )
     live = set()
     for line in proc.stdout.splitlines():
         fields = line.strip().split("|")

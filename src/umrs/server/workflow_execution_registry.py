@@ -200,6 +200,21 @@ class ExecutionRecord:
             event.set()
 
 
+def _reap_cancelled(record: ExecutionRecord) -> None:
+    """End the step-lane jobs an ended run left for a durable retry."""
+    try:
+        from umrs.server.step_reaper import reap_run_jobs, unreaped_steps
+
+        if unreaped_steps(record):
+            reap_run_jobs(record, for_retry=False)
+    except Exception:
+        logger.warning(
+            "step lane: reaping the jobs of cancelled run %s failed",
+            record.execution_id,
+            exc_info=True,
+        )
+
+
 class WorkflowExecutionRegistry:
     """Thread-safe in-memory registry of workflow executions."""
 
@@ -260,12 +275,16 @@ class WorkflowExecutionRegistry:
         if record is None:
             return None
         with record._lock:
-            if record.status in _TERMINAL:
-                return record
-            record.cancel_requested = True
-            if record.status == "submitted":
-                record.status = "cancelled"
-                record.finished_at = time.time()
+            ended = record.status in _TERMINAL
+            if not ended:
+                record.cancel_requested = True
+                if record.status == "submitted":
+                    record.status = "cancelled"
+                    record.finished_at = time.time()
+        if ended:
+            # Between durable retries the record has ended but its step jobs
+            # were left for the retry: a cancel ends them (peer review F2).
+            _reap_cancelled(record)
         return record
 
     def resolve_approval(
@@ -324,7 +343,12 @@ class WorkflowExecutionRegistry:
                 )
             finally:
                 with self._lock:
-                    self._workers.pop(record.execution_id, None)
+                    # A newer launch of the same id owns the entry by now.
+                    if (
+                        self._workers.get(record.execution_id)
+                        is threading.current_thread()
+                    ):
+                        del self._workers[record.execution_id]
 
         thread = threading.Thread(
             target=_wrapped,
