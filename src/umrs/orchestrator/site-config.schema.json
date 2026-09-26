@@ -195,7 +195,9 @@
         "helper_path": { "type": "string", "description": "Cluster path of umrs_step_helper.py in the pinned checkout" },
         "venue_script": { "type": "string", "description": "Cluster path of mini-rivault-llm/venue.sh" },
         "queue_timeout": { "type": "string", "description": "Max Slurm queue wait (HH:MM:SS), separate from the wall time" },
-        "pids_limit": { "type": "integer", "minimum": 0, "description": "--pids-limit of the step container; 0 drops it (and the job's check) for a runtime that cannot apply it" }
+        "pids_limit": { "type": "integer", "minimum": 0, "description": "--pids-limit of the step container; 0 drops it (and the job's check) for a runtime that cannot apply it" },
+        "cgroups": { "type": "string", "enum": ["enabled", "disabled"], "description": "disabled: the venue grants the step job no cgroup to create the container's in (Slurm cgroup v2 without delegation); the container runs with --cgroups=disabled inside the job's cgroup and pids_limit must be 0" },
+        "nproc_limit": { "type": "integer", "minimum": 0, "description": "--ulimit nproc (RLIMIT_NPROC) of the step container: a process bound without a cgroup; 0 omits it" }
       }
     },
     "partition_profile": {

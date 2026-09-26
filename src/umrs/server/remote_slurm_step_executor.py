@@ -316,6 +316,13 @@ class RemoteSlurmStepExecutor(SlurmStepExecutor):
     pids_limit: int = field(
         default_factory=lambda: int(_env("UMRS_STEP_PIDS_LIMIT") or 512)
     )
+    #: ``step_executor.cgroups``: "disabled" runs the container without a
+    #: cgroup of its own, inside the job's Slurm cgroup (pids_limit must be 0).
+    cgroups: str = field(default_factory=lambda: _env("UMRS_STEP_CGROUPS") or "enabled")
+    #: ``--ulimit nproc`` of the step container (0 omits it).
+    nproc_limit: int = field(
+        default_factory=lambda: int(_env("UMRS_STEP_NPROC_LIMIT") or 0)
+    )
     helper_python: str = "python3"
     caps: StageCaps = DEFAULT_CAPS
     reply_cap: int = REPLY_CAP_BYTES
@@ -412,6 +419,23 @@ class RemoteSlurmStepExecutor(SlurmStepExecutor):
                 "the connected-HPC step lane is not configured (needs "
                 f"{', '.join(missing)}; paths absolute on the cluster); nothing "
                 "was submitted",
+            )
+        self._check_posture()
+
+    def _check_posture(self) -> None:
+        """A container without a cgroup cannot hold a pids limit: say so
+        rather than run a step with less than the site asked for."""
+        if self.cgroups not in ("enabled", "disabled"):
+            raise StepExecutionError(
+                "setup",
+                f"step_executor.cgroups {self.cgroups!r} is not enabled|disabled",
+            )
+        if self.cgroups == "disabled" and self.pids_limit > 0:
+            raise StepExecutionError(
+                "setup",
+                "step_executor.cgroups is disabled, so pids_limit "
+                f"{self.pids_limit} cannot apply; set pids_limit: 0 (and bound "
+                "processes with nproc_limit); nothing was submitted",
             )
 
     def _lane_image(self, ctx: StepContext) -> str:
@@ -572,6 +596,8 @@ class RemoteSlurmStepExecutor(SlurmStepExecutor):
                 venue_script=self.venue_script,
                 needs_gpu=self._needs_gpu(ctx),
                 pids_limit=self.pids_limit,
+                cgroups_disabled=self.cgroups == "disabled",
+                nproc_limit=self.nproc_limit,
                 max_file_bytes=caps.max_out_file_bytes,
                 # Directories count against the file cap too (helper collect-out).
                 max_out_entries=2 * out_files + 8,

@@ -48,6 +48,12 @@ def test_each_escape_is_named(change, gpu, problem):
     assert problem in found
 
 
+def test_the_sites_process_bound_must_hold():
+    assert smoke.check({**GOOD, "nproc_soft": 4096}, gpu=False, nproc_limit=4096) == []
+    [found] = smoke.check({**GOOD, "nproc_soft": -1}, gpu=False, nproc_limit=4096)
+    assert "RLIMIT_NPROC is -1, not the site's 4096" in found
+
+
 def test_the_probe_reports_names_never_values(monkeypatch):
     monkeypatch.setenv("UMRS_PROBE_SECRET", "s3cr3t-value")
     facts = probe([])

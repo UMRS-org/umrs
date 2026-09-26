@@ -212,6 +212,21 @@ def test_the_tag_ignores_a_parents_job_facts_and_routed_values(cluster, tree):
     )
 
 
+@pytest.mark.parametrize(
+    ("overrides", "reason"),
+    [
+        ({"cgroups": "disabled", "pids_limit": 512}, "pids_limit 512 cannot apply"),
+        ({"cgroups": "off"}, "is not enabled|disabled"),
+    ],
+)
+def test_a_posture_the_venue_cannot_hold_is_refused_before_any_ssh(
+    cluster, tree, overrides, reason
+):
+    with pytest.raises(StepExecutionError, match=reason):
+        _run(cluster, tree, cluster.executor(**overrides))
+    assert cluster.calls("sbatch") == [] and cluster.calls("find-jobs") == []
+
+
 def test_the_tag_ignores_parent_order_and_a_gates_decision_time(cluster, tree):
     # Peer review T1/T2 (2026-09-26): a parallel wave fills the parents in
     # completion order, and a re-dispatch re-parks a manual gate whose new

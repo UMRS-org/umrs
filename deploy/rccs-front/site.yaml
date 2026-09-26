@@ -130,6 +130,14 @@ step_executor:
   image_archive_dir: /lvs0/rccs-dmp/masaru.nagaso/umrs_models/images
   helper_path: /lvs0/rccs-dmp/masaru.nagaso/ai4s-platform/umrs/deploy/_common/umrs_step_helper.py
   venue_script: /lvs0/rccs-dmp/masaru.nagaso/ai4s-platform/umrs/src/umrs/mini-rivault-llm/venue.sh
+  # R2 (2026-09-26): Slurm's cgroup v2 on the GB10 nodes grants the job no
+  # cgroup to create a container's in ("rootless needs no limits + no
+  # cgrouppath"), so the step runs with --cgroups=disabled inside the job's
+  # cgroup (scancel and the job's limits hold; the node is exclusive) and no
+  # --pids-limit; RLIMIT_NPROC bounds its processes instead.
+  cgroups: disabled
+  pids_limit: 0
+  nproc_limit: 4096
 
 database:
   host: localhost

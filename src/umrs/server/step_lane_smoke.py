@@ -96,10 +96,15 @@ class _RunStore:
         return sum(len(v) for v in self.objects.values())
 
 
-def check(probe: dict[str, Any], *, gpu: bool) -> list[str]:
-    """What is wrong with one run's probe facts ([] when it passed)."""
+def check(probe: dict[str, Any], *, gpu: bool, nproc_limit: int = 0) -> list[str]:
+    """What is wrong with one run's probe facts ([] when it passed);
+    *nproc_limit* is the site's ``--ulimit nproc`` (0: not set)."""
+    nproc = probe.get("nproc_soft")
     found = [
         _identity_problem(probe),
+        f"RLIMIT_NPROC is {nproc}, not the site's {nproc_limit}"
+        if nproc_limit > 0 and nproc != nproc_limit
+        else "",
         _env_problem(probe, "unexpected environment names", extra=True),
         _env_problem(probe, "staged names missing", extra=False),
         _connect_problem(probe),
@@ -195,6 +200,10 @@ def _lane(make_executor: Callable[[str], Any], partition: str, report: dict) -> 
         return None
 
 
+def _nproc(executor: Any) -> int:
+    return int(getattr(executor, "nproc_limit", 0) or 0)
+
+
 def _job_id(result: Any) -> str:
     return str((result.extra.get("slurm_job") or {}).get("job_id", ""))
 
@@ -219,7 +228,7 @@ def run_probe(
         report.update(ok=False, problems=problems)
         return report
     probe = dict(result.extra.get("probe") or {})
-    problems = check(probe, gpu=gpu)
+    problems = check(probe, gpu=gpu, nproc_limit=_nproc(executor))
     report.update(ok=not problems, problems=problems, job=_job_id(result), probe=probe)
     return report
 
@@ -251,7 +260,9 @@ def run_chain(
     b, problems = _run_step(executor, b_ctx)
     problems = [f"step b: {p}" for p in problems]
     if b is not None:
-        problems += check(dict(b.extra.get("probe") or {}), gpu=False)
+        problems += check(
+            dict(b.extra.get("probe") or {}), gpu=False, nproc_limit=_nproc(executor)
+        )
     if not stable:
         problems.append("b's inputs tag follows a's job facts")
     report.update(

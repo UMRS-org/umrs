@@ -371,6 +371,11 @@ class StagedJob:
     needs_gpu: bool
     #: ``--pids-limit`` (0 omits it and its check).
     pids_limit: int = 512
+    #: ``--cgroups=disabled``: the venue grants the job no cgroup to create
+    #: the container's in; the container stays in the job's Slurm cgroup.
+    cgroups_disabled: bool = False
+    #: ``--ulimit nproc`` (0 omits it): a process bound without a cgroup.
+    nproc_limit: int = 0
     #: ``--ulimit fsize``: no file the step writes grows past this.
     max_file_bytes: int = 8 * 1024**3
     #: The watchdog stops the step once ``out/`` + ``reply/`` pass these.
@@ -413,8 +418,12 @@ def _pod_posture(job: StagedJob, name: str, *, seccomp: bool = True) -> list[str
     parts = [*_POD_POSTURE[:2], f"--name {name}", *_POD_POSTURE[2:]]
     if seccomp:
         parts.append('--security-opt seccomp="${_step_seccomp}"')
-    if job.pids_limit > 0:
+    if job.cgroups_disabled:
+        parts.append("--cgroups=disabled")
+    elif job.pids_limit > 0:
         parts.append(f"--pids-limit={int(job.pids_limit)}")
+    if job.nproc_limit > 0:
+        parts.append(f"--ulimit nproc={int(job.nproc_limit)}")
     return [*parts, f"--ulimit fsize={int(job.max_file_bytes)}"]
 
 
@@ -642,7 +651,7 @@ def _staged_pids_lines(job: StagedJob) -> list[str]:
     cgroupfs node without a delegated cgroup drops it with a warning ("PIDs
     limit discarded"), or its runtime refuses the container. A probe in the
     same posture reads the limit back, so neither passes silently."""
-    if job.pids_limit <= 0:
+    if job.pids_limit <= 0 or job.cgroups_disabled:
         return []
     limit = int(job.pids_limit)
     probe = " ".join(
