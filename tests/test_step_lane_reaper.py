@@ -183,7 +183,7 @@ def test_reaping_a_run_records_each_step_cleaned_and_skips_cleaned_ones(cluster)
     cluster.add_job("900", JOB_NAME, str(wd), ["RUNNING"])
     step_reaper.set_step_lane_reaper(_off(cluster))
     done = {**_facts(wd, job_id="1", state="COMPLETED"), "cleaned": True}
-    record = _record(s1=_facts(wd), s2=done)
+    record = _record(durable=None, s1=_facts(wd), s2=done)  # no retry will come
     thread = step_reaper.reap_run_jobs(record)
     thread.join(timeout=60)
     assert step_reaper.step_jobs(record.steps["s1"])[str(wd)]["cleaned"] is True
@@ -241,7 +241,8 @@ def test_the_boot_pass_reaps_orphans_then_the_sweep_removes_idle_workdirs(cluste
     registry = SimpleNamespace(list=lambda: [_record(submitted_at=0.0, s1=_facts(orphan_wd))])
     stop = threading.Event()
     stop.set()  # one pass
-    step_reaper.reap_loop(reaper, registry, time.time(), stop=stop)
+    spent = lambda _job: "failed"  # noqa: E731 - its durable job will not run again
+    step_reaper.reap_loop(reaper, registry, time.time(), stop=stop, durable_status=spent)
     assert cluster.jobs()["900"]["states"] == ["CANCELLED"]
     assert cluster.workdirs() == [live_wd]  # a live job's workdir is never swept
 
@@ -593,8 +594,26 @@ def test_a_completed_workdir_a_durable_retry_may_adopt_is_kept(cluster):
     wd = _workdir(cluster)
     cluster.add_job("909", JOB_NAME, str(wd), ["COMPLETED"])
     ex = _off(cluster)
-    assert ex.reap_step(RUN, "s1", _facts(wd, state="COMPLETED"), keep_completed=True) is False
+    assert ex.reap_step(RUN, "s1", _facts(wd, state="COMPLETED"), for_retry=True) is False
     assert wd.exists() and cluster.calls("scancel") == []
+
+
+def test_a_live_job_a_durable_retry_may_resume_is_left_running(cluster):
+    """Peer review B1 (2026-09-26): the run-end reap of a failed run
+    cancelled the live job its durable retry would resume."""
+    wd = _workdir(cluster)
+    cluster.add_job("910", JOB_NAME, str(wd), ["RUNNING"])
+    ex = _off(cluster)
+    assert ex.reap_step(RUN, "s1", _facts(wd, job_id="910"), for_retry=True) is False
+    assert wd.exists() and cluster.calls("scancel") == []
+
+
+def test_a_failed_job_is_reaped_even_for_a_retry(cluster):
+    wd = _workdir(cluster)
+    cluster.add_job("911", JOB_NAME, str(wd), ["FAILED"])
+    ex = _off(cluster)
+    assert ex.reap_step(RUN, "s1", _facts(wd, job_id="911"), for_retry=True) is True
+    assert not wd.exists()
 
 
 def test_only_a_failed_uncancelled_durable_run_may_retry():
@@ -603,3 +622,7 @@ def test_only_a_failed_uncancelled_durable_run_may_retry():
     assert not step_reaper._may_retry(SimpleNamespace(**{**vars(ok), "cancel_requested": True}))
     assert not step_reaper._may_retry(SimpleNamespace(**{**vars(ok), "durable_job_id": None}))
     assert not step_reaper._may_retry(SimpleNamespace(**{**vars(ok), "status": "succeeded"}))
+    # at boot, only while the scheduler still dispatches the durable job
+    assert step_reaper._may_retry(ok, lambda _job: "queued")
+    assert not step_reaper._may_retry(ok, lambda _job: "failed")
+    assert not step_reaper._may_retry(ok, lambda _job: None)

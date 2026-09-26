@@ -147,11 +147,16 @@ def carry_step_jobs(prior: Any, record: Any) -> None:
             record_step_job(record, name, facts)
 
 
-def reap_record(reaper: Any, record: Any) -> None:
+def reap_record(
+    reaper: Any,
+    record: Any,
+    durable_status: Callable[[str], str | None] | None = None,
+) -> None:
     """Reap each step of *record* that left something; a step with nothing
     left is recorded ``cleaned`` (the next boot skips it). Stops once a
     durable retry replaced the record: the retry carries its uncleaned jobs
     (:func:`carry_step_jobs`) and reconciles or reaps them itself."""
+    for_retry = _may_retry(record, durable_status)
     for name, left in unreaped_steps(record).items():
         if live_record(record) is not record:
             logger.info(
@@ -162,7 +167,7 @@ def reap_record(reaper: Any, record: Any) -> None:
             return
         try:
             done = reaper.reap_step(
-                str(record.execution_id), name, *left, keep_completed=_may_retry(record)
+                str(record.execution_id), name, *left, for_retry=for_retry
             )
         except Exception:
             logger.warning(
@@ -176,15 +181,22 @@ def reap_record(reaper: Any, record: Any) -> None:
             _mark_cleaned(record, name, left)
 
 
-def _may_retry(record: Any) -> bool:
+def _may_retry(
+    record: Any, durable_status: Callable[[str], str | None] | None = None
+) -> bool:
     """A failed (not cancelled) run with a durable job may be dispatched again,
-    and that dispatch's reconcile adopts a COMPLETED job's kept outputs; the
-    workdir sweep removes them if no retry comes."""
-    return (
-        str(getattr(record, "status", "")) == "failed"
-        and not getattr(record, "cancel_requested", False)
-        and bool(getattr(record, "durable_job_id", None))
-    )
+    and that dispatch's reconcile resumes a live job on the same inputs or
+    adopts a COMPLETED one's outputs; --time and the workdir sweep bound them
+    if no retry comes. Given *durable_status* (at boot), only while the
+    scheduler still dispatches that job: a spent one's jobs are reaped."""
+    job = getattr(record, "durable_job_id", None)
+    if (
+        str(getattr(record, "status", "")) != "failed"
+        or getattr(record, "cancel_requested", False)
+        or not job
+    ):
+        return False
+    return durable_status is None or _job_status(record, durable_status) in _DISPATCHED
 
 
 def _mark_cleaned(record: Any, step: str, left: list[dict[str, Any]]) -> None:
@@ -322,7 +334,7 @@ def reap_loop(
     :func:`close_abandoned_run`), then sweep idle unused workdirs every
     *interval* seconds until *stop* is set."""
     for record in orphaned_runs(_list_records(registry), booted_at, durable_status):
-        reap_record(reaper, record)
+        reap_record(reaper, record, durable_status)
         close_abandoned_run(record, durable_status)
     stop = stop or threading.Event()
     while True:

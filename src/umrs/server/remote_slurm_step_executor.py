@@ -361,9 +361,11 @@ class RemoteSlurmStepExecutor(SlurmStepExecutor):
         payload = self._payload(entrypoint, config, ctx)
         tag = inputs_tag(plan, payload, source_dir or None, self.caps)
         job = self._begin(ctx, plan.step, tag)
-        adopted = self._reconcile(job, ctx, plan)
-        if adopted is not None:
-            return adopted
+        earlier = self._reconcile(job, ctx, plan)
+        if isinstance(earlier, StepResult):
+            return earlier
+        if earlier is not None:
+            return self._resume(job, earlier, ctx, plan)
         job.workdir = self._mkwd(job)
         self._notify(job)  # a crash before submit still leaves the reaper its name
         try:
@@ -441,6 +443,11 @@ class RemoteSlurmStepExecutor(SlurmStepExecutor):
             job.step,
             job.workdir,
         )
+        return self._collect_finished(job, ctx, plan)
+
+    def _collect_finished(
+        self, job: _StepJob, ctx: StepContext, plan: StagePlan
+    ) -> StepResult:
         state = self._poll(job, ctx)
         if state != "COMPLETED":
             raise self._failure(job, state)
@@ -452,6 +459,24 @@ class RemoteSlurmStepExecutor(SlurmStepExecutor):
                 "(reply/output.json); the staged lane reads no other reply",
             )
         return self._result_from(job, ctx, plan, blob)
+
+    def _resume(
+        self, job: _StepJob, found: _FoundJob, ctx: StepContext, plan: StagePlan
+    ) -> StepResult:
+        """An earlier attempt's job on the same inputs still runs (this server
+        lost sight of it: an SSH outage, a restart): wait for it instead of
+        cancelling it and running the step twice."""
+        job.workdir, job.job_id, job.state = found.workdir, found.job_id, found.state
+        self._notify(job)
+        logger.warning(
+            "step lane: resuming job %s of an earlier attempt of %s",
+            found.job_id,
+            job.step,
+        )
+        try:
+            return self._collect_finished(job, ctx, plan)
+        finally:
+            self._finish(job)
 
     # ── payload and job script ──────────────────────────────────────────────
 
@@ -967,12 +992,30 @@ class RemoteSlurmStepExecutor(SlurmStepExecutor):
 
     def _reconcile(
         self, job: _StepJob, ctx: StepContext, plan: StagePlan
-    ) -> StepResult | None:
-        """Earlier attempts of this step (a restart, an abandoned attempt):
-        live jobs are cancelled, finished ones without a reply cleaned up, and
-        a COMPLETED one with its reply still on disk is adopted."""
-        completed = []
-        for found in self._find_jobs(job.job_name):
+    ) -> StepResult | _FoundJob | None:
+        """Earlier attempts of this step (a restart, an abandoned attempt, an
+        SSH outage): a COMPLETED one with its reply still on disk is adopted;
+        else a live one on the same inputs is returned to resume; other live
+        ones are cancelled and finished ones without a reply cleaned up."""
+        completed, live = self._earlier_jobs(job)
+        for found in sorted(completed, key=lambda f: int(f.job_id), reverse=True):
+            adopted = self._adopt(found, job, ctx, plan)
+            if adopted is not None:
+                for other in live:
+                    self._cancel_earlier(other)
+                return adopted
+        resume = self._resumable(live, job)
+        for other in live:
+            if other is not resume:
+                self._cancel_earlier(other)
+        return resume
+
+    def _earlier_jobs(self, job: _StepJob) -> tuple[list[_FoundJob], list[_FoundJob]]:
+        """(COMPLETED, live) earlier jobs of this run's step; failed ones'
+        workdirs are removed, other runs' jobs left alone."""
+        completed: list[_FoundJob] = []
+        live: list[_FoundJob] = []
+        for found in self._find_jobs_patiently(job.job_name):
             if not self._own_workdir(found, job):
                 logger.warning(
                     "step lane: job %s is not this run's (workdir %s, comment %r); "
@@ -989,12 +1032,27 @@ class RemoteSlurmStepExecutor(SlurmStepExecutor):
             elif found.state in TERMINAL_FAILURES:
                 self._rmwd(found.workdir)
             else:
-                self._cancel_earlier(found)
-        for found in sorted(completed, key=lambda f: int(f.job_id), reverse=True):
-            adopted = self._adopt(found, job, ctx, plan)
-            if adopted is not None:
-                return adopted
-        return None
+                live.append(found)
+        return completed, live
+
+    @staticmethod
+    def _resumable(live: list[_FoundJob], job: _StepJob) -> _FoundJob | None:
+        """The newest live earlier job that runs on this attempt's inputs."""
+        same = [f for f in live if _workdir_tag(f.workdir, job) == job.tag]
+        return max(same, key=lambda f: int(f.job_id)) if same else None
+
+    def _find_jobs_patiently(self, job_name: str) -> list[_FoundJob]:
+        """find-jobs, riding out a login-node outage for the unreachable
+        budget: failing at once burnt a durable run's retries in minutes and
+        never adopted a job that finished meanwhile."""
+        started = time.monotonic()
+        while True:
+            try:
+                return self._find_jobs(job_name)
+            except _Unreachable:
+                if time.monotonic() - started >= self.unreachable_budget:
+                    raise
+                time.sleep(min(self.poll_interval * 4, 60.0))
 
     def _after_completing(self, found: _FoundJob) -> _FoundJob:
         """A COMPLETING job has ended but its epilog still runs; scancel-ing it
@@ -1211,15 +1269,16 @@ class RemoteSlurmStepExecutor(SlurmStepExecutor):
         run_id: str,
         step: str,
         *facts: dict[str, Any],
-        keep_completed: bool = False,
+        for_retry: bool = False,
     ) -> bool:
         """End what an ended (or refused) run left of one step on the
         cluster: every recorded job of the step still queued or running is
         ``scancel``-ed until terminal, then its workdir removed — a kept
-        COMPLETED one too, since no attempt will adopt it now. *facts* are
-        the step's recorded jobs (one per workdir). Works with the lane
-        switched off: a kill switch must still kill. True when nothing is
-        left."""
+        COMPLETED one too, since no attempt will adopt it now. *for_retry*
+        (a durable retry of the run may come) leaves live and COMPLETED jobs
+        for that retry to resume or adopt. *facts* are the step's recorded
+        jobs (one per workdir). Works with the lane switched off: a kill
+        switch must still kill. True when nothing is left."""
         jobs = [_recorded_job(run_id, step, f) for f in facts]
         jobs = jobs or [_job_identity(run_id, step, 1)]
         try:
@@ -1233,7 +1292,7 @@ class RemoteSlurmStepExecutor(SlurmStepExecutor):
             # A workdir without a job id waits for the sweep (a job may use it).
             complete = len(targets) == len(jobs)
         # every one: no short circuit
-        done = [self._reap_found(f, keep_completed) for f in targets]
+        done = [self._reap_found(f, for_retry) for f in targets]
         return complete and all(done)
 
     def _reap_targets(self, jobs: list[_StepJob]) -> list[_FoundJob]:
@@ -1255,11 +1314,13 @@ class RemoteSlurmStepExecutor(SlurmStepExecutor):
         found += [_FoundJob("", "", w) for w in sorted(workdirs - named)]
         return found
 
-    def _reap_found(self, found: _FoundJob, keep_completed: bool = False) -> bool:
+    def _reap_found(self, found: _FoundJob, for_retry: bool = False) -> bool:
         if found.job_id and _settling(found.job_id):
             return False  # this process is chasing it already
-        if keep_completed and found.state == "COMPLETED":
-            return False  # a durable retry of the run may still adopt its outputs
+        if for_retry and found.job_id and found.state not in TERMINAL_FAILURES:
+            # A durable retry of the run resumes a live job on the same inputs
+            # or adopts a COMPLETED one; --time and the sweep bound the rest.
+            return False
         if not found.job_id or found.state in TERMINAL_STATES:
             return self._rmwd(found.workdir)
         return self._settle(
