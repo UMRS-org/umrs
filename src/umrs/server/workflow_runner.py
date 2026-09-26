@@ -20,6 +20,7 @@ serve back inline.
 
 from __future__ import annotations
 
+import hashlib
 import importlib
 import logging
 import os
@@ -59,7 +60,10 @@ from umrs.server.step_router import (
     get_feedback_store,
 )
 from umrs.server.step_trust import (
+    HPC_LANES,
+    LEGACY_IN_PROCESS,
     is_uploaded_step,
+    step_image_refusal,
     uploaded_code_lane,
     workflow_has_uploaded_code,
 )
@@ -95,6 +99,10 @@ def _max_parallel_steps() -> int:
 # ----------------------------------------------------------------------
 
 
+def _blob_bytes(blobs: dict[str, Any]) -> int:
+    return sum(len(v) for v in blobs.values() if isinstance(v, (bytes, bytearray)))
+
+
 class _InMemoryS3Client:
     """Minimal stand-in that supports ``put_object`` / ``get_object``.
 
@@ -127,6 +135,41 @@ class _InMemoryS3Client:
         self._record.add_artifact(full_key)
         return {"ETag": '"in-memory"', "VersionId": "0"}
 
+    def stored_bytes(self) -> int:
+        """Bytes the run's blobs hold in server memory."""
+        with self._lock:
+            return _blob_bytes(self._record.results.get("blobs", {}))
+
+    def put_objects(
+        self,
+        *,
+        Bucket: str,
+        Objects: dict[str, bytes],
+        MaxTotalBytes: int | None = None,
+    ) -> None:
+        """Store several objects at once (the staged lane's stage-out).
+
+        The run's blobs after the write must fit *MaxTotalBytes* (checked
+        under the lock, so parallel steps cannot overshoot it together), else
+        ValueError and nothing is stored. The record persists once for the
+        batch: a durable record re-encodes every blob on each persist.
+        """
+        new = {f"{Bucket}/{key}": bytes(body) for key, body in Objects.items()}
+        with self._lock:
+            blobs = self._record.results["blobs"]
+            kept = {k: v for k, v in blobs.items() if k not in new}
+            total = _blob_bytes(kept) + _blob_bytes(new)
+            if MaxTotalBytes is not None and total > MaxTotalBytes:
+                raise ValueError(
+                    f"the run's in-memory store would hold {total} bytes; its "
+                    f"budget is {MaxTotalBytes}"
+                )
+            blobs.update(new)
+        for full_key in new:
+            # The base method appends without persisting; update() persists once.
+            ExecutionRecord.add_artifact(self._record, full_key)
+        self._record.update()
+
     def get_object(self, *, Bucket: str, Key: str, **_: Any) -> dict[str, Any]:
         full_key = f"{Bucket}/{Key}"
         with self._lock:
@@ -149,7 +192,10 @@ class _InMemoryS3Client:
             body = self._record.results.get("blobs", {}).get(full_key)
         if body is None:
             raise KeyError(full_key)
-        return {"ContentLength": len(body)}
+        # A content tag like S3's: the staged lane adopts an earlier job only
+        # for the inputs it ran on (build spec §8).
+        etag = hashlib.sha256(body).hexdigest()[:32]
+        return {"ContentLength": len(body), "ETag": f'"{etag}"'}
 
 
 # ----------------------------------------------------------------------
@@ -373,8 +419,13 @@ def _run_executor_attempt(
 
     A deadline breach is normalised into a run-phase
     :class:`StepExecutionError` so the retry loop treats it like any
-    other step failure (retriable, then terminal).
+    other step failure (retriable, then terminal). An executor that owns the
+    step's deadline (``owns_step_deadline``: the HPC lane counts it on the
+    job's run clock, not while the job waits in the queue) gets no soft
+    deadline here.
     """
+    if getattr(executor, "owns_step_deadline", False):
+        timeout_seconds = None
     try:
         return call_with_deadline(
             lambda: executor.execute(entrypoint=entrypoint, config=config, ctx=ctx),
@@ -548,20 +599,24 @@ def _assemble_step_config(
 
 _NO_HPC_LANE = (
     "this workflow carries uploaded step code, which runs on a connected HPC "
-    "lane (ADR-074), and this server has none — run it on a site with a "
-    "connected HPC (execution_mode: slurm)"
+    "lane (ADR-074), and this server has none enabled — run it on a site with "
+    "a connected HPC lane (execution_mode: slurm)"
 )
 
-#: Step-config keys a trigger param may not set (routing + credentials).
-_PARAM_RESERVED_KEYS = frozenset({"api_base", "api_key", "headers", "_routing"})
+#: Step-config keys a trigger param may not set (routing + credentials, and
+#: which config key a VisionStep reads its image from).
+_PARAM_RESERVED_KEYS = frozenset(
+    {"api_base", "api_key", "headers", "_routing", "image_param"}
+)
 
 
 def _redacted_decision(decision: Any) -> dict[str, Any]:
     """The routing decision without secret values (key, header values).
 
     It is stored in the execution's results (returned to the caller by
-    WORKFLOW_RESULTS) and carried into the step's config for introspection;
-    the step's own ``api_key`` / ``headers`` config keys still carry the values.
+    WORKFLOW_RESULTS) and carried into a platform step's config for
+    introspection, whose ``api_key`` / ``headers`` keys still carry the values
+    (an uploaded step gets none of the three: :func:`_apply_step_routing`).
     """
     view = decision.to_dict()
     if view.get("api_key"):
@@ -947,6 +1002,79 @@ def _executor_metadata(
     return metadata
 
 
+def _bind_step_lane(
+    executor: StepExecutor,
+    spec: dict[str, Any],
+    metadata: dict[str, Any],
+    record: ExecutionRecord,
+) -> None:
+    """The staged HPC lane's per-step context (build spec 2026-09-26 §5, §8):
+    the run owner and declared inputs for the stager, the step's soft
+    deadline (its job is ``scancel``-ed with it), and the run's cancel flag
+    and step record for the job lifecycle. Other executors are untouched."""
+    bind = getattr(executor, "bind_run", None)
+    if not callable(bind):
+        return
+    from umrs.server.remote_slurm_step_executor import STEP_TIMEOUT_METADATA_KEY
+    from umrs.server.step_staging import STAGE_REQUEST_METADATA_KEY, stage_request
+
+    try:
+        request = stage_request(spec, record.params, record.user_id)
+    except StepExecutionError:
+        # The stager refuses the raw value by name, inside the step.
+        request = {
+            "owner": record.user_id,
+            "step": spec["name"],
+            "params": {},
+            "stage_inputs": spec.get("stage_inputs"),
+        }
+    metadata[STAGE_REQUEST_METADATA_KEY] = request
+    timeout = StepPolicy.from_mapping(spec).timeout_seconds
+    if timeout:
+        metadata[STEP_TIMEOUT_METADATA_KEY] = float(timeout)
+    bind(
+        record.execution_id,
+        cancelled=lambda: bool(record.cancel_requested),
+        on_job=lambda step_name, job: _record_step_job(record, step_name, job),
+    )
+
+
+def _record_step_job(
+    record: ExecutionRecord, step_name: str, job: dict[str, Any]
+) -> None:
+    """Keep the job's id and workdir in the step's (durable) record, one entry
+    per workdir; a retry's or a result's ``set_step(extra=...)`` keeps them.
+    A settle thread outliving its run writes to the record a durable retry
+    replaced it with, never its stale snapshot over the live row."""
+    from umrs.server.step_reaper import live_record, record_step_job
+
+    record_step_job(live_record(record), step_name, job)
+
+
+def _is_manual_gate(spec: dict[str, Any]) -> bool:
+    return bool(spec.get("gate") or spec.get("manual_gate"))
+
+
+#: Step-config keys that carry platform routing values (key, header values,
+#: the routing record); uploaded code never receives them (build spec §2).
+_PLATFORM_CREDENTIAL_KEYS = ("api_key", "headers", "_routing")
+
+
+def _apply_step_routing(
+    config: dict[str, Any],
+    decision: RoutingDecision,
+    spec: dict[str, Any],
+    source_path: str | None,
+) -> None:
+    """Merge the routing decision into the step config; an uploaded step's
+    config then loses the routed key, headers and routing record — it is
+    written into the step's workdir, readable by the step."""
+    _apply_routing_decision_to_config(config, decision)
+    if is_uploaded_step(str(spec.get("entrypoint") or ""), source_path):
+        for key in _PLATFORM_CREDENTIAL_KEYS:
+            config.pop(key, None)
+
+
 def _execute_step(
     spec: dict[str, Any],
     *,
@@ -983,10 +1111,11 @@ def _execute_step(
     already put the directory on this process's ``sys.path``).
     """
     step_name = spec["name"]
+    executor = _lane_for(executor, spec)
     record.set_step(step_name, status="running", started_at=time.time())
 
     # ---- W5: manual approval gate — no executor, wait for decision -------
-    if spec.get("gate") or spec.get("manual_gate"):
+    if _is_manual_gate(spec):
         return _execute_manual_gate(
             spec,
             wave_index=wave_index,
@@ -1022,7 +1151,7 @@ def _execute_step(
         )
         return step_name, None, f"routing failed: {routing_err}"
 
-    _apply_routing_decision_to_config(config, decision)
+    _apply_step_routing(config, decision, spec, source_path)
     decision_dict = _redacted_decision(decision)
     decision_dict["wave_index"] = wave_index
 
@@ -1032,9 +1161,17 @@ def _execute_step(
     with state_lock:
         routing_log[step_name] = decision_dict
 
+    image_err = step_image_refusal(image_hint, str(getattr(executor, "name", "")))
+    if image_err is not None:
+        record.set_step(
+            step_name, status="failed", error=image_err, finished_at=time.time()
+        )
+        return step_name, None, image_err
+
     # ---- Build context ----------------------------------------------------
     upstream_keys = _collect_upstream_keys(spec, parent_results_snapshot)
     metadata = _executor_metadata(image_hint, gpu_hint, source_path)
+    _bind_step_lane(executor, spec, metadata, record)
     payload_s3_enabled, payload_bucket, payload_s3_prefix = _payload_s3_hint(metadata)
     _annotate_payload_mode(
         routing_log,
@@ -1110,7 +1247,11 @@ def _emit_workflow_metric(
 ) -> None:
     """X1: workflow-run counter + end-to-end duration. Never raises."""
     try:
-        name = type(executor).__name__ if executor is not None else "none"
+        name = (
+            getattr(executor, "metric_name", None) or type(executor).__name__
+            if executor is not None
+            else "none"
+        )
         started = record.started_at or record.submitted_at
         METRICS.workflow_run(name, outcome, max(0.0, time.time() - started))
     except Exception:
@@ -1252,8 +1393,26 @@ def _settle_before_run(
     if refusal:
         record.update(status="failed", error=refusal, finished_at=time.time())
         _emit_workflow_metric(record, executor, "failed")
+        _reap_step_jobs(record)  # a refused re-dispatch reconciles nothing
         return True, None
     return False, worker
+
+
+def _reap_step_jobs(record: ExecutionRecord) -> None:
+    """The run ended or was refused: no attempt of its steps will reconcile
+    the Slurm jobs and workdirs they left (a restart, a skipped step, the
+    lane switched off) — the step lane's reaper ends them."""
+    try:
+        from umrs.server.step_reaper import reap_run_jobs, unreaped_steps
+
+        if unreaped_steps(record):
+            reap_run_jobs(record)
+    except Exception:
+        logger.warning(
+            "step lane: reaping the jobs of run %s failed",
+            record.execution_id,
+            exc_info=True,
+        )
 
 
 def _workflow_executor_name(
@@ -1270,7 +1429,76 @@ def _workflow_executor_name(
     if injected or not workflow_has_uploaded_code(steps_spec, source_path):
         return worker, ""
     lane = uploaded_code_lane(worker)
+    if lane == LEGACY_IN_PROCESS:
+        return _legacy_uploaded_lane(worker, source_path), ""
     return (lane, "") if lane else (None, _NO_HPC_LANE)
+
+
+class _StepLanes:
+    """Per-step lanes for a run whose uploaded steps go to the HPC lane
+    (ADR-074 Amendment 1): its platform-template steps keep the lane the
+    workflow itself asked for (in-process by default). The staged lane has
+    no network, so an LLM or vision template there could only fail."""
+
+    def __init__(
+        self, uploaded: StepExecutor, template: StepExecutor, source_path: str | None
+    ) -> None:
+        self.uploaded, self.template, self.source_path = uploaded, template, source_path
+        self.metric_name = type(uploaded).__name__
+
+    def pick(self, spec: dict[str, Any]) -> StepExecutor:
+        entrypoint = str(spec.get("entrypoint") or "")
+        if is_uploaded_step(entrypoint, self.source_path):
+            return self.uploaded
+        return self.template
+
+    def shutdown(self) -> None:
+        _try_shutdown_executor(self.uploaded)
+        _try_shutdown_executor(self.template)
+
+
+def _lane_for(executor: Any, spec: dict[str, Any]) -> StepExecutor:
+    return executor.pick(spec) if isinstance(executor, _StepLanes) else executor
+
+
+def _split_step_lanes(
+    executor: StepExecutor,
+    workflow_json: dict[str, Any],
+    steps_spec: list[dict[str, Any]],
+    source_path: str | None,
+    worker: str | None,
+) -> Any:
+    """The run's executor, or :class:`_StepLanes` when uploaded code was sent
+    to the HPC lane (*worker*) while the workflow asked for another lane and
+    also carries platform-template steps."""
+    template_worker = _executor_name_from_execution_mode(
+        workflow_json.get("execution_mode")
+    )
+    if worker not in HPC_LANES or template_worker == worker:
+        return executor
+    uploaded = sum(
+        is_uploaded_step(str(s.get("entrypoint") or ""), source_path)
+        for s in steps_spec
+    )
+    if uploaded == len(steps_spec):
+        return executor
+    return _StepLanes(executor, build_step_executor(name=template_worker), source_path)
+
+
+def _legacy_uploaded_lane(worker: str | None, source_path: str | None) -> str | None:
+    """``step_executor.uploaded_code: legacy_in_process`` — the explicit
+    transition switch: the pre-ADR-074 behaviour (the manifest or the
+    deployment picks the lane, the uploaded tree joins this process's
+    ``sys.path``), logged on every run."""
+    logger.warning(
+        "uploaded step code from %s runs on the legacy lane %r, not the HPC "
+        "lane: step_executor.uploaded_code is legacy_in_process (ADR-074 "
+        "transition switch)",
+        source_path,
+        worker or os.environ.get("UMRS_STEP_EXECUTOR") or "inproc",
+    )
+    _prepare_source_path(source_path)
+    return worker
 
 
 def _resolve_runner_defaults(
@@ -1473,7 +1701,28 @@ def _finalize_run(
     executor: StepExecutor,
     state_lock: threading.Lock,
 ) -> None:
-    """Persist step outputs and set the terminal record status."""
+    """Persist step outputs, set the terminal record status, and reap what
+    the run's steps left on the cluster."""
+    _finalize_status(
+        record,
+        first_error=first_error,
+        parent_results=parent_results,
+        levels=levels,
+        executor=executor,
+        state_lock=state_lock,
+    )
+    _reap_step_jobs(record)
+
+
+def _finalize_status(
+    record: ExecutionRecord,
+    *,
+    first_error: str | None,
+    parent_results: dict[str, StepResult],
+    levels: list[list[dict[str, Any]]],
+    executor: StepExecutor,
+    state_lock: threading.Lock,
+) -> None:
     if record.cancel_requested and first_error is not None:
         # Cancel delivered during a failing wave (e.g. W5 gate cancel):
         # the cancel wins over the step failure for the terminal status.
@@ -1565,6 +1814,9 @@ def run_workflow_record(
     if settled:
         return
     router, executor = _resolve_runner_defaults(router, executor, name=worker)
+    executor = _split_step_lanes(
+        executor, workflow_json, steps_spec, source_path, worker
+    )
 
     try:
         levels, canonical_specs = _build_levels(steps_spec)
@@ -1599,6 +1851,7 @@ def run_workflow_record(
             record.update(status="cancelled", finished_at=time.time())
             _emit_workflow_metric(record, executor, "cancelled")
             _try_shutdown_executor(executor)
+            _reap_step_jobs(record)
             return
         if first_error is not None:
             # A previous wave produced a failure: mark dependents skipped

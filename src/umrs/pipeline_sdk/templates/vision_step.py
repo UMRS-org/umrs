@@ -31,9 +31,9 @@ import hashlib
 import json
 import logging
 import os
-from pathlib import Path
 from typing import Any
 
+from umrs.pipeline_sdk.staged_s3 import is_staged
 from umrs.pipeline_sdk.step import Step, StepContext, StepResult
 from umrs.schemas.vision import (
     DetectedObject,
@@ -46,6 +46,8 @@ from umrs.schemas.vision import (
 logger = logging.getLogger(__name__)
 
 VALID_MODES = {"caption", "dense", "detect", "ocr", "segment", "embed"}
+#: Config keys ``image_param`` may not name: the routed key and headers.
+_NOT_IMAGE_KEYS = frozenset({"api_base", "api_key", "headers"})
 
 
 class VisionStep(Step):
@@ -63,6 +65,9 @@ class VisionStep(Step):
 
         self.model: str = str(config.get("model", "rivault-vlm-static"))
         self.image_param: str = str(config.get("image_param", "image"))
+        if self.image_param in _NOT_IMAGE_KEYS or self.image_param.startswith("_"):
+            # The image source lands in the perception the caller reads back.
+            raise ValueError(f"VisionStep image_param {self.image_param!r} is reserved")
         self.prompt: str | None = config.get("prompt")
         self.max_chars: int = int(config.get("max_chars", 2000))
         self.api_base: str | None = (
@@ -160,7 +165,7 @@ class VisionStep(Step):
                     "VisionStep: VLM call failed (%s), falling back to mock perception",
                     exc,
                 )
-                return self._mock_perception(image_ref, fallback=True, error=str(exc))
+                return self._fallback(image_ref, str(exc))
 
         if self.mode in {"segment", "embed"}:
             try:
@@ -169,9 +174,19 @@ class VisionStep(Step):
                 logger.warning(
                     "VisionStep: Vision MCP call failed (%s), falling back to mock", exc
                 )
-                return self._mock_perception(image_ref, fallback=True, error=str(exc))
+                return self._fallback(image_ref, str(exc))
 
-        return self._mock_perception(image_ref, fallback=True, error="unknown mode")
+        return self._fallback(image_ref, "unknown mode")
+
+    def _fallback(self, image_ref: _ImageRef, error: str) -> VisionPerception:
+        """The mock perception — never on the staged HPC lane, which has no
+        network: there a denial must not read as a success (ADR-074 D-5)."""
+        if is_staged():
+            raise RuntimeError(
+                f"VisionStep: the vision call failed on the staged HPC lane ({error}); "
+                "no mock perception is returned"
+            )
+        return self._mock_perception(image_ref, fallback=True, error=error)
 
     def _invoke_vlm(self, image_ref: _ImageRef) -> VisionPerception:
         """Call an OpenAI-compatible VLM via the Gateway."""
@@ -420,7 +435,7 @@ _DEFAULT_PROMPTS = {
 
 
 class _ImageRef:
-    """Lightweight handle over an image identified by S3 key, path, or URL."""
+    """Lightweight handle over an image identified by S3 key or URL."""
 
     def __init__(
         self,
@@ -439,18 +454,21 @@ class _ImageRef:
 
     @classmethod
     def from_value(cls, value: str, ctx: StepContext) -> _ImageRef:
+        """A URL, else an S3 key in the run's input bucket — never a local
+        path. The step runs inside the UMRS server for workflows any user may
+        upload, and the value comes from step config, a trigger param or an
+        upstream step's reply: a path read the server's own files (its SSH
+        key, ``/proc/self/environ``, ``/dev/zero``) and posted them to a
+        workflow-chosen ``api_base`` (review round 4, 2026-09-26)."""
         if value.startswith(("http://", "https://", "data:")):
             return cls(url=value)
-        if value.startswith("file://"):
-            path = value[len("file://") :]
-            return cls(path=path)
-        path_obj = Path(value)
-        if path_obj.exists():
-            return cls(path=str(path_obj.resolve()))
-        # Fall back to treating value as an S3 key in the input bucket.
+        if value.startswith("file:"):
+            raise ValueError(
+                f"VisionStep: image {value[:80]!r} is a local file; give an S3 key "
+                "in the run's bucket or an http(s)/data URL"
+            )
         try:
-            data = ctx.download_bytes(value)
-            return cls(bytes_data=data, s3_key=value)
+            return cls(bytes_data=_download_image(ctx, value), s3_key=value)
         except Exception as exc:  # noqa: BLE001
             logger.warning("VisionStep: cannot fetch image %s: %s", value, exc)
             return cls(s3_key=value)
@@ -482,15 +500,24 @@ class _ImageRef:
         if self.url:
             return self.url
         data = self.bytes_data
-        if data is None and self.path:
-            try:
-                with open(self.path, "rb") as fh:
-                    data = fh.read()
-            except OSError as exc:
-                raise RuntimeError(
-                    f"Cannot read image file {self.path}: {exc}"
-                ) from exc
         if data is None:
             raise RuntimeError("No image bytes available for VLM call")
         b64 = base64.b64encode(data).decode("ascii")
         return f"data:image/png;base64,{b64}"
+
+
+#: An image is read whole into server memory and posted base64-encoded.
+MAX_IMAGE_BYTES = 64 * 1024 * 1024
+
+
+def _download_image(ctx: StepContext, key: str) -> bytes:
+    """The object's bytes, refused past :data:`MAX_IMAGE_BYTES` before the
+    body is read when the store reports its size."""
+    obj = ctx.s3.get_object(Bucket=ctx.input_bucket, Key=key)
+    size = obj.get("ContentLength")
+    if isinstance(size, int) and size > MAX_IMAGE_BYTES:
+        raise ValueError(f"image {key!r} is {size} bytes (max {MAX_IMAGE_BYTES})")
+    data = obj["Body"].read()
+    if len(data) > MAX_IMAGE_BYTES:
+        raise ValueError(f"image {key!r} exceeds {MAX_IMAGE_BYTES} bytes")
+    return data

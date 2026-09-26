@@ -828,6 +828,18 @@ class AutonomousResearchLoop:
             self._gate_denied(loop, iteration, workflow_name)
         return bool(verdict)
 
+    def _trigger_workflow(
+        self, loop: ResearchLoop, workflow_name: str, params: dict[str, Any]
+    ) -> str:
+        """Start the run as the loop's verified owner on a port whose class
+        takes one (the UMRS-side port); a client port runs as its own
+        verified caller."""
+        port = self._workflow_port
+        if callable(getattr(type(port), "trigger_as", None)):
+            owner = str(loop.metadata.get("owner_user_id") or "")
+            return port.trigger_as(workflow_name, params, owner=owner)
+        return port.trigger(workflow_name, params)
+
     def _execute_experiment(
         self,
         loop: ResearchLoop,
@@ -850,8 +862,10 @@ class AutonomousResearchLoop:
             params.update(dict(experiment.parameters or {}))
             params.setdefault("experiment_id", experiment.experiment_id)
         # Experiment parameters must not override the loop's project context
-        # (Gateway verified headers / durable job project_id).
+        # (Gateway verified headers / durable job project_id), nor name the
+        # run's owner: the planner writes them (ADR-074 D-8).
         params["project_id"] = loop.project_id
+        params.pop("user_id", None)
         # Loop-level default (resolved at loop start from the registry or the
         # caller's workflow_name — G-P1-3); experiments may still override.
         workflow_name = workflow_name or loop.metadata.get("workflow_name")
@@ -876,7 +890,7 @@ class AutonomousResearchLoop:
             # finalised (stopped loop / closed track) — never trigger then.
             return "deferred" if verdict == "deferred" else "halted"
 
-        execution_id = self._workflow_port.trigger(workflow_name, params)
+        execution_id = self._trigger_workflow(loop, workflow_name, params)
         self._in_flight_execution_id = execution_id
         iteration.workflow_run_id = execution_id
 

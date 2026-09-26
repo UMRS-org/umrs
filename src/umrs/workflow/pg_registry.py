@@ -48,7 +48,9 @@ class DurableExecutionRecord(ExecutionRecord):
     """ExecutionRecord that invokes a persist hook after each mutation."""
 
     _persist_hook: Callable[[DurableExecutionRecord], None] | None = None
-    _refresh_hook: Callable[[DurableExecutionRecord], dict[str, Any] | None] | None = None
+    _refresh_hook: Callable[[DurableExecutionRecord], dict[str, Any] | None] | None = (
+        None
+    )
 
     def _fire_persist(self) -> None:
         hook = self._persist_hook
@@ -86,6 +88,12 @@ class DurableExecutionRecord(ExecutionRecord):
 
     def set_step(self, name: str, **fields_: Any) -> None:
         super().set_step(name, **fields_)
+        self._fire_persist()
+
+    def update_step_entry(
+        self, name: str, key: str, entry: str, facts: dict[str, Any]
+    ) -> None:
+        super().update_step_entry(name, key, entry, facts)
         self._fire_persist()
 
     def add_artifact(self, key: str) -> None:
@@ -251,8 +259,7 @@ class PgWorkflowExecutionRegistry(WorkflowExecutionRegistry):
         )
         self._install_hooks(record)
         with self._lock:
-            self._records[record.execution_id] = record
-            self._gc_locked()
+            self._put_locked(record)
         self._persist(record)
         return record
 

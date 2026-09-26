@@ -65,6 +65,17 @@ class DurableJobRuntime:
             raise RuntimeError("DurableJobRuntime not started")
         return self._command_backend
 
+    def job_status(self, job_id: str) -> str | None:
+        """The durable job's status value, None when there is no such job
+        (the step lane's boot reaper: ``step_reaper.orphaned_runs``)."""
+        from umrs.jobs.store import JobNotFoundError
+
+        try:
+            job = self._service.job_service.job_store.get_job(job_id)
+        except JobNotFoundError:
+            return None
+        return job.status.value
+
     async def submit_job_sync(
         self,
         *,

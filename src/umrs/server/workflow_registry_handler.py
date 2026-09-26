@@ -304,7 +304,9 @@ def _workflow_run_context(
     source_path: str | None = None,
 ) -> tuple[str, dict[str, Any], int]:
     if source_path is None:
-        entry = _resolve_workflow_catalog_entry(workflow_name, client_id)
+        # A durable job without a usable source_path: owner-scoped like a
+        # trigger (ADR-074 D-8), never another owner's same-named workflow.
+        entry = resolve_workflow_for_caller(workflow_name, client_id)
         if entry is None:
             raise ValueError(f"Workflow '{workflow_name}' not found in registry")
         source_path = entry.get("source_path", "")
@@ -336,6 +338,11 @@ def _resolve_workflow_catalog_entry(
     deployment umbrella). A registered workflow shall be resolvable by
     everyone; otherwise different legacies of upload user vs execution user
     resurface as spurious "not found in registry" errors deep in the chain.
+
+    INTERNAL ONLY (delete's owner check). A run — a caller-facing trigger,
+    describe, or a durable job without a usable ``source_path`` — resolves
+    through :func:`resolve_workflow_for_caller` (ADR-074 D-8): the any-name
+    fallback here would run another owner's code.
     """
     with _CATALOG_LOCK:
         catalog = _load_catalog()
@@ -355,6 +362,49 @@ def _resolve_workflow_catalog_entry(
             system = workflow_entry
 
     return owned or system or any_name
+
+
+def resolve_workflow_for_caller(
+    workflow_name: str,
+    client_id: str,
+    *,
+    is_admin: bool = False,
+) -> dict[str, Any] | None:
+    """The workflow a caller may trigger or describe (ADR-074 D-8).
+
+    The caller's own entry, then a ``system`` entry (shared); another owner's
+    ``user`` entry only for admins — never a cross-owner name fallback, which
+    let a normal user run another owner's code against their own buckets.
+    """
+    with _CATALOG_LOCK:
+        catalog = _load_catalog()
+
+    system: dict[str, Any] | None = None
+    foreign: dict[str, Any] | None = None
+    for workflow_entry in catalog.get("workflows", []):
+        if workflow_entry.get("name") != workflow_name:
+            continue
+        if workflow_entry.get("user_id") == client_id:
+            return workflow_entry
+        if workflow_entry.get("scope") == "system":
+            system = system or workflow_entry
+        elif foreign is None:
+            foreign = workflow_entry
+    return system or (foreign if is_admin else None)
+
+
+def _caller_run_context(
+    workflow_name: str, client_id: str, *, is_admin: bool
+) -> tuple[str, dict[str, Any], int]:
+    """:func:`_workflow_run_context` for a caller-facing trigger: owner-scoped
+    resolution; the resolved ``source_path`` is what the run (and a durable
+    job's spec) carries from here on."""
+    entry = resolve_workflow_for_caller(workflow_name, client_id, is_admin=is_admin)
+    if entry is None:
+        raise ValueError(f"Workflow '{workflow_name}' not found in registry")
+    return _workflow_run_context(
+        workflow_name, client_id, source_path=str(entry.get("source_path") or "")
+    )
 
 
 def _launch_workflow_from_catalog(
@@ -387,6 +437,10 @@ def _launch_workflow_from_catalog(
     from umrs.server.workflow_runner import run_workflow_record
 
     registry = get_execution_registry()
+    # A durable re-dispatch reuses the execution id: the record it replaces
+    # (read through to Postgres after a restart) may name step jobs still on
+    # the cluster.
+    prior = registry.get(execution_id) if execution_id else None
     record = registry.create(
         workflow_name=workflow_name,
         user_id=client_id,
@@ -398,6 +452,10 @@ def _launch_workflow_from_catalog(
             identity_verified=identity_verified,
         ),
     )
+    if prior is not None:
+        from umrs.server.step_reaper import carry_step_jobs
+
+        carry_step_jobs(prior, record)
 
     project_id = _workflow_project_id(params)
     router = build_registry_backed_router(project_id=project_id)
@@ -426,7 +484,7 @@ def _submit_durable_workflow_run(
     step_count: int,
     job_backend: DurableJobCommandBackend,
 ) -> str:
-    raw = job_backend.submit(
+    raw = job_backend.submit_workflow_run(
         client_id,
         json.dumps(
             {
@@ -487,12 +545,16 @@ def _handle_run_workflow(
     job_backend: DurableJobCommandBackend | None = None,
     *,
     trusted_identity: bool = False,
+    caller_is_admin: bool = False,
 ) -> str:
     """Trigger execution of a registered workflow.
 
     Payload JSON:
       - workflow_name: str — name of the workflow to run
       - params: dict — additional runtime parameters (e.g. bucket alias)
+
+    Resolution is owner-scoped (ADR-074 D-8): the caller's own workflow or a
+    ``system`` one; another owner's only when ``caller_is_admin``.
     """
     try:
         payload = json.loads(payload_str) if payload_str else {}
@@ -512,7 +574,9 @@ def _handle_run_workflow(
     identity_verified = trusted_identity and bool(payload.get("_identity_verified"))
 
     try:
-        source_path, _, step_count = _workflow_run_context(workflow_name, client_id)
+        source_path, _, step_count = _caller_run_context(
+            workflow_name, client_id, is_admin=caller_is_admin
+        )
     except ValueError as exc:
         return json.dumps({"status": "error", "message": str(exc)})
 
@@ -559,6 +623,7 @@ def handle_workflow_command(
     job_backend: DurableJobCommandBackend | None = None,
     *,
     trusted_identity: bool = False,
+    caller_is_admin: bool = False,
 ) -> str:
     """Dispatch a workflow registry command and return a JSON response string.
 
@@ -568,7 +633,9 @@ def handle_workflow_command(
     verified identity (the HTTP trigger route after HMAC signature validation).
     For ZMQ-exposed commands the payload's ``_identity_verified`` flag is a
     client-supplied claim and is ignored unless ``trusted_identity`` is set
-    (wave-4 audit fix).
+    (wave-4 audit fix). ``caller_is_admin`` likewise comes only from the
+    server's own verification (the gateway-signed admin flag, the ZMQ auth
+    session's role), never from the payload.
     """
     from umrs.server.correlation import correlation_scope
 
@@ -581,7 +648,7 @@ def handle_workflow_command(
         (_payload or {}).get("_request_id") or (_payload or {}).get("_correlation_id")
     ):
         return _dispatch_workflow_command(
-            cmd, client_id, payload_str, job_backend, trusted_identity
+            cmd, client_id, payload_str, job_backend, trusted_identity, caller_is_admin
         )
 
 
@@ -591,6 +658,7 @@ def _dispatch_workflow_command(
     payload_str,
     job_backend,
     trusted_identity,
+    caller_is_admin=False,
 ):  # pragma: no cover - factored from handle_workflow_command body
     """Command dispatch under a fresh correlation scope (Q-05/G-001)."""
     from umrs.core.TaskCmdStatus import TaskCmd
@@ -604,6 +672,7 @@ def _dispatch_workflow_command(
                 payload_str,
                 job_backend=job_backend,
                 trusted_identity=trusted_identity,
+                caller_is_admin=caller_is_admin,
             )
         elif cmd == TaskCmd.WORKFLOW_STATUS:
             return _handle_workflow_status(client_id, payload_str)

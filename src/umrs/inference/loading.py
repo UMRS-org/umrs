@@ -43,12 +43,37 @@ class EmbeddingModel:
 
 
 ################################ Models loading  ###########################
+#: Bucket-model schemes that import a workflow's step modules and run their
+#: ``setup()`` inside this server process.
+_SERVER_SIDE_WORKFLOW_SCHEMES = ("user_script://", "user_workflow://")
+
+
+def _check_server_side_workflow(model_type):
+    """ADR-074 D-2: uploaded step code never runs in the UMRS server. These
+    schemes load only on a site that chose the recorded legacy transition
+    (``step_executor.uploaded_code: legacy_in_process``)."""
+    if not str(model_type).startswith(_SERVER_SIDE_WORKFLOW_SCHEMES):
+        return
+    from umrs.shared.uploaded_code import LEGACY_IN_PROCESS, uploaded_code_policy
+
+    if uploaded_code_policy() == LEGACY_IN_PROCESS:
+        return
+    scheme = model_type.split("://", 1)[0]
+    raise ValueError(
+        f"model_type {scheme}:// imports uploaded workflow code into the UMRS "
+        "server and is refused on this site (ADR-074 D-2); run the workflow "
+        "through the workflow runner instead"
+    )
+
+
 #  Load the Model Dynamically Based on Type
 def load_model(model_cfg, modality, task=None):
     model_name = model_cfg["model_name"]
     vector_size = model_cfg["vector_size"]
     model_type = model_cfg["model_type"]
     return_type = model_cfg["return_type"]
+
+    _check_server_side_workflow(model_type)
 
     tokenizer = None
     max_tokens = None

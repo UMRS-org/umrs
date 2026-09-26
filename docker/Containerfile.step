@@ -1,0 +1,37 @@
+# =============================================================================
+# Containerfile.step — the platform step image (ADR-074 D-7;
+# docs/development/rccs-step-lane-spec-2026-09-26.md §9 in the superproject)
+# =============================================================================
+# What `python -m umrs.server.step_worker` needs on a compute node: the umrs
+# wheel (worker, reply codec, pipeline SDK) and the hash-pinned core CPU tier
+# in step-requirements.txt (numpy, pandas, pyyaml, pillow,
+# opencv-python-headless 4.x, jsonschema). The worker's import closure is the
+# standard library plus umrs, so neither r4-contracts nor boto3 is here: a
+# staged step reads /work/in and writes /work/out, and holds no credential.
+#
+# COPY-only on purpose: no RUN, so a cross-arch build needs no emulation and
+# the only thing that reaches the image is the prepared site-packages dir.
+# Build it through deploy/_common/stage_step_image.sh, never by hand: the
+# stager fills that dir from `git archive` of the pinned commit (untracked
+# files, the cluster's serving secrets among them, cannot enter), builds in a
+# throwaway store, scans the added layer and saves the archive jobs load.
+#
+# Jobs run it with --user $(id -u):$(id -g) under --userns=keep-id, a
+# read-only rootfs and a /tmp tmpfs (spec §7); USER 65534 is the fallback
+# when nobody names a user. HOME=/tmp keeps libraries that cache under
+# $HOME off the read-only rootfs and off the host home path keep-id records.
+# =============================================================================
+FROM docker.io/library/python:3.11-slim@sha256:da047cb8f9d1d98e5c070f5300ba9f7274e33b8fc0e5be5ed88740aed1b95ba9
+
+ARG UMRS_REVISION=unknown
+LABEL org.umrs.step-contract="1" \
+      org.opencontainers.image.title="umrs-step" \
+      org.opencontainers.image.revision="${UMRS_REVISION}"
+
+COPY site-packages/ /usr/local/lib/python3.11/site-packages/
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    HOME=/tmp
+USER 65534:65534
+WORKDIR /tmp

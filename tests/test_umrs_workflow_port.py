@@ -1,6 +1,8 @@
 """UMRS WorkflowExecutionPort pins (real-mode REST loop composition).
 
-- trigger creates a WORKFLOW_RUN durable job with loop params preserved
+- trigger creates a WORKFLOW_RUN durable job with loop params preserved, for
+  the loop's verified owner with the workflow resolved owner-scoped (ADR-074
+  D-8, review round 3): a planner-written ``user_id`` param names nobody
 - wait blocks until a terminal registry status and carries durable_job_id
 - results maps registry record into the engine's expected payload shape
 - cancel is cooperative + best-effort
@@ -54,6 +56,28 @@ class _FakeRegistry:
             self.records[execution_id].status = "cancelled"
 
 
+#: The catalog the port resolves against: (owner, name) -> source_path.
+CATALOG = {
+    ("alice", "demo08_yield_eval"): "/wf/alice/demo08_yield_eval",
+    ("bob", "private"): "/wf/bob/private",
+    ("*", "wf"): "/wf/system/wf",
+    ("*", "demo08_yield_eval"): "/wf/system/demo08_yield_eval",
+}
+
+
+@pytest.fixture(autouse=True)
+def catalog(monkeypatch):
+    """Owner-scoped resolution (the real rule: the caller's own entry, else a
+    system one; never another owner's)."""
+    from umrs.server import workflow_registry_handler as handler
+
+    def resolve(name, owner, *, is_admin=False):
+        path = CATALOG.get((owner, name)) or CATALOG.get(("*", name))
+        return {"source_path": path} if path else None
+
+    monkeypatch.setattr(handler, "resolve_workflow_for_caller", resolve)
+
+
 @pytest.fixture
 def store() -> MagicMock:
     s = MagicMock()
@@ -76,18 +100,62 @@ def _patch_registry(registry: _FakeRegistry):
 
 def test_trigger_creates_workflow_run_job(store, registry):
     port = UmrsWorkflowExecutionPort(store)
-    exec_id = port.trigger(
-        "demo08_yield_eval", {"a": 1, "project_id": "proj-x", "user_id": "alice"}
-    )
+    exec_id = port.trigger_as("demo08_yield_eval", {"a": 1, "project_id": "proj-x"}, owner="alice")
     store.create_job.assert_called_once()
     kwargs = store.create_job.call_args.kwargs
     assert kwargs["user_id"] == "alice"
     assert kwargs["project_id"] == "proj-x"
     assert kwargs["spec"]["workflow_name"] == "demo08_yield_eval"
     assert kwargs["spec"]["execution_id"] == exec_id
+    # the owner's own workflow, resolved now: the backend never re-resolves
+    assert kwargs["spec"]["source_path"] == "/wf/alice/demo08_yield_eval"
     assert kwargs["max_attempts"] == 1
-    # user_id consumed as identity, not forwarded inside params
+
+
+def test_a_planner_user_id_param_names_nobody(store):
+    # Experiment parameters come from the LLM planner (steerable through the
+    # research goal): a user_id there must not run another owner's code.
+    port = UmrsWorkflowExecutionPort(store)
+    port.trigger_as("wf", {"project_id": "p", "user_id": "bob"}, owner="alice")
+    kwargs = store.create_job.call_args.kwargs
+    assert kwargs["user_id"] == "alice"
     assert "user_id" not in kwargs["spec"]["params"]
+    port.trigger("wf", {"project_id": "p", "user_id": "bob"})
+    assert store.create_job.call_args.kwargs["user_id"] == "research-loop"
+
+
+def test_another_owners_workflow_fails_by_name_before_any_job(store):
+    port = UmrsWorkflowExecutionPort(store)
+    with pytest.raises(RuntimeError, match="'private' is not one the loop's owner 'alice'"):
+        port.trigger_as("private", {"project_id": "p", "user_id": "bob"}, owner="alice")
+    with pytest.raises(RuntimeError, match="ADR-074 D-8"):
+        port.trigger("private", {"project_id": "p"})  # no verified owner: system only
+    store.create_job.assert_not_called()
+
+
+def test_the_engine_runs_experiments_as_the_loops_owner(store):
+    from types import SimpleNamespace
+
+    from umrs.knowledge.loop import AutonomousResearchLoop
+
+    port = UmrsWorkflowExecutionPort(store)
+    engine = AutonomousResearchLoop(workflow_port=port)
+    loop = SimpleNamespace(metadata={"owner_user_id": "alice"})
+    engine._trigger_workflow(loop, "demo08_yield_eval", {"project_id": "p"})
+    assert store.create_job.call_args.kwargs["user_id"] == "alice"
+
+
+def test_the_engine_keeps_a_client_ports_plain_trigger():
+    from types import SimpleNamespace
+
+    from umrs.knowledge.execution_port import FakeWorkflowExecutionPort
+    from umrs.knowledge.loop import AutonomousResearchLoop
+
+    port = FakeWorkflowExecutionPort()
+    engine = AutonomousResearchLoop(workflow_port=port)
+    loop = SimpleNamespace(metadata={"owner_user_id": "alice"})
+    engine._trigger_workflow(loop, "wf", {"project_id": "p"})
+    assert port.calls[0][0] == "trigger"
 
 
 def test_wait_returns_terminal_with_durable_job_id(store, registry):
@@ -169,3 +237,30 @@ def test_trigger_enqueues_the_created_job():
     assert execution_id.startswith("exec-")
     store.create_job.assert_called_once()
     store.enqueue_job.assert_called_once_with("job-1")
+
+
+def test_an_experiment_naming_another_user_still_runs_as_the_loops_owner(store):
+    from umrs.knowledge.loop import (
+        AutonomousResearchLoop,
+        LoopIteration,
+        LoopPhase,
+        LoopStatus,
+        ResearchLoop,
+    )
+    from umrs.knowledge.planner import ResearchExperiment
+
+    engine = AutonomousResearchLoop(simulated=False, workflow_port=UmrsWorkflowExecutionPort(store))
+    engine._cancel_check = lambda: True  # noqa: SLF001 — stop right after the trigger
+    loop = ResearchLoop(
+        loop_id="loop-owner", project_id="p", research_goal="g", status=LoopStatus.RUNNING,
+        phase=LoopPhase.EXPERIMENT_EXECUTION, max_iterations=1, current_iteration=1,
+        metadata={"mode": "auto", "workflow_name": "demo08_yield_eval",
+                  "owner_user_id": "alice"},
+    )  # fmt: skip
+    experiment = ResearchExperiment(experiment_id="e1", parameters={"user_id": "bob", "n": 2})
+    iteration = LoopIteration(iteration_id="it", loop_id=loop.loop_id, iteration_number=1)
+    engine._execute_experiment(loop, iteration, experiment)  # noqa: SLF001
+    kwargs = store.create_job.call_args.kwargs
+    assert kwargs["user_id"] == "alice"
+    assert kwargs["spec"]["source_path"] == "/wf/alice/demo08_yield_eval"
+    assert kwargs["spec"]["params"]["n"] == 2 and "user_id" not in kwargs["spec"]["params"]

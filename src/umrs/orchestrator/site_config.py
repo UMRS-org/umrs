@@ -213,6 +213,25 @@ class StepExecutorConfig:
     # Parent of the per-step workdirs; must be on a filesystem the compute
     # nodes see (required for slurm-remote: a path on the CLUSTER).
     workdir_root: str = ""
+    # ADR-074 HPC lane for uploaded step code (build spec 2026-09-26 §1).
+    # The site's HPC lane may run uploaded code; false keeps it closed.
+    remote_enabled: bool = False
+    # Sites without a live lane: "refuse" uploaded code by name, or
+    # "legacy_in_process" (the pre-ADR-074 lanes; an explicit transition).
+    uploaded_code: str = "refuse"
+    # Cluster dir holding umrs-step-<sha12>-<arch>.tar (+ .sha256, .id).
+    image_archive_dir: str = ""
+    # Images routing_hints.image may name besides the platform image (D-7).
+    allowed_images: list[str] = field(default_factory=list)
+    # Cluster paths of umrs_step_helper.py and mini-rivault-llm/venue.sh in
+    # the pinned cluster checkout.
+    helper_path: str = ""
+    venue_script: str = ""
+    # Max queue wait, separate from the step's wall time.
+    queue_timeout: str = "06:00:00"
+    # --pids-limit of the step container; 0 drops it for a venue whose
+    # runtime cannot apply it (the job refuses to run a step otherwise).
+    pids_limit: int = 512
 
 
 @dataclass
@@ -424,7 +443,25 @@ def _step_executor_env(cfg: StepExecutorConfig) -> dict[str, str]:
         env["UMRS_SLURM_TIME"] = cfg.time_limit
         if cfg.account:
             env["UMRS_SLURM_ACCOUNT"] = cfg.account
+    env.update(_step_lane_env(cfg))
     return env
+
+
+def _step_lane_env(cfg: StepExecutorConfig) -> dict[str, str]:
+    """The uploaded-code HPC lane knobs (ADR-074, build spec 2026-09-26 §1)."""
+    images = cfg.allowed_images
+    if isinstance(images, str):
+        images = _split_partitions(images)
+    return {
+        "UMRS_STEP_REMOTE_ENABLED": "1" if cfg.remote_enabled else "",
+        "UMRS_STEP_UPLOADED_CODE": cfg.uploaded_code,
+        "UMRS_STEP_IMAGE_ARCHIVE_DIR": cfg.image_archive_dir,
+        "UMRS_STEP_ALLOWED_IMAGES": ",".join(str(i).strip() for i in images),
+        "UMRS_STEP_HELPER": cfg.helper_path,
+        "UMRS_STEP_VENUE_SCRIPT": cfg.venue_script,
+        "UMRS_SLURM_QUEUE_TIMEOUT": cfg.queue_timeout,
+        "UMRS_STEP_PIDS_LIMIT": str(int(cfg.pids_limit)),
+    }
 
 
 def _vllm_env(vllm: VllmConfig) -> dict[str, str]:

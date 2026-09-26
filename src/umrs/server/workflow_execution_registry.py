@@ -36,6 +36,11 @@ logger = logging.getLogger(__name__)
 # Terminal statuses (no further updates expected).
 _TERMINAL = {"succeeded", "failed", "cancelled"}
 
+#: ``StepProgress.extra`` keys a wholesale ``set_step(extra=...)`` (a retry's
+#: attempt counter, a result) keeps: the connected-HPC lane's job facts are
+#: the reaper's only way to find a step's Slurm jobs and workdirs.
+STICKY_STEP_EXTRA = ("slurm_jobs",)
+
 
 @dataclass
 class StepProgress:
@@ -86,6 +91,13 @@ class ExecutionRecord:
     gate_decisions: dict[str, dict[str, Any]] = field(default_factory=dict)
     _gate_events: dict[str, threading.Event] = field(default_factory=dict, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    #: The record a durable re-dispatch of this execution id put in its place
+    #: (never serialized): threads the earlier run left behind (a step job's
+    #: settle, the reaper) write there, never this stale snapshot over the
+    #: live row.
+    superseded_by: ExecutionRecord | None = field(
+        default=None, repr=False, compare=False
+    )
 
     def to_dict(self) -> dict[str, Any]:
         with self._lock:
@@ -119,8 +131,23 @@ class ExecutionRecord:
     def set_step(self, name: str, **fields_: Any) -> None:
         with self._lock:
             step = self.steps.setdefault(name, StepProgress(name=name))
+            if "extra" in fields_:
+                kept = {k: step.extra[k] for k in STICKY_STEP_EXTRA if k in step.extra}
+                fields_["extra"] = {**kept, **dict(fields_["extra"] or {})}
             for key, value in fields_.items():
                 setattr(step, key, value)
+
+    def update_step_entry(
+        self, name: str, key: str, entry: str, facts: dict[str, Any]
+    ) -> None:
+        """Merge *facts* into ``extra[key][entry]`` of step *name* in one
+        locked step: the step lane's settle threads record their jobs while
+        the step's own thread records the next attempt's."""
+        with self._lock:
+            step = self.steps.setdefault(name, StepProgress(name=name))
+            entries = dict(step.extra.get(key) or {})
+            entries[entry] = {**dict(entries.get(entry) or {}), **facts}
+            step.extra = {**step.extra, key: entries}
 
     def add_artifact(self, key: str) -> None:
         with self._lock:
@@ -204,9 +231,17 @@ class WorkflowExecutionRegistry:
             identity_provenance=identity_provenance,
         )
         with self._lock:
-            self._records[record.execution_id] = record
-            self._gc_locked()
+            self._put_locked(record)
         return record
+
+    def _put_locked(self, record: ExecutionRecord) -> None:
+        """Register *record*; a record it replaces (a durable re-dispatch
+        reuses the execution id) is marked :attr:`superseded_by` it."""
+        prior = self._records.get(record.execution_id)
+        if prior is not None and prior is not record:
+            prior.superseded_by = record
+        self._records[record.execution_id] = record
+        self._gc_locked()
 
     def get(self, execution_id: str) -> ExecutionRecord | None:
         with self._lock:

@@ -176,7 +176,26 @@
         "account": { "type": "string" },
         "image": { "type": "string" },
         "gpu": { "type": "boolean" },
-        "workdir_root": { "type": "string" }
+        "workdir_root": { "type": "string" },
+        "remote_enabled": {
+          "type": "boolean",
+          "description": "The site's HPC lane may run uploaded step code (ADR-074); false refuses it by name unless uploaded_code is legacy_in_process"
+        },
+        "uploaded_code": {
+          "type": "string",
+          "enum": ["refuse", "legacy_in_process"],
+          "description": "Transition switch for sites without a live HPC lane; ignored when the lane is available"
+        },
+        "image_archive_dir": { "type": "string", "description": "Cluster dir holding umrs-step-<sha12>-<arch>.tar (+ .sha256, .id)" },
+        "allowed_images": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Images routing_hints.image may name besides the platform image (ADR-074 D-7)"
+        },
+        "helper_path": { "type": "string", "description": "Cluster path of umrs_step_helper.py in the pinned checkout" },
+        "venue_script": { "type": "string", "description": "Cluster path of mini-rivault-llm/venue.sh" },
+        "queue_timeout": { "type": "string", "description": "Max Slurm queue wait (HH:MM:SS), separate from the wall time" },
+        "pids_limit": { "type": "integer", "minimum": 0, "description": "--pids-limit of the step container; 0 drops it (and the job's check) for a runtime that cannot apply it" }
       }
     },
     "partition_profile": {

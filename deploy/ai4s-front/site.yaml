@@ -100,6 +100,11 @@ step_executor:
   account: ea                                 # Slurm account (sacctmgr assoc = "ea")
   image: ""                                   # No default image; use routing_hints.image
   gpu: true                                   # Attach GPU by default
+  # Uploaded step code (ADR-074, 2026-09-26): no HPC lane here yet (no
+  # workdir_root; Apptainer venue, data0 reachability open), so it is refused
+  # by name instead of failing at step time.
+  remote_enabled: false
+  uploaded_code: refuse
 
 database:
   host: localhost                             # Shared with umrs-front postgres

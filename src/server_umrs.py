@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 
 
 import contextlib
+import time
 import traceback
 
 import umrs.server.config as _server_config
@@ -606,6 +607,24 @@ def check_umrs_config_directory():
 # ---------------------------------- CLI ------------------------------------
 
 
+def _start_step_lane_reaper(booted_at: float, durable_job_runtime) -> None:
+    """ADR-074 step lane: end the step jobs and workdirs that runs from before
+    this boot left on the cluster, then sweep idle unused workdirs hourly.
+    Started after the durable runtime, whose boot reconciler has settled
+    which runs' durable jobs will run again."""
+    try:
+        from umrs.server.step_reaper import start_step_lane_reaper
+
+        start_step_lane_reaper(
+            booted_at=booted_at,
+            durable_status=(
+                durable_job_runtime.job_status if durable_job_runtime else None
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001 — boot must survive the reaper
+        print(f"Warning: step lane reaper not started: {exc}")
+
+
 def main():
     # Offline admin CLI: route `umrs-server admin ...` before any daemon
     # bootstrap so it works without a configured UMRS_CONFIG directory.
@@ -718,7 +737,15 @@ def main():
     print("Initial configuration done.")
     reconcile_status_on_startup(task_manager.active_threads, server_cfg.buckets_cfg)
 
+    # Staged step inputs are owner-checked against the provisioned buckets,
+    # not the bucket name alone (ADR-074 D-5); before any run re-dispatches.
+    from umrs.server.step_staging import register_bucket_registry
+
+    register_bucket_registry(server_cfg.buckets_cfg)
+
+    booted_at = time.time()
     durable_job_runtime = start_durable_job_runtime_from_env()
+    _start_step_lane_reaper(booted_at, durable_job_runtime)
     if durable_job_runtime is not None:
         job_command_backend = durable_job_runtime.command_backend
         print("Job commands using durable PostgreSQL backend with active scheduler.")

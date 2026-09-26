@@ -497,6 +497,10 @@ if [[ "${_bv_port}" != "${_bv_base}" ]]; then
 fi
 export BENTOML_VISION_DOCKER_PORT="${_bv_port}"
 
+# Owner-only from the start (2026-09-26): it carries the LiteLLM/vLLM keys, and
+# the job dir sits on shared Lustre. Every reader is host-side (grep/sed,
+# podman --env-file), so no container user needs to read it.
+( umask 077 && : > "./env.${uuid}" )
 cat <<EOF > "./env.${uuid}"
 # ═══════════════════════════════════════════════════════════════════════════════
 # Mini-RiVault environment file — generated per-job (UUID=${uuid})

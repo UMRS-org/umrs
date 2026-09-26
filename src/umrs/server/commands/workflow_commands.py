@@ -65,11 +65,15 @@ class RunWorkflowHandler(CommandHandler):
         # in-container orchestrator backend) run the workflow in-process so it
         # is not left queued forever.
         job_backend = ctx.job_command_backend if ctx.workflow_scheduler_active else None
+        # ADR-074 D-8: another owner's workflow only for an admin — the role
+        # of the server's own auth session, never a payload claim.
+        auth = ctx.control_mq.get_auth_context(client_id)
         response_json = handle_workflow_command(
             "RUN_WORKFLOW",
             client_id,
             payload_str,
             job_backend=job_backend,
+            caller_is_admin=getattr(auth, "is_admin", False) is True,
         )
         _send_reply(ctx, zmq_sender_id, response_json, "RUN_WORKFLOW")
         update_status(TaskStatus.COMPLETED)

@@ -404,7 +404,7 @@ class _FakeJobBackend:
     def __init__(self) -> None:
         self.submitted_payload: dict | None = None
 
-    def submit(self, _client_id: str, payload: str) -> str:
+    def submit_workflow_run(self, _client_id: str, payload: str) -> str:
         self.submitted_payload = json.loads(payload)
         return json.dumps({"status": "ok", "job": {"job_id": "job-new-1"}})
 
