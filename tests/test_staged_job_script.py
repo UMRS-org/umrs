@@ -258,6 +258,7 @@ case "$1" in
     if [[ -f "$state/run_pid" ]]; then kill "$(cat "$state/run_pid")"; rm "$state/run_pid"; exit 0; fi
     exit 1 ;;
   pull) echo "PULLED" >> "$state/podman.log"; exit 0 ;;
+  ps) cat "$state/ps_out" 2>/dev/null ;;
 esac
 """
 
@@ -268,6 +269,9 @@ def node(tmp_path):
     bin_dir.mkdir()
     (bin_dir / "podman").write_text(FAKE_PODMAN)
     (bin_dir / "podman").chmod(0o755)
+    # squeue answers only when a test gives it live job ids.
+    (bin_dir / "squeue").write_text('#!/bin/bash\ncat "$FAKE_STATE/squeue_out" 2>/dev/null\n')
+    (bin_dir / "squeue").chmod(0o755)
     state = tmp_path / "state"
     state.mkdir()
     archive_dir = tmp_path / "images"
@@ -325,11 +329,13 @@ def test_a_node_without_the_image_loads_the_archive_then_runs(node):
     assert "prepared umrs-step-4242" in proc.stdout
     verbs = [line.split()[0] for line in node["log"]()]
     # never pull
-    assert verbs == ["image", "rmi", "load", "image", "image", "info", "run", "run", "run", "kill"]
+    assert verbs == [
+        "image", "rmi", "load", "image", "image", "info", "run", "run", "run", "kill", "rm"
+    ]  # fmt: skip
     log = node["log"]()
     assert (log[1], log[2]) == ("rmi -f " + IMAGE, f"load -i {node['archive']}")
     assert log[8].startswith("run --rm --init --name umrs-step-4242 ")
-    assert log[-1] == "kill umrs-step-4242"  # the EXIT trap
+    assert log[-2:] == ["kill umrs-step-4242", "rm -f umrs-step-4242"]  # the EXIT trap
 
 
 def test_the_pids_probe_runs_first_in_the_steps_posture(node):
@@ -437,6 +443,27 @@ def test_without_a_cgroup_every_container_pins_the_cgroupfs_manager(node):
     runs = [x for x in node["log"]() if " run " in f" {x} "]
     assert len(runs) == 2  # the seccomp probe and the step
     assert all(x.startswith("--cgroup-manager=cgroupfs run ") for x in runs)
+
+
+def test_containers_a_scancel_left_are_removed_when_slurm_no_longer_lists_their_job(node):
+    (node["state"] / "have_id").write_text("f" * 64)
+    (node["state"] / "squeue_out").write_text("4242\n500\n")  # this job and a live one
+    (node["state"] / "ps_out").write_text(
+        "umrs-step-388530\numrs-step-388530-pids\numrs-step-500\numrs-step-4242-seccomp\n"
+    )
+    assert node["run"]().returncode == 0
+    removed = [x for x in node["log"]() if x.startswith("rm -f ")]
+    assert removed[:2] == ["rm -f umrs-step-388530", "rm -f umrs-step-388530-pids"]
+    assert "rm -f umrs-step-500" not in removed  # its job is live
+    assert removed[2:] == ["rm -f umrs-step-4242"]  # only the EXIT trap touches this job's
+
+
+def test_nothing_is_removed_when_squeue_does_not_answer(node):
+    (node["state"] / "have_id").write_text("f" * 64)
+    (node["state"] / "ps_out").write_text("umrs-step-388530\n")
+    (node["bin"] / "squeue").write_text("#!/bin/bash\nexit 1\n")
+    assert node["run"]().returncode == 0
+    assert [x for x in node["log"]() if x.startswith(("ps ", "rm -f umrs-step-388530"))] == []
 
 
 def test_the_pods_output_reaches_the_log_capped_with_its_tail(node):
