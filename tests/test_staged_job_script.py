@@ -423,12 +423,20 @@ def test_a_venue_without_a_cgroup_runs_the_step_without_one_and_bounds_processes
     (node["state"] / "have_id").write_text("f" * 64)
     assert node["run"](pids_limit=0, cgroups_disabled=True, nproc_limit=4096).returncode == 0
     [step] = _step_runs(node["log"]())
-    assert step.startswith("--cgroup-manager=cgroupfs run ")  # conmon stays in the job
-    assert "--cgroups=disabled" in step and "--ulimit nproc=4096" in step
-    seccomp = [x for x in node["log"]() if "umrs-seccomp-base" in x]
-    assert seccomp and all(x.startswith("--cgroup-manager=cgroupfs run ") for x in seccomp)
-    assert "--pids-limit" not in step and "--ulimit fsize=" in step
-    assert not any("pids.max" in x for x in node["log"]())
+    for flag in ("--cgroups=disabled", "--ulimit nproc=4096", "--ulimit fsize="):
+        assert flag in step
+    assert "--pids-limit" not in step
+    assert not [x for x in node["log"]() if "pids.max" in x]
+
+
+def test_without_a_cgroup_every_container_pins_the_cgroupfs_manager(node):
+    # The systemd manager would put conmon in a user@ scope outside the job's
+    # Slurm cgroup: the container would outlive scancel (peer review).
+    (node["state"] / "have_id").write_text("f" * 64)
+    assert node["run"](pids_limit=0, cgroups_disabled=True).returncode == 0
+    runs = [x for x in node["log"]() if " run " in f" {x} "]
+    assert len(runs) == 2  # the seccomp probe and the step
+    assert all(x.startswith("--cgroup-manager=cgroupfs run ") for x in runs)
 
 
 def test_the_pods_output_reaches_the_log_capped_with_its_tail(node):
