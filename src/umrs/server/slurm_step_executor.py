@@ -516,6 +516,7 @@ def _staged_prologue() -> list[str]:
         '        kill "${_step_watch_pid}" 2>/dev/null || true',
         "    fi",
         '    podman kill "${_step_ctr}" >/dev/null 2>&1 || true',
+        '    podman rm -f "${_step_ctr}" >/dev/null 2>&1 || true',
         "}",
         "trap _step_cleanup EXIT",
         "trap 'exit 143' TERM",
@@ -772,6 +773,30 @@ def _staged_watch_lines(job: StagedJob) -> list[str]:
     ]
 
 
+def _staged_stale_lines() -> list[str]:
+    """Step containers a scancel left in the node's store: its SIGKILL takes
+    the podman client and conmon before ``--rm`` (peer review 2026-09-26).
+    Removed when Slurm no longer lists their job — never when squeue does
+    not answer — so their layers do not pile up in the graphroot."""
+    listing = (
+        "podman ps -a --filter name=^umrs-step- --filter status=exited "
+        "--filter status=created --format '{{.Names}}' 2>/dev/null || true"
+    )
+    return [
+        'if _step_live="$(squeue --me -h -o %i 2>/dev/null)"; then',
+        "    while read -r _step_old; do",
+        '        _step_id="${_step_old#umrs-step-}"',
+        '        _step_id="${_step_id%%-*}"',
+        '        if [[ -n "${_step_id}" && "${_step_id}" != "${SLURM_JOB_ID}" ]] \\',
+        '            && ! grep -qx -- "${_step_id}" <<<"${_step_live}"; then',
+        '            podman rm -f "${_step_old}" >/dev/null 2>&1 || true',
+        "        fi",
+        f"    done < <({listing})",
+        "fi",
+        "",
+    ]
+
+
 def render_staged_job_script(job: StagedJob) -> str:
     """The staged step's sbatch script (build spec §7). Nothing interpolated
     is echoed and every value from Python is quoted or validated. The pod's
@@ -781,7 +806,7 @@ def render_staged_job_script(job: StagedJob) -> str:
     lines += _staged_venue_lines(job.venue_script)
     lines += _staged_image_lines(job.image, job.image_archive_dir)
     lines += _staged_seccomp_lines(job)
-    lines += _staged_pids_lines(job) + _staged_watch_lines(job)
+    lines += _staged_pids_lines(job) + _staged_stale_lines() + _staged_watch_lines(job)
     lines += [" ".join(staged_podman_argv(job)) + " 2>&1 | _step_log >&2", ""]
     return "\n".join(lines)
 

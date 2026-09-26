@@ -216,7 +216,7 @@ def test_the_inspector_script_is_valid_bash():
 @pytest.mark.parametrize(
     ("report", "kw", "problem"),
     [
-        ({**CLEAN, "containers": ["umrs-step-901|Exited (137)"]}, {}, "containers left"),
+        ({**CLEAN, "containers": ["umrs-step-901|Up 3 minutes"]}, {}, "still running"),
         ({**CLEAN, "processes": ["4242 conmon -n umrs-step-901"]}, {}, "processes survived"),
         ({**CLEAN, "workdir_left": True}, {}, "the workdir survived"),
         (CLEAN, {"final": "COMPLETED"}, "settled as COMPLETED"),
@@ -225,6 +225,14 @@ def test_the_inspector_script_is_valid_bash():
 def test_anything_that_outlives_the_cancel_fails_the_kill_check(report, kw, problem):
     result = _kill(_StubLane(report, **kw))
     assert not result["ok"] and any(problem in p for p in result["problems"]), result
+
+
+def test_an_exited_record_is_a_leftover_not_a_survivor():
+    # scancel's SIGKILL takes the podman client before --rm (peer review):
+    # the record is reported, and the next step job on the node removes it.
+    result = _kill(_StubLane({**CLEAN, "containers": ["umrs-step-901|Exited (137) 1 minute ago"]}))
+    assert result["ok"], result
+    assert result["inspect"]["leftover"] == ["umrs-step-901|Exited (137) 1 minute ago"]
 
 
 def test_a_step_that_never_starts_fails_the_kill_check():

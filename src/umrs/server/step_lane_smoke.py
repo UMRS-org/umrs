@@ -425,32 +425,55 @@ def _kill_verdict(
     started: bool,
     outcome: list[tuple[Any, list[str]]],
 ) -> dict[str, Any]:
-    job_id, workdir = str(facts.get("job_id") or ""), str(facts.get("workdir") or "")
+    job_id = str(facts.get("job_id") or "")
     state = executor._job_state(job_id) if job_id else ""
-    inspect = _inspect(executor, job_id, workdir) if job_id else {"error": "no job"}
-    problems = [p for p in _kill_problems(started, outcome, state, inspect) if p]
+    inspect, running = _inspected(executor, job_id, str(facts.get("workdir") or ""))
+    found = _run_problems(started, outcome, state) + _node_problems(inspect, running)
+    problems = [p for p in found if p]
     return {"ok": not problems, "problems": problems, "job": job_id, "state": state,
             "inspect": inspect}  # fmt: skip
 
 
-def _kill_problems(
-    started: bool,
-    outcome: list[tuple[Any, list[str]]],
-    state: str,
-    inspect: dict[str, Any],
+def _inspected(
+    executor: Any, job_id: str, workdir: str
+) -> tuple[dict[str, Any], list[str]]:
+    """The inspector's report and the step containers still running. An
+    Exited record is no survivor (the job's SIGKILL takes the podman client
+    before --rm; the next step job on the node removes it): it is reported
+    as ``leftover``."""
+    if not job_id:
+        return {"error": "no job"}, []
+    inspect = _inspect(executor, job_id, workdir)
+    containers = list(inspect.get("containers") or [])
+    inspect["leftover"] = [c for c in containers if not _running(c)]
+    return inspect, [c for c in containers if _running(c)]
+
+
+def _run_problems(
+    started: bool, outcome: list[tuple[Any, list[str]]], state: str
 ) -> list[str]:
-    result = outcome[0][0] if outcome else None
+    completed = bool(outcome) and outcome[0][0] is not None
     return [
         "" if started else "the step container never started",
-        "the cancelled step completed" if result is not None else "",
+        "the cancelled step completed" if completed else "",
         ""
         if state == "CANCELLED"
         else f"the job settled as {state or 'unknown'}, not CANCELLED",
+    ]
+
+
+def _node_problems(inspect: dict[str, Any], running: list[str]) -> list[str]:
+    return [
         f"inspector: {inspect['error']}" if inspect.get("error") else "",
-        _left("containers left", inspect.get("containers")),
+        _left("containers still running", running),
         _left("processes survived", inspect.get("processes")),
         "the workdir survived the cancel" if inspect.get("workdir_left") else "",
     ]
+
+
+def _running(container: str) -> bool:
+    """A ``name|status`` line of a container that runs (podman: "Up ...")."""
+    return container.partition("|")[2].strip().lower().startswith("up")
 
 
 def _left(what: str, items: Any) -> str:
