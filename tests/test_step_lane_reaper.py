@@ -764,7 +764,9 @@ def test_without_a_sidecar_store_the_durable_runtimes_store_decides(monkeypatch)
     assert step_reaper._may_retry(ok)  # neither store: leave the jobs
 
 
-def test_only_a_failed_uncancelled_durable_run_may_retry():
+def test_only_a_failed_uncancelled_durable_run_may_retry(monkeypatch):
+    # No job store in this process (CI has one, with no job-1 in it: "spent").
+    monkeypatch.setattr(step_reaper, "durable_job_store", lambda: None)
     ok = SimpleNamespace(status="failed", cancel_requested=False, durable_job_id="job-1")
     assert step_reaper._may_retry(ok)
     assert not step_reaper._may_retry(SimpleNamespace(**{**vars(ok), "cancel_requested": True}))
