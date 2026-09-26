@@ -14,6 +14,10 @@
 #
 # Topology:
 #   client --HTTP--> umrs-front (data0) --SSH--> octopus (mng02) --sbatch--> MI300X/H200
+#
+# Paths: octopus's home is /lustre/home/mnagaso, NOT /home/mnagaso (which does
+# not exist there). Every path below is on the octopus FS, none on data0
+# (corrected 2026-09-27, as the inventory's delegation dirs were before).
 # ─────────────────────────────────────────────────────────────
 
 name: octopus-front
@@ -32,8 +36,8 @@ scheduler:
   cpus: 8
   memory: ""                   # omit --mem; scheduler assigns node defaults
   slurm_delegation: per_user_ssh
-  service_pubkey_path: /home/mnagaso/ai4s-platform/keys/umrs-service.pub
-  slurm_proxy_path: /home/mnagaso/ai4s-platform/bin/umrs-slurm-proxy
+  service_pubkey_path: /lustre/home/mnagaso/ai4s-platform/keys/umrs-service.pub
+  slurm_proxy_path: /lustre/home/mnagaso/ai4s-platform/bin/umrs-slurm-proxy
   require_user_slurm_account: false
 
 runtime:
@@ -51,7 +55,7 @@ runtime:
 
 storage:
   model_cache_dir: ""  # No local model cache — models on octopus FS
-  sam3_model_path: /home/mnagaso/umrs_models/sam3.1
+  sam3_model_path: /lustre/home/mnagaso/umrs_models/sam3.1
   hmae_model_path: ""
   hmae_config_path: ""
   hmae_checkpoint: ""
@@ -75,10 +79,31 @@ vllm:
   max_num_seqs: 4
   tensor_parallel_size: 1
 
-# Workflow step execution: platform-template steps in-process. Uploaded step
-# code (ADR-074, 2026-09-26) needs this site's HPC lane, which is not built
-# here yet, so it is refused by name.
+# Workflow step execution (step lane wiring 2026-09-27, ADR-074 +
+# docs/development/rccs-step-lane-spec-2026-09-26.md). Platform-template steps
+# stay in-process; uploaded step code is refused by name. The lane stays
+# closed until the step runtime is decided: mng02 has no podman (read-only
+# survey 2026-09-26), so no step image can be staged or run here yet, and the
+# converge stages nothing for octopus (UMRS_OCTOPUS_STEP_* stay empty).
+# - gpu: false. gpu_form rocm fits the MI300X (AMD/ROCm) nodes; H200 (NVIDIA)
+#   steps would need cdi, i.e. a partition-level form later. Every node is x86_64.
+# - partition and job sizing are set with the runtime decision.
+# - The lane paths are declared only when octopus is onboarded (2026-09-27
+#   review): with helper_path + workdir_root set, the server starts the step
+#   reaper, which SSHes to octopus hourly (helper sweep) with the lane off and
+#   runs whatever helper sits in a checkout code-sync does not keep yet. The
+#   paths for then, on the octopus home, outside the checkout (read-only by
+#   rule); helper and venue in the pinned checkout hpc-code-sync keeps
+#   (umrs_front_octopus_hpc_repo_dir):
+#     workdir_root: /lustre/home/mnagaso/umrs_steps
+#     image_archive_dir: /lustre/home/mnagaso/umrs_models/images
+#     helper_path: /lustre/home/mnagaso/ai4s-platform/umrs/deploy/_common/umrs_step_helper.py
+#     venue_script: /lustre/home/mnagaso/ai4s-platform/umrs/src/umrs/mini-rivault-llm/venue.sh
 step_executor:
+  kind: inproc
+  image: ""            # composed by the converge once a runtime is decided
+  gpu: false
+  gpu_form: rocm
   remote_enabled: false
   uploaded_code: refuse
 
@@ -104,8 +129,8 @@ extra:
   ssh_control_path: "/run/umrs-ssh/octopus-%p"  # tmpfs inside container
   ssh_reverse_tunnels:
     - "127.0.0.1:9000:127.0.0.1:9000"
-  slurm_job_info_dir: /home/mnagaso/ai4s-platform/umrs/deploy/octopus/jobs
-  slurm_wrapper_script: /home/mnagaso/ai4s-platform/umrs/deploy/octopus/serve-model.slurm
+  slurm_job_info_dir: /lustre/home/mnagaso/ai4s-platform/umrs/deploy/octopus/jobs
+  slurm_wrapper_script: /lustre/home/mnagaso/ai4s-platform/umrs/deploy/octopus/serve-model.slurm
 
 partition_profiles:
   mi300x:

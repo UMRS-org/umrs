@@ -15,6 +15,10 @@ enabled (a kill switch must still kill):
   (:func:`orphaned_runs`);
 - every hour, the workdirs no queued or running job uses that sat idle past
   the lane's longest queue wait + run + transfers (helper ``sweep``).
+
+Each server reaps only its own lane's jobs, those whose workdir lies under
+its ``workdir_root``: the execution registry is shared by every umrs-front
+server (2026-09-27).
 """
 
 from __future__ import annotations
@@ -127,12 +131,36 @@ def record_step_job(record: Any, step: str, facts: dict[str, Any]) -> None:
         record.update_step_entry(step, JOBS_KEY, _entry(facts), dict(facts))
 
 
-def unreaped_steps(record: Any) -> dict[str, list[dict[str, Any]]]:
+def lane_root(reaper: Any) -> str | None:
+    """The workdir root of *reaper*'s lane; None for a reaper that names none
+    (a test double), "" for an empty one (nothing is its lane's)."""
+    root = getattr(reaper, "workdir_root", None)
+    return None if root is None else str(root).rstrip("/")
+
+
+def _in_lane(facts: dict[str, Any], root: str | None) -> bool:
+    """Whether a job's facts are the lane's with *root* (None: any lane).
+    ``mkwd`` makes every workdir a direct child of its lane's root."""
+    if root is None:
+        return True
+    return bool(root) and os.path.dirname(str(facts.get("workdir") or "")) == root
+
+
+def unreaped_steps(
+    record: Any, root: str | None = None
+) -> dict[str, list[dict[str, Any]]]:
     """Step name -> the facts of every job of the step that may have left a
-    job or a workdir on the cluster."""
+    job or a workdir on the cluster; with *root*, only those of that lane.
+    Every umrs-front server reads the one shared execution registry, and a
+    server's reaper reaches only its own cluster: another cluster's job id
+    there is an unrelated job (per-site wiring review, 2026-09-27)."""
     steps: dict[str, list[dict[str, Any]]] = {}
     for name, step in list(getattr(record, "steps", {}).items()):
-        left = [f for f in step_jobs(step).values() if not f.get("cleaned")]
+        left = [
+            f
+            for f in step_jobs(step).values()
+            if not f.get("cleaned") and _in_lane(f, root)
+        ]
         if left:
             steps[name] = left
     return steps
@@ -158,10 +186,12 @@ def reap_record(
     durable retry replaced the record: the retry carries its uncleaned jobs
     (:func:`carry_step_jobs`) and reconciles or reaps them itself.
     *for_retry* None asks :func:`_may_retry`; False (a cancel, a refused
-    dispatch — a kill switch must still kill) ends every job."""
+    dispatch — a kill switch must still kill) ends every job. Only the jobs
+    of *reaper*'s own lane (:func:`lane_root`): another cluster's are left
+    for that cluster's server."""
     if for_retry is None:
         for_retry = _may_retry(record, durable_status)
-    for name, left in unreaped_steps(record).items():
+    for name, left in unreaped_steps(record, lane_root(reaper)).items():
         if live_record(record) is not record:
             logger.info(
                 "step lane: run %s was dispatched again; its reaping is the "
@@ -320,6 +350,8 @@ def orphaned_runs(
     records: Iterable[Any],
     booted_at: float,
     durable_status: Callable[[str], str | None] | None = None,
+    *,
+    root: str | None = None,
 ) -> list[Any]:
     """Runs from before this process whose steps nothing will reconcile:
     ended ones (their settle threads died with the old process), ones
@@ -331,12 +363,13 @@ def orphaned_runs(
     queued or running is re-dispatched: its steps reconcile, or its refusal
     reaps them. Without *durable_status* (no job store in this process, so
     the run is another process's to dispatch) an open durable run is left
-    alone."""
+    alone. *root* (a lane's workdir root) keeps the runs with a job of that
+    lane: another cluster's run is neither reaped nor ended here."""
     return [
         r
         for r in records
         if float(r.submitted_at or 0) < booted_at
-        and unreaped_steps(r)
+        and unreaped_steps(r, root)
         and not _redispatched(r, durable_status)
     ]
 
@@ -410,10 +443,13 @@ def reap_loop(
     stop: threading.Event | None = None,
     durable_status: Callable[[str], str | None] | None = None,
 ) -> None:
-    """Reap the runs orphaned before *booted_at* (an open one is then ended:
-    :func:`close_abandoned_run`), then sweep idle unused workdirs every
-    *interval* seconds until *stop* is set."""
-    for record in orphaned_runs(_list_records(registry), booted_at, durable_status):
+    """Reap the runs of *reaper*'s lane orphaned before *booted_at* (an open
+    one is then ended: :func:`close_abandoned_run`), then sweep idle unused
+    workdirs every *interval* seconds until *stop* is set."""
+    records = _list_records(registry)
+    for record in orphaned_runs(
+        records, booted_at, durable_status, root=lane_root(reaper)
+    ):
         reap_record(reaper, record, durable_status)
         close_abandoned_run(record, durable_status)
     stop = stop or threading.Event()

@@ -438,6 +438,71 @@ def test_a_replaced_open_record_is_never_ended_over_the_live_one():
     assert record.status == "running" and live.status == "running"
 
 
+# ── one registry, one lane per server (per-site wiring review, 2026-09-27) ──
+
+
+def test_a_reaper_takes_only_the_jobs_under_its_own_workdir_root():
+    # Every umrs-front server reads the one shared execution registry; each
+    # reaper reaches only its own cluster, where another cluster's job id is
+    # an unrelated job.
+    rccs, bdrt = "/lvs0/x/umrs_steps", "/home/m/umrs_steps"
+    record = _record(submitted_at=0.0, s1=_facts(Path(f"{rccs}/wf-a")),
+                     s2=_facts(Path(f"{bdrt}/wf-b"), job_id="901"))  # fmt: skip
+    seen = []
+
+    def reap_step(_run, step, *facts, **_kw):
+        seen.append((step, [f["job_id"] for f in facts]))
+        return True
+
+    step_reaper.reap_record(SimpleNamespace(workdir_root=bdrt + "/", reap_step=reap_step),
+                            record, for_retry=False)  # fmt: skip
+    assert seen == [("s2", ["901"])]
+    assert step_reaper.unreaped_steps(record) == {"s1": [_facts(Path(f"{rccs}/wf-a"))]}
+    assert step_reaper.orphaned_runs([record], time.time(), root=rccs) == [record]
+    assert step_reaper.orphaned_runs([record], time.time(), root=bdrt) == []
+    assert step_reaper.unreaped_steps(record, "") == {}  # an empty root is no lane
+    assert step_reaper.lane_root(SimpleNamespace()) is None  # a double naming none
+
+
+def _open_run_with_a_live_job(cluster) -> tuple[Path, ExecutionRecord]:
+    wd = _workdir(cluster)
+    cluster.add_job("900", JOB_NAME, str(wd), ["RUNNING"])
+    return wd, _record("running", submitted_at=0.0, s1=_facts(wd))
+
+
+def _boot_pass(reaper, record) -> None:
+    """One boot pass over *record*, whose durable job will not run again."""
+    stop = threading.Event()
+    stop.set()
+    step_reaper.reap_loop(reaper, SimpleNamespace(list=lambda: [record]), time.time(),
+                          stop=stop, durable_status=lambda _job: "failed")  # fmt: skip
+
+
+def _foreign_lane(cluster, tmp_path):
+    """Another cluster's reaper: its own root, the same account and job ids."""
+    other = tmp_path / "other" / "umrs_steps"
+    other.mkdir(parents=True)
+    return cluster.executor(enabled=False, image="", workdir_root=str(other))
+
+
+def test_another_lanes_boot_pass_neither_reaps_nor_ends_this_lanes_run(cluster, tmp_path):
+    # The bdrt server restarts while an rccs run has a live job: its reaper
+    # must not scancel the job nor close the run as its own orphan.
+    wd, record = _open_run_with_a_live_job(cluster)
+    _boot_pass(_foreign_lane(cluster, tmp_path), record)
+    assert (cluster.calls("scancel"), cluster.jobs()["900"]["states"]) == ([], ["RUNNING"])
+    assert (record.status, cluster.workdirs()) == ("running", [wd])
+    assert step_reaper.unreaped_steps(record) == {"s1": [_facts(wd)]}
+
+
+def test_the_runs_own_lane_still_reaps_and_ends_it_after_another_lanes_pass(cluster, tmp_path):
+    wd, record = _open_run_with_a_live_job(cluster)
+    _boot_pass(_foreign_lane(cluster, tmp_path), record)
+    _boot_pass(_off(cluster), record)
+    assert (cluster.jobs()["900"]["states"], cluster.workdirs()) == (["CANCELLED"], [])
+    assert (record.status, step_reaper.unreaped_steps(record)) == ("failed", {})
+
+
 def test_the_server_gives_the_boot_reaper_the_job_stores_status(monkeypatch):
     import server_umrs
 
