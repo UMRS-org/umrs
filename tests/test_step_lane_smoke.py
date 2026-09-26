@@ -67,7 +67,7 @@ def test_the_smoke_runs_the_probe_through_the_lane(tmp_path, monkeypatch):
     cluster = make_cluster(tmp_path, monkeypatch)
     target = ("127.0.0.1", _closed_port())
     reports = smoke.run_plan(
-        [("ng-dgx-m0", False), ("ng-dgx-m1", True)],
+        [("probe", "ng-dgx-m0", False), ("probe", "ng-dgx-m1", True)],
         targets=[target],
         timeout=60,
         make_executor=lambda p: cluster.executor(partition=p),
@@ -90,14 +90,36 @@ def test_a_failed_run_is_reported_and_the_others_go_on(tmp_path, monkeypatch):
             raise RuntimeError("no ssh target")
         return cluster.executor(partition=partition)
 
-    bad, good = smoke.run_plan(
-        [("bad", False), ("ng-dgx-m0", False)], targets=[], timeout=60, make_executor=broken
+    bad, chain, good = smoke.run_plan(
+        [("probe", "bad", False), ("chain", "bad", False), ("probe", "ng-dgx-m0", False)],
+        targets=[],
+        timeout=60,
+        make_executor=broken,
     )
     assert not bad["ok"] and "no ssh target" in bad["problems"][0]
+    assert not chain["ok"] and "no ssh target" in chain["problems"][0]
     assert good["ok"], good
 
 
 def test_usage():
     assert smoke._plan("", "m0") == []
-    assert smoke._plan("m0,m1", "m0") == [("m0", False), ("m1", False), ("m0", True)]
+    assert smoke._plan("m0,m1", "m0") == [
+        ("probe", "m0", False),
+        ("probe", "m1", False),
+        ("probe", "m0", True),
+        ("chain", "m0", False),
+    ]
     assert smoke.main(["--partitions", ","]) == 2
+
+
+def test_the_chain_hands_a_live_parent_to_b_and_its_tag_holds(tmp_path, monkeypatch):
+    cluster = make_cluster(tmp_path, monkeypatch)
+    [report] = smoke.run_plan(
+        [("chain", "ng-dgx-m0", False)],
+        targets=[],
+        timeout=60,
+        make_executor=lambda p: cluster.executor(partition=p),
+    )
+    assert report["ok"], report
+    assert report["tag_stable"] is True and all(report["jobs"])
+    assert len(cluster.calls("sbatch")) == 2 and cluster.workdirs() == []

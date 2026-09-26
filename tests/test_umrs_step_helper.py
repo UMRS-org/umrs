@@ -741,6 +741,18 @@ def test_find_jobs_fails_when_squeue_cannot_list_and_refuses_other_names(slurm):
     assert run("find-jobs", "some-other-job", env=env).returncode == helper.EXIT_REFUSED
 
 
+def test_a_missing_slurm_tool_is_a_plain_failure_not_an_outage(slurm, tmp_path):
+    # Peer review (2026-09-26): rc 127 was retried for the whole budget.
+    import shutil
+
+    env, _answer, _calls = slurm
+    (tmp_path / "bin" / "squeue").unlink()
+    env = {**env, "PATH": f"{tmp_path / 'bin'}:/nonexistent"}
+    if shutil.which("squeue", path=env["PATH"]):
+        pytest.skip("a real squeue is on PATH")
+    assert run("find-jobs", "umrs-step-wf-s1", env=env).returncode == helper.EXIT_FAILED
+
+
 def test_find_jobs_fails_when_sacct_cannot_list(slurm):
     # A partial list hides a COMPLETED job whose kept workdir is the only
     # copy of its outputs: the server would submit the step again.

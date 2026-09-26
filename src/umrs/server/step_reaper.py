@@ -212,6 +212,21 @@ def _may_retry(
     return str(status or "").lower() in _DISPATCHED
 
 
+#: Job-level statuses after which the scheduler dispatches nothing again
+#: (``failed`` is job-level: every retry spent).
+_SPENT = frozenset({"cancelled", "failed", "completed", "all_complete"})
+
+
+def _stored_job(store: Any, job_id: str) -> Any:
+    """The durable job, None when the store has no such job."""
+    from umrs.jobs.store import JobNotFoundError
+
+    try:
+        return store.get_job(job_id)
+    except JobNotFoundError:
+        return None
+
+
 def _durable_attempts_left(job_id: str) -> bool:
     """The job store's view at run end: False when the durable job is gone,
     cancelled or out of attempts; True when it may run again or the store
@@ -222,10 +237,10 @@ def _durable_attempts_left(job_id: str) -> bool:
         store = get_optional_job_store()
         if store is None:
             return True
-        job = store.get_job(job_id)
+        job = _stored_job(store, job_id)
         if job is None:
             return False
-        if str(getattr(job.status, "value", job.status)).lower() == "cancelled":
+        if str(getattr(job.status, "value", job.status)).lower() in _SPENT:
             return False
         return bool(job.can_retry(len(store.get_attempts_for_job(job_id))))
     except Exception:
