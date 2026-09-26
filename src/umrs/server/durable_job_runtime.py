@@ -36,6 +36,13 @@ def get_runtime() -> DurableJobRuntime | None:
     return _global_runtime
 
 
+def get_runtime_job_store():
+    """The running runtime's job store (the one its scheduler dispatches
+    from), or None when this process runs no durable runtime."""
+    runtime = _global_runtime
+    return runtime.job_store if runtime is not None else None
+
+
 class DurableJobRuntimeError(RuntimeError):
     """Raised when the process-owned durable jobs runtime cannot start or stop."""
 
@@ -65,13 +72,18 @@ class DurableJobRuntime:
             raise RuntimeError("DurableJobRuntime not started")
         return self._command_backend
 
+    @property
+    def job_store(self):
+        """The job store the runtime's scheduler dispatches from."""
+        return self._service.job_service.job_store
+
     def job_status(self, job_id: str) -> str | None:
         """The durable job's status value, None when there is no such job
         (the step lane's boot reaper: ``step_reaper.orphaned_runs``)."""
         from umrs.jobs.store import JobNotFoundError
 
         try:
-            job = self._service.job_service.job_store.get_job(job_id)
+            job = self.job_store.get_job(job_id)
         except JobNotFoundError:
             return None
         return job.status.value

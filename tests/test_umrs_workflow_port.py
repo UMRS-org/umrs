@@ -204,9 +204,14 @@ def test_cancel_cooperates_with_registry_and_store(store, registry):
     port = UmrsWorkflowExecutionPort(store)
     exec_id = port.trigger("wf", {"project_id": "p"})
     registry.gain(exec_id)
+    from umrs.jobs.models import JobType
+
     # cancel_workflow_execution_for_job reads execution_id from job.spec —
     # SimpleNamespace: Mock treats ``spec`` as a reserved construction param.
-    job = SimpleNamespace(job_id="job-port-1", spec={"execution_id": exec_id})
+    # The port's jobs are workflow_run jobs (the registry cancel keys on it).
+    job = SimpleNamespace(
+        job_id="job-port-1", spec={"execution_id": exec_id}, job_type=JobType.WORKFLOW_RUN
+    )
     store.get_job_with_attempts.return_value = (job, [])
     with _patch_registry(registry):
         outcome = port.cancel(exec_id)

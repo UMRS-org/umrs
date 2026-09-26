@@ -401,12 +401,12 @@ class DurableJobCommandBackend:
         except JobNotFoundError as exc:
             return json.dumps({"status": "error", "message": str(exc)})
 
-        try:
-            self._job_store.cancel_job(job_id, reason=f"cancelled by {client_id}")
-            if job.job_type == JobType.WORKFLOW_RUN:
-                from umrs.jobs.workflow_run import cancel_workflow_execution_for_job
+        from umrs.jobs.workflow_run import cancel_job_and_run
 
-                cancel_workflow_execution_for_job(job)
+        try:
+            # A workflow_run's run is cancelled too, also when the durable job
+            # had ended; never after another store error (peer review F2).
+            cancel_job_and_run(self._job_store, job, reason=f"cancelled by {client_id}")
         except InvalidTransitionError as exc:
             if (
                 job.job_type == JobType.ENDPOINT_PROVISION

@@ -515,6 +515,33 @@ def test_podman_per_step_image_non_string_is_setup_error(monkeypatch):
     assert fake.calls == []
 
 
+def test_podman_payload_carries_no_runner_key_names(monkeypatch):
+    """Peer review (2026-09-26, cosmetic): the runner's routed-keys and
+    dependency-closure keys are executor-internal too; their names never
+    reach a worker's ``ctx.metadata``."""
+    from umrs.server.step_executor import (
+        EXECUTOR_ROUTED_KEYS_METADATA_KEY,
+        EXECUTOR_UPSTREAM_METADATA_KEY,
+    )
+
+    captured: dict[str, Any] = {}
+
+    def _capturing_run(cmd, **kwargs):  # noqa: ANN001
+        workdir = cmd[cmd.index("-v") + 1].split(":")[0]
+        with open(os.path.join(workdir, "input.pkl"), "rb") as fh:
+            captured["payload"] = pickle.load(fh)
+        with open(os.path.join(workdir, "output.pkl"), "wb") as fh:
+            fh.write(pickle.dumps({"status": "ok", "result": StepResult()}))
+        return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(subprocess, "run", _capturing_run)
+    ctx = _make_ctx()
+    ctx.metadata.update({EXECUTOR_ROUTED_KEYS_METADATA_KEY: ["model"],
+                         EXECUTOR_UPSTREAM_METADATA_KEY: ["s0"], "user_key": "kept"})  # fmt: skip
+    PodmanExecutor(image="default-img").execute(entrypoint="pkg.mod:Cls", config={}, ctx=ctx)
+    assert captured["payload"]["ctx"]["metadata"] == {"user_key": "kept"}
+
+
 def test_podman_per_step_image_metadata_stripped_from_payload(monkeypatch):
     """``__executor_image__`` is an executor-internal contract — it must not
     leak into the worker's StepContext.metadata."""

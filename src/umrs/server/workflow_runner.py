@@ -48,6 +48,7 @@ from umrs.server.step_executor import (
     EXECUTOR_PAYLOAD_S3_METADATA_KEY,
     EXECUTOR_ROUTED_KEYS_METADATA_KEY,
     EXECUTOR_SOURCE_DIR_METADATA_KEY,
+    EXECUTOR_UPSTREAM_METADATA_KEY,
     StepExecutionError,
     StepExecutor,
     build_step_executor,
@@ -376,10 +377,31 @@ def _build_levels(
 
     scheduler = DAGScheduler(adapters)
     level_indices = scheduler.execution_levels()
+    for spec in canonical_specs:
+        spec[_UPSTREAM_SPEC_KEY] = _upstream_closure(scheduler, spec["name"])
     levels: list[list[dict[str, Any]]] = [
         [canonical_specs[idx] for idx in level] for level in level_indices
     ]
     return levels, canonical_specs
+
+
+#: Runner-private key of a canonical step spec: the step's dependency closure
+#: (:func:`_upstream_closure`), which the staged HPC lane gets in its metadata.
+_UPSTREAM_SPEC_KEY = "__upstream_steps__"
+
+
+def _upstream_closure(scheduler: DAGScheduler, name: str) -> list[str]:
+    """Every step *name* depends on, directly or through its parents (the
+    scheduler's graph: the linear fallback chains each step to the one
+    before it), by name."""
+    closure: set[str] = set()
+    todo = list(scheduler.parent_names(name))
+    while todo:
+        parent = todo.pop()
+        if parent not in closure:
+            closure.add(parent)
+            todo.extend(scheduler.parent_names(parent))
+    return sorted(closure)
 
 
 # ----------------------------------------------------------------------
@@ -1017,8 +1039,10 @@ def _bind_step_lane(
 ) -> None:
     """The staged HPC lane's per-step context (build spec 2026-09-26 §5, §8):
     the run owner and declared inputs for the stager, the step's soft
-    deadline (its job is ``scancel``-ed with it), and the run's cancel flag
-    and step record for the job lifecycle. Other executors are untouched."""
+    deadline (its job is ``scancel``-ed with it), its dependency closure
+    (the parents its payload and inputs tag carry), and the run's cancel
+    flag and step record for the job lifecycle. Other executors are
+    untouched."""
     bind = getattr(executor, "bind_run", None)
     if not callable(bind):
         return
@@ -1039,6 +1063,8 @@ def _bind_step_lane(
     timeout = StepPolicy.from_mapping(spec).timeout_seconds
     if timeout:
         metadata[STEP_TIMEOUT_METADATA_KEY] = float(timeout)
+    if isinstance(spec.get(_UPSTREAM_SPEC_KEY), list):
+        metadata[EXECUTOR_UPSTREAM_METADATA_KEY] = list(spec[_UPSTREAM_SPEC_KEY])
     bind(
         record.execution_id,
         cancelled=lambda: bool(record.cancel_requested),

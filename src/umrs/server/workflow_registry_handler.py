@@ -407,6 +407,30 @@ def _caller_run_context(
     )
 
 
+def _take_over_prior_run(prior: Any, record: Any) -> None:
+    """A durable re-dispatch reuses the execution id: the record it replaces
+    (read through to Postgres after a restart) may name step jobs still on
+    the cluster, and they move to the new record. A dispatch whose durable
+    job the user cancelled meanwhile runs nothing, and its launch ends those
+    jobs (peer review F2). The cancel handlers cancel the durable job before
+    the registry record, and this check follows *record*'s registration: a
+    dispatch racing a cancel either finds the job cancelled here, or the
+    registry cancel that follows finds *record*
+    (``WorkflowExecutionRegistry.cancel``). A requeued job (an admin retry,
+    a reproduce) runs again: only the durable job's status counts, never an
+    earlier record's cancel."""
+    from umrs.server.step_reaper import carry_step_jobs, durable_job_cancelled
+
+    if prior is not None:
+        carry_step_jobs(prior, record)
+    if durable_job_cancelled(record.durable_job_id):
+        logger.info(
+            "workflow execution %s was cancelled; its dispatch runs nothing",
+            record.execution_id,
+        )
+        record.update(cancel_requested=True)
+
+
 def _launch_workflow_from_catalog(
     *,
     workflow_name: str,
@@ -448,9 +472,6 @@ def _launch_workflow_from_catalog(
             execution_id,
         )
         return live, source_path, step_count
-    # A durable re-dispatch reuses the execution id: the record it replaces
-    # (read through to Postgres after a restart) may name step jobs still on
-    # the cluster.
     prior = registry.get(execution_id) if execution_id else None
     record = registry.create(
         workflow_name=workflow_name,
@@ -463,10 +484,7 @@ def _launch_workflow_from_catalog(
             identity_verified=identity_verified,
         ),
     )
-    if prior is not None:
-        from umrs.server.step_reaper import carry_step_jobs
-
-        carry_step_jobs(prior, record)
+    _take_over_prior_run(prior, record)
 
     project_id = _workflow_project_id(params)
     router = build_registry_backed_router(project_id=project_id)
@@ -728,14 +746,16 @@ def _zmq_execution_access(
     execution_id: str,
 ) -> tuple[Any | None, Any | None, str | None]:
     """Resolve execution context and return an access-denied JSON string when needed."""
-    from umrs.api.jobs import get_optional_job_store
     from umrs.api.workflow_auth import (
         check_zmq_execution_access,
         resolve_execution_context,
         zmq_caller_from_payload,
     )
+    from umrs.server.step_reaper import durable_job_store
 
-    store = get_optional_job_store()
+    # The sidecar's job store, else the durable runtime's: the job is found
+    # also where only the runtime dispatches the runs.
+    store = durable_job_store()
     record, job = resolve_execution_context(execution_id, store=store)
     if record is None and job is None:
         return None, None, None
@@ -912,10 +932,34 @@ def _handle_workflow_results(client_id: str, payload_str: str) -> str:
     )
 
 
+def _record_durable_job(store: Any, record: Any) -> Any:
+    """The durable job *record* names (the execution-id lookup scans only the
+    newest workflow_run jobs); None when there is none."""
+    job_id = getattr(record, "durable_job_id", None)
+    if store is None or not job_id:
+        return None
+    from umrs.jobs.store import JobNotFoundError
+
+    try:
+        return store.get_job(job_id)
+    except JobNotFoundError:
+        return None
+
+
+def _reread_job(store: Any, job: Any) -> Any:
+    """*job* as the store has it now, for the reply; the loaded one when there
+    is no job or store, or the store cannot say."""
+    if job is None or store is None:
+        return job
+    try:
+        return store.get_job(job.job_id)
+    except Exception:  # noqa: BLE001 — only the reply's status is at stake
+        logger.warning("durable job %s unreadable after its cancel", job.job_id)
+        return job
+
+
 def _handle_workflow_cancel(client_id: str, payload_str: str) -> str:
     """Handle WORKFLOW_CANCEL — cancel a running workflow execution."""
-    from umrs.server.workflow_execution_registry import get_execution_registry
-
     execution_id, payload = _parse_execution_id(payload_str)
     if not execution_id:
         return json.dumps({"status": "error", "message": "execution_id is required"})
@@ -931,18 +975,16 @@ def _handle_workflow_cancel(client_id: str, payload_str: str) -> str:
             }
         )
 
-    registry = get_execution_registry()
-    record = registry.cancel(execution_id) if record is not None else None
-    from umrs.api.jobs import get_optional_job_store
-    from umrs.jobs.store import InvalidTransitionError
+    from umrs.jobs.workflow_run import cancel_workflow_execution
+    from umrs.server.step_reaper import durable_job_store
 
-    store = get_optional_job_store()
-    if job is not None and store is not None:
-        try:
-            store.cancel_job(job.job_id, reason="workflow_execution_cancelled")
-        except InvalidTransitionError:
-            pass
-        job = store.get_job(job.job_id)
+    store = durable_job_store()
+    if job is None:
+        job = _record_durable_job(store, record)
+    # The durable job, then the registry record whatever the lookup above
+    # found (peer review F2); the reply's re-read comes last.
+    record = cancel_workflow_execution(execution_id, store=store, job=job)
+    job = _reread_job(store, job)
 
     if record is None and job is not None:
         from umrs.api.workflow_auth import execution_payload_from_job

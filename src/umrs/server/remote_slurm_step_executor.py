@@ -84,6 +84,7 @@ from .step_executor import (
     EXECUTOR_PAYLOAD_S3_METADATA_KEY,
     EXECUTOR_ROUTED_KEYS_METADATA_KEY,
     EXECUTOR_SOURCE_DIR_METADATA_KEY,
+    EXECUTOR_UPSTREAM_METADATA_KEY,
     StepExecutionError,
     _serialise_ctx_payload,
 )
@@ -150,6 +151,7 @@ _INTERNAL_METADATA_KEYS = frozenset(
         EXECUTOR_ROUTED_KEYS_METADATA_KEY,
         EXECUTOR_GPU_METADATA_KEY,
         EXECUTOR_SOURCE_DIR_METADATA_KEY,
+        EXECUTOR_UPSTREAM_METADATA_KEY,
         STAGE_REQUEST_METADATA_KEY,
         STEP_TIMEOUT_METADATA_KEY,
     }
@@ -528,15 +530,16 @@ class RemoteSlurmStepExecutor(SlurmStepExecutor):
         metadata, no platform routing value (key, headers, routing record,
         and an ``api_base`` / ``model`` the router filled in), no
         object-store endpoint (the worker's ``ctx.s3`` is the staged file
-        shim) and no volatile parent facts (its inputs tag stays the same
-        across a durable re-dispatch)."""
+        shim), no parent outside the step's dependency closure and no
+        volatile parent facts (its inputs tag stays the same across a
+        durable re-dispatch)."""
         metadata = {
             k: v for k, v in ctx.metadata.items() if k not in _INTERNAL_METADATA_KEYS
         }
         dropped = (*_PLATFORM_CONFIG_KEYS, *_routed_keys(ctx))
         ctx_payload = _serialise_ctx_payload(ctx, metadata=metadata)
         ctx_payload["config"] = _without(ctx_payload["config"], dropped)
-        ctx_payload["parent_results"] = _stable_parents(ctx.parent_results)
+        ctx_payload["parent_results"] = _stable_parents(_upstream_parents(ctx))
         blob = pickle.dumps(
             {
                 "entrypoint": entrypoint,
@@ -1485,6 +1488,19 @@ def _without(config: dict[str, Any], keys: tuple[str, ...]) -> dict[str, Any]:
 def _routed_keys(ctx: StepContext) -> tuple[str, ...]:
     raw = ctx.metadata.get(EXECUTOR_ROUTED_KEYS_METADATA_KEY) or ()
     return tuple(k for k in raw if isinstance(k, str))
+
+
+def _upstream_parents(ctx: StepContext) -> dict[str, Any]:
+    """The parent results of the step's dependency closure, which the runner
+    lists (every earlier step's result reaches ``ctx.parent_results``: an
+    unrelated one that varies per run, an LLM step's reply, would re-tag the
+    job and a durable re-dispatch would cancel it). Without the list (a
+    caller other than the runner) every parent stays."""
+    upstream = ctx.metadata.get(EXECUTOR_UPSTREAM_METADATA_KEY)
+    parents = dict(ctx.parent_results or {})
+    if not isinstance(upstream, (list, tuple)):
+        return parents
+    return {name: result for name, result in parents.items() if name in upstream}
 
 
 def _stable_parents(parents: dict[str, Any]) -> dict[str, Any]:

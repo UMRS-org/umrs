@@ -17,6 +17,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import time
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -65,6 +66,25 @@ class AttemptNotFoundError(JobStoreError):
 
 class InvalidTransitionError(JobStoreError):
     """Raised when state transition is invalid."""
+
+
+#: A cancel waits out another lifecycle call's hold on the job's advisory
+#: lock (create_attempt, enqueue_job and retry_job commit in milliseconds)
+#: for at most this many tries, instead of failing the user's cancel.
+_CANCEL_LOCK_TRIES = 20
+_LOCK_RETRY_DELAY_S = 0.05
+
+
+def _try_advisory_lock(cur: Any, lock_key: int, tries: int) -> bool:
+    """Take advisory lock *lock_key* on *cur*'s session, trying up to *tries*
+    times a short delay apart; False when it stayed held."""
+    for attempt in range(max(tries, 1)):
+        if attempt:
+            time.sleep(_LOCK_RETRY_DELAY_S)
+        cur.execute("SELECT pg_try_advisory_lock(%s)", (lock_key,))
+        if cur.fetchone()[0]:
+            return True
+    return False
 
 
 def _research_loop_trace_id(job: Any) -> str:
@@ -191,21 +211,18 @@ class JobStore:
             self.db_pool.putconn(conn)
 
     @contextmanager
-    def _advisory_lock(self, conn, job_id: str):
+    def _advisory_lock(self, conn, job_id: str, *, tries: int = 1):
         """
         Acquire advisory lock for a job (Invariant C).
 
         This prevents concurrent attempts on the same job,
-        even across multiple UMRS instances.
+        even across multiple UMRS instances. Non-blocking; with *tries* > 1
+        it waits out a short hold before raising.
         """
         lock_key = self._advisory_lock_key(job_id)
 
         with conn.cursor() as cur:
-            # Try to acquire lock (non-blocking)
-            cur.execute("SELECT pg_try_advisory_lock(%s)", (lock_key,))
-            acquired = cur.fetchone()[0]
-
-            if not acquired:
+            if not _try_advisory_lock(cur, lock_key, tries):
                 raise JobStoreError(f"Could not acquire lock for job {job_id}")
 
             try:
@@ -673,7 +690,10 @@ class JobStore:
         Create a new attempt for a job.
 
         Must hold advisory lock for the job.
-        Transitions job: QUEUED → RUNNING
+        Transitions job: QUEUED (or PLANNED, an attempt admitted at
+        creation) → RUNNING. Any other status raises InvalidTransitionError
+        and creates no attempt: a cancel that landed after the scheduler
+        claimed the job stays a cancel (peer review F2, 2026-09-26).
         """
         attempt_id = generate_attempt_id()
         now = datetime.now(timezone.utc).replace(tzinfo=None)
@@ -721,15 +741,24 @@ class JobStore:
                             status = %s,
                             active_attempt_id = %s,
                             last_state_change_at = %s
-                        WHERE job_id = %s
+                        WHERE job_id = %s AND status IN (%s, %s)
+                        RETURNING job_id
                     """,
                     (
                         JobStatus.RUNNING.value,
                         attempt_id,
                         now,
                         job_id,
+                        JobStatus.PLANNED.value,
+                        JobStatus.QUEUED.value,
                     ),
                 )
+                if cur.fetchone() is None:
+                    conn.rollback()
+                    raise InvalidTransitionError(
+                        f"Cannot start an attempt of job {job_id} "
+                        "(not PLANNED or QUEUED)"
+                    )
 
                 conn.commit()
                 logger.info(
@@ -1381,11 +1410,16 @@ class JobStore:
         Cancel a job (stop scheduling further attempts).
 
         Does NOT kill running backend jobs.
-        Holds advisory lock to prevent races with create_attempt.
+        Holds advisory lock to prevent races with create_attempt, and waits
+        out a short hold of it (``_CANCEL_LOCK_TRIES``): the scheduler's
+        create_attempt holds it exactly while a run is being dispatched.
         """
         now = datetime.now(timezone.utc).replace(tzinfo=None)
 
-        with self._get_conn() as conn, self._advisory_lock(conn, job_id):
+        with (
+            self._get_conn() as conn,
+            self._advisory_lock(conn, job_id, tries=_CANCEL_LOCK_TRIES),
+        ):
             with conn.cursor() as cur:
                 # Mark job as cancelled
                 cur.execute(

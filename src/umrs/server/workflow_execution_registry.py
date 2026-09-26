@@ -201,7 +201,9 @@ class ExecutionRecord:
 
 
 def _reap_cancelled(record: ExecutionRecord) -> None:
-    """End the step-lane jobs an ended run left for a durable retry."""
+    """End for real the step-lane jobs a cancelled run's record names: left
+    for a durable retry by a run that ended, or carried over by a
+    re-dispatch that will now run nothing."""
     try:
         from umrs.server.step_reaper import reap_run_jobs, unreaped_steps
 
@@ -213,6 +215,21 @@ def _reap_cancelled(record: ExecutionRecord) -> None:
             record.execution_id,
             exc_info=True,
         )
+
+
+def _cancel_record(record: ExecutionRecord) -> None:
+    """Flag *record* cancelled: a submitted run ends here, a running one at
+    its runner's next check. An ended run keeps its status, but the step jobs
+    it left for a durable retry end (peer review F2)."""
+    with record._lock:
+        ended = record.status in _TERMINAL
+        if not ended:
+            record.cancel_requested = True
+            if record.status == "submitted":
+                record.status = "cancelled"
+                record.finished_at = time.time()
+    if ended:
+        _reap_cancelled(record)
 
 
 class WorkflowExecutionRegistry:
@@ -274,17 +291,15 @@ class WorkflowExecutionRegistry:
         record = self.get(execution_id)
         if record is None:
             return None
-        with record._lock:
-            ended = record.status in _TERMINAL
-            if not ended:
-                record.cancel_requested = True
-                if record.status == "submitted":
-                    record.status = "cancelled"
-                    record.finished_at = time.time()
-        if ended:
-            # Between durable retries the record has ended but its step jobs
-            # were left for the retry: a cancel ends them (peer review F2).
-            _reap_cancelled(record)
+        _cancel_record(record)
+        # A durable re-dispatch that replaced the record meanwhile found its
+        # durable job not yet cancelled (the cancel handlers cancel it before
+        # this record): that run must not resume the step jobs the user just
+        # cancelled (peer review F2).
+        live = self.get(execution_id)
+        if live is not None and live is not record:
+            _cancel_record(live)
+            return live
         return record
 
     def resolve_approval(
@@ -332,6 +347,9 @@ class WorkflowExecutionRegistry:
                         status="cancelled",
                         finished_at=time.time(),
                     )
+                    # A re-dispatch carried the earlier run's step jobs
+                    # over; nothing reconciles them now (peer review F2).
+                    _reap_cancelled(record)
                     return
                 runner(record)
             except Exception as exc:

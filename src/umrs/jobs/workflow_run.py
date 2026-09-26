@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import logging
 import os
 from collections.abc import Callable
 from typing import Any
 
-from .models import Job, JobAttempt
+from .models import Job, JobAttempt, JobType
 from .monitor import AttemptCheckResult
 from .scheduler import OrchestratorBackend
 
@@ -113,6 +114,52 @@ def cancel_workflow_execution_for_job(job: Job) -> None:
     from umrs.shared.workflow_execution_access import get_execution_registry
 
     get_execution_registry().cancel(execution_id.strip())
+
+
+# The cancel order and error policy every cancel route shares (peer review
+# F2, 2026-09-26). The durable job is cancelled first: a re-dispatch racing
+# the cancel then either finds it cancelled (``create_attempt`` refuses it,
+# or the launch's ``durable_job_cancelled`` check does), or the registry
+# cancel that follows finds the record the dispatch registered. An ended
+# durable job (InvalidTransitionError) still has its run cancelled: the run
+# may have left step jobs for a retry that will not come. Any other store
+# error propagates and leaves the run alone, because a registry-only cancel
+# is a rerun: the monitor reports the cancelled run failed and
+# ``mark_attempt_failed`` requeues the still-live durable job.
+
+
+def cancel_job_and_run(store: Any, job: Job, **cancel_kwargs: Any) -> None:
+    """Cancel durable *job* through *store* (``cancel_kwargs`` go to
+    ``cancel_job``), then a workflow_run job's registry record. An
+    InvalidTransitionError is raised after the registry cancel."""
+    from .store import InvalidTransitionError
+
+    try:
+        store.cancel_job(job.job_id, **cancel_kwargs)
+    except InvalidTransitionError:
+        _cancel_run_of(job)
+        raise
+    _cancel_run_of(job)
+
+
+def _cancel_run_of(job: Job) -> None:
+    if job.job_type == JobType.WORKFLOW_RUN:
+        cancel_workflow_execution_for_job(job)
+
+
+def cancel_workflow_execution(execution_id: str, *, store: Any, job: Job | None) -> Any:
+    """Cancel workflow execution *execution_id*: its durable *job* when there
+    is one (already ended is fine), then its registry record whatever an
+    earlier lookup found, since a dispatch may have registered it since.
+    Returns the registry's record, None when it has none."""
+    from umrs.shared.workflow_execution_access import get_execution_registry
+
+    from .store import InvalidTransitionError
+
+    if job is not None and store is not None:
+        with contextlib.suppress(InvalidTransitionError):
+            store.cancel_job(job.job_id, reason="workflow_execution_cancelled")
+    return get_execution_registry().cancel(execution_id)
 
 
 async def _record_run_artifacts(
