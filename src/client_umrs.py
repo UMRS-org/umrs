@@ -5933,7 +5933,10 @@ def _action_knn(ctx):
             print(api_json(status="error", action="knn", message=response.get("message", "Server error"), output_format=args.output))
             ctx.control_mq.close()
             return 1
-        print(api_json(action="knn", bucket=bucket_alias, **{k: v for k, v in response.items() if k != "status"}, output_format=args.output))
+        if args.output == "json":
+            print(api_json(action="knn", bucket=bucket_alias, **{k: v for k, v in response.items() if k != "status"}, output_format="json"))
+        else:
+            print(response.get("summary", ""))
     except Exception as e:
         print(api_json(status="error", action="knn", message=str(e), output_format=args.output))
         if args.verbose:

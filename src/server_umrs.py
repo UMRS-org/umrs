@@ -393,6 +393,15 @@ def check_umrs_config_directory():
             return None
 # ---------------------------------- CLI ------------------------------------
 
+def set_batch_size(batch_size: int) -> None:
+    """Set UMRS_INFERENCE_BATCH_SIZE from the CLI arg if not already in env."""
+    if "UMRS_INFERENCE_BATCH_SIZE" not in os.environ:
+        os.environ["UMRS_INFERENCE_BATCH_SIZE"] = str(batch_size)
+        print(f"[inference] batch_size={batch_size} (from --batch-size)")
+    else:
+        print(f"[inference] batch_size={os.environ['UMRS_INFERENCE_BATCH_SIZE']} (from env, --batch-size ignored)")
+
+
 def main():
     # Offline admin CLI: route `umrs-server admin ...` before any daemon
     # bootstrap so it works without a configured UMRS_CONFIG directory.
@@ -421,7 +430,10 @@ def main():
     parser.add_argument('--pool-max-pending', type=int, default=None,
                         help='Max pending tasks before rejecting requests (default: UMRS_POOL_MAX_PENDING or 64)')
     parser.add_argument("--skip-create-users", action="store_true", help="Disable MinIO and PostgresSQL checks for bucket/user configuration to speed up server startup.",)
+    parser.add_argument('--batch-size', type=int, default=64,
+                        help='Max objects per model forward pass (sets UMRS_INFERENCE_BATCH_SIZE if not already in env). 0 = no limit.')
     args = parser.parse_args()
+    set_batch_size(args.batch_size)
     configure_file = args.conf
 
     global ENABLE_PRETTY_PRINT

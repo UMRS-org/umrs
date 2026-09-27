@@ -295,7 +295,7 @@ class UMRSThreads:
         subdir=None,
         update_status_callback=None,
     ):
-        from umrs.server.sql import knn_search_worker
+        from umrs.server.knn_worker import knn_search_worker
 
         thread_ident, _ = self._submit_to_pool(
             knn_search_worker,
