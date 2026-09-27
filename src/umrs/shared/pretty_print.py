@@ -368,3 +368,26 @@ def pretty_print_check(check_dict, print_output=True):
     if print_output:
         print(message)
     return message
+
+
+def pretty_print_knn(query: str, bucket_name: str, n: int,
+                     results: list, duration_s: float, cached: bool) -> str:
+    emb_note = "(embedding cached)" if cached else "(embedding recomputed)"
+    header = (
+        f"KNN results  |  query: {query}  |  bucket: {bucket_name}"
+        f"  |  n: {n}  |  server time: {duration_s:.3f}s  {emb_note}"
+    )
+
+    if not results:
+        return f"{header}\n\n  No results."
+
+    rows = []
+    for i, r in enumerate(results, 1):
+        obj = r["object"]
+        display = obj.split("/")[-1] if "/" in obj else obj
+        score = r["score"]
+        bar = "█" * int(score * 10) + "░" * (10 - int(score * 10))
+        rows.append([f"#{i}", f"{score:.4f}", bar, display])
+
+    table = tabulate(rows, headers=["#", "Score", "", "Object"], tablefmt="fancy_grid")
+    return f"{header}\n\n{table}"
