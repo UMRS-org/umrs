@@ -687,6 +687,36 @@ class TestRail:
         assert status["runtime"]["turn_seq"] == 2
         assert status["runtime"]["partial"] == "thinking…"
 
+    def test_rail_heartbeat_carries_live_tool_activity(self, rail):
+        # TUI visibility (2026-09-27): the worker's bounded activity lines
+        # land verbatim on the row's runtime; honest absence otherwise.
+        r = rail.client.post(
+            "/umrs/companion/sessions/sess-1/rail/heartbeat",
+            headers=rail.rail_headers,
+            json={
+                "phase": "running",
+                "turn_seq": 3,
+                "partial": "text…",
+                "tool_activity": ["▸ hpc_submit sbatch run.slurm", "▸ rag_search 'defect' ✓ 1.2s"],
+            },
+        )
+        assert r.status_code == 200
+        status = rail.client.get("/umrs/companion/sessions/sess-1/venue", headers=H).json()
+        assert status["runtime"]["tool_activity"] == [
+            "▸ hpc_submit sbatch run.slurm",
+            "▸ rag_search 'defect' ✓ 1.2s",
+        ]
+        # A later plain heartbeat without the field keeps the last lines.
+        rail.client.post(
+            "/umrs/companion/sessions/sess-1/rail/heartbeat",
+            headers=rail.rail_headers,
+            json={"phase": "running", "turn_seq": 4, "partial": "more…"},
+        )
+        again = rail.client.get(
+            "/umrs/companion/sessions/sess-1/venue", headers=H
+        ).json()
+        assert again["runtime"]["tool_activity"][0] == "▸ hpc_submit sbatch run.slurm"
+
     def test_rail_heartbeat_after_stop_requests_exit(self, rail):
         rail.client.post("/umrs/companion/sessions/sess-1/venue/stop", headers=H)
         r = rail.client.post(
