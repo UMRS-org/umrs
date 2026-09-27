@@ -209,6 +209,15 @@ class DatabaseConfig:
 
 
 @dataclass
+class InferenceConfig:
+    """Local inference performance settings."""
+
+    # Maximum number of objects passed to model.compute_embeddings() in one
+    # forward pass.  0 means no limit (all objects at once — legacy behaviour).
+    batch_size: int = 0
+
+
+@dataclass
 class SiteConfig:
     """
     Top-level site configuration.
@@ -225,6 +234,7 @@ class SiteConfig:
     vllm: VllmConfig = field(default_factory=VllmConfig)
     step_executor: StepExecutorConfig = field(default_factory=StepExecutorConfig)
     database: DatabaseConfig = field(default_factory=DatabaseConfig)
+    inference: InferenceConfig = field(default_factory=InferenceConfig)
     partition_profiles: dict[str, PartitionProfile] = field(default_factory=dict)
     strict_secrets: bool = False  # Fail provisioning when required secrets missing
     extra: dict[str, Any] = field(default_factory=dict)
@@ -282,6 +292,7 @@ class SiteConfig:
             _vllm_env(self.vllm),
             _step_executor_env(self.step_executor),
             _database_env(self.database),
+            _inference_env(self.inference),
         ):
             env.update(layer)
         return {k: v for k, v in env.items() if v}
@@ -400,6 +411,13 @@ def _vllm_env(vllm: VllmConfig) -> dict[str, str]:
         "VLLM_GPU_MEMORY_UTILIZATION": str(vllm.gpu_mem_util),
         "VLLM_ENABLE_PREFIX_CACHING": "true" if vllm.enable_prefix_caching else "false",
     }
+
+
+def _inference_env(inference: InferenceConfig) -> dict[str, str]:
+    env: dict[str, str] = {}
+    if inference.batch_size > 0:
+        env["UMRS_INFERENCE_BATCH_SIZE"] = str(inference.batch_size)
+    return env
 
 
 def _database_env(database: DatabaseConfig) -> dict[str, str]:
@@ -523,6 +541,7 @@ def _parse_raw(raw: dict[str, Any]) -> SiteConfig:
         vllm=_dict_to_dataclass(VllmConfig, raw.get("vllm", {})),
         step_executor=_dict_to_dataclass(StepExecutorConfig, raw.get("step_executor", {})),
         database=_dict_to_dataclass(DatabaseConfig, raw.get("database", {})),
+        inference=_dict_to_dataclass(InferenceConfig, raw.get("inference", {})),
         partition_profiles=profiles,
         extra=raw.get("extra", {}),
     )
@@ -594,6 +613,9 @@ def default_site_config() -> SiteConfig:
     )
     cfg.database.registry_dsn = os.getenv("UMRS_REGISTRY_POSTGRES_DSN", "")
 
+    # Inference
+    cfg.inference.batch_size = int(os.getenv("UMRS_INFERENCE_BATCH_SIZE", "0"))
+
     return cfg
 
 
@@ -617,9 +639,11 @@ def get_site_config(path: str | None = None) -> SiteConfig:
 
     try:
         _site_config = load_site_config(path)
-    except FileNotFoundError:
-        logger.info("No site.yaml found — falling back to environment variables")
+        print(f"[site_config] Loaded site config: {_site_config.name}")
+    except FileNotFoundError as e:
+        print(f"[site_config] No site.yaml found ({e}) — using environment variables")
         _site_config = default_site_config()
+
 
     return _site_config
 

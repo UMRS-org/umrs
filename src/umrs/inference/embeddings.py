@@ -249,7 +249,21 @@ def compute_and_store_embedding_batch(items, store_fn=None):
     if not all_objects:
         return [False] * len(items)
 
-    all_embeddings = model.compute_embeddings(all_objects)
+    batch_size = int(os.getenv("UMRS_INFERENCE_BATCH_SIZE", "0"))
+    if batch_size > 0 and len(all_objects) > batch_size:
+        chunks = []
+        for i in range(0, len(all_objects), batch_size):
+            chunks.append(model.compute_embeddings(all_objects[i : i + batch_size]))
+        first = chunks[0]
+        if hasattr(first, "dim"):  # torch.Tensor
+            import torch
+            all_embeddings = torch.cat(chunks, dim=0)
+        elif hasattr(first, "shape"):  # numpy array
+            all_embeddings = np.concatenate(chunks, axis=0)
+        else:
+            all_embeddings = [e for chunk in chunks for e in chunk]
+    else:
+        all_embeddings = model.compute_embeddings(all_objects)
 
     if store_fn is None:
         from umrs.server.sql import store_embeddings_in_db
