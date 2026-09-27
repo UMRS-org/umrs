@@ -467,11 +467,13 @@ class FrontendVenueService:
         partial: str = "",
         detail: str = "",
         extend_seconds: int = 0,
+        tool_activity: list[str] | None = None,
     ) -> dict[str, Any]:
         extend = extend_seconds or self.config.rail_extend_seconds
         renewed = bool(self.broker.renew_lease(lease_id, extend, actor="worker"))
         row = self.store.update_runtime(
-            session_id, _runtime_report(phase, turn_seq, partial, detail)
+            session_id,
+            _runtime_report(phase, turn_seq, partial, detail, tool_activity=tool_activity),
         )
         lease = self.broker.get_lease(lease_id)
         stop_requested = row is None or row.state in ("stopped", "failed")
@@ -561,14 +563,24 @@ def _session_spec(
 
 
 def _runtime_report(
-    phase: str, turn_seq: int, partial: str, detail: str
+    phase: str,
+    turn_seq: int,
+    partial: str,
+    detail: str,
+    *,
+    tool_activity: list[str] | None = None,
 ) -> dict[str, Any]:
-    return {
+    report: dict[str, Any] = {
         "phase": (phase or "idle")[:32],
         "turn_seq": int(turn_seq or 0),
         "partial": (partial or "")[-4000:],
         "detail": (detail or "")[:400],
     }
+    if tool_activity:
+        # Honest absence: the key lands only when the worker really sent
+        # lines; bounded here too (never trust the wire's own caps).
+        report["tool_activity"] = [str(line)[:200] for line in tool_activity[:24]]
+    return report
 
 
 def _expires_iso(lease: Any) -> str | None:

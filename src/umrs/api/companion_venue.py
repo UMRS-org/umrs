@@ -150,6 +150,9 @@ class HeartbeatBody(BaseModel):
     partial: str = ""
     detail: str = ""
     extend_seconds: int = 0
+    # Live tool-activity lines the owner watches next to the partial text
+    # (r4 venue worker, 2026-09-27); [] when the worker pre-dates the field.
+    tool_activity: list[str] = Field(default_factory=list)
 
 
 class RailApprovalBody(BaseModel):
@@ -400,6 +403,7 @@ async def rail_heartbeat(
         partial=body.partial,
         detail=body.detail,
         extend_seconds=body.extend_seconds,
+        tool_activity=body.tool_activity,
     )
 
 
