@@ -4,6 +4,7 @@ import mimetypes
 import os, sys
 import secrets
 import string
+import time
 import warnings
 from io import BytesIO
 from typing import Optional
@@ -568,6 +569,32 @@ def is_an_image(filename):
     return is_image_by_opening(filename)
 
 
+_UPLOAD_RETRYABLE = ("IncompleteBody", "RequestTimeout", "SlowDown", "ServiceUnavailable")
+_UPLOAD_RETRY_DELAYS = (0, 1, 5)  # seconds between attempts: immediate, 1s, 5s
+
+
+def _upload_with_retry(s3, local_path, path_to_bucket, s3_key, extra_args):
+    """Call s3.upload_file with retries on transient errors (0s / 1s / 5s)."""
+    import boto3.exceptions
+    for attempt, delay in enumerate(_UPLOAD_RETRY_DELAYS, 1):
+        try:
+            s3.upload_file(local_path, path_to_bucket, s3_key, ExtraArgs=extra_args)
+            return
+        except (boto3.exceptions.S3UploadFailedError, ClientError) as exc:
+            code = str(exc) if isinstance(exc, boto3.exceptions.S3UploadFailedError) else exc.response["Error"].get("Code", "")
+            is_last = attempt == len(_UPLOAD_RETRY_DELAYS)
+            if is_last or not any(r in code for r in _UPLOAD_RETRYABLE):
+                raise
+            logger.warning(
+                "upload retry %d/%d for s3://%s/%s (%s)%s",
+                attempt, len(_UPLOAD_RETRY_DELAYS) - 1,
+                path_to_bucket, s3_key, code,
+                "" if delay == 0 else f" — waiting {delay}s",
+            )
+            if delay:
+                time.sleep(delay)
+
+
 def _upload_file(s3, path_to_bucket, s3_key, local_path, extra_args=None, check_exists=True):
     """Upload a local file to S3, optionally skipping if the same content is already there.
 
@@ -592,7 +619,7 @@ def _upload_file(s3, path_to_bucket, s3_key, local_path, extra_args=None, check_
             if e.response["Error"]["Code"] not in ("404", "NoSuchKey"):
                 raise
 
-    s3.upload_file(local_path, path_to_bucket, s3_key, ExtraArgs=extra_args)
+    _upload_with_retry(s3, local_path, path_to_bucket, s3_key, extra_args)
 
 
 def s3_store_image(s3, path_to_bucket, subdir, in_path, mq, metadata_args, check=True):
