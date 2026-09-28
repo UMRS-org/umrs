@@ -191,6 +191,174 @@ def compute_and_store_embedding(
     )
 
 
+# ---------------------------------------------------------------------------
+# Standard path helpers (used by compute_and_store_embedding_batch)
+# ---------------------------------------------------------------------------
+
+def _sequential_embed(items, model):
+    """Load all objects from S3, then run one forward pass.
+
+    No pipelining: all data is in RAM before inference starts.
+    Returns (per_item, t_io, t_compute).
+    """
+    all_objects, all_checksums, all_metadata, slices = [], [], [], []
+
+    t0 = time.perf_counter()
+    for item in items:
+        objects, metadata, checksums, sizes, has_zero = load_data_from_s3(
+            item["s3_connection"], item["path_to_bucket"],
+            item["s3_keys"], item["modality_name"],
+        )
+        start = len(all_objects)
+        all_objects.extend(objects)
+        all_checksums.extend(checksums)
+        all_metadata.extend(metadata)
+        slices.append((start, len(all_objects), sizes, has_zero))
+    t_io = time.perf_counter() - t0
+
+    t0 = time.perf_counter()
+    all_embeddings = model.compute_embeddings(all_objects)
+    t_compute = time.perf_counter() - t0
+
+    per_item = {
+        i: {
+            "embeddings": all_embeddings[start:end],
+            "checksums": all_checksums[start:end],
+            "metadata": all_metadata[start:end],
+            "sizes": sizes,
+            "has_zero": has_zero,
+        }
+        for i, (start, end, sizes, has_zero) in enumerate(slices)
+    }
+    return per_item, t_io, t_compute
+
+
+def _iter_key_batches(items, batch_size):
+    """Yield fixed-size batches of (item_idx, s3_key) pairs.
+
+    Flattens all keys from all items into one sequence, then slices
+    it into batches of *batch_size* so S3 loading and GPU compute
+    can be interleaved.
+    """
+    flat = [
+        (item_idx, key)
+        for item_idx, item in enumerate(items)
+        for key in item["s3_keys"]
+    ]
+    for start in range(0, len(flat), batch_size):
+        yield flat[start : start + batch_size]
+
+
+def _load_one_batch(items, key_batch):
+    """Synchronously load one batch of S3 objects.
+
+    Returns a list of (item_idx, obj, checksum, meta, size, has_zero)
+    in the same order as *key_batch*.
+    """
+    loaded = []
+    for item_idx, s3_key in key_batch:
+        item = items[item_idx]
+        objs, metas, checksums, sizes, has_zero = load_data_from_s3(
+            item["s3_connection"], item["path_to_bucket"],
+            [s3_key], item["modality_name"],
+        )
+        loaded.append((item_idx, objs[0], checksums[0], metas[0], sizes[0], has_zero))
+    return loaded
+
+
+def _prefetch_worker(items, batches, out_q, io_times):
+    """Background thread: load S3 batches and push them onto *out_q*.
+
+    Appends each batch's pure S3 load time to *io_times* (queue blocking
+    time is intentionally excluded so the log reflects actual I/O cost).
+    Pushes ``None`` as a done sentinel.
+    """
+    for batch in batches:
+        t0 = time.perf_counter()
+        loaded = _load_one_batch(items, batch)   # measure only S3 loading
+        io_times.append(time.perf_counter() - t0)
+        out_q.put(loaded)                         # may block if queue is full
+    out_q.put(None)
+
+
+def _pipelined_embed(items, model, batch_size):
+    """Overlap S3 I/O with GPU compute using a one-batch prefetch queue.
+
+    While the GPU processes batch i the I/O thread pre-loads batch i+1,
+    hiding most of the S3 latency behind compute.
+    Returns (per_item, t_io_total, t_compute_total).
+    """
+    import queue
+    import threading
+
+    per_item = {
+        i: {"embeddings": [], "checksums": [], "metadata": [],
+            "sizes": [], "has_zero": False}
+        for i in range(len(items))
+    }
+    io_times: list = []
+    t_compute = 0.0
+
+    batches = list(_iter_key_batches(items, batch_size))
+    prefetch_q = queue.Queue(maxsize=2)   # buffer: current batch + 1 pre-loaded
+    threading.Thread(
+        target=_prefetch_worker,
+        args=(items, batches, prefetch_q, io_times),
+        daemon=True,
+    ).start()
+
+    while True:
+        loaded = prefetch_q.get()
+        if loaded is None:
+            break
+        objects = [row[1] for row in loaded]
+        t0 = time.perf_counter()
+        embeddings = model.compute_embeddings(objects)
+        t_compute += time.perf_counter() - t0
+        for k, (item_idx, _obj, checksum, meta, size, has_zero) in enumerate(loaded):
+            d = per_item[item_idx]
+            d["embeddings"].append(embeddings[k])
+            d["checksums"].append(checksum)
+            d["metadata"].append(meta)
+            d["sizes"].append(size)
+            d["has_zero"] = d["has_zero"] or has_zero
+
+    return per_item, sum(io_times), t_compute
+
+
+def _store_item(item, d, model, store_fn):
+    """Store one item's embeddings in the DB. Returns True on success."""
+    embeddings = d["embeddings"]
+    checksums  = d["checksums"]
+    metadata   = d["metadata"]
+
+    if d["has_zero"]:
+        zero_out_embeddings_for_empty_objects(embeddings, d["sizes"], item["modality_name"])
+
+    # Enrich metadata with optional job/model tracking fields.
+    idj, mv, mp = item.get("indexing_job_id"), item.get("model_version"), item.get("model_path")
+    if idj or mv or mp:
+        dim = len(embeddings[0]) if embeddings and hasattr(embeddings[0], "__len__") else None
+        for md in metadata:
+            if idj: md["indexing_job_id"] = idj
+            if mv:  md["model_version"]   = mv
+            if mp:  md["model_path"]      = mp
+            if dim is not None: md["embedding_dimension"] = dim
+
+    try:
+        store_fn(
+            item["data_base"], embeddings, item["table_name"],
+            item["path_to_bucket"], item["s3_keys"],
+            [None] * len(item["s3_keys"]),   # saved_s3_keys (none on standard path)
+            item["modality_name"], checksums, model.model_name,
+            metadata_list=metadata,
+        )
+        return True
+    except Exception:
+        logger.exception("compute_and_store_embedding_batch: store failed")
+        return False
+
+
 def compute_and_store_embedding_batch(items, store_fn=None):
     """Batch variant: single model call across multiple (bucket, keys) items.
 
@@ -234,92 +402,28 @@ def compute_and_store_embedding_batch(items, store_fn=None):
                 results.append(False)
         return results
 
-    # Standard path: load all data then run one model forward pass.
-    all_objects, all_checksums, all_metadata, all_saved, slices = [], [], [], [], []
-    t_io_start = time.perf_counter()
-    for item in items:
-        s3_conn = item["s3_connection"]
-        bucket = item["path_to_bucket"]
-        keys = item["s3_keys"]
-        objects, metadata, checksums, sizes, has_zero = load_data_from_s3(
-            s3_conn, bucket, keys, item["modality_name"]
-        )
-        start = len(all_objects)
-        all_objects.extend(objects)
-        all_checksums.extend(checksums)
-        all_metadata.extend(metadata)
-        all_saved.extend([None] * len(keys))
-        slices.append((start, len(all_objects), sizes, has_zero))
-    t_io = time.perf_counter() - t_io_start
-
-    if not all_objects:
-        return [False] * len(items)
-
-    t_compute_start = time.perf_counter()
+    # Standard path: choose sequential or pipelined depending on batch_size.
     batch_size = int(os.getenv("UMRS_INFERENCE_BATCH_SIZE", "0"))
-    if batch_size > 0 and len(all_objects) > batch_size:
-        chunks = []
-        for i in range(0, len(all_objects), batch_size):
-            chunks.append(model.compute_embeddings(all_objects[i : i + batch_size]))
-        first = chunks[0]
-        if hasattr(first, "dim"):  # torch.Tensor
-            import torch
-            all_embeddings = torch.cat(chunks, dim=0)
-        elif hasattr(first, "shape"):  # numpy array
-            all_embeddings = np.concatenate(chunks, axis=0)
-        else:
-            all_embeddings = [e for chunk in chunks for e in chunk]
+
+    if batch_size > 0:
+        per_item, t_io, t_compute = _pipelined_embed(items, model, batch_size)
     else:
-        all_embeddings = model.compute_embeddings(all_objects)
-    t_compute = time.perf_counter() - t_compute_start
+        per_item, t_io, t_compute = _sequential_embed(items, model)
+
+    n_objects = sum(len(d["checksums"]) for d in per_item.values())
+    if n_objects == 0:
+        return [False] * len(items)
 
     logger.info(
         "[embed] n=%d  io=%.3fs  compute=%.3fs  model=%s",
-        len(all_objects), t_io, t_compute, getattr(model, "model_name", "?"),
+        n_objects, t_io, t_compute, getattr(model, "model_name", "?"),
     )
 
     if store_fn is None:
         from umrs.server.sql import store_embeddings_in_db
         store_fn = store_embeddings_in_db
 
-    results = []
-    for item, (start, end, sizes, has_zero) in zip(items, slices):
-        embeddings = all_embeddings[start:end]
-        checksums = all_checksums[start:end]
-        metadata = all_metadata[start:end]
-        saved = all_saved[start:end]
-
-        if has_zero:
-            zero_out_embeddings_for_empty_objects(embeddings, sizes, item["modality_name"])
-
-        idj = item.get("indexing_job_id")
-        mv = item.get("model_version")
-        mp = item.get("model_path")
-        if idj or mv or mp:
-            dim = len(embeddings[0]) if embeddings and hasattr(embeddings[0], "__len__") else None
-            for md in metadata:
-                if idj:
-                    md["indexing_job_id"] = idj
-                if mv:
-                    md["model_version"] = mv
-                if mp:
-                    md["model_path"] = mp
-                if dim is not None:
-                    md["embedding_dimension"] = dim
-
-        try:
-            store_fn(
-                item["data_base"], embeddings, item["table_name"],
-                item["path_to_bucket"], item["s3_keys"], saved,
-                item["modality_name"], checksums, model.model_name,
-                metadata_list=metadata,
-            )
-            results.append(True)
-        except Exception:
-            logger.exception("compute_and_store_embedding_batch: store failed")
-            results.append(False)
-
-    return results
+    return [_store_item(item, per_item[i], model, store_fn) for i, item in enumerate(items)]
 
 
 def load_embedding_model(model_name):
