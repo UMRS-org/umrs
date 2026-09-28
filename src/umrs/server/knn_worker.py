@@ -57,9 +57,10 @@ def knn_search_worker(
 
     # Load object from S3 to get ETag + raw data
     try:
-        objects, _, checksums, _, _ = load_data_from_s3(s3, bucket_name, [s3_object], modality_name)
+        objects, _, checksums, sizes, _ = load_data_from_s3(s3, bucket_name, [s3_object], modality_name)
         etag = checksums[0]
         obj_data = objects[0]
+        query_size_bytes = sizes[0]
     except Exception as exc:
         logger.exception("KNN: failed to load %s from S3: %s", s3_object, exc)
         result = json.dumps({"status": "error", "message": f"S3 load failed: {exc}"}, ensure_ascii=False)
@@ -126,7 +127,8 @@ def knn_search_worker(
                 "results": results_list,
                 "duration_s": duration_s,
                 "cached": cached,
-                "summary": pretty_print_knn(s3_object, bucket_name, n, results_list, duration_s, cached),
+                "n_indexed": entry.num_objects,
+                "summary": pretty_print_knn(s3_object, bucket_name, n, results_list, duration_s, cached, entry.num_objects),
             },
             ensure_ascii=False,
         )
