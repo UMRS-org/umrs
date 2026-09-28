@@ -405,18 +405,20 @@ def compute_and_store_embedding_batch(items, store_fn=None):
     # Standard path: choose sequential or pipelined depending on batch_size.
     batch_size = int(os.getenv("UMRS_INFERENCE_BATCH_SIZE", "0"))
 
+    t_wall0 = time.perf_counter()
     if batch_size > 0:
         per_item, t_io, t_compute = _pipelined_embed(items, model, batch_size)
     else:
         per_item, t_io, t_compute = _sequential_embed(items, model)
+    t_wall = time.perf_counter() - t_wall0
 
     n_objects = sum(len(d["checksums"]) for d in per_item.values())
     if n_objects == 0:
         return [False] * len(items)
 
     logger.info(
-        "[embed] n=%d  io=%.3fs  compute=%.3fs  model=%s",
-        n_objects, t_io, t_compute, getattr(model, "model_name", "?"),
+        "[embed] n=%d  wall=%.3fs  io=%.3fs  compute=%.3fs  model=%s",
+        n_objects, t_wall, t_io, t_compute, getattr(model, "model_name", "?"),
     )
 
     if store_fn is None:
