@@ -371,11 +371,13 @@ def pretty_print_check(check_dict, print_output=True):
 
 
 def pretty_print_knn(query: str, bucket_name: str, n: int,
-                     results: list, duration_s: float, cached: bool) -> str:
+                     results: list, duration_s: float, cached: bool,
+                     n_indexed: int = 0) -> str:
     emb_note = "(embedding cached)" if cached else "(embedding recomputed)"
+    kn = f"{n}/{n_indexed}" if n_indexed else str(n)
     header = (
         f"KNN results  |  query: {query}  |  bucket: {bucket_name}"
-        f"  |  n: {n}  |  server time: {duration_s:.3f}s  {emb_note}"
+        f"  |  k/n: {kn}  |  server time: {duration_s:.3f}s  {emb_note}"
     )
 
     if not results:
