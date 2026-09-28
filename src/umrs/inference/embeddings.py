@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+import time
 
 import numpy as np
 
@@ -235,6 +236,7 @@ def compute_and_store_embedding_batch(items, store_fn=None):
 
     # Standard path: load all data then run one model forward pass.
     all_objects, all_checksums, all_metadata, all_saved, slices = [], [], [], [], []
+    t_io_start = time.perf_counter()
     for item in items:
         s3_conn = item["s3_connection"]
         bucket = item["path_to_bucket"]
@@ -248,10 +250,12 @@ def compute_and_store_embedding_batch(items, store_fn=None):
         all_metadata.extend(metadata)
         all_saved.extend([None] * len(keys))
         slices.append((start, len(all_objects), sizes, has_zero))
+    t_io = time.perf_counter() - t_io_start
 
     if not all_objects:
         return [False] * len(items)
 
+    t_compute_start = time.perf_counter()
     batch_size = int(os.getenv("UMRS_INFERENCE_BATCH_SIZE", "0"))
     if batch_size > 0 and len(all_objects) > batch_size:
         chunks = []
@@ -267,6 +271,12 @@ def compute_and_store_embedding_batch(items, store_fn=None):
             all_embeddings = [e for chunk in chunks for e in chunk]
     else:
         all_embeddings = model.compute_embeddings(all_objects)
+    t_compute = time.perf_counter() - t_compute_start
+
+    logger.info(
+        "[embed] n=%d  io=%.3fs  compute=%.3fs  model=%s",
+        len(all_objects), t_io, t_compute, getattr(model, "model_name", "?"),
+    )
 
     if store_fn is None:
         from umrs.server.sql import store_embeddings_in_db
