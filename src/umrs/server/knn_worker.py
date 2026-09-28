@@ -118,6 +118,18 @@ def knn_search_worker(
             rows = cur.fetchall()
 
         results_list = [{"object": r[0], "score": float(r[1])} for r in rows]
+
+        if subdir:
+            with conn.cursor() as cur:
+                cur.execute(
+                    sql.SQL("SELECT COUNT(*) FROM {} WHERE s3_object LIKE %s")
+                    .format(sql.Identifier(table_name)),
+                    (f"{bucket_name}/{subdir}/%",),
+                )
+                n_indexed = cur.fetchone()[0]
+        else:
+            n_indexed = entry.num_objects
+
         duration_s = round(time.perf_counter() - t0, 3)
         result = json.dumps(
             {
@@ -127,8 +139,8 @@ def knn_search_worker(
                 "results": results_list,
                 "duration_s": duration_s,
                 "cached": cached,
-                "n_indexed": entry.num_objects,
-                "summary": pretty_print_knn(s3_object, bucket_name, n, results_list, duration_s, cached, entry.num_objects),
+                "n_indexed": n_indexed,
+                "summary": pretty_print_knn(s3_object, bucket_name, n, results_list, duration_s, cached, n_indexed),
             },
             ensure_ascii=False,
         )
