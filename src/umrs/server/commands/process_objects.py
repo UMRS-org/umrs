@@ -67,13 +67,16 @@ def filter_already_indexed(ctx, client_entries):
         # Single SQL batch query for this bucket
         db_keys = [f"{path_to_bucket}/{s3_key}" for _, _, s3_key in items]
         conn = data_base.get_conn()
-        with conn.cursor() as cur:
-            cur.execute(
-                pgsql.SQL("SELECT s3_object, checksum FROM {} WHERE s3_object = ANY(%s)")
-                .format(pgsql.Identifier(table_name)),
-                (db_keys,),
-            )
-            db_checksums = {row[0]: row[1] for row in cur.fetchall()}
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    pgsql.SQL("SELECT s3_object, checksum FROM {} WHERE s3_object = ANY(%s)")
+                    .format(pgsql.Identifier(table_name)),
+                    (db_keys,),
+                )
+                db_checksums = {row[0]: row[1] for row in cur.fetchall()}
+        finally:
+            data_base.put_conn(conn)
 
         # Filter: skip if ETag matches DB checksum
         for _, s3_uri, s3_key in items:

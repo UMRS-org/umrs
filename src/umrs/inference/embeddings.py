@@ -1,9 +1,12 @@
 #!/usr/bin/python3
 # import psycopg2
 import json
+import logging
 import os
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
 import ast  # To safely convert strings to lists
