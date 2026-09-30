@@ -23,10 +23,10 @@ class FakeS3Client:
     def __init__(self) -> None:
         self._store: dict[str, bytes] = {}
 
-    def put_object(self, Bucket: str, Key: str, Body: bytes, **_kwargs) -> None:  # noqa: N802, ARG002
+    def put_object(self, Bucket: str, Key: str, Body: bytes, **_kwargs) -> None:
         self._store[f"{Bucket}/{Key}"] = Body
 
-    def get_object(self, Bucket: str, Key: str, **_kwargs) -> dict:  # noqa: N802, ARG002
+    def get_object(self, Bucket: str, Key: str, **_kwargs) -> dict:
         value = self._store.get(f"{Bucket}/{Key}")
         if value is None:
             raise FakeS3Client.exceptions.ClientError(
@@ -35,7 +35,7 @@ class FakeS3Client:
             )
         return {"Body": FakeBody(value)}
 
-    def head_object(self, Bucket: str, Key: str, **_kwargs) -> dict:  # noqa: N802, ARG002
+    def head_object(self, Bucket: str, Key: str, **_kwargs) -> dict:
         value = self._store.get(f"{Bucket}/{Key}")
         if value is None:
             raise FakeS3Client.exceptions.ClientError(
@@ -44,7 +44,7 @@ class FakeS3Client:
             )
         return {"ContentLength": len(value)}
 
-    def delete_object(self, Bucket: str, Key: str, **_kwargs) -> None:  # noqa: N802, ARG002
+    def delete_object(self, Bucket: str, Key: str, **_kwargs) -> None:
         if f"{Bucket}/{Key}" not in self._store:
             raise FakeS3Client.exceptions.ClientError(
                 {"Code": "NoSuchKey"},
@@ -52,7 +52,7 @@ class FakeS3Client:
             )
         self._store.pop(f"{Bucket}/{Key}")
 
-    def list_objects_v2(self, Bucket: str, Prefix: str, **_kwargs) -> dict:  # noqa: N802, ARG002
+    def list_objects_v2(self, Bucket: str, Prefix: str, **_kwargs) -> dict:
         contents = [
             {"Key": path.split("/", 1)[1], "Size": len(data)}
             for path, data in self._store.items()
@@ -60,7 +60,7 @@ class FakeS3Client:
         ]
         return {"Contents": contents}
 
-    def generate_presigned_url(self, _Action: str, Params: dict, ExpiresIn: int) -> str:  # noqa: N802, N803, ARG002
+    def generate_presigned_url(self, _Action: str, Params: dict, ExpiresIn: int) -> str:
         return (
             f"https://s3.example.com/{Params['Bucket']}/{Params['Key']}?X-Amz-Expires={ExpiresIn}"
         )

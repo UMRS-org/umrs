@@ -17,7 +17,7 @@ from r4_contracts.handshake_hmac import sign_claims
 
 os.environ.setdefault("UMRS_AUTH_MODE", "strict")
 
-from umrs.api.secret_broker import get_broker, router  # noqa: E402
+from umrs.api.secret_broker import get_broker, router
 
 SECRET = "matrix-secret"
 

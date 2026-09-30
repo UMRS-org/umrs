@@ -102,7 +102,7 @@ class _FakePodman:
         self.fake_s3 = fake_s3
         self.calls: list[list[str]] = []
 
-    def __call__(self, cmd, **kwargs):  # noqa: ANN001
+    def __call__(self, cmd, **kwargs):
         self.calls.append(list(cmd))
 
         # If S3 mode, write reply to S3 using the output key from env.
@@ -292,7 +292,7 @@ def test_payload_s3_metadata_stripped_from_worker_payload(monkeypatch):
     """``__payload_s3__`` must not leak into the worker's StepContext.metadata."""
     captured: dict[str, Any] = {}
 
-    def _capturing_run(cmd, **kwargs):  # noqa: ANN001
+    def _capturing_run(cmd, **kwargs):
         workdir = None
         for i, arg in enumerate(cmd):
             if arg == "-v" and i + 1 < len(cmd):

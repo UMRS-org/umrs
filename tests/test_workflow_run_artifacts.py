@@ -158,7 +158,7 @@ def test_persist_run_artifacts_metrics_via_checker(monkeypatch: pytest.MonkeyPat
     )
     captured: list[tuple] = []
 
-    def _fake_persist(*, record, job, attempt):  # noqa: ANN001
+    def _fake_persist(*, record, job, attempt):
         captured.append((job, attempt))
         return [
             {
@@ -283,7 +283,7 @@ class _FakeAsyncpgPool:
         pass
 
 
-def _open_pool_ctx(pool):  # noqa: ANN001, ANN202
+def _open_pool_ctx(pool):
     """Return a context manager mimicking ka._open_pool yielding ``pool``."""
 
     @asynccontextmanager
@@ -451,7 +451,7 @@ def test_ingest_gate_accepts_workflow_run_spec(monkeypatch: pytest.MonkeyPatch) 
 
     calls: list[tuple] = []
 
-    def _capture(*, job, attempt, workflow, step) -> list[str]:  # noqa: ANN001
+    def _capture(*, job, attempt, workflow, step) -> list[str]:
         calls.append((workflow, step))
         return ["ingest-job-1"]
 

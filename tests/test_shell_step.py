@@ -18,7 +18,7 @@ class _FakeS3:
 
         return {"Body": _Body()}
 
-    def put_object(self, Bucket=None, Key=None, Body=None, **_kw):  # noqa: ARG002 — boto3 keyword contract
+    def put_object(self, Bucket=None, Key=None, Body=None, **_kw):
         self._store[Key] = Body
 
 

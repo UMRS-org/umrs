@@ -22,6 +22,8 @@ import logging
 import time
 from typing import Any
 
+from umrs.shared.pg_calls import PgCalls
+
 logger = logging.getLogger(__name__)
 
 AUDIT_STORE_SCHEMA_VERSION = 1
@@ -144,41 +146,47 @@ def _apply_audit_migrations(conn, cur, from_version: int, to_version: int) -> No
 class AuditStore:
     """Postgres-backed persistent audit event store.
 
-    Thread-safe: each method acquires and releases its own cursor.
+    ``pool`` (preferred): every call borrows its own connection and ends its
+    transaction (umrs.shared.pg_calls). Thread-safe: no connection or
+    transaction is shared between calls. The boot-leased ``conn`` it replaced
+    sat idle in a read transaction until R-14's reaper killed it; after that
+    every write was dropped (logged at debug) and every query fell back to
+    the in-memory buffer until a restart.
     """
 
-    def __init__(self, conn) -> None:
+    def __init__(self, conn=None, *, pool=None) -> None:
         self.conn = conn
+        self._calls = PgCalls(pool=pool, conn=conn, label="audit store")
 
     def write(self, record: dict[str, Any]) -> None:
         """Persist a single audit event record."""
-        cur = self.conn.cursor()
-        try:
+        params = (
+            record.get("event_id", ""),
+            record.get("schema_version", "1"),
+            record.get("ts", time.time()),
+            record.get("event", ""),
+            record.get("actor", ""),
+            record.get("project_id", ""),
+            record.get("request_id", ""),
+            record.get("outcome", "success"),
+            record.get("scope", ""),
+            json.dumps(record.get("details", {}), default=str),
+        )
+
+        def _insert(cur) -> None:
             cur.execute(
                 "INSERT INTO audit_events "
                 "(event_id, schema_version, ts, event, actor, project_id, "
                 " request_id, outcome, scope, details) "
                 "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
                 "ON CONFLICT (event_id) DO NOTHING",
-                (
-                    record.get("event_id", ""),
-                    record.get("schema_version", "1"),
-                    record.get("ts", time.time()),
-                    record.get("event", ""),
-                    record.get("actor", ""),
-                    record.get("project_id", ""),
-                    record.get("request_id", ""),
-                    record.get("outcome", "success"),
-                    record.get("scope", ""),
-                    json.dumps(record.get("details", {}), default=str),
-                ),
+                params,
             )
-            self.conn.commit()
+
+        try:
+            self._calls.run(_insert, write=True)
         except Exception:
-            self.conn.rollback()
             logger.debug("Audit write failed", exc_info=True)
-        finally:
-            cur.close()
 
     def query(
         self,
@@ -203,32 +211,19 @@ class AuditStore:
 
         Returns most-recent-first, limited to ``limit`` rows.
         """
-        conditions: list[str] = []
-        params: list[Any] = []
-
-        if request_id:
-            conditions.append("request_id = %s")
-            params.append(request_id)
-        if event:
-            conditions.append("event LIKE %s")
-            params.append(f"%{event}%")
-        if actor:
-            conditions.append("actor = %s")
-            params.append(actor)
-        if project_id:
-            conditions.append("project_id = %s")
-            params.append(project_id)
-        if since > 0:
-            conditions.append("ts >= %s")
-            params.append(since)
-        if until > 0:
-            conditions.append("ts <= %s")
-            params.append(until)
-        if outcome:
-            conditions.append("outcome = %s")
-            params.append(outcome)
-
-        where = " AND ".join(conditions) if conditions else "TRUE"
+        # (clause, active, bound value) — one row per indexed filter.
+        filters = (
+            ("request_id = %s", request_id, request_id),
+            ("event LIKE %s", event, f"%{event}%"),
+            ("actor = %s", actor, actor),
+            ("project_id = %s", project_id, project_id),
+            ("ts >= %s", since > 0, since),
+            ("ts <= %s", until > 0, until),
+            ("outcome = %s", outcome, outcome),
+        )
+        active = [(clause, value) for clause, on, value in filters if on]
+        where = " AND ".join(clause for clause, _ in active) or "TRUE"
+        params: list[Any] = [value for _, value in active]
         params.append(min(limit, 500))
 
         sql = (
@@ -238,16 +233,15 @@ class AuditStore:
             f"ORDER BY ts DESC LIMIT %s"
         )
 
-        cur = self.conn.cursor()
-        try:
+        def _select(cur) -> list[Any]:
             cur.execute(sql, params)
-            rows = cur.fetchall()
+            return cur.fetchall()
+
+        try:
+            rows = self._calls.run(_select)
         except Exception:
-            self.conn.rollback()
             logger.debug("Audit query failed", exc_info=True)
             return []
-        finally:
-            cur.close()
 
         return [
             {
@@ -267,30 +261,29 @@ class AuditStore:
 
     def count(self) -> int:
         """Return total number of persisted audit events."""
-        cur = self.conn.cursor()
-        try:
+
+        def _count(cur) -> int:
             cur.execute("SELECT COUNT(*) FROM audit_events")
             return cur.fetchone()[0]
+
+        try:
+            return self._calls.run(_count)
         except Exception:
-            self.conn.rollback()
+            logger.debug("Audit count failed", exc_info=True)
             return 0
-        finally:
-            cur.close()
 
     def delete_before(self, cutoff_ts: float) -> int:
         """Delete audit events older than cutoff_ts. Returns count deleted."""
-        cur = self.conn.cursor()
-        try:
+
+        def _delete(cur) -> int:
             cur.execute(
                 "DELETE FROM audit_events WHERE ts < %s",
                 (cutoff_ts,),
             )
-            count = cur.rowcount
-            self.conn.commit()
-            return count
+            return cur.rowcount
+
+        try:
+            return self._calls.run(_delete, write=True)
         except Exception:
-            self.conn.rollback()
             logger.warning("Audit retention cleanup failed", exc_info=True)
             return 0
-        finally:
-            cur.close()

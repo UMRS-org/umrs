@@ -129,7 +129,7 @@ def truncate_knowledge_premise_tables() -> None:
         finally:
             conn.commit()
             conn.close()
-    except Exception:  # noqa: BLE001 — isolation helper must not break collection
+    except Exception:
         pass
 
 
@@ -144,7 +144,7 @@ def _reset_knowledge_pool_between_tests() -> Generator:
         from umrs.knowledge.store import reset_knowledge_pool
 
         reset_knowledge_pool()
-    except Exception:  # noqa: BLE001 — isolation fixture must not raise
+    except Exception:
         pass
 
 

@@ -68,7 +68,7 @@ def _truncate_knowledge_premise_tables() -> None:
         finally:
             conn.commit()
             conn.close()
-    except Exception:  # noqa: BLE001 — isolation helper must not break collection
+    except Exception:
         pass
 
 

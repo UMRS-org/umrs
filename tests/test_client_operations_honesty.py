@@ -12,7 +12,6 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 import pytest
-
 from umrs.client.operations import OperationSDK
 
 
@@ -157,9 +156,8 @@ class TestRunnerSourceChecks:
 
     @pytest.mark.asyncio
     async def test_s3_head_failure_raises_named(self, monkeypatch):
-        from umrs.plugins.runner import PluginRunner
-
         from botocore.exceptions import ClientError
+        from umrs.plugins.runner import PluginRunner
 
         class _FakeClient:
             def head_object(self, payload):
@@ -185,8 +183,9 @@ class TestRunnerSourceChecks:
 
 class TestK2ReadinessCoverage:
     def test_verified_count_only_counts_real_verified_metadata(self):
-        from umrs.api.knowledge_v2 import _verified_artifact_count
         from types import SimpleNamespace
+
+        from umrs.api.knowledge_v2 import _verified_artifact_count
 
         rows = [
             SimpleNamespace(metadata={"status": "verified", "owner": "a"}),
@@ -204,8 +203,9 @@ class TestK2ReadinessCoverage:
         assert _verified_artifact_count([]) == 0
 
     def test_verified_count_metadata_alias_metadata_underscore(self):
-        from umrs.api.knowledge_v2 import _verified_artifact_count
         from types import SimpleNamespace
+
+        from umrs.api.knowledge_v2 import _verified_artifact_count
 
         rows = [
             SimpleNamespace(metadata_={"status": "verified"}),

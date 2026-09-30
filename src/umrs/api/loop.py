@@ -1127,6 +1127,10 @@ async def list_loops(
             "companion_session_id": str(
                 loop_obj.metadata.get("companion_session_id") or ""
             ),
+            # 2026-10-01: project scope flows to the work pane so the console
+            # can show only the current project's loops. Real field from the
+            # loop object, never reconstructed client-side.
+            "project_id": str(loop_obj.project_id or ""),
         }
         for loop_obj in _loop_store.list_all()
         if _may_access(loop_obj, caller)

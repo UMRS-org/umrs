@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
@@ -33,6 +33,15 @@ def cancel_readiness(job_id: str) -> None:
     """Stop any in-flight readiness poll for ``job_id`` at its next attempt."""
     if job_id:
         _CANCELLED_JOBS.add(str(job_id))
+
+
+# The delay is capped at max_delay_sec anyway; capping the exponent keeps
+# ``multiplier ** attempt`` finite. Uncapped, 2.0 ** 1024 raised OverflowError
+# about 2.8 h into a wait (live bdrt 2026-09-27: the crash was the only thing
+# that ended a 48 h readiness budget).
+_MAX_BACKOFF_EXPONENT = 32
+
+BACKEND_JOB_ENDED = "backend job ended while waiting for readiness"
 
 
 class ReadinessState(str, Enum):
@@ -87,6 +96,9 @@ class _ReadinessTarget:
     probe_kind: str
     probe_path: str | None
     on_progress: Callable[[ReadinessResult], None] | None
+    # Resolves False once the backend job behind the endpoint has ended; an
+    # HTTP probe alone cannot tell a cancelled job from a slow model load.
+    liveness: Callable[[], Awaitable[bool]] | None = None
 
 
 @dataclass
@@ -96,6 +108,7 @@ class _ReadinessPoll:
     result: ReadinessResult
     attempt: int = 0
     last_error: str | None = None
+    liveness_checked_at: float = 0.0  # elapsed seconds at the last check
 
 
 @dataclass
@@ -114,6 +127,7 @@ class ReadinessConfig:
     max_delay_sec: float = 5.0  # Maximum delay between polls
     backoff_multiplier: float = 2.0  # Backoff multiplier
     jitter_factor: float = 0.1  # Random jitter (±10%)
+    liveness_interval_sec: float = 60.0  # Backend job check cadence
 
     # Validation settings
     require_models: bool = True  # Require at least one model in response
@@ -249,7 +263,7 @@ class ReadinessPoller:
         import random
 
         delay = self.config.initial_delay_sec * (
-            self.config.backoff_multiplier**attempt
+            self.config.backoff_multiplier ** min(attempt, _MAX_BACKOFF_EXPONENT)
         )
         delay = min(delay, self.config.max_delay_sec)
 
@@ -323,7 +337,7 @@ class ReadinessPoller:
         except httpx.TimeoutException:
             return False, False, [], "Request timeout"
         except Exception as e:
-            return False, False, [], f"Error: {e}"
+            return False, False, [], f"{type(e).__name__}: {e}"
 
     def _auth_headers(self) -> dict[str, str] | None:
         if self.config.auth_token:
@@ -424,11 +438,24 @@ class ReadinessPoller:
         probe_kind: str = "models",
         probe_path: str | None = None,
         on_progress: Callable[[ReadinessResult], None] | None = None,
+        liveness: Callable[[], Awaitable[bool]] | None = None,
     ) -> ReadinessResult:
-        """Wait for endpoint to become ready and return the final state."""
+        """Wait for endpoint to become ready and return the final state.
+
+        ``liveness`` is awaited about every ``liveness_interval_sec``; when it
+        resolves False the wait ends FAILED instead of probing a dead job
+        until the timeout.
+        """
         poll = self._start_poll(
             _ReadinessTarget(
-                job_id, host, port, probe_model, probe_kind, probe_path, on_progress
+                job_id,
+                host,
+                port,
+                probe_model,
+                probe_kind,
+                probe_path,
+                on_progress,
+                liveness,
             )
         )
 
@@ -462,6 +489,10 @@ class ReadinessPoller:
         if timeout_result is not None:
             return timeout_result
 
+        ended_result = await self._backend_ended_result(poll, elapsed)
+        if ended_result is not None:
+            return ended_result
+
         poll.attempt += 1
         poll.result.attempts = poll.attempt
         is_ready, _is_degraded, models, error = await self._check_once(
@@ -486,6 +517,39 @@ class ReadinessPoller:
         poll.last_error = self._record_pending(poll, error)
         await self._sleep_before_next_attempt(poll.attempt, elapsed)
         return None
+
+    async def _backend_ended_result(
+        self, poll: _ReadinessPoll, elapsed: float
+    ) -> ReadinessResult | None:
+        liveness = poll.target.liveness
+        if liveness is None:
+            return None
+        if elapsed - poll.liveness_checked_at < self.config.liveness_interval_sec:
+            return None
+        poll.liveness_checked_at = elapsed
+        try:
+            alive = await liveness()
+        except Exception as e:  # noqa: BLE001 - inconclusive, keep probing
+            # The next interval asks again.
+            logger.warning(
+                "Liveness check for %s failed (%s: %s); still waiting",
+                poll.target.job_id,
+                type(e).__name__,
+                e,
+            )
+            return None
+        if alive:
+            return None
+        poll.result.state = ReadinessState.FAILED
+        poll.result.elapsed_sec = elapsed
+        poll.result.error = BACKEND_JOB_ENDED
+        logger.warning(
+            "Readiness poll for %s stopped after %.1fs: %s",
+            poll.target.job_id,
+            elapsed,
+            BACKEND_JOB_ENDED,
+        )
+        return poll.result
 
     async def _sleep_before_next_attempt(self, attempt: int, elapsed: float) -> None:
         delay = self._calculate_delay(attempt)

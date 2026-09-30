@@ -10,7 +10,6 @@ from umrs.connectors.sync_runner import ConnectorSyncRunner
 from umrs.connectors.sync_state import InMemorySyncStateStore
 
 # Interface-parity signatures: fakes intentionally ignore args.
-# ruff: noqa: ARG002
 from umrs.scheduler import ScheduleSpec, ScheduleStore
 from umrs.scheduler.connector_executor import (
     ConnectorSyncExecutor,

@@ -336,7 +336,7 @@ class TestMCPMutationScoping:
         from fastapi.testclient import TestClient
 
         store = self.store
-        store.unregister_server = lambda name: True  # noqa: ARG005
+        store.unregister_server = lambda name: True
         resp = TestClient(self.app).delete(
             f"{MCP_PREFIX}/servers/proj-b-tools", headers={"X-Project-ID": "proj-a"}
         )

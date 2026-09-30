@@ -27,12 +27,17 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
+from collections.abc import Callable
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, TypeVar
 from uuid import uuid4
+
+from umrs.shared.pg_calls import PgCalls
 
 from .schema import CREATE_APPROVAL_INBOX_TABLE
 from .store import _sqliteify
+
+_T = TypeVar("_T")
 
 # Decision vocabulary (kept identical to the companion route contract).
 APPROVED_DECISIONS = frozenset({"once", "always"})
@@ -92,7 +97,8 @@ def _row_to_record(row: Any) -> dict[str, Any]:
 class ApprovalInboxStore:
     """Sync store over a DB-API connection (psycopg or sqlite3).
 
-    ``conn`` may be a plain connection or a pool with ``getconn``/``putconn``.
+    ``conn`` may be a plain connection or a pool with ``getconn``/``putconn``
+    (preferred on Postgres: every call borrows its own connection).
     Placeholders are written ``%s`` — sqlite needs ``?`` (translated in ``_q``).
     """
 
@@ -116,6 +122,7 @@ class ApprovalInboxStore:
         if self._sqlite and self._conn is not None:
             self._conn.row_factory = sqlite3.Row
             self._conn.executescript(_sqliteify(CREATE_APPROVAL_INBOX_TABLE))
+        self._calls = PgCalls(pool=self._pool, conn=self._conn, label="approval inbox")
 
     @property
     def durability(self) -> str:
@@ -126,21 +133,20 @@ class ApprovalInboxStore:
 
     # -- plumbing ------------------------------------------------------------ #
 
-    def _borrow(self):
-        return self._pool.getconn() if self._pool is not None else self._conn
+    def _run(self, work: Callable[[Any], _T], *, write: bool = False) -> _T:
+        """One call, one transaction (umrs.shared.pg_calls), under the lock.
 
-    def _return(self, conn) -> None:
-        if self._pool is not None:
-            self._pool.putconn(conn)
+        Reads used to leave the boot-leased connection (shared with the trust
+        store) idle in transaction; R-14's reaper killed it and both stores
+        failed "connection already closed" until a restart.
+        """
+        with self._lock:
+            return self._calls.run(work, write=write)
 
     def _q(self, sql: str) -> str:
         if not self._sqlite:
             return sql
         return sql.replace("%s", "?").replace("now()", "datetime('now')")
-
-    def _commit(self, conn) -> None:
-        if self._sqlite or not getattr(conn, "autocommit", False):
-            conn.commit()
 
     def _json_param(self, payload: dict[str, Any]) -> Any:
         if self._sqlite:
@@ -169,41 +175,33 @@ class ApprovalInboxStore:
     ) -> dict[str, Any]:
         """Register an approval intent; idempotent when ``approval_id`` is given."""
         approval_id = approval_id or f"appr-{uuid4().hex[:12]}"
-        with self._lock:
-            conn = self._borrow()
-            try:
-                cur = conn.cursor()
-                cur.execute(
-                    self._q(
-                        "INSERT INTO companion_approval_inbox "
-                        "(approval_id, loop_id, iteration, user_id, job_id, attempt_id, action) "
-                        "VALUES (%s, %s, %s, %s, %s, %s, %s) "
-                        "ON CONFLICT (approval_id) DO NOTHING"
-                    ),
-                    (
-                        approval_id,
-                        loop_id,
-                        int(iteration),
-                        user_id or "",
-                        job_id or "",
-                        attempt_id or "",
-                        self._json_param(dict(action)),
-                    ),
-                )
-                self._commit(conn)
-                record = self._fetch_one(cur, approval_id)
-            finally:
-                self._return(conn)
+
+        def _insert(cur) -> dict[str, Any] | None:
+            cur.execute(
+                self._q(
+                    "INSERT INTO companion_approval_inbox "
+                    "(approval_id, loop_id, iteration, user_id, job_id, attempt_id, action) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s) "
+                    "ON CONFLICT (approval_id) DO NOTHING"
+                ),
+                (
+                    approval_id,
+                    loop_id,
+                    int(iteration),
+                    user_id or "",
+                    job_id or "",
+                    attempt_id or "",
+                    self._json_param(dict(action)),
+                ),
+            )
+            return self._fetch_one(cur, approval_id)  # same transaction, then commit
+
+        record = self._run(_insert, write=True)
         assert record is not None  # the row was just inserted or already present
         return record
 
     def get(self, approval_id: str) -> dict[str, Any] | None:
-        with self._lock:
-            conn = self._borrow()
-            try:
-                return self._fetch_one(conn.cursor(), approval_id)
-            finally:
-                self._return(conn)
+        return self._run(lambda cur: self._fetch_one(cur, approval_id))
 
     def pending(
         self, *, loop_id: str | None = None, user_id: str | None = None
@@ -218,14 +216,12 @@ class ApprovalInboxStore:
             sql += " AND (user_id = %s OR user_id = '')"
             params.append(user_id)
         sql += " ORDER BY created_at, approval_id"
-        with self._lock:
-            conn = self._borrow()
-            try:
-                cur = conn.cursor()
-                cur.execute(self._q(sql), tuple(params))
-                return [_row_to_record(r) for r in cur.fetchall()]
-            finally:
-                self._return(conn)
+
+        def _select(cur) -> list[dict[str, Any]]:
+            cur.execute(self._q(sql), tuple(params))
+            return [_row_to_record(r) for r in cur.fetchall()]
+
+        return self._run(_select)
 
     def decide(
         self, approval_id: str, decision: str, decided_by: str
@@ -235,23 +231,20 @@ class ApprovalInboxStore:
             raise ValueError(f"decision must be one of {sorted(VALID_DECISIONS)}")
         status = "approved" if decision in APPROVED_DECISIONS else "rejected"
         now = datetime.now(timezone.utc).isoformat()
-        with self._lock:
-            conn = self._borrow()
-            try:
-                cur = conn.cursor()
-                cur.execute(
-                    self._q(
-                        "UPDATE companion_approval_inbox SET status = %s, decision = %s, "
-                        "decided_by = %s, decided_at = %s "
-                        "WHERE approval_id = %s AND status = 'pending'"
-                    ),
-                    (status, decision, decided_by, now, approval_id),
-                )
-                changed = (cur.rowcount or 0) > 0
-                self._commit(conn)
-                record = self._fetch_one(cur, approval_id)
-            finally:
-                self._return(conn)
+
+        def _update(cur) -> tuple[bool, dict[str, Any] | None]:
+            cur.execute(
+                self._q(
+                    "UPDATE companion_approval_inbox SET status = %s, decision = %s, "
+                    "decided_by = %s, decided_at = %s "
+                    "WHERE approval_id = %s AND status = 'pending'"
+                ),
+                (status, decision, decided_by, now, approval_id),
+            )
+            changed = (cur.rowcount or 0) > 0
+            return changed, self._fetch_one(cur, approval_id)
+
+        changed, record = self._run(_update, write=True)
         if record is None:
             raise KeyError(f"approval not found: {approval_id}")
         if not changed:
@@ -260,13 +253,9 @@ class ApprovalInboxStore:
 
     def clear_all(self) -> None:
         """Test utility: wipe every intent."""
-        with self._lock:
-            conn = self._borrow()
-            try:
-                conn.cursor().execute("DELETE FROM companion_approval_inbox")
-                self._commit(conn)
-            finally:
-                self._return(conn)
+        self._run(
+            lambda cur: cur.execute("DELETE FROM companion_approval_inbox"), write=True
+        )
 
 
 __all__ = [

@@ -6,7 +6,7 @@ import argparse
 from pathlib import Path
 
 # Splice removed (ADR-053): umrs installed editable in .venv.
-from umrs.client.download_results import (  # noqa: E402
+from umrs.client.download_results import (
     classify_wait_reply,
     format_wait_progress,
     incomplete_error_payload,

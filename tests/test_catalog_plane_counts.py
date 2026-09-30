@@ -50,7 +50,7 @@ class _Pool:
     def getconn(self):
         return _Conn(self._script)
 
-    def putconn(self, conn):  # noqa: ARG002
+    def putconn(self, conn):
         return None
 
 
@@ -114,7 +114,7 @@ class _FailingPool:
     def getconn(self):
         raise RuntimeError("pool dead")
 
-    def putconn(self, conn):  # noqa: ARG002
+    def putconn(self, conn):
         return None
 
 

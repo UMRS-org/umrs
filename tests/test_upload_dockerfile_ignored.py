@@ -44,7 +44,7 @@ def _no_host_process(tmp_path, monkeypatch):
     """Any process the upload tried to start (a podman build) fails the test."""
     monkeypatch.setenv("UMRS_WORKFLOW_STATE_DIR", str(tmp_path / "state"))
 
-    def _refuse(*args, **_kw):  # noqa: ANN002, ANN003
+    def _refuse(*args, **_kw):
         raise AssertionError(f"upload started a host process: {args!r}")
 
     monkeypatch.setattr(subprocess, "run", _refuse)

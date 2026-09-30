@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import pytest
-from fake_pg_pool import FakePool  # noqa: E402
-from umrs.knowledge.graph_registry import ProposalStore  # noqa: E402
+from fake_pg_pool import FakePool
+from umrs.knowledge.graph_registry import ProposalStore
 
 
 class TestAcceptanceStats:

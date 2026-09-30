@@ -16,9 +16,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field, is_dataclass, replace
 from enum import Enum
+from functools import partial
 from typing import Any
 
 from .base import JobStatus, OrchestratorBackend
@@ -36,6 +37,7 @@ from .readiness import (
     ReadinessPoller,
     get_readiness_poller,
 )
+from .serving_spec import ResolvedEndpointSpec
 from .site_config import load_site_config
 
 logger = logging.getLogger(__name__)
@@ -45,6 +47,13 @@ logger = logging.getLogger(__name__)
 # briefly before declaring a deprovision failed.
 _DEPROVISION_VERIFY_ATTEMPTS = 6
 _DEPROVISION_VERIFY_DELAY_SEC = 1.0
+
+# Consecutive backend status errors tolerated while waiting for a location.
+_LOCATION_MAX_CONSECUTIVE_ERRORS = 5
+
+# Readiness cap when the request carries no resolved serving plan: the same
+# default a recipe without ``timeout`` resolves to.
+_RECIPE_READINESS_TIMEOUT_SEC = ResolvedEndpointSpec.readiness_timeout_sec
 
 
 class DeprovisionOutcome(str, Enum):
@@ -110,6 +119,48 @@ def _friendly_probe_detail(error: str | None, state: str) -> str:
     if len(short) > 60:
         short = short[:57] + "..."
     return short
+
+
+def _published_location(job: Any, job_id: str, port: int) -> tuple[str, int] | None:
+    """The job's concrete host/port once published; raises if it ended first."""
+    if job.status == JobStatus.FAILED:
+        raise RuntimeError(
+            f"Backend job {job_id} failed before publishing an endpoint: "
+            f"{job.error_message or 'unknown failure'}"
+        )
+    if job.status == JobStatus.STOPPED:
+        raise RuntimeError(
+            f"Backend job {job_id} stopped before publishing an endpoint"
+        )
+    if job.endpoint and job.endpoint.node and job.endpoint.node != "pending":
+        return job.endpoint.node, job.endpoint.litellm_port or port
+    return None
+
+
+def _readiness_probe(request: ProvisionRequest) -> dict[str, str | None]:
+    readiness_path = request.metadata.get("readiness_path")
+    return {
+        "model": request.model,
+        "kind": str(request.metadata.get("readiness_probe") or "chat"),
+        "path": str(readiness_path) if readiness_path else None,
+    }
+
+
+def _recipe_readiness_timeout_sec(metadata: dict[str, Any]) -> int:
+    """The resolved serving plan's ``readiness_timeout_sec`` (recipe ``timeout``)."""
+    plan = metadata.get("serving_plan")
+    raw = plan.get("readiness_timeout_sec") if isinstance(plan, dict) else None
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return _RECIPE_READINESS_TIMEOUT_SEC
+    return value if value > 0 else _RECIPE_READINESS_TIMEOUT_SEC
+
+
+def _readiness_timeout_sec(request: ProvisionRequest, budget_sec: float) -> int:
+    """Readiness clock once the host is known: the provision budget, capped
+    by the recipe's readiness timeout."""
+    return max(1, min(int(budget_sec), _recipe_readiness_timeout_sec(request.metadata)))
 
 
 @dataclass
@@ -271,8 +322,6 @@ class OrchestrationService:
         )
 
         consecutive_errors = 0
-        _max_consecutive_errors = 5
-
         while True:
             remaining = deadline - loop.time()
             if remaining <= 0:
@@ -280,40 +329,62 @@ class OrchestrationService:
                     f"Timed out waiting for backend endpoint location for {job_id}"
                 )
 
-            try:
-                job = await self.backend.get_job_status(job_id)
-                consecutive_errors = 0  # reset on success
-            except Exception as exc:
-                consecutive_errors += 1
-                logger.warning(
-                    "Transient backend error polling location for %s (%d/%d): %s",
-                    job_id,
-                    consecutive_errors,
-                    _max_consecutive_errors,
-                    exc,
-                )
-                if consecutive_errors >= _max_consecutive_errors:
-                    raise RuntimeError(
-                        f"Backend status check for {job_id} failed "
-                        f"{consecutive_errors} consecutive times: {exc}"
-                    ) from exc
-                await asyncio.sleep(min(float(poll_interval), remaining))
-                continue
-
-            if job.status == JobStatus.FAILED:
-                raise RuntimeError(
-                    f"Backend job {job_id} failed before publishing an endpoint: "
-                    f"{job.error_message or 'unknown failure'}"
-                )
-            if job.status == JobStatus.STOPPED:
-                raise RuntimeError(
-                    f"Backend job {job_id} stopped before publishing an endpoint"
-                )
-
-            if job.endpoint and job.endpoint.node and job.endpoint.node != "pending":
-                return job.endpoint.node, job.endpoint.litellm_port or port
+            job, consecutive_errors = await self._location_job_status(
+                job_id, consecutive_errors
+            )
+            location = (
+                _published_location(job, job_id, port) if job is not None else None
+            )
+            if location is not None:
+                return location
 
             await asyncio.sleep(min(float(poll_interval), remaining))
+
+    async def _location_job_status(
+        self, job_id: str, consecutive_errors: int
+    ) -> tuple[Any | None, int]:
+        """One status read for the location wait: ``(job, 0)``, or
+        ``(None, errors + 1)`` on a transient backend error."""
+        try:
+            # No endpoint is READY before its location is known, so a job the
+            # scheduler no longer knows ends the wait instead of spinning out
+            # the whole provision budget.
+            return await self._job_status_before_ready(job_id), 0
+        except Exception as exc:
+            consecutive_errors += 1
+            logger.warning(
+                "Transient backend error polling location for %s (%d/%d): %s",
+                job_id,
+                consecutive_errors,
+                _LOCATION_MAX_CONSECUTIVE_ERRORS,
+                exc,
+            )
+            if consecutive_errors >= _LOCATION_MAX_CONSECUTIVE_ERRORS:
+                raise RuntimeError(
+                    f"Backend status check for {job_id} failed "
+                    f"{consecutive_errors} consecutive times: {exc}"
+                ) from exc
+            return None, consecutive_errors
+
+    async def _job_status_before_ready(self, job_id: str) -> Any:
+        """Backend status for an endpoint that is not READY yet.
+
+        Backends that can tell a job the scheduler no longer knows from a
+        transient miss report it as ended here (remote Slurm: squeue does not
+        list it and sacct errors); others answer as ``get_job_status``.
+        """
+        getter = getattr(self.backend, "get_job_status_before_ready", None)
+        if getter is None:
+            getter = self.backend.get_job_status
+        return await getter(job_id)
+
+    async def _backend_job_running(self, job_id: str) -> bool:
+        """Readiness liveness: False once the backend reports the job ended.
+
+        A failed status read raises; the poller treats that as inconclusive.
+        """
+        info = await self._job_status_before_ready(job_id)
+        return info.status not in (JobStatus.FAILED, JobStatus.STOPPED)
 
     async def _verify_backend_job_alive(self, job_id: str) -> bool:
         """Return True if the backend reports the job in a non-terminal state.
@@ -348,6 +419,7 @@ class OrchestrationService:
         deadline: float,
         readiness_probe: dict[str, str | None] | None = None,
         on_progress: Callable[[Any], None] | None = None,
+        liveness: Callable[[], Awaitable[bool]] | None = None,
     ):
         """Run readiness polling within the remaining provision budget."""
         loop = asyncio.get_running_loop()
@@ -380,6 +452,7 @@ class OrchestrationService:
                 probe_kind=probe.get("kind") or "models",
                 probe_path=probe.get("path"),
                 on_progress=on_progress,
+                liveness=liveness,
             )
         finally:
             if temp_poller is not None:
@@ -684,29 +757,9 @@ class OrchestrationService:
     ) -> ProvisionResult:
         """Resolve backend assignment and readiness for a submitted job."""
         try:
-            if actual_host == "pending":
-                if progress:
-                    progress("waiting_for_assignment", {"job_id": job_id})
-                actual_host, actual_port = await self._resolve_endpoint_location(
-                    job_id,
-                    actual_host,
-                    actual_port,
-                    deadline,
-                )
-                self.registry.update_location(
-                    job_id,
-                    host=actual_host,
-                    port=actual_port,
-                    metadata={
-                        "detail": f"container starting on {actual_host}:{actual_port}",
-                        "service_url": f"http://{actual_host}:{actual_port}",
-                    },
-                )
-                if progress:
-                    progress(
-                        "assignment_resolved",
-                        {"host": actual_host, "port": actual_port},
-                    )
+            actual_host, actual_port = await self._await_assignment(
+                job_id, actual_host, actual_port, deadline, progress
+            )
 
             self.registry.update_status(job_id, EndpointStatus.STARTING)
             self.registry.update_metadata(
@@ -716,40 +769,22 @@ class OrchestrationService:
                 },
             )
 
-            remaining_timeout = max(
-                1, int(deadline - asyncio.get_running_loop().time())
-            )
+            # The provision budget bounded the queue wait; readiness gets its
+            # own clock from here, capped by the recipe's readiness timeout
+            # (live bdrt 2026-09-27: a 48 h host budget kept probing a
+            # cancelled job until the backoff overflowed ~2.8 h in).
+            readiness_timeout = _readiness_timeout_sec(request, deadline - start_time)
             if progress:
-                progress("waiting_for_ready", {"timeout": remaining_timeout})
-            readiness_probe = str(request.metadata.get("readiness_probe") or "chat")
-            readiness_path = request.metadata.get("readiness_path")
-
-            def _on_readiness_progress(r) -> None:
-                if progress:
-                    progress("readiness_check", r.to_dict())
-                detail = _friendly_probe_detail(r.error, r.state.value)
-                self.registry.update_metadata(
-                    job_id,
-                    {
-                        "detail": f"probe #{r.attempts}: {detail}"
-                        if detail
-                        else f"probe #{r.attempts}",
-                        "readiness_attempts": r.attempts,
-                        "readiness_elapsed_sec": round(r.elapsed_sec, 1),
-                    },
-                )
+                progress("waiting_for_ready", {"timeout": readiness_timeout})
 
             readiness_result = await self._wait_for_ready_with_budget(
                 job_id=job_id,
                 host=actual_host,
                 port=actual_port,
-                deadline=deadline,
-                readiness_probe={
-                    "model": request.model,
-                    "kind": readiness_probe,
-                    "path": str(readiness_path) if readiness_path else None,
-                },
-                on_progress=_on_readiness_progress,
+                deadline=asyncio.get_running_loop().time() + readiness_timeout,
+                readiness_probe=_readiness_probe(request),
+                on_progress=self._readiness_progress_recorder(job_id, progress),
+                liveness=partial(self._backend_job_running, job_id),
             )
 
             if readiness_result.is_ready:
@@ -799,6 +834,57 @@ class OrchestrationService:
                 error=str(e),
                 provisioning_time_sec=asyncio.get_event_loop().time() - start_time,
             )
+
+    async def _await_assignment(
+        self,
+        job_id: str,
+        host: str,
+        port: int,
+        deadline: float,
+        progress: Callable[[str, Any], None] | None,
+    ) -> tuple[str, int]:
+        """Resolve a "pending" (Slurm-style) host and record the location."""
+        if host != "pending":
+            return host, port
+        if progress:
+            progress("waiting_for_assignment", {"job_id": job_id})
+        host, port = await self._resolve_endpoint_location(job_id, host, port, deadline)
+        self.registry.update_location(
+            job_id,
+            host=host,
+            port=port,
+            metadata={
+                "detail": f"container starting on {host}:{port}",
+                "service_url": f"http://{host}:{port}",
+            },
+        )
+        if progress:
+            progress("assignment_resolved", {"host": host, "port": port})
+        return host, port
+
+    def _readiness_progress_recorder(
+        self,
+        job_id: str,
+        progress: Callable[[str, Any], None] | None,
+    ) -> Callable[[Any], None]:
+        """Mirror each readiness attempt into the registry row's detail."""
+
+        def _on_readiness_progress(r) -> None:
+            if progress:
+                progress("readiness_check", r.to_dict())
+            detail = _friendly_probe_detail(r.error, r.state.value)
+            self.registry.update_metadata(
+                job_id,
+                {
+                    "detail": f"probe #{r.attempts}: {detail}"
+                    if detail
+                    else f"probe #{r.attempts}",
+                    "readiness_attempts": r.attempts,
+                    "readiness_elapsed_sec": round(r.elapsed_sec, 1),
+                },
+            )
+
+        return _on_readiness_progress
 
     async def deprovision(
         self,

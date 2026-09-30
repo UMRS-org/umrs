@@ -20,7 +20,7 @@ class _RecordingConn:
     def __init__(self) -> None:
         self.codecs: list[dict] = []
 
-    async def set_type_codec(self, typename, **kwargs):  # noqa: ANN001, ANN001, ANN202
+    async def set_type_codec(self, typename, **kwargs):
         self.codecs.append({"typename": typename, **kwargs})
 
 
@@ -71,9 +71,9 @@ def test_open_pool_registers_json_and_jsonb_codecs(
     monkeypatch.setenv("DB_HOST", "127.0.0.1")
     captured: dict[str, object] = {}
 
-    import asyncpg as _real_asyncpg  # noqa: F401 — records the path only
+    import asyncpg as _real_asyncpg
 
-    def _factory(*, dsn: str = "", init=None, **_kw):  # noqa: ANN001
+    def _factory(*, dsn: str = "", init=None, **_kw):
         captured["init"] = init
 
         class _Awaitable:

@@ -255,7 +255,7 @@ def test_an_experiment_naming_another_user_still_runs_as_the_loops_owner(store):
     from umrs.knowledge.planner import ResearchExperiment
 
     engine = AutonomousResearchLoop(simulated=False, workflow_port=UmrsWorkflowExecutionPort(store))
-    engine._cancel_check = lambda: True  # noqa: SLF001 — stop right after the trigger
+    engine._cancel_check = lambda: True
     loop = ResearchLoop(
         loop_id="loop-owner", project_id="p", research_goal="g", status=LoopStatus.RUNNING,
         phase=LoopPhase.EXPERIMENT_EXECUTION, max_iterations=1, current_iteration=1,
@@ -264,7 +264,7 @@ def test_an_experiment_naming_another_user_still_runs_as_the_loops_owner(store):
     )  # fmt: skip
     experiment = ResearchExperiment(experiment_id="e1", parameters={"user_id": "bob", "n": 2})
     iteration = LoopIteration(iteration_id="it", loop_id=loop.loop_id, iteration_number=1)
-    engine._execute_experiment(loop, iteration, experiment)  # noqa: SLF001
+    engine._execute_experiment(loop, iteration, experiment)
     kwargs = store.create_job.call_args.kwargs
     assert kwargs["user_id"] == "alice"
     assert kwargs["spec"]["source_path"] == "/wf/alice/demo08_yield_eval"

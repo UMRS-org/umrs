@@ -165,7 +165,7 @@ class TestStoreCallbackWiring:
 class TestAutoIngestIntegration:
     """Integration tests using fully mocked dependencies."""
 
-    def test_provenance_metadata_set(self, monkeypatch: pytest.MonkeyPatch) -> None:  # noqa: ARG002
+    def test_provenance_metadata_set(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Ingested artifacts should have produced_by_job_id, workflow, step."""
         recorded_meta: list[dict[str, Any]] = []
 
@@ -195,7 +195,7 @@ class TestAutoIngestIntegration:
         # Even when services are unavailable, the hook should not crash.
         # We can only verify it didn't raise.
 
-    def test_success_and_failure_compose(self) -> None:  # noqa: D102
+    def test_success_and_failure_compose(self) -> None:
         """Both success and failure hooks can be active simultaneously."""
         success_called: list[tuple[Any, Any]] = []
         failure_called: list[tuple[Any, int, str]] = []

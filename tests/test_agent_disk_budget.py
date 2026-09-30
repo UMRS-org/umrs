@@ -142,12 +142,12 @@ class TestStagedBytesCleanupOnRefusal:
         client = SimpleNamespace(
             delete_object=lambda *, Bucket, Key: deleted.append((Bucket, Key))
         )
-        config = SimpleNamespace(bucket="bucket-x", get_client=lambda: client)  # noqa: ARG005
+        config = SimpleNamespace(bucket="bucket-x", get_client=lambda: client)
 
         monkeypatch.setattr(
             DiskLedger,
             "charge",
-            lambda self, user_id, *, content_hash, byte_size: (_ for _ in ()).throw(  # noqa: ARG002,ARG005
+            lambda self, user_id, *, content_hash, byte_size: (_ for _ in ()).throw(
                 HTTPException(status_code=503, detail="exceeded")
             ),
         )
@@ -173,7 +173,7 @@ class TestStagedBytesCleanupOnRefusal:
         monkeypatch.setattr(
             knowledge_upload,
             "_cleanup_staged_bytes",
-            lambda *, client, bucket, staged_key: calls.append(  # noqa: ARG005
+            lambda *, client, bucket, staged_key: calls.append(
                 (bucket, staged_key)
             ),
         )
@@ -182,7 +182,7 @@ class TestStagedBytesCleanupOnRefusal:
             def __init__(self, conn):
                 self.conn = conn
 
-            def charge(self, user_id, *, content_hash, byte_size):  # noqa: ARG002
+            def charge(self, user_id, *, content_hash, byte_size):
                 from fastapi import HTTPException
 
                 raise HTTPException(status_code=503, detail="quota")

@@ -167,7 +167,7 @@ def test_missing_sink_is_reported_not_silent():
 
 def test_sink_failure_is_folded_into_loop_metadata():
     class _Broken(InMemoryFindingSink):
-        def mint_artifact(self, **fields):  # noqa: ARG002
+        def mint_artifact(self, **fields):
             raise RuntimeError("knowledge pool unavailable")
 
     loop = _loop()
@@ -215,7 +215,7 @@ def test_engine_runner_invokes_hosting_hook_per_completed_iteration():
     seen: list[tuple[str, int, str]] = []
 
     class _Store:
-        def get(self, loop_id):  # noqa: ARG002
+        def get(self, loop_id):
             return loop
 
         def save(self, _loop):

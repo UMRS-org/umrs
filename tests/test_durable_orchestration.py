@@ -1496,7 +1496,7 @@ class TestOrchestrationServiceConfig:
                 backend="slurm-podman",
             )
         )
-        mock_backend.get_job_status = AsyncMock(
+        mock_backend.get_job_status_before_ready = AsyncMock(
             return_value=JobInfo(
                 job_id="slurm-654",
                 status=BackendJobStatus.STARTING,
@@ -1524,7 +1524,7 @@ class TestOrchestrationServiceConfig:
         )
 
         assert result.success is True
-        mock_backend.get_job_status.assert_awaited_once_with("slurm-654")
+        mock_backend.get_job_status_before_ready.assert_awaited_once_with("slurm-654")
         register_kwargs = mock_registry.register.call_args.kwargs
         assert register_kwargs["host"] == "pending"
         assert register_kwargs["port"] == 11434

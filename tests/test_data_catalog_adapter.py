@@ -202,7 +202,7 @@ class _AdapterS3:
             project_id = meta.acl_scope or s3_key.split("/", 1)[0]
             self.store.upsert(meta, project_id)
 
-    def head_object(self, *, Bucket: str, Key: str) -> dict[str, Any]:  # noqa: N803
+    def head_object(self, *, Bucket: str, Key: str) -> dict[str, Any]:
         if Key not in self.objects:
             raise _no_such_key(Key)
         return {"ContentLength": len(self.objects[Key]), "ETag": '"abc"'}
@@ -210,8 +210,8 @@ class _AdapterS3:
     def get_object(
         self,
         *,
-        Bucket: str,  # noqa: N803
-        Key: str,  # noqa: N803
+        Bucket: str,
+        Key: str,
         Range: str | None = None,
     ) -> dict[str, Any]:
         if Key not in self.objects:
@@ -227,8 +227,8 @@ class _AdapterS3:
     def put_object(
         self,
         *,
-        Bucket: str,  # noqa: N803
-        Key: str,  # noqa: N803
+        Bucket: str,
+        Key: str,
         Body: bytes | str,
         ContentType: str | None = None,
         Metadata: dict[str, str] | None = None,

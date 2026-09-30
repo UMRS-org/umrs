@@ -105,7 +105,7 @@ class TestKnowledgeIrRoundTrip:
         ir = _build()
         try:
             ir.ir_id = "x"  # type: ignore[misc]
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             assert exc.__class__.__name__ == "FrozenInstanceError"
         else:
             raise AssertionError("KnowledgeIR should be immutable")

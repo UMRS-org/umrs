@@ -6,7 +6,7 @@ monkeypatched httpx clients.
 
 # NOTE: ruff may complain about unsorted imports in this block.
 # The import order is intentional for readability.
-import httpx  # noqa: E402
+import httpx
 import pytest
 from umrs.api import chat as chat_mod
 from umrs.api.chat import (

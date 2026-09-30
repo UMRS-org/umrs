@@ -290,7 +290,7 @@ def _run_lane(h) -> list[tuple[str, str]]:
         job.status = _status("running")
         try:
             ref = asyncio.run(backend.submit_job(job, SimpleNamespace(attempt_id="a1")))
-        except Exception as exc:  # noqa: BLE001 — the attempt failed
+        except Exception as exc:
             job.status = _status("failed")
             h.jobs.attempts[job.job_id] = [_attempt("failed", str(exc))]
             out.append(("failed", str(exc)))

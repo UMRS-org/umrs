@@ -32,8 +32,8 @@ class _FakeProjectS3:
     def put_object(
         self,
         *,
-        Bucket: str,  # noqa: N803
-        Key: str,  # noqa: N803
+        Bucket: str,
+        Key: str,
         Body: bytes | str,
         ContentType: str | None = None,
         Metadata: dict[str, str] | None = None,
@@ -44,7 +44,7 @@ class _FakeProjectS3:
         self._etags[Key] = etag
         return {"ETag": f'"{etag}"'}
 
-    def head_object(self, *, Bucket: str, Key: str) -> dict[str, Any]:  # noqa: N803
+    def head_object(self, *, Bucket: str, Key: str) -> dict[str, Any]:
         if Key not in self.objects:
             raise _no_such_key(Key)
         return {
@@ -55,8 +55,8 @@ class _FakeProjectS3:
     def get_object(
         self,
         *,
-        Bucket: str,  # noqa: N803
-        Key: str,  # noqa: N803
+        Bucket: str,
+        Key: str,
         Range: str | None = None,
     ) -> dict[str, Any]:
         if Key not in self.objects:
@@ -79,7 +79,7 @@ class _FakePaginator:
         self.objects = objects
         self.etags = etags
 
-    def paginate(self, *, Bucket: str, Prefix: str):  # noqa: N803
+    def paginate(self, *, Bucket: str, Prefix: str):
         catalog_list = Prefix.startswith("_data_catalog/")
         contents = [
             {"Key": key, "ETag": f'"{self.etags[key]}"', "Size": len(data)}

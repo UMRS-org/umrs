@@ -48,7 +48,7 @@ class _AclS3Client:
     ):
         self._object_bodies = object_bodies or {}
 
-    def get_object(self, *, Bucket: str, Key: str, Range: str | None = None):  # noqa: N803
+    def get_object(self, *, Bucket: str, Key: str, Range: str | None = None):
         body = self._object_bodies.get(Key, b"")
         if Range is None:
             return {"Body": io.BytesIO(body)}
@@ -57,7 +57,7 @@ class _AclS3Client:
         end = int(end_raw)
         return {"Body": io.BytesIO(body[start : end + 1])}
 
-    def head_object(self, *, Bucket: str, Key: str):  # noqa: N803
+    def head_object(self, *, Bucket: str, Key: str):
         body = self._object_bodies.get(Key, b"")
         return {"ContentLength": len(body), "ETag": '"etag"'}
 

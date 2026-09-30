@@ -26,7 +26,7 @@ from typing import Any
 import pytest
 
 # splice removed (ADR-053): pytest auto-inserts tests/ for sibling helpers
-from _transport_parity_helpers import SpyAuditStore, compare_rows  # noqa: E402
+from _transport_parity_helpers import SpyAuditStore, compare_rows
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 

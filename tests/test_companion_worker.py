@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 # splice removed (ADR-053): pytest auto-inserts tests/ for sibling helpers; umrs editable
-from fake_pg_pool import FakePool  # noqa: E402
+from fake_pg_pool import FakePool
 from umrs.jobs.companion_worker import (
     WORKER_MAX_ATTEMPTS,
     WORKER_RESTART_DELAY_SEC,
@@ -240,7 +240,7 @@ class TestLostWorkerScenario:
 
 # ── Turn-attempt registry (T3b m2/m3, ADR-028) ──────────────────────────────
 
-from umrs.jobs.companion_worker import (  # noqa: E402
+from umrs.jobs.companion_worker import (
     CompanionTurnAttemptRegistry,
     TurnAttemptNotFound,
     user_attempt_token_hash,

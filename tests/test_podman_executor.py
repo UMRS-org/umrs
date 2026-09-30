@@ -70,7 +70,7 @@ class _FakePodman:
         # must reach the real function, and only podman calls are recorded.
         self._real_run = subprocess.run
 
-    def __call__(self, cmd, **kwargs):  # noqa: ANN001
+    def __call__(self, cmd, **kwargs):
         if not cmd or os.path.basename(str(list(cmd)[0])) != "podman":
             return self._real_run(cmd, **kwargs)
         self.calls.append(list(cmd))
@@ -526,7 +526,7 @@ def test_podman_payload_carries_no_runner_key_names(monkeypatch):
 
     captured: dict[str, Any] = {}
 
-    def _capturing_run(cmd, **kwargs):  # noqa: ANN001
+    def _capturing_run(cmd, **kwargs):
         workdir = cmd[cmd.index("-v") + 1].split(":")[0]
         with open(os.path.join(workdir, "input.pkl"), "rb") as fh:
             captured["payload"] = pickle.load(fh)
@@ -547,7 +547,7 @@ def test_podman_per_step_image_metadata_stripped_from_payload(monkeypatch):
     leak into the worker's StepContext.metadata."""
     captured: dict[str, Any] = {}
 
-    def _capturing_run(cmd, **kwargs):  # noqa: ANN001
+    def _capturing_run(cmd, **kwargs):
         # Find the workdir bind and read input.pkl that the executor wrote.
         workdir = None
         for i, arg in enumerate(cmd):

@@ -54,7 +54,7 @@ def test_trigger_returns_extracted_execution_id():
 
 def test_trigger_missing_id_raises_honestly():
     class T(_FakeTransport):
-        def post(self, path: str, body: dict):  # noqa: ARG002 — shape probe only
+        def post(self, path: str, body: dict):
             return {"weird": "shape"}
 
     import pytest

@@ -114,10 +114,10 @@ class _SidecarS3Client:
     def __init__(self, objects: dict[str, bytes]):
         self.objects = objects
 
-    def head_object(self, *, Bucket: str, Key: str):  # noqa: N803
+    def head_object(self, *, Bucket: str, Key: str):
         return {"ContentLength": len(self.objects[Key]), "ETag": '"abc"'}
 
-    def get_object(self, *, Bucket: str, Key: str, Range: str | None = None):  # noqa: N803
+    def get_object(self, *, Bucket: str, Key: str, Range: str | None = None):
         content = self.objects[Key]
         if Range is not None:
             start_raw, end_raw = Range.removeprefix("bytes=").split("-", 1)
@@ -130,13 +130,13 @@ class _TrackingS3Client(_SidecarS3Client):
         super().__init__(objects)
         self.max_read_length = 0
 
-    def get_object(self, *, Bucket: str, Key: str, Range: str | None = None):  # noqa: N803
+    def get_object(self, *, Bucket: str, Key: str, Range: str | None = None):
         if Range is not None:
             _start_raw, end_raw = Range.removeprefix("bytes=").split("-", 1)
             self.max_read_length = max(self.max_read_length, int(end_raw) + 1)
         return super().get_object(Bucket=Bucket, Key=Key, Range=Range)
 
-    def put_object(self, *, Bucket: str, Key: str, Body: bytes | str, **kwargs):  # noqa: N803
+    def put_object(self, *, Bucket: str, Key: str, Body: bytes | str, **kwargs):
         data = Body.encode("utf-8") if isinstance(Body, str) else Body
         self.objects[Key] = data
         return {"ETag": '"abc"'}

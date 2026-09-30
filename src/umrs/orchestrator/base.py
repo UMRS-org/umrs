@@ -284,6 +284,16 @@ class OrchestratorBackend(ABC):
         """
         ...
 
+    async def get_job_status_before_ready(self, job_id: str) -> JobInfo:
+        """
+        Get the status of a job whose endpoint is not READY yet.
+
+        A backend that can tell "the scheduler no longer knows this job" from
+        a transient miss reports such a job as ended here, where no healthy
+        endpoint can be lost by it. Default: ``get_job_status``.
+        """
+        return await self.get_job_status(job_id)
+
     @abstractmethod
     async def wait_for_ready(
         self,

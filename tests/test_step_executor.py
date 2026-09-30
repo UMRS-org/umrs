@@ -34,7 +34,7 @@ from umrs.server.step_executor import (
 class _OkStep(Step):
     name = "ok"
 
-    def run(self, ctx: StepContext) -> StepResult:  # noqa: D401
+    def run(self, ctx: StepContext) -> StepResult:
         return StepResult(extra={"hello": ctx.config.get("greeting", "world")})
 
 
@@ -301,7 +301,7 @@ def test_subprocess_payload_carries_no_executor_key_names(monkeypatch):
 
     captured: dict = {}
 
-    def _capturing_run(cmd, *, input, **_kw):  # noqa: A002, ANN001
+    def _capturing_run(cmd, *, input, **_kw):
         captured["payload"] = pickle.loads(input)
         reply = pickle.dumps({"status": "ok", "result": StepResult()})
         return types.SimpleNamespace(returncode=0, stdout=reply, stderr=b"")

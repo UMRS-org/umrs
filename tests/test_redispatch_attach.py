@@ -337,7 +337,7 @@ class _Conn:
     def __init__(self, answers):
         self.answers, self.sql, self.ended = list(answers), [], []
 
-    def cursor(self, cursor_factory=None):  # noqa: ARG002
+    def cursor(self, cursor_factory=None):
         return _Cursor(self)
 
     def commit(self):

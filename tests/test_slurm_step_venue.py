@@ -178,7 +178,7 @@ def test_worker_puts_source_dir_on_sys_path(monkeypatch, tmp_path, _clean_worker
     step_worker._prepare_worker_source_dir()
     assert sys.path[0] == str(tmp_path)
     sys.modules.pop("wfmod", None)
-    import wfmod  # noqa: E402
+    import wfmod
 
     assert wfmod.VALUE == 1
 
@@ -194,7 +194,7 @@ def test_worker_purge_on_source_dir_change(monkeypatch, tmp_path, _clean_worker_
     monkeypatch.setenv("UMRS_STEP_SOURCE_DIR", str(dir_a))
     step_worker._prepare_worker_source_dir()
     sys.modules.pop("wfmod", None)
-    import wfmod  # noqa: E402
+    import wfmod
 
     assert wfmod.VALUE == 10
 
@@ -203,7 +203,7 @@ def test_worker_purge_on_source_dir_change(monkeypatch, tmp_path, _clean_worker_
     monkeypatch.setenv("UMRS_STEP_SOURCE_DIR", str(dir_b))
     step_worker._prepare_worker_source_dir()
     assert "wfmod" not in sys.modules
-    import wfmod as wfmod_b  # noqa: E402
+    import wfmod as wfmod_b
 
     assert wfmod_b.VALUE == 20
 
