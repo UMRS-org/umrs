@@ -1202,8 +1202,11 @@ class MessageQueue:
 
     def _is_ready_reply(self, answer) -> bool:
         """Tolerate both the legacy ``READY!`` and the versioned ``READY!:v1.x``
-        liveness replies (D-04).  Falls back to the bare comparison when the
-        contracts package is absent."""
+        liveness replies (D-04).  ``None`` (recv timeout swallowed by
+        recv_string) is simply not ready, never an error.  Falls back to the
+        bare comparison when the contracts package is absent."""
+        if answer is None:
+            return False
         try:
             from r4_contracts.protocol import parse_handshake_reply
         except ImportError:
