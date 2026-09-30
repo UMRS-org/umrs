@@ -1,6 +1,9 @@
 from typing import Any
 
-from umrs.inference.embeddings import compute_and_store_embedding, compute_and_store_embedding_batch
+from umrs.inference.embeddings import (
+    compute_and_store_embedding,
+    compute_and_store_embedding_batch,
+)
 
 
 class LocalEmbeddingBackend:

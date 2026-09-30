@@ -225,8 +225,20 @@ def test_zmq_admin_comes_from_the_auth_session(tmp_path, role_admin, expected):
             send_string=lambda msg, _sender: sent.append(msg),
         ),
     )
+    jobs_status_updates: list[tuple[int, str]] = []
+
+    class _TasksStatus:
+        def create_task(self, cmd, payload):
+            return 1
+
+        def update_status(self, task_id, status):
+            jobs_status_updates.append((task_id, status))
+
+    ctx.task_manager = SimpleNamespace(tasks_status=_TasksStatus())
     payload = json.dumps({"workflow_name": "wf", "params": {}, "is_admin": True})
-    RunWorkflowHandler().execute(("root", payload, b"sender"), lambda _s: None, ctx, 1)
+    # Handler contract since the ejeannot batch sync (upstream 211790ab):
+    # execute(payload, ctx); the handler creates its own task via _make_task.
+    RunWorkflowHandler().execute(("root", payload, b"sender"), ctx)
     assert json.loads(sent[0])["status"] == expected
 
 
