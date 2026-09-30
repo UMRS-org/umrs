@@ -434,6 +434,72 @@ def create_db_user(username):
     conn.close()
 
 
+def drop_db_user(username):
+    """Drop a per-experience SQL role (`admin user delete --deprovision`)."""
+    cfg = get_db_config()
+    conn = psycopg2.connect(
+        dbname="postgres",
+        user=cfg["superuser"],
+        password=cfg["superuser_password"],
+        host=cfg["host"],
+        port=cfg["port"],
+        **pg_connect_kwargs("admin"),
+    )
+    conn.autocommit = True
+    try:
+        cur = conn.cursor()
+        if not db_user_exists(conn, username):
+            logger.info(f"==> User '{username}' absent in DB (drop no-op)")
+            cur.close()
+            return
+        cur.execute(sql.SQL("DROP USER {};").format(sql.Identifier(username)))
+        logger.info(f"==> User '{username}' dropped from DB")
+        cur.close()
+    finally:
+        conn.close()
+
+
+def drop_db(db_name):
+    """Drop a per-experience database (`admin user delete --deprovision`).
+
+    Evicts the cached pool for this database first (else the process would
+    keep serving a dropped DB), terminates live sessions to it, then drops.
+    """
+    cfg = get_db_config()
+    with _db_pool_cache_lock:
+        cached = _db_pool_cache.pop(db_name, None)
+    if cached is not None:
+        with contextlib.suppress(Exception):
+            cached.close()
+
+    conn = psycopg2.connect(
+        dbname="postgres",
+        user=cfg["superuser"],
+        password=cfg["superuser_password"],
+        host=cfg["host"],
+        port=cfg["port"],
+        **pg_connect_kwargs("admin"),
+    )
+    conn.autocommit = True
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT 1 FROM pg_database WHERE datname = %s;", (db_name,))
+        if not cur.fetchone():
+            logger.info(f"\t\t-->  Database '{db_name}' absent (drop no-op)")
+            cur.close()
+            return
+        cur.execute(
+            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+            "WHERE datname = %s AND pid <> pg_backend_pid();",
+            (db_name,),
+        )
+        cur.execute(sql.SQL("DROP DATABASE {};").format(sql.Identifier(db_name)))
+        logger.info(f"\t\t-->  Database '{db_name}' dropped.")
+        cur.close()
+    finally:
+        conn.close()
+
+
 def _adopt_legacy_database(cur, db_name: str, legacy_db_name: str) -> bool:
     """One-time rename of an un-namespaced legacy database onto ``db_name``.
 
