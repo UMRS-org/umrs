@@ -140,34 +140,109 @@ class UMRSThreads:
         embedding_backend,
         key,
         update_status_callback=None,
+        client_id=None,
     ):
-        from umrs.server.processing import process_s3_objects
-
-        thread_ident, future = self._submit_to_pool(
-            process_s3_objects,
-            (
-                self,
-                s3_objects,
-                buckets_cfg,
-                device,
-                embedding_backend,
-                key,
-                True,
-                update_status_callback,
-            ),
+        return self.launch_s3_threads_batch(
+            [(client_id, s3_objects)],
+            buckets_cfg,
+            device,
+            embedding_backend,
             key,
-            update_status_callback=update_status_callback,
+            client_callbacks={client_id: update_status_callback} if update_status_callback else {},
         )
 
-        try:
-            self._wait_for_key_in_dict(
-                self.thread_dict, thread_ident
-            )  # wait for the thread status to be updated
-        except RuntimeError as exc:
+    def launch_s3_threads_batch(
+        self,
+        client_entries,
+        buckets_cfg,
+        device,
+        embedding_backend,
+        key,
+        client_callbacks=None,
+    ) -> dict:
+        """Submit one pool thread per model group across all client entries.
+
+        ``prepare_model_groups`` resolves bucket configs and groups items by
+        model synchronously (before pool submission), so each submitted thread
+        is independent and can run in parallel — Rivault nodes on different
+        GPUs, or simply different local models.
+
+        Returns a ``{client_id: thread_ident}`` mapping so callers can link
+        threads to tasks via ``TaskManager.associate_thread_with_task`` and
+        patch thread-dict counts with ``patch_thread_nb_objects``.
+        """
+        from umrs.server.processing import prepare_model_groups, process_model_group
+
+        if client_callbacks:
+            for cb in client_callbacks.values():
+                cb(TaskStatus.LAUNCHED)
+
+        groups = prepare_model_groups(
+            self, client_entries, buckets_cfg, device, key, client_callbacks,
+        )
+
+        logger.info(
+            "[PROCESS] %d model group(s) to process for key='%s'",
+            len(groups), key,
+        )
+
+        client_thread_map: dict[str, int] = {}
+        for items, group_callbacks, group_users in groups:
+            model_name = getattr(items[0].get("model"), "model_name", str(items[0].get("model")))
             logger.info(
-                f"WARNING: Thread {thread_ident} did not register in time for '{key}': {exc}"
+                "[PROCESS] Submitting pool thread — model='%s' buckets=%d clients=%s",
+                model_name,
+                len(items),
+                sorted(group_callbacks.keys()),
             )
-        return thread_ident
+            thread_ident, _ = self._submit_to_pool(
+                process_model_group,
+                (self, items, group_callbacks, buckets_cfg, embedding_backend, key, group_users),
+                key,
+                update_status_callback=None,
+            )
+            try:
+                self._wait_for_key_in_dict(self.thread_dict, thread_ident)
+            except RuntimeError as exc:
+                logger.info(
+                    "WARNING: Thread %s did not register in time for '%s': %s",
+                    thread_ident, key, exc,
+                )
+            for client_id in group_callbacks:
+                client_thread_map[client_id] = thread_ident
+
+        return client_thread_map
+
+    def patch_thread_nb_objects(
+        self, thread_ident: int, original_counts_per_bucket: dict
+    ) -> None:
+        """Overwrite nb_objects in thread_dict with original submission counts.
+
+        Called after ``launch_s3_threads_batch`` returns, once the thread has
+        registered in thread_dict.  Re-records the status_store so subsequent
+        STATUS queries show the original submitted count rather than the
+        post-filter count.
+        """
+        key = None
+        users = []
+        with self.lock:
+            entry = self.thread_dict.get(thread_ident)
+            if entry is None:
+                return
+            for work in entry.get("work", []):
+                bucket = work.get("bucket")
+                if bucket in original_counts_per_bucket:
+                    work["nb_objects"] = original_counts_per_bucket[bucket]
+                if key is None:
+                    key = work.get("work_type")
+                user = work.get("user")
+                if user and user not in users:
+                    users.append(user)
+            # Persist the patched entry back (required for diskcache.Cache)
+            self.thread_dict[thread_ident] = entry
+
+        if users and key:
+            self.record_status_for_users_by_key(users, key)
 
     def launch_export_embeddings(
         self,
@@ -205,6 +280,30 @@ class UMRSThreads:
         self.update_thread_dict(
             buckets_cfg, keys_per_bucket, key, thread_ident=thread_ident
         )
+        return thread_ident
+
+    def launch_knn(
+        self,
+        user,
+        n,
+        s3_object,
+        bucket_name,
+        buckets_cfg,
+        control_mq,
+        zmq_sender_id,
+        key,
+        subdir=None,
+        update_status_callback=None,
+    ):
+        from umrs.server.knn_worker import knn_search_worker
+
+        thread_ident, _ = self._submit_to_pool(
+            knn_search_worker,
+            (self, user, n, s3_object, bucket_name, buckets_cfg, control_mq, zmq_sender_id, key, subdir, update_status_callback),
+            key,
+            update_status_callback=update_status_callback,
+        )
+        self.update_thread_dict(buckets_cfg, {bucket_name: None}, key, thread_ident=thread_ident)
         return thread_ident
 
     def launch_wait_table_modification_on_db(

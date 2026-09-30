@@ -31,6 +31,7 @@ from umrs.server.config import ENABLE_PRETTY_PRINT, get_default_db_subdir
 from umrs.server.durable_job_runtime import start_durable_job_runtime_from_env
 from umrs.server.model_path_validator import enforce_model_paths
 from umrs.server.commands import HandlerContext, build_registry
+from umrs.server.commands.base import make_status_callback
 from umrs.server.job_tracking_handler import build_durable_job_backend_from_env
 from umrs.server.json_config import load_server_cfg_file
 from umrs.server.maintenance import (
@@ -169,15 +170,6 @@ def perform_initial_config(configure_file, status_store, skip_create_users=False
 #########################        Main server loop        #########################
 ##################################################################################
 
-def make_update_status_callback(task_manager, task_id):
-    """
-    Return a callback function that updates the task status for the given task_id.
-    The returned function accepts a `status` argument when called.
-    """
-    def callback(status):
-        task_manager.tasks_status.update_status(task_id, status)
-    return callback
-
 
 def _reply_command_error(control_mq, payload, cmd, exc):
     """Best-effort JSON error reply after a per-command dispatch failure.
@@ -281,10 +273,7 @@ def server_event_loop(
             # caller so it fails fast instead of blocking until its receive
             # timeout, and continue serving.
             try:
-                task_id = task_manager.tasks_status.create_task(cmd, payload)
-                print(f"Command: {cmd=} {payload=} {task_id=}")
-                update_status_func = make_update_status_callback(task_manager, task_id)
-                registry.dispatch(cmd, payload, update_status_func, ctx, task_id)
+                registry.dispatch(cmd, payload, ctx)
             except Exception as cmd_exc:  # noqa: BLE001 - loop must survive
                 print(f"ERROR handling command {cmd}: {cmd_exc}", flush=True)
                 traceback.print_exc()
@@ -343,7 +332,7 @@ def handle_maintenance_flags(task_manager, args, buckets_cfg, device, embedding_
             print(f"==> Recovering {cmd} for {client_id} with status: {status}")
 
             # create a callback with task_id embedded
-            update_status_func = make_update_status_callback(task_manager, task_id)
+            update_status_func = make_status_callback(task_manager, task_id)
 
             if not is_client_configured(client_id, server_cfg):
                 print(f"Client {client_id} is not configured. Skipping recovery.")
@@ -404,6 +393,15 @@ def check_umrs_config_directory():
             return None
 # ---------------------------------- CLI ------------------------------------
 
+def set_batch_size(batch_size: int) -> None:
+    """Set UMRS_INFERENCE_BATCH_SIZE from the CLI arg if not already in env."""
+    if "UMRS_INFERENCE_BATCH_SIZE" not in os.environ:
+        os.environ["UMRS_INFERENCE_BATCH_SIZE"] = str(batch_size)
+        print(f"[inference] batch_size={batch_size} (from --batch-size)")
+    else:
+        print(f"[inference] batch_size={os.environ['UMRS_INFERENCE_BATCH_SIZE']} (from env, --batch-size ignored)")
+
+
 def main():
     # Offline admin CLI: route `umrs-server admin ...` before any daemon
     # bootstrap so it works without a configured UMRS_CONFIG directory.
@@ -432,7 +430,10 @@ def main():
     parser.add_argument('--pool-max-pending', type=int, default=None,
                         help='Max pending tasks before rejecting requests (default: UMRS_POOL_MAX_PENDING or 64)')
     parser.add_argument("--skip-create-users", action="store_true", help="Disable MinIO and PostgresSQL checks for bucket/user configuration to speed up server startup.",)
+    parser.add_argument('--batch-size', type=int, default=64,
+                        help='Max objects per model forward pass (sets UMRS_INFERENCE_BATCH_SIZE if not already in env). 0 = no limit.')
     args = parser.parse_args()
+    set_batch_size(args.batch_size)
     configure_file = args.conf
 
     global ENABLE_PRETTY_PRINT

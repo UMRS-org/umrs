@@ -13,11 +13,12 @@ from umrs.core.TaskCmdStatus import TaskCmd
 
 from .enroll_user import EnrollUserHandler
 from .export_embeddings import ExportEmbeddingsHandler
+from .knn import KnnHandler
 from .file_upload import FileHandler
 from .job import JobCancelHandler, JobListHandler, JobSubmitHandler
 from .maintenance import CheckHandler, RecomputeHandler, ReloadHandler, UpdateHandler
 from .model import ModelDownloadHandler, ModelListHandler, ModelRegisterHandler
-from .process_objects import ProcessObjectsHandler
+from .process_objects import ProcessObjectsBatchHandler
 from .purge_buckets import PurgeBucketsHandler
 from .registry import CommandRegistry
 from .upload_workflow import UploadWorkflowHandler
@@ -41,7 +42,9 @@ def build_registry() -> CommandRegistry:
     r = CommandRegistry()
 
     # --- Ingestion --------------------------------------------------------
-    r.register(TaskCmd.PROCESS_OBJECTS, ProcessObjectsHandler())
+    # PROCESS_OBJECTS_BATCH is synthesised by the ZMQ drain loop from
+    # already-authorised PROCESS_OBJECTS requests — skip _authorize.
+    r.register_internal(TaskCmd.PROCESS_OBJECTS_BATCH, ProcessObjectsBatchHandler())
 
     # --- Maintenance (admin-only: RECOMPUTE, UPDATE, CHECK, RELOAD) -------
     r.register(TaskCmd.RECOMPUTE, RecomputeHandler())
@@ -52,6 +55,7 @@ def build_registry() -> CommandRegistry:
     # --- File management --------------------------------------------------
     r.register(TaskCmd.FILE, FileHandler())
     r.register(TaskCmd.EXPORT_EMBEDDINGS, ExportEmbeddingsHandler())
+    r.register(TaskCmd.KNN, KnnHandler())
     r.register(TaskCmd.WAIT_OUTPUT, WaitOutputHandler())
 
     # --- User management (admin-only) -------------------------------------

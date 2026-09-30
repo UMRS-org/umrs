@@ -174,7 +174,8 @@ class MessageQueue:
 
     def __init__(self, role='server', queue_type='control', server_ip="127.0.0.1", port=BASE_PORT,
                  max_nb_messages=DEFAULT_NB_MSG, timeout_ms=8000, tmp_dir = None, task_manager = None,
-                 status_store=None, tunnel_mode=None, prefer_env_server_host=True, context=None):
+                 status_store=None, tunnel_mode=None, prefer_env_server_host=True, context=None,
+                 use_status_all_cache=True, status_all_cache_ttl=0.2):
         """
         Initializes the MessageQueue.
 
@@ -211,6 +212,14 @@ class MessageQueue:
         self.tmp_dir = tmp_dir
         self.task_manager = task_manager
         self.status_store = status_store
+        # UMRS_STATUS_ALL_CACHE=0 disables the cache without code changes (e.g. for benchmarking)
+        env_cache = os.environ.get("UMRS_STATUS_ALL_CACHE")
+        if env_cache is not None:
+            use_status_all_cache = env_cache.strip() not in ("0", "false", "no")
+        self.use_status_all_cache = use_status_all_cache
+        self.status_all_cache_ttl = status_all_cache_ttl
+        # (timestamp, payload) — None until first build
+        self._status_all_cache: tuple[float, str] | None = None
         self.debug = False  # disable noisy send/recv logs by default
         self._auth_sessions: dict[str, AuthContext] = {}  # client_id -> AuthContext
         self._last_control_auth: dict[str, str] = {}
@@ -288,18 +297,18 @@ class MessageQueue:
         if self.role == 'server':
             # Server uses PULL socket to receive pushed data
             self.socket = self.context.socket(zmq.PULL)
+            self.socket.setsockopt(zmq.RCVHWM, self.max_msg)  # must be set before bind
             self._apply_socket_security(self.socket, server=True)
             bind_host = "127.0.0.1" if self.tunnel_mode else "*"
             self.socket.bind(f"tcp://{bind_host}:{self.port}")  # Data channel bind
-            self.socket.setsockopt(zmq.RCVHWM, self.max_msg)  # e.g. max queued messages
             self.set_timeouts(self.timeout, self.timeout)
         else:  # client
             # Client uses PUSH socket to send data
             self.socket = self.context.socket(zmq.PUSH)
-            self.socket.setsockopt(zmq.LINGER, 0)  # Don't block on close/term
+            self.socket.setsockopt(zmq.LINGER, 30000)  # flush up to 30s on close
+            self.socket.setsockopt(zmq.SNDHWM, self.max_msg)  # must be set before connect
             self._apply_socket_security(self.socket, server=False)
             self.socket.connect(f"tcp://{self.server_ip}:{self.port}")
-            self.socket.setsockopt(zmq.SNDHWM, self.max_msg)  # e.g. max queued messages
             self.set_timeouts(self.timeout, self.timeout)
 
 
@@ -423,6 +432,13 @@ class MessageQueue:
                 raise RuntimeError(f"Unknown queue type: {self.type}")
 
         except zmq.Again:
+            if self.type == "data" and self.role == "client":
+                sndtimeo = self.socket.getsockopt(zmq.SNDTIMEO)
+                sndhwm = self.socket.getsockopt(zmq.SNDHWM)
+                raise RuntimeError(
+                    f"Data send timeout after {sndtimeo}ms on port {self.port} "
+                    f"(SNDHWM={sndhwm}) — server data queue may be full or unreachable"
+                ) from None
             raise RuntimeError("Timeout while sending message") from None
 
         except zmq.ZMQError as e:
@@ -550,6 +566,15 @@ class MessageQueue:
                 except Exception as e:
                     logger.warning("Failed to close data socket: %s", e)
 
+        # Log total notify_s3 count before closing a client data queue
+        if self.role == "client" and self.type == "data":
+            count = getattr(self, "_notify_s3_count", 0)
+            logger.info(
+                "notify_s3: closing data queue — %d message(s) sent in total on port %s",
+                count,
+                self.port,
+            )
+
         # Close main socket
         try:
             self.socket.close()
@@ -607,6 +632,12 @@ class MessageQueue:
         client_id = splited_msg[1] if len(splited_msg) > 1 else None
         status_key = splited_msg[2] if len(splited_msg) > 2 else "all"
         payload = self._get_status_payload(client_id, status_key)
+        with contextlib.suppress(RuntimeError):
+            self.send_string(payload, zmq_sender_id)
+        return None
+
+    def _parse_status_all(self, splited_msg, zmq_sender_id):
+        payload = self._get_status_all_payload()
         with contextlib.suppress(RuntimeError):
             self.send_string(payload, zmq_sender_id)
         return None
@@ -727,12 +758,14 @@ class MessageQueue:
         TaskCmd.HAND_CHECK:        "_parse_handshake",
         TaskCmd.CREATE_DATA_QUEUE: "_parse_create_data_queue",
         TaskCmd.STATUS:            "_parse_status",
+        TaskCmd.STATUS_ALL:        "_parse_status_all",
         TaskCmd.PROCESS_OBJECTS:   "_parse_count_cmd",
         TaskCmd.FILE:              "_parse_count_cmd",
         TaskCmd.ENROLL_USER:       "_parse_count_cmd",
         TaskCmd.UPLOAD_WORKFLOW:   "_parse_upload_workflow",
         TaskCmd.WAIT_OUTPUT:       "_parse_wait_output",
         TaskCmd.EXPORT_EMBEDDINGS: "_parse_simple_payload",
+        TaskCmd.KNN:               "_parse_json_payload",
         TaskCmd.RECOMPUTE:         "_parse_maintenance",
         TaskCmd.UPDATE:            "_parse_maintenance",
         TaskCmd.CHECK:             "_parse_maintenance",
@@ -757,8 +790,18 @@ class MessageQueue:
         if self.role != "server":
             raise PermissionError("Only server can call 'server_control_queue_loop'.")
 
+        # Lookahead deque: non-PROCESS_OBJECTS messages captured during batch drain
+        if not hasattr(self, "_lookahead"):
+            import collections
+            self._lookahead = collections.deque()
+
         while True:
-            zmq_sender_id, msg = self.recv_string()
+            # Drain lookahead first before blocking on ZMQ
+            if self._lookahead:
+                zmq_sender_id, msg = self._lookahead.popleft()
+            else:
+                zmq_sender_id, msg = self.recv_string()
+
             logger.info("Received control request: %s", self._redact_control_message(msg))
             splited_msg = msg.split(":")
             cmd = splited_msg[0]
@@ -783,49 +826,130 @@ class MessageQueue:
                     self.send_string("SERVER_ERROR", zmq_sender_id)
                 continue
 
-            if result is not None:
-                return result
-            # result is None → command was handled inline, loop continues
+            if result is None:
+                # Command handled inline, loop continues
+                continue
 
-    def wait_for_s3_events(self, nb_objects, debug=False, timeout_s=60):
+            # Got a PROCESS_OBJECTS — always wrap in BATCH (N=1 is handled uniformly)
+            if result[0] == TaskCmd.PROCESS_OBJECTS:
+                batch = [result[1]]
+                batch.extend(self._drain_process_objects())
+                logger.info(
+                    "[PROCESS] Batch assembled: %d client request(s) — %s",
+                    len(batch),
+                    [(cid, nb) for cid, nb in batch],
+                )
+                return TaskCmd.PROCESS_OBJECTS_BATCH, batch
+
+            return result
+
+    def _drain_process_objects(self):
+        """Non-blocking drain of the ZMQ control socket.
+
+        Collects additional PROCESS_OBJECTS payloads that are already queued.
+        Non-PROCESS_OBJECTS messages are pushed to the lookahead deque for the
+        next iteration of server_control_queue_loop.
+
+        Returns a list of additional PROCESS_OBJECTS payloads (may be empty).
+        """
+        extra = []
+        while True:
+            try:
+                frames = self.socket.recv_multipart(flags=zmq.NOBLOCK)
+            except zmq.Again:
+                break
+
+            # Re-parse the frame the same way recv_string does for ROUTER sockets
+            if len(frames) == 3 and frames[1] == b"":
+                zmq_sender_id, msg_bytes = frames[0], frames[2]
+                auth_frame = None
+            elif len(frames) == 3:
+                zmq_sender_id, msg_bytes = frames[0], frames[1]
+                auth_frame = frames[2]
+            elif len(frames) == 2:
+                zmq_sender_id, msg_bytes = frames[0], frames[1]
+                auth_frame = None
+            else:
+                logger.warning("_drain_process_objects: unexpected frame count %d", len(frames))
+                continue
+
+            msg = msg_bytes.decode()
+            splited_msg = msg.split(":")
+            cmd = splited_msg[0]
+
+            if cmd != TaskCmd.PROCESS_OBJECTS:
+                self._lookahead.append((zmq_sender_id, msg))
+                continue
+
+            # Parse and ACK the PROCESS_OBJECTS inline
+            try:
+                result = self._parse_count_cmd(splited_msg, zmq_sender_id)
+            except Exception as e:
+                logger.error("_drain_process_objects: parse error for %s: %s", cmd, e)
+                with contextlib.suppress(RuntimeError):
+                    self.send_string("SERVER_ERROR", zmq_sender_id)
+                continue
+
+            if result is not None:
+                extra.append(result[1])
+
+        return extra
+
+    def wait_for_s3_events(self, nb_objects, debug=False, timeout_s=10):
         """Block until new messages arrive, then read all available messages.
 
         Args:
             nb_objects: Number of S3 event messages to collect.
             debug: Enable debug printing.
-            timeout_s: Maximum wall-clock seconds to wait before returning
-                       with whatever messages have been collected so far.
-                       Default 60s.  Set to 0 or None for no limit.
+            timeout_s: Inactivity timeout — seconds without receiving any
+                       message before giving up.  Resets on each received
+                       message, so slow-but-steady streams are never cut off.
+                       Default 10s.  Set to 0 or None for no limit.
 
         Returns:
             List of received message strings (may be shorter than nb_objects
-            if the timeout fires).
+            if the inactivity timeout fires).
         """
         if self.role != 'server':
             raise PermissionError("Only server can call 'wait_for_s3_events'.")
 
         messages = []
-        logger.info(
-            "Listening for %s new messages (timeout=%s)",
+        logger.debug(
+            "Listening for %s new messages (inactivity_timeout=%s)",
             nb_objects,
             timeout_s,
         )
         nb_received = 0
-        start = time.time()
+        last_received = time.time()
         while nb_received < nb_objects:
-            if timeout_s and (time.time() - start) > timeout_s:
+            if timeout_s and (time.time() - last_received) > timeout_s:
                 logger.warning(
-                    "wait_for_s3_events timed out after %s seconds (%s/%s received)",
+                    "wait_for_s3_events inactivity timeout after %s seconds (%s/%s received)",
                     timeout_s,
                     nb_received,
                     nb_objects,
                 )
+                # Greedy drain: grab any messages already buffered without blocking
+                while nb_received < nb_objects:
+                    try:
+                        msg = self.socket.recv_string(flags=zmq.NOBLOCK)
+                        messages.append(msg)
+                        nb_received += 1
+                    except zmq.Again:
+                        break
+                if nb_received < nb_objects:
+                    logger.warning(
+                        "wait_for_s3_events: gave up after drain — final count %s/%s",
+                        nb_received,
+                        nb_objects,
+                    )
                 break
             _, message = self.recv_string()
             if message:
                 logger.debug("Received S3 event payload_bytes=%s", len(message.encode("utf-8")))
                 messages.append(message)
                 nb_received += 1
+                last_received = time.time()
 
         return messages
 
@@ -1106,6 +1230,40 @@ class MessageQueue:
 
         return reply
 
+    def request_knn(self, client_id: str, n: int, s3_object: str, bucket: str, subdir: str | None = None) -> str:
+        """Send a KNN request and return the raw JSON reply (client role only).
+
+        Parameters
+        ----------
+        client_id:  caller identity (must match the server's user registry)
+        n:          number of nearest neighbours to return
+        s3_object:  S3 key of the query object (must be accessible in *bucket*)
+        bucket:     path_to_bucket as registered in the server config
+        subdir:     optional sub-directory prefix; when set, search results are
+                    filtered to objects whose key starts with ``subdir/``
+        """
+        if self.role != "client":
+            raise PermissionError("Only client can call 'request_knn'")
+
+        import json as _json
+        safe_client_id = (client_id or "").replace(":", "_")
+        body: dict = {"n": n, "object": s3_object, "bucket": bucket}
+        if subdir:
+            body["subdir"] = subdir
+        payload = _json.dumps(body)
+        request_str = f"{TaskCmd.KNN}:{safe_client_id}:{payload}"
+
+        old_rcv = self.socket.getsockopt(zmq.RCVTIMEO)
+        self.socket.setsockopt(zmq.RCVTIMEO, 120_000)
+        self.send_string(request_str)
+        try:
+            _, reply = self.recv_string()
+        except zmq.Again:
+            raise TimeoutError("Timeout waiting for KNN reply") from None
+        finally:
+            self.socket.setsockopt(zmq.RCVTIMEO, old_rcv)
+        return reply
+
     def wait_for_new_data(self, client_id, full_bucket_name, timeout=60):
         if self.role != "client":
             raise PermissionError("Only client can call 'request_status'")
@@ -1195,13 +1353,89 @@ class MessageQueue:
             payload["pool"] = pool_metrics
         return json.dumps(payload, ensure_ascii=False)
 
+    def _build_status_all_payload(self) -> str:
+        """Build and return the raw STATUS_ALL JSON string (no caching)."""
+        try:
+            store = self.status_store or {}
+            generated_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+            db_by_client: dict = {}
+            if self.task_manager is not None:
+                with contextlib.suppress(Exception):
+                    db_by_client = (
+                        self.task_manager.tasks_status.all_tasks_summary_by_client()
+                    )
+
+            # diskcache.Cache has no .keys() method — use list(store) (__iter__)
+            # which works for both plain dict and diskcache.Cache.
+            store_keys = list(store)
+            all_ids = set(store_keys) | set(db_by_client.keys())
+            clients = {
+                cid: {
+                    "summaries": store.get(cid, {}),
+                    "uncompleted_key_list": db_by_client.get(cid, []),
+                }
+                for cid in all_ids
+            }
+            return json.dumps(
+                {"status": "ok", "generated_at": generated_at, "clients": clients},
+                ensure_ascii=False,
+                default=str,  # diskcache values may contain datetime or custom types
+            )
+        except Exception as exc:
+            logger.exception("STATUS_ALL payload build failed: %s", exc)
+            return json.dumps(
+                {"status": "error", "message": f"STATUS_ALL build error: {exc}"},
+                ensure_ascii=False,
+            )
+
+    def _get_status_all_payload(self) -> str:
+        """Return the STATUS_ALL JSON, using a short-lived cache when enabled."""
+        if self.use_status_all_cache:
+            now = time.monotonic()
+            entry = self._status_all_cache
+            if entry is not None and now - entry[0] < self.status_all_cache_ttl:
+                return entry[1]
+            payload = self._build_status_all_payload()
+            self._status_all_cache = (time.monotonic(), payload)
+            return payload
+        return self._build_status_all_payload()
+
+    def request_status_all(self) -> str:
+        """Send STATUS_ALL and return the raw JSON reply (client role only)."""
+        if self.role != "client":
+            raise PermissionError("Only client can call 'request_status_all'")
+        self.send_string(TaskCmd.STATUS_ALL)
+        try:
+            _, reply = self.recv_string()
+        except zmq.Again:
+            raise TimeoutError(
+                "Timeout waiting for server response in request_status_all"
+            ) from None
+        if reply is None:
+            raise TimeoutError("No response from server for STATUS_ALL")
+        if not reply.startswith("{"):
+            raise RuntimeError(f"Unexpected server reply for STATUS_ALL: {reply!r}")
+        return reply
+
     def notify_s3(self, s3_object):
         """Notify the server about a new S3 event."""
         if self.role != 'client':
             raise PermissionError("notify_s3 can only be used by the client.")
 
-        # print(f"sending data to port: {self.port}")
-        self.send_string(s3_object)
+        self._notify_s3_count = getattr(self, "_notify_s3_count", 0) + 1
+        if self._notify_s3_count % 500 == 0:
+            logger.info("notify_s3: %d messages sent so far on port %s", self._notify_s3_count, self.port)
+        try:
+            self.send_string(s3_object)
+        except RuntimeError as exc:
+            logger.error(
+                "notify_s3 failed for %s (message #%d): %s — object will NOT be indexed",
+                s3_object,
+                self._notify_s3_count,
+                exc,
+            )
+            raise
 
     def request_model_command(
         self, client_id, model_cmd, payload_json="", timeout_ms=300_000

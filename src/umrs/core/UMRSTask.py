@@ -96,6 +96,12 @@ class UMRSTask:
                         ON tasks (client_id, cmd, payload_hash)
                         WHERE status IN ('Submitted', 'Running')
                     """)
+                    # Index for STATUS queries: client_id + status filter used by
+                    # all_uncompleted_task and get_tasks(client_id=...).
+                    cur.execute("""
+                        CREATE INDEX IF NOT EXISTS tasks_client_status
+                        ON tasks (client_id, status)
+                    """)
         finally:
             self._put_conn(conn)
 
@@ -310,19 +316,26 @@ class UMRSTask:
                             (new_status, task_id),
                         )
                 break
+            except psycopg2.errors.UniqueViolation:
+                # Another task with the same (client, cmd, payload_hash) is
+                # already active.  The work is covered — log and return without
+                # raising so the calling thread stays alive.
+                logger.warning(
+                    "update_status task %d → %s: dedup conflict, task already "
+                    "active under the same key — skipping.",
+                    task_id, new_status,
+                )
+                break
             except psycopg2.Error as e:
-                if attempt < self.max_attempts:
-                    time.sleep(0.5)
-                else:
+                if attempt >= self.max_attempts:
                     logger.info(
                         f"Critical PostgreSQL error while updating task {task_id}: {type(e).__name__}: {e}"
                     )
                     traceback.print_exc()
                     raise
+                time.sleep(0.5)
             finally:
                 self._put_conn(conn)
-
-        self.pretty_print_tasks(limit=20)
 
     # ------------------------------------------------------------------
     # Task creation (cmd dispatch)
@@ -334,7 +347,13 @@ class UMRSTask:
 
         if cmd == TaskCmd.PROCESS_OBJECTS:
             client_id, s3_objects = full_payload
-            str_payload = json.dumps(s3_objects)
+            # PROCESS_OBJECTS consumes S3 events from the per-client data queue
+            # and is therefore not idempotent: two successive upload_dir calls
+            # for the same client (even with the same object count) must each
+            # create a distinct task.  Append a nanosecond timestamp to ensure
+            # every invocation gets a unique payload_hash and bypasses the
+            # active-task dedup that guards other commands.
+            str_payload = json.dumps({"n": s3_objects, "_ts": time.time_ns()})
 
         elif cmd == TaskCmd.WAIT_OUTPUT:
             client_id, output_path_to_bucket, timeout, zmq_sender_id = full_payload
@@ -363,6 +382,7 @@ class UMRSTask:
             TaskCmd.JOB_SUBMIT,
             TaskCmd.JOB_CANCEL,
             TaskCmd.PURGE_BUCKETS,
+            TaskCmd.KNN,
         ):
             client_id, payload_str, _zmq_sender_id = full_payload
             str_payload = payload_str
@@ -438,13 +458,66 @@ class UMRSTask:
         ]
 
     def all_uncompleted_task(self, client_id, status_key):
-        tasks = self.get_tasks(client_id=client_id)
+        query = (
+            "SELECT id, client_id, cmd, payload, status, submitted_at, updated_at "
+            "FROM tasks WHERE client_id = %s "
+            "AND status NOT IN (%s, %s)"
+        )
+        params = [client_id, TaskStatus.COMPLETED, TaskStatus.OVERRIDDEN]
+        if status_key not in (TaskCmd.ALL, "*"):
+            query += " AND cmd = %s"
+            params.append(status_key)
+
+        conn = self._get_conn()
+        try:
+            with conn:
+                with conn.cursor() as cur:
+                    cur.execute(query, params)
+                    rows = cur.fetchall()
+        finally:
+            self._put_conn(conn)
+
         return [
-            t
-            for t in tasks
-            if t["status"] not in (TaskStatus.COMPLETED, TaskStatus.OVERRIDDEN)
-            and (status_key in (TaskCmd.ALL, "*") or t["cmd"] == status_key)
+            {
+                "id": r[0], "client_id": r[1], "cmd": r[2],
+                "payload": r[3], "status": r[4],
+                "submitted_at": str(r[5]) if r[5] else "-",
+                "updated_at": str(r[6]) if r[6] else "-",
+            }
+            for r in rows
         ]
+
+    def all_tasks_summary_by_client(self) -> dict:
+        """Single SQL query returning uncompleted tasks grouped by client_id.
+
+        Used by STATUS_ALL to answer in one DB round-trip instead of one
+        query per client.  Returns dict[client_id -> list[task_dict]].
+        """
+        query = (
+            "SELECT client_id, id, cmd, status, submitted_at, updated_at "
+            "FROM tasks "
+            "WHERE status NOT IN (%s, %s) "
+            "ORDER BY client_id, updated_at DESC"
+        )
+        conn = self._get_conn()
+        try:
+            with conn:
+                with conn.cursor() as cur:
+                    cur.execute(query, (TaskStatus.COMPLETED, TaskStatus.OVERRIDDEN))
+                    rows = cur.fetchall()
+        finally:
+            self._put_conn(conn)
+
+        result: dict = {}
+        for r in rows:
+            client_id = r[0]
+            result.setdefault(client_id, []).append({
+                "id": r[1], "client_id": r[0], "cmd": r[2],
+                "status": r[3],
+                "submitted_at": str(r[4]) if r[4] else "-",
+                "updated_at": str(r[5]) if r[5] else "-",
+            })
+        return result
 
     def pretty_print_tasks(
         self,
@@ -529,7 +602,7 @@ class UMRSTask:
                 message = "Tasks in DB:\n" + table
 
         if print_output:
-            logger.info(message)
+            logger.debug(message)
         return message
 
     def close(self, verbose=False):

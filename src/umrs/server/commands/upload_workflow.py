@@ -20,11 +20,11 @@ import logging
 import os
 from typing import Any
 
-from umrs.core.TaskCmdStatus import TaskStatus
+from umrs.core.TaskCmdStatus import TaskCmd, TaskStatus
 from umrs.server.file_handling import handle_upload_workflow as _handle_upload_workflow
 from umrs.server.workflow_registry_handler import register_workflow
 
-from .base import CommandHandler, HandlerContext, StatusCallback
+from .base import CommandHandler, HandlerContext
 
 logger = logging.getLogger(__name__)
 
@@ -32,19 +32,12 @@ logger = logging.getLogger(__name__)
 class UploadWorkflowHandler(CommandHandler):
     """Handle UPLOAD_WORKFLOW — extract zip and register workflow in catalog."""
 
-    def execute(
-        self,
-        payload: Any,
-        update_status: StatusCallback,
-        ctx: HandlerContext,
-        task_id: int,
-    ) -> None:
+    def execute(self, payload: Any, ctx: HandlerContext) -> None:
+        task_id, update_status = self._make_task(ctx, TaskCmd.UPLOAD_WORKFLOW, payload)
         client_id, files, workflow_name = payload
 
         if not files:
-            logger.warning(
-                "UPLOAD_WORKFLOW received with no files (task_id=%s)", task_id
-            )
+            logger.warning("UPLOAD_WORKFLOW received with no files (task_id=%s)", task_id)
             update_status(TaskStatus.ERROR)
             return
 

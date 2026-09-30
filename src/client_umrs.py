@@ -5606,6 +5606,58 @@ def _action_status(ctx):
     return 0
 
 
+def format_status_all_text(parsed):
+    """Render a STATUS_ALL response as human-readable text."""
+    if parsed.get("status") != "ok":
+        return f"{_red('✗')} {parsed.get('message', 'status unavailable')}"
+
+    clients = parsed.get("clients", {})
+    if not clients:
+        return _dim("(no clients known to server)")
+
+    generated_at = parsed.get("generated_at", "")
+    header_line = _bold("Status — all clients")
+    if generated_at:
+        header_line += f"  {_dim('(' + utc_to_local(generated_at) + ')')}"
+
+    blocks = [header_line, ""]
+    for client_id in sorted(clients.keys()):
+        if client_id == "system":
+            continue
+        entry = clients[client_id]
+        per_client = {"status": "ok", "client": client_id, "summaries": entry.get("summaries", {})}
+        blocks.append(format_status_text(per_client, "process_objects"))
+        blocks.append("")
+
+    if blocks and blocks[-1] == "":
+        blocks.pop()
+    return "\n".join(blocks)
+
+
+def _action_status_all(ctx):
+    """Fetch the status of every client known to the server in one request."""
+    args = ctx.args
+    api = UMRSControlAPI(ctx.control_mq, "")
+    try:
+        parsed = api.request_status_all()
+        if getattr(args, "output", "text") == "json":
+            print(_json.dumps(parsed, ensure_ascii=False))
+        else:
+            print(format_status_all_text(parsed))
+    except Exception as e:
+        print(
+            api_json(
+                status="error",
+                action="status-all",
+                message=str(e),
+                output_format=getattr(args, "output", "text"),
+            )
+        )
+    finally:
+        ctx.control_mq.close()
+    return 0
+
+
 def _action_maintenance(ctx):
     args = ctx.args
 
@@ -5827,6 +5879,73 @@ def _action_export_embeddings(ctx):
     return 0
 
 
+def _action_knn(ctx):
+    """Upload a local file to S3 then ask the server for its k nearest neighbours."""
+    args = ctx.args
+    bucket_alias_arg = getattr(args, "bucket_alias")
+    bucket_alias, subdir = decompose_bucket_alias_arg(bucket_alias_arg)
+
+    entry = ctx.buckets_cfg.get(bucket_alias)
+    if entry is None:
+        print(api_json(status="error", message=f"Bucket alias not found: {bucket_alias}", output_format=args.output))
+        ctx.control_mq.close()
+        return 1
+
+    path_to_bucket = entry.path_to_bucket
+    s3_configuration_file = entry.s3_configuration_file
+    effective_username = getattr(args, "username", None) or (
+        ctx.user.get("username") if isinstance(ctx.user, dict) else None
+    )
+    if not effective_username:
+        print(api_json(status="error", message="No username provided and none found in config", output_format=args.output))
+        ctx.control_mq.close()
+        return 1
+
+    file_path = os.path.abspath(getattr(args, "image_path"))
+    if not os.path.isfile(file_path):
+        print(api_json(status="error", message=f"File not found: {file_path}", output_format=args.output))
+        ctx.control_mq.close()
+        return 1
+
+    try:
+        expanded_cfg = os.path.expanduser(s3_configuration_file)
+        default_docker_s3cfg = get_default_docker_s3cfg()
+        if not os.path.exists(expanded_cfg) and os.path.exists(default_docker_s3cfg):
+            expanded_cfg = default_docker_s3cfg
+
+        endpoint_override = None
+        if hasattr(ctx, "connection") and ctx.connection is not None:
+            if getattr(ctx.connection, "profile_name", None) is not None:
+                profile_minio = getattr(ctx.connection, "minio_url", None)
+                if profile_minio:
+                    endpoint_override = profile_minio
+
+        s3, _ = connect_to_s3(expanded_cfg, endpoint_url_override=endpoint_override)
+
+        s3_key = os.path.basename(file_path)
+        if subdir:
+            s3_key = f"{subdir}/{s3_key}"
+        s3.upload_file(file_path, path_to_bucket, s3_key)
+
+        raw_response = ctx.control_mq.request_knn(effective_username, args.n, s3_key, path_to_bucket, subdir=subdir or None)
+        response = _json.loads(raw_response)
+        if response.get("status") != "ok":
+            print(api_json(status="error", action="knn", message=response.get("message", "Server error"), output_format=args.output))
+            ctx.control_mq.close()
+            return 1
+        if args.output == "json":
+            print(api_json(action="knn", bucket=bucket_alias, **{k: v for k, v in response.items() if k != "status"}, output_format="json"))
+        else:
+            print(response.get("summary", ""))
+    except Exception as e:
+        print(api_json(status="error", action="knn", message=str(e), output_format=args.output))
+        if args.verbose:
+            traceback.print_exc()
+    finally:
+        ctx.control_mq.close()
+    return 0
+
+
 def _action_s3_transfer(ctx):
     """Handle upload_file, upload_dir, and download_results actions."""
     args = ctx.args
@@ -5968,9 +6087,6 @@ def _action_s3_transfer(ctx):
             return None, 0
 
         category = modality_category(modality)
-        print(
-            f"Processing file '{file_path}' for modality '{modality}' (category: {category})"
-        )
 
         if category == "image":
             s3_key = s3_store_image(
@@ -6044,26 +6160,42 @@ def _action_s3_transfer(ctx):
         s3_key_list = []
         file_list = []
         nb_objects = 0
-        # Recursively walk *path* so deeply nested data (e.g. the
-        # opossum ``opossum_NNN_X/opossumX/Schedule/YYYYMMDD/HH/*.mp4``
-        # hierarchy) is uploaded. Each file's relative directory becomes
-        # part of the S3 key prefix, preserving the camera/Schedule date
-        # hierarchy expected by the workflow step.
+
+        # Collect all files first so tqdm can show a total
         norm_path = os.path.abspath(path)
+        all_files = []
         for root, _dirs, files in os.walk(norm_path):
-            for fname in files:
-                file_path = os.path.join(root, fname)
-                if not os.path.isfile(file_path):
-                    continue
+            for fname in sorted(files):
+                fp = os.path.join(root, fname)
+                if os.path.isfile(fp):
+                    rel_dir = os.path.relpath(root, norm_path)
+                    if rel_dir in (".", ""):
+                        fsubdir = subdir
+                    elif subdir:
+                        fsubdir = f"{subdir}/{rel_dir}"
+                    else:
+                        fsubdir = rel_dir
+                    all_files.append((fp, fsubdir))
 
-                rel_dir = os.path.relpath(root, norm_path)
-                if rel_dir in (".", ""):
-                    file_subdir = subdir
-                elif subdir:
-                    file_subdir = f"{subdir}/{rel_dir}"
-                else:
-                    file_subdir = rel_dir
+        try:
+            from tqdm import tqdm as _tqdm
+        except ImportError:
+            _tqdm = None
 
+        iterable = (
+            _tqdm(all_files, desc="Uploading to S3", unit="file")
+            if _tqdm is not None
+            else all_files
+        )
+
+        # Flush a batch to the server every NOTIFY_BATCH_SIZE files to avoid
+        # filling the ZMQ data-queue buffers (SNDHWM + RCVHWM ≈ 20 480).
+        # The server ACKs notify_server immediately so this adds negligible delay.
+        NOTIFY_BATCH_SIZE = 8000
+        batch_pending = 0
+
+        try:
+            for file_path, file_subdir in iterable:
                 s3_key, nb_sent = process_file(
                     s3,
                     full_bucket_name,
@@ -6084,11 +6216,24 @@ def _action_s3_transfer(ctx):
                         s3_key_list.append(s3_key)
                         file_list.append(file_path)
                     nb_objects += nb_sent
+                    batch_pending += nb_sent
 
-        if nb_objects > 0:
-            ctx.control_mq.notify_server(
-                username, TaskCmd.PROCESS_OBJECTS, nb_objects, blocking = blocking
-            )
+                if batch_pending >= NOTIFY_BATCH_SIZE:
+                    ctx.control_mq.notify_server(
+                        username, TaskCmd.PROCESS_OBJECTS, batch_pending, blocking=False
+                    )
+                    batch_pending = 0
+        finally:
+            # Always flush URIs already queued in the ZMQ data channel, even if
+            # the loop aborted (e.g. data queue full): without this notify_server
+            # call the server never reads those URIs and the files are lost.
+            if batch_pending > 0:
+                print(f"Sending {nb_objects} object(s) to server...")
+                ctx.control_mq.notify_server(
+                    username, TaskCmd.PROCESS_OBJECTS, batch_pending, blocking=blocking
+                )
+            elif nb_objects > 0:
+                print(f"Sent {nb_objects} object(s) to server in batches.")
         return s3_key_list, file_list
 
     def download_results_fn(full_bucket_name, modality, subdir):
@@ -6239,8 +6384,7 @@ def _action_s3_transfer(ctx):
             if len(s3_key_list) > 0:
                 print(
                     api_json(
-                        s3_key_list=s3_key_list,
-                        file_list=file_list,
+                        nb_objects=len(s3_key_list),
                         bucket=full_bucket_name,
                         subdir=subdir,
                         modality=modality,
@@ -6282,11 +6426,13 @@ _ACTION_HANDLERS = {
     "list_buckets": _action_list_buckets,
     "purge_remote_buckets": _action_purge_remote_buckets,
     "status": _action_status,
+    "status-all": _action_status_all,
     "recompute": _action_maintenance,
     "update": _action_maintenance,
     "check": _action_maintenance,
     "reload": _action_maintenance,
     "export_embeddings": _action_export_embeddings,
+    "knn": _action_knn,
     "upload_file": _action_s3_transfer,
     "upload_dir": _action_s3_transfer,
     "download_results": _action_s3_transfer,
@@ -6698,6 +6844,11 @@ def main():
     )
     configure_status_parser(status_p, include_username=True)
 
+    subparsers.add_parser(
+        "status-all",
+        help="Fetch the status of every client known to the server in one request",
+    )
+
     # Embedding maintenance actions
     subparsers.add_parser(
         "recompute", help="Recompute embeddings for your own buckets (admin: all users)"
@@ -6748,6 +6899,23 @@ def main():
         "username",
         nargs="?",
         help="Configured username owning the bucket (defaults to config if omitted)",
+    )
+
+    # kNN nearest-neighbour search
+    knn_p = subparsers.add_parser(
+        "knn",
+        help="Find the N nearest neighbours of a local image in a bucket's embedding table",
+    )
+    knn_p.add_argument("n", type=int, help="Number of nearest neighbours to return")
+    knn_p.add_argument("image_path", help="Path to the local image file to use as query")
+    knn_p.add_argument(
+        "bucket_alias",
+        help="Alias of the bucket to search (as defined in the client configuration file)",
+    )
+    knn_p.add_argument(
+        "username",
+        nargs="?",
+        help="Username owning the bucket (defaults to config if omitted)",
     )
 
     # --- Model registry commands ---
