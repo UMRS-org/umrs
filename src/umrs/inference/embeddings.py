@@ -10,6 +10,7 @@ client, different process and latency class). Not to be merged (R6.1).
 
 # import psycopg2
 import json
+import logging
 import os
 
 import numpy as np
@@ -27,6 +28,11 @@ from umrs.shared.storage.s3 import load_data_from_s3
 from umrs.shared.utils import zero_out_embeddings_for_empty_objects
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
+# Module logger — the batch path (compute_and_store_embedding_batch) logs
+# per-item failures; upstream references `logger` without defining it
+# (latent NameError on the error path).
+logger = logging.getLogger(__name__)
 
 # Modalities where the model handles its own S3 I/O (data loading + output
 # writing) rather than receiving pre-loaded tensors.

@@ -22,7 +22,6 @@ import numpy as np
 import torch
 from PIL import Image
 
-
 # ---------------------------------------------------------------------------
 # Model loading
 # ---------------------------------------------------------------------------
@@ -32,7 +31,7 @@ def _device():
 
 
 def load_resnet():
-    import torchvision.models as models
+    from torchvision import models
     from torchvision.models import ResNet50_Weights
 
     model = models.resnet50(weights=ResNet50_Weights.DEFAULT)

@@ -7,13 +7,19 @@ clients from hanging until their receive timeout when:
 
 In both cases the registry must send a JSON error reply to the ZMQ sender
 so the client fails fast with a clear message.
+
+Contract note (2026-09-30, ejeannot batch sync, upstream 211790ab):
+``CommandRegistry.dispatch(cmd, payload, ctx)`` no longer takes a
+pre-created ``task_id``/``update_status`` — handlers own their task
+lifecycle via ``CommandHandler._make_task``. Unknown commands therefore
+create no task and no status transition; the error reply is the only
+observable effect.
 """
 
 from __future__ import annotations
 
 import json
 
-from umrs.core.TaskCmdStatus import TaskStatus
 from umrs.server.commands.base import CommandHandler, HandlerContext
 from umrs.server.commands.registry import CommandRegistry
 
@@ -34,16 +40,8 @@ class _RecordingControlMQ:
         return True
 
 
-class _StatusRecorder:
-    def __init__(self) -> None:
-        self.statuses: list[str] = []
-
-    def __call__(self, status: str) -> None:
-        self.statuses.append(status)
-
-
 class _RaisingHandler(CommandHandler):
-    def execute(self, payload, update_status, ctx, task_id):
+    def execute(self, payload, ctx):
         raise RuntimeError("boom")
 
 
@@ -62,11 +60,10 @@ def test_unknown_command_replies_with_error() -> None:
     registry = CommandRegistry()
     mq = _RecordingControlMQ()
     ctx = _make_ctx(mq)
-    status = _StatusRecorder()
 
     # 3-tuple payload: (client_id, payload_str, zmq_sender_id)
     payload = ("alice", "{}", b"sender-1")
-    registry.dispatch("NO_SUCH_CMD", payload, status, ctx, task_id=1)
+    registry.dispatch("NO_SUCH_CMD", payload, ctx)
 
     assert len(mq.sent) == 1
     message, sender = mq.sent[0]
@@ -75,20 +72,17 @@ def test_unknown_command_replies_with_error() -> None:
     assert body["status"] == "error"
     assert body["code"] == "UNKNOWN_COMMAND"
     assert "NO_SUCH_CMD" in body["message"]
-    assert TaskStatus.UNKNOWN in status.statuses
 
 
 def test_unknown_command_without_sender_does_not_reply() -> None:
     registry = CommandRegistry()
     mq = _RecordingControlMQ()
     ctx = _make_ctx(mq)
-    status = _StatusRecorder()
 
     # Fire-and-forget payload (plain str) carries no sender id.
-    registry.dispatch("NO_SUCH_CMD", "alice", status, ctx, task_id=1)
+    registry.dispatch("NO_SUCH_CMD", "alice", ctx)
 
     assert mq.sent == []
-    assert TaskStatus.UNKNOWN in status.statuses
 
 
 def test_handler_exception_replies_with_error() -> None:
@@ -96,10 +90,9 @@ def test_handler_exception_replies_with_error() -> None:
     registry.register("BOOM", _RaisingHandler())
     mq = _RecordingControlMQ()
     ctx = _make_ctx(mq)
-    status = _StatusRecorder()
 
     payload = ("alice", "{}", b"sender-2")
-    registry.dispatch("BOOM", payload, status, ctx, task_id=1)
+    registry.dispatch("BOOM", payload, ctx)
 
     assert len(mq.sent) == 1
     message, sender = mq.sent[0]
@@ -107,4 +100,3 @@ def test_handler_exception_replies_with_error() -> None:
     body = json.loads(message)
     assert body["status"] == "error"
     assert body["code"] == "HANDLER_ERROR"
-    assert TaskStatus.ERROR in status.statuses
