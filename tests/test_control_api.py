@@ -271,3 +271,20 @@ def test_is_server_ready_tolerates_versioned_handshake_reply():
     mq.send_string = lambda *a, **k: sent.append(a[0])
     mq.recv_string = lambda: (None, next(replies))
     assert mq.is_server_ready(timeout_ms=1500) is True
+
+
+def test_is_server_ready_treats_recv_timeout_as_not_ready():
+    """``recv_string`` swallows zmq.Again into ``(None, None)``: the guard
+    must return False, never raise (regression for the N>=64 crash staging
+    found in the live batch sweep: first HANDSHAKE timeout under load)."""
+    from umrs.core.MessageQueue import MessageQueue as _MQ
+
+    mq = _MQ.__new__(_MQ)
+    mq.role = "client"
+    mq.type = "control"
+    mq.timeout = 8000
+    mq.set_timeouts = lambda *a, **k: None
+    mq.send_string = lambda *a, **k: None
+    mq.recv_string = lambda: (None, None)
+    mq.reset_control_queue = lambda: None
+    assert mq.is_server_ready(timeout_ms=1500) is False
