@@ -107,16 +107,16 @@ def test_client_retries_busy_reply_then_connects(monkeypatch):
     monkeypatch.setattr(mq, "recv_string", lambda: (None, next(replies)))
     monkeypatch.setattr(time, "sleep", lambda _s: None)
 
-    real_new = MessageQueue.__new__  # captured before patching (no recursion)
-
-    def _fake_new(cls, **kwargs):
-        inst = real_new(cls)
-        inst.kwargs = kwargs
-        return inst
-
-    monkeypatch.setattr(MessageQueue, "__new__", staticmethod(_fake_new))
+    # No __new__ patching: a real client data MessageQueue only creates a
+    # ZMQ PUSH socket on connect() (non-blocking, no server needed) — so
+    # constructing one here is harmless and exercises the true path.
     data_mq = mq.get_data_queue("bench01")
-    assert data_mq.kwargs["port"] == 50091
+    try:
+        assert data_mq.port == 50091
+        assert data_mq.role == "client"
+        assert data_mq.type == "data"
+    finally:
+        data_mq.close()
 
 
 def test_client_busy_retry_dies_with_runtime_error_past_deadline(monkeypatch):
