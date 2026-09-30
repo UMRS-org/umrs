@@ -13,7 +13,6 @@ from umrs.connectors.sync_runner import ConnectorSyncRunner
 from umrs.connectors.sync_state import InMemorySyncStateStore
 
 # Interface-parity signatures: fakes intentionally ignore args.
-# ruff: noqa: ARG002
 
 
 def _doc(source_id, content, content_type="text/plain"):

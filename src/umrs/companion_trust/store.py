@@ -18,8 +18,11 @@ Semantics:
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any, TypeVar
 
+from umrs.shared.pg_calls import PgCalls
 from umrs.shared.scope_grammar import parse_lenient
 
 from .schema import (
@@ -27,6 +30,8 @@ from .schema import (
     CREATE_SESSION_ARCHIVE_TABLE,
     CREATE_TRUST_TABLE,
 )
+
+_T = TypeVar("_T")
 
 DEFAULT_TTL_SEC = 1800  # 30 min — mirrors R4_PERMISSION_APPROVAL_TTL default
 REASON_SESSION_ARCHIVED = "session_archived"
@@ -127,7 +132,8 @@ def _row_to_trust(row) -> TrustRow:
 class TrustAllowlistStore:
     """Sync store over a DB-API connection (psycopg or sqlite3).
 
-    ``conn`` may be a plain connection or a pool with ``getconn``/``putconn``.
+    ``conn`` may be a plain connection or a pool with ``getconn``/``putconn``
+    (preferred on Postgres: every call borrows its own connection).
     Placeholders are written ``%s`` — sqlite needs ``?`` (translated in ``_q``).
     """
 
@@ -151,24 +157,32 @@ class TrustAllowlistStore:
             self._conn.executescript(_sqliteify(CREATE_TRUST_TABLE))
             self._conn.executescript(_sqliteify(CREATE_SESSION_ARCHIVE_TABLE))
             self._conn.executescript(_sqliteify(CREATE_REVOKE_LOG_TABLE))
+        self._calls = PgCalls(pool=self._pool, conn=self._conn, label="trust store")
 
     # -- low-level plumbing ------------------------------------------------ #
 
-    def _borrow(self):
-        return self._pool.getconn() if self._pool is not None else self._conn
+    def _run(self, work: Callable[[Any], _T], *, write: bool = False) -> _T:
+        """One call, one transaction (umrs.shared.pg_calls): writes commit and
+        reads end their transaction on both dialects.
 
-    def _return(self, conn) -> None:
-        if self._pool is not None:
-            self._pool.putconn(conn)
+        Writes used to commit only on sqlite; on Postgres a grant or revoke
+        stayed in the boot-leased connection's open transaction (made durable
+        only when the approval inbox, sharing that connection, happened to
+        commit) until R-14's idle-in-transaction reaper rolled it back.
+        """
+        return self._calls.run(work, write=write)
+
+    def _fetchone(self, sql: str, params: tuple) -> Any:
+        def _select(cur) -> Any:
+            cur.execute(self._q(sql), params)
+            return cur.fetchone()
+
+        return self._run(_select)
 
     def _q(self, sql: str) -> str:
         if not self._sqlite:
             return sql
         return sql.replace("%s", "?").replace("now()", "datetime('now')")
-
-    def _commit(self, conn) -> None:
-        if self._sqlite:
-            conn.commit()  # psycopg connections commit via pool owner
 
     # -- CRUD ---------------------------------------------------------------- #
 
@@ -189,14 +203,13 @@ class TrustAllowlistStore:
         is mutually exclusive commit ordering, caught by check() anyway.
         """
         scope = _norm_scope(scope)
-        conn = self._borrow()
         alive_guard = (
             _session_id_of_scope(scope) if scope.startswith("session:") else None
         )
-        try:
-            cur = conn.cursor()
+
+        def _upsert(cur) -> None:
             if alive_guard is not None:
-                cur = self._grant_transaction_with_alive_check(conn, alive_guard, scope)
+                self._refuse_archived_session(cur, alive_guard, scope)
             if self._sqlite:
                 cur.execute(
                     """INSERT INTO companion_trust_allowlist
@@ -222,16 +235,16 @@ class TrustAllowlistStore:
                        DO UPDATE SET expires_at = now() + (%s || ' seconds')::interval""",
                     (user_id, scope, tool_name, str(ttl_sec), created_by, str(ttl_sec)),
                 )
-            self._commit(conn)
-            return TrustRow(
-                user_id=user_id,
-                scope=scope,
-                tool_name=tool_name,
-                expires_at="",  # caller re-reads via check() if it needs the stamp
-                created_by=created_by,
-            )
-        finally:
-            self._return(conn)
+
+        # A refused grant rolls back, releasing the tombstone row lock too.
+        self._run(_upsert, write=True)
+        return TrustRow(
+            user_id=user_id,
+            scope=scope,
+            tool_name=tool_name,
+            expires_at="",  # caller re-reads via check() if it needs the stamp
+            created_by=created_by,
+        )
 
     def check(
         self, user_id: str, tool_name: str, scope: str = "system"
@@ -260,27 +273,27 @@ class TrustAllowlistStore:
         """Unexpired rows for the user, optionally scope-filtered."""
         if scope is not None:
             scope = _norm_scope(scope)
-        conn = self._borrow()
-        try:
-            cur = conn.cursor()
-            sql = "SELECT * FROM companion_trust_allowlist WHERE user_id = %s"
-            params: tuple = (user_id,)
-            if scope is not None:
-                sql += " AND scope = %s"
-                params = (user_id, scope)
-            sql += " ORDER BY scope, tool_name"
+        sql = "SELECT * FROM companion_trust_allowlist WHERE user_id = %s"
+        params: tuple = (user_id,)
+        if scope is not None:
+            sql += " AND scope = %s"
+            params = (user_id, scope)
+        sql += " ORDER BY scope, tool_name"
+
+        def _select(cur) -> list[Any]:
             cur.execute(self._q(sql), params)
-            rows = [self._row_guard(r) for r in cur.fetchall()]
-            return [r for r in rows if r is not None]
-        finally:
-            self._return(conn)
+            return cur.fetchall()
+
+        # Expiry guards run after the read's transaction ended (each is a
+        # call of its own), never nested inside it.
+        rows = [self._row_guard(r) for r in self._run(_select)]
+        return [r for r in rows if r is not None]
 
     def revoke(self, user_id: str, tool_name: str, scope: str = "system") -> bool:
         """Delete a row. Returns True when a row existed."""
         scope = _norm_scope(scope)
-        conn = self._borrow()
-        try:
-            cur = conn.cursor()
+
+        def _delete(cur) -> int:
             cur.execute(
                 self._q(
                     "DELETE FROM companion_trust_allowlist "
@@ -288,10 +301,9 @@ class TrustAllowlistStore:
                 ),
                 (user_id, scope, tool_name),
             )
-            self._commit(conn)
-            return (cur.rowcount or 0) > 0
-        finally:
-            self._return(conn)
+            return cur.rowcount or 0
+
+        return self._run(_delete, write=True) > 0
 
     def revoke_scope(self, scope: str, *, user_id: str | None = None) -> int:
         """Delete ALL rows in a scope (optionally one owner's rows).
@@ -304,9 +316,8 @@ class TrustAllowlistStore:
         defensive only. Returns the number of rows deleted.
         """
         scope = _norm_scope(scope)
-        conn = self._borrow()
-        try:
-            cur = conn.cursor()
+
+        def _delete(cur) -> int:
             if user_id is None:
                 cur.execute(
                     self._q("DELETE FROM companion_trust_allowlist WHERE scope = %s"),
@@ -320,11 +331,9 @@ class TrustAllowlistStore:
                     ),
                     (scope, user_id),
                 )
-            deleted = cur.rowcount or 0
-            self._commit(conn)
-            return deleted
-        finally:
-            self._return(conn)
+            return cur.rowcount or 0
+
+        return self._run(_delete, write=True)
 
     # ── session lifecycle cascade (ADR-035 item-8; schema v2) ────────────── #
 
@@ -398,9 +407,8 @@ class TrustAllowlistStore:
         whichever client happened to trigger the archive.
         """
         scope = _norm_scope(f"session:{session_id}")
-        conn = self._borrow()
-        try:
-            cur = conn.cursor()
+
+        def _archive(cur) -> list[dict]:
             if self._sqlite:
                 cur.execute(
                     self._q(
@@ -417,21 +425,13 @@ class TrustAllowlistStore:
                     ),
                     (session_id, archived_by),
                 )
-            revoked = self._revoke_scope_on(
+            return self._revoke_scope_on(
                 cur, scope, reason=reason, session_id=session_id
             )
-            if self._sqlite:
-                self._commit(conn)
-            else:
-                conn.commit()
-            return revoked
-        except Exception:
-            # Tombstone + revoke + audit either all land or none — an
-            # exception between them must NOT leave a half-archived state.
-            conn.rollback()
-            raise
-        finally:
-            self._return(conn)
+
+        # Tombstone + revoke + audit either all land or none — an exception
+        # between them rolls back the transaction _run opened.
+        return self._run(_archive, write=True)
 
     def revoke_session_scope_conn(
         self,
@@ -455,38 +455,23 @@ class TrustAllowlistStore:
     # -- internals ---------------------------------------------------------- #
 
     def _fetch(self, user_id: str, scope: str, tool_name: str) -> TrustRow | None:
-        conn = self._borrow()
-        try:
-            cur = conn.cursor()
-            cur.execute(
-                self._q(
-                    "SELECT * FROM companion_trust_allowlist "
-                    "WHERE user_id = %s AND scope = %s AND tool_name = %s"
-                ),
-                (user_id, scope, tool_name),
-            )
-            row = cur.fetchone()
-            return _row_to_trust(row) if row is not None else None
-        finally:
-            self._return(conn)
+        row = self._fetchone(
+            "SELECT * FROM companion_trust_allowlist "
+            "WHERE user_id = %s AND scope = %s AND tool_name = %s",
+            (user_id, scope, tool_name),
+        )
+        return _row_to_trust(row) if row is not None else None
 
     def _unexpired(self, row: TrustRow) -> bool:
         """Expiry check against the DB clock (authoritative, no client skew)."""
-        conn = self._borrow()
-        try:
-            cur = conn.cursor()
-            now_fn = "datetime('now')" if self._sqlite else "now()"
-            cur.execute(
-                self._q(
-                    f"SELECT 1 FROM companion_trust_allowlist "
-                    f"WHERE user_id = %s AND scope = %s AND tool_name = %s "
-                    f"AND expires_at > {now_fn}"
-                ),
-                (row.user_id, row.scope, row.tool_name),
-            )
-            return cur.fetchone() is not None
-        finally:
-            self._return(conn)
+        now_fn = "datetime('now')" if self._sqlite else "now()"
+        hit = self._fetchone(
+            f"SELECT 1 FROM companion_trust_allowlist "
+            f"WHERE user_id = %s AND scope = %s AND tool_name = %s "
+            f"AND expires_at > {now_fn}",
+            (row.user_id, row.scope, row.tool_name),
+        )
+        return hit is not None
 
     def _row_guard(self, raw) -> TrustRow | None:
         """list-row filter: keep only unexpired; drop expired eagerly."""
@@ -498,21 +483,14 @@ class TrustAllowlistStore:
 
     def _session_archived(self, session_id: str) -> bool:
         """Tombstone presence — the read-side invariant for the cascade."""
-        conn = self._borrow()
-        try:
-            cur = conn.cursor()
-            cur.execute(
-                self._q(
-                    "SELECT 1 FROM companion_session_archives WHERE session_id = %s"
-                ),
-                (session_id,),
-            )
-            return cur.fetchone() is not None
-        finally:
-            self._return(conn)
+        hit = self._fetchone(
+            "SELECT 1 FROM companion_session_archives WHERE session_id = %s",
+            (session_id,),
+        )
+        return hit is not None
 
-    def _grant_transaction_with_alive_check(self, conn, session_id: str, scope: str):
-        """Return (conn, cursor) once the tombstone is ruled out in-tx.
+    def _refuse_archived_session(self, cur, session_id: str, scope: str) -> None:
+        """Raise once the tombstone is found in-tx (on the grant's cursor).
 
         Postgres path: ``SELECT ... FOR UPDATE`` inside the SAME transaction
         as the later upsert — a concurrent archive writing the tombstone
@@ -520,12 +498,9 @@ class TrustAllowlistStore:
         sqlite path: plain SELECT inside the tx (no FOR UPDATE support;
         the read-side check() refuse remains the functional backstop).
         """
-        cur = conn.cursor()
         cur.execute(
             self._q(
-                self._q(
-                    "SELECT 1 FROM companion_session_archives WHERE session_id = %s"
-                )
+                "SELECT 1 FROM companion_session_archives WHERE session_id = %s"
                 if self._sqlite
                 else "SELECT 1 FROM companion_session_archives "
                 "WHERE session_id = %s FOR UPDATE"
@@ -536,7 +511,6 @@ class TrustAllowlistStore:
             raise SessionArchivedError(
                 f"session archived — refusing to mint grant in scope {scope!r}"
             )
-        return cur
 
 
 def _session_id_of_scope(scope: str) -> str:

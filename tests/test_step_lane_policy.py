@@ -300,7 +300,7 @@ def test_refuse_switch_refuses_a_manifest_slurm_lane_by_name(tmp_path, no_site, 
 
 
 class _PlatformRouter:
-    def resolve(self, _step_spec, **_kw):  # noqa: ANN001, ANN003
+    def resolve(self, _step_spec, **_kw):
         return RoutingDecision(
             api_base="http://llm.internal/v1",
             api_key="sk-platform",
@@ -317,7 +317,7 @@ class _CapturingHpc:
         self.configs: list[dict] = []
         self.metadata: list[dict] = []
 
-    def execute(self, *, entrypoint, config, ctx):  # noqa: ANN001, ARG002
+    def execute(self, *, entrypoint, config, ctx):
         self.configs.append(dict(config))
         self.metadata.append(dict(ctx.metadata))
         return StepResult(output_keys=["ok"])
@@ -377,7 +377,7 @@ class _CapturingInproc(_CapturingHpc):
         self.entrypoints: list[str] = []
         self.shut = False
 
-    def execute(self, *, entrypoint, config, ctx):  # noqa: ANN001
+    def execute(self, *, entrypoint, config, ctx):
         self.entrypoints.append(entrypoint)
         return super().execute(entrypoint=entrypoint, config=config, ctx=ctx)
 
@@ -525,7 +525,7 @@ def test_pool_worker_forwards_no_credential(monkeypatch):
         def poll(self):
             return None
 
-    def _popen(cmd, **_kw):  # noqa: ANN001, ANN003
+    def _popen(cmd, **_kw):
         seen.append(list(cmd))
         return _Proc()
 

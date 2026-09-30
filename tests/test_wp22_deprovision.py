@@ -145,12 +145,12 @@ class ServiceReturns:
         self.outcome = outcome
         self.endpoint = endpoint
 
-    async def deprovision(self, job_id, force=False):  # noqa: ARG002 - stub mimics service signature
+    async def deprovision(self, job_id, force=False):
         return self.outcome
 
 
 def _route_client(outcome_name, endpoint=None, monkeypatch=None):
-    from umrs.api import endpoints as endpoints_mod  # noqa: F401 (kept for symmetry)
+    from umrs.api import endpoints as endpoints_mod
     from umrs.api.endpoints import router
     from umrs.orchestrator.endpoint_registry import get_registry
     from umrs.orchestrator.service import DeprovisionOutcome

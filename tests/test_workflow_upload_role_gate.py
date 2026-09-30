@@ -16,7 +16,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 # splice removed (ADR-053): pytest auto-inserts tests/ for sibling helpers; umrs editable
-from umrs.api import audit_events, workflows  # noqa: E402
+from umrs.api import audit_events, workflows
 
 
 @pytest.fixture(autouse=True)

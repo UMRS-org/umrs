@@ -78,5 +78,5 @@ class FakePool:
     def getconn(self) -> FakeConn:
         return self.conn
 
-    def putconn(self, conn: FakeConn) -> None:  # noqa: ARG002
+    def putconn(self, conn: FakeConn) -> None:
         return None

@@ -66,7 +66,7 @@ def test_reconcile_deletes_missing_s3_objects():
     store.upsert(_ready_meta("proj-1/uploads/live.csv", "proj-1", "live"), "proj-1")
 
     class _S3:
-        def head_object(self, *, Bucket: str, Key: str):  # noqa: N803
+        def head_object(self, *, Bucket: str, Key: str):
             if Key.endswith("gone.csv"):
                 raise OSError("missing")
             return {}
@@ -83,10 +83,10 @@ def test_backfill_parses_legacy_sidecar():
         def __init__(self) -> None:
             self.objects: dict[str, bytes] = {}
 
-        def put_object(self, *, Bucket: str, Key: str, Body: bytes, **kwargs):  # noqa: N803
+        def put_object(self, *, Bucket: str, Key: str, Body: bytes, **kwargs):
             self.objects[Key] = Body
 
-        def get_object(self, *, Bucket: str, Key: str):  # noqa: N803
+        def get_object(self, *, Bucket: str, Key: str):
             import io
 
             return {"Body": io.BytesIO(self.objects[Key])}
@@ -94,7 +94,7 @@ def test_backfill_parses_legacy_sidecar():
         def get_paginator(self, name: str):
             return self
 
-        def paginate(self, *, Bucket: str, Prefix: str):  # noqa: N803
+        def paginate(self, *, Bucket: str, Prefix: str):
             keys = [k for k in self.objects if k.startswith(Prefix)]
             return [{"Contents": [{"Key": k} for k in keys]}]
 

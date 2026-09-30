@@ -48,7 +48,7 @@ class _FakeHpc:
     def __init__(self) -> None:
         self.calls: list[dict] = []
 
-    def execute(self, *, entrypoint, config, ctx):  # noqa: ANN001, ARG002
+    def execute(self, *, entrypoint, config, ctx):
         self.calls.append({"entrypoint": entrypoint, "metadata": dict(ctx.metadata)})
         return StepResult(output_keys=["ran-on-hpc"])
 
@@ -77,7 +77,7 @@ def test_uploaded_code_runs_on_the_hpc_lane_never_in_the_server(tmp_path, monkey
     hpc = _FakeHpc()
     names: list = []
 
-    def _build(*, name=None):  # noqa: ANN001, ANN202
+    def _build(*, name=None):
         names.append(name)
         return hpc
 

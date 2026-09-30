@@ -5,8 +5,8 @@ from __future__ import annotations
 import pytest
 
 # splice removed (ADR-053): pytest auto-inserts tests/ for sibling helpers; umrs editable
-from fake_pg_pool import FakePool  # noqa: E402
-from umrs.knowledge.graph_registry import (  # noqa: E402
+from fake_pg_pool import FakePool
+from umrs.knowledge.graph_registry import (
     GraphRegistryStore,
     ProposalStore,
     default_graph_id,

@@ -45,10 +45,10 @@ class _FakeCursor:
         self.executed.append((sql, params))
         self._conn.calls.append((sql, params))
 
-    def fetchone(self):  # noqa: ANN001
+    def fetchone(self):
         return None
 
-    def fetchall(self):  # noqa: ANN001
+    def fetchall(self):
         return []
 
 
@@ -59,7 +59,7 @@ class _FakeConn:
         self.calls: list[tuple[str, Any]] = []
         self.commits = 0
 
-    def cursor(self, cursor_factory=None):  # noqa: ANN001, ARG002
+    def cursor(self, cursor_factory=None):
         return _FakeCursor(self)
 
     def commit(self) -> None:
@@ -114,7 +114,7 @@ class TestDriverReregistration:
         registered: list[str] = []
         with patch(
             "umrs.knowledge.engine_loop_runner.register",
-            side_effect=lambda loop, **kw: registered.append(loop.loop_id),  # noqa: ARG005
+            side_effect=lambda loop, **kw: registered.append(loop.loop_id),
         ):
             resumed = loop_api.reregister_loop_drivers()
         assert resumed == 1

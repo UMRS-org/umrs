@@ -48,6 +48,31 @@ logger = logging.getLogger(__name__)
 # Memory units understood in scheduler.memory (case-insensitive suffix → MB).
 _MEM_UNIT_TO_MB = {"K": 1 / 1024, "M": 1.0, "G": 1024.0, "T": 1024.0 * 1024.0}
 
+# Serve-wrapper job names the orphan listing matches: the in-tree job script
+# (mini-rivault) and the per-cluster shims deploy/<cluster>/serve-model.slurm
+# (umrs-rivault). squeue -n takes a comma list.
+_WRAPPER_JOB_NAMES = "mini-rivault,umrs-rivault"
+
+# squeue answered, and the job is not in the answer.
+_SQUEUE_NOT_LISTED = "not listed by squeue"
+# squeue does not list the job and sacct errors (live bdrt 2026-09-27:
+# AccountingStorageHost=localhost, so every sacct fails). The controller no
+# longer knows the job; how it ended is unknowable.
+_SLURM_VANISHED = "slurm-vanished"
+_SLURM_VANISHED_ERROR = "Slurm no longer lists the job and sacct is unavailable"
+
+
+def _squeue_omits_job(result: Any) -> bool:
+    """True when squeue answered and the job is not in the answer.
+
+    Exit 0 with no row, or Slurm's own "Invalid job id specified" once the
+    controller purged the job (MinJobAge). Any other failure (SSH, a
+    controller timeout) is no answer at all.
+    """
+    if result.ok:
+        return not result.stdout.strip()
+    return "invalid job id" in (result.stderr or "").lower()
+
 
 def _parse_mem_to_mb(value: str) -> float | None:
     """Parse a Slurm-style memory string (e.g. ``1400G``, ``400000M``) to MB.
@@ -526,6 +551,19 @@ class RemoteSlurmBackend(SlurmBackend):
 
     async def get_job_status(self, job_id: str) -> JobInfo:
         """Get status of a Slurm job via SSH."""
+        return await self._job_status(job_id, before_ready=False)
+
+    async def get_job_status_before_ready(self, job_id: str) -> JobInfo:
+        """Get status for an endpoint that is not READY yet.
+
+        Unlike ``get_job_status``, a job squeue does not list while sacct
+        errors is reported FAILED: before READY no healthy endpoint can be
+        lost, and on a cluster without working accounting it is the only
+        trace an externally cancelled job leaves.
+        """
+        return await self._job_status(job_id, before_ready=True)
+
+    async def _job_status(self, job_id: str, *, before_ready: bool) -> JobInfo:
         # Try job info file first (read remotely).
         info_content = await self._read_remote_job_info(job_id)
         if info_content is not None:
@@ -549,32 +587,11 @@ class RemoteSlurmBackend(SlurmBackend):
                     state_reason="budget_exhausted",
                 )
             status = self._status_from_info(info)
-
-            # The info file is a startup artifact written to the shared
-            # filesystem; it is only deleted by ``cleanup()``. If the job died
-            # by walltime, preemption, node failure, or an external ``scancel``,
-            # the file is orphaned and still reports the last written status
-            # (``running`` or ``starting``). Trusting it verbatim produces a
-            # ghost endpoint. Cross-check live states against Slurm so a dead
-            # job is reported as terminal. Only override on a *positively*
-            # terminal Slurm state — a squeue miss / ``UNKNOWN`` must not
-            # delete a healthy endpoint.
-            if status in (JobStatus.READY, JobStatus.RUNNING, JobStatus.STARTING):
-                slurm_status, _reason = await self._query_slurm_job_status(job_id)
-                if slurm_status in (JobStatus.FAILED, JobStatus.STOPPED):
-                    logger.warning(
-                        "Job %s info file reports %s but Slurm reports %s; "
-                        "treating as terminal and removing stale info file",
-                        job_id,
-                        status.value,
-                        slurm_status.value,
-                    )
-                    await self._remove_stale_info_file(job_id)
-                    return JobInfo(
-                        job_id=job_id,
-                        status=slurm_status,
-                        backend=self.backend_name,
-                    )
+            terminal = await self._slurm_terminal_override(
+                job_id, status, before_ready=before_ready
+            )
+            if terminal is not None:
+                return terminal
 
             endpoint = self._endpoint_from_info(status, info)
             if endpoint is not None:
@@ -590,11 +607,67 @@ class RemoteSlurmBackend(SlurmBackend):
 
         # Fallback to squeue/sacct.
         status, reason = await self._query_slurm_job_status(job_id)
+        if reason == _SLURM_VANISHED:
+            if before_ready:
+                return self._vanished_job_info(job_id, status)
+            reason = None  # an UNKNOWN miss, as for any other caller
         return JobInfo(
             job_id=job_id,
             status=status,
             backend=self.backend_name,
             state_reason=reason,
+        )
+
+    async def _slurm_terminal_override(
+        self, job_id: str, status: JobStatus, *, before_ready: bool
+    ) -> JobInfo | None:
+        """Terminal JobInfo when Slurm contradicts a live info-file status.
+
+        The info file is a startup artifact written to the shared
+        filesystem; it is only deleted by ``cleanup()``. If the job died by
+        walltime, preemption, node failure, or an external ``scancel``, the
+        file is orphaned and still reports the last written status
+        (``running`` or ``starting``). Trusting it verbatim produces a ghost
+        endpoint. Cross-check live states against Slurm so a dead job is
+        reported as terminal. Only override on a *positively* terminal Slurm
+        state — a squeue miss / ``UNKNOWN`` must not delete a healthy
+        endpoint. Before READY there is none to delete, so there (only) a
+        job squeue does not list while sacct errors counts as ended.
+        """
+        if status not in (JobStatus.READY, JobStatus.RUNNING, JobStatus.STARTING):
+            return None
+        slurm_status, reason = await self._query_slurm_job_status(job_id)
+        if slurm_status in (JobStatus.FAILED, JobStatus.STOPPED):
+            logger.warning(
+                "Job %s info file reports %s but Slurm reports %s; "
+                "treating as terminal and removing stale info file",
+                job_id,
+                status.value,
+                slurm_status.value,
+            )
+            await self._remove_stale_info_file(job_id)
+            return JobInfo(
+                job_id=job_id,
+                status=slurm_status,
+                backend=self.backend_name,
+            )
+        if before_ready and reason == _SLURM_VANISHED:
+            # The info file stays: cleanup() reads it to close the tunnel.
+            return self._vanished_job_info(job_id, status)
+        return None
+
+    def _vanished_job_info(self, job_id: str, last_status: JobStatus) -> JobInfo:
+        logger.warning(
+            "Job %s (last %s) is not listed by squeue and sacct is unavailable; "
+            "treating it as ended (endpoint not READY yet)",
+            job_id,
+            last_status.value,
+        )
+        return JobInfo(
+            job_id=job_id,
+            status=JobStatus.FAILED,
+            backend=self.backend_name,
+            error_message=_SLURM_VANISHED_ERROR,
         )
 
     async def _remove_stale_info_file(self, job_id: str) -> None:
@@ -671,22 +744,33 @@ class RemoteSlurmBackend(SlurmBackend):
         Returns ``(status, reason)`` where ``reason`` is the scheduler's
         human-readable explanation for the current state (squeue ``%R`` — e.g.
         ``MaxMemPerLimit``, ``Resources``, ``Priority``) when the job is still
-        queued, or ``None`` otherwise.
+        queued, or ``None`` otherwise. A job squeue answers it does not list
+        while sacct errors comes back as ``(UNKNOWN, _SLURM_VANISHED)``; the
+        caller decides whether that is terminal.
         """
         squeue_result = await self._query_squeue_status(job_id)
-        if squeue_result is not None:
+        if squeue_result is not None and squeue_result[1] != _SQUEUE_NOT_LISTED:
             return squeue_result
-        return await self._query_sacct_status(job_id), None
+        sacct_status = await self._query_sacct_status(job_id)
+        if sacct_status is not None:
+            return sacct_status, None
+        return JobStatus.UNKNOWN, _SLURM_VANISHED if squeue_result else None
 
     async def _query_squeue_status(
         self, job_id: str
     ) -> tuple[JobStatus, str | None] | None:
-        """Query squeue for active job status + pending reason via SSH."""
+        """Query squeue for active job status + pending reason via SSH.
+
+        ``None`` when squeue could not answer; ``(UNKNOWN, _SQUEUE_NOT_LISTED)``
+        when it answered without the job.
+        """
         ssh = await self._get_ssh()
         # %T = job state, %R = reason (for PENDING) or node list (for RUNNING).
         result = await ssh.run_remote(f'squeue -j {job_id} -h -o "%T|%R"')
 
-        if not result.ok or not result.stdout.strip():
+        if _squeue_omits_job(result):
+            return JobStatus.UNKNOWN, _SQUEUE_NOT_LISTED
+        if not result.ok:
             return None
         raw = result.stdout.strip().splitlines()[0]
         state, _, reason = raw.partition("|")
@@ -699,10 +783,12 @@ class RemoteSlurmBackend(SlurmBackend):
             reason = None
         return status, reason
 
-    async def _query_sacct_status(self, job_id: str) -> JobStatus:
-        """Query sacct for completed job status via SSH."""
+    async def _query_sacct_status(self, job_id: str) -> JobStatus | None:
+        """Query sacct for completed job status via SSH (``None`` if sacct errors)."""
         ssh = await self._get_ssh()
         result = await ssh.run_remote(f"sacct -j {job_id} -n -o State")
+        if not result.ok:
+            return None
 
         state = result.stdout.strip().split("\n")[0].strip() if result.stdout else ""
         return self._status_from_accounting_state(state)
@@ -815,7 +901,9 @@ class RemoteSlurmBackend(SlurmBackend):
         """Query squeue for running jobs via SSH."""
         user = os.environ.get("USER", "")
         ssh = await self._get_ssh()
-        result = await ssh.run_remote(f"squeue -u {user} -n mini-rivault -h -o %i")
+        result = await ssh.run_remote(
+            f"squeue -u {user} -n {_WRAPPER_JOB_NAMES} -h -o %i"
+        )
 
         if not result.stdout.strip():
             return

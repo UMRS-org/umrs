@@ -81,7 +81,7 @@ def test_success_hook_reaches_enqueue_through_indirection(
         ka,
         "enqueue_knowledge_ingest",
         lambda job, attempt, workflow="default", step="main": (
-            captured.append(  # noqa: ANN001
+            captured.append(
                 (job.job_id, workflow, step, attempt.attempt_id)
             )
             or ["ingest-job"]
@@ -142,7 +142,7 @@ def test_failure_hook_wired(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         ka,
         "enqueue_ingest_failure",
-        lambda job_id, attempt_no, exit_reason, user_id, project_id: captured.append(  # noqa: ANN001
+        lambda job_id, attempt_no, exit_reason, user_id, project_id: captured.append(
             (job_id, attempt_no, exit_reason, user_id, project_id)
         ),
     )
@@ -277,7 +277,7 @@ def test_combined_persist_registry_and_auto_ingest(
     conn = _FakeConn(_FakeCursor(row))
 
     class _S3:
-        def put_object(self, *, Bucket: str, Key: str, Body: bytes, **_: object) -> dict:  # noqa: ARG002
+        def put_object(self, *, Bucket: str, Key: str, Body: bytes, **_: object) -> dict:
             return {"ETag": '"x"'}
 
     # 1) Persist blobs through the REAL ArtifactStore (Json adaptation live).

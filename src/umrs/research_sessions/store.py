@@ -9,10 +9,15 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, TypeVar
+
+from umrs.shared.pg_calls import PgCalls
 
 from .schema import CREATE_LOOPS_TABLE, CREATE_SESSIONS_TABLE
+
+_T = TypeVar("_T")
 
 
 def _sqliteify(sql: str) -> str:
@@ -137,8 +142,9 @@ class SessionStore:
     """Sync store over a DB-API connection (psycopg or sqlite3).
 
     ``conn`` may be a plain connection or a connection pool with
-    ``getconn``/``putconn`` (psycopg.pool-like). Placeholders are written
-    with ``%s`` — sqlite needs ``?`` so we translate on the sqlite path.
+    ``getconn``/``putconn`` (psycopg.pool-like; preferred on Postgres: every
+    call borrows its own connection). Placeholders are written with ``%s`` —
+    sqlite needs ``?`` so we translate on the sqlite path.
     """
 
     def __init__(self, conn: Any | None = None, *, path: str | None = None) -> None:
@@ -160,31 +166,39 @@ class SessionStore:
             self._conn.row_factory = sqlite3.Row
             self._conn.executescript(_sqliteify(CREATE_SESSIONS_TABLE))
             self._conn.executescript(_sqliteify(CREATE_LOOPS_TABLE))
+        self._calls = PgCalls(
+            pool=self._pool, conn=self._conn, label="research-session store"
+        )
 
     # -- low-level plumbing ------------------------------------------------ #
 
-    def _borrow(self):
-        return self._pool.getconn() if self._pool is not None else self._conn
+    def _run(self, work: Callable[[Any], _T], *, write: bool = False) -> _T:
+        """One call, one transaction (umrs.shared.pg_calls): writes commit and
+        reads end their transaction on both dialects.
 
-    def _return(self, conn) -> None:
-        if self._pool is not None:
-            self._pool.putconn(conn)
+        Writes used to commit only on sqlite; on Postgres the sidecar's
+        boot-leased connection kept them in an open transaction until R-14's
+        idle-in-transaction reaper killed the session and rolled them back
+        (and every later call failed "connection already closed").
+        """
+        return self._calls.run(work, write=write)
+
+    def _fetchall(self, sql: str, params: tuple) -> list[Any]:
+        def _select(cur) -> list[Any]:
+            cur.execute(self._q(sql), params)
+            return cur.fetchall()
+
+        return self._run(_select)
 
     def _q(self, sql: str) -> str:
         if not self._sqlite:
             return sql
         return sql.replace("%s", "?").replace("now()", "datetime('now')")
 
-    def _commit(self, conn) -> None:
-        if self._sqlite:
-            conn.commit()  # psycopg connections commit via callers in other stores
-
     # -- CRUD --------------------------------------------------------------- #
 
     def create(self, session: ResearchSession) -> ResearchSession:
-        conn = self._borrow()
-        try:
-            cur = conn.cursor()
+        def _insert(cur) -> None:
             cur.execute(
                 self._q(
                     """INSERT INTO research_sessions
@@ -204,15 +218,12 @@ class SessionStore:
             )
             for link in session.loops:
                 self._attach_copy(cur, link)
-            self._commit(conn)
-            return session
-        finally:
-            self._return(conn)
+
+        self._run(_insert, write=True)
+        return session
 
     def get(self, session_id: str) -> ResearchSession | None:
-        conn = self._borrow()
-        try:
-            cur = conn.cursor()
+        def _select(cur) -> ResearchSession | None:
             cur.execute(
                 self._q("SELECT * FROM research_sessions WHERE session_id = %s"),
                 (session_id,),
@@ -223,32 +234,25 @@ class SessionStore:
             session = _row_to_session(row)
             session.loops = self._list_loops_on(cur, session_id)
             return session
-        finally:
-            self._return(conn)
+
+        return self._run(_select)
 
     def list(
         self, project_id: str | None = None, status: str | None = None
     ) -> list[ResearchSession]:
-        conn = self._borrow()
-        try:
-            cur = conn.cursor()
-            sql = "SELECT * FROM research_sessions"
-            clauses: list[str] = []
-            params: list[Any] = []
-            if project_id:
-                clauses.append("project_id = %s")
-                params.append(project_id)
-            if status:
-                clauses.append("status = %s")
-                params.append(status)
-            if clauses:
-                sql += " WHERE " + " AND ".join(clauses)
-            sql += " ORDER BY updated_at DESC"
-            cur.execute(self._q(sql), tuple(params))
-            rows = cur.fetchall()
-            return [_row_to_session(r) for r in rows]
-        finally:
-            self._return(conn)
+        sql = "SELECT * FROM research_sessions"
+        clauses: list[str] = []
+        params: list[Any] = []
+        if project_id:
+            clauses.append("project_id = %s")
+            params.append(project_id)
+        if status:
+            clauses.append("status = %s")
+            params.append(status)
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY updated_at DESC"
+        return [_row_to_session(r) for r in self._fetchall(sql, tuple(params))]
 
     def update(
         self,
@@ -261,9 +265,8 @@ class SessionStore:
         current = self.get(session_id)
         if current is None:
             return None
-        conn = self._borrow()
-        try:
-            cur = conn.cursor()
+
+        def _update(cur) -> None:
             if title is not None:
                 cur.execute(
                     self._q(
@@ -290,33 +293,22 @@ class SessionStore:
                     ),
                     (json.dumps(metadata), session_id),
                 )
-            self._commit(conn)
-        finally:
-            self._return(conn)
+
+        self._run(_update, write=True)
         return self.get(session_id)
 
     def _aged_session_rows(self, max_days: int) -> list[tuple[str, str]]:
         """Donor rows for the sweep (pin-exempt check is the caller's)."""
-        conn = self._borrow()
-        try:
-            cur = conn.cursor()
-            cutoff_sql = (
-                "datetime('now', ?)"
-                if self._sqlite
-                else "now() - (%s * interval '1 day')"
-            )
-            cutoff_param = f"-{max_days} days" if self._sqlite else max_days
-            cur.execute(
-                self._q(
-                    "SELECT session_id, metadata FROM research_sessions "
-                    "WHERE status != 'archived' "
-                    f"AND updated_at < {cutoff_sql}"
-                ),
-                (cutoff_param,),
-            )
-            return cur.fetchall()
-        finally:
-            self._return(conn)
+        cutoff_sql = (
+            "datetime('now', ?)" if self._sqlite else "now() - (%s * interval '1 day')"
+        )
+        cutoff_param = f"-{max_days} days" if self._sqlite else max_days
+        return self._fetchall(
+            "SELECT session_id, metadata FROM research_sessions "
+            "WHERE status != 'archived' "
+            f"AND updated_at < {cutoff_sql}",
+            (cutoff_param,),
+        )
 
     @staticmethod
     def _row_is_pinned(metadata_raw: str) -> bool:
@@ -367,9 +359,8 @@ class SessionStore:
         would leave live grants on a dead session — exactly the state this
         exists to prevent, hence the shared commit.
         """
-        conn = self._borrow()
-        try:
-            cur = conn.cursor()
+
+        def _archive(cur) -> None:
             cur.execute(
                 self._q(
                     "UPDATE research_sessions SET status = %s, "
@@ -391,82 +382,47 @@ class SessionStore:
                     "VALUES (%s, %s) ON CONFLICT (session_id) DO NOTHING"
                 )
                 cur.execute(tomb_sql, (session_id, "research-sessions.patch"))
-                trust_store.revoke_session_scope_conn(conn, session_id)
-            if self._sqlite:
-                self._commit(conn)
-            else:
-                conn.commit()
-        except Exception:
-            # One transaction or not at all: anything between update and
-            # revoke must not leave a live grant on a dead session (and
-            # vice versa). Both DBs keep a pending transaction open on
-            # raise without an explicit rollback.
-            conn.rollback()
-            raise
-        finally:
-            self._return(conn)
+                trust_store.revoke_session_scope_conn(cur.connection, session_id)
+
+        # One transaction or not at all: anything between update and revoke
+        # must not leave a live grant on a dead session (and vice versa) —
+        # a raise rolls back the transaction _run opened, nothing commits.
+        self._run(_archive, write=True)
         return self.get(session_id)
 
     def attach_loop(self, link: SessionLoopLink) -> None:
-        conn = self._borrow()
-        try:
-            cur = conn.cursor()
-            cur.execute(
-                self._q(
-                    """INSERT INTO research_session_loops
-                       (session_id, loop_id, venue, loop_role)
-                       VALUES (%s,%s,%s,%s)
-                       ON CONFLICT (session_id, loop_id) DO NOTHING"""
-                ),
-                (link.session_id, link.loop_id, link.venue, link.loop_role),
-            )
+        def _insert(cur) -> None:
+            self._attach_copy(cur, link)
             cur.execute(
                 self._q(
                     "UPDATE research_sessions SET updated_at = now() WHERE session_id = %s"
                 ),
                 (link.session_id,),
             )
-            self._commit(conn)
-        finally:
-            self._return(conn)
+
+        self._run(_insert, write=True)
 
     def detach_loop(self, session_id: str, loop_id: str) -> None:
-        conn = self._borrow()
-        try:
-            cur = conn.cursor()
+        def _delete(cur) -> None:
             cur.execute(
                 self._q(
                     "DELETE FROM research_session_loops WHERE session_id = %s AND loop_id = %s"
                 ),
                 (session_id, loop_id),
             )
-            self._commit(conn)
-        finally:
-            self._return(conn)
+
+        self._run(_delete, write=True)
 
     def list_loops(self, session_id: str) -> list[SessionLoopLink]:
-        conn = self._borrow()
-        try:
-            cur = conn.cursor()
-            return self._list_loops_on(cur, session_id)
-        finally:
-            self._return(conn)
+        return self._run(lambda cur: self._list_loops_on(cur, session_id))
 
     def session_for_loop(self, loop_id: str) -> SessionLoopLink | None:
-        conn = self._borrow()
-        try:
-            cur = conn.cursor()
-            cur.execute(
-                self._q(
-                    "SELECT * FROM research_session_loops WHERE loop_id = %s "
-                    "ORDER BY attached_at DESC LIMIT 1"
-                ),
-                (loop_id,),
-            )
-            row = cur.fetchone()
-            return _row_to_link(row) if row else None
-        finally:
-            self._return(conn)
+        rows = self._fetchall(
+            "SELECT * FROM research_session_loops WHERE loop_id = %s "
+            "ORDER BY attached_at DESC LIMIT 1",
+            (loop_id,),
+        )
+        return _row_to_link(rows[0]) if rows else None
 
     # -- helpers ------------------------------------------------------------ #
 

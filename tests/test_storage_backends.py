@@ -174,7 +174,7 @@ class _FakeIam:
     def list_access_keys(self, UserName):
         return {"AccessKeyMetadata": [{"AccessKeyId": k} for k in self.keys.get(UserName, [])]}
 
-    def delete_access_key(self, UserName, AccessKeyId):  # noqa: ARG002 — boto-shaped fake
+    def delete_access_key(self, UserName, AccessKeyId):
         self.deleted_keys.append(AccessKeyId)
 
     def delete_user(self, UserName):

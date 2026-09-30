@@ -97,7 +97,7 @@ vllm:
 # and steps must execute on compute nodes with GPUs.
 step_executor:
   kind: slurm                                 # Submit steps as Slurm jobs to GPU compute nodes
-  partition: ng-dgx-m0,ng-dgx-m1,ng-dgx-m2,ng-dgx-m3  # GB10 Blackwell partitions
+  partition: ng-dgx-s,ng-dgx-m0,ng-dgx-m1,ng-dgx-m2,ng-dgx-m3  # GB10 Blackwell partitions; ng-dgx-s re-enabled 2026-09-30 (was temporarily unavailable)
   gpus: 0                                     # ng-dgx-m* partitions reject --gpus
   cpus: 8                                     # 8 CPUs per step
   memory: ""                                  # omit --mem; ng-dgx-m* partitions reject explicit memory requests
@@ -124,6 +124,21 @@ database:
 # ─────────────────────────────────────────────────────────────
 partition_profiles:
   # ── aarch64 NVIDIA (GB10 Blackwell) ──
+  ng-dgx-s:
+    # Same GB10 node family as ng-dgx-m*; re-enabled 2026-09-30.
+    # Values mirror the m* profiles; gpus stays 0 on the assumption that
+    # ng-dgx-s also rejects --gres/--gpus like the m* partitions — verify on
+    # first job and relax (set gpus: 1) if the partition accepts GPU GRES.
+    arch: aarch64
+    gpu_vendor: nvidia
+    gpu_memory_gb: 128          # GB10 Blackwell 128 GiB
+    oci_runtime: runc
+    userns_mode: host
+    network_backend: netavark
+    vllm_docker_tag: cu130-nightly-aarch64
+    gpus: 0
+    gpu_mem_util_max: 0.78     # GB10 shared with harness + vision sidecar (~97 GiB free of 121.6)
+    needs_netavark_switch: false
   ng-dgx-m0:
     arch: aarch64
     gpu_vendor: nvidia

@@ -239,7 +239,7 @@ class TestCancelBus:
         try:
             download_safety.broadcast_cancel("job-1")
         finally:
-            download_safety._listeners.remove(backend.on_cancel)  # noqa: SLF001
+            download_safety._listeners.remove(backend.on_cancel)
         assert prov.torn == ["sess-1"]
         assert backend.store.get("sess-1").state == "stopped"
 

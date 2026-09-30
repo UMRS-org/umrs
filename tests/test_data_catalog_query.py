@@ -71,11 +71,11 @@ class _RangeS3Client:
         self.content = content
         self.object_range: str | None = None
 
-    def head_object(self, *, Bucket: str, Key: str):  # noqa: N803 - boto3 shape
+    def head_object(self, *, Bucket: str, Key: str):
         assert Key == self.s3_key
         return {"ContentLength": len(self.content), "ETag": '"abc"'}
 
-    def get_object(self, *, Bucket: str, Key: str, Range: str | None = None):  # noqa: N803
+    def get_object(self, *, Bucket: str, Key: str, Range: str | None = None):
         assert Key == self.s3_key
         assert Range is not None
         self.object_range = Range

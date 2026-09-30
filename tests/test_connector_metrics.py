@@ -26,10 +26,10 @@ class _FakeConnector:
     def connector_type(self) -> ConnectorType:
         return ConnectorType.CUSTOM
 
-    def validate_config(self, config):  # noqa: ARG002 — test seam
+    def validate_config(self, config):
         return []
 
-    def fetch(self, config, checkpoint=None):  # noqa: ARG002 — test seam
+    def fetch(self, config, checkpoint=None):
         return iter(self._docs)
 
 

@@ -252,12 +252,12 @@ class _CatalogS3Client:
     def __init__(self, objects: dict[str, bytes]):
         self.objects = dict(objects)
 
-    def head_object(self, *, Bucket: str, Key: str):  # noqa: N803
+    def head_object(self, *, Bucket: str, Key: str):
         if Key not in self.objects:
             raise _missing_key(Key)
         return {"ContentLength": len(self.objects[Key]), "ETag": '"abc"'}
 
-    def get_object(self, *, Bucket: str, Key: str, Range: str | None = None):  # noqa: N803
+    def get_object(self, *, Bucket: str, Key: str, Range: str | None = None):
         if Key not in self.objects:
             raise _missing_key(Key)
         content = self.objects[Key]
@@ -273,7 +273,7 @@ class _CatalogS3Client:
         Key: str,
         Body: bytes | str,
         ContentType: str | None = None,
-    ) -> dict[str, Any]:  # noqa: N803
+    ) -> dict[str, Any]:
         self.objects[Key] = Body.encode("utf-8") if isinstance(Body, str) else Body
         return {"ETag": '"abc"'}
 
@@ -286,7 +286,7 @@ class _CatalogPaginator:
     def __init__(self, objects: dict[str, bytes]):
         self.objects = objects
 
-    def paginate(self, *, Bucket: str, Prefix: str):  # noqa: N803
+    def paginate(self, *, Bucket: str, Prefix: str):
         contents = [{"Key": key} for key in self.objects if key.startswith(Prefix)]
         return [{"Contents": contents}]
 

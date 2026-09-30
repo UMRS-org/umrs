@@ -85,7 +85,7 @@ def test_rotation_rewrap_preserves_plaintext(keypair):
     plaintext = unseal_credential(blob, privkey_b64=keypair["priv"], **aad)
 
     # Old → unwrap DEK → rewrap for the new recipient (simulated rotation job).
-    from umrs.security.seal import _crypto, _hkdf_wrap_key  # noqa: PLC0415
+    from umrs.security.seal import _crypto, _hkdf_wrap_key
 
     c = _crypto()
     eph_pub_raw = blob.dek_wrapped[:32]

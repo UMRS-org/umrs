@@ -187,17 +187,25 @@ def _init_mcp_store(app, db_pool):
         )
 
 
+def _ensure_schema_on_borrowed_conn(db_pool, ensure_schema) -> None:
+    """Run a store's boot DDL on a borrowed connection and hand it back."""
+    schema_conn = db_pool.getconn()
+    try:
+        ensure_schema(schema_conn)
+        schema_conn.commit()
+    finally:
+        db_pool.putconn(schema_conn)
+
+
 def _init_audit_store(app, db_pool):
     """Initialize the audit store."""
     try:
         from umrs.api.audit_events import set_audit_store
         from umrs.api.audit_store import AuditStore, ensure_audit_schema
 
-        audit_conn = db_pool.getconn()
-        ensure_audit_schema(audit_conn)
-        audit_conn.commit()
-        app.state.umrs_audit_store_conn = audit_conn
-        set_audit_store(AuditStore(audit_conn))
+        _ensure_schema_on_borrowed_conn(db_pool, ensure_audit_schema)
+        # Borrow per call, never a boot lease (see _init_mcp_store).
+        set_audit_store(AuditStore(pool=db_pool))
         logger.info("Audit store initialized for HTTP sidecar")
     except Exception:  # noqa: BLE001 — boot/teardown must survive per-component failures
         logger.warning("Audit store unavailable — using in-memory buffer only")
@@ -231,11 +239,11 @@ def _init_research_sessions_store(app, db_pool):
         from umrs.research_sessions import ensure_schema
         from umrs.research_sessions.store import SessionStore
 
-        sess_conn = db_pool.getconn()
-        ensure_schema(sess_conn)
-        sess_conn.commit()
-        app.state.umrs_research_sessions_conn = sess_conn
-        set_session_store(SessionStore(sess_conn))
+        _ensure_schema_on_borrowed_conn(db_pool, ensure_schema)
+        # Borrow per call, never a boot lease (see _init_mcp_store): on the
+        # leased connection no write ever committed on Postgres, and R-14's
+        # reaper rolled them back (2026-09-27).
+        set_session_store(SessionStore(db_pool))
         logger.info("Research session store initialized for HTTP sidecar")
     except Exception:  # noqa: BLE001 — boot/teardown must survive per-component failures
         logger.warning(
@@ -268,13 +276,12 @@ def _init_companion_trust_store(app, db_pool):
         from umrs.companion_trust import ensure_schema
         from umrs.companion_trust.store import TrustAllowlistStore
 
-        trust_conn = db_pool.getconn()
-        ensure_schema(trust_conn)
-        trust_conn.commit()
-        app.state.umrs_companion_trust_conn = trust_conn
-        set_trust_store(TrustAllowlistStore(trust_conn))
+        _ensure_schema_on_borrowed_conn(db_pool, ensure_schema)
+        # Borrow per call, never a boot lease (see _init_mcp_store); the trust
+        # store and the approval inbox used to share one leased connection.
+        set_trust_store(TrustAllowlistStore(db_pool))
         logger.info("Companion trust store initialized for HTTP sidecar")
-        _init_approval_inbox(trust_conn)
+        _init_approval_inbox(db_pool)
     except Exception:  # noqa: BLE001 — boot/teardown must survive per-component failures
         logger.warning(
             "Companion trust store unavailable in HTTP sidecar — "
@@ -282,8 +289,8 @@ def _init_companion_trust_store(app, db_pool):
         )
 
 
-def _init_approval_inbox(trust_conn) -> None:
-    """Durable approval inbox (ADR-036 (a), WP-05) on the trust connection.
+def _init_approval_inbox(db_pool) -> None:
+    """Durable approval inbox (ADR-036 (a), WP-05) on the shared pool.
 
     Failure leaves the process-local inbox in place — visible as
     ``durability: process`` on the approvals route, never silent.
@@ -292,7 +299,7 @@ def _init_approval_inbox(trust_conn) -> None:
         from umrs.companion_trust.approval_inbox import ApprovalInboxStore
         from umrs.knowledge import tool_approvals
 
-        tool_approvals.configure(ApprovalInboxStore(trust_conn))
+        tool_approvals.configure(ApprovalInboxStore(db_pool))
         logger.info("Companion approval inbox initialized (postgres)")
     except Exception:
         logger.warning(

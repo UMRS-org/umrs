@@ -13,10 +13,10 @@ import pytest
 
 pytest.importorskip("fastapi")
 
-from fastapi import FastAPI  # noqa: E402
-from fastapi.testclient import TestClient  # noqa: E402
-from umrs.api.loop import router  # noqa: E402
-from umrs.knowledge.engine_loop_runner import _RUNNERS  # noqa: E402
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+from umrs.api.loop import router
+from umrs.knowledge.engine_loop_runner import _RUNNERS
 
 
 @pytest.fixture(autouse=True)
@@ -91,6 +91,14 @@ def test_the_list_shows_only_the_callers_loops(alice_loop):
     alice_ids = {row["loop_id"] for row in _client("alice").get("/umrs/loops").json()["loops"]}
     assert alice_loop not in bob_ids
     assert alice_loop in alice_ids
+
+
+def test_list_rows_carry_the_project_id(alice_loop):
+    """2026-10-01: the work pane scopes loops by the row's project_id —
+    the list ships the loop's real project, never a client guess."""
+    rows = _client("alice").get("/umrs/loops").json()["loops"]
+    mine = {row["loop_id"]: row for row in rows}[alice_loop]
+    assert mine["project_id"] == "proj-x"
 
 
 def test_owner_and_admin_pass(alice_loop):

@@ -24,10 +24,10 @@ class FakeStore:
     async def upsert_edge(self, edge):
         self.edges[edge.edge_id] = edge
 
-    async def list_nodes(self, project_id, graph_id=None):  # noqa: ARG002
+    async def list_nodes(self, project_id, graph_id=None):
         return list(self.nodes.values())
 
-    async def list_edges(self, project_id, graph_id=None):  # noqa: ARG002
+    async def list_edges(self, project_id, graph_id=None):
         return list(self.edges.values())
 
 

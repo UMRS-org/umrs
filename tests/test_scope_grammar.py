@@ -73,12 +73,12 @@ class TestPrecedence:
 # Authorization ladder (ADR-041) — one ladder for every asset record type
 # ---------------------------------------------------------------------------
 
-from umrs.knowledge.access_scope import (  # noqa: E402
+from umrs.knowledge.access_scope import (
     CallerScope,
     graph_readable,
     graph_writable,
 )
-from umrs.shared.scope_grammar import (  # noqa: E402
+from umrs.shared.scope_grammar import (
     normalize_asset_scope,
     scope_readable,
     scope_writable,

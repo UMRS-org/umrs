@@ -51,7 +51,7 @@ def _record() -> ExecutionRecord:
     )
 
 
-def _sources(tmp_path) -> str:  # noqa: ANN001
+def _sources(tmp_path) -> str:
     tmp_path.mkdir(parents=True, exist_ok=True)
     (tmp_path / "mod.py").write_text(_NOOP_STEP_SRC)
     return str(tmp_path)
@@ -102,7 +102,7 @@ def test_run_workflow_record_propagates_execution_mode(
     monkeypatch.setenv("UMRS_STEP_EXECUTOR", "slurm")  # poisoning condition
     captured: list[object] = []
 
-    def _capture(*, name=None):  # noqa: ANN001, ANN202
+    def _capture(*, name=None):
         captured.append(name)
         return InProcessExecutor()
 

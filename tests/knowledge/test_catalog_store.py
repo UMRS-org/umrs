@@ -111,7 +111,7 @@ class _StoreS3:
                 indent=2,
             ).encode("utf-8")
 
-    def head_object(self, *, Bucket: str, Key: str) -> dict[str, Any]:  # noqa: N803
+    def head_object(self, *, Bucket: str, Key: str) -> dict[str, Any]:
         if Key not in self.objects:
             raise _no_such_key(Key)
         return {"ContentLength": len(self.objects[Key]), "ETag": '"abc"'}
@@ -119,8 +119,8 @@ class _StoreS3:
     def get_object(
         self,
         *,
-        Bucket: str,  # noqa: N803
-        Key: str,  # noqa: N803
+        Bucket: str,
+        Key: str,
         Range: str | None = None,
     ) -> dict[str, Any]:
         if Key not in self.objects:
@@ -137,7 +137,7 @@ class _StoreS3:
         assert name == "list_objects_v2"
         return self
 
-    def paginate(self, *, Bucket: str, Prefix: str):  # noqa: N803
+    def paginate(self, *, Bucket: str, Prefix: str):
         contents = []
         for key in sorted(self.objects):
             if not key.startswith(Prefix) or not key.endswith(".meta.json"):
@@ -148,8 +148,8 @@ class _StoreS3:
     def put_object(
         self,
         *,
-        Bucket: str,  # noqa: N803
-        Key: str,  # noqa: N803
+        Bucket: str,
+        Key: str,
         Body: bytes | str,
         ContentType: str | None = None,
         Metadata: dict[str, str] | None = None,

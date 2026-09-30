@@ -241,7 +241,7 @@ def test_the_boot_pass_reaps_orphans_then_the_sweep_removes_idle_workdirs(cluste
     registry = SimpleNamespace(list=lambda: [_record(submitted_at=0.0, s1=_facts(orphan_wd))])
     stop = threading.Event()
     stop.set()  # one pass
-    spent = lambda _job: "failed"  # noqa: E731 - its durable job will not run again
+    spent = lambda _job: "failed"
     step_reaper.reap_loop(reaper, registry, time.time(), stop=stop, durable_status=spent)
     assert cluster.jobs()["900"]["states"] == ["CANCELLED"]
     assert cluster.workdirs() == [live_wd]  # a live job's workdir is never swept
@@ -620,7 +620,7 @@ def test_a_redispatched_run_keeps_the_jobs_its_earlier_process_left(tmp_path, mo
     import asyncio
     import json as _json
 
-    import umrs.server.workflow_registry_handler  # noqa: F401 — registers the launcher
+    import umrs.server.workflow_registry_handler
     from umrs.jobs.models import Job, JobAttempt, JobType
     from umrs.jobs.workflow_run import WorkflowRunBackend
     from umrs.server.workflow_execution_registry import (

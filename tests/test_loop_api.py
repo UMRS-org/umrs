@@ -367,7 +367,7 @@ class TestHosting:
     def test_submission_failure_falls_back_and_is_recorded(self):
         client = _make_app()
 
-        async def _boom(loop):  # noqa: ARG001
+        async def _boom(loop):
             raise RuntimeError("runtime exploded")
 
         client.app.state.loop_job_submitter = _boom
@@ -451,13 +451,13 @@ class TestWorkflowResolution:
 
         client = _make_app()
 
-        async def _submitter(loop):  # noqa: ARG001
+        async def _submitter(loop):
             return "job-wf"
 
         client.app.state.loop_job_submitter = _submitter
         if isinstance(registry, Exception):
 
-            def _boom(owner):  # noqa: ARG001
+            def _boom(owner):
                 raise registry
 
             monkeypatch.setattr(loop_api, "_registered_workflow_names", _boom)
@@ -579,7 +579,7 @@ def test_engine_uses_loop_level_workflow_default():
         metadata={"workflow_name": "wf-default"},
     )
     iteration = LoopIteration(iteration_id="it", loop_id="loop-wf", iteration_number=1)
-    engine._execute_experiment(loop, iteration, ResearchExperiment(experiment_id="e1"))  # noqa: SLF001
+    engine._execute_experiment(loop, iteration, ResearchExperiment(experiment_id="e1"))
     assert port.calls[0][1][0] == "wf-default"
     assert iteration.durable_job_id == "job-fake-durable"
 

@@ -40,7 +40,7 @@ def _graphs_always_in_memory(monkeypatch):
     )
 
 
-from blank_project_fixture import materialize_blank_project  # noqa: E402
+from blank_project_fixture import materialize_blank_project
 
 
 def _demo08_project(tmp_path: Path) -> ResearchProject:

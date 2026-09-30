@@ -81,7 +81,7 @@ async def test_backend_routes_cluster_to_submitter_and_frontend_to_host(monkeypa
 
     calls = {"cluster": 0, "host": 0}
 
-    async def _fake_cluster_submit(_self, *, job, attempt, spec):  # noqa: ARG001,A004
+    async def _fake_cluster_submit(_self, *, job, attempt, spec):
         calls["cluster"] += 1
         return "research_loop_job|loop_id=loop-c|driver=slurm|slurm_id=slurm-42"
 

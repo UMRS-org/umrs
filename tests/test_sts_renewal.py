@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src", "umrs", "mini-rivault-llm"))
 
-import sts_renewal  # noqa: E402
+import sts_renewal
 
 
 class TestRenewalInterval:

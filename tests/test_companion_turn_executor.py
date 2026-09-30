@@ -14,8 +14,8 @@ from pathlib import Path
 import pytest
 
 # splice removed (ADR-053): pytest auto-inserts tests/ for sibling helpers; umrs editable
-from fake_pg_pool import FakePool  # noqa: E402
-from umrs.jobs.companion_turn_executor import (  # noqa: E402
+from fake_pg_pool import FakePool
+from umrs.jobs.companion_turn_executor import (
     DEFAULT_LITELLM_URL,
     DEFAULT_MODEL,
     ChatTarget,
@@ -26,7 +26,7 @@ from umrs.jobs.companion_turn_executor import (  # noqa: E402
     resolve_chat_target,
     resolve_model,
 )
-from umrs.jobs.companion_worker import CompanionTurnAttemptRegistry  # noqa: E402
+from umrs.jobs.companion_worker import CompanionTurnAttemptRegistry
 
 
 def _row(**overrides):

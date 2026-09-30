@@ -86,7 +86,7 @@ class _Jobs:
     def __init__(self) -> None:
         self.specs: list[dict] = []
 
-    def submit_workflow_run(self, _client_id, payload):  # noqa: ANN001
+    def submit_workflow_run(self, _client_id, payload):
         self.specs.append(json.loads(payload)["spec"])
         return json.dumps({"status": "ok", "job": {"job_id": "j1"}})
 
@@ -145,13 +145,13 @@ class _Store:
         self.created: list[dict] = []
         self.db_pool = None
 
-    def create_job(self, **kw):  # noqa: ANN003
+    def create_job(self, **kw):
         self.created.append(kw)
         return "job-1"
 
     create_fan_out_graph = create_job
 
-    def enqueue_job(self, _job_id):  # noqa: ANN001
+    def enqueue_job(self, _job_id):
         pass
 
 

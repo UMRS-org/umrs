@@ -74,7 +74,7 @@ class _FakeTx:
     async def __aenter__(self) -> _FakeTx:
         return self
 
-    async def __aexit__(self, *exc: Any) -> None:  # noqa: D105
+    async def __aexit__(self, *exc: Any) -> None:
         return None
 
 

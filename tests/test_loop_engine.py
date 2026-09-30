@@ -14,7 +14,7 @@ from __future__ import annotations
 import pytest
 
 # Splice removed (ADR-053): umrs installed editable in .venv.
-from umrs.knowledge.loop import (  # noqa: E402
+from umrs.knowledge.loop import (
     AutonomousResearchLoop,
     LoopIteration,
     LoopPhase,

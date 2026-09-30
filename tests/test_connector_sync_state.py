@@ -22,7 +22,6 @@ from umrs.connectors.sync_state import (
 )
 
 # Interface-parity signatures: pytest fakes intentionally ignore args.
-# ruff: noqa: ARG002
 
 _MIGRATION = (
     Path(__file__).resolve().parents[1] / "src/umrs/migrations/0063_connector_sync_state.sql"
