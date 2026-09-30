@@ -44,6 +44,9 @@ DATA_PORT_RANGE = _resolve_default_data_port_range()
 DATA_BASE_PORT = DATA_PORT_RANGE.base_port
 DEFAULT_NB_MSG = 10240
 
+# Sentinel for the control-loop dispatcher: continue the loop (never a parser result).
+_CONTINUE = object()
+
 
 class MessageQueue:
     _AUTH_FIELD_INDEX = {
@@ -188,6 +191,32 @@ class MessageQueue:
         entry["last_activity"] = time.monotonic()
         return selected_port, port_range
 
+    def _queue_is_reapable(self, client_id, entry, now: float, idle_ttl_s: float) -> bool:
+        """Idle-TTL + uncompleted-task guard for one client entry (never reap work)."""
+        port = entry.get("port")
+        data_queue = entry.get("data_queue")
+        if port is None or data_queue is None:
+            return False
+        last_activity = getattr(
+            data_queue, "last_activity_monotonic", entry.get("last_activity", now)
+        )
+        if now - last_activity < idle_ttl_s:
+            return False
+        if self.task_manager is None:
+            return True
+        try:
+            uncompleted = self.task_manager.tasks_status.all_uncompleted_task(
+                client_id, "all"
+            )
+        except Exception as exc:  # noqa: BLE001 — doubt means keep the queue
+            logger.warning(
+                "Data-queue reaper: status lookup failed for %s (%s); keeping",
+                client_id,
+                exc,
+            )
+            return False
+        return not uncompleted
+
     def reap_idle_data_queues(self, idle_ttl_s: float | None = None) -> list:
         """Release ports held by idle client data queues (server role).
 
@@ -213,32 +242,10 @@ class MessageQueue:
         now = time.monotonic()
         reaped = []
         for client_id, entry in list(self.client_dictionary.items()):
-            port = entry.get("port")
-            data_queue = entry.get("data_queue")
-            if port is None or data_queue is None:
-                continue
-            last_activity = getattr(
-                data_queue, "last_activity_monotonic", entry.get("last_activity", now)
-            )
-            if now - last_activity < idle_ttl_s:
-                continue
-            uncompleted = None
-            if self.task_manager is not None:
-                try:
-                    uncompleted = self.task_manager.tasks_status.all_uncompleted_task(
-                        client_id, "all"
-                    )
-                except Exception as exc:  # noqa: BLE001 — doubt means keep the queue
-                    logger.warning(
-                        "Data-queue reaper: status lookup failed for %s (%s); keeping",
-                        client_id,
-                        exc,
-                    )
-                    continue
-            if uncompleted:
+            if not self._queue_is_reapable(client_id, entry, now, idle_ttl_s):
                 continue
             with contextlib.suppress(Exception):
-                data_queue.close()
+                entry["data_queue"].close()
             entry.pop("port", None)
             entry.pop("data_queue", None)
             reaped.append(client_id)
@@ -297,12 +304,7 @@ class MessageQueue:
             if tunnel_mode is None
             else bool(tunnel_mode)
         )
-        # Determine server_ip: prefer explicit env var so other containers/hosts can connect
-        env_server_host = (
-            os.environ.get("UMRS_SERVER_HOST") if prefer_env_server_host else None
-        )
-        remote_server_ip = env_server_host if env_server_host else server_ip
-        self.server_ip = "127.0.0.1" if self.tunnel_mode else remote_server_ip
+        self.server_ip = self._select_server_ip(server_ip, prefer_env_server_host)
         self.context = context if context is not None else zmq.Context()
         self.client_dictionary = {}
         self.timeout = timeout_ms
@@ -310,11 +312,7 @@ class MessageQueue:
         self.tmp_dir = tmp_dir
         self.task_manager = task_manager
         self.status_store = status_store
-        # UMRS_STATUS_ALL_CACHE=0 disables the cache without code changes (e.g. for benchmarking)
-        env_cache = os.environ.get("UMRS_STATUS_ALL_CACHE")
-        if env_cache is not None:
-            use_status_all_cache = env_cache.strip() not in ("0", "false", "no")
-        self.use_status_all_cache = use_status_all_cache
+        self.use_status_all_cache = self._resolve_status_all_cache_flag(use_status_all_cache)
         self.status_all_cache_ttl = status_all_cache_ttl
         # (timestamp, payload) — None until first build
         self._status_all_cache: tuple[float, str] | None = None
@@ -345,17 +343,36 @@ class MessageQueue:
         self._message_count = 0  # rough in-flight message counter
 
         # Initialize the selected queue type
+        self._init_queue_transport(port)
+
+    def _select_server_ip(self, server_ip, prefer_env_server_host: bool) -> str:
+        """Server binding/connect address: env var wins, tunnel forces localhost."""
+        env_server_host = (
+            os.environ.get("UMRS_SERVER_HOST") if prefer_env_server_host else None
+        )
+        remote_server_ip = env_server_host if env_server_host else server_ip
+        return "127.0.0.1" if self.tunnel_mode else remote_server_ip
+
+    @staticmethod
+    def _resolve_status_all_cache_flag(use_status_all_cache: bool) -> bool:
+        """UMRS_STATUS_ALL_CACHE=0/false/no disables the cache without code changes."""
+        env_cache = os.environ.get("UMRS_STATUS_ALL_CACHE")
+        if env_cache is not None:
+            use_status_all_cache = env_cache.strip() not in ("0", "false", "no")
+        return use_status_all_cache
+
+    def _init_queue_transport(self, port) -> None:
+        """Resolve the port and initialize the selected queue type."""
+        self.port = self._resolve_port(self.type, port)
         if self.type == "control":
-            # Use provided port (allows non-standard ports for Docker/HPC)
-            self.port = self._resolve_port(self.type, port)
             self._initialize_control_queue()
-        elif self.type == "data":
-            self.port = self._resolve_port(self.type, port)
+            return
+        if self.type == "data":
             if self.port == BASE_PORT:
                 raise ValueError(f"Cannot use port {BASE_PORT} for data channel")
             self._initialize_data_queue()
-        else:
-            raise ValueError(f"Unsupported queue type: {self.type}")
+            return
+        raise ValueError(f"Unsupported queue type: {self.type}")
 
     # ------------------------ Initializers ------------------------
 
@@ -933,54 +950,62 @@ class MessageQueue:
             self._lookahead = collections.deque()
 
         while True:
-            # Drain lookahead first before blocking on ZMQ (ejeannot batch lane)
-            if self._lookahead:
-                zmq_sender_id, msg = self._lookahead.popleft()
-            else:
-                zmq_sender_id, msg = self.recv_string()
-
+            zmq_sender_id, msg = self._next_control_message()
             logger.info(
                 "Received control request: %s", self._redact_control_message(msg)
             )
             splited_msg = msg.split(":")
             cmd = splited_msg[0]
 
-            parser_name = self._CONTROL_PARSERS.get(cmd)
-            if parser_name is None:
-                logger.warning("Unknown ZMQ command: %s", cmd)
-                with contextlib.suppress(RuntimeError):
-                    self.send_string("UNKNOWN_CMD", zmq_sender_id)
+            result = self._dispatch_control_parser(cmd, splited_msg, zmq_sender_id)
+            if result is _CONTINUE:
                 continue
-
-            try:
-                result = getattr(self, parser_name)(splited_msg, zmq_sender_id)
-            except self._CmdError as e:
-                logger.error("Malformed command %s: %s", cmd, e)
-                with contextlib.suppress(RuntimeError):
-                    self.send_string("CMD_ERROR", zmq_sender_id)
-                continue
-            except Exception as e:
-                logger.error("Unexpected error in parser for %s: %s", cmd, e)
-                with contextlib.suppress(RuntimeError):
-                    self.send_string("SERVER_ERROR", zmq_sender_id)
-                continue
-
             if result is None:
                 # Command handled inline, loop continues
                 continue
 
             # Got a PROCESS_OBJECTS — always wrap in BATCH (N=1 is handled uniformly)
             if result[0] == TaskCmd.PROCESS_OBJECTS:
-                batch = [result[1]]
-                batch.extend(self._drain_process_objects())
-                logger.info(
-                    "[PROCESS] Batch assembled: %d client request(s) — %s",
-                    len(batch),
-                    [(cid, nb) for cid, nb in batch],
-                )
-                return TaskCmd.PROCESS_OBJECTS_BATCH, batch
+                return self._assemble_process_batch(result)
 
             return result
+
+    def _next_control_message(self):
+        """Lookahead deque first, then blocking ZMQ receive (ejeannot batch lane)."""
+        if self._lookahead:
+            return self._lookahead.popleft()
+        return self.recv_string()
+
+    def _dispatch_control_parser(self, cmd, splited_msg, zmq_sender_id):
+        """Command → parser result; _CONTINUE on unknown/malformed/parser errors."""
+        parser_name = self._CONTROL_PARSERS.get(cmd)
+        if parser_name is None:
+            logger.warning("Unknown ZMQ command: %s", cmd)
+            with contextlib.suppress(RuntimeError):
+                self.send_string("UNKNOWN_CMD", zmq_sender_id)
+            return _CONTINUE
+        try:
+            return getattr(self, parser_name)(splited_msg, zmq_sender_id)
+        except self._CmdError as e:
+            logger.error("Malformed command %s: %s", cmd, e)
+            with contextlib.suppress(RuntimeError):
+                self.send_string("CMD_ERROR", zmq_sender_id)
+        except Exception as e:
+            logger.error("Unexpected error in parser for %s: %s", cmd, e)
+            with contextlib.suppress(RuntimeError):
+                self.send_string("SERVER_ERROR", zmq_sender_id)
+        return _CONTINUE
+
+    def _assemble_process_batch(self, result):
+        """PROCESS_OBJECTS result + inline drain → a BATCH tuple for the caller."""
+        batch = [result[1]]
+        batch.extend(self._drain_process_objects())
+        logger.info(
+            "[PROCESS] Batch assembled: %d client request(s) — %s",
+            len(batch),
+            [(cid, nb) for cid, nb in batch],
+        )
+        return TaskCmd.PROCESS_OBJECTS_BATCH, batch
 
     def _drain_process_objects(self):
         """Non-blocking drain of the ZMQ control socket.
@@ -998,23 +1023,11 @@ class MessageQueue:
             except zmq.Again:
                 break
 
-            # Re-parse the frame the same way recv_string does for ROUTER sockets
-            if len(frames) == 3 and frames[1] == b"":
-                zmq_sender_id, msg_bytes = frames[0], frames[2]
-                auth_frame = None
-            elif len(frames) == 3:
-                zmq_sender_id, msg_bytes = frames[0], frames[1]
-                auth_frame = frames[2]
-            elif len(frames) == 2:
-                zmq_sender_id, msg_bytes = frames[0], frames[1]
-                auth_frame = None
-            else:
-                logger.warning(
-                    "_drain_process_objects: unexpected frame count %d", len(frames)
-                )
+            parsed = self._parse_drain_frames(frames)
+            if parsed is None:
                 continue
+            zmq_sender_id, msg = parsed
 
-            msg = msg_bytes.decode()
             splited_msg = msg.split(":")
             cmd = splited_msg[0]
 
@@ -1022,19 +1035,37 @@ class MessageQueue:
                 self._lookahead.append((zmq_sender_id, msg))
                 continue
 
-            # Parse and ACK the PROCESS_OBJECTS inline
-            try:
-                result = self._parse_count_cmd(splited_msg, zmq_sender_id)
-            except Exception as e:
-                logger.error("_drain_process_objects: parse error for %s: %s", cmd, e)
-                with contextlib.suppress(RuntimeError):
-                    self.send_string("SERVER_ERROR", zmq_sender_id)
-                continue
-
-            if result is not None:
-                extra.append(result[1])
+            self._ack_process_object_drain(splited_msg, cmd, zmq_sender_id, extra)
 
         return extra
+
+    @staticmethod
+    def _parse_drain_frames(frames):
+        """ROUTER frame → (sender_id, msg); None for unexpected frame counts."""
+        if len(frames) == 3 and frames[1] == b"":
+            zmq_sender_id, msg_bytes = frames[0], frames[2]
+        elif len(frames) == 3:
+            zmq_sender_id, msg_bytes = frames[0], frames[1]
+        elif len(frames) == 2:
+            zmq_sender_id, msg_bytes = frames[0], frames[1]
+        else:
+            logger.warning(
+                "_drain_process_objects: unexpected frame count %d", len(frames)
+            )
+            return None
+        return zmq_sender_id, msg_bytes.decode()
+
+    def _ack_process_object_drain(self, splited_msg, cmd, zmq_sender_id, extra) -> None:
+        """Parse and ACK one drained PROCESS_OBJECTS inline (errors → SERVER_ERROR)."""
+        try:
+            result = self._parse_count_cmd(splited_msg, zmq_sender_id)
+        except Exception as e:
+            logger.error("_drain_process_objects: parse error for %s: %s", cmd, e)
+            with contextlib.suppress(RuntimeError):
+                self.send_string("SERVER_ERROR", zmq_sender_id)
+            return
+        if result is not None:
+            extra.append(result[1])
 
     def wait_for_s3_events(self, nb_objects, debug=False, timeout_s=60):
         """Block until new messages arrive, then read all available messages.
@@ -1249,6 +1280,46 @@ class MessageQueue:
                 self.timeout, self.timeout
             )  # always reset timeout before exiting
 
+    def _await_data_queue_reply(self, client_id, admin_token, busy_deadline):
+        """CREATE_DATA_QUEUE with capped exponential backoff on pool exhaustion.
+
+        Returns ``(reply, attempts)``. NO_DATA_PORT_AVAILABLE is transient:
+        bursty batch lanes free their ports as they finish — retry until the
+        deadline with capped backoff + jitter.
+        """
+        attempt = 0
+        while True:
+            attempt += 1
+            self.send_control_request(
+                [TaskCmd.CREATE_DATA_QUEUE, client_id],
+                admin_token=admin_token,
+            )
+            try:
+                _, reply = self.recv_string()
+            except zmq.Again:
+                raise RuntimeError(
+                    "Timeout waiting for server response in get_data_queue"
+                ) from None
+            except (AttributeError, TypeError, ValueError):
+                reply = self.socket.recv_string()
+
+            if (
+                reply is None
+                or not reply.startswith("NO_DATA_PORT_AVAILABLE")
+                or time.monotonic() >= busy_deadline
+            ):
+                return reply, attempt
+
+            sleep_s = min(15.0, 0.5 * (1.7 ** (attempt - 1)))
+            sleep_s += random.uniform(0.0, 0.5)
+            logger.info(
+                "Data port pool exhausted for %s; retrying in %.1fs (attempt %d)",
+                client_id,
+                sleep_s,
+                attempt,
+            )
+            time.sleep(sleep_s)
+
     def get_data_queue(self, client_id, tunnel_mode=None, admin_token=None):
         """Request a client data queue.
 
@@ -1276,38 +1347,9 @@ class MessageQueue:
         busy_deadline = time.monotonic() + float(
             os.environ.get("UMRS_DATA_QUEUE_BUSY_TIMEOUT_S", "600")
         )
-        busy_attempt = 0
-        while True:
-            busy_attempt += 1
-            self.send_control_request(
-                [TaskCmd.CREATE_DATA_QUEUE, client_id],
-                admin_token=admin_token,
-            )
-            try:
-                _, reply = self.recv_string()
-            except zmq.Again:
-                raise RuntimeError(
-                    "Timeout waiting for server response in get_data_queue"
-                ) from None
-            except (AttributeError, TypeError, ValueError):
-                reply = self.socket.recv_string()
-
-            if (
-                reply is not None
-                and reply.startswith("NO_DATA_PORT_AVAILABLE")
-                and time.monotonic() < busy_deadline
-            ):
-                sleep_s = min(15.0, 0.5 * (1.7 ** (busy_attempt - 1)))
-                sleep_s += random.uniform(0.0, 0.5)
-                logger.info(
-                    "Data port pool exhausted for %s; retrying in %.1fs (attempt %d)",
-                    client_id,
-                    sleep_s,
-                    busy_attempt,
-                )
-                time.sleep(sleep_s)
-                continue
-            break
+        reply, busy_attempt = self._await_data_queue_reply(
+            client_id, admin_token, busy_deadline
+        )
 
         # ``recv_string`` swallows ``zmq.Again`` and returns ``(None, None)`` on a
         # receive timeout, so the ``except zmq.Again`` above never fires for that
@@ -1315,49 +1357,54 @@ class MessageQueue:
         # ``reply.startswith(...)`` call fail with the opaque
         # ``'NoneType' object has no attribute 'startswith'`` error.
         if reply is None:
-            raise RuntimeError(
-                f"Timeout waiting for server to allocate a data queue for client '{client_id}'. "
-                "The control channel reached the server (CURVE session is valid) but "
-                "the server did not return a data-queue endpoint in time. This "
-                "usually means the server failed while allocating the data queue "
-                "(check the server logs for a CREATE_DATA_QUEUE error) or the "
-                "configured data port range (UMRS_DATA_PORT_RANGE / "
-                "UMRS_DATA_BASE_PORT) is exhausted or unreachable."
-            )
+            self._raise_data_queue_timeout(client_id)
 
         if reply.startswith("tcp://"):
-            # Remove protocol prefix
-            endpoint = reply[len("tcp://") :]
-            # Split IP and port
-            server_ip, port_str = endpoint.split(":")
-            port = int(port_str)
+            return self._build_data_queue_from_advert(reply, effective_tunnel_mode)
+        self._raise_data_queue_verdict(reply, busy_attempt)
+    def _build_data_queue_from_advert(self, reply: str, effective_tunnel_mode):
+        """Parse ``tcp://ip:port`` and build the data ``MessageQueue``.
 
-            # Servers that bind to a wildcard address may advertise it
-            # verbatim (e.g. "tcp://0.0.0.0:50091"). Connecting a PUSH
-            # socket there would target the client's own localhost and
-            # silently drop every S3 event message. Fall back to the
-            # control channel's host, which is known to be reachable.
-            if server_ip in ("0.0.0.0", "::", ""):
-                logger.warning(
-                    "Server advertised non-routable data endpoint %s; "
-                    "falling back to control host %s",
-                    reply,
-                    self.server_ip,
-                )
-                server_ip = self.server_ip
-
-            # Create MessageQueue with parsed IP and port
-            data_mq = MessageQueue(
-                role="client",
-                queue_type="data",
-                server_ip=server_ip,
-                port=port,
-                tunnel_mode=effective_tunnel_mode,
-                # Share the control queue's ZMQ context so the ZAP
-                # authenticator covers data-queue sockets too (#64).
-                context=self.context,
+        A server that binds wildcard may advertise it verbatim; connecting a
+        PUSH socket there would target the client's own localhost and silently
+        drop S3 events — fall back to the control channel's host instead.
+        """
+        endpoint = reply[len("tcp://") :]
+        server_ip, port_str = endpoint.split(":")
+        port = int(port_str)
+        if server_ip in ("0.0.0.0", "::", ""):
+            logger.warning(
+                "Server advertised non-routable data endpoint %s; "
+                "falling back to control host %s",
+                reply,
+                self.server_ip,
             )
-            return data_mq
+            server_ip = self.server_ip
+        return MessageQueue(
+            role="client",
+            queue_type="data",
+            server_ip=server_ip,
+            port=port,
+            tunnel_mode=effective_tunnel_mode,
+            # Share the control queue's ZMQ context so the ZAP
+            # authenticator covers data-queue sockets too (#64).
+            context=self.context,
+        )
+
+    def _raise_data_queue_timeout(self, client_id) -> None:
+        raise RuntimeError(
+            f"Timeout waiting for server to allocate a data queue for client '{client_id}'. "
+            "The control channel reached the server (CURVE session is valid) but "
+            "the server did not return a data-queue endpoint in time. This "
+            "usually means the server failed while allocating the data queue "
+            "(check the server logs for a CREATE_DATA_QUEUE error) or the "
+            "configured data port range (UMRS_DATA_PORT_RANGE / "
+            "UMRS_DATA_BASE_PORT) is exhausted or unreachable."
+        )
+
+    @staticmethod
+    def _raise_data_queue_verdict(reply: str, busy_attempt: int) -> None:
+        """Non-tcp, non-timeout reply: range exhaustion or an unexpected reply."""
         if reply.startswith("NO_DATA_PORT_AVAILABLE"):
             _, _, port_range = reply.partition(":")
             suffix = f" in configured range {port_range}" if port_range else ""
@@ -1365,8 +1412,7 @@ class MessageQueue:
                 f"No data ports available{suffix} "
                 f"(still exhausted after {busy_attempt} attempt(s))"
             )
-        else:
-            raise RuntimeError(f"Unexpected reply from server: {reply}")
+        raise RuntimeError(f"Unexpected reply from server: {reply}")
 
     def notify_server(
         self,
@@ -1391,6 +1437,13 @@ class MessageQueue:
             [notification_type, client_id, nb_objects],
             admin_token=admin_token,
         )
+        reply = self._await_notify_reply(blocking)
+        return self._notify_reply_verdict(
+            reply, notification_type, client_id, verbose
+        )
+
+    def _await_notify_reply(self, blocking: bool):
+        """Receive the server's reply, honoring the blocking-timeout swap."""
         try:
             if blocking:
                 prev_recv_timeout, prev_send_timeout = self.set_timeouts(-1, -1)
@@ -1403,7 +1456,10 @@ class MessageQueue:
             raise TimeoutError(
                 "Timeout waiting for server response in notify_server"
             ) from None
+        return reply
 
+    def _notify_reply_verdict(self, reply, notification_type, client_id, verbose):
+        """Map the server's reply to the notify outcome (ACK / named errors)."""
         if reply is None:
             raise TimeoutError(
                 f"Timeout waiting for server response to {notification_type} for user {client_id}. "
@@ -1524,15 +1580,10 @@ class MessageQueue:
             role=UserRole.USER,
         )
 
-    def _get_status_payload(self, client_id, status_key):
-        store = self.status_store or {}
-        key = status_key or TaskCmd.ALL
-
-        if not client_id:
-            payload = {"status": "error", "message": "Missing client identifier"}
-            return json.dumps(payload, ensure_ascii=False)
-
+    def _collect_status_extras(self, client_id, status_key):
+        """(uncompleted_key_list, pool_metrics) — both optional, failure-tolerant."""
         uncompleted_key_list = None
+        pool_metrics = None
         if self.task_manager is not None:
             try:
                 uncompleted_key_list = (
@@ -1545,12 +1596,21 @@ class MessageQueue:
                     "Could not fetch uncompleted tasks for STATUS (pool exhausted?): %s",
                     e,
                 )
-
-        # Collect pool metrics when available
-        pool_metrics = None
-        if self.task_manager is not None:
             with contextlib.suppress(Exception):
                 pool_metrics = self.task_manager.active_threads.pool.metrics().to_dict()
+        return uncompleted_key_list, pool_metrics
+
+    def _get_status_payload(self, client_id, status_key):
+        store = self.status_store or {}
+        key = status_key or TaskCmd.ALL
+
+        if not client_id:
+            payload = {"status": "error", "message": "Missing client identifier"}
+            return json.dumps(payload, ensure_ascii=False)
+
+        uncompleted_key_list, pool_metrics = self._collect_status_extras(
+            client_id, status_key
+        )
 
         client_store = store.get(client_id, {})
         if key in (TaskCmd.ALL, "*"):
