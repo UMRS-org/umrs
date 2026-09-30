@@ -15,10 +15,10 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from umrs.core.TaskCmdStatus import TaskStatus
+from umrs.core.TaskCmdStatus import TaskCmd, TaskStatus
 from umrs.server.file_handling import persist_uploaded_user_config as _persist_uploaded_user_config
 
-from .base import CommandHandler, HandlerContext, StatusCallback
+from .base import CommandHandler, HandlerContext
 
 logger = logging.getLogger(__name__)
 
@@ -26,13 +26,8 @@ logger = logging.getLogger(__name__)
 class FileHandler(CommandHandler):
     """Handle FILE — persist uploaded user config files on the server."""
 
-    def execute(
-        self,
-        payload: Any,
-        update_status: StatusCallback,
-        ctx: HandlerContext,
-        task_id: int,
-    ) -> None:
+    def execute(self, payload: Any, ctx: HandlerContext) -> None:
+        task_id, update_status = self._make_task(ctx, TaskCmd.FILE, payload)
         if not payload:
             logger.warning("FILE command received with no payload (task_id=%s)", task_id)
             update_status(TaskStatus.COMPLETED)

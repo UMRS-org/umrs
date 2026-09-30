@@ -1,6 +1,7 @@
 # here are values and methods to assocaite tasks with keys to be stored in dictionnaries and to get status
 class TaskCmd:
     PROCESS_OBJECTS = "PROCESS_OBJECTS"
+    PROCESS_OBJECTS_BATCH = "PROCESS_OBJECTS_BATCH"  # internal: batched multi-client
     WAIT_OUTPUT = "WAIT_OUTPUT"
     RECOMPUTE = "RECOMPUTE"
     UPDATE = "UPDATE"
@@ -17,7 +18,9 @@ class TaskCmd:
     HAND_CHECK = "HAND_CHECK"
     CREATE_DATA_QUEUE = "CREATE_DATA_QUEUE"
     STATUS = "STATUS"
+    STATUS_ALL = "STATUS_ALL"  # server-wide snapshot: all clients in one response
     EXPORT_EMBEDDINGS = "EXPORT_EMBEDDINGS"
+    KNN = "KNN"
     # Model registry commands
     MODEL_REGISTER = "MODEL_REGISTER"
     MODEL_LIST = "MODEL_LIST"

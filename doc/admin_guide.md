@@ -511,6 +511,54 @@ curl http://localhost:$NGINX_PORT/vision/healthz
 
 ---
 
+## Local Inference Tuning
+
+### Inference Batch Size
+
+By default, UMRS passes **all objects** to the embedding model in a single
+forward pass (`model.compute_embeddings(all_objects)`).  This maximises
+throughput on small collections but can exhaust RAM or GPU VRAM when
+indexing large directories (thousands of images or text files at once).
+
+Set `UMRS_INFERENCE_BATCH_SIZE` to split the forward pass into smaller chunks:
+
+```bash
+export UMRS_INFERENCE_BATCH_SIZE=64
+./server_umrs.py ...
+```
+
+| Value | Behaviour |
+|-------|-----------|
+| `0` (default) | All objects in one forward pass — legacy behaviour, no limit |
+| `N > 0` | At most N objects per forward pass; multiple passes are concatenated |
+
+**When to set it:**
+
+- **OOM on CPU or GPU** — reduce until the error disappears (try 128 → 64 → 32).
+- **Large batch uploads (1 000+ images)** — a batch size of 64–256 keeps memory
+  stable at the cost of a small overhead for each extra forward pass.
+- **Development / testing** — set to a small value (e.g. `8`) to trigger the
+  chunking path even on small datasets.
+
+**Scope:** applies only to the standard local inference path
+(`compute_and_store_embedding_batch`).  The Rivault / BentoML / user-script
+paths manage their own batching independently.
+
+**Via `site.yaml`:** for sites that already load `site.yaml` through the
+orchestration layer (Slurm, Rivault), the value can also be declared under the
+`inference` section and is propagated as `UMRS_INFERENCE_BATCH_SIZE` when
+`SiteConfig.inject_env()` is called:
+
+```yaml
+inference:
+  batch_size: 64
+```
+
+For standalone server runs (no Slurm / Rivault), set the environment variable
+directly — `site.yaml` is not loaded in that code path.
+
+---
+
 ## Troubleshooting: BentoML Vision Service
 
 ### Common Failure Patterns
