@@ -304,6 +304,66 @@ def _maybe_register_in_server_config(
         )
 
 
+def _load_server_conf_users(config_path: str) -> "tuple[dict, list] | None":
+    """(cfg, users) from conf_umrs.json; None when unreadable (warned)."""
+    try:
+        with open(config_path, encoding="utf-8") as fh:
+            cfg = json.load(fh)
+    except (json.JSONDecodeError, OSError) as exc:
+        print(
+            f"warning: could not read {config_path} to unregister user: {exc}",
+            file=sys.stderr,
+        )
+        return None
+    return cfg, list(cfg.get("users") or [])
+
+
+def _drop_user_from_conf_list(users_list: list, config_dir: str, user_file_abs: str) -> "tuple[list, int]":
+    """(kept, removed_count) — absolute-path match covers relative forms too."""
+    import os
+
+    kept: list = []
+    removed = 0
+    for entry in users_list:
+        try:
+            if (
+                os.path.abspath(os.path.join(config_dir, os.path.expanduser(entry)))
+                == user_file_abs
+            ):
+                removed += 1
+                continue
+        except Exception:  # noqa: BLE001, S110 — entry form unknown to us, keep it
+            pass
+        kept.append(entry)
+    return kept, removed
+
+
+def _write_server_conf_atomic(config_path: str, cfg: dict, username: str) -> None:
+    """tmp+rename write; bind-mounted files fall back to in-place."""
+    import os
+
+    tmp_path = config_path + ".tmp"
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as fh:
+            json.dump(cfg, fh, indent=2)
+            fh.write("\n")
+        try:
+            os.replace(tmp_path, config_path)
+        except OSError:
+            # Bind-mounted files block rename; fall back to in-place write.
+            with open(tmp_path, encoding="utf-8") as src:
+                content = src.read()
+            os.unlink(tmp_path)
+            with open(config_path, "w", encoding="utf-8") as dst:
+                dst.write(content)
+        print(f"unregistered {username} from {os.path.basename(config_path)}")
+    except OSError as exc:
+        print(
+            f"warning: could not update {config_path}: {exc}",
+            file=sys.stderr,
+        )
+
+
 def _maybe_unregister_from_server_config(
     args: argparse.Namespace, store: UserStore, username: str
 ) -> None:
@@ -325,57 +385,19 @@ def _maybe_unregister_from_server_config(
     config_path = os.path.abspath(os.path.expanduser(server_config))
     if not os.path.isfile(config_path):
         return
+
+    loaded = _load_server_conf_users(config_path)
+    if loaded is None:
+        return
+    cfg, users_list = loaded
     config_dir = os.path.dirname(config_path)
     user_file_abs = os.path.abspath(str(store.dir / f"{username}.json"))
 
-    try:
-        with open(config_path, encoding="utf-8") as fh:
-            cfg = json.load(fh)
-    except (json.JSONDecodeError, OSError) as exc:
-        print(
-            f"warning: could not read {config_path} to unregister user: {exc}",
-            file=sys.stderr,
-        )
-        return
-
-    users_list = cfg.get("users") or []
-    kept = []
-    removed = 0
-    for u in users_list:
-        try:
-            if (
-                os.path.abspath(os.path.join(config_dir, os.path.expanduser(u)))
-                == user_file_abs
-            ):
-                removed += 1
-                continue
-        except Exception:  # noqa: BLE001, S110 — entry form unknown to us, keep it
-            pass
-        kept.append(u)
+    kept, removed = _drop_user_from_conf_list(users_list, config_dir, user_file_abs)
     if not removed:
         return
     cfg["users"] = kept
-
-    try:
-        tmp_path = config_path + ".tmp"
-        with open(tmp_path, "w", encoding="utf-8") as fh:
-            json.dump(cfg, fh, indent=2)
-            fh.write("\n")
-        try:
-            os.replace(tmp_path, config_path)
-        except OSError:
-            # Bind-mounted files block rename; fall back to in-place write.
-            with open(tmp_path, encoding="utf-8") as src:
-                content = src.read()
-            os.unlink(tmp_path)
-            with open(config_path, "w", encoding="utf-8") as dst:
-                dst.write(content)
-        print(f"unregistered {username} from {os.path.basename(config_path)}")
-    except OSError as exc:
-        print(
-            f"warning: could not update {config_path}: {exc}",
-            file=sys.stderr,
-        )
+    _write_server_conf_atomic(config_path, cfg, username)
 
 
 def _cmd_user_add(args: argparse.Namespace, store: UserStore) -> int:
