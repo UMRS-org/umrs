@@ -997,7 +997,6 @@ class MessageQueue:
             raise PermissionError(
                 "reset_control_plane can only be called by client control queue"
             )
-
         # Close existing socket if it exists
         if hasattr(self, "socket"):
             try:

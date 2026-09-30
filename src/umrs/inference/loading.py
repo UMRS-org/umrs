@@ -41,6 +41,7 @@ class EmbeddingModel:
         else:
             self.nlp = None
 
+_MODEL_CACHE = {}
 
 ################################ Models loading  ###########################
 #: Bucket-model schemes that import a workflow's step modules and run their
@@ -81,6 +82,18 @@ def load_model(model_cfg, modality, task=None):
     cfg_file = model_cfg.get("model_cfg_file", None)
     checkpoint_path = model_cfg.get("checkpoint_path", None)
 
+    cache_key = (
+            model_type,
+            model_name,
+            spacy_model,
+            modality,
+            task,
+        )
+    
+    if cache_key in _MODEL_CACHE:
+        print(f"Model '{model_name}' already loaded from cache")
+        return _MODEL_CACHE[cache_key]
+    
     if model_type == "SentenceTransformer":
         from .sentence_transformers import (
             load_sentence_transformers_model,
@@ -278,4 +291,5 @@ def load_model(model_cfg, modality, task=None):
     elif model_type == "SAM3":
         em._sam3_processor = _sam3_processor
 
+    _MODEL_CACHE[cache_key] = em
     return em
