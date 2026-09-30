@@ -141,6 +141,9 @@ services:
       UMRS_PREFLIGHT_MODE: ${UMRS_PREFLIGHT_MODE:-warn}
       UMRS_CONTROL_PORT: ${UMRS_RCCS_ZMQ_PORT:-50090}
       UMRS_DATA_PORT_RANGE: ${UMRS_RCCS_DATA_PORT_RANGE:-50091-50098}
+      # Idle data-queue reaper TTL (batch-sync 2026-09-30; frees ports for
+      # bursty multi-user lanes — see reap_idle_data_queues in MessageQueue)
+      UMRS_DATA_QUEUE_IDLE_TTL_S: ${UMRS_RCCS_DATA_QUEUE_IDLE_TTL_S:-90}
       UMRS_HTTP_PORT: ${UMRS_RCCS_PORT:-8000}
       # Frontend venue (ADR-046 A2): this API as reachable from egress-net
       # (sidecar rail listener → API). Session lifecycle rides the durable
