@@ -308,9 +308,8 @@ def compute_and_store_embedding_batch(items, store_fn=None):
 
     all_embeddings = model.compute_embeddings(all_objects)
 
-    if store_fn is None:
-        from umrs.server.sql import store_embeddings_in_db
-        store_fn = store_embeddings_in_db
+    # Route through the sanctioned fallback (single boundary-tagged point).
+    store_fn = _resolve_store_fn(store_fn)
 
     results = []
     for item, (start, end, sizes, has_zero) in zip(items, slices):

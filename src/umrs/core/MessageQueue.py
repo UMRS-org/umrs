@@ -2,6 +2,7 @@ import contextlib
 import json
 import logging
 import os
+import random
 import shutil
 import socket
 import tempfile
@@ -184,7 +185,71 @@ class MessageQueue:
             )
 
         entry["port"] = selected_port
+        entry["last_activity"] = time.monotonic()
         return selected_port, port_range
+
+    def reap_idle_data_queues(self, idle_ttl_s: float | None = None) -> list:
+        """Release ports held by idle client data queues (server role).
+
+        A port stays reserved in ``client_dictionary`` until the client
+        disconnects — under bursty multi-user load (PROCESS_OBJECTS_BATCH
+        lanes) the pool exhausts and ``_allocate_data_port`` starts
+        returning ``None``, so ``CREATE_DATA_QUEUE`` would hard-fail with
+        NO_DATA_PORT_AVAILABLE.  This reaper closes queues whose last
+        data-plane activity is older than the TTL and hands their ports
+        back to the pool.
+
+        A queue is NEVER reaped while its client has uncompleted tasks
+        (any command): cancelling an in-flight PROCESS_OBJECTS burst
+        would drop S3 events mid-upload.
+
+        TTL: ``idle_ttl_s`` argument, else ``UMRS_DATA_QUEUE_IDLE_TTL_S``
+        (default 90 s).  Returns the list of reaped client ids.
+        """
+        if self.role != "server":
+            raise PermissionError("Only the server reaps data queues")
+        if idle_ttl_s is None:
+            idle_ttl_s = float(os.environ.get("UMRS_DATA_QUEUE_IDLE_TTL_S", "90"))
+        now = time.monotonic()
+        reaped = []
+        for client_id, entry in list(self.client_dictionary.items()):
+            port = entry.get("port")
+            data_queue = entry.get("data_queue")
+            if port is None or data_queue is None:
+                continue
+            last_activity = getattr(
+                data_queue, "last_activity_monotonic", entry.get("last_activity", now)
+            )
+            if now - last_activity < idle_ttl_s:
+                continue
+            uncompleted = None
+            if self.task_manager is not None:
+                try:
+                    uncompleted = self.task_manager.tasks_status.all_uncompleted_task(
+                        client_id, "all"
+                    )
+                except Exception as exc:  # noqa: BLE001 — doubt means keep the queue
+                    logger.warning(
+                        "Data-queue reaper: status lookup failed for %s (%s); keeping",
+                        client_id,
+                        exc,
+                    )
+                    continue
+            if uncompleted:
+                continue
+            with contextlib.suppress(Exception):
+                data_queue.close()
+            entry.pop("port", None)
+            entry.pop("data_queue", None)
+            reaped.append(client_id)
+        if reaped:
+            logger.info(
+                "Reaped %d idle client data queue(s) (ttl=%ss): %s",
+                len(reaped),
+                idle_ttl_s,
+                reaped,
+            )
+        return reaped
 
     def __init__(
         self,
@@ -256,6 +321,10 @@ class MessageQueue:
         # Note: the upstream per-instance _send_lock was reverted by 2ad7ee04
         # (STATUS threads removed); sends stay synchronous on the event loop.
         self.debug = False  # disable noisy send/recv logs by default
+        # Liveness stamp for the server-side idle data-queue reaper
+        # (reap_idle_data_queues): set at construction and refreshed on
+        # every data-plane receive.
+        self.last_activity_monotonic = time.monotonic()
         self._auth_sessions: dict[str, AuthContext] = {}  # client_id -> AuthContext
         self._last_control_auth: dict[str, str] = {}
         # Started ZAP authenticators for CURVE/session sockets (server role).
@@ -524,6 +593,10 @@ class MessageQueue:
             else:
                 # PULL socket: single frame
                 msg = self.socket.recv_string()
+                # Server-side data queues: data-plane traffic is liveness —
+                # the idle reaper (reap_idle_data_queues) never harvests a
+                # queue that is actively receiving S3 events.
+                self.last_activity_monotonic = time.monotonic()
                 return None, msg
 
         except zmq.Again:
@@ -648,6 +721,13 @@ class MessageQueue:
             "Auth session created: user=%s role=%s", client_id, auth_ctx.role.value
         )
         port, port_range = self._ensure_client_data_queue(client_id)
+        if port is None:
+            # Contention-point self-healing: a busy reply is only honest
+            # after idle queues have been reaped once — batch lanes
+            # (PROCESS_OBJECTS_BATCH) drive bursty CREATE_DATA_QUEUE traffic
+            # that would otherwise hard-fail past the port-pool size.
+            self.reap_idle_data_queues()
+            port, port_range = self._ensure_client_data_queue(client_id)
         if port is None:
             with contextlib.suppress(RuntimeError):
                 self.send_string(
@@ -849,6 +929,7 @@ class MessageQueue:
         # Lookahead deque: non-PROCESS_OBJECTS messages captured during batch drain
         if not hasattr(self, "_lookahead"):
             import collections
+
             self._lookahead = collections.deque()
 
         while True:
@@ -928,7 +1009,9 @@ class MessageQueue:
                 zmq_sender_id, msg_bytes = frames[0], frames[1]
                 auth_frame = None
             else:
-                logger.warning("_drain_process_objects: unexpected frame count %d", len(frames))
+                logger.warning(
+                    "_drain_process_objects: unexpected frame count %d", len(frames)
+                )
                 continue
 
             msg = msg_bytes.decode()
@@ -1166,22 +1249,51 @@ class MessageQueue:
         if self.role != "client":
             raise PermissionError("Only client can call 'get_data_queue'")
 
-        self.send_control_request(
-            [TaskCmd.CREATE_DATA_QUEUE, client_id],
-            admin_token=admin_token,
-        )
-
         effective_tunnel_mode = (
             self.tunnel_mode if tunnel_mode is None else bool(tunnel_mode)
         )
-        try:
-            _, reply = self.recv_string()
-        except zmq.Again:
-            raise RuntimeError(
-                "Timeout waiting for server response in get_data_queue"
-            ) from None
-        except (AttributeError, TypeError, ValueError):
-            reply = self.socket.recv_string()
+
+        # NO_DATA_PORT_AVAILABLE is a TRANSIENT condition, not a hard error:
+        # the server reaps idle data queues at the contention point and
+        # bursty batch lanes free their ports as they finish.  Retry with
+        # capped exponential backoff + jitter until
+        # UMRS_DATA_QUEUE_BUSY_TIMEOUT_S (default 600 s) elapses; past the
+        # deadline the same RuntimeError as before is raised.
+        busy_deadline = time.monotonic() + float(
+            os.environ.get("UMRS_DATA_QUEUE_BUSY_TIMEOUT_S", "600")
+        )
+        busy_attempt = 0
+        while True:
+            busy_attempt += 1
+            self.send_control_request(
+                [TaskCmd.CREATE_DATA_QUEUE, client_id],
+                admin_token=admin_token,
+            )
+            try:
+                _, reply = self.recv_string()
+            except zmq.Again:
+                raise RuntimeError(
+                    "Timeout waiting for server response in get_data_queue"
+                ) from None
+            except (AttributeError, TypeError, ValueError):
+                reply = self.socket.recv_string()
+
+            if (
+                reply is not None
+                and reply.startswith("NO_DATA_PORT_AVAILABLE")
+                and time.monotonic() < busy_deadline
+            ):
+                sleep_s = min(15.0, 0.5 * (1.7 ** (busy_attempt - 1)))
+                sleep_s += random.uniform(0.0, 0.5)
+                logger.info(
+                    "Data port pool exhausted for %s; retrying in %.1fs (attempt %d)",
+                    client_id,
+                    sleep_s,
+                    busy_attempt,
+                )
+                time.sleep(sleep_s)
+                continue
+            break
 
         # ``recv_string`` swallows ``zmq.Again`` and returns ``(None, None)`` on a
         # receive timeout, so the ``except zmq.Again`` above never fires for that
@@ -1235,7 +1347,10 @@ class MessageQueue:
         if reply.startswith("NO_DATA_PORT_AVAILABLE"):
             _, _, port_range = reply.partition(":")
             suffix = f" in configured range {port_range}" if port_range else ""
-            raise RuntimeError(f"No data ports available{suffix}")
+            raise RuntimeError(
+                f"No data ports available{suffix} "
+                f"(still exhausted after {busy_attempt} attempt(s))"
+            )
         else:
             raise RuntimeError(f"Unexpected reply from server: {reply}")
 
@@ -1406,8 +1521,10 @@ class MessageQueue:
         uncompleted_key_list = None
         if self.task_manager is not None:
             try:
-                uncompleted_key_list = self.task_manager.tasks_status.all_uncompleted_task(
-                    client_id, status_key
+                uncompleted_key_list = (
+                    self.task_manager.tasks_status.all_uncompleted_task(
+                        client_id, status_key
+                    )
                 )
             except Exception as e:
                 logger.warning(
