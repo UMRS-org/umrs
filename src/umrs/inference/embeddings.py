@@ -240,7 +240,7 @@ def compute_and_store_embedding(
             METRICS.embedding_compute(
                 str(modality_name), outcome, _time.monotonic() - t0
             )
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001, S110
             pass
 
 
@@ -270,39 +270,10 @@ def compute_and_store_embedding_batch(items, store_fn=None):
     )
 
     if is_direct:
-        # Direct-compute models manage their own I/O; process per-item.
-        results = []
-        for item in items:
-            try:
-                compute_and_store_embedding(
-                    item["path_to_bucket"], item["s3_keys"], item["data_base"],
-                    item["table_name"], item["model"], item["device"],
-                    item["modality_name"], item["s3_connection"], item["output_bucket"],
-                    task=item.get("task"), skip_existing=item.get("skip_existing", True),
-                    store_fn=store_fn,
-                )
-                results.append(True)
-            except Exception:
-                logger.exception("compute_and_store_embedding_batch: item failed")
-                results.append(False)
-        return results
+        return _process_direct_batch(items, store_fn)
 
     # Standard path: load all data then run one model forward pass.
-    all_objects, all_checksums, all_metadata, all_saved, slices = [], [], [], [], []
-    for item in items:
-        s3_conn = item["s3_connection"]
-        bucket = item["path_to_bucket"]
-        keys = item["s3_keys"]
-        objects, metadata, checksums, sizes, has_zero = load_data_from_s3(
-            s3_conn, bucket, keys, item["modality_name"]
-        )
-        start = len(all_objects)
-        all_objects.extend(objects)
-        all_checksums.extend(checksums)
-        all_metadata.extend(metadata)
-        all_saved.extend([None] * len(keys))
-        slices.append((start, len(all_objects), sizes, has_zero))
-
+    all_objects, all_checksums, all_metadata, all_saved, slices = _load_batch_data(items)
     if not all_objects:
         return [False] * len(items)
 
@@ -314,41 +285,96 @@ def compute_and_store_embedding_batch(items, store_fn=None):
     results = []
     for item, (start, end, sizes, has_zero) in zip(items, slices):
         embeddings = all_embeddings[start:end]
-        checksums = all_checksums[start:end]
-        metadata = all_metadata[start:end]
-        saved = all_saved[start:end]
+        run_ok = _store_batch_slice(
+            store_fn, item, embeddings,
+            all_checksums[start:end], all_metadata[start:end], all_saved[start:end],
+            sizes, has_zero, model.model_name,
+        )
+        results.append(run_ok)
 
-        if has_zero:
-            zero_out_embeddings_for_empty_objects(embeddings, sizes, item["modality_name"])
+    return results
 
-        idj = item.get("indexing_job_id")
-        mv = item.get("model_version")
-        mp = item.get("model_path")
-        if idj or mv or mp:
-            dim = len(embeddings[0]) if embeddings and hasattr(embeddings[0], "__len__") else None
-            for md in metadata:
-                if idj:
-                    md["indexing_job_id"] = idj
-                if mv:
-                    md["model_version"] = mv
-                if mp:
-                    md["model_path"] = mp
-                if dim is not None:
-                    md["embedding_dimension"] = dim
 
+def _process_direct_batch(items, store_fn):
+    """Direct-compute models manage their own I/O; process per-item."""
+    results = []
+    for item in items:
         try:
-            store_fn(
-                item["data_base"], embeddings, item["table_name"],
-                item["path_to_bucket"], item["s3_keys"], saved,
-                item["modality_name"], checksums, model.model_name,
-                metadata_list=metadata,
+            compute_and_store_embedding(
+                item["path_to_bucket"], item["s3_keys"], item["data_base"],
+                item["table_name"], item["model"], item["device"],
+                item["modality_name"], item["s3_connection"], item["output_bucket"],
+                task=item.get("task"), skip_existing=item.get("skip_existing", True),
+                store_fn=store_fn,
             )
             results.append(True)
         except Exception:
-            logger.exception("compute_and_store_embedding_batch: store failed")
+            logger.exception("compute_and_store_embedding_batch: item failed")
             results.append(False)
-
     return results
+
+
+def _load_batch_data(items):
+    """Load every item's S3 objects once; returns flat arrays + per-item slices."""
+    all_objects, all_checksums, all_metadata, all_saved, slices = [], [], [], [], []
+    for item in items:
+        objects, metadata, checksums, sizes, has_zero = load_data_from_s3(
+            item["s3_connection"], item["path_to_bucket"], item["s3_keys"],
+            item["modality_name"],
+        )
+        start = len(all_objects)
+        all_objects.extend(objects)
+        all_checksums.extend(checksums)
+        all_metadata.extend(metadata)
+        all_saved.extend([None] * len(item["s3_keys"]))
+        slices.append((start, len(all_objects), sizes, has_zero))
+    return all_objects, all_checksums, all_metadata, all_saved, slices
+
+
+def _job_metadata_fields(idj, mv, mp, embeddings) -> dict:
+    """Concrete job fields for one item (only present keys, + dimension)."""
+    fields = {}
+    if idj:
+        fields["indexing_job_id"] = idj
+    if mv:
+        fields["model_version"] = mv
+    if mp:
+        fields["model_path"] = mp
+    dim = len(embeddings[0]) if embeddings and hasattr(embeddings[0], "__len__") else None
+    if dim is not None:
+        fields["embedding_dimension"] = dim
+    return fields
+
+
+def _stamp_job_metadata(metadata, item, embeddings) -> None:
+    """indexing_job_id / model_version / model_path (+dimension) onto each row."""
+    idj = item.get("indexing_job_id")
+    mv = item.get("model_version")
+    mp = item.get("model_path")
+    if not (idj or mv or mp):
+        return
+    extra = _job_metadata_fields(idj, mv, mp, embeddings)
+    for md in metadata:
+        md.update(extra)
+
+
+def _store_batch_slice(store_fn, item, embeddings, checksums, metadata, saved,
+                       sizes, has_zero, model_name) -> bool:
+    """Zero-stamp when needed, stamp job metadata, store one item's slice."""
+    if has_zero:
+        zero_out_embeddings_for_empty_objects(embeddings, sizes, item["modality_name"])
+    _stamp_job_metadata(metadata, item, embeddings)
+    try:
+        store_fn(
+            item["data_base"], embeddings, item["table_name"],
+            item["path_to_bucket"], item["s3_keys"], saved,
+            item["modality_name"], checksums, model_name,
+            metadata_list=metadata,
+        )
+        return True
+    except Exception:
+        logger.exception("compute_and_store_embedding_batch: store failed")
+        return False
 
 
 def load_embedding_model(model_name):
@@ -637,5 +663,5 @@ def open_AI_tokenizer():
         except AttributeError:
             print(f"OpenAI API error: {e}")
 
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — unknown OpenAI error shape prints, never raises
         print(f"Unexpected error: {e}")

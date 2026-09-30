@@ -88,12 +88,10 @@ class ProcessObjectsBatchHandler(CommandHandler):
                 )
             return client_id, objects or None
 
-        def _collect_and_process() -> None:
+        def _fetch_all_client_events() -> tuple[list, list]:
+            """Parallel S3-event fetch → (client_entries, failed_client_ids)."""
             client_entries = []
             failed = []
-
-            # Collect S3 events for all clients in parallel so the pool thread
-            # starts as soon as the LAST client responds, not sum(all waits).
             with ThreadPoolExecutor(max_workers=len(merged)) as fetcher:
                 futures = {
                     fetcher.submit(_fetch_one, cid, nb): cid
@@ -105,6 +103,33 @@ class ProcessObjectsBatchHandler(CommandHandler):
                         failed.append(client_id)
                     else:
                         client_entries.append((client_id, objects))
+            return client_entries, failed
+
+        def _launch_batch_threads(client_entries, active_callbacks) -> None:
+            """Pool submission honoring ServerOverloadedError (callbacks → ERROR)."""
+            logger.info(
+                "[PROCESS] S3 events ready — launching threads for %d client(s): %s",
+                len(client_entries),
+                [(cid, len(objs)) for cid, objs in client_entries],
+            )
+            try:
+                ctx.task_manager.active_threads.launch_s3_threads_batch(
+                    client_entries,
+                    ctx.buckets_cfg,
+                    ctx.device,
+                    ctx.embedding_backend,
+                    "process_objects",
+                    client_callbacks=active_callbacks,
+                )
+            except ServerOverloadedError as exc:
+                logger.warning("Rejecting PROCESS_OBJECTS_BATCH: %s", exc)
+                for cb in active_callbacks.values():
+                    cb(TaskStatus.ERROR)
+
+        def _collect_and_process() -> None:
+            # Collect S3 events for all clients in parallel so the pool thread
+            # starts as soon as the LAST client responds, not sum(all waits).
+            client_entries, failed = _fetch_all_client_events()
 
             for cid in failed:
                 cb = client_callbacks.get(cid)
@@ -119,26 +144,7 @@ class ProcessObjectsBatchHandler(CommandHandler):
                 for cid, _ in client_entries
                 if cid in client_callbacks
             }
-
-            logger.info(
-                "[PROCESS] S3 events ready — launching threads for %d client(s): %s",
-                len(client_entries),
-                [(cid, len(objs)) for cid, objs in client_entries],
-            )
-
-            try:
-                ctx.task_manager.active_threads.launch_s3_threads_batch(
-                    client_entries,
-                    ctx.buckets_cfg,
-                    ctx.device,
-                    ctx.embedding_backend,
-                    "process_objects",
-                    client_callbacks=active_callbacks,
-                )
-            except ServerOverloadedError as exc:
-                logger.warning("Rejecting PROCESS_OBJECTS_BATCH: %s", exc)
-                for cb in active_callbacks.values():
-                    cb(TaskStatus.ERROR)
+            _launch_batch_threads(client_entries, active_callbacks)
 
         thread = threading.Thread(
             target=_collect_and_process,

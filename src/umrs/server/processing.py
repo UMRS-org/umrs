@@ -21,6 +21,111 @@ _SELECTED_FIELDS = [
 ]
 
 
+def _build_bucket_membership(client_entries):
+    """Per-bucket key lists + client membership from raw client entries."""
+    keys_per_bucket: dict[str, list] = {}
+    bucket_to_clients: dict[str, set] = defaultdict(set)
+    for client_id, s3_objects in client_entries:
+        for s3_object in s3_objects:
+            logger.debug("\t\t-->%s", s3_object)
+            path_to_bucket, s3_key = s3_object.replace("s3://", "").split("/", 1)
+            bucket_keys = keys_per_bucket.setdefault(path_to_bucket, [])
+            if s3_key not in bucket_keys:
+                bucket_keys.append(s3_key)
+            bucket_to_clients[path_to_bucket].add(client_id)
+    return keys_per_bucket, bucket_to_clients
+
+
+def _resolve_model_groups(keys_per_bucket, bucket_to_clients, buckets_cfg,
+                          device, force_recompute):
+    """Bucket-config resolution → (model_groups, bucket_errors).
+
+    Buckets with no config, or without an embeddings-warranting model, are
+    skipped (num_objects refreshed) instead of entering a group.
+    """
+    model_groups: dict[str, list] = {}
+    bucket_errors: set[str] = set()
+    for path_to_bucket, s3_keys in keys_per_bucket.items():
+        result = buckets_cfg.get(path_to_bucket, filter=_SELECTED_FIELDS)
+        if result is None:
+            logger.warning("No bucket config for '%s', skipping", path_to_bucket)
+            bucket_errors.add(path_to_bucket)
+            continue
+        slot = _pack_model_group_slot(
+            result, path_to_bucket, s3_keys, device, buckets_cfg, force_recompute,
+            bucket_to_clients[path_to_bucket],
+        )
+        if slot is None:
+            continue
+        model_name = getattr(slot["model"], "model_name", str(slot["model"]))
+        model_groups.setdefault(model_name, []).append(slot)
+    return model_groups, bucket_errors
+
+
+def _pack_model_group_slot(result, path_to_bucket, s3_keys, device, buckets_cfg,
+                           force_recompute, clients):
+    """One bucket's resolved config → its model-group slot, or None to skip."""
+    (user, data_base, table_name, model, store_embeddings_flag,
+     modality_name, task, s3_connection, output_bucket, reentrant_lock,
+     keep_endpoint) = result
+    should_process = (
+        store_embeddings_flag
+        or (model is not None and getattr(model, "return_type", None) == "file")
+        or (model is not None and getattr(model, "type", None) in ("user_script", "user_workflow"))
+    )
+    if not should_process:
+        logger.info("No embeddings configured for bucket '%s', skipping", path_to_bucket)
+        buckets_cfg.update_num_objects(path_to_bucket)
+        return None
+    return {
+        "path_to_bucket": path_to_bucket,
+        "s3_keys": s3_keys,
+        "data_base": data_base,
+        "table_name": table_name,
+        "model": model,
+        "device": device,
+        "modality_name": modality_name,
+        "task": task,
+        "s3_connection": s3_connection,
+        "output_bucket": output_bucket,
+        "reentrant_lock": reentrant_lock,
+        "skip_existing": not force_recompute,
+        "_clients": clients,
+        "_user": user,
+        "keep_endpoint": bool(keep_endpoint),
+    }
+
+
+def _fire_bucket_error_callbacks(bucket_errors, bucket_to_clients, client_callbacks):
+    """ERROR callbacks for every client attached to an unresolvable bucket."""
+    errored_clients: set[str] = set()
+    for bucket in bucket_errors:
+        for cid in bucket_to_clients.get(bucket, set()):
+            errored_clients.add(cid)
+            cb = client_callbacks.get(cid)
+            if cb:
+                cb(TaskStatus.ERROR)
+    return errored_clients
+
+
+def _assemble_result_groups(model_groups, client_callbacks, errored_clients):
+    """Per-model (items, group_callbacks, group_users) excluding errored clients."""
+    result_groups = []
+    for items in model_groups.values():
+        group_client_ids: set[str] = set()
+        group_users: list[str] = []
+        for item in items:
+            group_client_ids.update(item["_clients"])
+            group_users.append(item["_user"])
+        group_callbacks = {
+            cid: client_callbacks[cid]
+            for cid in group_client_ids
+            if cid in client_callbacks and cid not in errored_clients
+        }
+        result_groups.append((items, group_callbacks, group_users))
+    return result_groups
+
+
 def prepare_model_groups(
     active_threads,
     client_entries,
@@ -48,88 +153,108 @@ def prepare_model_groups(
     if client_callbacks is None:
         client_callbacks = {}
 
-    # --- Build per-bucket key lists and client membership ---
-    keys_per_bucket: dict[str, list] = {}
-    bucket_to_clients: dict[str, set] = defaultdict(set)
+    keys_per_bucket, bucket_to_clients = _build_bucket_membership(client_entries)
+    model_groups, bucket_errors = _resolve_model_groups(
+        keys_per_bucket, bucket_to_clients, buckets_cfg, device, force_recompute
+    )
+    errored_clients = _fire_bucket_error_callbacks(
+        bucket_errors, bucket_to_clients, client_callbacks
+    )
+    return _assemble_result_groups(model_groups, client_callbacks, errored_clients)
 
-    for client_id, s3_objects in client_entries:
-        for s3_object in s3_objects:
-            logger.debug("\t\t-->%s", s3_object)
-            path_to_bucket, s3_key = s3_object.replace("s3://", "").split("/", 1)
-            bucket_keys = keys_per_bucket.setdefault(path_to_bucket, [])
-            if s3_key not in bucket_keys:
-                bucket_keys.append(s3_key)
-            bucket_to_clients[path_to_bucket].add(client_id)
 
-    # --- Resolve bucket config and group by model ---
-    model_groups: dict[str, list] = {}
-    bucket_errors: set[str] = set()
+def _launch_group_rivault_model(model, items, group_callbacks):
+    """RiVault launch for the group; None on failure (clients already ERRORed)."""
+    from umrs.server.rivault_launcher import launch_rivault_model
 
-    for path_to_bucket, s3_keys in keys_per_bucket.items():
-        result = buckets_cfg.get(path_to_bucket, filter=_SELECTED_FIELDS)
-        if result is None:
-            logger.warning("No bucket config for '%s', skipping", path_to_bucket)
-            bucket_errors.add(path_to_bucket)
-            continue
-        (user, data_base, table_name, model, store_embeddings_flag,
-         modality_name, task, s3_connection, output_bucket, reentrant_lock,
-         keep_endpoint) = result
+    for cb in group_callbacks.values():
+        cb(TaskStatus.INITIALIZING)
+    try:
+        with rivault_lock:
+            model = launch_rivault_model(model.model.copy())
+    except Exception as e:  # noqa: BLE001 — launcher failure shape varies; clients get ERROR either way
+        import traceback
+        logger.error("Error launching RiVault model for group: %s", e)
+        traceback.print_exc()
+        for cb in group_callbacks.values():
+            cb(TaskStatus.ERROR)
+        return None
+    for item in items:
+        item["model"] = model
+    return model
 
-        should_process = (
-            store_embeddings_flag
-            or (model is not None and getattr(model, "return_type", None) == "file")
-            or (model is not None and getattr(model, "type", None) in ("user_script", "user_workflow"))
+
+def _pop_locks_and_clients(items):
+    """Pop reentrant_lock/_clients/_user from each item; returns (locks, client_sets)."""
+    reentrant_locks = [item.pop("reentrant_lock") for item in items]
+    client_sets = [item.pop("_clients") for item in items]
+    # _user already used during prepare; pop to keep items clean for backend
+    for item in items:
+        item.pop("_user", None)
+    return reentrant_locks, client_sets
+
+
+def _compute_group_batch(embedding_backend, items, reentrant_locks):
+    """Acquire every bucket lock, run one batch compute, always release."""
+    for lock in reentrant_locks:
+        lock.acquire()
+    try:
+        return embedding_backend.compute_and_store_batch(items)
+    finally:
+        for lock in reentrant_locks:
+            lock.release()
+
+
+def _report_group_results(items, results, client_sets, group_callbacks, buckets_cfg):
+    """Per-bucket num_objects updates + per-client final status callbacks."""
+    client_status = {cid: TaskStatus.COMPLETED for cid in group_callbacks}
+    for item, ok in zip(items, results):
+        buckets_cfg.update_num_objects(item["path_to_bucket"])
+        if not ok:
+            for cid in client_sets[items.index(item)]:
+                if cid in client_status:
+                    client_status[cid] = TaskStatus.ERROR
+    for cid, status in client_status.items():
+        cb = group_callbacks.get(cid)
+        if cb:
+            cb(status)
+
+
+def _release_phase_for_group(active_threads, items) -> None:
+    """Auto-release backend jobs on idle, unless keep_endpoint was requested.
+
+    keep_endpoint=true leaves the mini-rivault endpoint warm; the idle
+    janitor reaps it once genuinely idle (ai4s-platform port, pre-batch era).
+    """
+    keep_endpoint_requested = any(item.get("keep_endpoint") for item in items)
+    if keep_endpoint_requested:
+        logger.info(
+            "[lifecycle] keep_endpoint requested — leaving backend endpoint(s) warm"
         )
-        if not should_process:
-            logger.info("No embeddings configured for bucket '%s', skipping", path_to_bucket)
-            buckets_cfg.update_num_objects(path_to_bucket)
-            continue
+        return
+    if os.environ.get("UMRS_SERVICE_LIFECYCLE", "auto_release") != "auto_release":
+        return
+    with active_threads.lock:
+        current_ident = threading.current_thread().ident
+        still_running = sum(
+            1 for future in active_threads.thread_list
+            if not future.done() and future.ident != current_ident
+        )
+    if still_running == 0:
+        from umrs.server.rivault_launcher import release_all_backend_jobs
+        release_all_backend_jobs()
 
-        model_name = getattr(model, "model_name", str(model))
-        model_groups.setdefault(model_name, []).append({
-            "path_to_bucket": path_to_bucket,
-            "s3_keys": s3_keys,
-            "data_base": data_base,
-            "table_name": table_name,
-            "model": model,
-            "device": device,
-            "modality_name": modality_name,
-            "task": task,
-            "s3_connection": s3_connection,
-            "output_bucket": output_bucket,
-            "reentrant_lock": reentrant_lock,
-            "skip_existing": not force_recompute,
-            "_clients": bucket_to_clients[path_to_bucket],
-            "_user": user,
-            "keep_endpoint": bool(keep_endpoint),
-        })
 
-    # --- Fire ERROR callbacks for unresolvable buckets ---
-    errored_clients: set[str] = set()
-    for bucket in bucket_errors:
-        for cid in bucket_to_clients.get(bucket, set()):
-            errored_clients.add(cid)
-            cb = client_callbacks.get(cid)
-            if cb:
-                cb(TaskStatus.ERROR)
-
-    # --- Build per-group callback dicts (exclude errored clients) ---
-    result_groups = []
-    for model_name, items in model_groups.items():
-        group_client_ids: set[str] = set()
-        group_users: list[str] = []
-        for item in items:
-            group_client_ids.update(item["_clients"])
-            group_users.append(item["_user"])
-
-        group_callbacks = {
-            cid: client_callbacks[cid]
-            for cid in group_client_ids
-            if cid in client_callbacks and cid not in errored_clients
-        }
-        result_groups.append((items, group_callbacks, group_users))
-
-    return result_groups
+def _report_group_pretty_status(active_threads, all_users) -> None:
+    """Final pretty thread-status block for the finished group."""
+    logger.info("Model group done. Users: %s", all_users)
+    from umrs.server.config import ENABLE_PRETTY_PRINT
+    with active_threads.lock:
+        pretty_print_thread_status(
+            active_threads.thread_dict,
+            running_only=False,
+            print_output=ENABLE_PRETTY_PRINT,
+        )
 
 
 def process_model_group(
@@ -175,51 +300,15 @@ def process_model_group(
 
     # --- Optional Rivault model launch ---
     if getattr(model, "type", None) == "rivault":
-        from umrs.server.rivault_launcher import launch_rivault_model
-        for cb in group_callbacks.values():
-            cb(TaskStatus.INITIALIZING)
-        try:
-            with rivault_lock:
-                model = launch_rivault_model(model.model.copy())
-            for item in items:
-                item["model"] = model
-        except Exception as e:
-            import traceback
-            logger.error("Error launching RiVault model for group: %s", e)
-            traceback.print_exc()
-            for cb in group_callbacks.values():
-                cb(TaskStatus.ERROR)
+        model = _launch_group_rivault_model(model, items, group_callbacks)
+        if model is None:
             return
 
     # --- Extract and acquire per-bucket locks ---
-    reentrant_locks = [item.pop("reentrant_lock") for item in items]
-    client_sets = [item.pop("_clients") for item in items]
-    # _user already used during prepare; pop to keep items clean for backend
-    for item in items:
-        item.pop("_user", None)
+    reentrant_locks, client_sets = _pop_locks_and_clients(items)
+    results = _compute_group_batch(embedding_backend, items, reentrant_locks)
 
-    for lock in reentrant_locks:
-        lock.acquire()
-    try:
-        results = embedding_backend.compute_and_store_batch(items)
-    finally:
-        for lock in reentrant_locks:
-            lock.release()
-
-    # --- Per-bucket result processing ---
-    client_status = {cid: TaskStatus.COMPLETED for cid in group_callbacks}
-    for item, ok in zip(items, results):
-        buckets_cfg.update_num_objects(item["path_to_bucket"])
-        if not ok:
-            for cid in client_sets[items.index(item)]:
-                if cid in client_status:
-                    client_status[cid] = TaskStatus.ERROR
-
-    # --- Fire per-client final callbacks ---
-    for cid, status in client_status.items():
-        cb = group_callbacks.get(cid)
-        if cb:
-            cb(status)
+    _report_group_results(items, results, client_sets, group_callbacks, buckets_cfg)
 
     # --- Thread-dict lifecycle ---
     if update_when_done:
@@ -227,38 +316,8 @@ def process_model_group(
         active_threads.record_status_for_users_by_key(all_users, key)
         active_threads.remove_from_running_list()
 
-    # --- Auto-release Rivault backend jobs when the server goes idle ---
-    service_lifecycle = os.environ.get("UMRS_SERVICE_LIFECYCLE", "auto_release")
-    keep_endpoint_requested = any(
-        item.get("keep_endpoint") for item in items
-    )
-    if keep_endpoint_requested:
-        # A processed experience opted to keep its backend endpoint warm
-        # (experience.json `keep_endpoint: true`). Skip auto-release so the
-        # mini-rivault endpoint stays available; the idle janitor still reaps
-        # it once it is genuinely idle (ai4s-platform port, pre-batch era).
-        logger.info(
-            "[lifecycle] keep_endpoint requested — leaving backend endpoint(s) warm"
-        )
-    elif service_lifecycle == "auto_release":
-        with active_threads.lock:
-            current_ident = threading.current_thread().ident
-            still_running = sum(
-                1 for future in active_threads.thread_list
-                if not future.done() and future.ident != current_ident
-            )
-        if still_running == 0:
-            from umrs.server.rivault_launcher import release_all_backend_jobs
-            release_all_backend_jobs()
-
-    logger.info("Model group done. Users: %s", all_users)
-    from umrs.server.config import ENABLE_PRETTY_PRINT
-    with active_threads.lock:
-        pretty_print_thread_status(
-            active_threads.thread_dict,
-            running_only=False,
-            print_output=ENABLE_PRETTY_PRINT,
-        )
+    _release_phase_for_group(active_threads, items)
+    _report_group_pretty_status(active_threads, all_users)
 
 
 def process_s3_objects_batch(
