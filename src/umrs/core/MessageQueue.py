@@ -1200,6 +1200,17 @@ class MessageQueue:
         self._apply_socket_security(self.socket, server=False)
         self.socket.connect(f"tcp://{self.server_ip}:{self.port}")
 
+    def _is_ready_reply(self, answer) -> bool:
+        """Tolerate both the legacy ``READY!`` and the versioned ``READY!:v1.x``
+        liveness replies (D-04).  Falls back to the bare comparison when the
+        contracts package is absent."""
+        try:
+            from r4_contracts.protocol import parse_handshake_reply
+        except ImportError:
+            return answer == "READY!"
+        ready, _version = parse_handshake_reply(answer)
+        return ready
+
     def is_server_ready(self, timeout_ms=5000):
         if self.role != "client":
             raise PermissionError("Only client can call 'get_data_queue'")
@@ -1215,7 +1226,7 @@ class MessageQueue:
             try:
                 self.send_string(TaskCmd.HANDSHAKE)
                 _, answer = self.recv_string()
-                if answer == "READY!":
+                if self._is_ready_reply(answer):
                     return True
             except zmq.Again:
                 # Retry once on timeout
@@ -1225,7 +1236,7 @@ class MessageQueue:
                     self.set_timeouts(timeout_ms, timeout_ms)
                     self.send_string("READY?")
                     _, answer = self.recv_string()
-                    if answer == "READY!":
+                    if self._is_ready_reply(answer):
                         return True
                 except zmq.Again:
                     return False

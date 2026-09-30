@@ -249,3 +249,25 @@ def test_execute_command_rejects_unsupported_commands():
         pass
     else:
         raise AssertionError("Expected parser rejection for unsupported command")
+
+
+def test_is_server_ready_tolerates_versioned_handshake_reply():
+    """READY!:v1.x must count as ready (D-04 wire versioning, 2026-09-30).
+
+    Regression for the exact-match bug found staging the live batch
+    benchmark: a v1.0 server answers READY!:v1.0, and the legacy
+    ``answer == "READY!"`` comparison declared the server dead — every
+    non-ping client action aborted with "Server connection timeout".
+    """
+    from umrs.core.MessageQueue import MessageQueue as _MQ
+
+    mq = _MQ.__new__(_MQ)
+    mq.role = "client"
+    mq.type = "control"
+    mq.timeout = 8000
+    mq.set_timeouts = lambda *a, **k: None
+    sent = []
+    replies = iter(["READY!:v1.0"])
+    mq.send_string = lambda *a, **k: sent.append(a[0])
+    mq.recv_string = lambda: (None, next(replies))
+    assert mq.is_server_ready(timeout_ms=1500) is True
