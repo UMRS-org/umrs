@@ -73,13 +73,13 @@ def knn_search_worker(
     conn = entry.data_base.get_conn()
     try:
         # Fast path: reuse cached embedding if ETag matches.
-        # DB stores s3_object as "bucket_name/s3_key" (no s3:// prefix).
-        db_s3_object = f"{bucket_name}/{s3_object}"
+        # Look up by checksum only so the cache hits regardless of whether the
+        # query image is stored at "key" or "subdir/key" in the bucket.
         with conn.cursor() as cur:
             cur.execute(
-                sql.SQL("SELECT embedding FROM {} WHERE s3_object = %s AND checksum = %s LIMIT 1")
+                sql.SQL("SELECT embedding FROM {} WHERE checksum = %s LIMIT 1")
                 .format(sql.Identifier(table_name)),
-                (db_s3_object, etag),
+                (etag,),
             )
             row = cur.fetchone()
 
@@ -92,6 +92,7 @@ def knn_search_worker(
             query_embedding = emb.tolist() if hasattr(emb, "tolist") else list(emb)
 
         # Cosine kNN — the HNSW index uses vector_cosine_ops so <=> is indexed.
+        # Exclude all rows whose checksum matches the query object (exact copies).
         with conn.cursor() as cur:
             if subdir:
                 prefix = f"{bucket_name}/{subdir}/%"
@@ -100,20 +101,22 @@ def knn_search_worker(
                         SELECT s3_object, 1.0 - (embedding <=> %s::vector) AS score
                         FROM {}
                         WHERE s3_object LIKE %s
+                          AND checksum != %s
                         ORDER BY embedding <=> %s::vector
                         LIMIT %s
                     """).format(sql.Identifier(table_name)),
-                    (query_embedding, prefix, query_embedding, n),
+                    (query_embedding, prefix, etag, query_embedding, n),
                 )
             else:
                 cur.execute(
                     sql.SQL("""
                         SELECT s3_object, 1.0 - (embedding <=> %s::vector) AS score
                         FROM {}
+                        WHERE checksum != %s
                         ORDER BY embedding <=> %s::vector
                         LIMIT %s
                     """).format(sql.Identifier(table_name)),
-                    (query_embedding, query_embedding, n),
+                    (query_embedding, etag, query_embedding, n),
                 )
             rows = cur.fetchall()
 
