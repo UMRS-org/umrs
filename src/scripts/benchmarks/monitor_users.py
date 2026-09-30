@@ -82,7 +82,7 @@ def query_user(user: str, config_dir: str, client: str, debug: bool = False) -> 
     """
     config_file = os.path.expanduser(f"{config_dir}/{user}.json")
     cmd = [client, "-c", config_file, "--output", "json", "status", "--username", user]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
 
     for line in result.stdout.splitlines():
         line = line.strip()
@@ -143,7 +143,7 @@ def query_all_users_once(
     """
     config_file = os.path.expanduser(f"{config_dir}/{users[0]}.json")
     cmd = [client, "-c", config_file, "--output", "json", "status-all"]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
 
     for line in result.stdout.splitlines():
         parsed = _parse_status_all_line(line, users, debug)
@@ -164,7 +164,7 @@ def fmt_ts(iso_ts):
     try:
         dt = datetime.fromisoformat(iso_ts.replace("Z", "+00:00"))
         return dt.astimezone().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-    except Exception:
+    except Exception:  # noqa: BLE001 — unknown ts shape passes through verbatim
         return iso_ts
 
 
@@ -334,7 +334,7 @@ def _apply_new_completions(user, is_running, latest_ts, state, completions, roun
 
 def _update_user_state(user, entry, state, completions, base_done, rounds, done, last_done_ts):
     """One bulk-scan entry → state/completions transition; returns the winning ts."""
-    is_running, latest_status, latest_ts, n_done = entry
+    is_running, latest_ts, n_done = entry[0], entry[2], entry[3]
     prev_state = state[user]
     new_completions = max(0, n_done - base_done[user])
     if new_completions > completions[user]:
@@ -378,7 +378,7 @@ def _print_duration_line(log_file, client_start_ts, last_done_ts):
         with open(log_file, "a") as f:
             f.write(f"Duration: {duration_str}\n")
         print(f"\n Total duration: {duration_str}\033[K", flush=True)
-    except Exception:
+    except Exception:  # noqa: BLE001, S110 — duration line is best-effort, never fatal
         pass
 
 

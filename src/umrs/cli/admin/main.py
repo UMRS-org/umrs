@@ -304,7 +304,7 @@ def _maybe_register_in_server_config(
         )
 
 
-def _load_server_conf_users(config_path: str) -> "tuple[dict, list] | None":
+def _load_server_conf_users(config_path: str) -> tuple[dict, list] | None:
     """(cfg, users) from conf_umrs.json; None when unreadable (warned)."""
     try:
         with open(config_path, encoding="utf-8") as fh:
@@ -318,7 +318,7 @@ def _load_server_conf_users(config_path: str) -> "tuple[dict, list] | None":
     return cfg, list(cfg.get("users") or [])
 
 
-def _drop_user_from_conf_list(users_list: list, config_dir: str, user_file_abs: str) -> "tuple[list, int]":
+def _drop_user_from_conf_list(users_list: list, config_dir: str, user_file_abs: str) -> tuple[list, int]:
     """(kept, removed_count) — absolute-path match covers relative forms too."""
     import os
 
