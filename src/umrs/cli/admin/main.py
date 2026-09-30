@@ -304,6 +304,80 @@ def _maybe_register_in_server_config(
         )
 
 
+def _maybe_unregister_from_server_config(
+    args: argparse.Namespace, store: UserStore, username: str
+) -> None:
+    """Drop the user JSON from conf_umrs.json's ``users`` list.
+
+    Mirror of :func:`_maybe_register_in_server_config` for the delete path
+    (2026-09-30, batch-benchmark cleanup discovery): without it, deleted
+    users re-provision on the daemon's next reload/restart because their
+    stale conf entries still point at (now missing) user files.
+
+    Matches by absolute path, so the register-side relative forms
+    (``./user_files/<u>.json`` etc.) are covered as well.
+    """
+    import os
+
+    server_config = getattr(args, "server_config", None)
+    if not server_config:
+        return
+    config_path = os.path.abspath(os.path.expanduser(server_config))
+    if not os.path.isfile(config_path):
+        return
+    config_dir = os.path.dirname(config_path)
+    user_file_abs = os.path.abspath(str(store.dir / f"{username}.json"))
+
+    try:
+        with open(config_path, encoding="utf-8") as fh:
+            cfg = json.load(fh)
+    except (json.JSONDecodeError, OSError) as exc:
+        print(
+            f"warning: could not read {config_path} to unregister user: {exc}",
+            file=sys.stderr,
+        )
+        return
+
+    users_list = cfg.get("users") or []
+    kept = []
+    removed = 0
+    for u in users_list:
+        try:
+            if (
+                os.path.abspath(os.path.join(config_dir, os.path.expanduser(u)))
+                == user_file_abs
+            ):
+                removed += 1
+                continue
+        except Exception:  # noqa: BLE001, S110 — entry form unknown to us, keep it
+            pass
+        kept.append(u)
+    if not removed:
+        return
+    cfg["users"] = kept
+
+    try:
+        tmp_path = config_path + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as fh:
+            json.dump(cfg, fh, indent=2)
+            fh.write("\n")
+        try:
+            os.replace(tmp_path, config_path)
+        except OSError:
+            # Bind-mounted files block rename; fall back to in-place write.
+            with open(tmp_path, encoding="utf-8") as src:
+                content = src.read()
+            os.unlink(tmp_path)
+            with open(config_path, "w", encoding="utf-8") as dst:
+                dst.write(content)
+        print(f"unregistered {username} from {os.path.basename(config_path)}")
+    except OSError as exc:
+        print(
+            f"warning: could not update {config_path}: {exc}",
+            file=sys.stderr,
+        )
+
+
 def _cmd_user_add(args: argparse.Namespace, store: UserStore) -> int:
     # When --site is given, scope the slurm account to that site.
     site_name = getattr(args, "site", None)
@@ -694,6 +768,7 @@ def _cmd_user_delete(args: argparse.Namespace, store: UserStore) -> int:
 
         path = store.delete(args.username)
         _remove_client_template(store, args.username)
+        _maybe_unregister_from_server_config(args, store, args.username)
         print(f"deprovisioned and deleted {path}")
         return 0
 
@@ -706,6 +781,7 @@ def _cmd_user_delete(args: argparse.Namespace, store: UserStore) -> int:
             return 1
         path = store.delete(args.username)
         _remove_client_template(store, args.username)
+        _maybe_unregister_from_server_config(args, store, args.username)
         print(f"deleted {path}")
         return 0
     # Soft delete: mark disabled. Preserve job/audit history (Decision 1).
