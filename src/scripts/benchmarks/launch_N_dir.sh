@@ -13,7 +13,7 @@ BENCHMARK_DIR="$(cd "$(dirname "$0")" && pwd)"
 # Fichier de log
 LOG_DIR="$BENCHMARK_DIR/log"
 mkdir -p "$LOG_DIR"
-LOG_FILE="$LOG_DIR/xp_dir_${N}.log"
+LOG_FILE="$LOG_DIR/xp_dir_2_${N}.log"
 
 # Supprimer le log s'il existe déjà
 rm -f "$LOG_FILE"
@@ -37,6 +37,7 @@ for i in $(seq 1 "$N"); do
     ./client_umrs.py \
         -c ~/.config/umrs/n_users/users/user1_${i}.json \
         --output text \
-        upload_dir --blocking ../data/img bucket-3 > /dev/null &
+        upload_dir --blocking ../data/img bucket-3/new-xp_5_-$N > /dev/null &
+    sleep 1
 done
 echo "All client launched"
