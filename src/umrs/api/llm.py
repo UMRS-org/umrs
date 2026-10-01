@@ -34,6 +34,7 @@ from umrs.api.llm_usage import (
 )
 from umrs.api.typed_errors import PlatformError, raise_typed
 from umrs.metrics import METRICS
+from umrs.orchestrator.endpoint_access import EndpointCaller, usable_endpoints
 from umrs.orchestrator.endpoint_registry import (
     EndpointRegistry,
     EndpointStatus,
@@ -208,6 +209,7 @@ def _discover_endpoint(
     registry: EndpointRegistry,
     project_id: str,
     model: str,
+    caller: EndpointCaller | None = None,
 ) -> RegisteredEndpoint:
     """
     Discover a ready endpoint for (project_id, model).
@@ -241,6 +243,13 @@ def _discover_endpoint(
 
     if not endpoint:
         endpoint = _variant_pool_match(registry, project_id, model)
+
+    if not endpoint and caller is not None:
+        # ADR-078: the caller's own project first, then endpoints of other
+        # projects whose access list admits the caller (user/group/system).
+        endpoint = registry.select_shared_endpoint(
+            caller, base_model, variant=variant
+        ) or registry.select_shared_endpoint(caller, model)
 
     if not endpoint:
         raise_typed(
@@ -616,6 +625,50 @@ def _get_caller_identity(request: Request) -> tuple[str, str]:
     return verified_identity(request, require_project=True)
 
 
+_GROUPS_TTL_SEC = 60.0
+_groups_cache: dict[str, tuple[float, frozenset[str]]] = {}
+
+
+def _cached_groups(request: Request, user_id: str) -> frozenset[str]:
+    """The caller's active groups, cached per user for one minute.
+
+    Called lazily — only when a group-scoped endpoint is the deciding
+    candidate — so the common routing path never takes a pool connection.
+    """
+    import time
+
+    now = time.monotonic()
+    hit = _groups_cache.get(user_id)
+    if hit is not None and now - hit[0] < _GROUPS_TTL_SEC:
+        return hit[1]
+    pool = getattr(request.app.state, "umrs_db_pool", None)
+    if pool is None:
+        return frozenset()
+    from .groups import groups_for_user
+
+    conn = pool.getconn()
+    try:
+        groups = frozenset(groups_for_user(conn, user_id))
+    except Exception as exc:  # noqa: BLE001 - no groups beats a failed request
+        logger.warning("group lookup for %s failed: %s", user_id, exc)
+        return frozenset()
+    finally:
+        pool.putconn(conn)
+    _groups_cache[user_id] = (now, groups)
+    return groups
+
+
+def _endpoint_caller(request: Request, user_id: str, project_id: str) -> EndpointCaller:
+    """Routing identity for ADR-078 access checks (gateway-verified headers)."""
+    admin = (request.headers.get("x-verified-is-admin") or "").strip().lower()
+    return EndpointCaller(
+        user_id=user_id or "",
+        project_id=project_id or "",
+        is_admin=admin in ("true", "1", "yes"),
+        groups_resolver=lambda: _cached_groups(request, user_id) if user_id else (),
+    )
+
+
 def _variant_pool_match(
     registry: EndpointRegistry, project_id: str, model: str
 ) -> RegisteredEndpoint | None:
@@ -652,7 +705,9 @@ async def chat_completions(
 
     logger.info("Chat completion: project=%s, model=%s", project_id, model)
 
-    endpoint = _discover_endpoint(registry, project_id, model)
+    endpoint = _discover_endpoint(
+        registry, project_id, model, _endpoint_caller(request, user_id, project_id)
+    )
     response = await _proxy_to_litellm(
         request,
         endpoint,
@@ -678,7 +733,9 @@ async def completions(
     body = await request.json()
     model = _extract_model(body)
 
-    endpoint = _discover_endpoint(registry, project_id, model)
+    endpoint = _discover_endpoint(
+        registry, project_id, model, _endpoint_caller(request, user_id, project_id)
+    )
     response = await _proxy_to_litellm(
         request,
         endpoint,
@@ -816,11 +873,15 @@ async def list_models(
     every served model is discoverable (not just the first endpoint's).
     Entries are deduplicated by model id.
     """
-    _user_id, project_id = _get_caller_identity(request)
+    user_id, project_id = _get_caller_identity(request)
 
-    endpoints = registry.list_all(
-        project_id=project_id,
-        status_filter=[EndpointStatus.READY, EndpointStatus.DEGRADED],
+    live = [EndpointStatus.READY, EndpointStatus.DEGRADED]
+    endpoints = registry.list_all(project_id=project_id, status_filter=live)
+    # ADR-078: plus endpoints other projects share with this caller.
+    endpoints += usable_endpoints(
+        registry.list_all(status_filter=live),
+        _endpoint_caller(request, user_id, project_id),
+        shared_only=True,
     )
 
     if not endpoints:
@@ -848,7 +909,9 @@ async def embeddings(
     body = await request.json()
     model = _extract_model(body)
 
-    endpoint = _discover_endpoint(registry, project_id, model)
+    endpoint = _discover_endpoint(
+        registry, project_id, model, _endpoint_caller(request, user_id, project_id)
+    )
     response = await _proxy_to_litellm(
         request,
         endpoint,

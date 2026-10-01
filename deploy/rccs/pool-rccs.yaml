@@ -116,6 +116,9 @@ endpoints:
     gpu_count: 1
     max_model_len: 8192
     ttl_sec: 0
+    # ADR-078: every authenticated caller may route to it, whatever their
+    # project (the endpoint is owned + billed by project `default`).
+    access: [system]
     keep_alive:
       project_id: default         # the rccs-cloud profile's project (X-Project-ID)
       user: mnagaso               # Slurm submitter under per_user_ssh delegation

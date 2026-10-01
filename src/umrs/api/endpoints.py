@@ -19,9 +19,19 @@ import os
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    status,
+)
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from ..orchestrator.endpoint_access import usable_endpoints
 from ..orchestrator.endpoint_mounts import (
     egress_reasons,
     require_egress_proxy_image,
@@ -801,6 +811,7 @@ class EndpointResponse(BaseModel):
     litellm_url: str
     owner_type: str | None = None
     owner_id: str | None = None
+    access: list[str] | None = None  # ADR-078 scopes beyond the owning project
     tier: str | None = None
     served_model_name: str | None = None
     model_type: str | None = None
@@ -1021,6 +1032,15 @@ class ProvisionRequest(BaseModel):
     )
     max_model_len: int = Field(4096, ge=512, description="Max context length")
     prefer_warm: bool = Field(True, description="Prefer reusing existing endpoint")
+    access: list[str] | None = Field(
+        None,
+        description=(
+            "ADR-078 access scopes beyond the owning project: user:<id>, "
+            "project:<id>, group:<id> (members only) or system (admin only). "
+            "Omitted = the roster recipe's access when the caller may grant "
+            "it, else the owning project only."
+        ),
+    )
     variant: str | None = Field(
         None,
         description=(
@@ -1764,8 +1784,15 @@ async def get_active_endpoints(
     ),
     project_id: str = Depends(get_project_id),
     registry: EndpointRegistry = Depends(get_registry),
+    raw_request: Request = None,
+    requesting_user: str | None = Depends(_get_requesting_user),
 ) -> EndpointsListResponse:
-    """Get active (ready) endpoints for the project."""
+    """Get active (ready) endpoints for the project (plus ADR-078 shared ones)."""
+    from ._endpoint_access import caller_for
+
+    caller = caller_for(
+        raw_request, user_id=requesting_user, project_id=project_id, is_admin=False
+    )
 
     normalized_model = model.strip() if model else None
     capability_tags = _parse_capabilities_csv(capabilities)
@@ -1773,7 +1800,9 @@ async def get_active_endpoints(
 
     # If specific model requested, try to get that endpoint
     if not _is_all_models_query(normalized_model):
-        endpoint = _find_named_ready(registry, project_id, normalized_model)
+        endpoint = _find_named_ready(
+            registry, project_id, normalized_model
+        ) or registry.select_shared_endpoint(caller, normalized_model)
         if endpoint is None:
             return EndpointsListResponse(endpoints=[], total=0)
         live = await _filter_live_ready_endpoints(registry, [endpoint])
@@ -1789,10 +1818,11 @@ async def get_active_endpoints(
             total=1,
         )
 
-    # List all ready endpoints for the project
-    endpoints = registry.list_all(
-        project_id=project_id,
-        status_filter=[EndpointStatus.READY, EndpointStatus.DEGRADED],
+    # List all ready endpoints for the project, then those shared with the caller
+    live = [EndpointStatus.READY, EndpointStatus.DEGRADED]
+    endpoints = registry.list_all(project_id=project_id, status_filter=live)
+    endpoints += usable_endpoints(
+        registry.list_all(status_filter=live), caller, shared_only=True
     )
     endpoints = await _filter_live_ready_endpoints(registry, endpoints)
     return _active_list_response(endpoints, capability_tags, normalized_model_type)
@@ -2811,6 +2841,56 @@ async def _try_warm_reuse(registry, service, project_id: str, request):
     return None
 
 
+def _record_owner_and_access(
+    metadata: dict, requesting_user, access: list[str]
+) -> None:
+    """ADR-078: who owns the row and who else may use it."""
+    if requesting_user:
+        metadata.setdefault("owner_id", requesting_user)
+    if access:
+        metadata["access"] = access
+
+
+async def _access_and_warm_reuse(
+    registry, raw_request, request, requesting_user, project_id, is_admin
+):
+    """(access list to record, warm ProvisionResponse or None)."""
+    from ..orchestrator.service import get_orchestration_service
+    from ._endpoint_access import caller_for, provision_access
+
+    caller = caller_for(
+        raw_request, user_id=requesting_user, project_id=project_id, is_admin=is_admin
+    )
+    access = provision_access(request, caller)
+    service = get_orchestration_service()
+    warm = await _try_warm_reuse(registry, service, project_id, request)
+    if warm is None:
+        warm = await _try_shared_warm_reuse(registry, service, caller, request)
+    return access, warm
+
+
+async def _try_shared_warm_reuse(registry, service, caller, request):
+    """ADR-078: a READY endpoint another project shares with the caller.
+
+    Same contract as the project warm path: only with ``prefer_warm``, and
+    only after the backend job is verified alive.
+    """
+    if not request.prefer_warm:
+        return None
+    shared = registry.select_shared_endpoint(
+        caller, request.model, variant=request.variant, min_ttl_sec=60
+    )
+    if shared is None or not shared.is_usable:
+        return None
+    if not await _is_backend_job_alive(service, shared.job_id):
+        return None
+    return ProvisionResponse(
+        status="ready",
+        job_id=shared.job_id,
+        endpoint=EndpointResponse(**shared.to_dict()),
+    )
+
+
 def _dedupe_in_flight(registry, project_id: str, request):
     """202 + Retry-After when the same (model, variant) is already provisioning."""
     from fastapi.responses import JSONResponse
@@ -2866,6 +2946,7 @@ async def provision_endpoint(
     is_admin: bool = Depends(_caller_is_admin),
     requesting_user: str | None = Depends(_get_requesting_user),
     registry: EndpointRegistry = Depends(get_registry),
+    raw_request: Request = None,  # FastAPI injects; in-process callers may omit
 ):
     """Provision a new endpoint or return existing one."""
     from ..orchestrator.service import (
@@ -2918,9 +2999,11 @@ async def provision_endpoint(
     # 200/202 it should have failed with. Fail fast before ANY reuse return.
     _enforce_recipe_policy(is_admin, request)
 
-    # Check for existing warm endpoint first
-    warm = await _try_warm_reuse(
-        registry, get_orchestration_service(), effective_project_id, request
+    # Check for existing warm endpoint first — the caller's project, then
+    # endpoints shared with it (ADR-078); the access list is decided (and
+    # refused) before any reuse.
+    access, warm = await _access_and_warm_reuse(
+        registry, raw_request, request, requesting_user, effective_project_id, is_admin
     )
     if warm is not None:
         return warm
@@ -3065,6 +3148,7 @@ async def provision_endpoint(
 
     request_metadata.setdefault("owner_type", request.tier)
     request_metadata.setdefault("tier", request_metadata["owner_type"])
+    _record_owner_and_access(request_metadata, requesting_user, access)
     _apply_served_name_env(request, model_entry, request_metadata, env_vars)
 
     _require_egress_proxy_for_request(request)
@@ -3185,11 +3269,61 @@ def _surface_deprovision_outcome(
             },
         )
     raise_typed(
-        PlatformError.endpoints(
-            "failure", f"Failed to deprovision endpoint: {job_id}"
-        ),
+        PlatformError.endpoints("failure", f"Failed to deprovision endpoint: {job_id}"),
     )
     return None
+
+
+class EndpointAccessUpdate(BaseModel):
+    """ADR-078: the complete access list beyond the owning project."""
+
+    access: list[str] = Field(
+        default_factory=list,
+        description="user:<id> | project:<id> | group:<id> | system; [] = owning project only",
+    )
+
+
+@router.put(
+    "/{job_id}/access",
+    response_model=EndpointResponse,
+    summary="Set who may use an endpoint (ADR-078)",
+)
+async def set_endpoint_access(
+    job_id: str,
+    body: EndpointAccessUpdate,
+    raw_request: Request,
+    project_id: str | None = Depends(get_project_id_optional),
+    is_admin: bool = Depends(_caller_is_admin),
+    requesting_user: str | None = Depends(_get_requesting_user),
+    registry: EndpointRegistry = Depends(get_registry),
+) -> EndpointResponse:
+    """Replace the endpoint's access list (owning project or admin only)."""
+    from ._endpoint_access import caller_for, checked_access
+
+    endpoint = registry.get_by_job_id(job_id)
+    if not endpoint:
+        raise_typed(
+            PlatformError.endpoints("not_found", f"Endpoint not found: {job_id}")
+        )
+    _require_identity_for_mutation(project_id, "Access change")
+    if not is_admin:
+        _forbid_if_project_mismatch(endpoint, project_id)
+    caller = caller_for(
+        raw_request,
+        user_id=requesting_user,
+        project_id=project_id or endpoint.project_id,
+        is_admin=is_admin,
+    )
+    access = checked_access(body.access, caller)
+    updated = registry.update_metadata(job_id, {"access": access})
+    from .audit_events import emit_audit
+
+    emit_audit(
+        "endpoint.access_changed",
+        project_id=endpoint.project_id,
+        details={"job_id": job_id, "access": access, "by": requesting_user or ""},
+    )
+    return EndpointResponse(**(updated or endpoint).to_dict())
 
 
 @router.delete(
