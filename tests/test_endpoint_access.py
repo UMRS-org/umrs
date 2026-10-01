@@ -283,3 +283,21 @@ def test_explicit_access_is_refused_loudly():
         glue.provision_access(_request(access=["system"]), _caller())
     assert exc.value.status_code == 403
     assert glue.provision_access(_request(access=["user:alice"]), _caller()) == ["user:alice"]
+
+
+def test_rccs_roster_access_reaches_the_provision_unmocked(monkeypatch):
+    """Live regression 2026-10-01: the relay's Nimble endpoint came up with
+    no access list — the roster lookup read a key the defaults dict strips."""
+    from pathlib import Path
+
+    from umrs.api import _endpoint_access as glue
+    from umrs.orchestrator import provision_roster as pr
+
+    pool = Path(__file__).resolve().parents[1] / "deploy/rccs/pool-rccs.yaml"
+    monkeypatch.setenv(pr.ROSTER_ENV_VAR, str(pool))
+    pr._cache.clear()
+    try:
+        assert pr.resolve_model_recipe("Bespoke-Nimble-9B")["access"] == ["system"]
+        assert glue.provision_access(_request(), _caller(admin=True)) == ["system"]
+    finally:
+        pr._cache.clear()

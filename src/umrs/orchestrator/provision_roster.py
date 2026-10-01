@@ -273,3 +273,19 @@ def roster_entries() -> list[dict[str, Any]]:
             seen.add(id(full))
             entries.append(full)
     return entries
+
+
+def resolve_model_recipe(
+    model: str, variant: str | None = None
+) -> dict[str, Any] | None:
+    """The full recipe entry for ``model`` (same lookup as the defaults).
+
+    ``resolve_model_provision_defaults`` returns only the sizing subset;
+    recipe-level keys (``access``, ``keep_alive``, ``patches``) live here.
+    """
+    index = _load_index()
+    entry = index.get((model, variant)) or index.get((model, None))
+    if not entry:
+        return None
+    full = entry.get("_full_entry")
+    return full if isinstance(full, dict) else None
