@@ -37,7 +37,7 @@ from __future__ import annotations
 import logging
 import re
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Any, Literal
 
@@ -80,6 +80,19 @@ class RelayAction:
     job_id: str | None = None
 
 
+_DURATION = re.compile(r"(?:(\d+)-)?(\d+)(?::(\d+))?(?::(\d+))?")
+
+
+def _hms(
+    days_s: str | None, a: str, b: str | None, c: str | None
+) -> tuple[int, int, int]:
+    if days_s is not None:  # D-HH[:MM[:SS]]
+        return int(a), int(b or 0), int(c or 0)
+    if c is not None:  # HH:MM:SS
+        return int(a), int(b or 0), int(c)
+    return 0, int(a), int(b or 0)  # MM or MM:SS
+
+
 def parse_slurm_duration(value: str) -> int | None:
     """Seconds in a Slurm ``--time`` value; ``None`` for unlimited/unparseable.
 
@@ -87,20 +100,12 @@ def parse_slurm_duration(value: str) -> int | None:
     ``D-HH:MM:SS``.
     """
     text = str(value or "").strip()
-    if not text or text.upper() in ("UNLIMITED", "INFINITE"):
-        return None
-    match = re.fullmatch(r"(?:(\d+)-)?(\d+)(?::(\d+))?(?::(\d+))?", text)
-    if not match:
+    match = _DURATION.fullmatch(text)
+    if not match:  # also "", UNLIMITED, INFINITE
         return None
     days_s, a, b, c = match.groups()
-    days = int(days_s or 0)
-    if days_s is not None:  # D-HH[:MM[:SS]]
-        hours, minutes, seconds = int(a), int(b or 0), int(c or 0)
-    elif c is not None:  # HH:MM:SS
-        hours, minutes, seconds = int(a), int(b), int(c)
-    else:  # MM or MM:SS
-        hours, minutes, seconds = 0, int(a), int(b or 0)
-    return ((days * 24 + hours) * 60 + minutes) * 60 + seconds
+    hours, minutes, seconds = _hms(days_s, a, b, c)
+    return ((int(days_s or 0) * 24 + hours) * 60 + minutes) * 60 + seconds
 
 
 def _positive(value: Any, default: int) -> int:
@@ -109,6 +114,26 @@ def _positive(value: Any, default: int) -> int:
     except (TypeError, ValueError):
         return default
     return parsed if parsed > 0 else default
+
+
+def _policy_from_entry(entry: dict[str, Any]) -> KeepAlivePolicy | None:
+    block = entry.get("keep_alive")
+    model = str(entry.get("model") or "")
+    if not isinstance(block, dict) or not model:
+        return None
+    project_id = str(block.get("project_id") or "").strip()
+    if not project_id:
+        logger.warning("keep_alive for %s has no project_id; relay skipped", model)
+        return None
+    walltime = block.get("walltime")
+    return KeepAlivePolicy(
+        model=model,
+        project_id=project_id,
+        user=str(block.get("user") or "").strip() or None,
+        renew_before_sec=_positive(block.get("renew_before_sec"), 7200),
+        handover_grace_sec=_positive(block.get("handover_grace_sec"), 300),
+        walltime_sec=parse_slurm_duration(walltime) if walltime else None,
+    )
 
 
 def keep_alive_policies(entries: Iterable[dict[str, Any]]) -> list[KeepAlivePolicy]:
@@ -120,23 +145,11 @@ def keep_alive_policies(entries: Iterable[dict[str, Any]]) -> list[KeepAlivePoli
     """
     policies: dict[str, KeepAlivePolicy] = {}
     for entry in entries:
-        block = entry.get("keep_alive")
-        model = str(entry.get("model") or "")
-        if not isinstance(block, dict) or not model or model in policies:
+        if str(entry.get("model") or "") in policies:
             continue
-        project_id = str(block.get("project_id") or "").strip()
-        if not project_id:
-            logger.warning("keep_alive for %s has no project_id; relay skipped", model)
-            continue
-        walltime = block.get("walltime")
-        policies[model] = KeepAlivePolicy(
-            model=model,
-            project_id=project_id,
-            user=(str(block["user"]).strip() or None) if block.get("user") else None,
-            renew_before_sec=_positive(block.get("renew_before_sec"), 7200),
-            handover_grace_sec=_positive(block.get("handover_grace_sec"), 300),
-            walltime_sec=parse_slurm_duration(walltime) if walltime else None,
-        )
+        policy = _policy_from_entry(entry)
+        if policy is not None:
+            policies[policy.model] = policy
     return list(policies.values())
 
 
@@ -145,6 +158,83 @@ def _seconds_left(
 ) -> float:
     deadline = endpoint.created_at + timedelta(seconds=walltime_sec)
     return (deadline - now).total_seconds()
+
+
+def _owned(policy: KeepAlivePolicy, ep: RegisteredEndpoint) -> bool:
+    if ep.project_id != policy.project_id:
+        return False
+    return (
+        ep.model == policy.model or ep.metadata.get("served_model_name") == policy.model
+    )
+
+
+def _handed_over(
+    policy: KeepAlivePolicy, fresh: list[RegisteredEndpoint], now: datetime
+) -> bool:
+    return any(
+        ep.status == EndpointStatus.READY
+        and ep.ready_at is not None
+        and (now - ep.ready_at).total_seconds() >= policy.handover_grace_sec
+        for ep in fresh
+    )
+
+
+def _retirements(
+    policy: KeepAlivePolicy,
+    expiring: list[RegisteredEndpoint],
+    walltime: int,
+    now: datetime,
+) -> list[RelayAction]:
+    actions = []
+    for ep in expiring:
+        left = _seconds_left(ep, walltime, now)
+        if ep.active_requests == 0 or left <= DRAIN_FLOOR_SEC:
+            actions.append(
+                RelayAction(
+                    "retire",
+                    policy.model,
+                    policy.project_id,
+                    f"handed over; {int(left)}s to walltime",
+                    ep.job_id,
+                )
+            )
+    return actions
+
+
+@dataclass(frozen=True)
+class _Fleet:
+    live: list[RegisteredEndpoint]
+    pending: bool
+    expiring: list[RegisteredEndpoint]
+    fresh: list[RegisteredEndpoint]
+
+
+def _split_by_deadline(
+    policy: KeepAlivePolicy,
+    live: list[RegisteredEndpoint],
+    walltime: int,
+    now: datetime,
+) -> tuple[list[RegisteredEndpoint], list[RegisteredEndpoint]]:
+    expiring, fresh = [], []
+    for ep in live:
+        near = _seconds_left(ep, walltime, now) <= policy.renew_before_sec
+        (expiring if near else fresh).append(ep)
+    return expiring, fresh
+
+
+def _fleet(
+    policy: KeepAlivePolicy,
+    endpoints: Iterable[RegisteredEndpoint],
+    walltime: int | None,
+    now: datetime,
+) -> _Fleet:
+    mine = [ep for ep in endpoints if _owned(policy, ep)]
+    live = [ep for ep in mine if ep.status in _LIVE]
+    pending = any(ep.status in _PENDING for ep in mine)
+    if walltime is None:
+        return _Fleet(live, pending, [], live)
+    expiring, fresh = _split_by_deadline(policy, live, walltime, now)
+    return _Fleet(live, pending, expiring, fresh)
 
 
 def plan_relay(
@@ -156,58 +246,22 @@ def plan_relay(
 ) -> list[RelayAction]:
     """Relay actions for one policy given the registry rows (pure)."""
     walltime = policy.walltime_sec or walltime_sec
-    mine = [
-        ep
-        for ep in endpoints
-        if ep.project_id == policy.project_id
-        and (
-            ep.model == policy.model
-            or ep.metadata.get("served_model_name") == policy.model
+    fleet = _fleet(policy, endpoints, walltime, now)
+    provision = RelayAction("provision", policy.model, policy.project_id, "")
+    if not fleet.live:
+        return (
+            []
+            if fleet.pending
+            else [replace(provision, reason="no live or pending endpoint")]
         )
-    ]
-    live = [ep for ep in mine if ep.status in _LIVE]
-    pending = [ep for ep in mine if ep.status in _PENDING]
-
-    def act(
-        action: Literal["provision", "retire"], reason: str, job_id: str | None = None
-    ):
-        return RelayAction(action, policy.model, policy.project_id, reason, job_id)
-
-    if not live:
-        if pending:
-            return []
-        return [act("provision", "no live or pending endpoint")]
     if walltime is None:
         return []  # no deadline to relay across; only the respawn above applies
-
-    expiring = [
-        ep for ep in live if _seconds_left(ep, walltime, now) <= policy.renew_before_sec
-    ]
-    fresh = [ep for ep in live if ep not in expiring]
-    if not fresh:
-        if pending:
+    if not fleet.fresh:
+        if fleet.pending:
             return []
-        soonest = min(_seconds_left(ep, walltime, now) for ep in expiring)
-        return [
-            act(
-                "provision",
-                f"successor: live endpoint reaches walltime in {int(soonest)}s",
-            )
-        ]
-
-    handed_over = any(
-        ep.status == EndpointStatus.READY
-        and ep.ready_at is not None
-        and (now - ep.ready_at).total_seconds() >= policy.handover_grace_sec
-        for ep in fresh
-    )
-    if not handed_over:
+        soonest = min(_seconds_left(ep, walltime, now) for ep in fleet.expiring)
+        reason = f"successor: live endpoint reaches walltime in {int(soonest)}s"
+        return [replace(provision, reason=reason)]
+    if not _handed_over(policy, fleet.fresh, now):
         return []
-    actions = []
-    for ep in expiring:
-        left = _seconds_left(ep, walltime, now)
-        if ep.active_requests == 0 or left <= DRAIN_FLOOR_SEC:
-            actions.append(
-                act("retire", f"handed over; {int(left)}s to walltime", ep.job_id)
-            )
-    return actions
+    return _retirements(policy, fleet.expiring, walltime, now)

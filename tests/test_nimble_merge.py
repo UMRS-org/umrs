@@ -68,31 +68,47 @@ def _sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def test_merge_matches_peft_bf16_arithmetic(tmp_path):
+@pytest.fixture
+def merged_run(tmp_path):
     base, adapter, weights, lora = _checkpoint(tmp_path)
     out = tmp_path / "merged"
     sha = _sha(adapter / "adapter_model.safetensors")
     result = _run(base, adapter, out, sha)
     assert result.returncode == 0, result.stderr
+    return base, adapter, out, sha, weights, lora
 
+
+def _expected(name: str, weights: dict, lora: dict):
+    stem = "base_model.model." + name[: -len(".weight")]
+    a, b = lora[stem + ".lora_A.weight"], lora[stem + ".lora_B.weight"]
+    return weights[name] + (b.float() @ a.float() * 2.0).to(torch.bfloat16)
+
+
+def test_merge_matches_peft_bf16_arithmetic(merged_run):
+    _, _, out, _, weights, lora = merged_run
     merged = {}
     for shard in out.glob("*.safetensors"):
         merged.update(st.load_file(str(shard)))
-    for name in (W1, W2):
-        stem = "base_model.model." + name[: -len(".weight")]
-        a, b = lora[stem + ".lora_A.weight"], lora[stem + ".lora_B.weight"]
-        expected = weights[name] + (b.float() @ a.float() * 2.0).to(torch.bfloat16)
-        assert merged[name].dtype == torch.bfloat16
-        assert torch.equal(merged[name], expected)
+    assert {merged[n].dtype for n in (W1, W2)} == {torch.bfloat16}
+    assert torch.equal(merged[W1], _expected(W1, weights, lora))
+    assert torch.equal(merged[W2], _expected(W2, weights, lora))
     assert torch.equal(merged[UNTOUCHED], weights[UNTOUCHED])
 
+
+def test_merge_output_is_complete_and_atomic(merged_run, tmp_path):
+    _, _, out, _, _, _ = merged_run
     ready = json.loads((out / "READY.json").read_text())
     assert (ready["merged_weights"], ready["scale"]) == (2, 2.0)
-    assert (out / "tokenizer.json").exists() and (out / "config.json").exists()
+    assert (out / "tokenizer.json").exists()
+    assert (out / "config.json").exists()
     assert not (tmp_path / "merged.partial").exists()
 
-    again = _run(base, adapter, out, sha)  # idempotent: verifies, does not rewrite
-    assert again.returncode == 0 and "verified existing merge" in again.stdout
+
+def test_rerun_verifies_instead_of_rewriting(merged_run):
+    base, adapter, out, sha, _, _ = merged_run
+    again = _run(base, adapter, out, sha)
+    assert again.returncode == 0
+    assert "verified existing merge" in again.stdout
 
 
 def test_pinned_adapter_hash_is_enforced(tmp_path):
