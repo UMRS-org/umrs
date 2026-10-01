@@ -19,8 +19,8 @@ CONFIG_DIR   = "/home/emmanuel.jeannot/.config/umrs/n_users/users"
 DATA_DIR     = "/home/emmanuel.jeannot/Unified_Multimodal_Retriever_Service/data/images/7000/"
 BUCKET_BASE  = "bucket-3"
 SLEEP_S      = 600
-LOG_DIR      = "/mnt/data/ejeannot/log"
-STATE_FILE   = "/mnt/data/ejeannot/log/mass_upload_state.json"
+LOG_DIR      = "/mnt/storage/ejeannot/log"
+STATE_FILE   = "/mnt/storage/ejeannot/log/mass_upload_state.json"
 
 USERS = [
     {"z": 10, "target": 100_000},
