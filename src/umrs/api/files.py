@@ -277,6 +277,27 @@ def get_project_id(
     )
 
 
+def get_project_s3_config(
+    project_id: str = Depends(get_project_id),
+    default: S3Config = Depends(get_s3_config),
+) -> S3Config:
+    """The caller project's object store (ADR-077): bound, else *default*.
+
+    A project whose binding cannot be read is refused (503) rather than
+    served from the default store — its data must not land in the wrong one.
+    """
+    from umrs.shared.storage.project_storage import (
+        ProjectStorageUnavailable,
+        project_s3_config,
+    )
+
+    try:
+        bound = project_s3_config(project_id)
+    except ProjectStorageUnavailable as exc:
+        raise_typed(PlatformError.projects("unavailable", str(exc)), cause=exc)
+    return bound if bound is not None else default
+
+
 def validate_key(key: str, project_id: str, *, warn_on_rename: bool = False) -> str:
     """
     Validate and normalize S3 key.
@@ -382,7 +403,7 @@ async def upload_file(
     key: str | None = Form(None),
     purpose: str | None = Form("uploads"),
     project_id: str = Depends(get_project_id),
-    config: S3Config = Depends(get_s3_config),
+    config: S3Config = Depends(get_project_s3_config),
     x_user_id: str | None = Header(None),
 ) -> UploadResponse:
     """Store an uploaded file under the caller's project namespace."""
@@ -455,7 +476,7 @@ async def upload_file(
 async def generate_presigned_url(
     request: PresignRequest,
     project_id: str = Depends(get_project_id),
-    config: S3Config = Depends(get_s3_config),
+    config: S3Config = Depends(get_project_s3_config),
 ) -> PresignResponse:
     """Generate presigned URL for upload or download.
 
@@ -529,9 +550,18 @@ async def _await_download_readiness(request: PresignRequest) -> None:
 
 
 async def _presign_upload(
-    request: PresignRequest, s3_client: Any, bucket: str, key: str, ttl_sec: int
+    request: PresignRequest,
+    s3_client: Any,
+    bucket: str,
+    key: str,
+    ttl_sec: int,
+    endpoint_override: str | None = None,
 ) -> str:
-    """Compute URL for an upload (PUT) presign."""
+    """Compute URL for an upload (PUT) presign.
+
+    ``endpoint_override`` pins a project-bound store's own endpoint (ADR-077);
+    otherwise the server-wide presign endpoint applies.
+    """
     # NOTE: for metadata support we still call boto3 directly here because the
     # shared utility doesn't handle per-object metadata.
     if request.metadata:
@@ -553,13 +583,14 @@ async def _presign_upload(
         key,
         content_type=request.content_type or "application/octet-stream",
         ttl=ttl_sec,
+        endpoint_override=endpoint_override,
     )
 
 
 async def _generate_presigned_url_impl(
     request: PresignRequest,
     project_id: str = Depends(get_project_id),
-    config: S3Config = Depends(get_s3_config),
+    config: S3Config = Depends(get_project_s3_config),
 ) -> PresignResponse:
     """Core presign implementation split by operation (upload/download)."""
     if request.operation == PresignedOperation.DOWNLOAD and request.job_id:
@@ -573,7 +604,14 @@ async def _generate_presigned_url_impl(
         s3_client = config.get_client()
 
         if request.operation == PresignedOperation.UPLOAD:
-            url = await _presign_upload(request, s3_client, bucket, key, ttl_sec)
+            url = await _presign_upload(
+                request,
+                s3_client,
+                bucket,
+                key,
+                ttl_sec,
+                endpoint_override=getattr(config, "presign_endpoint", None),
+            )
             headers = {}
             if request.content_type:
                 headers["Content-Type"] = request.content_type
@@ -631,7 +669,7 @@ async def _generate_presigned_url_impl(
 async def generate_presigned_urls_batch(
     request: PresignBatchRequest,
     project_id: str = Depends(get_project_id),
-    config: S3Config = Depends(get_s3_config),
+    config: S3Config = Depends(get_project_s3_config),
 ) -> PresignBatchResponse:
     """Generate multiple presigned URLs."""
 
@@ -672,7 +710,7 @@ async def get_file_metadata(
     file_id: str,
     bucket: str | None = None,
     project_id: str = Depends(get_project_id),
-    config: S3Config = Depends(get_s3_config),
+    config: S3Config = Depends(get_project_s3_config),
 ) -> FileMetadata:
     """Get file metadata."""
 
@@ -720,7 +758,7 @@ async def delete_file(
     file_id: str,
     bucket: str | None = None,
     project_id: str = Depends(get_project_id),
-    config: S3Config = Depends(get_s3_config),
+    config: S3Config = Depends(get_project_s3_config),
 ) -> None:
     """Delete a file."""
 
@@ -841,7 +879,7 @@ async def download_file_stream(
         None, description="Bucket name (defaults to configured bucket)"
     ),
     project_id: str = Depends(get_project_id),
-    config: S3Config = Depends(get_s3_config),
+    config: S3Config = Depends(get_project_s3_config),
 ):
     """Stream an S3 object stored in the caller's project namespace."""
     bucket_name = bucket or config.bucket
@@ -864,7 +902,7 @@ async def check_files_exist(
     keys: list[str],
     bucket: str | None = None,
     project_id: str = Depends(get_project_id),
-    config: S3Config = Depends(get_s3_config),
+    config: S3Config = Depends(get_project_s3_config),
 ) -> dict[str, bool]:
     """Check if files exist."""
 

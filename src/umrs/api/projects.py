@@ -15,7 +15,7 @@ module (no imports from umrs.api).
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, NoReturn
 
 from fastapi import APIRouter, Depends, Request, status
 from pydantic import BaseModel, Field
@@ -519,6 +519,322 @@ def put_project_budget(
         max_wall_clock_hours=body.max_wall_clock_hours,
     )
     return {"status": "ok", "budget": budget}
+
+
+# -- external storage binding (ADR-077, gap row D-17) -------------------------
+
+
+class StorageBindingBody(BaseModel):
+    """Bind a project's stores by locator; ``None`` keeps, ``""`` unbinds."""
+
+    s3_url: str | None = Field(
+        default=None,
+        description=(
+            "http(s)://ACCESS_KEY:SECRET_KEY@host:port[/bucket][?region=&verify=&backend=]"
+            " — '' unbinds the object store"
+        ),
+    )
+    postgres_uri: str | None = Field(
+        default=None,
+        description="postgresql://user:password@host:port/db[?sslmode=] — '' unbinds Postgres",
+    )
+    check: bool = Field(
+        default=True,
+        description="probe the resulting binding from this server first; a failing probe refuses",
+    )
+
+
+class _BindingStores:
+    """The project row store and the binding store over one pooled conn."""
+
+    def __init__(self, conn: Any) -> None:
+        from umrs.shared.storage.project_storage import ProjectStorageStore
+
+        self.projects = ProjectStore(conn)
+        self.bindings = ProjectStorageStore(conn)
+
+
+def _binding_stores_dep(request: Request):
+    """Borrow one conn for the request; always returned (2026-09-09 class)."""
+    pool = getattr(request.app.state, "umrs_db_pool", None)
+    if pool is None:
+        raise_typed(
+            PlatformError.projects(
+                "unavailable", "projects store unavailable — shared umrs_db pool absent"
+            )
+        )
+    conn = pool.getconn()
+    try:
+        yield _BindingStores(conn)
+    finally:
+        try:
+            conn.rollback()  # reads must not leave the conn idle in transaction
+        finally:
+            pool.putconn(conn)
+
+
+def _project_or_404(stores: _BindingStores, project_id: str) -> dict[str, Any]:
+    try:
+        return stores.projects.get(project_id)
+    except ProjectNotFound:
+        raise_typed(
+            PlatformError.projects("not_found", f"project {project_id} not found")
+        )
+
+
+def _require_owner_or_admin(row: dict[str, Any], identity: Any) -> None:
+    if not identity.is_admin and (identity.user_id or "") != row["owner_id"]:
+        raise_typed(
+            PlatformError.projects(
+                "forbidden",
+                "only the owner or an admin may manage this project's storage",
+            )
+        )
+
+
+def _binding_error(exc: Exception) -> NoReturn:
+    """Typed refusal for a locator/sealing failure (never echoes credentials)."""
+    reason = getattr(exc, "reason", "invalid")
+    if reason in ("sealing_key_unavailable", "sealing_key_changed"):
+        raise_typed(
+            PlatformError.projects("unavailable", f"storage binding: {exc}"), cause=exc
+        )
+    raise_typed(
+        PlatformError.projects("bad_request", f"storage binding: {exc}"), cause=exc
+    )
+
+
+def _empty_binding(project_id: str) -> dict[str, Any]:
+    from umrs.shared.storage.project_storage import StorageBinding
+
+    return StorageBinding(project_id).redacted()
+
+
+def _current_binding(stores: _BindingStores, project_id: str):
+    from umrs.shared.storage.project_storage import StorageBindingError
+
+    try:
+        return stores.bindings.get(project_id)
+    except StorageBindingError as exc:
+        _binding_error(exc)
+
+
+def _parsed_locators(body: StorageBindingBody) -> tuple[Any, Any]:
+    """Parse + host-check the locators the body sets (None/'' carry no locator)."""
+    from umrs.shared.storage.project_storage import (
+        check_target_host,
+        parse_postgres_uri,
+        parse_s3_url,
+    )
+
+    s3 = parse_s3_url(body.s3_url) if (body.s3_url or "").strip() else None
+    pg = (
+        parse_postgres_uri(body.postgres_uri)
+        if (body.postgres_uri or "").strip()
+        else None
+    )
+    for locator in (s3, pg):
+        if locator is not None:
+            check_target_host(locator.host)
+    return s3, pg
+
+
+def _candidate(
+    project_id: str, body: StorageBindingBody, current: Any, s3: Any, pg: Any
+):
+    """The binding the PUT would leave behind (for the pre-save probe)."""
+    from umrs.shared.storage.project_storage import StorageBinding
+
+    def pick(value: str | None, parsed: Any, kept: Any) -> Any:
+        if value is None:
+            return kept
+        return parsed  # None when value is blank (unbind)
+
+    return StorageBinding(
+        project_id,
+        s3=pick(body.s3_url, s3, current.s3 if current else None),
+        postgres=pick(body.postgres_uri, pg, current.postgres if current else None),
+    )
+
+
+def _default_bucket() -> str:
+    from umrs.shared.storage.s3_config import get_s3_config
+
+    return get_s3_config().bucket
+
+
+def _probe_or_refuse(candidate: Any) -> dict[str, Any] | None:
+    from umrs.shared.storage.project_storage import probe_binding
+
+    if not candidate.bound:
+        return None
+    report = probe_binding(candidate, default_bucket=_default_bucket())
+    if not report["ok"]:
+        failed = {
+            name: (report[name] or {}).get("detail")
+            or (report[name] or {}).get("error")
+            for name in ("s3", "postgres")
+            if report[name] is not None and not report[name].get("ok")
+        }
+        raise_typed(
+            PlatformError.projects(
+                "conflict", f"storage binding probe failed — nothing saved: {failed}"
+            )
+        )
+    return report
+
+
+def _invalidate_binding_cache(project_id: str) -> None:
+    from umrs.shared.storage.project_storage import get_project_storage_resolver
+
+    get_project_storage_resolver().invalidate(project_id)
+
+
+@router.get("/{project_id}/storage")
+def get_project_storage(
+    project_id: str,
+    stores: _BindingStores = Depends(_binding_stores_dep),
+    identity: CallerIdentity = Depends(get_caller_identity),
+) -> dict[str, Any]:
+    """The project's storage binding, redacted (owner-or-admin).
+    # auth: verified
+    """
+    row = _project_or_404(stores, project_id)
+    _require_owner_or_admin(row, identity)
+    binding = _current_binding(stores, project_id)
+    return {
+        "status": "ok",
+        "storage": binding.redacted() if binding else _empty_binding(project_id),
+    }
+
+
+@router.put("/{project_id}/storage")
+def put_project_storage(
+    project_id: str,
+    body: StorageBindingBody,
+    stores: _BindingStores = Depends(_binding_stores_dep),
+    identity: CallerIdentity = Depends(get_caller_identity),
+) -> dict[str, Any]:
+    """Bind the project's object store and/or Postgres by locator.
+
+    Owner-or-admin; an owner needs the operator allowlist
+    (``UMRS_PROJECT_STORAGE_ALLOWED``). With ``check`` (default) the
+    resulting binding is probed from this server first. Credentials are
+    sealed at rest and never returned.
+    # auth: verified
+    """
+    from umrs.shared.storage.project_storage import (
+        StorageBindingError,
+        allowed_targets,
+        binding_refusal,
+    )
+
+    row = _project_or_404(stores, project_id)
+    refusal = binding_refusal(
+        is_admin=bool(identity.is_admin),
+        is_owner=(identity.user_id or "") == row["owner_id"],
+        allowed=allowed_targets(),
+    )
+    if refusal:
+        raise_typed(PlatformError.projects("forbidden", _REFUSAL_TEXT[refusal]))
+    try:
+        binding, probe = _save_binding(stores, project_id, body, actor=identity.user_id)
+    except StorageBindingError as exc:
+        _binding_error(exc)
+    _invalidate_binding_cache(project_id)
+    return {
+        "status": "ok",
+        "storage": binding.redacted() if binding else _empty_binding(project_id),
+        "probe": probe,
+    }
+
+
+def _save_binding(
+    stores: _BindingStores,
+    project_id: str,
+    body: StorageBindingBody,
+    *,
+    actor: str | None,
+) -> tuple[Any, dict[str, Any] | None]:
+    """Validate, optionally probe, then persist; returns (binding, probe report)."""
+    s3, pg = _parsed_locators(body)
+    probe = None
+    if body.check:
+        # The stored side is read only when the body keeps one of the stores.
+        keeps_one = body.s3_url is None or body.postgres_uri is None
+        current = stores.bindings.get(project_id) if keeps_one else None
+        probe = _probe_or_refuse(_candidate(project_id, body, current, s3, pg))
+    binding = stores.bindings.put(
+        project_id,
+        s3_url=body.s3_url,
+        postgres_uri=body.postgres_uri,
+        updated_by=(actor or "").strip(),
+    )
+    return binding, probe
+
+
+_REFUSAL_TEXT = {
+    "forbidden": "only the owner or an admin may bind this project's storage",
+    "admin_required": (
+        "binding external storage requires the admin role unless the operator "
+        "allowlists targets (UMRS_PROJECT_STORAGE_ALLOWED)"
+    ),
+}
+
+
+@router.delete("/{project_id}/storage")
+def delete_project_storage(
+    project_id: str,
+    stores: _BindingStores = Depends(_binding_stores_dep),
+    identity: CallerIdentity = Depends(get_caller_identity),
+) -> dict[str, Any]:
+    """Unbind both stores — the project returns to the server's own stores.
+
+    Objects already written to the external stores stay there.
+    # auth: verified
+    """
+    row = _project_or_404(stores, project_id)
+    _require_owner_or_admin(row, identity)
+    existed = stores.bindings.clear(project_id)
+    _invalidate_binding_cache(project_id)
+    return {"status": "ok", "cleared": existed, "storage": _empty_binding(project_id)}
+
+
+@router.post("/{project_id}/storage/check")
+def check_project_storage(
+    project_id: str,
+    stores: _BindingStores = Depends(_binding_stores_dep),
+    identity: CallerIdentity = Depends(get_caller_identity),
+) -> dict[str, Any]:
+    """Probe the saved binding from this server (owner-or-admin).
+
+    S3: project bucket + ``-output`` ensured, then a put/get/delete
+    round-trip; Postgres: connect, server facts, TLS, pgvector round-trip.
+    # auth: verified
+    """
+    from umrs.shared.storage.project_storage import (
+        StorageBindingError,
+        check_target_host,
+        probe_binding,
+    )
+
+    row = _project_or_404(stores, project_id)
+    _require_owner_or_admin(row, identity)
+    binding = _current_binding(stores, project_id)
+    if binding is None:
+        raise_typed(
+            PlatformError.projects(
+                "not_found", f"project {project_id} has no storage binding"
+            )
+        )
+    try:
+        for locator in (binding.s3, binding.postgres):
+            if locator is not None:
+                check_target_host(locator.host)
+    except StorageBindingError as exc:
+        _binding_error(exc)
+    report = probe_binding(binding, default_bucket=_default_bucket())
+    return {"status": "ok", "storage": binding.redacted(), "probe": report}
 
 
 __all__ = ["ProjectNotFound", "ProjectStore", "router"]
