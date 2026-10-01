@@ -152,17 +152,15 @@ def rccs_roster(monkeypatch):
     pr._cache.clear()
 
 
-def test_rccs_nimble_entry_is_kept_alive_on_ng_dgx_s(rccs_roster):
+def test_rccs_nimble_entry_is_kept_alive_on_a_gb10_partition(rccs_roster):
     (policy,) = keep_alive_policies(pr.roster_entries())
     assert (policy.model, policy.project_id) == ("Bespoke-Nimble-9B", "default")
     # The successor window must cover a cold start (~45 min Lustre load).
     assert policy.renew_before_sec >= 3600
     defaults = pr.resolve_model_provision_defaults("Bespoke-Nimble-9B")
-    assert (defaults["partition"], defaults["ttl_sec"], defaults["max_model_len"]) == (
-        "ng-dgx-s",
-        0,
-        8192,
-    )
+    # ng-dgx-m1 while ng-dgx-s is reserved (2026-10-01 → 10-02); either is GB10.
+    assert defaults["partition"] in ("ng-dgx-s", "ng-dgx-m1")
+    assert (defaults["ttl_sec"], defaults["max_model_len"]) == (0, 8192)
     env = defaults["env_vars"]
     # logprob_token_ids on /v1/completions needs vLLM >= 0.26 (a pinned tag).
     major, minor = env["VLLM_DOCKER_IMAGE"].rsplit(":v", 1)[1].split(".")[:2]
