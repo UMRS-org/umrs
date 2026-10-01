@@ -515,10 +515,15 @@ class PostgresBackend(RegistryBackend):
     ) -> list[RegisteredEndpoint]:
         """List all endpoints with optional filters."""
         conn = self._get_connection()
+        # Same 16 columns as load()/load_by_job_id(): _row_to_endpoint reads
+        # row[15]. The 15-column list here made every startup load raise
+        # IndexError (2026-09-18 → 10-01), so each restart began with an empty
+        # registry and the janitor reaped every live endpoint as an orphan.
         query = """
             SELECT job_id, project_id, model, host, port, status, backend,
                    variant, created_at, ready_at, last_used_at, expires_at,
-                   error_message, consecutive_failures, metadata
+                   error_message, consecutive_failures, metadata,
+                   backend_job_id
             FROM endpoint_registry WHERE 1=1
         """
         params: list[Any] = []
