@@ -384,20 +384,32 @@ def run_kill_check(
     worker.join(timeout=_START_TIMEOUT)
     _join_settlers(executor)
     report.update(_kill_verdict(executor, facts, started, outcome))
+    if not started:
+        # What the job printed while the marker never came (empty = nothing).
+        report["log_tail"] = facts.get("log_tail", "")
     return report
+
+
+#: Bytes of the job log a kill check that never saw its marker reports — the
+#: workdir (and with it the log) is gone by the time the verdict is written.
+_LOG_TAIL_KEEP = 2000
 
 
 def _await_start(
     executor: Any, facts: dict[str, Any], worker: Any, poll: float, timeout: float
 ) -> bool:
-    """True once the sleeping step's marker is in its job's log."""
+    """True once the sleeping step's marker is in its job's log; every
+    non-empty tail seen is kept in ``facts["log_tail"]`` for the report."""
     from .step_lane_probe import SLEEP_MARKER
 
     deadline = time.monotonic() + timeout
     while worker.is_alive() and time.monotonic() < deadline:
-        if facts.get("job_id") and SLEEP_MARKER in _log_tail(
-            executor, facts.get("workdir", "")
-        ):
+        tail = (
+            _log_tail(executor, facts.get("workdir", "")) if facts.get("job_id") else ""
+        )
+        if tail:
+            facts["log_tail"] = tail[-_LOG_TAIL_KEEP:]
+        if SLEEP_MARKER in tail:
             return True
         time.sleep(poll)
     return False

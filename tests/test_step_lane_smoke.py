@@ -145,8 +145,8 @@ class _StubLane:
     workdir_root, partition, account = "/r", "ng-dgx-m3", "cloud-users"
     venue_script = "/c/umrs/src/umrs/mini-rivault-llm/venue.sh"
 
-    def __init__(self, report, *, started=True, final="CANCELLED"):
-        self.report, self.started, self.final = report, started, final
+    def __init__(self, report, *, started=True, final="CANCELLED", log=""):
+        self.report, self.started, self.final, self.log = report, started, final, log
         self._settlers, self.scripts, self.removed = [], [], []
 
     def bind_run(self, _run_id, *, cancelled, on_job):
@@ -161,7 +161,9 @@ class _StubLane:
 
     def _helper(self, verb, *_args, **_kw):
         assert verb == "tail-log"
-        return SimpleNamespace(returncode=0, stdout=(SLEEP_MARKER if self.started else "").encode())
+        return SimpleNamespace(
+            returncode=0, stdout=(SLEEP_MARKER if self.started else self.log).encode()
+        )
 
     def _job_state(self, job_id):
         return self.final if job_id == "901" else "COMPLETED"
@@ -238,3 +240,21 @@ def test_an_exited_record_is_a_leftover_not_a_survivor():
 def test_a_step_that_never_starts_fails_the_kill_check():
     result = _kill(_StubLane(CLEAN, started=False), start_timeout=0.2)
     assert "the step container never started" in result["problems"]
+
+
+def test_a_kill_check_that_never_starts_reports_what_the_job_printed():
+    # R2 2026-10-01: the sleeper ran 10 min to TIMEOUT without its marker and
+    # the workdir was gone by the verdict — the report now carries the tail.
+    log = "[umrs-step] FATAL: podman venue could not be prepared on gb10-m3\n"
+    result = _kill(_StubLane(CLEAN, started=False, log=log), start_timeout=0.2)
+    assert "the step container never started" in result["problems"]
+    assert result["log_tail"] == log
+
+
+def test_a_kill_check_whose_job_printed_nothing_says_so():
+    result = _kill(_StubLane(CLEAN, started=False), start_timeout=0.2)
+    assert result["log_tail"] == ""
+
+
+def test_a_started_kill_check_carries_no_log_tail():
+    assert "log_tail" not in _kill(_StubLane(CLEAN))

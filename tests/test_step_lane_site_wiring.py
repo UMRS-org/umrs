@@ -244,7 +244,8 @@ def test_each_front_server_reads_only_its_own_clusters_step_env(cluster):
 
 
 @pytest.mark.parametrize(
-    ("front", "form"), [("rccs-front", "cdi"), ("bdrt-front", "cdi"), ("octopus-front", "rocm")]
+    ("front", "form"),
+    [("rccs-front", "nvidia-devices"), ("bdrt-front", "cdi"), ("octopus-front", "rocm")],
 )
 def test_each_lane_site_hands_its_executor_its_gpu_form(monkeypatch, front, form):
     env = load_site_config(str(DEPLOY / front / "site.yaml")).to_env()

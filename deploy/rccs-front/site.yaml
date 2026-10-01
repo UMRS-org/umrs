@@ -142,6 +142,12 @@ step_executor:
   cgroups: enabled
   pids_limit: 0
   nproc_limit: 4096
+  # R2 2026-10-01: the GPU run failed "setting up CDI devices: unresolvable
+  # CDI devices nvidia.com/gpu=all" — podman 4.9.3 on the GB10 nodes has no
+  # usable CDI spec (the serving path maps devices directly for the same
+  # reason, x_nvidia-override.yaml). Steps that need a GPU get the node's
+  # /dev/nvidia* nodes and the host driver libraries instead.
+  gpu_form: nvidia-devices
 
 database:
   host: localhost

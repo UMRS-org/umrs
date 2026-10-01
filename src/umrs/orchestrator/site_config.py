@@ -211,8 +211,10 @@ class StepExecutorConfig:
     image: str = ""  # Default container image for steps
     gpu: bool = True  # Whether to attach GPU by default
     # How the HPC lane hands a step that needs a GPU its devices: "cdi"
-    # (NVIDIA, --device nvidia.com/gpu=all) or "rocm" (AMD, --device /dev/kfd
-    # --device /dev/dri). The lane refuses any other value before submitting.
+    # (NVIDIA, --device nvidia.com/gpu=all), "rocm" (AMD, --device /dev/kfd
+    # --device /dev/dri) or "nvidia-devices" (the NVIDIA device nodes + host
+    # driver libraries found on the node; podman builds without CDI support,
+    # RCCS GB10). The lane refuses any other value before submitting.
     gpu_form: str = "cdi"
     # Parent of the per-step workdirs; must be on a filesystem the compute
     # nodes see (required for slurm-remote: a path on the CLUSTER).
