@@ -805,8 +805,12 @@ def probe_s3(
 def _pg_connect(locator: PostgresLocator) -> Any:
     import psycopg2
 
+    from umrs.shared.pg_settings import pg_connect_kwargs
+
+    # R-14 session hygiene applies to external stores too (application_name +
+    # idle-in-transaction reaper, both plain libpq/GUC settings).
     return psycopg2.connect(
-        locator.uri, connect_timeout=5, application_name="umrs-binding-probe"
+        locator.uri, connect_timeout=5, **pg_connect_kwargs("binding-probe")
     )
 
 
