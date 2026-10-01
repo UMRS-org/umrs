@@ -39,6 +39,17 @@ def _default_owner_type(project_id: str) -> str:
     return "user"
 
 
+def _serves(ep: Any, model: str, variant: str | None, min_ttl: float) -> bool:
+    """A live row for this model (catalog or served name) with TTL to spare."""
+    if ep.status not in (EndpointStatus.READY, EndpointStatus.DEGRADED):
+        return False
+    if ep.model != model and ep.metadata.get("served_model_name") != model:
+        return False
+    if variant is not None and ep.variant != variant:
+        return False
+    return ep.ttl_remaining_sec is None or ep.ttl_remaining_sec >= min_ttl
+
+
 def _positive_int(value: Any) -> int | None:
     try:
         parsed = int(value)
@@ -167,6 +178,12 @@ class RegisteredEndpoint:
             project_id=self.project_id or "",
         )
 
+    def _add_access(self, d: dict[str, Any]) -> None:
+        """ADR-078 access scopes beyond the owning project, when set."""
+        access = self.metadata.get("access")
+        if isinstance(access, list):
+            d["access"] = [str(a) for a in access]
+
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for API response."""
         owner_type = self.metadata.get("owner_type") or self.metadata.get("tier")
@@ -203,6 +220,7 @@ class RegisteredEndpoint:
         owner_id = self.metadata.get("owner_id")
         if owner_id is not None:
             d["owner_id"] = str(owner_id)
+        self._add_access(d)
         # Include served_model_name if available in metadata
         served = self.metadata.get("served_model_name")
         if served:
@@ -709,6 +727,33 @@ class EndpointRegistry:
                 return min(usable, key=lambda e: e.active_requests)
             # "first" or unknown strategy
             return usable[0]
+
+    def select_shared_endpoint(
+        self,
+        caller: Any,
+        model: str,
+        variant: str | None = None,
+        min_ttl_sec: int | None = None,
+    ) -> RegisteredEndpoint | None:
+        """Least-loaded endpoint of ANOTHER project shared with ``caller`` (ADR-078).
+
+        The fallback after the caller's own project found nothing: matches
+        the model by catalog or served name like ``_find_candidates``, keeps
+        only rows whose access list admits the caller (``endpoint_access``).
+        """
+        from .endpoint_access import is_shared_with
+
+        min_ttl = (
+            min_ttl_sec if min_ttl_sec is not None else self._min_ttl_for_reuse_sec
+        )
+        with self._lock:
+            rows = list(self._endpoints.values())
+        shared = [
+            ep
+            for ep in rows
+            if _serves(ep, model, variant, min_ttl) and is_shared_with(ep, caller)
+        ]
+        return min(shared, key=lambda e: e.active_requests) if shared else None
 
     def increment_requests(self, job_id: str) -> None:
         """Atomically increment active_requests for an endpoint.
