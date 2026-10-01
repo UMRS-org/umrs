@@ -844,8 +844,16 @@ def _staged_watch_lines(job: StagedJob) -> list[str]:
         "}",
         "_step_watch &",
         "_step_watch_pid=$!",
+        # GNU head writes through stdio, block-buffered into the log file: a
+        # step that prints and keeps running (the kill check's sleeper) showed
+        # nothing until it exited (R2 2026-10-01, verified on ng-dgx-m3-14).
+        "if command -v stdbuf >/dev/null 2>&1; then",
+        "    _step_head=(stdbuf -o0 head)",
+        "else",
+        "    _step_head=(head)",
+        "fi",
         "_step_log() {",
-        f"    head -c {int(job.log_head_bytes)}",
+        f'    "${{_step_head[@]}}" -c {int(job.log_head_bytes)}',
         f"    tail -c {int(job.log_tail_bytes)}",
         "}",
         "",

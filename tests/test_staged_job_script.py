@@ -18,8 +18,10 @@ import os
 import platform
 import re
 import shlex
+import shutil
 import subprocess
 import sys
+import time
 
 import pytest
 from umrs.orchestrator.ssh_control import SSHControlConfig
@@ -532,6 +534,30 @@ def test_the_pods_output_reaches_the_log_capped_with_its_tail(node):
     step_log = proc.stderr.split("prepared", 1)[-1]
     assert "HEAD" in step_log and step_log.rstrip().endswith("TRACEBACK")
     assert len(step_log) <= 1100 + 200  # the head, the tail and the script's own lines
+
+
+@pytest.mark.skipif(shutil.which("stdbuf") is None, reason="needs coreutils stdbuf")
+def test_the_log_streams_while_the_pod_still_runs(tmp_path):
+    # R2 2026-10-01: plain `head -c` held a still-running step's first line
+    # in its stdio buffer, so the kill check never saw its sleeper's marker.
+    script = render_staged_job_script(_job())
+    start = script.index("if command -v stdbuf")
+    # the function ends at its own closing-brace line (``${_step_head[@]}``
+    # carries a brace too)
+    definition = script[start : script.index("\n}\n", script.index("_step_log() {")) + 2]
+    log = tmp_path / "slurm.err"
+    log.write_text("")  # the redirect truncates it; never read a missing file
+    proc = subprocess.Popen(
+        ["bash", "-c", definition + f"\n( echo marker; sleep 5 ) | _step_log > {log}"]
+    )
+    try:
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline and "marker" not in log.read_text():
+            time.sleep(0.1)
+        assert "marker" in log.read_text()
+    finally:
+        proc.kill()
+        proc.wait()
 
 
 def test_the_watchdog_stops_a_step_whose_outputs_pass_their_caps(node):
