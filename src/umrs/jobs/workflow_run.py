@@ -211,11 +211,27 @@ async def _record_run_artifacts(
 
 
 def _resolve_s3(job: Job, s3_client: Any) -> tuple[Any, str]:
-    """Return (S3 client, bucket): injected client or env-built one."""
-    if s3_client is not None:
-        from .knowledge_adapters import _resolve_bucket
+    """Return (S3 client, bucket): injected, project-bound (ADR-077) or env-built.
 
+    A bound project whose binding cannot be read answers ``(None, bucket)``:
+    persistence is skipped (logged) rather than written to another store.
+    """
+    from .knowledge_adapters import _resolve_bucket
+
+    if s3_client is not None:
         return s3_client, _resolve_bucket(job.spec)
+    from umrs.shared.storage.project_storage import (
+        ProjectStorageUnavailable,
+        project_s3_config,
+    )
+
+    try:
+        bound = project_s3_config(job.project_id)
+    except ProjectStorageUnavailable:
+        logger.warning("storage binding unreadable for project %s", job.project_id)
+        return None, _resolve_bucket(job.spec)
+    if bound is not None:
+        return bound.get_client(), bound.bucket
     from .knowledge_adapters import _build_s3_client
 
     return _build_s3_client(job.spec)

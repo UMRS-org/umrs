@@ -1362,8 +1362,32 @@ def _boto3_client_from_s3cfg(s3cfg_path: str, bucket: str) -> Any:
     return client
 
 
+def _project_bound_s3(project_id: str | None) -> Any:
+    """The run project's bound object-store client (ADR-077), or None.
+
+    Raises ``ProjectStorageUnavailable`` when the binding registry cannot
+    be read for a never-resolved project — the run must not fall back to
+    another store with a bound project's data.
+    """
+    if not project_id:
+        return None
+    from umrs.shared.storage.project_storage import project_s3_config
+
+    bound = project_s3_config(project_id)
+    if bound is None:
+        return None
+    logger.info(
+        "Using project-bound S3 store (project=%s, endpoint=%s)",
+        project_id,
+        bound.endpoint_url,
+    )
+    return bound.get_client()
+
+
 def _resolve_s3_client(
-    record: ExecutionRecord, state_lock: threading.Lock
+    record: ExecutionRecord,
+    state_lock: threading.Lock,
+    project_id: str | None = None,
 ) -> tuple[Any, str]:
     """Pick the S3 client for this run; returns ``(client, bucket)``.
 
@@ -1374,10 +1398,15 @@ def _resolve_s3_client(
     alias to ``{user}.{project}.{alias}`` before sending RUN_WORKFLOW.
     The step context derives the output bucket as ``<bucket>-output``,
     so the output bucket must be provisioned alongside the input bucket.
+    A project with a storage binding (ADR-077) reads and writes that
+    bucket pair in its own store.
     """
     bucket = record.params.get("bucket", "wf-runner")
     if bucket == "wf-runner":
         return _InMemoryS3Client(record, state_lock=state_lock), bucket
+    bound_client = _project_bound_s3(project_id)
+    if bound_client is not None:
+        return bound_client, bucket
     try:
         s3cfg_path = _find_s3cfg()
         if s3cfg_path is None:
@@ -1806,6 +1835,42 @@ def _finalize_status(
     _try_shutdown_executor(executor)
 
 
+def _fail_run(record: ExecutionRecord, executor: Any, error: str) -> None:
+    """Mark a run failed before any step launched."""
+    record.update(status="failed", error=error, finished_at=time.time())
+    _emit_workflow_metric(record, executor, "failed")
+
+
+def _prepare_run(
+    record: ExecutionRecord,
+    steps_spec: list[dict[str, Any]],
+    state_lock: threading.Lock,
+    project_id: str | None,
+    executor: Any,
+) -> tuple[list[Any], Any, str] | None:
+    """``(levels, s3 client, bucket)``, or None after marking the run failed.
+
+    Refusals: an invalid DAG, and an unreadable project storage binding
+    (ADR-077) — the run fails loudly instead of writing a bound project's
+    data to another store.
+    """
+    from umrs.shared.storage.project_storage import ProjectStorageUnavailable
+
+    try:
+        levels, _canonical = _build_levels(steps_spec)
+    except (DAGValidationError, ValueError) as exc:
+        _fail_run(record, executor, str(exc))
+        return None
+    try:
+        s3_client, bucket = _resolve_s3_client(
+            record, state_lock, project_id=project_id
+        )
+    except ProjectStorageUnavailable as exc:
+        _fail_run(record, executor, f"project storage binding unreadable: {exc}")
+        return None
+    return levels, s3_client, bucket
+
+
 # ----------------------------------------------------------------------
 # Runner
 # ----------------------------------------------------------------------
@@ -1860,19 +1925,11 @@ def run_workflow_record(
         executor, workflow_json, steps_spec, source_path, worker
     )
 
-    try:
-        levels, canonical_specs = _build_levels(steps_spec)
-    except (DAGValidationError, ValueError) as exc:
-        record.update(
-            status="failed",
-            error=str(exc),
-            finished_at=time.time(),
-        )
-        _emit_workflow_metric(record, executor, "failed")
-        return
-
     state_lock = threading.Lock()
-    s3_client, bucket = _resolve_s3_client(record, state_lock)
+    prepared = _prepare_run(record, steps_spec, state_lock, project_id, executor)
+    if prepared is None:
+        return
+    levels, s3_client, bucket = prepared
 
     parent_results: dict[str, StepResult] = {}
     routing_log: dict[str, dict[str, Any]] = {}
