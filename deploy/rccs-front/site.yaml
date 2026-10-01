@@ -172,6 +172,23 @@ extra:
 
 # Partition profiles are identical to rccs-cloud — same compute hardware
 partition_profiles:
+  # ng-dgx-s-[00-07] (8 GB10 nodes, 1-00:00:00 max; partition listing
+  # 2026-10-01). Listed here so a pool entry may pin it (_validate_partition
+  # accepts profile keys); deliberately NOT in scheduler.partition, so generic
+  # provisions keep landing on ng-dgx-m*. First user: the Bespoke-Nimble-9B
+  # decision endpoint (pool-rccs.yaml, ADR-076). gpus: 0 mirrors m* — relax to
+  # 1 only after a job proves the partition accepts --gres.
+  ng-dgx-s:
+    arch: aarch64
+    gpu_vendor: nvidia
+    gpu_memory_gb: 128
+    oci_runtime: runc
+    userns_mode: host
+    network_backend: netavark
+    vllm_docker_tag: cu130-nightly-aarch64
+    gpus: 0
+    gpu_mem_util_max: 0.78     # GB10 shared with harness + vision sidecar (~97 GiB free of 121.6)
+    needs_netavark_switch: false
   ng-dgx-m0:
     arch: aarch64
     gpu_vendor: nvidia

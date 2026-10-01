@@ -98,3 +98,39 @@ endpoints:
       # Co-located LiteLLM DB container (compose ll-postgres is a profile
       # opt-in; without this the stack wedges at create).
       RIVAULT_PROFILES: "harness vllm litellm-db"
+
+  # Curated: Bespoke-Nimble-9B — Jev-style decision model (ADR-076). Qwen3.5-9B
+  # + Bespoke LoRA (hub rev bd792f44, adapter sha256 29ef39b0…, Apache-2.0),
+  # merged to BF16 before staging (scripts in docs/development/
+  # decision-model-nimble-2026-10-01.md). It never generates text: R4 sends one
+  # /v1/completions request per question with max_tokens=1 and
+  # logprob_token_ids=[A..Z] (vLLM >= 0.26 exposes it on the OpenAI routes) and
+  # softmaxes the candidate logprobs itself (r4.decisions).
+  # Always-on: keep_alive hands the endpoint to a successor job before the
+  # 24 h ng-dgx-s walltime (umrs.orchestrator.endpoint_relay); ng-dgx-s has 8
+  # nodes, so the successor normally starts beside the old job (no gap).
+  - name: bespoke-nimble-9b
+    model: Bespoke-Nimble-9B
+    partition: ng-dgx-s
+    node_count: 1
+    gpu_count: 1
+    max_model_len: 8192
+    ttl_sec: 0
+    keep_alive:
+      project_id: default         # the rccs-cloud profile's project (X-Project-ID)
+      user: mnagaso               # Slurm submitter under per_user_ssh delegation
+      renew_before_sec: 7200      # ~45 min Lustre load + queue headroom
+      handover_grace_sec: 300
+    env_vars:
+      # Pinned release: logprob_token_ids on /v1/completions needs >= v0.26
+      # (vllm#43463); v0.30.0 has an arm64 manifest (same digest as `latest`
+      # on 2026-10-01, the lane proven for Qwen3.5 on GB10).
+      VLLM_DOCKER_IMAGE: "docker.io/vllm/vllm-openai:v0.30.0"
+      # 9B BF16 ≈ 19 GiB + 8k-context state; 0.30 × 121.6 = 36 GiB.
+      VLLM_GPU_MEM_UTIL: "0.30"
+      VLLM_MAX_MODEL_LEN: "8192"
+      VLLM_MAX_NUM_SEQS: "32"     # one sequence per question; 32 parallel
+      # Text-only decision scoring; the merged checkpoint keeps the base's
+      # visual.* weights, so the AgentWorld qwen3_5 patch is not needed.
+      VLLM_LANGUAGE_MODEL_ONLY: "1"
+      RIVAULT_PROFILES: "harness vllm litellm-db"

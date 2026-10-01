@@ -770,6 +770,10 @@ def _create_app():
 
         start_janitor()
         logger.info("Janitor started via lifespan hook")
+        from umrs.server.endpoint_relay import start_endpoint_relay, stop_endpoint_relay
+
+        if start_endpoint_relay():
+            logger.info("Endpoint walltime relay started via lifespan hook")
         if start_scheduler():
             logger.info("Scheduler service started via lifespan hook")
         _start_durable_runtime()
@@ -778,6 +782,7 @@ def _create_app():
             yield
         finally:
             stop_scheduler()
+            stop_endpoint_relay()
             stop_janitor()
             logger.info("Scheduler service + janitor stopped via lifespan hook")
 
