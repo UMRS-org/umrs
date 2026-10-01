@@ -130,12 +130,16 @@ step_executor:
   image_archive_dir: /lvs0/rccs-dmp/masaru.nagaso/umrs_models/images
   helper_path: /lvs0/rccs-dmp/masaru.nagaso/ai4s-platform/umrs/deploy/_common/umrs_step_helper.py
   venue_script: /lvs0/rccs-dmp/masaru.nagaso/ai4s-platform/umrs/src/umrs/mini-rivault-llm/venue.sh
-  # R2 (2026-09-26): Slurm's cgroup v2 on the GB10 nodes grants the job no
-  # cgroup to create a container's in ("rootless needs no limits + no
-  # cgrouppath"), so the step runs with --cgroups=disabled inside the job's
-  # cgroup (scancel and the job's limits hold; the node is exclusive) and no
-  # --pids-limit; RLIMIT_NPROC bounds its processes instead.
-  cgroups: disabled
+  # 2026-10-01: back to plain podman on the nodes' stock runtime — the
+  # no-cgroup posture of 2026-09-26 needs crun (runc refuses NoCgroups) and
+  # RCCS cannot install crun (STATE TODO-20260926-CRUN). With cgroups
+  # enabled and no limits requested, rootless runc creates no container
+  # cgroup here ("rootless needs no limits + no cgrouppath", R2 2026-09-26),
+  # so the step still runs inside the job's Slurm cgroup — scancel and the
+  # job's limits hold (the node is exclusive). pids_limit stays 0: rootless
+  # runc in this venue cannot hold a pids cgroup either (the posture probe
+  # would fail every step by name); RLIMIT_NPROC bounds its processes instead.
+  cgroups: enabled
   pids_limit: 0
   nproc_limit: 4096
 

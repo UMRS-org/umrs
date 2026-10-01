@@ -194,13 +194,16 @@ def test_rccs_step_jobs_ask_for_no_memory_and_no_gres(monkeypatch):
     assert "#SBATCH --account=cloud-users" in script
 
 
-def test_rccs_steps_run_without_a_cgroup_bounded_by_nproc(monkeypatch):
-    # R2: no cgroup for the container on these nodes; RLIMIT_NPROC instead.
+def test_rccs_steps_run_on_plain_podman_bounded_by_nproc(monkeypatch):
+    # 2026-10-01: the 2026-09-26 no-cgroup posture needed crun (runc refuses
+    # NoCgroups) and RCCS cannot install it (STATE TODO-20260926-CRUN), so
+    # the lane runs plain `podman run` on the nodes' stock runtime — no
+    # --cgroups flag, no --pids-limit (rootless runc holds no pids cgroup
+    # here); RLIMIT_NPROC bounds the step's processes instead.
     script = _rendered(_site_executor(monkeypatch, "rccs-front"))
-    for part in ("podman --cgroup-manager=cgroupfs run", "--cgroups=disabled",
-                 "--ulimit nproc=4096"):  # fmt: skip
+    for part in ("podman run", "--ulimit nproc=4096"):
         assert part in script
-    for part in ("--pids-limit", "pids.max"):
+    for part in ("--cgroups", "--cgroup-manager", "--pids-limit", "pids.max"):
         assert part not in script
 
 
