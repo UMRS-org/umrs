@@ -178,8 +178,8 @@
         "gpu": { "type": "boolean" },
         "gpu_form": {
           "type": "string",
-          "enum": ["cdi", "rocm"],
-          "description": "How the HPC lane gives a step that needs a GPU its devices: cdi (NVIDIA, --device nvidia.com/gpu=all) or rocm (AMD, --device /dev/kfd --device /dev/dri)"
+          "enum": ["cdi", "rocm", "nvidia-devices"],
+          "description": "How the HPC lane gives a step that needs a GPU its devices: cdi (NVIDIA, --device nvidia.com/gpu=all), rocm (AMD, --device /dev/kfd --device /dev/dri) or nvidia-devices (the NVIDIA device nodes + host driver libraries present on the node, for podman builds that cannot resolve CDI)"
         },
         "workdir_root": { "type": "string" },
         "remote_enabled": {

@@ -175,6 +175,25 @@ def test_the_gpu_form_picks_the_devices_of_a_step_that_needs_a_gpu():
     assert "--device" not in render_staged_job_script(_job(gpu_form="rocm"))
 
 
+def test_the_nvidia_devices_form_maps_what_the_node_has():
+    # RCCS GB10 (R2 2026-10-01): podman 4.9.3 there cannot resolve the CDI
+    # spec, so the step gets the node's device nodes + host driver libraries.
+    script = render_staged_job_script(_job(needs_gpu=True, gpu_form="nvidia-devices"))
+    run = _podman_run_line(script)
+    assert '"${_step_gpu[@]}"' in run
+    assert "nvidia.com/gpu=all" not in run
+    for needle in ("/dev/nvidiactl", "/dev/nvidia-uvm", "libcuda.so.1", "no NVIDIA device nodes"):
+        assert needle in script
+    assert script.index("_step_gpu=()") < script.index(run)
+    assert "_step_gpu" not in render_staged_job_script(_job(gpu_form="nvidia-devices"))
+
+
+def test_the_nvidia_devices_script_is_valid_bash():
+    script = render_staged_job_script(_job(needs_gpu=True, gpu_form="nvidia-devices"))
+    proc = subprocess.run(["bash", "-n"], input=script.encode(), capture_output=True)
+    assert proc.returncode == 0, proc.stderr
+
+
 def test_a_gpu_form_the_script_cannot_render_is_refused_by_name():
     with pytest.raises(StepExecutionError, match="gpu_form 'opencl'"):
         render_staged_job_script(_job(needs_gpu=True, gpu_form="opencl"))

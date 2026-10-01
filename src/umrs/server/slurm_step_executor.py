@@ -458,11 +458,37 @@ _STAGED_ENV = (
 
 
 #: ``step_executor.gpu_form`` -> the ``podman run`` devices of a step that
-#: needs a GPU: the NVIDIA CDI spec, or the ROCm device nodes (AMD).
+#: needs a GPU: the NVIDIA CDI spec, the ROCm device nodes (AMD), or the
+#: NVIDIA device nodes + driver libraries found on the node at job time
+#: (``${_step_gpu[@]}``, :func:`_staged_gpu_lines`) — RCCS GB10: podman 4.9.3
+#: there cannot resolve ``nvidia.com/gpu=all`` (R2 2026-10-01; the serving
+#: path maps devices directly for the same reason, x_nvidia-override.yaml).
 STAGED_GPU_DEVICES: dict[str, tuple[str, ...]] = {
     "cdi": ("--device", "nvidia.com/gpu=all"),
     "rocm": ("--device", "/dev/kfd", "--device", "/dev/dri"),
+    "nvidia-devices": ('"${_step_gpu[@]}"',),
 }
+
+#: The host NVIDIA user-space libraries a step container needs to talk to the
+#: driver (the step image ships none), bound read-only at the host path from
+#: the first library directory that holds them.
+_NVIDIA_HOST_LIBS = (
+    "libcuda.so.1",
+    "libnvidia-ml.so.1",
+    "libnvidia-ptxjitcompiler.so.1",
+)
+_NVIDIA_LIB_DIRS = (
+    "/usr/lib/aarch64-linux-gnu",
+    "/usr/lib/x86_64-linux-gnu",
+    "/usr/lib64",
+)
+_NVIDIA_DEVICE_GLOBS = (
+    "/dev/nvidia[0-9]*",
+    "/dev/nvidiactl",
+    "/dev/nvidia-uvm",
+    "/dev/nvidia-uvm-tools",
+    "/dev/nvidia-caps/nvidia-cap[0-9]*",
+)
 
 
 def _staged_gpu_devices(job: StagedJob) -> tuple[str, ...]:
@@ -474,6 +500,37 @@ def _staged_gpu_devices(job: StagedJob) -> tuple[str, ...]:
             f"{'|'.join(STAGED_GPU_DEVICES)}",
         )
     return devices
+
+
+def _staged_gpu_lines(job: StagedJob) -> list[str]:
+    """``${_step_gpu[@]}`` for the ``nvidia-devices`` form: the NVIDIA device
+    nodes and host driver libraries present on THIS node (nothing is
+    mapped that does not exist); a GPU step on a node without them fails by
+    name before the pod starts."""
+    if not (job.needs_gpu and job.gpu_form == "nvidia-devices"):
+        return []
+    libs = " ".join(_NVIDIA_HOST_LIBS)
+    dirs = " ".join(_NVIDIA_LIB_DIRS)
+    return [
+        "_step_gpu=()",
+        f"for _d in {' '.join(_NVIDIA_DEVICE_GLOBS)}; do",
+        '    [[ -e "${_d}" ]] && _step_gpu+=(--device "${_d}")',
+        "done",
+        _or_fatal(
+            "[[ ${#_step_gpu[@]} -gt 0 ]]",
+            _EX_CONFIG,
+            "no NVIDIA device nodes on $(hostname)",
+        ),
+        f"for _l in {libs}; do",
+        f"    for _p in {dirs}; do",
+        '        if [[ -e "${_p}/${_l}" ]]; then',
+        '            _step_gpu+=(-v "${_p}/${_l}:${_p}/${_l}:ro")',
+        "            break",
+        "        fi",
+        "    done",
+        "done",
+        "",
+    ]
 
 
 def staged_podman_argv(job: StagedJob) -> list[str]:
@@ -829,6 +886,7 @@ def render_staged_job_script(job: StagedJob) -> str:
     lines += _staged_image_lines(job.image, job.image_archive_dir)
     lines += _staged_seccomp_lines(job)
     lines += _staged_pids_lines(job) + _staged_stale_lines() + _staged_watch_lines(job)
+    lines += _staged_gpu_lines(job)
     lines += [" ".join(staged_podman_argv(job)) + " 2>&1 | _step_log >&2", ""]
     return "\n".join(lines)
 
