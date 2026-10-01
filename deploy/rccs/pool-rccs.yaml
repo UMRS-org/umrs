@@ -111,7 +111,11 @@ endpoints:
   # nodes, so the successor normally starts beside the old job (no gap).
   - name: bespoke-nimble-9b
     model: Bespoke-Nimble-9B
-    partition: ng-dgx-s
+    # TEMPORARY (2026-10-01, maintainer): ng-dgx-s-[00-07] are all held by
+    # reservation nakao-dgx-s until 2026-10-02 16:44 (IGNORE_JOBS); serve from
+    # ng-dgx-m1 (2 idle GB10 nodes — the relay successor fits beside the
+    # current job). Switch back to ng-dgx-s after the reservation if wanted.
+    partition: ng-dgx-m1
     node_count: 1
     gpu_count: 1
     max_model_len: 8192
