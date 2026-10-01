@@ -50,10 +50,11 @@ def caller_for(
 
 
 def _roster_access(model: str, variant: str | None) -> Any:
-    from ..orchestrator.provision_roster import resolve_model_provision_defaults
+    from ..orchestrator.provision_roster import resolve_model_recipe
 
-    defaults = resolve_model_provision_defaults(model, variant) or {}
-    return (defaults.get("_full_entry") or {}).get("access")
+    # Not resolve_model_provision_defaults: it strips the full entry, which
+    # silently dropped `access` for every roster provision (live 2026-10-01).
+    return (resolve_model_recipe(model, variant) or {}).get("access")
 
 
 def provision_access(request: Any, caller: EndpointCaller) -> list[str]:
