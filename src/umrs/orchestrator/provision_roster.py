@@ -257,3 +257,19 @@ def resolve_model_serving_spec(
         owner_id=owner_id,
         storage_ref=storage_ref or str(full.get("path") or ""),
     )
+
+
+def roster_entries() -> list[dict[str, Any]]:
+    """The full recipe entries of the published roster, one per indexed key.
+
+    Same mtime-cached index as the provision defaults; each entry appears
+    once even when it is reachable under several keys (variant, aliases).
+    """
+    seen: set[int] = set()
+    entries: list[dict[str, Any]] = []
+    for defaults in _load_index().values():
+        full = defaults.get("_full_entry")
+        if isinstance(full, dict) and id(full) not in seen:
+            seen.add(id(full))
+            entries.append(full)
+    return entries
