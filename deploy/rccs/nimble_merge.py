@@ -68,22 +68,66 @@ def lora_pairs(adapter_tensors: dict) -> dict[str, tuple]:
     return pairs
 
 
+def _existing(out_dir: Path, adapter_sha: str) -> dict | None:
+    ready = out_dir / "READY.json"
+    if not ready.exists():
+        return None
+    saved = json.loads(ready.read_text())
+    if saved.get("adapter_sha256") != adapter_sha:
+        raise SystemExit(f"{out_dir} holds a different merge; use a fresh directory")
+    print(f"verified existing merge: {out_dir}")
+    return saved
+
+
+def _fresh_partial(base_dir: Path, out_dir: Path) -> Path:
+    """``<out>.partial`` holding the base's non-weight files."""
+    partial = out_dir.with_name(out_dir.name + ".partial")
+    if partial.exists():
+        shutil.rmtree(partial)
+    partial.mkdir(parents=True)
+    for item in base_dir.iterdir():
+        if item.is_file() and not item.name.endswith(".safetensors"):
+            shutil.copy2(item, partial / item.name)
+    return partial
+
+
+def _merge_tensor(name: str, weight, pair: tuple, scale: float):
+    a, b = pair
+    if tuple(weight.shape) != (b.shape[0], a.shape[1]):
+        raise SystemExit(f"{name}: base {tuple(weight.shape)} vs lora {b.shape[0]}x{a.shape[1]}")
+    delta = (b.float() @ a.float() * scale).to(weight.dtype)
+    return (weight + delta).contiguous()
+
+
+def _merge_shards(base_dir: Path, partial: Path, shards: list[str], pairs: dict, scale: float):
+    from safetensors.torch import load_file, save_file
+
+    merged = 0
+    for shard in shards:
+        tensors = load_file(str(base_dir / shard))
+        touched = [name for name in tensors if name in pairs]
+        for name in touched:
+            tensors[name] = _merge_tensor(name, tensors[name], pairs[name], scale)
+        merged += len(touched)
+        save_file(tensors, str(partial / shard), metadata={"format": "pt"})
+        print(f"{shard}: {len(touched)} adapted", flush=True)
+    if merged != len(pairs):
+        raise SystemExit(f"merged {merged} of {len(pairs)} adapted weights")
+    return merged
+
+
 def merge(
     base_dir: Path, adapter_dir: Path, out_dir: Path, *, adapter_sha256: str = ADAPTER_SHA256
 ) -> dict:
     import torch
-    from safetensors.torch import load_file, save_file
+    from safetensors.torch import load_file
 
-    ready = out_dir / "READY.json"
     adapter_file = adapter_dir / "adapter_model.safetensors"
     adapter_sha = sha256(adapter_file)
     if adapter_sha != adapter_sha256:
         raise SystemExit(f"adapter sha256 {adapter_sha} != pinned {adapter_sha256}")
-    if ready.exists():
-        saved = json.loads(ready.read_text())
-        if saved.get("adapter_sha256") != adapter_sha:
-            raise SystemExit(f"{out_dir} holds a different merge; use a fresh directory")
-        print(f"verified existing merge: {out_dir}")
+    saved = _existing(out_dir, adapter_sha)
+    if saved is not None:
         return saved
 
     config = json.loads((adapter_dir / "adapter_config.json").read_text())
@@ -94,34 +138,9 @@ def merge(
     if missing:
         raise SystemExit(f"{len(missing)} adapted weights absent from the base: {missing[:3]}")
 
-    partial = out_dir.with_name(out_dir.name + ".partial")
-    if partial.exists():
-        shutil.rmtree(partial)
-    partial.mkdir(parents=True)
-    for item in base_dir.iterdir():
-        if item.is_file() and not item.name.endswith(".safetensors"):
-            shutil.copy2(item, partial / item.name)
-
+    partial = _fresh_partial(base_dir, out_dir)
     shards = sorted(set(index.values()))
-    merged = 0
-    for shard in shards:
-        tensors = load_file(str(base_dir / shard))
-        touched = [name for name in tensors if name in pairs]
-        for name in touched:
-            a, b = pairs[name]
-            weight = tensors[name]
-            if tuple(weight.shape) != (b.shape[0], a.shape[1]):
-                raise SystemExit(
-                    f"{name}: base {tuple(weight.shape)} vs lora {b.shape[0]}x{a.shape[1]}"
-                )
-            delta = (b.float() @ a.float() * scale).to(weight.dtype)
-            tensors[name] = (weight + delta).contiguous()
-            merged += 1
-        save_file(tensors, str(partial / shard), metadata={"format": "pt"})
-        print(f"{shard}: {len(touched)} adapted", flush=True)
-    if merged != len(pairs):
-        raise SystemExit(f"merged {merged} of {len(pairs)} adapted weights")
-
+    merged = _merge_shards(base_dir, partial, shards, pairs, scale)
     for name in ADAPTER_FILES:
         if (adapter_dir / name).exists():
             shutil.copy2(adapter_dir / name, partial / name)
