@@ -111,8 +111,10 @@ vllm:
 #   R2 receipt passed (converge 36844513817: plain podman + runc, GPU via
 #   gpu_form nvidia-devices, kill check). Still needs the verified image the
 #   converge composes; uploaded_code: refuse stays the fallback.
-# - gpu: false — steps ask for a GPU per step with routing_hints.gpu (the
-#   nvidia-devices form is proven by R2).
+# - gpu: true — the site gate only: on the remote lane a step gets the
+#   nvidia-devices form ONLY when it also asks with routing_hints.gpu (both
+#   are required, remote_slurm_step_executor._needs_gpu). With gpu: false the
+#   hint is ignored — R3 2026-10-02 showed a hinted step with no devices.
 # - workdir_root: on Lustre (the compute node sees it), outside the git
 #   checkout (read-only by rule).
 # - helper_path / venue_script: the pinned cluster checkout hpc-code-sync
@@ -128,7 +130,7 @@ step_executor:
   time_limit: "01:00:00"
   account: cloud-users
   image: ""            # composed by the converge after the archive verifies (see above)
-  gpu: false
+  gpu: true            # site gate; a step still needs routing_hints.gpu (see above)
   workdir_root: /lvs0/rccs-dmp/masaru.nagaso/umrs_steps
   remote_enabled: true
   uploaded_code: refuse
