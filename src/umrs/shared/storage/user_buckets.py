@@ -60,13 +60,20 @@ class UserBucket:
 
 
 def _segment(value: str) -> str:
-    """``make_path_to_bucket_string`` rules: lowercase, spaces/_ → '-'."""
-    return str(value or "").strip().lower().replace(" ", "-").replace("_", "-")
+    """``make_path_to_bucket_string`` rules (lowercase, spaces/_ → '-'), plus
+    '@' and '.' → '-' so an e-mail-shaped identity (an OIDC ``sub``) still
+    yields one bucket segment."""
+    text = str(value or "").strip().lower()
+    for char in (" ", "_", "@", "."):
+        text = text.replace(char, "-")
+    return text
 
 
 def bucket_name(owner: str, project: str, alias: str) -> str:
     """``<owner>.<project>.<alias>``, refused unless every part is a valid
-    bucket segment — the same shape the staging owner check expects."""
+    bucket segment. The ``user_buckets`` row — not the name — proves
+    ownership, so an owner mapped to a segment (``a.b@x`` → ``a-b-x``) is
+    fine; a second identity mapping to the same name is refused at create."""
     parts = [_segment(owner), _segment(project), _segment(alias)]
     for label, part in zip(("owner", "project", "alias"), parts, strict=True):
         if not _SEGMENT_RE.fullmatch(part):

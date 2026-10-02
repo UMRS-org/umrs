@@ -113,11 +113,18 @@ def test_bucket_name_follows_the_lane_shape():
 
 @pytest.mark.parametrize(
     "owner,project,alias",
-    [("al.ice", "p", "a"), ("a", "p/x", "a"), ("a", "p", "-x"), ("a", "", "v")],
+    [("a/b", "p", "a"), ("a", "p/x", "a"), ("a", "p", "-x"), ("a", "", "v")],
 )
 def test_bucket_name_refuses_what_s3_or_the_lane_cannot_hold(owner, project, alias):
     with pytest.raises(ub.UserBucketError):
         ub.bucket_name(owner, project, alias)
+
+
+def test_an_email_shaped_identity_maps_to_one_segment():
+    # OIDC access tokens can carry the login (an e-mail) as `sub`.
+    assert ub.bucket_name("Masaru.Nagaso@riken.jp", "opossum", "videos") == (
+        "masaru-nagaso-riken-jp.opossum.videos"
+    )
 
 
 def test_bucket_name_keeps_room_for_the_output_suffix():
@@ -150,6 +157,26 @@ def test_the_lane_stages_a_personal_bucket_for_its_owner_only(store, monkeypatch
     step_staging.check_bucket_scope("alice.opossum.videos-output", "alice", [])
     with pytest.raises(StepExecutionError):
         step_staging.check_bucket_scope("alice.opossum.unknown", "alice", [])
+
+
+def test_an_email_owner_is_staged_through_the_ownership_row(store, monkeypatch):
+    class _Registry:
+        def get(self, _name):
+            return None
+
+        def find_by_output_path(self, _name):
+            return None, None
+
+    monkeypatch.setattr(step_staging, "_bucket_registry", _Registry())
+    owner = "Masaru.Nagaso@riken.jp"
+    name = ub.bucket_name(owner, "opossum", "videos")
+    store.add(ub.UserBucket(name, owner, "opossum", "videos"))
+    step_staging.check_bucket_scope(name, owner, [])
+    step_staging.check_bucket_scope(name + "-output", owner, [])
+    assert step_staging.bucket_owned_by(name, owner)
+    assert not step_staging.bucket_owned_by(name, "someone@riken.jp")
+    with pytest.raises(StepExecutionError):
+        step_staging.check_bucket_scope(name, "someone@riken.jp", [])
 
 
 def test_a_lookup_failure_never_grants_ownership(monkeypatch):
@@ -200,6 +227,12 @@ def test_create_makes_both_buckets_and_records_the_owner(store, s3):
 def test_create_refuses_a_name_another_owner_holds(store, s3):
     store.add(ub.UserBucket("alice.opossum.videos", "mallory", "opossum", "videos"))
     resp = _client("alice").post("/umrs/buckets", json={"project": "opossum", "alias": "videos"})
+    assert resp.status_code == 409
+
+
+def test_two_identities_mapping_to_one_name_cannot_share_it(store, s3):
+    assert _client("a.b").post("/umrs/buckets", json={"project": "p", "alias": "v"}).status_code == 201
+    resp = _client("a-b").post("/umrs/buckets", json={"project": "p", "alias": "v"})
     assert resp.status_code == 409
 
 

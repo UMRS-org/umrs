@@ -207,17 +207,21 @@ def _personal_owner(bucket: str) -> str | None:
 
 
 def bucket_owned_by(bucket: str, owner: str) -> bool:
-    """Whether *owner* owns *bucket*: the name carries their prefix AND a
-    provisioned bucket (``BucketsCfg``) or a personal bucket (ADR-079) records
-    them as its owner. The one rule the HPC lane and the files API share."""
+    """Whether *owner* owns *bucket* — the one rule the HPC lane and the
+    files API share: a personal bucket (ADR-079) whose server-written
+    ``user_buckets`` row names them, or a provisioned bucket whose name
+    carries their prefix AND whose ``BucketsCfg`` entry names them. An
+    ``-output`` name belongs to the owner of its input bucket."""
+    if not owner:
+        return False
+    if _personal_owner(bucket) == owner:
+        return True
     prefix = owner_bucket_prefix(owner)
     remainder = bucket[len(prefix) :] if bucket.startswith(prefix) else ""
-    if not owner or not _OWNED_REMAINDER_RE.fullmatch(remainder):
+    if not _OWNED_REMAINDER_RE.fullmatch(remainder):
         return False
     registry = _bucket_registry
-    if registry is not None and _registered_owner(registry, bucket) == owner:
-        return True
-    return _personal_owner(bucket) == owner
+    return registry is not None and _registered_owner(registry, bucket) == owner
 
 
 def _check_registered(bucket: str, owner: str) -> None:
@@ -226,8 +230,6 @@ def _check_registered(bucket: str, owner: str) -> None:
         return
     registered = _registered_owner(registry, bucket)
     if registered == owner:
-        return
-    if registered is None and _personal_owner(bucket) == owner:
         return
     why = (
         "it is not a provisioned bucket"
@@ -242,6 +244,8 @@ def _check_registered(bucket: str, owner: str) -> None:
 
 
 def _check_owned(bucket: str, owner: str) -> None:
+    if owner and _personal_owner(bucket) == owner:
+        return  # ADR-079: the server-written ownership row is the proof
     prefix = owner_bucket_prefix(owner)
     remainder = bucket[len(prefix) :] if bucket.startswith(prefix) else ""
     if not _OWNED_REMAINDER_RE.fullmatch(remainder):
