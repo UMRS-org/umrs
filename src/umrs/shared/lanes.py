@@ -85,6 +85,9 @@ FAMILY_LANES: dict[str, SurfaceLane] = {
     "jobs": SurfaceLane.STABLE,
     "workflows": SurfaceLane.STABLE,
     "files": SurfaceLane.STABLE,
+    # 2026-10-02 (ADR-079): personal buckets — new surface, beta until the
+    # colleague rollout settles its shape.
+    "buckets": SurfaceLane.BETA,
     "pipelines": SurfaceLane.STABLE,
     # v1beta — user-facing knowledge / agent / memory / evidence surfaces
     # that are served but still evolving (ADR-012 chat, ADR-034 a2l ledger,
