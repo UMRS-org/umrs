@@ -43,8 +43,8 @@
 pool: ai4s-research
 defaults:
   tier: system            # system tier → shared, visible to all users
-  ttl_sec: 0              # 0 = never expires. 4n4gpu-p has unlimited walltime;
-                          # system-tier pool models must persist until explicitly torn down.
+  ttl_sec: 0              # 0 = never expires. RIKYU's gpu partition caps jobs at 4 days
+                          # (add keep_alive to an entry for an ADR-076 walltime relay).
   timeout: 86400          # HTTP request timeout (seconds) for `pool up`, NOT endpoint TTL.
                           # Endpoint lifetime is controlled by ttl_sec above.
 
@@ -54,7 +54,7 @@ endpoints:
     tier: system
     gpu_count: 4           # GPUs per node
     node_count: 4          # validated multi-node config (TP=4 × PP=4 = 16× B200, 2770 GiB) serving 1M KV today.
-    partition: 4n4gpu-p    # unlimited walltime (MinNodes=0/MaxNodes=unlimited → node_count drives allocation, not the name)
+    partition: gpu    # RIKYU: one gpu partition (4-day max); node_count drives allocation
     max_model_len: 1048576 # native 1M context (full token size)
     # NEXT-CANARY: GB200 recipe = 2 nodes TP=8 + --enable-expert-parallel, PP=1 (~960 GiB FP4+FP8 fits 8 GPUs).
     #   Halves GPU count + removes pipeline bubbles, BUT halves aggregate memory → 1M KV must be re-validated
@@ -72,7 +72,7 @@ endpoints:
     tier: system
     gpu_count: 4
     node_count: 4
-    partition: 4n4gpu-p
+    partition: gpu
     max_model_len: 1048576 # 1M context
     env_vars:
       VLLM_MAX_NUM_SEQS: "16"                # explicit concurrency cap
@@ -87,7 +87,7 @@ endpoints:
     tier: system
     gpu_count: 4
     node_count: 2          # TEP: 2 nodes × 4 GPU = 8× B200 (1385.6 GiB)
-    partition: 2n4gpu      # NVLink × 2 trays, InfiniBand between
+    partition: gpu      # NVLink × 2 trays, InfiniBand between
     max_model_len: 262144  # CANARY: start 256K, validate KV fit before 1M
     parallel_strategy: tep # TP=8 PP=1 + expert-parallel — eliminates pipeline bubbles
     env_vars:
@@ -99,7 +99,7 @@ endpoints:
     tier: system
     gpu_count: 4
     node_count: 4          # same allocation as baseline 1M
-    partition: 4n4gpu-p
+    partition: gpu
     max_model_len: 131072  # 128K — ~8× more KV headroom vs 1M
     env_vars:
       VLLM_MAX_NUM_SEQS: "32"
@@ -110,7 +110,7 @@ endpoints:
     tier: system
     gpu_count: 4
     node_count: 2          # TEP: 2 nodes × 4 GPU = 8× B200
-    partition: 2n4gpu
+    partition: gpu
     max_model_len: 131072  # 128K — max headroom in TEP layout
     parallel_strategy: tep # TP=8 PP=1 — no pipeline bubbles + 128K KV
     env_vars:
@@ -122,7 +122,7 @@ endpoints:
     tier: system
     gpu_count: 4
     node_count: 4          # validated multi-node config (TP=4 × PP=4) serving native context today.
-    partition: 4n4gpu-p    # unlimited walltime; node_count drives allocation
+    partition: gpu    # RIKYU gpu (4-day max); node_count drives allocation
     max_model_len: 202752  # native context (full token size)
     # NEXT-CANARY: GB200 recipe = 2 nodes TP=8, PP=1 (FP8 ~893 GiB fits 8 GPUs). Same memory-revalidation caveat as DeepSeek
     #   before reducing node_count to 2. Also wire reasoning-parser glm45 (tool-parser glm47 already derived).
@@ -132,7 +132,7 @@ endpoints:
     tier: system
     gpu_count: 4
     node_count: 4          # 4n4gpu for native 1M context (BF16 ~1.5TB; FP8 ~753GiB fits 4 nodes)
-    partition: 4n4gpu-p    # unlimited walltime
+    partition: gpu    # RIKYU gpu (4-day max)
     max_model_len: 1048576 # native 1M context (per upstream README: "solid 1M-token context")
     env_vars:
       # GLM-5.2's glm_moe_dsa DSA indexer (self_attn.indexer.k_norm) needs
@@ -141,7 +141,7 @@ endpoints:
       # v6 overlay image (vLLM 0.23.1rc1 + Ray 2.48.0). serve.slurm reads
       # RIVAULT_SIF from the job shell (--export=ALL). v4/v5 stay default for
       # all other models. See ai4s-endpoint-restore-glm52-2026-06-17 memory.
-      RIVAULT_SIF: /work/hps0/home/ea0022/images/mini-rivault-aarch64-v6.sif
+      RIVAULT_SIF: /data1/rkp00043/rku00126/images/mini-rivault-aarch64-v6.sif
       VLLM_MAX_NUM_SEQS: "32"                # align with v2; KV headroom available
 
   # ── GLM-5.2 V2 (optimized baseline, 2026-06-22) ───────────────────────────
@@ -157,10 +157,10 @@ endpoints:
     tier: system
     gpu_count: 4
     node_count: 4
-    partition: 4n4gpu-p
+    partition: gpu
     max_model_len: 1048576 # 1M context
     env_vars:
-      RIVAULT_SIF: /work/hps0/home/ea0022/images/mini-rivault-aarch64-v6.sif
+      RIVAULT_SIF: /data1/rkp00043/rku00126/images/mini-rivault-aarch64-v6.sif
       VLLM_MAX_NUM_SEQS: "32"                # explicit concurrency cap
       VLLM_MAX_NUM_BATCHED_TOKENS: "32768"   # faster prefill (was 16384)
 
@@ -180,10 +180,10 @@ endpoints:
     tier: system
     gpu_count: 4
     node_count: 4
-    partition: 4n4gpu-p
+    partition: gpu
     max_model_len: 1048576 # 1M context
     env_vars:
-      RIVAULT_SIF: /work/hps0/home/ea0022/images/mini-rivault-aarch64-v6.sif
+      RIVAULT_SIF: /data1/rkp00043/rku00126/images/mini-rivault-aarch64-v6.sif
       VLLM_MAX_NUM_SEQS: "16"
       VLLM_MAX_NUM_BATCHED_TOKENS: "32768"
       VLLM_ENFORCE_EAGER: "0"              # CANARY: re-enable CUDA graphs
@@ -202,10 +202,10 @@ endpoints:
     tier: system
     gpu_count: 4
     node_count: 4
-    partition: 4n4gpu-p
+    partition: gpu
     max_model_len: 1048576
     env_vars:
-      RIVAULT_SIF: /work/hps0/home/ea0022/images/mini-rivault-aarch64-v6.sif
+      RIVAULT_SIF: /data1/rkp00043/rku00126/images/mini-rivault-aarch64-v6.sif
       VLLM_CUDAGRAPH_MODE: FULL_DECODE_ONLY
 
   - name: glm-5.2-tep-bf16
@@ -213,11 +213,11 @@ endpoints:
     tier: system
     gpu_count: 4
     node_count: 4          # BF16 ~1.5 TB does not fit 2n4gpu (8× B200); TEP on full 16-GPU world
-    partition: 4n4gpu-p
+    partition: gpu
     max_model_len: 1048576
     parallel_strategy: tep
     env_vars:
-      RIVAULT_SIF: /work/hps0/home/ea0022/images/mini-rivault-aarch64-v6.sif
+      RIVAULT_SIF: /data1/rkp00043/rku00126/images/mini-rivault-aarch64-v6.sif
       VLLM_MAX_NUM_SEQS: "32"
       VLLM_MAX_NUM_BATCHED_TOKENS: "32768"
 
@@ -226,11 +226,11 @@ endpoints:
     tier: system
     gpu_count: 4
     node_count: 2          # GB200 recipe: FP8 ~753 GiB fits 8× B200; native 1M KV must validate
-    partition: 2n4gpu
+    partition: gpu
     max_model_len: 1048576
     parallel_strategy: tep
     env_vars:
-      RIVAULT_SIF: /work/hps0/home/ea0022/images/mini-rivault-aarch64-v6.sif
+      RIVAULT_SIF: /data1/rkp00043/rku00126/images/mini-rivault-aarch64-v6.sif
       VLLM_QUANTIZATION: fp8
       VLLM_FORCE_FLASHINFER_MOE: "1"
       VLLM_CUDAGRAPH_MODE: FULL_DECODE_ONLY
@@ -242,11 +242,11 @@ endpoints:
     tier: system
     gpu_count: 4
     node_count: 4          # FP8 + 1M with maximum KV headroom (same GPU count as prod, no PP bubbles)
-    partition: 4n4gpu-p
+    partition: gpu
     max_model_len: 1048576
     parallel_strategy: tep
     env_vars:
-      RIVAULT_SIF: /work/hps0/home/ea0022/images/mini-rivault-aarch64-v6.sif
+      RIVAULT_SIF: /data1/rkp00043/rku00126/images/mini-rivault-aarch64-v6.sif
       VLLM_QUANTIZATION: fp8
       VLLM_FORCE_FLASHINFER_MOE: "1"
       VLLM_CUDAGRAPH_MODE: FULL_DECODE_ONLY
@@ -258,7 +258,7 @@ endpoints:
     tier: system
     gpu_count: 4
     node_count: 1          # vLLM GB200 recipe: INT4 ~714 GiB fits ONE tray (4 GPUs); single-node TP=4 over NVLink avoids cross-node pipeline bubbles + Ray overhead
-    partition: 4n4gpu-p    # unlimited walltime; node_count=1 → single-node allocation on this partition
+    partition: gpu    # RIKYU gpu (4-day max); node_count=1 → single-node allocation on this partition
     max_model_len: 245760  # 240K. Canary 10064 showed INT4 weights leave only 16.68 GiB/GPU KV at gpu_mem_util=0.9 → hard ceiling 254816 tokens for native 262144. Trimmed to 245760 for fragmentation margin. (orchestrator does not thread per-model gpu_memory_utilization, so raising util is not available via pool.)
     env_vars:
       VLLM_MAX_NUM_SEQS: "16"              # cap concurrency to the realistic KV budget
@@ -276,7 +276,7 @@ endpoints:
     tier: system
     gpu_count: 4
     node_count: 1            # single-node TP=4 (same as K2.6 recipe)
-    partition: 4n4gpu-p      # unlimited walltime
+    partition: gpu      # RIKYU gpu (4-day max)
     max_model_len: 245760    # 240K (same INT4 KV headroom ceiling as K2.6)
     env_vars:
       VLLM_GPU_MEMORY_UTILIZATION: "0.90"
@@ -302,7 +302,7 @@ endpoints:
     tier: system
     gpu_count: 1           # BF16 ~50 GiB + diffusion buffers fits B200 (173.2 GiB)
     node_count: 1
-    partition: 4n4gpu-p    # single GPU within a 4-GPU node; TP=1 adequate
+    partition: gpu    # single GPU within a 4-GPU node; TP=1 adequate
     max_model_len: 262144  # native 256K context
     env_vars:
       VLLM_MAX_NUM_SEQS: "4"              # hard limit — diffusion state OOM above 4
@@ -328,7 +328,7 @@ endpoints:
     tier: system
     gpu_count: 1           # MXFP4 ~60 GiB weights fits B200 (173.2 GiB) with KV headroom
     node_count: 1          # single-node TP=1; scale TP for throughput if needed
-    partition: 4n4gpu-p
+    partition: gpu
     max_model_len: 32768   # trained context; 32K recommended per model card
     env_vars:
       VLLM_MAX_NUM_SEQS: "64"               # moderate concurrency
@@ -352,7 +352,7 @@ endpoints:
     tier: system
     gpu_count: 1           # BF16 ~64 GiB fits B200 (173.2 GiB) easily
     node_count: 1
-    partition: 4n4gpu-p
+    partition: gpu
     max_model_len: 65536   # native 64K context
     env_vars:
       VLLM_MAX_NUM_SEQS: "64"
@@ -372,7 +372,7 @@ endpoints:
     tier: system
     gpu_count: 4
     node_count: 2
-    partition: 2n4gpu
+    partition: gpu
     max_model_len: 262144
     env_vars:
       VLLM_MAX_NUM_SEQS: "32"
@@ -385,7 +385,7 @@ endpoints:
     tier: system
     gpu_count: 4
     node_count: 2
-    partition: 2n4gpu
+    partition: gpu
     max_model_len: 262144
     env_vars:
       VLLM_GPU_MEMORY_UTILIZATION: "0.90"
@@ -401,7 +401,7 @@ endpoints:
     tier: system
     gpu_count: 4
     node_count: 1
-    partition: 4n4gpu-p
+    partition: gpu
     max_model_len: 262144
     env_vars:
       VLLM_GPU_MEMORY_UTILIZATION: "0.90"
@@ -417,10 +417,10 @@ endpoints:
     tier: system
     gpu_count: 4
     node_count: 2
-    partition: 2n4gpu
+    partition: gpu
     max_model_len: 1048576
     env_vars:
-      RIVAULT_SIF: /work/hps0/home/ea0022/images/mini-rivault-aarch64-v6.sif
+      RIVAULT_SIF: /data1/rkp00043/rku00126/images/mini-rivault-aarch64-v6.sif
       VLLM_KV_CACHE_DTYPE: "fp8"
       VLLM_MAX_NUM_SEQS: "32"
       VLLM_MAX_NUM_BATCHED_TOKENS: "32768"
@@ -433,15 +433,15 @@ endpoints:
     tier: system
     gpu_count: 4
     node_count: 4
-    partition: 4n4gpu-p
+    partition: gpu
     max_model_len: 1048576
     env_vars:
-      RIVAULT_SIF: /work/hps0/home/ea0022/images/mini-rivault-aarch64-v6.sif
+      RIVAULT_SIF: /data1/rkp00043/rku00126/images/mini-rivault-aarch64-v6.sif
       VLLM_KV_CACHE_DTYPE: "fp8"
       VLLM_MAX_NUM_SEQS: "32"
       VLLM_MAX_NUM_BATCHED_TOKENS: "32768"
-      NIXL_PACKAGES_HOST: /work/hps0/home/ea0022/images/nixl_packages
-      SLURM_WRAPPER_SCRIPT: /work/hps0/home/ea0022/ai4s-platform/umrs/deploy/ai4s/serve-pd.slurm
+      NIXL_PACKAGES_HOST: /data1/rkp00043/rku00126/images/nixl_packages
+      SLURM_WRAPPER_SCRIPT: /data1/rkp00043/rku00126/ai4s-platform/umrs/deploy/ai4s/serve-pd.slurm
 
   # ── Ornith-1.0-397B (DeepReinforce, 397B MoE agentic coding) ──────────────
   # HF: deepreinforce-ai/Ornith-1.0-397B
@@ -454,10 +454,10 @@ endpoints:
     tier: system
     gpu_count: 4
     node_count: 2
-    partition: 2n4gpu
+    partition: gpu
     max_model_len: 262144
     env_vars:
-      RIVAULT_SIF: /work/hps0/home/ea0022/images/mini-rivault-aarch64-v6.sif
+      RIVAULT_SIF: /data1/rkp00043/rku00126/images/mini-rivault-aarch64-v6.sif
       VLLM_TOOL_CALL_PARSER: "qwen3_xml"
       VLLM_REASONING_PARSER: "qwen3"
       VLLM_MAX_NUM_SEQS: "16"
