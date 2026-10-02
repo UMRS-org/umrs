@@ -17,7 +17,7 @@ import os
 import sys
 import time
 from pathlib import Path
-from botocore.exceptions import ClientError
+from tqdm import tqdm
 import urllib3
 urllib3.disable_warnings()
 
@@ -27,7 +27,8 @@ S3CFG_TMPL      = "/home/emmanuel.jeannot/.s3cfg_user1_{z}"
 LOG_DIR         = "/mnt/storage/ejeannot/log"
 STATE_FILE      = "/mnt/storage/ejeannot/log/populate_state.json"
 FILES_PER_ROUND = 7000
-RETRY_DELAYS    = [1, 2, 5, 5, 10]
+UPLOAD_RETRIES  = [1, 1, 5, 5, 10, 10]
+COPY_RETRIES    = [1, 1, 5, 5, 10, 10]
 
 USERS = [
     {"z": 10, "target": 100_000},
@@ -58,21 +59,18 @@ def all_prefixes():
         yield f"7000{a}{b}"
 
 
-def make_clients(z):
+def make_client(z):
     cfg = configparser.ConfigParser()
     cfg.read(S3CFG_TMPL.format(z=z))
     d = cfg["default"]
     protocol = "https" if d.get("use_https", "False").strip() == "True" else "http"
-    endpoint = f"{protocol}://{d['host_base']}"
-    kwargs = dict(
-        endpoint_url=endpoint,
+    return boto3.client(
+        "s3",
+        endpoint_url=f"{protocol}://{d['host_base']}",
         aws_access_key_id=d["access_key"],
         aws_secret_access_key=d["secret_key"],
         verify=False,
     )
-    client   = boto3.client("s3", **kwargs)
-    resource = boto3.resource("s3", **kwargs)
-    return client, resource
 
 
 def bucket_name(z):
@@ -93,15 +91,13 @@ def save_state(state):
 
 # ── Upload with retry ────────────────────────────────────────────────────────
 def upload_file_with_retry(client, local_path, bucket, s3_key):
-    for attempt, delay in enumerate(RETRY_DELAYS + [None]):
+    for delay in UPLOAD_RETRIES + [None]:
         try:
             client.upload_file(str(local_path), bucket, s3_key)
             return
         except Exception as e:
             if delay is None:
-                raise RuntimeError(
-                    f"Failed after all retries: {local_path} → {s3_key}: {e}"
-                )
+                raise RuntimeError(f"Failed after all retries: {local_path}: {e}")
             log.warning(f"Upload failed ({e}), retry in {delay}s...")
             time.sleep(delay)
 
@@ -128,13 +124,27 @@ def upload_initial(client, z, bucket, prefix, state):
     log.info(f"user1_{z} | initial upload complete")
 
 
-# ── Server-side copy via boto3 resource ──────────────────────────────────────
-def server_copy(client, resource, bucket, src_prefix, dst_prefix, z, round_idx, total_rounds):
-    from tqdm import tqdm
-    paginator = client.get_paginator("list_objects_v2")
-    bucket_res = resource.Bucket(bucket)
+# ── Copy one file with retry ──────────────────────────────────────────────────
+def copy_object_with_retry(client, bucket, src_key, dst_key):
+    for delay in COPY_RETRIES + [None]:
+        try:
+            client.copy_object(
+                Bucket=bucket,
+                CopySource={"Bucket": bucket, "Key": src_key},
+                Key=dst_key,
+            )
+            return
+        except Exception as e:
+            if delay is None:
+                raise RuntimeError(f"Copy failed after all retries: {src_key} → {dst_key}: {e}")
+            log.warning(f"Copy failed ({e}), retry in {delay}s...")
+            time.sleep(delay)
 
-    # Collect all keys first to know total for tqdm
+
+# ── Server-side copy ──────────────────────────────────────────────────────────
+def server_copy(client, bucket, src_prefix, dst_prefix, z, round_idx, total_rounds):
+    paginator = client.get_paginator("list_objects_v2")
+
     keys = []
     for page in paginator.paginate(Bucket=bucket, Prefix=f"{src_prefix}/"):
         for obj in page.get("Contents", []):
@@ -142,10 +152,11 @@ def server_copy(client, resource, bucket, src_prefix, dst_prefix, z, round_idx, 
 
     pct = round(100 * round_idx / total_rounds, 1)
     desc = f"user1_{z} | round {round_idx}/{total_rounds} ({pct}%) {src_prefix}→{dst_prefix}"
+
     with tqdm(total=len(keys), desc=desc, unit="file") as bar:
         for src_key in keys:
             dst_key = dst_prefix + "/" + src_key[len(src_prefix) + 1:]
-            bucket_res.copy({"Bucket": bucket, "Key": src_key}, dst_key)
+            copy_object_with_retry(client, bucket, src_key, dst_key)
             bar.update(1)
 
     log.info(
@@ -163,20 +174,20 @@ def main():
         total = rounds_needed(user["target"])
         prefixes = list(itertools.islice(all_prefixes(), total))
         bucket = bucket_name(z)
-        client, resource = make_clients(z)
+        client = make_client(z)
 
         log.info(f"=== user1_{z} | {total} rounds | bucket={bucket} ===")
 
         # Step 1: initial upload → first prefix (7000aa)
         upload_initial(client, z, bucket, prefixes[0], state)
 
-        # Step 2: server-side copies via boto3 resource (handles ContentLength)
+        # Step 2: copy via download+upload in memory (MinIO rejects copy_object)
         for i, dst_prefix in enumerate(prefixes[1:], 2):
             copy_key = f"{z}_copy_{dst_prefix}"
             if state.get(copy_key) == "done":
                 log.info(f"user1_{z} | {dst_prefix} already copied, skipping")
                 continue
-            server_copy(client, resource, bucket, prefixes[0], dst_prefix, z, i, total)
+            server_copy(client, bucket, prefixes[0], dst_prefix, z, i, total)
             state[copy_key] = "done"
             save_state(state)
 
