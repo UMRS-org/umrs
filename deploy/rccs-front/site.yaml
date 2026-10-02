@@ -119,7 +119,9 @@ vllm:
 #   keeps (umrs_front_rccs_hpc_repo_dir).
 step_executor:
   kind: inproc
-  partition: ng-dgx-m0,ng-dgx-m1,ng-dgx-m2,ng-dgx-m3
+  # One partition: the rccs job_submit policy refuses a comma list ("Multiple
+  # partitions are not allowed", R3 2026-10-02). m3 = two GB10 nodes, R2-proven.
+  partition: ng-dgx-m3
   gpus: 0              # ng-dgx-m* reject --gres
   cpus: 8
   memory: ""           # ng-dgx-m* reject --mem

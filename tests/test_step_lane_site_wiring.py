@@ -206,7 +206,8 @@ def test_rccs_step_jobs_ask_for_no_memory_and_no_gres(monkeypatch):
     # the base lane's 32G default would make every ng-dgx-m* submit fail.
     script = _rendered(_site_executor(monkeypatch, "rccs-front"))
     assert "#SBATCH --mem" not in script and "#SBATCH --gres" not in script
-    assert "#SBATCH --partition=ng-dgx-m0,ng-dgx-m1,ng-dgx-m2,ng-dgx-m3" in script
+    # one partition: the rccs job_submit policy refuses a list (R3 2026-10-02)
+    assert "#SBATCH --partition=ng-dgx-m3\n" in script
     assert "#SBATCH --account=cloud-users" in script
 
 
