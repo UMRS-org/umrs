@@ -28,7 +28,9 @@ from umrs.knowledge.access_scope import (
     graph_writable,
 )
 from umrs.knowledge.graph_registry import GRAPH_STATUSES, GraphRegistryStore
+from umrs.shared.access_scopes import access_admits
 
+from ._access import checked_access, resource_caller
 from ._knowledge_mutation_guard import (
     AGENT_ACTOR,
     enforce_registry_write_authorization,
@@ -50,6 +52,61 @@ def _registry(request: Request) -> GraphRegistryStore:
             PlatformError.knowledgegraphs("unavailable", "Database unavailable")
         )
     return GraphRegistryStore(pool)
+
+
+def _shared_read_admits(request: Request, stored_access: Any, scope: CallerScope) -> bool:
+    """ADR-080: does the row's access list admit this caller (beyond the tier
+    ladder)? Group membership resolves lazily against the request pool."""
+    caller = resource_caller(
+        request,
+        user_id=scope.user_id,
+        project_id=scope.project_id,
+        is_admin=scope.is_admin,
+    )
+    return access_admits(stored_access, caller)
+
+
+def _graph_read_allowed(
+    request: Request,
+    *,
+    kind: str,
+    project_id: str | None,
+    owner_id: str,
+    stored_access: Any,
+    scope: CallerScope,
+) -> bool:
+    """Tier ladder OR the row's access list (ADR-080)."""
+    if graph_readable(kind=kind, project_id=project_id, owner_id=owner_id, caller=scope):
+        return True
+    return _shared_read_admits(request, stored_access, scope)
+
+
+class AccessUpdate(BaseModel):
+    """ADR-080 access list update (validated against the canonical grammar)."""
+
+    access: list[str] = Field(
+        default_factory=list,
+        description="user:<id> | project:<id> | group:<id> | system; [] = tier ladder only",
+    )
+
+
+def _base_graph_list(
+    registry: GraphRegistryStore,
+    *,
+    project_id: str | None,
+    status: str | None,
+    q: str | None,
+    limit: int,
+) -> list[Any]:
+    """The tier-ladder listing (project default materialized on demand)."""
+    if project_id:
+        registry.ensure_default_graph(project_id)
+    if q:
+        graphs = registry.search_graphs(q, project_id=project_id, limit=limit)
+        if status:
+            graphs = [g for g in graphs if g.status == status]
+        return graphs
+    return registry.list_graphs(project_id=project_id, status=status, limit=limit)
 
 
 class CreateGraphRequest(BaseModel):
@@ -84,14 +141,9 @@ async def list_graphs(
     so legacy projects are listed without any manual migration.
     """
     registry = _registry(request)
-    if project_id:
-        registry.ensure_default_graph(project_id)
-    if q:
-        graphs = registry.search_graphs(q, project_id=project_id, limit=limit)
-        if status:
-            graphs = [g for g in graphs if g.status == status]
-    else:
-        graphs = registry.list_graphs(project_id=project_id, status=status, limit=limit)
+    graphs = _base_graph_list(
+        registry, project_id=project_id, status=status, q=q, limit=limit
+    )
     scope = get_caller_scope(request)
     visible = [
         g
@@ -100,7 +152,30 @@ async def list_graphs(
             kind=g.kind, project_id=g.project_id, owner_id=g.owner_id, caller=scope
         )
     ]
+    seen = {g.graph_id for g in visible}
+    visible.extend(
+        _shared_visible_graphs(request, registry, status=status, scope=scope, seen=seen)
+    )
     return {"graphs": [g.to_dict() for g in visible], "total": len(visible)}
+
+
+def _shared_visible_graphs(
+    request: Request,
+    registry: GraphRegistryStore,
+    *,
+    status: str | None,
+    scope: CallerScope,
+    seen: set[str],
+) -> list[Any]:
+    """ADR-080 rows outside the caller's tier whose access admits them."""
+    out: list[Any] = []
+    for shared in registry.list_shared_graphs(status=status):
+        if shared.graph_id in seen:
+            continue
+        if _shared_read_admits(request, shared.access, scope):
+            out.append(shared)
+            seen.add(shared.graph_id)
+    return out
 
 
 @router.post("", status_code=201)
@@ -162,11 +237,13 @@ async def get_graph(graph_id: str, request: Request) -> dict[str, Any]:
     registry = _registry(request)
     graph = registry.resolve_graph(graph_id)
     scope = get_caller_scope(request)
-    if graph is None or not graph_readable(
+    if graph is None or not _graph_read_allowed(
+        request,
         kind=graph.kind,
         project_id=graph.project_id,
         owner_id=graph.owner_id,
-        caller=scope,
+        stored_access=graph.access,
+        scope=scope,
     ):
         raise_typed(
             PlatformError.knowledgegraphs("not_found", f"Graph {graph_id} not found")
@@ -217,13 +294,16 @@ async def get_graph_content(
             PlatformError.knowledgegraphs("not_found", f"Graph {graph_id} not found")
         )
     scope = get_caller_scope(request)
-    if not graph_readable(
+    meta = registry.resolve_graph(graph_id)
+    if not _graph_read_allowed(
+        request,
         kind=str(content.get("kind") or ""),
         project_id=content.get("project_id")
         if isinstance(content.get("project_id"), str)
         else None,
         owner_id=str(content.get("owner_id") or ""),
-        caller=scope,
+        stored_access=meta.access if meta is not None else [],
+        scope=scope,
     ):
         raise_typed(
             PlatformError.knowledgegraphs("not_found", f"Graph {graph_id} not found")
@@ -280,6 +360,76 @@ async def update_graph(
     )
     assert graph is not None
     return graph.to_dict()
+
+
+@router.get("/{graph_id}/access")
+async def get_graph_access(graph_id: str, request: Request) -> dict[str, Any]:
+    """The graph's ADR-080 access list (any caller who may read the graph).
+    # auth: verified
+    """
+    registry = _registry(request)
+    graph = registry.resolve_graph(graph_id)
+    scope = get_caller_scope(request)
+    if graph is None or not _graph_read_allowed(
+        request,
+        kind=graph.kind,
+        project_id=graph.project_id,
+        owner_id=graph.owner_id,
+        stored_access=graph.access,
+        scope=scope,
+    ):
+        raise_typed(
+            PlatformError.knowledgegraphs("not_found", f"Graph {graph_id} not found")
+        )
+    return {"graph_id": graph.graph_id, "access": list(graph.access)}
+
+
+@router.put("/{graph_id}/access")
+async def set_graph_access(
+    graph_id: str,
+    body: AccessUpdate,
+    request: Request,
+    identity: CallerIdentity = Depends(get_caller_identity),
+) -> dict[str, Any]:
+    """Replace the graph's access list (write-tier owners or admin; audited).
+
+    The list names who may READ the graph beyond its tier ladder;
+    ``system`` entries are admin-only. Lifecycle writes are unaffected.
+    # auth: verified
+    """
+    enforce_registry_write_authorization(request)
+    registry = _registry(request)
+    graph = registry.resolve_graph(graph_id)
+    scope = CallerScope(
+        user_id=identity.user_id or "",
+        project_id=identity.project_id or "",
+        is_admin=identity.is_admin,
+    )
+    if graph is None or not graph_writable(
+        kind=graph.kind,
+        project_id=graph.project_id,
+        owner_id=graph.owner_id,
+        caller=scope,
+    ):
+        raise_typed(
+            PlatformError.knowledgegraphs("not_found", f"Graph {graph_id} not found")
+        )
+    caller = resource_caller(
+        request,
+        user_id=identity.user_id,
+        project_id=identity.project_id or "",
+        is_admin=identity.is_admin,
+    )
+    access = checked_access(body.access, caller, error=PlatformError.knowledgegraphs)
+    updated = registry.set_access(graph.graph_id, access)
+    from .audit_events import emit_audit
+
+    emit_audit(
+        "knowledgegraph.access_changed",
+        project_id=graph.project_id or "",
+        details={"graph_id": graph.graph_id, "access": access, "by": scope.user_id},
+    )
+    return (updated or graph).to_dict()
 
 
 class EstablishResponse(BaseModel):

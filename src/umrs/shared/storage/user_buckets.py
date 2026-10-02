@@ -15,6 +15,7 @@ No credential is stored or returned: the server performs every S3 operation
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import threading
@@ -44,18 +45,20 @@ class UserBucket:
     owner_id: str
     project: str
     alias: str
+    access: tuple[str, ...] = ()
 
     @property
     def output_bucket(self) -> str:
         return self.bucket + _OUTPUT_SUFFIX
 
-    def to_dict(self) -> dict[str, str]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "bucket": self.bucket,
             "output_bucket": self.output_bucket,
             "owner": self.owner_id,
             "project": self.project,
             "alias": self.alias,
+            "access": list(self.access),
         }
 
 
@@ -103,17 +106,27 @@ def _default_pool() -> Any:
     return get_default_sync_pool() if pg_configured_from_env() else None
 
 
+def _row_entry(row: Any) -> UserBucket:
+    """One SELECTed row → UserBucket; a pre-0116 row (no access column)
+    reads the ADR-080 list as the honest ()."""
+    access = row[4] if len(row) > 4 else ()
+    if isinstance(access, str):
+        access = json.loads(access)
+    shared = tuple(str(entry) for entry in access) if isinstance(access, list) else ()
+    return UserBucket(row[0], row[1], row[2], row[3], shared)
+
+
 def _borrowed(pool: Any, work: Callable[[Any], Any], *, absent: Any) -> Any:
     """Run *work* on a borrowed connection; *absent* without a registry (no
-    Postgres, or migration 0115 not applied yet). The connection is always
-    returned, never idle in transaction."""
+    Postgres, or migration 0115/0116 not applied yet). The connection is
+    always returned, never idle in transaction."""
     if pool is None:
         return absent
     conn = pool.getconn()
     try:
         return work(conn)
     except Exception as exc:
-        if getattr(exc, "pgcode", None) == "42P01":  # undefined_table
+        if getattr(exc, "pgcode", None) in ("42P01", "42703"):  # no table/column yet
             return absent
         raise
     finally:
@@ -160,11 +173,11 @@ class UserBucketStore:
         def work(conn: Any) -> UserBucket | None:
             cur = conn.cursor()
             cur.execute(
-                "SELECT bucket, owner_id, project, alias FROM user_buckets WHERE bucket = %s",
+                "SELECT bucket, owner_id, project, alias, access FROM user_buckets WHERE bucket = %s",
                 (bucket,),
             )
             row = cur.fetchone()
-            return UserBucket(*row) if row else None
+            return _row_entry(row) if row else None
 
         return _borrowed(self._pool(), work, absent=None)
 
@@ -172,11 +185,87 @@ class UserBucketStore:
         def work(conn: Any) -> list[UserBucket]:
             cur = conn.cursor()
             cur.execute(
-                "SELECT bucket, owner_id, project, alias FROM user_buckets "
+                "SELECT bucket, owner_id, project, alias, access FROM user_buckets "
                 "WHERE owner_id = %s ORDER BY bucket",
                 (owner,),
             )
-            return [UserBucket(*row) for row in cur.fetchall()]
+            return [_row_entry(row) for row in cur.fetchall()]
+
+        return _borrowed(self._pool(), work, absent=[])
+
+    def set_access(self, bucket: str, access: list[str]) -> bool:
+        """Replace the bucket's ADR-080 object-access list (validated
+        upstream). False when the row does not exist."""
+
+        def work(conn: Any) -> bool:
+            cur = conn.cursor()
+            cur.execute(
+                "UPDATE user_buckets SET access = %s::jsonb WHERE bucket = %s",
+                (json.dumps(list(access)), input_bucket_of(bucket)),
+            )
+            conn.commit()
+            return cur.rowcount == 1
+
+        pool = self._pool()
+        if pool is None:
+            raise UserBucketError("bucket access needs the UMRS Postgres store")
+        updated = bool(_borrowed(pool, work, absent=False))
+        with self._lock:
+            self._owners.pop(input_bucket_of(bucket), None)
+        return updated
+
+    def can_access(self, bucket: str, user_id: str) -> bool:
+        """May *user_id* read/write OBJECTS in *bucket* (ADR-080)?
+
+        Owner, or the row's access list: ``system`` admits everyone,
+        ``user:<id>`` the named user, ``group:<id>`` any ACTIVE member
+        (multi-membership allowed). Fail-closed on any lookup error.
+        An ``-output`` name follows its input bucket's row.
+        """
+        if not user_id:
+            return False
+        name = input_bucket_of(bucket)
+
+        def work(conn: Any) -> bool:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT 1 FROM user_buckets b WHERE b.bucket = %s AND ("
+                "  b.owner_id = %s"
+                "  OR b.access @> '[\"system\"]'::jsonb"
+                "  OR b.access @> jsonb_build_array(%s)"
+                "  OR EXISTS ("
+                "    SELECT 1 FROM group_members gm"
+                "    JOIN groups g ON g.group_id = gm.group_id"
+                "    WHERE gm.user_id = %s AND g.status = 'active'"
+                "      AND b.access @> jsonb_build_array('group:' || gm.group_id)"
+                "  )) LIMIT 1",
+                (name, user_id, f"user:{user_id}", user_id),
+            )
+            return cur.fetchone() is not None
+
+        return bool(_borrowed(self._pool(), work, absent=False))
+
+    def list_shared_with(self, user_id: str) -> list[UserBucket]:
+        """Buckets the caller does not own but may access (ADR-080)."""
+        if not user_id:
+            return []
+
+        def work(conn: Any) -> list[UserBucket]:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT bucket, owner_id, project, alias, access FROM user_buckets b "
+                "WHERE b.owner_id != %s AND ("
+                "  b.access @> '[\"system\"]'::jsonb"
+                "  OR b.access @> jsonb_build_array(%s)"
+                "  OR EXISTS ("
+                "    SELECT 1 FROM group_members gm"
+                "    JOIN groups g ON g.group_id = gm.group_id"
+                "    WHERE gm.user_id = %s AND g.status = 'active'"
+                "      AND b.access @> jsonb_build_array('group:' || gm.group_id)"
+                "  )) ORDER BY bucket",
+                (user_id, f"user:{user_id}", user_id),
+            )
+            return [_row_entry(row) for row in cur.fetchall()]
 
         return _borrowed(self._pool(), work, absent=[])
 

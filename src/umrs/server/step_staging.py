@@ -34,6 +34,7 @@ import dataclasses
 import hashlib
 import io
 import json
+import logging
 import os
 import re
 import stat
@@ -52,6 +53,8 @@ from umrs.pipeline_sdk.staged_s3 import (
 from umrs.pipeline_sdk.step import StepContext, StepResult
 
 from .step_executor import StepExecutionError
+
+logger = logging.getLogger(__name__)
 
 #: ``ctx.metadata`` key under which the runner hands the executor the step's
 #: staging request (see :func:`stage_request`).
@@ -206,15 +209,33 @@ def _personal_owner(bucket: str) -> str | None:
     return owner_of(bucket)
 
 
+def _personal_shared(bucket: str, owner: str) -> bool:
+    """The bucket's ADR-080 access list admits *owner* (object read/write);
+    fail-closed — a lookup error or an old store grants nothing."""
+    from umrs.shared.storage.user_buckets import get_user_bucket_store
+
+    can_access = getattr(get_user_bucket_store(), "can_access", None)
+    if can_access is None:
+        return False
+    try:
+        return bool(can_access(bucket, owner))
+    except Exception:
+        logger.warning("bucket access lookup failed for %s", bucket, exc_info=True)
+        return False
+
+
 def bucket_owned_by(bucket: str, owner: str) -> bool:
     """Whether *owner* owns *bucket* — the one rule the HPC lane and the
     files API share: a personal bucket (ADR-079) whose server-written
-    ``user_buckets`` row names them, or a provisioned bucket whose name
+    ``user_buckets`` row names them, or whose ADR-080 access list admits
+    them (shared workspace objects), or a provisioned bucket whose name
     carries their prefix AND whose ``BucketsCfg`` entry names them. An
     ``-output`` name belongs to the owner of its input bucket."""
     if not owner:
         return False
     if _personal_owner(bucket) == owner:
+        return True
+    if _personal_shared(bucket, owner):
         return True
     prefix = owner_bucket_prefix(owner)
     remainder = bucket[len(prefix) :] if bucket.startswith(prefix) else ""
@@ -246,6 +267,8 @@ def _check_registered(bucket: str, owner: str) -> None:
 def _check_owned(bucket: str, owner: str) -> None:
     if owner and _personal_owner(bucket) == owner:
         return  # ADR-079: the server-written ownership row is the proof
+    if owner and _personal_shared(bucket, owner):
+        return  # ADR-080: the bucket's access list admits the run owner
     prefix = owner_bucket_prefix(owner)
     remainder = bucket[len(prefix) :] if bucket.startswith(prefix) else ""
     if not _OWNED_REMAINDER_RE.fullmatch(remainder):

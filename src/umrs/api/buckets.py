@@ -16,7 +16,7 @@ import logging
 from typing import Any
 
 from botocore.exceptions import ClientError
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
 
 from umrs.shared.storage.s3_config import get_s3_config
@@ -27,6 +27,7 @@ from umrs.shared.storage.user_buckets import (
     get_user_bucket_store,
 )
 
+from ._access import checked_access, resource_caller
 from ._verified_headers import CallerIdentity, get_verified_caller
 from .typed_errors import PlatformError, raise_typed
 
@@ -40,13 +41,23 @@ class CreateBucketRequest(BaseModel):
     alias: str = Field(..., description="Short bucket alias, e.g. videos")
 
 
+class BucketAccessUpdate(BaseModel):
+    """ADR-080 object-access list update (canonical scope grammar)."""
+
+    access: list[str] = Field(
+        default_factory=list,
+        description="user:<id> | project:<id> | group:<id> | system; [] = owner only",
+    )
+
+
 class BucketInfo(BaseModel):
     bucket: str
     output_bucket: str
     owner: str
     project: str = ""
     alias: str = ""
-    kind: str = "personal"  # personal (ADR-079) | provisioned (user config)
+    access: list[str] = Field(default_factory=list)
+    kind: str = "personal"  # personal (ADR-079) | provisioned (user config) | shared (ADR-080)
 
 
 class BucketListResponse(BaseModel):
@@ -85,7 +96,9 @@ async def create_bucket(
     body: CreateBucketRequest,
     caller: CallerIdentity = Depends(get_verified_caller),
 ) -> BucketInfo:
-    """Create (or re-confirm) the caller's ``<user>.<project>.<alias>``."""
+    """Create (or re-confirm) the caller's ``<user>.<project>.<alias>``.
+    # auth: verified
+    """
     try:
         name = bucket_name(caller.user_id, body.project, body.alias)
     except UserBucketError as exc:
@@ -113,30 +126,118 @@ async def create_bucket(
     return BucketInfo(**entry.to_dict(), kind="personal")
 
 
+def _provisioned_rows(user_id: str, seen: set[str]) -> list[BucketInfo]:
+    """Provisioned buckets of the caller's user config (site-provided)."""
+    from umrs.server import step_staging
+
+    registry = step_staging._bucket_registry
+    if registry is None:
+        return []
+    rows: list[BucketInfo] = []
+    for path, entry in list(registry.items()):
+        if getattr(entry, "s3_username", None) != user_id or path in seen:
+            continue
+        if path.endswith("-output"):
+            continue
+        rows.append(
+            BucketInfo(
+                bucket=path,
+                output_bucket=f"{path}-output",
+                owner=user_id,
+                alias=str(getattr(entry, "bucket_alias", "") or ""),
+                kind="provisioned",
+            )
+        )
+    return rows
+
+
 @router.get("", response_model=BucketListResponse)
 async def list_buckets(
     caller: CallerIdentity = Depends(get_verified_caller),
 ) -> BucketListResponse:
-    """The caller's personal buckets plus provisioned ones from their config."""
-    personal = await asyncio.to_thread(get_user_bucket_store().list_for, caller.user_id)
+    """The caller's personal buckets plus provisioned ones from their config
+    plus buckets whose ADR-080 access list admits them (``kind="shared"``).
+    # auth: verified
+    """
+    store = get_user_bucket_store()
+    personal = await asyncio.to_thread(store.list_for, caller.user_id)
     rows = [BucketInfo(**b.to_dict(), kind="personal") for b in personal]
     seen = {b.bucket for b in personal}
-    from umrs.server import step_staging
-
-    registry = step_staging._bucket_registry
-    if registry is not None:
-        for path, entry in list(registry.items()):
-            if getattr(entry, "s3_username", None) != caller.user_id or path in seen:
-                continue
-            if path.endswith("-output"):
-                continue
-            rows.append(
-                BucketInfo(
-                    bucket=path,
-                    output_bucket=f"{path}-output",
-                    owner=caller.user_id,
-                    alias=str(getattr(entry, "bucket_alias", "") or ""),
-                    kind="provisioned",
-                )
-            )
+    rows.extend(_provisioned_rows(caller.user_id, seen))
+    shared = await asyncio.to_thread(store.list_shared_with, caller.user_id)
+    rows.extend(
+        BucketInfo(**entry.to_dict(), kind="shared")
+        for entry in shared
+        if entry.bucket not in seen
+    )
     return BucketListResponse(buckets=sorted(rows, key=lambda r: r.bucket))
+
+
+@router.get("/{bucket}/access")
+async def get_bucket_access(
+    bucket: str,
+    caller: CallerIdentity = Depends(get_verified_caller),
+) -> dict[str, Any]:
+    """The bucket's ADR-080 object-access list (owner, admin, or a caller
+    the list admits).
+    # auth: verified
+    """
+    store = get_user_bucket_store()
+    entry = await asyncio.to_thread(store.get, bucket)
+    if entry is None:
+        raise_typed(PlatformError.files("not_found", f"Bucket {bucket!r} not found"))
+    allowed = (
+        entry.owner_id == caller.user_id
+        or caller.is_admin
+        or await asyncio.to_thread(store.can_access, bucket, caller.user_id)
+    )
+    if not allowed:
+        raise_typed(PlatformError.files("not_found", f"Bucket {bucket!r} not found"))
+    return {"bucket": entry.bucket, "owner": entry.owner_id, "access": list(entry.access)}
+
+
+@router.put("/{bucket}/access", response_model=BucketInfo)
+async def set_bucket_access(
+    bucket: str,
+    body: BucketAccessUpdate,
+    request: Request,
+    caller: CallerIdentity = Depends(get_verified_caller),
+) -> BucketInfo:
+    """Replace the bucket's ADR-080 object-access list (owner or admin;
+    audited). Governs OBJECT reads/writes; the bucket lifecycle stays
+    owner-only; ``system`` entries are admin-only.
+    # auth: verified
+    """
+    store = get_user_bucket_store()
+    entry = await asyncio.to_thread(store.get, bucket)
+    if entry is None:
+        raise_typed(PlatformError.files("not_found", f"Bucket {bucket!r} not found"))
+    if entry.owner_id != caller.user_id and not caller.is_admin:
+        raise_typed(
+            PlatformError.files(
+                "bucket_denied", f"Only the owner of {bucket!r} may change its access"
+            )
+        )
+    guard = resource_caller(
+        request,
+        user_id=caller.user_id,
+        project_id=caller.project_id or "",
+        is_admin=caller.is_admin,
+    )
+    access = checked_access(
+        body.access, guard, error=PlatformError.files, name="bucket_denied"
+    )
+    try:
+        await asyncio.to_thread(store.set_access, bucket, access)
+    except UserBucketError as exc:
+        raise_typed(PlatformError.files("bucket_registry_unavailable", str(exc)), cause=exc)
+    from .audit_events import emit_audit
+
+    emit_audit(
+        "bucket.access_changed",
+        project_id=entry.project,
+        details={"bucket": entry.bucket, "access": access, "by": caller.user_id},
+    )
+    updated = await asyncio.to_thread(store.get, entry.bucket)
+    assert updated is not None  # set_access would have failed otherwise
+    return BucketInfo(**updated.to_dict(), kind="personal")

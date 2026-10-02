@@ -29,7 +29,9 @@ from umrs.orchestrator.endpoint_registry import (
     EndpointStatus,
     get_registry,
 )
+from umrs.rag.corpus_access import get_corpus_access_store, shared_corpus_readable
 
+from ._access import checked_access, resource_caller
 from .typed_errors import PlatformError, raise_typed
 
 logger = logging.getLogger(__name__)
@@ -139,6 +141,11 @@ def _require_rag_scope(
     project_writable. Effects vs the legacy equality check: admin bypass,
     'system' corpus readable by any verified caller (writable by admin
     only), and 'user:<uid>' namespaces enforced owner-only.
+
+    ADR-080: a read the tier denies may still pass through the target
+    corpus's access list (``rag_corpus_access`` — user/group/project/system
+    scopes, group membership resolved against the 0097 authority). Writes
+    never consult the list.
     """
     user_id, project_id = _get_caller_identity(request)
     admin = request.headers.get("x-verified-is-admin", "").strip().lower() in (
@@ -150,6 +157,8 @@ def _require_rag_scope(
     allowed = (
         project_writable(target, caller) if write else project_readable(target, caller)
     )
+    if not allowed and not write:
+        allowed = shared_corpus_readable(target, user_id)
     if not allowed:
         raise_typed(
             PlatformError.rag(
@@ -162,6 +171,63 @@ def _require_rag_scope(
 
 # ADR-027 P1a: cap knowledge minting per upload (guard against giant docs).
 _KNOWLEDGE_NODE_CAP = 100
+
+
+class CorpusAccessUpdate(BaseModel):
+    """ADR-080 corpus read-sharing update (canonical scope grammar)."""
+
+    project_id: str = Field(..., min_length=1)
+    access: list[str] = Field(
+        default_factory=list,
+        description="user:<id> | project:<id> | group:<id> | system; [] = owning project tier only",
+    )
+
+
+@router.get("/corpus-access")
+def get_corpus_access(request: Request, project_id: str) -> dict[str, Any]:
+    """The corpus's ADR-080 read-sharing list (any caller who may read it).
+    # auth: verified
+    """
+    _require_rag_scope(request, project_id, write=False)
+    return {
+        "project_id": project_id,
+        "access": get_corpus_access_store().get_access(project_id),
+    }
+
+
+@router.put("/corpus-access")
+def put_corpus_access(request: Request, body: CorpusAccessUpdate) -> dict[str, Any]:
+    """Replace the corpus's ADR-080 read-sharing list (audited).
+
+    Corpus members (project_writable) or admins set it; ``system`` entries
+    are admin-only. Governs READS (query/documents/search/stats) — ingest,
+    upload and delete stay with the owning project.
+    # auth: verified
+    """
+    user_id, _ = _require_rag_scope(request, body.project_id, write=True)
+    admin = request.headers.get("x-verified-is-admin", "").strip().lower() in (
+        "true",
+        "1",
+    )
+    caller = resource_caller(
+        request,
+        user_id=user_id,
+        project_id=body.project_id,
+        is_admin=admin,
+    )
+    access = checked_access(body.access, caller, error=PlatformError.rag)
+    get_corpus_access_store().set_access(body.project_id, access, set_by=user_id)
+    from .audit_events import emit_audit
+
+    emit_audit(
+        "rag.corpus_access_changed",
+        project_id=body.project_id,
+        details={"project_id": body.project_id, "access": access, "by": user_id},
+    )
+    return {"project_id": body.project_id, "access": access}
+
+
+
 
 
 async def _upload_success(

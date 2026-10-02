@@ -65,6 +65,10 @@ def _row_to_graph(row: dict[str, Any]) -> KnowledgeGraphMeta:
     for key in ("provenance",):
         if isinstance(data.get(key), str):
             data[key] = json.loads(data[key])
+    access = data.get("access")
+    if isinstance(access, str):
+        access = json.loads(access)
+    data["access"] = [str(entry) for entry in access] if isinstance(access, list) else []
     return KnowledgeGraphMeta(**data)
 
 
@@ -95,6 +99,7 @@ class KnowledgeGraphMeta:
     ontology_id: str | None = None
     ontology_version: str | None = None
     provenance: dict[str, Any] = field(default_factory=dict)
+    access: list[str] = field(default_factory=list)
     created_at: datetime | None = None
     updated_at: datetime | None = None
 
@@ -110,6 +115,7 @@ class KnowledgeGraphMeta:
             "ontology_id": self.ontology_id,
             "ontology_version": self.ontology_version,
             "provenance": self.provenance,
+            "access": list(self.access),
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
@@ -178,7 +184,7 @@ class _SyncPoolStore:
 
 _GRAPH_COLUMNS = (
     "graph_id, name, description, owner_id, project_id, kind, status, "
-    "ontology_id, ontology_version, provenance, created_at, updated_at"
+    "ontology_id, ontology_version, provenance, access, created_at, updated_at"
 )
 
 
@@ -425,6 +431,41 @@ class GraphRegistryStore(_SyncPoolStore):
                 "UPDATE knowledge_graphs SET status = %s, updated_at = now() "
                 "WHERE graph_id = %s",
                 (status, graph_id),
+            )
+        return self.get_graph(graph_id)
+
+    def list_shared_graphs(
+        self,
+        *,
+        status: str | None = None,
+        limit: int = 500,
+    ) -> list[KnowledgeGraphMeta]:
+        """Rows carrying a non-empty access list (ADR-080) — the candidates
+        a caller may reach beyond their tier; the route filters by
+        ``access_admits`` before anything is disclosed."""
+        conditions, params = ["access != '[]'::jsonb"], []
+        if status:
+            conditions.append("status = %s")
+            params.append(status)
+        where = " AND ".join(conditions)
+        with self._cursor() as cur:
+            cur.execute(
+                f"SELECT {_GRAPH_COLUMNS} FROM knowledge_graphs "
+                f"WHERE {where} ORDER BY created_at LIMIT %s",
+                (*params, limit),
+            )
+            rows = cur.fetchall()
+        return [_row_to_graph(row) for row in rows]
+
+    def set_access(
+        self, graph_id: str, access: list[str]
+    ) -> KnowledgeGraphMeta | None:
+        """Replace the row's ADR-080 access list (validated upstream)."""
+        with self._cursor() as cur:
+            cur.execute(
+                "UPDATE knowledge_graphs SET access = %s::jsonb, updated_at = now() "
+                "WHERE graph_id = %s",
+                (json.dumps(list(access)), graph_id),
             )
         return self.get_graph(graph_id)
 

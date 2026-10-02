@@ -193,17 +193,13 @@ def groups_for_user(conn: Any, user_id: str) -> list[str]:
     """Active group ids the user is a member of (the grant-ladder resolution).
 
     Retired groups never resolve — their grants stop counting immediately
-    (tombstone semantics from the migration comment).
+    (tombstone semantics from the migration comment). The SQL authority is
+    ``umrs.shared.group_membership.group_ids_for_user`` (ADR-080); this
+    wrapper keeps the established api import surface.
     """
-    cur = conn.cursor()
-    cur.execute(
-        "SELECT gm.group_id FROM group_members gm"
-        " JOIN groups g ON g.group_id = gm.group_id"
-        " WHERE gm.user_id = %s AND g.status = 'active'"
-        " ORDER BY gm.group_id",
-        (user_id,),
-    )
-    return [r[0] for r in cur.fetchall()]
+    from umrs.shared.group_membership import group_ids_for_user
+
+    return group_ids_for_user(conn, user_id)
 
 
 # ── routes ───────────────────────────────────────────────────────────────

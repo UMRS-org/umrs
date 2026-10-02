@@ -38,6 +38,28 @@ class _FakeStore:
         row = self.rows.get(ub.input_bucket_of(bucket))
         return row.owner_id if row else None
 
+    def set_access(self, bucket: str, access: list) -> bool:
+        row = self.rows.get(ub.input_bucket_of(bucket))
+        if row is None:
+            return False
+        self.rows[row.bucket] = ub.UserBucket(
+            row.bucket, row.owner_id, row.project, row.alias, tuple(access)
+        )
+        return True
+
+    def can_access(self, bucket: str, user_id: str) -> bool:
+        row = self.rows.get(ub.input_bucket_of(bucket))
+        if row is None:
+            return False
+        return row.owner_id == user_id
+
+    def list_shared_with(self, user_id: str):
+        return [
+            r
+            for r in self.rows.values()
+            if r.owner_id != user_id and "system" in r.access
+        ]
+
 
 class _FakeS3:
     def __init__(self) -> None:
