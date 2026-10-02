@@ -199,12 +199,35 @@ def owner_bucket_prefix(owner: str) -> str:
     return owner.lower().replace(" ", "-").replace("_", "-") + "."
 
 
+def _personal_owner(bucket: str) -> str | None:
+    """Owner recorded for a self-service personal bucket (ADR-079)."""
+    from umrs.shared.storage.user_buckets import owner_of
+
+    return owner_of(bucket)
+
+
+def bucket_owned_by(bucket: str, owner: str) -> bool:
+    """Whether *owner* owns *bucket*: the name carries their prefix AND a
+    provisioned bucket (``BucketsCfg``) or a personal bucket (ADR-079) records
+    them as its owner. The one rule the HPC lane and the files API share."""
+    prefix = owner_bucket_prefix(owner)
+    remainder = bucket[len(prefix) :] if bucket.startswith(prefix) else ""
+    if not owner or not _OWNED_REMAINDER_RE.fullmatch(remainder):
+        return False
+    registry = _bucket_registry
+    if registry is not None and _registered_owner(registry, bucket) == owner:
+        return True
+    return _personal_owner(bucket) == owner
+
+
 def _check_registered(bucket: str, owner: str) -> None:
     registry = _bucket_registry
     if registry is None:
         return
     registered = _registered_owner(registry, bucket)
     if registered == owner:
+        return
+    if registered is None and _personal_owner(bucket) == owner:
         return
     why = (
         "it is not a provisioned bucket"

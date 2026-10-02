@@ -424,6 +424,26 @@ def _require_verified_workflow_identity(
         )
 
 
+def _verified_users_may_upload() -> bool:
+    """``UMRS_WORKFLOW_UPLOAD_ROLE``: ``verified`` (default, ADR-079 D-1) lets
+    any gateway-verified user upload user-scope workflows; ``workflow_author``
+    restores the ADR-027 role gate."""
+    policy = os.environ.get("UMRS_WORKFLOW_UPLOAD_ROLE", "verified").strip().lower()
+    return policy != "workflow_author"
+
+
+def _scope_policy_decides(
+    scope: str, is_admin: bool, headers_present: bool, deny: Any
+) -> bool:
+    """``scope=system`` needs admin (*deny* raises); True when the ADR-079
+    D-1 policy already admits the upload: a gateway-verified researcher
+    uploads their own user-scope workflows (maintainer 2026-09-25) — the code
+    never runs in the server (ADR-074) and runs only for its owner (D-8)."""
+    if scope == "system" and not is_admin:
+        deny("system scope requires admin")
+    return headers_present and _verified_users_may_upload()
+
+
 def _enforce_workflow_upload_role(
     *,
     scope: str,
@@ -462,8 +482,8 @@ def _enforce_workflow_upload_role(
     headers_present = bool(actor and project_id)
     if not (_strict_auth_mode() or headers_present):
         return
-    if scope == "system" and not is_admin:
-        _deny("system scope requires admin")
+    if _scope_policy_decides(scope, is_admin, headers_present, _deny):
+        return
     author_ok = workflow_author_trusted(
         strict=_strict_auth_mode(),
         secret=handshake_secret(),
@@ -860,6 +880,12 @@ async def get_workflow_package(
                 "not_found", f"Workflow '{workflow_name}' not found"
             )
         )
+    return _package_payload(entry)
+
+
+def _package_payload(entry: dict[str, Any]) -> dict[str, Any]:
+    """The ``/package`` body for a resolved catalog *entry* (split out of the
+    route for the complexity ratchet, 2026-10-02; behaviour unchanged)."""
     payload = _describe_workflow_entry(entry)
     workflow_json = _read_entry_workflow_json(entry)
     # Rich definition fields for the graph card: the REAL workflow.json

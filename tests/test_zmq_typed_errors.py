@@ -215,7 +215,8 @@ def test_files_bucket_denied_carries_typed_header(monkeypatch):
     assert getattr(exc, "status_code", None) == 403, f"{exc!r}"
     headers = getattr(exc, "headers", {}) or {}
     assert headers.get("x-platform-error-code") == "files.bucket_denied"
-    assert getattr(exc, "detail", "") == "Bucket not in download allowlist: other-bucket"
+    # ADR-079: a named bucket outside the allowlist must be one the caller owns.
+    assert "is not one of yours" in getattr(exc, "detail", "")
 
 
 def test_contract_jobs_family_codes():
