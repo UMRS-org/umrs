@@ -782,6 +782,106 @@ async def list_workflow_triggers(
     }
 
 
+# ---------------------------------------------------------------------------
+# Workflow package — definition + registered code for the console detail view
+# ---------------------------------------------------------------------------
+
+_PACKAGE_SKIP_DIRS = {"__pycache__", ".git", ".venv", "venv", "node_modules"}
+_PACKAGE_FILE_CAP = 32 * 1024  # per-file bytes
+_PACKAGE_TOTAL_CAP = 200 * 1024  # summed read across files
+_PACKAGE_MAX_FILES = 24
+
+
+def _package_file_row(root: str, path: str) -> dict[str, Any]:
+    """One code file row: content capped honestly (`truncated` flags it)."""
+    full = os.path.join(root, path)
+    size = os.path.getsize(full)
+    with open(full, encoding="utf-8", errors="replace") as handle:
+        raw = handle.read(_PACKAGE_FILE_CAP + 1)
+    truncated = len(raw) > _PACKAGE_FILE_CAP
+    content = raw[:_PACKAGE_FILE_CAP]
+    return {
+        "path": path,
+        "bytes": size,
+        "lines": content.count("\n")
+        + (0 if content.endswith("\n") or not content else 1),
+        "content": content,
+        "truncated": truncated,
+    }
+
+
+def _collect_package_files(source_path: str) -> tuple[list[dict[str, Any]], bool]:
+    """Walk the workflow's registered source dir under budget.
+
+    Returns (rows, truncated) — skipped dirs, the file-count cap and the
+    total-bytes cap all mark ``truncated=True``, never a silent drop.
+    """
+    rows: list[dict[str, Any]] = []
+    budget = _PACKAGE_TOTAL_CAP
+    truncated = False
+    for dirpath, dirnames, filenames in os.walk(source_path):
+        dirnames[:] = [d for d in sorted(dirnames) if d not in _PACKAGE_SKIP_DIRS]
+        for filename in sorted(filenames):
+            rel = os.path.relpath(os.path.join(dirpath, filename), source_path)
+            if len(rows) >= _PACKAGE_MAX_FILES or budget <= 0:
+                truncated = True
+                break
+            row = _package_file_row(source_path, rel)
+            budget -= len(row["content"])
+            rows.append(row)
+    return rows, truncated
+
+
+@router.get("/{workflow_name}/package")
+async def get_workflow_package(
+    workflow_name: str,
+    x_user_id: str | None = Header(None),
+    x_verified_project_id: str | None = Header(None),
+    x_verified_is_admin: str | None = Header(None),
+    x_verified_hmac: str | None = Header(None),
+):
+    """Definition + registered CODE for the console definition card.
+
+    Owner-scoped exactly like describe (ADR-074 D-8): own or system entry,
+    another owner's only for admins. ``files`` carries registered sources
+    with honest caps (``truncated`` flags); a missing source dir ships an
+    empty list, never an invented listing.
+    """
+    _require_verified_workflow_identity(
+        x_user_id, x_verified_project_id, x_verified_is_admin, x_verified_hmac
+    )
+    caller = _header_str(x_user_id) or ""
+    entry = resolve_workflow_for_caller(
+        workflow_name, caller, is_admin=_header_str(x_verified_is_admin) == "true"
+    )
+    if entry is None:
+        raise_typed(
+            PlatformError.workflows(
+                "not_found", f"Workflow '{workflow_name}' not found"
+            )
+        )
+    payload = _describe_workflow_entry(entry)
+    workflow_json = _read_entry_workflow_json(entry)
+    # Rich definition fields for the graph card: the REAL workflow.json
+    # carries depends_on/config detail catalog rows flatten away — it wins
+    # whenever it declares steps; the catalog row set is the fallback.
+    if isinstance(workflow_json.get("steps"), list) and workflow_json["steps"]:
+        payload["steps"] = workflow_json["steps"]
+    payload["resources"] = workflow_json.get("resources", {})
+    payload["execution_mode"] = workflow_json.get("execution_mode")
+    payload["output"] = workflow_json.get("output")
+    payload["source_path"] = str(entry.get("source_path") or "")
+    source_path = payload["source_path"]
+    if source_path and os.path.isdir(source_path):
+        files, truncated = _collect_package_files(source_path)
+        payload["files"] = files
+        payload["files_truncated"] = truncated or any(f["truncated"] for f in files)
+    else:
+        payload["files"] = []
+        payload["files_truncated"] = False
+    return payload
+
+
 @router.delete("/{workflow_name}")
 async def delete_workflow(
     workflow_name: str,
