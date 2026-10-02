@@ -130,20 +130,27 @@ def upload_initial(client, z, bucket, prefix, state):
 
 # ── Server-side copy via boto3 resource ──────────────────────────────────────
 def server_copy(client, resource, bucket, src_prefix, dst_prefix, z, round_idx, total_rounds):
+    from tqdm import tqdm
     paginator = client.get_paginator("list_objects_v2")
     bucket_res = resource.Bucket(bucket)
-    copied = 0
+
+    # Collect all keys first to know total for tqdm
+    keys = []
     for page in paginator.paginate(Bucket=bucket, Prefix=f"{src_prefix}/"):
         for obj in page.get("Contents", []):
-            src_key = obj["Key"]
-            dst_key = dst_prefix + "/" + src_key[len(src_prefix) + 1:]
-            copy_source = {"Bucket": bucket, "Key": src_key}
-            bucket_res.copy(copy_source, dst_key)
-            copied += 1
+            keys.append(obj["Key"])
+
     pct = round(100 * round_idx / total_rounds, 1)
+    desc = f"user1_{z} | round {round_idx}/{total_rounds} ({pct}%) {src_prefix}→{dst_prefix}"
+    with tqdm(total=len(keys), desc=desc, unit="file") as bar:
+        for src_key in keys:
+            dst_key = dst_prefix + "/" + src_key[len(src_prefix) + 1:]
+            bucket_res.copy({"Bucket": bucket, "Key": src_key}, dst_key)
+            bar.update(1)
+
     log.info(
         f"user1_{z} | copy {src_prefix} → {dst_prefix} | "
-        f"{copied} files | round {round_idx}/{total_rounds} ({pct}%)"
+        f"{len(keys)} files | round {round_idx}/{total_rounds} ({pct}%)"
     )
 
 
