@@ -22,8 +22,9 @@ from umrs.server.file_handling import DOCKERFILE_IGNORED_NOTICE, handle_upload_w
 _WORKFLOW = {
     "name": "dock",
     "version": "1.0",
+    "description": "One-step upload fixture.",
     "source": {"type": "local_path", "path": "."},
-    "steps": [{"name": "s1", "entrypoint": "steps:StepOne"}],
+    "steps": [{"name": "s1", "entrypoint": "steps:StepOne", "depends_on": []}],
 }
 
 

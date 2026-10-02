@@ -339,6 +339,7 @@ Create `workflow.json` in your scripts directory:
 {
     "name": "my-denoise-pipeline",
     "version": "1.0",
+    "description": "Removes noise from each input image with scikit-image; writes one denoised image per input.",
     "source": {"type": "local_path", "path": "/home/user/my_scripts/"},
     "requirements": ["scikit-image"],
     "resources": {"gpu_count": 0, "memory_limit": "4Gi", "timeout_seconds": 600},
@@ -346,6 +347,7 @@ Create `workflow.json` in your scripts directory:
         {
             "name": "denoise",
             "entrypoint": "my_model:DenoiseStep",
+            "depends_on": [],
             "config": {"strength": 0.1}
         }
     ],
@@ -368,14 +370,16 @@ Add to your model configuration (the same JSON where you define SAM3, HMAE, etc.
 
 ### 8.4 Multi-Step Workflows
 
-Chain steps — each step's outputs become the next step's inputs:
+Chain steps with `depends_on`: a step receives the outputs of the steps it
+lists. List every edge, and give a step that starts the run `[]`; uploads
+are refused without them (2026-10-02).
 
 ```json
 {
     "steps": [
-        {"name": "preprocess",  "entrypoint": "preproc:ResizeStep",  "config": {"size": 1024}},
-        {"name": "infer",       "entrypoint": "model:InferStep",     "config": {"checkpoint": "/models/net.pt"}},
-        {"name": "postprocess", "entrypoint": "postproc:FilterStep", "config": {"threshold": 0.5}}
+        {"name": "preprocess",  "entrypoint": "preproc:ResizeStep",  "depends_on": [],             "config": {"size": 1024}},
+        {"name": "infer",       "entrypoint": "model:InferStep",     "depends_on": ["preprocess"], "config": {"checkpoint": "/models/net.pt"}},
+        {"name": "postprocess", "entrypoint": "postproc:FilterStep", "depends_on": ["infer"],      "config": {"threshold": 0.5}}
     ]
 }
 ```
@@ -416,9 +420,10 @@ For production, choose an execution mode via the workflow's
 ```json
 {
   "name": "my-pipeline",
+  "description": "Runs the model on each input image as one Slurm GPU job per step.",
   "source": {"type": "local_path", "path": "/data/user/scripts"},
   "steps": [
-    {"name": "infer", "entrypoint": "my_model:InferStep"}
+    {"name": "infer", "entrypoint": "my_model:InferStep", "depends_on": []}
   ],
   "resources": {
     "gpu_count": 1,

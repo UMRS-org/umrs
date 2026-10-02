@@ -54,8 +54,8 @@ def _workflow_json(name: str = "ct-analysis", *, with_required_bucket: bool = Fa
         "description": "workflow test",
         "source": {"type": "local_path", "path": "."},
         "steps": [
-            {"name": "step-1", "entrypoint": "my_module:StepOne"},
-            {"name": "step-2", "entrypoint": "my_module:StepTwo"},
+            {"name": "step-1", "entrypoint": "my_module:StepOne", "depends_on": []},
+            {"name": "step-2", "entrypoint": "my_module:StepTwo", "depends_on": ["step-1"]},
         ],
     }
     if with_required_bucket:
@@ -371,10 +371,8 @@ def test_describe_workflow_returns_parameter_schema(client, tmp_path):
     assert data["parameter_schema"]["required"] == ["bucket"]
 
 
-def test_package_returns_definition_resources_and_code(client, tmp_path):
-    """2026-10-01: the work-pane definition card reads one endpoint —
-    metadata, resources (partition/gpu family), step graph rows AND the
-    registered code files, with honest truncation flags."""
+def _registered_package(client, tmp_path):
+    """Register a two-step workflow with step code on disk; GET its package."""
     workflow_dir = tmp_path / "ct-analysis"
     steps_dir = workflow_dir / "steps"
     steps_dir.mkdir(parents=True)
@@ -387,7 +385,6 @@ def test_package_returns_definition_resources_and_code(client, tmp_path):
     (workflow_dir / "workflow.json").write_text(json.dumps(workflow_json))
     (steps_dir / "segment.py").write_text("class SegmentStep:\n    pass\n")
     (steps_dir / "stats.py").write_text("class StatsStep:\n    pass\n")
-
     register_workflow(
         workflow_name="ct-analysis",
         version="1.0",
@@ -396,21 +393,29 @@ def test_package_returns_definition_resources_and_code(client, tmp_path):
         workflow_json=workflow_json,
         scope="user",
     )
-
     response = client.get(
         "/umrs/workflows/ct-analysis/package",
         headers=_auth_headers("alice", "project-a"),
     )
-
     assert response.status_code == 200
-    data = response.json()
+    return response.json()
+
+
+def test_package_returns_definition_resources_and_code(client, tmp_path):
+    """2026-10-01: the work-pane definition card reads one endpoint —
+    metadata, resources (partition/gpu family), step graph rows AND the
+    registered code files, with honest truncation flags."""
+    data = _registered_package(client, tmp_path)
     assert data["workflow_name"] == "ct-analysis"
     assert data["resources"] == {"gpu_count": 1, "timeout_seconds": 600}
     assert [s["name"] for s in data["steps"]] == ["segment", "stats"]
     assert data["steps"][1]["depends_on"] == ["segment"]
+
+
+def test_package_ships_the_registered_code_files(client, tmp_path):
+    data = _registered_package(client, tmp_path)
     paths = {f["path"].replace(os.sep, "/") for f in data["files"]}
-    assert "workflow.json" in paths
-    assert "steps/segment.py" in paths and "steps/stats.py" in paths
+    assert {"workflow.json", "steps/segment.py", "steps/stats.py"} <= paths
     seg = next(f for f in data["files"] if f["path"].endswith("segment.py"))
     assert "class SegmentStep" in seg["content"]
     assert seg["truncated"] is False

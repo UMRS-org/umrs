@@ -1,6 +1,7 @@
 {
   "name": "complex-dag-demo",
   "version": "1.0",
+  "description": "Loads a dataset, analyses its text and metadata in parallel, merges both results and writes a report.",
   "source": {
     "type": "local_path",
     "path": "."

@@ -10,6 +10,7 @@
     {
       "name": "hmae_reconstruct",
       "entrypoint": "hmae_reconstruct:HMAEReconstructStep",
+      "depends_on": [],
       "model": "HMAE ViT-B",
       "requires": ["vision"],
       "model_type": "vision",

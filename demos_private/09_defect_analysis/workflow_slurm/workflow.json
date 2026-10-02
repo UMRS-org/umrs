@@ -9,6 +9,7 @@
     {
       "name": "sam3_segment",
       "entrypoint": "sam3_segmentation:SAM3SegmentationStep",
+      "depends_on": [],
       "config": {
         "bentoml_url": "${BENTOML_URL:-http://localhost:11434/vision}",
         "prompt": "defect",
@@ -20,6 +21,7 @@
     {
       "name": "region_extract",
       "entrypoint": "region_extraction:RegionExtractionStep",
+      "depends_on": ["sam3_segment"],
       "config": {
         "min_patch_size": 32,
         "padding": 10,
@@ -29,6 +31,7 @@
     {
       "name": "hmae_analysis",
       "entrypoint": "hmae_analysis:HMAEAnalysisStep",
+      "depends_on": ["region_extract"],
       "config": {
         "bentoml_url": "${BENTOML_URL:-http://localhost:11434/vision}",
         "anomaly_threshold": 0.3,
@@ -38,6 +41,7 @@
     {
       "name": "structure_discovery",
       "entrypoint": "structure_discovery:StructureDiscoveryStep",
+      "depends_on": ["hmae_analysis"],
       "config": {
         "n_clusters": 4,
         "anomaly_prefix": "anomaly/"

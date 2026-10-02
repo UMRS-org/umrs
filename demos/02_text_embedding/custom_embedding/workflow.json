@@ -12,6 +12,7 @@
         {
             "name": "word_count_embedding",
             "entrypoint": "word_count_step:WordCountEmbeddingStep",
+            "depends_on": [],
             "config": {
                 "vector_size": 128,
                 "output_prefix": "embeddings/"

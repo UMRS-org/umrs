@@ -11,6 +11,7 @@
     {
       "name": "segment",
       "entrypoint": "segment_mode:SegmentModeStep",
+      "depends_on": [],
       "config": {
         "bentoml_url": "http://localhost:11434",
         "model_type": "sam3",
@@ -22,6 +23,7 @@
     {
       "name": "features",
       "entrypoint": "feature_mode:FeatureModeStep",
+      "depends_on": [],
       "config": {
         "bentoml_url": "http://localhost:11434",
         "model_type": "hmae",
@@ -32,6 +34,7 @@
     {
       "name": "thumbnails",
       "entrypoint": "thumbnail_mode:ThumbnailModeStep",
+      "depends_on": [],
       "config": {
         "sizes": [128, 256],
         "format": "JPEG",
@@ -39,9 +42,6 @@
       }
     }
   ],
-  "execution": {
-    "parallel": ["segment", "features", "thumbnails"]
-  },
   "resources": {
     "gpu_count": 1,
     "memory_limit": "16Gi",
