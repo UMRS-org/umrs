@@ -70,6 +70,11 @@ def make_client(z):
         aws_access_key_id=d["access_key"],
         aws_secret_access_key=d["secret_key"],
         verify=False,
+        config=Config(
+            connect_timeout=5,
+            read_timeout=5,      # réduit à 5s au lieu de 60s
+            retries={"max_attempts": 1},  # pas de retry boto3, on gère nous-mêmes
+        )
     )
 
 
