@@ -8,6 +8,7 @@ No UMRS involvement — pure boto3.
 """
 
 import boto3
+from botocore.config import Config
 import configparser
 import itertools
 import json
