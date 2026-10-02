@@ -9,6 +9,7 @@ No imports from umrs.api or umrs.server — foundation module.
 
 from __future__ import annotations
 
+import functools
 import logging
 import uuid
 from collections.abc import Callable
@@ -26,6 +27,26 @@ from umrs.artifact_registry.models import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _borrow_per_call(method):
+    """Pool mode (``conn_release`` given): return every connection the call
+    leased when it ends, success or not. Without it a store the caller never
+    closes keeps one pool connection per call, idle in transaction — the
+    asset index called :meth:`lineage` once per artifact on every console
+    poll and drained the 32-slot pool within a minute of a restart (rccs
+    2026-10-02, TODO-20261001-REG recurrences). A caller-supplied connection
+    (no ``conn_release``) is left to its owner, as before."""
+
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        try:
+            return method(self, *args, **kwargs)
+        finally:
+            if self._conn_release is not None:
+                self.close()
+
+    return wrapper
 
 
 class ArtifactStoreError(Exception):
@@ -83,6 +104,7 @@ class ArtifactStore:
 
     # -- public CRUD -----------------------------------------------------------
 
+    @_borrow_per_call
     def create(self, artifact: Artifact) -> Artifact:
         """Register a new artifact.  Returns the artifact with id populated."""
         conn = self._get_conn()
@@ -128,6 +150,7 @@ class ArtifactStore:
             logger.error("Failed to create artifact: %s", exc)
             raise
 
+    @_borrow_per_call
     def get(self, artifact_id: uuid.UUID) -> Artifact | None:
         """Get an artifact by id.  Returns None if not found."""
         conn = self._get_conn()
@@ -138,6 +161,7 @@ class ArtifactStore:
                 return None
             return Artifact.from_row(row)
 
+    @_borrow_per_call
     def list(self, query: ArtifactQuery) -> list[Artifact]:
         """List artifacts matching the query filters."""
         conn = self._get_conn()
@@ -187,6 +211,7 @@ class ArtifactStore:
             rows = cur.fetchall()
             return [Artifact.from_row(r) for r in rows]
 
+    @_borrow_per_call
     def update_metadata(self, artifact_id: uuid.UUID, patch: dict[str, Any]) -> None:
         """Merge patch dict into the artifact's metadata JSONB."""
         conn = self._get_conn()
@@ -215,6 +240,7 @@ class ArtifactStore:
             logger.error("Failed to update metadata: %s", exc)
             raise
 
+    @_borrow_per_call
     def add_lineage(
         self,
         artifact_id: uuid.UUID,
@@ -244,6 +270,7 @@ class ArtifactStore:
             logger.error("Failed to add lineage: %s", exc)
             raise
 
+    @_borrow_per_call
     def lineage(
         self, artifact_id: uuid.UUID, depth: int = 3
     ) -> list[ArtifactLineageEdge]:
@@ -280,6 +307,7 @@ class ArtifactStore:
                 for r in rows
             ]
 
+    @_borrow_per_call
     def delete(self, artifact_id: uuid.UUID) -> bool:
         """Delete an artifact and its lineage edges.  Returns True if deleted."""
         conn = self._get_conn()
