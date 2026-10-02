@@ -120,6 +120,20 @@ def _budget_exhausted_marker(attempt_id: str, exit_reason: str | None) -> bool:
     return True
 
 
+def configured_site_name() -> str:
+    """This process's site name (``site.yaml`` ``name``), "" without one.
+
+    Mirrors what the scheduler claims with: a store that creates and a store
+    that claims must agree, so no env-only fallback name is invented here.
+    """
+    try:
+        from umrs.orchestrator.site_config import load_site_config
+
+        return str(getattr(load_site_config(), "name", "") or "").strip()
+    except Exception:  # noqa: BLE001 — no site config: the shared lane
+        return ""
+
+
 class JobStore:
     """
     Durable job store with state machine enforcement.
@@ -138,10 +152,13 @@ class JobStore:
         """
         self.db_pool = db_pool
         self.umrs_instance_id = umrs_instance_id or str(uuid.uuid4())
-        # WP-14: claim-site scoping (venue). Scheduler set this with the
-        # site's name at boot; "" keeps the pre-venue ANY-claim semantics
-        # until all rows carry venue (pre-release migration lane).
-        self.site_name: str = ""
+        # WP-14: claim-site scoping (venue). Every store takes the site's
+        # name, not only the scheduler's: the ZMQ durable backend, the HTTP
+        # sidecar and the vision route create jobs through their own stores,
+        # and an unscoped one wrote venue '' — claimable by every umrs-front
+        # server sharing umrs_db (rccs runs refused by ai4s/octopus, R3
+        # 2026-10-02). "" (no site.yaml) keeps the pre-venue ANY-claim lane.
+        self.site_name: str = configured_site_name()
         # WP-10 r2: optional venue-side VectorVersionStore for manifest
         # model-pin enrichment. Boot code may set this on a real venue; it
         # stays None anywhere the venue store is not wired and the manifest

@@ -155,15 +155,8 @@ class JobService:
         # config names a cluster (WP-14 / ADR-034 lineage: cross-cluster
         # job theft stays impossible because claims of site-bound rows only
         # happen on the site itself).
+        # (JobStore takes the site name itself: configured_site_name.)
         self._job_store = JobStore(self.db_pool, self.instance_id)
-        try:
-            from ..orchestrator.site_config import load_site_config
-
-            site_name = str(getattr(load_site_config(), "name", "") or "").strip()
-            if site_name:
-                self._job_store.site_name = site_name
-        except Exception:  # noqa: BLE001 — sites without a config run shared
-            pass
 
         # WP-06 r2 leg-c + WP-10 r2 venue-pin enrichment prerequisite: attach a
         # pool-backed VectorVersionStore at boot so model pins gain their venue
