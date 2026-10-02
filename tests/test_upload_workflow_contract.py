@@ -54,7 +54,7 @@ def _zip(tmp_path: Path, workflow: dict) -> str:
 @pytest.fixture(autouse=True)
 def _state(tmp_path, monkeypatch):
     monkeypatch.setenv("UMRS_WORKFLOW_STATE_DIR", str(tmp_path / "state"))
-    monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail(f"host process {a!r}"))
+    monkeypatch.setattr(subprocess, "run", lambda *a, **_kw: pytest.fail(f"host process {a!r}"))
 
 
 def _upload(tmp_path, workflow):
@@ -194,15 +194,18 @@ def test_http_upload_answers_400_with_the_problems(tmp_path, monkeypatch):
 
 
 def test_the_contract_knows_exactly_the_runner_enums():
-    from r4_contracts.workflow_package import EXECUTION_MODES, SOURCE_TYPES
     from umrs.pipeline_sdk.workflow import ExecutionMode, SourceType
+
+    from r4_contracts.workflow_package import EXECUTION_MODES, SOURCE_TYPES
 
     assert set(SOURCE_TYPES) == {t.value for t in SourceType}
     assert set(EXECUTION_MODES) == {m.value for m in ExecutionMode}
 
 
 def test_an_uppercase_enum_is_refused_in_plain_words(tmp_path):
-    ok, _dest, message = _upload(tmp_path, _workflow(source={"type": "LOCAL_PATH", "path": "."}, execution_mode="IN_PROCESS"))
+    ok, _dest, message = _upload(
+        tmp_path, _workflow(source={"type": "LOCAL_PATH", "path": "."}, execution_mode="IN_PROCESS")
+    )
     assert not ok
     assert '"LOCAL_PATH" is not one of local_path' in message
     assert '"IN_PROCESS" is not one of in_process' in message

@@ -20,7 +20,7 @@ DEPLOY = Path(__file__).resolve().parents[1] / "deploy"
 
 @pytest.fixture(autouse=True)
 def _no_schema(monkeypatch):
-    monkeypatch.setattr(JobStore, "_ensure_schema", lambda self: None)
+    monkeypatch.setattr(JobStore, "_ensure_schema", lambda _self: None)
 
 
 @pytest.fixture
