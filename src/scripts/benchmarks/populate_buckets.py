@@ -18,7 +18,7 @@ CLIENT       = "/home/emmanuel.jeannot/Unified_Multimodal_Retriever_Service/src/
 CONFIG_DIR   = "/home/emmanuel.jeannot/.config/umrs/n_users/users"
 DATA_DIR     = "/home/emmanuel.jeannot/Unified_Multimodal_Retriever_Service/data/images/7000/"
 BUCKET_BASE  = "bucket-3"
-SLEEP_S      = 600
+SLEEP_S      = 300
 LOG_DIR      = "/mnt/storage/ejeannot/log"
 STATE_FILE   = "/mnt/storage/ejeannot/log/mass_upload_state.json"
 
