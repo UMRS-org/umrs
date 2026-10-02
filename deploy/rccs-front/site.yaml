@@ -127,7 +127,10 @@ step_executor:
   gpus: 0              # ng-dgx-m* reject --gres
   cpus: 8
   memory: ""           # ng-dgx-m* reject --mem
-  time_limit: "01:00:00"
+  # 2026-10-02: partition ng-dgx-m3 MaxTime is 1-00:00:00 (see the endpoint
+  # pool's time_limit note above; Nimble ran 23 h + handover against it).
+  # 1 day lets a full camera-day full_scan cnn job fit in one step job.
+  time_limit: "1-00:00:00"
   account: cloud-users
   image: ""            # composed by the converge after the archive verifies (see above)
   gpu: true            # site gate; a step still needs routing_hints.gpu (see above)
