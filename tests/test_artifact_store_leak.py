@@ -9,6 +9,7 @@ psycopg2 pool exhausted and the artifacts route returned 500
 
 from __future__ import annotations
 
+import contextlib
 import uuid
 
 from umrs.artifact_registry.store import ArtifactStore
@@ -113,7 +114,7 @@ def test_leased_connections_return_to_pool_on_close():
     )
     store.get(uuid.uuid4())
     store.close()
-    assert len(pool._free) == 2, f"every leased conn returned: {pool._free}"
+    assert len(pool._free) == len(pool._all), f"every leased conn returned: {pool._free}"
 
     # Pool is reusable afterwards — no exhaustion is possible.
     for _ in range(3):
@@ -145,3 +146,41 @@ def test_create_then_close_releases_conn():
     store2 = ArtifactStore(pool.getconn, conn_release=pool.putconn)
     store2._get_conn()
     store2.close()
+
+
+def test_a_never_closed_store_cannot_drain_the_pool():
+    # rccs 2026-10-02: the asset index built a pool-mode store, called
+    # lineage() once per artifact on every console poll and never closed it —
+    # each call kept a connection idle in transaction until the 32-slot pool
+    # was empty (bare 500 "connection pool exhausted" on every route).
+    pool = _FakePool(maxconn=2)
+    store = ArtifactStore(pool.getconn, conn_release=pool.putconn)
+    for _ in range(50):
+        store.lineage(uuid.uuid4(), depth=1)
+        store.get(uuid.uuid4())
+    assert store._leased == []
+    assert len(pool._free) == len(pool._all) <= 2
+
+
+def test_a_failing_call_still_returns_its_connection():
+    pool = _FakePool(maxconn=1)
+    store = ArtifactStore(pool.getconn, conn_release=pool.putconn)
+
+    class _Boom(_FakeCur):
+        def execute(self, *_a, **_k):
+            raise RuntimeError("db down")
+
+    conn = pool.getconn()
+    pool.putconn(conn)
+    conn.cursor = lambda: _Boom(conn)
+    with contextlib.suppress(RuntimeError):
+        store.get(uuid.uuid4())
+    assert pool._free == [conn]
+
+
+def test_a_caller_owned_connection_is_left_open():
+    conn = _FakeConn()
+    store = ArtifactStore(lambda: conn)  # jobs/monitor.py, workflow_run.py style
+    store.get(uuid.uuid4())
+    store.lineage(uuid.uuid4())
+    assert conn.closed_count == 0
