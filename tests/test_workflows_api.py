@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import zipfile
 from io import BytesIO
 from unittest.mock import patch
@@ -368,6 +369,60 @@ def test_describe_workflow_returns_parameter_schema(client, tmp_path):
     data = response.json()
     assert data["workflow_name"] == "ct-analysis"
     assert data["parameter_schema"]["required"] == ["bucket"]
+
+
+def test_package_returns_definition_resources_and_code(client, tmp_path):
+    """2026-10-01: the work-pane definition card reads one endpoint —
+    metadata, resources (partition/gpu family), step graph rows AND the
+    registered code files, with honest truncation flags."""
+    workflow_dir = tmp_path / "ct-analysis"
+    steps_dir = workflow_dir / "steps"
+    steps_dir.mkdir(parents=True)
+    workflow_json = _workflow_json()
+    workflow_json["resources"] = {"gpu_count": 1, "timeout_seconds": 600}
+    workflow_json["steps"] = [
+        {"name": "segment", "entrypoint": "segment:SegmentStep", "config": {}, "depends_on": []},
+        {"name": "stats", "entrypoint": "stats:StatsStep", "config": {}, "depends_on": ["segment"]},
+    ]
+    (workflow_dir / "workflow.json").write_text(json.dumps(workflow_json))
+    (steps_dir / "segment.py").write_text("class SegmentStep:\n    pass\n")
+    (steps_dir / "stats.py").write_text("class StatsStep:\n    pass\n")
+
+    register_workflow(
+        workflow_name="ct-analysis",
+        version="1.0",
+        user_id="alice",
+        source_path=str(workflow_dir),
+        workflow_json=workflow_json,
+        scope="user",
+    )
+
+    response = client.get(
+        "/umrs/workflows/ct-analysis/package",
+        headers=_auth_headers("alice", "project-a"),
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["workflow_name"] == "ct-analysis"
+    assert data["resources"] == {"gpu_count": 1, "timeout_seconds": 600}
+    assert [s["name"] for s in data["steps"]] == ["segment", "stats"]
+    assert data["steps"][1]["depends_on"] == ["segment"]
+    paths = {f["path"].replace(os.sep, "/") for f in data["files"]}
+    assert "workflow.json" in paths
+    assert "steps/segment.py" in paths and "steps/stats.py" in paths
+    seg = next(f for f in data["files"] if f["path"].endswith("segment.py"))
+    assert "class SegmentStep" in seg["content"]
+    assert seg["truncated"] is False
+    # Hidden/venv noise never ships.
+    assert not any("__pycache__" in f["path"] for f in data["files"])
+
+
+def test_package_unknown_workflow_404(client):
+    response = client.get(
+        "/umrs/workflows/nope/package", headers=_auth_headers("alice", "project-a")
+    )
+    assert response.status_code == 404
 
 
 def test_trigger_workflow_rejects_missing_required_params(client, tmp_path):
