@@ -137,6 +137,34 @@ def _published_location(job: Any, job_id: str, port: int) -> tuple[str, int] | N
     return None
 
 
+def _still_queued(job: Any) -> bool:
+    """The scheduler still holds the job in its queue (None: a transient
+    status miss, bounded by ``_LOCATION_MAX_CONSECUTIVE_ERRORS``)."""
+    return job is None or job.status == JobStatus.PENDING
+
+
+def _location_pause(
+    job_id: str, job: Any, remaining: float, poll_interval: float, queue_patient: bool
+) -> float:
+    """Seconds until the next location poll; raises once the wait is over."""
+    if remaining > 0:
+        return min(poll_interval, remaining)
+    if queue_patient and _still_queued(job):
+        return poll_interval
+    raise TimeoutError(f"Timed out waiting for backend endpoint location for {job_id}")
+
+
+def _resumed_request(endpoint: RegisteredEndpoint) -> ProvisionRequest:
+    """The provision a restart interrupted, rebuilt from its registry row."""
+    return ProvisionRequest(
+        project_id=endpoint.project_id,
+        model=endpoint.model,
+        ttl_sec=0 if endpoint.expires_at is None else 1,
+        metadata=dict(endpoint.metadata),
+        variant=endpoint.variant,
+    )
+
+
 def _readiness_probe(request: ProvisionRequest) -> dict[str, str | None]:
     readiness_path = request.metadata.get("readiness_path")
     return {
@@ -237,6 +265,8 @@ class OrchestrationService:
         self._registry = registry
         self._port_manager = port_manager
         self._readiness_poller = readiness_poller
+        # Strong refs: the loop keeps only weak ones to running tasks.
+        self._resume_tasks: set[asyncio.Task] = set()
         self._backend = backend
         self._backend_type: BackendType | None = None
 
@@ -310,25 +340,28 @@ class OrchestrationService:
         host: str,
         port: int,
         deadline: float,
+        *,
+        queue_patient: bool = False,
     ) -> tuple[str, int]:
-        """Wait for the backend to publish a concrete endpoint host."""
+        """Wait for the backend to publish a concrete endpoint host.
+
+        ``queue_patient`` (non-expiring endpoints: the walltime relay's
+        successors, system pools) keeps waiting past the deadline while the
+        scheduler still holds the job in its queue (2026-10-02: on a 2-node
+        partition a relay successor queues until the old job frees a node;
+        cancelling it at 600 s made the relay resubmit every 10 minutes).
+        The janitor still reaps a job held for an unsatisfiable allocation.
+        """
         if host and host != "pending":
             return host, port
 
         loop = asyncio.get_running_loop()
-        poll_interval = max(
-            1,
-            int(getattr(self.backend.config, "readiness_poll_interval_sec", 5)),
+        poll_interval = float(
+            max(1, int(getattr(self.backend.config, "readiness_poll_interval_sec", 5)))
         )
 
         consecutive_errors = 0
         while True:
-            remaining = deadline - loop.time()
-            if remaining <= 0:
-                raise TimeoutError(
-                    f"Timed out waiting for backend endpoint location for {job_id}"
-                )
-
             job, consecutive_errors = await self._location_job_status(
                 job_id, consecutive_errors
             )
@@ -338,7 +371,9 @@ class OrchestrationService:
             if location is not None:
                 return location
 
-            await asyncio.sleep(min(float(poll_interval), remaining))
+            await asyncio.sleep(
+                _location_pause(job_id, job, deadline - loop.time(), poll_interval, queue_patient)
+            )
 
     async def _location_job_status(
         self, job_id: str, consecutive_errors: int
@@ -758,7 +793,12 @@ class OrchestrationService:
         """Resolve backend assignment and readiness for a submitted job."""
         try:
             actual_host, actual_port = await self._await_assignment(
-                job_id, actual_host, actual_port, deadline, progress
+                job_id,
+                actual_host,
+                actual_port,
+                deadline,
+                progress,
+                queue_patient=request.ttl_sec <= 0,
             )
 
             self.registry.update_status(job_id, EndpointStatus.STARTING)
@@ -842,13 +882,17 @@ class OrchestrationService:
         port: int,
         deadline: float,
         progress: Callable[[str, Any], None] | None,
+        *,
+        queue_patient: bool = False,
     ) -> tuple[str, int]:
         """Resolve a "pending" (Slurm-style) host and record the location."""
         if host != "pending":
             return host, port
         if progress:
             progress("waiting_for_assignment", {"job_id": job_id})
-        host, port = await self._resolve_endpoint_location(job_id, host, port, deadline)
+        host, port = await self._resolve_endpoint_location(
+            job_id, host, port, deadline, queue_patient=queue_patient
+        )
         self.registry.update_location(
             job_id,
             host=host,
@@ -1465,8 +1509,16 @@ class OrchestrationService:
         while a ``_finalize_provision`` task is running (or the task dies),
         the endpoint registry retains rows in PROVISIONING/STARTING with
         ``host="pending"``.  This method iterates those rows, resolves their
-        actual host/port from the backend, re-probes readiness, and either
-        promotes them to READY or marks them FAILED depending on the result.
+        actual host/port from the backend, re-probes readiness, and promotes
+        them to READY or marks them FAILED.
+
+        A row whose backend job is still alive (queued, or loading its model)
+        is never marked FAILED here: it is *deferred* and
+        :meth:`resume_unfinished_provisions` finishes it once the server
+        runs. A queued job is deferred at once, without the readiness wait.
+        (2026-10-02: each restart marked a queued relay successor FAILED
+        without cancelling it; the relay then submitted another, and the
+        orphans ran unregistered while callers got 503.)
 
         Returns:
             Summary dict with counts::
@@ -1475,6 +1527,7 @@ class OrchestrationService:
                     "checked": N,
                     "promoted_to_ready": N,
                     "marked_failed": N,
+                    "deferred": N,
                     "timed_out": N,
                     "errors": [...],
                 }
@@ -1483,84 +1536,135 @@ class OrchestrationService:
             "checked": 0,
             "promoted_to_ready": 0,
             "marked_failed": 0,
+            "deferred": 0,
             "timed_out": 0,
             "errors": [],
         }
-
-        stuck_statuses = {EndpointStatus.PROVISIONING, EndpointStatus.STARTING}
-
-        # Gather candidates outside the registry lock so refresh_endpoint
-        # (which acquires it) doesn't deadlock.
-        with self.registry._lock:
-            candidates = [
-                ep
-                for ep in self.registry._endpoints.values()
-                if ep.status in stuck_statuses
-            ]
-
+        candidates = self._unfinished_rows()
         if not candidates:
             logger.info("No PROVISIONING/STARTING endpoints to reconcile")
             return result
 
         logger.info(
-            "Boot-time reconciler: found %d endpoints in %s — starting reconciliation",
+            "Boot-time reconciler: found %d endpoints in provisioning, starting "
+            "— starting reconciliation",
             len(candidates),
-            ", ".join(s.value for s in stuck_statuses),
         )
-
         for ep in candidates:
             result["checked"] += 1
-            try:
-                refreshed = await self.refresh_endpoint(
-                    ep.job_id,
-                    timeout_sec=timeout_sec,
-                )
-            except Exception as exc:
-                error_msg = str(exc)[:200]
-                result["errors"].append({"job_id": ep.job_id, "error": error_msg})
-                logger.error(
-                    "Reconcile error for job %s: %s", ep.job_id, exc, exc_info=True
-                )
-                self.registry.mark_failed(ep.job_id, f"reconcile_error: {error_msg}")
-                result["marked_failed"] += 1
-                continue
-
-            if refreshed is None:
-                result["timed_out"] += 1
-                result["errors"].append(
-                    {"job_id": ep.job_id, "error": "endpoint disappeared"}
-                )
-                continue
-
-            if refreshed.status == EndpointStatus.READY:
-                result["promoted_to_ready"] += 1
-                logger.info(
-                    "Reconciled job %s → READY (host=%s:%s)",
-                    ep.job_id,
-                    refreshed.host,
-                    refreshed.port,
-                )
-            else:
-                result["marked_failed"] += 1
-                self.registry.mark_failed(
-                    ep.job_id,
-                    f"reconcile: not ready after {timeout_sec}s (status={refreshed.status.value})",
-                )
-                logger.info(
-                    "Reconciled job %s → FAILED (status=%s)",
-                    ep.job_id,
-                    refreshed.status.value,
-                )
+            outcome = await self._reconcile_one(ep, timeout_sec, result["errors"])
+            if outcome is not None:
+                result[outcome] += 1
 
         logger.info(
-            "Boot-time reconciler done: checked=%d ready=%d failed=%d timed_out=%d errors=%d",
+            "Boot-time reconciler done: checked=%d ready=%d failed=%d deferred=%d "
+            "timed_out=%d errors=%d",
             result["checked"],
             result["promoted_to_ready"],
             result["marked_failed"],
+            result["deferred"],
             result["timed_out"],
             len(result["errors"]),
         )
         return result
+
+    def _unfinished_rows(self) -> list[RegisteredEndpoint]:
+        # Gather outside later registry calls (refresh_endpoint takes the lock).
+        stuck_statuses = {EndpointStatus.PROVISIONING, EndpointStatus.STARTING}
+        with self.registry._lock:
+            return [
+                ep for ep in self.registry._endpoints.values() if ep.status in stuck_statuses
+            ]
+
+    async def _still_in_queue(self, ep: RegisteredEndpoint) -> bool:
+        if ep.host != "pending":
+            return False
+        try:
+            job = await self._job_status_before_ready(ep.job_id)
+        except Exception:  # noqa: BLE001 - inconclusive: take the refresh path
+            return False
+        return job.status == JobStatus.PENDING
+
+    async def _reconcile_one(
+        self, ep: RegisteredEndpoint, timeout_sec: int, errors: list[dict]
+    ) -> str | None:
+        """The result counter one stuck row lands in."""
+        if await self._still_in_queue(ep):
+            logger.info("Reconcile: job %s still queued — deferred", ep.job_id)
+            return "deferred"
+        try:
+            refreshed = await self.refresh_endpoint(ep.job_id, timeout_sec=timeout_sec)
+        except Exception as exc:
+            error_msg = str(exc)[:200]
+            errors.append({"job_id": ep.job_id, "error": error_msg})
+            logger.exception("Reconcile error for job %s", ep.job_id)
+            self.registry.mark_failed(ep.job_id, f"reconcile_error: {error_msg}")
+            return "marked_failed"
+
+        if refreshed is None:
+            errors.append({"job_id": ep.job_id, "error": "endpoint disappeared"})
+            return "timed_out"
+        if refreshed.status == EndpointStatus.READY:
+            logger.info(
+                "Reconciled job %s → READY (host=%s:%s)",
+                ep.job_id,
+                refreshed.host,
+                refreshed.port,
+            )
+            return "promoted_to_ready"
+        if await self._verify_backend_job_alive(ep.job_id):
+            logger.info(
+                "Reconcile: job %s alive but not ready after %ds — deferred",
+                ep.job_id,
+                timeout_sec,
+            )
+            return "deferred"
+        self.registry.mark_failed(
+            ep.job_id,
+            f"reconcile: not ready after {timeout_sec}s (status={refreshed.status.value})",
+        )
+        logger.info(
+            "Reconciled job %s → FAILED (status=%s)", ep.job_id, refreshed.status.value
+        )
+        return "marked_failed"
+
+    async def resume_unfinished_provisions(self) -> list[str]:
+        """Finish the provisions a restart interrupted (the server's own loop).
+
+        Every PROVISIONING/STARTING row with a live backend job gets the same
+        finalize task a fresh provision runs: wait for the host (patient
+        while queued when the row never expires), probe readiness, then
+        READY, or FAILED with the job cancelled. Nothing is left running
+        unregistered. Returns the job ids resumed.
+        """
+        loop = asyncio.get_running_loop()
+        budget = max(
+            self.readiness_poller.config.timeout_sec,
+            int(getattr(self.backend.config, "startup_timeout_sec", 0) or 0),
+        )
+        resumed: list[str] = []
+        for ep in self._unfinished_rows():
+            if not await self._verify_backend_job_alive(ep.job_id):
+                continue  # ended: the janitor's stuck/orphan passes own it
+            now = loop.time()
+            task = asyncio.create_task(
+                self._finalize_provision(
+                    request=_resumed_request(ep),
+                    job_id=ep.job_id,
+                    target_host=str(ep.metadata.get("allocated_host") or ep.host),
+                    actual_host=ep.host,
+                    actual_port=ep.port,
+                    deadline=now + budget,
+                    progress=None,
+                    start_time=now,
+                )
+            )
+            self._resume_tasks.add(task)
+            task.add_done_callback(self._resume_tasks.discard)
+            resumed.append(ep.job_id)
+        if resumed:
+            logger.info("Resumed %d interrupted provision(s): %s", len(resumed), resumed)
+        return resumed
 
     async def close(self):
         """Clean up resources."""

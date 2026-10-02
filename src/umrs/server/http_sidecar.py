@@ -683,6 +683,28 @@ def _rehydrate_loop_drivers() -> None:
         logger.warning("loop driver re-registration failed", exc_info=True)
 
 
+def _boot_reconcile_enabled() -> bool:
+    return os.environ.get("UMRS_BOOT_RECONCILE_ENABLED", "true").lower() in (
+        "true",
+        "1",
+        "yes",
+    )
+
+
+async def _resume_interrupted_provisions() -> None:
+    """Finish provisions a restart cut short (the boot reconciler defers rows
+    whose backend job is still queued or loading; this runs them to READY or
+    to FAILED-and-cancelled on the server's own loop)."""
+    if not _boot_reconcile_enabled():
+        return
+    try:
+        from umrs.orchestrator.service import get_orchestration_service
+
+        await get_orchestration_service().resume_unfinished_provisions()
+    except Exception:
+        logger.warning("resuming interrupted provisions failed", exc_info=True)
+
+
 def _tag_metrics_source() -> None:
     """Tag all LLM metrics with the operational source (site name)."""
     try:
@@ -773,6 +795,7 @@ def _create_app():
         logger.info("Janitor started via lifespan hook")
         from umrs.server.endpoint_relay import start_endpoint_relay, stop_endpoint_relay
 
+        await _resume_interrupted_provisions()  # before the relay plans on them
         if start_endpoint_relay():
             logger.info("Endpoint walltime relay started via lifespan hook")
         if start_scheduler():
@@ -984,11 +1007,7 @@ def start_http_sidecar(
         # is complete.  UMRS_RECONCILE_TIMEOUT_SEC controls the per-endpoint
         # timeout (default 300s).  UMRS_BOOT_RECONCILE_ENABLED gates the
         # feature ("true" by default; set "false" to disable).
-        if os.environ.get("UMRS_BOOT_RECONCILE_ENABLED", "true").lower() not in (
-            "true",
-            "1",
-            "yes",
-        ):
+        if not _boot_reconcile_enabled():
             logger.info("Boot-time reconciler disabled by UMRS_BOOT_RECONCILE_ENABLED")
         else:
             try:

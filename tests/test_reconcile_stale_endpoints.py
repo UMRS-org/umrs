@@ -220,6 +220,7 @@ async def test_reconcile_empty_registry(monkeypatch):
         "checked": 0,
         "promoted_to_ready": 0,
         "marked_failed": 0,
+        "deferred": 0,
         "timed_out": 0,
         "errors": [],
     }
