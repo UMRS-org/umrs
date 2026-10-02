@@ -22,14 +22,12 @@ import urllib3
 urllib3.disable_warnings()
 
 # ── Config ───────────────────────────────────────────────────────────────────
-DATA_DIR     = "/home/emmanuel.jeannot/Unified_Multimodal_Retriever_Service/data/images/7000/"
-S3CFG_TMPL   = "/home/emmanuel.jeannot/.s3cfg_user1_{z}"
-LOG_DIR      = "/mnt/ejeannot/log"
-STATE_FILE   = "/mnt/data/ejeannot/log/populate_state.json"
+DATA_DIR        = "/home/emmanuel.jeannot/Unified_Multimodal_Retriever_Service/data/images/7000/"
+S3CFG_TMPL      = "/home/emmanuel.jeannot/.s3cfg_user1_{z}"
+LOG_DIR         = "/mnt/storage/ejeannot/log"
+STATE_FILE      = "/mnt/storage/ejeannot/log/populate_state.json"
 FILES_PER_ROUND = 7000
-LOG_DIR      = "/mnt/storage/ejeannot/log"
-STATE_FILE   = "/mnt/storage/ejeannot/log/mass_upload_state.json"
-RETRY_DELAYS = [1, 2, 5, 5, 10]
+RETRY_DELAYS    = [1, 2, 5, 5, 10]
 
 USERS = [
     {"z": 10, "target": 100_000},
@@ -60,18 +58,21 @@ def all_prefixes():
         yield f"7000{a}{b}"
 
 
-def make_s3_client(z):
+def make_clients(z):
     cfg = configparser.ConfigParser()
     cfg.read(S3CFG_TMPL.format(z=z))
     d = cfg["default"]
     protocol = "https" if d.get("use_https", "False").strip() == "True" else "http"
-    return boto3.client(
-        "s3",
-        endpoint_url=f"{protocol}://{d['host_base']}",
+    endpoint = f"{protocol}://{d['host_base']}"
+    kwargs = dict(
+        endpoint_url=endpoint,
         aws_access_key_id=d["access_key"],
         aws_secret_access_key=d["secret_key"],
         verify=False,
     )
+    client   = boto3.client("s3", **kwargs)
+    resource = boto3.resource("s3", **kwargs)
+    return client, resource
 
 
 def bucket_name(z):
@@ -91,19 +92,21 @@ def save_state(state):
 
 
 # ── Upload with retry ────────────────────────────────────────────────────────
-def upload_file_with_retry(s3, local_path, bucket, s3_key):
+def upload_file_with_retry(client, local_path, bucket, s3_key):
     for attempt, delay in enumerate(RETRY_DELAYS + [None]):
         try:
-            s3.upload_file(str(local_path), bucket, s3_key, ExtraArgs={"ChecksumAlgorithm": "SHA256"} if False else {})
+            client.upload_file(str(local_path), bucket, s3_key)
             return
         except Exception as e:
             if delay is None:
-                raise RuntimeError(f"Failed after all retries: {local_path} → {s3_key}: {e}")
+                raise RuntimeError(
+                    f"Failed after all retries: {local_path} → {s3_key}: {e}"
+                )
             log.warning(f"Upload failed ({e}), retry in {delay}s...")
             time.sleep(delay)
 
 
-def upload_initial(s3, z, bucket, prefix, state):
+def upload_initial(client, z, bucket, prefix, state):
     key = f"{z}_upload"
     if state.get(key) == "done":
         log.info(f"user1_{z} | initial upload already done, skipping")
@@ -115,7 +118,7 @@ def upload_initial(s3, z, bucket, prefix, state):
 
     for i, f in enumerate(files, 1):
         s3_key = f"{prefix}/{f.name}"
-        upload_file_with_retry(s3, f, bucket, s3_key)
+        upload_file_with_retry(client, f, bucket, s3_key)
         if i % 500 == 0 or i == total:
             pct = round(100 * i / total, 1)
             log.info(f"user1_{z} | upload {i}/{total} ({pct}%)")
@@ -125,22 +128,23 @@ def upload_initial(s3, z, bucket, prefix, state):
     log.info(f"user1_{z} | initial upload complete")
 
 
-# ── Server-side copy ─────────────────────────────────────────────────────────
-def server_copy(s3, bucket, src_prefix, dst_prefix, z, round_idx, total_rounds):
-    paginator = s3.get_paginator("list_objects_v2")
+# ── Server-side copy via boto3 resource ──────────────────────────────────────
+def server_copy(client, resource, bucket, src_prefix, dst_prefix, z, round_idx, total_rounds):
+    paginator = client.get_paginator("list_objects_v2")
+    bucket_res = resource.Bucket(bucket)
     copied = 0
     for page in paginator.paginate(Bucket=bucket, Prefix=f"{src_prefix}/"):
         for obj in page.get("Contents", []):
             src_key = obj["Key"]
             dst_key = dst_prefix + "/" + src_key[len(src_prefix) + 1:]
-            s3.copy_object(
-                Bucket=bucket,
-                CopySource={"Bucket": bucket, "Key": src_key},
-                Key=dst_key,
-            )
+            copy_source = {"Bucket": bucket, "Key": src_key}
+            bucket_res.copy(copy_source, dst_key)
             copied += 1
     pct = round(100 * round_idx / total_rounds, 1)
-    log.info(f"user1_{z} | copy {src_prefix} → {dst_prefix} | {copied} files | round {round_idx}/{total_rounds} ({pct}%)")
+    log.info(
+        f"user1_{z} | copy {src_prefix} → {dst_prefix} | "
+        f"{copied} files | round {round_idx}/{total_rounds} ({pct}%)"
+    )
 
 
 # ── Main ─────────────────────────────────────────────────────────────────────
@@ -152,20 +156,20 @@ def main():
         total = rounds_needed(user["target"])
         prefixes = list(itertools.islice(all_prefixes(), total))
         bucket = bucket_name(z)
-        s3 = make_s3_client(z)
+        client, resource = make_clients(z)
 
         log.info(f"=== user1_{z} | {total} rounds | bucket={bucket} ===")
 
         # Step 1: initial upload → first prefix (7000aa)
-        upload_initial(s3, z, bucket, prefixes[0], state)
+        upload_initial(client, z, bucket, prefixes[0], state)
 
-        # Step 2: server-side copies
+        # Step 2: server-side copies via boto3 resource (handles ContentLength)
         for i, dst_prefix in enumerate(prefixes[1:], 2):
             copy_key = f"{z}_copy_{dst_prefix}"
             if state.get(copy_key) == "done":
                 log.info(f"user1_{z} | {dst_prefix} already copied, skipping")
                 continue
-            server_copy(s3, bucket, prefixes[0], dst_prefix, z, i, total)
+            server_copy(client, resource, bucket, prefixes[0], dst_prefix, z, i, total)
             state[copy_key] = "done"
             save_state(state)
 
