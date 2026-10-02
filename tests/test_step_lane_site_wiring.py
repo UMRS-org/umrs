@@ -2,10 +2,10 @@
 is live (ADR-074; superproject docs/development/rccs-step-lane-spec-2026-09-26.md
 §1 and §10).
 
-rccs carries every lane knob but ``remote_enabled: false`` and no image — the
-converge composes the image only after it verified the staged archive — so the
-lane opens only when the maintainer flips ``remote_enabled`` AND an image is
-present. bdrt and octopus carry their lane sizing and gpu_form, closed and
+rccs carries every lane knob, ``remote_enabled: true`` (maintainer flip
+2026-10-02) and the GPU site gate, but no image — the converge composes the
+image only after it verified the staged archive — so the lane opens only when
+``remote_enabled`` AND an image are present. bdrt and octopus carry their lane sizing and gpu_form, closed and
 without lane paths until onboarded (2026-09-27: bdrt awaits its R2 probe,
 octopus a runtime decision; a declared helper + workdir root starts the
 reaper's hourly SSH); ai4s has none. All four refuse uploaded code by name, and
@@ -110,11 +110,12 @@ def test_uploaded_code_is_refused_on_every_front(front, site_env):
     assert uploaded_code_lane("in_process") is None
 
 
-def test_rccs_has_no_default_image_or_gpu_and_workdirs_outside_the_checkout():
+def test_rccs_has_no_default_image_and_workdirs_outside_the_checkout():
     step = _step("rccs-front")
     assert step.kind == "inproc"
     assert step.image == ""
-    assert step.gpu is False
+    # 2026-10-02 R3: the site GPU gate is open; a step still needs routing_hints.gpu.
+    assert step.gpu is True
     assert step.workdir_root == "/lvs0/rccs-dmp/masaru.nagaso/umrs_steps"
     assert not step.workdir_root.startswith(RCCS_CHECKOUT + "/")
 
@@ -127,13 +128,13 @@ def test_rccs_lane_knobs_point_at_the_pinned_cluster_checkout():
     assert (UMRS_ROOT.parent / VENUE_REL).is_file()
 
 
-def test_rccs_exports_the_lane_env_without_gpu():
+def test_rccs_exports_the_lane_env_with_the_gpu_gate():
     env = load_site_config(str(DEPLOY / "rccs-front" / "site.yaml")).to_env()
     assert env["UMRS_SLURM_STEP_SUBMIT"] == "remote"
     assert env["UMRS_SLURM_WORKDIR_ROOT"] == "/lvs0/rccs-dmp/masaru.nagaso/umrs_steps"
     assert env["UMRS_STEP_HELPER"] == f"{RCCS_CHECKOUT}/{HELPER_REL}"
     assert env["UMRS_STEP_VENUE_SCRIPT"] == f"{RCCS_CHECKOUT}/{VENUE_REL}"
-    assert "UMRS_STEP_GPU" not in env
+    assert env["UMRS_STEP_GPU"] == "1"
 
 
 def test_rccs_lane_opens_once_the_converge_verified_an_image(site_env):
