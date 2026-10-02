@@ -10,7 +10,7 @@
 # are submitted remotely via SSH to the AI4S login node.
 #
 # Topology:
-#   client --SSH--> umrs-front (mnagaso) --SSH--> AI4S login (ea0022)
+#   client --SSH--> umrs-front (mnagaso) --SSH--> AI4S login (rku00126 @ RIKYU)
 #     --sbatch--> AI4S compute (GB200 NVL4)
 #
 # Hardware (per compute node):
@@ -21,10 +21,10 @@
 #   - InfiniBand XDR 800 Gbps
 #
 # Key differences from rccs-front:
-#   - Different SSH target (AI4S login: 134.160.189.24)
-#   - Different user account (ea0022 on AI4S, vs masaru.nagaso on rccs-cloud)
+#   - Different SSH target (AI4S login: login.rikyu.r-ccs.riken.jp; was 134.160.189.24)
+#   - Different user account (rku00126 on RIKYU, vs masaru.nagaso on rccs-cloud)
 #   - Apptainer/Singularity for container runtime (not Podman)
-#   - GB200 partitions (1n1gpu..4n4gpu) instead of ng-dgx-m*
+#   - One GB200 partition `gpu` (was 1n1gpu..4n4gpu-p) instead of ng-dgx-m*
 #   - Much larger GPU memory (173.2 GiB/GPU vs 128 GiB on GB10)
 # ─────────────────────────────────────────────────────────────
 
@@ -35,21 +35,21 @@ description: >-
 
 scheduler:
   kind: slurm-remote
-  partition: 1n1gpu                           # Default partition; override per job
-  account: ea                                 # Slurm account (NOT the username ea0022; sacctmgr assoc = "ea")
+  partition: gpu                              # RIKYU has one GB200 partition (342 nodes, 4 GPUs each); node/GPU counts size the job
+  account: rkp00043                           # RIKYU project account of rku00126 (maintainer choice 2026-10-02)
   qos: ""
-  time_limit: "96:00:00"                      # Max allowed: 96h (unlimited on 4n4gpu-p); long-lived system-tier endpoints
-  gpus: 1                                     # --gpus-per-node=1 for 1n1gpu
+  time_limit: "96:00:00"                      # RIKYU gpu partition MaxTime 4-00:00:00; long-lived system-tier endpoints
+  gpus: 1                                     # --gpus-per-node=1 by default
   cpus: 32                                    # GB200 node has 144 cores; give model load + sparse-attn enough parallelism
   memory: "1400G"                            # AI4S rejects --mem=0; node RealMemory=1562.5G. 64G OOM-killed DeepSeek-V4 at 1M context (host KV/sparse-attn structures). Request near-full node RAM.
   slurm_delegation: per_user_ssh
-  service_pubkey_path: /work/hps0/home/ea0022/ai4s-platform/keys/umrs-service.pub
-  slurm_proxy_path: /work/hps0/home/ea0022/ai4s-platform/bin/umrs-slurm-proxy
+  service_pubkey_path: /data1/rkp00043/rku00126/ai4s-platform/keys/umrs-service.pub
+  slurm_proxy_path: /data1/rkp00043/rku00126/ai4s-platform/bin/umrs-slurm-proxy
   require_user_slurm_account: false
 
 runtime:
   kind: singularity                           # Apptainer on AI4S
-  rivault_dir: /work/hps0/home/ea0022/images/mini-rivault-aarch64-v4.sif  # aarch64 vLLM+LiteLLM+NGINX+Ray SIF (v4, multi-node)
+  rivault_dir: /data1/rkp00043/rku00126/images/mini-rivault-aarch64-v4.sif  # aarch64 vLLM+LiteLLM+NGINX+Ray SIF (v4, multi-node)
   repo_dir: ""
   vision_image: ""
   compose_file: ""
@@ -66,7 +66,7 @@ storage:
   hmae_config_path: ""
   hmae_checkpoint: ""
   vision_tarball: ""
-  user_model_path: /work/hps0/home/ea0022/umrs_models
+  user_model_path: /data1/rkp00043/rku00126/umrs_models
   s3_tunnel_host: ""
   s3_tunnel_port: 9000
 
@@ -92,12 +92,12 @@ vllm:
 # and steps must execute on compute nodes with GPUs.
 step_executor:
   kind: slurm                                 # Submit steps as Slurm jobs to GPU compute nodes
-  partition: 1n1gpu                           # GB200 NVL4 partition (1 node, 1 GPU)
+  partition: gpu                              # RIKYU GB200 partition (1 GPU per step)
   gpus: 1                                     # 1 B200 GPU per step
   cpus: 32                                    # 32 CPUs per step (GB200 has 144 cores)
   memory: "1400G"                             # Near-full node RAM
   time_limit: "01:00:00"                      # 1 hour per step
-  account: ea                                 # Slurm account (sacctmgr assoc = "ea")
+  account: rkp00043                           # RIKYU project account
   image: ""                                   # No default image; use routing_hints.image
   gpu: true                                   # Attach GPU by default
   # Uploaded step code (ADR-074, 2026-09-26): no HPC lane here yet (no
@@ -120,10 +120,10 @@ database:
 # Connects from umrs-front to the AI4S login node.
 # User accounts differ per hop:
 #   umrs-front: mnagaso
-#   AI4S login: ea0022
+#   AI4S login: rku00126 (RIKYU, login.rikyu.r-ccs.riken.jp — moved 2026-10-02)
 extra:
   ssh_target: AI4S                            # umrs-front SSH alias for AI4S login
-  ssh_user: ea0022                            # AI4S account
+  ssh_user: rku00126                          # RIKYU account (was ea0022@134.160.189.24)
   ssh_port: 22
   ssh_connect_timeout: 15
   ssh_command_timeout: 60                     # AI4S may be slower for large jobs
@@ -138,16 +138,21 @@ extra:
   ssh_reverse_tunnels:
     - "127.0.0.1:9000:127.0.0.1:9000"
   # Job info file path on AI4S Lustre (accessible from login+compute)
-  slurm_job_info_dir: /work/hps0/home/ea0022/ai4s-platform/umrs/deploy/ai4s/jobs
+  slurm_job_info_dir: /data1/rkp00043/rku00126/ai4s-platform/umrs/deploy/ai4s/jobs
   # Real Singularity/vLLM wrapper. Runs the aarch64 mini-RiVault SIF on the
   # allocated GB200 node and serves an OpenAI-compatible endpoint.
   # (serve-openai-smoke.slurm kept for fallback/debugging.)
-  slurm_wrapper_script: /work/hps0/home/ea0022/ai4s-platform/umrs/deploy/ai4s/serve.slurm
+  slurm_wrapper_script: /data1/rkp00043/rku00126/ai4s-platform/umrs/deploy/ai4s/serve.slurm
   # Environment variables injected before every remote command.
-  # Required: AI4S uses configless Slurm with DNS SRV; non-login SSH
-  # sessions don't source .bashrc so SLURM_CONF_SERVER is not set.
+  # Required: RIKYU uses configless Slurm with DNS SRV; non-login SSH
+  # sessions don't source the login profile, so SLURM_CONF_SERVER is not set
+  # (sinfo: "Could not establish a configuration source") and apptainer is
+  # not on PATH (serve.slurm resolves it with `command -v`; sbatch exports
+  # the submit environment to the job). Values read from `bash -lc env` on
+  # login.rikyu.r-ccs.riken.jp, 2026-10-02.
   ssh_remote_env:
-    SLURM_CONF_SERVER: "sv08,sv09"
+    SLURM_CONF_SERVER: "sctl1:6817,sctl2:6817"
+    PATH: "/shared/software/apptainer/bin:$PATH"
 
 # ─────────────────────────────────────────────────────────────
 # Per-partition profiles — GB200 NVL4 (B200 GPUs)
@@ -155,45 +160,13 @@ extra:
 # All AI4S partitions share the same hardware; they differ in
 # node count and GPU allocation.
 partition_profiles:
-  1n1gpu:
+  # RIKYU (2026-10-02): a single partition, nodes gpu:nvidia_gb200:4, 144
+  # cores, 1.72 TB; node_count/gpu_count size each job (the old 1n1gpu,
+  # 1n2gpu, 1n4gpu, 2n4gpu, 4n4gpu, 4n4gpu-p names no longer exist).
+  gpu:
     arch: aarch64
     gpu_vendor: nvidia
     userns_mode: ""                           # Not applicable for Singularity
     vllm_docker_tag: ""                       # Use Singularity SIF image
     gpus: 1
-    needs_netavark_switch: false
-  1n2gpu:
-    arch: aarch64
-    gpu_vendor: nvidia
-    userns_mode: ""
-    vllm_docker_tag: ""
-    gpus: 2
-    needs_netavark_switch: false
-  1n4gpu:
-    arch: aarch64
-    gpu_vendor: nvidia
-    userns_mode: ""
-    vllm_docker_tag: ""
-    gpus: 4
-    needs_netavark_switch: false
-  2n4gpu:
-    arch: aarch64
-    gpu_vendor: nvidia
-    userns_mode: ""
-    vllm_docker_tag: ""
-    gpus: 4
-    needs_netavark_switch: false
-  4n4gpu:
-    arch: aarch64
-    gpu_vendor: nvidia
-    userns_mode: ""
-    vllm_docker_tag: ""
-    gpus: 4
-    needs_netavark_switch: false
-  4n4gpu-p:
-    arch: aarch64
-    gpu_vendor: nvidia
-    userns_mode: ""
-    vllm_docker_tag: ""
-    gpus: 4
     needs_netavark_switch: false
