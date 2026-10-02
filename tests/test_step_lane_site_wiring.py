@@ -366,3 +366,16 @@ def test_octopus_lane_is_closed_on_x86_64_with_rocm_and_no_partition_yet():
     assert step.partition == ""  # set with the runtime decision (mng02 has no podman)
     profiles = load_site_config(str(DEPLOY / "octopus-front" / "site.yaml")).partition_profiles
     assert {p.arch for p in profiles.values()} == {"x86_64"}
+
+
+@pytest.mark.parametrize("front", ["rccs-front", "bdrt-front", "octopus-front", "ai4s-front"])
+def test_allowed_images_are_pinned_and_archive_named(front):
+    # D-7: an allow-listed image is loaded from <name>-<tag>-<arch>.tar, never
+    # pulled; a moving tag (:latest, none) would let a rebuilt archive change
+    # what an already-uploaded workflow runs.
+    from umrs.server.slurm_step_executor import image_archive_stem
+
+    for image in _step(front).allowed_images or []:
+        leaf = image.rsplit("/", 1)[-1]
+        assert ":" in leaf and not leaf.endswith(":latest"), image
+        assert image_archive_stem(image)

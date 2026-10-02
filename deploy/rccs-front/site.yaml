@@ -135,6 +135,14 @@ step_executor:
   remote_enabled: true
   uploaded_code: refuse
   image_archive_dir: /lvs0/rccs-dmp/masaru.nagaso/umrs_models/images
+  # D-7 allow-list (admin-curated, 2026-10-02): images a step may name in
+  # routing_hints.image besides the platform image. Each must sit in
+  # image_archive_dir as <name>-<tag>-aarch64.tar + .id (nodes never pull).
+  # opossum CNN (MDv5a + torch 2.14.1+cu130), built by the project's
+  # tools/stage_cnn_image.sh on the platform image 7afb44c12c0e; tag =
+  # <base sha12>-<lock sha8>, never :latest.
+  allowed_images:
+    - localhost/umrs-step-opossum-cnn:7afb44c12c0e-a51b1fa4
   helper_path: /lvs0/rccs-dmp/masaru.nagaso/ai4s-platform/umrs/deploy/_common/umrs_step_helper.py
   venue_script: /lvs0/rccs-dmp/masaru.nagaso/ai4s-platform/umrs/src/umrs/mini-rivault-llm/venue.sh
   # 2026-10-01: back to plain podman on the nodes' stock runtime — the
