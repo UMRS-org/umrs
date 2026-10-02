@@ -161,6 +161,9 @@ services:
       DB_SUPERUSER: ${POSTGRES_USER:-umrs}
       DB_SUPERUSER_PASSWORD: ${POSTGRES_PASSWORD}
       UMRS_REGISTRY_POSTGRES_DSN: "postgres://${POSTGRES_USER:-umrs}:${POSTGRES_PASSWORD}@127.0.0.1:${POSTGRES_PORT:-5432}/${POSTGRES_DB_RCCS:-front_rccs}"
+      # ADR-060 U-1: endpoint registry in the shared umrs_db, venue-scoped
+      # (wins over the per-cluster DSN above, kept as rollback fallback)
+      UMRS_ENDPOINT_REGISTRY_SHARED: "1"
       S3_BACKEND: ${S3_BACKEND:-seaweedfs}
       S3_ENDPOINT_URL: "http://127.0.0.1:${S3_PORT:-9000}"
       S3_IAM_ENDPOINT_URL: "http://127.0.0.1:${S3_IAM_PORT:-8111}"
@@ -303,6 +306,9 @@ services:
       DB_SUPERUSER: ${POSTGRES_USER:-umrs}
       DB_SUPERUSER_PASSWORD: ${POSTGRES_PASSWORD}
       UMRS_REGISTRY_POSTGRES_DSN: "postgres://${POSTGRES_USER:-umrs}:${POSTGRES_PASSWORD}@127.0.0.1:${POSTGRES_PORT:-5432}/${POSTGRES_DB_AI4S:-front_ai4s}"
+      # ADR-060 U-1: endpoint registry in the shared umrs_db, venue-scoped
+      # (wins over the per-cluster DSN above, kept as rollback fallback)
+      UMRS_ENDPOINT_REGISTRY_SHARED: "1"
       S3_BACKEND: ${S3_BACKEND:-seaweedfs}
       S3_ENDPOINT_URL: "http://127.0.0.1:${S3_PORT:-9000}"
       S3_IAM_ENDPOINT_URL: "http://127.0.0.1:${S3_IAM_PORT:-8111}"
@@ -429,6 +435,9 @@ services:
       DB_SUPERUSER: ${POSTGRES_USER:-umrs}
       DB_SUPERUSER_PASSWORD: ${POSTGRES_PASSWORD}
       UMRS_REGISTRY_POSTGRES_DSN: "postgres://${POSTGRES_USER:-umrs}:${POSTGRES_PASSWORD}@127.0.0.1:${POSTGRES_PORT:-5432}/${POSTGRES_DB_BDRT:-front_bdrt}"
+      # ADR-060 U-1: endpoint registry in the shared umrs_db, venue-scoped
+      # (wins over the per-cluster DSN above, kept as rollback fallback)
+      UMRS_ENDPOINT_REGISTRY_SHARED: "1"
       S3_BACKEND: ${S3_BACKEND:-seaweedfs}
       S3_ENDPOINT_URL: "http://127.0.0.1:${S3_PORT:-9000}"
       S3_IAM_ENDPOINT_URL: "http://127.0.0.1:${S3_IAM_PORT:-8111}"
@@ -547,6 +556,9 @@ services:
       DB_SUPERUSER: ${POSTGRES_USER:-umrs}
       DB_SUPERUSER_PASSWORD: ${POSTGRES_PASSWORD}
       UMRS_REGISTRY_POSTGRES_DSN: "postgres://${POSTGRES_USER:-umrs}:${POSTGRES_PASSWORD}@127.0.0.1:${POSTGRES_PORT:-5432}/${POSTGRES_DB_OCTOPUS:-front_octopus}"
+      # ADR-060 U-1: endpoint registry in the shared umrs_db, venue-scoped
+      # (wins over the per-cluster DSN above, kept as rollback fallback)
+      UMRS_ENDPOINT_REGISTRY_SHARED: "1"
       S3_BACKEND: ${S3_BACKEND:-seaweedfs}
       S3_ENDPOINT_URL: "http://127.0.0.1:${S3_PORT:-9000}"
       S3_IAM_ENDPOINT_URL: "http://127.0.0.1:${S3_IAM_PORT:-8111}"

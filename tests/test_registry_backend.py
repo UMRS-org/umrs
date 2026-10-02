@@ -123,3 +123,130 @@ def test_registry_restores_rows_from_the_postgres_backend():
     registry = EndpointRegistry(backend=_pg_backend())
     restored = registry.get_by_job_id("391365")
     assert restored is not None and restored.status.value == "ready"
+
+
+# ── ADR-060 U-1: one hub registry, venue-scoped ────────────────────────────
+
+
+class _RecordingCursor:
+    def __init__(self, conn):
+        self._conn = conn
+        self.rowcount = 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def execute(self, query, params=None):
+        self._conn.queries.append((" ".join(str(query).split()), params))
+        self.rowcount = 1
+
+    def fetchone(self):
+        return self._conn.one
+
+    def fetchall(self):
+        return self._conn.many
+
+
+class _RecordingConn:
+    closed = False
+
+    def __init__(self, one=None, many=()):
+        self.queries: list = []
+        self.one = one
+        self.many = list(many)
+
+    def cursor(self):
+        return _RecordingCursor(self)
+
+
+def _venue_conn(venue="rccs-front", one=None, many=()):
+    from umrs.orchestrator.registry_backend import PostgresBackend
+
+    backend = PostgresBackend.__new__(PostgresBackend)
+    backend._venue = venue
+    backend._conn = _RecordingConn(one=one, many=many)
+    backend._get_connection = lambda: backend._conn
+    return backend
+
+
+def test_venue_save_stamps_the_site_name():
+    backend = _venue_conn("rccs-front")
+    from umrs.orchestrator.endpoint_registry import EndpointRegistry
+
+    registry = EndpointRegistry(backend=backend)
+    registry.register(
+        project_id="default",
+        model="m",
+        job_id="j1",
+        host="node",
+        port=1,
+        backend="slurm-remote",
+    )
+    sql, params = backend._conn.queries[-1]
+    assert "INSERT INTO endpoint_registry" in sql and "venue" in sql
+    assert params[-1] == "rccs-front"
+
+
+def test_venue_reads_filter_to_the_site():
+    backend = _venue_conn("rccs-front")
+    backend.load("default", "m")
+    backend.load_by_job_id("j1")
+    backend.list_all(project_id="default")
+    backend.delete("j1")
+    backend.clear_all()
+    for sql, params in backend._conn.queries:
+        assert "venue = %s" in sql, sql
+        assert "rccs-front" in params, params
+
+
+def test_unscoped_backend_keeps_the_legacy_shape():
+    backend = _venue_conn("")
+    backend.load_by_job_id("j1")
+    sql, params = backend._conn.queries[-1]
+    assert "venue" not in sql and params == ["j1"]
+
+
+def test_migrate_schema_adds_venue_column_and_index():
+    conn = _RecordingConn(one=None)
+    conn.one = None  # information_schema misses → ALTER fires
+    from umrs.orchestrator.registry_backend import PostgresBackend
+
+    backend = PostgresBackend.__new__(PostgresBackend)
+    backend._conn = conn
+    backend._get_connection = lambda: conn
+    backend._migrate_schema()
+    sqls = [sql for sql, _ in conn.queries]
+    assert any("ADD COLUMN venue" in sql for sql in sqls)
+    assert any("CREATE INDEX IF NOT EXISTS idx_registry_venue" in sql for sql in sqls)
+
+
+def test_get_backend_shared_branch_wins_with_flag(monkeypatch):
+    monkeypatch.setenv("UMRS_ENDPOINT_REGISTRY_SHARED", "1")
+    monkeypatch.setenv("DB_HOST", "db0")
+    monkeypatch.setenv("DB_SUPERUSER", "umrs")
+    monkeypatch.setenv("DB_SUPERUSER_PASSWORD", "pw")
+    monkeypatch.setenv("UMRS_JOBS_DB", "umrs_db")
+
+    with (
+        patch("umrs.orchestrator.registry_backend.PostgresBackend") as mock_backend,
+        patch(
+            "umrs.orchestrator.registry_backend._shared_registry_venue",
+            return_value="rccs-front",
+        ),
+    ):
+        from umrs.orchestrator.registry_backend import get_backend as gb
+
+        gb()
+
+    args, kwargs = mock_backend.call_args
+    assert args[0] == "postgres://umrs:pw@db0:5432/umrs_db"
+    assert kwargs == {"venue": "rccs-front"}
+
+
+def test_get_backend_explicit_memory_still_wins_over_shared(monkeypatch):
+    monkeypatch.setenv("UMRS_REGISTRY_BACKEND", "memory")
+    monkeypatch.setenv("UMRS_ENDPOINT_REGISTRY_SHARED", "1")
+    assert isinstance(get_backend(), InMemoryBackend)
