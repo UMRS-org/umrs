@@ -43,7 +43,55 @@ def _resolve_backend_type(backend_type: str | None = None) -> str:
     if os.environ.get("UMRS_REGISTRY_POSTGRES_DSN"):
         return "postgres"
 
+    if _shared_registry_enabled():
+        return "postgres"
+
     return "memory"
+
+
+def _shared_registry_enabled() -> bool:
+    """ADR-060 U-1: the endpoint registry lives in the shared ``umrs_db``
+    (one hub registry), venue-scoped by site name — set
+    ``UMRS_ENDPOINT_REGISTRY_SHARED`` on every umrs-front server."""
+    return os.environ.get("UMRS_ENDPOINT_REGISTRY_SHARED", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
+def _env_first(*names: str, default: str) -> str:
+    """First non-empty env value among *names* (mirrors shared/pg's chain)."""
+    for name in names:
+        value = os.environ.get(name)
+        if value:
+            return value
+    return default
+
+
+def _shared_registry_dsn() -> str:
+    """DSN of the shared jobs DB built from the standard DB_* components
+    (the same resolution chain ``umrs.shared.pg`` pools use)."""
+    from urllib.parse import quote
+
+    db = _env_first("UMRS_JOBS_DB", "POSTGRES_DB", default="umrs_db")
+    host = _env_first("DB_HOST", default="127.0.0.1")
+    port = _env_first("DB_PORT", "POSTGRES_PORT", default="5432")
+    user = _env_first("DB_USER", "DB_SUPERUSER", "POSTGRES_USER", default="postgres")
+    password = _env_first(
+        "DB_PASSWORD", "DB_SUPERUSER_PASSWORD", "POSTGRES_PASSWORD", default="postgres"
+    )
+    return f"postgres://{quote(user, safe='')}:{quote(password, safe='')}@{host}:{port}/{db}"
+
+
+def _shared_registry_venue() -> str:
+    """This server's venue: the site.yaml ``name`` (jobs' claim scope)."""
+    try:
+        from umrs.jobs.store import configured_site_name
+
+        return configured_site_name()
+    except Exception:  # noqa: BLE001 — no site config: unscoped dev lane
+        return ""
 
 
 def _parse_datetime(value: str | None) -> datetime | None:
@@ -197,24 +245,36 @@ class PostgresBackend(RegistryBackend):
         CREATE INDEX idx_registry_status ON endpoint_registry(status);
     """
 
-    def __init__(self, dsn: str | None = None):
+    def __init__(self, dsn: str | None = None, *, venue: str = ""):
         """
         Initialize Postgres backend.
 
         Args:
             dsn: PostgreSQL connection string. If not provided, reads from
                  UMRS_REGISTRY_POSTGRES_DSN environment variable.
+            venue: ADR-060 U-1 venue scope (site.yaml ``name``). When set,
+                 every row is stamped and every read filtered to this
+                 venue — one shared registry table, per-site visibility.
         """
         self._dsn = dsn or os.environ.get("UMRS_REGISTRY_POSTGRES_DSN")
         if not self._dsn:
             raise ValueError(
                 "PostgreSQL DSN required. Set UMRS_REGISTRY_POSTGRES_DSN environment variable."
             )
+        self._venue = venue
 
         self._conn = None
         self._ensure_database()
         self._init_schema()
         self._migrate_schema()
+
+    def _venue_clause(self, params: list[Any]) -> str:
+        """``AND venue = %s`` (+ param) when venue-scoped, else nothing."""
+        venue = getattr(self, "_venue", "")
+        if not venue:
+            return ""
+        params.append(venue)
+        return " AND venue = %s"
 
     def _ensure_database(self) -> None:
         """Create the target database if it does not exist.
@@ -386,6 +446,24 @@ class PostgresBackend(RegistryBackend):
                 )
                 logger.info(f"Removed legacy constraint: {constraint_name}")
 
+            # ADR-060 U-1: one hub registry — venue column scopes each row to
+            # its site (stamped on write, filtered on read when venue-mode).
+            cur.execute("""
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'endpoint_registry'
+                AND column_name = 'venue'
+            """)
+            if cur.fetchone() is None:
+                cur.execute(
+                    "ALTER TABLE endpoint_registry "
+                    "ADD COLUMN venue VARCHAR(32) NOT NULL DEFAULT ''"
+                )
+                logger.info("Added 'venue' column to endpoint_registry")
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_registry_venue
+                ON endpoint_registry(venue)
+            """)
+
     def _row_to_endpoint(self, row) -> RegisteredEndpoint:
         """Convert database row to RegisteredEndpoint."""
         from .endpoint_registry import EndpointStatus, RegisteredEndpoint
@@ -410,7 +488,7 @@ class PostgresBackend(RegistryBackend):
         )
 
     def save(self, endpoint: RegisteredEndpoint) -> None:
-        """Save or update an endpoint."""
+        """Save or update an endpoint (venue-stamped when venue-scoped)."""
         conn = self._get_connection()
         with conn.cursor() as cur:
             cur.execute(
@@ -418,9 +496,10 @@ class PostgresBackend(RegistryBackend):
                 INSERT INTO endpoint_registry (
                     job_id, project_id, model, host, port, status, backend,
                     variant, created_at, ready_at, last_used_at, expires_at,
-                    error_message, consecutive_failures, metadata, backend_job_id
+                    error_message, consecutive_failures, metadata, backend_job_id,
+                    venue
                 ) VALUES (
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
                 )
                 ON CONFLICT (job_id) DO UPDATE SET
                     project_id = EXCLUDED.project_id,
@@ -436,7 +515,8 @@ class PostgresBackend(RegistryBackend):
                     error_message = EXCLUDED.error_message,
                     consecutive_failures = EXCLUDED.consecutive_failures,
                     metadata = EXCLUDED.metadata,
-                    backend_job_id = EXCLUDED.backend_job_id
+                    backend_job_id = EXCLUDED.backend_job_id,
+                    venue = EXCLUDED.venue
                 """,
                 (
                     endpoint.job_id,
@@ -455,13 +535,15 @@ class PostgresBackend(RegistryBackend):
                     endpoint.consecutive_failures,
                     json.dumps(endpoint.metadata),
                     endpoint.backend_job_id,
+                    self._venue,
                 ),
             )
         logger.debug(f"Saved endpoint {endpoint.job_id} to Postgres")
 
     def load(self, project_id: str, model: str) -> RegisteredEndpoint | None:
-        """Load an endpoint by (project_id, model)."""
+        """Load an endpoint by (project_id, model) in this venue."""
         conn = self._get_connection()
+        params: list[Any] = [project_id, model]
         with conn.cursor() as cur:
             cur.execute(
                 """
@@ -471,15 +553,17 @@ class PostgresBackend(RegistryBackend):
                        backend_job_id
                 FROM endpoint_registry
                 WHERE project_id = %s AND model = %s
-                """,
-                (project_id, model),
+                """
+                + self._venue_clause(params),
+                params,
             )
             row = cur.fetchone()
             return self._row_to_endpoint(row) if row else None
 
     def load_by_job_id(self, job_id: str) -> RegisteredEndpoint | None:
-        """Load an endpoint by job_id."""
+        """Load an endpoint by job_id in this venue."""
         conn = self._get_connection()
+        params: list[Any] = [job_id]
         with conn.cursor() as cur:
             cur.execute(
                 """
@@ -489,19 +573,22 @@ class PostgresBackend(RegistryBackend):
                        backend_job_id
                 FROM endpoint_registry
                 WHERE job_id = %s
-                """,
-                (job_id,),
+                """
+                + self._venue_clause(params),
+                params,
             )
             row = cur.fetchone()
             return self._row_to_endpoint(row) if row else None
 
     def delete(self, job_id: str) -> bool:
-        """Delete an endpoint by job_id."""
+        """Delete an endpoint by job_id in this venue."""
         conn = self._get_connection()
+        params: list[Any] = [job_id]
         with conn.cursor() as cur:
             cur.execute(
-                "DELETE FROM endpoint_registry WHERE job_id = %s",
-                (job_id,),
+                "DELETE FROM endpoint_registry WHERE job_id = %s"
+                + self._venue_clause(params),
+                params,
             )
             deleted = cur.rowcount > 0
         if deleted:
@@ -519,14 +606,14 @@ class PostgresBackend(RegistryBackend):
         # row[15]. The 15-column list here made every startup load raise
         # IndexError (2026-09-18 → 10-01), so each restart began with an empty
         # registry and the janitor reaped every live endpoint as an orphan.
+        params: list[Any] = []
         query = """
             SELECT job_id, project_id, model, host, port, status, backend,
                    variant, created_at, ready_at, last_used_at, expires_at,
                    error_message, consecutive_failures, metadata,
                    backend_job_id
             FROM endpoint_registry WHERE 1=1
-        """
-        params: list[Any] = []
+        """ + self._venue_clause(params)
 
         if project_id:
             query += " AND project_id = %s"
@@ -542,10 +629,14 @@ class PostgresBackend(RegistryBackend):
             return [self._row_to_endpoint(row) for row in cur.fetchall()]
 
     def clear_all(self) -> int:
-        """Clear all endpoints."""
+        """Clear all endpoints (own venue only — never another site's)."""
         conn = self._get_connection()
+        params: list[Any] = []
         with conn.cursor() as cur:
-            cur.execute("DELETE FROM endpoint_registry")
+            cur.execute(
+                "DELETE FROM endpoint_registry WHERE 1=1" + self._venue_clause(params),
+                params,
+            )
             count = cur.rowcount
         logger.warning(f"Cleared {count} endpoints from Postgres registry")
         return count
@@ -584,6 +675,14 @@ def get_backend(backend_type: str | None = None) -> RegistryBackend:
         return InMemoryBackend()
 
     elif backend_type == "postgres":
+        if _shared_registry_enabled():
+            dsn = _shared_registry_dsn()
+            venue = _shared_registry_venue()
+            logger.info(
+                "Using shared PostgreSQL registry backend (umrs_db, venue=%r) — ADR-060 U-1",
+                venue,
+            )
+            return PostgresBackend(dsn, venue=venue)
         dsn = os.environ.get("UMRS_REGISTRY_POSTGRES_DSN")
         if not dsn:
             raise ValueError("UMRS_REGISTRY_POSTGRES_DSN required for postgres backend")
