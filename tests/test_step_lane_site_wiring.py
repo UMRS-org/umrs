@@ -32,6 +32,8 @@ from umrs.server.step_trust import hpc_lane_available, uploaded_code_lane
 UMRS_ROOT = Path(__file__).resolve().parents[1]
 DEPLOY = UMRS_ROOT / "deploy"
 FRONTS = ("rccs-front", "ai4s-front", "bdrt-front", "octopus-front")
+#: rccs opened its lane 2026-10-02 (maintainer, after R2); the rest stay closed.
+CLOSED_FRONTS = ("ai4s-front", "bdrt-front", "octopus-front")
 RCCS_CHECKOUT = "/lvs0/rccs-dmp/masaru.nagaso/ai4s-platform"
 HELPER_REL = "umrs/deploy/_common/umrs_step_helper.py"
 VENUE_REL = "umrs/src/umrs/mini-rivault-llm/venue.sh"
@@ -81,7 +83,7 @@ def _step(front: str):
     return load_site_config(str(DEPLOY / front / "site.yaml")).step_executor
 
 
-@pytest.mark.parametrize("front", FRONTS)
+@pytest.mark.parametrize("front", CLOSED_FRONTS)
 def test_every_front_declares_the_closed_lane_explicitly(front):
     # Declared, not inherited: a later change of the dataclass defaults must
     # not open a site's lane silently.
@@ -90,7 +92,7 @@ def test_every_front_declares_the_closed_lane_explicitly(front):
     assert raw["uploaded_code"] == "refuse"
 
 
-@pytest.mark.parametrize("front", FRONTS)
+@pytest.mark.parametrize("front", CLOSED_FRONTS)
 def test_every_front_keeps_the_lane_closed_and_refuses_uploaded_code(front):
     step = _step(front)
     assert step.remote_enabled is False
@@ -134,10 +136,24 @@ def test_rccs_exports_the_lane_env_without_gpu():
     assert "UMRS_STEP_GPU" not in env
 
 
-def test_rccs_verified_image_alone_does_not_open_the_lane(site_env):
-    site_env("rccs-front", UMRS_STEP_IMAGE="localhost/umrs-step:0123456789ab")
+def test_rccs_lane_opens_once_the_converge_verified_an_image(site_env):
+    # 2026-10-02: site.yaml remote_enabled is true, so the converge's verified
+    # image is the last switch; without it uploaded code stays refused.
+    site_env("rccs-front")
     assert hpc_lane_available() is False
     assert uploaded_code_lane("in_process") is None
+    site_env("rccs-front", UMRS_STEP_IMAGE="localhost/umrs-step:0123456789ab")
+    assert hpc_lane_available() is True
+    assert uploaded_code_lane("in_process") == "slurm"
+
+
+def test_rccs_declares_its_lane_open_with_refuse_as_the_fallback():
+    # Maintainer flip 2026-10-02 after the R2 receipt; without the converge's
+    # verified image the lane is still unavailable and uploaded code refused.
+    raw = yaml.safe_load((DEPLOY / "rccs-front" / "site.yaml").read_text())["step_executor"]
+    assert raw["remote_enabled"] is True
+    assert raw["uploaded_code"] == "refuse"
+    assert _step("rccs-front").remote_enabled is True
 
 
 def test_rccs_lane_opens_with_remote_enabled_and_a_verified_image(site_env):

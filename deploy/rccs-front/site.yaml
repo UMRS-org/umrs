@@ -107,9 +107,12 @@ vllm:
 # sets that image (UMRS_STEP_IMAGE, plus the archive dir, helper and venue
 # paths) only after it staged and verified the step image archive on the
 # cluster, so image stays "" here.
-# - remote_enabled: false until the rccs receipts (maintainer flips it).
-# - gpu: false — plain-podman CDI on GB10 is unproven; a step asks for a GPU
-#   with routing_hints.gpu once a smoke job proves the form.
+# - remote_enabled: true since 2026-10-02 — maintainer-approved flip after the
+#   R2 receipt passed (converge 36844513817: plain podman + runc, GPU via
+#   gpu_form nvidia-devices, kill check). Still needs the verified image the
+#   converge composes; uploaded_code: refuse stays the fallback.
+# - gpu: false — steps ask for a GPU per step with routing_hints.gpu (the
+#   nvidia-devices form is proven by R2).
 # - workdir_root: on Lustre (the compute node sees it), outside the git
 #   checkout (read-only by rule).
 # - helper_path / venue_script: the pinned cluster checkout hpc-code-sync
@@ -125,7 +128,7 @@ step_executor:
   image: ""            # composed by the converge after the archive verifies (see above)
   gpu: false
   workdir_root: /lvs0/rccs-dmp/masaru.nagaso/umrs_steps
-  remote_enabled: false
+  remote_enabled: true
   uploaded_code: refuse
   image_archive_dir: /lvs0/rccs-dmp/masaru.nagaso/umrs_models/images
   helper_path: /lvs0/rccs-dmp/masaru.nagaso/ai4s-platform/umrs/deploy/_common/umrs_step_helper.py
