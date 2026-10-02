@@ -16,26 +16,10 @@ from ..orchestrator.endpoint_access import (
     EndpointCaller,
     validate_access,
 )
+from ._access import groups_resolver_for
 from .typed_errors import PlatformError, raise_typed
 
 logger = logging.getLogger(__name__)
-
-
-def _groups_resolver(raw_request: Any, user_id: str):
-    def resolve() -> list[str]:
-        app = getattr(raw_request, "app", None)
-        pool = getattr(getattr(app, "state", None), "umrs_db_pool", None)
-        if pool is None or not user_id:
-            return []
-        from .groups import groups_for_user
-
-        conn = pool.getconn()
-        try:
-            return groups_for_user(conn, user_id)
-        finally:
-            pool.putconn(conn)
-
-    return resolve
 
 
 def caller_for(
@@ -45,7 +29,7 @@ def caller_for(
         user_id=user_id or "",
         project_id=project_id or "",
         is_admin=is_admin,
-        groups_resolver=_groups_resolver(raw_request, user_id or ""),
+        groups_resolver=groups_resolver_for(raw_request, user_id or ""),
     )
 
 

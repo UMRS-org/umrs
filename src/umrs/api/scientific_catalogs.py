@@ -30,7 +30,9 @@ from umrs.scientific_catalogs.store import (
     CatalogSpec,
     ScientificCatalogStore,
 )
+from umrs.shared.access_scopes import access_admits
 
+from ._access import checked_access, resource_caller
 from .jobs import CallerIdentity, get_caller_identity
 from .typed_errors import PlatformError, raise_typed
 
@@ -70,6 +72,30 @@ def _require_project_scope(body_project: str, identity: CallerIdentity) -> None:
             "forbidden",
             f"project {body_project!r} outside the caller's project scope",
         )
+    )
+
+
+def _catalog_read_allowed(row: dict[str, Any], request: Request, identity: CallerIdentity) -> bool:
+    """Owning project, admin, or the row's ADR-080 access list (lazy groups)."""
+    if identity.is_admin:
+        return True
+    if (identity.project_id or "").strip() and identity.project_id == row.get("project_id"):
+        return True
+    caller = resource_caller(
+        request,
+        user_id=identity.user_id,
+        project_id=identity.project_id or "",
+        is_admin=identity.is_admin,
+    )
+    return access_admits(row.get("access"), caller)
+
+
+class AccessUpdate(BaseModel):
+    """ADR-080 access list update (validated against the canonical grammar)."""
+
+    access: list[str] = Field(
+        default_factory=list,
+        description="user:<id> | project:<id> | group:<id> | system; [] = owning project only",
     )
 
 
@@ -115,37 +141,60 @@ def create_catalog(
 
 @router.get("")
 def list_catalogs(
+    request: Request,
     project_id: str | None = None,
     store: ScientificCatalogStore = Depends(_store_dep),
     identity: CallerIdentity = Depends(get_caller_identity),
 ) -> dict[str, Any]:
     """List active catalogs, optionally scoped to one project.
+
+    Non-admin callers see their own project's rows plus rows whose ADR-080
+    access list admits them (shared catalogs are marked by their access).
     # auth: verified
     """
     scope = project_id
     if not identity.is_admin:
         scope = identity.project_id or project_id
-    return {"catalogs": store.list(project_id=scope)}
+    catalogs = store.list(project_id=scope)
+    if not identity.is_admin:
+        seen = {row["catalog_id"] for row in catalogs}
+        for shared in store.list_shared():
+            if shared["catalog_id"] in seen:
+                continue
+            if _catalog_read_allowed(shared, request, identity):
+                catalogs.append(shared)
+                seen.add(shared["catalog_id"])
+    return {"catalogs": catalogs}
 
 
 @router.get("/{catalog_id}")
 def get_catalog(
     catalog_id: str,
+    request: Request,
     store: ScientificCatalogStore = Depends(_store_dep),
     identity: CallerIdentity = Depends(get_caller_identity),
 ) -> dict[str, Any]:
     """Fetch one catalog row by id (404 for unknown ids, never empty-smudge).
+
+    Readable by the owning project, admins, and callers the row's ADR-080
+    access list admits — a row outside all three is a 404 (no disclosure).
     # auth: verified
     """
     try:
-        return store.get(catalog_id)
+        row = store.get(catalog_id)
     except CatalogNotFound:
         raise_typed(
             PlatformError.scientificcatalogs(
                 "not_found", f"scientific catalog {catalog_id!r} not found"
             )
         )
-    raise AssertionError("unreachable")  # raise_typed is NoReturn
+    if not _catalog_read_allowed(row, request, identity):
+        raise_typed(
+            PlatformError.scientificcatalogs(
+                "not_found", f"scientific catalog {catalog_id!r} not found"
+            )
+        )
+    return row
 
 
 @router.patch("/{catalog_id}")
@@ -224,13 +273,87 @@ def pins_by_ref(
 def list_versions(
     project_id: str,
     name: str,
+    request: Request,
     store: ScientificCatalogStore = Depends(_store_dep),
     identity: CallerIdentity = Depends(get_caller_identity),
 ) -> dict[str, Any]:
     """One catalog's version chain (changelog view, oldest first).
+
+    Rows the caller may not read (outside their project and not shared via
+    ADR-080) are filtered out — the chain never leaks across projects.
     # auth: verified
     """
-    return {"versions": store.versions(project_id=project_id, name=name)}
+    rows = store.versions(project_id=project_id, name=name)
+    visible = [row for row in rows if _catalog_read_allowed(row, request, identity)]
+    return {"versions": visible}
+
+
+@router.get("/{catalog_id}/access")
+def get_catalog_access(
+    catalog_id: str,
+    request: Request,
+    store: ScientificCatalogStore = Depends(_store_dep),
+    identity: CallerIdentity = Depends(get_caller_identity),
+) -> dict[str, Any]:
+    """The catalog's ADR-080 access list (any caller who may read the row).
+    # auth: verified
+    """
+    try:
+        row = store.get(catalog_id)
+    except CatalogNotFound:
+        raise_typed(
+            PlatformError.scientificcatalogs(
+                "not_found", f"scientific catalog {catalog_id!r} not found"
+            )
+        )
+    if not _catalog_read_allowed(row, request, identity):
+        raise_typed(
+            PlatformError.scientificcatalogs(
+                "not_found", f"scientific catalog {catalog_id!r} not found"
+            )
+        )
+    return {"catalog_id": row["catalog_id"], "access": row.get("access", [])}
+
+
+@router.put("/{catalog_id}/access")
+def set_catalog_access(
+    catalog_id: str,
+    body: AccessUpdate,
+    request: Request,
+    store: ScientificCatalogStore = Depends(_store_dep),
+    identity: CallerIdentity = Depends(get_caller_identity),
+) -> dict[str, Any]:
+    """Replace the catalog's access list (owning project or admin; audited).
+
+    Governs READS beyond the owning project; ``system`` is admin-only.
+    Lifecycle writes stay project-scoped.
+    # auth: verified
+    """
+    try:
+        row = store.get(catalog_id)
+    except CatalogNotFound:
+        raise_typed(
+            PlatformError.scientificcatalogs(
+                "not_found", f"scientific catalog {catalog_id!r} not found"
+            )
+        )
+    _require_project_scope(row["project_id"], identity)
+    caller = resource_caller(
+        request,
+        user_id=identity.user_id,
+        project_id=identity.project_id or "",
+        is_admin=identity.is_admin,
+    )
+    access = checked_access(body.access, caller, error=PlatformError.scientificcatalogs)
+    updated = store.set_access(catalog_id, access)
+    from .audit_events import emit_audit
+
+    emit_audit(
+        "scientificcatalog.access_changed",
+        project_id=row["project_id"],
+        details={"catalog_id": catalog_id, "access": access, "by": identity.user_id or ""},
+    )
+    return updated
 
 
 @router.delete("/{catalog_id}")

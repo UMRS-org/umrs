@@ -59,7 +59,7 @@ _COLUMNS = (
     "catalog_id, project_id, name, version, description, ontology,"
     " member_graph_ids, skill_ids, mcp_server_ids, embedding_model_ids,"
     " mcp_trust_classes, contributors, licence, provenance, change_note,"
-    " redaction_rules, owner_id, status, created_at, updated_at"
+    " redaction_rules, owner_id, status, created_at, updated_at, access"
 )
 
 
@@ -89,10 +89,11 @@ class ScientificCatalogStore:
     @staticmethod
     def _row_dict(row: Any) -> dict[str, Any]:
         """Read a catalog row; pre-0108 rows (19 cols, no declaration
-        column) read the declaration as the honest empty dict."""
+        column) read the declaration as the honest empty dict; pre-0116
+        rows (20 cols) read the ADR-080 access list as the honest []."""
         if len(row) < 20:
             return ScientificCatalogStore._row_dict_legacy(row)
-        return {
+        payload = {
             "catalog_id": row[0],
             "project_id": row[1],
             "name": row[2],
@@ -113,7 +114,9 @@ class ScientificCatalogStore:
             "status": row[17],
             "created_at": row[18].isoformat() if row[18] else None,
             "updated_at": row[19].isoformat() if row[19] else None,
+            "access": _as_list(row[20]) if len(row) > 20 else [],
         }
+        return payload
 
     @staticmethod
     def _row_dict_legacy(row: Any) -> dict[str, Any]:
@@ -139,6 +142,7 @@ class ScientificCatalogStore:
             "status": row[16],
             "created_at": row[17].isoformat() if row[17] else None,
             "updated_at": row[18].isoformat() if row[18] else None,
+            "access": [],
         }
 
     def _row(self, catalog_id: str) -> dict[str, Any] | None:
@@ -230,6 +234,30 @@ class ScientificCatalogStore:
             params,
         )
         return [self._row_dict(row) for row in cur.fetchall()]
+
+    def list_shared(self) -> list[dict[str, Any]]:
+        """Active rows carrying a non-empty ADR-080 access list — sharing
+        candidates; the route filters by access_admits before disclosure."""
+        cur = self._conn.cursor()
+        cur.execute(
+            f"SELECT {_COLUMNS} FROM scientific_catalogs"
+            " WHERE status != 'retired' AND access != '[]'::jsonb"
+            " ORDER BY project_id, name, created_at"
+        )
+        return [self._row_dict(row) for row in cur.fetchall()]
+
+    def set_access(self, catalog_id: str, access: list[str]) -> dict[str, Any]:
+        """Replace the row's ADR-080 access list (validated upstream)."""
+        self.get(catalog_id)  # raises CatalogNotFound
+        cur = self._conn.cursor()
+        cur.execute(
+            """UPDATE scientific_catalogs
+               SET access = %s::jsonb, updated_at = now()
+               WHERE catalog_id = %s""",
+            (json.dumps(list(access)), catalog_id),
+        )
+        self._conn.commit()
+        return self.get(catalog_id)
 
     def update_metadata(
         self, catalog_id: str, *, patch: CatalogPatch

@@ -20,9 +20,11 @@ import logging
 import os
 import threading
 import uuid
+from collections.abc import Callable
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
+from umrs.shared.access_scopes import ResourceCaller, access_admits
 from umrs.shared.config import get_resolved_umrs_subdir
 
 if TYPE_CHECKING:
@@ -31,6 +33,56 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _CATALOG_LOCK = threading.Lock()
+
+# ADR-080: group membership resolver hook for access-admit decisions.
+# The default resolves through the UMRS default pool (0097 authority);
+# tests replace it via ``set_workflow_groups_resolver``.
+_groups_resolver_hook: Callable[[str], list[str]] | None = None
+_groups_resolver_ready = False
+_groups_resolver_lock = threading.Lock()
+
+
+def set_workflow_groups_resolver(resolver: Callable[[str], list[str]] | None) -> None:
+    """Tests / boot code replace the group resolver (None = default pool)."""
+    global _groups_resolver_hook, _groups_resolver_ready
+    with _groups_resolver_lock:
+        _groups_resolver_hook = resolver
+        _groups_resolver_ready = True
+
+
+def _default_groups_resolver() -> Callable[[str], list[str]]:
+    def resolve(user_id: str) -> list[str]:
+        from umrs.shared.pg import get_default_sync_pool, pg_configured_from_env
+
+        if not pg_configured_from_env():
+            return []
+        from umrs.shared.group_membership import group_ids_for_user
+
+        pool = get_default_sync_pool()
+        conn = pool.getconn()
+        try:
+            return group_ids_for_user(conn, user_id)
+        finally:
+            pool.putconn(conn)
+
+    return resolve
+
+
+def _resolve_groups(user_id: str) -> list[str]:
+    """Active group ids for an access decision; fail-closed ([]) on error."""
+    global _groups_resolver_ready, _groups_resolver_hook
+    with _groups_resolver_lock:
+        if not _groups_resolver_ready:
+            _groups_resolver_hook = _default_groups_resolver()
+            _groups_resolver_ready = True
+        resolver = _groups_resolver_hook
+    if resolver is None or not user_id:
+        return []
+    try:
+        return resolver(user_id)
+    except Exception:
+        logger.warning("workflow group resolution failed for %s", user_id, exc_info=True)
+        return []
 
 
 def _catalog_path() -> str:
@@ -112,6 +164,7 @@ def register_workflow(
         "user_id": user_id,
         "source_path": source_path,
         "scope": scope,
+        "access": [],
         "description": description or workflow_json.get("description", ""),
         "steps": steps_meta,
         "requirements": workflow_json.get("requirements", []),
@@ -128,8 +181,12 @@ def register_workflow(
                 and existing.get("scope") == scope
                 and existing.get("user_id") == user_id
             ):
-                # Update in place (re-upload overwrites)
+                # Update in place (re-upload overwrites; an ADR-080 access
+                # list set on the entry survives the re-upload)
+                access = existing.get("access")
                 existing.update(entry)
+                if access:
+                    existing["access"] = access
                 _save_catalog(catalog)
                 logger.info(
                     "Updated workflow registration: %s v%s (user=%s, scope=%s)",
@@ -211,29 +268,22 @@ def _handle_list_workflows(client_id: str, payload_str: str) -> str:
       - scope: "user" | "system" — filter by scope
       - user_id: str — filter by owner
       - name: str — filter by workflow name (substring match)
+      - include_shared_for: str — also append entries whose ADR-080 access
+        list admits this caller (marked ``shared: true``)
+      - verified_project: str — the caller's gateway-verified project (for
+        project-scoped access entries)
     """
     try:
         payload = json.loads(payload_str) if payload_str else {}
     except json.JSONDecodeError:
         payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
 
     with _CATALOG_LOCK:
         catalog = _load_catalog()
-    workflows = catalog.get("workflows", [])
-
-    # Apply filters
-    scope_filter = payload.get("scope") if isinstance(payload, dict) else None
-    user_filter = payload.get("user_id") if isinstance(payload, dict) else None
-    name_filter = payload.get("name") if isinstance(payload, dict) else None
-
-    if scope_filter:
-        workflows = [w for w in workflows if w.get("scope") == scope_filter]
-    if user_filter:
-        workflows = [w for w in workflows if w.get("user_id") == user_filter]
-    if name_filter:
-        workflows = [
-            w for w in workflows if name_filter.lower() in w.get("name", "").lower()
-        ]
+    workflows = _filtered_workflows(catalog.get("workflows", []), payload)
+    _append_shared_workflows(workflows, catalog.get("workflows", []), payload)
 
     return json.dumps(
         {
@@ -243,6 +293,59 @@ def _handle_list_workflows(client_id: str, payload_str: str) -> str:
         },
         default=str,
     )
+
+
+def _filtered_workflows(
+    workflows: list[dict[str, Any]], payload: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """Scope/user/name filters straight from the list payload."""
+    scope_f = payload.get("scope")
+    user_f = payload.get("user_id")
+    name_f = (payload.get("name") or "").lower()
+    return [
+        w
+        for w in workflows
+        if (not scope_f or w.get("scope") == scope_f)
+        and (not user_f or w.get("user_id") == user_f)
+        and (not name_f or name_f in w.get("name", "").lower())
+    ]
+
+
+def _shared_candidate(entry: dict[str, Any], seen: set, name_f: str) -> bool:
+    """May this catalog entry even be offered as a shared row?"""
+    key = (entry.get("name"), entry.get("version"), entry.get("user_id"))
+    return (
+        key not in seen
+        and entry.get("scope") != "system"
+        and (not name_f or name_f in entry.get("name", "").lower())
+    )
+
+
+def _append_shared_workflows(
+    workflows: list[dict[str, Any]],
+    catalog_entries: list[dict[str, Any]],
+    payload: dict[str, Any],
+) -> None:
+    """ADR-080: append entries whose access list admits the payload's
+    caller, marked ``shared: true`` (never silently)."""
+    include_for = payload.get("include_shared_for") if isinstance(payload, dict) else None
+    if not include_for:
+        return
+    caller = ResourceCaller(
+        str(include_for),
+        str(payload.get("verified_project") or ""),
+        groups_resolver=lambda: _resolve_groups(str(include_for)),
+    )
+    name_f = (payload.get("name") or "").lower()
+    seen = {(w.get("name"), w.get("version"), w.get("user_id")) for w in workflows}
+    for entry in catalog_entries:
+        if not _shared_candidate(entry, seen, name_f):
+            continue
+        if access_admits(entry.get("access"), caller):
+            marked = dict(entry)
+            marked["shared"] = True
+            workflows.append(marked)
+            seen.add((entry.get("name"), entry.get("version"), entry.get("user_id")))
 
 
 def _handle_unregister_workflow(client_id: str, payload_str: str) -> str:
@@ -296,6 +399,15 @@ def _workflow_project_id(params: Any) -> str:
         if project_id:
             return project_id
     return "default"
+
+
+def _verified_caller_project(params: Any, identity_verified: bool) -> str | None:
+    """ADR-080: project-scoped sharing admits only a gateway-verified
+    project (never an unverified claim, never the ``default`` bucket)."""
+    if not identity_verified:
+        return None
+    project = _workflow_project_id(params)
+    return None if project == "default" else project
 
 
 def _workflow_run_context(
@@ -364,42 +476,114 @@ def _resolve_workflow_catalog_entry(
     return owned or system or any_name
 
 
+def _classify_workflow_entries(
+    entries: list[dict[str, Any]],
+    workflow_name: str,
+    client_id: str,
+    caller: ResourceCaller,
+) -> tuple[
+    dict[str, Any] | None,
+    dict[str, Any] | None,
+    dict[str, Any] | None,
+    dict[str, Any] | None,
+]:
+    """Scan same-named entries → (own, system, shared, first-foreign)."""
+    own: dict[str, Any] | None = None
+    system: dict[str, Any] | None = None
+    shared: dict[str, Any] | None = None
+    foreign: dict[str, Any] | None = None
+    for entry in entries:
+        if entry.get("name") != workflow_name:
+            continue
+        if entry.get("user_id") == client_id:
+            own = entry
+            break  # the caller's own entry always wins
+        if entry.get("scope") == "system":
+            system = system or entry
+        elif shared is None and access_admits(entry.get("access"), caller):
+            shared = entry
+        elif foreign is None:
+            foreign = entry
+    return own, system, shared, foreign
+
+
 def resolve_workflow_for_caller(
     workflow_name: str,
     client_id: str,
     *,
     is_admin: bool = False,
+    caller_project: str | None = None,
 ) -> dict[str, Any] | None:
-    """The workflow a caller may trigger or describe (ADR-074 D-8).
+    """The workflow a caller may trigger or describe (ADR-074 D-8, ADR-080).
 
-    The caller's own entry, then a ``system`` entry (shared); another owner's
-    ``user`` entry only for admins — never a cross-owner name fallback, which
-    let a normal user run another owner's code against their own buckets.
+    Order: the caller's own entry, then a ``system`` entry (shared), then an
+    entry whose ADR-080 access list admits the caller (user/project/group
+    scopes; ``system`` entries there equal a system workflow); another
+    owner's entry otherwise only for admins — never a blind cross-owner name
+    fallback, which let a normal user run another owner's code against their
+    own buckets. Group membership resolves lazily (only a group-scoped
+    candidate triggers the lookup); ``project:`` scopes admit only a
+    verified ``caller_project``.
     """
     with _CATALOG_LOCK:
         catalog = _load_catalog()
 
-    system: dict[str, Any] | None = None
-    foreign: dict[str, Any] | None = None
-    for workflow_entry in catalog.get("workflows", []):
-        if workflow_entry.get("name") != workflow_name:
-            continue
-        if workflow_entry.get("user_id") == client_id:
-            return workflow_entry
-        if workflow_entry.get("scope") == "system":
-            system = system or workflow_entry
-        elif foreign is None:
-            foreign = workflow_entry
-    return system or (foreign if is_admin else None)
+    caller = ResourceCaller(
+        client_id,
+        caller_project or "",
+        is_admin=is_admin,
+        groups_resolver=lambda: _resolve_groups(client_id),
+    )
+    own, system, shared, foreign = _classify_workflow_entries(
+        catalog.get("workflows", []), workflow_name, client_id, caller
+    )
+    return own or system or shared or (foreign if is_admin else None)
+
+
+def workflow_access_entries(
+    workflow_name: str, owner_id: str
+) -> list[dict[str, Any]]:
+    """Catalog entries owned by *owner_id* under *workflow_name* (all
+    versions/scopes) — the rows one ``access`` update touches."""
+    with _CATALOG_LOCK:
+        catalog = _load_catalog()
+    return [
+        entry
+        for entry in catalog.get("workflows", [])
+        if entry.get("name") == workflow_name and entry.get("user_id") == owner_id
+    ]
+
+
+def set_workflow_access(
+    workflow_name: str, owner_id: str, access: list[str]
+) -> list[dict[str, Any]]:
+    """Replace the ADR-080 access list on every (name, owner) entry
+    (validated upstream). Returns the updated entries ([] when none)."""
+    with _CATALOG_LOCK:
+        catalog = _load_catalog()
+        updated: list[dict[str, Any]] = []
+        for entry in catalog.get("workflows", []):
+            if entry.get("name") == workflow_name and entry.get("user_id") == owner_id:
+                entry["access"] = list(access)
+                updated.append(entry)
+        if updated:
+            _save_catalog(catalog)
+    return updated
 
 
 def _caller_run_context(
-    workflow_name: str, client_id: str, *, is_admin: bool
+    workflow_name: str,
+    client_id: str,
+    *,
+    is_admin: bool,
+    caller_project: str | None = None,
 ) -> tuple[str, dict[str, Any], int]:
     """:func:`_workflow_run_context` for a caller-facing trigger: owner-scoped
     resolution; the resolved ``source_path`` is what the run (and a durable
     job's spec) carries from here on."""
-    entry = resolve_workflow_for_caller(workflow_name, client_id, is_admin=is_admin)
+    entry = resolve_workflow_for_caller(
+        workflow_name, client_id, is_admin=is_admin, caller_project=caller_project
+    )
     if entry is None:
         raise ValueError(f"Workflow '{workflow_name}' not found in registry")
     return _workflow_run_context(
@@ -601,10 +785,14 @@ def _handle_run_workflow(
         )
 
     identity_verified = trusted_identity and bool(payload.get("_identity_verified"))
+    caller_project = _verified_caller_project(params, identity_verified)
 
     try:
         source_path, _, step_count = _caller_run_context(
-            workflow_name, client_id, is_admin=caller_is_admin
+            workflow_name,
+            client_id,
+            is_admin=caller_is_admin,
+            caller_project=caller_project,
         )
     except ValueError as exc:
         return json.dumps({"status": "error", "message": str(exc)})

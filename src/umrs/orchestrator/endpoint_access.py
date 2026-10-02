@@ -17,86 +17,66 @@ Access governs *use* (routing, model listing, warm reuse). Lifecycle writes
 Sharing spends only the owner's GPU, so the owner may name any user, project
 or group; ``system`` (everyone's model list) is admin-only.
 
-Foundation module: stdlib + ``umrs.shared`` only; the caller's groups come in
-through a lazy resolver so a request that never meets a group-scoped
-endpoint never touches the database.
+The policy itself is the shared one-guard module
+(``umrs.shared.access_scopes``, ADR-080); this module keeps the
+endpoint-specific surface (metadata key, owning-project implicit scope, the
+EndpointCaller/AccessError names ADR-078 landed with).
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
-from dataclasses import dataclass, field
+from collections.abc import Iterable
 from typing import Any
 
-from ..shared.scope_grammar import Scope, ScopeError, parse
+from ..shared.access_scopes import (
+    MAX_ACCESS_ENTRIES,
+    AccessListError,
+    ResourceCaller,
+    scopes_admit,
+    stored_access_scopes,
+)
+from ..shared.access_scopes import (
+    validate_access as _validate_access,
+)
+from ..shared.scope_grammar import Scope
 
 ACCESS_KEY = "access"
-MAX_ACCESS_ENTRIES = 16
-_KINDS = ("system", "project", "group", "user")
+
+__all__ = [
+    "ACCESS_KEY",
+    "MAX_ACCESS_ENTRIES",
+    "AccessError",
+    "EndpointCaller",
+    "can_use",
+    "endpoint_scopes",
+    "is_shared_with",
+    "usable_endpoints",
+    "validate_access",
+]
 
 
-class AccessError(ValueError):
+class AccessError(AccessListError):
     """An access list the caller may not set (or that is malformed)."""
 
 
-@dataclass
-class EndpointCaller:
+class EndpointCaller(ResourceCaller):
     """The routing caller: verified identity + lazily resolved groups."""
-
-    user_id: str
-    project_id: str
-    is_admin: bool = False
-    groups_resolver: Callable[[], Iterable[str]] | None = None
-    _groups: frozenset[str] | None = field(default=None, init=False, repr=False)
-
-    def groups(self) -> frozenset[str]:
-        if self._groups is None:
-            resolver = self.groups_resolver
-            self._groups = frozenset(resolver() if resolver and self.user_id else ())
-        return self._groups
-
-
-def _parse_entry(raw: Any) -> Scope:
-    try:
-        scope = parse(str(raw))
-    except ScopeError as exc:
-        raise AccessError(str(exc)) from exc
-    if scope.kind not in _KINDS:
-        raise AccessError(f"endpoint access cannot use {scope.kind!r} scopes")
-    return scope
 
 
 def endpoint_scopes(endpoint: Any) -> list[Scope]:
     """The endpoint's effective access list (owning project always included)."""
-    raw = (getattr(endpoint, "metadata", None) or {}).get(ACCESS_KEY)
     owner = Scope(kind="project", id=str(endpoint.project_id or ""))
     scopes: list[Scope] = [owner]
-    for entry in raw if isinstance(raw, list) else ():
-        try:
-            scope = _parse_entry(entry)
-        except AccessError:
-            continue  # a malformed stored entry grants nothing
+    raw = (getattr(endpoint, "metadata", None) or {}).get(ACCESS_KEY)
+    for scope in stored_access_scopes(raw):
         if scope not in scopes:
             scopes.append(scope)
     return scopes
 
 
-def _scope_admits(scope: Scope, caller: EndpointCaller) -> bool:
-    if scope.kind == "system":
-        return True
-    if scope.kind == "project":
-        return bool(scope.id) and scope.id == caller.project_id
-    if scope.kind == "user":
-        return bool(scope.id) and scope.id == caller.user_id
-    return scope.id in caller.groups()
-
-
 def can_use(endpoint: Any, caller: EndpointCaller) -> bool:
     """May this caller route requests to the endpoint?"""
-    scopes = endpoint_scopes(endpoint)
-    # Cheap kinds first so a group lookup happens only when it decides.
-    ordered = sorted(scopes, key=lambda s: s.kind == "group")
-    return any(_scope_admits(scope, caller) for scope in ordered)
+    return scopes_admit(endpoint_scopes(endpoint), caller)
 
 
 def is_shared_with(endpoint: Any, caller: EndpointCaller) -> bool:
@@ -104,31 +84,15 @@ def is_shared_with(endpoint: Any, caller: EndpointCaller) -> bool:
     return endpoint.project_id != caller.project_id and can_use(endpoint, caller)
 
 
-def _may_grant(scope: Scope, caller: EndpointCaller) -> bool:
-    return caller.is_admin or scope.kind != "system"
-
-
 def validate_access(raw: Any, caller: EndpointCaller) -> list[str]:
     """Normalize a requested access list; AccessError when it is not grantable.
 
     ``None`` → ``[]`` (owning project only). Duplicates collapse; order kept.
     """
-    if raw is None:
-        return []
-    if isinstance(raw, str):
-        raw = [raw]
-    if not isinstance(raw, list):
-        raise AccessError("access must be a list of scopes")
-    if len(raw) > MAX_ACCESS_ENTRIES:
-        raise AccessError(f"at most {MAX_ACCESS_ENTRIES} access entries")
-    normalized: list[str] = []
-    for entry in raw:
-        scope = _parse_entry(entry)
-        if not _may_grant(scope, caller):
-            raise AccessError(f"not allowed to share an endpoint with {scope}")
-        if str(scope) not in normalized:
-            normalized.append(str(scope))
-    return normalized
+    try:
+        return _validate_access(raw, caller)
+    except AccessListError as exc:
+        raise AccessError(str(exc)) from exc
 
 
 def usable_endpoints(

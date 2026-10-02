@@ -3297,7 +3297,9 @@ async def set_endpoint_access(
     requesting_user: str | None = Depends(_get_requesting_user),
     registry: EndpointRegistry = Depends(get_registry),
 ) -> EndpointResponse:
-    """Replace the endpoint's access list (owning project or admin only)."""
+    """Replace the endpoint's access list (owning project or admin only).
+    # auth: verified
+    """
     from ._endpoint_access import caller_for, checked_access
 
     endpoint = registry.get_by_job_id(job_id)

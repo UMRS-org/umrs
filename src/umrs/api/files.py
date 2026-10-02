@@ -807,15 +807,17 @@ async def delete_file(
 
 def _require_owned_bucket(bucket: str, user_id: str | None) -> None:
     """Refuse unless the verified caller owns *bucket* (or its input bucket,
-    for an ``-output`` pair) — the HPC lane's own ownership rule."""
+    for an ``-output`` pair) or the bucket's ADR-080 access list admits
+    them — the HPC lane's own ownership rule."""
     from umrs.server.step_staging import bucket_owned_by
 
     if not isinstance(user_id, str) or not user_id or not bucket_owned_by(bucket, user_id):
         raise_typed(
             PlatformError.files(
                 "bucket_denied",
-                f"Bucket {bucket!r} is not one of yours (create one with "
-                "`r4 bucket create`; list them with `r4 bucket list`)",
+                f"Bucket {bucket!r} is not one of yours or shared with you "
+                "(create one with `r4 bucket create`; list them with "
+                "`r4 bucket list`)",
             )
         )
 

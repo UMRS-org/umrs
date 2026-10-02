@@ -25,6 +25,7 @@ from fastapi import (
     Header,
     HTTPException,
     Query,
+    Request,
     UploadFile,
     status,
 )
@@ -41,8 +42,11 @@ from ..server.workflow_registry_handler import (
     handle_workflow_command,
     register_workflow,
     resolve_workflow_for_caller,
+    set_workflow_access,
     unregister_workflow,
+    workflow_access_entries,
 )
+from ._access import checked_access, resource_caller
 from .jobs import CallerIdentity, get_caller_identity, get_optional_job_store
 from .typed_errors import PlatformError, raise_typed
 from .workflow_auth import (
@@ -564,6 +568,9 @@ async def list_workflows(
             ("scope", scope),
             ("name", name),
             ("user_id", resolved_user_id),
+            # ADR-080: entries whose access list admits the caller (shared).
+            ("include_shared_for", _header_str(x_user_id)),
+            ("verified_project", _header_str(x_verified_project_id)),
         )
         if value is not None
     }
@@ -641,6 +648,7 @@ async def save_run_definition(
         request.workflow_name,
         caller,
         is_admin=_header_str(x_verified_is_admin) == "true",
+        caller_project=_header_str(x_verified_project_id),
     )
     if workflow_entry is None:
         raise_typed(
@@ -861,6 +869,7 @@ async def get_workflow_package(
     x_verified_hmac: str | None = Header(None),
 ):
     """Definition + registered CODE for the console definition card.
+    # auth: verified
 
     Owner-scoped exactly like describe (ADR-074 D-8): own or system entry,
     another owner's only for admins. ``files`` carries registered sources
@@ -994,7 +1003,10 @@ async def describe_workflow(
     )
     caller = _header_str(x_user_id) or ""
     entry = resolve_workflow_for_caller(
-        workflow_name, caller, is_admin=_header_str(x_verified_is_admin) == "true"
+        workflow_name,
+        caller,
+        is_admin=_header_str(x_verified_is_admin) == "true",
+        caller_project=_header_str(x_verified_project_id),
     )
     if entry is None:
         raise_typed(
@@ -1003,6 +1015,133 @@ async def describe_workflow(
             )
         )
     return _describe_workflow_entry(entry)
+
+
+class WorkflowAccessUpdate(BaseModel):
+    """ADR-080 access list update (canonical scope grammar)."""
+
+    access: list[str] = Field(
+        default_factory=list,
+        description="user:<id> | project:<id> | group:<id> | system; [] = owner/system scopes only",
+    )
+
+
+def _access_target_owner(
+    workflow_name: str, caller: str, owner: str | None, is_admin: bool
+) -> str:
+    """Whose entries the access update touches: the caller's, or another
+    owner's when both requested and admin (typed 403 otherwise)."""
+    if not owner or owner == caller:
+        return caller
+    if not is_admin:
+        raise_typed(
+            PlatformError.workflows(
+                "forbidden", "only an admin may change another owner's access"
+            )
+        )
+    return owner
+
+
+@router.get("/{workflow_name}/access")
+async def get_workflow_access(
+    workflow_name: str,
+    x_user_id: str | None = Header(None),
+    x_verified_project_id: str | None = Header(None),
+    x_verified_is_admin: str | None = Header(None),
+    x_verified_hmac: str | None = Header(None),
+):
+    """The workflow's ADR-080 access list (any caller who may run/describe it).
+    # auth: verified
+    """
+    _require_verified_workflow_identity(
+        x_user_id, x_verified_project_id, x_verified_is_admin, x_verified_hmac
+    )
+    caller = _header_str(x_user_id) or ""
+    entry = resolve_workflow_for_caller(
+        workflow_name,
+        caller,
+        is_admin=_header_str(x_verified_is_admin) == "true",
+        caller_project=_header_str(x_verified_project_id),
+    )
+    if entry is None:
+        raise_typed(
+            PlatformError.workflows(
+                "not_found", f"Workflow '{workflow_name}' not found"
+            )
+        )
+    return {
+        "workflow_name": workflow_name,
+        "owner": entry.get("user_id", ""),
+        "access": list(entry.get("access") or []),
+    }
+
+
+@router.put("/{workflow_name}/access")
+async def put_workflow_access(
+    workflow_name: str,
+    body: WorkflowAccessUpdate,
+    request: Request,
+    owner: str | None = Query(None, description="Admin-only: another owner's entries"),
+    x_user_id: str | None = Header(None),
+    x_verified_project_id: str | None = Header(None),
+    x_verified_is_admin: str | None = Header(None),
+    x_verified_hmac: str | None = Header(None),
+):
+    """Replace the access list on the caller's entries of *workflow_name*
+    (all versions; owner or admin; audited).
+
+    The list names who beyond the owner may RUN and describe the workflow
+    (ADR-080); lifecycle (delete/re-upload) is unchanged. ``system``
+    entries are admin-only; entries at ``system`` scope require admin to
+    re-scope (the delete rule).
+    # auth: verified
+    """
+    _require_verified_workflow_identity(
+        x_user_id, x_verified_project_id, x_verified_is_admin, x_verified_hmac
+    )
+    caller = _header_str(x_user_id) or ""
+    is_admin = _header_str(x_verified_is_admin) == "true"
+    target_owner = _access_target_owner(workflow_name, caller, owner, is_admin)
+    entries = workflow_access_entries(workflow_name, target_owner)
+    if not entries:
+        raise_typed(
+            PlatformError.workflows(
+                "not_found", f"Workflow '{workflow_name}' not found"
+            )
+        )
+    if any(str(e.get("scope", "user")) == "system" for e in entries) and not is_admin:
+        raise_typed(
+            PlatformError.auth(
+                "admin_required", "Only admins may re-scope system workflows"
+            )
+        )
+    guard = resource_caller(
+        request,
+        user_id=caller,
+        project_id=_header_str(x_verified_project_id) or "",
+        is_admin=is_admin,
+    )
+    access = checked_access(body.access, guard, error=PlatformError.workflows)
+    updated = set_workflow_access(workflow_name, target_owner, access)
+    from .audit_events import emit_audit
+
+    emit_audit(
+        "workflow.access_changed",
+        project_id=_header_str(x_verified_project_id) or "",
+        details={
+            "workflow_name": workflow_name,
+            "owner": target_owner,
+            "access": access,
+            "by": caller,
+        },
+    )
+    return {
+        "status": "ok",
+        "workflow_name": workflow_name,
+        "owner": target_owner,
+        "access": access,
+        "updated": len(updated),
+    }
 
 
 def _check_workflow_quota(project_id: str) -> None:
@@ -1185,7 +1324,12 @@ async def trigger_workflow(
     )
     # ADR-074 D-8: owner-scoped, the same resolution the run below uses.
     is_admin = _header_str(x_verified_is_admin) == "true"
-    entry = resolve_workflow_for_caller(workflow_name, user_id, is_admin=is_admin)
+    entry = resolve_workflow_for_caller(
+        workflow_name,
+        user_id,
+        is_admin=is_admin,
+        caller_project=_header_str(x_verified_project_id),
+    )
     if entry is None:
         raise_typed(
             PlatformError.workflows(
