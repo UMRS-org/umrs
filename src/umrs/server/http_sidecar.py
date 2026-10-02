@@ -711,6 +711,7 @@ def _create_app():
     from umrs.api.a2l_ledger import router as a2l_ledger_router
     from umrs.api.artifact_routes import router as artifact_router
     from umrs.api.assets import router as assets_router
+    from umrs.api.buckets import router as buckets_router
     from umrs.api.bundle_restore import router as bundle_restore_router
     from umrs.api.catalog import router as catalog_router
     from umrs.api.chat import router as chat_router
@@ -842,6 +843,7 @@ def _create_app():
     app.include_router(grants_router)
     app.include_router(endpoints_router)
     app.include_router(files_router)
+    app.include_router(buckets_router)  # ADR-079 personal buckets
     app.include_router(intake_uploads_router)
     app.include_router(jobs_router)
     app.include_router(knowledge_router)

@@ -22,8 +22,11 @@ from umrs.api import audit_events, workflows
 @pytest.fixture(autouse=True)
 def _identity_gate_bypass(monkeypatch: pytest.MonkeyPatch):
     """The Wave-6 identity gate itself is covered elsewhere; isolate the
-    role gate."""
+    role gate. These tests pin the ADR-027 role gate, which a site keeps with
+    UMRS_WORKFLOW_UPLOAD_ROLE=workflow_author (ADR-079 D-1 made "verified"
+    the default; covered at the end of this file)."""
     monkeypatch.setattr(workflows, "_require_verified_workflow_identity", lambda *_a, **_k: None)
+    monkeypatch.setenv("UMRS_WORKFLOW_UPLOAD_ROLE", "workflow_author")
 
 
 @pytest.fixture()
@@ -147,3 +150,18 @@ def test_strict_admin_without_author_claim_passes(client, monkeypatch):
     monkeypatch.setenv("UMRS_HANDSHAKE_HMAC_SECRET", STRICT_SECRET)
     resp = _post(client, ADMIN)
     assert resp.status_code == 202, resp.text
+
+
+def test_default_policy_lets_a_verified_user_upload_user_scope(client, monkeypatch):
+    # ADR-079 D-1: no workflow_author claim needed for the caller's own workflows.
+    monkeypatch.delenv("UMRS_WORKFLOW_UPLOAD_ROLE", raising=False)
+    _stub_pipeline(monkeypatch)
+    assert _post(client, BASE).status_code == 202
+
+
+def test_default_policy_still_refuses_system_scope_to_non_admins(client, monkeypatch):
+    monkeypatch.delenv("UMRS_WORKFLOW_UPLOAD_ROLE", raising=False)
+    _stub_pipeline(monkeypatch)
+    resp = _post(client, BASE, scope="system")
+    assert resp.status_code == 403
+    assert "admin" in resp.json()["detail"]

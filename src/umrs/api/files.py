@@ -358,7 +358,7 @@ def _charge_upload_quota(
     s3_client: Any,
     bucket: str,
     object_key: str,
-    content: bytes,
+    content: bytes | tuple[str, int],
     x_user_id: str | None,
 ) -> None:
     """Disk budget (ADR-051 D-3, remaining-lanes leg 2026-09-16): catalog-bound
@@ -374,12 +374,16 @@ def _charge_upload_quota(
     pool = getattr(request.app.state, "umrs_db_pool", None)
     if pool is None:
         return
+    if isinstance(content, tuple):
+        content_hash, byte_size = content  # streamed upload: hashed on the way
+    else:
+        content_hash, byte_size = hashlib.md5(content).hexdigest(), len(content)
     conn = pool.getconn()
     try:
         DiskLedger(conn).charge(
             x_user_id,
-            content_hash=hashlib.md5(content).hexdigest(),
-            byte_size=len(content),
+            content_hash=content_hash,
+            byte_size=byte_size,
         )
     except Exception:
         try:
@@ -402,13 +406,17 @@ async def upload_file(
     file: UploadFile = File(None),
     key: str | None = Form(None),
     purpose: str | None = Form("uploads"),
+    bucket: str | None = Form(None),
     project_id: str = Depends(get_project_id),
     config: S3Config = Depends(get_project_s3_config),
     x_user_id: str | None = Header(None),
 ) -> UploadResponse:
-    """Store an uploaded file under the caller's project namespace."""
+    """Store an uploaded file under the caller's project namespace, or — with
+    ``bucket`` — at ``key`` in a bucket the caller owns (ADR-079)."""
     if not file.filename:
         raise_typed(PlatformError.files("filename_required", "Filename required"))
+    if bucket:
+        return await _upload_to_owned_bucket(request, file, bucket, key, x_user_id)
 
     object_key = validate_key(key or _upload_key(file.filename, purpose), project_id)
     bucket = config.bucket
@@ -794,6 +802,105 @@ async def delete_file(
         )
 
 
+# -- personal / provisioned buckets the caller owns (ADR-079) -----------------
+
+
+def _require_owned_bucket(bucket: str, user_id: str | None) -> None:
+    """Refuse unless the verified caller owns *bucket* (or its input bucket,
+    for an ``-output`` pair) — the HPC lane's own ownership rule."""
+    from umrs.server.step_staging import bucket_owned_by
+
+    if not isinstance(user_id, str) or not user_id or not bucket_owned_by(bucket, user_id):
+        raise_typed(
+            PlatformError.files(
+                "bucket_denied",
+                f"Bucket {bucket!r} is not one of yours (create one with "
+                "`r4 bucket create`; list them with `r4 bucket list`)",
+            )
+        )
+
+
+def _raw_key(key: str) -> str:
+    """A key in an owned bucket keeps its own layout (no project prefix);
+    traversal and empty keys are refused."""
+    cleaned = str(key or "").strip().lstrip("/")
+    if not cleaned or ".." in cleaned.split("/") or "\x00" in cleaned:
+        raise_typed(PlatformError.files("traversal", f"Invalid key: {key!r}"))
+    return cleaned
+
+
+class _HashingReader:
+    """File-like view that md5-hashes and counts what boto3 reads (streamed
+    uploads charge the disk ledger without holding the body in memory)."""
+
+    def __init__(self, raw: Any) -> None:
+        self._raw = raw
+        self.md5 = hashlib.md5(usedforsecurity=False)
+        self.size = 0
+
+    def read(self, size: int = -1) -> bytes:
+        chunk = self._raw.read(size)
+        self.md5.update(chunk)
+        self.size += len(chunk)
+        return chunk
+
+
+async def _upload_to_owned_bucket(
+    request: Request,
+    file: UploadFile,
+    bucket: str,
+    key: str | None,
+    x_user_id: str | None,
+) -> UploadResponse:
+    _require_owned_bucket(bucket, x_user_id)
+    object_key = _raw_key(key or _safe_filename(file.filename or ""))
+    content_type = file.content_type or "application/octet-stream"
+    config = get_s3_config()
+    s3_client = config.get_client()
+    reader = _HashingReader(file.file)
+    try:
+        await asyncio.to_thread(
+            s3_client.upload_fileobj,
+            reader,
+            bucket,
+            object_key,
+            ExtraArgs={
+                "ContentType": content_type,
+                "Metadata": {"filename": _safe_filename(file.filename or "")},
+            },
+        )
+    except ClientError as e:
+        logger.error("S3 error uploading to owned bucket %s: %s", bucket, e)
+        raise_typed(
+            PlatformError.files("upload_failed", "Failed to upload file"), cause=e
+        )
+    _charge_upload_quota(
+        request, s3_client, bucket, object_key,
+        (reader.md5.hexdigest(), reader.size), x_user_id,
+    )
+    return UploadResponse(
+        key=object_key,
+        bucket=bucket,
+        uri=f"s3://{bucket}/{object_key}",
+        size=reader.size,
+        content_type=content_type,
+        filename=file.filename,
+    )
+
+
+class ListedObject(BaseModel):
+    key: str
+    size: int
+    last_modified: str | None = None
+
+
+class ListObjectsResponse(BaseModel):
+    bucket: str
+    prefix: str
+    objects: list[ListedObject] = Field(default_factory=list)
+    next_token: str | None = None
+
+
 def _cross_bucket_allowlist(config: S3Config) -> set[str]:
     """Buckets a caller may read without project namespace enforcement.
 
@@ -880,9 +987,15 @@ async def download_file_stream(
     ),
     project_id: str = Depends(get_project_id),
     config: S3Config = Depends(get_project_s3_config),
+    x_user_id: str | None = Header(None),
 ):
-    """Stream an S3 object stored in the caller's project namespace."""
+    """Stream an S3 object stored in the caller's project namespace, or from a
+    bucket the caller owns (ADR-079: personal/provisioned + ``-output``)."""
     bucket_name = bucket or config.bucket
+    if bucket and bucket_name not in _cross_bucket_allowlist(config):
+        _require_owned_bucket(bucket_name, x_user_id)
+        default = get_s3_config()
+        return _stream_object(default.get_client(), bucket_name, _raw_key(path))
     if bucket_name not in _cross_bucket_allowlist(config):
         raise_typed(
             PlatformError.files(
@@ -891,6 +1004,48 @@ async def download_file_stream(
         )
     key = _resolve_download_key(path, bucket_name, project_id, config)
     return _stream_object(config.get_client(), bucket_name, key)
+
+
+@router.get(
+    "/list",
+    response_model=ListObjectsResponse,
+    summary="List objects in a bucket the caller owns (ADR-079)",
+)
+async def list_owned_objects(
+    bucket: str = Query(..., description="A bucket you own, or its -output pair"),
+    prefix: str = Query("", description="Key prefix"),
+    token: str | None = Query(None, description="next_token of the previous page"),
+    limit: int = Query(1000, ge=1, le=1000),
+    project_id: str = Depends(get_project_id),
+    x_user_id: str | None = Header(None),
+) -> ListObjectsResponse:
+    """Keys and sizes under *prefix*; the server lists, the caller never gets
+    a credential or a presigned URL."""
+    del project_id  # verifies the gateway identity tuple (strict mode)
+    _require_owned_bucket(bucket, x_user_id)
+    kwargs: dict[str, Any] = {"Bucket": bucket, "Prefix": prefix.lstrip("/"), "MaxKeys": limit}
+    if token:
+        kwargs["ContinuationToken"] = token
+    try:
+        page = await asyncio.to_thread(get_s3_config().get_client().list_objects_v2, **kwargs)
+    except ClientError as e:
+        raise_typed(PlatformError.files("list_failed", f"Failed to list {bucket}"), cause=e)
+    objects = [
+        ListedObject(
+            key=str(item.get("Key")),
+            size=int(item.get("Size") or 0),
+            last_modified=(
+                item["LastModified"].isoformat() if item.get("LastModified") else None
+            ),
+        )
+        for item in page.get("Contents") or []
+    ]
+    return ListObjectsResponse(
+        bucket=bucket,
+        prefix=kwargs["Prefix"],
+        objects=objects,
+        next_token=page.get("NextContinuationToken") if page.get("IsTruncated") else None,
+    )
 
 
 @router.post(
