@@ -16,7 +16,7 @@ class TestStepBuilder:
         d = sb.to_dict()
         assert d["name"] == "embed"
         assert d["entrypoint"] == "steps/embed.py:Embed"
-        assert "depends_on" not in d  # empty deps omitted
+        assert d["depends_on"] == []  # explicit: the upload contract needs every edge
 
     def test_with_config(self):
         sb = StepBuilder("s1", "mod:Class")
@@ -39,7 +39,7 @@ class TestStepBuilder:
 
 class TestPipelineBuilder:
     def test_minimal_build(self):
-        wf = PipelineBuilder("simple").add_step("step1", "mod:Step1").build()
+        wf = PipelineBuilder("simple").set_description("One step.").add_step("step1", "mod:Step1").build()
         assert wf["name"] == "simple"
         assert len(wf["steps"]) == 1
         assert wf["steps"][0]["name"] == "step1"
@@ -47,6 +47,7 @@ class TestPipelineBuilder:
     def test_multi_step_with_deps(self):
         wf = (
             PipelineBuilder("multi")
+            .set_description("Load, process, save.")
             .add_step("load", "mod:Load")
             .add_step("process", "mod:Process", depends_on=["load"])
             .add_step("save", "mod:Save", depends_on=["process"])
@@ -57,18 +58,19 @@ class TestPipelineBuilder:
         assert "load" in proc_step["depends_on"]
 
     def test_set_execution_mode(self):
-        wf = PipelineBuilder("p1").add_step("s1", "m:S").set_execution_mode("SLURM").build()
-        assert wf["execution_mode"] == "SLURM"
+        wf = PipelineBuilder("p1").set_description("Slurm run.").add_step("s1", "m:S").set_execution_mode("SLURM").build()
+        assert wf["execution_mode"] == "slurm"  # the enum value the runner reads
 
     def test_set_source(self):
         wf = (
             PipelineBuilder("p1")
+            .set_description("Local source.")
             .add_step("s1", "m:S")
             .set_source("/path/to/steps", source_type="LOCAL_PATH")
             .build()
         )
         assert wf["source"]["path"] == "/path/to/steps"
-        assert wf["source"]["type"] == "LOCAL_PATH"
+        assert wf["source"]["type"] == "local_path"
 
     def test_set_version_description(self):
         wf = (
@@ -84,6 +86,7 @@ class TestPipelineBuilder:
     def test_set_output(self):
         wf = (
             PipelineBuilder("p1")
+            .set_description("Vector output.")
             .add_step("s1", "m:S")
             .set_output(return_type="vector", embedding_vector_size=768)
             .build()
@@ -116,7 +119,7 @@ class TestPipelineBuilder:
             builder.build()
 
     def test_to_json(self):
-        builder = PipelineBuilder("json-test").add_step("s1", "m:S")
+        builder = PipelineBuilder("json-test").set_description("JSON round trip.").add_step("s1", "m:S")
         j = builder.to_json()
         parsed = json.loads(j)
         assert parsed["name"] == "json-test"
@@ -141,6 +144,7 @@ class TestPipelineBuilder:
         """Build a realistic multi-branch DAG."""
         wf = (
             PipelineBuilder("complex")
+            .set_description("Ingest, embed text and images, merge, export.")
             .add_step("ingest", "steps:Ingest")
             .add_step("text_embed", "steps:TextEmbed", depends_on=["ingest"])
             .add_step("image_embed", "steps:ImageEmbed", depends_on=["ingest"])
@@ -152,3 +156,43 @@ class TestPipelineBuilder:
         assert len(wf["steps"]) == 5
         merge = [s for s in wf["steps"] if s["name"] == "merge"][0]
         assert set(merge["depends_on"]) == {"text_embed", "image_embed"}
+
+
+class TestUploadContract:
+    """2026-10-02: what the builder emits meets the upload contract
+    (r4_contracts.workflow_package): a description and every step's
+    depends_on, [] for a step that starts the run."""
+
+    def test_description_is_required(self):
+        builder = PipelineBuilder("undescribed").add_step("s1", "m:S")
+        with pytest.raises(PipelineBuilderError, match="description is required"):
+            builder.build()
+
+    def test_a_built_workflow_passes_the_upload_check(self):
+        from r4_contracts.workflow_package import errors_of, workflow_package_problems
+
+        wf = (
+            PipelineBuilder("fan")
+            .set_description("Ingest once, embed twice, merge.")
+            .add_step("ingest", "steps:Ingest")
+            .add_step("a", "steps:A", depends_on=["ingest"])
+            .add_step("b", "steps:B", depends_on=["ingest"])
+            .add_step("merge", "steps:Merge", depends_on=["a", "b"])
+            .build()
+        )
+        assert wf["steps"][0]["depends_on"] == []
+        assert errors_of(workflow_package_problems(wf)) == []
+
+    def test_the_built_workflow_parses_as_the_runner_reads_it(self):
+        from umrs.pipeline_sdk.workflow import ExecutionMode, SourceType, WorkflowDefinition
+
+        wf = (
+            PipelineBuilder("p")
+            .set_description("One step on Slurm.")
+            .set_execution_mode("slurm")
+            .add_step("s1", "m:S")
+            .build()
+        )
+        parsed = WorkflowDefinition.from_dict(wf)
+        assert parsed.execution_mode is ExecutionMode.SLURM
+        assert parsed.source.type is SourceType.LOCAL_PATH

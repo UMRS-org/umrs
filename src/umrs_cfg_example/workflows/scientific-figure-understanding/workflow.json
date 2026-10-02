@@ -2,10 +2,12 @@
   "name": "scientific-figure-understanding",
   "version": "0.1",
   "description": "Multimodal perception (VLM dense + OCR) feeding an LLM reasoner that returns a structured analysis of a scientific figure.",
+  "source": {"type": "local_path", "path": "."},
   "steps": [
     {
       "name": "vision_dense",
       "entrypoint": "umrs.pipeline_sdk.templates.vision_step:VisionStep",
+      "depends_on": [],
       "config": {
         "mode": "dense",
         "model": "rivault-vlm-static",
@@ -17,6 +19,7 @@
     {
       "name": "vision_ocr",
       "entrypoint": "umrs.pipeline_sdk.templates.ocr_step:OCRStep",
+      "depends_on": [],
       "config": {
         "model": "rivault-vlm-static",
         "image_param": "image"

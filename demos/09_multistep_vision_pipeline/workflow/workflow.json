@@ -11,6 +11,7 @@
     {
       "name": "segment",
       "entrypoint": "segment:SegmentStep",
+      "depends_on": [],
       "config": {
         "bentoml_url": "http://localhost:11434",
         "prompt": "object",
@@ -21,6 +22,7 @@
     {
       "name": "crop_regions",
       "entrypoint": "crop_regions:CropRegionsStep",
+      "depends_on": ["segment"],
       "config": {
         "min_patch_size": 32,
         "padding": 10,
@@ -30,6 +32,7 @@
     {
       "name": "image_stats",
       "entrypoint": "image_stats:ImageStatsStep",
+      "depends_on": ["crop_regions"],
       "config": {
         "output_prefix": "analysis/"
       }

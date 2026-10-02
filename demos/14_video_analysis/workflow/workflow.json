@@ -11,6 +11,7 @@
     {
       "name": "motion_detect",
       "entrypoint": "motion_step:MotionDetectStep",
+      "depends_on": [],
       "config": {
         "diff_threshold": 30,
         "area_threshold": 500,

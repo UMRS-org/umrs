@@ -45,9 +45,10 @@ class StepBuilder:
         d: dict[str, Any] = {
             "name": self.name,
             "entrypoint": self.entrypoint,
+            # Always explicit ([] = starts the run): the upload contract
+            # requires every step to declare its place in the flow graph.
+            "depends_on": list(self.depends_on),
         }
-        if self.depends_on:
-            d["depends_on"] = self.depends_on
         if self.config:
             d["config"] = self.config
         if self.max_retries > 0:
@@ -114,11 +115,11 @@ class PipelineBuilder:
         return self
 
     def set_execution_mode(self, mode: str) -> PipelineBuilder:
-        if mode not in self.VALID_EXECUTION_MODES:
+        if mode.upper() not in self.VALID_EXECUTION_MODES:
             raise PipelineBuilderError(
                 f"Invalid execution mode: {mode}. Must be one of {self.VALID_EXECUTION_MODES}"
             )
-        self._execution_mode = mode
+        self._execution_mode = mode.upper()
         return self
 
     def set_source(
@@ -127,11 +128,11 @@ class PipelineBuilder:
         source_type: str = "LOCAL_PATH",
         ref: str | None = None,
     ) -> PipelineBuilder:
-        if source_type not in self.VALID_SOURCE_TYPES:
+        if source_type.upper() not in self.VALID_SOURCE_TYPES:
             raise PipelineBuilderError(
                 f"Invalid source type: {source_type}. Must be one of {self.VALID_SOURCE_TYPES}"
             )
-        self._source_type = source_type
+        self._source_type = source_type.upper()
         self._source_path = path
         self._source_ref = ref
         return self
@@ -178,15 +179,23 @@ class PipelineBuilder:
         }
         return self
 
-    def validate(self) -> list[str]:
-        """Validate the pipeline configuration. Returns list of errors."""
+    def _basic_errors(self) -> list[str]:
+        """Name, description (the upload contract, 2026-10-02) and steps."""
         errors: list[str] = []
-
         if not self._name:
             errors.append("Pipeline name is required")
-
+        if not self._description.strip():
+            errors.append(
+                "Pipeline description is required (set_description: what it "
+                "does, what it needs, what it produces)"
+            )
         if not self._steps:
             errors.append("Pipeline must have at least one step")
+        return errors
+
+    def validate(self) -> list[str]:
+        """Validate the pipeline configuration. Returns list of errors."""
+        errors = self._basic_errors()
 
         # Check for duplicate step names
         names = [s.name for s in self._steps]
@@ -237,13 +246,15 @@ class PipelineBuilder:
                 f"Pipeline validation failed: {'; '.join(errors)}"
             )
 
+        # workflow.json carries the runner's enum VALUES (lowercase:
+        # SourceType / ExecutionMode); the names stay accepted as input.
         workflow: dict[str, Any] = {
             "name": self._name,
             "source": {
-                "type": self._source_type,
+                "type": self._source_type.lower(),
                 "path": self._source_path,
             },
-            "execution_mode": self._execution_mode,
+            "execution_mode": self._execution_mode.lower(),
             "steps": [s.to_dict() for s in self._steps],
         }
 

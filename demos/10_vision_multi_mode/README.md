@@ -50,17 +50,20 @@ IMAGE_DIR=/path/to/images MULTI_BUCKET=my-analysis bash ./run_demo.sh
 
 ## How Parallel Execution Works
 
-The `workflow.json` includes an `execution.parallel` list:
+Each step in `workflow.json` declares the steps it waits for. All three
+start the run, so each says `"depends_on": []`:
 
 ```json
-"execution": {
-  "parallel": ["segment", "features", "thumbnails"]
-}
+{"name": "segment",    "entrypoint": "segment_mode:SegmentModeStep",     "depends_on": []},
+{"name": "features",   "entrypoint": "feature_mode:FeatureModeStep",     "depends_on": []},
+{"name": "thumbnails", "entrypoint": "thumbnail_mode:ThumbnailModeStep", "depends_on": []}
 ```
 
-Steps listed in `parallel` receive the **same input keys** and run
-concurrently.  Each branch writes to its own output prefix so there
-are no conflicts.
+Steps with no edge between them receive the **same input keys** and run
+concurrently. Each branch writes to its own output prefix so there are no
+conflicts. (Until 2026-10-02 this demo used the `execution.parallel`
+shorthand; the runner still reads it, but an upload must spell the graph
+out in `depends_on`.)
 
 ## Running Manually
 

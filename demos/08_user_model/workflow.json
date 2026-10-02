@@ -19,6 +19,7 @@
         {
             "name": "invert",
             "entrypoint": "invert_image:InvertImageStep",
+            "depends_on": [],
             "config": {
                 "output_prefix": "inverted/"
             }

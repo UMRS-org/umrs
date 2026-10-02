@@ -11,6 +11,7 @@
     {
       "name": "count_words",
       "entrypoint": "counter:WordCounter",
+      "depends_on": [],
       "config": {"min_word_length": 3}
     }
   ],

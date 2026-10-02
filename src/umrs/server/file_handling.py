@@ -260,11 +260,40 @@ def _check_zip_size(zf) -> None:
             )
 
 
-def _extract_checked(zf, dest_dir: str) -> None:
+def _package_check(raw: bytes) -> list[str]:
+    """The upload contract (r4_contracts.workflow_package, 2026-10-02): a
+    description and an explicit flow graph (every step's ``depends_on``)
+    are mandatory, so an error refuses the upload, every problem named at
+    once. Warnings come back as advice lines for the upload notice."""
+    from r4_contracts.workflow_package import (
+        errors_of,
+        format_problems,
+        warnings_of,
+        workflow_package_problems,
+    )
+
+    from umrs.pipeline_sdk.workflow import WorkflowDefinition
+
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise _UploadRefused(f"Invalid workflow.json: {e}") from e
+    problems = workflow_package_problems(data)
+    errors = errors_of(problems)
+    if errors:
+        raise _UploadRefused(f"Invalid workflow.json: {format_problems(errors)}")
+    try:
+        WorkflowDefinition.from_dict(data)
+    except (KeyError, ValueError) as e:
+        raise _UploadRefused(f"Invalid workflow.json: {e}") from e
+    return [str(p) for p in warnings_of(problems)]
+
+
+def _extract_checked(zf, dest_dir: str) -> list[str]:
     """Extract after every member is checked to stay inside *dest_dir*, the
     archive fits the source caps and a ``workflow.json`` (root or one level
-    deep) parses."""
-    from umrs.pipeline_sdk.workflow import WorkflowDefinition
+    deep) meets the upload contract and parses. Returns the contract's
+    warnings."""
 
     _check_zip_size(zf)
     for member in zf.namelist():
@@ -281,12 +310,10 @@ def _extract_checked(zf, dest_dir: str) -> None:
             raise _UploadRefused(
                 f"{name} is {declared} bytes (max {MAX_WORKFLOW_JSON_BYTES})"
             )
-    try:
-        WorkflowDefinition.from_dict(json.loads(zf.read(candidates[0])))
-    except (json.JSONDecodeError, KeyError, ValueError) as e:
-        raise _UploadRefused(f"Invalid workflow.json: {e}") from e
+    warnings = _package_check(zf.read(candidates[0]))
     os.makedirs(dest_dir, exist_ok=True)
     zf.extractall(dest_dir)
+    return warnings
 
 
 def _flatten_nested(dest_dir: str) -> None:
@@ -331,12 +358,15 @@ def handle_upload_workflow(client_id, zip_path, workflow_name):
     """Validate and extract an uploaded workflow zip to the user_workflows directory.
 
     The zip must contain a ``workflow.json`` at its root (or one level deep)
-    with a parseable :class:`WorkflowDefinition`; *workflow_name* must match
+    that meets the upload contract (a description and every step's
+    ``depends_on``, ``r4_contracts.workflow_package``) and parses as a
+    :class:`WorkflowDefinition`; *workflow_name* must match
     :data:`WORKFLOW_NAME_RE` (one directory under the owner's tree).
 
     Returns ``(success: bool, dest_dir: str | None, message: str | None)``:
     the error on failure; on success an optional notice for the uploader
-    (a Dockerfile in the upload is ignored, never built — ADR-074 D-7).
+    (a Dockerfile in the upload is ignored, never built — ADR-074 D-7; the
+    contract's advice, e.g. parameters no parameter_schema declares).
     """
     try:
         _precheck_upload(zip_path, workflow_name)
@@ -351,7 +381,7 @@ def handle_upload_workflow(client_id, zip_path, workflow_name):
             guarded = _CountedDirectory(raw, 2 * DEFAULT_CAPS.max_src_files)
             with zipfile.ZipFile(guarded) as zf:
                 guarded.armed = False
-                _extract_checked(zf, dest_dir)
+                advice = _extract_checked(zf, dest_dir)
         _flatten_nested(dest_dir)
         _mark_uploaded(dest_dir)
     except _UploadRefused as refused:
@@ -371,7 +401,8 @@ def handle_upload_workflow(client_id, zip_path, workflow_name):
         f"Workflow '{workflow_name}' for user '{client_id}' extracted to {dest_dir}"
     )
 
-    return True, dest_dir, _dockerfile_notice(dest_dir, workflow_name)
+    notices = [_dockerfile_notice(dest_dir, workflow_name), *advice]
+    return True, dest_dir, "; ".join(n for n in notices if n) or None
 
 
 def persist_uploaded_user_config(

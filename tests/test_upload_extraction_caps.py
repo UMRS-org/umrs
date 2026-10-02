@@ -25,8 +25,9 @@ from umrs.server.step_staging import DEFAULT_CAPS
 _WORKFLOW = {
     "name": "wf",
     "version": "1.0",
+    "description": "One-step upload fixture.",
     "source": {"type": "local_path", "path": "."},
-    "steps": [{"name": "s1", "entrypoint": "a:B"}],
+    "steps": [{"name": "s1", "entrypoint": "a:B", "depends_on": []}],
 }
 
 

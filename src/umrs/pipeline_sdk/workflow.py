@@ -311,7 +311,10 @@ class StepSpec:
     def from_dict(cls, data: dict[str, Any]) -> StepSpec:
         return cls(
             name=data["name"],
-            entrypoint=data["entrypoint"],
+            # A gate step runs no class, so it carries no entrypoint (the
+            # runner returns before loading one); validate() still demands
+            # one for every other step.
+            entrypoint=data.get("entrypoint", ""),
             config=data.get("config", {}),
             extends=data.get("extends"),
             depends_on=data.get("depends_on"),
