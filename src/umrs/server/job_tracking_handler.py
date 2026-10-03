@@ -359,6 +359,12 @@ class DurableJobCommandBackend:
             attempts = self._job_store.get_attempts_for_job(job_id)
         except DuplicateJobError as exc:
             job = self._job_store.get_job(exc.existing_job_id)
+            if job.user_id != client_id:
+                # The key and project come from the payload: another user's
+                # job behind a guessed key is never returned (review 2026-10-04).
+                return json.dumps(
+                    {"status": "error", "message": "idempotency_key already in use"}
+                )
             attempts = self._job_store.get_attempts_for_job(exc.existing_job_id)
             return json.dumps(
                 {
@@ -386,7 +392,20 @@ class DurableJobCommandBackend:
             default=str,
         )
 
-    def cancel(self, client_id: str, payload_str: str) -> str:
+    def _owned_job(self, job_id: str, client_id: str, is_admin: bool):
+        """The job when *client_id* owns it (any job for an admin).
+
+        Another user's job reads exactly like a missing one, so a caller
+        cannot probe which job ids exist.
+        """
+        job = self._job_store.get_job(job_id)
+        if not is_admin and job.user_id != client_id:
+            raise JobNotFoundError(f"Job not found: {job_id}")
+        return job
+
+    def cancel(
+        self, client_id: str, payload_str: str, *, is_admin: bool = False
+    ) -> str:
         try:
             payload = _parse_payload(payload_str)
         except json.JSONDecodeError as exc:
@@ -397,7 +416,7 @@ class DurableJobCommandBackend:
             return json.dumps({"status": "error", "message": "job_id is required"})
 
         try:
-            job = self._job_store.get_job(job_id)
+            job = self._owned_job(job_id, client_id, is_admin)
         except JobNotFoundError as exc:
             return json.dumps({"status": "error", "message": str(exc)})
 
@@ -418,7 +437,10 @@ class DurableJobCommandBackend:
         logger.info("Durable job cancelled: %s by %s", job_id, client_id)
         return json.dumps({"status": "ok", "message": f"Job {job_id} cancelled"})
 
-    def list_jobs(self, client_id: str, payload_str: str) -> str:
+    def list_jobs(
+        self, client_id: str, payload_str: str, *, is_admin: bool = False
+    ) -> str:
+        """The caller's own jobs (every user's for an admin)."""
         try:
             payload = _parse_payload(payload_str)
         except json.JSONDecodeError:
@@ -438,7 +460,7 @@ class DurableJobCommandBackend:
 
         if job_id:
             try:
-                job = self._job_store.get_job(job_id)
+                job = self._owned_job(str(job_id), client_id, is_admin)
             except JobNotFoundError as exc:
                 return json.dumps({"status": "error", "message": str(exc)})
 
@@ -458,6 +480,7 @@ class DurableJobCommandBackend:
             job_type=job_type,
             limit=limit,
             offset=offset,
+            user_id=None if is_admin else client_id,
         )
         serialized_jobs = []
         for job in jobs:
@@ -503,6 +526,8 @@ def handle_job_command(
     client_id: str,
     payload_str: str,
     backend: DurableJobCommandBackend | None = None,
+    *,
+    caller_is_admin: bool = False,
 ) -> str:
     """
     Dispatch a job tracking command and return a JSON response string.
@@ -514,6 +539,9 @@ def handle_job_command(
         client_id: Username / client identifier
         payload_str: JSON-encoded payload
         backend: Durable backend shared with the server runtime
+        caller_is_admin: From the server's own verification (the ZMQ session's
+            grants), never the payload — JOB_CANCEL / JOB_LIST reach other
+            users' jobs only for an admin
 
     Returns:
         JSON string to send back to client via ZMQ
@@ -529,7 +557,9 @@ def handle_job_command(
             (_payload or {}).get("_request_id")
             or (_payload or {}).get("_correlation_id")
         ):
-            return _handle_job_command_scoped(cmd, client_id, payload_str, backend)
+            return _handle_job_command_scoped(
+                cmd, client_id, payload_str, backend, caller_is_admin
+            )
     except Exception as e:
         logger.exception("Error handling job command %s", cmd)
         METRICS.bridge_event(_BRIDGE_NAME, "error")
@@ -537,7 +567,7 @@ def handle_job_command(
 
 
 def _handle_job_command_scoped(
-    cmd, client_id, payload_str, backend
+    cmd, client_id, payload_str, backend, caller_is_admin=False
 ):  # pragma: no cover - factored from handle_job_command
     """Command dispatch under a fresh correlation scope (Q-05/G-001)."""
     try:
@@ -552,9 +582,9 @@ def _handle_job_command_scoped(
         if cmd == JOB_SUBMIT:
             return backend.submit(client_id, payload_str)
         elif cmd == JOB_CANCEL:
-            return backend.cancel(client_id, payload_str)
+            return backend.cancel(client_id, payload_str, is_admin=caller_is_admin)
         elif cmd == JOB_LIST:
-            return backend.list_jobs(client_id, payload_str)
+            return backend.list_jobs(client_id, payload_str, is_admin=caller_is_admin)
         else:
             return json.dumps(
                 {"status": "error", "message": f"Unknown job command: {cmd}"}

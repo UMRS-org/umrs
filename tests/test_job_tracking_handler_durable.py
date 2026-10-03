@@ -69,9 +69,13 @@ class FakeJobStore:
     def get_attempts_for_job(self, job_id):
         return self.attempts[job_id]
 
-    def list_jobs(self, project_id=None, status=None, job_type=None, limit=100, offset=0):
+    def list_jobs(
+        self, project_id=None, status=None, job_type=None, limit=100, offset=0, user_id=None
+    ):
         wanted = {"project_id": project_id, "status": status, "job_type": job_type}
         jobs = [job for job in self.jobs.values() if _job_matches(job, wanted)]
+        if user_id is not None:
+            jobs = [job for job in jobs if job.user_id == user_id]
         return jobs[offset : offset + limit]
 
     def cancel_job(self, job_id, reason="user_cancelled"):
@@ -490,3 +494,90 @@ def test_a_failed_durable_cancel_never_cancels_the_run_alone(monkeypatch):
     port._jobs["wf-live"] = job_id
     assert port.cancel("wf-live")["status"] == "error"
     assert not record.cancel_requested and record.status == "running"
+
+
+# ── JOB_CANCEL / JOB_LIST reach only the caller's own jobs (2026-10-04) ────
+
+
+def _two_owners():
+    store = FakeJobStore()
+    store.jobs = {}
+    alice_job = store.create_job("p", "alice", JobType.INDEX_BUILD, {"index": "a"})
+    bob_job = store.create_job("p", "bob", JobType.INDEX_BUILD, {"index": "b"})
+    store.get_job = _missing_raises(store.get_job)
+    return store, alice_job, bob_job
+
+
+def _missing_raises(get_job):
+    from umrs.jobs.store import JobNotFoundError
+
+    def wrapped(job_id):
+        try:
+            return get_job(job_id)
+        except KeyError:
+            raise JobNotFoundError(f"Job not found: {job_id}") from None
+
+    return wrapped
+
+
+def test_cancel_of_another_users_job_reads_as_not_found():
+    store, _alice_job, bob_job = _two_owners()
+    result = json.loads(
+        DurableJobCommandBackend(store).cancel("alice", json.dumps({"job_id": bob_job}))
+    )
+    assert result == {"status": "error", "message": f"Job not found: {bob_job}"}
+    assert store.cancelled == []
+
+
+def test_owner_and_admin_may_cancel():
+    store, alice_job, bob_job = _two_owners()
+    backend = DurableJobCommandBackend(store)
+    assert json.loads(backend.cancel("alice", json.dumps({"job_id": alice_job})))["status"] == "ok"
+    admin = json.loads(backend.cancel("maint", json.dumps({"job_id": bob_job}), is_admin=True))
+    assert admin["status"] == "ok"
+    assert [job_id for job_id, _ in store.cancelled] == [alice_job, bob_job]
+
+
+def test_list_shows_only_the_callers_jobs():
+    store, alice_job, bob_job = _two_owners()
+    backend = DurableJobCommandBackend(store)
+    mine = json.loads(backend.list_jobs("alice", "{}"))
+    assert [job["job_id"] for job in mine["jobs"]] == [alice_job]
+    every = json.loads(backend.list_jobs("maint", "{}", is_admin=True))
+    assert sorted(job["job_id"] for job in every["jobs"]) == sorted([alice_job, bob_job])
+
+
+def test_list_by_id_of_another_users_job_reads_as_not_found():
+    store, _alice_job, bob_job = _two_owners()
+    result = json.loads(
+        DurableJobCommandBackend(store).list_jobs("alice", json.dumps({"job_id": bob_job}))
+    )
+    assert result == {"status": "error", "message": f"Job not found: {bob_job}"}
+
+
+def test_handle_job_command_threads_the_admin_flag():
+    store, _alice_job, bob_job = _two_owners()
+    backend = DurableJobCommandBackend(store)
+    payload = json.dumps({"job_id": bob_job})
+    refused = json.loads(handle_job_command("JOB_CANCEL", "alice", payload, backend=backend))
+    assert refused["status"] == "error"
+    allowed = json.loads(
+        handle_job_command("JOB_CANCEL", "maint", payload, backend=backend, caller_is_admin=True)
+    )
+    assert allowed["status"] == "ok"
+
+
+def test_submit_with_another_users_idempotency_key_never_returns_their_job():
+    store, _alice_job, bob_job = _two_owners()
+    bob_key = store.jobs[bob_job].idempotency_key
+    payload = json.dumps(
+        {
+            "job_type": "index_build",
+            "project_id": "p",
+            "idempotency_key": bob_key,
+            "spec": {"database": "d", "table": "t"},
+        }
+    )
+    result = json.loads(DurableJobCommandBackend(store).submit("alice", payload))
+    assert result == {"status": "error", "message": "idempotency_key already in use"}
+

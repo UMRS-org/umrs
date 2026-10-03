@@ -1,3 +1,4 @@
+import collections
 import contextlib
 import json
 import logging
@@ -47,8 +48,63 @@ DEFAULT_NB_MSG = 10240
 # Sentinel for the control-loop dispatcher: continue the loop (never a parser result).
 _CONTINUE = object()
 
+# Control commands that carry no client_id field (readiness pings, the global
+# status view, and the JWT-authenticated bootstrap).
+_IDENTITY_FREE_COMMANDS = frozenset(
+    {
+        TaskCmd.HANDSHAKE,
+        TaskCmd.HAND_CHECK,
+        TaskCmd.STATUS_ALL,
+        TaskCmd.GET_BOOTSTRAP_CONTEXT,
+    }
+)
+
+
+def _frame_bytes(frame) -> bytes:
+    """A received frame's payload (a pyzmq Frame, or bytes from a test double)."""
+    return frame.bytes if hasattr(frame, "bytes") else frame
+
+
+def _frame_session_id(frame) -> str | None:
+    """The ZAP user-id of the connection a frame arrived on (the session id
+    in session mode); ``None`` without CURVE/ZAP or for plain bytes."""
+    get = getattr(frame, "get", None)
+    if get is None or isinstance(frame, (bytes, bytearray)):
+        return None
+    try:
+        value = get("User-Id")
+    except zmq.ZMQError:
+        return None
+    return value or None
+
+
+def _wire_client_id(user_id: str) -> str:
+    """A user id as clients put it in the colon-split wire format."""
+    return (user_id or "").replace(":", "_")
+
+
+#: Bound on the per-session and per-connection identity caches.
+_IDENTITY_CACHE_MAX = 4096
+
+
+def _remember(cache, key, value) -> None:
+    """Insert into a bounded LRU ``OrderedDict`` (oldest evicted)."""
+    cache[key] = value
+    cache.move_to_end(key)
+    while len(cache) > _IDENTITY_CACHE_MAX:
+        cache.popitem(last=False)
+
 
 class MessageQueue:
+    # ZMQ identity binding state (session mode; see _bind_session_identity).
+    # Class defaults keep instances built without __init__ (test doubles) sound.
+    _last_control_session: str | None = None
+    _identity_provider_cache: tuple[object | None] | None = None
+    _session_entries: "collections.OrderedDict | None" = None
+    _sender_entries: "collections.OrderedDict | None" = None
+    _current_session_entry: object | None = None
+    owner_client_id: str | None = None  # data queues: the user they belong to
+
     _AUTH_FIELD_INDEX = {
         TaskCmd.CREATE_DATA_QUEUE: 2,
         TaskCmd.ENROLL_USER: 3,
@@ -187,6 +243,7 @@ class MessageQueue:
                 context=self.context,
             )
 
+        entry["data_queue"].owner_client_id = client_id
         entry["port"] = selected_port
         entry["last_activity"] = time.monotonic()
         return selected_port, port_range
@@ -325,6 +382,13 @@ class MessageQueue:
         self.last_activity_monotonic = time.monotonic()
         self._auth_sessions: dict[str, AuthContext] = {}  # client_id -> AuthContext
         self._last_control_auth: dict[str, str] = {}
+        # Session mode: the ZAP session id of the last control message, and
+        # each session's entry as first seen (ZAP authenticates a connection
+        # once, so a session that expires mid-connection keeps its identity).
+        self._last_control_session = None
+        self._session_entries = collections.OrderedDict()
+        self._sender_entries = collections.OrderedDict()
+        self._identity_provider_cache = None
         # Started ZAP authenticators for CURVE/session sockets (server role).
         # Retained so close() can stop their background threads. Empty unless
         # UMRS_ZMQ_AUTH_TYPE is curve/session.
@@ -573,25 +637,7 @@ class MessageQueue:
         """
         try:
             if self.type == "control" and self.role == "server":
-                # ROUTER receives: [client_id][empty_delimiter][payload] from REQ
-                # or [client_id][payload] from DEALER
-                self._last_control_auth = {}
-                frames = self.socket.recv_multipart()
-                if len(frames) == 3:
-                    client_id, second, third = frames
-                    if second == b"":
-                        # REQ socket: [client_id][empty][payload]
-                        msg = third
-                    else:
-                        # DEALER multipart auth: [client_id][payload][auth]
-                        msg = second
-                        self._last_control_auth = self._decode_control_auth_frame(third)
-                elif len(frames) == 2:
-                    # DEALER socket: [client_id][payload]
-                    client_id, msg = frames
-                else:
-                    raise ValueError(f"Unexpected frame count: {len(frames)}")
-                return client_id, msg.decode()
+                return self._recv_control_request()
 
             elif self.type == "control" and self.role == "client":
                 # DEALER receives: [empty][payload] or [payload]
@@ -608,8 +654,11 @@ class MessageQueue:
                 return None, msg.decode()
 
             else:
-                # PULL socket: single frame
-                msg = self.socket.recv_string()
+                # PULL socket: single frame (the queue owner's, session mode)
+                if self._owner_check_active():
+                    msg = self._recv_owned_frame().decode()
+                else:
+                    msg = self.socket.recv_string()
                 # Server-side data queues: data-plane traffic is liveness —
                 # the idle reaper (reap_idle_data_queues) never harvests a
                 # queue that is actively receiving S3 events.
@@ -618,6 +667,32 @@ class MessageQueue:
 
         except zmq.Again:
             return None, None
+
+    def _recv_control_request(self):
+        """One ROUTER request → ``(sender, message)``.
+
+        ROUTER receives ``[sender][empty][payload]`` from REQ,
+        ``[sender][payload]`` from DEALER, or ``[sender][payload][auth]``
+        (DEALER multipart auth). The connection's verified session (the ZAP
+        user-id) rides on every frame; the payload's own client_id field is
+        only a claim (:meth:`_bind_session_identity`).
+        """
+        self._last_control_auth = {}
+        raw = self.socket.recv_multipart(copy=False)
+        self._last_control_session = _frame_session_id(raw[-1]) if raw else None
+        frames = [_frame_bytes(frame) for frame in raw]
+        if len(frames) == 3:
+            client_id, second, third = frames
+            if second == b"":
+                msg = third
+            else:
+                msg = second
+                self._last_control_auth = self._decode_control_auth_frame(third)
+        elif len(frames) == 2:
+            client_id, msg = frames
+        else:
+            raise ValueError(f"Unexpected frame count: {len(frames)}")
+        return client_id, msg.decode()
 
     def set_timeouts(self, recv_timeout_ms, send_timeout_ms):
         old_recv = self.socket.RCVTIMEO
@@ -647,6 +722,38 @@ class MessageQueue:
             except zmq.ZMQError as e:
                 raise RuntimeError(f"Failed to send file: {e}") from e
 
+    def _data_frame_receiver(self):
+        """The data-plane frame receiver: owner-checked in session mode."""
+        return self._recv_owned_frame if self._owner_check_active() else self.socket.recv
+
+    def _owner_check_active(self) -> bool:
+        """Session mode on a data queue that knows its owner."""
+        return self.owner_client_id is not None and self._identity_provider() is not None
+
+    def _recv_owned_frame(self) -> bytes:
+        """The next data-plane frame sent by the queue owner's session.
+
+        Every registered session passes the shared ZAP authenticator and data
+        ports come from a known range, so another user could push S3 event
+        notices or file chunks into this queue (review 2026-10-04). Frames
+        from any other session (an admin's excepted) are dropped.
+        """
+        while True:
+            frame = self.socket.recv(copy=False)
+            session_id = _frame_session_id(frame)
+            provider = self._identity_provider()
+            entry = self._session_entry(provider, session_id) if session_id else None
+            if entry is not None and (
+                _wire_client_id(entry.user_id) == self.owner_client_id
+                or entry.grants.is_admin
+            ):
+                return _frame_bytes(frame)
+            logger.warning(
+                "data queue of %s: dropped a frame from session %r",
+                self.owner_client_id,
+                session_id,
+            )
+
     def recv_file(self, out_dir="/tmp"):
         if self.role != "server" or self.type != "data":
             raise PermissionError(
@@ -662,8 +769,9 @@ class MessageQueue:
                 mode="w+b", dir=out_dir, delete=False
             ) as tmp_file:
                 tmp_path = os.path.abspath(tmp_file.name)
+                recv_chunk = self._data_frame_receiver()
                 while True:
-                    chunk = self.socket.recv()
+                    chunk = recv_chunk()
                     if chunk == b"__END_OF_FILE__":
                         break
                     tmp_file.write(chunk)
@@ -733,7 +841,7 @@ class MessageQueue:
             auth_ctx = AuthContext(
                 user_id=client_id, username=client_id, role=UserRole.USER
             )
-        self._auth_sessions[client_id] = auth_ctx
+        self._store_auth(client_id, auth_ctx)
         logger.info(
             "Auth session created: user=%s role=%s", client_id, auth_ctx.role.value
         )
@@ -887,7 +995,7 @@ class MessageQueue:
         if client_id and token:
             try:
                 auth_ctx = create_auth_context_from_request(client_id, token=token)
-                self._auth_sessions[client_id] = auth_ctx
+                self._store_auth(client_id, auth_ctx)
                 logger.info(
                     "Auth session refreshed: user=%s role=%s cmd=%s",
                     client_id,
@@ -945,17 +1053,20 @@ class MessageQueue:
 
         # Lookahead deque: non-PROCESS_OBJECTS messages captured during batch drain
         if not hasattr(self, "_lookahead"):
-            import collections
-
             self._lookahead = collections.deque()
 
         while True:
-            zmq_sender_id, msg = self._next_control_message()
+            zmq_sender_id, msg, session_id = self._next_control_message()
             logger.info(
                 "Received control request: %s", self._redact_control_message(msg)
             )
             splited_msg = msg.split(":")
             cmd = splited_msg[0]
+            splited_msg = self._bind_session_identity(
+                cmd, splited_msg, zmq_sender_id, session_id
+            )
+            if splited_msg is None:
+                continue
 
             result = self._dispatch_control_parser(cmd, splited_msg, zmq_sender_id)
             if result is _CONTINUE:
@@ -971,10 +1082,127 @@ class MessageQueue:
             return result
 
     def _next_control_message(self):
-        """Lookahead deque first, then blocking ZMQ receive (ejeannot batch lane)."""
+        """Lookahead deque first, then blocking ZMQ receive (ejeannot batch lane).
+
+        Returns ``(sender, message, session_id)``; ``session_id`` is the
+        connection's ZAP user-id (``None`` outside session mode).
+        """
         if self._lookahead:
-            return self._lookahead.popleft()
-        return self.recv_string()
+            zmq_sender_id, msg, session_id, auth = self._lookahead.popleft()
+            # Its own auth frame, never the one of the message that drained it.
+            self._last_control_auth = auth
+            return zmq_sender_id, msg, session_id
+        zmq_sender_id, msg = self.recv_string()
+        return zmq_sender_id, msg, self._last_control_session
+
+    def _identity_provider(self):
+        """The session provider when ZMQ identity binding applies, else None.
+
+        Binding applies in ``UMRS_ZMQ_AUTH_TYPE=session`` unless
+        ``UMRS_ZMQ_SESSION_IDENTITY=off`` (an escape hatch, logged loudly).
+        """
+        if self._identity_provider_cache is None:
+            provider = None
+            from umrs.core.zmq_security import ZMQSecurityConfig
+
+            if self.role == "server" and ZMQSecurityConfig.from_env().is_session_mode:
+                mode = (
+                    os.environ.get("UMRS_ZMQ_SESSION_IDENTITY", "bind").strip().lower()
+                )
+                if mode == "off":
+                    logger.warning(
+                        "UMRS_ZMQ_SESSION_IDENTITY=off: ZMQ commands act as whatever "
+                        "client_id they claim (any session can act as any user)"
+                    )
+                else:
+                    from umrs.core.session_curve_provider import (
+                        get_shared_session_provider,
+                    )
+
+                    provider = get_shared_session_provider()
+            self._identity_provider_cache = (provider,)
+        return self._identity_provider_cache[0]
+
+    def _session_entry(self, provider, session_id):
+        """The session's live entry; a session that merely expired while its
+        connection stayed open keeps the identity it was first seen with.
+
+        A session gone before its expiry (revoked, account disabled, evicted
+        by the per-user cap) is refused: ZAP authenticated the connection
+        once, so this re-check is what ends an open revoked connection.
+        """
+        if self._session_entries is None:
+            self._session_entries = collections.OrderedDict()
+        live = provider.lookup_session(session_id)
+        if live is not None:
+            _remember(self._session_entries, session_id, live)
+            return live
+        cached = self._session_entries.get(session_id)
+        if cached is not None and cached.expires_at > time.time():
+            self._session_entries.pop(session_id, None)
+            return None
+        return cached
+
+    def verified_session(self, zmq_sender_id):
+        """The session entry of the connection *zmq_sender_id* (a ROUTER
+        routing id) as bound by its last command, else None."""
+        return (self._sender_entries or {}).get(zmq_sender_id)
+
+    def _auth_refusal(self, cmd) -> str:
+        """The refusal reply in the shape the command's clients parse."""
+        reason = "no authenticated ZMQ session"
+        if self._CONTROL_PARSERS.get(cmd) == "_parse_json_payload":
+            return json.dumps({"status": "error", "message": reason})
+        return f"AUTH_ERROR:{reason}"
+
+    def _carries_client_id(self, cmd, splited_msg) -> bool:
+        """A known command with a client_id field (others pass untouched: the
+        dispatcher answers UNKNOWN_CMD / CMD_ERROR for them)."""
+        return (
+            cmd not in _IDENTITY_FREE_COMMANDS
+            and cmd in self._CONTROL_PARSERS
+            and len(splited_msg) >= 2
+        )
+
+    def _bind_session_identity(self, cmd, splited_msg, zmq_sender_id, session_id):
+        """Session mode: the client_id field becomes the connection's user.
+
+        The field is a claim; the CURVE session the connection authenticated
+        with is the identity. A claim that differs is rebound (a client that
+        sent ``default`` or a project id now acts as its own user); only an
+        admin session may act as another client_id. A connection without a
+        known session is refused. Returns the (possibly rebound) message
+        fields, or ``None`` when refused (reply already sent).
+        """
+        self._current_session_entry = None
+        provider = self._identity_provider()
+        if provider is None or not self._carries_client_id(cmd, splited_msg):
+            return splited_msg
+        entry = self._session_entry(provider, session_id) if session_id else None
+        if entry is None:
+            logger.warning(
+                "ZMQ %s refused: no authenticated session (%r)", cmd, session_id
+            )
+            with contextlib.suppress(RuntimeError):
+                self.send_string(self._auth_refusal(cmd), zmq_sender_id)
+            return None
+        self._current_session_entry = entry
+        if self._sender_entries is None:
+            self._sender_entries = collections.OrderedDict()
+        _remember(self._sender_entries, zmq_sender_id, entry)
+        user = _wire_client_id(entry.user_id)
+        claimed = splited_msg[1]
+        if claimed == user:
+            return splited_msg
+        if entry.grants.is_admin:
+            logger.info(
+                "ZMQ %s: admin session %s acts as client_id %r", cmd, user, claimed
+            )
+            return splited_msg
+        logger.warning(
+            "ZMQ %s: client_id %r rebound to the session's user %r", cmd, claimed, user
+        )
+        return [splited_msg[0], user, *splited_msg[2:]]
 
     def _dispatch_control_parser(self, cmd, splited_msg, zmq_sender_id):
         """Command → parser result; _CONTINUE on unknown/malformed/parser errors."""
@@ -1019,25 +1247,43 @@ class MessageQueue:
         extra = []
         while True:
             try:
-                frames = self.socket.recv_multipart(flags=zmq.NOBLOCK)
+                raw = self.socket.recv_multipart(flags=zmq.NOBLOCK, copy=False)
             except zmq.Again:
                 break
 
-            parsed = self._parse_drain_frames(frames)
-            if parsed is None:
+            drained = self._read_drained_message(raw)
+            if drained is None:
                 continue
-            zmq_sender_id, msg = parsed
+            zmq_sender_id, msg, session_id, auth = drained
 
             splited_msg = msg.split(":")
             cmd = splited_msg[0]
 
             if cmd != TaskCmd.PROCESS_OBJECTS:
-                self._lookahead.append((zmq_sender_id, msg))
+                self._lookahead.append((zmq_sender_id, msg, session_id, auth))
                 continue
 
+            splited_msg = self._bind_session_identity(
+                cmd, splited_msg, zmq_sender_id, session_id
+            )
+            if splited_msg is None:
+                continue
             self._ack_process_object_drain(splited_msg, cmd, zmq_sender_id, extra)
 
         return extra
+
+    def _read_drained_message(self, raw):
+        """Drained ROUTER frames → ``(sender, message, session_id, auth)``;
+        None for unexpected frame counts. The message keeps its own session
+        and auth frame for when the lookahead deque hands it on."""
+        session_id = _frame_session_id(raw[-1]) if raw else None
+        frames = [_frame_bytes(frame) for frame in raw]
+        parsed = self._parse_drain_frames(frames)
+        if parsed is None:
+            return None
+        has_auth = len(frames) == 3 and frames[1] != b""
+        auth = self._decode_control_auth_frame(frames[2]) if has_auth else {}
+        return (*parsed, session_id, auth)
 
     @staticmethod
     def _parse_drain_frames(frames):
@@ -1563,13 +1809,37 @@ class MessageQueue:
     def set_debug(self, enabled: bool):
         self.debug = bool(enabled)
 
+    def _auth_key(self, client_id: str) -> str:
+        """Where a token-derived AuthContext lives: per CURVE session while a
+        bound command is being handled (session mode), else per client_id.
+
+        Per client_id in session mode let an admin acting as carol leave an
+        ADMIN context that carol's own session then read (review 2026-10-04).
+        """
+        entry = self._current_session_entry
+        if entry is not None:
+            return f"session:{entry.session_id}"
+        return client_id
+
+    def _store_auth(self, client_id: str, auth_ctx: AuthContext) -> None:
+        sessions = self._auth_sessions
+        sessions[self._auth_key(client_id)] = auth_ctx
+        while len(sessions) > _IDENTITY_CACHE_MAX:
+            del sessions[next(iter(sessions))]
+
     def get_auth_context(self, client_id: str) -> AuthContext:
         """Return the AuthContext for *client_id*.
 
+        Session mode: the role of the CURVE session that sent the command
+        being handled (its JWT grants, or an admin token it presented itself),
+        never a context another session left under the same client_id.
         If the client has not yet authenticated via CREATE_DATA_QUEUE the
         default role is ``UserRole.USER`` (backward compatible).
         """
-        ctx = self._auth_sessions.get(client_id)
+        ctx = self._auth_sessions.get(self._auth_key(client_id))
+        entry = self._current_session_entry
+        if entry is not None and entry.grants.is_admin and not (ctx and ctx.is_admin):
+            return AuthContext(user_id=client_id, username=client_id, role=UserRole.ADMIN)
         if ctx is not None:
             return ctx
         # Create a default USER context for clients that connected before
