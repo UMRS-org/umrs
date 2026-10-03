@@ -665,11 +665,15 @@ class JobStore:
         job_type: JobType | None = None,
         limit: int = 100,
         offset: int = 0,
+        user_id: str | None = None,
     ) -> list[Job]:
-        """List jobs with optional filters."""
+        """List jobs with optional filters (``user_id``: the owner's jobs only)."""
         conditions = []
         params = []
 
+        if user_id is not None:
+            conditions.append("user_id = %s")
+            params.append(user_id)
         if project_id:
             conditions.append("project_id = %s")
             params.append(project_id)

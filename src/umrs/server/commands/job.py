@@ -13,6 +13,15 @@ from .base import CommandHandler, HandlerContext
 logger = logging.getLogger(__name__)
 
 
+def _caller_is_admin(ctx: HandlerContext, client_id: str, _zmq_sender_id: Any) -> bool:
+    """Admin from the server's own verification, never the payload — the same
+    rule RUN_WORKFLOW and the command registry use (``get_auth_context``: the
+    sending CURVE session's grants or an admin token it presented itself)."""
+    get_auth = getattr(ctx.control_mq, "get_auth_context", None)
+    auth = get_auth(client_id) if callable(get_auth) else None
+    return getattr(auth, "is_admin", False) is True
+
+
 def _send_reply(
     ctx: HandlerContext, zmq_sender_id: Any, response_json: str, label: str
 ) -> None:
@@ -50,6 +59,7 @@ class JobCancelHandler(CommandHandler):
             client_id,
             payload_str,
             backend=ctx.job_command_backend,
+            caller_is_admin=_caller_is_admin(ctx, client_id, zmq_sender_id),
         )
         _send_reply(ctx, zmq_sender_id, response_json, "JOB_CANCEL")
         update_status(TaskStatus.COMPLETED)
@@ -66,6 +76,7 @@ class JobListHandler(CommandHandler):
             client_id,
             payload_str,
             backend=ctx.job_command_backend,
+            caller_is_admin=_caller_is_admin(ctx, client_id, zmq_sender_id),
         )
         _send_reply(ctx, zmq_sender_id, response_json, "JOB_LIST")
         update_status(TaskStatus.COMPLETED)

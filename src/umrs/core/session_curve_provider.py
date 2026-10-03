@@ -496,6 +496,16 @@ class SessionCredentialsProvider:
                 return None
             return entry
 
+    def lookup_session(self, session_id: str) -> SessionCurveEntry | None:
+        """Return the entry for *session_id* (the ZAP user-id a CURVE
+        connection carries); ``None`` when unknown or expired."""
+        with self._lock:
+            pubkey = self._by_session.get(session_id)
+            entry = self._by_key.get(pubkey) if pubkey is not None else None
+            if entry is None or entry.is_expired:
+                return None
+            return entry
+
     def active_session_count(self, user_id: str | None = None) -> int:
         """Return the number of active (non-expired) sessions."""
         with self._lock:

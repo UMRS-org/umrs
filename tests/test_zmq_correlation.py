@@ -16,10 +16,10 @@ class _CapturingBackend:
         self._sink.append(get_request_id())
         return json.dumps({"status": "ok"})
 
-    def cancel(self, _client_id, _payload_str):
+    def cancel(self, _client_id, _payload_str, **_kw):
         return json.dumps({"status": "ok"})
 
-    def list_jobs(self, _client_id, _payload_str):
+    def list_jobs(self, _client_id, _payload_str, **_kw):
         return json.dumps({"status": "ok", "jobs": []})
 
 
