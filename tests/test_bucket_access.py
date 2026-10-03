@@ -107,10 +107,10 @@ class _FakeAccessStore:
     def __init__(self, admitted=()):
         self._admitted = set(admitted)
 
-    def owner_of(self, bucket):
+    def owner_of(self, bucket):  # noqa: ARG002 — test double mirrors the real signature
         return None
 
-    def can_access(self, bucket, user_id):
+    def can_access(self, bucket, user_id):  # noqa: ARG002 — test double mirrors the real signature
         return user_id in self._admitted
 
 
@@ -129,10 +129,10 @@ def test_bucket_owned_by_via_access_list():
 
 def test_bucket_owned_by_store_error_is_fail_closed():
     class _Exploding:
-        def can_access(self, bucket, user_id):
+        def can_access(self, bucket, user_id):  # noqa: ARG002 — test double mirrors the real signature
             raise RuntimeError("db down")
 
-        def owner_of(self, bucket):
+        def owner_of(self, bucket):  # noqa: ARG002 — test double mirrors the real signature
             return None
 
     ub.set_user_bucket_store(_Exploding())

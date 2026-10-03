@@ -104,7 +104,7 @@ class TestRunResolution:
 
 
 class TestAccessMutation:
-    def test_set_workflow_access_covers_all_versions(self, tmp_catalog):
+    def test_set_workflow_access_covers_all_versions(self, tmp_catalog):  # noqa: ARG002 — the fixture points the registry at a temp catalog
         wrh.register_workflow(
             workflow_name="wf", version="1.0", user_id="alice",
             source_path="/tmp/a", workflow_json={"steps": []},
@@ -146,7 +146,7 @@ class TestListing:
         assert [w["name"] for w in shared] == [alice_wf]
         assert shared[0]["user_id"] == "alice"
 
-    def test_unshared_entries_stay_hidden(self, alice_wf):
+    def test_unshared_entries_stay_hidden(self, alice_wf):  # noqa: ARG002 — the fixture registers alice's shared workflow
         out = json.loads(
             wrh._handle_list_workflows(
                 "carol", json.dumps({"user_id": "carol", "include_shared_for": "carol"})

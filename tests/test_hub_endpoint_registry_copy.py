@@ -35,7 +35,7 @@ class _Cur:
 
 
 class _Conn:
-    def __init__(self, *, exists=True, one=None, many=()):
+    def __init__(self, *, exists=True, one=None, many=()):  # noqa: ARG002 — test double mirrors the real signature
         self.record: list = []
         self.one = "endpoint_registry" if exists else None
         self.many = list(many)

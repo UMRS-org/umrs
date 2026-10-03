@@ -61,35 +61,54 @@ class _Conn:
         pass
 
     # -- SQL routing ------------------------------------------------------
+    # (predicate on the SQL text, handler) in match order; anything else is
+    # the active list (project-scoped or all).
+    _ROUTES = (
+        (lambda sql: sql.startswith("INSERT"), "_insert"),
+        (lambda sql: sql.startswith("UPDATE"), "_update_access"),
+        (lambda sql: "FROM group_members" in sql, "_group_rows"),
+        (lambda sql: "WHERE catalog_id = %s" in sql, "_one_row"),
+        (lambda sql: "access != '[]'::jsonb" in sql, "_shared_rows"),
+        (lambda sql: "ORDER BY created_at, catalog_id" in sql, "_name_versions"),
+    )
+
     def _handle(self, sql, params, cur: _Cursor) -> None:
         self.record.append(sql)
-        if sql.startswith("INSERT"):
-            self._insert(params, cur)
-        elif sql.startswith("UPDATE"):
-            row = self.rows[params[1]]
-            row["access"] = json.loads(params[0])
-            cur._result = []
-        elif "FROM group_members" in sql:
-            cur._result = [(g,) for g in self.groups]
-        elif "WHERE catalog_id = %s" in sql:
-            row = self.rows.get(params[0])
-            cur._result = [_tuple_from_dict(row)] if row else []
-        elif "access != '[]'::jsonb" in sql:
-            cur._result = [
-                _tuple_from_dict(v) for v in self.rows.values()
-                if v["status"] != "retired" and v["access"]
-            ]
-        elif "ORDER BY created_at, catalog_id" in sql:
-            rows = [
-                v for v in self.rows.values()
-                if v["project_id"] == params[0] and v["name"] == params[1]
-            ]
-            cur._result = [_tuple_from_dict(v) for v in rows]
-        else:  # active list (project-scoped or all)
-            rows = [v for v in self.rows.values() if v["status"] != "retired"]
-            if params:
-                rows = [v for v in rows if v["project_id"] == params[0]]
-            cur._result = [_tuple_from_dict(v) for v in rows]
+        for matches, handler in self._ROUTES:
+            if matches(sql):
+                getattr(self, handler)(params, cur)
+                return
+        self._active_rows(params, cur)
+
+    def _update_access(self, params, cur: _Cursor) -> None:
+        self.rows[params[1]]["access"] = json.loads(params[0])
+        cur._result = []
+
+    def _group_rows(self, _params, cur: _Cursor) -> None:
+        cur._result = [(g,) for g in self.groups]
+
+    def _one_row(self, params, cur: _Cursor) -> None:
+        row = self.rows.get(params[0])
+        cur._result = [_tuple_from_dict(row)] if row else []
+
+    def _shared_rows(self, _params, cur: _Cursor) -> None:
+        cur._result = [
+            _tuple_from_dict(v) for v in self.rows.values()
+            if v["status"] != "retired" and v["access"]
+        ]
+
+    def _name_versions(self, params, cur: _Cursor) -> None:
+        rows = [
+            v for v in self.rows.values()
+            if v["project_id"] == params[0] and v["name"] == params[1]
+        ]
+        cur._result = [_tuple_from_dict(v) for v in rows]
+
+    def _active_rows(self, params, cur: _Cursor) -> None:
+        rows = [v for v in self.rows.values() if v["status"] != "retired"]
+        if params:
+            rows = [v for v in rows if v["project_id"] == params[0]]
+        cur._result = [_tuple_from_dict(v) for v in rows]
 
     def _insert(self, params, cur: _Cursor) -> None:
         now = datetime.now(timezone.utc)

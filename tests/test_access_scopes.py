@@ -119,7 +119,7 @@ def test_multi_membership_comes_from_one_authority():
             return [("lab",), ("ops",), ("fieldwork",)]
 
     cur = _Cur()
-    conn = type("C", (), {"cursor": lambda self: cur})()
+    conn = type("C", (), {"cursor": lambda self: cur})()  # noqa: ARG005 — test double mirrors the real signature
     assert group_ids_for_user(conn, "alice") == ["lab", "ops", "fieldwork"]
     assert "g.status = 'active'" in cur.sql  # retired groups never resolve
     assert cur.params == ("alice",)

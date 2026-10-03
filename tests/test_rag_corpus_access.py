@@ -135,7 +135,7 @@ class _FakeAccess:
     def get_access(self, project):
         return list(self.rows.get(project, []))
 
-    def set_access(self, project, access, *, set_by):
+    def set_access(self, project, access, *, set_by):  # noqa: ARG002 — test double mirrors the real signature
         self.rows[project] = list(access)
 
     def shared_readable(self, project, user_id):
