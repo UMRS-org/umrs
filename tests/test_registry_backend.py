@@ -226,6 +226,8 @@ def test_migrate_schema_adds_venue_column_and_index():
 def test_get_backend_shared_branch_wins_with_flag(monkeypatch):
     monkeypatch.setenv("UMRS_ENDPOINT_REGISTRY_SHARED", "1")
     monkeypatch.setenv("DB_HOST", "db0")
+    # Pinned: CI's DB-backed job exports POSTGRES_PORT=55432 (DB_PORT wins).
+    monkeypatch.setenv("DB_PORT", "5432")
     monkeypatch.setenv("DB_SUPERUSER", "umrs")
     monkeypatch.setenv("DB_SUPERUSER_PASSWORD", "pw")
     monkeypatch.setenv("UMRS_JOBS_DB", "umrs_db")
