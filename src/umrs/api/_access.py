@@ -1,8 +1,8 @@
 """API-side glue for row-carried access scopes (ADR-080).
 
 The policy lives in ``umrs.shared.access_scopes`` (pure). This module binds
-it to request identity: the caller's groups come from the shared
-``umrs_db_pool``, resolved lazily — only when a ``group:`` scope actually
+it to request identity: the caller's circles come from the shared
+``umrs_db_pool``, resolved lazily — only when a ``circle:`` scope actually
 decides — and memoized per caller instance.
 """
 
@@ -22,19 +22,19 @@ from .typed_errors import PlatformError, raise_typed
 logger = logging.getLogger(__name__)
 
 
-def groups_resolver_for(raw_request: Any, user_id: str) -> Callable[[], list[str]]:
-    """Lazy group lookup bound to the request's app pool (0097 authority)."""
+def circles_resolver_for(raw_request: Any, user_id: str) -> Callable[[], list[str]]:
+    """Lazy circle lookup bound to the request's app pool (0119 authority)."""
 
     def resolve() -> list[str]:
         app = getattr(raw_request, "app", None)
         pool = getattr(getattr(app, "state", None), "umrs_db_pool", None)
         if pool is None or not user_id:
             return []
-        from .groups import groups_for_user
+        from .circles import circles_for_user
 
         conn = pool.getconn()
         try:
-            return groups_for_user(conn, user_id)
+            return circles_for_user(conn, user_id)
         finally:
             pool.putconn(conn)
 
@@ -44,12 +44,12 @@ def groups_resolver_for(raw_request: Any, user_id: str) -> Callable[[], list[str
 def resource_caller(
     raw_request: Any, *, user_id: str | None, project_id: str, is_admin: bool
 ) -> ResourceCaller:
-    """A guard caller from verified identity parts (+ lazy group resolver)."""
+    """A guard caller from verified identity parts (+ lazy circle resolver)."""
     return ResourceCaller(
         user_id=user_id or "",
         project_id=project_id or "",
         is_admin=is_admin,
-        groups_resolver=groups_resolver_for(raw_request, user_id or ""),
+        circles_resolver=circles_resolver_for(raw_request, user_id or ""),
     )
 
 

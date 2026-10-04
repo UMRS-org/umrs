@@ -64,8 +64,9 @@ FAMILY_LANES: dict[str, SurfaceLane] = {
     # ADR-051 read model (2026-09-16): caller-attributed quota gauge — BETA,
     # user-facing read surface like projects.
     "quota": SurfaceLane.BETA,
-    # ADR-050 §3 (2026-09-16): groups + membership authority — BETA like grants.
-    "groups": SurfaceLane.BETA,
+    # ADR-086 (2026-10-05): circles — project-scoped membership authority,
+    # supersedes the ADR-050 §3 groups family; BETA like grants.
+    "circles": SurfaceLane.BETA,
     # D-39 (2026-09-22): Scientific Catalog registry — BETA like projects.
     "scientific-catalogs": SurfaceLane.BETA,
     "ops": SurfaceLane.INTERNAL,

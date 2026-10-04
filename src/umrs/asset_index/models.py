@@ -7,7 +7,7 @@ An AssetRow is a pointer INTO a subsystem store, not a copy:
     asset_id   the subsystem's own id — the row in its own table stays
                authoritative; the index never duplicates mutable state
     scope      canonical scope string (system / project:<id> /
-               group:<id> / user:<id>) derived per subsystem
+               circle:<proj>/<id> / user:<id>) derived per subsystem
     status     lifecycle string as reported by the subsystem, verbatim
     lineage    edges derived from existing relations (artifact→parent,
                job→artifacts, session→loops, loop→artifacts) — see fanout.py

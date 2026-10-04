@@ -1,8 +1,8 @@
 """API-side glue for endpoint access scopes (ADR-078).
 
 The policy lives in ``umrs.orchestrator.endpoint_access`` (pure). This module
-binds it to request identity: the caller's groups come from the shared
-``umrs_db_pool`` (looked up lazily, only for group scopes) and roster recipes
+binds it to request identity: the caller's circles come from the shared
+``umrs_db_pool`` (looked up lazily, only for circle scopes) and roster recipes
 may carry a default ``access`` list.
 """
 
@@ -16,7 +16,7 @@ from ..orchestrator.endpoint_access import (
     EndpointCaller,
     validate_access,
 )
-from ._access import groups_resolver_for
+from ._access import circles_resolver_for
 from .typed_errors import PlatformError, raise_typed
 
 logger = logging.getLogger(__name__)
@@ -29,7 +29,7 @@ def caller_for(
         user_id=user_id or "",
         project_id=project_id or "",
         is_admin=is_admin,
-        groups_resolver=groups_resolver_for(raw_request, user_id or ""),
+        circles_resolver=circles_resolver_for(raw_request, user_id or ""),
     )
 
 

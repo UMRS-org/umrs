@@ -2,7 +2,7 @@
 
 A RAG corpus is a project namespace in the vector store — it has no durable
 row of its own, so migration 0116's ``rag_corpus_access`` registry carries
-its access scope list (``user:<id>`` | ``project:<id>`` | ``group:<id>`` |
+its access scope list (``user:<id>`` | ``project:<id>`` | ``circle:<proj>/<id>`` |
 ``system``). The list governs READS (query/documents/search/stats); ingest,
 upload and delete stay with the owning project (``project_writable``), and
 the existing three-tier namespaces (``system`` corpus, ``user:<uid>``) are
@@ -102,7 +102,7 @@ class CorpusAccessStore:
         """May *user_id* read the corpus through its access list?
 
         One query: ``system`` admits everyone; ``user:<id>`` the named user;
-        ``group:<id>`` any ACTIVE member (multi-membership allowed).
+        ``circle:<proj>/<id>`` any ACTIVE member (multi-membership allowed).
         """
         if not user_id:
             return False
@@ -115,10 +115,12 @@ class CorpusAccessStore:
                 "  c.access @> '[\"system\"]'::jsonb"
                 "  OR c.access @> jsonb_build_array(%s)"
                 "  OR EXISTS ("
-                "    SELECT 1 FROM group_members gm"
-                "    JOIN groups g ON g.group_id = gm.group_id"
-                "    WHERE gm.user_id = %s AND g.status = 'active'"
-                "      AND c.access @> jsonb_build_array('group:' || gm.group_id)"
+                "    SELECT 1 FROM circle_members cm"
+                "    JOIN circles g ON g.project_id = cm.project_id"
+                "      AND g.circle_id = cm.circle_id"
+                "    WHERE cm.user_id = %s AND g.status = 'active'"
+                "      AND c.access @> jsonb_build_array("
+                "        'circle:' || cm.project_id || '/' || cm.circle_id)"
                 "  )) LIMIT 1",
                 (project_id, f"user:{user_id}", user_id),
             )

@@ -86,7 +86,9 @@ class AccessUpdate(BaseModel):
 
     access: list[str] = Field(
         default_factory=list,
-        description="user:<id> | project:<id> | group:<id> | system; [] = tier ladder only",
+        description=(
+            "user:<id> | project:<id> | circle:<proj>/<id> | system; [] = tier ladder only"
+        ),
     )
 
 

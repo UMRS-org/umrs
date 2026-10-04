@@ -1,6 +1,6 @@
 """Knowledge graph access scopes (ADR-080).
 
-A graph row carries ``access``: several user:/project:/group:/system
+A graph row carries ``access``: several user:/project:/circle:/system
 entries; any match admits READS beyond the tier ladder; lifecycle writes
 stay on the ladder. Absent list = the historical tier behavior exactly.
 """
@@ -57,9 +57,9 @@ def _headers(user: str, project: str, admin: bool = False) -> dict[str, str]:
 
 
 def test_row_to_graph_normalizes_access():
-    meta = _row_to_graph(_graph_row(access=json.dumps(["user:bob", "group:lab"])))
-    assert meta.access == ["user:bob", "group:lab"]
-    assert meta.to_dict()["access"] == ["user:bob", "group:lab"]
+    meta = _row_to_graph(_graph_row(access=json.dumps(["user:bob", "circle:proj-a/lab"])))
+    assert meta.access == ["user:bob", "circle:proj-a/lab"]
+    assert meta.to_dict()["access"] == ["user:bob", "circle:proj-a/lab"]
     legacy = _row_to_graph(_graph_row())
     legacy_dict = {k: v for k, v in _graph_row().items() if k != "access"}
     assert _row_to_graph(legacy_dict).access == []
@@ -92,28 +92,22 @@ class TestSharedGraphReads:
     def test_user_scope_opens_the_graph_to_the_named_user(self):
         shared = _graph_row(access=["user:bob"])
         client, _ = _client([shared, []])  # resolve + ontology block
-        resp = client.get(
-            "/umrs/knowledge/graphs/g-abc", headers=_headers("bob", "proj-b")
-        )
+        resp = client.get("/umrs/knowledge/graphs/g-abc", headers=_headers("bob", "proj-b"))
         assert resp.status_code == 200, resp.text
         assert resp.json()["access"] == ["user:bob"]
 
     def test_unrelated_caller_gets_404_no_disclosure(self):
         client, _ = _client([_graph_row(access=["user:bob"])])
-        resp = client.get(
-            "/umrs/knowledge/graphs/g-abc", headers=_headers("heidi", "proj-b")
-        )
+        resp = client.get("/umrs/knowledge/graphs/g-abc", headers=_headers("heidi", "proj-b"))
         assert resp.status_code == 404
 
-    def test_group_scope_via_active_membership(self):
-        shared = _graph_row(access=["group:lab"])
-        # resolve; then the lazy groups lookup admits; then the ontology block
-        client, pool = _client([shared, [("lab",)], []])
-        resp = client.get(
-            "/umrs/knowledge/graphs/g-abc", headers=_headers("carol", "proj-b")
-        )
+    def test_circle_scope_via_active_membership(self):
+        shared = _graph_row(access=["circle:proj-a/lab"])
+        # resolve; then the lazy circles lookup admits; then the ontology block
+        client, pool = _client([shared, [("proj-a/lab",)], []])
+        resp = client.get("/umrs/knowledge/graphs/g-abc", headers=_headers("carol", "proj-b"))
         assert resp.status_code == 200, resp.text
-        assert any("FROM group_members" in sql for sql, _ in pool.record)
+        assert any("FROM circle_members" in sql for sql, _ in pool.record)
 
     def test_list_includes_shared_graphs_for_admitted_callers(self):
         shared = _graph_row(access=["user:bob"])
@@ -136,16 +130,16 @@ class TestSharedGraphReads:
 class TestSetGraphAccess:
     def test_owner_replaces_the_list(self):
         rows = _graph_row()
-        updated = _graph_row(access=["user:bob", "group:lab"])
+        updated = _graph_row(access=["user:bob", "circle:proj-a/lab"])
         # resolve, set_access update, re-read
         client, pool = _client([rows, None, updated])
         resp = client.put(
             "/umrs/knowledge/graphs/g-abc/access",
-            json={"access": ["user:bob", "group:lab"]},
+            json={"access": ["user:bob", "circle:proj-a/lab"]},
             params=_IDENT,
         )
         assert resp.status_code == 200, resp.text
-        assert resp.json()["access"] == ["user:bob", "group:lab"]
+        assert resp.json()["access"] == ["user:bob", "circle:proj-a/lab"]
         assert any("UPDATE knowledge_graphs SET access" in sql for sql, _ in pool.record)
 
     def test_foreign_caller_cannot_set(self):
@@ -190,8 +184,6 @@ class TestSetGraphAccess:
     def test_get_access_route_shows_the_list_to_readers(self):
         shared = _graph_row(access=["user:bob"])
         client, _ = _client([shared])
-        resp = client.get(
-            "/umrs/knowledge/graphs/g-abc/access", headers=_headers("bob", "proj-b")
-        )
+        resp = client.get("/umrs/knowledge/graphs/g-abc/access", headers=_headers("bob", "proj-b"))
         assert resp.status_code == 200, resp.text
         assert resp.json() == {"graph_id": "g-abc", "access": ["user:bob"]}

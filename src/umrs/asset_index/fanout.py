@@ -40,19 +40,22 @@ class IndexWarning:
 # ── caller visibility (read-side authorization, Review F3/F4) ───────────────
 
 
-def _visible_by_claim(claim: Any, caller: Any, group_ids: frozenset[str] = frozenset()) -> bool:
+def _visible_by_claim(
+    claim: Any, caller: Any, circle_refs: frozenset[str] = frozenset()
+) -> bool:
     """Visibility of a parsed scope claim (fail closed for unknown kinds).
 
-    Group claim resolves through the ADR-050 §3 membership authority: the
-    caller sees rows for groups they are an ACTIVE member of (ids resolved
-    upstream — retired groups never land in the set).
+    Circle claim resolves through the ADR-086 membership authority: the
+    caller sees rows for circles they are an ACTIVE member of (refs
+    resolved upstream — retired circles never land in the set). Legacy
+    ``group`` claims admit no one (superseded, fail-closed).
     """
     if claim.kind == "system":
         return True
     if claim.kind == "project":
         return bool(getattr(caller, "project_id", "")) and claim.id == caller.project_id
-    if claim.kind == "group":
-        return claim.id in group_ids
+    if claim.kind == "circle":
+        return claim.id in circle_refs
     if claim.kind == "user":
         return bool(getattr(caller, "user_id", "")) and claim.id == caller.user_id
     return False
@@ -61,14 +64,14 @@ def _visible_by_claim(claim: Any, caller: Any, group_ids: frozenset[str] = froze
 def _visible_row(
     row: AssetRow,
     caller: Any | None,
-    group_ids: frozenset[str] = frozenset(),
+    circle_refs: frozenset[str] = frozenset(),
 ) -> bool:
     """Whether a caller may see this row.
 
     caller is a knowledge.access_scope.CallerScope (or None=model all-visible
     for in-process consumers). Non-admin callers see system rows, project
-    rows of their verified project, own user rows, and group rows for the
-    ACTIVE groups they belong to (ADR-050 §3 authority, resolved upstream).
+    rows of their verified project, own user rows, and circle rows for the
+    ACTIVE circles they belong to (ADR-086 authority, resolved upstream).
     """
     if caller is None or getattr(caller, "is_admin", False):
         return True
@@ -77,7 +80,9 @@ def _visible_row(
     try:
         from umrs.shared.scope_grammar import parse as parse_scope
 
-        return _visible_by_claim(parse_scope(row.scope, allow_legacy=True), caller, group_ids)
+        return _visible_by_claim(
+            parse_scope(row.scope, allow_legacy=True), caller, circle_refs
+        )
     except Exception:
         return False
 
@@ -88,7 +93,7 @@ def _scope_of(
     """Derive the canonical scope string for a row (umrs.shared.scope_grammar).
 
     Subsystem rows carry different owner markers; this collapses to the
-    canonical grammar (system / project:<id> / group:<id> / user:<id>).
+    canonical grammar (system / project:<id> / circle:<proj>/<id> / user:<id>).
     """
     if scope:
         from umrs.shared.scope_grammar import ScopeError
@@ -359,7 +364,7 @@ def build_asset_index(
     job_store: Any = None,
     model_ctx: Any = None,
     caller: Any = None,
-    caller_groups: Iterable[str] = (),
+    caller_circles: Iterable[str] = (),
 ) -> tuple[list[AssetRow], list[IndexWarning]]:
     """Compose the cross-subsystem asset index.
 
@@ -396,8 +401,8 @@ def build_asset_index(
         if builder is None or stores.get(kind) is None:
             continue
         rows.extend(_collect(kind, builder, warnings))
-    group_ids = frozenset(caller_groups)
-    return [row for row in rows if _visible_row(row, caller, group_ids)], warnings
+    circle_refs = frozenset(caller_circles)
+    return [row for row in rows if _visible_row(row, caller, circle_refs)], warnings
 
 
 # Model collectors need an AccessContext (strict store). It derives from the

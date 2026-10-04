@@ -2,7 +2,7 @@
 
 The corpus is a project namespace with no row of its own; 0116's
 ``rag_corpus_access`` registry carries its scope list. Reads the tier
-denies may pass through the list (user:/group:/project:/system); writes
+denies may pass through the list (user:/circle:/project:/system); writes
 never consult it. Fail-closed everywhere.
 """
 
@@ -71,9 +71,7 @@ def _request(user: str, project: str, admin: bool = False) -> Request:
     ]
     if admin:
         headers.append((b"x-verified-is-admin", b"true"))
-    return Request(
-        {"type": "http", "method": "GET", "path": "/", "headers": headers}
-    )
+    return Request({"type": "http", "method": "GET", "path": "/", "headers": headers})
 
 
 @pytest.fixture(autouse=True)
@@ -87,9 +85,9 @@ def _reset_store():
 
 
 def test_get_access_reads_the_row():
-    conn = _Conn(fetchone=(["user:bob", "group:lab"],))
+    conn = _Conn(fetchone=(["user:bob", "circle:proj-a/lab"],))
     store = CorpusAccessStore(lambda: _Pool(conn))
-    assert store.get_access("proj-a") == ["user:bob", "group:lab"]
+    assert store.get_access("proj-a") == ["user:bob", "circle:proj-a/lab"]
     sql, params = conn.record[0]
     assert "FROM rag_corpus_access" in sql and params == ("proj-a",)
 
@@ -114,7 +112,7 @@ def test_shared_readable_sql_joins_active_memberships():
     store = CorpusAccessStore(lambda: _Pool(conn))
     assert store.shared_readable("proj-a", "alice")
     sql, params = conn.record[0]
-    assert "group_members" in sql and "g.status = 'active'" in sql
+    assert "circle_members" in sql and "g.status = 'active'" in sql
     assert '["system"]' in sql and "jsonb_build_array" in sql
     assert params == ("proj-a", "user:alice", "alice")
 

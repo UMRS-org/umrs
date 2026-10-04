@@ -1036,7 +1036,7 @@ class ProvisionRequest(BaseModel):
         None,
         description=(
             "ADR-078 access scopes beyond the owning project: user:<id>, "
-            "project:<id>, group:<id> (members only) or system (admin only). "
+            "project:<id>, circle:<proj>/<id> (members only) or system (admin only). "
             "Omitted = the roster recipe's access when the caller may grant "
             "it, else the owning project only."
         ),
@@ -3279,7 +3279,9 @@ class EndpointAccessUpdate(BaseModel):
 
     access: list[str] = Field(
         default_factory=list,
-        description="user:<id> | project:<id> | group:<id> | system; [] = owning project only",
+        description=(
+            "user:<id> | project:<id> | circle:<proj>/<id> | system; [] = owning project only"
+        ),
     )
 
 

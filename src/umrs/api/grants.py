@@ -157,6 +157,31 @@ def _asset_writable(
     return False
 
 
+def _validate_circle_grantee(pool: Any, grantee_id: str) -> None:
+    """ADR-086: a circle grantee is '<project>/<circle>' and must resolve to
+    an ACTIVE circle (400 malformed, 404 unknown, 409 retired — never a
+    dangling audience accreting in the store)."""
+    from .circles import CircleNotFound, CirclesStore
+
+    project, sep, circle = grantee_id.partition("/")
+    if not sep or not project or not circle:
+        raise_typed(
+            PlatformError.grants(
+                "bad_request",
+                "circle grantee_id must be '<project_id>/<circle_id>'",
+            )
+        )
+    gconn = pool.getconn()
+    try:
+        crow = CirclesStore(gconn).get(project, circle)
+    except CircleNotFound:
+        raise_typed(PlatformError.grants("not_found", f"circle {grantee_id} not found"))
+    finally:
+        pool.putconn(gconn)
+    if crow["status"] != "active":
+        raise_typed(PlatformError.grants("conflict", f"circle {grantee_id} is retired"))
+
+
 # ── Routes ─────────────────────────────────────────────────────────────────
 
 
@@ -171,24 +196,8 @@ async def create_grant(body: GrantBody, request: Request) -> dict[str, Any]:
         raise_typed(
             PlatformError.grants("bad_request", "unknown asset_kind or grantee_kind")
         )
-    if body.grantee_kind == "group":
-        from .groups import GroupNotFound, GroupsStore
-
-        gconn = pool.getconn()
-        try:
-            grow = GroupsStore(gconn).get(body.grantee_id)
-        except GroupNotFound:
-            raise_typed(
-                PlatformError.grants("not_found", f"group {body.grantee_id} not found")
-            )
-        finally:
-            pool.putconn(gconn)
-        if grow["status"] != "active":
-            raise_typed(
-                PlatformError.grants(
-                    "conflict", f"group {body.grantee_id} is retired"
-                )
-            )
+    if body.grantee_kind == "circle":
+        _validate_circle_grantee(pool, body.grantee_id)
     if not _asset_writable(pool, body.asset_kind, body.asset_id, caller):
         # 404-shaped: the asset is absent or not the caller's to share.
         raise_typed(PlatformError.grants("not_found", "asset not found"))
@@ -254,11 +263,11 @@ async def list_my_grants(request: Request) -> dict[str, Any]:
         grants = store.list_for_grantee("user", caller.user_id)
         if caller.project_id:
             grants = grants + store.list_for_grantee("project", caller.project_id)
-        # ADR-050 §3: plus every grant riding an ACTIVE group the caller is in
-        from .groups import groups_for_user
+        # ADR-086: plus every grant riding an ACTIVE circle the caller is in
+        from .circles import circles_for_user
 
-        for gid in groups_for_user(conn, caller.user_id):
-            grants = grants + store.list_for_grantee("group", gid)
+        for ref in circles_for_user(conn, caller.user_id):
+            grants = grants + store.list_for_grantee("circle", ref)
     finally:
         pool.putconn(conn)
     return _serialize(grants)

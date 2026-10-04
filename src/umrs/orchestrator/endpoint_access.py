@@ -5,7 +5,8 @@ canonical grammar (``umrs.shared.scope_grammar``)::
 
     user:<user_id>        that user only
     project:<project_id>  callers whose verified project is that project
-    group:<group_id>      members of that (active) group
+    circle:<project_id>/<circle_id>
+                          members of that (active) circle
     system                every authenticated caller
 
 A row without the key keeps the historical rule: ``project:<owning project>``
@@ -15,7 +16,7 @@ access (it is where the endpoint was provisioned and is billed).
 Access governs *use* (routing, model listing, warm reuse). Lifecycle writes
 (deprovision, refresh, re-scoping) stay with the owning project or an admin.
 Sharing spends only the owner's GPU, so the owner may name any user, project
-or group; ``system`` (everyone's model list) is admin-only.
+or circle; ``system`` (everyone's model list) is admin-only.
 
 The policy itself is the shared one-guard module
 (``umrs.shared.access_scopes``, ADR-080); this module keeps the
@@ -60,7 +61,7 @@ class AccessError(AccessListError):
 
 
 class EndpointCaller(ResourceCaller):
-    """The routing caller: verified identity + lazily resolved groups."""
+    """The routing caller: verified identity + lazily resolved circles."""
 
 
 def endpoint_scopes(endpoint: Any) -> list[Scope]:
