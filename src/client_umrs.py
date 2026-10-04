@@ -2461,7 +2461,10 @@ def _handle_admin_command(args):
             print(f"  {_yellow(token)}")
             print()
             print(f"  {_dim('Save this token — it cannot be retrieved later.')}")
-            print(f"  {_dim('Use with: umrs --admin-token <token> <command>')}")
+            # Shell-safe: the token is umrs-admin-<urlsafe base64>; no <PLACEHOLDER>
+            # (bash reads <X> as an input redirect).
+            use_with = f"Use with: umrs --admin-token {token} COMMAND"
+            print(f"  {_dim(use_with)}")
             print(
                 f"  {_dim('NOTE: this is NOT a Gateway/r4 JWT — use umrs-server admin token generate-jwt for that.')}"
             )

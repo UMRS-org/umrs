@@ -162,8 +162,17 @@ services:
       DB_SUPERUSER_PASSWORD: ${POSTGRES_PASSWORD}
       UMRS_REGISTRY_POSTGRES_DSN: "postgres://${POSTGRES_USER:-umrs}:${POSTGRES_PASSWORD}@127.0.0.1:${POSTGRES_PORT:-5432}/${POSTGRES_DB_RCCS:-front_rccs}"
       # ADR-060 U-1: endpoint registry in the shared umrs_db, venue-scoped
-      # (wins over the per-cluster DSN above, kept as rollback fallback)
+      # (wins over the per-cluster DSN above, kept as rollback fallback —
+      # frozen at the U-1 flip, so that rollback is lossy; plan doc 2026-10-03)
       UMRS_ENDPOINT_REGISTRY_SHARED: "1"
+      # Public gateway URL a token minted in this container embeds as the
+      # gateway_url claim, so 'r4 auth login --api-key TOKEN' needs no other
+      # flag (2026-10-03). The converge writes UMRS_RCCS_PUBLIC_GATEWAY_URL
+      # into .env from umrs_front_rccs_gateway_url; empty = no claim. Only this
+      # site's URL arrives under the name the CLI reads; all four
+      # UMRS_<C>_PUBLIC_GATEWAY_URL keys still reach every container via
+      # env_file: .env (the ADR-060 hub's per-venue lookup, plan U-3).
+      UMRS_PUBLIC_GATEWAY_URL: ${UMRS_RCCS_PUBLIC_GATEWAY_URL:-}
       S3_BACKEND: ${S3_BACKEND:-seaweedfs}
       S3_ENDPOINT_URL: "http://127.0.0.1:${S3_PORT:-9000}"
       S3_IAM_ENDPOINT_URL: "http://127.0.0.1:${S3_IAM_PORT:-8111}"
@@ -307,8 +316,17 @@ services:
       DB_SUPERUSER_PASSWORD: ${POSTGRES_PASSWORD}
       UMRS_REGISTRY_POSTGRES_DSN: "postgres://${POSTGRES_USER:-umrs}:${POSTGRES_PASSWORD}@127.0.0.1:${POSTGRES_PORT:-5432}/${POSTGRES_DB_AI4S:-front_ai4s}"
       # ADR-060 U-1: endpoint registry in the shared umrs_db, venue-scoped
-      # (wins over the per-cluster DSN above, kept as rollback fallback)
+      # (wins over the per-cluster DSN above, kept as rollback fallback —
+      # frozen at the U-1 flip, so that rollback is lossy; plan doc 2026-10-03)
       UMRS_ENDPOINT_REGISTRY_SHARED: "1"
+      # Public gateway URL a token minted in this container embeds as the
+      # gateway_url claim, so 'r4 auth login --api-key TOKEN' needs no other
+      # flag (2026-10-03). The converge writes UMRS_AI4S_PUBLIC_GATEWAY_URL
+      # into .env from umrs_front_ai4s_gateway_url; empty = no claim. Only this
+      # site's URL arrives under the name the CLI reads; all four
+      # UMRS_<C>_PUBLIC_GATEWAY_URL keys still reach every container via
+      # env_file: .env (the ADR-060 hub's per-venue lookup, plan U-3).
+      UMRS_PUBLIC_GATEWAY_URL: ${UMRS_AI4S_PUBLIC_GATEWAY_URL:-}
       S3_BACKEND: ${S3_BACKEND:-seaweedfs}
       S3_ENDPOINT_URL: "http://127.0.0.1:${S3_PORT:-9000}"
       S3_IAM_ENDPOINT_URL: "http://127.0.0.1:${S3_IAM_PORT:-8111}"
@@ -436,8 +454,17 @@ services:
       DB_SUPERUSER_PASSWORD: ${POSTGRES_PASSWORD}
       UMRS_REGISTRY_POSTGRES_DSN: "postgres://${POSTGRES_USER:-umrs}:${POSTGRES_PASSWORD}@127.0.0.1:${POSTGRES_PORT:-5432}/${POSTGRES_DB_BDRT:-front_bdrt}"
       # ADR-060 U-1: endpoint registry in the shared umrs_db, venue-scoped
-      # (wins over the per-cluster DSN above, kept as rollback fallback)
+      # (wins over the per-cluster DSN above, kept as rollback fallback —
+      # frozen at the U-1 flip, so that rollback is lossy; plan doc 2026-10-03)
       UMRS_ENDPOINT_REGISTRY_SHARED: "1"
+      # Public gateway URL a token minted in this container embeds as the
+      # gateway_url claim, so 'r4 auth login --api-key TOKEN' needs no other
+      # flag (2026-10-03). The converge writes UMRS_BDRT_PUBLIC_GATEWAY_URL
+      # into .env from umrs_front_bdrt_gateway_url; empty = no claim. Only this
+      # site's URL arrives under the name the CLI reads; all four
+      # UMRS_<C>_PUBLIC_GATEWAY_URL keys still reach every container via
+      # env_file: .env (the ADR-060 hub's per-venue lookup, plan U-3).
+      UMRS_PUBLIC_GATEWAY_URL: ${UMRS_BDRT_PUBLIC_GATEWAY_URL:-}
       S3_BACKEND: ${S3_BACKEND:-seaweedfs}
       S3_ENDPOINT_URL: "http://127.0.0.1:${S3_PORT:-9000}"
       S3_IAM_ENDPOINT_URL: "http://127.0.0.1:${S3_IAM_PORT:-8111}"
@@ -557,8 +584,17 @@ services:
       DB_SUPERUSER_PASSWORD: ${POSTGRES_PASSWORD}
       UMRS_REGISTRY_POSTGRES_DSN: "postgres://${POSTGRES_USER:-umrs}:${POSTGRES_PASSWORD}@127.0.0.1:${POSTGRES_PORT:-5432}/${POSTGRES_DB_OCTOPUS:-front_octopus}"
       # ADR-060 U-1: endpoint registry in the shared umrs_db, venue-scoped
-      # (wins over the per-cluster DSN above, kept as rollback fallback)
+      # (wins over the per-cluster DSN above, kept as rollback fallback —
+      # frozen at the U-1 flip, so that rollback is lossy; plan doc 2026-10-03)
       UMRS_ENDPOINT_REGISTRY_SHARED: "1"
+      # Public gateway URL a token minted in this container embeds as the
+      # gateway_url claim, so 'r4 auth login --api-key TOKEN' needs no other
+      # flag (2026-10-03). The converge writes UMRS_OCTOPUS_PUBLIC_GATEWAY_URL
+      # into .env from umrs_front_octopus_gateway_url; empty = no claim. Only this
+      # site's URL arrives under the name the CLI reads; all four
+      # UMRS_<C>_PUBLIC_GATEWAY_URL keys still reach every container via
+      # env_file: .env (the ADR-060 hub's per-venue lookup, plan U-3).
+      UMRS_PUBLIC_GATEWAY_URL: ${UMRS_OCTOPUS_PUBLIC_GATEWAY_URL:-}
       S3_BACKEND: ${S3_BACKEND:-seaweedfs}
       S3_ENDPOINT_URL: "http://127.0.0.1:${S3_PORT:-9000}"
       S3_IAM_ENDPOINT_URL: "http://127.0.0.1:${S3_IAM_PORT:-8111}"

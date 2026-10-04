@@ -109,6 +109,16 @@ UMRS_SERVER_HOST=0.0.0.0
 # reach ZMQ.  Must be a routable hostname/IP, never 0.0.0.0.
 UMRS_ADVERTISE_HOST=data0.ai.r-ccs.riken.jp
 
+# Public gateway URL (token gateway_url claim, 2026-10-03). A JWT minted in
+# umrs-server-<c> embeds UMRS_<C>_PUBLIC_GATEWAY_URL, so the user logs in with
+# 'r4 auth login --api-key TOKEN' alone. Unset = tokens carry no URL. The
+# converge writes these lines; a manual setup uncomments them. Plain
+# https://HOST[/PATH] only (letters, digits, . _ ~ / -), no quotes.
+# UMRS_RCCS_PUBLIC_GATEWAY_URL=https://data0.ai.r-ccs.riken.jp/rccs
+# UMRS_AI4S_PUBLIC_GATEWAY_URL=https://data0.ai.r-ccs.riken.jp/ai4s
+# UMRS_BDRT_PUBLIC_GATEWAY_URL=https://data0.ai.r-ccs.riken.jp/bdrt
+# UMRS_OCTOPUS_PUBLIC_GATEWAY_URL=https://data0.ai.r-ccs.riken.jp/octopus
+
 # Cluster master SSH targets used for bootstrap checks and reverse tunnels.
 RCCS_SSH_TARGET=masaru.nagaso@rccs-cloud
 AI4S_SSH_TARGET=ea0022@AI4S
