@@ -48,14 +48,13 @@ DEFAULT_NB_MSG = 10240
 # Sentinel for the control-loop dispatcher: continue the loop (never a parser result).
 _CONTINUE = object()
 
-# Control commands that carry no client_id field (readiness pings, the global
-# status view, and the JWT-authenticated bootstrap).
+# Control commands that carry no client_id field (readiness pings and the
+# global status view, which _parse_status_all scopes to the session itself).
 _IDENTITY_FREE_COMMANDS = frozenset(
     {
         TaskCmd.HANDSHAKE,
         TaskCmd.HAND_CHECK,
         TaskCmd.STATUS_ALL,
-        TaskCmd.GET_BOOTSTRAP_CONTEXT,
     }
 )
 
@@ -83,6 +82,19 @@ def _wire_client_id(user_id: str) -> str:
     return (user_id or "").replace(":", "_")
 
 
+def _own_status_only(payload: str, client_id: str) -> str:
+    """A STATUS_ALL payload narrowed to *client_id*'s entry."""
+    try:
+        data = json.loads(payload)
+    except (TypeError, json.JSONDecodeError):
+        return payload
+    clients = data.get("clients") if isinstance(data, dict) else None
+    if not isinstance(clients, dict):
+        return payload
+    data["clients"] = {cid: v for cid, v in clients.items() if cid == client_id}
+    return json.dumps(data, ensure_ascii=False, default=str)
+
+
 #: Bound on the per-session and per-connection identity caches.
 _IDENTITY_CACHE_MAX = 4096
 
@@ -103,6 +115,7 @@ class MessageQueue:
     _session_entries: "collections.OrderedDict | None" = None
     _sender_entries: "collections.OrderedDict | None" = None
     _current_session_entry: object | None = None
+    _dispatch_session_id: str | None = None  # session of the message in dispatch
     owner_client_id: str | None = None  # data queues: the user they belong to
 
     _AUTH_FIELD_INDEX = {
@@ -880,10 +893,40 @@ class MessageQueue:
         return None
 
     def _parse_status_all(self, splited_msg, zmq_sender_id):
-        payload = self._get_status_all_payload()
-        with contextlib.suppress(RuntimeError):
-            self.send_string(payload, zmq_sender_id)
+        payload = self._status_all_for_session(zmq_sender_id)
+        if payload is not None:
+            with contextlib.suppress(RuntimeError):
+                self.send_string(payload, zmq_sender_id)
         return None
+
+    def _status_all_for_session(self, zmq_sender_id) -> str | None:
+        """STATUS_ALL scoped to the sending session (session mode): an admin
+        sees every client, anyone else only their own entry; no known session
+        is refused (None, reply sent). Every client's summaries and unfinished
+        task keys went to any caller before 2026-10-04."""
+        provider = self._identity_provider()
+        payload = self._get_status_all_payload()
+        if provider is None:
+            return payload
+        session_id = self._dispatch_session_id
+        entry = self._session_entry(provider, session_id) if session_id else None
+        if entry is None:
+            refusal = {"status": "error", "message": "no authenticated ZMQ session"}
+            with contextlib.suppress(RuntimeError):
+                self.send_string(json.dumps(refusal), zmq_sender_id)
+            return None
+        if self._session_is_admin(entry):
+            return payload
+        return _own_status_only(payload, _wire_client_id(entry.user_id))
+
+    def _session_is_admin(self, entry) -> bool:
+        """The admin rule get_auth_context applies: the session's JWT grants,
+        or an admin token this same session presented."""
+        if entry.grants.is_admin:
+            return True
+        sessions = getattr(self, "_auth_sessions", None) or {}
+        token_ctx = sessions.get(f"session:{entry.session_id}")
+        return bool(token_ctx is not None and token_ctx.is_admin)
 
     def _parse_count_cmd(self, splited_msg, zmq_sender_id):
         """Parser for FILE, PROCESS_OBJECTS, ENROLL_USER: field[2] is an integer count."""
@@ -966,25 +1009,6 @@ class MessageQueue:
                 pass  # Not JSON — nothing to extract
         return cmd, (client_id, payload_str, zmq_sender_id)
 
-    def _parse_bootstrap_context(self, splited_msg, zmq_sender_id):
-        """Parser for GET_BOOTSTRAP_CONTEXT: requires JWT auth, returns auth context."""
-        jwt_token = self._control_auth_jwt()
-        if not jwt_token:
-            with contextlib.suppress(RuntimeError):
-                self.send_string(
-                    "AUTH_REQUIRED:JWT required for bootstrap", zmq_sender_id
-                )
-            return None
-        try:
-            from umrs.shared.auth import authenticate_request
-
-            auth_ctx = authenticate_request(jwt_token)
-        except Exception as exc:
-            with contextlib.suppress(RuntimeError):
-                self.send_string(f"AUTH_ERROR:{exc}", zmq_sender_id)
-            return None
-        return TaskCmd.GET_BOOTSTRAP_CONTEXT, (auth_ctx, zmq_sender_id)
-
     def _refresh_auth_session(self, client_id, cmd, token_field=None, splited_msg=None):
         """Refresh _auth_sessions[client_id] from the admin token embedded in the message."""
         token = None
@@ -1044,7 +1068,6 @@ class MessageQueue:
         TaskCmd.JOB_CANCEL: "_parse_json_payload",
         TaskCmd.JOB_LIST: "_parse_json_payload",
         TaskCmd.PURGE_BUCKETS: "_parse_json_payload",
-        TaskCmd.GET_BOOTSTRAP_CONTEXT: "_parse_bootstrap_context",
     }
 
     def server_control_queue_loop(self):
@@ -1057,6 +1080,7 @@ class MessageQueue:
 
         while True:
             zmq_sender_id, msg, session_id = self._next_control_message()
+            self._dispatch_session_id = session_id
             logger.info(
                 "Received control request: %s", self._redact_control_message(msg)
             )

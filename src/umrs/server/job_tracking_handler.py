@@ -189,6 +189,39 @@ WORKFLOW_RUN_SERVER_ONLY = (
 )
 
 
+def spec_resource_refusal(
+    job_type: JobType, spec: dict[str, Any], user_id: str, is_admin: bool
+) -> str | None:
+    """Why *user_id* may not submit a job naming this spec's resource, or None.
+
+    data_ingestion reads the named object with the server's S3 credentials
+    and writes back into that bucket; index_build runs on the admin DB
+    connection — a caller-chosen bucket or (database, table) reached any
+    user's data (review 2026-10-04). Shared by the ZMQ and HTTP submit paths.
+    """
+    if is_admin:
+        return None
+    from umrs.server.step_staging import bucket_owned_by, database_table_owned_by
+
+    if job_type == JobType.DATA_INGESTION and not bucket_owned_by(
+        str(spec.get("bucket") or ""), user_id
+    ):
+        return "data_ingestion spec.bucket is not a bucket you may use"
+    if job_type == JobType.INDEX_BUILD and not database_table_owned_by(
+        str(spec.get("database") or "").strip(), str(spec.get("table") or "").strip(), user_id
+    ):
+        return "index_build spec.database/table is not a table of one of your buckets"
+    return None
+
+
+def _raise_for_spec_resources(
+    job_type: JobType, spec: dict[str, Any], user_id: str, is_admin: bool
+) -> None:
+    refusal = spec_resource_refusal(job_type, spec, user_id, is_admin)
+    if refusal:
+        raise ValueError(refusal)
+
+
 def _check_submit_surface(job_type: JobType, internal: bool) -> None:
     if (job_type == JobType.WORKFLOW_RUN) != internal:
         raise ValueError(
@@ -309,16 +342,18 @@ class DurableJobCommandBackend:
             default=str,
         )
 
-    def submit(self, client_id: str, payload_str: str) -> str:
+    def submit(self, client_id: str, payload_str: str, *, is_admin: bool = False) -> str:
         """JOB_SUBMIT from a client: any job type but ``workflow_run``."""
-        return self._submit(client_id, payload_str, internal=False)
+        return self._submit(client_id, payload_str, internal=False, is_admin=is_admin)
 
     def submit_workflow_run(self, client_id: str, payload_str: str) -> str:
         """The server's own entry for a ``workflow_run`` job whose spec it
         built from an owner-scoped resolution (never a client payload)."""
         return self._submit(client_id, payload_str, internal=True)
 
-    def _submit(self, client_id: str, payload_str: str, *, internal: bool) -> str:
+    def _submit(
+        self, client_id: str, payload_str: str, *, internal: bool, is_admin: bool = False
+    ) -> str:
         try:
             payload = _parse_payload(payload_str)
         except json.JSONDecodeError as exc:
@@ -337,6 +372,7 @@ class DurableJobCommandBackend:
 
             project_id = payload.get("project_id", "default")
             spec = _validate_job_spec(job_type, payload.get("spec", {}))
+            _raise_for_spec_resources(job_type, spec, client_id, is_admin)
             priority = int(payload.get("priority", 0))
             max_attempts = int(payload.get("max_attempts", 3))
             restart_policy = _parse_restart_policy(
@@ -580,7 +616,7 @@ def _handle_job_command_scoped(
         METRICS.bridge_activity(_BRIDGE_NAME)
 
         if cmd == JOB_SUBMIT:
-            return backend.submit(client_id, payload_str)
+            return backend.submit(client_id, payload_str, is_admin=caller_is_admin)
         elif cmd == JOB_CANCEL:
             return backend.cancel(client_id, payload_str, is_admin=caller_is_admin)
         elif cmd == JOB_LIST:

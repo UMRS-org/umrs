@@ -200,6 +200,19 @@ class DataBase:
             self.db_pool.putconn(conn)
 
 
+
+def _exportable_entry(buckets_cfg, path_to_bucket: str, user: str):
+    """The bucket's config when *user* may export it — their own bucket or
+    one whose ADR-080 access list admits them; another user's bucket reads
+    exactly like a missing one (review 2026-10-04: any session could export
+    any bucket's embeddings and object keys)."""
+    from umrs.server.step_staging import bucket_owned_by
+
+    entry = buckets_cfg.get(path_to_bucket)
+    if entry is None or not bucket_owned_by(path_to_bucket, user):
+        return None
+    return entry
+
 def export_embeddings(
     active_threads,
     user,
@@ -239,7 +252,7 @@ def export_embeddings(
             return ["embedding"]
         return columns
 
-    entry = buckets_cfg.get(path_to_bucket)
+    entry = _exportable_entry(buckets_cfg, path_to_bucket, user)
     if entry is None:
         results = json.dumps(
             {

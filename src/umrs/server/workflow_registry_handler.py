@@ -272,6 +272,8 @@ def _handle_list_workflows(client_id: str, payload_str: str) -> str:
         list admits this caller (marked ``shared: true``)
       - verified_project: str — the caller's gateway-verified project (for
         project-scoped access entries)
+      - include_system: bool — also append the platform's ``system``-scope
+        workflows (every user may run them; an owner filter used to hide them)
     """
     try:
         payload = json.loads(payload_str) if payload_str else {}
@@ -284,6 +286,7 @@ def _handle_list_workflows(client_id: str, payload_str: str) -> str:
         catalog = _load_catalog()
     workflows = _filtered_workflows(catalog.get("workflows", []), payload)
     _append_shared_workflows(workflows, catalog.get("workflows", []), payload)
+    _append_system_workflows(workflows, catalog.get("workflows", []), payload)
 
     return json.dumps(
         {
@@ -346,6 +349,34 @@ def _append_shared_workflows(
             marked["shared"] = True
             workflows.append(marked)
             seen.add((entry.get("name"), entry.get("version"), entry.get("user_id")))
+
+
+def _append_system_workflows(
+    workflows: list[dict[str, Any]],
+    catalog_entries: list[dict[str, Any]],
+    payload: dict[str, Any],
+) -> None:
+    """Append ``system``-scope entries when the payload asks (a caller's own
+    list is owner-filtered, which dropped the platform workflows every user
+    may run — review 2026-10-04). The name filter still applies."""
+    if not (isinstance(payload, dict) and payload.get("include_system")):
+        return
+    name_f = (payload.get("name") or "").lower()
+    seen = {(w.get("name"), w.get("version"), w.get("user_id")) for w in workflows}
+    for entry in catalog_entries:
+        if _system_candidate(entry, seen, name_f):
+            workflows.append(entry)
+            seen.add((entry.get("name"), entry.get("version"), entry.get("user_id")))
+
+
+def _system_candidate(entry: dict[str, Any], seen: set, name_f: str) -> bool:
+    """A system-scope entry not listed yet that matches the name filter."""
+    key = (entry.get("name"), entry.get("version"), entry.get("user_id"))
+    return (
+        entry.get("scope") == "system"
+        and key not in seen
+        and (not name_f or name_f in entry.get("name", "").lower())
+    )
 
 
 def _handle_unregister_workflow(client_id: str, payload_str: str) -> str:

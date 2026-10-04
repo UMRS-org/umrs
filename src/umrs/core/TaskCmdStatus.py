@@ -18,7 +18,7 @@ class TaskCmd:
     HAND_CHECK = "HAND_CHECK"
     CREATE_DATA_QUEUE = "CREATE_DATA_QUEUE"
     STATUS = "STATUS"
-    STATUS_ALL = "STATUS_ALL"  # server-wide snapshot: all clients in one response
+    STATUS_ALL = "STATUS_ALL"  # one snapshot: every client for an admin session, else the caller only
     EXPORT_EMBEDDINGS = "EXPORT_EMBEDDINGS"
     # Model registry commands
     MODEL_REGISTER = "MODEL_REGISTER"
@@ -47,8 +47,6 @@ class TaskCmd:
     )
     # Admin enrollment
     ENROLL_USER = "ENROLL_USER"  # admin-only: register a new user
-    # Bootstrap context
-    GET_BOOTSTRAP_CONTEXT = "GET_BOOTSTRAP_CONTEXT"  # return versioned user context
     # Bucket management
     PURGE_BUCKETS = "PURGE_BUCKETS"  # delete user-owned extra S3 buckets
     # Meta-key: request all status entries

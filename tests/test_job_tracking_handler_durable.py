@@ -572,10 +572,11 @@ def test_submit_with_another_users_idempotency_key_never_returns_their_job():
     bob_key = store.jobs[bob_job].idempotency_key
     payload = json.dumps(
         {
-            "job_type": "index_build",
+            # a type with no resource check, so the duplicate path is reached
+            "job_type": "cleanup",
             "project_id": "p",
             "idempotency_key": bob_key,
-            "spec": {"database": "d", "table": "t"},
+            "spec": {"target": "endpoint", "job_id": "job-x"},
         }
     )
     result = json.loads(DurableJobCommandBackend(store).submit("alice", payload))

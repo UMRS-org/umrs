@@ -21,19 +21,70 @@ _SELECTED_FIELDS = [
 ]
 
 
+def _client_may_use(bucket: str, client_id: str) -> bool:
+    """The rule the files API and the HPC lane share (``bucket_owned_by``):
+    the client's own personal or provisioned bucket, or one whose ADR-080
+    access list admits it. An S3 event naming any other bucket would run
+    that bucket's model — user_script / user_workflow included — on keys
+    the sender picked (review 2026-10-04)."""
+    from umrs.server.step_staging import bucket_owned_by
+
+    return bucket_owned_by(bucket, client_id)
+
+
+def _split_s3_object(s3_object: str) -> tuple[str, str]:
+    """``s3://bucket/key`` → (bucket, key)."""
+    path_to_bucket, s3_key = s3_object.replace("s3://", "").split("/", 1)
+    return path_to_bucket, s3_key
+
+
+def _event_buckets(s3_objects) -> set[str] | None:
+    """The distinct buckets the events name; None when one is malformed."""
+    try:
+        return {_split_s3_object(s3_object)[0] for s3_object in s3_objects}
+    except ValueError:
+        return None
+
+
+def _refused_clients(client_entries) -> set[str]:
+    """Clients refused whole — an event naming a bucket they may not use, or
+    a malformed event — so none of their keys (own buckets included) are
+    processed and the rest of the batch still runs. Each distinct bucket is
+    checked once per client: the ownership lookup can hit the database, and
+    a batch holds thousands of events for a handful of buckets."""
+    refused: set[str] = set()
+    for client_id, s3_objects in client_entries:
+        buckets = _event_buckets(s3_objects)
+        if buckets is None:
+            logger.warning("PROCESS_OBJECTS: malformed event from %s; refused", client_id)
+            refused.add(client_id)
+            continue
+        denied = sorted(b for b in buckets if not _client_may_use(b, client_id))
+        if denied:
+            logger.warning(
+                "PROCESS_OBJECTS: %s may not use bucket(s) %s; refused", client_id, denied
+            )
+            refused.add(client_id)
+    return refused
+
+
 def _build_bucket_membership(client_entries):
-    """Per-bucket key lists + client membership from raw client entries."""
+    """Per-bucket key lists + client membership from raw client entries,
+    and the clients refused for naming a bucket they may not use."""
+    refused = _refused_clients(client_entries)
     keys_per_bucket: dict[str, list] = {}
     bucket_to_clients: dict[str, set] = defaultdict(set)
     for client_id, s3_objects in client_entries:
+        if client_id in refused:
+            continue
         for s3_object in s3_objects:
             logger.debug("\t\t-->%s", s3_object)
-            path_to_bucket, s3_key = s3_object.replace("s3://", "").split("/", 1)
+            path_to_bucket, s3_key = _split_s3_object(s3_object)
             bucket_keys = keys_per_bucket.setdefault(path_to_bucket, [])
             if s3_key not in bucket_keys:
                 bucket_keys.append(s3_key)
             bucket_to_clients[path_to_bucket].add(client_id)
-    return keys_per_bucket, bucket_to_clients
+    return keys_per_bucket, bucket_to_clients, refused
 
 
 def _resolve_model_groups(keys_per_bucket, bucket_to_clients, buckets_cfg,
@@ -153,13 +204,20 @@ def prepare_model_groups(
     if client_callbacks is None:
         client_callbacks = {}
 
-    keys_per_bucket, bucket_to_clients = _build_bucket_membership(client_entries)
+    keys_per_bucket, bucket_to_clients, refused = _build_bucket_membership(
+        client_entries
+    )
     model_groups, bucket_errors = _resolve_model_groups(
         keys_per_bucket, bucket_to_clients, buckets_cfg, device, force_recompute
     )
     errored_clients = _fire_bucket_error_callbacks(
         bucket_errors, bucket_to_clients, client_callbacks
     )
+    for client_id in refused - errored_clients:
+        callback = client_callbacks.get(client_id)
+        if callback:
+            callback(TaskStatus.ERROR)
+    errored_clients |= refused
     return _assemble_result_groups(model_groups, client_callbacks, errored_clients)
 
 

@@ -7337,7 +7337,7 @@ def main():
     # === STATUS_ALL (ejeannot batch lane) ===
     subparsers.add_parser(
         "status-all",
-        help="Fetch the status of every client known to the server in one request",
+        help="Fetch every client's status in one request (admin sessions; others get their own entry)",
     )
 
     # === Embedding maintenance commands ===

@@ -12,7 +12,7 @@ class _CapturingBackend:
     def __init__(self, sink: list):
         self._sink = sink
 
-    def submit(self, _client_id, _payload_str):
+    def submit(self, _client_id, _payload_str, **_kw):
         self._sink.append(get_request_id())
         return json.dumps({"status": "ok"})
 

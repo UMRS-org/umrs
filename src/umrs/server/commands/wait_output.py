@@ -29,6 +29,14 @@ from .base import CommandHandler, HandlerContext
 logger = logging.getLogger(__name__)
 
 
+
+def _may_watch(path_to_bucket: str, client_id: str) -> bool:
+    """The caller's own bucket or one its ADR-080 access list admits."""
+    from umrs.server.step_staging import bucket_owned_by
+
+    return bucket_owned_by(path_to_bucket, client_id)
+
+
 class WaitOutputHandler(CommandHandler):
     """Handle WAIT_OUTPUT — block until an output bucket's DB table is updated."""
 
@@ -39,6 +47,9 @@ class WaitOutputHandler(CommandHandler):
         path_to_bucket, entry = ctx.buckets_cfg.find_by_output_path(
             output_path_to_bucket
         )
+        if entry is not None and not _may_watch(path_to_bucket, client_id):
+            # Another user's bucket reads like an unknown one (review 2026-10-04).
+            entry = None
         if entry is None:
             # Bucket alias unknown — reply immediately so the client is not hung.
             with contextlib.suppress(RuntimeError):

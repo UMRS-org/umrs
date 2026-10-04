@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
@@ -23,14 +24,40 @@ def _send_reply(
         logger.error("Error sending %s response: %s", label, exc)
 
 
+
+def _scoped_list_payload(payload_str: str, client_id: str, is_admin: bool) -> str:
+    """LIST_WORKFLOWS over ZMQ scoped like the HTTP route: a non-admin sees
+    their own workflows plus those whose ADR-080 access list admits them.
+    The payload's owner filter and share subject become the bound caller,
+    and its project claim is dropped (ZMQ carries no gateway-verified
+    project). Before 2026-10-04 an empty payload listed every user's
+    workflows, source paths and access lists included."""
+    if is_admin:
+        return payload_str
+    try:
+        payload = json.loads(payload_str) if payload_str else {}
+    except json.JSONDecodeError:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    payload["user_id"] = client_id
+    payload["include_shared_for"] = client_id
+    payload["include_system"] = True
+    payload.pop("verified_project", None)
+    return json.dumps(payload)
+
+
 class ListWorkflowsHandler(CommandHandler):
     """Handle LIST_WORKFLOWS — list registered workflows for a user."""
 
     def execute(self, payload: Any, ctx: HandlerContext) -> None:
         task_id, update_status = self._make_task(ctx, TaskCmd.LIST_WORKFLOWS, payload)
         client_id, payload_str, zmq_sender_id = payload
+        auth = ctx.control_mq.get_auth_context(client_id)
         response_json = handle_workflow_command(
-            "LIST_WORKFLOWS", client_id, payload_str
+            "LIST_WORKFLOWS",
+            client_id,
+            _scoped_list_payload(payload_str, client_id, getattr(auth, "is_admin", False) is True),
         )
         _send_reply(ctx, zmq_sender_id, response_json, "LIST_WORKFLOWS")
         update_status(TaskStatus.COMPLETED)
