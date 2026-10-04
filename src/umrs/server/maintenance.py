@@ -592,10 +592,12 @@ def handle_purge_buckets(
     """Delete user-owned extra S3 buckets via admin credentials.
 
        Security invariants:
-         - Only buckets whose name starts with the normalised username prefix
-           (``<username>.``) can be deleted.
-         - Configured buckets (those still referenced in the user's experience
-           config) are excluded from deletion.
+         - Only the caller's own buckets can be deleted: the exact provisioned
+           shape ``<username>.<xp>.<alias>[-output]`` with no other owner on
+           record (``step_staging.bucket_purgeable_by``; a bare prefix let user
+           ``first`` purge ``first.last``'s buckets — review 2026-10-04).
+         - The client chooses which of its buckets are "extra"; the server
+           does not exclude configured ones.
          - Admin credentials are used server-side; the user never sees them.
 
        Payload JSON:
@@ -616,14 +618,16 @@ def handle_purge_buckets(
     if not requested_buckets:
         return json.dumps({"status": "error", "message": "No buckets specified"})
 
-    # Normalise username for prefix matching (same logic as client-side)
+    from umrs.server.step_staging import bucket_purgeable_by
+
+    # Bucket-name prefix of this user (the experience clean-up below keys on it)
     username_prefix = client_id.lower().replace("_", "-") + "."
 
     # Validate every requested bucket belongs to this user
     for bname in requested_buckets:
-        if not bname.startswith(username_prefix):
+        if not bucket_purgeable_by(bname, client_id):
             logger.warning(
-                "PURGE_BUCKETS denied: user=%s tried to delete bucket=%s (prefix mismatch)",
+                "PURGE_BUCKETS denied: user=%s tried to delete bucket=%s (not theirs)",
                 client_id,
                 bname,
             )

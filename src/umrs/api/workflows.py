@@ -571,6 +571,9 @@ async def list_workflows(
             # ADR-080: entries whose access list admits the caller (shared).
             ("include_shared_for", _header_str(x_user_id)),
             ("verified_project", _header_str(x_verified_project_id)),
+            # The owner filter above dropped the system-scope workflows every
+            # user may run (review 2026-10-04).
+            ("include_system", True if resolved_user_id else None),
         )
         if value is not None
     }

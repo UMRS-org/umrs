@@ -211,6 +211,36 @@ def _enforce_job_scope_policy(
     _check_scope_target(scope, metadata, user_id, project_id, is_admin)
 
 
+def _enforce_spec_resources(
+    job_type: "JobType",
+    spec: dict[str, Any],
+    user_id: str,
+    is_admin: bool,
+    fan_out_jobs: list[dict[str, Any]] | None,
+) -> None:
+    """A data_ingestion bucket / index_build (database, table) the caller may
+    use — the parent and every fan-out child (shared with the ZMQ submit,
+    ``job_tracking_handler.spec_resource_refusal``; review 2026-10-04)."""
+    from ..server.job_tracking_handler import spec_resource_refusal
+
+    for target_type, target_spec in _spec_targets(job_type, spec, fan_out_jobs):
+        refusal = spec_resource_refusal(target_type, target_spec, user_id, is_admin)
+        _deny_unless(refusal is None, refusal or "")
+
+
+def _spec_targets(job_type, spec, fan_out_jobs):
+    """(job_type, spec) of the parent and of every fan-out child with a known
+    type (the fan-out builder rejects an unknown one itself)."""
+    targets = [(job_type, spec)]
+    for child in fan_out_jobs or []:
+        try:
+            child_type = JobType(str((child or {}).get("job_type") or ""))
+        except ValueError:
+            continue
+        targets.append((child_type, (child or {}).get("spec") or {}))
+    return targets
+
+
 def _check_scope_target(
     scope: str,
     metadata: dict[str, Any],
@@ -639,6 +669,7 @@ async def create_job(
             x_verified_hmac,
         )
         _enforce_job_scope_policy(job_type, spec, user_id, project_id, is_admin)
+        _enforce_spec_resources(job_type, spec, user_id, is_admin, request.fan_out_jobs)
 
         create_method = (
             store.create_fan_out_graph if request.fan_out_jobs else store.create_job

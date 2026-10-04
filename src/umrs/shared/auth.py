@@ -80,7 +80,6 @@ USER_ALLOWED_COMMANDS: set[str] = frozenset(
         "UPDATE",  # Update embeddings across configured buckets (only client files)
         "CHECK",  # Global consistency check across all users' buckets (only client files)
         "RECOMPUTE",  # Recompute embeddings across user's own buckets
-        "GET_BOOTSTRAP_CONTEXT",
         "PURGE_BUCKETS",
     }
 )

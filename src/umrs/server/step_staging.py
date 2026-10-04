@@ -245,6 +245,41 @@ def bucket_owned_by(bucket: str, owner: str) -> bool:
     return registry is not None and _registered_owner(registry, bucket) == owner
 
 
+
+def bucket_purgeable_by(bucket: str, owner: str) -> bool:
+    """Whether *owner* may purge *bucket*: the exact provisioned shape
+    ``<owner>.<xp>.<alias>[-output]`` (a prefix alone let user ``first``
+    purge ``first.last``'s buckets, review 2026-10-04), and no other owner on
+    record — neither a personal-bucket row nor a registry entry naming
+    someone else. Unregistered leftovers of *owner* stay purgeable."""
+    if not owner:
+        return False
+    prefix = owner_bucket_prefix(owner)
+    remainder = bucket[len(prefix) :] if bucket.startswith(prefix) else ""
+    if not _OWNED_REMAINDER_RE.fullmatch(remainder):
+        return False
+    personal = _personal_owner(bucket)
+    if personal is not None and personal != owner:
+        return False
+    registry = _bucket_registry
+    registered = _registered_owner(registry, bucket) if registry is not None else None
+    return registered in (None, owner)
+
+
+def database_table_owned_by(database: str, table: str, owner: str) -> bool:
+    """Whether (*database*, *table*) belongs to one of *owner*'s provisioned
+    buckets — the target an index_build job may touch (it runs on the admin
+    DB connection, so a caller-chosen pair reached any user's tables)."""
+    registry = _bucket_registry
+    if not owner or registry is None:
+        return False
+    return any(
+        getattr(entry, "s3_username", None) == owner
+        and getattr(entry, "db_name", None) == database
+        and getattr(entry, "table_name", None) == table
+        for entry in registry.values()
+    )
+
 def _check_registered(bucket: str, owner: str) -> None:
     registry = _bucket_registry
     if registry is None:

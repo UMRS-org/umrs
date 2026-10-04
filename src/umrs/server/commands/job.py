@@ -43,6 +43,7 @@ class JobSubmitHandler(CommandHandler):
             client_id,
             payload_str,
             backend=ctx.job_command_backend,
+            caller_is_admin=_caller_is_admin(ctx, client_id, zmq_sender_id),
         )
         _send_reply(ctx, zmq_sender_id, response_json, "JOB_SUBMIT")
         update_status(TaskStatus.COMPLETED)

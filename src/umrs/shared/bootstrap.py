@@ -46,8 +46,9 @@ def build_bootstrap_context(
     """Build a versioned bootstrap context for the authenticated user.
 
     The returned dict is serialisable to JSON and delivered to clients
-    via ``GET_BOOTSTRAP_CONTEXT`` (ZMQ) or ``GET /umrs/bootstrap``
-    (HTTP).
+    via ``GET /umrs/bootstrap`` (HTTP). The ZMQ ``GET_BOOTSTRAP_CONTEXT``
+    command was retired 2026-10-04: it called an undefined method, had no
+    registered handler, and no client sent it.
 
     Args:
         auth_ctx: Authenticated user context (from ``authenticate_request``).
