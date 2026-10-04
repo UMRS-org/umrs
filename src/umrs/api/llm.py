@@ -625,37 +625,37 @@ def _get_caller_identity(request: Request) -> tuple[str, str]:
     return verified_identity(request, require_project=True)
 
 
-_GROUPS_TTL_SEC = 60.0
-_groups_cache: dict[str, tuple[float, frozenset[str]]] = {}
+_CIRCLES_TTL_SEC = 60.0
+_circles_cache: dict[str, tuple[float, frozenset[str]]] = {}
 
 
-def _cached_groups(request: Request, user_id: str) -> frozenset[str]:
-    """The caller's active groups, cached per user for one minute.
+def _cached_circles(request: Request, user_id: str) -> frozenset[str]:
+    """The caller's active circle refs, cached per user for one minute.
 
-    Called lazily — only when a group-scoped endpoint is the deciding
+    Called lazily — only when a circle-scoped endpoint is the deciding
     candidate — so the common routing path never takes a pool connection.
     """
     import time
 
     now = time.monotonic()
-    hit = _groups_cache.get(user_id)
-    if hit is not None and now - hit[0] < _GROUPS_TTL_SEC:
+    hit = _circles_cache.get(user_id)
+    if hit is not None and now - hit[0] < _CIRCLES_TTL_SEC:
         return hit[1]
     pool = getattr(request.app.state, "umrs_db_pool", None)
     if pool is None:
         return frozenset()
-    from .groups import groups_for_user
+    from .circles import circles_for_user
 
     conn = pool.getconn()
     try:
-        groups = frozenset(groups_for_user(conn, user_id))
-    except Exception as exc:  # noqa: BLE001 - no groups beats a failed request
-        logger.warning("group lookup for %s failed: %s", user_id, exc)
+        circles = frozenset(circles_for_user(conn, user_id))
+    except Exception as exc:  # noqa: BLE001 - no circles beats a failed request
+        logger.warning("circle lookup for %s failed: %s", user_id, exc)
         return frozenset()
     finally:
         pool.putconn(conn)
-    _groups_cache[user_id] = (now, groups)
-    return groups
+    _circles_cache[user_id] = (now, circles)
+    return circles
 
 
 def _endpoint_caller(request: Request, user_id: str, project_id: str) -> EndpointCaller:
@@ -665,7 +665,7 @@ def _endpoint_caller(request: Request, user_id: str, project_id: str) -> Endpoin
         user_id=user_id or "",
         project_id=project_id or "",
         is_admin=admin in ("true", "1", "yes"),
-        groups_resolver=lambda: _cached_groups(request, user_id) if user_id else (),
+        circles_resolver=lambda: _cached_circles(request, user_id) if user_id else (),
     )
 
 

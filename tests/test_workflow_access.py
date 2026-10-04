@@ -1,6 +1,6 @@
 """Workflow access scopes (ADR-080).
 
-Catalog entries carry ``access`` (user:/project:/group:/system, several
+Catalog entries carry ``access`` (user:/project:/circle:/system, several
 entries; multi-membership admitted). Run resolution order: own → system →
 access-shared → admin-foreign. ``project:`` entries admit only a
 gateway-verified caller project; a durable re-dispatch never re-resolves
@@ -19,9 +19,9 @@ from umrs.server import workflow_registry_handler as wrh
 def tmp_catalog(tmp_path, monkeypatch):
     catalog_file = str(tmp_path / "workflow_catalog.json")
     monkeypatch.setattr(wrh, "_catalog_path", lambda: catalog_file)
-    wrh.set_workflow_groups_resolver(None)
+    wrh.set_workflow_circles_resolver(None)
     yield catalog_file
-    wrh.set_workflow_groups_resolver(lambda _user: [])  # no groups off-test
+    wrh.set_workflow_circles_resolver(lambda _user: [])  # no circles off-test
 
 
 @pytest.fixture
@@ -36,7 +36,7 @@ def alice_wf(tmp_catalog):
     return "cnn_track"
 
 
-def _groups(mapping):
+def _circles(mapping):
     return lambda user: list(mapping.get(user, []))
 
 
@@ -51,12 +51,18 @@ class TestRunResolution:
         assert entry is not None and entry["user_id"] == "alice"
         assert wrh.resolve_workflow_for_caller(alice_wf, "carol") is None
 
-    def test_multiple_users_and_groups_admit(self, alice_wf):
+    def test_multiple_users_and_circles_admit(self, alice_wf):
         wrh.set_workflow_access(
-            alice_wf, "alice", ["user:bob", "user:brenda", "group:lab", "group:ops"]
+            alice_wf, "alice", ["user:bob", "user:brenda", "circle:proj-a/lab", "circle:proj-a/ops"]
         )
-        wrh.set_workflow_groups_resolver(
-            _groups({"carol": ["lab"], "dan": ["ops"], "erin": ["lab", "ops"]})
+        wrh.set_workflow_circles_resolver(
+            _circles(
+                {
+                    "carol": ["proj-a/lab"],
+                    "dan": ["proj-a/ops"],
+                    "erin": ["proj-a/lab", "proj-a/ops"],
+                }
+            )
         )
         assert wrh.resolve_workflow_for_caller(alice_wf, "bob") is not None
         assert wrh.resolve_workflow_for_caller(alice_wf, "brenda") is not None
@@ -65,22 +71,18 @@ class TestRunResolution:
         assert wrh.resolve_workflow_for_caller(alice_wf, "erin") is not None  # multi-membership
         assert wrh.resolve_workflow_for_caller(alice_wf, "frank") is None
 
-    def test_group_lookup_is_lazy(self, alice_wf):
+    def test_circle_lookup_is_lazy(self, alice_wf):
         calls: list[str] = []
-        wrh.set_workflow_groups_resolver(lambda u: calls.append(u) or [])
+        wrh.set_workflow_circles_resolver(lambda u: calls.append(u) or [])
         wrh.set_workflow_access(alice_wf, "alice", ["user:bob"])
         assert wrh.resolve_workflow_for_caller(alice_wf, "bob") is not None
-        assert calls == []  # a user: entry never triggers the group lookup
+        assert calls == []  # a user: entry never triggers the circle lookup
 
     def test_project_scope_needs_a_verified_project(self, alice_wf):
         wrh.set_workflow_access(alice_wf, "alice", ["project:proj-b"])
-        assert wrh.resolve_workflow_for_caller(
-            alice_wf, "bob", caller_project="proj-b"
-        ) is not None
+        assert wrh.resolve_workflow_for_caller(alice_wf, "bob", caller_project="proj-b") is not None
         assert wrh.resolve_workflow_for_caller(alice_wf, "bob") is None
-        assert wrh.resolve_workflow_for_caller(
-            alice_wf, "bob", caller_project="proj-c"
-        ) is None
+        assert wrh.resolve_workflow_for_caller(alice_wf, "bob", caller_project="proj-c") is None
 
     def test_system_access_entry_shares_with_everyone(self, alice_wf):
         wrh.set_workflow_access(alice_wf, "alice", ["system"])
@@ -106,12 +108,18 @@ class TestRunResolution:
 class TestAccessMutation:
     def test_set_workflow_access_covers_all_versions(self, tmp_catalog):  # noqa: ARG002 — the fixture points the registry at a temp catalog
         wrh.register_workflow(
-            workflow_name="wf", version="1.0", user_id="alice",
-            source_path="/tmp/a", workflow_json={"steps": []},
+            workflow_name="wf",
+            version="1.0",
+            user_id="alice",
+            source_path="/tmp/a",
+            workflow_json={"steps": []},
         )
         wrh.register_workflow(
-            workflow_name="wf", version="2.0", user_id="alice",
-            source_path="/tmp/b", workflow_json={"steps": []},
+            workflow_name="wf",
+            version="2.0",
+            user_id="alice",
+            source_path="/tmp/b",
+            workflow_json={"steps": []},
         )
         updated = wrh.set_workflow_access("wf", "alice", ["user:bob"])
         assert len(updated) == 2
@@ -120,14 +128,16 @@ class TestAccessMutation:
         assert wrh.set_workflow_access("wf", "carol", ["user:bob"]) == []
 
     def test_reupload_preserves_the_access_list(self, alice_wf):
-        wrh.set_workflow_access(alice_wf, "alice", ["group:lab"])
+        wrh.set_workflow_access(alice_wf, "alice", ["circle:proj-a/lab"])
         wrh.register_workflow(  # re-upload of the same (name, version, scope, user)
-            workflow_name=alice_wf, version="1.0", user_id="alice",
+            workflow_name=alice_wf,
+            version="1.0",
+            user_id="alice",
             source_path="/tmp/cnn_track_v2",
             workflow_json={"steps": [], "version": "1.0"},
         )
         entry = wrh.resolve_workflow_for_caller(alice_wf, "alice")
-        assert entry["access"] == ["group:lab"]
+        assert entry["access"] == ["circle:proj-a/lab"]
 
     def test_fresh_upload_starts_private(self, alice_wf):
         entry = wrh.resolve_workflow_for_caller(alice_wf, "alice")

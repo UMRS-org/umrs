@@ -11,7 +11,11 @@ Grammar
 
     system                  platform-wide (was 'global' in the trust store)
     project:<project_id>    one project
-    group:<group_id>        one group (lab/collab tier, scopes.py §Hierarchy)
+    circle:<project_id>/<circle_id>
+                            one circle (project-scoped context/audience
+                            cell, ADR-086)
+    group:<group_id>        legacy — superseded by circle: (ADR-086);
+                            parseable, grants nothing on access lists
     user:<user_id>          one user, owner-only
     session:<session_id>    one companion/research session (trust-only today)
 
@@ -30,24 +34,37 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 BARE_SCOPES = frozenset({"system"})
-PREFIX_SCOPES = frozenset({"project:", "group:", "user:", "session:"})
+PREFIX_SCOPES = frozenset({"project:", "circle:", "group:", "user:", "session:"})
 # Legacy alias accepted on read/normalize, rejected on write.
 LEGACY_ALIASES = {"global": "system"}
 
 # Most-specific-first precedence chain for permission fallbacks.
-_PRECEDENCE = ("session", "project", "group", "user", "system")
+_PRECEDENCE = ("session", "project", "circle", "group", "user", "system")
 
 
 class ScopeError(ValueError):
     """Raised when a scope string violates the grammar."""
 
 
+def _validate_circle_id(raw: str) -> None:
+    """Circle ids are ``<project_id>/<circle_id>`` — one slash, non-empty parts."""
+    project, sep, circle = raw.partition("/")
+    if not sep or not project or not circle or "/" in circle:
+        raise ScopeError(
+            f"circle scope wants circle:<project_id>/<circle_id>, got {raw!r}"
+        )
+
+
 @dataclass(frozen=True)
 class Scope:
     """A validated scope: bare kind + optional id."""
 
-    kind: str  # system | project | group | user | session
+    kind: str  # system | project | circle | group | user | session
     id: str = ""
+
+    def __post_init__(self) -> None:
+        if self.kind == "circle":
+            _validate_circle_id(self.id)
 
     def __str__(self) -> str:
         return (
@@ -90,9 +107,11 @@ def parse(raw: str, *, allow_legacy: bool = False) -> Scope:
         )
     for prefix in PREFIX_SCOPES:
         if text.startswith(prefix) and len(text) > len(prefix):
+            # circle shape rides Scope.__post_init__ (raises ScopeError here)
             return Scope(kind=prefix[:-1], id=text[len(prefix) :])
     raise ScopeError(
-        f"invalid scope {text!r} — want system | project:<id> | group:<id> | user:<id> | session:<id>"
+        f"invalid scope {text!r} — want system | project:<id> |"
+        " circle:<project>/<id> | user:<id> | session:<id>"
     )
 
 

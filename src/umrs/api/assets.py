@@ -85,20 +85,20 @@ def _gather_stores() -> dict[str, Any]:
     return stores
 
 
-def _caller_group_ids(request: Request, caller: Any) -> frozenset[str]:
-    """Active group ids for the caller (ADR-050 §3 authority); empty without
-    a pool (groups rows stay hidden — the safe edge, never fabricated)."""
+def _caller_circle_refs(request: Request, caller: Any) -> frozenset[str]:
+    """Active circle refs for the caller (ADR-086 authority); empty without
+    a pool (circle rows stay hidden — the safe edge, never fabricated)."""
     user_id = getattr(caller, "user_id", "") or ""
     if not user_id:
         return frozenset()
     pool = getattr(request.app.state, "umrs_db_pool", None)
     if pool is None:
         return frozenset()
-    from .groups import groups_for_user
+    from .circles import circles_for_user
 
     conn = pool.getconn()
     try:
-        return frozenset(groups_for_user(conn, user_id))
+        return frozenset(circles_for_user(conn, user_id))
     finally:
         pool.putconn(conn)
 
@@ -115,7 +115,7 @@ async def snapshot(
     # auth: verified
 
     Callers see only rows for scopes they inhabit (system + verified project
-    + own user rows + ACTIVE groups from the ADR-050 §3 membership authority);
+    + own user rows + ACTIVE circles from the ADR-086 membership authority);
     nothing else ever leaks.
     """
     stores = _gather_stores()
@@ -136,7 +136,7 @@ async def snapshot(
         loop_store=stores.get("loop_store"),
         job_store=stores.get("job_store"),
         caller=caller,
-        caller_groups=_caller_group_ids(request, caller),
+        caller_circles=_caller_circle_refs(request, caller),
     )
     row_dicts = [r.to_dict() for r in rows]
     return AssetSnapshotResponse(
@@ -147,7 +147,6 @@ async def snapshot(
             {f"{d['kind']}:{d['asset_id']}": _row_shape_hash(d) for d in row_dicts}
         ),
     )
-
 
 
 # ── catalog patch lane (2026-09-16) ─────────────────────────────────────────
@@ -197,7 +196,9 @@ def _gather_and_diff(
         if getattr(caller, "is_admin", False)
         else (getattr(caller, "project_id", "") or body.project_id)
     )
-    kind_list = [k.strip() for k in body.kinds.split(",") if k.strip()] if body.kinds else None
+    kind_list = (
+        [k.strip() for k in body.kinds.split(",") if k.strip()] if body.kinds else None
+    )
     rows, warnings = build_asset_index(
         project_id=bound_project,
         kinds=kind_list,
@@ -208,7 +209,7 @@ def _gather_and_diff(
         loop_store=stores.get("loop_store"),
         job_store=stores.get("job_store"),
         caller=caller,
-        caller_groups=_caller_group_ids(request, caller),
+        caller_circles=_caller_circle_refs(request, caller),
     )
     shape: dict[str, dict[str, Any]] = {}
     hashes: dict[str, str] = {}
@@ -252,6 +253,7 @@ async def catalog_patch(
 
 @router.get("/{kind}/{asset_id}", response_model=AssetRowResponse)
 async def get_asset(
+    request: Request,
     kind: str,
     asset_id: str,
     caller: Any = Depends(get_caller_scope),
@@ -267,6 +269,7 @@ async def get_asset(
         loop_store=stores.get("loop_store"),
         job_store=stores.get("job_store"),
         caller=caller,
+        caller_circles=_caller_circle_refs(request, caller),
     )
     for row in rows:
         if row.asset_id == asset_id:

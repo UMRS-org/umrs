@@ -1,6 +1,6 @@
 """Endpoint access scopes (ADR-078): who may route to an endpoint.
 
-user:<id> | project:<id> | group:<id> | system, the owning project always
+user:<id> | project:<id> | circle:<proj>/<id> | system, the owning project always
 included; no access key = owning project only (the historical rule).
 """
 
@@ -43,13 +43,13 @@ def _registry(*rows):
     return registry
 
 
-def _caller(user="alice", project="opossum", groups=(), admin=False, calls=None):
+def _caller(user="alice", project="opossum", circles=(), admin=False, calls=None):
     def resolve():
         if calls is not None:
             calls.append(user)
-        return groups
+        return circles
 
-    return EndpointCaller(user, project, is_admin=admin, groups_resolver=resolve)
+    return EndpointCaller(user, project, is_admin=admin, circles_resolver=resolve)
 
 
 def _ep(project="default", access=None):
@@ -75,8 +75,8 @@ def test_no_access_key_keeps_the_owning_project_only():
         (["project:opossum"], _caller(project="tj-047"), False),
         (["user:alice"], _caller(user="alice"), True),
         (["user:alice"], _caller(user="bob"), False),
-        (["group:lab"], _caller(groups=("lab",)), True),
-        (["group:lab"], _caller(groups=("other",)), False),
+        (["circle:proj-a/lab"], _caller(circles=("proj-a/lab",)), True),
+        (["circle:proj-a/lab"], _caller(circles=("proj-a/other",)), False),
         (["garbage", "session:s1"], _caller(), False),  # malformed entries grant nothing
     ],
 )
@@ -88,12 +88,16 @@ def test_admin_flag_does_not_widen_routing():
     assert not can_use(_ep(), _caller(project="opossum", admin=True))
 
 
-def test_groups_are_resolved_only_when_they_decide():
+def test_circles_are_resolved_only_when_they_decide():
     calls: list[str] = []
-    caller = _caller(project="default", groups=("lab",), calls=calls)
-    assert can_use(_ep(access=["group:lab"]), caller)  # own project decides first
+    caller = _caller(project="default", circles=("default/lab",), calls=calls)
+    assert can_use(_ep(access=["circle:default/lab"]), caller)  # own project decides first
     assert calls == []
-    assert can_use(_ep(access=["group:lab"]), _caller(groups=("lab",), calls=calls))
+    # circle decides only when the owning project does not
+    assert can_use(
+        _ep(access=["circle:default/lab"]),
+        _caller(project="other", circles=("default/lab",), calls=calls),
+    )
     assert calls == ["alice"]
 
 
@@ -112,12 +116,14 @@ def test_refused_grants(access, caller):
 
 
 def test_grantable_lists_normalize():
-    # The owner shares its own GPU: any user, project or group may be named.
-    caller = _caller(groups=())
-    assert validate_access(["user:bob", "project:tj-047", "group:lab", "user:bob"], caller) == [
+    # The owner shares its own GPU: any user, project or circle may be named.
+    caller = _caller(circles=())
+    assert validate_access(
+        ["user:bob", "project:tj-047", "circle:tj-047/lab", "user:bob"], caller
+    ) == [
         "user:bob",
         "project:tj-047",
-        "group:lab",
+        "circle:tj-047/lab",
     ]
     assert validate_access(["system"], _caller(admin=True)) == ["system"]
     assert validate_access(None, caller) == []

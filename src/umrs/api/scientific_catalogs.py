@@ -95,7 +95,9 @@ class AccessUpdate(BaseModel):
 
     access: list[str] = Field(
         default_factory=list,
-        description="user:<id> | project:<id> | group:<id> | system; [] = owning project only",
+        description=(
+            "user:<id> | project:<id> | circle:<proj>/<id> | system; [] = owning project only"
+        ),
     )
 
 

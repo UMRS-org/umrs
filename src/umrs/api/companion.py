@@ -288,7 +288,8 @@ def _authorize_scope_write(scope: str, x_user_id: str, caller_project: str) -> N
     Rows are always user-pinned, but scope strings claim a domain and must
     not be mintable for domains the caller doesn't inhabit:
     - project:<pid>  → pid must be the caller's verified project
-    - group:<gid>    → no group-membership authority exists yet → 422
+    - circle:<p/cid> → not resolvable on this trust-write path → 422
+    - group:<gid>    → superseded by circle: (ADR-086) → 422
     - user:<uid>     → uid must equal the caller
     - session:<sid>  → allowed (caller-pinned rows)
     - system         → allowed (per-user blanket, still user-pinned)
@@ -306,11 +307,12 @@ def _authorize_scope_write(scope: str, x_user_id: str, caller_project: str) -> N
                 ),
             )
         )
-    if claim.kind == "group":
+    if claim.kind in ("circle", "group"):
         raise_typed(
             PlatformError.companion(
                 "unprocessable",
-                "group-scoped trust is not writable yet (no group membership authority)",
+                f"{claim.kind}-scoped trust is not writable on this path"
+                " (audience-scoped trust resolves nowhere here)",
             )
         )
     if claim.kind == "user" and claim.id != x_user_id:
@@ -780,4 +782,3 @@ async def archive_companion_session(
         "revoked_grants": revoked,
         "revoked_count": len(revoked),
     }
-

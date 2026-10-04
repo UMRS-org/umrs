@@ -262,44 +262,50 @@ class TestLoopArtifactLineage:
         assert rows[0].metadata["hosting"] == ""
 
 
-# ── ADR-050 §3 + F4 follow-through (2026-09-16): group-aware visibility and
-# the /patch wire lane — the prior fail-closed kind got its authority.
+# ── ADR-086 (2026-10-05): circle-aware visibility and the /patch wire lane.
 
 
-class TestGroupVisibilityNow:
-    """Groups stop being invisible when the caller carries memberships."""
+class TestCircleVisibilityNow:
+    """Circles stop being invisible when the caller carries memberships."""
 
     def _caller(self):
         return SimpleNamespace(user_id="alice", project_id="p1", is_admin=False, anonymous=False)
 
     def _rows(self):
         return [
-            AssetRow(kind="artifact", asset_id="grp-active", scope="group:lab", status="ok"),
-            AssetRow(kind="artifact", asset_id="grp-other", scope="group:ops", status="ok"),
+            AssetRow(kind="artifact", asset_id="grp-active", scope="circle:p1/lab", status="ok"),
+            AssetRow(kind="artifact", asset_id="grp-other", scope="circle:p1/ops", status="ok"),
         ]
 
-    def test_group_rows_visible_for_active_memberships(self):
+    def test_circle_rows_visible_for_active_memberships(self):
         from umrs.asset_index.fanout import _visible_row
 
         seen = [
             r.asset_id
             for r in self._rows()
-            if _visible_row(r, self._caller(), group_ids=frozenset({"lab"}))
+            if _visible_row(r, self._caller(), circle_refs=frozenset({"p1/lab"}))
         ]
         assert seen == ["grp-active"]
 
-    def test_builder_threads_caller_groups(self):
+    def test_group_scoped_rows_grant_nothing(self):
+        # ADR-086: superseded group: scopes are fail-closed in the fanout too
+        from umrs.asset_index.fanout import _visible_row
+
+        legacy = AssetRow(kind="artifact", asset_id="old", scope="group:lab", status="ok")
+        assert not _visible_row(legacy, self._caller(), circle_refs=frozenset({"p1/lab"}))
+
+    def test_builder_threads_caller_circles(self):
         # default () keeps the fail-closed shape exactly (legacy behavior)
         rows, _ = build_asset_index(
             artifact_store=None,
             caller=self._caller(),
         )
         assert rows == []
-        grp = AssetRow(kind="artifact", asset_id="grp", scope="group:lab", status="ok")
+        grp = AssetRow(kind="artifact", asset_id="grp", scope="circle:p1/lab", status="ok")
         from umrs.asset_index.fanout import _visible_row
 
         assert not _visible_row(grp, self._caller())
-        assert _visible_row(grp, self._caller(), group_ids=frozenset({"lab"}))
+        assert _visible_row(grp, self._caller(), circle_refs=frozenset({"p1/lab"}))
 
 
 class TestCatalogPatchRoute:

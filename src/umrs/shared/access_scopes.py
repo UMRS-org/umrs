@@ -6,8 +6,9 @@ canonical grammar (``umrs.shared.scope_grammar``)::
 
     user:<user_id>        that user only
     project:<project_id>  callers verified into that project
-    group:<group_id>      members of that (active) group — a user may hold
-                          many memberships; any match admits
+    circle:<project_id>/<circle_id>
+                          members of that (active) circle — a user may
+                          hold many memberships; any match admits
     system                every authenticated caller
 
 Semantics (uniform across families, generalized from ADR-078 endpoints):
@@ -17,10 +18,12 @@ Semantics (uniform across families, generalized from ADR-078 endpoints):
 - The list governs *use*: reads and runs. Lifecycle writes (re-scoping,
   retire, delete) stay with each family's existing write ladder.
 - Setting the list: the write-tier owner (or an admin) may name any
-  ``user:`` / ``project:`` / ``group:`` scope; ``system`` is admin-only.
-- Group membership resolves through the single authority (migration 0097;
-  retired groups never resolve) and lazily — a request that never meets a
-  group-scoped row never touches the database.
+  ``user:`` / ``project:`` / ``circle:`` scope; ``system`` is admin-only.
+- Circle membership resolves through the single authority (migration
+  0119; retired circles never resolve) and lazily — a request that never
+  meets a circle-scoped row never touches the database.
+- ``group:`` entries (superseded by ADR-086) parse but admit no one and
+  are rejected on writes.
 
 Foundation module: stdlib + ``umrs.shared`` only.
 """
@@ -33,8 +36,9 @@ from typing import Any
 
 from .scope_grammar import Scope, ScopeError, parse
 
-#: Scope kinds an access entry may use (``session:`` never shares a resource).
-ACCESS_KINDS = ("system", "project", "group", "user")
+#: Scope kinds an access entry may use (``session:`` never shares a resource;
+#: ``group:`` is superseded by ``circle:`` — ADR-086).
+ACCESS_KINDS = ("system", "project", "circle", "user")
 #: Cap on one row's access list (parsing/lookup stays bounded).
 MAX_ACCESS_ENTRIES = 16
 
@@ -47,22 +51,22 @@ class AccessListError(ValueError):
 class ResourceCaller:
     """The caller an access decision is made for.
 
-    ``groups_resolver`` is called at most once per instance and only when a
-    ``group:`` scope actually decides the outcome.
+    ``circles_resolver`` is called at most once per instance and only when a
+    ``circle:`` scope actually decides the outcome.
     """
 
     user_id: str
     project_id: str = ""
     is_admin: bool = False
-    groups_resolver: Callable[[], Iterable[str]] | None = None
-    _groups: frozenset[str] | None = field(default=None, init=False, repr=False)
+    circles_resolver: Callable[[], Iterable[str]] | None = None
+    _circles: frozenset[str] | None = field(default=None, init=False, repr=False)
 
-    def groups(self) -> frozenset[str]:
-        """Active group ids of the caller (multi-membership; lazy, memoized)."""
-        if self._groups is None:
-            resolver = self.groups_resolver
-            self._groups = frozenset(resolver() if resolver and self.user_id else ())
-        return self._groups
+    def circles(self) -> frozenset[str]:
+        """Active circle refs (``project/circle``) of the caller (lazy, memoized)."""
+        if self._circles is None:
+            resolver = self.circles_resolver
+            self._circles = frozenset(resolver() if resolver and self.user_id else ())
+        return self._circles
 
 
 def parse_access_entry(raw: Any) -> Scope:
@@ -97,12 +101,15 @@ def scope_admits(scope: Scope, caller: ResourceCaller) -> bool:
         return bool(scope.id) and scope.id == caller.project_id
     if scope.kind == "user":
         return bool(scope.id) and scope.id == caller.user_id
-    return scope.id in caller.groups()
+    if scope.kind == "circle":
+        return scope.id in caller.circles()
+    # group: (superseded, ADR-086) and anything else admit no one.
+    return False
 
 
 def scopes_admit(scopes: Iterable[Scope], caller: ResourceCaller) -> bool:
-    """Any scope admits; cheap kinds first so a group lookup decides last."""
-    ordered = sorted(scopes, key=lambda s: s.kind == "group")
+    """Any scope admits; cheap kinds first so a circle lookup decides last."""
+    ordered = sorted(scopes, key=lambda s: s.kind == "circle")
     return any(scope_admits(scope, caller) for scope in ordered)
 
 

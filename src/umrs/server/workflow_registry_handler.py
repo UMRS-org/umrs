@@ -34,54 +34,56 @@ logger = logging.getLogger(__name__)
 
 _CATALOG_LOCK = threading.Lock()
 
-# ADR-080: group membership resolver hook for access-admit decisions.
-# The default resolves through the UMRS default pool (0097 authority);
-# tests replace it via ``set_workflow_groups_resolver``.
-_groups_resolver_hook: Callable[[str], list[str]] | None = None
-_groups_resolver_ready = False
-_groups_resolver_lock = threading.Lock()
+# ADR-080: circle membership resolver hook for access-admit decisions.
+# The default resolves through the UMRS default pool (0119 authority,
+# ADR-086); tests replace it via ``set_workflow_circles_resolver``.
+_circles_resolver_hook: Callable[[str], list[str]] | None = None
+_circles_resolver_ready = False
+_circles_resolver_lock = threading.Lock()
 
 
-def set_workflow_groups_resolver(resolver: Callable[[str], list[str]] | None) -> None:
-    """Tests / boot code replace the group resolver (None = default pool)."""
-    global _groups_resolver_hook, _groups_resolver_ready
-    with _groups_resolver_lock:
-        _groups_resolver_hook = resolver
-        _groups_resolver_ready = True
+def set_workflow_circles_resolver(resolver: Callable[[str], list[str]] | None) -> None:
+    """Tests / boot code replace the circle resolver (None = default pool)."""
+    global _circles_resolver_hook, _circles_resolver_ready
+    with _circles_resolver_lock:
+        _circles_resolver_hook = resolver
+        _circles_resolver_ready = True
 
 
-def _default_groups_resolver() -> Callable[[str], list[str]]:
+def _default_circles_resolver() -> Callable[[str], list[str]]:
     def resolve(user_id: str) -> list[str]:
         from umrs.shared.pg import get_default_sync_pool, pg_configured_from_env
 
         if not pg_configured_from_env():
             return []
-        from umrs.shared.group_membership import group_ids_for_user
+        from umrs.shared.circle_membership import circle_refs_for_user
 
         pool = get_default_sync_pool()
         conn = pool.getconn()
         try:
-            return group_ids_for_user(conn, user_id)
+            return circle_refs_for_user(conn, user_id)
         finally:
             pool.putconn(conn)
 
     return resolve
 
 
-def _resolve_groups(user_id: str) -> list[str]:
-    """Active group ids for an access decision; fail-closed ([]) on error."""
-    global _groups_resolver_ready, _groups_resolver_hook
-    with _groups_resolver_lock:
-        if not _groups_resolver_ready:
-            _groups_resolver_hook = _default_groups_resolver()
-            _groups_resolver_ready = True
-        resolver = _groups_resolver_hook
+def _resolve_circles(user_id: str) -> list[str]:
+    """Active circle refs for an access decision; fail-closed ([]) on error."""
+    global _circles_resolver_ready, _circles_resolver_hook
+    with _circles_resolver_lock:
+        if not _circles_resolver_ready:
+            _circles_resolver_hook = _default_circles_resolver()
+            _circles_resolver_ready = True
+        resolver = _circles_resolver_hook
     if resolver is None or not user_id:
         return []
     try:
         return resolver(user_id)
     except Exception:
-        logger.warning("workflow group resolution failed for %s", user_id, exc_info=True)
+        logger.warning(
+            "workflow circle resolution failed for %s", user_id, exc_info=True
+        )
         return []
 
 
@@ -331,13 +333,15 @@ def _append_shared_workflows(
 ) -> None:
     """ADR-080: append entries whose access list admits the payload's
     caller, marked ``shared: true`` (never silently)."""
-    include_for = payload.get("include_shared_for") if isinstance(payload, dict) else None
+    include_for = (
+        payload.get("include_shared_for") if isinstance(payload, dict) else None
+    )
     if not include_for:
         return
     caller = ResourceCaller(
         str(include_for),
         str(payload.get("verified_project") or ""),
-        groups_resolver=lambda: _resolve_groups(str(include_for)),
+        circles_resolver=lambda: _resolve_circles(str(include_for)),
     )
     name_f = (payload.get("name") or "").lower()
     seen = {(w.get("name"), w.get("version"), w.get("user_id")) for w in workflows}
@@ -548,11 +552,11 @@ def resolve_workflow_for_caller(
     """The workflow a caller may trigger or describe (ADR-074 D-8, ADR-080).
 
     Order: the caller's own entry, then a ``system`` entry (shared), then an
-    entry whose ADR-080 access list admits the caller (user/project/group
+    entry whose ADR-080 access list admits the caller (user/project/circle
     scopes; ``system`` entries there equal a system workflow); another
     owner's entry otherwise only for admins — never a blind cross-owner name
     fallback, which let a normal user run another owner's code against their
-    own buckets. Group membership resolves lazily (only a group-scoped
+    own buckets. Circle membership resolves lazily (only a circle-scoped
     candidate triggers the lookup); ``project:`` scopes admit only a
     verified ``caller_project``.
     """
@@ -563,7 +567,7 @@ def resolve_workflow_for_caller(
         client_id,
         caller_project or "",
         is_admin=is_admin,
-        groups_resolver=lambda: _resolve_groups(client_id),
+        circles_resolver=lambda: _resolve_circles(client_id),
     )
     own, system, shared, foreign = _classify_workflow_entries(
         catalog.get("workflows", []), workflow_name, client_id, caller
@@ -571,9 +575,7 @@ def resolve_workflow_for_caller(
     return own or system or shared or (foreign if is_admin else None)
 
 
-def workflow_access_entries(
-    workflow_name: str, owner_id: str
-) -> list[dict[str, Any]]:
+def workflow_access_entries(workflow_name: str, owner_id: str) -> list[dict[str, Any]]:
     """Catalog entries owned by *owner_id* under *workflow_name* (all
     versions/scopes) — the rows one ``access`` update touches."""
     with _CATALOG_LOCK:

@@ -218,8 +218,8 @@ class UserBucketStore:
         """May *user_id* read/write OBJECTS in *bucket* (ADR-080)?
 
         Owner, or the row's access list: ``system`` admits everyone,
-        ``user:<id>`` the named user, ``group:<id>`` any ACTIVE member
-        (multi-membership allowed). Fail-closed on any lookup error.
+        ``user:<id>`` the named user, ``circle:<proj>/<id>`` any ACTIVE
+        member (multi-membership allowed). Fail-closed on any lookup error.
         An ``-output`` name follows its input bucket's row.
         """
         if not user_id:
@@ -234,10 +234,12 @@ class UserBucketStore:
                 "  OR b.access @> '[\"system\"]'::jsonb"
                 "  OR b.access @> jsonb_build_array(%s)"
                 "  OR EXISTS ("
-                "    SELECT 1 FROM group_members gm"
-                "    JOIN groups g ON g.group_id = gm.group_id"
-                "    WHERE gm.user_id = %s AND g.status = 'active'"
-                "      AND b.access @> jsonb_build_array('group:' || gm.group_id)"
+                "    SELECT 1 FROM circle_members cm"
+                "    JOIN circles g ON g.project_id = cm.project_id"
+                "      AND g.circle_id = cm.circle_id"
+                "    WHERE cm.user_id = %s AND g.status = 'active'"
+                "      AND b.access @> jsonb_build_array("
+                "        'circle:' || cm.project_id || '/' || cm.circle_id)"
                 "  )) LIMIT 1",
                 (name, user_id, f"user:{user_id}", user_id),
             )
@@ -258,10 +260,12 @@ class UserBucketStore:
                 "  b.access @> '[\"system\"]'::jsonb"
                 "  OR b.access @> jsonb_build_array(%s)"
                 "  OR EXISTS ("
-                "    SELECT 1 FROM group_members gm"
-                "    JOIN groups g ON g.group_id = gm.group_id"
-                "    WHERE gm.user_id = %s AND g.status = 'active'"
-                "      AND b.access @> jsonb_build_array('group:' || gm.group_id)"
+                "    SELECT 1 FROM circle_members cm"
+                "    JOIN circles g ON g.project_id = cm.project_id"
+                "      AND g.circle_id = cm.circle_id"
+                "    WHERE cm.user_id = %s AND g.status = 'active'"
+                "      AND b.access @> jsonb_build_array("
+                "        'circle:' || cm.project_id || '/' || cm.circle_id)"
                 "  )) ORDER BY bucket",
                 (user_id, f"user:{user_id}", user_id),
             )
@@ -310,5 +314,7 @@ def owner_of(bucket: str) -> str | None:
     try:
         return get_user_bucket_store().owner_of(bucket)
     except Exception:
-        logger.warning("personal-bucket owner lookup failed for %s", bucket, exc_info=True)
+        logger.warning(
+            "personal-bucket owner lookup failed for %s", bucket, exc_info=True
+        )
         return None

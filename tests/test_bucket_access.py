@@ -1,6 +1,6 @@
 """Bucket object-access lists (ADR-080).
 
-A personal bucket's row carries ``access`` (user:/project:/group:/system,
+A personal bucket's row carries ``access`` (user:/project:/circle:/system,
 several entries; multi-membership admitted): the named callers read and
 write OBJECTS — uploads, lists, downloads, HPC staging — while the bucket
 lifecycle stays owner-only. ``system`` entries are admin-granted only.
@@ -67,18 +67,18 @@ class _Pool:
 def test_set_access_updates_and_invalidates_owner_cache():
     conn = _Conn()
     store = ub.UserBucketStore(lambda: _Pool(conn))
-    assert store.set_access("alice.proj.data", ["user:bob", "group:lab"])
+    assert store.set_access("alice.proj.data", ["user:bob", "circle:proj-a/lab"])
     sql, params = conn.record[0]
     assert "UPDATE user_buckets SET access" in sql
-    assert params == (json.dumps(["user:bob", "group:lab"]), "alice.proj.data")
+    assert params == (json.dumps(["user:bob", "circle:proj-a/lab"]), "alice.proj.data")
 
 
-def test_can_access_sql_covers_user_group_system():
+def test_can_access_sql_covers_user_circle_system():
     conn = _Conn(fetchone=(1,))
     store = ub.UserBucketStore(lambda: _Pool(conn))
     assert store.can_access("alice.proj.data-output", "bob")  # -output → input row
     sql, params = conn.record[0]
-    assert '["system"]' in sql and "group_members" in sql
+    assert '["system"]' in sql and "circle_members" in sql
     assert "g.status = 'active'" in sql
     assert params == ("alice.proj.data", "bob", "user:bob", "bob")
 
@@ -181,8 +181,7 @@ class _RouteStore:
         return [
             r
             for r in self.rows.values()
-            if r.owner_id != user_id
-            and ("system" in r.access or f"user:{user_id}" in r.access)
+            if r.owner_id != user_id and ("system" in r.access or f"user:{user_id}" in r.access)
         ]
 
 
@@ -207,16 +206,16 @@ def store():
     return s
 
 
-def test_owner_shares_with_users_and_groups(store):
+def test_owner_shares_with_users_and_circles(store):
     client = _client(store)
     r = client.put(
         "/umrs/buckets/alice.proj-a.videos/access",
-        json={"access": ["user:bob", "group:lab"]},
+        json={"access": ["user:bob", "circle:proj-a/lab"]},
         headers=_headers("alice"),
     )
     assert r.status_code == 200, r.text
-    assert r.json()["access"] == ["user:bob", "group:lab"]
-    assert store.get("alice.proj-a.videos").access == ("user:bob", "group:lab")
+    assert r.json()["access"] == ["user:bob", "circle:proj-a/lab"]
+    assert store.get("alice.proj-a.videos").access == ("user:bob", "circle:proj-a/lab")
 
 
 def test_non_owner_cannot_set_access(store):
@@ -231,27 +230,36 @@ def test_non_owner_cannot_set_access(store):
 
 def test_system_entry_is_admin_only(store):
     client = _client(store)
-    assert client.put(
-        "/umrs/buckets/alice.proj-a.videos/access",
-        json={"access": ["system"]}, headers=_headers("alice"),
-    ).status_code == 403
-    assert client.put(
-        "/umrs/buckets/alice.proj-a.videos/access",
-        json={"access": ["system"]}, headers=_headers("ops", admin=True),
-    ).status_code == 200
+    assert (
+        client.put(
+            "/umrs/buckets/alice.proj-a.videos/access",
+            json={"access": ["system"]},
+            headers=_headers("alice"),
+        ).status_code
+        == 403
+    )
+    assert (
+        client.put(
+            "/umrs/buckets/alice.proj-a.videos/access",
+            json={"access": ["system"]},
+            headers=_headers("ops", admin=True),
+        ).status_code
+        == 200
+    )
 
 
 def test_get_access_visible_to_admitted_callers(store):
     store.set_access("alice.proj-a.videos", ["user:bob"])
     client = _client(store)
-    r = client.get(
-        "/umrs/buckets/alice.proj-a.videos/access", headers=_headers("bob", "proj-b")
-    )
+    r = client.get("/umrs/buckets/alice.proj-a.videos/access", headers=_headers("bob", "proj-b"))
     assert r.status_code == 200
     assert r.json()["access"] == ["user:bob"]
-    assert client.get(
-        "/umrs/buckets/alice.proj-a.videos/access", headers=_headers("carol", "proj-b")
-    ).status_code == 404
+    assert (
+        client.get(
+            "/umrs/buckets/alice.proj-a.videos/access", headers=_headers("carol", "proj-b")
+        ).status_code
+        == 404
+    )
 
 
 def test_list_marks_shared_buckets(store):

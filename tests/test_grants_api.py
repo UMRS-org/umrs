@@ -317,118 +317,161 @@ def test_supported_asset_kinds_documented():
     assert "bundle" not in ASSET_KINDS
 
 
-# ── ADR-050 §3: group grantee mapping (groups authority 2026-09-16) ──────────
+# ── ADR-086: circle grantee mapping (circles authority 2026-10-05) ────────────
 
 
-class _GroupsAwareMixin:
-    """Extend the in-memory cursor with groups/group_members tables."""
+def _circle_row(project, circle, owner, status):
+    return (project, circle, "", owner, status, None, None, None)
 
-    def _select_groups(self, sql, params):
-        groups = getattr(self, "_groups", {})
+
+class _CirclesAwareMixin:
+    """Extend the in-memory cursor with circles/circle_members tables."""
+
+    def _select_circles(self, sql, params):
+        circles = getattr(self, "_circles", {})
         members = getattr(self, "_members", set())
         self._many = []
         self._one = None
-        if "from group_members" in sql and "join groups" in sql:
-            # groups_for_user: only ACTIVE groups the user is a member of
-            self._many = [[g] for g in _active_groups_of(members, groups, params[0])]
+        if "from circle_members" in sql and "join circles" in sql:
+            # circles_for_user: only ACTIVE circles the user is a member of
+            self._many = [
+                [f"{p}/{c}"] for (p, c) in _active_circles_of(members, circles, params[0])
+            ]
             return
-        if "from groups" in sql and "group_id = %s" in sql:
-            row = groups.get(params[0])
+        if "from circles" in sql and "circle_id = %s" in sql:
+            row = circles.get((params[0], params[1]))
             self._one = tuple(row) if row else None
             return
         self._base_select(sql, params)
 
 
-def _active_groups_of(members, groups, user_id):
-    joined = {gid for (gid, uid) in members if uid == user_id}
-    live = {g for g, row in groups.items() if row[3] == "active"}
+def _active_circles_of(members, circles, user_id):
+    joined = {(p, c) for (p, c, uid) in members if uid == user_id}
+    live = {k for k, row in circles.items() if row[4] == "active"}
     return sorted(joined & live)
 
 
-def _patch_groups_tables(pool, *, groups=None, members=None):
-    """Duck-type the existing fake cursor with group tables."""
-    pool.groups = groups or {}
+def _patch_circles_tables(pool, *, circles=None, members=None):
+    """Duck-type the existing fake cursor with circle tables."""
+    pool.circles = circles or {}
     pool.members = members or set()
     cur = pool.conn._cursor
-    cur._groups = pool.groups
+    cur._circles = pool.circles
     cur._members = pool.members
     if not hasattr(cur, "_base_select"):
         cur._base_select = cur._select
+
         def _select(sql, params):
-            return _GroupsAwareMixin._select_groups(cur, sql, params)
+            return _CirclesAwareMixin._select_circles(cur, sql, params)
+
         cur._select = _select
 
 
-def test_create_grant_group_kind_round_trip(client):
+def test_create_grant_circle_kind_round_trip(client):
     pool = client.app.state.umrs_db_pool
-    _patch_groups_tables(
+    _patch_circles_tables(
         pool,
-        groups={"g-lab": ("g-lab", "Lab A", "carol", "active", None, None, None)},
-        members={("g-lab", "carol")},
+        circles={("proj-a", "lab"): _circle_row("proj-a", "lab", "carol", "active")},
+        members={("proj-a", "lab", "carol")},
     )
     resp = client.post(
         "/umrs/grants",
         json={
             "asset_kind": "model",
             "asset_id": "mdl-1",
-            "grantee_kind": "group",
-            "grantee_id": "g-lab",
+            "grantee_kind": "circle",
+            "grantee_id": "proj-a/lab",
         },
     )
-    assert resp.status_code == 200, resp.text  # route convention: 200 for create (matches the legacy round-trip pin above)
+    assert resp.status_code == 200, (
+        resp.text
+    )  # route convention: 200 for create (matches the legacy round-trip pin above)
     row = next(iter(client.app.state.umrs_db_pool.rows.values()))
-    assert row[3] == "group" and row[4] == "g-lab"
+    assert row[3] == "circle" and row[4] == "proj-a/lab"
 
 
-def test_create_grant_group_unknown_gets_404(client):
+def test_create_grant_circle_malformed_gets_400(client):
     pool = client.app.state.umrs_db_pool
-    _patch_groups_tables(pool, groups={})
+    _patch_circles_tables(pool, circles={})
     resp = client.post(
         "/umrs/grants",
         json={
             "asset_kind": "model",
             "asset_id": "mdl-1",
-            "grantee_kind": "group",
-            "grantee_id": "g-ghost",
+            "grantee_kind": "circle",
+            "grantee_id": "noslash",
+        },
+    )
+    assert resp.status_code == 400
+
+
+def test_create_grant_circle_unknown_gets_404(client):
+    pool = client.app.state.umrs_db_pool
+    _patch_circles_tables(pool, circles={})
+    resp = client.post(
+        "/umrs/grants",
+        json={
+            "asset_kind": "model",
+            "asset_id": "mdl-1",
+            "grantee_kind": "circle",
+            "grantee_id": "proj-a/c-ghost",
         },
     )
     assert resp.status_code == 404
 
 
-def test_create_grant_group_retired_gets_409(client):
+def test_create_grant_circle_retired_gets_409(client):
     pool = client.app.state.umrs_db_pool
-    _patch_groups_tables(
+    _patch_circles_tables(
         pool,
-        groups={"g-dead": ("g-dead", "Dead", "carol", "retired", None, None, None)},
+        circles={("proj-a", "dead"): _circle_row("proj-a", "dead", "carol", "retired")},
     )
     resp = client.post(
         "/umrs/grants",
         json={
             "asset_kind": "model",
             "asset_id": "mdl-1",
-            "grantee_kind": "group",
-            "grantee_id": "g-dead",
+            "grantee_kind": "circle",
+            "grantee_id": "proj-a/dead",
         },
     )
     assert resp.status_code == 409
 
 
-def test_mine_includes_grants_of_caller_active_groups(client):
+def test_mine_includes_grants_of_caller_active_circles(client):
     pool = client.app.state.umrs_db_pool
-    _patch_groups_tables(
+    _patch_circles_tables(
         pool,
-        groups={
-            "g-live": ("g-live", "Live", "root", "active", None, None, None),
-            "g-dead": ("g-dead", "Dead", "root", "retired", None, None, None),
+        circles={
+            ("proj-a", "live"): _circle_row("proj-a", "live", "root", "active"),
+            ("proj-a", "dead"): _circle_row("proj-a", "dead", "root", "retired"),
         },
-        members={("g-live", "carol"), ("g-dead", "carol")},
+        members={("proj-a", "live", "carol"), ("proj-a", "dead", "carol")},
     )
     rows = pool.rows
     rows["grt-g1"] = [
-        "grt-g1", "model", "mdl-1", "group", "g-live", None, None, None, "root", "2026-09-07",
+        "grt-g1",
+        "model",
+        "mdl-1",
+        "circle",
+        "proj-a/live",
+        None,
+        None,
+        None,
+        "root",
+        "2026-09-07",
     ]
-    rows["grt-g2"] = [  # retired group — must not resolve
-        "grt-g2", "model", "mdl-2", "group", "g-dead", None, None, None, "root", "2026-09-07",
+    rows["grt-g2"] = [  # retired circle — must not resolve
+        "grt-g2",
+        "model",
+        "mdl-2",
+        "circle",
+        "proj-a/dead",
+        None,
+        None,
+        None,
+        "root",
+        "2026-09-07",
     ]
     resp = client.get("/umrs/grants/mine")
     assert resp.status_code == 200, resp.text

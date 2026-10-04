@@ -15,10 +15,11 @@ from typing import Any
 
 # WP-06 round 2 leg-b: two more kinds; 'bundle' stays deferred (no durable
 # bundle-owner rows exist today and fabricating one would lie).
-# WP-06 r2 leg-c (ADR-050 §3 groundwork 2026-09-16): 'group' joins the
-# ladder — the groups+membership authority (0097) exists to resolve it.
+# WP-06 r2 leg-c (ADR-050 §3 groundwork 2026-09-16): 'group' joined the
+# ladder; ADR-086 (2026-10-05) replaces it with 'circle' — the circles
+# membership authority (0119) resolves it; grantee_id is "project/circle".
 ASSET_KINDS = ("model", "knowledge_graph", "endpoint", "workflow")
-GRANTEE_KINDS = ("user", "project", "group")
+GRANTEE_KINDS = ("user", "project", "circle")
 
 
 @dataclass(frozen=True)
