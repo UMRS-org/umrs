@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import re
+import shlex
 import sys
 from collections.abc import Callable, Sequence
 from typing import Any, cast
@@ -120,7 +123,7 @@ def _print_table(
     if not rows:
         print("(no users)")
         print(
-            "hint: register one with `umrs-server admin user add <username> "
+            "hint: register one with `umrs-server admin user add USERNAME "
             '--fullname "Your Name" --role user`'
         )
         return
@@ -318,7 +321,9 @@ def _load_server_conf_users(config_path: str) -> tuple[dict, list] | None:
     return cfg, list(cfg.get("users") or [])
 
 
-def _drop_user_from_conf_list(users_list: list, config_dir: str, user_file_abs: str) -> tuple[list, int]:
+def _drop_user_from_conf_list(
+    users_list: list, config_dir: str, user_file_abs: str
+) -> tuple[list, int]:
     """(kept, removed_count) — absolute-path match covers relative forms too."""
     import os
 
@@ -468,7 +473,7 @@ def _cmd_user_add(args: argparse.Namespace, store: UserStore) -> int:
                 f"This site requires per-user Slurm accounts "
                 f"(scheduler.require_user_slurm_account=true); endpoint "
                 f"provisioning (r4 endpoint up) will fail until one is set.\n"
-                f"  hint: umrs-server admin user set-slurm-account {rec.username} <ACCOUNT>",
+                f"  hint: umrs-server admin user set-slurm-account {rec.username} ACCOUNT",
                 file=sys.stderr,
             )
         else:
@@ -478,7 +483,7 @@ def _cmd_user_add(args: argparse.Namespace, store: UserStore) -> int:
                 f"This site does not require per-user accounts "
                 f"(scheduler.require_user_slurm_account=false); jobs fall back "
                 f"to the site master Slurm account{fallback}.\n"
-                f"  to assign one anyway: umrs-server admin user set-slurm-account {rec.username} <ACCOUNT>",
+                f"  to assign one anyway: umrs-server admin user set-slurm-account {rec.username} ACCOUNT",
                 file=sys.stderr,
             )
 
@@ -529,81 +534,127 @@ def _maybe_emit_template(args, store, rec) -> None:
     _write_client_template(rec.username, rec.fullname, tpl_path)
     if not getattr(args, "json", False):
         print(f"client template written to {tpl_path}")
+        issued = (
+            _issue_onboarding_token(args, rec)
+            if getattr(args, "issue_token", False)
+            else None
+        )
+        _print_onboarding_steps(args, rec, issued)
 
-        # Issue an onboarding JWT if requested.
-        token_hint = ""
-        if getattr(args, "issue_token", False):
-            try:
-                secret = _resolve_jwt_secret(args)
-                payload = _build_jwt_payload(
-                    user=rec.username,
-                    email=rec.email or "",
-                    project=rec.projects[0] if rec.projects else "",
-                    roles=[rec.role],
-                    days=getattr(args, "token_days", 30),
-                    projects=rec.projects or None,
-                    gateway_url=getattr(args, "gateway_url", None) or None,
-                    profile=getattr(args, "profile", None) or None,
-                )
-                from jose import jwt as jose_jwt
 
-                token = jose_jwt.encode(payload, secret, algorithm="HS256")
-                token_hint = token
-                print()
-                print(f"  Onboarding token (valid {getattr(args, 'token_days', 30)}d):")
-                print(f"    {token}")
-            except Exception as exc:  # noqa: BLE001 — admin CLI degrades best-effort, named in output
-                print(
-                    f"  warning: could not issue onboarding JWT: {exc}", file=sys.stderr
-                )
+def _issue_onboarding_token(
+    args: argparse.Namespace, rec: UserRecord
+) -> tuple[str, dict[str, Any]] | None:
+    """Mint the ``user add --issue-token`` JWT; ``(token, claims)`` or None.
 
-        print()
-        print("  Onboarding steps for the new user:")
-        if token_hint:
-            gw_hint = payload.get("gateway_url", "")
-            if gw_hint:
-                print(
-                    "  1. (recommended) r4 via Gateway HTTP (gateway_url embedded — no flags needed):"
-                )
-                print(f"       r4 auth login --api-key {token_hint}")
-            else:
-                print("  1. (recommended) r4 via Gateway HTTP:")
-                print(
-                    f"       r4 auth login --gateway-url <GATEWAY_URL> --api-key {token_hint}"
-                )
-            print(
-                "  2. (alternative) umrs direct ZMQ — requires CURVE keys if CURVE auth is enabled:"
+    Same claim builder and gateway-URL resolution as ``token generate-jwt``.
+    """
+    days = getattr(args, "token_days", 30)
+    try:
+        secret = _resolve_jwt_secret(args)
+        payload = _build_jwt_payload(
+            user=rec.username,
+            email=rec.email or "",
+            project=rec.projects[0] if rec.projects else "",
+            roles=[rec.role],
+            days=days,
+            projects=rec.projects or None,
+            gateway_url=_resolve_public_gateway_url(args),
+            profile=getattr(args, "profile", None) or None,
+        )
+        from jose import jwt as jose_jwt
+
+        token = jose_jwt.encode(payload, secret, algorithm="HS256")
+    except Exception as exc:  # noqa: BLE001 — admin CLI degrades best-effort, named in output
+        print(f"  warning: could not issue onboarding JWT: {exc}", file=sys.stderr)
+        return None
+    print()
+    print(f"  Onboarding token (valid {days}d):")
+    print(f"    {token}")
+    return token, payload
+
+
+def _print_onboarding_steps(
+    args: argparse.Namespace,
+    rec: UserRecord,
+    issued: tuple[str, dict[str, Any]] | None,
+) -> None:
+    """Print the new user's login steps; every command is shell-safe."""
+    print()
+    print("  Onboarding steps for the new user:")
+    no_url = bool(getattr(args, "no_gateway_url", False))
+    if issued:
+        token, payload = issued
+        print(
+            _format_login_hint(
+                payload, token, lead="  1. (recommended) ", advise_embed=not no_url
             )
-            print(f"       umrs login --host <HOST> --api-key {token_hint}")
+        )
+        print(f"  2. (alternative) {_ZMQ_LOGIN_LEAD}")
+        print(f"       umrs login --host HOST --api-key {shlex.quote(token)}")
+    else:
+        command, note = _generate_jwt_command(args, rec)
+        print(f"  1. Generate a token for the user ({note}):")
+        print(f"       {command}")
+        print("  2. Give the token to the user, who runs:")
+        if no_url:  # the token carries no URL, so the user names it
+            print(
+                f"       r4 auth login --gateway-url {shlex.quote(_GATEWAY_URL_EXAMPLE)} "
+                f"--api-key TOKEN   (replace {_GATEWAY_URL_EXAMPLE})"
+            )
         else:
-            print(
-                "  1. Generate a token for the user (embed --gateway-url for single-flag login):"
-            )
-            print(
-                f"       umrs-server admin token generate-jwt --user {rec.username} --gateway-url <GATEWAY_URL>"
-            )
-            print("  2. Give the token to the user, who runs:")
-            print("       r4 auth login --api-key <TOKEN>")
-            print(
-                "     (alternative) umrs direct ZMQ — requires CURVE keys if CURVE auth is enabled:"
-            )
-            print("       umrs login --host <HOST> --api-key <TOKEN>")
-        if not rec.slurm_account and not rec.slurm_accounts:
-            require_acct, _ = _resolve_slurm_account_requirement()
-            if require_acct:
-                print(
-                    "  NOTE: set a Slurm account before the user can provision endpoints:"
-                )
-                print(
-                    f"       umrs-server admin user set-slurm-account {rec.username} <ACCOUNT>"
-                )
-            else:
-                print(
-                    "  NOTE: per-user Slurm account is optional on this site; jobs use the site master account."
-                )
-                print(
-                    f"       to assign one anyway: umrs-server admin user set-slurm-account {rec.username} <ACCOUNT>"
-                )
+            print("       r4 auth login --api-key TOKEN")
+        print(f"     (alternative) {_ZMQ_LOGIN_LEAD}")
+        print("       umrs login --host HOST --api-key TOKEN")
+    _print_slurm_account_note(rec)
+
+
+def _generate_jwt_command(args: argparse.Namespace, rec: UserRecord) -> tuple[str, str]:
+    """``(command, note)`` minting the token ``--issue-token`` would mint.
+
+    Same projects (``--projects`` for several, which fills
+    project_memberships), profile and gateway-URL choice; role and email come
+    from the user record in both paths. Every value is shell-quoted.
+    """
+    parts = ["umrs-server", "admin", "token", "generate-jwt", "--user", rec.username]
+    projects = list(rec.projects or [])
+    if len(projects) > 1:
+        parts += ["--projects", *projects]
+    elif projects:
+        parts += ["--project", projects[0]]
+    profile = getattr(args, "profile", None)
+    if profile:
+        parts += ["--profile", profile]
+    if getattr(args, "no_gateway_url", False):
+        parts.append("--no-gateway-url")
+        return shlex.join(parts), "--no-gateway-url: the token carries no gateway URL"
+    url = _resolve_public_gateway_url(
+        args, unset=f"the mint command below shows the example {_GATEWAY_URL_EXAMPLE}"
+    )
+    if getattr(args, "gateway_url", None):
+        return shlex.join([*parts, "--gateway-url", url or ""]), "embeds the gateway URL"
+    if url:
+        return shlex.join(parts), f"embeds ${PUBLIC_GATEWAY_URL_ENV}={url}"
+    return (
+        shlex.join([*parts, "--gateway-url", _GATEWAY_URL_EXAMPLE]),
+        f"replace {_GATEWAY_URL_EXAMPLE} with the site's public gateway URL",
+    )
+
+
+def _print_slurm_account_note(rec: UserRecord) -> None:
+    if rec.slurm_account or rec.slurm_accounts:
+        return
+    require_acct, _ = _resolve_slurm_account_requirement()
+    if require_acct:
+        print("  NOTE: set a Slurm account before the user can provision endpoints:")
+        print(f"       umrs-server admin user set-slurm-account {rec.username} ACCOUNT")
+    else:
+        print(
+            "  NOTE: per-user Slurm account is optional on this site; jobs use the site master account."
+        )
+        print(
+            f"       to assign one anyway: umrs-server admin user set-slurm-account {rec.username} ACCOUNT"
+        )
 
 
 def _pg_user_rows() -> list | None:
@@ -927,9 +978,16 @@ def _cmd_user_generate_template(args: argparse.Namespace, _store: UserStore) -> 
     print()
     print("  Onboarding steps for the user:")
     print(f"  1. Send '{out_path.name}' to the user (or copy via scp)")
+    gateway_url = (
+        _resolve_public_gateway_url(
+            args, unset=f"the command below shows the example {_GATEWAY_URL_EXAMPLE}"
+        )
+        or _GATEWAY_URL_EXAMPLE
+    )
     print("  2. On their local machine:")
     print(
-        f"       r4 config init --gateway-url <GATEWAY_URL> --umrs-username {username}"
+        f"       r4 config init --gateway-url {shlex.quote(gateway_url)} "
+        f"--umrs-username {shlex.quote(username)}"
     )
     print("  3. Config is stored locally at ~/.config/r4/profiles.json")
     return 0
@@ -1057,8 +1115,9 @@ def _cmd_token_generate(args: argparse.Namespace, _store: UserStore) -> int:
         print(f"token: {token}")
         print("  (this is the only time the raw token will be shown)")
         print()
-        print("  Use with: umrs --admin-token <token> <command>")
-        print("         or: export UMRS_ADMIN_TOKEN=<token>")
+        quoted = shlex.quote(token)
+        print(f"  Use with: umrs --admin-token {quoted} COMMAND")
+        print(f"         or: export UMRS_ADMIN_TOKEN={quoted}")
         print()
         print("  NOTE: this token is for the umrs ZMQ control plane only.")
         print(
@@ -1087,6 +1146,129 @@ def _resolve_jwt_secret(args: argparse.Namespace) -> str:
     return resolved
 
 
+# ---------------------------------------------------------------------------
+# gateway URL claim + login hint (2026-10-03)
+# ---------------------------------------------------------------------------
+# A token minted where UMRS runs carries that server's public gateway URL as
+# the ``gateway_url`` claim, so the user logs in with
+# ``r4 auth login --api-key TOKEN`` alone. The URL comes from --gateway-url, else
+# from $UMRS_PUBLIC_GATEWAY_URL: the umrs-front converge sets it in each
+# per-site server container to that site's URL. The URL belongs to a venue,
+# not to a container: the ADR-060 hub serves every venue from one container,
+# so it must pick UMRS_<VENUE>_PUBLIC_GATEWAY_URL from the user's venue (open
+# item under U-3 in docs/development/umrs-hub-convergence-plan-2026-10-03.md).
+# Printed commands never carry ``<PLACEHOLDER>`` tokens: bash reads ``<X>`` as
+# an input redirect ("GATEWAY_URL: No such file or directory").
+PUBLIC_GATEWAY_URL_ENV = "UMRS_PUBLIC_GATEWAY_URL"
+_GATEWAY_URL_EXAMPLE = "https://HOST/SITE"
+_ZMQ_LOGIN_LEAD = "umrs direct ZMQ — requires CURVE keys if CURVE auth is enabled:"
+# One rule for every source (--gateway-url, the env, the converge's .env
+# line — deploy/ansible/roles/front_end/tasks/umrs-front.yaml uses the same
+# pattern): scheme, host, optional port and path from a shell-inert character
+# set. No userinfo, query, fragment, whitespace or shell metacharacter can
+# reach the token claim or a printed command.
+_GATEWAY_URL_RE = re.compile(r"^https?://[A-Za-z0-9.-]+(:[0-9]+)?(/[A-Za-z0-9._~/-]*)?$")
+
+
+def _normalize_gateway_url(value: str) -> str | None:
+    """*value* without its trailing slash when it is a plain http(s) URL, else None."""
+    from urllib.parse import urlsplit
+
+    candidate = value.strip()
+    if not _GATEWAY_URL_RE.match(candidate):
+        return None
+    try:
+        port = urlsplit(candidate).port  # raises ValueError above 65535
+    except ValueError:
+        return None
+    if port == 0:
+        return None
+    return candidate.rstrip("/")
+
+
+def _gateway_url_arg(value: str) -> str:
+    """argparse ``type`` for --gateway-url: an explicit value fails loudly (exit 2)."""
+    url = _normalize_gateway_url(value)
+    if url is None:
+        raise argparse.ArgumentTypeError(
+            f"{value!r} is not a plain http(s) URL (https://HOST[:PORT][/PATH]; "
+            "letters, digits and . _ ~ / - only)"
+        )
+    if url == _GATEWAY_URL_EXAMPLE:
+        raise argparse.ArgumentTypeError(
+            f"{_GATEWAY_URL_EXAMPLE} is the example; replace it with the site's public gateway URL"
+        )
+    return url
+
+
+def _resolve_public_gateway_url(
+    args: argparse.Namespace, *, unset: str = "the token carries no gateway URL"
+) -> str | None:
+    """The gateway URL a minted token embeds.
+
+    ``--no-gateway-url`` > ``--gateway-url`` (validated by argparse) >
+    ``$UMRS_PUBLIC_GATEWAY_URL`` > none. An env value that breaks the
+    ``_GATEWAY_URL_RE`` rule is ignored with a warning ending in *unset*,
+    which says what the caller does without a URL.
+    """
+    if getattr(args, "no_gateway_url", False):
+        return None
+    explicit = getattr(args, "gateway_url", None)
+    if explicit:
+        return explicit
+    raw = os.environ.get(PUBLIC_GATEWAY_URL_ENV, "")
+    if not raw.strip():
+        return None
+    url = _normalize_gateway_url(raw)
+    if url is None:
+        print(
+            f"warning: ignoring ${PUBLIC_GATEWAY_URL_ENV}={raw!r} "
+            f"(not a plain http(s) URL); {unset}",
+            file=sys.stderr,
+        )
+    return url
+
+
+def _format_login_hint(
+    payload: dict[str, Any], token: str, *, lead: str, advise_embed: bool = True
+) -> str:
+    """The r4 login step for *token*, rendered from the claims it carries.
+
+    Both minting paths (``token generate-jwt`` and ``user add --issue-token``)
+    print this, so their hints cannot disagree. Commands are shell-safe.
+    *advise_embed* False (the admin passed --no-gateway-url) drops the advice
+    on how to embed a URL next time.
+    """
+    pad = " " * 7  # the command column of every onboarding step
+    gateway_url = payload.get("gateway_url")
+    if gateway_url:
+        return "\n".join(
+            [
+                (
+                    f"{lead}r4 via Gateway HTTP (the token carries the gateway URL "
+                    f"{gateway_url}, so no other flag is needed):"
+                ),
+                f"{pad}r4 auth login --api-key {shlex.quote(token)}",
+            ]
+        )
+    lines = [
+        (
+            f"{lead}r4 via Gateway HTTP (this token carries NO gateway URL; "
+            f"replace {_GATEWAY_URL_EXAMPLE} with the site's public gateway URL):"
+        ),
+        (
+            f"{pad}r4 auth login --gateway-url {shlex.quote(_GATEWAY_URL_EXAMPLE)} "
+            f"--api-key {shlex.quote(token)}"
+        ),
+    ]
+    if advise_embed:
+        lines.append(
+            f"{pad}(to embed the URL instead, mint with --gateway-url URL or set "
+            f"${PUBLIC_GATEWAY_URL_ENV} where umrs-server runs)"
+        )
+    return "\n".join(lines)
+
+
 def _build_jwt_payload(
     user: str,
     email: str,
@@ -1106,9 +1288,10 @@ def _build_jwt_payload(
     compatibility (set to the first entry of *projects* when given).
 
     Optional *gateway_url* and *profile* embed client-connection hints
-    so ``r4 auth login --api-key <token>`` can auto-configure everything.
-    OIDC tokens naturally lack these claims — the client falls through
-    to the ``--gateway-url`` flag as before.
+    so ``r4 auth login --api-key TOKEN`` can auto-configure everything
+    (callers resolve the URL with ``_resolve_public_gateway_url``). OIDC
+    tokens never pass through here and lack these claims — the client
+    falls through to the ``--gateway-url`` flag as before.
     """
     import time
 
@@ -1175,7 +1358,7 @@ def _cmd_token_generate_jwt(args: argparse.Namespace, _store: UserStore) -> int:
         roles,
         args.days,
         projects=projects,
-        gateway_url=getattr(args, "gateway_url", None),
+        gateway_url=_resolve_public_gateway_url(args),
         profile=getattr(args, "profile", None),
     )
     token = jose_jwt.encode(payload, secret, algorithm="HS256")
@@ -1225,11 +1408,18 @@ def _cmd_token_generate_jwt(args: argparse.Namespace, _store: UserStore) -> int:
             for w in warnings:
                 print(f"  warning: {w}", file=sys.stderr)
             print(
-                "  hint: pass --user <username> --project <project-id> to scope this token correctly.",
+                "  hint: pass --user USERNAME --project PROJECT_ID to scope this token correctly.",
                 file=sys.stderr,
             )
         print()
-        print("  Use with: r4 auth login --api-key <token>")
+        print(
+            _format_login_hint(
+                payload,
+                token,
+                lead="  Log in with ",
+                advise_embed=not getattr(args, "no_gateway_url", False),
+            )
+        )
     return 0
 
 
@@ -1378,8 +1568,10 @@ _GENERATE_JWT_DESCRIPTION = (
     "The token carries sub, project_id, roles, and exp claims. "
     "Use --projects to grant access to multiple projects in a single token "
     "(the first project becomes the default project_id). "
-    "Use --gateway-url and --profile to embed client-connection hints "
-    "so 'r4 auth login --api-key <token>' auto-configures everything "
+    "The token embeds the public Gateway URL from --gateway-url or, by default, "
+    "$UMRS_PUBLIC_GATEWAY_URL (set per server container by the converge; "
+    "--no-gateway-url leaves it out), so 'r4 auth login --api-key TOKEN' "
+    "auto-configures everything; --profile embeds a suggested profile name "
     "(OIDC tokens lack these claims \u2014 the client falls through to flags). "
     "For shared user sessions prefer OIDC/Okta. "
     "The signing secret is read from --secret, $JWT_SECRET, the persisted Gateway secret, "
@@ -1387,6 +1579,28 @@ _GENERATE_JWT_DESCRIPTION = (
     "NOTE: this token is NOT for umrs --admin-token — "
     "for that, use 'generate' instead."
 )
+
+
+def _add_gateway_url_args(parser: argparse.ArgumentParser, help_text: str) -> None:
+    """--gateway-url / --no-gateway-url for the two JWT-minting commands."""
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument(
+        "--gateway-url",
+        dest="gateway_url",
+        default=None,
+        type=_gateway_url_arg,
+        metavar="URL",
+        help=(
+            f"{help_text} (https://HOST[:PORT][/PATH]; trailing slash dropped). "
+            f"Default: ${PUBLIC_GATEWAY_URL_ENV} when set"
+        ),
+    )
+    group.add_argument(
+        "--no-gateway-url",
+        dest="no_gateway_url",
+        action="store_true",
+        help=f"Embed no Gateway URL (ignore ${PUBLIC_GATEWAY_URL_ENV})",
+    )
 
 
 def _add_user_parsers(user_sub: argparse._SubParsersAction) -> None:
@@ -1449,11 +1663,9 @@ def _add_user_parsers(user_sub: argparse._SubParsersAction) -> None:
         default=30,
         help="Onboarding token validity in days (default: 30)",
     )
-    add_p.add_argument(
-        "--gateway-url",
-        dest="gateway_url",
-        default=None,
-        help="Embed Gateway URL in the onboarding JWT so users can login with just --api-key",
+    _add_gateway_url_args(
+        add_p,
+        "Embed this Gateway URL in the onboarding JWT so users log in with just --api-key",
     )
     add_p.add_argument(
         "--profile",
@@ -1578,7 +1790,7 @@ def _add_user_parsers(user_sub: argparse._SubParsersAction) -> None:
         description=(
             "Generate a ready-to-use user config JSON template. "
             "The file can be sent to the new user who then imports it with:\n"
-            "  umrs config init --template <file> --username <username>"
+            "  umrs config init --template FILE --username USERNAME"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -1672,10 +1884,9 @@ def _add_token_parsers(token_sub: argparse._SubParsersAction) -> None:
         default=None,
         help="JWT signing secret. Default: $JWT_SECRET, Gateway secret, or dev default",
     )
-    jwt_p.add_argument(
-        "--gateway-url",
-        default=None,
-        help="Embed Gateway URL so 'r4 auth login --api-key <token>' auto-configures (ignored for OIDC)",
+    _add_gateway_url_args(
+        jwt_p,
+        "Embed this Gateway URL so 'r4 auth login --api-key TOKEN' auto-configures",
     )
     jwt_p.add_argument(
         "--profile",
@@ -2207,20 +2418,24 @@ def build_parser() -> argparse.ArgumentParser:
             "admin_tokens.json directly — no running daemon required."
         ),
         epilog=(
-            "Common onboarding flow:\n"
+            "Common onboarding flow (USERNAME, ACCOUNT, PROJECT: your values):\n"
             "  1. Register a user (with Slurm account for HPC):\n"
-            '       umrs-server admin user add <username> --fullname "Your Name" '
-            "--role user --slurm-account <ACCOUNT>\n"
+            '       umrs-server admin user add USERNAME --fullname "Your Name" '
+            "--role user --slurm-account ACCOUNT\n"
             "  2. Generate an authentication token:\n"
-            "       umrs-server admin token generate-jwt --user <username> --project <project>\n"
+            "       umrs-server admin token generate-jwt --user USERNAME --project PROJECT\n"
             "  3. Give the token to the user, who runs:\n"
-            "       r4 auth login --gateway-url <GATEWAY_URL> --api-key <TOKEN>\n"
+            "       r4 auth login --api-key TOKEN\n"
+            "  The token carries the public Gateway URL from $UMRS_PUBLIC_GATEWAY_URL\n"
+            "  (set in every umrs-front server container) or from --gateway-url URL.\n"
+            '  A token without it needs: r4 auth login --gateway-url "https://HOST/SITE" '
+            "--api-key TOKEN\n"
             "  Shortcut: combine steps 1-3 with --issue-token:\n"
-            "       umrs-server admin user add <username> --role user "
-            "--slurm-account <ACCOUNT> --issue-token\n\n"
+            "       umrs-server admin user add USERNAME --role user "
+            "--slurm-account ACCOUNT --issue-token\n\n"
             "Diagnostics:\n"
             "  umrs-server admin user list\n"
-            "  umrs-server admin user show <username>\n\n"
+            "  umrs-server admin user show USERNAME\n\n"
             "Shell completion:\n"
             '  eval "$(umrs-server completion bash)"'
         ),
@@ -2280,9 +2495,9 @@ def build_parser() -> argparse.ArgumentParser:
         ),
         epilog=(
             "Most common commands:\n"
-            '  umrs-server admin user add <username> --fullname "Your Name" --role user\n'
+            '  umrs-server admin user add USERNAME --fullname "Your Name" --role user\n'
             "  umrs-server admin user list\n"
-            "  umrs-server admin user show <username>"
+            "  umrs-server admin user show USERNAME"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -2319,8 +2534,8 @@ def build_parser() -> argparse.ArgumentParser:
             "Examples:\n"
             "  umrs-server admin endpoint list\n"
             "  umrs-server admin endpoint list --status ready --json\n"
-            "  umrs-server admin endpoint show <job_id>\n"
-            "  umrs-server admin endpoint stop <job_id> -y\n"
+            "  umrs-server admin endpoint show JOB_ID\n"
+            "  umrs-server admin endpoint stop JOB_ID -y\n"
             "  umrs-server admin endpoint stats"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
