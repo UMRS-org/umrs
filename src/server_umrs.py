@@ -625,6 +625,12 @@ def main():
 
     configure_server_logging()
 
+    # The server owns its endpoint registry: UMRS_REGISTRY_READ_ONLY (umrs-rag
+    # only) leaking in through the shared .env is dropped with an error.
+    from umrs.orchestrator.registry_backend import drop_read_only_flag_in_owner
+
+    drop_read_only_flag_in_owner()
+
     # check if we have a correct configuration directory
     umrs_cfg_dir = check_umrs_config_directory()
     if umrs_cfg_dir:

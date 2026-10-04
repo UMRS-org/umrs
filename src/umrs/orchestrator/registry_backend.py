@@ -94,6 +94,57 @@ def _shared_registry_venue() -> str:
         return ""
 
 
+def _registry_read_only() -> bool:
+    """``UMRS_REGISTRY_READ_ONLY``: this process reads a registry that other
+    processes own (umrs-rag over the hub table the servers write) — it never
+    runs DDL, never upserts, never deletes (U-1 follow-up 2026-10-03)."""
+    return os.environ.get("UMRS_REGISTRY_READ_ONLY", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
+def drop_read_only_flag_in_owner(process: str = "umrs-server") -> bool:
+    """An owning server never runs a read-only registry (2026-10-03).
+
+    On umrs-front every server loads ``env_file: .env``: a
+    ``UMRS_REGISTRY_READ_ONLY`` put there for umrs-rag would make every
+    server a reader that persists no endpoint, so its endpoints vanish at
+    the next restart and the janitor reaps their jobs as orphans. The owner
+    drops the flag from its environment, loudly. Returns True when dropped.
+    """
+    if not _registry_read_only():
+        return False
+    logger.error(
+        "UMRS_REGISTRY_READ_ONLY is set in the %s process — IGNORED: a server "
+        "owns its endpoint registry and must persist it. The flag is for "
+        "umrs-rag only (start.sh passes it there); remove it from .env.",
+        process,
+    )
+    os.environ.pop("UMRS_REGISTRY_READ_ONLY", None)
+    return True
+
+
+def _reader_venue() -> str:
+    """Venue a read-only reader sees: ``UMRS_REGISTRY_VENUE`` when set (a
+    reader such as umrs-rag carries no site.yaml), else the site name; ""
+    leaves the read unscoped — every venue — and is logged as such."""
+    venue = (
+        os.environ.get("UMRS_REGISTRY_VENUE", "").strip() or _shared_registry_venue()
+    )
+    if not venue:
+        logger.warning(
+            "read-only registry has no venue (UMRS_REGISTRY_VENUE unset, no "
+            "site.yaml) — it reads EVERY venue's endpoints"
+        )
+    return venue
+
+
+class RegistryReadOnlyError(RuntimeError):
+    """A write reached a read-only registry backend."""
+
+
 def _parse_datetime(value: str | None) -> datetime | None:
     """Parse ISO format datetime string."""
     if not value:
@@ -112,6 +163,10 @@ class RegistryBackend(ABC):
 
     All operations are synchronous. For async support, use run_in_executor.
     """
+
+    #: True for a reader of a registry other processes own: the
+    #: EndpointRegistry then never writes it and re-reads it on list_all.
+    read_only: bool = False
 
     @abstractmethod
     def save(self, endpoint: RegisteredEndpoint) -> None:
@@ -245,7 +300,9 @@ class PostgresBackend(RegistryBackend):
         CREATE INDEX idx_registry_status ON endpoint_registry(status);
     """
 
-    def __init__(self, dsn: str | None = None, *, venue: str = ""):
+    def __init__(
+        self, dsn: str | None = None, *, venue: str = "", read_only: bool = False
+    ):
         """
         Initialize Postgres backend.
 
@@ -255,6 +312,11 @@ class PostgresBackend(RegistryBackend):
             venue: ADR-060 U-1 venue scope (site.yaml ``name``). When set,
                  every row is stamped and every read filtered to this
                  venue — one shared registry table, per-site visibility.
+            read_only: reader of a table other processes own (umrs-rag):
+                 no DDL at start, a read-only session, and save/delete/
+                 clear_all raise RegistryReadOnlyError — a reader's boot
+                 snapshot must never overwrite the owner's rows (its
+                 upsert would rewrite every column, venue included).
         """
         self._dsn = dsn or os.environ.get("UMRS_REGISTRY_POSTGRES_DSN")
         if not self._dsn:
@@ -262,11 +324,23 @@ class PostgresBackend(RegistryBackend):
                 "PostgreSQL DSN required. Set UMRS_REGISTRY_POSTGRES_DSN environment variable."
             )
         self._venue = venue
+        self.read_only = read_only
 
         self._conn = None
+        if read_only:
+            # The owning servers and migration 0117 own the schema.
+            return
         self._ensure_database()
         self._init_schema()
         self._migrate_schema()
+
+    def _refuse_write(self, operation: str) -> None:
+        """Raise when this backend is a read-only reader."""
+        if self.read_only:
+            raise RegistryReadOnlyError(
+                f"endpoint registry backend is read-only "
+                f"(venue={getattr(self, '_venue', '')!r}); refused {operation}"
+            )
 
     def _venue_clause(self, params: list[Any]) -> str:
         """``AND venue = %s`` (+ param) when venue-scoped, else nothing."""
@@ -335,7 +409,11 @@ class PostgresBackend(RegistryBackend):
             self._conn = psycopg2.connect(
                 self._dsn, **pg_connect_kwargs("orchestrator-registry")
             )
-            self._conn.autocommit = True
+            if self.read_only:
+                # Server-enforced too: default_transaction_read_only.
+                self._conn.set_session(readonly=True, autocommit=True)
+            else:
+                self._conn.autocommit = True
         return self._conn
 
     def _init_schema(self) -> None:
@@ -489,6 +567,7 @@ class PostgresBackend(RegistryBackend):
 
     def save(self, endpoint: RegisteredEndpoint) -> None:
         """Save or update an endpoint (venue-stamped when venue-scoped)."""
+        self._refuse_write("save")
         conn = self._get_connection()
         with conn.cursor() as cur:
             cur.execute(
@@ -582,6 +661,7 @@ class PostgresBackend(RegistryBackend):
 
     def delete(self, job_id: str) -> bool:
         """Delete an endpoint by job_id in this venue."""
+        self._refuse_write("delete")
         conn = self._get_connection()
         params: list[Any] = [job_id]
         with conn.cursor() as cur:
@@ -630,6 +710,7 @@ class PostgresBackend(RegistryBackend):
 
     def clear_all(self) -> int:
         """Clear all endpoints (own venue only — never another site's)."""
+        self._refuse_write("clear_all")
         conn = self._get_connection()
         params: list[Any] = []
         with conn.cursor() as cur:
@@ -653,6 +734,28 @@ class PostgresBackend(RegistryBackend):
             return False
 
 
+def _postgres_backend() -> PostgresBackend:
+    """The Postgres backend: shared hub table (ADR-060 U-1) or the
+    per-cluster DSN; a reader (``UMRS_REGISTRY_READ_ONLY``) gets a
+    read-only backend scoped by ``_reader_venue``."""
+    read_only = _registry_read_only()
+    reader: dict[str, Any] = {"read_only": True} if read_only else {}
+    if _shared_registry_enabled():
+        venue = _reader_venue() if read_only else _shared_registry_venue()
+        logger.info(
+            "Using shared PostgreSQL registry backend (umrs_db, venue=%r, "
+            "read_only=%s) — ADR-060 U-1",
+            venue,
+            read_only,
+        )
+        return PostgresBackend(_shared_registry_dsn(), venue=venue, **reader)
+    dsn = os.environ.get("UMRS_REGISTRY_POSTGRES_DSN")
+    if not dsn:
+        raise ValueError("UMRS_REGISTRY_POSTGRES_DSN required for postgres backend")
+    logger.info("Using PostgreSQL registry backend (read_only=%s)", read_only)
+    return PostgresBackend(dsn, **reader)
+
+
 def get_backend(backend_type: str | None = None) -> RegistryBackend:
     """
     Get the appropriate registry backend based on configuration.
@@ -663,6 +766,9 @@ def get_backend(backend_type: str | None = None) -> RegistryBackend:
     Environment variables:
         UMRS_REGISTRY_BACKEND: "memory" | "postgres" | "redis"
         UMRS_REGISTRY_POSTGRES_DSN: PostgreSQL connection string (for postgres backend)
+        UMRS_ENDPOINT_REGISTRY_SHARED: the hub table in umrs_db (ADR-060 U-1)
+        UMRS_REGISTRY_READ_ONLY: reader of a registry other processes own
+        UMRS_REGISTRY_VENUE: a reader's venue scope (default: site.yaml name)
         UMRS_REGISTRY_REDIS_URL: Redis URL (for redis backend, future)
 
     Returns:
@@ -675,19 +781,7 @@ def get_backend(backend_type: str | None = None) -> RegistryBackend:
         return InMemoryBackend()
 
     elif backend_type == "postgres":
-        if _shared_registry_enabled():
-            dsn = _shared_registry_dsn()
-            venue = _shared_registry_venue()
-            logger.info(
-                "Using shared PostgreSQL registry backend (umrs_db, venue=%r) — ADR-060 U-1",
-                venue,
-            )
-            return PostgresBackend(dsn, venue=venue)
-        dsn = os.environ.get("UMRS_REGISTRY_POSTGRES_DSN")
-        if not dsn:
-            raise ValueError("UMRS_REGISTRY_POSTGRES_DSN required for postgres backend")
-        logger.info("Using PostgreSQL registry backend")
-        return PostgresBackend(dsn)
+        return _postgres_backend()
 
     elif backend_type == "redis":
         raise NotImplementedError("Redis backend not yet implemented")

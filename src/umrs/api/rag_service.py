@@ -1901,6 +1901,11 @@ def rag_delete_document(
 def main() -> None:
     import uvicorn
 
+    # The standalone RAG service reads the endpoint registry the umrs
+    # servers own; it never writes it (U-1 follow-up 2026-10-03: its
+    # mark_used upsert rewrote every column, venue included, from a boot
+    # snapshot). The deploy sets this too; an explicit value still wins.
+    os.environ.setdefault("UMRS_REGISTRY_READ_ONLY", "1")
     bind_host = os.getenv("UMRS_RAG_BIND_HOST", "127.0.0.1")
     bind_port = int(os.getenv("UMRS_RAG_PORT", "8081"))
     uvicorn.run(
