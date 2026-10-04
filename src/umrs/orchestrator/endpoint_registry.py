@@ -296,6 +296,11 @@ class EndpointRegistry:
 
         # Persistent storage backend (U-109)
         self._backend = backend
+        # A read-only backend (umrs-rag over the hub table the servers own,
+        # U-1 follow-up 2026-10-03) is never written — mark_used & co stay
+        # in memory — and list_all re-reads it, so the reader's view is the
+        # owners' current rows rather than its boot snapshot.
+        self._read_only = getattr(backend, "read_only", False) is True
         if backend:
             self._load_from_backend()
 
@@ -315,17 +320,33 @@ class EndpointRegistry:
         except Exception as e:
             logger.error(f"Failed to load from backend: {e}")
 
+    def _reload_from_backend(self) -> None:
+        """Read-only mode: replace the cache with the backend's current rows,
+        so endpoints their owner removed disappear here too. A failed read
+        keeps the last view (logged) — a reader never invents state."""
+        try:
+            endpoints = self._backend.list_all() if self._backend else []
+        except Exception as e:  # noqa: BLE001 — keep serving the last view
+            logger.warning(f"Read-only registry refresh failed, last view kept: {e}")
+            return
+        with self._lock:
+            self._endpoints.clear()
+            self._by_job_id.clear()
+            for ep in endpoints:
+                self._endpoints[(ep.project_id, ep.job_id)] = ep
+                self._by_job_id[ep.job_id] = ep
+
     def _persist(self, endpoint: RegisteredEndpoint) -> None:
-        """Persist endpoint to backend if configured."""
-        if self._backend:
+        """Persist endpoint to backend if configured (never a read-only one)."""
+        if self._backend and not self._read_only:
             try:
                 self._backend.save(endpoint)
             except Exception as e:
                 logger.error(f"Failed to persist endpoint {endpoint.job_id}: {e}")
 
     def _delete_from_backend(self, job_id: str) -> None:
-        """Delete endpoint from backend if configured."""
-        if self._backend:
+        """Delete endpoint from backend if configured (never a read-only one)."""
+        if self._backend and not self._read_only:
             try:
                 self._backend.delete(job_id)
             except Exception as e:
@@ -816,6 +837,8 @@ class EndpointRegistry:
         Returns:
             List of endpoints.
         """
+        if self._read_only:
+            self._reload_from_backend()
         with self._lock:
             endpoints = list(self._endpoints.values())
 
@@ -858,8 +881,8 @@ class EndpointRegistry:
             count = len(self._endpoints)
             self._endpoints.clear()
             self._by_job_id.clear()
-            # Also clear backend if configured
-            if self._backend:
+            # Also clear backend if configured (a reader never clears it)
+            if self._backend and not self._read_only:
                 try:
                     self._backend.clear_all()
                 except Exception as e:

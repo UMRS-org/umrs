@@ -1027,6 +1027,16 @@ if [[ "$RAG_ENABLED" == "true" ]]; then
         sleep 2
     fi
 
+    # Endpoint registry (ADR-060 U-1 follow-up, 2026-10-03): RAG reads the
+    # hub table in umrs_db that the servers own — READ-ONLY (no DDL, no
+    # upsert: its mark_used upsert would rewrite venue and every column
+    # from its boot snapshot) and scoped to rccs-front, the venue whose
+    # config and user files this container mounts and the only rows it saw
+    # before U-1 (front_rccs). The front_rccs DSN stays as rollback fallback
+    # (unset UMRS_ENDPOINT_REGISTRY_SHARED) — frozen at the U-1 flip, so
+    # that rollback is lossy. UMRS_RAG_REGISTRY_VENUE overrides the venue;
+    # empty falls back to rccs-front. Never put UMRS_REGISTRY_READ_ONLY in
+    # .env: env_file feeds all four servers (a server drops it, logged).
     podman run -d --name umrs-rag \
         --network=host \
         -v "${SCRIPT_DIR}/conf_umrs_rccs.json:/work/conf_umrs.json:ro,z" \
@@ -1045,6 +1055,10 @@ if [[ "$RAG_ENABLED" == "true" ]]; then
         -e DB_SUPERUSER="${POSTGRES_USER:-umrs}" \
         -e DB_SUPERUSER_PASSWORD="${POSTGRES_PASSWORD}" \
         -e UMRS_REGISTRY_POSTGRES_DSN="postgres://${POSTGRES_USER:-umrs}:${POSTGRES_PASSWORD}@127.0.0.1:${POSTGRES_PORT:-5432}/${POSTGRES_DB_RCCS:-front_rccs}" \
+        -e UMRS_JOBS_DB="${UMRS_JOBS_DB:-umrs_db}" \
+        -e UMRS_ENDPOINT_REGISTRY_SHARED=1 \
+        -e UMRS_REGISTRY_READ_ONLY=1 \
+        -e UMRS_REGISTRY_VENUE="${UMRS_RAG_REGISTRY_VENUE:-rccs-front}" \
         -e PYTHONUNBUFFERED=1 \
         "$UMRS_IMAGE" python -m umrs.api.rag_service
 
