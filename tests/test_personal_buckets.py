@@ -369,6 +369,40 @@ def test_access_list_member_also_uploads_into_shared_bucket(s3, monkeypatch):
         ub.set_user_bucket_store(None)
 
 
+def test_owned_or_shared_bucket_upload_fires_ingest(s3, monkeypatch):
+    """W4: uploads into an owned/access-owned bucket dispatch the same
+    post-upload ingest as the project-namespaced path (the missing leg:
+    triggers: on: ingest must fire for demo buckets too)."""
+    import umrs.api.files as files_api
+
+    fake = _SharedStore()
+    fake.add(ub.UserBucket("alice.opossum.videos", "alice", "opossum", "videos",
+                           access=("user:bob",)))
+    fake.set_access("alice.opossum.videos", ["user:bob"])
+    ub.set_user_bucket_store(fake)  # type: ignore[arg-type]
+    monkeypatch.setattr(step_staging, "_bucket_registry", None)
+    monkeypatch.setattr(files_api, "_charge_upload_quota", lambda *_a, **_k: None)
+    fired = []
+    monkeypatch.setattr(
+        files_api, "_fire_post_upload_ingest", lambda *a: fired.append(a)
+    )
+    try:
+        up = _files_client("bob").post(
+            "/umrs/files/upload",
+            data={"bucket": "alice.opossum.videos", "key": "opossum_215_A/clip.mp4"},
+            files={"file": ("clip.mp4", b"clip-bytes", "video/mp4")},
+        )
+        assert up.status_code == 200, up.text
+        assert len(fired) == 1
+        _s3_fn, bucket, key, _etag, project_id, user, _name = fired[0]
+        assert bucket == "alice.opossum.videos"
+        assert key == "opossum_215_A/clip.mp4"
+        assert project_id == "default"
+        assert user == "bob"
+    finally:
+        ub.set_user_bucket_store(None)
+
+
 def test_another_users_bucket_is_refused_everywhere(store, s3):
     store.add(ub.UserBucket("alice.opossum.videos", "alice", "opossum", "videos"))
     c = _files_client("bob")
