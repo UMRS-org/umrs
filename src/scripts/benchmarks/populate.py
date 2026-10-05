@@ -76,7 +76,7 @@ def make_client(z):
         verify=False,
         config=Config(
             connect_timeout=5,
-            read_timeout=5,      # réduit à 5s au lieu de 60s
+            read_timeout=10,      # réduit à 10s au lieu de 60s
             retries={"max_attempts": 1},  # pas de retry boto3, on gère nous-mêmes
         )
     )
