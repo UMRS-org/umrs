@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
 Populate MinIO buckets for mass upload benchmark.
-1. Upload data/images/7000/ → 7000aa/ for each user (with retry/backoff)
-2. Server-side copy 7000aa/ → 7000ab/, 7000ac/, ... for remaining rounds
+1. Upload data/images/5000/ → 5000aa/ for each user (with retry/backoff)
+2. Server-side copy 5000aa/ → 5000ab/, 5000ac/, ... for remaining rounds
 
 No UMRS involvement — pure boto3.
 """
@@ -23,19 +23,22 @@ import urllib3
 urllib3.disable_warnings()
 
 # ── Config ───────────────────────────────────────────────────────────────────
-DATA_DIR        = "/home/emmanuel.jeannot/Unified_Multimodal_Retriever_Service/data/images/7000/"
+DATA_DIR        = "/home/emmanuel.jeannot/Unified_Multimodal_Retriever_Service/data/images/5000/"
 S3CFG_TMPL      = "/home/emmanuel.jeannot/.s3cfg_user1_{z}"
 LOG_DIR         = "/mnt/storage/ejeannot/log"
 STATE_FILE      = "/mnt/storage/ejeannot/log/populate_state.json"
-FILES_PER_ROUND = 7000
+FILES_PER_ROUND = 5000
 UPLOAD_RETRIES  = [1, 1, 5, 5, 10, 10]
 COPY_RETRIES    = [1, 1, 5, 5, 10, 10]
 
 USERS = [
-    {"z": 10, "target": 100_000},
-    {"z": 11, "target": 200_000},
-    {"z": 12, "target": 500_000},
-    {"z": 13, "target": 1_000_000},
+    {"z": 7, "target": 10_000},
+    {"z": 8, "target": 20_000},
+    {"z": 9, "target": 50_000},
+#     {"z": 10, "target": 100_000},
+#     {"z": 11, "target": 200_000},
+#     {"z": 12, "target": 500_000},
+#     {"z": 13, "target": 1_000_000},
 ]
 
 # ── Logging ──────────────────────────────────────────────────────────────────
@@ -57,7 +60,7 @@ def rounds_needed(target):
 
 def all_prefixes():
     for a, b in itertools.product("abcdefghijklmnopqrstuvwxyz", repeat=2):
-        yield f"7000{a}{b}"
+        yield f"5000{a}{b}"
 
 
 def make_client(z):
@@ -184,7 +187,7 @@ def main():
 
         log.info(f"=== user1_{z} | {total} rounds | bucket={bucket} ===")
 
-        # Step 1: initial upload → first prefix (7000aa)
+        # Step 1: initial upload → first prefix (5000aa)
         upload_initial(client, z, bucket, prefixes[0], state)
 
         # Step 2: copy via download+upload in memory (MinIO rejects copy_object)
