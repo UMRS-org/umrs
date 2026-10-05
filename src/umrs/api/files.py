@@ -418,7 +418,9 @@ async def upload_file(
     if not file.filename:
         raise_typed(PlatformError.files("filename_required", "Filename required"))
     if bucket:
-        return await _upload_to_owned_bucket(request, file, bucket, key, x_user_id)
+        return await _upload_to_owned_bucket(
+            request, file, bucket, key, x_user_id, project_id
+        )
 
     object_key = validate_key(key or _upload_key(file.filename, purpose), project_id)
     bucket = config.bucket
@@ -855,6 +857,7 @@ async def _upload_to_owned_bucket(
     bucket: str,
     key: str | None,
     x_user_id: str | None,
+    project_id: str | None = None,
 ) -> UploadResponse:
     _require_owned_bucket(bucket, x_user_id)
     object_key = _raw_key(key or _safe_filename(file.filename or ""))
@@ -882,6 +885,18 @@ async def _upload_to_owned_bucket(
         request, s3_client, bucket, object_key,
         (reader.md5.hexdigest(), reader.size), x_user_id,
     )
+    if project_id:
+        # W4: uploads into a personal/shared bucket must fire the same ingest
+        # event as the project-namespaced path so `triggers: on: ingest` work.
+        _fire_post_upload_ingest(
+            s3_client,
+            bucket,
+            object_key,
+            reader.md5.hexdigest(),
+            project_id,
+            x_user_id,
+            file.filename or "",
+        )
     return UploadResponse(
         key=object_key,
         bucket=bucket,
