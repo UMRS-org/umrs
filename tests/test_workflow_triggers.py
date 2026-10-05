@@ -66,6 +66,28 @@ def _write_catalog(path: Path, entries: list) -> None:
     path.write_text(json.dumps({"workflows": entries}))
 
 
+def test_stem_key_only_scopes_run_to_the_uploaded_file(catalog_env, tmp_path):
+    """`stem_key_only: true` → run params carry only_videos=<uploaded stem>,
+    so batch uploads fan out as per-file runs instead of whole-bucket rescans."""
+    catalog_file, calls = catalog_env
+    wf_dir = _write_workflow_dir(
+        tmp_path,
+        "wf-auto",
+        [{"on": "ingest", "bucket": "demo", "prefix": "opossum_", "stem_key_only": True}],
+    )
+    _write_catalog(
+        catalog_file,
+        [{"name": "wf-auto", "user_id": "alice", "source_path": str(wf_dir)}],
+    )
+    ids = workflow_triggers.dispatch_catalog_event(
+        project_id="p", bucket="demo",
+        s3_key="opossum_215_A/cam/20260325_030811.mp4", owner="alice",
+    )
+    assert ids == ["exec-1"]
+    params = json.loads(calls[0]["payload"])["params"]
+    assert params["only_videos"] == "20260325_030811"
+
+
 @pytest.fixture
 def catalog_env(tmp_path, monkeypatch):
     """Temp workflow catalog + captured trigger calls."""
