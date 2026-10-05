@@ -156,6 +156,18 @@ class TestListing:
         assert [w["name"] for w in shared] == [alice_wf]
         assert shared[0]["user_id"] == "alice"
 
+    def test_circle_scoped_rows_list_for_members(self, alice_wf):
+        # 2026-10-05 live class (case-matched circle refs): a colleague sees
+        # shared rows through the same ZMQ wrapper payload the work pane rides
+        wrh.set_workflow_access(alice_wf, "alice", ["circle:proj-a/lab"])
+        wrh.set_workflow_circles_resolver(lambda user: ["proj-a/lab"] if user == "bob" else [])
+        payload = json.dumps(
+            {"user_id": "bob", "include_shared_for": "bob", "include_system": True}
+        )
+        out = json.loads(wrh._handle_list_workflows("bob", payload))
+        shared = [w for w in out["workflows"] if w.get("shared")]
+        assert [w["name"] for w in shared] == [alice_wf]
+
     def test_unshared_entries_stay_hidden(self, alice_wf):  # noqa: ARG002 — the fixture registers alice's shared workflow
         out = json.loads(
             wrh._handle_list_workflows(
