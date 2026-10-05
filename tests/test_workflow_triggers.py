@@ -88,6 +88,34 @@ def test_stem_key_only_scopes_run_to_the_uploaded_file(catalog_env, tmp_path):
     assert params["only_videos"] == "20260325_030811"
 
 
+def test_batch_quiet_window_collects_stems_into_one_run(catalog_env, tmp_path):
+    """`batch_quiet_seconds: N`: two uploads inside the quiet window → ONE run
+    whose only_videos is the sorted comma-joined stems of both."""
+    import time
+
+    catalog_file, calls = catalog_env
+    wf_dir = _write_workflow_dir(
+        tmp_path,
+        "wf-batch",
+        [{"on": "ingest", "bucket": "demo", "prefix": "opossum_",
+          "batch_quiet_seconds": 0.2}],
+    )
+    _write_catalog(
+        catalog_file,
+        [{"name": "wf-batch", "user_id": "alice", "source_path": str(wf_dir)}],
+    )
+    for key in ("opossum_215_A/cam/20260325_030811.mp4",
+                "opossum_215_A/cam/20260325_032828.mp4"):
+        workflow_triggers.dispatch_catalog_event(
+            project_id="p", bucket="demo", s3_key=key, owner="alice",
+        )
+    assert calls == [] or len(calls) == 1
+    time.sleep(0.5)
+    assert len(calls) == 1
+    params = json.loads(calls[0]["payload"])["params"]
+    assert params["only_videos"] == "20260325_030811,20260325_032828"
+
+
 @pytest.fixture
 def catalog_env(tmp_path, monkeypatch):
     """Temp workflow catalog + captured trigger calls."""
