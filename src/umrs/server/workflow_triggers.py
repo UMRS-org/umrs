@@ -4,12 +4,15 @@ Workflows declare subscriptions at the top level of ``workflow.json``::
 
     "triggers": [
       {"on": "ingest", "project": "proj-a", "bucket": "uploads", "prefix": "images/"},
-      {"on": "ingest"}
+      {"on": "ingest", "bucket": "b", "prefix": "videos/", "stem_key_only": true}
     ]
 
-Fields other than ``on`` are optional matchers; absent (or ``"*"``)
-means "match any". Cron subscriptions are handled separately by the
-SchedulerService (W4 cron half) — this module covers event dispatch.
+Fields other than ``on`` are optional matchers or behavior flags; absent
+(or ``"*"``) matcher values mean "match any". ``stem_key_only: true``
+adds ``only_videos = <uploaded stem>`` to the run params so file-scoped
+workflows run per uploaded file instead of rescanning the bucket.
+Cron subscriptions are handled separately by the SchedulerService
+(W4 cron half) — this module covers event dispatch.
 
 Philosophy mirrors the connector triggers: dispatch is best-effort and
 never raises — a broken workflow subscription must not break the
@@ -82,9 +85,16 @@ def _execution_id_from_response(raw: str) -> str | None:
 
 
 def _dispatch_entry(
-    entry: dict[str, Any], *, project_id: str, bucket: str, s3_key: str, owner: str
+    entry: dict[str, Any], *, project_id:str, bucket: str, s3_key: str, owner: str
 ) -> list[str]:
-    """Fire ``on: ingest`` triggers declared by one workflow entry."""
+    """Fire ``on: ingest`` triggers declared by one workflow entry.
+
+    Optional matcher extension: ``stem_key_only: true`` scopes the launched
+    run to the uploaded file's stem (``only_videos``) so multi-file uploads
+    fan out as per-file runs instead of rescanning the whole bucket.
+    """
+    from pathlib import Path
+
     from umrs.core.TaskCmdStatus import TaskCmd
     from umrs.server.workflow_registry_handler import handle_workflow_command
 
@@ -104,6 +114,8 @@ def _dispatch_entry(
             "ingest_s3_key": s3_key,
             "_trigger": dict(trigger),
         }
+        if trigger.get("stem_key_only"):
+            params["only_videos"] = Path(s3_key).stem
         raw = handle_workflow_command(
             TaskCmd.RUN_WORKFLOW,
             client_id,
