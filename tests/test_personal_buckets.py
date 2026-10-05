@@ -61,6 +61,19 @@ class _FakeStore:
         ]
 
 
+class _SharedStore(_FakeStore):
+    """FakeStore variant whose can_access also honours the access list
+    (mirror of test_bucket_access._RouteStore's semantics)."""
+
+    def can_access(self, bucket: str, user_id: str) -> bool:
+        row = self.rows.get(ub.input_bucket_of(bucket))
+        if row is None:
+            return False
+        if row.owner_id == user_id:
+            return True
+        return "system" in row.access or f"user:{user_id}" in row.access
+
+
 class _FakeS3:
     def __init__(self) -> None:
         self.buckets: set[str] = set()
@@ -322,6 +335,38 @@ def test_quota_is_charged_with_the_streamed_hash_and_size(store, s3, monkeypatch
         files={"file": ("w.pt", b"weights", "application/octet-stream")},
     )
     assert seen["c"] == (hashlib.md5(b"weights").hexdigest(), 7)
+
+
+def test_access_list_member_also_uploads_into_shared_bucket(s3, monkeypatch):
+    """Access-listed member (not owner) uploads into the shared bucket
+    (option A — `bucket_owned_by` admits via ADR-080 access); a stranger
+    stays 403."""
+    import umrs.api.files as files_api
+
+    fake = _SharedStore()
+    fake.add(ub.UserBucket("alice.opossum.videos", "alice", "opossum", "videos",
+                           access=("circle:bdr/opossum",)))
+    fake.set_access("alice.opossum.videos", ["circle:bdr/opossum", "user:bob"])
+    ub.set_user_bucket_store(fake)  # type: ignore[arg-type]
+    monkeypatch.setattr(step_staging, "_bucket_registry", None)
+    monkeypatch.setattr(files_api, "_charge_upload_quota", lambda *_a, **_k: None)
+    try:
+        up = _files_client("bob").post(
+            "/umrs/files/upload",
+            data={"bucket": "alice.opossum.videos", "key": "opossum_215_A/bob.mp4"},
+            files={"file": ("bob.mp4", b"clip-bytes", "video/mp4")},
+        )
+        assert up.status_code == 200, up.text
+        assert up.json()["key"] == "opossum_215_A/bob.mp4"
+
+        refused = _files_client("carol").post(
+            "/umrs/files/upload",
+            data={"bucket": "alice.opossum.videos"},
+            files={"file": ("carol.mp4", b"clip-bytes", "video/mp4")},
+        )
+        assert refused.status_code == 403
+    finally:
+        ub.set_user_bucket_store(None)
 
 
 def test_another_users_bucket_is_refused_everywhere(store, s3):
