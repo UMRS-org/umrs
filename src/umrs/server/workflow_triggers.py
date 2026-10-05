@@ -11,6 +11,10 @@ Fields other than ``on`` are optional matchers or behavior flags; absent
 (or ``"*"``) matcher values mean "match any". ``stem_key_only: true``
 adds ``only_videos = <uploaded stem>`` to the run params so file-scoped
 workflows run per uploaded file instead of rescanning the bucket.
+``batch_quiet_seconds: N`` instead collects stems during a rolling
+quiet window and fires ONE run with ``only_videos = `` a comma list of
+all collected stems (multi-file uploads become ONE batch job; pending
+batches live only in-process — a server restart drops them).
 Cron subscriptions are handled separately by the SchedulerService
 (W4 cron half) — this module covers event dispatch.
 
@@ -24,6 +28,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -84,14 +89,87 @@ def _execution_id_from_response(raw: str) -> str | None:
     return None
 
 
+# ── batch quiet-window collection (single run per batch) ────────────────────
+
+_BATCH_LOCK = threading.Lock()
+_BATCHES: dict[tuple, dict[str, Any]] = {}
+_BATCH_CAP = int(os.environ.get("UMRS_INGEST_BATCH_CAP", "200"))
+
+
+def _collect_batch_fire(
+    workflow_name: str, client_id: str, trigger: dict[str, Any], stems: list[str],
+) -> None:
+    """Timer expiry: launch ONE run with only_videos=<comma-joined stems>."""
+    from umrs.core.TaskCmdStatus import TaskCmd
+    from umrs.server.workflow_registry_handler import handle_workflow_command
+
+    params = dict(trigger.get("_params") or {})
+    params["only_videos"] = ",".join(sorted(stems))
+    params["_trigger"] = {k: v for k, v in trigger.items() if k != "_params"}
+    try:
+        raw = handle_workflow_command(
+            TaskCmd.RUN_WORKFLOW, client_id,
+            json.dumps({"workflow_name": workflow_name, "params": params,
+                        "_identity_verified": False}),
+        )
+        execution_id = _execution_id_from_response(raw)
+        logger.info(
+            "Ingest batch fired: workflow=%s execution=%s files=%d",
+            workflow_name, execution_id or "<unresolved>", len(stems),
+        )
+    except Exception:
+        logger.exception("Ingest batch dispatch failed for %s", workflow_name)
+
+
+def _queue_batch(
+    workflow_name: str, client_id: str, trigger: dict[str, Any], stem: str,
+) -> bool:
+    """Collect the stem into the rolling batch and (re)arm the quiet timer.
+    Returns True when the call was absorbed into a batch (no immediate fire).
+    """
+    quiet = float(trigger.get("batch_quiet_seconds") or 0)
+    if quiet <= 0:
+        return False
+    key = (workflow_name, str(trigger.get("bucket") or ""))
+    with _BATCH_LOCK:
+        b = _BATCHES.setdefault(
+            key, {"stems": set(), "timer": None, "client_id": client_id,
+                  "trigger": trigger}
+        )
+        b["stems"].add(stem)
+        b["client_id"] = client_id
+        old = b["timer"]
+        if old is not None:
+            old.cancel()
+        if len(b["stems"]) >= _BATCH_CAP:
+            _collect_batch_fire(workflow_name, client_id, trigger,
+                                sorted(b["stems"]))
+            _BATCHES[key] = {"stems": set(), "timer": None, "client_id": client_id,
+                             "trigger": trigger}
+            return True
+        t = threading.Timer(
+            quiet, _collect_batch_fire,
+            args=(workflow_name, client_id, trigger, sorted(b["stems"])),
+        )
+        t.daemon = True
+        b["timer"] = t
+        t.start()
+    logger.info(
+        "Ingest batch queued: workflow=%s bucket=%s stems=%d quiet=%ss",
+        workflow_name, trigger.get("bucket"), len(b["stems"]), quiet,
+    )
+    return True
+
+
 def _dispatch_entry(
-    entry: dict[str, Any], *, project_id:str, bucket: str, s3_key: str, owner: str
+    entry: dict[str, Any], *, project_id: str, bucket: str, s3_key: str, owner: str
 ) -> list[str]:
     """Fire ``on: ingest`` triggers declared by one workflow entry.
 
-    Optional matcher extension: ``stem_key_only: true`` scopes the launched
-    run to the uploaded file's stem (``only_videos``) so multi-file uploads
-    fan out as per-file runs instead of rescanning the whole bucket.
+    Optional matcher extensions: ``stem_key_only: true`` scopes the launch to
+    the uploaded stem; ``batch_quiet_seconds: N`` collects stems inside a
+    rolling quiet window and fires ONE run with only_videos list (batch upload
+    = one job), declared per trigger.
     """
     from pathlib import Path
 
@@ -108,14 +186,24 @@ def _dispatch_entry(
             trigger, project_id=project_id, bucket=bucket, s3_key=s3_key
         ):
             continue
-        params = {
+        stem = Path(s3_key).stem
+        base = {
             "project_id": project_id,
             "bucket": bucket,
             "ingest_s3_key": s3_key,
+        }
+        if _queue_batch(
+            workflow_name, client_id,
+            {**trigger, "_params": dict(base)}, stem,
+        ):
+            execution_ids.append("batch-queued")
+            continue
+        params = {
+            **base,
             "_trigger": dict(trigger),
         }
         if trigger.get("stem_key_only"):
-            params["only_videos"] = Path(s3_key).stem
+            params["only_videos"] = stem
         raw = handle_workflow_command(
             TaskCmd.RUN_WORKFLOW,
             client_id,
