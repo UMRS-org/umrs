@@ -412,7 +412,9 @@ async def upload_file(
     x_user_id: str | None = Header(None),
 ) -> UploadResponse:
     """Store an uploaded file under the caller's project namespace, or — with
-    ``bucket`` — at ``key`` in a bucket the caller owns (ADR-079)."""
+    ``bucket`` — at ``key`` in a bucket the caller owns (ADR-079) or whose
+    ADR-080 access list admits them (object writes; lifecycle stays
+    owner-only)."""
     if not file.filename:
         raise_typed(PlatformError.files("filename_required", "Filename required"))
     if bucket:
