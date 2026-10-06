@@ -149,6 +149,30 @@ class TestJanitorEngineProbe:
         assert harness.janitor._probe_failures.get("job-r") is None
         assert (endpoint0.metadata.get("detail") or "").startswith("probe: recovered")
 
+    async def test_degraded_since_is_stamped_once_and_cleared_on_recovery(self, _patch_poller):
+        """The walltime relay reads ``degraded_since`` (2026-10-07: a vanished job
+        stayed DEGRADED and blocked its own respawn)."""
+        port = 13007
+        refused = (False, False, [], "connection refused")
+        script = {port: [refused] * 4 + [(True, False, ["probe-model"], "")]}
+        poller = _ScriptedPoller(script)
+        harness = _JanitorProbeHarness(poller)
+        _patch_poller["poller"] = poller
+        _register_ready(harness.registry, "job-s", port=port)
+        endpoint0 = harness.registry.get_by_job_id("job-s")
+
+        for _ in range(3):
+            await harness.probe()
+        stamped = endpoint0.metadata.get("degraded_since")
+        assert endpoint0.status == EndpointStatus.DEGRADED and stamped
+
+        await harness.probe()  # still failing: the first stamp is kept
+        assert endpoint0.metadata.get("degraded_since") == stamped
+
+        await harness.probe()  # recovered
+        assert endpoint0.status == EndpointStatus.READY
+        assert not endpoint0.metadata.get("degraded_since")
+
     async def test_pending_host_is_skipped(self, _patch_poller):
         """Endpoints without a concrete host are never probed and stay untouched."""
         poller = _ScriptedPoller({})
