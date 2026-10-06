@@ -479,6 +479,7 @@ class EndpointProvisionBackend(OrchestratorBackend):
             Backend reference (slurm job ID)
         """
         # Lazy imports to avoid circular dependencies with orchestrator
+        from umrs.model_registry.capabilities import endpoint_limit_metadata
         from umrs.orchestrator.deployment_spec import DeploymentSpec
         from umrs.orchestrator.endpoint_mounts import build_mount_environment
         from umrs.orchestrator.preflight import PreflightValidator
@@ -696,6 +697,9 @@ class EndpointProvisionBackend(OrchestratorBackend):
                     if parsed_idle_ttl > 0:
                         endpoint_metadata["idle_ttl_sec"] = parsed_idle_ttl
             endpoint_metadata.update(mount_metadata)
+            # W5/U3 (2026-10-05): max_output_tokens / reasoning flags for the
+            # LLM proxy's /v1/models listing, from the catalog entry.
+            endpoint_metadata.update(endpoint_limit_metadata(model_entry.to_dict()))
             env_served_name = deployment_spec.huggingface_id
             if env_served_name and env_served_name != model_name:
                 endpoint_metadata["served_model_name"] = env_served_name

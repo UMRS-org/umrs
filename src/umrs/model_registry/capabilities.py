@@ -20,6 +20,7 @@ New models declare capabilities.  No bash edits needed.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -251,3 +252,79 @@ class ModelCapabilities:
             requires_mm_encoder_tp_data=family in FAMILY_REQUIRES_MM_ENCODER_TP_DATA,
             model_family=family,
         )
+
+
+# ── Client-facing model limits (W5 / U3+U4, 2026-10-05; gap row D-11) ───────
+
+
+def _positive_int(value: Any) -> int | None:
+    """``value`` as a positive int, else None (bools and junk are unknown)."""
+    if isinstance(value, bool):
+        return None
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
+
+
+def _mapping(value: Any) -> dict[str, Any]:
+    """``value`` as a plain dict when it is a mapping, else an empty dict."""
+    return dict(value) if isinstance(value, Mapping) else {}
+
+
+def _reasoning_flags(caps: ModelCapabilities, declared: bool) -> dict[str, bool]:
+    """``reasoning`` / ``supports_reasoning_effort`` where the registry knows.
+
+    A positive signal (capability flag, a model family with a reasoning
+    parser, derived effort levels) is always published. A negative one is
+    published only when the entry declares capabilities at all — an entry
+    left at the defaults says nothing, so the value stays unknown.
+    """
+    reasoning = caps.supports_reasoning or bool(
+        FAMILY_REASONING_PARSER.get(caps.model_family or "")
+    )
+    effort = bool(caps.reasoning_effort_levels)
+    flags: dict[str, bool] = {}
+    if reasoning or declared:
+        flags["reasoning"] = reasoning
+    if effort or declared:
+        flags["supports_reasoning_effort"] = effort
+    return flags
+
+
+def endpoint_limit_metadata(entry: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Model limits to record on an endpoint's registry metadata.
+
+    The LLM proxy's ``/v1/models`` listing publishes them per model
+    (``umrs.api.llm``), so clients size their output budget from the
+    platform instead of a name table and send ``reasoning_effort`` only
+    where it is honoured.
+
+    Args:
+        entry: the catalog entry as a dict (``ModelEntry.to_dict()`` shape or
+            a JSON-catalog row); None when the model is not registered.
+
+    Returns:
+        Only the keys whose value is known: ``max_output_tokens`` (int — the
+        serving profile's ``max_output_tokens``, else the capabilities'
+        generation-config ``max_output_tokens``), ``reasoning`` (bool) and
+        ``supports_reasoning_effort`` (bool). Unknown values are left out,
+        never guessed. A non-mapping *entry* (or sub-block) counts as unknown.
+    """
+    if not isinstance(entry, Mapping):
+        return {}
+    raw_caps = _mapping(entry.get("capabilities"))
+    declared = ModelCapabilities.from_dict(raw_caps) != ModelCapabilities()
+    caps = resolve_capabilities(
+        str(entry.get("name") or ""), ModelCapabilities.from_dict(raw_caps)
+    )
+    out: dict[str, Any] = {}
+    profile = _mapping(entry.get("serving_profile"))
+    max_output = _positive_int(profile.get("max_output_tokens")) or _positive_int(
+        caps.max_output_tokens
+    )
+    if max_output is not None:
+        out["max_output_tokens"] = max_output
+    out.update(_reasoning_flags(caps, declared))
+    return out

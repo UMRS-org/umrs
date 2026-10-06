@@ -31,6 +31,7 @@ from fastapi import (
 )
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from ..model_registry.capabilities import endpoint_limit_metadata
 from ..orchestrator.endpoint_access import usable_endpoints
 from ..orchestrator.endpoint_mounts import (
     egress_reasons,
@@ -3150,6 +3151,9 @@ async def provision_endpoint(
     request_metadata.setdefault("tier", request_metadata["owner_type"])
     _record_owner_and_access(request_metadata, requesting_user, access)
     _apply_served_name_env(request, model_entry, request_metadata, env_vars)
+    # W5/U3 (2026-10-05): max_output_tokens / reasoning flags the LLM proxy's
+    # /v1/models listing publishes per model (known values only).
+    request_metadata.update(endpoint_limit_metadata(model_entry))
 
     _require_egress_proxy_for_request(request)
 

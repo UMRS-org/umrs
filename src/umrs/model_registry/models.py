@@ -300,6 +300,13 @@ class ServingProfile:
     tensor_parallel_size: int = 1
     pipeline_parallel_size: int = 1
     max_model_len: int | None = None
+    # Default output-token budget for this model (W5/U4, 2026-10-05): sits
+    # beside max_model_len (VLLM_MAX_MODEL_LEN). Published per model in the
+    # LLM proxy's /v1/models listing as ``max_output_tokens`` so clients send
+    # an explicit max_tokens; None = not set (the listing then falls back to
+    # the model's generation_config max_new_tokens, else null). Not passed to
+    # the server launch yet — the launchers have no generation-config lane.
+    max_output_tokens: int | None = None
     gpu_memory_utilization: float = 0.9
     dtype: str = "auto"
     quantization: str | None = None  # e.g., "awq", "gptq"
@@ -333,6 +340,7 @@ class ServingProfile:
             "tensor_parallel_size": self.tensor_parallel_size,
             "pipeline_parallel_size": self.pipeline_parallel_size,
             "max_model_len": self.max_model_len,
+            "max_output_tokens": self.max_output_tokens,
             "gpu_memory_utilization": self.gpu_memory_utilization,
             "dtype": self.dtype,
             "quantization": self.quantization,
@@ -368,6 +376,7 @@ class ServingProfile:
             tensor_parallel_size=data.get("tensor_parallel_size", 1),
             pipeline_parallel_size=data.get("pipeline_parallel_size", 1),
             max_model_len=data.get("max_model_len"),
+            max_output_tokens=data.get("max_output_tokens"),
             gpu_memory_utilization=data.get("gpu_memory_utilization", 0.9),
             dtype=data.get("dtype", "auto"),
             quantization=data.get("quantization"),
