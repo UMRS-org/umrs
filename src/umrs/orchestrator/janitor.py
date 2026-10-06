@@ -55,6 +55,28 @@ def _cancel_durable_lineage(endpoint: Any) -> None:
         )
 
 
+def _degraded_metadata(
+    endpoint: Any, failures: int, error: str | None, models: list[str], now: datetime
+) -> dict[str, Any]:
+    """Registry metadata for a failing engine probe on a DEGRADED endpoint.
+
+    ``degraded_since`` marks the first failing probe after the degrade: the
+    walltime relay stops counting a long-degraded endpoint as live
+    (``endpoint_relay.DEGRADED_GRACE_SEC``, 2026-10-07). Rows degraded before
+    the field existed get it on their next failing probe.
+    """
+    update: dict[str, Any] = {
+        "detail": (
+            f"degraded: engine probe failed ({failures} consecutive; {error or 'unreachable'})"
+        ),
+        "readiness_error": str(error or "unreachable")[:200],
+        "readiness_models": models,
+    }
+    if not (endpoint.metadata or {}).get("degraded_since"):
+        update["degraded_since"] = now.isoformat()
+    return update
+
+
 @dataclass
 class JanitorConfig:
     """Configuration for janitor task."""
@@ -465,6 +487,7 @@ class Janitor:
                             "detail": "probe: recovered — engine healthy",
                             "readiness_error": None,
                             "readiness_models": models,
+                            "degraded_since": None,
                         },
                     )
                     recovered += 1
@@ -495,14 +518,7 @@ class Janitor:
                 )
             self.registry.update_metadata(
                 endpoint.job_id,
-                {
-                    "detail": (
-                        "degraded: engine probe failed "
-                        f"({failures} consecutive; {error or 'unreachable'})"
-                    ),
-                    "readiness_error": str(error or "unreachable")[:200],
-                    "readiness_models": models,
-                },
+                _degraded_metadata(endpoint, failures, error, models, now),
             )
 
         return (degraded, recovered)
@@ -762,7 +778,9 @@ class Janitor:
         next_n = streak_map.get(backend_name, 0) + 1
         streak_map[backend_name] = next_n
         if next_n == self._FAIL_BLOCK_FIRST:
-            logger.error("Orphan cleanup failed (backend=%s, streak=1): %s", backend_name, exc)
+            logger.error(
+                "Orphan cleanup failed (backend=%s, streak=1): %s", backend_name, exc
+            )
         elif next_n % self._FAIL_SUMMARY_EVERY == 0:
             logger.error(
                 "Orphan cleanup STILL failing (backend=%s, streak=%d consecutive): %s",

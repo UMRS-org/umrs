@@ -56,6 +56,14 @@ _PENDING = (
 #: walltime kill would end their requests anyway.
 DRAIN_FLOOR_SEC = 300
 
+#: A DEGRADED endpoint counts as live only this long after it degraded
+#: (``metadata["degraded_since"]``, set by the janitor's engine probe). On
+#: 2026-10-07 a Nimble job vanished 15 h into its walltime; its row stayed
+#: DEGRADED, the relay counted it live, nothing was respawned, and every
+#: decision call failed until the row was removed by hand. Past the grace it
+#: no longer blocks a respawn, and it is retired once a READY endpoint exists.
+DEGRADED_GRACE_SEC = 900
+
 
 @dataclass(frozen=True)
 class KeepAlivePolicy:
@@ -160,6 +168,20 @@ def _seconds_left(
     return (deadline - now).total_seconds()
 
 
+def _degraded_since(ep: RegisteredEndpoint) -> datetime | None:
+    raw = (ep.metadata or {}).get("degraded_since")
+    try:
+        return datetime.fromisoformat(str(raw)) if raw else None
+    except ValueError:
+        return None
+
+
+def _stale_degraded(ep: RegisteredEndpoint, now: datetime) -> bool:
+    """DEGRADED for longer than the grace (rows without a timestamp never are)."""
+    since = _degraded_since(ep) if ep.status == EndpointStatus.DEGRADED else None
+    return since is not None and (now - since).total_seconds() >= DEGRADED_GRACE_SEC
+
+
 def _owned(policy: KeepAlivePolicy, ep: RegisteredEndpoint) -> bool:
     if ep.project_id != policy.project_id:
         return False
@@ -207,6 +229,7 @@ class _Fleet:
     pending: bool
     expiring: list[RegisteredEndpoint]
     fresh: list[RegisteredEndpoint]
+    stale: tuple[RegisteredEndpoint, ...] = ()
 
 
 def _split_by_deadline(
@@ -229,12 +252,36 @@ def _fleet(
     now: datetime,
 ) -> _Fleet:
     mine = [ep for ep in endpoints if _owned(policy, ep)]
-    live = [ep for ep in mine if ep.status in _LIVE]
+    live, stale = _live_and_stale(mine, now)
     pending = any(ep.status in _PENDING for ep in mine)
     if walltime is None:
-        return _Fleet(live, pending, [], live)
+        return _Fleet(live, pending, [], live, stale)
     expiring, fresh = _split_by_deadline(policy, live, walltime, now)
-    return _Fleet(live, pending, expiring, fresh)
+    return _Fleet(live, pending, expiring, fresh, stale)
+
+
+def _live_and_stale(
+    mine: list[RegisteredEndpoint], now: datetime
+) -> tuple[list[RegisteredEndpoint], tuple[RegisteredEndpoint, ...]]:
+    """Live rows (READY, or DEGRADED within the grace) and the stale DEGRADED ones."""
+    stale = tuple(ep for ep in mine if _stale_degraded(ep, now))
+    return [ep for ep in mine if ep.status in _LIVE and ep not in stale], stale
+
+
+def _stale_retirements(policy: KeepAlivePolicy, fleet: _Fleet) -> list[RelayAction]:
+    """Retire stale DEGRADED rows once a READY endpoint serves the model."""
+    if not any(ep.status == EndpointStatus.READY for ep in fleet.live):
+        return []
+    return [
+        RelayAction(
+            "retire",
+            policy.model,
+            policy.project_id,
+            f"degraded for over {DEGRADED_GRACE_SEC}s; a READY endpoint serves",
+            ep.job_id,
+        )
+        for ep in fleet.stale
+    ]
 
 
 def plan_relay(
@@ -247,6 +294,13 @@ def plan_relay(
     """Relay actions for one policy given the registry rows (pure)."""
     walltime = policy.walltime_sec or walltime_sec
     fleet = _fleet(policy, endpoints, walltime, now)
+    return _plan_live(policy, fleet, walltime, now) + _stale_retirements(policy, fleet)
+
+
+def _plan_live(
+    policy: KeepAlivePolicy, fleet: _Fleet, walltime: int | None, now: datetime
+) -> list[RelayAction]:
+    """Respawn, successor and handover actions over the live endpoints."""
     provision = RelayAction("provision", policy.model, policy.project_id, "")
     if not fleet.live:
         return (

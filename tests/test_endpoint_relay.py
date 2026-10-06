@@ -69,6 +69,35 @@ def test_crashed_endpoint_respawns():
     assert _plan(_ep("j1", EndpointStatus.FAILED, age_h=3)) == [("provision", None)]
 
 
+def _degraded(job_id, *, age_h, degraded_min):
+    ep = _ep(job_id, EndpointStatus.DEGRADED, age_h=age_h)
+    ep.metadata["degraded_since"] = (NOW - timedelta(minutes=degraded_min)).isoformat()
+    return ep
+
+
+def test_briefly_degraded_endpoint_still_counts_as_live():
+    assert _plan(_degraded("j1", age_h=3, degraded_min=5)) == []
+
+
+def test_long_degraded_endpoint_is_respawned():
+    """2026-10-07: a vanished Nimble job stayed DEGRADED and blocked the respawn."""
+    assert _plan(_degraded("j1", age_h=15, degraded_min=20)) == [("provision", None)]
+
+
+def test_long_degraded_without_timestamp_keeps_the_old_behaviour():
+    assert _plan(_ep("j1", EndpointStatus.DEGRADED, age_h=15)) == []
+
+
+def test_stale_degraded_is_retired_once_a_ready_endpoint_serves():
+    fresh = _ep("j2", EndpointStatus.READY, age_h=0.2, ready_ago_min=3)
+    assert _plan(_degraded("j1", age_h=15, degraded_min=30), fresh) == [("retire", "j1")]
+
+
+def test_stale_degraded_waits_while_the_respawn_is_pending():
+    pending = _ep("j2", EndpointStatus.PROVISIONING, age_h=0.1)
+    assert _plan(_degraded("j1", age_h=15, degraded_min=30), pending) == []
+
+
 def test_pending_first_job_waits():
     assert _plan(_ep("j1", EndpointStatus.PROVISIONING, age_h=0.2)) == []
 
