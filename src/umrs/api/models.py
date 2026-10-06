@@ -120,6 +120,14 @@ class ServingProfileRequest(BaseModel):
         1, ge=1, le=8, description="Number of GPUs for tensor parallelism"
     )
     max_model_len: int | None = Field(None, description="Maximum context length")
+    max_output_tokens: int | None = Field(
+        None,
+        ge=1,
+        description=(
+            "Default output-token budget published in /v1/models "
+            "(max_output_tokens); unset = generation_config default"
+        ),
+    )
     gpu_memory_utilization: float = Field(
         0.9, ge=0.1, le=1.0, description="GPU memory fraction"
     )
@@ -625,6 +633,7 @@ def serving_profile_from_request(
         invoke_base_path=req.invoke_base_path,
         tensor_parallel_size=req.tensor_parallel_size,
         max_model_len=req.max_model_len,
+        max_output_tokens=req.max_output_tokens,
         gpu_memory_utilization=req.gpu_memory_utilization,
         dtype=req.dtype,
         quantization=req.quantization,

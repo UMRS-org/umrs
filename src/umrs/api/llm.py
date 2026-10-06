@@ -24,6 +24,7 @@ import httpx
 from fastapi import APIRouter, Depends, Query, Request, Response
 from fastapi.responses import StreamingResponse
 
+from umrs.api._proxy_timeouts import ProxyTimeouts, resolve_proxy_timeouts
 from umrs.api.llm_usage import (
     ProxyTimer,
     UsageRecord,
@@ -75,9 +76,14 @@ def _resolve_litellm_service_key() -> str | None:
 # used by readiness probes and Slurm-launched LiteLLM.
 _LITELLM_SERVICE_KEY: str | None = _resolve_litellm_service_key()
 
-# Timeouts
-_CONNECT_TIMEOUT = float(os.environ.get("LLM_PROXY_CONNECT_TIMEOUT", "10"))
-_READ_TIMEOUT = float(os.environ.get("LLM_PROXY_READ_TIMEOUT", "120"))
+# Timeouts (W5/U1, 2026-10-05) — connect, idle-between-chunks (streaming) and
+# total (non-streaming deadline) are separate limits; see _proxy_timeouts for
+# the env names. LLM_PROXY_READ_TIMEOUT is a deprecated alias of the idle
+# limit (it no longer caps non-streaming requests).
+_TIMEOUTS: ProxyTimeouts = resolve_proxy_timeouts("LLM_PROXY")
+# GET /v1/models fan-out keeps the pre-split 120 s read limit: one hung
+# endpoint must not stall the aggregate listing for the idle/total limits.
+_LIST_READ_TIMEOUT = float(os.environ.get("LLM_PROXY_LIST_TIMEOUT", "120"))
 
 
 # ---------------------------------------------------------------------------
@@ -322,12 +328,36 @@ def _build_upstream_headers(
     return headers
 
 
-_PROXY_TIMEOUT = httpx.Timeout(
-    connect=_CONNECT_TIMEOUT,
-    read=_READ_TIMEOUT,
-    write=_READ_TIMEOUT,
-    pool=5.0,
-)
+def _streaming_timeout() -> httpx.Timeout:
+    """Streaming: the read limit is the idle gap between chunks (per read)."""
+    return httpx.Timeout(
+        connect=_TIMEOUTS.connect,
+        read=_TIMEOUTS.idle,
+        write=_TIMEOUTS.idle,
+        pool=5.0,
+    )
+
+
+def _oneshot_timeout() -> httpx.Timeout:
+    """Non-streaming: the reply arrives only once the model has finished, so a
+    per-read idle limit would cut long turns; reads may wait up to the total
+    limit, which ``_proxy_oneshot`` also enforces as an overall deadline."""
+    return httpx.Timeout(
+        connect=_TIMEOUTS.connect,
+        read=_TIMEOUTS.total,
+        write=_TIMEOUTS.idle,
+        pool=5.0,
+    )
+
+
+def _listing_timeout() -> httpx.Timeout:
+    """Per-endpoint ``GET /v1/models`` during the aggregate listing."""
+    return httpx.Timeout(
+        connect=_TIMEOUTS.connect,
+        read=_LIST_READ_TIMEOUT,
+        write=_LIST_READ_TIMEOUT,
+        pool=5.0,
+    )
 
 
 async def _open_stream(
@@ -337,7 +367,7 @@ async def _open_stream(
     body: bytes,
 ) -> tuple[httpx.AsyncClient, httpx.Response]:
     """Build and send the upstream streaming request (504/502-mapped)."""
-    client = httpx.AsyncClient(timeout=_PROXY_TIMEOUT)
+    client = httpx.AsyncClient(timeout=_streaming_timeout())
     try:
         req = client.build_request(
             method=request.method,
@@ -457,6 +487,23 @@ async def _proxy_streaming(
     )
 
 
+def _record_oneshot_usage(
+    response: httpx.Response,
+    usage_record: UsageRecord | None,
+    timer: ProxyTimer | None,
+) -> None:
+    """Fill and persist (fire-and-forget) the usage row of a one-shot reply."""
+    if usage_record is None:
+        return
+    usage_record.status_code = response.status_code
+    if timer is not None:
+        usage_record.duration_ms = timer.elapsed_ms()
+    usage = extract_usage_oneshot(response.content)
+    if usage:
+        fill_usage(usage_record, usage)
+    record_usage(_usage_db_pool, usage_record)
+
+
 async def _proxy_oneshot(
     request: Request,
     upstream_url: str,
@@ -465,30 +512,41 @@ async def _proxy_oneshot(
     usage_record: UsageRecord | None = None,
     timer: ProxyTimer | None = None,
 ) -> Response:
-    """Non-streaming proxy: send request, return full response."""
-    async with httpx.AsyncClient(timeout=_PROXY_TIMEOUT) as client:
+    """Non-streaming proxy: send request, return full response.
+
+    The whole request (send + full body read) runs under the total deadline
+    (``LLM_PROXY_TOTAL_TIMEOUT``); exceeding it maps to the same 504 as an
+    httpx timeout.
+    """
+    async with httpx.AsyncClient(timeout=_oneshot_timeout()) as client:
         try:
-            response = await client.request(
-                method=request.method,
-                url=upstream_url,
-                headers=headers,
-                content=body,
+            response = await asyncio.wait_for(
+                client.request(
+                    method=request.method,
+                    url=upstream_url,
+                    headers=headers,
+                    content=body,
+                ),
+                timeout=_TIMEOUTS.total,
             )
-            # Extract and record usage (fire-and-forget)
-            if usage_record is not None:
-                usage_record.status_code = response.status_code
-                if timer is not None:
-                    usage_record.duration_ms = timer.elapsed_ms()
-                usage = extract_usage_oneshot(response.content)
-                if usage:
-                    fill_usage(usage_record, usage)
-                record_usage(_usage_db_pool, usage_record)
+            _record_oneshot_usage(response, usage_record, timer)
 
             return Response(
                 content=response.content,
                 status_code=response.status_code,
                 headers=dict(response.headers),
                 media_type=response.headers.get("content-type"),
+            )
+        except asyncio.TimeoutError:
+            logger.error(
+                "Upstream %s exceeded the total deadline of %.0fs",
+                upstream_url,
+                _TIMEOUTS.total,
+            )
+            raise_typed(
+                PlatformError.llm(
+                    "gateway_timeout", "Request to upstream service timed out"
+                )
             )
         except httpx.TimeoutException:
             logger.error("Timeout proxying to %s", upstream_url)
@@ -782,21 +840,80 @@ def _variant_is_redundant(variant: str, base_id: str) -> bool:
     return _norm(variant) == _norm(str(base_id))
 
 
+def _positive_int(value: object) -> int | None:
+    """``value`` when it is a positive int (bools excluded), else None."""
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        return value
+    return None
+
+
+def _optional_bool(value: object) -> bool | None:
+    """``value`` when it is a bool, else None (unknown)."""
+    return value if isinstance(value, bool) else None
+
+
+# Model-limit fields every listed entry carries (W5/U3, 2026-10-05; D-11).
+# A value is null when the platform does not know it. Sources:
+#   context_window            the served max_model_len — the upstream entry's
+#                             own ``max_model_len`` (vLLM reports it), else
+#                             the endpoint's registry metadata
+#   max_output_tokens         serving-profile ``max_output_tokens``, else the
+#                             model's generation_config ``max_new_tokens``
+#   reasoning                 registry capability / model-family flag
+#   supports_reasoning_effort registry ``reasoning_effort_levels`` non-empty
+# The last three are recorded on the endpoint at provision time
+# (``umrs.model_registry.capabilities.endpoint_limit_metadata``); endpoints
+# provisioned before 2026-10-05 list them as null until re-provisioned.
+_MODEL_LIMIT_FIELDS = (
+    "context_window",
+    "max_output_tokens",
+    "reasoning",
+    "supports_reasoning_effort",
+)
+
+
+def _model_limits(entry: dict, endpoint: RegisteredEndpoint) -> dict[str, object]:
+    """Client-facing limits for one listed model (None = unknown)."""
+    metadata = endpoint.metadata or {}
+    return {
+        "context_window": _positive_int(entry.get("max_model_len"))
+        or _positive_int(metadata.get("max_model_len")),
+        "max_output_tokens": _positive_int(metadata.get("max_output_tokens")),
+        "reasoning": _optional_bool(metadata.get("reasoning")),
+        "supports_reasoning_effort": _optional_bool(
+            metadata.get("supports_reasoning_effort")
+        ),
+    }
+
+
+def _with_model_limits(normalized: dict, endpoint: RegisteredEndpoint) -> dict:
+    """Add the limit fields; a non-null value the upstream already sent wins."""
+    limits = _model_limits(normalized, endpoint)
+    for key in _MODEL_LIMIT_FIELDS:
+        if normalized.get(key) is None:
+            normalized[key] = limits[key]
+    return normalized
+
+
 def _normalize_model_list_entry(
     entry: dict,
     endpoint: RegisteredEndpoint,
 ) -> tuple[dict, str]:
-    """Rewrite picker ids to catalog names and tag the base catalog model."""
+    """Rewrite picker ids to catalog names, tag the base catalog model and
+    attach the model-limit fields (``_MODEL_LIMIT_FIELDS``)."""
     catalog_model = endpoint.model
     upstream_id = entry.get("id")
     base_id = catalog_model or upstream_id
     if not base_id:
         return entry, ""
 
-    normalized = {
-        **entry,
-        "catalog_model": catalog_model,
-    }
+    normalized = _with_model_limits(
+        {
+            **entry,
+            "catalog_model": catalog_model,
+        },
+        endpoint,
+    )
     if endpoint.variant and not _variant_is_redundant(
         str(endpoint.variant), str(base_id)
     ):
@@ -821,7 +938,7 @@ async def _fetch_endpoint_models(endpoint: RegisteredEndpoint) -> list[dict]:
         headers["Authorization"] = f"Bearer {_LITELLM_SERVICE_KEY}"
     url = f"{endpoint.litellm_url}/v1/models"
     try:
-        async with httpx.AsyncClient(timeout=_PROXY_TIMEOUT) as client:
+        async with httpx.AsyncClient(timeout=_listing_timeout()) as client:
             response = await client.get(url, headers=headers)
             response.raise_for_status()
             payload = response.json()
