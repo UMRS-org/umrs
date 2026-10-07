@@ -548,11 +548,43 @@ def _execution_payload_from_job(job) -> dict[str, Any]:
     return execution_payload_from_job(job)
 
 
+def _list_workflows_payload(
+    scope: str | None,
+    name: str | None,
+    resolved_user_id: str | None,
+    *,
+    caller_id: str | None,
+    verified_project: str | None,
+    admin_all: bool,
+) -> dict[str, Any]:
+    if admin_all:
+        # Explicit admin audit view (mirrors ZMQ ``all_users: true``,
+        # 2026-10-06): no owner/share scoping — filters only.
+        pairs: tuple[tuple[str, Any], ...] = (("scope", scope), ("name", name))
+    else:
+        pairs = (
+            ("scope", scope),
+            ("name", name),
+            ("user_id", resolved_user_id),
+            # ADR-080: entries whose access list admits the caller (shared).
+            ("include_shared_for", caller_id),
+            ("verified_project", verified_project),
+            # The owner filter above dropped the system-scope workflows every
+            # user may run (review 2026-10-04).
+            ("include_system", True if resolved_user_id else None),
+        )
+    return {key: value for key, value in pairs if value is not None}
+
+
 @router.get("")
 async def list_workflows(
     scope: str | None = Query(None, description="Optional workflow scope filter"),
     name: str | None = Query(None, description="Optional workflow-name filter"),
     user_id: str | None = Query(None, description="Optional owner filter"),
+    all_users: bool = Query(
+        False,
+        description="Admin-only: list the full catalog across owners",
+    ),
     x_user_id: str | None = Header(None),
     x_verified_project_id: str | None = Header(None),
     x_verified_is_admin: str | None = Header(None),
@@ -562,21 +594,14 @@ async def list_workflows(
         x_user_id, x_verified_project_id, x_verified_is_admin, x_verified_hmac
     )
     resolved_user_id = _header_str(x_user_id) or user_id
-    payload = {
-        key: value
-        for key, value in (
-            ("scope", scope),
-            ("name", name),
-            ("user_id", resolved_user_id),
-            # ADR-080: entries whose access list admits the caller (shared).
-            ("include_shared_for", _header_str(x_user_id)),
-            ("verified_project", _header_str(x_verified_project_id)),
-            # The owner filter above dropped the system-scope workflows every
-            # user may run (review 2026-10-04).
-            ("include_system", True if resolved_user_id else None),
-        )
-        if value is not None
-    }
+    payload = _list_workflows_payload(
+        scope,
+        name,
+        resolved_user_id,
+        caller_id=_header_str(x_user_id),
+        verified_project=_header_str(x_verified_project_id),
+        admin_all=all_users and _header_str(x_verified_is_admin) == "true",
+    )
     raw = handle_workflow_command(
         TaskCmd.LIST_WORKFLOWS,
         resolved_user_id or "_",

@@ -24,22 +24,26 @@ def _send_reply(
         logger.error("Error sending %s response: %s", label, exc)
 
 
-
 def _scoped_list_payload(payload_str: str, client_id: str, is_admin: bool) -> str:
-    """LIST_WORKFLOWS over ZMQ scoped like the HTTP route: a non-admin sees
+    """LIST_WORKFLOWS over ZMQ scoped like the HTTP route: every caller sees
     their own workflows plus those whose ADR-080 access list admits them.
     The payload's owner filter and share subject become the bound caller,
     and its project claim is dropped (ZMQ carries no gateway-verified
-    project). Before 2026-10-04 an empty payload listed every user's
-    workflows, source paths and access lists included."""
-    if is_admin:
-        return payload_str
+    project). The full-catalog audit view stays explicit: ``all_users:
+    true`` is honoured only for an admin session — for everyone else the
+    key is stripped like any other claimed escape (never a privilege a
+    payload can assert). Before 2026-10-04 an empty payload listed every
+    user's workflows, source paths and access lists included; until
+    2026-10-06 an admin session still got that dump by default."""
     try:
         payload = json.loads(payload_str) if payload_str else {}
     except json.JSONDecodeError:
         payload = {}
     if not isinstance(payload, dict):
         payload = {}
+    all_users = payload.pop("all_users", None) is True
+    if is_admin and all_users:
+        return json.dumps(payload)
     payload["user_id"] = client_id
     payload["include_shared_for"] = client_id
     payload["include_system"] = True
@@ -57,7 +61,9 @@ class ListWorkflowsHandler(CommandHandler):
         response_json = handle_workflow_command(
             "LIST_WORKFLOWS",
             client_id,
-            _scoped_list_payload(payload_str, client_id, getattr(auth, "is_admin", False) is True),
+            _scoped_list_payload(
+                payload_str, client_id, getattr(auth, "is_admin", False) is True
+            ),
         )
         _send_reply(ctx, zmq_sender_id, response_json, "LIST_WORKFLOWS")
         update_status(TaskStatus.COMPLETED)
@@ -90,7 +96,9 @@ class WorkflowStatusHandler(CommandHandler):
     def execute(self, payload: Any, ctx: HandlerContext) -> None:
         task_id, update_status = self._make_task(ctx, TaskCmd.WORKFLOW_STATUS, payload)
         client_id, payload_str, zmq_sender_id = payload
-        response_json = handle_workflow_command("WORKFLOW_STATUS", client_id, payload_str)
+        response_json = handle_workflow_command(
+            "WORKFLOW_STATUS", client_id, payload_str
+        )
         _send_reply(ctx, zmq_sender_id, response_json, "WORKFLOW_STATUS")
         update_status(TaskStatus.COMPLETED)
 
@@ -118,7 +126,9 @@ class WorkflowResultsHandler(CommandHandler):
     def execute(self, payload: Any, ctx: HandlerContext) -> None:
         task_id, update_status = self._make_task(ctx, TaskCmd.WORKFLOW_RESULTS, payload)
         client_id, payload_str, zmq_sender_id = payload
-        response_json = handle_workflow_command("WORKFLOW_RESULTS", client_id, payload_str)
+        response_json = handle_workflow_command(
+            "WORKFLOW_RESULTS", client_id, payload_str
+        )
         _send_reply(ctx, zmq_sender_id, response_json, "WORKFLOW_RESULTS")
         update_status(TaskStatus.COMPLETED)
 
@@ -129,7 +139,9 @@ class WorkflowCancelHandler(CommandHandler):
     def execute(self, payload: Any, ctx: HandlerContext) -> None:
         task_id, update_status = self._make_task(ctx, TaskCmd.WORKFLOW_CANCEL, payload)
         client_id, payload_str, zmq_sender_id = payload
-        response_json = handle_workflow_command("WORKFLOW_CANCEL", client_id, payload_str)
+        response_json = handle_workflow_command(
+            "WORKFLOW_CANCEL", client_id, payload_str
+        )
         _send_reply(ctx, zmq_sender_id, response_json, "WORKFLOW_CANCEL")
         update_status(TaskStatus.COMPLETED)
 
@@ -140,6 +152,8 @@ class WorkflowErrorsHandler(CommandHandler):
     def execute(self, payload: Any, ctx: HandlerContext) -> None:
         task_id, update_status = self._make_task(ctx, TaskCmd.WORKFLOW_ERRORS, payload)
         client_id, payload_str, zmq_sender_id = payload
-        response_json = handle_workflow_command("WORKFLOW_ERRORS", client_id, payload_str)
+        response_json = handle_workflow_command(
+            "WORKFLOW_ERRORS", client_id, payload_str
+        )
         _send_reply(ctx, zmq_sender_id, response_json, "WORKFLOW_ERRORS")
         update_status(TaskStatus.COMPLETED)
