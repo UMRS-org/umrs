@@ -215,7 +215,14 @@ def test_list_workflows_payload_is_forced_to_the_caller_for_non_admins():
 
     scoped = json.loads(
         _scoped_list_payload(
-            json.dumps({"user_id": "bob", "include_shared_for": "bob", "verified_project": "p", "name": "x"}),
+            json.dumps(
+                {
+                    "user_id": "bob",
+                    "include_shared_for": "bob",
+                    "verified_project": "p",
+                    "name": "x",
+                }
+            ),
             "alice",
             is_admin=False,
         )
@@ -231,7 +238,46 @@ def test_list_workflows_payload_is_forced_to_the_caller_for_non_admins():
         "include_shared_for": "alice",
         "include_system": True,
     }
-    assert _scoped_list_payload('{"user_id": "bob"}', "maint", is_admin=True) == '{"user_id": "bob"}'
+    # A non-admin's ``all_users`` claim is stripped, never honoured.
+    assert json.loads(_scoped_list_payload('{"all_users": true}', "alice", is_admin=False)) == {
+        "user_id": "alice",
+        "include_shared_for": "alice",
+        "include_system": True,
+    }
+
+
+def test_list_workflows_payload_is_scoped_for_admins_by_default():
+    from umrs.server.commands.workflow_commands import _scoped_list_payload
+
+    scoped = json.loads(_scoped_list_payload('{"user_id": "bob"}', "maint", is_admin=True))
+    assert scoped == {
+        "user_id": "maint",
+        "include_shared_for": "maint",
+        "include_system": True,
+    }
+    assert json.loads(_scoped_list_payload("", "maint", is_admin=True)) == {
+        "user_id": "maint",
+        "include_shared_for": "maint",
+        "include_system": True,
+    }
+
+
+def test_list_workflows_all_users_is_the_explicit_admin_audit_view():
+    from umrs.server.commands.workflow_commands import _scoped_list_payload
+
+    assert json.loads(_scoped_list_payload('{"all_users": true}', "maint", is_admin=True)) == {}
+    # Admin filters survive the audit view; only the marker key is removed.
+    assert json.loads(
+        _scoped_list_payload(
+            '{"all_users": true, "user_id": "bob", "name": "x"}', "maint", is_admin=True
+        )
+    ) == {"user_id": "bob", "name": "x"}
+    # A non-true value never opens the audit view.
+    assert json.loads(_scoped_list_payload('{"all_users": "true"}', "maint", is_admin=True)) == {
+        "user_id": "maint",
+        "include_shared_for": "maint",
+        "include_system": True,
+    }
 
 
 def test_list_workflows_handler_scopes_through_the_session_role(monkeypatch):
@@ -239,7 +285,9 @@ def test_list_workflows_handler_scopes_through_the_session_role(monkeypatch):
 
     seen = {}
     monkeypatch.setattr(
-        wc, "handle_workflow_command", lambda _cmd, _cid, payload, **_k: seen.setdefault("p", payload) and "{}"
+        wc,
+        "handle_workflow_command",
+        lambda _cmd, _cid, payload, **_k: seen.setdefault("p", payload) and "{}",
     )
     ctx = SimpleNamespace(
         control_mq=SimpleNamespace(
@@ -255,6 +303,35 @@ def test_list_workflows_handler_scopes_through_the_session_role(monkeypatch):
         "include_shared_for": "alice",
         "include_system": True,
     }
+
+
+def test_list_workflows_handler_scopes_admin_sessions_too(monkeypatch):
+    from umrs.server.commands import workflow_commands as wc
+
+    seen = {}
+    monkeypatch.setattr(
+        wc,
+        "handle_workflow_command",
+        lambda _cmd, _cid, payload, **_k: seen.setdefault("p", payload) and "{}",
+    )
+    auth = SimpleNamespace(is_admin=True)
+    ctx = SimpleNamespace(
+        control_mq=SimpleNamespace(
+            get_auth_context=lambda _cid: auth,
+            send_string=lambda *_a: None,
+        )
+    )
+    handler = wc.ListWorkflowsHandler()
+    handler._make_task = lambda *_a: (1, lambda _s: None)
+    handler.execute(("maint", "{}", b"r"), ctx)
+    assert json.loads(seen["p"]) == {
+        "user_id": "maint",
+        "include_shared_for": "maint",
+        "include_system": True,
+    }
+    seen.clear()
+    handler.execute(("maint", '{"all_users": true}', b"r"), ctx)
+    assert json.loads(seen["p"]) == {}
 
 
 def test_get_bootstrap_context_is_retired_on_zmq():
@@ -299,7 +376,9 @@ def test_a_users_list_keeps_the_platform_system_workflows(monkeypatch):
         ]
     }
     monkeypatch.setattr(wrh, "_load_catalog", lambda: catalog)
-    out = json.loads(wrh._handle_list_workflows("alice", _scoped_list_payload("{}", "alice", False)))
+    out = json.loads(
+        wrh._handle_list_workflows("alice", _scoped_list_payload("{}", "alice", False))
+    )
     assert sorted(w["name"] for w in out["workflows"]) == ["cnn-track", "mine"]
 
 
@@ -335,7 +414,10 @@ def test_data_ingestion_of_another_users_bucket_is_refused(buckets):
 
     backend = DurableJobCommandBackend(_submit_store())
     payload = json.dumps(
-        {"job_type": "data_ingestion", "spec": {"bucket": BOB_BUCKET, "s3_key": "k", "project_id": "p"}}
+        {
+            "job_type": "data_ingestion",
+            "spec": {"bucket": BOB_BUCKET, "s3_key": "k", "project_id": "p"},
+        }
     )
     refused = json.loads(backend.submit("alice", payload))
     assert refused == {
@@ -363,7 +445,10 @@ def test_the_http_submit_applies_the_same_rule_to_fan_out_children(buckets):
     from umrs.api.jobs import _enforce_spec_resources
     from umrs.jobs.models import JobType
 
-    child = {"job_type": "data_ingestion", "spec": {"bucket": BOB_BUCKET, "s3_key": "k", "project_id": "p"}}
+    child = {
+        "job_type": "data_ingestion",
+        "spec": {"bucket": BOB_BUCKET, "s3_key": "k", "project_id": "p"},
+    }
     with pytest.raises(HTTPException):
         _enforce_spec_resources(JobType.CLEANUP, {}, "alice", False, [child])
     _enforce_spec_resources(JobType.CLEANUP, {}, "maint", True, [child])
@@ -373,7 +458,9 @@ def test_status_all_counts_an_admin_token_the_session_presented():
     from umrs.shared.auth import AuthContext, UserRole
 
     mq = _status_mq({"s-ops": _Entry("ops")})
-    mq._auth_sessions = {"session:s-ops": AuthContext(user_id="ops", username="ops", role=UserRole.ADMIN)}
+    mq._auth_sessions = {
+        "session:s-ops": AuthContext(user_id="ops", username="ops", role=UserRole.ADMIN)
+    }
     mq._dispatch_session_id = "s-ops"
     mq._parse_status_all(["STATUS_ALL"], b"r")
     assert sorted(json.loads(mq.sent[-1])["clients"]) == ["alice", "bob"]
@@ -389,7 +476,9 @@ def test_purge_runs_end_to_end_for_own_buckets_and_refuses_others(buckets, tmp_p
     monkeypatch.setattr(json_config, "load_server_cfg_file", lambda _f: (str(admin_cfg), [], {}))
     removed = []
     monkeypatch.setattr(
-        backends, "get_backend", lambda: SimpleNamespace(remove_bucket=lambda b, _c: removed.append(b))
+        backends,
+        "get_backend",
+        lambda: SimpleNamespace(remove_bucket=lambda b, _c: removed.append(b)),
     )
     monkeypatch.setattr(maintenance, "_remove_purged_experiences_from_user_config", lambda *_a: [])
     ok = json.loads(
@@ -400,7 +489,10 @@ def test_purge_runs_end_to_end_for_own_buckets_and_refuses_others(buckets, tmp_p
     assert ok["status"] == "ok" and removed == [ALICE_BUCKET]
     denied = json.loads(
         maintenance.handle_purge_buckets(
-            "PURGE_BUCKETS", "first", json.dumps({"buckets": ["first.last.xp.img"]}), configure_file="c"
+            "PURGE_BUCKETS",
+            "first",
+            json.dumps({"buckets": ["first.last.xp.img"]}),
+            configure_file="c",
         )
     )
     assert denied["status"] == "error" and removed == [ALICE_BUCKET]
