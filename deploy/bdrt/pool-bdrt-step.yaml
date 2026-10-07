@@ -142,6 +142,46 @@ endpoints:
       CONTAINERS_STORAGE_CONF: "/home/mnagaso/.config/containers/storage-native.conf"
 
 
+  # ── Bespoke-Nimble-9B decision model — second venue (ADR-076) ───────
+  #  Replica of the rccs entry (deploy/rccs/pool-rccs.yaml) so a decision
+  #  model survives RCCS reservations (nakao-1009 holds every rccs GB10 node
+  #  2026-10-09 13:00 → 10-16 13:00 JST; docs/development/
+  #  dgx-spark-fleet-plan-2026-10-08.md). bdrt has no Slurm time limit, so
+  #  keep_alive only respawns a dead endpoint here (no walltime relay).
+  #  Registry reads are venue-filtered: this endpoint serves bdrt callers.
+  #  Owner legs: copy the merged BF16 checkpoint (READY.json checked) to
+  #  /home/mnagaso/umrs_models/Bespoke-Nimble-9B, then
+  #    umrs --profile bdrt model register Bespoke-Nimble-9B \
+  #      /home/mnagaso/umrs_models/Bespoke-Nimble-9B --type llm --scope system
+  #  Until then each relay cycle logs a failed provision and changes nothing.
+  #  0.30 x 121.6 GiB = 36 GiB; check `squeue -p spark` before converging —
+  #  if both spark nodes carry 0.78+ endpoints, this replica queues.
+  - name: bespoke-nimble-9b
+    model: Bespoke-Nimble-9B
+    tier: system
+    node_count: 1
+    gpu_count: 1
+    partition: spark
+    max_model_len: 8192
+    ttl_sec: 0
+    access: [system]
+    keep_alive:
+      project_id: default
+      user: mnagaso
+      handover_grace_sec: 300
+    env_vars:
+      VLLM_DOCKER_IMAGE: "docker.io/vllm/vllm-openai:v0.30.0"
+      VLLM_GPU_MEM_UTIL: "0.30"
+      VLLM_MAX_MODEL_LEN: "8192"
+      VLLM_MAX_NUM_SEQS: "32"
+      VLLM_LANGUAGE_MODEL_ONLY: "1"
+      RIVAULT_PROFILES: "harness vllm litellm-db"
+      RCCS_SKIP_CDI: "1"
+      # Native kernel overlay: shields a landing on dgx-spark-1 (corrupt
+      # fuse-overlayfs, see the qwen3.6 entry above).
+      CONTAINERS_STORAGE_CONF: "/home/mnagaso/.config/containers/storage-native.conf"
+
+
   # ── Step-3.7-Flash-148B (2 nodes → edge-double) ─────────────────────
   #  148B MoE, NVFP4 quantized (base: stepfun-ai/Step-3.7-Flash-NVFP4).
   #  ~50-60 GB active GPU mem per node → requires 2× GB10, TP=2.

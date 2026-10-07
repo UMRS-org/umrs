@@ -111,12 +111,13 @@ endpoints:
   # nodes, so the successor normally starts beside the old job (no gap).
   - name: bespoke-nimble-9b
     model: Bespoke-Nimble-9B
-    # TEMPORARY (2026-10-01, maintainer): ng-dgx-s-[00-07] are held by
-    # reservation nakao-dgx-s (moved to 2026-10-02 14:00 – 10-03 14:00); serve
-    # from ng-dgx-m1. With 2 nodes the relay successor may queue until the old
-    # job ends (a load-time gap); since 2026-10-02 it waits in the queue rather
-    # than being cancelled. Switch back to ng-dgx-s after the reservation.
-    partition: ng-dgx-m1
+    # ng-dgx-s (8 standalone nodes): the relay successor starts beside the
+    # old job. The 2026-10-01 temporary ng-dgx-m1 pin (reservation
+    # nakao-dgx-s) was never reverted; on 2026-10-08 the successor had to
+    # queue behind another user's job on m1-11 (docs/development/
+    # dgx-spark-fleet-plan-2026-10-08.md §1). Fallback venue: the bdrt
+    # replica (deploy/bdrt/pool-bdrt-step.yaml).
+    partition: ng-dgx-s
     node_count: 1
     gpu_count: 1
     max_model_len: 8192

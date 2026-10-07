@@ -105,7 +105,10 @@ def parse_slurm_duration(value: str) -> int | None:
     """Seconds in a Slurm ``--time`` value; ``None`` for unlimited/unparseable.
 
     Accepts ``MM``, ``MM:SS``, ``HH:MM:SS``, ``D-HH``, ``D-HH:MM`` and
-    ``D-HH:MM:SS``.
+    ``D-HH:MM:SS``. A zero duration is Slurm's "no time limit" (bdrt sites
+    set ``time_limit: "0"``), so it is ``None`` too: a 0 s walltime would put
+    every live endpoint inside its renew window and the relay would provision
+    a successor every cycle.
     """
     text = str(value or "").strip()
     match = _DURATION.fullmatch(text)
@@ -113,7 +116,8 @@ def parse_slurm_duration(value: str) -> int | None:
         return None
     days_s, a, b, c = match.groups()
     hours, minutes, seconds = _hms(days_s, a, b, c)
-    return ((int(days_s or 0) * 24 + hours) * 60 + minutes) * 60 + seconds
+    total = ((int(days_s or 0) * 24 + hours) * 60 + minutes) * 60 + seconds
+    return total or None
 
 
 def _positive(value: Any, default: int) -> int:

@@ -18,6 +18,8 @@ from umrs.orchestrator.endpoint_relay import (
 
 POOL = Path(__file__).resolve().parents[1] / "deploy/rccs/pool-rccs.yaml"
 SITE = Path(__file__).resolve().parents[1] / "deploy/rccs-front/site.yaml"
+BDRT_POOL = Path(__file__).resolve().parents[1] / "deploy/bdrt/pool-bdrt-step.yaml"
+BDRT_SITE = Path(__file__).resolve().parents[1] / "deploy/bdrt-front/site.yaml"
 NOW = datetime(2026, 10, 2, 12, 0, 0)
 WALLTIME = 23 * 3600
 POLICY = KeepAlivePolicy(model="Bespoke-Nimble-9B", project_id="default")
@@ -53,6 +55,8 @@ def _plan(*endpoints, policy=POLICY, walltime=WALLTIME):
         ("90", 90 * 60),
         ("05:30", 5 * 60 + 30),
         ("UNLIMITED", None),
+        ("0", None),  # Slurm "no limit" (bdrt time_limit)
+        ("00:00:00", None),
         ("", None),
         ("soon", None),
     ],
@@ -187,8 +191,10 @@ def test_rccs_nimble_entry_is_kept_alive_on_a_gb10_partition(rccs_roster):
     # The successor window must cover a cold start (~45 min Lustre load).
     assert policy.renew_before_sec >= 3600
     defaults = pr.resolve_model_provision_defaults("Bespoke-Nimble-9B")
-    # ng-dgx-m1 while ng-dgx-s is reserved (2026-10-01 → 10-02); either is GB10.
-    assert defaults["partition"] in ("ng-dgx-s", "ng-dgx-m1")
+    # ng-dgx-s (8 nodes): the successor starts beside its predecessor. The
+    # 2-node ng-dgx-m1 pin made successors queue behind other users' jobs
+    # (2026-10-08, dgx-spark-fleet-plan §1).
+    assert defaults["partition"] == "ng-dgx-s"
     assert (defaults["ttl_sec"], defaults["max_model_len"]) == (0, 8192)
     env = defaults["env_vars"]
     # logprob_token_ids on /v1/completions needs vLLM >= 0.26 (a pinned tag).
@@ -207,6 +213,31 @@ def test_ng_dgx_s_is_a_valid_rccs_front_partition_but_not_a_default():
     # The relay's deadline comes from the site time_limit; it must sit under
     # the 1-00:00:00 partition maximum.
     assert parse_slurm_duration(site["scheduler"]["time_limit"]) < 24 * 3600
+
+
+def test_bdrt_nimble_replica_is_kept_alive_without_successor_churn(monkeypatch):
+    """bdrt has no Slurm time limit (``time_limit: "0"``): its Nimble replica
+    is only respawned, never relayed (a 0 s walltime would provision a
+    successor every cycle)."""
+    import yaml
+
+    monkeypatch.setenv(pr.ROSTER_ENV_VAR, str(BDRT_POOL))
+    pr._cache.clear()
+    try:
+        policies = {p.model: p for p in keep_alive_policies(pr.roster_entries())}
+        defaults = pr.resolve_model_provision_defaults("Bespoke-Nimble-9B")
+        recipe = pr.resolve_model_recipe("Bespoke-Nimble-9B")
+    finally:
+        pr._cache.clear()
+    policy = policies["Bespoke-Nimble-9B"]
+    assert policy.walltime_sec is None
+    assert recipe["access"] == ["system"]
+    assert float(defaults["env_vars"]["VLLM_GPU_MEM_UTIL"]) <= 0.78
+    site = yaml.safe_load(BDRT_SITE.read_text())
+    walltime = parse_slurm_duration(site["scheduler"]["time_limit"])
+    assert walltime is None
+    old = _ep("j1", EndpointStatus.READY, age_h=100, ready_ago_min=5000)
+    assert plan_relay(policy, [old], walltime_sec=walltime, now=NOW) == []
 
 
 def test_roster_entries_dedupes_aliases(tmp_path, monkeypatch):
