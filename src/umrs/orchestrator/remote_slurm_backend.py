@@ -475,6 +475,7 @@ class RemoteSlurmBackend(SlurmBackend):
         optional = [
             ("--partition=", partition),
             ("--time=", sched.time_limit),
+            ("--time-min=", getattr(sched, "time_min", "")),
             ("--gres=gpu:", effective_gpus if sched.gpus != 0 else None),
             ("--cpus-per-task=", sched.cpus),
             ("--account=", slurm_account),
@@ -782,6 +783,24 @@ class RemoteSlurmBackend(SlurmBackend):
         if status != JobStatus.PENDING:
             reason = None
         return status, reason
+
+    async def time_left_sec(self, job_id: str) -> int | None:
+        """Seconds until Slurm ends a running job (``squeue %L``), else ``None``.
+
+        A job started with a shortened limit (``--time-min``, e.g. to finish
+        before a reservation) ends earlier than ``created_at + time_limit``;
+        the walltime relay hands it over by this answer instead. ``%L`` is a
+        duration, so the cluster's time zone never enters.
+        """
+        from .endpoint_relay import parse_slurm_duration
+
+        if not re.fullmatch(r"\d+", str(job_id)):
+            return None
+        ssh = await self._get_ssh()
+        result = await ssh.run_remote(f'squeue -j {job_id} -h -t RUNNING -o "%L"')
+        if not result.ok or not result.stdout.strip():
+            return None
+        return parse_slurm_duration(result.stdout.strip().splitlines()[0])
 
     async def _query_sacct_status(self, job_id: str) -> JobStatus | None:
         """Query sacct for completed job status via SSH (``None`` if sacct errors)."""

@@ -67,6 +67,10 @@ class SchedulerConfig:
     account: str = ""  # Slurm account
     qos: str = ""  # Slurm QoS
     time_limit: str = "04:00:00"  # Default wall-clock
+    # Slurm --time-min: lets the scheduler start a job earlier with a shorter
+    # limit (never below this), e.g. to finish before a maintenance
+    # reservation instead of pending behind it. "" = not sent.
+    time_min: str = ""
     gpus: int = 1
     cpus: int = 8
     memory: str = "64G"

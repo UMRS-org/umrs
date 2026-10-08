@@ -31,6 +31,11 @@ scheduler:
   account: cloud-users
   qos: ""
   time_limit: "23:00:00"  # ng-dgx-m* max is 1-00:00:00; 23h gives clean RIVAULT_JOB_TIMEOUT exit headroom
+  # --time-min (2026-10-08): Slurm may start a job with a limit cut down to
+  # fit before a maintenance reservation (nakao-1009 holds every GB10 node
+  # 10-09 13:00 → 10-16) instead of leaving it pending; the walltime relay
+  # reads the granted end (squeue %L). 03:00:00 > the 2 h renew window.
+  time_min: "03:00:00"
   gpus: 0
   cpus: 8
   memory: ""
