@@ -245,6 +245,9 @@ def _shared_env(monkeypatch):
     monkeypatch.delenv("UMRS_REGISTRY_BACKEND", raising=False)
     monkeypatch.setenv("UMRS_ENDPOINT_REGISTRY_SHARED", "1")
     monkeypatch.setenv("DB_HOST", "127.0.0.1")
+    # Hermetic: the self-hosted CI runner exports POSTGRES_PORT=55432.
+    monkeypatch.delenv("DB_PORT", raising=False)
+    monkeypatch.delenv("POSTGRES_PORT", raising=False)
     monkeypatch.setenv("DB_SUPERUSER", "umrs")
     monkeypatch.setenv("DB_SUPERUSER_PASSWORD", "pw")
     monkeypatch.setenv("UMRS_JOBS_DB", "umrs_db")
