@@ -215,29 +215,29 @@ def test_ng_dgx_s_is_a_valid_rccs_front_partition_but_not_a_default():
     assert parse_slurm_duration(site["scheduler"]["time_limit"]) < 24 * 3600
 
 
-def test_bdrt_nimble_replica_is_kept_alive_without_successor_churn(monkeypatch):
-    """bdrt has no Slurm time limit (``time_limit: "0"``): its Nimble replica
-    is only respawned, never relayed (a 0 s walltime would provision a
-    successor every cycle)."""
+def test_zero_walltime_site_only_respawns():
+    """bdrt-style sites set ``time_limit: "0"`` (no Slurm limit): a keep-alive
+    endpoint there is only respawned, never relayed (a 0 s walltime would
+    provision a successor every cycle)."""
     import yaml
 
-    monkeypatch.setenv(pr.ROSTER_ENV_VAR, str(BDRT_POOL))
-    pr._cache.clear()
-    try:
-        policies = {p.model: p for p in keep_alive_policies(pr.roster_entries())}
-        defaults = pr.resolve_model_provision_defaults("Bespoke-Nimble-9B")
-        recipe = pr.resolve_model_recipe("Bespoke-Nimble-9B")
-    finally:
-        pr._cache.clear()
-    policy = policies["Bespoke-Nimble-9B"]
-    assert policy.walltime_sec is None
-    assert recipe["access"] == ["system"]
-    assert float(defaults["env_vars"]["VLLM_GPU_MEM_UTIL"]) <= 0.78
     site = yaml.safe_load(BDRT_SITE.read_text())
     walltime = parse_slurm_duration(site["scheduler"]["time_limit"])
     assert walltime is None
     old = _ep("j1", EndpointStatus.READY, age_h=100, ready_ago_min=5000)
-    assert plan_relay(policy, [old], walltime_sec=walltime, now=NOW) == []
+    assert plan_relay(POLICY, [old], walltime_sec=walltime, now=NOW) == []
+
+
+def test_nimble_is_kept_alive_on_rccs_only(monkeypatch):
+    """Maintainer 2026-10-08: the decision model runs on rccs-cloud, not bdrt.
+    A bdrt entry without the model staged there made the bdrt relay submit
+    a failing Slurm job every cycle (jobs 7843, 7844, ...)."""
+    monkeypatch.setenv(pr.ROSTER_ENV_VAR, str(BDRT_POOL))
+    pr._cache.clear()
+    try:
+        assert keep_alive_policies(pr.roster_entries()) == []
+    finally:
+        pr._cache.clear()
 
 
 def test_roster_entries_dedupes_aliases(tmp_path, monkeypatch):
