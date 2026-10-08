@@ -90,48 +90,13 @@ class _Cursor:
             self.rowcount = 1
 
     def _read(self, low, params):
-        conn = self._conn
-        if _in(low, "select role from circle_members"):
-            self._result = (
-                [(conn._role[(params[0], params[1], params[2])],)]
-                if (params[0], params[1], params[2]) in conn._role
-                else []
-            )
-        elif _in(low, "from circle_members cm", "join circles", "limit 1"):
-            self._result = [(1,)] if _affiliated(conn, params[0], params[1]) else []
-        elif _in(low, "cm.project_id || '/' || cm.circle_id"):
-            refs = [
-                f"{p}/{c}"
-                for (p, c, u) in sorted(conn.members)
-                if u == params[0] and conn.circles[(p, c)][4] == "active"
-            ]
-            self._result = [(r,) for r in refs]
-        elif _in(low, "from projects where project_id = %s"):
-            row = conn.projects.get(params[0])
-            self._result = [row] if row else []
-        elif _in(low, "from circle_members", "where project_id = %s"):
-            self._result = [
-                (
-                    u,
-                    conn._role[(params[0], params[1], u)],
-                    conn._by[(params[0], params[1], u)],
-                    None,
-                )
-                for (p, c, u) in sorted(conn.members)
-                if p == params[0] and c == params[1]
-            ]
-        elif _in(low, "where project_id = %s and circle_id = %s"):
-            row = conn.circles.get((params[0], params[1]))
-            self._result = [row] if row else []
-        elif _in(low, "from circles where project_id = %s"):
-            rows = [r for (p, _c), r in conn.circles.items() if p == params[0]]
-            if _in(low, "status <> 'retired'"):
-                rows = [r for r in rows if r[4] != "retired"]
-            self._result = rows
-        elif _in(low, "left join circle_members"):
-            self._result = self._mine(conn, low, params)
-        else:
-            self._result = []
+        # First matching marker set wins (order matters: the joins and the
+        # roster query also contain the shorter markers further down).
+        for markers, handler in _READS:
+            if _in(low, *markers):
+                self._result = handler(self, self._conn, low, params)
+                return
+        self._result = []
 
     def _mine(self, conn, low, params):
         user = params[0]
@@ -141,6 +106,64 @@ class _Cursor:
         if _in(low, "status <> 'retired'"):
             rows = [r for r in rows if r[4] != "retired"]
         return rows
+
+
+def _read_role(_cur, conn, _low, params):
+    key = (params[0], params[1], params[2])
+    return [(conn._role[key],)] if key in conn._role else []
+
+
+def _read_affiliation(_cur, conn, _low, params):
+    return [(1,)] if _affiliated(conn, params[0], params[1]) else []
+
+
+def _read_refs(_cur, conn, _low, params):
+    return [
+        (f"{p}/{c}",)
+        for (p, c, u) in sorted(conn.members)
+        if u == params[0] and conn.circles[(p, c)][4] == "active"
+    ]
+
+
+def _read_project(_cur, conn, _low, params):
+    row = conn.projects.get(params[0])
+    return [row] if row else []
+
+
+def _read_roster(_cur, conn, _low, params):
+    return [
+        (u, conn._role[(params[0], params[1], u)], conn._by[(params[0], params[1], u)], None)
+        for (p, c, u) in sorted(conn.members)
+        if p == params[0] and c == params[1]
+    ]
+
+
+def _read_circle(_cur, conn, _low, params):
+    row = conn.circles.get((params[0], params[1]))
+    return [row] if row else []
+
+
+def _read_project_circles(_cur, conn, low, params):
+    rows = [r for (p, _c), r in conn.circles.items() if p == params[0]]
+    if _in(low, "status <> 'retired'"):
+        rows = [r for r in rows if r[4] != "retired"]
+    return rows
+
+
+def _read_mine(cur, conn, low, params):
+    return cur._mine(conn, low, params)
+
+
+_READS = (
+    (("select role from circle_members",), _read_role),
+    (("from circle_members cm", "join circles", "limit 1"), _read_affiliation),
+    (("cm.project_id || '/' || cm.circle_id",), _read_refs),
+    (("from projects where project_id = %s",), _read_project),
+    (("from circle_members", "where project_id = %s"), _read_roster),
+    (("where project_id = %s and circle_id = %s",), _read_circle),
+    (("from circles where project_id = %s",), _read_project_circles),
+    (("left join circle_members",), _read_mine),
+)
 
 
 def _affiliated(conn, project_id, user_id) -> bool:

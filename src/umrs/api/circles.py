@@ -379,24 +379,51 @@ def create_circle(
     # auth: verified
     """
     actor = (identity.user_id or "").strip()
-    if body.for_user and body.for_user != actor and not identity.is_admin:
+    owner = _circle_owner(body, actor, identity.is_admin)
+    project = _live_project_or_raise(store, body.project_id)
+    _require_create_right(
+        store, body, project, actor=actor, owner=owner, is_admin=identity.is_admin
+    )
+    row = store.create(body.project_id, body.circle_id, name=body.name, owner_id=owner)
+    return {"status": "ok", "circle": _row_response(row), "created": True}
+
+
+def _circle_owner(body: CircleCreateBody, actor: str, is_admin: bool) -> str:
+    """The circle's owner: the caller, or ``for_user`` when an admin mints it."""
+    if body.for_user and body.for_user != actor and not is_admin:
         raise_typed(
             PlatformError.circles(
                 "forbidden", "minting circles for another user requires the admin role"
             )
         )
-    owner = body.for_user if body.for_user else actor
+    owner = body.for_user or actor
     if not owner:
         raise_typed(PlatformError.circles("bad_request", "caller identity required"))
-    project = _project_or_404(store, body.project_id)
+    return owner
+
+
+def _live_project_or_raise(store: CirclesStore, project_id: str) -> dict[str, Any]:
+    project = _project_or_404(store, project_id)
     if project["status"] == "retired":
         raise_typed(
-            PlatformError.circles("conflict", f"project {body.project_id} is retired")
+            PlatformError.circles("conflict", f"project {project_id} is retired")
         )
-    personal = body.circle_id == owner
+    return project
+
+
+def _require_create_right(
+    store: CirclesStore,
+    body: CircleCreateBody,
+    project: dict[str, Any],
+    *,
+    actor: str,
+    owner: str,
+    is_admin: bool,
+) -> None:
+    """Personal circle, admin, project owner, or an affiliated caller."""
     allowed = (
-        personal
-        or identity.is_admin
+        body.circle_id == owner
+        or is_admin
         or actor == project["owner_id"]
         or store.affiliated(body.project_id, actor)
     )
@@ -408,8 +435,6 @@ def create_circle(
                 " affiliated caller — create your personal circle first",
             )
         )
-    row = store.create(body.project_id, body.circle_id, name=body.name, owner_id=owner)
-    return {"status": "ok", "circle": _row_response(row), "created": True}
 
 
 @router.get("/{project_id}")
