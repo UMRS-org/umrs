@@ -66,6 +66,7 @@
         "account": { "type": "string" },
         "qos": { "type": "string" },
         "time_limit": { "type": "string" },
+        "time_min": { "type": "string" },
         "gpus": { "type": "integer", "minimum": 0 },
         "cpus": { "type": "integer", "minimum": 0 },
         "memory": { "type": "string" },

@@ -23,7 +23,9 @@ from ..orchestrator.endpoint_registry import get_registry
 from ..orchestrator.endpoint_relay import (
     KeepAlivePolicy,
     RelayAction,
+    deadline_metadata,
     keep_alive_policies,
+    needs_deadline,
     parse_slurm_duration,
     plan_relay,
 )
@@ -40,6 +42,52 @@ def _site_walltime_sec() -> int | None:
     except Exception as exc:  # noqa: BLE001 - no site config = no deadline
         logger.debug("endpoint relay: no site time_limit (%s)", exc)
         return None
+
+
+def _relay_backend():
+    """The configured orchestrator backend, or ``None`` (no deadline reads)."""
+    try:
+        from ..orchestrator.factory import (
+            get_orchestrator,
+            resolve_configured_backend_name,
+        )
+
+        configured = resolve_configured_backend_name()
+        return get_orchestrator(configured) if configured else None
+    except Exception as exc:  # noqa: BLE001 - deadlines are an optimisation
+        logger.debug("endpoint relay: no backend for deadline reads (%s)", exc)
+        return None
+
+
+async def _read_deadline(backend, endpoint, now: datetime) -> None:
+    try:
+        left = await backend.time_left_sec(endpoint.job_id)
+    except Exception as exc:  # noqa: BLE001 - fall back to created_at + walltime
+        logger.debug(
+            "endpoint relay: time left of %s unknown (%s)", endpoint.job_id, exc
+        )
+        return
+    if left:
+        metadata = deadline_metadata(now, left)
+        get_registry().update_metadata(endpoint.job_id, metadata)
+        endpoint.metadata.update(metadata)
+
+
+async def refresh_deadlines(policies, endpoints, now: datetime) -> None:
+    """Record the Slurm-granted end of each READY keep-alive endpoint once.
+
+    A job started with a shortened limit (``--time-min`` before a
+    reservation) ends before ``created_at + time_limit``; without its real
+    deadline the relay would start the successor too late.
+    """
+    due = [ep for ep in endpoints for p in policies if needs_deadline(p, ep)]
+    if not due:
+        return
+    backend = _relay_backend()
+    if backend is None or not hasattr(backend, "time_left_sec"):
+        return
+    for endpoint in due:
+        await _read_deadline(backend, endpoint, now)
 
 
 async def _provision(policy: KeepAlivePolicy, action: RelayAction) -> None:
@@ -95,6 +143,7 @@ async def run_relay_once(now: datetime | None = None) -> list[RelayAction]:
     now = now or datetime.now(timezone.utc).replace(tzinfo=None)
     walltime = _site_walltime_sec()
     endpoints = get_registry().list_all()
+    await refresh_deadlines(policies, endpoints, now)
     attempted: list[RelayAction] = []
     for policy in policies:
         for action in plan_relay(policy, endpoints, walltime_sec=walltime, now=now):

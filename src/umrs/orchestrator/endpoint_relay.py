@@ -27,9 +27,11 @@ module is foundation: no ``umrs.api`` / ``umrs.server`` imports). Each cycle:
    renew window → retire the old endpoints (idle ones at once, busy ones once
    they are within ``drain_floor_sec`` of the deadline).
 
-The deadline is ``created_at + walltime``: ``created_at`` is the submit time,
-never later than the Slurm start, so the estimate is never late — at worst the
-successor starts by the job's queue time early.
+The deadline is ``metadata["slurm_deadline"]`` when the executor has read it
+from Slurm (``squeue %L`` of the running job: a ``--time-min`` start before a
+reservation ends early), else ``created_at + walltime``: ``created_at`` is the
+submit time, never later than the Slurm start, so the estimate is never late —
+at worst the successor starts by the job's queue time early.
 """
 
 from __future__ import annotations
@@ -165,11 +167,40 @@ def keep_alive_policies(entries: Iterable[dict[str, Any]]) -> list[KeepAlivePoli
     return list(policies.values())
 
 
+#: Metadata key holding the Slurm-granted end of a running job (naive UTC ISO).
+DEADLINE_KEY = "slurm_deadline"
+
+
+def _granted_deadline(endpoint: RegisteredEndpoint) -> datetime | None:
+    raw = (endpoint.metadata or {}).get(DEADLINE_KEY)
+    try:
+        return datetime.fromisoformat(str(raw)) if raw else None
+    except ValueError:
+        return None
+
+
 def _seconds_left(
     endpoint: RegisteredEndpoint, walltime_sec: int, now: datetime
 ) -> float:
-    deadline = endpoint.created_at + timedelta(seconds=walltime_sec)
+    deadline = _granted_deadline(endpoint) or (
+        endpoint.created_at + timedelta(seconds=walltime_sec)
+    )
     return (deadline - now).total_seconds()
+
+
+def needs_deadline(policy: KeepAlivePolicy, endpoint: RegisteredEndpoint) -> bool:
+    """A READY endpoint of this policy whose Slurm deadline is not read yet."""
+    return (
+        _owned(policy, endpoint)
+        and endpoint.status == EndpointStatus.READY
+        and bool(endpoint.job_id)
+        and _granted_deadline(endpoint) is None
+    )
+
+
+def deadline_metadata(now: datetime, time_left_sec: int) -> dict[str, str]:
+    """Registry metadata recording a running job's Slurm end (naive UTC)."""
+    return {DEADLINE_KEY: (now + timedelta(seconds=time_left_sec)).isoformat()}
 
 
 def _degraded_since(ep: RegisteredEndpoint) -> datetime | None:

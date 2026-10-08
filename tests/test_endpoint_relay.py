@@ -275,6 +275,7 @@ def test_runner_provisions_through_the_api_handler(rccs_roster, monkeypatch):
     monkeypatch.setattr(api, "provision_endpoint", fake_provision_endpoint)
     monkeypatch.setattr(runner, "get_registry", lambda: _Registry())
     monkeypatch.setattr(runner, "_site_walltime_sec", lambda: WALLTIME)
+    monkeypatch.setattr(runner, "_relay_backend", lambda: None)
 
     actions = asyncio.run(runner.run_relay_once(now=NOW))
 
@@ -292,3 +293,172 @@ def test_runner_provisions_through_the_api_handler(rccs_roster, monkeypatch):
         True,
         "mnagaso",
     )
+
+
+# ── Slurm-granted deadlines (--time-min before a reservation, 2026-10-08) ──
+
+
+def _with_deadline(ep, hours_left):
+    ep.metadata["slurm_deadline"] = (NOW + timedelta(hours=hours_left)).isoformat()
+    return ep
+
+
+def test_granted_deadline_wins_over_created_at_plus_walltime():
+    """nakao-1009: a job started at 01:17 with --time-min ends at 13:00, not 00:17
+    the next day. One hour left → the successor is due now."""
+    young = _ep("j1", EndpointStatus.READY, age_h=1, ready_ago_min=40)
+    assert _plan(young) == []
+    assert _plan(_with_deadline(young, 1)) == [("provision", None)]
+
+
+def test_unreadable_deadline_falls_back_to_walltime():
+    ep = _ep("j1", EndpointStatus.READY, age_h=1, ready_ago_min=40)
+    ep.metadata["slurm_deadline"] = "soon"
+    assert _plan(ep) == []
+
+
+def test_needs_deadline_only_for_ready_owned_rows_without_one():
+    from umrs.orchestrator.endpoint_relay import needs_deadline
+
+    ready = _ep("j1", EndpointStatus.READY, age_h=1, ready_ago_min=40)
+    assert needs_deadline(POLICY, ready)
+    assert not needs_deadline(POLICY, _with_deadline(_ep("j2", EndpointStatus.READY, age_h=1), 5))
+    assert not needs_deadline(POLICY, _ep("j3", EndpointStatus.PROVISIONING, age_h=0.1))
+    assert not needs_deadline(POLICY, _ep("j4", EndpointStatus.READY, age_h=1, project="other"))
+
+
+def test_runner_reads_the_deadline_once_and_relays_by_it(rccs_roster, monkeypatch):
+    import asyncio
+
+    from umrs.api import endpoints as api
+    from umrs.server import endpoint_relay as runner
+
+    asked, updates, calls = [], [], []
+    ep = _ep("401", EndpointStatus.READY, age_h=1, ready_ago_min=40)
+
+    class _Backend:
+        async def time_left_sec(self, job_id):
+            asked.append(job_id)
+            return 3600
+
+    class _Registry:
+        def list_all(self):
+            return [ep]
+
+        def update_metadata(self, job_id, metadata):
+            updates.append((job_id, metadata))
+
+    async def fake_provision_endpoint(**kwargs):
+        calls.append(kwargs)
+        return api.ProvisionResponse(status="provisioning", job_id="402")
+
+    monkeypatch.setattr(api, "provision_endpoint", fake_provision_endpoint)
+    monkeypatch.setattr(runner, "get_registry", lambda: _Registry())
+    monkeypatch.setattr(runner, "_site_walltime_sec", lambda: WALLTIME)
+    monkeypatch.setattr(runner, "_relay_backend", lambda: _Backend())
+
+    actions = asyncio.run(runner.run_relay_once(now=NOW))
+    assert [a.action for a in actions] == ["provision"]
+    assert asked == ["401"]
+    assert updates == [("401", {"slurm_deadline": (NOW + timedelta(hours=1)).isoformat()})]
+
+    asyncio.run(runner.run_relay_once(now=NOW))
+    assert asked == ["401"]  # read once: the deadline of a running job is fixed
+
+
+def test_runner_without_a_deadline_answer_keeps_the_walltime_estimate(rccs_roster, monkeypatch):
+    import asyncio
+
+    from umrs.server import endpoint_relay as runner
+
+    class _Backend:
+        async def time_left_sec(self, _job_id):
+            raise OSError("ssh down")
+
+    class _Registry:
+        def list_all(self):
+            return [_ep("401", EndpointStatus.READY, age_h=1, ready_ago_min=40)]
+
+    monkeypatch.setattr(runner, "get_registry", lambda: _Registry())
+    monkeypatch.setattr(runner, "_site_walltime_sec", lambda: WALLTIME)
+    monkeypatch.setattr(runner, "_relay_backend", lambda: _Backend())
+    assert asyncio.run(runner.run_relay_once(now=NOW)) == []
+
+
+def _remote_backend(stdout, ok=True, seen=None):
+    from types import SimpleNamespace
+
+    from umrs.orchestrator.remote_slurm_backend import RemoteSlurmBackend
+
+    backend = RemoteSlurmBackend.__new__(RemoteSlurmBackend)
+
+    class _SSH:
+        async def run_remote(self, command):
+            if seen is not None:
+                seen.append(command)
+            return SimpleNamespace(ok=ok, stdout=stdout)
+
+    async def get_ssh():
+        return _SSH()
+
+    backend._get_ssh = get_ssh
+    return backend
+
+
+@pytest.mark.parametrize(
+    ("stdout", "ok", "expected"),
+    [
+        ("11:42:58\n", True, 11 * 3600 + 42 * 60 + 58),
+        ("1-02:00:00", True, 26 * 3600),
+        ("UNLIMITED", True, None),
+        ("", True, None),  # not running (pending or gone)
+        ("11:00:00", False, None),
+    ],
+)
+def test_remote_backend_time_left(stdout, ok, expected):
+    import asyncio
+
+    seen = []
+    backend = _remote_backend(stdout, ok, seen)
+    assert asyncio.run(backend.time_left_sec("395814")) == expected
+    assert seen == ['squeue -j 395814 -h -t RUNNING -o "%L"']
+
+
+def test_remote_backend_time_left_refuses_a_non_numeric_job_id():
+    import asyncio
+
+    seen = []
+    backend = _remote_backend("1:00:00", True, seen)
+    assert asyncio.run(backend.time_left_sec("1; rm -rf /")) is None
+    assert seen == []
+
+
+def test_rccs_front_submits_with_a_time_min_below_the_limit():
+    import yaml
+    from umrs.orchestrator.site_config import SchedulerConfig, _dict_to_dataclass
+
+    sched = _dict_to_dataclass(SchedulerConfig, yaml.safe_load(SITE.read_text())["scheduler"])
+    assert sched.time_min
+    assert 0 < parse_slurm_duration(sched.time_min) < parse_slurm_duration(sched.time_limit)
+
+
+@pytest.mark.parametrize(("time_min", "present"), [("03:00:00", True), ("", False)])
+def test_wrapper_sbatch_carries_time_min_only_when_set(time_min, present):
+    from types import SimpleNamespace
+
+    from umrs.orchestrator.remote_slurm_backend import RemoteSlurmBackend
+    from umrs.orchestrator.site_config import SchedulerConfig
+
+    backend = RemoteSlurmBackend.__new__(RemoteSlurmBackend)
+    sched = SchedulerConfig(time_limit="23:00:00", time_min=time_min, gpus=0, memory="")
+    args = backend._build_wrapper_sbatch_args(
+        site=SimpleNamespace(scheduler=sched, partition_profiles={}),
+        output_dir="/tmp/x",
+        gpu_count=None,
+        node_count=None,
+        partition_override="ng-dgx-s",
+        slurm_account=None,
+        nodelist_hint=None,
+    )
+    assert "--time=23:00:00" in args
+    assert ("--time-min=03:00:00" in args) is present
