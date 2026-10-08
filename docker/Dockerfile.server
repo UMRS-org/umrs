@@ -25,8 +25,24 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY ./umrs/src/pyproject.toml /build/umrs-src-pyproject.toml
 COPY ./r4-contracts/pyproject.toml /build/r4-contracts-pyproject.toml
 
+# Torch wheel index. Default is empty => PyPI => the CUDA build, which is what
+# the GPU cluster images want. A CPU-only target (the stand-alone single-host
+# deployment, ADR-090) sets this to the CPU index and saves ~1.7 GB of
+# nvidia-* wheels that can never execute there:
+#   --build-arg TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu
+# Same pattern already used by umrs/deploy/_common/setup_server.sh:110.
+ARG TORCH_INDEX_URL=""
+
 # Pre-install heavy deps from pyproject.toml [all] extras
 # This layer is cached unless pyproject.toml changes
+# torch/torchvision first and SEPARATELY, so TORCH_INDEX_URL can be an
+# --index-url (a replacement). --extra-index-url would NOT work here: pip would
+# still prefer PyPI's CUDA build by version. This mirrors
+# umrs/deploy/_common/setup_server.sh:110, which installs torch on its own.
+RUN if [ -n "${TORCH_INDEX_URL}" ]; then \
+        pip install --no-cache-dir --index-url "${TORCH_INDEX_URL}" torch torchvision; \
+    fi
+
 RUN pip install --no-cache-dir \
     pyzmq boto3 pillow psycopg2-binary asyncpg tabulate pandas jsonschema \
     charset-normalizer requests configparser httpx pyyaml diskcache \
