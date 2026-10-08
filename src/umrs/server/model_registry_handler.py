@@ -35,6 +35,7 @@ from umrs.model_registry.store import (
     PathNotAllowedError,
     PathValidator,
     PermissionDeniedError,
+    release_connection,
 )
 from umrs.shared.auth import create_auth_context_from_request
 from umrs.shared.config import get_resolved_umrs_subdir
@@ -71,7 +72,8 @@ class DurableModelCommandBackend:
             store = ModelStore(conn, path_validator=PathValidator())
             return callback(store)
         finally:
-            self._db_pool.putconn(conn)
+            # Never pool a connection idle in a read transaction (R-14 reaper).
+            release_connection(self._db_pool, conn)
 
     def register(self, client_id: str, payload_str: str) -> str:
         try:
