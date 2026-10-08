@@ -14,6 +14,7 @@ from .errors import (
     PermissionDeniedError,
 )
 from .path_validator import DEFAULT_ALLOWED_PATHS, PathValidator
+from .pooled import PooledModelStore, release_connection
 
 __all__ = [
     "DEFAULT_ALLOWED_PATHS",
@@ -25,4 +26,6 @@ __all__ = [
     "PathNotAllowedError",
     "PathValidator",
     "PermissionDeniedError",
+    "PooledModelStore",
+    "release_connection",
 ]

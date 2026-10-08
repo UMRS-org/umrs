@@ -119,12 +119,9 @@ def _init_model_store(app, db_pool):
         from umrs.model_registry import (
             ensure_schema as ensure_model_registry_schema,
         )
-        from umrs.model_registry.store import ModelStore, PathValidator
+        from umrs.model_registry.store import PathValidator, PooledModelStore
 
-        model_conn = db_pool.getconn()
-        ensure_model_registry_schema(model_conn)
-        model_conn.commit()
-        app.state.umrs_model_store_conn = model_conn
+        _ensure_schema_on_borrowed_conn(db_pool, ensure_model_registry_schema)
         # WP-06 r2 P10-C3 (console badges): wire the grant-reader seam so the
         # ACL's read_reason surface isn't scope-only — without it every listing
         # stays a scope query (badge chips never carry 'grant' on live rows).
@@ -142,13 +139,12 @@ def _init_model_store(app, db_pool):
                 db_pool.putconn(conn)
 
         acl = ACLEnforcer(grant_reader=_read_grants_for_acl)
+        # Borrow per call, never a boot lease (see _init_mcp_store): the leased
+        # connection sat idle in a read transaction until the R-14 reaper
+        # killed it, and the next /umrs/models or endpoint-provision lookup
+        # 500'd (rccs/bdrt 2026-10-07, found by Ops Watch).
         set_model_store(
-            ModelStore(
-                model_conn,
-                path_validator=PathValidator(),
-                pool=db_pool,
-                acl_enforcer=acl,
-            )
+            PooledModelStore(db_pool, path_validator=PathValidator(), acl_enforcer=acl)
         )
         logger.info("Model store initialized for HTTP sidecar")
     except Exception:  # noqa: BLE001 — boot/teardown must survive per-component failures

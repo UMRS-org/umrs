@@ -59,24 +59,22 @@ def _pool(request: Request) -> Any:
 
 
 def _model_writable(pool: Any, asset_id: str, caller: CallerScope) -> bool:
-    from umrs.model_registry.store import AccessContext, ModelStore
+    from umrs.model_registry.store import AccessContext, PooledModelStore
     from umrs.model_registry.store.errors import ModelNotFoundError
 
-    conn = pool.getconn()
+    # Borrow per call; the read's transaction ends before the pool gets the
+    # connection back (R-14 reaper, 2026-10-08).
+    store = PooledModelStore(pool)
     try:
-        store = ModelStore(conn)
-        try:
-            model = store.get_model(asset_id)
-        except ModelNotFoundError:
-            return False
-        ctx = AccessContext(
-            user_id=caller.user_id,
-            is_admin=caller.is_admin,
-            project_memberships={caller.project_id} if caller.project_id else set(),
-        )
-        return store.acl.can_write(model, ctx)
-    finally:
-        pool.putconn(conn)
+        model = store.get_model(asset_id)
+    except ModelNotFoundError:
+        return False
+    ctx = AccessContext(
+        user_id=caller.user_id,
+        is_admin=caller.is_admin,
+        project_memberships={caller.project_id} if caller.project_id else set(),
+    )
+    return store.acl.can_write(model, ctx)
 
 
 def _graph_writable(pool: Any, asset_id: str, caller: CallerScope) -> bool:
