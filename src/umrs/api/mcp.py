@@ -544,6 +544,38 @@ async def mcp_health() -> dict[str, Any]:
 # =============================================================================
 
 
+def _redact_auth_config(auth_config: dict[str, Any] | None) -> dict[str, Any]:
+    """Which auth keys a server has, never their values.
+
+    ``auth_config`` holds upstream credentials (``r4 mcp register
+    --auth-token`` stores ``{"token": ...}``). Every listing and lookup returns
+    a ``ServerResponse``, so returning the dict verbatim disclosed those
+    credentials to any caller allowed to list servers.
+    """
+    return {key: "***" for key in (auth_config or {})}
+
+
+def _upstream_auth_headers(server) -> dict[str, str]:
+    """The credential UMRS presents when it proxies a tool call.
+
+    Registration stored ``auth_type``/``auth_config`` but the proxy never sent
+    them, so a server that requires a credential could not be called through
+    UMRS. Convention (r4 ``--auth-token``): ``auth_config["token"]`` is sent as
+    ``Authorization: Bearer <token>``; an optional ``auth_config["header"]``
+    names a different header that carries the bare token instead.
+    """
+    if (getattr(server, "auth_type", "none") or "none") == "none":
+        return {}
+    cfg = getattr(server, "auth_config", None) or {}
+    token = cfg.get("token") or cfg.get("api_key")
+    if not token:
+        return {}
+    header = cfg.get("header")
+    if header:
+        return {str(header): str(token)}
+    return {"Authorization": f"Bearer {token}"}
+
+
 def _server_to_response(server) -> ServerResponse:
     """Convert MCPServer dataclass to API response."""
     return ServerResponse(
@@ -555,7 +587,7 @@ def _server_to_response(server) -> ServerResponse:
         status=server.status,
         description=server.description,
         auth_type=server.auth_type,
-        auth_config=server.auth_config,
+        auth_config=_redact_auth_config(server.auth_config),
         metadata=server.metadata,
         registered_by=server.registered_by,
         project_id=server.project_id,
@@ -623,6 +655,7 @@ async def call_tool(
             request.tool,
             request.arguments,
             metadata=request.metadata,
+            auth_headers=_upstream_auth_headers(server),
         )
         return ToolCallResponse(
             content=result.get("content", []),
@@ -729,6 +762,7 @@ async def _post_tool_call_once(
     url: str,
     payload: dict[str, Any],
     tool_name: str,
+    extra_headers: dict[str, str] | None = None,
 ) -> tuple[str, Any]:
     """One proxy attempt.
 
@@ -737,7 +771,7 @@ async def _post_tool_call_once(
     """
     async with aiohttp.ClientSession(timeout=session_timeout) as session:
         async with session.post(
-            url, json=payload, headers=_tool_call_headers()
+            url, json=payload, headers={**_tool_call_headers(), **(extra_headers or {})}
         ) as response:
             result = await _parse_tool_response(response, tool_name)
             if result is not None:
@@ -751,6 +785,7 @@ async def _proxy_tool_call(
     tool_name: str,
     arguments: dict[str, Any],
     metadata: dict[str, Any] | None = None,
+    auth_headers: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Proxy a tool call to the MCP server via HTTP."""
     if transport not in ("http", "sse") and not server_url.startswith("http"):
@@ -775,7 +810,9 @@ async def _proxy_tool_call(
     for attempt in range(_MCP_MAX_RETRIES):
         last = attempt >= _MCP_MAX_RETRIES - 1
         try:
-            outcome, info = await _post_tool_call_once(timeout, url, payload, tool_name)
+            outcome, info = await _post_tool_call_once(
+                timeout, url, payload, tool_name, auth_headers
+            )
         except aiohttp.ClientError as e:
             if not last:
                 await asyncio.sleep(2**attempt)
