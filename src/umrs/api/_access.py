@@ -15,6 +15,7 @@ from typing import Any
 from ..shared.access_scopes import (
     AccessListError,
     ResourceCaller,
+    access_admits,
     validate_access,
 )
 from .typed_errors import PlatformError, raise_typed
@@ -65,3 +66,42 @@ def checked_access(
         return validate_access(raw, caller)
     except AccessListError as exc:
         raise_typed(error(name, f"access: {exc}"), cause=None)
+
+
+def graph_read_allowed(
+    raw_request: Any,
+    *,
+    kind: str,
+    project_id: str | None,
+    owner_id: str,
+    stored_access: Any,
+    scope: Any,
+) -> bool:
+    """May the caller read one knowledge graph: the tier ladder OR the row's
+    access list (ADR-080). The one rule for the registry routes, K3 graph
+    selection and the proposal routes."""
+    from umrs.knowledge.access_scope import graph_readable
+
+    if graph_readable(
+        kind=kind, project_id=project_id, owner_id=owner_id, caller=scope
+    ):
+        return True
+    caller = resource_caller(
+        raw_request,
+        user_id=scope.user_id,
+        project_id=scope.project_id,
+        is_admin=scope.is_admin,
+    )
+    return access_admits(stored_access, caller)
+
+
+def graph_meta_readable(raw_request: Any, graph: Any, scope: Any) -> bool:
+    """``graph_read_allowed`` for a registry row (``KnowledgeGraphMeta``)."""
+    return graph_read_allowed(
+        raw_request,
+        kind=graph.kind,
+        project_id=graph.project_id,
+        owner_id=graph.owner_id,
+        stored_access=graph.access,
+        scope=scope,
+    )

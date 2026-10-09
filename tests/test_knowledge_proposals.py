@@ -9,8 +9,9 @@ from umrs.knowledge.graph_registry import ProposalStore
 
 class TestAcceptanceStats:
     def test_accepted_counts_approved_and_executed(self):
-        # aggregate row: accepted=2 (approved+executed), declined=1, pending=1
-        pool = FakePool(script=[(2, 1, 1)])
+        # aggregate row, as the RealDictCursor returns it (a tuple fake hid the
+        # live 500, TC-03): accepted=2 (approved+executed), declined=1, pending=1
+        pool = FakePool(script=[{"accepted": 2, "declined": 1, "pending": 1}])
         stats = ProposalStore(pool).acceptance_stats()
         assert stats["accepted"] == 2
         assert stats["declined"] == 1
@@ -19,7 +20,7 @@ class TestAcceptanceStats:
         assert stats["acceptance_rate"] == pytest.approx(2 / 3)
 
     def test_no_decisions_reports_null_rate_never_fake_hundred(self):
-        pool = FakePool(script=[(0, 0, 4)])
+        pool = FakePool(script=[{"accepted": 0, "declined": 0, "pending": 4}])
         stats = ProposalStore(pool).acceptance_stats()
         assert stats["decided"] == 0
         assert stats["acceptance_rate"] is None
@@ -31,7 +32,7 @@ class TestAcceptanceStats:
         assert stats["decided"] == 0
 
     def test_graph_filter_travels_in_both_params(self):
-        pool = FakePool(script=[(1, 0, 0)])
+        pool = FakePool(script=[{"accepted": 1, "declined": 0, "pending": 0}])
         ProposalStore(pool).acceptance_stats(target_graph_id="kg-A")
         _, params = pool.record[0]
         assert params == ("kg-A", "kg-A")

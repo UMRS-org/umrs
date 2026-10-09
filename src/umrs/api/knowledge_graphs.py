@@ -31,6 +31,7 @@ from umrs.knowledge.graph_registry import GRAPH_STATUSES, GraphRegistryStore
 from umrs.shared.access_scopes import access_admits
 
 from ._access import checked_access, resource_caller
+from ._access import graph_read_allowed as _graph_read_allowed
 from ._knowledge_mutation_guard import (
     AGENT_ACTOR,
     enforce_registry_write_authorization,
@@ -54,7 +55,9 @@ def _registry(request: Request) -> GraphRegistryStore:
     return GraphRegistryStore(pool)
 
 
-def _shared_read_admits(request: Request, stored_access: Any, scope: CallerScope) -> bool:
+def _shared_read_admits(
+    request: Request, stored_access: Any, scope: CallerScope
+) -> bool:
     """ADR-080: does the row's access list admit this caller (beyond the tier
     ladder)? Group membership resolves lazily against the request pool."""
     caller = resource_caller(
@@ -66,19 +69,21 @@ def _shared_read_admits(request: Request, stored_access: Any, scope: CallerScope
     return access_admits(stored_access, caller)
 
 
-def _graph_read_allowed(
-    request: Request,
-    *,
-    kind: str,
-    project_id: str | None,
-    owner_id: str,
-    stored_access: Any,
-    scope: CallerScope,
-) -> bool:
-    """Tier ladder OR the row's access list (ADR-080)."""
-    if graph_readable(kind=kind, project_id=project_id, owner_id=owner_id, caller=scope):
-        return True
-    return _shared_read_admits(request, stored_access, scope)
+def _stored_project(kind: str | None, project_id: str | None, scope: CallerScope) -> str | None:
+    """The project a new graph is stored under.
+
+    Owner-only graphs are not project-bound and system graphs stay global.
+    Any other graph created without a project gets the caller's project, the
+    one create_graph's write check admitted. Persisting NULL left a graph no
+    non-admin could ever update, archive or decide proposals on, its creator
+    included (2026-10-09).
+    """
+    kind_reduced = (kind or "").strip().lower()
+    if kind_reduced in ("user", "personal"):
+        return None
+    if project_id is None and kind_reduced != "system":
+        return scope.project_id or None
+    return project_id
 
 
 class AccessUpdate(BaseModel):
@@ -217,9 +222,7 @@ async def create_graph(
                 ),
             },
         )
-    kind_reduced = (body.kind or "").strip().lower()
-    if kind_reduced in ("user", "personal"):
-        project_id = None  # owner-only graphs are not project-bound
+    project_id = _stored_project(body.kind, project_id, scope)
     graph = registry.create_graph(
         body.name,
         description=body.description,
