@@ -179,3 +179,25 @@ def test_max_per_doc_caps_chunks():
         max_per_doc=1,
     )
     assert minted == 1
+
+
+def test_chunk_nodes_carry_their_text():
+    """Spine answers need the passage text; legacy chunks have no artifact to
+    slice it from, so a text-less chunk node was dropped from every answer."""
+    import json
+
+    capture: list = []
+    entry = _doc("sumA")
+    canonize_document(
+        _Conn(capture=capture),
+        doc_key="sumA",
+        doc_uri=entry["uri"],
+        chunk_rows=entry["rows"],
+        project_id="default",
+        max_per_doc=500,
+    )
+    doc_id = "legacy-" + _legacy_document_id("sumA")
+    chunk_params = next(
+        p for sql, p in capture if "knowledge_nodes" in sql and p[0] == f"ragdoc-{doc_id}-chunk0"
+    )
+    assert json.loads(chunk_params[4])["text"] == entry["rows"][0]["content"]

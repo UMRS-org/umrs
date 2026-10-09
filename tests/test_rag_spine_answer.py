@@ -302,3 +302,11 @@ def test_endpoint_mode_is_the_old_proxy(monkeypatch):
 def test_unknown_facade_value_means_auto(monkeypatch, value):
     monkeypatch.setenv("UMRS_RAG_QUERY_FACADE", value)
     assert rag_api._query_facade() == "auto"
+
+
+def test_a_canonized_legacy_chunk_answers_from_its_stored_text():
+    content = json.dumps({"kind": "chunk", "chunk_start": 0, "chunk_end": 9, "text": "legacy passage"})
+    pool = _Pool([("node-legacy-chunk0", content, None, None, None)])
+    kept = rag_spine.attach_texts(pool, [_passage("node-legacy-chunk0")], lambda _r: None)
+    assert kept[0]["text"] == "legacy passage"
+    assert kept[0]["metadata"]["text_source"] == "node"

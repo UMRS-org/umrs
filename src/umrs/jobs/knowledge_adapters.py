@@ -519,7 +519,12 @@ class KnowledgeIngestBackend(OrchestratorBackend):
                 degraded_reason="S3 client initialization failed",
             )
             _write_result(attempt, result)
-            return f"knowledge_ingest|mode=degraded|project={project_id}"
+            # The counts let the status checker's B7 rule fail it: without them
+            # an ingest that stored nothing was reported as a success.
+            return (
+                f"knowledge_ingest|mode=degraded|project={project_id}"
+                f"|artifacts=0|failed={len(source_refs)}"
+            )
 
         result_str, success_descs = _run_ingest_sync(
             job,
@@ -2232,12 +2237,39 @@ class KnowledgeUnderstandStatusChecker(BackendStatusChecker):
         return AttemptCheckResult.failed("Unexpected backend reference")
 
 
+_EMBED_DEGRADED_DETAIL = {
+    "no_embedder": (
+        "degraded: no embedder configured (UMRS_KNOWLEDGE_EMBED_MODEL unset or not a "
+        "pre-staged model dir) — no vectors written; semantic search and RAG "
+        "answers cannot see these documents"
+    ),
+    "no_dsn": "degraded: no knowledge database configured — no vectors written",
+}
+
+
+def _embed_degraded_result(ref: str) -> AttemptCheckResult:
+    if "reason=no_pool" in ref:
+        return AttemptCheckResult.failed(
+            "embed: knowledge database configured but unreachable — no vectors "
+            "written (the job retries)"
+        )
+    reason = next((r for r in _EMBED_DEGRADED_DETAIL if f"reason={r}" in ref), "")
+    return AttemptCheckResult.succeeded(
+        metrics={"verified_after_submit": True, "degraded": True},
+        detail=_EMBED_DEGRADED_DETAIL.get(reason, "degraded: no vectors written"),
+    )
+
+
 class KnowledgeEmbedStatusChecker(BackendStatusChecker):
     """Status checker for synchronous knowledge-embed jobs.
 
-    ``mode=degraded`` refs (no embedder configured / pool unavailable) are
-    documented no-ops: embed is an opt-in stage, so the attempt succeeds.
-    Genuine failures (0 embedded with failing artifacts) fail honestly.
+    ``mode=degraded`` refs for an opt-out site (no embedder, no knowledge
+    database configured) are documented no-ops: embed is an opt-in stage, so
+    the attempt succeeds — with a detail `r4 job describe` prints, because a
+    green ingest with zero vectors was invisible (defect-wave 2026-10-08 #2).
+    A configured database that is unreachable is transient and fails, so the
+    job retries instead of losing the document's vectors. Genuine failures
+    (0 embedded with failing artifacts) fail honestly.
     """
 
     @property
@@ -2254,9 +2286,7 @@ class KnowledgeEmbedStatusChecker(BackendStatusChecker):
         ref = attempt.backend_ref
         if ref.startswith("knowledge_embed|"):
             if "mode=degraded" in ref:
-                return AttemptCheckResult.succeeded(
-                    metrics={"verified_after_submit": True, "degraded": True}
-                )
+                return _embed_degraded_result(ref)
             embedded = _knowledge_ref_counts(ref, "embedded")
             failed = _knowledge_ref_counts(ref, "failed")
             if embedded == 0 and failed > 0:
@@ -2577,12 +2607,15 @@ class KnowledgeEmbedBackend(OrchestratorBackend):
 
         async with _open_pool() as pool:
             if pool is None:
-                logger.warning("knowledge_embed degraded: Postgres pool unavailable")
+                # Configured but unreachable is transient: the checker fails it
+                # so the job retries. No database configured is a no-op.
+                reason = "no_pool" if _resolve_knowledge_dsn() else "no_dsn"
+                logger.warning("knowledge_embed degraded: Postgres pool unavailable (%s)", reason)
                 result.degraded = True
                 result.degraded_reason = "Postgres pool unavailable"
                 _write_result(attempt, result)
                 return (
-                    f"knowledge_embed|mode=degraded|reason=no_pool|project={project_id}"
+                    f"knowledge_embed|mode=degraded|reason={reason}|project={project_id}"
                 )
             await _embed_sources(
                 KnowledgeStore(pool),

@@ -863,8 +863,51 @@ def _response_text(response: Any) -> str:
 
 DB_MODEL_STORE: dict[str, dict[str, Any]] = {}
 EMBEDDINGS: SentenceTransformerEmbeddings | None = None
+EMBEDDINGS_SOURCE: str = ""  # where the loaded model's name came from
 HYBRID_SEARCHER: HybridSearcher | None = None
 RERANKER: CrossEncoderReranker | None = None
+
+
+# Every deployment artifact sets this name; the service never read it
+# (defect-wave 2026-10-08 #3). Which name is canonical is the maintainer's
+# call — renaming would make it live on deploy — so it is reported, not used.
+_IGNORED_EMBEDDING_ENV = "RAG_EMBEDDING_MODEL"
+
+
+def _resolve_embedding_model(db_model_store: dict[str, dict[str, Any]]) -> tuple[str, str]:
+    """``(model, where it came from)``: UMRS_RAG_EMBEDDING_MODEL, else the first
+    text modality of the user config (the model used for ingestion), else the
+    built-in default."""
+    explicit = os.getenv("UMRS_RAG_EMBEDDING_MODEL")
+    ignored = os.getenv(_IGNORED_EMBEDDING_ENV)
+    if ignored and not explicit:
+        logger.warning(
+            "%s=%r is not read by the RAG service; it uses UMRS_RAG_EMBEDDING_MODEL, "
+            "else the user config's text model, else the built-in default",
+            _IGNORED_EMBEDDING_ENV,
+            ignored,
+        )
+    if explicit:
+        return explicit, "UMRS_RAG_EMBEDDING_MODEL"
+    detected = _detect_embedding_model_from_config(db_model_store)
+    if detected:
+        return detected, "user config (first text modality)"
+    return "sentence-transformers/all-MiniLM-L6-v2", "built-in default"
+
+
+def _embedder_stats() -> dict[str, Any]:
+    """The embedder actually loaded — /rag/stats used to report a label."""
+    client = getattr(EMBEDDINGS, "client", None)
+    dimension_of = getattr(client, "get_sentence_embedding_dimension", None)
+    stats: dict[str, Any] = {
+        "embedding_model": getattr(EMBEDDINGS, "model_name", None),
+        "embedding_model_source": EMBEDDINGS_SOURCE or None,
+        "embedding_dimensions": dimension_of() if callable(dimension_of) else None,
+    }
+    ignored = os.getenv(_IGNORED_EMBEDDING_ENV)
+    if ignored and EMBEDDINGS is not None:
+        stats["ignored_settings"] = {_IGNORED_EMBEDDING_ENV: ignored}
+    return stats
 
 
 @app.on_event("startup")
@@ -884,12 +927,8 @@ def startup_event() -> None:
             "with store_embeddings = 'yes'."
         )
 
-    model_name = os.getenv("UMRS_RAG_EMBEDDING_MODEL")
-    if not model_name:
-        # Auto-detect from the user config (matches the model used for ingestion)
-        model_name = _detect_embedding_model_from_config(DB_MODEL_STORE)
-    if not model_name:
-        model_name = "sentence-transformers/all-MiniLM-L6-v2"
+    global EMBEDDINGS_SOURCE
+    model_name, EMBEDDINGS_SOURCE = _resolve_embedding_model(DB_MODEL_STORE)
     EMBEDDINGS = PrefixedSentenceTransformerEmbeddings(model_name=model_name)
 
     # Hybrid search and cross-encoder reranking (opt-in via request fields)
@@ -1844,11 +1883,7 @@ def rag_stats(
     import psycopg2
 
     db_url = os.getenv("UMRS_RAG_DATABASE_URL", os.getenv("DATABASE_URL", ""))
-    stats: dict = {
-        "status": "ok",
-        "embedding_model": os.getenv("UMRS_RAG_EMBEDDING_MODEL", "intfloat/e5-base-v2"),
-        "embedding_dimensions": int(os.getenv("UMRS_RAG_EMBEDDING_DIM", "768")),
-    }
+    stats: dict = {"status": "ok", **_embedder_stats()}
 
     if not db_url:
         stats["status"] = "no_database"
