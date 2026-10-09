@@ -100,6 +100,8 @@ def test_s3_uri_descriptor_is_stamped_and_keeps_the_staged_uri(monkeypatch):
     meta = descs[0]["metadata"]
     assert canonical_identity.carried(meta) is not None
     assert meta["staged_from"] == _URI
+    # The artifact row has no title column: the name rides in the metadata.
+    assert meta["source_name"] == "graphene-note.md"
 
 
 def test_kind_follows_the_staged_filename(monkeypatch):
