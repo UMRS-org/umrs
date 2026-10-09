@@ -23,6 +23,11 @@ _BRIDGE_NAME = "gen1_gen2_runtime"
 
 # Module-level reference for sidecar access (Task 2-delta)
 _global_runtime: DurableJobRuntime | None = None
+# One runtime per process: server_umrs.py and the HTTP sidecar's lifespan both
+# start it, and each call used to build a second runtime — two schedulers on
+# one database, and a boot reconciliation that took the other's live attempts
+# for stale ones (STATE JOBS-20261009-001).
+_start_lock = threading.Lock()
 
 
 def _set_runtime(runtime: DurableJobRuntime | None) -> None:
@@ -272,6 +277,15 @@ def start_durable_job_runtime_from_env(
         logger.info("Durable job runtime disabled via UMRS_DISABLE_DURABLE_RUNTIME")
         return None
 
+    with _start_lock:
+        running = _global_runtime
+        if running is not None and not getattr(running, "_shutdown_called", False):
+            logger.info("Durable job runtime already running in this process; reusing it")
+            return running
+        return _start_new_runtime(timeout)
+
+
+def _start_new_runtime(timeout: float) -> DurableJobRuntime | None:
     from umrs.orchestrator.detection import detect_backend
 
     detection = detect_backend()

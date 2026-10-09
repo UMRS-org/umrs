@@ -129,6 +129,11 @@ class Reconciler:
                 # Find all in-flight attempts that either:
                 # - Have a different umrs_instance_id (from previous instance)
                 # - Have NULL umrs_instance_id (legacy or failed to set)
+                # CREATED counts too: an attempt whose submission died with its
+                # process or the database stayed CREATED, and its job RUNNING,
+                # for good (2026-10-09). Safe because a process runs one durable
+                # runtime (durable_job_runtime._start_lock): nothing live waits
+                # in CREATED under another instance id at boot.
                 cur.execute(
                     """
                     SELECT
@@ -137,11 +142,12 @@ class Reconciler:
                         attempt_no,
                         umrs_instance_id
                     FROM job_attempts
-                    WHERE status IN (%s, %s)
+                    WHERE status IN (%s, %s, %s)
                       AND (umrs_instance_id IS NULL OR umrs_instance_id != %s)
                     ORDER BY created_at ASC
                 """,
                     (
+                        AttemptStatus.CREATED.value,
                         AttemptStatus.SUBMITTED.value,
                         AttemptStatus.RUNNING.value,
                         self.umrs_instance_id,
