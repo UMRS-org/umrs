@@ -10,6 +10,7 @@ Covers:
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 from unittest.mock import MagicMock, patch
 
@@ -562,11 +563,14 @@ class TestKnowledgeIngestBackend:
         sample_job.spec["sources"] = [
             {"kind": "local_file", "uri": tmp_py_file},  # valid
             {"kind": "local_file", "uri": "/nonexistent/file.py"},  # invalid
-            {"kind": "s3_uri", "uri": "s3://bucket/key"},  # valid (reference)
+            {"kind": "s3_uri", "uri": "s3://bucket/key"},  # valid (readable object)
         ]
         sample_job.spec["bucket"] = "test-bucket"
 
         fake_s3 = _make_fake_s3()
+        # s3_uri sources are read once and copied content-addressed (2026-10-09),
+        # so the referenced object must exist to count as a success.
+        fake_s3.get_object.return_value = {"Body": io.BytesIO(b"staged upload")}
 
         with patch(
             "boto3.client",
@@ -576,7 +580,7 @@ class TestKnowledgeIngestBackend:
             await backend.submit_job(sample_job, sample_attempt)
 
         metadata = json.loads(sample_attempt.metrics["result"])
-        # 2 artifacts (local_file succeeded + s3 reference)
+        # 2 artifacts (local_file succeeded + s3 object copied)
         assert len(metadata["artifact_ids"]) == 2
         # 1 failure (nonexistent file)
         assert len(metadata["failed_items"]) == 1

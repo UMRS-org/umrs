@@ -1806,6 +1806,33 @@ def rag_list_documents(
     return []
 
 
+class EmbedRequest(BaseModel):
+    """One query to embed for the K3 vector lane."""
+
+    text: str = Field(..., min_length=1, max_length=2048)
+
+
+class EmbedResponse(BaseModel):
+    model: str
+    dimension: int
+    vector: list[float]
+
+
+@app.post("/rag/embed", response_model=EmbedResponse)
+def embed_query(payload: EmbedRequest) -> EmbedResponse:
+    """Query-time embedding for ``GET /umrs/knowledge/query`` (R6.1).
+
+    This service is the only query-time text embedder; the facade never
+    loads a model, it asks here. The model's query prefix is applied
+    (e5 ``query:``) and ``model`` names the space, so the caller ranks only
+    vectors that model wrote (ADR-083 D-2).
+    """
+    if EMBEDDINGS is None:
+        raise_typed(PlatformError.ragservice("unavailable", "embedding model not loaded"))
+    vector = EMBEDDINGS.embed_query(payload.text)
+    return EmbedResponse(model=EMBEDDINGS.model_name, dimension=len(vector), vector=vector)
+
+
 @app.get("/rag/stats")
 def rag_stats(
     project_id: str = Query(None, description="Filter stats by project (optional)"),

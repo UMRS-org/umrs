@@ -23,6 +23,9 @@ class _FakeS3Client:
         self.puts.append(kwargs)
 
 
+_RUNTIME_CALLS: list[dict] = []
+
+
 def _app(monkeypatch, *, s3=None, runtime=None):
     app = FastAPI()
     app.include_router(router)
@@ -48,6 +51,7 @@ def _app(monkeypatch, *, s3=None, runtime=None):
 
         async def submit_job_sync(self, **kwargs):
             self.calls.append(kwargs)
+            _RUNTIME_CALLS.append(kwargs)
             return runtime or "job-central-1"
 
     monkeypatch.setattr("umrs.server.durable_job_runtime.get_runtime", lambda: _Runtime())
@@ -82,6 +86,14 @@ def test_ingest_spec_carries_s3_uri_and_graph(monkeypatch):
     assert body["s3_key"].startswith("knowledge-uploads/proj-9/")
     assert body["graph_id"] == "graph-default"
     assert body["dwell_contract"].startswith("central")
+
+
+def test_ingest_job_is_owned_by_the_uploader(monkeypatch):
+    """An ownerless job was invisible to `r4 job list` and 403 on describe (2026-10-09)."""
+    _RUNTIME_CALLS.clear()
+    resp = _post(_app(monkeypatch), monkeypatch)
+    assert resp.status_code == 202, resp.text
+    assert _RUNTIME_CALLS[-1]["user_id"] == "u-1"
 
 
 def test_s3_fault_is_503_never_silent_fallback(monkeypatch):

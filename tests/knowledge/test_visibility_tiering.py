@@ -81,8 +81,10 @@ class TestVisibilityGatingShape:
         assert "graph_id = ANY(%s)" in src  # ownership half intact
 
     def test_embeddings_lanes_use_shared_predicate(self) -> None:
+        # The lanes' SQL: table-reader (moved out of search_embeddings when the
+        # encoder lane landed, 2026-10-09) and similarity.
         for fn in (
-            _EmbeddingsSearchBackend.search_embeddings,
+            _EmbeddingsSearchBackend._table_reader_hits,
             _EmbeddingsSearchBackend._similarity_hits,
         ):
             src = inspect.getsource(fn)

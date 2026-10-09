@@ -117,6 +117,7 @@ async def _submit_upload_ingest(
     proposal_id: str | None,
     project_id: str,
     target_graph_id: str,
+    user_id: str = "",
 ) -> dict[str, Any]:
     """Submit the KNOWLEDGE_INGEST job against the staged key (503 on no runtime)."""
     from umrs.jobs.models import JobType
@@ -150,10 +151,13 @@ async def _submit_upload_ingest(
     if proposal_id:
         spec["proposal_id"] = proposal_id
     try:
+        # The uploader owns the job (and its chained understand/embed jobs):
+        # an ownerless job is invisible to `r4 job list` and 403 on describe.
         job_id = await runtime.submit_job_sync(
             job_type=JobType.KNOWLEDGE_INGEST,
             project_id=project_id,
             spec=spec,
+            user_id=user_id,
         )
     except Exception as exc:
         raise_typed(
@@ -248,4 +252,5 @@ async def knowledge_upload(
         proposal_id=request.headers.get("x-proposal-id"),
         project_id=project_id,
         target_graph_id=target_graph_id,
+        user_id=user_id,
     )

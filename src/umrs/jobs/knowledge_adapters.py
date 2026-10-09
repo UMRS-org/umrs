@@ -793,25 +793,19 @@ def _ingest_one_source(
                 success_descs,
             )
     elif resolved.kind == "s3_uri":
-        # S3 reference — register without copy
-        success_ids.append(artifact_id)
-        success_descs.append(
-            {
-                "artifact_id": artifact_id,
-                "content_hash": "",
-                "kind": resolved.kind,
-                "source_ref": uri,
-            }
+        _copy_s3_reference(
+            job.job_id,
+            attempt.attempt_id,
+            s3_client,
+            bucket,
+            storage,
+            project_id,
+            uri,
+            artifact_id,
+            result,
+            success_ids,
+            success_descs,
         )
-        result.artifact_ids.append(artifact_id)
-        KnowledgeEvent(
-            event_type="create",
-            job_id=job.job_id,
-            attempt_id=attempt.attempt_id,
-            artifact_id=artifact_id,
-            source_ref=uri,
-            details="s3 reference (no copy)",
-        ).emit()
     elif resolved.kind in ("http_url", "git_repo"):
         _fetch_and_store_remote(
             job.job_id,
@@ -925,6 +919,63 @@ def _put_file_sync(
         artifact_id=artifact_id,
         source_ref=file_path,
         details=f"hash={content_hash[:16]}... size={size_bytes}",
+    ).emit()
+
+
+def _copy_s3_reference(
+    job_id: str,
+    attempt_id: str,
+    s3_client: Any,
+    bucket: str,
+    storage: ArtifactStorage,
+    project_id: str,
+    uri: str,
+    artifact_id: str,
+    result: KnowledgeIngestResult,
+    success_ids: list[str],
+    success_descs: list[dict[str, Any]],
+) -> None:
+    """Read an s3_uri source once and store it content-addressed.
+
+    `r4 knowledge upload` stages bytes at ``s3://<bucket>/knowledge-uploads/...``
+    and submits that URI. Registering it "without copy" (content_hash "",
+    kind "s3_uri") meant understand had nothing to parse, nothing was embedded,
+    and a bundle could not carry it — raw objects are read only from the
+    content-addressed key (canonical_identity.stored_object). Measured on the
+    stand-alone stack 2026-10-09. The staged object is left in place: the
+    upload response hands its key to the caller.
+    """
+    content = _fetch_artifact_bytes(s3_client, bucket, uri)
+    if content is None:
+        result.failed_items.append(
+            {"source": "s3_uri", "uri": uri, "error": "s3 object unreadable"}
+        )
+        return
+
+    content_hash, size_bytes, _ = storage.put_artifact(project_id, content)
+    success_ids.append(artifact_id)
+    success_descs.append(
+        {
+            "artifact_id": artifact_id,
+            "content_hash": content_hash,
+            # The staged key ends in the uploaded basename.
+            "kind": _artifact_kind_for_path(uri),
+            "source_ref": storage.key(project_id, content_hash),
+            "metadata": {
+                **canonical_identity.stamp(content, content_hash),
+                "staged_from": uri,
+            },
+        }
+    )
+    result.artifact_ids.append(artifact_id)
+    _bridge_a2l_ref(artifact_id, content_hash, project_id)
+    KnowledgeEvent(
+        event_type="create",
+        job_id=job_id,
+        attempt_id=attempt_id,
+        artifact_id=artifact_id,
+        source_ref=uri,
+        details=f"s3 copy hash={content_hash[:16]}... size={size_bytes}",
     ).emit()
 
 
