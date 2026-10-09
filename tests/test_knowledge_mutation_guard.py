@@ -20,8 +20,10 @@ class _FakeRuntime:
     def __init__(self) -> None:
         self.calls: list[dict] = []
 
-    async def submit_job_sync(self, *, job_type, project_id, spec):
-        self.calls.append({"job_type": job_type, "project_id": project_id, "spec": spec})
+    async def submit_job_sync(self, *, job_type, project_id, spec, user_id=""):
+        self.calls.append(
+            {"job_type": job_type, "project_id": project_id, "spec": spec, "user_id": user_id}
+        )
         return "job-1"
 
 
@@ -107,6 +109,17 @@ class TestKnowledgeMutationGuard:
         assert resp.status_code == 200, resp.text
         assert resp.json()["job_id"] == "job-1"
         assert runtime.calls[0]["spec"].get("proposal_id") is None
+
+    def test_ingest_job_is_owned_by_its_caller(self, runtime):
+        """An ownerless job was 403 to its own submitter on `r4 job describe` (2026-10-09)."""
+        client, _ = _client([])
+        resp = client.post(
+            "/umrs/k2/ingest",
+            json={"sources": [{"kind": "inline_text", "uri": "n.md", "content": "x"}]},
+            headers={"X-Project-ID": "proj-a", "x-user-id": "scientist"},
+        )
+        assert resp.status_code == 200, resp.text
+        assert runtime.calls[0]["user_id"] == "scientist"
 
     def test_agent_without_proposal_is_rejected_409(self, runtime):
         client, _ = _client([])

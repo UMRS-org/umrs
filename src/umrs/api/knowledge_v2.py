@@ -276,6 +276,15 @@ def _refuse_server_side_source_kinds(sources: list[dict[str, Any]]) -> None:
             )
 
 
+def _job_owner(request: Request) -> str:
+    """The caller owns the job: an ownerless job is 403 to its own submitter.
+
+    ``get_project_id`` has verified the signed identity tuple, X-User-Id
+    included, in strict mode.
+    """
+    return (request.headers.get("x-user-id") or "").strip()
+
+
 @router.post("/ingest")
 async def trigger_ingest(
     body: IngestRequest,
@@ -368,6 +377,7 @@ async def trigger_ingest(
             job_type=JobType.KNOWLEDGE_INGEST,
             project_id=project_id,
             spec=spec,
+            user_id=_job_owner(request),
         )
         logger.info("Knowledge ingest queued: %s", job_id)
         mark_proposal_executed(

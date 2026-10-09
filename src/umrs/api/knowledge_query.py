@@ -21,8 +21,11 @@ Existing subsystem routes stay untouched (aliases per K3 guardrail).
 from __future__ import annotations
 
 import logging
+import os
+from collections.abc import Callable
 from typing import Any
 
+import httpx
 from fastapi import APIRouter, Depends, Query, Request
 
 from umrs.knowledge.access_scope import visibility_predicate
@@ -224,6 +227,48 @@ def _split_csv(raw: str | None) -> list[str]:
     return [t.strip() for t in raw.split(",") if t.strip()]
 
 
+# Query-time text encoder (R6.1): the RAG service owns it, this facade only
+# asks. Unset → UMRS_RAG_DIRECT_URL (the same service), else no encoder.
+_QUERY_ENCODER_URL_ENV = "UMRS_KNOWLEDGE_QUERY_ENCODER_URL"
+_QUERY_ENCODER_TIMEOUT_ENV = "UMRS_KNOWLEDGE_QUERY_ENCODER_TIMEOUT"
+
+# (model_name, vector or None, reason when None)
+QueryEncoder = Callable[[str], tuple[str, list[float] | None, str]]
+
+
+def _query_encoder_url() -> str:
+    url = os.environ.get(_QUERY_ENCODER_URL_ENV) or os.environ.get("UMRS_RAG_DIRECT_URL")
+    return (url or "").strip().rstrip("/")
+
+
+def _query_encoder_timeout() -> float:
+    try:
+        return max(0.5, float(os.environ.get(_QUERY_ENCODER_TIMEOUT_ENV, "5")))
+    except ValueError:
+        return 5.0
+
+
+def _encode_query(query: str) -> tuple[str, list[float] | None, str]:
+    """Embed a query through the RAG service's ``POST /rag/embed``.
+
+    The service applies the model's query prefix (e5 ``query:``) and names
+    the model, so the caller can rank only vectors from that space (ADR-083).
+    """
+    base = _query_encoder_url()
+    if not base:
+        return "", None, "no query encoder configured"
+    try:
+        response = httpx.post(
+            f"{base}/rag/embed", json={"text": query}, timeout=_query_encoder_timeout()
+        )
+        response.raise_for_status()
+        body = response.json()
+        return str(body["model"]), [float(v) for v in body["vector"]], ""
+    except (httpx.HTTPError, KeyError, TypeError, ValueError) as exc:
+        logger.warning("query encoder at %s unavailable: %s", base, exc)
+        return "", None, f"query encoder unavailable ({type(exc).__name__})"
+
+
 class _EmbeddingsSearchBackend:
     """``search_api`` EmbeddingsSearchable port over migration-0075 rows.
 
@@ -245,9 +290,18 @@ class _EmbeddingsSearchBackend:
     lane stays table-reader.
     """
 
-    def __init__(self, pool: Any, *, include_ambient: bool = False) -> None:
+    def __init__(
+        self,
+        pool: Any,
+        *,
+        include_ambient: bool = False,
+        encoder: QueryEncoder | None = None,
+    ) -> None:
         self._pool = pool
         self._include_ambient = include_ambient
+        self._encoder = encoder
+        # Which lane the last search ran and why — reported to the caller.
+        self.lane_report: dict[str, str] | None = None
 
     def search_embeddings(
         self,
@@ -256,11 +310,35 @@ class _EmbeddingsSearchBackend:
         project_id: str | None = None,
         limit: int = 20,
         query_embedding: list[float] | None = None,
+        model_name: str | None = None,
     ) -> list[dict[str, Any]]:
         if query_embedding:
             return self._similarity_hits(
-                query_embedding, project_id=project_id, limit=limit
+                query_embedding, model_name=model_name, project_id=project_id, limit=limit
             )
+        if self._encoder is None:
+            self.lane_report = {"lane": "table-reader", "reason": "no query encoder"}
+            return self._table_reader_hits(query, project_id=project_id, limit=limit)
+        model, vector, reason = self._encoder(query)
+        if not vector:
+            # ADR-083 D-4: an encoder outage is reported, never answered by
+            # a lexical match labelled "embeddings".
+            self.lane_report = {"lane": "unavailable", "reason": reason}
+            return []
+        hits = self._similarity_hits(
+            vector, model_name=model, project_id=project_id, limit=limit
+        )
+        self.lane_report = {"lane": "similarity", "model": model}
+        if not hits:
+            # ADR-083 D-5: a space with no vectors here is no evidence.
+            self.lane_report["reason"] = (
+                f"no vectors in embedding space {model!r} for this project"
+            )
+        return hits
+
+    def _table_reader_hits(
+        self, query: str, *, project_id: str | None, limit: int
+    ) -> list[dict[str, Any]]:
         pattern = f"%{query}%"
         # ADR-050 tier gate on the owning node (R-02 wave 2: this lane was
         # previously ungated — project-only, ambient rows still served).
@@ -286,22 +364,32 @@ class _EmbeddingsSearchBackend:
         self,
         query_embedding: list[float],
         *,
+        model_name: str | None,
         project_id: str | None,
         limit: int,
     ) -> list[dict[str, Any]]:
-        """Cosine-distance ANN over 0075 rows using a pre-computed vector."""
+        """Cosine-distance ANN over 0075 rows using a pre-computed vector.
+
+        Ranks one embedding space only (ADR-083 D-2): vectors from another
+        model are not comparable, and a same-dimension model would mix
+        silently instead of failing.
+        """
+        if not model_name:
+            raise ValueError("a query vector needs the model_name of its space")
         qv = "[" + ",".join(repr(float(v)) for v in query_embedding) + "]"
         with self._pool.getconn() as conn:
             try:
                 with conn.cursor() as cur:
                     cur.execute(
                         "SELECT e.node_id, e.model_name, e.dimension, e.created_at, "
-                        "n.label, n.project_id, (e.embedding <=> %s::vector) AS distance "
+                        "n.label, n.project_id, (e.embedding <=> %s::vector) AS distance, "
+                        "n.content::text "
                         "FROM knowledge_node_embeddings e "
                         "JOIN knowledge_nodes n ON n.node_id = e.node_id "
                         f"WHERE {visibility_predicate('n', include_ambient=self._include_ambient)} "
+                        "AND e.model_name = %s "
                         "ORDER BY distance ASC LIMIT %s",
-                        (qv, project_id, limit),
+                        (qv, project_id, model_name, limit),
                     )
                     rows = cur.fetchall()
             finally:
@@ -311,15 +399,18 @@ class _EmbeddingsSearchBackend:
     @staticmethod
     def _hit(row: tuple) -> dict[str, Any]:
         node_id, model_name, dimension, _created, label, project_id = row[:6]
+        content = f"vector row for {node_id} ({model_name}, {dimension}d)"
         if len(row) > 6:  # similarity lane: cosine distance in position 7
             distance = float(row[6])
             score, lane = max(0.0, 1.0 - distance), "similarity"
             extra = {"distance": distance}
+            # The matched text, so a semantic hit is readable on its own.
+            content = _first_text_field(row[7] if len(row) > 7 else "") or content
         else:
             score, lane, extra = 0.5, "table-reader", {}
         return {
             "title": label or node_id,
-            "content": f"vector row for {node_id} ({model_name}, {dimension}d)",
+            "content": content,
             "score": score,
             "source_id": node_id,
             "source_type": "knowledge_node_embedding",
@@ -334,7 +425,7 @@ class _EmbeddingsSearchBackend:
 
 
 def _embeddings_backend_for(
-    pool: Any, *, include_ambient: bool = False
+    pool: Any, *, include_ambient: bool = False, encoder: QueryEncoder | None = None
 ) -> tuple[_EmbeddingsSearchBackend | None, str | None]:
     """Wire the 0075 backend iff the table exists; honesty reason otherwise."""
     if pool is None:
@@ -353,7 +444,10 @@ def _embeddings_backend_for(
         return None, "embeddings search unavailable (table probe failed)"
     if not present:
         return None, "embeddings search unavailable (migration 0075 not applied)"
-    return _EmbeddingsSearchBackend(pool, include_ambient=include_ambient), None
+    return (
+        _EmbeddingsSearchBackend(pool, include_ambient=include_ambient, encoder=encoder),
+        None,
+    )
 
 
 def _first_text_field(content_text: str) -> str | None:
@@ -589,7 +683,9 @@ def query_knowledge(
         include_ambient=include_ambient,
     )
     emb_backend, emb_reason = _embeddings_backend_for(
-        pool, include_ambient=include_ambient
+        pool,
+        include_ambient=include_ambient,
+        encoder=_encode_query if _query_encoder_url() else None,
     )
     rag_backend, rag_reason = _rag_backend_for(pool, include_ambient=include_ambient)
     search, wired, unwired = _build_unified_search(
@@ -611,6 +707,8 @@ def query_knowledge(
     payload = results.to_dict()
     payload["wired_backends"] = wired
     payload["unavailable_backends"] = unwired
+    if emb_backend is not None and emb_backend.lane_report is not None:
+        payload["embeddings_lane"] = emb_backend.lane_report
     payload["selected_graphs"] = [g.graph_id for g in selected]
     payload["excluded_graphs"] = excluded
     payload["ontologies"] = _ontology_blocks_for(

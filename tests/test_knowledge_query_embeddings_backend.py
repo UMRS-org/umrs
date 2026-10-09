@@ -178,6 +178,7 @@ def test_similarity_lane_ranks_by_distance_and_scores_similarity():
         project_id="spring8",
         limit=5,
         query_embedding=[0.1] * 768,
+        model_name="intfloat/e5-base-v2",
     )
     assert [h["metadata"]["lane"] for h in hits] == ["similarity", "similarity"]
     assert hits[0]["score"] > hits[1]["score"]
@@ -188,12 +189,15 @@ def test_similarity_lane_ranks_by_distance_and_scores_similarity():
 def test_similarity_lane_sql_uses_cosine_operator_and_literal():
     pool = _Pool(lambda _sql, _params: _SIM_ROWS)
     backend = _EmbeddingsSearchBackend(pool)
-    backend.search_embeddings("", project_id="spring8", query_embedding=[1.0, 2.0])
+    backend.search_embeddings(
+        "", project_id="spring8", query_embedding=[1.0, 2.0], model_name="m"
+    )
     sql, params = pool._conn._cur.queries[0]
     assert "<=> %s::vector" in sql
     assert "ORDER BY distance ASC" in sql
     assert params[0] == "[1.0,2.0]"
     assert params[1] == "spring8"
+    assert "e.model_name = %s" in sql and params[2] == "m"
 
 
 def test_no_vector_keeps_table_reader_lane():
