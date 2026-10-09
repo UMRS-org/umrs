@@ -444,21 +444,100 @@ def _discover_rag_endpoint(
 # ---------------------------------------------------------------------------
 
 
+# ADR-027 D3/P2: answer from the knowledge spine. ``auto`` (default): the
+# spine whenever it has passages for the question, else the endpoint corpus
+# (legacy per-experience stores keep answering until canonized —
+# knowledge/legacy_corpus_canonize.py); ``spine``: the spine only;
+# ``endpoint``: the proxy alone, as before 2026-10-09.
+_QUERY_FACADE_ENV = "UMRS_RAG_QUERY_FACADE"
+
+
+def _query_facade() -> str:
+    value = os.environ.get(_QUERY_FACADE_ENV, "auto").strip().lower()
+    return value if value in ("auto", "spine", "endpoint") else "auto"
+
+
 @router.post("/query", response_model=RAGQueryResponse)
 async def query_rag(
     request_body: RAGQueryRequest,
     request: Request,
     registry: EndpointRegistry = Depends(get_registry),
 ):
-    """
-    Query documents using RAG.
+    """Answer a question: the knowledge spine first, per UMRS_RAG_QUERY_FACADE.
 
-    Discovers active mini-rivault endpoint, forwards to RAG service.
+    Uploads feed only the spine (WP-15), so the endpoint corpus alone could
+    never answer from them.
     """
     _user_id, project_id = _require_rag_scope(
         request, request_body.project_id, write=False
     )
+    facade = _query_facade()
+    if facade != "endpoint":
+        spine = await _query_via_spine(
+            request, request_body, request_body.project_id or project_id
+        )
+        if spine.passages or facade == "spine":
+            return _spine_response(spine, request_body)
+        logger.info("rag query: spine has no passages (%s); endpoint corpus next", spine.reason)
+    return await _query_via_endpoint(request_body, registry, project_id)
 
+
+async def _query_via_spine(
+    request: Request, body: RAGQueryRequest, target_project: str
+) -> Any:
+    """Run the synchronous spine pipeline (DB, S3, one chat call) off the loop."""
+    import asyncio
+
+    from .rag_spine import SpineAnswer, answer_from_spine
+
+    pool = getattr(request.app.state, "umrs_db_pool", None)
+    if pool is None:
+        return SpineAnswer(reason="knowledge database unavailable")
+    admin = request.headers.get("x-verified-is-admin", "").strip().lower() in ("true", "1")
+    try:
+        return await asyncio.to_thread(
+            answer_from_spine,
+            pool,
+            body.query,
+            target_project,
+            top_k=body.top_k,
+            threshold=body.threshold,
+            include_ambient=admin,
+        )
+    except Exception as exc:  # noqa: BLE001 — auto mode falls back to the endpoint corpus
+        logger.warning("rag query: spine path failed: %s", exc)
+        return SpineAnswer(reason=f"spine query failed: {type(exc).__name__}")
+
+
+def _spine_response(spine: Any, body: RAGQueryRequest) -> RAGQueryResponse:
+    """The spine's answer, or why there is none; sources name their venue."""
+    if spine.answer:
+        answer = spine.answer
+    elif spine.passages:
+        answer = f"Could not generate an answer: {spine.reason}"
+    else:
+        answer = f"No knowledge in this project answers this ({spine.reason})."
+    sources = [
+        RAGSource(
+            document_id=passage["source_id"],
+            content=passage["text"],
+            score=passage["score"],
+            metadata={
+                **passage["metadata"],
+                "source_name": passage["source_name"],
+                "corpus_venue": "spine",
+                "model": spine.model,
+            },
+        )
+        for passage in spine.passages
+    ]
+    return RAGQueryResponse(answer=answer, sources=sources if body.include_sources else [])
+
+
+async def _query_via_endpoint(
+    request_body: RAGQueryRequest, registry: EndpointRegistry, project_id: str
+) -> RAGQueryResponse:
+    """The per-experience corpus behind a mini-RiVault endpoint (pre-P2 path)."""
     rag_base = _discover_rag_endpoint(registry, project_id)
     rag_url = f"{rag_base}/rag/query"
 

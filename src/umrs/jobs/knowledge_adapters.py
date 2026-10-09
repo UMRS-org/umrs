@@ -860,7 +860,7 @@ def _put_inline_text_sync(
             "content_hash": content_hash,
             "kind": _artifact_kind_for_path(uri),
             "source_ref": storage.key(project_id, content_hash),
-            "metadata": canonical_identity.stamp(content, content_hash),
+            "metadata": _stamp(content, content_hash, Path(uri).name),
         }
     )
     result.artifact_ids.append(artifact_id)
@@ -873,6 +873,13 @@ def _put_inline_text_sync(
         source_ref=uri,
         details=f"inline hash={content_hash[:16]}... size={size_bytes}",
     ).emit()
+
+
+def _stamp(content: bytes, content_hash: str, source_name: str) -> dict[str, Any]:
+    """Artifact metadata: the canonical identity, plus the name the scientist
+    gave the source — the artifact row has no other place for it, so answers
+    and listings could only say ``art-…`` (2026-10-09)."""
+    return {**canonical_identity.stamp(content, content_hash), "source_name": source_name}
 
 
 def _put_file_sync(
@@ -904,7 +911,7 @@ def _put_file_sync(
             # source_ref must be the S3 key: knowledge_understand fetches
             # bytes via ArtifactStorage.key-style lookups by source_ref.
             "source_ref": storage.key(project_id, content_hash),
-            "metadata": canonical_identity.stamp(content, content_hash),
+            "metadata": _stamp(content, content_hash, Path(file_path).name),
         }
     )
     result.artifact_ids.append(artifact_id)
@@ -962,7 +969,7 @@ def _copy_s3_reference(
             "kind": _artifact_kind_for_path(uri),
             "source_ref": storage.key(project_id, content_hash),
             "metadata": {
-                **canonical_identity.stamp(content, content_hash),
+                **_stamp(content, content_hash, Path(uri).name),
                 "staged_from": uri,
             },
         }
@@ -1027,7 +1034,7 @@ def _fetch_and_store_remote(
             # Remote-scraped research content is overwhelmingly prose/markdown.
             "kind": "document",
             "source_ref": storage.key(project_id, content_hash),
-            "metadata": canonical_identity.stamp(fetch.content, content_hash),
+            "metadata": _stamp(fetch.content, content_hash, url),
         }
     )
     result.artifact_ids.append(artifact_id)

@@ -254,7 +254,7 @@ def test_prefixed_embedder_adds_the_e5_query_prefix(monkeypatch):
     monkeypatch.setattr(
         rag_service.SentenceTransformerEmbeddings,
         "embed_query",
-        lambda self, text: seen.append(text) or [0.0],
+        lambda _self, text: seen.append(text) or [0.0],
     )
     emb = rag_service.PrefixedSentenceTransformerEmbeddings.__new__(
         rag_service.PrefixedSentenceTransformerEmbeddings
