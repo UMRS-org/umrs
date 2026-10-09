@@ -23,6 +23,7 @@ import hashlib
 import json
 import logging
 import re
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
@@ -112,6 +113,8 @@ def attach_texts(
             continue
         passage["text"] = text
         passage["source_name"] = name or passage["title"]
+        passage["artifact_id"] = str(content.get("artifact_id") or "")
+        passage["source_ref"] = source_ref
         passage["metadata"]["text_source"] = source
         kept.append(passage)
     return kept
@@ -181,13 +184,14 @@ def answer_from_spine(
 
 def _passage_rows(pool: Any, node_ids: list[str]) -> dict[str, tuple[dict, str, str]]:
     """node_id → (node content, artifact source_ref, artifact display name)."""
-    with pool.getconn() as conn:
-        try:
+    conn = pool.getconn()
+    try:
+        with conn:
             with conn.cursor() as cur:
                 cur.execute(_PASSAGE_SQL, (node_ids,))
                 rows = cur.fetchall()
-        finally:
-            pool.putconn(conn)
+    finally:
+        pool.putconn(conn)
     return {
         node_id: (_as_dict(content), ref or "", name or _basename(staged))
         for node_id, content, ref, name, staged in rows
@@ -266,3 +270,114 @@ def _artifact_fetcher() -> FetchBytes:
         return _fetch_artifact_bytes(state["client"], state["bucket"], source_ref)
 
     return fetch
+
+
+# ── The research loop's evidence store ───────────────────────────────────────
+
+_ARTIFACT_ROWS_SQL = (
+    "SELECT k.artifact_id, k.kind, k.source_ref, k.metadata->>'source_name', "
+    "(SELECT n.content->>'excerpt' FROM knowledge_nodes n "
+    " WHERE n.node_type = 'file' AND n.node_id LIKE 'node-file-%%' || k.artifact_id "
+    " LIMIT 1) "
+    "FROM knowledge_artifacts k WHERE k.project_id = %s"
+)
+
+
+_KNOWLEDGE_POOL: Any = None
+_KNOWLEDGE_POOL_LOCK = threading.Lock()
+
+
+def _knowledge_pool() -> Any:
+    """The loop store's Postgres pool, built on first use, one per process.
+
+    The knowledge database (``_resolve_knowledge_dsn``), which a site may
+    split from the jobs database. ``minconn=0``: a returned connection is
+    closed, so none goes stale across a Postgres restart; at most four open.
+    """
+    global _KNOWLEDGE_POOL
+    with _KNOWLEDGE_POOL_LOCK:
+        if _KNOWLEDGE_POOL is None:
+            from psycopg2.pool import ThreadedConnectionPool
+
+            from umrs.jobs.knowledge_adapters import _resolve_knowledge_dsn
+
+            _KNOWLEDGE_POOL = ThreadedConnectionPool(0, 4, _resolve_knowledge_dsn())
+        return _KNOWLEDGE_POOL
+
+
+class SpineKnowledgeStore:
+    """Evidence for the research loop from the knowledge spine (ADR-027 D3).
+
+    The server-side loop engine was built with no knowledge store, so in real
+    mode every iteration found no evidence and stopped at the gate ("refusing
+    to publish an unevidenced finding") in every deployment (plan §3c.2,
+    reproduced on the stand-alone stack 2026-10-09). The engine binds this to
+    each loop's project with ``for_project``.
+    """
+
+    def __init__(
+        self,
+        project_id: str = "",
+        *,
+        pool: Callable[[], Any] = _knowledge_pool,
+        top_k: int = 5,
+        threshold: float = 0.7,
+    ) -> None:
+        self._project_id = project_id
+        self._pool = pool
+        self._top_k = top_k
+        self._threshold = threshold
+
+    def for_project(self, project_id: str) -> SpineKnowledgeStore:
+        return SpineKnowledgeStore(
+            project_id, pool=self._pool, top_k=self._top_k, threshold=self._threshold
+        )
+
+    def search_artifacts(self, query: str, artifact_type: str | None = None) -> list[dict[str, Any]]:
+        """Semantic passages for ``query`` (the K3 lane), as loop artifacts."""
+        pool = self._pool()
+        passages, _reason = retrieve_passages(
+            pool, query, self._project_id, top_k=self._top_k, threshold=self._threshold
+        )
+        if passages:
+            passages = attach_texts(pool, passages, _artifact_fetcher())
+        return [
+            {
+                "artifact_id": p["artifact_id"] or p["source_id"],
+                "content": p["text"],
+                "filename": p["source_name"],
+                "summary": p["text"][:200],
+                "s3_key": p["source_ref"] or None,
+            }
+            for p in passages
+        ]
+
+    def list_artifacts(self, artifact_type: str | None = None) -> list[dict[str, Any]]:
+        return self._artifact_rows("ORDER BY k.created_at DESC LIMIT 200", ())
+
+    def get_artifact(self, artifact_id: str) -> dict[str, Any] | None:
+        rows = self._artifact_rows("AND k.artifact_id = %s", (artifact_id,))
+        return rows[0] if rows else None
+
+    def _artifact_rows(self, tail: str, params: tuple) -> list[dict[str, Any]]:
+        pool = self._pool()
+        conn = pool.getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(f"{_ARTIFACT_ROWS_SQL} {tail}", (self._project_id, *params))
+                rows = cur.fetchall()
+            conn.rollback()  # read-only; return the connection idle
+        finally:
+            pool.putconn(conn)
+        return [
+            {
+                "artifact_id": artifact_id,
+                "kind": kind,
+                "content": excerpt or "",
+                "filename": name or "",
+                "summary": (excerpt or "")[:200],
+                "s3_key": source_ref or None,
+            }
+            for artifact_id, kind, source_ref, name, excerpt in rows
+        ]
+

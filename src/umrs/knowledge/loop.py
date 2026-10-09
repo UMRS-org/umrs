@@ -655,7 +655,7 @@ class AutonomousResearchLoop:
         for anchor_id in anchors:
             if anchor_id and anchor_id not in related_ids:
                 related_ids.append(anchor_id)
-                excerpt = self._excerpt_for_id(anchor_id) or f"anchor:{anchor_id}"
+                excerpt = self._excerpt_for_id(anchor_id, loop) or f"anchor:{anchor_id}"
                 refs.append(
                     EvidenceRef(
                         source=EvidenceSource.GRAPH,
@@ -675,7 +675,7 @@ class AutonomousResearchLoop:
             for nid in _related_object_ids(related):
                 if nid not in related_ids:
                     related_ids.append(nid)
-                    excerpt = self._excerpt_for_id(nid) or f"related:{nid}"
+                    excerpt = self._excerpt_for_id(nid, loop) or f"related:{nid}"
                     refs.append(
                         EvidenceRef(
                             source=EvidenceSource.GRAPH,
@@ -694,7 +694,8 @@ class AutonomousResearchLoop:
     ) -> tuple[list[EvidenceRef], list[str]]:
         refs: list[EvidenceRef] = []
         excerpts: list[str] = []
-        if self._knowledge_store is None:
+        store = self._store_for(loop)
+        if store is None:
             return refs, excerpts
 
         query = loop.research_goal or ""
@@ -706,13 +707,13 @@ class AutonomousResearchLoop:
 
         artifacts: list[dict[str, Any]] = []
         try:
-            artifacts = list(self._knowledge_store.search_artifacts(query) or [])
+            artifacts = list(store.search_artifacts(query) or [])
         except Exception as exc:  # noqa: BLE001
             logger.warning("search_artifacts failed: %s", exc)
             self._retrieval_errors.append(f"search_artifacts: {exc}")
 
         if not artifacts:
-            artifacts = self._gap_fill_from_store(query)
+            artifacts = self._gap_fill_from_store(query, store)
 
         for artifact in artifacts:
             artifact_id = str(artifact.get("artifact_id") or "")
@@ -733,10 +734,20 @@ class AutonomousResearchLoop:
 
         return refs, excerpts
 
-    def _gap_fill_from_store(self, query: str) -> list[dict[str, Any]]:
+    def _store_for(self, loop: ResearchLoop) -> Any:
+        """The knowledge store scoped to this loop's project.
+
+        A store that serves many projects exposes ``for_project`` (the knowledge
+        spine, api/rag_spine.SpineKnowledgeStore); any other store is used as is.
+        """
+        store = self._knowledge_store
+        bind = getattr(store, "for_project", None)
+        return bind(loop.project_id) if callable(bind) else store
+
+    def _gap_fill_from_store(self, query: str, store: Any) -> list[dict[str, Any]]:
         """Match query tokens against artifact content when catalog search is empty."""
         try:
-            all_artifacts = list(self._knowledge_store.list_artifacts() or [])
+            all_artifacts = list(store.list_artifacts() or [])
         except Exception as exc:  # noqa: BLE001
             self._retrieval_errors.append(f"list_artifacts: {exc}")
             return []
@@ -756,11 +767,12 @@ class AutonomousResearchLoop:
                 matched.append(artifact)
         return matched or all_artifacts[:5]
 
-    def _excerpt_for_id(self, object_id: str) -> str:
-        if self._knowledge_store is None:
+    def _excerpt_for_id(self, object_id: str, loop: ResearchLoop) -> str:
+        store = self._store_for(loop)
+        if store is None:
             return ""
         try:
-            artifact = self._knowledge_store.get_artifact(object_id)
+            artifact = store.get_artifact(object_id)
         except Exception as exc:  # noqa: BLE001
             self._retrieval_errors.append(f"get_artifact({object_id}): {exc}")
             return ""

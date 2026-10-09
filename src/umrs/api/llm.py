@@ -487,6 +487,37 @@ async def _proxy_streaming(
     )
 
 
+# httpx hands the body back de-chunked and decoded, and this server frames and
+# dates its own reply. Forwarding the upstream's framing made nginx refuse the
+# reply whenever the model server answered chunked ("sent Content-Length and
+# Transfer-Encoding at the same time" → 502, shown as 503; ollama, live
+# 2026-10-09: a team role failed on a 200 from the model).
+_UPSTREAM_FRAMING_HEADERS = frozenset(
+    {
+        "connection",
+        "keep-alive",
+        "proxy-connection",
+        "te",
+        "trailer",
+        "transfer-encoding",
+        "upgrade",
+        "content-length",
+        "content-encoding",
+        "date",
+        "server",
+    }
+)
+
+
+def _oneshot_response_headers(response: httpx.Response) -> dict[str, str]:
+    """The upstream's response headers, less framing that describes another body."""
+    return {
+        key: value
+        for key, value in response.headers.items()
+        if key.lower() not in _UPSTREAM_FRAMING_HEADERS
+    }
+
+
 def _record_oneshot_usage(
     response: httpx.Response,
     usage_record: UsageRecord | None,
@@ -534,7 +565,7 @@ async def _proxy_oneshot(
             return Response(
                 content=response.content,
                 status_code=response.status_code,
-                headers=dict(response.headers),
+                headers=_oneshot_response_headers(response),
                 media_type=response.headers.get("content-type"),
             )
         except asyncio.TimeoutError:

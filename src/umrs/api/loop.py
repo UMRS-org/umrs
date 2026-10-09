@@ -355,7 +355,14 @@ def _rehost_on_thread(loop: ResearchLoop) -> None:
 def _get_engine() -> AutonomousResearchLoop:
     global _loop_engine
     if _loop_engine is None:
-        _loop_engine = AutonomousResearchLoop(workflow_port=_default_workflow_port())
+        from .rag_spine import SpineKnowledgeStore
+
+        # Evidence comes from the knowledge spine; without a store every
+        # real-mode iteration stopped at the evidence gate (2026-10-09).
+        _loop_engine = AutonomousResearchLoop(
+            workflow_port=_default_workflow_port(),
+            knowledge_store=SpineKnowledgeStore(),
+        )
     return _loop_engine
 
 

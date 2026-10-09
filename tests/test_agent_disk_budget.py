@@ -31,7 +31,7 @@ def _open_pool(rows):
     cursor = conn.cursor.return_value.__enter__.return_value
     cursor.fetchone.return_value = rows
     pool = MagicMock()
-    pool.getconn.return_value.__enter__.return_value = conn
+    pool.getconn.return_value = conn
     return pool, cursor
 
 
