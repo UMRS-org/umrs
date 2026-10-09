@@ -523,6 +523,48 @@ class TestKnowledgeIngestBackend:
         assert desc["artifact_id"].startswith("art-")
 
     @pytest.mark.asyncio
+    async def test_a_reupload_continues_on_the_stored_artifact(self, sample_job, tmp_py_file):
+        """Bytes the project already holds: the result, the provenance and the
+        chained understand all name the stored artifact, not a fresh id with no
+        row (SL-CONF T2, 2026-10-09: understand "completed" with every node
+        failing its FK, and embed failed)."""
+        sample_attempt = JobAttempt(
+            attempt_id=generate_attempt_id(),
+            job_id=sample_job.job_id,
+            attempt_no=1,
+            backend="compose",
+            status=AttemptStatus.CREATED,
+            backend_ref="",
+            metrics={},
+        )
+        sample_job.spec["sources"] = [{"kind": "local_file", "uri": tmp_py_file}]
+        sample_job.spec["bucket"] = "test-bucket"
+        chained: list[list[dict]] = []
+
+        def _known_bytes(_project_id: str, descs: list[dict]) -> dict[str, str]:
+            fresh = descs[0]["artifact_id"]
+            descs[0]["artifact_id"] = "art-stored"
+            return {fresh: "art-stored"}
+
+        with (
+            patch("boto3.client", return_value=_make_fake_s3()),
+            patch(
+                "umrs.jobs.knowledge_adapters._store_artifacts_in_db_sync",
+                side_effect=_known_bytes,
+            ),
+            patch(
+                "umrs.jobs.knowledge_adapters._enqueue_understand_job",
+                side_effect=lambda *_a, sources, **_k: chained.append(sources),
+            ),
+        ):
+            await KnowledgeIngestBackend().submit_job(sample_job, sample_attempt)
+
+        result = json.loads(sample_attempt.metrics["result"])
+        assert result["artifact_ids"] == ["art-stored"]
+        assert [a["artifact_id"] for a in sample_attempt.metrics["artifacts"]] == ["art-stored"]
+        assert [d["artifact_id"] for d in chained[0]] == ["art-stored"]
+
+    @pytest.mark.asyncio
     async def test_ingest_local_dir(self, sample_job, tmp_dir_with_files):
         """Ingest a directory of files."""
         sample_attempt = JobAttempt(

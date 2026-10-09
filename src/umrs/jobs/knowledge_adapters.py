@@ -732,7 +732,8 @@ def _run_ingest_sync(
     # Store artifact metadata in Postgres (best-effort). Full descriptors
     # (content_hash + source_ref S3 key + kind) are required by the chained
     # KNOWLEDGE_UNDERSTAND job — bare artifact_ids are skipped at parse time.
-    _store_artifacts_in_db_sync(project_id, success_descs)
+    deduped = _store_artifacts_in_db_sync(project_id, success_descs) or {}
+    result.artifact_ids = [deduped.get(aid, aid) for aid in result.artifact_ids]
 
     KnowledgeEvent(
         event_type="ingest" if not result.failed_items else "fail",
@@ -1143,7 +1144,7 @@ def _text_content(src: dict[str, Any], content: bytes) -> tuple[bytes | None, st
 def _store_artifacts_in_db_sync(
     project_id: str,
     artifact_descs: list[dict[str, Any]],
-) -> None:
+) -> dict[str, str]:
     """Persist artifact metadata to Postgres (synchronous best-effort).
 
     Descriptors must carry content_hash + source_ref (S3 key) + kind — the
@@ -1153,9 +1154,17 @@ def _store_artifacts_in_db_sync(
     knowledge_artifacts. A fire-and-forget insert raced the chained
     understand job in production — FK violation, swallowed as a "likely
     duplicate" IR insert, and content never became graph nodes.
+
+    Identical bytes are one artifact per project: a descriptor whose bytes
+    the project already holds is repointed at the stored artifact, and the
+    returned map (new id → stored id) lets the caller do the same. Before,
+    a re-upload went down the chain under a fresh id with no row — understand
+    "completed" with every node failing its FK, and embed failed (SL-CONF T2,
+    2026-10-09).
     """
+    deduped: dict[str, str] = {}
     if not _resolve_knowledge_dsn():
-        return
+        return deduped
     try:
 
         async def _do() -> None:
@@ -1167,6 +1176,8 @@ def _store_artifacts_in_db_sync(
                 store = KnowledgeStore(pool)
                 for desc in artifact_descs:
                     try:
+                        if await _repoint_to_stored(store, desc, project_id, deduped):
+                            continue
                         await store.insert_artifact(
                             artifact_id=desc["artifact_id"],
                             content_hash=desc.get("content_hash", ""),
@@ -1181,6 +1192,20 @@ def _store_artifacts_in_db_sync(
         _run_coroutine_sync(_do(), "persist_artifact_meta")
     except Exception:  # noqa: BLE001, S110 — best-effort, must not raise
         pass
+    return deduped
+
+
+async def _repoint_to_stored(
+    store: Any, desc: dict[str, Any], project_id: str, deduped: dict[str, str]
+) -> bool:
+    """Repoint ``desc`` at the project's stored artifact for its bytes, if any."""
+    content_hash = desc.get("content_hash", "")
+    stored = await store.active_artifact_for(content_hash, project_id) if content_hash else None
+    if not stored or stored == desc["artifact_id"]:
+        return False
+    deduped[desc["artifact_id"]] = stored
+    desc["artifact_id"] = stored
+    return True
 
 
 # ── A2L Derive Helper ─────────────────────────────────────────────────────
