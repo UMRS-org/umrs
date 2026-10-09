@@ -536,6 +536,12 @@ class KnowledgeIngestBackend(OrchestratorBackend):
             project_id,
             allow_domains,
         )
+        # Where provenance reads a job's outputs (jobs/provenance.py); the
+        # scheduler persists attempt.metrics after submit.
+        attempt.metrics["artifacts"] = [
+            {k: d[k] for k in ("artifact_id", "content_hash", "kind", "source_ref") if k in d}
+            for d in success_descs
+        ]
 
         # Chain KNOWLEDGE_UNDERSTAND so API-triggered ingests become queryable
         # without a manual understand call (mirrors the auto-ingest hook).

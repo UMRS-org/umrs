@@ -86,17 +86,32 @@ def _artifacts_from_attempts(job: Any, attempts: list[Any]) -> list[ArtifactRef]
 
         # Look for artifact refs stored in attempt metrics
         for artifact_entry in att.metrics.get("artifacts", []):
-            if isinstance(artifact_entry, dict) and "uri" in artifact_entry:
-                artifacts.append(
-                    ArtifactRef(
-                        uri=artifact_entry["uri"],
-                        media_type=artifact_entry.get("media_type", ""),
-                        size_bytes=artifact_entry.get("size_bytes"),
-                        sha256=artifact_entry.get("sha256"),
-                    )
-                )
+            ref = _artifact_ref(artifact_entry)
+            if ref is not None:
+                artifacts.append(ref)
 
     return artifacts
+
+
+def _artifact_ref(entry: Any) -> ArtifactRef | None:
+    """One ``metrics["artifacts"]`` entry as an ArtifactRef.
+
+    Producers write the ingest descriptor shape (``source_ref``,
+    ``content_hash``, ``kind``); this reader took only ``uri``, so provenance
+    reported no artifact for any workflow run or ingest (plan §3c.2,
+    measured 2026-10-09). Both shapes are read.
+    """
+    if not isinstance(entry, dict):
+        return None
+    uri = entry.get("uri") or entry.get("source_ref")
+    if not uri:
+        return None
+    return ArtifactRef(
+        uri=str(uri),
+        media_type=str(entry.get("media_type") or entry.get("kind") or ""),
+        size_bytes=entry.get("size_bytes"),
+        sha256=entry.get("sha256") or entry.get("content_hash") or None,
+    )
 
 
 def build_provenance(job: Any, attempts: list[Any]) -> ProvenanceRecord:

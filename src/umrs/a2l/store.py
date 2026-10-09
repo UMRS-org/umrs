@@ -34,6 +34,18 @@ _pool = None
 _instance: ConservationStore | None = None
 
 
+def _add_project_scope(
+    clauses: list[str], params: list[Any], readable_projects: list[str] | None
+) -> None:
+    """Restrict a list query to the caller's readable project namespaces
+    (``None`` = unrestricted). Rows with no project are global, as in
+    knowledge.access_scope.project_readable."""
+    if readable_projects is None:
+        return
+    params.append(readable_projects)
+    clauses.append(f"(project_id IS NULL OR project_id = '' OR project_id = ANY(${len(params)}))")
+
+
 class ConservationStoreUnavailable(RuntimeError):
     """Raised when no pool has been built for the conservation store."""
 
@@ -66,7 +78,7 @@ class ConservationStore:
                 id, type, type_schema, uri, metadata, status, user_id,
                 project_id, hash_version, artifact_class, job_id, attempt_id,
                 created_at
-            ) VALUES ($1,$2,$3::jsonb,$4,$5::jsonb,$6,$7,$8,$9,$10,$11,$12,$13)
+            ) VALUES ($1,$2,$3::jsonb,$4,$5::jsonb,$6,$7,$8,$9,$10,$11,$12,$13::text::timestamptz)
             ON CONFLICT (id) DO NOTHING
             """,
             record.id,
@@ -115,7 +127,7 @@ class ConservationStore:
                         id, type, type_schema, uri, metadata, status, user_id,
                         project_id, hash_version, artifact_class, job_id, attempt_id,
                         created_at
-                    ) VALUES ($1,$2,$3::jsonb,$4,$5::jsonb,$6,$7,$8,$9,$10,$11,$12,$13)
+                    ) VALUES ($1,$2,$3::jsonb,$4,$5::jsonb,$6,$7,$8,$9,$10,$11,$12,$13::text::timestamptz)
                     ON CONFLICT (id) DO NOTHING
                     """,
                     record.id,
@@ -156,16 +168,25 @@ class ConservationStore:
         *,
         job_id: str | None = None,
         user_id: str | None = None,
+        artifact_type: str | None = None,
+        status: str | None = None,
+        readable_projects: list[str] | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> list[ArtifactRecord]:
+        """``readable_projects`` None = every project (admin); otherwise rows
+        in those namespaces or with no project (global)."""
         clauses, params = ["deleted_at IS NULL"], []
-        if job_id:
-            params.append(job_id)
-            clauses.append(f"job_id = ${len(params)}")
-        if user_id:
-            params.append(user_id)
-            clauses.append(f"user_id = ${len(params)}")
+        for col, val in (
+            ("job_id", job_id),
+            ("user_id", user_id),
+            ("type", artifact_type),
+            ("status", status),
+        ):
+            if val:
+                params.append(val)
+                clauses.append(f"{col} = ${len(params)}")
+        _add_project_scope(clauses, params, readable_projects)
         params.extend([limit, offset])
         rows = await self._pool.fetch(
             f"SELECT * FROM a2l_artifacts WHERE {' AND '.join(clauses)}"
@@ -174,6 +195,39 @@ class ConservationStore:
             *params,
         )
         return [self._to_artifact(r) for r in rows]
+
+    async def lineage(
+        self, artifact_id: str, *, direction: str = "both", max_depth: int = 3
+    ) -> dict[str, Any]:
+        """Breadth-first lineage around ``artifact_id`` over the derive edges:
+        ``{"root_id", "nodes": [artifact dicts], "edges": [edge dicts]}``."""
+        seen, frontier, edges = {artifact_id}, [artifact_id], {}
+        for _ in range(max(0, min(max_depth, 10))):
+            rows = await self._pool.fetch(
+                "SELECT parent_id, child_id, relationship_type FROM a2l_artifact_edges"
+                " WHERE ($2 AND parent_id = ANY($1)) OR ($3 AND child_id = ANY($1))",
+                frontier,
+                direction in ("down", "both"),
+                direction in ("up", "both"),
+            )
+            frontier = []
+            for row in rows:
+                edges[(row["parent_id"], row["child_id"])] = row["relationship_type"]
+                for node in (row["parent_id"], row["child_id"]):
+                    if node not in seen:
+                        seen.add(node)
+                        frontier.append(node)
+            if not frontier:
+                break
+        nodes = await self._pool.fetch("SELECT * FROM a2l_artifacts WHERE id = ANY($1)", list(seen))
+        return {
+            "root_id": artifact_id,
+            "nodes": [self._to_artifact(r).to_dict() for r in nodes],
+            "edges": [
+                {"parent_id": p, "child_id": c, "relationship_type": t}
+                for (p, c), t in edges.items()
+            ],
+        }
 
     async def update_artifact_status(
         self, artifact_id: str, status: str, error: str = ""
@@ -188,10 +242,10 @@ class ConservationStore:
         await self._pool.execute(
             """
             UPDATE a2l_artifacts
-            SET status = $2,
+            SET status = $2::text::a2l_artifact_status,
                 error = $3,
-                started_at = COALESCE(started_at, CASE WHEN $2 = 'running' THEN now() END),
-                completed_at = COALESCE($4::timestamptz, completed_at)
+                started_at = COALESCE(started_at, CASE WHEN $2::text = 'running' THEN now() END),
+                completed_at = COALESCE($4::text::timestamptz, completed_at)
             WHERE id = $1
             """,
             artifact_id,
@@ -226,7 +280,7 @@ class ConservationStore:
             INSERT INTO a2l_agent_executions (
                 id, agent_name, agent_version, model_ref, prompt_hash, params,
                 status, user_id, project_id, job_id, attempt_id, created_at
-            ) VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8,$9,$10,$11,$12)
+            ) VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8,$9,$10,$11,$12::text::timestamptz)
             """,
             rec.id,
             rec.agent_name,
@@ -256,6 +310,7 @@ class ConservationStore:
         attempt_id: str | None = None,
         agent_name: str | None = None,
         user_id: str | None = None,
+        readable_projects: list[str] | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> list[AgentExecution]:
@@ -269,6 +324,7 @@ class ConservationStore:
             if val:
                 params.append(val)
                 clauses.append(f"{col} = ${len(params)}")
+        _add_project_scope(clauses, params, readable_projects)
         params.extend([limit, offset])
         rows = await self._pool.fetch(
             f"SELECT * FROM a2l_agent_executions WHERE {' AND '.join(clauses)}"
@@ -287,11 +343,11 @@ class ConservationStore:
         await self._pool.execute(
             """
             UPDATE a2l_agent_executions
-            SET status = COALESCE($2, status),
+            SET status = COALESCE($2::text::a2l_execution_status, status),
                 execution_trace = COALESCE($3::jsonb, execution_trace),
                 error = COALESCE($4, error),
-                started_at = COALESCE(started_at, CASE WHEN $2 = 'running' THEN now() END),
-                completed_at = COALESCE($5::timestamptz, completed_at)
+                started_at = COALESCE(started_at, CASE WHEN $2::text = 'running' THEN now() END),
+                completed_at = COALESCE($5::text::timestamptz, completed_at)
             WHERE id = $1
             """,
             execution_id,
@@ -319,7 +375,7 @@ class ConservationStore:
             INSERT INTO a2l_decisions (
                 id, job_id, attempt_id, artifact_id, decided_by, decision,
                 rationale, payload, created_at
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9)
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::text::timestamptz)
             """,
             did,
             req.job_id or None,
