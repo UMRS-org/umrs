@@ -32,6 +32,7 @@ import boto3
 # Re-export KnowledgeExportResult for consumers that need it.
 from ..knowledge import canonical_identity
 from ..knowledge.bundle_export import KnowledgeExportResult
+from ..knowledge.text_embedder import TEXT_EMBEDDER_ENV, configured_text_embedder
 from .models import Job, JobAttempt, JobType
 from .scheduler import OrchestratorBackend
 
@@ -863,7 +864,7 @@ def _put_inline_text_sync(
         {
             "artifact_id": artifact_id,
             "content_hash": content_hash,
-            "kind": _artifact_kind_for_path(uri),
+            "kind": _artifact_kind(uri, content),
             "source_ref": storage.key(project_id, content_hash),
             "metadata": _stamp(content, content_hash, Path(uri).name),
         }
@@ -912,7 +913,7 @@ def _put_file_sync(
         {
             "artifact_id": artifact_id,
             "content_hash": content_hash,
-            "kind": _artifact_kind_for_path(file_path),
+            "kind": _artifact_kind(file_path, content),
             # source_ref must be the S3 key: knowledge_understand fetches
             # bytes via ArtifactStorage.key-style lookups by source_ref.
             "source_ref": storage.key(project_id, content_hash),
@@ -971,7 +972,7 @@ def _copy_s3_reference(
             "artifact_id": artifact_id,
             "content_hash": content_hash,
             # The staged key ends in the uploaded basename.
-            "kind": _artifact_kind_for_path(uri),
+            "kind": _artifact_kind(uri, content),
             "source_ref": storage.key(project_id, content_hash),
             "metadata": {
                 **_stamp(content, content_hash, Path(uri).name),
@@ -1036,8 +1037,8 @@ def _fetch_and_store_remote(
         {
             "artifact_id": artifact_id,
             "content_hash": content_hash,
-            # Remote-scraped research content is overwhelmingly prose/markdown.
-            "kind": "document",
+            # Remote-scraped research content is mostly prose; an image URL is not.
+            "kind": _artifact_kind(url, fetch.content),
             "source_ref": storage.key(project_id, content_hash),
             "metadata": _stamp(fetch.content, content_hash, url),
         }
@@ -1077,6 +1078,60 @@ _ARTIFACT_KIND_BY_SUFFIX = {
 def _artifact_kind_for_path(path: str) -> str:
     """Heuristic artifact kind for parser extension selection (default: document)."""
     return _ARTIFACT_KIND_BY_SUFFIX.get(Path(path).suffix.lower(), "document")
+
+
+# Modalities with no understanding parser and no embedder on this site: they
+# fail by name in both stages instead of being read as UTF-8 noise.
+_NON_TEXT_KINDS = frozenset({"image", "video", "audio", "binary"})
+
+
+def _modality(name: str, content: bytes) -> str:
+    """detect_modality, except that text in a legacy encoding stays text: its
+    strict UTF-8 check calls a latin-1 note "binary"; only NUL bytes do here."""
+    from umrs.data_catalog.modality import detect_modality
+
+    modality = detect_modality(name, content)
+    if modality == "binary" and b"\x00" not in content[:8192]:
+        return "text"
+    return modality
+
+
+def _artifact_kind(path: str, content: bytes) -> str:
+    """The parser kind by suffix; otherwise the content decides, so an image,
+    video, audio or binary file is never filed as a text document (2026-10-09:
+    every upload was, and its bytes were embedded as text)."""
+    kind = _ARTIFACT_KIND_BY_SUFFIX.get(Path(path).suffix.lower())
+    if kind:
+        return kind
+    modality = _modality(path, content)
+    if modality in _NON_TEXT_KINDS:
+        return modality
+    return "code" if modality == "code" else "document"
+
+
+def _text_content(src: dict[str, Any], content: bytes) -> tuple[bytes | None, str]:
+    """The artifact as text bytes, or ``(None, what it is instead)``.
+
+    PDF and PPTX go through the catalog's text extractor (pypdf /
+    python-pptx). Rows written before kinds followed the modality are
+    re-checked by content.
+    """
+    from umrs.knowledge.extract import (
+        _is_binary_document_bytes,
+        resolve_extraction_content,
+    )
+
+    name = str((src.get("metadata") or {}).get("source_name") or "")
+    kind = str(src.get("kind") or "")
+    modality = kind if kind in _NON_TEXT_KINDS else _modality(name, content)
+    if modality in _NON_TEXT_KINDS:
+        return None, modality
+    if not _is_binary_document_bytes(name, content):
+        return content, ""
+    text = resolve_extraction_content(name, content)
+    if _is_binary_document_bytes(name, text):
+        return None, "document with no extractable text (a scanned PDF? no OCR in this lane)"
+    return text, ""
 
 
 def _store_artifacts_in_db_sync(
@@ -1384,6 +1439,29 @@ async def _existing_current_ir(store: Any, artifact_id: str) -> str | None:
         return None
 
 
+async def _graph_written(store: Any, job: Job, artifact_id: str) -> bool:
+    """Whether the artifact's file node exists. An IR without it means an
+    earlier attempt died between the IR insert and the node writes (Postgres
+    restarted mid-understand, 2026-10-09): skipping on "already has IR" then
+    left the artifact out of the graph for good and failed every embed on the
+    missing file node. Probe errors answer True — never a rebuild loop."""
+    project_id = str(job.spec.get("project_id") or getattr(job, "project_id", ""))
+    scope = _node_id_scope(project_id, str(job.spec.get("graph_id") or ""))
+    try:
+        found = await store._pool.fetchval(  # type: ignore[union-attr]
+            "SELECT 1 FROM knowledge_nodes WHERE node_id = $1",
+            f"node-file-{scope}{artifact_id}",
+        )
+    except Exception:  # noqa: BLE001 — fail-open, like the IR probe
+        return True
+    return bool(found)
+
+
+async def _already_understood(store: Any, job: Job, artifact_id: str, inserted: bool) -> bool:
+    """The IR was there already and so is its graph (else rebuild the nodes)."""
+    return not inserted and await _graph_written(store, job, artifact_id)
+
+
 async def _understand_input(
     job: Job,
     attempt: JobAttempt,
@@ -1401,9 +1479,10 @@ async def _understand_input(
     artifact_id = src["artifact_id"]
     kind = src.get("kind", "document")
 
-    # Check for existing current-version IR (write-once idempotent)
+    # Check for existing current-version IR (write-once idempotent); an IR
+    # whose graph was never written is rebuilt, not skipped.
     existing = await _existing_current_ir(store, artifact_id)
-    if existing:
+    if existing and await _graph_written(store, job, artifact_id):
         result.already_ir += 1
         KnowledgeEvent(
             event_type="verify",
@@ -1421,6 +1500,21 @@ async def _understand_input(
             {
                 "artifact_id": artifact_id,
                 "error": "artifact content unavailable (source_ref unreadable)",
+            }
+        )
+        return None
+
+    content, other = _text_content(src, content)
+    if content is None:
+        result.failed_items.append(
+            {
+                "artifact_id": artifact_id,
+                "error": (
+                    f"no understanding for {other} content: only text, code and "
+                    "documents are understood"
+                    if other in _NON_TEXT_KINDS
+                    else other
+                ),
             }
         )
         return None
@@ -1486,10 +1580,11 @@ async def _understand_one_artifact(
         result.failed_items.append({"artifact_id": artifact_id, "error": str(exc)})
         return
 
-    if not inserted:
+    if await _already_understood(store, job, artifact_id, inserted):
         result.already_ir += 1
         return
 
+    # Inserted now, or present from an attempt that died before its nodes.
     result.ir_ids.append(ir.ir_id)
 
     # Build and upsert graph nodes/edges (into the target graph: the
@@ -2204,7 +2299,9 @@ class KnowledgeIngestStatusChecker(BackendStatusChecker):
             failed = _knowledge_ref_counts(ref, "failed")
             if artifacts == 0 and failed > 0:
                 return AttemptCheckResult.failed(
-                    f"ingest: all {failed} source(s) failed, 0 artifacts stored"
+                    _with_first_failure(
+                        f"ingest: all {failed} source(s) failed, 0 artifacts stored", attempt
+                    )
                 )
             return AttemptCheckResult.succeeded(metrics={"verified_after_submit": True})
         return AttemptCheckResult.failed("Unexpected backend reference")
@@ -2231,18 +2328,28 @@ class KnowledgeUnderstandStatusChecker(BackendStatusChecker):
             failed = _knowledge_ref_counts(ref, "fail")
             if ir_ids == 0 and already == 0 and failed > 0:
                 return AttemptCheckResult.failed(
-                    f"understand: all {failed} artifact(s) failed, no IR produced"
+                    _with_first_failure(
+                        f"understand: all {failed} artifact(s) failed, no IR produced", attempt
+                    )
                 )
             return AttemptCheckResult.succeeded(metrics={"verified_after_submit": True})
         return AttemptCheckResult.failed("Unexpected backend reference")
 
 
+def _with_first_failure(message: str, attempt: Any) -> str:
+    """``message`` plus the first failed item's reason from the stored result,
+    so the job says why — "no embedding model for image content", not only a
+    count."""
+    try:
+        stored = json.loads((getattr(attempt, "metrics", None) or {}).get("result") or "{}")
+        items = stored.get("failed_items") or []
+        reason = str(items[0].get("error") or "") if items else ""
+    except (AttributeError, TypeError, ValueError):
+        reason = ""
+    return f"{message} — {reason}" if reason else message
+
+
 _EMBED_DEGRADED_DETAIL = {
-    "no_embedder": (
-        "degraded: no embedder configured (UMRS_KNOWLEDGE_EMBED_MODEL unset or not a "
-        "pre-staged model dir) — no vectors written; semantic search and RAG "
-        "answers cannot see these documents"
-    ),
     "no_dsn": "degraded: no knowledge database configured — no vectors written",
 }
 
@@ -2252,6 +2359,13 @@ def _embed_degraded_result(ref: str) -> AttemptCheckResult:
         return AttemptCheckResult.failed(
             "embed: knowledge database configured but unreachable — no vectors "
             "written (the job retries)"
+        )
+    if "reason=no_embedder" in ref:
+        # Maintainer decision 2026-10-09: the image bundles a text embedder, so
+        # lacking one is a failure, not an opt-out.
+        return AttemptCheckResult.failed(
+            "embed: no text embedding model (UMRS_KNOWLEDGE_EMBED_MODEL is not a "
+            "staged model dir, and the bundled e5-base-v2 is absent) — nothing embedded"
         )
     reason = next((r for r in _EMBED_DEGRADED_DETAIL if f"reason={r}" in ref), "")
     return AttemptCheckResult.succeeded(
@@ -2291,9 +2405,18 @@ class KnowledgeEmbedStatusChecker(BackendStatusChecker):
             failed = _knowledge_ref_counts(ref, "failed")
             if embedded == 0 and failed > 0:
                 return AttemptCheckResult.failed(
-                    f"embed: all {failed} artifact(s) failed, 0 vectors written"
+                    _with_first_failure(
+                        f"embed: all {failed} artifact(s) failed, 0 vectors written", attempt
+                    )
                 )
-            return AttemptCheckResult.succeeded(metrics={"verified_after_submit": True})
+            return AttemptCheckResult.succeeded(
+                metrics={"verified_after_submit": True},
+                detail=(
+                    _with_first_failure(f"{failed} artifact(s) not embedded", attempt)
+                    if failed
+                    else None
+                ),
+            )
         return AttemptCheckResult.failed("Unexpected backend reference")
 
 
@@ -2307,11 +2430,13 @@ class KnowledgeEmbedStatusChecker(BackendStatusChecker):
 # one vector row per chunk node.
 #
 # Offline invariant: the embedder is a pre-staged local SentenceTransformer
-# directory named by UMRS_KNOWLEDGE_EMBED_MODEL. Names are never resolved via
-# the network — without a pre-staged path the job completes as a documented
-# degraded no-op (graph content is unaffected; embedding is opt-in per site).
+# directory — UMRS_KNOWLEDGE_EMBED_MODEL, else the e5-base-v2 the umrs-server
+# image bundles (knowledge/text_embedder.py; maintainer decision 2026-10-09:
+# text embedding works out of the box). Names are never resolved via the
+# network. Without a staged model, or for a modality no embedder serves
+# (images, audio, video, binary), the work FAILS — never a quiet no-op.
 
-_NODE_EMBED_MODEL_ENV = "UMRS_KNOWLEDGE_EMBED_MODEL"
+_NODE_EMBED_MODEL_ENV = TEXT_EMBEDDER_ENV
 _NODE_EMBED_CHUNK_TOKENS_ENV = "UMRS_KNOWLEDGE_EMBED_CHUNK_TOKENS"
 _NODE_EMBED_MAX_CHUNKS_ENV = "UMRS_KNOWLEDGE_EMBED_MAX_CHUNKS"
 
@@ -2330,9 +2455,7 @@ def _get_node_embedder() -> Any:
         return _node_embedder
     if _node_embedder_unavailable:
         return None
-    model_path = os.environ.get(_NODE_EMBED_MODEL_ENV, "").strip()
-    if not model_path:
-        return None
+    model_path = configured_text_embedder()
     if not os.path.isdir(model_path):
         logger.warning(
             "%s=%r is not a pre-staged model directory — node embedding "
@@ -2377,7 +2500,21 @@ def _artifact_text(
             {"artifact_id": artifact_id, "error": "artifact content unavailable"}
         )
         return None
-    text = content.decode("utf-8", errors="ignore").strip()
+    raw, other = _text_content(src, content)
+    if raw is None:
+        result.failed_items.append(
+            {
+                "artifact_id": artifact_id,
+                "error": (
+                    f"no embedding model for {other} content: this site embeds text "
+                    f"only ({configured_text_embedder()})"
+                    if other in _NON_TEXT_KINDS
+                    else other
+                ),
+            }
+        )
+        return None
+    text = raw.decode("utf-8", errors="ignore").strip()
     if not text:
         result.skipped += 1
         return None
@@ -2419,7 +2556,7 @@ async def _write_embedded_chunks(
     if not chunks:
         result.skipped += 1
         return
-    model_name = os.environ.get(_NODE_EMBED_MODEL_ENV, "").strip()
+    model_name = configured_text_embedder()
     scope = _node_id_scope(project_id, graph_id)
     file_node_id = f"node-file-{scope}{artifact_id}"
     cap = int(os.environ.get(_NODE_EMBED_MAX_CHUNKS_ENV, "128"))
@@ -2495,10 +2632,14 @@ def _chunk_embedder_for_site() -> tuple[Any | None, str]:
         sandbox_config_from_env,
     )
 
-    model_name = os.environ.get(_NODE_EMBED_MODEL_ENV, "").strip()
+    model_name = configured_text_embedder()
     max_tokens = int(os.environ.get(_NODE_EMBED_CHUNK_TOKENS_ENV, "256"))
-    no_embedder = f"no embedder (set {_NODE_EMBED_MODEL_ENV} to a pre-staged model dir)"
-    config = sandbox_config_from_env(model_name) if model_name else None
+    no_embedder = (
+        f"no text embedding model: {model_name} is not a staged model directory "
+        f"(set {_NODE_EMBED_MODEL_ENV}, or run the umrs-server image, which bundles "
+        "e5-base-v2)"
+    )
+    config = sandbox_config_from_env(model_name)
     if config is not None:
         return (
             SandboxChunkEmbedder(

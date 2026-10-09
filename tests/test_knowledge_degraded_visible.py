@@ -10,8 +10,8 @@ user-facing path said so. Two siblings found while fixing it:
   "every source failed → failed" rule (audit B7) never fired and the job
   succeeded having stored nothing.
 
-"No embedder configured" stays a success (embed is an opt-in stage), but the
-attempt now carries a detail that `r4 job describe` prints.
+"No embedder configured" was made a visible success here, then a failure by the
+maintainer's decision the same day (test_knowledge_modality.py).
 """
 
 from __future__ import annotations
@@ -36,13 +36,13 @@ _JOB = SimpleNamespace(job_id="job-1", spec={}, project_id="p")
 
 
 @pytest.mark.asyncio
-async def test_no_embedder_succeeds_with_a_visible_detail():
+async def test_no_embedder_fails_and_names_the_setting():
+    """Was a success-with-detail; maintainer decision 2026-10-09 makes it a failure
+    (the image bundles e5-base-v2, so a missing model is a misconfiguration)."""
     ref = "knowledge_embed|mode=degraded|reason=no_embedder|project=p"
     result = await ka.KnowledgeEmbedStatusChecker().check_status(_attempt(ref), _JOB)
-    assert result.status == "succeeded"
-    assert result.metrics.get("degraded") is True
-    assert "no vectors written" in result.status_detail
-    assert "UMRS_KNOWLEDGE_EMBED_MODEL" in result.status_detail
+    assert result.status == "failed"
+    assert "UMRS_KNOWLEDGE_EMBED_MODEL" in result.exit_reason
 
 
 @pytest.mark.asyncio

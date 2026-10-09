@@ -187,13 +187,14 @@ class TestUnderstandStatusHonesty:
 
 class TestEmbedStatusChecker:
     @pytest.mark.asyncio
-    async def test_degraded_noop_succeeds_as_documented_noop(self):
+    async def test_no_embedder_is_a_failure(self):
+        """Maintainer decision 2026-10-09: the image bundles a text embedder, so
+        lacking one fails (it was a documented no-op before)."""
         checker = KnowledgeEmbedStatusChecker()
         job = _job(JobType.KNOWLEDGE_EMBED, {})
         ref = "knowledge_embed|mode=degraded|reason=no_embedder|project=p"
         result = await checker.check_status(_attempt(ref), job)
-        assert result.status == "succeeded"
-        assert result.metrics.get("degraded") is True
+        assert result.status == "failed"
 
     @pytest.mark.asyncio
     async def test_all_failed_is_failure(self):

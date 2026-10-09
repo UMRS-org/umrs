@@ -25,10 +25,25 @@ _STORE = {
 
 
 @pytest.fixture(autouse=True)
-def _clean_env(monkeypatch):
+def _clean_env(monkeypatch, tmp_path):
     monkeypatch.delenv("UMRS_RAG_EMBEDDING_MODEL", raising=False)
     monkeypatch.delenv("RAG_EMBEDDING_MODEL", raising=False)
+    # No knowledge embedder staged unless a test stages one.
+    monkeypatch.setenv("UMRS_KNOWLEDGE_EMBED_MODEL", str(tmp_path / "absent"))
     monkeypatch.setattr(rag_service, "_model_name_from_entry", lambda m: (m or {}).get("name"))
+
+
+def test_the_staged_knowledge_embedder_comes_before_the_user_config(monkeypatch, tmp_path):
+    """The query encoder must be the model the spine's vectors were written with."""
+    staged = tmp_path / "e5-base-v2"
+    staged.mkdir()
+    (staged / "config.json").write_text("{}")
+    (staged / "model.safetensors").write_bytes(b"x")
+    monkeypatch.setenv("UMRS_KNOWLEDGE_EMBED_MODEL", str(staged))
+    assert rag_service._resolve_embedding_model(_STORE) == (
+        str(staged),
+        "knowledge text embedder",
+    )
 
 
 def test_explicit_variable_wins_and_is_named():

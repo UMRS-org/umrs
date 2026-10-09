@@ -58,8 +58,8 @@ services:
       ENABLE_OPENAI_API: "True"
       OPENAI_API_BASE_URLS: http://rivault-vllm:8000/v1
       OPENAI_API_KEYS: "local-dev-key"
-      RAG_EMBEDDING_MODEL: sentence-transformers/all-MiniLM-L6-v2
-      RAG_EMBEDDING_MODEL_AUTO_UPDATE: "False"
+      # The embedder is UMRS_RAG_EMBEDDING_MODEL, else the knowledge text embedder
+      # (the umrs image bundles e5-base-v2): umrs/api/rag_service.py _resolve_embedding_model.
       ENABLE_SIGNUP: "True"
       DEFAULT_USER_ROLE: user
     restart: unless-stopped

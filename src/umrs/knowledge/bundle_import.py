@@ -21,7 +21,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass, field
@@ -52,9 +51,7 @@ _TABLE_FILES: dict[str, str] = {
 
 # ADR-032 precondition #3: the destination trusts exactly one pipeline — the
 # site's own knowledge embedder (the pre-staged directory KNOWLEDGE_EMBED
-# writes with). Same env name as jobs/knowledge_adapters (not imported: the
-# knowledge package never imports jobs).
-_DEST_EMBED_MODEL_ENV = "UMRS_KNOWLEDGE_EMBED_MODEL"
+# writes with), resolved by knowledge/text_embedder.py like every reader.
 
 
 class BundleFormatError(ValueError):
@@ -796,7 +793,9 @@ class KnowledgeImportEngine:
         if not path.exists():
             return
         rows = list(_iter_rows(path))
-        dest_model = os.environ.get(_DEST_EMBED_MODEL_ENV, "").strip()
+        from .text_embedder import configured_text_embedder
+
+        dest_model = configured_text_embedder()
         pool = self._pool()
         trusted = [r for r in rows if _trusted_node_vector(r, dest_model)]
         result.node_embeddings_pending = len(rows) - len(trusted)

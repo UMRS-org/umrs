@@ -875,20 +875,27 @@ _IGNORED_EMBEDDING_ENV = "RAG_EMBEDDING_MODEL"
 
 
 def _resolve_embedding_model(db_model_store: dict[str, dict[str, Any]]) -> tuple[str, str]:
-    """``(model, where it came from)``: UMRS_RAG_EMBEDDING_MODEL, else the first
-    text modality of the user config (the model used for ingestion), else the
-    built-in default."""
+    """``(model, where it came from)``: UMRS_RAG_EMBEDDING_MODEL, else the
+    knowledge text embedder when staged (the bundled e5-base-v2 by default) —
+    this service encodes queries for the spine, so it must match the model the
+    spine's vectors were written with — else the user config's first text
+    modality, else the built-in default."""
+    from umrs.knowledge.text_embedder import configured_text_embedder, is_staged
+
     explicit = os.getenv("UMRS_RAG_EMBEDDING_MODEL")
     ignored = os.getenv(_IGNORED_EMBEDDING_ENV)
     if ignored and not explicit:
         logger.warning(
             "%s=%r is not read by the RAG service; it uses UMRS_RAG_EMBEDDING_MODEL, "
-            "else the user config's text model, else the built-in default",
+            "else the knowledge text embedder, else the user config's text model",
             _IGNORED_EMBEDDING_ENV,
             ignored,
         )
     if explicit:
         return explicit, "UMRS_RAG_EMBEDDING_MODEL"
+    knowledge = configured_text_embedder()
+    if is_staged(knowledge):
+        return knowledge, "knowledge text embedder"
     detected = _detect_embedding_model_from_config(db_model_store)
     if detected:
         return detected, "user config (first text modality)"

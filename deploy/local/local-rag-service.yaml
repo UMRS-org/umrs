@@ -19,8 +19,8 @@ services:
     environment:
       # RAG service configuration
       RAG_PORT: ${RAG_LOCAL_PORT:-8003}
-      RAG_EMBEDDING_MODEL: ${RAG_EMBEDDING_MODEL:-intfloat/e5-base-v2}
-      RAG_EMBEDDING_DIMENSION: ${RAG_EMBEDDING_DIMENSION:-768}
+      # The embedder is UMRS_RAG_EMBEDDING_MODEL, else the knowledge text embedder
+      # (the umrs image bundles e5-base-v2): umrs/api/rag_service.py _resolve_embedding_model.
       # Offline mode (same as inference containers)
       TRANSFORMERS_OFFLINE: "1"
       HF_HUB_OFFLINE: "1"

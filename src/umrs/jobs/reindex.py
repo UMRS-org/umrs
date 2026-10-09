@@ -25,7 +25,6 @@ Payload contract (validated at submit time):
 from __future__ import annotations
 
 import logging
-import os
 
 from umrs.jobs.models import Job, JobAttempt, JobType
 from umrs.knowledge.embedding_metadata import (
@@ -122,8 +121,10 @@ def resolve_site_embed_model(target_model: str) -> str:
     """The site embedder's model name when ``target_model`` names it (by
     basename — sites stage models under their own paths); refused by name
     otherwise, since re-embedding needs the model this site actually runs."""
-    site = os.environ.get(_SITE_EMBED_MODEL_ENV, "").strip()
-    if not site or _model_base(site) != _model_base(target_model):
+    from umrs.knowledge.text_embedder import configured_text_embedder
+
+    site = configured_text_embedder()
+    if _model_base(site) != _model_base(target_model):
         raise EmbeddingMetadataError(
             f"KNOWLEDGE_REINDEX target_model {target_model!r} is not this site's "
             f"embedder ({_SITE_EMBED_MODEL_ENV}={site!r}); re-embedding needs the "

@@ -444,17 +444,17 @@ def _discover_rag_endpoint(
 # ---------------------------------------------------------------------------
 
 
-# ADR-027 D3/P2: answer from the knowledge spine. ``auto`` (default): the
-# spine whenever it has passages for the question, else the endpoint corpus
-# (legacy per-experience stores keep answering until canonized —
-# knowledge/legacy_corpus_canonize.py); ``spine``: the spine only;
-# ``endpoint``: the proxy alone, as before 2026-10-09.
+# ADR-027 D3/P2: answer from the knowledge spine. ``spine`` (default since the
+# maintainer declared the legacy per-experience corpora disposable,
+# 2026-10-09): the spine only, with an honest "nothing answers this";
+# ``auto``: the spine when it has passages, else the endpoint corpus;
+# ``endpoint``: the old proxy alone.
 _QUERY_FACADE_ENV = "UMRS_RAG_QUERY_FACADE"
 
 
 def _query_facade() -> str:
-    value = os.environ.get(_QUERY_FACADE_ENV, "auto").strip().lower()
-    return value if value in ("auto", "spine", "endpoint") else "auto"
+    value = os.environ.get(_QUERY_FACADE_ENV, "spine").strip().lower()
+    return value if value in ("auto", "spine", "endpoint") else "spine"
 
 
 @router.post("/query", response_model=RAGQueryResponse)

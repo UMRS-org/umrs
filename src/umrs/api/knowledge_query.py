@@ -372,11 +372,18 @@ class _EmbeddingsSearchBackend:
 
         Ranks one embedding space only (ADR-083 D-2): vectors from another
         model are not comparable, and a same-dimension model would mix
-        silently instead of failing.
+        silently instead of failing. A space is the model's basename
+        (text_embedder.embedding_space), so the bundled model and a copy staged
+        at another path rank together.
         """
         if not model_name:
             raise ValueError("a query vector needs the model_name of its space")
+        from umrs.knowledge.text_embedder import embedding_space
+
         qv = "[" + ",".join(repr(float(v)) for v in query_embedding) + "]"
+        # Same space = same model name, or the same model staged elsewhere.
+        space = embedding_space(model_name).replace("\\", "\\\\")
+        same_space = "%/" + space.replace("%", "\\%").replace("_", "\\_")
         with self._pool.getconn() as conn:
             try:
                 with conn.cursor() as cur:
@@ -387,9 +394,9 @@ class _EmbeddingsSearchBackend:
                         "FROM knowledge_node_embeddings e "
                         "JOIN knowledge_nodes n ON n.node_id = e.node_id "
                         f"WHERE {visibility_predicate('n', include_ambient=self._include_ambient)} "
-                        "AND e.model_name = %s "
+                        "AND (e.model_name = %s OR e.model_name LIKE %s) "
                         "ORDER BY distance ASC LIMIT %s",
-                        (qv, project_id, model_name, limit),
+                        (qv, project_id, model_name, same_space, limit),
                     )
                     rows = cur.fetchall()
             finally:
