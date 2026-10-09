@@ -122,6 +122,17 @@ class KnowledgeStore:
         """Initialize store with an asyncpg connection pool."""
         self._pool = pool
 
+    async def active_artifact_for(self, content_hash: str, project_id: str) -> str | None:
+        """The project's active artifact holding these bytes (per-project dedup)."""
+        async with self._pool.acquire() as conn:
+            return await conn.fetchval(
+                """SELECT artifact_id FROM knowledge_artifacts
+                   WHERE content_hash = $1 AND project_id = $2 AND status = 'active'
+                   LIMIT 1""",
+                content_hash,
+                project_id,
+            )
+
     async def insert_artifact(
         self,
         artifact_id: str,
@@ -141,19 +152,11 @@ class KnowledgeStore:
         project to produce no artifact row — the chained understand then
         FK-failed in silence while the job reported success.
         """
+        existing = await self.active_artifact_for(content_hash, project_id)
+        if existing:
+            logger.debug("Artifact deduped: hash=%s (exists as %s)", content_hash, existing)
+            return False
         async with self._pool.acquire() as conn:
-            existing = await conn.fetchval(
-                """SELECT artifact_id FROM knowledge_artifacts
-                   WHERE content_hash = $1 AND project_id = $2 AND status = 'active'
-                   LIMIT 1""",
-                content_hash,
-                project_id,
-            )
-            if existing:
-                logger.debug(
-                    "Artifact deduped: hash=%s (exists as %s)", content_hash, existing
-                )
-                return False
 
             # NOTE: knowledge_artifacts.created_at/updated_at are TEXT columns
             # on live deployments (0064-shim migration shape). asyncpg rejects
