@@ -25,6 +25,18 @@ from .store import JobStore, JobStoreError
 logger = logging.getLogger(__name__)
 
 
+def _persist_backend_metrics(job_store: Any, attempt_id: str, attempt: Any) -> None:
+    """Save what a synchronous backend wrote into ``attempt.metrics``.
+
+    The knowledge backends write their result (counts, per-item failure
+    reasons, degraded notes) there; it never left memory, so `r4 job
+    describe` could only say "all 1 artifact(s) failed" (2026-10-09).
+    """
+    metrics = getattr(attempt, "metrics", None)
+    if metrics:
+        job_store.update_attempt_metrics(attempt_id, metrics)
+
+
 class OrchestratorBackend(Protocol):
     """Protocol for orchestrator backends."""
 
@@ -223,6 +235,7 @@ class Scheduler:
 
                 # Mark submitted
                 self.job_store.mark_attempt_submitted(attempt_id, backend_ref)
+                _persist_backend_metrics(self.job_store, attempt_id, attempt)
 
                 self._stats["jobs_scheduled"] += 1
                 METRICS.job_submitted(backend.backend_name)

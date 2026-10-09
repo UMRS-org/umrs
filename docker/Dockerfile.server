@@ -50,6 +50,7 @@ RUN pip install --no-cache-dir \
     torch torchvision transformers sentence-transformers scikit-learn \
     spacy langchain langchain-community langchain-openai "bentoml>=1.3.0" \
     opencv-python-headless posix_ipc sysv_ipc "rich>=13.0" \
+    "pypdf>=4.0" "python-pptx>=1.0" \
     && (python -c "import spacy" && python -m spacy download en_core_web_sm || true)
 
 # ─── Stage 2: Runtime image ──────────────────────────────────────────────────
@@ -72,6 +73,19 @@ RUN ARCH=$(dpkg --print-architecture) && \
 # Copy Python packages from builder
 COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
 COPY --from=builder /usr/local/bin /usr/local/bin
+
+# Bundled text embedder, intfloat/e5-base-v2 at /opt/umrs/models/e5-base-v2
+# (maintainer decision 2026-10-09): knowledge embedding and semantic search work
+# out of the box. Staged at BUILD time — UMRS never downloads a model at runtime
+# — and before the source copy, so source edits do not re-download ~420 MB.
+# --build-arg UMRS_BUNDLE_TEXT_EMBEDDER=0 skips it; the site then points
+# UMRS_KNOWLEDGE_EMBED_MODEL at a model it stages itself.
+ARG UMRS_BUNDLE_TEXT_EMBEDDER=1
+COPY ./umrs/src/umrs/knowledge/text_embedder.py /tmp/text_embedder.py
+RUN if [ "${UMRS_BUNDLE_TEXT_EMBEDDER}" = "1" ]; then \
+        HF_HOME=/tmp/hf python /tmp/text_embedder.py stage && rm -rf /tmp/hf; \
+    fi \
+    && rm -f /tmp/text_embedder.py
 
 # Copy source code
 COPY ./r4-contracts /app/r4-contracts

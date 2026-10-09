@@ -93,8 +93,8 @@ def test_encoder_vector_runs_the_similarity_lane_in_one_space():
 
     assert enc.calls == ["moisture damage"]
     sql, params = pool.cur.queries[0]
-    assert "<=> %s::vector" in sql and "e.model_name = %s" in sql
-    assert params == ("[0.1,0.2]", "p1", "/models/e5-base-v2", 5)
+    assert "<=> %s::vector" in sql and "(e.model_name = %s OR e.model_name LIKE %s)" in sql
+    assert params == ("[0.1,0.2]", "p1", "/models/e5-base-v2", "%/e5-base-v2", 5)
     assert hits[0]["metadata"]["lane"] == "similarity"
     assert hits[0]["score"] == pytest.approx(0.88)
     assert backend.lane_report == {"lane": "similarity", "model": "/models/e5-base-v2"}
@@ -262,3 +262,19 @@ def test_prefixed_embedder_adds_the_e5_query_prefix(monkeypatch):
     object.__setattr__(emb, "model_name", "/models/e5-base-v2")
     emb.embed_query("moisture")
     assert seen == ["query: moisture"]
+
+
+def test_a_space_is_the_model_basename():
+    """The bundled model, a copy staged elsewhere and the hub id are one space."""
+    from umrs.knowledge.text_embedder import embedding_space
+
+    names = {"/opt/umrs/models/e5-base-v2", "/models/e5-base-v2/", "intfloat/e5-base-v2"}
+    assert {embedding_space(n) for n in names} == {"e5-base-v2"}
+
+
+def test_like_wildcards_in_a_model_name_are_escaped():
+    pool = _Pool(_rows(sim=[_SIM_ROW]))
+    backend = kq._EmbeddingsSearchBackend(pool, encoder=_encoder(model="/m/all_MiniLM%v2"))
+    backend.search_embeddings("q", project_id="p1")
+    assert pool.cur.queries[0][1][3] == "%/all\\_MiniLM\\%v2"
+

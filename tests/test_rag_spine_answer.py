@@ -299,9 +299,15 @@ def test_endpoint_mode_is_the_old_proxy(monkeypatch):
 
 
 @pytest.mark.parametrize("value", ["", "bogus"])
-def test_unknown_facade_value_means_auto(monkeypatch, value):
+def test_unknown_facade_value_means_spine(monkeypatch, value):
+    """Default since 2026-10-09: legacy corpora are disposable (maintainer)."""
     monkeypatch.setenv("UMRS_RAG_QUERY_FACADE", value)
-    assert rag_api._query_facade() == "auto"
+    assert rag_api._query_facade() == "spine"
+
+
+def test_unset_facade_is_spine(monkeypatch):
+    monkeypatch.delenv("UMRS_RAG_QUERY_FACADE", raising=False)
+    assert rag_api._query_facade() == "spine"
 
 
 def test_a_canonized_legacy_chunk_answers_from_its_stored_text():

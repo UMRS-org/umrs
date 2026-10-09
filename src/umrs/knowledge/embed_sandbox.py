@@ -53,11 +53,19 @@ def _default_runner(argv: list[str], *, input_text: str, timeout: float) -> Any:
 @dataclass(frozen=True)
 class SandboxConfig:
     image: str
+    # Host directory mounted at /model; "" = the model the image bundles.
     model_host_dir: str
     timeout: float = 600.0
     memory: str = "8g"
     cpus: str = "4"
     podman_bin: str = "podman"
+
+    @property
+    def container_model_dir(self) -> str:
+        """Where the worker loads the model from inside the sandbox."""
+        from .text_embedder import BUNDLED_TEXT_EMBEDDER_DIR
+
+        return _CONTAINER_MODEL_DIR if self.model_host_dir else BUNDLED_TEXT_EMBEDDER_DIR
 
 
 def sandbox_config_from_env(model_dir: str) -> SandboxConfig | None:
@@ -74,11 +82,17 @@ def sandbox_config_from_env(model_dir: str) -> SandboxConfig | None:
         raise EmbeddingSandboxError(
             f"{SANDBOX_ENV}=podman but no image: set {IMAGE_ENV} (or UMRS_STEP_IMAGE)"
         )
+    from .text_embedder import BUNDLED_TEXT_EMBEDDER_DIR
+
+    # The podman host may see the pre-staged model under another path than
+    # this (containerised) server does. The bundled model is inside the image
+    # the sandbox runs, so it needs no mount at all.
+    host_dir = os.environ.get(MODEL_HOST_DIR_ENV, "").strip()
+    if not host_dir and model_dir != BUNDLED_TEXT_EMBEDDER_DIR:
+        host_dir = model_dir
     return SandboxConfig(
         image=image,
-        # The podman host may see the pre-staged model under another path
-        # than this (containerised) server does.
-        model_host_dir=os.environ.get(MODEL_HOST_DIR_ENV, "").strip() or model_dir,
+        model_host_dir=host_dir,
         timeout=float(os.environ.get(TIMEOUT_ENV, "600")),
         memory=os.environ.get(MEMORY_ENV, "8g"),
         cpus=os.environ.get(CPUS_ENV, "4"),
@@ -99,8 +113,7 @@ def build_argv(config: SandboxConfig) -> list[str]:
         "--cap-drop=all",
         f"--memory={config.memory}",
         f"--cpus={config.cpus}",
-        "-v",
-        f"{config.model_host_dir}:{_CONTAINER_MODEL_DIR}:ro",
+        *(["-v", f"{config.model_host_dir}:{_CONTAINER_MODEL_DIR}:ro"] if config.model_host_dir else []),
         "-e",
         "HF_HUB_OFFLINE=1",
         "-e",
@@ -135,7 +148,7 @@ class SandboxChunkEmbedder:
     def chunk_and_embed(self, texts: list[str]) -> list[dict[str, Any]]:
         request = json.dumps(
             {
-                "model_dir": _CONTAINER_MODEL_DIR,
+                "model_dir": self._config.container_model_dir,
                 "prefix_model_name": self._prefix,
                 "max_tokens": self._max_tokens,
                 "texts": texts,
