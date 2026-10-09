@@ -941,3 +941,41 @@ def test_decode_rate_never_fired_without_content_frames():
 
     assert response.status_code == 200
     assert rates == []
+
+
+def test_a_chunked_upstream_reply_is_reframed():
+    """Live 2026-10-09 (ollama): the upstream's Transfer-Encoding, Content-Length and
+    Date were copied onto the reply. nginx refused "Content-Length and
+    Transfer-Encoding at the same time" (502, shown as 503), and a team role
+    failed on a 200 from the model."""
+    import httpx
+
+    registry = _make_registry_with_endpoint()
+    client = _create_client(registry)
+    body = json.dumps({"choices": [{"message": {"content": "Hello!"}}]}).encode()
+
+    async def fake_request(self, method, url, **kwargs):
+        return httpx.Response(
+            200,
+            content=body,
+            headers={
+                "content-type": "application/json",
+                "transfer-encoding": "chunked",
+                "content-length": "9999",
+                "date": "Fri, 09 Oct 2026 10:28:13 GMT",
+                "x-request-id": "req-1",
+            },
+        )
+
+    with patch.object(httpx.AsyncClient, "request", fake_request):
+        response = client.post(
+            "/umrs/llm/v1/chat/completions",
+            json={"model": "qwen3-8b", "messages": [{"role": "user", "content": "Hi"}]},
+            headers={"x-user-id": "user-1", "x-project-id": "test-project"},
+        )
+
+    assert response.status_code == 200
+    assert "transfer-encoding" not in response.headers
+    assert response.headers.get_list("content-length") == [str(len(response.content))]
+    assert "10:28:13" not in response.headers.get("date", "")
+    assert response.headers["x-request-id"] == "req-1"

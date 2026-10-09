@@ -110,8 +110,9 @@ class TestVisibilityGatingShape:
         cursor = MagicMock()
         cursor.fetchall.return_value = []
         conn.cursor.return_value.__enter__.return_value = cursor
-        # RAG backend does `with pool.getconn() as conn:` — getconn IS the CM.
-        pool.getconn.return_value.__enter__.return_value = conn
+        # The backend borrows, then ends the transaction with `with conn:`
+        # before returning it (a returned conn may be closed by the pool).
+        pool.getconn.return_value = conn
         backend = _RAGSearchBackend(pool)
         out = backend.search_rag("x", project_id="proj-a")
         assert out == []
@@ -125,7 +126,7 @@ class TestVisibilityGatingShape:
         cursor = MagicMock()
         cursor.fetchall.return_value = []
         conn.cursor.return_value.__enter__.return_value = cursor
-        pool.getconn.return_value.__enter__.return_value = conn
+        pool.getconn.return_value = conn
         out = _EmbeddingsSearchBackend(pool).search_embeddings("m", project_id="proj-a")
         assert out == []
         sql, params = cursor.execute.call_args.args

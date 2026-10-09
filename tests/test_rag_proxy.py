@@ -48,8 +48,10 @@ def _mock_rag_response(content: dict, status_code: int = 200):
     )
 
 
-def test_query_rag_discovers_and_proxies():
+def test_query_rag_discovers_and_proxies(monkeypatch):
     """Query should discover endpoint and proxy to RAG service."""
+    # The spine answers by default (2026-10-09); this is the endpoint facade.
+    monkeypatch.setenv("UMRS_RAG_QUERY_FACADE", "endpoint")
     registry = _make_registry_with_endpoint()
     client = _create_client(registry)
 
@@ -79,8 +81,9 @@ def test_query_rag_discovers_and_proxies():
     assert response.json()["answer"] == "The answer is 42."
 
 
-def test_query_rag_no_endpoint_returns_503():
+def test_query_rag_no_endpoint_returns_503(monkeypatch):
     """If no endpoint is available, return 503."""
+    monkeypatch.setenv("UMRS_RAG_QUERY_FACADE", "endpoint")
     registry = EndpointRegistry()
     client = _create_client(registry)
 

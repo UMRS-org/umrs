@@ -132,8 +132,9 @@ class _GraphSearchBackend:
             owned_sql="(graph_id = ANY(%s) OR (graph_id = '' AND project_id = ANY(%s)))",
             include_ambient=self._include_ambient,
         )
-        with self._pool.getconn() as conn:
-            try:
+        conn = self._pool.getconn()
+        try:
+            with conn:
                 with conn.cursor() as cur:
                     cur.execute(
                         "SELECT node_id, project_id, label, node_type, content, graph_id "
@@ -144,8 +145,8 @@ class _GraphSearchBackend:
                         (graph_ids, default_projects, pattern, pattern, pattern, limit),
                     )
                     rows = cur.fetchall()
-            finally:
-                self._pool.putconn(conn)
+        finally:
+            self._pool.putconn(conn)
         return [self._hit(query, row) for row in rows]
 
     def _hit(self, query: str, row: tuple) -> dict[str, Any]:
@@ -342,8 +343,9 @@ class _EmbeddingsSearchBackend:
         pattern = f"%{query}%"
         # ADR-050 tier gate on the owning node (R-02 wave 2: this lane was
         # previously ungated — project-only, ambient rows still served).
-        with self._pool.getconn() as conn:
-            try:
+        conn = self._pool.getconn()
+        try:
+            with conn:
                 with conn.cursor() as cur:
                     cur.execute(
                         "SELECT e.node_id, e.model_name, e.dimension, e.created_at, "
@@ -356,8 +358,8 @@ class _EmbeddingsSearchBackend:
                         (project_id, pattern, pattern, pattern, limit),
                     )
                     rows = cur.fetchall()
-            finally:
-                self._pool.putconn(conn)
+        finally:
+            self._pool.putconn(conn)
         return [self._hit(row) for row in rows]
 
     def _similarity_hits(
@@ -384,8 +386,9 @@ class _EmbeddingsSearchBackend:
         # Same space = same model name, or the same model staged elsewhere.
         space = embedding_space(model_name).replace("\\", "\\\\")
         same_space = "%/" + space.replace("%", "\\%").replace("_", "\\_")
-        with self._pool.getconn() as conn:
-            try:
+        conn = self._pool.getconn()
+        try:
+            with conn:
                 with conn.cursor() as cur:
                     cur.execute(
                         "SELECT e.node_id, e.model_name, e.dimension, e.created_at, "
@@ -399,8 +402,8 @@ class _EmbeddingsSearchBackend:
                         (qv, project_id, model_name, same_space, limit),
                     )
                     rows = cur.fetchall()
-            finally:
-                self._pool.putconn(conn)
+        finally:
+            self._pool.putconn(conn)
         return [self._hit(row) for row in rows]
 
     @staticmethod
@@ -438,14 +441,15 @@ def _embeddings_backend_for(
     if pool is None:
         return None, "embeddings search requires the database"
     try:
-        with pool.getconn() as conn:
-            try:
+        conn = pool.getconn()
+        try:
+            with conn:
                 with conn.cursor() as cur:
                     cur.execute("SELECT to_regclass('knowledge_node_embeddings')")
                     found = cur.fetchone()
                 present = bool(found and found[0])
-            finally:
-                pool.putconn(conn)
+        finally:
+            pool.putconn(conn)
     except Exception as exc:  # noqa: BLE001 — honesty over hard failure
         logger.warning("0075 probe failed, embeddings backend unwired: %s", exc)
         return None, "embeddings search unavailable (table probe failed)"
@@ -514,8 +518,9 @@ class _RAGSearchBackend:
         limit: int = 20,
     ) -> list[dict[str, Any]]:
         pattern = f"%{query}%"
-        with self._pool.getconn() as conn:
-            try:
+        conn = self._pool.getconn()
+        try:
+            with conn:
                 with conn.cursor() as cur:
                     # ADR-050: visibility families. Project rows + system rows
                     # are visible; ambient rows are read-gated (kept, never
@@ -533,8 +538,8 @@ class _RAGSearchBackend:
                         (project_id, pattern, pattern, pattern, limit),
                     )
                     rows = cur.fetchall()
-            finally:
-                self._pool.putconn(conn)
+        finally:
+            self._pool.putconn(conn)
         return [self._hit(row) for row in rows]
 
     @staticmethod
@@ -562,14 +567,15 @@ def _rag_backend_for(
     if pool is None:
         return None, "RAG search requires the database"
     try:
-        with pool.getconn() as conn:
-            try:
+        conn = pool.getconn()
+        try:
+            with conn:
                 with conn.cursor() as cur:
                     cur.execute("SELECT to_regclass('knowledge_nodes')")
                     found = cur.fetchone()
                 present = bool(found and found[0])
-            finally:
-                pool.putconn(conn)
+        finally:
+            pool.putconn(conn)
     except Exception as exc:  # noqa: BLE001 — honesty over hard failure
         logger.warning("corpus probe failed, RAG backend unwired: %s", exc)
         return None, "RAG search unavailable (corpus probe failed)"

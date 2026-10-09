@@ -46,8 +46,9 @@ def count_active_agent_units(pool: Any, *, user_id: str) -> int:
     (never a fabricated 503)."""
     if pool is None:
         return 0
-    with pool.getconn() as conn:
-        try:
+    conn = pool.getconn()
+    try:
+        with conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """SELECT COUNT(*) FROM jobs
@@ -57,8 +58,8 @@ def count_active_agent_units(pool: Any, *, user_id: str) -> int:
                     (user_id, list(AGENT_JOB_KINDS), list(LIVE_JOB_STATUSES)),
                 )
                 row = cur.fetchone()
-        finally:
-            pool.putconn(conn)
+    finally:
+        pool.putconn(conn)
     return int(row[0]) if row else 0
 
 
