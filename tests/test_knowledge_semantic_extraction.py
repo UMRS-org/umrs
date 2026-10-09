@@ -185,7 +185,7 @@ class TestNodesEdgesForArtifact:
         calls: list[str] = []
         payload = ka._normalize_graph_payload(json.loads(_GRAPH_JSON))
 
-        def _fake_llm(text: str):
+        def _fake_llm(text: str, **_kw):
             calls.append(text)
             return payload
 

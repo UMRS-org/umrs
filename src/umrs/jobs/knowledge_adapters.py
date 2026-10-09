@@ -398,6 +398,12 @@ def _fetch_artifact_bytes(s3_client: Any, bucket: str, source_ref: str) -> bytes
     """
     if s3_client is None or not source_ref:
         return None
+    # The upload facade records ``s3://<bucket>/<key>`` (api/knowledge_upload.py)
+    # while other producers record a bare key. Passing the URI as the key made
+    # every `r4 knowledge upload` fail with NoSuchKey: understand produced
+    # nothing and embed requeued forever (measured 2026-10-09).
+    if source_ref.startswith("s3://"):
+        bucket, _, source_ref = source_ref[len("s3://") :].partition("/")
     try:
         obj = s3_client.get_object(Bucket=bucket, Key=source_ref)
         return obj["Body"].read()
@@ -1152,6 +1158,19 @@ async def _run_understand(
     for src in artifacts_to_process:
         artifact_id = src.get("artifact_id", "")
         if not artifact_id or not src.get("content_hash"):
+            # Never a silent skip (this module's own contract). An `s3_uri`
+            # source — what `r4 knowledge upload` submits — is registered
+            # "without copy" with content_hash "" and was dropped here, so the
+            # upload produced nothing while the job reported a clean run.
+            result.failed_items.append(
+                {
+                    "artifact_id": artifact_id,
+                    "error": (
+                        "no content_hash: source registered without hashing "
+                        f"(kind={src.get('kind', '?')}); not understood"
+                    ),
+                }
+            )
             continue
         await _understand_one_artifact(
             job,
@@ -1415,6 +1434,7 @@ async def _understand_one_artifact(
     # otherwise the project's default graph). Prose artifacts gain
     # semantic concept/entity nodes via graph-JSON import (W3) or
     # site-LLM extraction (W2).
+    notes: list[str] = []
     nodes, edges = _nodes_edges_for_artifact(
         artifact_id,
         ir.ir_id,
@@ -1423,7 +1443,15 @@ async def _understand_one_artifact(
         parsed,
         project_id,
         target_graph_id,
+        notes=notes,
     )
+    if notes:
+        # Report it: an ingest that produced only structural nodes is not a
+        # clean run (it gates only the best-effort skill-proposal leg below).
+        result.degraded = True
+        result.degraded_reason = "; ".join(
+            filter(None, [result.degraded_reason, *dict.fromkeys(notes)])
+        )
     if origin_actor == "agent":
         # D-35: agent-authored content enters the two-tier graph as
         # proposed — the establish seam (human) is the only promotion.
@@ -1801,14 +1829,109 @@ def _detect_graph_payload(text: str) -> dict[str, Any] | None:
         return None
 
 
-def _llm_extract_document(text: str) -> dict[str, Any] | None:
+def _is_chat_endpoint(ep: Any) -> bool:
+    """A registry row that serves chat (not an embedding or vision service)."""
+    meta = getattr(ep, "metadata", None) or {}
+    kind = f"{meta.get('model_type', '')} {meta.get('service_kind', '')}".lower()
+    return not any(word in kind for word in ("vision", "embed"))
+
+
+def _served_model_name(ep: Any) -> str:
+    meta = getattr(ep, "metadata", None) or {}
+    return str(meta.get("served_model_name") or ep.model)
+
+
+def _is_system_shared(ep: Any, scopes_of: Any) -> bool:
+    """Shared with everyone (ADR-078 system scope)."""
+    return any(scope.kind == "system" for scope in scopes_of(ep))
+
+
+def _registry_chat_candidates(project_id: str) -> list[Any]:
+    """READY/DEGRADED chat rows the project may use: its own, then system-shared.
+
+    A strict subset of ADR-078 routing (user/group/circle grants need a full
+    caller identity a background job does not have).
+    """
+    try:
+        from umrs.orchestrator.endpoint_access import endpoint_scopes
+        from umrs.orchestrator.endpoint_registry import EndpointStatus, get_registry
+
+        ready = [EndpointStatus.READY, EndpointStatus.DEGRADED]
+        registry = get_registry()
+        own = registry.list_all(project_id=project_id, status_filter=ready)
+        every = registry.list_all(status_filter=ready)
+    except Exception as exc:  # noqa: BLE001 — extraction is best-effort
+        logger.warning("Extraction endpoint lookup failed: %s", exc)
+        return []
+    shared = [
+        ep
+        for ep in every
+        if ep.project_id != project_id and _is_system_shared(ep, endpoint_scopes)
+    ]
+    return [ep for ep in (*own, *shared) if _is_chat_endpoint(ep)]
+
+
+def _extract_chat_endpoint(project_id: str) -> tuple[str, str] | None:
+    """(base_url, model) for semantic extraction, or None when none is usable.
+
+    An explicit UMRS_AGENT_LITELLM_URL wins, so sites that configured it keep
+    their behaviour. Otherwise the chat model is resolved through the endpoint
+    registry — the one internal inference API (ADR-068, gap D-63) — instead of
+    the old default http://127.0.0.1:11434, which inside a container is the
+    container itself and refused every request. UMRS_KNOWLEDGE_EXTRACT_MODEL,
+    when set, picks among the candidates.
+    """
+    wanted = os.environ.get("UMRS_KNOWLEDGE_EXTRACT_MODEL", "").strip()
+    explicit = os.environ.get("UMRS_AGENT_LITELLM_URL", "").strip()
+    if explicit:
+        return explicit, wanted or "gpt-oss"
+    candidates = _registry_chat_candidates(project_id)
+    if wanted:
+        candidates = [
+            ep for ep in candidates if wanted in (ep.model, _served_model_name(ep))
+        ]
+    if not candidates:
+        return None
+    return candidates[0].litellm_url, _served_model_name(candidates[0])
+
+
+def _extract_timeout() -> float:
+    """Seconds allowed for one extraction call (UMRS_KNOWLEDGE_EXTRACT_TIMEOUT).
+
+    60 s suits a datacenter endpoint. A laptop-class model decodes ~30 tok/s,
+    and a reply that runs to the 1800-token cap needs about a minute on its own
+    — measured 2026-10-09: the same 5-sentence note took 4.6 s or 16.3 s, and
+    once timed out at 60 s.
+    """
+    try:
+        return max(5.0, float(os.environ.get("UMRS_KNOWLEDGE_EXTRACT_TIMEOUT", "60")))
+    except ValueError:
+        return 60.0
+
+
+def _llm_extract_document(
+    text: str, project_id: str = "", notes: list[str] | None = None
+) -> dict[str, Any] | None:
     """Site-LLM semantic extraction for prose artifacts (W2).
 
-    Disabled with UMRS_KNOWLEDGE_LLM_EXTRACT=0; any failure degrades to the
-    structural file-node view (the job still succeeds).
+    Disabled with UMRS_KNOWLEDGE_LLM_EXTRACT=0. Any failure still degrades to
+    the structural file-node view and the job still succeeds — but the reason
+    is appended to ``notes`` so the run is reported as degraded rather than as
+    a clean ingest that silently produced an empty graph.
     """
     if os.environ.get("UMRS_KNOWLEDGE_LLM_EXTRACT", "1") in ("0", "false"):
         return None
+
+    def _fail(reason: str) -> None:
+        logger.warning("LLM prose extraction unavailable: %s", reason)
+        if notes is not None:
+            notes.append(f"semantic extraction unavailable: {reason}")
+
+    target = _extract_chat_endpoint(project_id)
+    if target is None:
+        _fail("no READY chat endpoint in the registry and UMRS_AGENT_LITELLM_URL unset")
+        return None
+    base_url, model = target
     try:
         from umrs.knowledge.agent_executor import _default_litellm_chat
 
@@ -1817,21 +1940,23 @@ def _llm_extract_document(text: str) -> dict[str, Any] | None:
                 {"role": "system", "content": _PROSE_EXTRACT_SYSTEM},
                 {"role": "user", "content": text[:9000]},
             ],
-            model=os.environ.get("UMRS_KNOWLEDGE_EXTRACT_MODEL", "gpt-oss"),
-            base_url=os.environ.get("UMRS_AGENT_LITELLM_URL", "http://127.0.0.1:11434"),
+            model=model,
+            base_url=base_url,
             api_key=None,
             max_tokens=1800,
-            timeout=60.0,
+            timeout=_extract_timeout(),
         )
-    except Exception as exc:  # noqa: BLE001 — degraded structural view is fine
-        logger.warning("LLM prose extraction failed: %s", exc)
+    except Exception as exc:  # noqa: BLE001 — degraded structural view, reported
+        _fail(f"{type(exc).__name__}: {exc}")
         return None
     match = re.search(r"\{.*\}", reply, re.DOTALL)
     if match is None:
+        _fail(f"model {model!r} replied without a JSON graph")
         return None
     try:
         raw = json.loads(match.group(0))
     except (json.JSONDecodeError, ValueError):
+        _fail(f"model {model!r} replied with invalid JSON")
         return None
     if isinstance(raw, dict) and "entities" in raw and "nodes" not in raw:
         raw = {**raw, "nodes": raw.get("entities"), "edges": raw.get("relations")}
@@ -1926,6 +2051,7 @@ def _nodes_edges_for_artifact(
     parsed: dict[str, Any],
     project_id: str,
     target_graph_id: str,
+    notes: list[str] | None = None,
 ) -> tuple[list, list]:
     """Structural nodes/edges plus, for prose artifacts, semantic ones.
 
@@ -1943,7 +2069,7 @@ def _nodes_edges_for_artifact(
     payload = _detect_graph_payload(text)
     if payload is None and len(nodes) == 1:
         # Structural parse found nothing semantic → LLM extraction (W2).
-        payload = _llm_extract_document(text)
+        payload = _llm_extract_document(text, project_id=project_id, notes=notes)
     if payload is not None:
         sem_nodes, sem_edges = _semantic_nodes_edges(
             artifact_id, ir_id, project_id, target_graph_id, payload
