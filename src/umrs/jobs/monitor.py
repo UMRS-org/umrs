@@ -86,12 +86,16 @@ class AttemptCheckResult:
         cls,
         metrics: dict | None = None,
         commit: bool = True,
+        detail: str | None = None,
     ) -> AttemptCheckResult:
+        """``detail`` is kept on the attempt (``r4 job describe`` prints it) —
+        how a success that wrote nothing says so."""
         return cls(
             status="succeeded",
             exit_reason="success",
             metrics=metrics,
             should_commit=commit,
+            status_detail=detail,
         )
 
     @classmethod
@@ -294,6 +298,10 @@ class AttemptMonitor:
             commit=result.should_commit,
             metrics=result.metrics,
         )
+        if result.status_detail:
+            self.job_store.update_attempt_status_detail(
+                attempt.attempt_id, result.status_detail
+            )
         self._stats["attempts_succeeded"] += 1
         METRICS.monitor_check("succeeded")
         logger.info(f"Attempt {attempt.attempt_id} succeeded")

@@ -99,17 +99,15 @@ def attach_texts(
     """Give each passage its ``text`` and ``source_name``; drop text-less ones.
 
     ``metadata.text_source`` says where the text came from: ``artifact`` (the
-    full chunk, md5-verified) or ``excerpt`` (the first 500 characters the
-    chunk node stores).
+    full chunk, md5-verified), ``node`` (the chunk text the node stores — legacy
+    canonized corpora) or ``excerpt`` (the first 500 characters).
     """
     rows = _passage_rows(pool, [p["source_id"] for p in passages])
     documents: dict[str, str | None] = {}
     kept: list[dict[str, Any]] = []
     for passage in passages:
         content, source_ref, name = rows.get(passage["source_id"], ({}, "", ""))
-        text = _artifact_slice(content, source_ref, documents, fetch_bytes)
-        source = "artifact" if text else "excerpt"
-        text = text or str(content.get("excerpt") or "")
+        text, source = _passage_text(content, source_ref, documents, fetch_bytes)
         if not text:
             continue
         passage["text"] = text
@@ -206,6 +204,24 @@ def _as_dict(content_text: str | None) -> dict[str, Any]:
 
 def _basename(uri: str | None) -> str:
     return PurePosixPath(uri).name if uri else ""
+
+
+def _passage_text(
+    content: dict[str, Any],
+    source_ref: str,
+    documents: dict[str, str | None],
+    fetch_bytes: FetchBytes,
+) -> tuple[str, str]:
+    """``(text, source)``: the verified artifact slice, else the node's text,
+    else its excerpt; ``("", "")`` when the node has none."""
+    text = _artifact_slice(content, source_ref, documents, fetch_bytes)
+    if text:
+        return text, "artifact"
+    for key, source in (("text", "node"), ("excerpt", "excerpt")):
+        value = content.get(key)
+        if isinstance(value, str) and value.strip():
+            return value, source
+    return "", ""
 
 
 def _chunk_span(content: dict[str, Any]) -> tuple[int, int, str] | None:

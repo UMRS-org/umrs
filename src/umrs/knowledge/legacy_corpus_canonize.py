@@ -175,6 +175,9 @@ def canonize_document(
                     "chunk_end": row["chunk_end"],
                     "chunk_md5": row["chunk_md5"],
                     "s3_chunk": row["s3_chunk"],
+                    # The passage itself: a legacy chunk has no artifact to slice
+                    # it from, and spine answers drop a text-less chunk.
+                    "text": row.get("content") or "",
                     "origin": ORIGIN,
                 },
                 content_hash=row["chunk_md5"],
