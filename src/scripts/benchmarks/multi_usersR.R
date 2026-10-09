@@ -175,6 +175,6 @@ ggplot(long, aes(x = n_label, y = s, fill = part)) +
   )
 
 ggsave("log/batch_speedup.pdf", width = 9, height = 5.5)
-#ggsave("batch_speedup.png", width = 9, height = 5.5, dpi = 150)
+ggsave("log/batch_speedup.png", width = 9, height = 5.5, dpi = 300)
 message("Saved: batch_speedup.pdf / batch_speedup.png")
 

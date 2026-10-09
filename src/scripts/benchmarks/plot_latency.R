@@ -106,6 +106,7 @@ p1 <- ggplot(stacked, aes(x = factor(n_processed), y = seconds, fill = component
   ) +
   theme_lat
 
+p1
 ggsave("log/latency_stacked.pdf", p1, width = 10, height = 6)
 
 # ---------------------------------------------------------------------------
