@@ -232,7 +232,25 @@ def _resolve_ingest_target(
                 "Graph registry requires the database (named-graph target)",
             )
         )
-    graph = GraphRegistryStore(pool).resolve_graph(graph_ref)
+    from umrs.knowledge.access_scope import graph_writable
+
+    from ._scope_identity import request_caller_scope
+
+    # A graph the caller may not write is "unknown", like an absent one.
+    # resolve_graph took any project's graph by id, or the oldest graph of
+    # that name anywhere, and nothing checked write access: a caller could
+    # inject rows into another project's graph (review of KG-05, 2026-10-09).
+    scope = request_caller_scope(request)
+    graph = next(
+        (
+            g
+            for g in GraphRegistryStore(pool).graph_candidates(graph_ref)
+            if graph_writable(
+                kind=g.kind, project_id=g.project_id, owner_id=g.owner_id, caller=scope
+            )
+        ),
+        None,
+    )
     if graph is None:
         raise_typed(
             PlatformError.knowledge2(

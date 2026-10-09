@@ -283,3 +283,26 @@ class TestRemoteSafeSourceKinds:
             headers={"X-Project-ID": "proj-a"},
         )
         assert resp.status_code == 200, resp.text
+
+
+@pytest.mark.usefixtures("runtime")
+class TestIngestTargetAccess:
+    """A caller ingests only into a graph it may write (review of KG-05,
+    2026-10-09): any project's graph was a valid target, by id or by the
+    oldest graph of that name anywhere, so rows could be injected into
+    another project's graph views and searches."""
+
+    def test_another_projects_graph_is_an_unknown_target(self):
+        client, _ = _client([_graph_row(graph_id="g-b", project_id="proj-b", owner_id="bob")])
+        from r4_contracts.errors import ERROR_CODE_HEADER
+
+        resp = _ingest(client, graph_id="g-b")
+        assert resp.status_code == 400
+        assert resp.headers.get(ERROR_CODE_HEADER) == "knowledge2.unknown_graph"
+
+    def test_a_shared_name_targets_the_callers_own_graph(self, runtime):
+        foreign = _graph_row(graph_id="g-b", project_id="proj-b", owner_id="bob")
+        client, _ = _client([None, [foreign, _graph_row()]])
+        resp = _ingest(client, graph_id="experiment-history")
+        assert resp.status_code in (200, 201, 202), resp.text
+        assert runtime.calls[0]["spec"]["graph_id"] == "g-exp"

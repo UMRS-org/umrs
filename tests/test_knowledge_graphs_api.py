@@ -236,6 +236,7 @@ class TestProposalApi:
                 None,  # create insert
                 _proposal_row(),  # create re-read
                 _proposal_row(),  # decision: get_proposal
+                _graph_row(),  # decision: the target graph (read + write access)
                 None,  # decision: update
                 _proposal_row(status="approved", decided_by="bob"),
             ]
@@ -264,10 +265,10 @@ class TestProposalApi:
         body = decided.json()
         assert body["status"] == "approved"
         assert body["decided_by"] == "bob"
-        assert "AND status = 'pending'" in pool.record[4][0]
+        assert "AND status = 'pending'" in pool.record[5][0]
 
     def test_double_decision_409(self):
-        client, _ = _client([_proposal_row(status="approved")])
+        client, _ = _client([_proposal_row(status="approved"), _graph_row()])
         resp = client.post(
             "/umrs/knowledge/proposals/gp-1/decision", json={"approved": False}, params=_IDENTITY
         )
@@ -278,6 +279,7 @@ class TestProposalApi:
         client, _ = _client(
             [
                 _proposal_row(),
+                _graph_row(),
                 None,
                 _proposal_row(status="declined", decided_by="bob"),
             ]
@@ -329,3 +331,77 @@ class TestOntologyTraversalBlock:
         assert resp.status_code == 200, resp.text
         block = resp.json()["ontology"]
         assert "ontology_error" in block
+
+
+class TestProposalAccess:
+    """KG-05 (2026-10-09): agents propose, people decide (ADR-084 D-3), and a
+    proposal answers only to a caller who may read its graph (ADR-080). Before,
+    an agent could approve its own proposal and then pass the mutation guard,
+    and any caller could read or decide any project's proposals."""
+
+    _CAROL = {"caller_user_id": "carol", "caller_project_id": "proj-c"}
+
+    def test_an_agent_cannot_decide(self):
+        client, pool = _client([_proposal_row(), _graph_row()])
+        resp = client.post(
+            "/umrs/knowledge/proposals/gp-1/decision",
+            json={"approved": True},
+            params=_IDENTITY,
+            headers={"x-r4-actor": "agent"},
+        )
+        assert resp.status_code == 403
+        assert resp.headers["x-platform-error-code"] == "proposals.forbidden"
+        assert pool.record == []  # refused before anything is read
+
+    def test_another_projects_proposal_is_not_found(self):
+        for method, path in [
+            ("get", "/umrs/knowledge/proposals/gp-1"),
+            ("post", "/umrs/knowledge/proposals/gp-1/decision"),
+        ]:
+            client, _ = _client([_proposal_row(), _graph_row()])
+            kwargs = {"json": {"approved": True}} if method == "post" else {}
+            resp = getattr(client, method)(path, params=self._CAROL, **kwargs)
+            assert resp.status_code == 404, (path, resp.text)
+
+    def test_another_projects_proposal_list_is_not_found(self):
+        client, _ = _client([_graph_row()])
+        resp = client.get("/umrs/knowledge/graphs/g-abc/proposals", params=self._CAROL)
+        assert resp.status_code == 404
+
+    def test_deciding_needs_write_access(self):
+        """A system graph is readable by everyone, writable by admins only."""
+        system = _graph_row(kind="system", project_id=None, owner_id="")
+        client, _ = _client([_proposal_row(), system])
+        resp = client.post(
+            "/umrs/knowledge/proposals/gp-1/decision", json={"approved": True}, params=_IDENTITY
+        )
+        assert resp.status_code == 403
+        assert resp.headers["x-platform-error-code"] == "proposals.forbidden"
+
+    def test_a_proposal_named_by_graph_name_targets_the_graph_id(self):
+        """The resolved row was thrown away: a name went into the FK column (500)."""
+        client, pool = _client([None, [_graph_row()], None, _proposal_row()])
+        resp = client.post(
+            "/umrs/knowledge/graphs/experiment-history/proposals",
+            json={"reason": "gap"},
+            params=_IDENTITY,
+        )
+        assert resp.status_code == 201, resp.text
+        insert = next(p for sql, p in pool.record if "INSERT INTO knowledge_graph_proposals" in sql)
+        assert "g-abc" in insert and "experiment-history" not in insert
+
+
+class TestGraphCreateProject:
+    def test_a_graph_created_without_a_project_is_stored_in_the_callers(self):
+        """The write check admitted the caller's project but NULL was stored, so
+        no non-admin (its creator included) could ever update, archive or decide
+        on the graph (review, 2026-10-09)."""
+        client, pool = _client([None, _graph_row()])
+        resp = client.post(
+            "/umrs/knowledge/graphs",
+            json={"name": "mygraph", "kind": "research"},
+            params=_IDENTITY,
+        )
+        assert resp.status_code in (200, 201), resp.text
+        insert = next(p for sql, p in pool.record if "INSERT INTO knowledge_graphs" in sql)
+        assert "proj-a" in insert

@@ -807,6 +807,42 @@ def _loop_owner(
     return (x_user_id or "").strip()
 
 
+def _enforce_loop_project(
+    request: StartLoopRequest, http_request: Request, owner: str
+) -> None:
+    """A loop runs in a project its verified starter may write.
+
+    The body names the project and nothing bound it to the caller, so a
+    verified user could run a loop, with its knowledge reads, finding writes
+    and the project's own model endpoints, in any project (review of the
+    loop's registry route, 2026-10-09). Same rule as knowledge ingest's
+    project_mismatch: a member of several projects uses that project's token.
+    Ownerless loops exist only outside strict mode (``_loop_owner``).
+    """
+    from umrs.knowledge.access_scope import CallerScope, project_writable
+
+    project_id = (request.project_id or "").strip()
+    if not project_id:
+        raise_typed(PlatformError.loops("bad_request", "project_id is required"))
+    if not owner:
+        return
+    headers = http_request.headers
+    scope = CallerScope(
+        user_id=owner,
+        project_id=(headers.get("x-verified-project-id") or "").strip(),
+        is_admin=(headers.get("x-verified-is-admin") or "").strip().lower()
+        in ("1", "true"),
+    )
+    if not project_writable(project_id, scope):
+        raise_typed(
+            PlatformError.loops(
+                "forbidden",
+                f"Cannot start a loop in project {project_id!r} with a token for "
+                f"{scope.project_id!r}; log in to that project",
+            )
+        )
+
+
 _COMPANION_SESSION_ID = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 
 
@@ -877,6 +913,7 @@ async def start_loop(
     ``metadata.durable_job_id``); otherwise the process drives it on a
     thread (``hosting == "thread"``). Both are visible on the loop record.
     """
+    _enforce_loop_project(request, http_request, owner)
     _enforce_readiness_approval(request)
     # D-33 tail: the project's persisted ask-policy default fills the
     # request when the caller left mode unset; an explicit mode always

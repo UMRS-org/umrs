@@ -138,7 +138,9 @@ class UmrsAgentIterationExecutor:
     ) -> None:
         self._project = project
         self._chat = chat
-        self._model = model or os.getenv("UMRS_AGENT_MODEL", "rivault-gpt-oss-static")
+        # The model a caller or the site named; empty = whatever the registry serves.
+        self._wanted_model = (model or os.getenv("UMRS_AGENT_MODEL", "")).strip()
+        self._model = self._wanted_model or "rivault-gpt-oss-static"
         self._max_tokens = max_tokens
         self._max_nodes = max_nodes
         self._graph_loader = project_graph_loader
@@ -210,9 +212,15 @@ class UmrsAgentIterationExecutor:
     def _call_llm(
         self, goal: str, graph: dict[str, Any], number: int
     ) -> dict[str, Any] | None:
-        chat = self._chat
+        chat, model = self._chat, self._model
         if chat is None:
-            base_url = os.getenv("UMRS_AGENT_LITELLM_URL", "http://127.0.0.1:11434")
+            target = self._litellm_target()
+            if target is None:
+                return {
+                    "_error": "no READY chat endpoint in the registry "
+                    "and UMRS_AGENT_LITELLM_URL unset"
+                }
+            base_url, model = target
             key = _resolve_litellm_service_key()
             chat = lambda messages, model, max_tokens: _default_litellm_chat(
                 messages,
@@ -224,12 +232,46 @@ class UmrsAgentIterationExecutor:
         try:
             content = chat(
                 self._messages(goal, graph, number),
-                model=self._model,
+                model=model,
                 max_tokens=self._max_tokens,
             )
             return self._parse_reply(str(content or ""))
         except Exception as exc:  # noqa: BLE001 - digest-only iteration, keep loop durable
             return {"_error": str(exc)}
+
+    def _litellm_target(self) -> tuple[str, str] | None:
+        """(base_url, model) for this loop's turns, or None when none is usable.
+
+        An explicit UMRS_AGENT_LITELLM_URL wins, so sites that configured it
+        keep their behaviour. Otherwise the project's chat endpoint comes from
+        the endpoint registry, the one internal inference API (ADR-068, gap
+        D-63), and a named model picks among the candidates. The old default,
+        http://127.0.0.1:11434, is the container itself inside one: every
+        agentic iteration failed there and was still marked completed.
+        """
+        explicit = os.getenv("UMRS_AGENT_LITELLM_URL", "").strip()
+        if explicit:
+            return explicit, self._model
+        from umrs.jobs.knowledge_adapters import (
+            _registry_chat_candidates,
+            _served_model_name,
+        )
+
+        project_id = str(getattr(self._project, "project_id", "") or "").strip()
+        if not project_id:
+            # An empty project would make the registry lookup unfiltered:
+            # every project's private endpoint would count as "own".
+            return None
+        candidates = _registry_chat_candidates(project_id)
+        if self._wanted_model:
+            candidates = [
+                ep
+                for ep in candidates
+                if self._wanted_model in (ep.model, _served_model_name(ep))
+            ]
+        if not candidates:
+            return None
+        return candidates[0].litellm_url, _served_model_name(candidates[0])
 
     @staticmethod
     def _parse_reply(text: str) -> dict[str, Any]:

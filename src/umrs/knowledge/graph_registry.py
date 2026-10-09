@@ -68,7 +68,9 @@ def _row_to_graph(row: dict[str, Any]) -> KnowledgeGraphMeta:
     access = data.get("access")
     if isinstance(access, str):
         access = json.loads(access)
-    data["access"] = [str(entry) for entry in access] if isinstance(access, list) else []
+    data["access"] = (
+        [str(entry) for entry in access] if isinstance(access, list) else []
+    )
     return KnowledgeGraphMeta(**data)
 
 
@@ -276,6 +278,25 @@ class GraphRegistryStore(_SyncPoolStore):
             row = cur.fetchone()
         return _row_to_graph(row) if row else None
 
+    def graph_candidates(self, identifier: str) -> list[KnowledgeGraphMeta]:
+        """Every graph an identifier may name: the exact id, else every graph of
+        that (case-insensitive) name, active first. Names are not unique across
+        projects, so a caller takes the first candidate it may read — with
+        ``resolve_graph``'s single match, another project's older graph of the
+        same name hid the caller's own."""
+        graph = self.get_graph(identifier)
+        if graph is not None:
+            return [graph]
+        with self._cursor() as cur:
+            cur.execute(
+                f"SELECT {_GRAPH_COLUMNS} FROM knowledge_graphs "
+                "WHERE lower(name) = lower(%s) "
+                "ORDER BY CASE WHEN status = 'active' THEN 0 ELSE 1 END, created_at",
+                (identifier,),
+            )
+            rows = cur.fetchall()
+        return [_row_to_graph(row) for row in rows]
+
     def graph_content(
         self,
         graph_id: str,
@@ -457,9 +478,7 @@ class GraphRegistryStore(_SyncPoolStore):
             rows = cur.fetchall()
         return [_row_to_graph(row) for row in rows]
 
-    def set_access(
-        self, graph_id: str, access: list[str]
-    ) -> KnowledgeGraphMeta | None:
+    def set_access(self, graph_id: str, access: list[str]) -> KnowledgeGraphMeta | None:
         """Replace the row's ADR-080 access list (validated upstream)."""
         with self._cursor() as cur:
             cur.execute(
@@ -571,8 +590,12 @@ class ProposalStore(_SyncPoolStore):
                 " WHERE (%s::text IS NULL OR target_graph_id = %s)",
                 (target_graph_id, target_graph_id),
             )
-            row = cur.fetchone() or (0, 0, 0)
-        accepted, declined, pending = int(row[0]), int(row[1]), int(row[2])
+            # _cursor is a RealDictCursor: rows are mappings (indexing them by
+            # position made the live route a 500 — TC-03).
+            row = cur.fetchone() or {}
+        accepted, declined, pending = (
+            int(row.get(key) or 0) for key in ("accepted", "declined", "pending")
+        )
         decided = accepted + declined
         return {
             "accepted": accepted,

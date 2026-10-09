@@ -170,7 +170,7 @@ class TestOntologyBlocks:
 
         monkeypatch.setattr(
             "umrs.api.knowledge_query._resolve_selected_graphs",
-            lambda registry, project_id, graphs_csv, exclude_csv: (metas, []),
+            lambda *_args, **_kwargs: (metas, []),
         )
         # Pool slot occupied so the graph backend wires — psycopg shape
         # (getconn/cursor) returning zero rows; registry resolution is

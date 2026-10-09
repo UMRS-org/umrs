@@ -29,9 +29,15 @@ import httpx
 from fastapi import APIRouter, Depends, Query, Request
 
 from umrs.knowledge.access_scope import visibility_predicate
-from umrs.knowledge.graph_registry import GraphRegistryStore, KnowledgeGraphMeta
+from umrs.knowledge.graph_registry import (
+    GraphRegistryStore,
+    KnowledgeGraphMeta,
+    graph_id_is_default,
+)
 from umrs.search_api import SearchScope, UnifiedSearch
 
+from ._access import graph_meta_readable
+from ._scope_identity import request_caller_scope
 from .catalog_store import get_optional_catalog_meta_store
 from .jobs import CallerIdentity, get_caller_identity
 from .typed_errors import PlatformError, raise_typed
@@ -110,7 +116,15 @@ class _GraphSearchBackend:
         self._pool = pool
         self._selected = selected
         self._by_id = {g.graph_id: g for g in selected}
-        self._default_by_project = {g.project_id: g for g in selected if g.project_id}
+        # Legacy rows (graph_id '') belong to their project's DEFAULT graph
+        # only — the rule graph_content and list_nodes use. Mapping every
+        # project-bound graph let a shared non-default graph expose its
+        # owner's legacy rows (review of KG-05, 2026-10-09).
+        self._default_by_project = {
+            g.project_id: g
+            for g in selected
+            if g.project_id and graph_id_is_default(g.graph_id, g.project_id)
+        }
 
     def search_knowledge_graph(
         self,
@@ -175,22 +189,33 @@ def _resolve_exclusions(
     excluded_ids: set[str] = set()
     excluded_names: list[str] = []
     for token in _split_csv(exclude_csv):
-        graph = registry.resolve_graph(token)
-        if graph is not None:
-            excluded_ids.add(graph.graph_id)
+        # Every graph the token can name: includes pick the first readable
+        # candidate, so excluding only one would let a name slip through and
+        # reveal whether another project holds a graph of that name.
+        excluded_ids.update(g.graph_id for g in registry.graph_candidates(token))
         excluded_names.append(token)
     return excluded_ids, excluded_names
+
+
+GraphReadable = Callable[[KnowledgeGraphMeta], bool]
 
 
 def _resolve_includes(
     registry: GraphRegistryStore,
     tokens: list[str],
     excluded_ids: set[str],
+    readable: GraphReadable,
 ) -> list[KnowledgeGraphMeta]:
-    """Resolve include tokens, dropping excluded and duplicate graphs."""
+    """Resolve include tokens, dropping excluded, duplicate and unreadable graphs.
+
+    KG-05: ``resolve_graph`` matches an id, or a name across every project
+    (a default graph is named after its project), so a caller could read
+    another project's nodes by naming its graph. A graph the caller may not
+    read is skipped exactly like an unknown token: existence is not disclosed.
+    """
     selected: list[KnowledgeGraphMeta] = []
     for token in tokens:
-        graph = registry.resolve_graph(token)
+        graph = next((g for g in registry.graph_candidates(token) if readable(g)), None)
         if graph is None or graph.graph_id in excluded_ids:
             continue
         if graph.graph_id in {g.graph_id for g in selected}:
@@ -204,6 +229,7 @@ def _resolve_selected_graphs(
     project_id: str,
     graphs_csv: str | None,
     exclude_csv: str | None,
+    readable: GraphReadable | None = None,
 ) -> tuple[list[KnowledgeGraphMeta], list[str]]:
     """Resolve explicit include/exclude tokens into selected graph metas.
 
@@ -215,7 +241,9 @@ def _resolve_selected_graphs(
 
     tokens = _split_csv(graphs_csv)
     if tokens:
-        return _resolve_includes(registry, tokens, excluded_ids), excluded_names
+        # No predicate, no named graphs: fail closed.
+        allow = readable or (lambda _graph: False)
+        return _resolve_includes(registry, tokens, excluded_ids, allow), excluded_names
 
     default = registry.ensure_default_graph(project_id)
     selected = [default] if default.graph_id not in excluded_ids else []
@@ -238,7 +266,9 @@ QueryEncoder = Callable[[str], tuple[str, list[float] | None, str]]
 
 
 def _query_encoder_url() -> str:
-    url = os.environ.get(_QUERY_ENCODER_URL_ENV) or os.environ.get("UMRS_RAG_DIRECT_URL")
+    url = os.environ.get(_QUERY_ENCODER_URL_ENV) or os.environ.get(
+        "UMRS_RAG_DIRECT_URL"
+    )
     return (url or "").strip().rstrip("/")
 
 
@@ -315,7 +345,10 @@ class _EmbeddingsSearchBackend:
     ) -> list[dict[str, Any]]:
         if query_embedding:
             return self._similarity_hits(
-                query_embedding, model_name=model_name, project_id=project_id, limit=limit
+                query_embedding,
+                model_name=model_name,
+                project_id=project_id,
+                limit=limit,
             )
         if self._encoder is None:
             self.lane_report = {"lane": "table-reader", "reason": "no query encoder"}
@@ -456,7 +489,9 @@ def _embeddings_backend_for(
     if not present:
         return None, "embeddings search unavailable (migration 0075 not applied)"
     return (
-        _EmbeddingsSearchBackend(pool, include_ambient=include_ambient, encoder=encoder),
+        _EmbeddingsSearchBackend(
+            pool, include_ambient=include_ambient, encoder=encoder
+        ),
         None,
     )
 
@@ -688,12 +723,14 @@ def query_knowledge(
     # ADR-050 wave-2.1: the ambient read lane is admin-only; regular callers
     # never see ambient rows on any lane.
     include_ambient = bool(identity.is_admin)
+    scope_for_graphs = request_caller_scope(request)
     backend, reason, selected, excluded = _graph_backend_for(
         pool,
         resolved_project,
         graphs,
         exclude_graphs,
         include_ambient=include_ambient,
+        readable=lambda graph: graph_meta_readable(request, graph, scope_for_graphs),
     )
     emb_backend, emb_reason = _embeddings_backend_for(
         pool,
@@ -737,6 +774,7 @@ def _graph_backend_for(
     exclude_csv: str | None,
     *,
     include_ambient: bool = False,
+    readable: GraphReadable | None = None,
 ) -> tuple[_GraphSearchBackend | None, str | None, list, list]:
     """Build the graph backend or an honesty reason, plus selection truth."""
     if pool is None:
@@ -748,7 +786,7 @@ def _graph_backend_for(
         )
     registry = GraphRegistryStore(pool)
     selected, excluded = _resolve_selected_graphs(
-        registry, project_id, graphs_csv, exclude_csv
+        registry, project_id, graphs_csv, exclude_csv, readable
     )
     if not selected:
         return None, "no graphs selected (empty or fully excluded)", selected, excluded

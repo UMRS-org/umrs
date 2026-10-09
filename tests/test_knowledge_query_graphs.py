@@ -164,3 +164,66 @@ class TestGraphBackendWiring:
         payload = resp.json()["query"]
         assert payload["wired_backends"] == ["catalog"]
         assert "requires the database" in payload["unavailable_backends"]["knowledge_graph"]
+
+
+class TestGraphReadAccess:
+    """KG-05 (2026-10-09): `graphs=` resolves an id, or a name across every
+    project (default graphs are named after their project), and the selection
+    was never access-checked: any caller could read another project's nodes
+    by naming its graph. A graph the caller may not read is now skipped like
+    an unknown one, so its existence is not disclosed either."""
+
+    def test_another_projects_graph_is_skipped_like_an_unknown_one(self):
+        foreign = _graph_row(graph_id="g-b", name="proj-b", project_id="proj-b", owner_id="bob")
+        client, _ = _client([foreign])
+        resp = _query(client, project_id="proj-a", graphs="g-b")
+        assert resp.status_code == 200, resp.text
+        payload = resp.json()["query"]
+        assert payload["selected_graphs"] == [] and payload["ontologies"] == []
+        assert "g-b" not in resp.text
+
+    def test_a_graph_shared_with_the_callers_project_is_selected(self):
+        shared = _graph_row(
+            graph_id="g-b",
+            name="proj-b",
+            project_id="proj-b",
+            owner_id="bob",
+            access=["project:proj-a"],
+        )
+        client, _ = _client([shared])
+        resp = _query(client, project_id="proj-a", graphs="g-b")
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["query"]["selected_graphs"] == ["g-b"]
+
+    def test_a_shared_name_resolves_to_the_callers_own_graph(self):
+        """Names are not unique across projects; another project's older graph
+        of the same name must neither leak nor hide the caller's own."""
+        foreign = _graph_row(graph_id="g-b", name="batteries", project_id="proj-b", owner_id="bob")
+        own = _graph_row(graph_id="g-a", name="batteries")
+        client, _ = _client([None, [foreign, own]])  # no id match, then every name match
+        resp = _query(client, project_id="proj-a", graphs="batteries")
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["query"]["selected_graphs"] == ["g-a"]
+
+    def test_a_shared_graph_exposes_none_of_its_owners_legacy_rows(self):
+        """Legacy rows (graph_id '') belong to the owner's DEFAULT graph only.
+        Sharing a non-default graph exposed every one of them (review, 2026-10-09)."""
+        shared = _graph_row(graph_id="g-shared", name="shared", access=["project:proj-b"])
+        client, pool = _client([shared])
+        resp = client.get(
+            "/umrs/knowledge/query",
+            params={"q": "secret", "graphs": "g-shared", "scope": "knowledge_graph"},
+            headers={"X-User-ID": "bob", "X-Verified-Project-ID": "proj-b"},
+        )
+        assert resp.status_code == 200, resp.text
+        node_query = next(p for sql, p in pool.record if "graph_id = ANY" in sql)
+        assert node_query[0] == ["g-shared"] and node_query[1] == []
+
+    def test_an_excluded_name_stays_excluded_whatever_project_holds_it(self):
+        foreign = _graph_row(graph_id="g-b", name="batteries", project_id="proj-b", owner_id="bob")
+        own = _graph_row(graph_id="g-a", name="batteries")
+        # exclusions resolve first (id miss, every name match), then includes
+        client, _ = _client([None, [foreign, own], None, [foreign, own]])
+        resp = _query(client, project_id="proj-a", graphs="batteries", exclude_graphs="batteries")
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["query"]["selected_graphs"] == []

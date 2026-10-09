@@ -144,3 +144,30 @@ def test_the_session_filter_never_reaches_another_users_loops():
     _start(_client("alice"), **{"x-r4-session-id": "shared-name"})
     rows = _client("bob").get("/umrs/loops", params={"companion_session_id": "shared-name"})
     assert rows.json()["loops"] == []
+
+
+# ── a loop runs in a project its starter may write (2026-10-09) ─────────────
+
+
+def test_a_loop_cannot_be_started_in_another_project():
+    """The body named the project and nothing bound it to the caller: a loop
+    read, wrote and spent model capacity in any project the caller named."""
+    resp = _client("alice").post(
+        "/umrs/loops", json={"project_id": "proj-other", "research_goal": "g", "max_iterations": 1}
+    )
+    assert resp.status_code == 403
+    assert resp.headers["x-platform-error-code"] == "loops.forbidden"
+
+
+def test_an_admin_may_start_a_loop_in_any_project():
+    resp = _client("root", admin=True).post(
+        "/umrs/loops", json={"project_id": "proj-other", "research_goal": "g", "max_iterations": 1}
+    )
+    assert resp.status_code == 201, resp.text
+
+
+def test_a_loop_needs_a_project():
+    resp = _client("alice").post(
+        "/umrs/loops", json={"project_id": " ", "research_goal": "g", "max_iterations": 1}
+    )
+    assert resp.status_code == 400
