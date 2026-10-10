@@ -13,6 +13,10 @@ throwaway rootless-Podman container instead of the UMRS server process:
 Site opt-in: ``UMRS_EMBEDDING_SANDBOX=podman``. Unset = the in-process lane
 (unchanged). A configured-but-failing sandbox raises — never a silent fall
 back to in-process compute.
+
+Both lanes carry the site's chunk scheme (``fixed-v0`` | ``sent-v1``,
+ADR-093 D-11) and, for ``sent-v1``, one header title per text: chunking
+stays in this lane, never in the server.
 """
 
 from __future__ import annotations
@@ -20,7 +24,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -65,7 +69,9 @@ class SandboxConfig:
         """Where the worker loads the model from inside the sandbox."""
         from .text_embedder import BUNDLED_TEXT_EMBEDDER_DIR
 
-        return _CONTAINER_MODEL_DIR if self.model_host_dir else BUNDLED_TEXT_EMBEDDER_DIR
+        return (
+            _CONTAINER_MODEL_DIR if self.model_host_dir else BUNDLED_TEXT_EMBEDDER_DIR
+        )
 
 
 def sandbox_config_from_env(model_dir: str) -> SandboxConfig | None:
@@ -113,7 +119,11 @@ def build_argv(config: SandboxConfig) -> list[str]:
         "--cap-drop=all",
         f"--memory={config.memory}",
         f"--cpus={config.cpus}",
-        *(["-v", f"{config.model_host_dir}:{_CONTAINER_MODEL_DIR}:ro"] if config.model_host_dir else []),
+        *(
+            ["-v", f"{config.model_host_dir}:{_CONTAINER_MODEL_DIR}:ro"]
+            if config.model_host_dir
+            else []
+        ),
         "-e",
         "HF_HUB_OFFLINE=1",
         "-e",
@@ -139,21 +149,33 @@ class SandboxChunkEmbedder:
         prefix_model_name: str,
         max_tokens: int,
         runner: Runner | None = None,
+        scheme: str = "fixed-v0",
     ) -> None:
+        from .chunking import resolve_scheme
+
         self._config = config
         self._prefix = prefix_model_name
         self._max_tokens = max_tokens
         self._runner = runner or _default_runner
+        self.scheme = resolve_scheme(scheme)
 
-    def chunk_and_embed(self, texts: list[str]) -> list[dict[str, Any]]:
-        request = json.dumps(
-            {
-                "model_dir": self._config.container_model_dir,
-                "prefix_model_name": self._prefix,
-                "max_tokens": self._max_tokens,
-                "texts": texts,
-            }
-        )
+    def chunk_and_embed(
+        self,
+        texts: list[str],
+        titles: Sequence[str] | None = None,
+        headings: Sequence[bool] | None = None,
+    ) -> list[dict[str, Any]]:
+        payload: dict[str, Any] = {
+            "model_dir": self._config.container_model_dir,
+            "prefix_model_name": self._prefix,
+            "max_tokens": self._max_tokens,
+            "texts": texts,
+            "scheme": self.scheme,
+            "titles": list(titles or []),
+        }
+        if headings is not None:  # sent-v1: which texts have markdown headings
+            payload["headings"] = [bool(h) for h in headings]
+        request = json.dumps(payload)
         try:
             done = self._runner(
                 build_argv(self._config),
@@ -193,13 +215,26 @@ class InProcessChunkEmbedder:
     lane = "in_process"
 
     def __init__(
-        self, embedder: Any, *, prefix_model_name: str, max_tokens: int
+        self,
+        embedder: Any,
+        *,
+        prefix_model_name: str,
+        max_tokens: int,
+        scheme: str = "fixed-v0",
     ) -> None:
+        from .chunking import resolve_scheme
+
         self._embedder = embedder
         self._prefix = prefix_model_name
         self._max_tokens = max_tokens
+        self.scheme = resolve_scheme(scheme)
 
-    def chunk_and_embed(self, texts: list[str]) -> list[dict[str, Any]]:
+    def chunk_and_embed(
+        self,
+        texts: list[str],
+        titles: Sequence[str] | None = None,
+        headings: Sequence[bool] | None = None,
+    ) -> list[dict[str, Any]]:
         from .embed_worker import chunk_and_embed
 
         return chunk_and_embed(
@@ -207,6 +242,9 @@ class InProcessChunkEmbedder:
             texts,
             prefix_model_name=self._prefix,
             max_tokens=self._max_tokens,
+            scheme=self.scheme,
+            titles=titles,
+            headings=headings,
         )
 
 

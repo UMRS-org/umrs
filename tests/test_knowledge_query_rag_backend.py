@@ -1,23 +1,31 @@
-"""_RAGSearchBackend pins (WP-15, ADR-027 P1b facade leg).
+"""_RAGSearchBackend pins (WP-15, ADR-027 P1b facade leg; ADR-093 C7).
 
 The facade's ``rag`` scope answers from the node-keyed central corpus
 (``knowledge_nodes``, migration 0055) — never the endpoint-coupled
-mini-RiVault corpus. These pins lock: project scoping + ordering SQL,
-honest hit shape (venue + lane in metadata, fixed score, never
-fabricated content), wiring gates (regclass probe), and the unified
-composition reporting the backend as wired.
+mini-RiVault corpus. Since ADR-093 C7 the lane is the retrieval core's
+lexical chunk lane (IDF-weighted OR full-text search, C6) instead of a
+whole-phrase ILIKE ordered by recency with a fixed 0.5 score. These pins lock:
+the lane call and its spec (project, graph selection), the hit shape (venue +
+lane in metadata, the lane's own score, never fabricated content), honest
+unavailability when the core or its column is missing, wiring gates
+(regclass probe), and the unified composition reporting the backend as wired.
 """
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import sys
+import types
 
+import pytest
 from umrs.api.knowledge_query import (
     _build_unified_search,
-    _node_snippet,
+    _GraphScope,
     _rag_backend_for,
     _RAGSearchBackend,
 )
+from umrs.knowledge.retrieval.types import Candidate, LaneResult
+
+_LEXICAL = "umrs.knowledge.retrieval.lexical"
 
 
 class _Cur:
@@ -67,63 +75,145 @@ class _Pool:
         self.returned += 1
 
 
-_ROWS = [
-    (
-        "ragdoc-doc-1-chunk0",
-        "chunk 0 of scan.h5",
-        "entity",
-        '{"text": "detector calibration constants for run 12"}',
-        "ab" * 32,
-        datetime(2026, 9, 7, tzinfo=timezone.utc),
-    ),
-    (
-        "ragdoc-doc-2",
-        "run.md",
-        "file",
-        '{"filename": "run.md"}',
-        "cd" * 32,
-        datetime(2026, 9, 6, tzinfo=timezone.utc),
-    ),
-]
+class _UntouchedPool:
+    """The backend hands the pool to the lane; it runs no SQL of its own."""
+
+    def getconn(self):
+        raise AssertionError("the rag backend must not query the pool itself")
 
 
-def _rag_hits(limit=5):
-    pool = _Pool(lambda _sql, _params: _ROWS)
-    backend = _RAGSearchBackend(pool)
-    return pool, backend.search_rag("calibration", project_id="spring8", limit=limit)
+def _candidates() -> list[Candidate]:
+    return [
+        Candidate(
+            node_id="node-chunk-art-1-0",
+            artifact_id="art-1",
+            chunk_index=0,
+            content={"kind": "chunk", "excerpt": "detector calibration constants for run 12"},
+            lane_scores={"lex": 7.5},
+        ),
+        Candidate(
+            node_id="node-chunk-art-2-3",
+            artifact_id="art-2",
+            chunk_index=3,
+            content={"kind": "chunk", "artifact_id": "art-2"},
+            lane_scores={"lex": 3.25},
+            text="calibration of the beamline monochromator",
+        ),
+    ]
 
 
-def test_backend_sql_is_project_scoped_corpus_read():
-    pool, hits = _rag_hits()
-    assert len(hits) == 2
-    sql, params = pool._conn._cur.queries[0]
-    assert "knowledge_nodes n" in sql
-    assert params[0] == "spring8" and params[-1] == 5
+def _install_lane(monkeypatch, result=None, *, raises=None) -> list[tuple]:
+    calls: list[tuple] = []
+    module = types.ModuleType(_LEXICAL)
+
+    def lexical_lane(pool, query, spec, *, limit=50):
+        calls.append((pool, query, spec, limit))
+        if raises is not None:
+            raise raises
+        return result
+
+    module.lexical_lane = lexical_lane
+    monkeypatch.setitem(sys.modules, _LEXICAL, module)
+    return calls
 
 
-def test_hit_carries_central_venue_and_lane():
-    _, hits = _rag_hits()
-    first = hits[0]
+def _ok_lane() -> LaneResult:
+    return LaneResult(name="lex", candidates=_candidates())
+
+
+def test_the_rag_scope_runs_the_lexical_chunk_lane(monkeypatch):
+    calls = _install_lane(monkeypatch, _ok_lane())
+    pool = _UntouchedPool()
+    hits = _RAGSearchBackend(pool).search_rag("calibration", project_id="spring8", limit=5)
+    assert [h["source_id"] for h in hits] == ["node-chunk-art-1-0", "node-chunk-art-2-3"]
+    lane_pool, query, _spec, limit = calls[0]
+    assert (lane_pool, query, limit) == (pool, "calibration", 5)
+
+
+def test_the_lane_spec_is_the_project_under_the_legacy_rule(monkeypatch):
+    calls = _install_lane(monkeypatch, _ok_lane())
+    _RAGSearchBackend(_UntouchedPool()).search_rag("calibration", project_id="spring8")
+    spec = calls[0][2]
+    assert (spec.queries, spec.project_id) == (("calibration",), "spring8")
+    assert (spec.graph_ids, spec.include_ambient) == (None, False)
+
+
+def test_hits_carry_the_lane_score_venue_and_chunk(monkeypatch):
+    _install_lane(monkeypatch, _ok_lane())
+    first, second = _RAGSearchBackend(_UntouchedPool()).search_rag("calibration", project_id="p")
+    assert first["score"] == 7.5 and second["score"] == 3.25  # IDF sums, not a fixed 0.5
     assert first["source_type"] == "knowledge_corpus_node"
-    meta = first["metadata"]
-    assert meta["lane"] == "central-corpus"
-    assert meta["corpus_venue"] == "central-pg"
-    assert meta["node_type"] == "entity"
-    assert first["score"] == 0.5  # honest fixed score — no relevance model
+    assert first["title"] == "chunk 0 of art-1"
+    assert first["metadata"] == {
+        "lane": "lexical",
+        "corpus_venue": "central-pg",
+        "artifact_id": "art-1",
+        "chunk_index": 0,
+    }
 
 
-def test_hit_snippet_prefers_text_field():
-    _, hits = _rag_hits()
-    assert hits[0]["content"] == "detector calibration constants for run 12"
-    # second node has no text-ish key -> honest content-ref pointer
-    assert hits[1]["content"].startswith("(content ref:")
+def test_hit_text_prefers_the_hydrated_chunk_then_the_excerpt(monkeypatch):
+    _install_lane(monkeypatch, _ok_lane())
+    first, second = _RAGSearchBackend(_UntouchedPool()).search_rag("calibration", project_id="p")
+    assert first["content"] == "detector calibration constants for run 12"
+    assert second["content"] == "calibration of the beamline monochromator"
 
 
-def test_node_snippet_never_fabricates():
-    assert _node_snippet("", "") == "(no snippet)"
-    assert _node_snippet('{"x": 1}', "") == "(no snippet)"
-    assert _node_snippet("not json raw text", "").startswith("not json")
-    assert _node_snippet('{"preview": "p"}', "") == "p"
+def test_the_lane_report_and_candidates_are_kept_for_the_response(monkeypatch):
+    _install_lane(monkeypatch, _ok_lane())
+    backend = _RAGSearchBackend(_UntouchedPool())
+    backend.search_rag("calibration", project_id="p")
+    assert backend.lane_report == {"lane": "lexical", "status": "ok", "n": 2}
+    assert [c.node_id for c in backend.lexical_candidates] == [
+        "node-chunk-art-1-0",
+        "node-chunk-art-2-3",
+    ]
+
+
+def test_a_graph_selection_reaches_the_lane(monkeypatch):
+    calls = _install_lane(monkeypatch, _ok_lane())
+    scope = _GraphScope(graph_ids=("g-exp", "g-def"), default_projects=("p",))
+    backend = _RAGSearchBackend(_UntouchedPool(), include_ambient=True, graph_scope=scope)
+    backend.search_rag("q", project_id="p")
+    spec = calls[0][2]
+    assert spec.graph_ids == ("g-exp", "g-def") and spec.include_ambient is True
+
+
+def test_a_missing_lexical_module_is_reported_never_answered(monkeypatch):
+    monkeypatch.setitem(sys.modules, _LEXICAL, None)
+    backend = _RAGSearchBackend(_UntouchedPool())
+    assert backend.search_rag("q", project_id="p") == []
+    assert backend.lane_report["status"] == "unavailable"
+    assert "lexical lane not installed" in backend.lane_report["reason"]
+    assert backend.lexical_candidates is None
+
+
+@pytest.mark.parametrize(
+    ("status", "reason"),
+    [("unavailable", "knowledge_nodes.search_text missing (migration 0120)"), ("off", "")],
+)
+def test_a_lane_that_did_not_run_returns_nothing_and_says_why(monkeypatch, status, reason):
+    _install_lane(monkeypatch, LaneResult(name="lex", status=status, reason=reason))
+    backend = _RAGSearchBackend(_UntouchedPool())
+    assert backend.search_rag("q", project_id="p") == []
+    assert backend.lane_report["status"] == status
+    assert backend.lane_report.get("reason", "") == reason
+    assert backend.lexical_candidates is None
+
+
+def test_a_failing_lane_is_reported_not_raised(monkeypatch):
+    _install_lane(monkeypatch, raises=RuntimeError("relation does not exist"))
+    backend = _RAGSearchBackend(_UntouchedPool())
+    assert backend.search_rag("q", project_id="p") == []
+    assert backend.lane_report["reason"] == "lexical lane failed (RuntimeError)"
+
+
+def test_the_page_is_capped_at_the_limit(monkeypatch):
+    many = [Candidate(node_id=f"n{i}", lane_scores={"lex": 10.0 - i}) for i in range(9)]
+    _install_lane(monkeypatch, LaneResult(name="lex", candidates=many))
+    hits = _RAGSearchBackend(_UntouchedPool()).search_rag("q", project_id="p", limit=4)
+    assert [h["source_id"] for h in hits] == ["n0", "n1", "n2", "n3"]
+    assert hits[0]["title"] == "n0"  # no artifact: the node id, never a made-up name
 
 
 def test_wiring_gated_on_table_presence():
@@ -152,8 +242,7 @@ class _StubStore:
 
 
 def test_unified_search_marks_rag_wired():
-    pool = _Pool(lambda _sql, _params: _ROWS)
-    backend = _RAGSearchBackend(pool)
+    backend = _RAGSearchBackend(_UntouchedPool())
     _, wired, unwired = _build_unified_search(
         _StubStore(), None, "no pool", None, None, backend, None
     )

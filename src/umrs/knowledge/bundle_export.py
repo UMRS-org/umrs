@@ -19,6 +19,16 @@ The a2l_links and a2l_refs tables are backward-compatible: older bundle
 readers (v1.0) that do not know these tables simply ignore them.
 
 Downloaded via Gateway with auth, validated on client with signature.sig.
+
+Chunk text (ADR-093 D-12, MD-5): with the explicit ``chunk_text`` opt-in
+(default off) every chunk node of an active artifact carries its full body
+(``text``, md5-verified, at most 4,096 chars) and the manifest becomes v1.3
+with ``chunk_text: true``. A project whose data class is not
+``non_sensitive`` (an unset class counts as sensitive, ADR-062) exports it
+only when the job's verified submitter is its owner (never on an
+acknowledgement the spec carries); the export refuses otherwise. Without the opt-in
+the bundle keeps the v1.2 shape: excerpts only, raw bytes only with
+``include_raw``.
 """
 
 from __future__ import annotations
@@ -35,7 +45,8 @@ from pathlib import Path
 from typing import Any
 
 from . import bundle_raw, canonical_identity
-from .bundle_reader import ExportBundleWriter
+from .bundle_reader import CHUNK_TEXT_MAX_CHARS, ExportBundleWriter, is_chunk_row
+from .retrieval.hydrate import artifact_slice, stored_text
 from .store import KnowledgeStore
 
 logger = logging.getLogger(__name__)
@@ -47,14 +58,38 @@ _SIGNATURE_FILENAME = "signature.sig"
 _PAGE_SIZE = 500
 _BUNDLE_FORMAT = "r4-kb"
 _BUNDLE_VERSION = "1.2"
+# ADR-093 D-12: only an export with the chunk_text opt-in is v1.3.
+_CHUNK_TEXT_VERSION = "1.3"
 _GENERATOR_NAME = "umrs"
 
 # Default embedding vector cursor (pgvector stores as text, use id as cursor)
 _DEFAULT_EMBEDDING_CURSOR = "0"
 
+# ADR-093 D-12 chunk text: the stored bodies (migration 0120; an absent
+# column reads as none), the active artifacts' object keys, and the project
+# facts of the MD-5 gate (projects.owner_id / data_class, 0095 + 0107).
+_CHUNK_SEARCH_TEXT_SQL = (
+    "SELECT node_id, search_text FROM knowledge_nodes "
+    "WHERE project_id = $1 AND content->>'kind' = 'chunk' "
+    "AND search_text IS NOT NULL"
+)
+# The source name is the one the embed job decoded the object under (a PPTX
+# is extracted only by its name; hydrate.chunked_text).
+_ARTIFACT_REFS_SQL = (
+    "SELECT artifact_id, source_ref, metadata->>'source_name' "
+    "FROM knowledge_artifacts WHERE project_id = $1 AND status = 'active'"
+)
+_PROJECT_FACTS_SQL = "SELECT owner_id, data_class FROM projects WHERE project_id = $1"
+# Artifact texts held at once while slicing (chunks arrive grouped by artifact).
+_DOCUMENT_CACHE = 8
+
 
 class BundleIntegrityError(RuntimeError):
     """Raised when integrity requirements for an export cannot be met."""
+
+
+class ChunkTextRefused(PermissionError):
+    """A chunk-text export the project's data class does not allow (MD-5)."""
 
 
 def _read_umrs_version() -> str:
@@ -199,6 +234,161 @@ def _json_dict(value: Any) -> dict[str, Any]:
     return {}
 
 
+# ── Chunk text (ADR-093 D-12) ──────────────────────────────────────────────────
+
+
+def _chunk_text_refusal(
+    project_id: str, facts: tuple[str, str] | None, submitter: str
+) -> str:
+    """Why a chunk-text export of the project is refused ("" = allowed).
+
+    ``non_sensitive`` projects export it on the flag; any other class (an
+    unset one included) only when the job's verified submitter is the
+    project's owner. Nothing the spec says counts: a client-written
+    acknowledgement naming the owner unlocked a sensitive project for any
+    member through POST /jobs (review chunk-data-2, 2026-10-10). A project
+    with no readable registry row (unregistered, or the registry down)
+    refuses (fail closed): its owner and class are unknown.
+    """
+    if facts is None:
+        return (
+            f"chunk text of {project_id!r} refused: no readable project registry "
+            "row (owner, data class) — register the project or retry when the "
+            "registry is reachable"
+        )
+    owner, data_class = facts
+    if data_class == "non_sensitive":
+        return ""
+    if owner and submitter == owner:
+        return ""
+    return (
+        f"project {project_id!r} is {data_class or 'sensitive (unset)'}: its chunk "
+        "text leaves the installation only on its owner's explicit chunk_text flag "
+        f"(the job's submitter is {submitter or 'unknown'!r})"
+    )
+
+
+def _owner_acknowledgement(
+    facts: tuple[str, str] | None, submitter: str
+) -> dict[str, Any]:
+    """The manifest record of a sensitive project's release: the verified
+    owner who submitted it ({} for a ``non_sensitive`` project)."""
+    if facts is None or facts[1] == "non_sensitive":
+        return {}
+    return {
+        "by": submitter,
+        "data_class": facts[1] or "sensitive",
+        "verified": "job submitter is the project owner",
+        "at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def _quiet_reader(
+    reader: Callable[[str], bytes | None] | None,
+) -> Callable[[str], bytes | None] | None:
+    """The artifact reader with read faults turned into "unreadable" (None)."""
+    if reader is None:
+        return None
+
+    def read(source_ref: str) -> bytes | None:
+        try:
+            return reader(source_ref)
+        except Exception as exc:  # noqa: BLE001 — one unreadable object keeps its excerpt
+            logger.warning("chunk text: artifact %s unreadable: %s", source_ref, exc)
+            return None
+
+    return read
+
+
+def _artifact_of(row: dict[str, Any]) -> str:
+    """A node row's ``content.artifact_id`` ("" when it has none)."""
+    content = row.get("content")
+    return str(content.get("artifact_id") or "") if isinstance(content, dict) else ""
+
+
+def _header_of(content: dict[str, Any], search_text: str | None) -> str | None:
+    """The C9 header a stored ``search_text`` starts with, when it has one."""
+    header_chars = content.get("header_chars")
+    if search_text and isinstance(header_chars, int) and header_chars > 0:
+        return search_text[:header_chars]
+    return None
+
+
+class _ChunkTexts:
+    """Full chunk bodies for a ``chunk_text`` export.
+
+    A body is the ``search_text`` whose md5 equals ``content.chunk_md5``
+    (after a C9 header), else the md5-verified slice of the artifact the
+    embed job chunked — both through knowledge/retrieval/hydrate, the rule
+    every reader shares. A chunk of an artifact that is not active, or with
+    neither text, keeps its excerpt only.
+    """
+
+    def __init__(
+        self,
+        search_texts: dict[str, str],
+        artifacts: dict[str, tuple[str, str]],
+        reader: Callable[[str], bytes | None] | None,
+    ) -> None:
+        self._search_texts = search_texts
+        self._artifacts = artifacts  # artifact_id -> (source_ref, source_name)
+        self._reader = _quiet_reader(reader)
+        self._documents: dict[str, str | None] = {}
+        self.counts = dict.fromkeys(
+            (
+                "chunks",
+                "search_text",
+                "artifact",
+                "missing",
+                "no_artifact",
+                "truncated",
+            ),
+            0,
+        )
+
+    def attach(self, row: dict[str, Any]) -> None:
+        """Give one serialized node row its ``text`` when it is a chunk."""
+        if not is_chunk_row(row):
+            return
+        self.counts["chunks"] += 1
+        content = row["content"]
+        artifact = self._artifacts.get(str(content.get("artifact_id") or ""))
+        if artifact is None:
+            self.counts["no_artifact"] += 1
+            return
+        search_text = self._search_texts.get(str(row.get("node_id") or ""))
+        body = stored_text(content, search_text)
+        source, header = "search_text", _header_of(content, search_text)
+        if not body:
+            body, source, header = self._slice(content, *artifact), "artifact", None
+        if not body:
+            self.counts["missing"] += 1
+            return
+        self.counts[source] += 1
+        self._put(row, body, header)
+
+    def _slice(self, content: dict[str, Any], ref: str, name: str) -> str | None:
+        if ref not in self._documents and len(self._documents) >= _DOCUMENT_CACHE:
+            self._documents.clear()
+        return artifact_slice(content, ref, self._documents, self._reader, name)
+
+    def _put(self, row: dict[str, Any], body: str, header: str | None) -> None:
+        if len(body) > CHUNK_TEXT_MAX_CHARS:
+            body = body[:CHUNK_TEXT_MAX_CHARS]
+            row["text_truncated"] = True
+            self.counts["truncated"] += 1
+        row["text"] = body
+        if header:
+            row["text_header"] = header
+
+    def summary(self, acknowledgement: dict[str, Any]) -> dict[str, Any]:
+        """The manifest ``chunk_text_summary`` block."""
+        block: dict[str, Any] = {**self.counts, "max_chars": CHUNK_TEXT_MAX_CHARS}
+        if acknowledgement:
+            block["acknowledgement"] = acknowledgement
+        return block
+
+
 # ── Result DTO ─────────────────────────────────────────────────────────────────
 
 
@@ -242,12 +432,21 @@ class KnowledgeExportEngine:
         artifact_reader: Callable[[str], bytes | None] | None = None,
         include_raw: bool = False,
         raw_acknowledgement: dict[str, Any] | None = None,
+        chunk_text: bool = False,
+        chunk_text_submitter: str = "",
     ) -> None:
         self._store = store
         # ADR-032 raw-materials amendment: opt-in carriage of artifact bytes;
         # the acknowledgement (sensitive projects) is recorded in the manifest.
         self._include_raw = include_raw
         self._raw_acknowledgement = raw_acknowledgement or {}
+        # ADR-093 D-12 / MD-5: opt-in full chunk text (r4-kb v1.3), gated on
+        # the job's verified submitter; the owner's release of a sensitive
+        # project rides the manifest (set by the gate).
+        self._chunk_text = chunk_text
+        self._chunk_text_submitter = str(chunk_text_submitter or "")
+        self._chunk_text_ack: dict[str, Any] = {}
+        self._chunk_text_block: dict[str, Any] = {}
         self._artifact_rows: list[dict[str, Any]] = []
         # ADR-032 #1: reads one artifact's raw bytes by source_ref (None =
         # unreadable) so the export can map each row to its canonical identity.
@@ -279,6 +478,7 @@ class KnowledgeExportEngine:
                 "PRODUCING UNSIGNED BUNDLE for project=%s (allow_unsigned opt-out)",
                 project_id,
             )
+        await self._gate_chunk_text(project_id)
         logger.info("Starting knowledge export for project=%s", project_id)
 
         writer = ExportBundleWriter(self._output_dir / project_id)
@@ -313,6 +513,7 @@ class KnowledgeExportEngine:
             catalog_record,
         )
         self._manifest["raw"] = raw_block
+        self._stamp_chunk_text(self._manifest)
         # The signature must cover the table CONTENTS, not only their names
         # and counts: each listed file's sha256 rides the signed manifest.
         stamp_table_digests(self._manifest, writer.path)
@@ -506,12 +707,7 @@ class KnowledgeExportEngine:
             "Exported %d IR documents for project=%s", len(doc_rows), project_id
         )
 
-        nodes = await self._store.list_nodes(project_id=project_id)
-        node_rows = [
-            self._serialize_node(n) for n in nodes if n.node_id not in excluded_node_ids
-        ]
-        await writer.write_nodes(node_rows)
-        logger.info("Exported %d nodes for project=%s", len(node_rows), project_id)
+        node_count = await self._dump_nodes(project_id, writer, excluded_node_ids)
 
         edges = await self._store.list_edges(project_id=project_id)
         edge_rows = [
@@ -546,11 +742,96 @@ class KnowledgeExportEngine:
         return {
             "artifacts": (artifact_total, "artifacts.jsonl"),
             "documents": (len(doc_rows), "documents.jsonl"),
-            "nodes": (len(node_rows), "nodes.jsonl"),
+            "nodes": (node_count, "nodes.jsonl"),
             "edges": (len(edge_rows), "edges.jsonl"),
             "embeddings": (emb_total, "embeddings.jsonl"),
             "catalog": (len(cat_rows), "catalog.jsonl"),
         }
+
+    async def _dump_nodes(
+        self,
+        project_id: str,
+        writer: ExportBundleWriter,
+        excluded_node_ids: frozenset[str],
+    ) -> int:
+        """Write nodes.jsonl (snapshot-excluded nodes dropped); chunk rows
+        carry their full text only with the chunk_text opt-in."""
+        nodes = await self._store.list_nodes(project_id=project_id)
+        node_rows = [
+            self._serialize_node(n) for n in nodes if n.node_id not in excluded_node_ids
+        ]
+        await self._attach_chunk_text(project_id, node_rows)
+        await writer.write_nodes(node_rows)
+        logger.info("Exported %d nodes for project=%s", len(node_rows), project_id)
+        return len(node_rows)
+
+    # ── Chunk text (ADR-093 D-12) ─────────────────────────────────────────────
+
+    async def _gate_chunk_text(self, project_id: str) -> None:
+        """MD-5: refuse BEFORE anything is written when the project's data
+        class does not let its chunk text leave (no-op without the opt-in)."""
+        if not self._chunk_text:
+            return
+        facts = await self._project_facts(project_id)
+        submitter = self._chunk_text_submitter
+        refusal = _chunk_text_refusal(project_id, facts, submitter)
+        if refusal:
+            raise ChunkTextRefused(refusal)
+        self._chunk_text_ack = _owner_acknowledgement(facts, submitter)
+
+    async def _project_facts(self, project_id: str) -> tuple[str, str] | None:
+        """(owner_id, data_class) from the projects registry, or None."""
+        try:
+            row = await self._store._pool.fetchrow(_PROJECT_FACTS_SQL, project_id)  # type: ignore[union-attr]
+        except Exception as exc:  # noqa: BLE001 — unreadable registry refuses (fail closed)
+            logger.warning("project facts unreadable for %s: %s", project_id, exc)
+            return None
+        if row is None:
+            return None
+        return str(row["owner_id"] or ""), str(row["data_class"] or "")
+
+    async def _attach_chunk_text(
+        self, project_id: str, node_rows: list[dict[str, Any]]
+    ) -> None:
+        """Give every chunk row of an active artifact its md5-verified body."""
+        if not self._chunk_text:
+            return
+        search_texts = await self._fetch_pairs(_CHUNK_SEARCH_TEXT_SQL, project_id)
+        artifacts = {
+            str(row[0]): (str(row[1] or ""), str(row[2] or ""))
+            for row in await self._fetch_rows(_ARTIFACT_REFS_SQL, project_id)
+        }
+        texts = _ChunkTexts(search_texts, artifacts, self._artifact_reader)
+        # Visit by artifact (rows change in place; nodes.jsonl keeps its
+        # order) so each artifact is read at most once whatever the order.
+        for row in sorted(node_rows, key=_artifact_of):
+            texts.attach(row)
+        self._chunk_text_block = texts.summary(self._chunk_text_ack)
+        logger.info("Chunk text for project=%s: %s", project_id, texts.counts)
+
+    async def _fetch_pairs(self, query: str, project_id: str) -> dict[str, str]:
+        """``{first column: second column}`` of one read ({} when unreadable,
+        e.g. ``search_text`` before migration 0120)."""
+        rows = await self._fetch_rows(query, project_id)
+        return {str(r[0]): str(r[1] or "") for r in rows}
+
+    async def _fetch_rows(self, query: str, project_id: str) -> list[Any]:
+        """The rows of one read with a first column ([] when unreadable)."""
+        try:
+            rows = await self._store._pool.fetch(query, project_id)  # type: ignore[union-attr]
+        except Exception as exc:  # noqa: BLE001 — the slice fallback still applies
+            logger.warning("chunk text input unreadable for %s: %s", project_id, exc)
+            return []
+        return [r for r in rows if r[0]]
+
+    def _stamp_chunk_text(self, manifest: dict[str, Any]) -> None:
+        """v1.3 + ``chunk_text: true`` only with the opt-in; otherwise the
+        manifest keeps the v1.2 shape untouched."""
+        if not self._chunk_text:
+            return
+        manifest["version"] = _CHUNK_TEXT_VERSION
+        manifest["chunk_text"] = True
+        manifest["chunk_text_summary"] = self._chunk_text_block
 
     async def _dump_node_embeddings(
         self,
@@ -1072,6 +1353,7 @@ def verify_bundle_integrity(
 
 
 __all__ = [
+    "ChunkTextRefused",
     "KnowledgeExportEngine",
     "KnowledgeExportResult",
     "stamp_table_digests",

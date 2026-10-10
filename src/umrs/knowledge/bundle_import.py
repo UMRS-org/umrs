@@ -14,6 +14,12 @@ individually (row-level fault isolation), never aborting the run.
 
 Retargeting: ``target_project_id`` rewrites every row's project scope —
 the DR/migration path (restore source bundle into a new project).
+
+Chunk search text (ADR-093 D-12): a restored chunk node gets
+``search_text`` (migration 0120) from its v1.3 node text when the md5
+matches ``content.chunk_md5``, else from the md5-verified slice of a raw
+object the bundle carries (and the importer accepted), else it stays NULL
+and the result reports the chunks a backfill must fill.
 """
 
 from __future__ import annotations
@@ -29,12 +35,18 @@ from typing import Any
 
 from . import bundle_raw, canonical_identity
 from .bundle_export import tables_pinned, verify_bundle_integrity
-from .store import KnowledgeEdge, KnowledgeNode
+from .bundle_reader import chunk_search_text
+from .retrieval.hydrate import artifact_slice
+from .store import KnowledgeEdge, KnowledgeNode, _has_search_text
 
 logger = logging.getLogger(__name__)
 
 _BUNDLE_FORMAT = "r4-kb"
-_ACCEPTED_VERSIONS = {"1.0", "1.1", "1.2"}
+# 1.3 = 1.2 + optional chunk-node text (ADR-093 D-12, export opt-in).
+_ACCEPTED_VERSIONS = {"1.0", "1.1", "1.2", "1.3"}
+# Raw-object texts held at once while slicing chunk bodies.
+_RAW_DOCUMENT_CACHE = 8
+_BACKFILL_COMMAND = "python -m umrs.knowledge.retrieval.backfill --project {project}"
 _SIGNATURE_FILENAME = "signature.sig"
 
 _TABLE_FILES: dict[str, str] = {
@@ -106,6 +118,23 @@ class KnowledgeImportResult:
     # existing one under another id (reported, never merged — federation is
     # outside v1).
     canonical_matches: list[dict[str, str]] = field(default_factory=list)
+    # ADR-093 D-12: restored chunk nodes whose search_text was filled from
+    # the v1.3 node text / from a raw object's verified slice / left NULL
+    # (the backfill command to run is named when any is pending).
+    search_text_from_node: int = 0
+    search_text_from_raw: int = 0
+    search_text_pending: int = 0
+    # Pending chunks whose artifact got no raw object restored here: the
+    # backfill reads their source installation's object key (review
+    # chunk-data-14, 2026-10-10).
+    search_text_pending_no_raw: int = 0
+    search_text_backfill: str = ""
+    # Node rows not restored because an identical row (same node_id and
+    # content hash) is already present — node ids are installation-global,
+    # so a row held by another project is not restored into the target
+    # either (review chunk-data-13, 2026-10-10).
+    nodes_skipped_identical: int = 0
+    nodes_skipped_other_project: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -140,6 +169,13 @@ class KnowledgeImportResult:
             "raw_restored": self.raw_restored,
             "raw_unbound": self.raw_unbound,
             "raw_declined": self.raw_declined,
+            "search_text_from_node": self.search_text_from_node,
+            "search_text_from_raw": self.search_text_from_raw,
+            "search_text_pending": self.search_text_pending,
+            "search_text_pending_no_raw": self.search_text_pending_no_raw,
+            "search_text_backfill": self.search_text_backfill,
+            "nodes_skipped_identical": self.nodes_skipped_identical,
+            "nodes_skipped_other_project": self.nodes_skipped_other_project,
         }
 
 
@@ -345,6 +381,204 @@ def _read_stored_signature(bundle_path: Path) -> str:
     return ""
 
 
+# ── Chunk search text (ADR-093 D-12) ──────────────────────────────────────
+
+
+def _source_name(row: dict[str, Any]) -> str:
+    """An artifact row's ``metadata.source_name`` ("" when it has none)."""
+    metadata = row.get("metadata")
+    return str(metadata.get("source_name") or "") if isinstance(metadata, dict) else ""
+
+
+def _artifact_hashes(bundle_path: Path) -> dict[str, tuple[str, str]]:
+    """artifact_id -> (content_hash, source name), from the artifact rows."""
+    path = bundle_path / _TABLE_FILES["artifacts"]
+    if not path.exists():
+        return {}
+    return {
+        str(row.get("artifact_id") or ""): (
+            str(row.get("content_hash") or ""),
+            _source_name(row),
+        )
+        for row in _iter_rows(path)
+    }
+
+
+class _RawTexts:
+    """A chunk row -> the md5-verified slice of its artifact's raw object.
+
+    Objects are content-addressed and deduplicated, so a chunk finds its
+    object through its artifact row's ``content_hash``. Each object is
+    decoded the way the embed job chunked it (hydrate.artifact_slice: a PDF,
+    or a PPTX by its artifact's source name, through the text extractor).
+    """
+
+    def __init__(self, bundle_path: Path, raw_rows: list[dict[str, Any]]) -> None:
+        by_hash = {str(r.get("content_hash") or ""): r for r in raw_rows}
+        self._bundle = bundle_path
+        self._objects = {
+            artifact_id: (by_hash[digest], name)
+            for artifact_id, (digest, name) in _artifact_hashes(bundle_path).items()
+            if digest in by_hash
+        }
+        self._documents: dict[str, str | None] = {}
+
+    def __call__(self, row: dict[str, Any]) -> str | None:
+        content = row.get("content") if isinstance(row.get("content"), dict) else {}
+        found = self._objects.get(str(content.get("artifact_id") or ""))
+        if found is None:
+            return None
+        obj, name = found
+        key = str(obj["content_hash"])
+        if key not in self._documents and len(self._documents) >= _RAW_DOCUMENT_CACHE:
+            self._documents.clear()
+        return artifact_slice(
+            content,
+            key,
+            self._documents,
+            lambda _key: bundle_raw.read_object(self._bundle, obj),
+            name,
+        )
+
+
+class _SearchTexts:
+    """search_text for restored chunk nodes, and the counts the result
+    reports. ``enabled`` is False without migration 0120's column: nothing
+    is computed and every chunk with a span is pending."""
+
+    def __init__(
+        self,
+        raw_slice: _RawTexts | None,
+        enabled: bool,
+        rebound: frozenset[str] = frozenset(),
+    ) -> None:
+        self._raw_slice = raw_slice
+        self._enabled = enabled
+        # Artifacts whose raw object this import stored and re-bound: the
+        # backfill can read those; the others keep the source's object key.
+        self._rebound = rebound
+        self.counts = {"node": 0, "raw": 0, "pending": 0, "no_raw": 0}
+
+    def text_for(self, row: dict[str, Any]) -> tuple[str | None, str]:
+        """``(search_text, source)`` for one node row (see chunk_search_text)."""
+        if not self._enabled:
+            _text, source = chunk_search_text(row)
+            return None, ("pending" if source else "")
+        return chunk_search_text(row, self._raw_slice)
+
+    def count(self, source: str, row: dict[str, Any]) -> None:
+        """Count one restored row's source ("" = not a chunk: not counted)."""
+        if not source:
+            return
+        self.counts[source] += 1
+        content = row.get("content") if isinstance(row.get("content"), dict) else {}
+        if source == "pending" and str(content.get("artifact_id")) not in self._rebound:
+            self.counts["no_raw"] += 1
+
+    def _advice(self, project_id: str) -> str:
+        """What fills the pending chunks: the backfill reads each artifact's
+        object, so it works for an artifact whose raw object was restored
+        here; any other keeps the source installation's object key, readable
+        only there — elsewhere the bundle must carry the text or the bytes."""
+        command = _BACKFILL_COMMAND.format(project=project_id)
+        if not self._enabled:
+            return f"apply migration 0120 (knowledge_nodes.search_text), then {command}"
+        no_raw = self.counts["no_raw"]
+        if not no_raw:
+            return command
+        return (
+            f"{no_raw} of {self.counts['pending']} pending chunk(s) have no raw object "
+            "restored here: re-export the source with --chunk-text (or include_raw) "
+            f"and import again; `{command}` fills them only where the source "
+            "installation's objects are readable"
+        )
+
+    def report(self, result: KnowledgeImportResult, project_id: str) -> None:
+        result.search_text_from_node = self.counts["node"]
+        result.search_text_from_raw = self.counts["raw"]
+        result.search_text_pending = self.counts["pending"]
+        result.search_text_pending_no_raw = self.counts["no_raw"]
+        if not self.counts["pending"]:
+            return
+        result.search_text_backfill = self._advice(project_id)
+        logger.warning(
+            "%d restored chunk(s) of %s have no search_text; run: %s",
+            self.counts["pending"],
+            project_id,
+            result.search_text_backfill,
+        )
+
+
+def _data_errors() -> tuple[type[Exception], ...]:
+    """asyncpg's row-data errors (a NUL in TEXT or JSONB, a bad encoding):
+    the row is refused, the connection is fine."""
+    try:
+        from asyncpg.exceptions import DataError
+    except ImportError:  # pragma: no cover — asyncpg ships with umrs
+        return ()
+    return (DataError,)
+
+
+# A row that cannot be restored is skipped by name; the restore goes on.
+_ROW_ERRORS: tuple[type[Exception], ...] = (
+    KeyError,
+    TypeError,
+    ValueError,
+    *_data_errors(),
+)
+
+
+def _holder(row: dict[str, Any]) -> dict[str, Any]:
+    """The skip detail of an identical row already present: its project."""
+    return {"project_id": str(row.get("project_id") or "")}
+
+
+class _NodeSkips:
+    """Node rows skipped as already present (same id and content hash), and
+    how many of those another project holds — node ids are global, so such
+    a row is not restored into the target project at all."""
+
+    def __init__(self, target: str) -> None:
+        self._target = target
+        self.identical = 0
+        self.other_project = 0
+
+    def add(self, existing: dict[str, Any] | None) -> None:
+        self.identical += 1
+        owner = str((existing or {}).get("project_id") or "")
+        if owner and owner != self._target:
+            self.other_project += 1
+
+    def report(self, result: KnowledgeImportResult | None) -> None:
+        if result is None:
+            return
+        result.nodes_skipped_identical = self.identical
+        result.nodes_skipped_other_project = self.other_project
+        if self.other_project:
+            logger.warning(
+                "%d node row(s) already exist under another project and were not "
+                "restored into %s (node ids are installation-global): import into "
+                "another installation to get a separate copy",
+                self.other_project,
+                self._target,
+            )
+
+
+async def _search_text_column(store: Any) -> bool:
+    """Whether the destination has ``knowledge_nodes.search_text`` (0120);
+    the store's own probe, cached per pool. A store without a pool takes
+    the field as given."""
+    pool = getattr(store, "_pool", None)
+    if pool is None:
+        return True
+    try:
+        async with pool.acquire() as conn:
+            return await _has_search_text(pool, conn)
+    except Exception as exc:  # noqa: BLE001 — unknown column = not written, reported pending
+        logger.warning("search_text column probe failed: %s", exc)
+        return False
+
+
 class KnowledgeImportEngine:
     """Restore engine (mirror of ``KnowledgeExportEngine``)."""
 
@@ -423,8 +657,12 @@ class KnowledgeImportEngine:
         docs, doc_skipped = await self._restore_documents(bundle_path, target)
         result.document_count = docs
         result.skipped_count += doc_skipped
-        await self._restore_raw(bundle_path, raw_rows, target, result)
-        result.node_count = await self._restore_nodes(bundle_path, target)
+        rebound = await self._restore_raw(bundle_path, raw_rows, target, result)
+        texts = await self._search_texts(bundle_path, raw_rows, rebound)
+        result.node_count = await self._restore_nodes(
+            bundle_path, target, texts, result
+        )
+        texts.report(result, target)
         result.edge_count = await self._restore_edges(bundle_path, target)
         (
             result.embedding_count,
@@ -516,9 +754,11 @@ class KnowledgeImportEngine:
         rows: list[dict[str, Any]],
         project_id: str,
         result: KnowledgeImportResult,
-    ) -> None:
+    ) -> frozenset[str]:
         """Store each object in the destination and re-bind its artifact's
-        ``source_ref`` (the one deployment-local field; ids/hashes kept)."""
+        ``source_ref`` (the one deployment-local field; ids/hashes kept).
+        Returns the artifact ids re-bound to a stored object."""
+        rebound: set[str] = set()
         for row in rows:
             content = bundle_raw.read_object(bundle_path, row)
             try:
@@ -527,14 +767,14 @@ class KnowledgeImportEngine:
                 result.degraded = True
                 result.degraded_reason = f"raw objects not stored: {exc}"
                 logger.warning("raw object store failed for %s: %s", project_id, exc)
-                return
-            bound = await self._store.rebind_artifact_source(
-                project_id, str(row.get("artifact_id") or ""), key
-            )
-            if bound:
+                break
+            artifact_id = str(row.get("artifact_id") or "")
+            if await self._store.rebind_artifact_source(project_id, artifact_id, key):
                 result.raw_restored += 1
+                rebound.add(artifact_id)
             else:
                 result.raw_unbound += 1
+        return frozenset(rebound)
 
     async def _canonical_matches(
         self, bundle_path: Path, project_id: str
@@ -634,7 +874,7 @@ class KnowledgeImportEngine:
             return "insert", None
         existing_hash = str(row_d.get("content_hash") or "")
         if existing_hash == new_hash:
-            return "skip", None
+            return "skip", _holder(row_d)
         diff = {
             "table": table,
             "id": row_id,
@@ -665,31 +905,65 @@ class KnowledgeImportEngine:
             lambda row: self._store.insert_ir(**_ir_kwargs(row)),
         )
 
-    async def _restore_nodes(self, bundle_path: Path, project_id: str) -> int:
+    async def _search_texts(
+        self,
+        bundle_path: Path,
+        raw_rows: list[dict[str, Any]],
+        rebound: frozenset[str] = frozenset(),
+    ) -> _SearchTexts:
+        """The search_text source for this restore (ADR-093 D-12): raw
+        objects are sliced only when the importer accepted them."""
+        enabled = await _search_text_column(self._store)
+        raw_slice = _RawTexts(bundle_path, raw_rows) if enabled and raw_rows else None
+        return _SearchTexts(raw_slice, enabled, rebound)
+
+    async def _restore_nodes(
+        self,
+        bundle_path: Path,
+        project_id: str,
+        texts: _SearchTexts,
+        result: KnowledgeImportResult | None = None,
+    ) -> int:
         count = 0
         path = bundle_path / _TABLE_FILES["nodes"]
         if not path.exists():
             return count
+        skips = _NodeSkips(project_id)
         for row in _iter_rows(path):
-            outcome, diff = await self._collision_decision(
+            outcome, detail = await self._collision_decision(
                 "knowledge_nodes",
                 "node_id",
                 str(row["node_id"]),
                 str(row.get("content_hash") or ""),
             )
             if outcome == "abort":
-                raise BundleFormatError(_diff_message(diff))
+                raise BundleFormatError(_diff_message(detail))
             if outcome == "skip":
+                skips.add(detail)
                 continue
-            try:
-                await self._store.upsert_node(self._node_from_row(row, project_id))
-                count += 1
-            except (KeyError, TypeError, ValueError) as exc:
-                logger.warning("Skipping malformed node row: %s", exc)
+            count += await self._restore_node(row, project_id, texts)
+        skips.report(result)
         return count
 
+    async def _restore_node(
+        self, row: dict[str, Any], project_id: str, texts: _SearchTexts
+    ) -> int:
+        """Upsert one node row (1) or skip it as malformed, by name (0): a
+        row Postgres refuses (a NUL in its text, say) never aborts the rest
+        of the table."""
+        text, source = texts.text_for(row)
+        try:
+            await self._store.upsert_node(self._node_from_row(row, project_id, text))
+        except _ROW_ERRORS as exc:
+            logger.warning("Skipping malformed node row: %s", exc)
+            return 0
+        texts.count(source, row)
+        return 1
+
     @staticmethod
-    def _node_from_row(row: dict[str, Any], project_id: str) -> KnowledgeNode:
+    def _node_from_row(
+        row: dict[str, Any], project_id: str, search_text: str | None = None
+    ) -> KnowledgeNode:
         return KnowledgeNode(
             node_id=str(row["node_id"]),
             project_id=project_id,
@@ -698,6 +972,7 @@ class KnowledgeImportEngine:
             content=row.get("content") or {},
             content_hash=str(row.get("content_hash") or ""),
             source_ir=str(row.get("source_ir") or ""),
+            search_text=search_text,
         )
 
     async def _restore_edges(self, bundle_path: Path, project_id: str) -> int:
@@ -709,7 +984,7 @@ class KnowledgeImportEngine:
             try:
                 await self._store.upsert_edge(self._edge_from_row(row, project_id))
                 count += 1
-            except (KeyError, TypeError, ValueError) as exc:
+            except _ROW_ERRORS as exc:
                 logger.warning("Skipping malformed edge row: %s", exc)
         return count
 

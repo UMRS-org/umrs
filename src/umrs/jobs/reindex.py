@@ -7,24 +7,48 @@ The durable pattern registered with ``JobType.KNOWLEDGE_REINDEX``:
    a site cannot re-embed with a model it does not run — refused by name;
 2. **sweep** — stale/uncurrent active artifacts under that model
    (`umrs.knowledge.embedding_metadata.select_stale_artifacts`);
-3. **re-embed** — one KNOWLEDGE_EMBED job per project over the swept
-   artifacts (the embedding-job sandbox lane when the site opted in); the
-   embed job stamps each artifact current only after its vectors are
-   written. This job never stamps: until 2026-09-24 it marked swept rows
-   current WITHOUT recomputing a single vector;
+3. **re-embed** — one KNOWLEDGE_EMBED job per graph of the job's project
+   over the swept artifacts (the embedding-job sandbox lane when the site
+   opted in); the embed job stamps each artifact current only after its
+   vectors are written. This job never stamps: until 2026-09-24 it marked
+   swept rows current WITHOUT recomputing a single vector;
 4. **maintain** — the canonical INDEX_BUILD seam
-   (`umrs.shared.pgvector_index.maintain_pgvector_index`).
+   (`umrs.shared.pgvector_index.maintain_pgvector_index`), except on
+   ``knowledge_node_embeddings``: its 0075 ``vector`` column has no
+   dimension, so pgvector cannot build an ANN index on it (the HNSW gate,
+   EMBEDDING-POLICY) and the call failed every reindex after it had already
+   enqueued the re-embed — a retry enqueued them again (ADR-093 D-11).
+
+Same-model repair (ADR-090 D-4, ADR-093 D-11, 2026-10-10): the sweep also
+selects artifacts cut by another chunk scheme than the site's
+(``UMRS_KNOWLEDGE_CHUNK_SCHEME``), and each artifact is re-embedded into the
+graph(s) its chunks live in, so a re-chunk replaces them in place (the embed
+writer deletes the orphans).
+
+Scope (review chunk-data-5, 2026-10-10): a reindex sweeps the job's own
+project only — any member can submit one, and a sweep of every project
+re-chunked other tenants' knowledge under that member's name. A spec naming
+another project is refused; the maintainer re-chunks a site with one job per
+project. Each re-embed descriptor carries the artifact's ``kind`` and
+``metadata`` (its source name decides PDF/PPTX extraction), and a retry
+that finds a batch already enqueued goes on with the next one.
 
 Payload contract (validated at submit time):
 
     {"database": str, "table": str, "target_model": str,
      "index_name": str | None, "embedding_dim": int > 0 | None,
-     "batch_limit": int > 0 (default 500)}
+     "batch_limit": int > 0 (default 500),
+     "project_id": str | None, "chunk_scheme": str | None}
+
+``chunk_scheme``, when given, must be the site's scheme: the re-embed
+writes the scheme the site runs, never the one a spec asks for.
 """
 
 from __future__ import annotations
 
+import json
 import logging
+from typing import Any
 
 from umrs.jobs.models import Job, JobAttempt, JobType
 from umrs.knowledge.embedding_metadata import (
@@ -59,7 +83,22 @@ def validate_knowledge_reindex_spec(spec: dict) -> dict:
         "table": table,
         "embedding_dim": dim,
         "batch_limit": limit,
+        **_scope_fields(spec),
     }
+
+
+def _scope_fields(spec: dict) -> dict:
+    """The optional sweep scope: ``project_id`` and a ``chunk_scheme`` name
+    (checked against the site at submit, see ``resolve_site_chunk_scheme``)."""
+    from umrs.knowledge.chunking import resolve_scheme
+
+    project = str(spec.get("project_id") or "").strip()
+    scheme = spec.get("chunk_scheme")
+    try:
+        scheme = resolve_scheme(scheme) if scheme else None
+    except ValueError as exc:
+        raise EmbeddingMetadataError(str(exc)) from exc
+    return {"project_id": project or None, "chunk_scheme": scheme}
 
 
 def _require_nonempty(value: str, message: str) -> None:
@@ -83,34 +122,46 @@ class KnowledgeReindexBackend(OrchestratorBackend):
 
     async def submit_job(self, job: Job, attempt: JobAttempt) -> str:
         spec = validate_knowledge_reindex_spec(job.spec or {})
+        spec["project_id"] = resolve_job_project(job, spec.get("project_id"))
         spec["target_model"] = resolve_site_embed_model(spec["target_model"])
+        spec["chunk_scheme"] = resolve_site_chunk_scheme(spec.get("chunk_scheme"))
 
         stale = _sweep(spec)
         if not stale:
             logger.info("reindex no-op: no stale artifacts for job=%s", job.job_id)
             return _backend_ref(spec, swept=0, enqueued=0)
 
-        enqueued = _enqueue_reembed(job, _stale_sources(stale))
-
-        from umrs.shared.pgvector_index import (
-            maintain_pgvector_index,
-        )
-
-        metrics = maintain_pgvector_index(
-            spec["database"],
-            spec["table"],
-            rebuild=True,
-            index_name=spec.get("index_name") or None,
-        )
+        enqueued = _enqueue_reembed(job, _stale_sources(stale, spec["project_id"]))
+        action = _maintain_index(spec)
         logger.info(
-            "reindex: job=%s attempt=%s swept=%d re-embed jobs=%d action=%s",
+            "reindex: job=%s attempt=%s swept=%d re-embed jobs=%d index=%s",
             job.job_id,
             attempt.attempt_id,
             len(stale),
             len(enqueued),
-            metrics.get("action", "rebuild"),
+            action,
         )
         return _backend_ref(spec, swept=len(stale), enqueued=len(enqueued))
+
+
+# Vector tables whose column has no dimension (0075): no ANN index can exist
+# on them, so there is nothing to maintain — nearest-node reads scan exactly.
+_UNTYPED_VECTOR_TABLES = frozenset({"knowledge_node_embeddings"})
+
+
+def _maintain_index(spec: dict) -> str:
+    """Rebuild the table's pgvector index; skipped for an untyped column."""
+    if spec["table"] in _UNTYPED_VECTOR_TABLES:
+        return "skipped (dimension-less vector column, 0075)"
+    from umrs.shared.pgvector_index import maintain_pgvector_index
+
+    metrics = maintain_pgvector_index(
+        spec["database"],
+        spec["table"],
+        rebuild=True,
+        index_name=spec.get("index_name") or None,
+    )
+    return str(metrics.get("action", "rebuild"))
 
 
 def _model_base(model: str) -> str:
@@ -133,35 +184,151 @@ def resolve_site_embed_model(target_model: str) -> str:
     return site
 
 
-def _stale_sources(stale: list[str]) -> dict[str, list[dict[str, str]]]:
-    """Swept artifact ids → KNOWLEDGE_EMBED source descriptors per project."""
-    with _artifact_conn() as conn:
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT artifact_id, project_id, source_ref FROM knowledge_artifacts "
-            "WHERE artifact_id = ANY(%s)",
-            (list(stale),),
+def resolve_job_project(job: Job, requested: str | None) -> str:
+    """The project a reindex sweeps: the job's own (verified at submit). A
+    spec naming another project is refused by name, and so is a job with
+    no project — there is no all-projects sweep from a job."""
+    own = str(getattr(job, "project_id", "") or "").strip()
+    if not own:
+        raise EmbeddingMetadataError(
+            "KNOWLEDGE_REINDEX sweeps the job's project and this job has none"
         )
-        rows = cur.fetchall()
-    by_project: dict[str, list[dict[str, str]]] = {}
-    for artifact_id, project_id, source_ref in rows:
-        by_project.setdefault(str(project_id), []).append(
-            {"artifact_id": str(artifact_id), "source_ref": str(source_ref or "")}
+    if requested and requested != own:
+        raise EmbeddingMetadataError(
+            f"KNOWLEDGE_REINDEX spec project_id {requested!r} is not the job's "
+            f"project {own!r}: a reindex re-embeds its own project only"
         )
-    return by_project
+    return own
 
 
-def _enqueue_reembed(
-    job: Job, by_project: dict[str, list[dict[str, str]]]
-) -> list[str]:
-    """One KNOWLEDGE_EMBED job per project (its default graph)."""
+def resolve_site_chunk_scheme(requested: str | None) -> str:
+    """The site's chunk scheme; a spec naming another one is refused by name
+    (the re-embed cuts with the site's scheme, so the sweep would never
+    converge)."""
+    from umrs.knowledge.chunking import CHUNK_SCHEME_ENV, configured_scheme
+
+    try:
+        site = configured_scheme()
+    except ValueError as exc:
+        raise EmbeddingMetadataError(str(exc)) from exc
+    if requested and requested != site:
+        raise EmbeddingMetadataError(
+            f"KNOWLEDGE_REINDEX chunk_scheme {requested!r} is not this site's "
+            f"({CHUNK_SCHEME_ENV}={site!r}); set the site scheme, then reindex"
+        )
+    return site
+
+
+# The graphs an artifact lives in: those holding its file node (the embed
+# writer's part_of edges need it there) or its chunks (one read per batch),
+# in the artifact's own project only — ``content.artifact_id`` is node data,
+# and another project's node naming it must not add a target.
+_CHUNK_GRAPHS_SQL = (
+    "SELECT DISTINCT content->>'artifact_id', graph_id FROM knowledge_nodes "
+    "WHERE (node_type = 'file' OR content->>'kind' = 'chunk') "
+    "AND project_id = %s AND content->>'artifact_id' = ANY(%s)"
+)
+_STALE_ROWS_SQL = (
+    "SELECT artifact_id, project_id, source_ref, kind, metadata "
+    "FROM knowledge_artifacts WHERE artifact_id = ANY(%s) AND project_id = %s"
+)
+# The descriptor metadata the embed path reads: the source name (PDF/PPTX
+# extraction, the header title's fallback) and the title.
+_DESCRIPTOR_METADATA = ("source_name", "title", "staged_from")
+
+# (project_id, graph_id) -> KNOWLEDGE_EMBED source descriptors
+_Batches = dict[tuple[str, str], list[dict[str, Any]]]
+
+
+def _graphs_by_artifact(cur, ids: list[str], project_id: str) -> dict[str, set[str]]:
+    cur.execute(_CHUNK_GRAPHS_SQL, (project_id, ids))
+    graphs: dict[str, set[str]] = {}
+    for artifact_id, graph_id in cur.fetchall():
+        graphs.setdefault(str(artifact_id), set()).add(str(graph_id or ""))
+    return graphs
+
+
+def _as_metadata(value: Any) -> dict[str, Any]:
+    """A JSONB column as a dict (psycopg2 decodes it; a text form is parsed)."""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _descriptor(row: tuple) -> dict[str, Any]:
+    """One KNOWLEDGE_EMBED source, shaped as the ingest chain shapes it: the
+    embed path reads ``kind`` and ``metadata.source_name`` to decide how the
+    bytes become text (without the name a PPTX was read as its zip bytes,
+    review chunk-data-1)."""
+    artifact_id, _project, source_ref, kind, metadata = row
+    meta = _as_metadata(metadata)
+    return {
+        "artifact_id": str(artifact_id),
+        "source_ref": str(source_ref or ""),
+        "kind": str(kind or ""),
+        "metadata": {k: meta[k] for k in _DESCRIPTOR_METADATA if meta.get(k)},
+    }
+
+
+def _stale_sources(stale: list[str], project_id: str) -> _Batches:
+    """Swept artifact ids of ``project_id`` → KNOWLEDGE_EMBED sources per
+    (project, graph).
+
+    An artifact is re-embedded into each graph that holds its file node or
+    its chunks (its project's default graph when none does, or only legacy
+    ``''`` rows): the writer replaces chunks by id within one graph scope,
+    so re-embedding a named-graph artifact into the default graph would
+    leave the old chunks where they are, and its part_of edges would point
+    at a file node that is not there.
+    """
     from umrs.knowledge.graph_registry import default_graph_id
 
-    from .service import JobSubmission, get_job_service
+    with _artifact_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(_STALE_ROWS_SQL, (list(stale), project_id))
+        rows = cur.fetchall()
+        graphs = _graphs_by_artifact(cur, [str(row[0]) for row in rows], project_id)
+    default = default_graph_id(project_id)
+    batches: _Batches = {}
+    for row in rows:
+        source = _descriptor(row)
+        targets = {g or default for g in graphs.get(source["artifact_id"], {""})}
+        for graph_id in sorted(targets):
+            batches.setdefault((project_id, graph_id), []).append(source)
+    return batches
+
+
+def _enqueue_reembed(job: Job, batches: _Batches) -> list[str]:
+    """One KNOWLEDGE_EMBED job per (project, graph). A batch whose job is
+    already enqueued — this attempt's retry, while that embed job still
+    runs — counts as enqueued, and the next batches still go (review
+    chunk-data-11: the first duplicate ended every retry)."""
+    from .service import get_job_service
 
     service = get_job_service()
     return [
-        service.submit_job(
+        _submit_batch(service, job, project_id, graph_id, sources)
+        for (project_id, graph_id), sources in sorted(batches.items())
+    ]
+
+
+def _submit_batch(
+    service: Any,
+    job: Job,
+    project_id: str,
+    graph_id: str,
+    sources: list[dict[str, Any]],
+) -> str:
+    """Submit one re-embed job; its id (the existing job's when it is
+    already enqueued)."""
+    from .service import JobSubmission
+    from .store import DuplicateJobError
+
+    try:
+        return service.submit_job(
             JobSubmission(
                 project_id=project_id,
                 user_id=job.user_id,
@@ -170,21 +337,33 @@ def _enqueue_reembed(
                     "sources": sources,
                     "project_id": project_id,
                     "parent_job_id": job.job_id,
-                    "graph_id": default_graph_id(project_id),
+                    "graph_id": graph_id,
                     "reason": "knowledge_reindex",
                 },
                 priority=job.priority,
                 max_attempts=3,
             )
         )
-        for project_id, sources in sorted(by_project.items())
-    ]
+    except DuplicateJobError as exc:
+        existing = str(getattr(exc, "existing_job_id", "") or "")
+        logger.info(
+            "reindex %s: the re-embed of (%s, %s) is already enqueued (%s)",
+            job.job_id,
+            project_id,
+            graph_id,
+            existing or "unknown job",
+        )
+        return existing
 
 
 def _sweep(spec: dict) -> list[str]:
     with _artifact_conn() as conn:
         return select_stale_artifacts(
-            conn, spec["target_model"], limit=int(spec.get("batch_limit", 500))
+            conn,
+            spec["target_model"],
+            limit=int(spec.get("batch_limit", 500)),
+            chunk_scheme=spec.get("chunk_scheme"),
+            project_id=spec.get("project_id"),
         )
 
 
@@ -211,9 +390,11 @@ def _artifact_conn():
 
 def _backend_ref(spec: dict, *, swept: int, enqueued: int) -> str:
     index = spec.get("index_name") or "default"
+    scheme = spec.get("chunk_scheme") or "fixed-v0"
     return (
         f"knowledge_reindex|database={spec['database']}|table={spec['table']}|"
-        f"index={index}|model={spec['target_model']}|swept={swept}|reembed_jobs={enqueued}"
+        f"index={index}|model={spec['target_model']}|scheme={scheme}|"
+        f"swept={swept}|reembed_jobs={enqueued}"
     )
 
 

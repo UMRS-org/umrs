@@ -10,7 +10,9 @@ Contracts locked:
   and the catalog store search render their gate from it — project rows +
   system rows are visible, ambient rows are never served regardless of
   ownership (kept, not deleted — user decision). The gate is additive along
-  the existing ownership clause, never replacing it.
+  the existing ownership clause, never replacing it. Since ADR-093 C7 the
+  rag lane is the retrieval core's lexical lane, which renders the gate in
+  ``knowledge.retrieval`` from the caller's spec (project + ambient flag).
 - Migrations 0092 (knowledge planes) and 0093 (catalog_objects, R-02) add
   the column with default ``'project'`` — no existing row changes tier.
 """
@@ -23,6 +25,7 @@ from unittest.mock import MagicMock
 
 from umrs.api.knowledge_query import (
     _EmbeddingsSearchBackend,
+    _GraphScope,
     _GraphSearchBackend,
     _RAGSearchBackend,
 )
@@ -71,26 +74,32 @@ class TestVisibilityGatingShape:
     """Every lane renders its gate from the single predicate (no hand-rolled copies)."""
 
     def test_rag_lane_uses_shared_predicate(self) -> None:
+        # ADR-093 C7: the lane's SQL is the core's; the facade hands it the
+        # caller's ambient flag and renders no copy of the rule itself.
         src = inspect.getsource(_RAGSearchBackend.search_rag)
-        assert "visibility_predicate('n', include_ambient=self._include_ambient)" in src
+        assert "include_ambient=self._include_ambient" in src
         assert "visibility = 'system'" not in src  # no second copy of the rule
 
     def test_graph_lane_uses_shared_predicate_with_graph_ownership(self) -> None:
         src = inspect.getsource(_GraphSearchBackend.search_knowledge_graph)
         assert "visibility_predicate(" in src
-        assert "graph_id = ANY(%s)" in src  # ownership half intact
+        assert "owned_sql=self._scope.owned_sql()" in src
+        owned = inspect.getsource(_GraphScope.owned_sql)
+        assert "graph_id = ANY(%s)" in owned  # ownership half intact
 
     def test_embeddings_lanes_use_shared_predicate(self) -> None:
         # The lanes' SQL: table-reader (moved out of search_embeddings when the
-        # encoder lane landed, 2026-10-09) and similarity.
+        # encoder lane landed, 2026-10-09) and similarity; both render the one
+        # gate helper (ADR-093 C7: owned by project, or by graph selection).
+        gate = inspect.getsource(_EmbeddingsSearchBackend._gate)
+        assert 'visibility_predicate("n", include_ambient=self._include_ambient)' in gate
+        assert "visibility = 'system'" not in gate
         for fn in (
             _EmbeddingsSearchBackend._table_reader_hits,
             _EmbeddingsSearchBackend._similarity_hits,
         ):
             src = inspect.getsource(fn)
-            assert "visibility_predicate('n', include_ambient=self._include_ambient)" in src, (
-                fn.__name__
-            )
+            assert "self._gate(project_id)" in src, fn.__name__
             assert "WHERE n.project_id = %s" not in src, fn.__name__  # old ungated form gone
 
     def test_catalog_store_uses_shared_predicate_with_s3_ownership(self) -> None:
@@ -104,21 +113,21 @@ class TestVisibilityGatingShape:
         # system rows bypass the project ACL re-check (visible to every caller)
         assert 'row.get("visibility") != VISIBILITY_SYSTEM' in src
 
-    def test_rag_lane_executes_atomically_per_caller(self) -> None:
-        pool = MagicMock()
-        conn = MagicMock()
-        cursor = MagicMock()
-        cursor.fetchall.return_value = []
-        conn.cursor.return_value.__enter__.return_value = cursor
-        # The backend borrows, then ends the transaction with `with conn:`
-        # before returning it (a returned conn may be closed by the pool).
-        pool.getconn.return_value = conn
-        backend = _RAGSearchBackend(pool)
-        out = backend.search_rag("x", project_id="proj-a")
+    def test_rag_lane_executes_atomically_per_caller(self, monkeypatch) -> None:
+        # ADR-093 C7: the lane runs in the retrieval core; the caller's project
+        # and ambient flag travel in its spec (the core binds them first).
+        seen = []
+
+        def lane(pool, query, spec, *, limit=50):
+            seen.append(spec)
+            from umrs.knowledge.retrieval.types import LaneResult
+
+            return LaneResult(name="lex")
+
+        monkeypatch.setattr("umrs.knowledge.retrieval.lexical.lexical_lane", lane)
+        out = _RAGSearchBackend(MagicMock()).search_rag("x", project_id="proj-a")
         assert out == []
-        sql, params = cursor.execute.call_args.args
-        assert params[0] == "proj-a"  # caller project stays the first bind
-        assert visibility_predicate("n") in sql
+        assert (seen[0].project_id, seen[0].include_ambient) == ("proj-a", False)
 
     def test_embeddings_table_reader_binds_caller_project_first(self) -> None:
         pool = MagicMock()

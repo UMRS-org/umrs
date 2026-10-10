@@ -13,7 +13,7 @@ from typing import Any
 from umrs.knowledge.access_scope import VISIBILITY_SYSTEM, visibility_predicate
 
 from .schema import CatalogObjectMeta, CatalogState
-from .scoring import CatalogHit, allowed, score_meta, tokenize
+from .scoring import CatalogHit, allowed, score_meta, token_matches, tokenize
 
 logger = logging.getLogger(__name__)
 
@@ -160,6 +160,13 @@ def _list_where(
     return clauses, params
 
 
+def _prefix_match(meta: CatalogObjectMeta, prefix: str | None) -> bool:
+    if not prefix:
+        return True
+    normalized = prefix if prefix.endswith("/") else f"{prefix}/"
+    return meta.s3_key.startswith(normalized)
+
+
 def _fallback_match(
     meta: CatalogObjectMeta,
     *,
@@ -167,18 +174,23 @@ def _fallback_match(
     state: str | None,
     tag: str | None,
     prefix: str | None,
+    tokens: list[str] | None = None,
 ) -> bool:
-    """Structured-filter re-check for the recency-window search fallback."""
+    """Structured-filter re-check for the recency-window search fallback.
+
+    LIVE-06: a row no query token matches scores zero however it is
+    weighted otherwise, and is dropped — the fallback widens the field
+    order, never the meaning of a match.
+    """
+    if tokens and not token_matches(meta, tokens):
+        return False
     if modality and meta.detected_modality != modality:
         return False
     if state and meta.state.value != state:
         return False
     if tag and tag not in meta.tags:
         return False
-    if prefix:
-        normalized = prefix if prefix.endswith("/") else f"{prefix}/"
-        return meta.s3_key.startswith(normalized)
-    return True
+    return _prefix_match(meta, prefix)
 
 
 class CatalogMetaStore:
@@ -456,7 +468,12 @@ class CatalogMetaStore:
         hits: list[CatalogHit] = []
         for meta in metas:
             if not _fallback_match(
-                meta, modality=modality, state=state, tag=tag, prefix=prefix
+                meta,
+                modality=modality,
+                state=state,
+                tag=tag,
+                prefix=prefix,
+                tokens=tokens,
             ):
                 continue
             score = score_meta(meta, tokens, query=query)

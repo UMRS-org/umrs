@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from umrs.search_api import (
     SearchDepth,
     SearchResult,
@@ -295,15 +296,24 @@ def test_unified_search_scope_filtering():
 
 
 def test_unified_search_results_sorted_by_score():
-    """Test that search results are sorted by score descending."""
+    """``scope=all`` sorts by fused score (ADR-093 C7: weighted RRF, not raw).
+
+    Each lane put its one hit first, so the lane weights decide: graph 0.7
+    over catalogue 0.5, normalised by the 1.2 both lanes could attain.
+    """
     search = UnifiedSearch(
-        catalog=MockCatalogSearch(),  # score 0.8
-        knowledge_graph=MockKnowledgeGraphSearch(),  # score 0.9
+        catalog=MockCatalogSearch(),  # raw score 0.8
+        knowledge_graph=MockKnowledgeGraphSearch(),  # raw score 0.9
     )
     results = search.search("test", scope=SearchScope.ALL)
 
-    assert results.results[0].score == 0.9  # knowledge graph
-    assert results.results[1].score == 0.8  # catalog
+    assert [r.result_type for r in results.results] == [
+        SearchResultType.KNOWLEDGE_NODE,
+        SearchResultType.CATALOG_HIT,
+    ]
+    assert results.results[0].score == pytest.approx(0.7 / 1.2, abs=1e-6)
+    assert results.results[1].score == pytest.approx(0.5 / 1.2, abs=1e-6)
+    assert results.results[0].metadata["lane_score"] == {"knowledge_graph": 0.9}
 
 
 def test_unified_search_duration_tracked():

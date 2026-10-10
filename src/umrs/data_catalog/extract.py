@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import io
+import itertools
 import json
 import os
 from typing import Any
@@ -149,7 +150,9 @@ def _extract_pptx_detailed(content: bytes) -> tuple[str, list[str]]:
         presentation = Presentation(io.BytesIO(content))
         parts = []
         max_slides = _max_document_pages()
-        for slide in presentation.slides[:max_slides]:
+        # Slides support iteration, not slicing (python-pptx 1.0 raises on
+        # [:n], which turned every deck into "extract_failed").
+        for slide in itertools.islice(presentation.slides, max_slides):
             for shape in slide.shapes:
                 text = getattr(shape, "text", None)
                 if text:

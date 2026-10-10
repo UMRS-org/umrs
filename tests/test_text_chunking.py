@@ -58,3 +58,17 @@ def test_flatten_text_chunks_keeps_empty_text_without_nlp():
             }
         ]
     ]
+
+
+def test_fixed_v0_is_the_unchanged_window_chunker():
+    """ADR-093 D-11: ``fixed-v0`` (the default scheme) IS the shared window
+    chunker — same chunks, same offsets, no header."""
+    from umrs.knowledge.chunking import chunk_text
+    from umrs.shared.utils import _chunk_text_without_nlp
+
+    tokenizer = _WhitespaceTokenizer()
+    text = "alpha beta. Gamma delta epsilon. Zeta"
+    expected = _chunk_text_without_nlp(text, tokenizer=tokenizer, max_tokens=2)
+    assert chunk_text(text, tokenizer=tokenizer, max_tokens=2) == expected
+    assert chunk_text(text, scheme="fixed-v0", tokenizer=tokenizer, max_tokens=2) == expected
+    assert not any("header" in chunk for chunk in expected)
