@@ -872,6 +872,35 @@ class TestRailGatewayD42ReadGating:
         )
         assert r.status_code == 403
 
+    @pytest.mark.parametrize("dots", ["%2e%2e", "%2E%2E", ".%2e", "%252e%252e"])
+    def test_a_dot_segment_never_leaves_the_family(self, gw, dots):
+        """The family was read from the decoded path and httpx then resolved
+        ``..``: rag/%2e%2e/secrets/probe reached /umrs/secrets/probe as the
+        lease owner (pre-existing D-42 hole, review of ADR-093 2026-10-10)."""
+        r = gw.client.get(
+            f"/umrs/companion/sessions/sess-1/rail/gw/rag/{dots}/secrets/probe",
+            headers=gw.rail_headers,
+        )
+        assert r.status_code == 403 and "leak" not in r.text
+        assert r.headers["x-platform-error-code"] == "companionvenue.forbidden"
+
+    def test_a_dot_segment_never_writes_to_a_read_only_family(self, gw):
+        r = gw.client.post(
+            "/umrs/companion/sessions/sess-1/rail/gw/jobs/%2e%2e/knowledge/probe",
+            headers=gw.rail_headers,
+            json={},
+        )
+        assert r.status_code == 403
+        assert r.headers["x-platform-error-code"] == "companionvenue.forbidden"
+
+    def test_dots_inside_a_name_still_pass(self, gw):
+        r = gw.client.get(
+            "/umrs/companion/sessions/sess-1/rail/gw/rag/passages/node.v1..csv",
+            headers=gw.rail_headers,
+        )
+        assert r.status_code == 200
+        assert r.json()["path"] == "/umrs/rag/passages/node.v1..csv"
+
     def test_workflows_jobs_keep_write_verbs(self, gw):
         for family in ("workflows", "jobs"):
             r = gw.client.post(
