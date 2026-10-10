@@ -39,6 +39,18 @@ logger = logging.getLogger(__name__)
 _LEGACY_DEMO08_WORKFLOW_NAME = "demo08_yield_eval"
 # Kept for FakeWorkflowExecutionPort / docs. Real mode no longer falls back.
 _TOKEN_RE = re.compile(r"[a-z0-9]{3,}", re.IGNORECASE)
+# The gap fill's words: "the", "what" and "for" are in almost every excerpt,
+# so as substrings they matched every artifact (review of ADR-093, 2026-10-10).
+_GAP_FILL_STOP_TEXT = """about above after again against all also and any are because been before
+    being below best between both but can could did does doing down during each
+    few for from further had has have having her here hers him his how into its
+    itself just more most much not now off once only other our ours out over own
+    same she should some such than that the their theirs them then there these
+    they this those through too under until very was were what when where which
+    while who whom why will with would you your yours"""
+_GAP_FILL_STOP_WORDS = frozenset(_GAP_FILL_STOP_TEXT.split())
+# Content words an artifact must hold (every one of a shorter goal's).
+_GAP_FILL_MIN_HITS = 2
 # Demo 08 / lab yield figures commonly appear as "85.0" / "4.21" near batch-3.
 _BATCH3_YIELD_RE = re.compile(
     r"batch[-_ ]?3[^\n]{0,80}?(\d+(?:\.\d+)?)\s*%?",
@@ -745,27 +757,30 @@ class AutonomousResearchLoop:
         return bind(loop.project_id) if callable(bind) else store
 
     def _gap_fill_from_store(self, query: str, store: Any) -> list[dict[str, Any]]:
-        """Match query tokens against artifact content when catalog search is empty."""
+        """Match the goal's content words against artifacts when search is empty.
+
+        A store that judges sufficiency (the retrieval core's spine store)
+        returns nothing when nothing answers the goal: that verdict stands.
+        Otherwise an artifact is evidence when enough of the goal's content
+        words each begin one of its words (stop words never count; the
+        retrieval core's term rule, ``cutoff.content_terms``).
+        """
+        if getattr(store, "judges_sufficiency", False) is True:
+            return []  # ADR-093 D-2: the scorer's "insufficient" is no evidence
+        terms = _gap_fill_terms(query)
+        if not terms:
+            return []  # ADR-093 D-2: no hit is no evidence, never recency
         try:
             all_artifacts = list(store.list_artifacts() or [])
         except Exception as exc:  # noqa: BLE001
             self._retrieval_errors.append(f"list_artifacts: {exc}")
             return []
-        tokens = set(_TOKEN_RE.findall(query.lower()))
-        if not tokens:
-            return all_artifacts[:5]
-        matched: list[dict[str, Any]] = []
-        for artifact in all_artifacts:
-            haystack = " ".join(
-                [
-                    str(artifact.get("filename") or ""),
-                    str(artifact.get("summary") or ""),
-                    _artifact_excerpt(artifact),
-                ]
-            ).lower()
-            if any(tok in haystack for tok in tokens):
-                matched.append(artifact)
-        return matched or all_artifacts[:5]
+        need = min(_GAP_FILL_MIN_HITS, len(terms))
+        return [  # nothing matched: no evidence (MD-6), not the newest five
+            artifact
+            for artifact in all_artifacts
+            if _term_hits(terms, _artifact_words(artifact)) >= need
+        ]
 
     def _excerpt_for_id(self, object_id: str, loop: ResearchLoop) -> str:
         store = self._store_for(loop)
@@ -1297,6 +1312,30 @@ def _artifact_excerpt(artifact: dict[str, Any]) -> str:
         or artifact.get("artifact_id")
     )
     return str(summary or "")[:240]
+
+
+def _gap_fill_terms(query: str) -> set[str]:
+    """The goal's content words: three characters or more, no stop words."""
+    words = _TOKEN_RE.findall(query.lower())
+    return {w for w in words if w not in _GAP_FILL_STOP_WORDS}
+
+
+def _term_hits(terms: set[str], words: set[str]) -> int:
+    """How many terms begin a word ("zeolite" hits "zeolites", "the" is no
+    term, and "rain" never hits "training")."""
+    return sum(1 for term in terms if any(word.startswith(term) for word in words))
+
+
+def _artifact_words(artifact: dict[str, Any]) -> set[str]:
+    """The whole words of an artifact's name, summary and excerpt."""
+    text = " ".join(
+        [
+            str(artifact.get("filename") or ""),
+            str(artifact.get("summary") or ""),
+            _artifact_excerpt(artifact),
+        ]
+    )
+    return set(_TOKEN_RE.findall(text.lower()))
 
 
 # ── Convenience Function ────────────────────────────────────────────────────
