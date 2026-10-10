@@ -14,6 +14,7 @@ Key operations:
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -29,6 +30,97 @@ _KNOWLEDGE_SCHEMA_VERSION = 1
 def _utcnow() -> datetime:
     """Timezone-aware UTC now."""
     return datetime.now(timezone.utc)
+
+
+_UPSERT_NODE_SQL = """INSERT INTO knowledge_nodes
+   (node_id, project_id, label, node_type, content, content_hash,
+    source_ir, created_at, updated_at, graph_id, status, confidence)
+   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+   ON CONFLICT (node_id) DO UPDATE
+   SET content = $5, content_hash = $6, source_ir = $7, updated_at = $9"""
+
+# ADR-093 D-6 (0120): a chunk's search_text is the new text when one is
+# given; without one the stored text survives only while the content it was
+# verified against does (chunk_md5, and a sent-v1 header with its length):
+# the column contract is md5(search_text[header_chars:]) = chunk_md5, and a
+# re-chunk under the same node id must not leave the lexical lanes ranking
+# words the chunk no longer holds (review finding data-deploy-5, 2026-10-10).
+_UPSERT_NODE_TEXT_SQL = """INSERT INTO knowledge_nodes
+   (node_id, project_id, label, node_type, content, content_hash,
+    source_ir, created_at, updated_at, graph_id, status, confidence, search_text)
+   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+   ON CONFLICT (node_id) DO UPDATE
+   SET content = $5, content_hash = $6, source_ir = $7, updated_at = $9,
+       search_text = CASE
+           WHEN $13::text IS NOT NULL THEN $13::text
+           WHEN knowledge_nodes.content->'chunk_md5' IS NOT DISTINCT FROM EXCLUDED.content->'chunk_md5'
+            AND knowledge_nodes.content->'header' IS NOT DISTINCT FROM EXCLUDED.content->'header'
+            AND knowledge_nodes.content->'header_chars' IS NOT DISTINCT FROM EXCLUDED.content->'header_chars'
+           THEN knowledge_nodes.search_text
+       END"""
+
+_SEARCH_TEXT_PROBE_SQL = (
+    "SELECT EXISTS (SELECT 1 FROM pg_attribute "
+    "WHERE attrelid = to_regclass('knowledge_nodes') AND attname = 'search_text' "
+    "AND NOT attisdropped)"
+)
+# A present column is remembered per pool for good; an absent one is
+# re-probed after this many seconds (migration 0120 applied while running).
+_SEARCH_TEXT_RECHECK_S = 60.0
+# id(pool) -> (pool, present, checked). asyncpg's Pool has __slots__ without
+# __weakref__, so a weak-keyed memo never held one and every chunk write
+# re-probed (review finding data-deploy-8). The entry holds the pool itself,
+# so its id cannot be reused while the entry lives; closed pools (a job's
+# pool) are dropped on the next store, and the memo is bounded.
+_SEARCH_TEXT_MEMO_MAX = 64
+_search_text_probes: dict[int, tuple[Any, bool, float]] = {}
+
+
+def _known_search_text(pool: Any) -> bool | None:
+    """The remembered probe for ``pool``, or None when it must be (re)run."""
+    entry = _search_text_probes.get(id(pool))
+    if entry is None or entry[0] is not pool:
+        return None
+    _held, present, checked = entry
+    if present or time.monotonic() - checked < _SEARCH_TEXT_RECHECK_S:
+        return present
+    return None
+
+
+def _pool_closing(pool: Any) -> bool:
+    is_closing = getattr(pool, "is_closing", None)
+    return bool(is_closing()) if callable(is_closing) else False
+
+
+def _remember_search_text(pool: Any, present: bool) -> None:
+    """Store one probe; drop closed pools and the oldest beyond the bound."""
+    for key, entry in list(_search_text_probes.items()):
+        if _pool_closing(entry[0]):
+            del _search_text_probes[key]
+    _search_text_probes.pop(id(pool), None)
+    while len(_search_text_probes) >= _SEARCH_TEXT_MEMO_MAX:
+        del _search_text_probes[next(iter(_search_text_probes))]
+    _search_text_probes[id(pool)] = (pool, present, time.monotonic())
+
+
+async def _has_search_text(pool: Any, conn: Any) -> bool:
+    """Does ``knowledge_nodes.search_text`` (migration 0120) exist?"""
+    known = _known_search_text(pool)
+    if known is not None:
+        return known
+    present = (await conn.fetchval(_SEARCH_TEXT_PROBE_SQL)) is True
+    _remember_search_text(pool, present)
+    if not present:
+        logger.info(
+            "knowledge_nodes.search_text absent (migration 0120): nodes written without it"
+        )
+    return present
+
+
+def _carries_search_text(node: KnowledgeNode) -> bool:
+    """Chunk rows own the column; other nodes never touch it (no probe)."""
+    content = node.content if isinstance(node.content, dict) else {}
+    return node.search_text is not None or content.get("kind") == "chunk"
 
 
 @dataclass(frozen=True)
@@ -85,6 +177,10 @@ class KnowledgeNode:
     created_at: datetime | None = None
     updated_at: datetime | None = None
     graph_id: str = ""
+    # ADR-093 D-6 (0120): a chunk's full body for the lexical lanes; its md5
+    # is ``content['chunk_md5']``. None = not given (an upsert keeps the
+    # stored text while the chunk's md5 and header are unchanged).
+    search_text: str | None = None
 
 
 @dataclass(frozen=True)
@@ -226,16 +322,17 @@ class KnowledgeStore:
         node upserted with ``status='proposed'`` stays proposed; the ON
         CONFLICT update never silently promotes (status is only written at
         INSERT; promotion is the human ``establish_node`` seam).
+
+        ADR-093 D-6 (0120): a node given ``search_text`` stores it. A chunk
+        upserted without text keeps its stored text only while ``chunk_md5``
+        and the header it was verified against are unchanged; otherwise the
+        column goes NULL, for the backfill to refill from verified text.
+        Non-chunk nodes never touch the column. Without migration 0120 the
+        row is written without it (probed once per pool).
         """
         async with self._pool.acquire() as conn:
             ts = _utcnow()
-            await conn.execute(
-                """INSERT INTO knowledge_nodes
-                   (node_id, project_id, label, node_type, content, content_hash,
-                    source_ir, created_at, updated_at, graph_id, status, confidence)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-                   ON CONFLICT (node_id) DO UPDATE
-                   SET content = $5, content_hash = $6, source_ir = $7, updated_at = $9""",
+            params: list[Any] = [
                 node.node_id,
                 node.project_id,
                 node.label,
@@ -248,7 +345,11 @@ class KnowledgeStore:
                 node.graph_id,
                 node.status,
                 node.confidence,
-            )
+            ]
+            if _carries_search_text(node) and await _has_search_text(self._pool, conn):
+                await conn.execute(_UPSERT_NODE_TEXT_SQL, *params, node.search_text)
+            else:
+                await conn.execute(_UPSERT_NODE_SQL, *params)
 
     async def upsert_edge(
         self,

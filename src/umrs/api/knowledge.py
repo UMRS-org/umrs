@@ -767,6 +767,11 @@ class ExportRequest(BaseModel):
         default=False,
         description="With include_raw on a sensitive project: explicit, audited acknowledgement",
     )
+    chunk_text: bool = Field(
+        default=False,
+        description="Carry each chunk's md5-verified full text (r4-kb v1.3, ADR-093 "
+        "D-12); a sensitive project: its owner only, audited",
+    )
 
 
 class VerifyJobRequest(BaseModel):
@@ -1195,6 +1200,35 @@ def _authorize_raw(request: Request, body: ExportRequest) -> dict[str, Any]:
     return ack
 
 
+def _authorize_chunk_text(
+    request: Request, body: ExportRequest
+) -> tuple[dict[str, Any], str]:
+    """ADR-093 D-12 / MD-5 chunk-text gate (before the job; typed refusals):
+    ``(acknowledgement, verified caller)``. The release is audited; the job
+    is submitted under the verified caller, whom the export engine checks
+    against the project's owner again (it trusts no acknowledgement a spec
+    carries, review chunk-data-2)."""
+    if not body.chunk_text:
+        return {}, ""
+    from ._raw_export_gate import authorize_chunk_text_export
+    from .audit_events import emit_audit
+
+    identity = _raw_caller(request)
+    ack = authorize_chunk_text_export(
+        getattr(request.app.state, "umrs_db_pool", None),
+        project_id=body.project_id,
+        user_id=identity.user_id,
+    )
+    emit_audit(
+        "knowledge.export.chunk_text",
+        actor=identity.user_id,
+        user_id=identity.user_id,
+        project_id=body.project_id,
+        details={"acknowledgement": ack} if ack else {"data_class": "non_sensitive"},
+    )
+    return ack, identity.user_id
+
+
 @router.post("/export", response_model=dict[str, Any])
 async def export_knowledge(
     body: ExportRequest,
@@ -1216,6 +1250,7 @@ async def export_knowledge(
             )
         )
     raw_ack = _authorize_raw(request, body)
+    chunk_ack, submitter = _authorize_chunk_text(request, body)
     try:
         from umrs.server.durable_job_runtime import get_runtime
 
@@ -1236,6 +1271,8 @@ async def export_knowledge(
             "request_id": uuid4().hex,
             "include_raw": body.include_raw,
             "raw_acknowledgement": raw_ack,
+            "chunk_text": body.chunk_text,
+            "chunk_text_acknowledgement": chunk_ack,
         }
 
         # Unified ingest governance (R6.4).
@@ -1252,6 +1289,7 @@ async def export_knowledge(
             job_type=JobType.KNOWLEDGE_EXPORT,
             project_id=body.project_id,
             spec=spec,
+            user_id=submitter,
         )
 
         logger.info("Knowledge export queued: %s", job_id)

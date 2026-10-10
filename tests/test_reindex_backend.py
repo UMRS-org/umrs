@@ -102,7 +102,7 @@ def _conn_scope(cur):
 
 
 async def _run_backend(backend, spec):
-    job = SimpleNamespace(job_id="j-1", spec=spec, user_id="u-1", priority=0)
+    job = SimpleNamespace(job_id="j-1", spec=spec, user_id="u-1", priority=0, project_id="p1")
     attempt = SimpleNamespace(attempt_id="a-1")
     return await backend.submit_job(job, attempt)
 
@@ -137,7 +137,11 @@ def _run_reembed(monkeypatch):
     cur = _Cur(
         batches=[
             [("art-1",), ("art-2",), ("art-3",)],
-            [("art-1", "p1", "k1"), ("art-2", "p1", "k2"), ("art-3", "p2", "k3")],
+            [
+                ("art-1", "p1", "k1", "document", {"source_name": "a.md"}),
+                ("art-2", "p1", "k2", "document", None),
+                ("art-3", "p1", "k3", "code", {}),
+            ],
         ]
     )
     monkeypatch.setattr(reindex, "_artifact_conn", lambda: _conn_scope(cur))
@@ -152,23 +156,29 @@ def test_submit_sweeps_reembeds_and_never_stamps(monkeypatch):
     target model WITHOUT recomputing a vector. It now enqueues KNOWLEDGE_EMBED
     per project (the embed job stamps after writing) and issues no UPDATE."""
     ref, cur, called, _ = _run_reembed(monkeypatch)
-    assert ("swept=3" in ref, "reembed_jobs=2" in ref, called["rebuild"]) == (True, True, True)
+    assert ("swept=3" in ref, "reembed_jobs=1" in ref, called["rebuild"]) == (True, True, True)
     assert "model=/srv/models/bge-m3" in ref  # resolved to the site embedder
     assert not [q for q, _ in cur.statements if q.startswith("UPDATE")]
     # sweep compares against the site model string the embed job stamps
     assert cur.statements[0][1][0] == "/srv/models/bge-m3"
 
 
-def test_reembed_jobs_are_per_project_with_their_sources(monkeypatch):
-    _, _, _, submitted = _run_reembed(monkeypatch)
+def test_reembed_jobs_stay_in_the_jobs_project_with_their_sources(monkeypatch):
+    """One project per reindex job (review chunk-data-5): the sweep and the
+    re-embed are the job's project's; each source is shaped as ingest
+    shapes it (kind + metadata, review chunk-data-1)."""
+    _, cur, _, submitted = _run_reembed(monkeypatch)
     by_project = {s.project_id: s for s in submitted}
-    assert set(by_project) == {"p1", "p2"}
+    assert set(by_project) == {"p1"}
     assert {s.job_type for s in submitted} == {JobType.KNOWLEDGE_EMBED}
     assert by_project["p1"].spec["sources"] == [
-        {"artifact_id": "art-1", "source_ref": "k1"},
-        {"artifact_id": "art-2", "source_ref": "k2"},
-    ]
+        {"artifact_id": "art-1", "source_ref": "k1", "kind": "document",
+         "metadata": {"source_name": "a.md"}},
+        {"artifact_id": "art-2", "source_ref": "k2", "kind": "document", "metadata": {}},
+        {"artifact_id": "art-3", "source_ref": "k3", "kind": "code", "metadata": {}},
+    ]  # fmt: skip
     assert by_project["p1"].spec["reason"] == "knowledge_reindex"
+    assert cur.statements[1][1] == (["art-1", "art-2", "art-3"], "p1")
 
 
 @pytest.mark.parametrize("site", ["", "/srv/models/e5-base-v2"])

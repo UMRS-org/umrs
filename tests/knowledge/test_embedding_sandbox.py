@@ -75,7 +75,75 @@ def test_round_trip_and_request_shape():
         "prefix_model_name": "/m/e5",
         "max_tokens": 64,
         "texts": ["hello"],
+        "scheme": "fixed-v0",  # ADR-093 D-11: the site's scheme rides along
+        "titles": [],
     }
+
+
+def test_a_sent_v1_request_carries_one_title_per_text():
+    seen = {}
+    reply = json.dumps({"results": [{"chunks": [], "vectors": []}] * 2})
+    emb = es.SandboxChunkEmbedder(
+        CONFIG,
+        prefix_model_name="/m/e5",
+        max_tokens=64,
+        runner=_runner(reply, capture=seen),
+        scheme="sent-v1",
+    )
+    emb.chunk_and_embed(["a", "b"], ["Title A", "Title B"])
+    assert (seen["request"]["scheme"], seen["request"]["titles"]) == (
+        "sent-v1",
+        ["Title A", "Title B"],
+    )
+
+
+def test_a_sent_v1_request_carries_the_heading_rule_per_text():
+    seen = {}
+    reply = json.dumps({"results": [{"chunks": [], "vectors": []}] * 2})
+    emb = es.SandboxChunkEmbedder(
+        CONFIG,
+        prefix_model_name="/m/e5",
+        max_tokens=64,
+        runner=_runner(reply, capture=seen),
+        scheme="sent-v1",
+    )
+    emb.chunk_and_embed(["a", "b"], ["notes.md", "plot.py"], [True, False])
+    assert seen["request"]["headings"] == [True, False]
+
+
+CODE = "# helpers for the plot\nimport os\n\n# the main loop\nx = 1\n"
+
+
+def _sections(results):
+    return [[c["section"] for c in r["chunks"]] for r in results]
+
+
+def test_the_worker_reads_no_section_from_a_code_comment(monkeypatch):
+    """The sandbox lane: headings[i] false keeps a '# comment' out of the
+    section (review chunk-data-8); a text without an entry keeps the rule."""
+    monkeypatch.setattr(ew, "_load_embedder", lambda _d: _FakeEmbedder())
+    request = {
+        "model_dir": "/model",
+        "texts": [CODE, CODE],
+        "scheme": "sent-v1",
+        "titles": ["plot.py", "notes.md"],
+        "headings": [False],
+    }
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(request)))
+    out = io.StringIO()
+    monkeypatch.setattr("sys.stdout", out)
+    assert ew.main() == 0
+    as_code, as_markdown = _sections(json.loads(out.getvalue())["results"])
+    assert set(as_code) == {""}
+    assert as_markdown[0] == "helpers for the plot"
+
+
+def test_the_in_process_lane_passes_the_heading_rule_through():
+    emb = es.InProcessChunkEmbedder(
+        _FakeEmbedder(), prefix_model_name="", max_tokens=64, scheme="sent-v1"
+    )
+    results = emb.chunk_and_embed([CODE], ["plot.py"], [False])
+    assert _sections(results) == [[""] * len(results[0]["chunks"])]
 
 
 @pytest.mark.parametrize(
@@ -175,6 +243,41 @@ async def test_failed_batch_fails_its_artifacts_by_name(monkeypatch):
     assert all("exit=137" in f["error"] for f in result.failed_items)
 
 
+@pytest.mark.asyncio
+async def test_a_batch_embeds_off_the_event_loop(monkeypatch):
+    """The model run blocks for seconds per batch; inline it held every API
+    request on the umrs event loop (504s through the gateway, 2026-10-10)."""
+    import asyncio
+    import time
+
+    from umrs.jobs import knowledge_adapters as ka
+    from umrs.jobs.knowledge_adapters import KnowledgeEmbedResult
+
+    monkeypatch.setattr(ka, "_fetch_artifact_bytes", lambda *_a, **_k: b"some text")
+
+    class _Slow:
+        lane = "in_process"
+
+        def chunk_and_embed(self, texts):
+            time.sleep(0.3)
+            return [{"chunks": [], "vectors": []} for _ in texts]
+
+    ticks = []
+
+    async def _ticker():
+        for _ in range(5):
+            ticks.append(time.monotonic())
+            await asyncio.sleep(0.02)
+
+    sources = [{"artifact_id": "a1", "source_ref": "k1"}]
+    started = time.monotonic()
+    await asyncio.gather(
+        ka._embed_sources(object(), sources, "p", "", _Slow(), (None, "b"), KnowledgeEmbedResult()),
+        _ticker(),
+    )
+    assert len(ticks) == 5 and ticks[-1] - started < 0.25  # the loop ran during the batch
+
+
 class _StampPool:
     def __init__(self):
         self.updates = []
@@ -221,9 +324,14 @@ async def test_embed_stamps_the_artifact_only_after_vectors_are_written(monkeypa
     embedded = {"chunks": [{"text": "a"}, {"text": "b"}], "vectors": [[0.1, 0.2, 0.3]] * 2}
     await ka._write_embedded_chunks(store, "art-1", "p", "", embedded, result)
     assert len(store.vectors) == 2
-    ((sql, args),) = store._pool.updates
+    # ADR-093 D-11: the orphan delete and the stale-vector delete run first;
+    # the stamp, last, records the chunk scheme and the counts beside the
+    # model and dimension.
+    (delete_sql, _), (vectors_sql, _), (sql, args) = store._pool.updates
+    assert delete_sql.startswith("DELETE FROM knowledge_nodes")
+    assert vectors_sql.startswith("DELETE FROM knowledge_node_embeddings")
     assert "embedding_status = 'current'" in sql
-    assert args == ("/srv/models/e5", 3, "art-1")
+    assert args == ("/srv/models/e5", 3, "art-1", "fixed-v0", 2, 2)
 
     empty_store = _Store()
     await ka._write_embedded_chunks(

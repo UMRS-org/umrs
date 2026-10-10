@@ -10,6 +10,9 @@ Raw bytes leaving the installation are a data release, so:
 
 The facts come from one read of the shared registry. When the registry is
 unreachable the gate fails closed (raw export refused, reason named).
+
+The same facts gate the opt-in chunk text of ADR-093 D-12 (MD-5): a
+sensitive project's chunk bodies leave only on its owner's explicit flag.
 """
 
 from __future__ import annotations
@@ -111,4 +114,39 @@ def authorize_raw_export(
     }
 
 
-__all__ = ["authorize_raw_export"]
+def authorize_chunk_text_export(
+    pool: Any, *, project_id: str, user_id: str
+) -> dict[str, Any]:
+    """ADR-093 D-12 / MD-5: full chunk text (r4-kb v1.3) of a project whose
+    class is not ``non_sensitive`` leaves only on its owner's explicit flag
+    (an admin is not the owner). Refuse (typed, fail closed on an unreadable
+    registry) or return the acknowledgement ({} when non-sensitive)."""
+    facts = _project_facts(pool, project_id)
+    if facts is None:
+        raise_typed(
+            PlatformError.knowledge(
+                "unavailable",
+                f"chunk-text export needs a readable project registry row (owner, "
+                f"data class) for {project_id!r}: the project is unregistered or "
+                "the registry is unreachable",
+            )
+        )
+    owner, data_class, _licence = facts
+    if data_class == "non_sensitive":
+        return {}
+    if not user_id or user_id != owner:
+        raise_typed(
+            PlatformError.knowledge(
+                "raw_forbidden",
+                f"project {project_id!r} is {data_class or 'sensitive (unset)'}: its "
+                "chunk text is exported only on its owner's explicit --chunk-text",
+            )
+        )
+    return {
+        "by": user_id,
+        "data_class": data_class or "sensitive",
+        "at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+__all__ = ["authorize_chunk_text_export", "authorize_raw_export"]

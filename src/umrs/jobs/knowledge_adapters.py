@@ -126,6 +126,13 @@ class KnowledgeEmbedResult:
     failed_items: list[dict[str, Any]] = field(default_factory=list)
     degraded: bool = False
     degraded_reason: str = ""
+    # ADR-093 D-11: chunks a re-chunk left behind and deleted (with their
+    # vectors), and artifacts the per-artifact chunk cap truncated.
+    chunks_removed: int = 0
+    chunks_truncated: int = 0
+    # Vectors of rewritten chunks that another model name held in the same
+    # space, or that recorded the text the chunk had before (integrator).
+    vectors_removed: int = 0
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -2531,8 +2538,12 @@ def _artifact_text(
             {"artifact_id": artifact_id, "error": "artifact content unavailable"}
         )
         return None
+    from umrs.knowledge.retrieval.hydrate import decode_chunked
+
     raw, other = _text_content(src, content)
-    if raw is None:
+    text = decode_chunked(raw) if raw is not None else ""
+    other = other or _not_text_reason(raw or b"", text)
+    if other:
         result.failed_items.append(
             {
                 "artifact_id": artifact_id,
@@ -2545,11 +2556,37 @@ def _artifact_text(
             }
         )
         return None
-    text = raw.decode("utf-8", errors="ignore").strip()
     if not text:
         result.skipped += 1
         return None
     return text
+
+
+# The share of control characters (beyond tab/newline/CR/FF/VT) above which
+# decoded bytes are binary, not text: random bytes decode to about 20%, a log
+# with colour escapes to a few percent (2026-10-10).
+_CONTROL_CHAR_SHARE = 0.10
+_CONTROL_CHARS = re.compile(r"[\x01-\x08\x0e-\x1f\x7f]")
+
+
+def _not_text_reason(raw: bytes, text: str) -> str:
+    """Why decoded artifact bytes are no text to chunk ("" = they are).
+
+    The text the chunker sees has its NUL bytes removed (Postgres refuses
+    them, ``hydrate.decode_chunked``), so NUL no longer stops binary bytes
+    by accident: a zip container the extractor did not open (DOCX, XLSX, a
+    PPTX without its name) and binary bytes under a text name are refused
+    here, by name, per artifact."""
+    if raw.startswith(b"PK\x03\x04"):
+        return (
+            "document with no extractable text (a zip container: this lane "
+            "extracts PDF and PPTX only)"
+        )
+    sample = text[:8192]
+    controls = len(_CONTROL_CHARS.findall(sample))
+    if sample and controls > _CONTROL_CHAR_SHARE * len(sample):
+        return "content is not text (binary bytes under a text name)"
+    return ""
 
 
 async def _embed_one_artifact(
@@ -2566,10 +2603,215 @@ async def _embed_one_artifact(
     text = _artifact_text(src, s3_client, bucket, result)
     if text is None:
         return
-    embedded = chunk_embedder.chunk_and_embed([text])[0]
+    embedded = (await _chunk_and_embed_batch(store, chunk_embedder, [(src, text)]))[0]
     await _write_embedded_chunks(
         store, src["artifact_id"], project_id, graph_id, embedded, result
     )
+
+
+# ADR-093 D-11 (C9): after a re-chunk to n chunks, the artifact's chunks n..
+# in this scope are orphans; deleting the node takes its part_of edge and its
+# vector with it (ON DELETE CASCADE, migrations 0055/0075). Candidates are the
+# part_of edges into the file node plus the exact ids n..cap-1 (a node whose
+# edge write never happened); a candidate must carry the writer's own id for
+# its index, so another scope or another artifact can never match.
+_DELETE_ORPHAN_CHUNKS_SQL = (
+    "DELETE FROM knowledge_nodes n "
+    "WHERE n.node_id IN ("
+    "SELECT e.source_id FROM knowledge_edges e "
+    "WHERE e.target_id = $1 AND e.relation_type = 'part_of' "
+    "UNION SELECT unnest($2::text[])) "
+    "AND n.project_id = $3 "
+    "AND n.content->>'kind' = 'chunk' "
+    "AND n.content->>'artifact_id' = $4 "
+    "AND n.node_id = $5 || (n.content->>'chunk_index') "
+    "AND CASE WHEN n.content->>'chunk_index' ~ '^[0-9]{1,9}$' "
+    "THEN (n.content->>'chunk_index')::int >= $6 ELSE false END"
+)
+# ADR-093 D-11 / ADR-083 D-2: a rewritten chunk keeps one vector per space
+# and no vector of a text it no longer has. Rows on the written chunks under
+# another model name go when they sit in the writer's space (the same model
+# staged under another path, which the dense lane would rank beside the new
+# vector) or record another text's md5 (the cut before a re-chunk).
+_DELETE_STALE_VECTORS_SQL = (
+    "DELETE FROM knowledge_node_embeddings e "
+    "USING unnest($1::text[], $2::text[]) AS w(node_id, md5) "
+    "WHERE e.node_id = w.node_id AND e.model_name <> $3 "
+    "AND (e.model_name = $4 OR e.model_name LIKE $5 "
+    "OR (e.content_hash <> '' AND e.content_hash <> w.md5))"
+)
+# The header title of a sent-v1 chunk: the artifact's metadata title, else
+# (in chunking.pick_title) its first markdown heading, else its source name.
+_ARTIFACT_LABELS_SQL = (
+    "SELECT artifact_id, metadata->>'title', title, metadata->>'source_name', "
+    "metadata->>'staged_from' FROM knowledge_artifacts "
+    "WHERE artifact_id = ANY($1::text[])"
+)
+
+
+@dataclass(frozen=True)
+class _ChunkTarget:
+    """Where one artifact's chunks go (node ids: the writer's scheme, which
+    the neighbour merge and the orphan delete rely on)."""
+
+    artifact_id: str
+    project_id: str
+    graph_id: str
+    scope: str
+    scheme: str
+
+    @property
+    def file_node_id(self) -> str:
+        return f"node-file-{self.scope}{self.artifact_id}"
+
+    @property
+    def chunk_prefix(self) -> str:
+        return f"node-chunk-{self.scope}{self.artifact_id}-"
+
+    def chunk_id(self, index: int) -> str:
+        return f"{self.chunk_prefix}{index}"
+
+
+def _chunk_content(
+    target: _ChunkTarget, index: int, chunk: dict[str, Any]
+) -> tuple[dict[str, Any], str | None]:
+    """``(node content, search_text)`` of one chunk. ``chunk_md5`` is the
+    body's md5; a sent-v1 ``search_text`` is header, newline, body, and
+    ``header_chars`` says where the body starts (hydrate's md5 rule).
+
+    Postgres refuses NUL in TEXT and JSONB. The embed job's text has none
+    (``hydrate.decode_chunked``); a body that still carries one keeps its
+    md5 and offsets, its excerpt loses the NUL, and it stores no
+    ``search_text`` (``content.nul_in_body``) — the row is written, never
+    the whole batch failed."""
+    from umrs.knowledge.chunking import FIXED_V0, header_search_text
+
+    body = chunk["text"]
+    nul = "\x00" in body
+    content: dict[str, Any] = {
+        "kind": "chunk",
+        "artifact_id": target.artifact_id,
+        "chunk_index": index,
+        "chunk_start": chunk.get("start"),
+        "chunk_end": chunk.get("end"),
+        "chunk_md5": hashlib.md5(body.encode("utf-8")).hexdigest(),
+        "excerpt": body.replace("\x00", "")[:500],
+        "origin": "knowledge_embed",
+        "chunk_scheme": target.scheme,
+    }
+    if nul:
+        content["nul_in_body"] = True
+    if target.scheme == FIXED_V0:
+        # ADR-093 D-6: the full body for the lexical lanes
+        return content, None if nul else body
+    header = str(chunk.get("header") or "")
+    search_text, header_chars = header_search_text(header, body)
+    content.update(
+        header=header,
+        section=str(chunk.get("section") or ""),
+        header_chars=header_chars,
+    )
+    if isinstance(chunk.get("num_tokens"), int):
+        content["num_tokens"] = chunk["num_tokens"]
+    return content, None if nul else search_text
+
+
+async def _write_chunk(
+    store: Any,
+    target: _ChunkTarget,
+    index: int,
+    chunk: dict[str, Any],
+    vector: Any,
+    model_name: str,
+) -> str:
+    """One chunk node, its part_of edge and its vector; returns the chunk's
+    md5 (the body's)."""
+    from umrs.knowledge.store import KnowledgeEdge, KnowledgeNode
+
+    chunk_id = target.chunk_id(index)
+    content, search_text = _chunk_content(target, index, chunk)
+    chunk_md5 = content["chunk_md5"]
+    await store.upsert_node(
+        KnowledgeNode(
+            node_id=chunk_id,
+            project_id=target.project_id,
+            label=f"chunk {index} of {target.artifact_id}",
+            node_type="entity",
+            content=content,
+            content_hash=chunk_md5,
+            graph_id=target.graph_id,
+            search_text=search_text,
+        )
+    )
+    await store.upsert_edge(
+        KnowledgeEdge(
+            edge_id=f"edge-{chunk_id}-part-of-{target.file_node_id}",
+            project_id=target.project_id,
+            source_id=chunk_id,
+            target_id=target.file_node_id,
+            relation_type="part_of",
+            content={"kind": "part_of", "origin": "knowledge_embed"},
+            graph_id=target.graph_id,
+        )
+    )
+    await store.upsert_node_embedding(
+        chunk_id, model_name, vector, content_hash=chunk_md5
+    )
+    return chunk_md5
+
+
+def _deleted_rows(status: Any) -> int:
+    """Rows a ``DELETE n`` command status reports (0 when it names none)."""
+    try:
+        return int(str(status).rsplit(" ", 1)[-1])
+    except ValueError:
+        return 0
+
+
+async def _drop_chunks_from(
+    store: Any, target: _ChunkTarget, keep: int, bound: int
+) -> int:
+    """Delete the artifact's chunks ``keep``.. in this scope — an earlier cut
+    left them — with their edges and vectors. Returns the nodes removed."""
+    pool = getattr(store, "_pool", None)
+    if pool is None:
+        return 0
+    exact = [target.chunk_id(i) for i in range(keep, max(keep, bound))]
+    async with pool.acquire() as conn:
+        status = await conn.execute(
+            _DELETE_ORPHAN_CHUNKS_SQL,
+            target.file_node_id,
+            exact,
+            target.project_id,
+            target.artifact_id,
+            target.chunk_prefix,
+            keep,
+        )
+    return _deleted_rows(status)
+
+
+async def _drop_stale_vectors(
+    store: Any, target: _ChunkTarget, md5s: list[str], model_name: str
+) -> int:
+    """Delete the written chunks' vectors under other model names that are
+    stale: same space, or another text's md5. Returns the rows removed."""
+    from umrs.knowledge.retrieval.dense import same_space_pattern
+    from umrs.knowledge.text_embedder import embedding_space
+
+    pool = getattr(store, "_pool", None)
+    if pool is None or not md5s:
+        return 0
+    ids = [target.chunk_id(i) for i in range(len(md5s))]
+    async with pool.acquire() as conn:
+        status = await conn.execute(
+            _DELETE_STALE_VECTORS_SQL,
+            ids,
+            list(md5s),
+            model_name,
+            embedding_space(model_name),
+            same_space_pattern(model_name),
+        )
+    return _deleted_rows(status)
 
 
 async def _write_embedded_chunks(
@@ -2580,75 +2822,148 @@ async def _write_embedded_chunks(
     embedded: dict[str, Any],
     result: KnowledgeEmbedResult,
 ) -> None:
-    """Write chunk nodes, part_of edges and node vectors for one artifact."""
-    from umrs.knowledge.store import KnowledgeEdge, KnowledgeNode
+    """Write chunk nodes, part_of edges and node vectors for one artifact.
+
+    Honest writes (ADR-093 D-11): after writing n chunks, the artifact's
+    chunks n.. from an earlier cut are deleted with their vectors, and so are
+    stale vectors of the n written ones (:func:`_drop_stale_vectors`); the
+    per-artifact cap stays (``UMRS_KNOWLEDGE_EMBED_MAX_CHUNKS``, 128) and the
+    stamp records the scheme, ``chunks_total`` and ``chunks_indexed``. The
+    scheme is the one the worker reports (none: fixed-v0).
+    """
+    from umrs.knowledge.chunking import resolve_scheme
+    from umrs.knowledge.embedding_metadata import ChunkStamp
 
     chunks, vectors = embedded.get("chunks") or [], embedded.get("vectors") or []
     if not chunks:
         result.skipped += 1
         return
-    model_name = configured_text_embedder()
     scope = _node_id_scope(project_id, graph_id)
-    file_node_id = f"node-file-{scope}{artifact_id}"
+    scheme = resolve_scheme(embedded.get("scheme"))
+    target = await _resolve_target(
+        store, _ChunkTarget(artifact_id, project_id, graph_id, scope, scheme)
+    )
+    model_name = configured_text_embedder()
     cap = int(os.environ.get(_NODE_EMBED_MAX_CHUNKS_ENV, "128"))
-    written = 0
-    for i, (chunk, vector) in enumerate(zip(chunks, vectors)):
-        if i >= cap:
-            break
-        chunk_id = f"node-chunk-{scope}{artifact_id}-{i}"
-        chunk_md5 = hashlib.md5(chunk["text"].encode("utf-8")).hexdigest()
-        await store.upsert_node(
-            KnowledgeNode(
-                node_id=chunk_id,
-                project_id=project_id,
-                label=f"chunk {i} of {artifact_id}",
-                node_type="entity",
-                content={
-                    "kind": "chunk",
-                    "artifact_id": artifact_id,
-                    "chunk_index": i,
-                    "chunk_start": chunk.get("start"),
-                    "chunk_end": chunk.get("end"),
-                    "chunk_md5": chunk_md5,
-                    "excerpt": chunk["text"][:500],
-                    "origin": "knowledge_embed",
-                },
-                content_hash=chunk_md5,
-                graph_id=graph_id,
+    pairs = list(zip(chunks, vectors))[: max(cap, 0)]
+    md5s = [
+        await _write_chunk(store, target, i, chunk, vector, model_name)
+        for i, (chunk, vector) in enumerate(pairs)
+    ]
+    result.nodes_embedded += len(pairs)
+    if not pairs:
+        return
+    result.chunks_removed += await _drop_chunks_from(store, target, len(pairs), cap)
+    result.vectors_removed += await _drop_stale_vectors(store, target, md5s, model_name)
+    stamp = ChunkStamp(scheme=scheme, total=len(chunks), indexed=len(pairs))
+    _note_truncation(artifact_id, stamp, result)
+    await _stamp_embedded(store, artifact_id, model_name, len(vectors[0]), stamp)
+
+
+# The chunks of an artifact hang on its file node in the graph (part_of; the
+# 0055 edge FK). The writer's own id scope for the graph is checked first (a
+# primary-key read); only when that node is absent are the artifact's file
+# nodes in the graph listed: an imported named-graph bundle restores its rows
+# into graph '' under their source scope (ids ``node-file-g-<src>-<art>``),
+# and a re-embed must replace those chunks in place, not write a chunk 0
+# whose edge has no target (review chunk-data-6, 2026-10-10).
+_FILE_NODE_SQL = "SELECT 1 FROM knowledge_nodes WHERE node_id = $1 AND project_id = $2"
+_FILE_NODES_SQL = (
+    "SELECT node_id FROM knowledge_nodes WHERE project_id = $1 "
+    "AND node_type = 'file' AND content->>'artifact_id' = $2 "
+    "AND graph_id = ANY($3::text[])"
+)
+_FILE_NODE_PREFIX = "node-file-"
+
+
+class _NoFileNode(RuntimeError):
+    """No single file node of the artifact in the graph to hang chunks on."""
+
+
+def _graph_family(project_id: str, graph_id: str) -> list[str]:
+    """The graph ids one id scope covers: the default graph and legacy ''."""
+    from umrs.knowledge.graph_registry import default_graph_id
+
+    default = default_graph_id(project_id)
+    return ["", default] if graph_id in ("", default) else [graph_id]
+
+
+def _scope_of(node_id: str, artifact_id: str) -> str | None:
+    """The id scope a file node id carries (``node-file-{scope}{artifact}``)."""
+    if not (node_id.startswith(_FILE_NODE_PREFIX) and node_id.endswith(artifact_id)):
+        return None
+    scope = node_id[len(_FILE_NODE_PREFIX) : len(node_id) - len(artifact_id)]
+    return scope if scope == "" or scope.endswith("-") else None
+
+
+async def _file_node_scopes(pool: Any, target: _ChunkTarget) -> set[str] | None:
+    """The id scopes of the artifact's file nodes in the target's graph;
+    None when they cannot be read (the edge FK still guards the write)."""
+    family = _graph_family(target.project_id, target.graph_id)
+    try:
+        async with pool.acquire() as conn:
+            own = target.file_node_id
+            if await conn.fetchval(_FILE_NODE_SQL, own, target.project_id):
+                return {target.scope}
+            rows = await conn.fetch(
+                _FILE_NODES_SQL, target.project_id, target.artifact_id, family
             )
+    except Exception as exc:  # noqa: BLE001 — unknown: the writer's own scope applies
+        logger.warning("file node of %s unreadable: %s", target.artifact_id, exc)
+        return None
+    scopes = (_scope_of(str(row[0]), target.artifact_id) for row in rows)
+    return {scope for scope in scopes if scope is not None}
+
+
+async def _resolve_target(store: Any, target: _ChunkTarget) -> _ChunkTarget:
+    """The target whose file node exists: the writer's scope, else the one
+    scope the artifact's file node in this graph carries. Refused by name
+    when there is none (or several) — never a chunk without its edge."""
+    from dataclasses import replace
+
+    pool = getattr(store, "_pool", None)
+    scopes = None if pool is None else await _file_node_scopes(pool, target)
+    if scopes is None or target.scope in scopes:
+        return target
+    if len(scopes) == 1:
+        return replace(target, scope=next(iter(scopes)))
+    where = target.graph_id or "the default graph"
+    raise _NoFileNode(
+        f"no single file node of {target.artifact_id} in {where} "
+        f"({len(scopes)} found): its chunks would have no part_of target — "
+        "re-ingest the artifact"
+    )
+
+
+def _note_truncation(
+    artifact_id: str, stamp: Any, result: KnowledgeEmbedResult
+) -> None:
+    if stamp.indexed < stamp.total:
+        result.chunks_truncated += 1
+        logger.warning(
+            "embed: artifact %s has %d chunks; %d indexed (%s)",
+            artifact_id,
+            stamp.total,
+            stamp.indexed,
+            _NODE_EMBED_MAX_CHUNKS_ENV,
         )
-        await store.upsert_edge(
-            KnowledgeEdge(
-                edge_id=f"edge-{chunk_id}-part-of-{file_node_id}",
-                project_id=project_id,
-                source_id=chunk_id,
-                target_id=file_node_id,
-                relation_type="part_of",
-                content={"kind": "part_of", "origin": "knowledge_embed"},
-                graph_id=graph_id,
-            )
-        )
-        await store.upsert_node_embedding(
-            chunk_id, model_name, vector, content_hash=chunk_md5
-        )
-        written += 1
-    result.nodes_embedded += written
-    if written:
-        await _stamp_embedded(store, artifact_id, model_name, len(vectors[0]))
 
 
 async def _stamp_embedded(
-    store: Any, artifact_id: str, model_name: str, dim: int
+    store: Any, artifact_id: str, model_name: str, dim: int, chunks: Any = None
 ) -> None:
     """The artifact's embedding metadata now tells the truth (model, dim,
-    current) — best-effort: a failed stamp never undoes written vectors."""
+    current; with ``chunks``, its chunk scheme and counts) — best-effort: a
+    failed stamp never undoes written vectors."""
     pool = getattr(store, "_pool", None)
     if pool is None or not model_name:
         return
     from umrs.knowledge.embedding_metadata import stamp_artifact_embedded
 
     try:
-        await stamp_artifact_embedded(pool, artifact_id, model=model_name, dim=dim)
+        await stamp_artifact_embedded(
+            pool, artifact_id, model=model_name, dim=dim, chunks=chunks
+        )
     except Exception as exc:  # noqa: BLE001 — metadata stamp is best-effort beside the vectors
         logger.warning("embedding stamp failed for %s: %s", artifact_id, exc)
 
@@ -2656,7 +2971,9 @@ async def _stamp_embedded(
 def _chunk_embedder_for_site() -> tuple[Any | None, str]:
     """(chunk-embedder, degraded reason). The ``embedding-job`` sandbox when
     the site opted in (D-12 move leg; the server never loads the model then),
-    else the in-process embedder. A misconfigured sandbox raises by name."""
+    else the in-process embedder. A misconfigured sandbox raises by name, as
+    does an unknown ``UMRS_KNOWLEDGE_CHUNK_SCHEME`` (default fixed-v0)."""
+    from umrs.knowledge.chunking import configured_scheme
     from umrs.knowledge.embed_sandbox import (
         InProcessChunkEmbedder,
         SandboxChunkEmbedder,
@@ -2665,6 +2982,11 @@ def _chunk_embedder_for_site() -> tuple[Any | None, str]:
 
     model_name = configured_text_embedder()
     max_tokens = int(os.environ.get(_NODE_EMBED_CHUNK_TOKENS_ENV, "256"))
+    lane = {
+        "prefix_model_name": model_name,
+        "max_tokens": max_tokens,
+        "scheme": configured_scheme(),
+    }
     no_embedder = (
         f"no text embedding model: {model_name} is not a staged model directory "
         f"(set {_NODE_EMBED_MODEL_ENV}, or run the umrs-server image, which bundles "
@@ -2672,21 +2994,11 @@ def _chunk_embedder_for_site() -> tuple[Any | None, str]:
     )
     config = sandbox_config_from_env(model_name)
     if config is not None:
-        return (
-            SandboxChunkEmbedder(
-                config, prefix_model_name=model_name, max_tokens=max_tokens
-            ),
-            "",
-        )
+        return SandboxChunkEmbedder(config, **lane), ""
     embedder = _get_node_embedder()
     if embedder is None:
         return None, no_embedder
-    return (
-        InProcessChunkEmbedder(
-            embedder, prefix_model_name=model_name, max_tokens=max_tokens
-        ),
-        "",
-    )
+    return InProcessChunkEmbedder(embedder, **lane), ""
 
 
 def _prepared_batch(
@@ -2695,6 +3007,82 @@ def _prepared_batch(
     """(source, text) pairs of one batch; unreadable sources are recorded."""
     pairs = [(src, _artifact_text(src, *s3, result)) for src in batch]
     return [(src, text) for src, text in pairs if text is not None]
+
+
+def _label_row(row: Any) -> tuple[str, str]:
+    """``(metadata title, source name)`` of one artifact row."""
+    title = row[1] or row[2] or ""
+    name = row[3] or Path(str(row[4] or "")).name
+    return str(title), str(name)
+
+
+async def _artifact_labels(
+    store: Any, artifact_ids: list[str]
+) -> dict[str, tuple[str, str]]:
+    """``{artifact_id: (metadata title, source name)}`` from the artifact
+    rows; empty without a pool or when the read fails (a header degrades,
+    the chunk body does not)."""
+    pool = getattr(store, "_pool", None)
+    if pool is None or not artifact_ids:
+        return {}
+    try:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(_ARTIFACT_LABELS_SQL, artifact_ids)
+    except Exception as exc:  # noqa: BLE001 — headers are best-effort
+        logger.warning("chunk header titles unavailable: %s", exc)
+        return {}
+    return {str(row[0]): _label_row(row) for row in rows}
+
+
+def _header_labels(
+    src: dict[str, Any], labels: dict[str, tuple[str, str]]
+) -> tuple[str, str]:
+    """``(metadata title, source name)`` of one source (descriptor metadata
+    fills in for a row the store could not read)."""
+    meta = src.get("metadata") if isinstance(src.get("metadata"), dict) else {}
+    title, name = labels.get(str(src.get("artifact_id") or ""), ("", ""))
+    return title or str(meta.get("title") or ""), name or str(
+        meta.get("source_name") or ""
+    )
+
+
+def _header_title(
+    src: dict[str, Any], text: str, labels: dict[str, tuple[str, str]]
+) -> str:
+    """The sent-v1 header title of one source."""
+    from umrs.knowledge.chunking import pick_title
+
+    title, name = _header_labels(src, labels)
+    return pick_title(title, text, name)
+
+
+def _has_headings(src: dict[str, Any], labels: dict[str, tuple[str, str]]) -> bool:
+    """Whether the source's '#' lines are markdown headings (its file type):
+    a code, config or plain-text file's '# comment' never names a section
+    (review chunk-data-8, 2026-10-10)."""
+    from umrs.knowledge.chunking import has_heading_syntax
+
+    return has_heading_syntax(_header_labels(src, labels)[1])
+
+
+async def _chunk_and_embed_batch(
+    store: Any, chunk_embedder: Any, prepared: list[tuple[dict[str, Any], str]]
+) -> list[dict[str, Any]]:
+    """One chunk + embed call, in a worker thread (the model run blocks). A
+    sent-v1 lane also gets each text's header title and whether its '#'
+    lines are headings (ADR-093 D-11)."""
+    from umrs.knowledge.chunking import FIXED_V0
+
+    texts = [text for _, text in prepared]
+    if getattr(chunk_embedder, "scheme", FIXED_V0) == FIXED_V0:
+        return await asyncio.to_thread(chunk_embedder.chunk_and_embed, texts)
+    ids = [str(src.get("artifact_id") or "") for src, _ in prepared]
+    labels = await _artifact_labels(store, ids)
+    titles = [_header_title(src, text, labels) for src, text in prepared]
+    headings = [_has_headings(src, labels) for src, _ in prepared]
+    return await asyncio.to_thread(
+        chunk_embedder.chunk_and_embed, texts, titles, headings
+    )
 
 
 async def _embed_sources(
@@ -2706,23 +3094,51 @@ async def _embed_sources(
     s3: tuple[Any, str],
     result: KnowledgeEmbedResult,
 ) -> None:
-    """Embed every source in batches; a failed batch fails its artifacts by name."""
+    """Embed every source in batches; a failed chunk+embed call fails its
+    batch's artifacts by name, a failed write fails its artifact alone.
+
+    The object-store reads and the model run in a worker thread: both are
+    blocking, and this runs on the API process's event loop. Inline, one
+    batch held every request for its whole duration (gateway 504s during a
+    1000-document ingest, ADR-093 eval, 2026-10-10).
+    """
     for i in range(0, len(sources), _EMBED_BATCH_ARTIFACTS):
-        prepared = _prepared_batch(sources[i : i + _EMBED_BATCH_ARTIFACTS], s3, result)
+        batch = sources[i : i + _EMBED_BATCH_ARTIFACTS]
+        prepared = await asyncio.to_thread(_prepared_batch, batch, s3, result)
         if not prepared:
             continue
         try:
-            embedded = chunk_embedder.chunk_and_embed([text for _, text in prepared])
-            for (src, _), res in zip(prepared, embedded):
-                await _write_embedded_chunks(
-                    store, src["artifact_id"], project_id, graph_id, res, result
-                )
+            embedded = await _chunk_and_embed_batch(store, chunk_embedder, prepared)
         except Exception as exc:  # noqa: BLE001 — per-batch isolation, named per artifact
             logger.error("embed batch failed (%d artifacts): %s", len(prepared), exc)
             result.failed_items.extend(
                 {"artifact_id": src.get("artifact_id", ""), "error": str(exc)}
                 for src, _ in prepared
             )
+            continue
+        for (src, _), res in zip(prepared, embedded):
+            await _write_isolated(store, src, project_id, graph_id, res, result)
+
+
+async def _write_isolated(
+    store: Any,
+    src: dict[str, Any],
+    project_id: str,
+    graph_id: str,
+    embedded: dict[str, Any],
+    result: KnowledgeEmbedResult,
+) -> None:
+    """One artifact's chunk write; a failure fails that artifact alone, by
+    name (until 2026-10-10 one bad row failed the 16-artifact batch, and
+    the artifacts after it were never written or stamped)."""
+    artifact_id = str(src.get("artifact_id") or "")
+    try:
+        await _write_embedded_chunks(
+            store, artifact_id, project_id, graph_id, embedded, result
+        )
+    except Exception as exc:  # noqa: BLE001 — per-artifact isolation, named
+        logger.error("embed write failed for %s: %s", artifact_id, exc)
+        result.failed_items.append({"artifact_id": artifact_id, "error": str(exc)})
 
 
 class KnowledgeEmbedBackend(OrchestratorBackend):
@@ -3196,6 +3612,22 @@ def _lazy_artifact_reader() -> Any:
     return read
 
 
+def _chunk_text_kwargs(
+    spec: dict[str, Any] | None, submitter: str = ""
+) -> dict[str, Any]:
+    """ADR-093 D-12: the export spec's chunk-text opt-in as engine kwargs.
+
+    The engine's MD-5 gate decides on the job's verified submitter, never on
+    the spec: ``chunk_text_acknowledgement`` is written by whoever submits
+    the job (POST /jobs takes any spec), so a member could name the owner
+    in it (review chunk-data-2, 2026-10-10)."""
+    spec = spec or {}
+    return {
+        "chunk_text": bool(spec.get("chunk_text", False)),
+        "chunk_text_submitter": str(submitter or ""),
+    }
+
+
 class _ExportIntegrityMixin:
     """Shared export+integrity flow for the export backend's submit path."""
 
@@ -3209,6 +3641,8 @@ class _ExportIntegrityMixin:
         verify_fn: Any,
         allow_unsigned: bool = False,
         raw: dict[str, Any] | None = None,
+        chunk_text_spec: dict[str, Any] | None = None,
+        submitter: str = "",
     ) -> KnowledgeExportResult:
         """Run the export (or degraded fallback) and post-verify the bundle."""
         if pool is None:
@@ -3231,6 +3665,7 @@ class _ExportIntegrityMixin:
             artifact_reader=_lazy_artifact_reader(),
             include_raw=bool((raw or {}).get("include")),
             raw_acknowledgement=(raw or {}).get("acknowledgement"),
+            **_chunk_text_kwargs(chunk_text_spec, submitter),
         )
         result = await engine.export_project(project_id)
         if secret_key and not result.degraded and result.bundle_path:
@@ -3326,6 +3761,8 @@ class KnowledgeExportBackend(OrchestratorBackend, _ExportIntegrityMixin):
                     "include": bool(job.spec.get("include_raw", False)),
                     "acknowledgement": job.spec.get("raw_acknowledgement"),
                 },
+                chunk_text_spec=job.spec,
+                submitter=job.user_id,
             )
             self._publish_archive(result, job.job_id)
             _write_result(attempt, result)

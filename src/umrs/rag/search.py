@@ -12,8 +12,11 @@ Provides:
 from __future__ import annotations
 
 import logging
+import os
 import re
+import threading
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -286,48 +289,203 @@ class HybridSearcher:
 
 
 # =============================================================================
-# Cross-Encoder Reranking (U-304)
+# Cross-Encoder Reranking (U-304; ADR-093 D-7)
 # =============================================================================
+
+RERANKER_MODEL_ENV = "UMRS_RAG_RERANKER_MODEL"
+RERANKER_THREADS_ENV = "UMRS_RAG_RERANKER_THREADS"
+#: MiniLM takes 512 tokens; 384 holds a query plus a 256-token chunk and its
+#: header, and caps the cost of the rare long passage.
+RERANKER_MAX_LENGTH = 384
+RERANKER_BATCH_SIZE = 16
+DEFAULT_RERANKER_THREADS = 2
+#: Where ``huggingface_hub.snapshot_download(local_dir=...)`` records the
+#: commit each file was downloaded at (first line of the ``.metadata`` file).
+_DOWNLOAD_METADATA = (
+    Path(".cache") / "huggingface" / "download" / "config.json.metadata"
+)
+
+
+class RerankerUnavailable(RuntimeError):
+    """The cross-encoder cannot score; the message says why, by name."""
+
+
+def reranker_staged(model_dir: str | os.PathLike[str]) -> bool:
+    """A directory a cross-encoder loads from offline (the embedder's rule)."""
+    path = Path(model_dir)
+    return (path / "config.json").is_file() and (path / "model.safetensors").is_file()
+
+
+def reranker_unavailable_reason(model: str) -> str | None:
+    """Why ``model`` cannot be loaded offline, or ``None`` when it can.
+
+    Only a staged directory loads. A hub id is refused by name: under
+    ``HF_HUB_OFFLINE=1`` it can never load, and without it a load would be a
+    runtime download (CONSTITUTION offline rule).
+    """
+    name = (model or "").strip()
+    if not name:
+        return f"not configured ({RERANKER_MODEL_ENV} is empty)"
+    path = Path(name)
+    if path.is_dir():
+        if reranker_staged(path):
+            return None
+        return f"not staged: {name} lacks config.json or model.safetensors"
+    if not path.is_absolute():
+        return (
+            f"refused: {name!r} is a hub id, not a staged directory "
+            "(stage it first: standalone.sh reranker pull)"
+        )
+    return f"not staged: {name} does not exist"
+
+
+def staged_revision(model_dir: str | os.PathLike[str]) -> str:
+    """The hub commit a staged directory was downloaded at, else ``unknown``."""
+    try:
+        lines = (Path(model_dir) / _DOWNLOAD_METADATA).read_text().splitlines()
+    except OSError:
+        return "unknown"
+    return (lines[0].strip() if lines else "") or "unknown"
+
+
+def reranker_threads() -> int:
+    """``UMRS_RAG_RERANKER_THREADS`` (default 2: the rag container's CPUs)."""
+    try:
+        return max(
+            1, int(os.environ.get(RERANKER_THREADS_ENV, DEFAULT_RERANKER_THREADS))
+        )
+    except ValueError:
+        return DEFAULT_RERANKER_THREADS
+
+
+def _load_cross_encoder(path: str, device: str, max_length: int) -> Any:
+    """A sentence-transformers CrossEncoder that returns RAW logits.
+
+    The library's default activation for a one-label model is a sigmoid; the
+    sigmoid belongs to the cut (``knowledge/retrieval/cutoff.py``), so the
+    identity is set here. ``local_files_only``: nothing downloads, ever.
+    """
+    import torch
+    from sentence_transformers import CrossEncoder
+
+    kwargs = {"device": device, "max_length": max_length, "local_files_only": True}
+    try:
+        return CrossEncoder(path, activation_fn=torch.nn.Identity(), **kwargs)
+    except TypeError:  # sentence-transformers < 4 names it differently
+        return CrossEncoder(
+            path, default_activation_function=torch.nn.Identity(), **kwargs
+        )
+
+
+def _set_torch_threads(threads: int) -> None:
+    import torch
+
+    torch.set_num_threads(threads)
+
+
+def _sort_key(result: SearchResult) -> float:
+    return result.rerank_score if result.rerank_score is not None else float("-inf")
 
 
 class CrossEncoderReranker:
     """
     Cross-encoder reranking for improved relevance.
 
-    Uses a cross-encoder model to score query-document pairs.
+    Uses a cross-encoder model to score query-document pairs. ADR-093 D-7:
+    loads only a staged directory (a hub id is refused by name), caches a
+    load failure instead of retrying it on every call, returns raw logits,
+    and runs at ``max_length`` 384, batch 16, ``UMRS_RAG_RERANKER_THREADS``.
     """
 
     def __init__(
         self,
-        model_name: str = "cross-encoder/ms-marco-MiniLM-L-6-v2",
+        model_name: str | None = None,
         device: str = "cpu",
+        *,
+        max_length: int = RERANKER_MAX_LENGTH,
+        batch_size: int = RERANKER_BATCH_SIZE,
+        threads: int | None = None,
     ):
         """
         Initialize reranker.
 
         Args:
-            model_name: HuggingFace model name for cross-encoder
+            model_name: staged model directory; ``None`` reads
+                ``UMRS_RAG_RERANKER_MODEL`` (empty = no reranker)
             device: Device to run model on ('cpu' or 'cuda')
+            max_length: token limit per (query, passage) pair
+            batch_size: pairs per forward pass
+            threads: torch threads; ``None`` reads ``UMRS_RAG_RERANKER_THREADS``
         """
-        self.model_name = model_name
+        if model_name is None:
+            model_name = os.environ.get(RERANKER_MODEL_ENV, "")
+        self.model_name = model_name.strip()
         self.device = device
+        self.max_length = max_length
+        self.batch_size = batch_size
+        self.threads = reranker_threads() if threads is None else threads
         self._model = None
+        self._load_error: str | None = None
+        self._lock = threading.Lock()
+        self._warned: set[str] = set()
 
-    def _load_model(self):
-        """Lazy load the cross-encoder model."""
-        if self._model is None:
+    @property
+    def load_error(self) -> str | None:
+        """The cached reason a load attempt failed (never retried)."""
+        return self._load_error
+
+    @property
+    def revision(self) -> str:
+        return staged_revision(self.model_name) if self.model_name else "unknown"
+
+    def unavailable_reason(self) -> str | None:
+        """``None`` when the model is loaded or loadable, else why not."""
+        if self._model is not None:
+            return None
+        return self._load_error or reranker_unavailable_reason(self.model_name)
+
+    def _load_model(self) -> None:
+        """Lazy load from the staged directory; a failure is cached."""
+        with self._lock:
+            if self._model is not None or self._load_error is not None:
+                return
+            if reranker_unavailable_reason(self.model_name) is not None:
+                return
             try:
-                from sentence_transformers import CrossEncoder
-
-                self._model = CrossEncoder(self.model_name, device=self.device)
-                logger.info(f"Loaded cross-encoder: {self.model_name}")
-            except ImportError:
-                logger.warning(
-                    "sentence-transformers not installed. "
-                    "Reranking will use original scores."
+                self._model = _load_cross_encoder(
+                    self.model_name, self.device, self.max_length
                 )
-            except Exception as e:
-                logger.error(f"Failed to load cross-encoder: {e}")
+                _set_torch_threads(self.threads)
+            except Exception as exc:  # ImportError, OSError, bad weights: all final
+                self._load_error = f"load failed: {type(exc).__name__}: {exc}"
+                logger.error("cross-encoder %s: %s", self.model_name, self._load_error)
+                return
+            logger.info("Loaded cross-encoder: %s (%s)", self.model_name, self.revision)
+
+    def score(self, query: str, passages: list[str]) -> list[float]:
+        """Raw logits, one per passage, in input order.
+
+        Raises :class:`RerankerUnavailable` with the reason when the model is
+        not configured, not staged, a hub id, or failed to load.
+        """
+        self._load_model()
+        if self._model is None:
+            raise RerankerUnavailable(self.unavailable_reason() or "not loaded")
+        if not passages:
+            return []
+        pairs = [(query, passage) for passage in passages]
+        logits = self._model.predict(
+            pairs, batch_size=self.batch_size, show_progress_bar=False
+        )
+        return [float(value) for value in np.asarray(logits, dtype=float).reshape(-1)]
+
+    def _mark_unavailable(self, results: list[SearchResult], reason: str) -> None:
+        """The legacy routes keep their order, but never silently."""
+        if reason not in self._warned:
+            self._warned.add(reason)
+            logger.warning("cross-encoder rerank skipped: %s", reason)
+        for result in results:
+            result.metadata["rerank"] = f"unavailable: {reason}"
 
     def rerank(
         self,
@@ -344,27 +502,24 @@ class CrossEncoderReranker:
             top_k: Number of results to return (None = all)
 
         Returns:
-            Reranked search results
+            Reranked search results. When the model is unavailable the input
+            order is kept and every result says so in
+            ``metadata["rerank"]``.
         """
         if not results:
             return results
 
-        self._load_model()
-
-        if self._model is None:
-            # Fallback: return original results
+        try:
+            scores = self.score(query, [r.content for r in results])
+        except RerankerUnavailable as exc:
+            self._mark_unavailable(results, str(exc))
             return results[:top_k] if top_k else results
 
-        # Score query-document pairs
-        pairs = [(query, r.content) for r in results]
-        scores = self._model.predict(pairs)
-
-        # Update results with rerank scores
         for result, score in zip(results, scores, strict=False):
-            result.rerank_score = float(score)
+            result.rerank_score = score
 
-        # Sort by rerank score
-        results.sort(key=lambda x: x.rerank_score or 0, reverse=True)
+        # Raw logits are signed: an unscored result sorts last, not at 0.
+        results.sort(key=_sort_key, reverse=True)
 
         return results[:top_k] if top_k else results
 

@@ -32,9 +32,12 @@ from umrs.orchestrator.endpoint_registry import (
 from umrs.rag.corpus_access import get_corpus_access_store, shared_corpus_readable
 
 from ._access import checked_access, resource_caller
+from .rag_retrieve import LEGACY_TOP_K
 from .typed_errors import PlatformError, raise_typed
 
 logger = logging.getLogger(__name__)
+
+_ADAPTIVE_K_CAP = 12  # the retrieve verb's k_max bound
 
 router = APIRouter(prefix="/umrs/rag", tags=["rag-proxy"])
 
@@ -73,8 +76,26 @@ class RAGQueryRequest(BaseModel):
 
     query: str = Field(..., description="Query text")
     project_id: str = Field(..., description="Project ID")
-    top_k: int = Field(5, ge=1, le=20, description="Number of results")
-    threshold: float = Field(0.7, ge=0.0, le=1.0, description="Similarity threshold")
+    top_k: int = Field(
+        LEGACY_TOP_K,
+        ge=1,
+        le=20,
+        description=(
+            "Most passages: k in threshold mode. In adaptive mode the cut's "
+            "k_max (capped at 12) when sent with a value other than the legacy "
+            f"default {LEGACY_TOP_K}, which every pre-ADR-093 client serializes; "
+            "unset or the legacy default means the site's UMRS_RAG_FINAL_K_MAX"
+        ),
+    )
+    threshold: float | None = Field(
+        None,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Legacy absolute similarity cut (top_k at or above it). Unset "
+            "(ADR-093 D-3): the adaptive cut and calibrated sufficiency"
+        ),
+    )
     include_sources: bool = Field(True, description="Include source documents")
     filters: dict[str, Any] | None = Field(None, description="Metadata filters")
 
@@ -94,6 +115,8 @@ class RAGQueryResponse(BaseModel):
     answer: str
     sources: list[RAGSource] = Field(default_factory=list)
     usage: dict[str, int] | None = None
+    # ADR-093 D-4: citations, abstained, uncited, sufficiency, dropped passages.
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class DocumentInfo(BaseModel):
@@ -227,9 +250,6 @@ def put_corpus_access(request: Request, body: CorpusAccessUpdate) -> dict[str, A
         details={"project_id": body.project_id, "access": access, "by": user_id},
     )
     return {"project_id": body.project_id, "access": access}
-
-
-
 
 
 async def _upload_success(
@@ -478,8 +498,45 @@ async def query_rag(
         )
         if spine.passages or facade == "spine":
             return _spine_response(spine, request_body)
-        logger.info("rag query: spine has no passages (%s); endpoint corpus next", spine.reason)
+        logger.info(
+            "rag query: spine has no passages (%s); endpoint corpus next", spine.reason
+        )
     return await _query_via_endpoint(request_body, registry, project_id)
+
+
+def _spine_k_max(body: RAGQueryRequest) -> int | None:
+    """The k the core is handed; ``None`` is the site default it applies.
+
+    Threshold mode: ``top_k`` as sent. Adaptive mode: ``top_k`` (12 at most)
+    only when it is not the legacy default — R4's ``RAGQuery`` and the eval
+    harness always serialize ``top_k=5``, which overrode
+    ``UMRS_RAG_FINAL_K_MAX`` on every call (review of ADR-093, 2026-10-10).
+    """
+    sent = "top_k" in body.model_fields_set
+    if body.threshold is not None:
+        return body.top_k if sent else None
+    if not sent or body.top_k == LEGACY_TOP_K:
+        return None
+    return min(body.top_k, _ADAPTIVE_K_CAP)
+
+
+def _answer_in_scope(
+    request: Request, pool: Any, body: RAGQueryRequest, project: str, admin: bool
+) -> Any:
+    """The spine's answer over the project minus the graphs the caller may
+    not read — the retrieve verb's whole-project scope (KG-05)."""
+    from .rag_retrieve import hidden_graphs
+    from .rag_spine import answer_from_spine
+
+    return answer_from_spine(
+        pool,
+        body.query,
+        project,
+        k_max=_spine_k_max(body),
+        threshold=body.threshold,
+        include_ambient=admin,
+        exclude_graph_ids=hidden_graphs(request, pool, project),
+    )
 
 
 async def _query_via_spine(
@@ -488,25 +545,43 @@ async def _query_via_spine(
     """Run the synchronous spine pipeline (DB, S3, one chat call) off the loop."""
     import asyncio
 
-    from .rag_spine import SpineAnswer, answer_from_spine
+    from .rag_spine import SpineAnswer
 
     pool = getattr(request.app.state, "umrs_db_pool", None)
     if pool is None:
         return SpineAnswer(reason="knowledge database unavailable")
-    admin = request.headers.get("x-verified-is-admin", "").strip().lower() in ("true", "1")
+    admin = request.headers.get("x-verified-is-admin", "").strip().lower() in (
+        "true",
+        "1",
+    )
     try:
         return await asyncio.to_thread(
-            answer_from_spine,
-            pool,
-            body.query,
-            target_project,
-            top_k=body.top_k,
-            threshold=body.threshold,
-            include_ambient=admin,
+            _answer_in_scope, request, pool, body, target_project, admin
         )
     except Exception as exc:  # noqa: BLE001 — auto mode falls back to the endpoint corpus
         logger.warning("rag query: spine path failed: %s", exc)
         return SpineAnswer(reason=f"spine query failed: {type(exc).__name__}")
+
+
+def _spine_source(passage: Any, model: str) -> RAGSource:
+    scores = dict(passage.scores)
+    return RAGSource(
+        document_id=passage.source_id,
+        content=passage.text,
+        score=float(scores.get("dense", scores.get("fused", 0.0))),
+        metadata={
+            "text_source": passage.text_source,
+            "source_name": passage.source_name,
+            "artifact_id": passage.artifact_id,
+            "section": passage.section,
+            "span": list(passage.span) if passage.span else None,
+            "rank": passage.rank,
+            "scores": scores,
+            "lanes": list(passage.lanes),
+            "corpus_venue": "spine",
+            "model": model,
+        },
+    )
 
 
 def _spine_response(spine: Any, body: RAGQueryRequest) -> RAGQueryResponse:
@@ -517,21 +592,12 @@ def _spine_response(spine: Any, body: RAGQueryRequest) -> RAGQueryResponse:
         answer = f"Could not generate an answer: {spine.reason}"
     else:
         answer = f"No knowledge in this project answers this ({spine.reason})."
-    sources = [
-        RAGSource(
-            document_id=passage["source_id"],
-            content=passage["text"],
-            score=passage["score"],
-            metadata={
-                **passage["metadata"],
-                "source_name": passage["source_name"],
-                "corpus_venue": "spine",
-                "model": spine.model,
-            },
-        )
-        for passage in spine.passages
-    ]
-    return RAGQueryResponse(answer=answer, sources=sources if body.include_sources else [])
+    sources = [_spine_source(passage, spine.model) for passage in spine.passages]
+    return RAGQueryResponse(
+        answer=answer,
+        sources=sources if body.include_sources else [],
+        metadata=spine.metadata() if hasattr(spine, "metadata") else {},
+    )
 
 
 async def _query_via_endpoint(
@@ -547,8 +613,11 @@ async def _query_via_endpoint(
 
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
+            # An unset threshold is omitted: the endpoint corpus keeps its 0.7.
             response = await client.post(
-                rag_url, json=request_body.model_dump(), headers=_trace_headers()
+                rag_url,
+                json=request_body.model_dump(exclude_none=True),
+                headers=_trace_headers(),
             )
 
             if response.status_code != 200:
@@ -851,3 +920,10 @@ async def rag_stats(
         raise_typed(
             PlatformError.rag("unavailable", "RAG service unavailable"), cause=e
         )
+
+
+# ADR-093 D-2: the retrieve verb and its fetch handle, mounted under this
+# router's prefix (/umrs/rag/retrieve, /umrs/rag/passages/{node_id}).
+from .rag_retrieve import register as _register_retrieve
+
+_register_retrieve(router)

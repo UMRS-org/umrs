@@ -1,11 +1,13 @@
 """UMRS RAG FastAPI service."""
 
+import contextvars
 import logging
 import os
 import re
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Annotated, Any, NoReturn
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +23,7 @@ from langchain_core.documents import Document
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.retrievers import BaseRetriever
 from langchain_openai import ChatOpenAI
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
 # ADR-027 G5/P1b: executor-side canonical mint. Imported at module level but
 # every call path is best-effort (never fails an upload).
@@ -32,7 +34,12 @@ from umrs.orchestrator.endpoint_registry import (
     get_registry,
 )
 from umrs.orchestrator.site_config import get_site_config
-from umrs.rag.search import CrossEncoderReranker, HybridSearcher, SearchResult
+from umrs.rag.search import (
+    CrossEncoderReranker,
+    HybridSearcher,
+    RerankerUnavailable,
+    SearchResult,
+)
 from umrs.server.json_config import load_server_cfg_file
 from umrs.server.provisioning import ServerCfg, configure_user
 from umrs.shared.config import (
@@ -417,6 +424,56 @@ class UMRSPgVectorRetriever(BaseRetriever):
 
 app = FastAPI(title="UMRS RAG Service", version="0.1.0")
 
+# True while PrefixedSentenceTransformerEmbeddings encodes a query.
+_ENCODING_QUERY: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "rag_encoding_query", default=False
+)
+
+#: How a query reaches the model (ADR-093; eval-only switch, 2026-10-10).
+#: ``fixed`` (the default): the model's query prefix once, ``query: <q>`` for
+#: e5. ``b0``: the encoding every query had until 2026-10-10, ``passage:
+#: query: <q>`` (langchain's ``embed_query`` delegates to ``embed_documents``,
+#: which added the passage prefix too). Baseline B0 was measured with it;
+#: ``b0`` exists so the fix is measured as its own factor and legacy-mode
+#: parity with B0 can be checked live. Never a production setting.
+QUERY_PREFIX_ENV = "UMRS_RAG_QUERY_PREFIX"
+QUERY_PREFIX_MODES: tuple[str, ...] = ("fixed", "b0")
+QUERY_PREFIX: str = "fixed"  # set at startup from UMRS_RAG_QUERY_PREFIX
+
+
+def query_prefix_mode() -> str:
+    """``UMRS_RAG_QUERY_PREFIX``: ``fixed`` (also when unset or empty) or
+    ``b0``. Any other value is refused: a typo must not silently measure the
+    other encoder."""
+    mode = os.getenv(QUERY_PREFIX_ENV, "").strip().lower() or "fixed"
+    if mode not in QUERY_PREFIX_MODES:
+        raise ValueError(
+            f"{QUERY_PREFIX_ENV}={mode!r}: expected one of {', '.join(QUERY_PREFIX_MODES)}"
+        )
+    return mode
+
+
+def _init_query_prefix() -> None:
+    """Apply ``UMRS_RAG_QUERY_PREFIX`` at startup (raises on an unknown value)."""
+    global QUERY_PREFIX
+    QUERY_PREFIX = query_prefix_mode()
+    if QUERY_PREFIX == "b0":
+        logger.warning(
+            "%s=b0: queries are encoded as baseline B0 encoded them "
+            "('passage: query: ...' for e5) — eval only",
+            QUERY_PREFIX_ENV,
+        )
+
+
+def _query_encoding(model_name: str | None) -> str | None:
+    """The string the model sees for the query ``{q}`` under the switch."""
+    if not model_name:
+        return None
+    text = add_query_prefix("{q}", model_name)
+    if QUERY_PREFIX == "b0":
+        return add_document_prefix([text], model_name)[0]
+    return text
+
 
 class PrefixedSentenceTransformerEmbeddings(SentenceTransformerEmbeddings):
     """Query-time text embedder for retrieval (R6.1 ownership boundary).
@@ -438,11 +495,31 @@ class PrefixedSentenceTransformerEmbeddings(SentenceTransformerEmbeddings):
     """
 
     def embed_query(self, text: str) -> list[float]:
+        # The base embed_query delegates to self.embed_documents, i.e. to the
+        # override below: until 2026-10-10 every e5 query was encoded as
+        # "passage: query: ..." (ADR-093). Inside a query the document prefix
+        # is suppressed, so a query carries its own prefix exactly once —
+        # unless UMRS_RAG_QUERY_PREFIX=b0 asks for B0's encoding (eval only).
         text = add_query_prefix(text, self.model_name)
-        return super().embed_query(text)
+        if QUERY_PREFIX == "b0":
+            return super().embed_query(text)
+        token = _ENCODING_QUERY.set(True)
+        try:
+            return super().embed_query(text)
+        finally:
+            _ENCODING_QUERY.reset(token)
+
+    def embed_queries(self, texts: list[str]) -> list[list[float]]:
+        """Many queries in one forward pass, each encoded as ``embed_query``
+        encodes one (the query prefix only; ``b0``: B0's double prefix)."""
+        prefixed = [add_query_prefix(text, self.model_name) for text in texts]
+        if QUERY_PREFIX == "b0":
+            return self.embed_documents(prefixed)
+        return super().embed_documents(prefixed)
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
-        texts = add_document_prefix(texts, self.model_name)
+        if not _ENCODING_QUERY.get():
+            texts = add_document_prefix(texts, self.model_name)
         return super().embed_documents(texts)
 
 
@@ -874,7 +951,9 @@ RERANKER: CrossEncoderReranker | None = None
 _IGNORED_EMBEDDING_ENV = "RAG_EMBEDDING_MODEL"
 
 
-def _resolve_embedding_model(db_model_store: dict[str, dict[str, Any]]) -> tuple[str, str]:
+def _resolve_embedding_model(
+    db_model_store: dict[str, dict[str, Any]],
+) -> tuple[str, str]:
     """``(model, where it came from)``: UMRS_RAG_EMBEDDING_MODEL, else the
     knowledge text embedder when staged (the bundled e5-base-v2 by default) —
     this service encodes queries for the spine, so it must match the model the
@@ -906,10 +985,15 @@ def _embedder_stats() -> dict[str, Any]:
     """The embedder actually loaded — /rag/stats used to report a label."""
     client = getattr(EMBEDDINGS, "client", None)
     dimension_of = getattr(client, "get_sentence_embedding_dimension", None)
+    model_name = getattr(EMBEDDINGS, "model_name", None)
     stats: dict[str, Any] = {
-        "embedding_model": getattr(EMBEDDINGS, "model_name", None),
+        "embedding_model": model_name,
         "embedding_model_source": EMBEDDINGS_SOURCE or None,
         "embedding_dimensions": dimension_of() if callable(dimension_of) else None,
+        # ADR-093: which query encoding is in force, so a measured run
+        # records it (UMRS_RAG_QUERY_PREFIX, eval-only).
+        "query_prefix": QUERY_PREFIX,
+        "query_encoding": _query_encoding(model_name),
     }
     ignored = os.getenv(_IGNORED_EMBEDDING_ENV)
     if ignored and EMBEDDINGS is not None:
@@ -922,6 +1006,7 @@ def startup_event() -> None:
     global DB_MODEL_STORE, EMBEDDINGS, HYBRID_SEARCHER, RERANKER
 
     _inject_site_env_defaults()
+    _init_query_prefix()
 
     config_path = _resolve_server_config_path()
     cfg_store = _build_cfg_store(config_path)
@@ -940,11 +1025,45 @@ def startup_event() -> None:
 
     # Hybrid search and cross-encoder reranking (opt-in via request fields)
     HYBRID_SEARCHER = HybridSearcher()
-    reranker_model = os.getenv(
-        "UMRS_RAG_RERANKER_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    RERANKER = _init_reranker()
+
+
+def _init_reranker() -> CrossEncoderReranker:
+    """The staged cross-encoder (ADR-093 D-7), warmed when it is staged.
+
+    ``UMRS_RAG_RERANKER_MODEL`` empty (the default) means no reranker: the
+    hub id this used to default to could never load offline and was retried,
+    and silently skipped, on every request. The warm-up loads the weights at
+    boot so the first ``/rag/rerank`` is not charged the load.
+    """
+    reranker = CrossEncoderReranker(
+        model_name=os.getenv("UMRS_RAG_RERANKER_MODEL", ""),
+        device=os.getenv("UMRS_RAG_RERANKER_DEVICE", "cpu"),
     )
-    reranker_device = os.getenv("UMRS_RAG_RERANKER_DEVICE", "cpu")
-    RERANKER = CrossEncoderReranker(model_name=reranker_model, device=reranker_device)
+    reason = reranker.unavailable_reason()
+    if reason is not None:
+        logger.info("cross-encoder reranker off: %s", reason)
+        return reranker
+    try:
+        reranker.score("warm-up", ["warm-up"])
+    except (RuntimeError, ValueError, OSError) as exc:  # never takes the service down
+        logger.warning("cross-encoder warm-up failed: %s", exc)
+    return reranker
+
+
+def _reranker_stats() -> dict[str, Any]:
+    """``reranker``: ``{model, revision}``, or ``unavailable (...)`` and why."""
+    reranker = RERANKER
+    reason = (
+        "service not started" if reranker is None else reranker.unavailable_reason()
+    )
+    if reranker is not None and reason is None:
+        return {
+            "reranker": {"model": reranker.model_name, "revision": reranker.revision}
+        }
+    failed = reranker is not None and reranker.load_error is not None
+    label = "unavailable (load failed)" if failed else "unavailable (not staged)"
+    return {"reranker": label, "reranker_reason": reason}
 
 
 def _fetch_k_for(payload: RAGSearchRequest) -> int:
@@ -1575,10 +1694,10 @@ def _chunk_and_embed(text: str) -> tuple[list[dict[str, Any]], list[Any]]:
             PlatformError.ragservice("bad_request", "No chunks produced from document")
         )
 
-    chunk_texts = [c["text"] for c in chunks]
-    model_name = getattr(EMBEDDINGS, "model_name", None)
-    prefixed_texts = add_document_prefix(chunk_texts, model_name)
-    return chunks, EMBEDDINGS.embed_documents(prefixed_texts)
+    # embed_documents adds the model's document prefix itself; prefixing here
+    # as well encoded every uploaded chunk as "passage: passage: ..." in the
+    # space the dense lane ranks (ADR-093 review, 2026-10-10).
+    return chunks, EMBEDDINGS.embed_documents([c["text"] for c in chunks])
 
 
 def _insert_one_chunk(
@@ -1852,10 +1971,24 @@ def rag_list_documents(
     return []
 
 
-class EmbedRequest(BaseModel):
-    """One query to embed for the K3 vector lane."""
+EMBED_BATCH_MAX = 64
+_QueryText = Annotated[str, StringConstraints(min_length=1, max_length=2048)]
 
-    text: str = Field(..., min_length=1, max_length=2048)
+
+class EmbedRequest(BaseModel):
+    """Queries to embed: ``text`` (one, the K3 vector lane) or ``texts``
+    (up to 64, the retrieve verb's query variants and the null probes)."""
+
+    text: _QueryText | None = None
+    texts: list[_QueryText] | None = Field(
+        None, min_length=1, max_length=EMBED_BATCH_MAX
+    )
+
+    @model_validator(mode="after")
+    def _exactly_one_form(self) -> "EmbedRequest":
+        if (self.text is None) == (self.texts is None):
+            raise ValueError("send exactly one of 'text' or 'texts'")
+        return self
 
 
 class EmbedResponse(BaseModel):
@@ -1864,19 +1997,98 @@ class EmbedResponse(BaseModel):
     vector: list[float]
 
 
-@app.post("/rag/embed", response_model=EmbedResponse)
-def embed_query(payload: EmbedRequest) -> EmbedResponse:
-    """Query-time embedding for ``GET /umrs/knowledge/query`` (R6.1).
+class EmbedBatchResponse(BaseModel):
+    model: str
+    vectors: list[list[float]]
+    dim: int
+
+
+def _embed_queries(texts: list[str]) -> list[list[float]]:
+    """One batched pass when the embedder has one, else one call per query."""
+    batch = getattr(EMBEDDINGS, "embed_queries", None)
+    if callable(batch):
+        return [list(vector) for vector in batch(texts)]
+    return [EMBEDDINGS.embed_query(text) for text in texts]
+
+
+@app.post("/rag/embed", response_model=EmbedResponse | EmbedBatchResponse)
+def embed_query(payload: EmbedRequest) -> EmbedResponse | EmbedBatchResponse:
+    """Query-time embedding for ``GET /umrs/knowledge/query`` (R6.1) and
+    ``GET /umrs/rag/retrieve`` (ADR-093 D-2).
 
     This service is the only query-time text embedder; the facade never
-    loads a model, it asks here. The model's query prefix is applied
+    loads a model, it asks here. The model's query prefix is applied once
     (e5 ``query:``) and ``model`` names the space, so the caller ranks only
-    vectors that model wrote (ADR-083 D-2).
+    vectors that model wrote (ADR-083 D-2). ``{"text"}`` answers
+    ``{model, dimension, vector}`` as before; ``{"texts"}`` answers
+    ``{model, vectors, dim}``. An older service answers ``texts`` with 422,
+    which is the caller's cue to fall back to one ``text`` call per query.
     """
     if EMBEDDINGS is None:
-        raise_typed(PlatformError.ragservice("unavailable", "embedding model not loaded"))
+        raise_typed(
+            PlatformError.ragservice("unavailable", "embedding model not loaded")
+        )
+    if payload.texts is not None:
+        vectors = _embed_queries(payload.texts)
+        dim = len(vectors[0]) if vectors else 0
+        return EmbedBatchResponse(model=EMBEDDINGS.model_name, vectors=vectors, dim=dim)
     vector = EMBEDDINGS.embed_query(payload.text)
-    return EmbedResponse(model=EMBEDDINGS.model_name, dimension=len(vector), vector=vector)
+    return EmbedResponse(
+        model=EMBEDDINGS.model_name, dimension=len(vector), vector=vector
+    )
+
+
+RERANK_PASSAGES_MAX = 32
+# 384 tokens of English is under 2,000 characters; the tokenizer truncates
+# anyway, so a longer passage only costs tokenizer time.
+_RERANK_PASSAGE_CHARS = 4000
+
+
+class RerankRequest(BaseModel):
+    """One query and up to 32 passages for the cross-encoder (ADR-093 D-7)."""
+
+    query: _QueryText
+    passages: list[str] = Field(..., max_length=RERANK_PASSAGES_MAX)
+
+
+class RerankResponse(BaseModel):
+    model: str
+    revision: str
+    logits: list[float]
+    ms: float
+
+
+def _reranker_unavailable(reason: str) -> NoReturn:
+    raise_typed(PlatformError.rag("unavailable", f"reranker unavailable: {reason}"))
+
+
+@app.post("/rag/rerank", response_model=RerankResponse)
+def rerank_passages(payload: RerankRequest) -> RerankResponse:
+    """Raw cross-encoder logits, one per passage, in input order.
+
+    The sigmoid, the cut and the ordering belong to UMRS
+    (``knowledge/retrieval``); this route only scores. 503
+    ``reranker unavailable: <reason>`` when no model is staged, a hub id is
+    configured, or the load failed: never the input order in disguise.
+    """
+    reranker = RERANKER
+    if reranker is None:
+        _reranker_unavailable("service not started")
+    started = time.perf_counter()
+    passages = [passage[:_RERANK_PASSAGE_CHARS] for passage in payload.passages]
+    try:
+        logits = reranker.score(payload.query, passages)
+    except RerankerUnavailable as exc:
+        _reranker_unavailable(str(exc))
+    except (RuntimeError, ValueError, OSError, TypeError) as exc:  # an outage, said so
+        logger.exception("cross-encoder scoring failed")
+        _reranker_unavailable(f"scoring failed: {type(exc).__name__}")
+    return RerankResponse(
+        model=reranker.model_name,
+        revision=reranker.revision,
+        logits=logits,
+        ms=round((time.perf_counter() - started) * 1000.0, 1),
+    )
 
 
 @app.get("/rag/stats")
@@ -1890,7 +2102,7 @@ def rag_stats(
     import psycopg2
 
     db_url = os.getenv("UMRS_RAG_DATABASE_URL", os.getenv("DATABASE_URL", ""))
-    stats: dict = {"status": "ok", **_embedder_stats()}
+    stats: dict = {"status": "ok", **_embedder_stats(), **_reranker_stats()}
 
     if not db_url:
         stats["status"] = "no_database"

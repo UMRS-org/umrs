@@ -89,10 +89,17 @@ def _default_litellm_chat(
     model: str,
     base_url: str,
     api_key: str | None,
-    max_tokens: int = 700,
+    max_tokens: int | None = 700,
     timeout: float = 60.0,
+    temperature: float = 0.3,
 ) -> str:
-    """Chat via the site LiteLLM upstream (same auth as api/llm.py)."""
+    """Chat via the site LiteLLM upstream (same auth as api/llm.py).
+
+    ``temperature`` stays 0.3 for the loop and extraction callers; the RAG
+    answer path passes 0.0 (ADR-093 D-4). ``max_tokens=None`` sends no
+    output limit at all (the provider's own default): the RAG answer of a
+    large reader (ADR-093 D-14, rikyu's kimi-k3 and glm-5.3).
+    """
     key = api_key or _resolve_litellm_service_key()
     if not base_url:
         raise RuntimeError("no litellm base url configured for agent executor")
@@ -101,16 +108,18 @@ def _default_litellm_chat(
         headers["Authorization"] = f"Bearer {key}"
     import httpx
 
+    body: dict[str, Any] = {
+        "model": model,
+        "messages": messages,
+        "temperature": temperature,
+        "stream": False,
+    }
+    if max_tokens is not None:
+        body["max_tokens"] = max_tokens
     resp = httpx.post(
         f"{base_url.rstrip('/')}/v1/chat/completions",
         headers=headers,
-        json={
-            "model": model,
-            "messages": messages,
-            "temperature": 0.3,
-            "max_tokens": max_tokens,
-            "stream": False,
-        },
+        json=body,
         timeout=timeout,
         trust_env=False,
     )

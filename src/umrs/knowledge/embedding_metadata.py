@@ -18,11 +18,19 @@ never re-derives defaults client-side (deliberate, operator-visible).
 Dispatcher wire-up (KNOWLEDGE_REINDEX → sweep/submit/stamp) is a
 recorded follow-up; the registered type exists so no caller scripts
 re-indexing ad hoc (S9 premise).
+
+Chunk scheme (ADR-093 D-11, 2026-10-10): the embed stamp also records the
+scheme that cut the artifact's chunks and how many were indexed, in the
+artifact's ``metadata`` (``chunk_scheme``, ``chunks_total``,
+``chunks_indexed``; no column, no migration). An artifact without
+``chunk_scheme`` was cut ``fixed-v0``. The sweep can select by scheme
+mismatch and by project, so the same-model reindex re-chunks a project.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
@@ -53,18 +61,83 @@ def validate_reindex_payload(spec: dict) -> dict:
     return {TARGET_MODEL_KEY: model, INDEX_NAME_KEY: index}
 
 
-def select_stale_artifacts(conn, target_model: str, *, limit: int = 500) -> list[str]:
-    """Active artifact ids needing (re)embedding under ``target_model``."""
+# An artifact stamped before chunk schemes existed was cut by fixed-v0.
+_UNSTAMPED_SCHEME = "fixed-v0"
+
+# The scheme stamp is per artifact, but one artifact can hold chunks in
+# several graphs (one re-embed job each): when one graph's job stamps the
+# new scheme and another's fails, the artifact row reads current while that
+# graph keeps old chunks. So the chunk rows themselves are read too — an
+# artifact with any chunk of another scheme, in its own project, is stale
+# (review chunk-data-4, 2026-10-10). Non-correlated, so Postgres hashes it
+# once per sweep.
+_STALE_CHUNKS_SQL = (
+    "(project_id, artifact_id) IN (SELECT n.project_id, n.content->>'artifact_id' "
+    "FROM knowledge_nodes n WHERE n.content->>'kind' = 'chunk' "
+    "AND COALESCE(n.content->>'chunk_scheme', %s) <> %s{project})"
+)
+
+
+def _scheme_clauses(
+    chunk_scheme: str | None, project_id: str | None
+) -> tuple[list[str], list[Any]]:
+    """The chunk-scheme mismatch clauses: the artifact's stamp, then its
+    chunk rows (none without a scheme)."""
+    if not chunk_scheme:
+        return [], []
+    stamp = "COALESCE(metadata->>'chunk_scheme', %s) <> %s"
+    rows = _STALE_CHUNKS_SQL.format(
+        project=" AND n.project_id = %s" if project_id else ""
+    )
+    params: list[Any] = [
+        _UNSTAMPED_SCHEME,
+        chunk_scheme,
+        _UNSTAMPED_SCHEME,
+        chunk_scheme,
+    ]
+    return [stamp, rows], params + ([project_id] if project_id else [])
+
+
+def _stale_where(
+    model: str, chunk_scheme: str | None, project_id: str | None
+) -> tuple[str, list[Any]]:
+    """The sweep's WHERE clause and its parameters (placeholders only)."""
+    stale = ["embedding_status <> 'current'", "embedding_model <> %s"]
+    params: list[Any] = [model]
+    clauses, scheme_params = _scheme_clauses(chunk_scheme, project_id)
+    stale += clauses
+    params += scheme_params
+    where = f"status = 'active' AND ({' OR '.join(stale)})"
+    if project_id:
+        where += " AND project_id = %s"
+        params.append(project_id)
+    return where, params
+
+
+def select_stale_artifacts(
+    conn,
+    target_model: str,
+    *,
+    limit: int = 500,
+    chunk_scheme: str | None = None,
+    project_id: str | None = None,
+) -> list[str]:
+    """Active artifact ids needing (re)embedding under ``target_model``.
+
+    With ``chunk_scheme``, an artifact cut by another scheme is stale too
+    (same-model re-chunk, ADR-093 D-11) — by its stamp or by any of its
+    chunk rows; with ``project_id``, only that project's artifacts are
+    swept.
+    """
     model = str(target_model or "").strip()
     if not model:
         raise EmbeddingMetadataError("target_model must be non-empty")
+    where, params = _stale_where(model, chunk_scheme, project_id)
     cur = conn.cursor()
     cur.execute(
-        "SELECT artifact_id FROM knowledge_artifacts "
-        "WHERE status = 'active' "
-        "AND (embedding_status <> 'current' OR embedding_model <> %s) "
+        f"SELECT artifact_id FROM knowledge_artifacts WHERE {where} "
         "ORDER BY created_at LIMIT %s",
-        (model, int(limit)),
+        (*params, int(limit)),
     )
     return [row[0] for row in cur.fetchall()]
 
@@ -127,22 +200,53 @@ def mark_embeddings_stale(conn, *, previous_model: str | None = None) -> int:
     return int(getattr(cur, "rowcount", 0) or 0)
 
 
+_STAMP_SQL = (
+    "UPDATE knowledge_artifacts "
+    "SET embedding_model = $1, embedding_dim = $2, embedded_at = now(), "
+    "embedding_status = 'current', updated_at = now() "
+    "WHERE artifact_id = $3"
+)
+# ADR-093 D-11: the scheme and the chunk counts ride with the stamp.
+_STAMP_CHUNKS_SQL = (
+    "UPDATE knowledge_artifacts "
+    "SET embedding_model = $1, embedding_dim = $2, embedded_at = now(), "
+    "embedding_status = 'current', updated_at = now(), "
+    "metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object("
+    "'chunk_scheme', $4::text, 'chunks_total', $5::int, 'chunks_indexed', $6::int) "
+    "WHERE artifact_id = $3"
+)
+
+
+@dataclass(frozen=True)
+class ChunkStamp:
+    """How an artifact was cut: its scheme, its chunks, the ones indexed
+    (fewer than ``total`` when the per-artifact cap truncated it)."""
+
+    scheme: str
+    total: int
+    indexed: int
+
+
 async def stamp_artifact_embedded(
-    pool: Any, artifact_id: str, *, model: str, dim: int
+    pool: Any,
+    artifact_id: str,
+    *,
+    model: str,
+    dim: int,
+    chunks: ChunkStamp | None = None,
 ) -> None:
     """Mark ONE artifact current after its vectors were actually written
-    (KNOWLEDGE_EMBED — the only honest stamper; asyncpg pool)."""
+    (KNOWLEDGE_EMBED — the only honest stamper; asyncpg pool). With
+    ``chunks``, the artifact's metadata also records its chunk scheme and
+    counts."""
     if not model or dim <= 0:
         raise EmbeddingMetadataError(
             "stamp needs the producing model and a positive dim"
         )
+    args: tuple[Any, ...] = (model, dim, artifact_id)
+    sql = _STAMP_SQL
+    if chunks is not None:
+        sql = _STAMP_CHUNKS_SQL
+        args += (chunks.scheme, int(chunks.total), int(chunks.indexed))
     async with pool.acquire() as conn:
-        await conn.execute(
-            "UPDATE knowledge_artifacts "
-            "SET embedding_model = $1, embedding_dim = $2, embedded_at = now(), "
-            "embedding_status = 'current', updated_at = now() "
-            "WHERE artifact_id = $3",
-            model,
-            dim,
-            artifact_id,
-        )
+        await conn.execute(sql, *args)

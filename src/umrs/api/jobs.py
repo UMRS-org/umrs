@@ -670,6 +670,7 @@ async def create_job(
         )
         _enforce_job_scope_policy(job_type, spec, user_id, project_id, is_admin)
         _enforce_spec_resources(job_type, spec, user_id, is_admin, request.fan_out_jobs)
+        _enforce_export_release(job_type, spec, request.fan_out_jobs)
 
         create_method = (
             store.create_fan_out_graph if request.fan_out_jobs else store.create_job
@@ -825,6 +826,33 @@ def _enforce_client_job_types(
     ]
     if job_type == JobType.WORKFLOW_RUN or JobType.WORKFLOW_RUN.value in children:
         raise_typed(PlatformError.jobs("bad_request", WORKFLOW_RUN_SERVER_ONLY))
+
+
+# Data releases a knowledge export carries only through POST /knowledge/export,
+# which gates them on the verified caller (owner, data class, licence) and
+# audits them; a raw spec here skipped both (review chunk-data-2, 2026-10-10).
+_EXPORT_RELEASE_FIELDS = ("chunk_text", "include_raw")
+
+
+def _enforce_export_release(
+    job_type: JobType, spec: dict[str, Any], fan_out_jobs: list[dict[str, Any]] | None
+) -> None:
+    """Refuse a knowledge_export spec (or fan-out child) asking for chunk
+    text or raw bytes: those go through POST /knowledge/export only."""
+    specs = [
+        target_spec
+        for target_type, target_spec in _spec_targets(job_type, spec, fan_out_jobs)
+        if target_type == JobType.KNOWLEDGE_EXPORT
+    ]
+    asked = sorted({f for s in specs for f in _EXPORT_RELEASE_FIELDS if s.get(f)})
+    if asked:
+        raise_typed(
+            PlatformError.jobs(
+                "bad_request",
+                f"knowledge_export with {', '.join(asked)} is submitted through "
+                "POST /knowledge/export, which gates and audits the release",
+            )
+        )
 
 
 def _parse_job_type_filter(job_type: str | None) -> JobType | None:

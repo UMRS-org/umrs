@@ -189,9 +189,7 @@ def test_similarity_lane_ranks_by_distance_and_scores_similarity():
 def test_similarity_lane_sql_uses_cosine_operator_and_literal():
     pool = _Pool(lambda _sql, _params: _SIM_ROWS)
     backend = _EmbeddingsSearchBackend(pool)
-    backend.search_embeddings(
-        "", project_id="spring8", query_embedding=[1.0, 2.0], model_name="m"
-    )
+    backend.search_embeddings("", project_id="spring8", query_embedding=[1.0, 2.0], model_name="m")
     sql, params = pool._conn._cur.queries[0]
     assert "<=> %s::vector" in sql
     assert "ORDER BY distance ASC" in sql
@@ -206,3 +204,85 @@ def test_no_vector_keeps_table_reader_lane():
     hits = backend.search_embeddings("e5", project_id="spring8")
     assert all(h["metadata"]["lane"] == "table-reader" for h in hits)
     assert "ORDER BY e.created_at DESC" in pool._conn._cur.queries[0][0]
+
+
+# ── ADR-093 C7: a graph selection binds the vector lane ─────────────────────
+
+_SCOPED = "(n.graph_id = ANY(%s) OR (n.graph_id = '' AND n.project_id = ANY(%s)))"
+
+
+def _scope(graph_ids=("g-exp",), defaults=()):
+    from umrs.api.knowledge_query import _GraphScope
+
+    return _GraphScope(graph_ids=tuple(graph_ids), default_projects=tuple(defaults))
+
+
+def test_a_graph_scope_owns_the_similarity_rows_by_graph():
+    pool = _Pool(lambda _sql, _params: _SIM_ROWS)
+    backend = _EmbeddingsSearchBackend(pool, graph_scope=_scope(("g-exp", "g-def"), ("spring8",)))
+    backend.search_embeddings(
+        "", project_id="spring8", limit=5, query_embedding=[1.0, 2.0], model_name="m"
+    )
+    sql, params = pool._conn._cur.queries[0]
+    assert _SCOPED in sql
+    assert "n.project_id = %s" not in sql
+    assert params == ("[1.0,2.0]", ["g-exp", "g-def"], ["spring8"], "m", "%/m", 5)
+
+
+def test_a_graph_scope_binds_the_table_reader_too():
+    pool = _Pool(lambda _sql, _params: _ROWS)
+    backend = _EmbeddingsSearchBackend(pool, graph_scope=_scope())
+    backend.search_embeddings("e5", project_id="spring8", limit=5)
+    sql, params = pool._conn._cur.queries[0]
+    assert _SCOPED in sql
+    assert params[:2] == (["g-exp"], []) and params[-1] == 5
+
+
+def test_an_empty_selection_reads_no_rows_rather_than_the_project():
+    """Every named graph unreadable: the lane fails closed, never project-wide."""
+    pool = _Pool(lambda _sql, _params: [])
+    backend = _EmbeddingsSearchBackend(pool, graph_scope=_scope((), ()))
+    backend.search_embeddings("", project_id="spring8", query_embedding=[1.0], model_name="m")
+    sql, params = pool._conn._cur.queries[0]
+    assert _SCOPED in sql and params[1:3] == ([], [])
+
+
+def test_the_factory_passes_the_scope_through():
+    scope = _scope()
+    pool = _Pool(lambda _sql, _params: [("knowledge_node_embeddings",)])
+    backend, _ = _embeddings_backend_for(pool, graph_scope=scope)
+    assert backend._graph_scope is scope
+
+
+def test_the_scope_of_a_selection_keeps_legacy_rows_for_default_graphs_only():
+    from umrs.api.knowledge_query import _GraphScope
+    from umrs.knowledge.graph_registry import KnowledgeGraphMeta, default_graph_id
+
+    default = KnowledgeGraphMeta(
+        graph_id=default_graph_id("proj-a"), name="proj-a", project_id="proj-a"
+    )
+    shared = KnowledgeGraphMeta(graph_id="g-shared", name="shared", project_id="proj-b")
+    scope = _GraphScope.of([default, shared, default])
+    assert scope.graph_ids == (default.graph_id, "g-shared", default.graph_id)
+    assert scope.default_projects == ("proj-a",)
+
+
+def test_the_encoder_lane_keeps_its_hits_for_the_sufficiency_verdict():
+    pool = _Pool(lambda _sql, _params: [(*_SIM_ROWS[0], "{}"), (*_SIM_ROWS[1], "{}")])
+
+    def encoder(_query):
+        return "intfloat/e5-base-v2", [0.1, 0.2], ""
+
+    backend = _EmbeddingsSearchBackend(pool, encoder=encoder)
+    backend.search_embeddings("q", project_id="spring8")
+    assert backend.dense_model == "intfloat/e5-base-v2"
+    assert [h["source_id"] for h in backend.dense_hits] == [
+        "ragdoc-doc-1-chunk0",
+        "ragdoc-doc-2-chunk3",
+    ]
+
+
+def test_the_table_reader_leaves_no_dense_hits():
+    backend = _EmbeddingsSearchBackend(_Pool(lambda _sql, _params: _ROWS))
+    backend.search_embeddings("e5", project_id="spring8")
+    assert backend.dense_hits is None

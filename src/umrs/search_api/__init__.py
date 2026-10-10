@@ -14,17 +14,29 @@ from multiple UMRS subsystems:
   - search() — unified search across all subsystems
 
 Each search returns typed results with source attribution.
+
+ADR-093 D-6 (C7, 2026-10-10): ``scope=all`` fuses its lanes by weighted
+reciprocal-rank fusion instead of sorting raw scores, which are not comparable
+across lanes (a catalogue token count, a cosine, an IDF sum, a matched
+fraction). A hit found by several lanes is one result carrying
+``metadata.lanes`` and ``metadata.lane_score``; catalogue rows are held to a
+quota so they cannot crowd passages out (KGC-03); ``total_results`` counts
+every distinct hit before the cut. A single-lane scope keeps its lane's own
+order and raw score.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from collections.abc import Mapping
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Protocol
 from uuid import uuid4
 
 __all__ = [
+    "LANE_WEIGHTS",
+    "RRF_K",
     "CatalogSearchable",
     "EmbeddingsSearchable",
     "KnowledgeGraphSearchable",
@@ -35,6 +47,8 @@ __all__ = [
     "SearchResults",
     "SearchScope",
     "UnifiedSearch",
+    "catalog_quota",
+    "fuse_lanes",
 ]
 
 
@@ -183,6 +197,136 @@ class RAGSearchable(Protocol):
     ) -> list[dict[str, Any]]: ...
 
 
+# ── Lane fusion (ADR-093 D-6, C7) ────────────────────────────────────────
+
+#: Reciprocal-rank fusion constant (Cormack et al.; ADR-085 D-1).
+RRF_K = 60
+
+#: Lane weights: passages first, graph nodes next, catalogue rows last.
+LANE_WEIGHTS: Mapping[SearchScope, float] = {
+    SearchScope.EMBEDDINGS: 1.0,
+    SearchScope.RAG: 1.0,
+    SearchScope.KNOWLEDGE_GRAPH: 0.7,
+    SearchScope.CATALOG: 0.5,
+}
+
+# Fusion visits lanes heaviest first, so equal fused scores keep that order.
+_FUSION_ORDER: tuple[SearchScope, ...] = (
+    SearchScope.EMBEDDINGS,
+    SearchScope.RAG,
+    SearchScope.KNOWLEDGE_GRAPH,
+    SearchScope.CATALOG,
+)
+
+_RESULT_TYPES: Mapping[SearchScope, SearchResultType] = {
+    SearchScope.CATALOG: SearchResultType.CATALOG_HIT,
+    SearchScope.KNOWLEDGE_GRAPH: SearchResultType.KNOWLEDGE_NODE,
+    SearchScope.EMBEDDINGS: SearchResultType.EMBEDDING_MATCH,
+    SearchScope.RAG: SearchResultType.RAG_RESULT,
+}
+
+
+def catalog_quota(limit: int) -> int:
+    """At most this many catalogue rows in a fused page of ``limit`` (KGC-03)."""
+    return max(2, limit // 4)
+
+
+@dataclass
+class _Fused:
+    """One source found by one or more lanes."""
+
+    result: SearchResult
+    contribution: float  # the representative lane's weight / (k + rank)
+    fused: float = 0.0
+    lane_score: dict[str, float] = field(default_factory=dict)
+    lane_rank: dict[str, int] = field(default_factory=dict)
+
+    def add(
+        self, lane: SearchScope, rank: int, hit: SearchResult, share: float
+    ) -> None:
+        self.fused += share
+        self.lane_score[lane.value] = hit.score
+        self.lane_rank[lane.value] = rank
+        if share > self.contribution:  # the strongest lane speaks for the hit
+            self.result, self.contribution = hit, share
+
+    def to_result(self, attainable: float) -> SearchResult:
+        metadata = {
+            **self.result.metadata,
+            "lanes": list(self.lane_score),
+            "lane_score": dict(self.lane_score),
+            "lane_rank": dict(self.lane_rank),
+            "rrf": self.fused,
+        }
+        score = self.fused / attainable if attainable > 0 else 0.0
+        return replace(self.result, score=round(score, 6), metadata=metadata)
+
+
+def _ranked(hits: list[SearchResult]) -> list[SearchResult]:
+    """A lane's hits best first, each source once (its best rank)."""
+    seen: set[str] = set()
+    out: list[SearchResult] = []
+    for hit in sorted(hits, key=lambda h: h.score, reverse=True):
+        key = hit.source_id or hit.result_id  # no id: never merged with another
+        if key not in seen:
+            seen.add(key)
+            out.append(hit)
+    return out
+
+
+def fuse_lanes(
+    lanes: Mapping[SearchScope, list[SearchResult]],
+    *,
+    k: int = RRF_K,
+    weights: Mapping[SearchScope, float] = LANE_WEIGHTS,
+) -> list[SearchResult]:
+    """Weighted RRF over the lanes that ran, deduplicated by ``source_id``.
+
+    ``score`` is the fused value over the most a source could attain (rank 1
+    in every lane that ran), so 1.0 means every lane put it first; the raw
+    RRF sum is ``metadata.rrf`` and each lane's own score ``metadata.lane_score``.
+    """
+    entries: dict[str, _Fused] = {}
+    for lane in (s for s in _FUSION_ORDER if s in lanes):
+        for rank, hit in enumerate(_ranked(lanes[lane]), start=1):
+            share = weights[lane] / (k + rank)
+            key = hit.source_id or hit.result_id
+            entry = entries.setdefault(key, _Fused(result=hit, contribution=share))
+            entry.add(lane, rank, hit, share)
+    attainable = sum(weights[lane] for lane in lanes) / (k + 1)
+    ordered = sorted(entries.values(), key=lambda e: e.fused, reverse=True)
+    return [entry.to_result(attainable) for entry in ordered]
+
+
+def _page(ranked: list[SearchResult], limit: int) -> list[SearchResult]:
+    """The first ``limit`` fused results, catalogue rows held to their quota.
+
+    Catalogue rows past the quota go behind every result of the other lanes:
+    they can no longer push a passage or a node off the page (KGC-03), and
+    they still fill a page the other lanes cannot (a project with files but
+    no knowledge nodes keeps its catalogue answers).
+    """
+    quota = catalog_quota(limit)
+    page: list[SearchResult] = []
+    held: list[SearchResult] = []
+    for result in ranked:
+        if result.result_type != SearchResultType.CATALOG_HIT:
+            page.append(result)
+        elif quota > 0:
+            quota -= 1
+            page.append(result)
+        else:
+            held.append(result)
+    return (page + held)[:limit]
+
+
+def _single_lane(lanes: Mapping[SearchScope, list[SearchResult]]) -> list[SearchResult]:
+    """One scope asked for: its own order and raw score (thresholds keep working)."""
+    hits = [hit for found in lanes.values() for hit in found]
+    hits.sort(key=lambda r: r.score, reverse=True)
+    return hits
+
+
 # ── Unified Search ───────────────────────────────────────────────────────
 
 
@@ -228,65 +372,60 @@ class UnifiedSearch:
             scope: Which subsystems to search
             depth: Search depth
             project_id: Filter by project ID
-            limit: Maximum number of results per subsystem
+            limit: Maximum number of results per subsystem, and of the page
 
         Returns:
-            SearchResults with aggregated results from all searched subsystems
+            SearchResults: for ``scope=all`` the lanes fused by weighted RRF
+            (catalogue rows held to ``catalog_quota``); for one scope that
+            lane's hits by raw score. ``total_results`` counts every distinct
+            hit before the page is cut.
         """
         start = datetime.now(timezone.utc)
-        all_results: list[SearchResult] = []
-
-        # Determine which subsystems to search
-        scopes = self._get_scopes(scope)
-
-        # Search each subsystem
-        for s in scopes:
-            if s == SearchScope.CATALOG and self._catalog:
-                results = self._catalog.search_catalog(
-                    query, project_id=project_id, limit=limit
-                )
-                all_results.extend(
-                    self._convert_results(results, SearchResultType.CATALOG_HIT)
-                )
-            elif s == SearchScope.KNOWLEDGE_GRAPH and self._knowledge_graph:
-                results = self._knowledge_graph.search_knowledge_graph(
-                    query, project_id=project_id, limit=limit
-                )
-                all_results.extend(
-                    self._convert_results(results, SearchResultType.KNOWLEDGE_NODE)
-                )
-            elif s == SearchScope.EMBEDDINGS and self._embeddings:
-                results = self._embeddings.search_embeddings(
-                    query, project_id=project_id, limit=limit
-                )
-                all_results.extend(
-                    self._convert_results(results, SearchResultType.EMBEDDING_MATCH)
-                )
-            elif s == SearchScope.RAG and self._rag:
-                results = self._rag.search_rag(
-                    query, project_id=project_id, limit=limit
-                )
-                all_results.extend(
-                    self._convert_results(results, SearchResultType.RAG_RESULT)
-                )
-
-        # Sort by score descending
-        all_results.sort(key=lambda r: r.score, reverse=True)
-
-        # Limit total results
-        all_results = all_results[:limit]
-
+        lanes = self._run_lanes(query, scope, project_id=project_id, limit=limit)
+        if scope == SearchScope.ALL:
+            ranked = fuse_lanes(lanes)
+            page = _page(ranked, limit)
+        else:
+            ranked = _single_lane(lanes)
+            page = ranked[:limit]
         duration = (datetime.now(timezone.utc) - start).total_seconds()
 
         return SearchResults(
             query=query,
             scope=scope,
             depth=depth,
-            results=all_results,
-            total_results=len(all_results),
+            results=page,
+            total_results=len(ranked),
             searched_at=start.isoformat(),
             duration_seconds=duration,
         )
+
+    def _lane_search(self, lane: SearchScope) -> Any:
+        """The bound search call of a configured lane, or None."""
+        backends = {
+            SearchScope.CATALOG: (self._catalog, "search_catalog"),
+            SearchScope.KNOWLEDGE_GRAPH: (
+                self._knowledge_graph,
+                "search_knowledge_graph",
+            ),
+            SearchScope.EMBEDDINGS: (self._embeddings, "search_embeddings"),
+            SearchScope.RAG: (self._rag, "search_rag"),
+        }
+        backend, method = backends[lane]
+        return getattr(backend, method) if backend else None
+
+    def _run_lanes(
+        self, query: str, scope: SearchScope, *, project_id: str | None, limit: int
+    ) -> dict[SearchScope, list[SearchResult]]:
+        """Every configured lane in scope -> its converted hits (empty lists kept)."""
+        lanes: dict[SearchScope, list[SearchResult]] = {}
+        for lane in self._get_scopes(scope):
+            search = self._lane_search(lane)
+            if search is None:
+                continue
+            raw = search(query, project_id=project_id, limit=limit)
+            lanes[lane] = self._convert_results(raw, _RESULT_TYPES[lane])
+        return lanes
 
     def search_catalog(
         self,
