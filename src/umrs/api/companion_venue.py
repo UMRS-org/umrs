@@ -34,6 +34,7 @@ import json
 import logging
 import os
 from typing import Any
+from urllib.parse import unquote
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
@@ -544,6 +545,35 @@ def stamp_rail_origin(store: Any, session_id: str, family: str, upstream: Any) -
     return ""
 
 
+def _fully_decoded(path: str) -> str:
+    """``path`` percent-decoded until it stops changing (at most three times)."""
+    for _ in range(3):
+        decoded = unquote(path)
+        if decoded == path:
+            break
+        path = decoded
+    return path
+
+
+def _rail_path(path: str) -> str:
+    """The upstream path, refused when a segment could leave its family.
+
+    The route sees the path already decoded (``%2e%2e`` is ``..``), and
+    httpx resolves ``..`` in ``/umrs/{path}``: ``rag/../secrets/probe``
+    passed the family check as ``rag`` and reached ``/umrs/secrets/probe``
+    as the lease owner, and ``jobs/../knowledge/...`` wrote to a read-only
+    family (D-42). No dot segment, however encoded, reaches upstream.
+    """
+    segments = _fully_decoded(path).replace("\\", "/").split("/")
+    if any(segment in (".", "..") for segment in segments):
+        raise_typed(
+            PlatformError.companionvenue(
+                "forbidden", "rail gw: a path may not contain '.' or '..' segments"
+            )
+        )
+    return path
+
+
 def _refuse_rail_family(family: str, method: str) -> None:
     """Allowlisted families only; read-only families refuse writes (D-42)."""
     if family not in RAIL_GW_FAMILIES:
@@ -584,6 +614,7 @@ async def rail_gateway(
     """Re-dispatch an allowlisted platform verb with the lease owner's identity.
     # auth: lease-token
     """
+    path = _rail_path(path)
     family = path.split("/", 1)[0]
     _refuse_rail_family(family, request.method)
     headers = _forwardable_headers(request)
