@@ -63,6 +63,7 @@ _EXPORT_MAP: dict[str, str] = {
     "JobType": ".models",
     "RestartPolicy": ".models",
     "compute_idempotency_key": ".models",
+    "default_idempotency_key": ".models",
     "generate_attempt_id": ".models",
     "generate_job_id": ".models",
     # monitor

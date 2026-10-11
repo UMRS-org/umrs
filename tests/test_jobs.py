@@ -43,6 +43,18 @@ class TestJobModels:
         assert attempt_id.startswith("att-")
         assert len(attempt_id) == 16
 
+    def test_an_identical_reindex_spec_is_a_new_pass(self):
+        """ADR-093 D-11 (wave F): a reindex is a pass over what is stale when it
+        runs; an identical repeat without a caller key is new work."""
+        from umrs.jobs.models import default_idempotency_key
+
+        args = ("proj-1", "user-1")
+        spec = {"table": "knowledge_node_embeddings"}
+        reindex = [default_idempotency_key(*args, JobType.KNOWLEDGE_REINDEX, spec) for _ in "ab"]
+        build = [default_idempotency_key(*args, JobType.INDEX_BUILD, spec) for _ in "ab"]
+        assert reindex[0] != reindex[1] and all(len(k) <= 64 for k in reindex)
+        assert build[0] == build[1] == compute_idempotency_key(*args, JobType.INDEX_BUILD, spec)
+
     def test_compute_idempotency_key(self):
         """Test idempotency key computation."""
         key1 = compute_idempotency_key(

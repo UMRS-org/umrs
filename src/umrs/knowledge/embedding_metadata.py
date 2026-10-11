@@ -25,6 +25,11 @@ artifact's ``metadata`` (``chunk_scheme``, ``chunks_total``,
 ``chunks_indexed``; no column, no migration). An artifact without
 ``chunk_scheme`` was cut ``fixed-v0``. The sweep can select by scheme
 mismatch and by project, so the same-model reindex re-chunks a project.
+
+Convergence (ADR-093 D-11, wave F, 2026-10-11): the sweep pages by
+``artifact_id`` (keyset ``after``), so one reindex pass visits each stale
+artifact once, and with ``held_by`` it skips artifacts that a queued or
+running embed/understand job already holds.
 """
 
 from __future__ import annotations
@@ -114,6 +119,34 @@ def _stale_where(
     return where, params
 
 
+# ADR-093 D-11 (wave F): an artifact that an unfinished job already holds
+# (a queued or running embed/understand job lists it in spec.sources) is not
+# swept again — every re-embed key hashes its parent job, so two passes never
+# deduplicated each other's embeds. NOT EXISTS, never NOT IN (one source
+# without artifact_id would make NOT IN NULL for every row); the CASE guards
+# a spec whose ``sources`` is not an array. PLANNED is left out on purpose:
+# a crash between create and enqueue leaves an orphan PLANNED row that must
+# not hold its artifacts for ever.
+_HELD_SQL = (
+    "NOT EXISTS (SELECT 1 FROM jobs j CROSS JOIN LATERAL jsonb_array_elements("
+    "CASE WHEN jsonb_typeof(j.spec->'sources') = 'array' THEN j.spec->'sources' "
+    "ELSE '[]'::jsonb END) s "
+    "WHERE j.project_id = knowledge_artifacts.project_id "
+    "AND j.job_type = ANY(%s) AND j.status = ANY(%s) "
+    "AND s->>'artifact_id' = knowledge_artifacts.artifact_id)"
+)
+
+
+@dataclass(frozen=True)
+class HeldBy:
+    """Jobs whose unfinished runs hold their sources: their types and the
+    statuses that count as unfinished (strings, as the jobs table stores
+    them; the caller in ``umrs.jobs`` names them)."""
+
+    job_types: tuple[str, ...]
+    statuses: tuple[str, ...]
+
+
 def select_stale_artifacts(
     conn,
     target_model: str,
@@ -121,6 +154,8 @@ def select_stale_artifacts(
     limit: int = 500,
     chunk_scheme: str | None = None,
     project_id: str | None = None,
+    after: str | None = None,
+    held_by: HeldBy | None = None,
 ) -> list[str]:
     """Active artifact ids needing (re)embedding under ``target_model``.
 
@@ -128,15 +163,27 @@ def select_stale_artifacts(
     (same-model re-chunk, ADR-093 D-11) — by its stamp or by any of its
     chunk rows; with ``project_id``, only that project's artifacts are
     swept.
+
+    Keyset pages (wave F): ids come in ``artifact_id`` order, and ``after``
+    starts the page past the previous page's last id, so one pass visits
+    each artifact once — an artifact that fails and turns stale again
+    during the pass is not visited twice. With ``held_by``, artifacts an
+    unfinished job of those types already holds are skipped.
     """
     model = str(target_model or "").strip()
     if not model:
         raise EmbeddingMetadataError("target_model must be non-empty")
     where, params = _stale_where(model, chunk_scheme, project_id)
+    if after is not None:
+        where += " AND artifact_id > %s"
+        params.append(after)
+    if held_by is not None:
+        where += f" AND {_HELD_SQL}"
+        params += [list(held_by.job_types), list(held_by.statuses)]
     cur = conn.cursor()
     cur.execute(
         f"SELECT artifact_id FROM knowledge_artifacts WHERE {where} "
-        "ORDER BY created_at LIMIT %s",
+        "ORDER BY artifact_id LIMIT %s",
         (*params, int(limit)),
     )
     return [row[0] for row in cur.fetchall()]
