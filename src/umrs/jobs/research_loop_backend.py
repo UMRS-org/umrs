@@ -34,6 +34,19 @@ DRIVERS = frozenset({"engine", "agent"})
 
 CLUSTER_VENUE_PATTERN = "cluster:"
 
+# ADR-092 slice 6: a loop iteration may run a team plan only in the local
+# venue (r4's LocalRuntime). A server-hosted loop has no tool-executing
+# agent session to run plan agents in until slice 8's server venue (the
+# agentic companion_turn_executor, the D-63 registry route and the ADR-068
+# /umrs/llm lane), so a plan iteration is refused here by name — never run
+# as a plain engine loop with the plan silently dropped.
+PLAN_ITERATION_REFUSAL = (
+    "plan_iteration_needs_server_venue: a server-hosted loop cannot run a "
+    "team plan as its iteration yet (ADR-092 slice 8: the server venue). "
+    "Run the loop on the local runtime (R4_RUNTIME_MODE=local), or start it "
+    "without a plan."
+)
+
 
 def validate_research_loop_spec(spec: dict) -> dict:
     if not isinstance(spec, dict):
@@ -41,6 +54,8 @@ def validate_research_loop_spec(spec: dict) -> dict:
     loop_id = str(spec.get("loop_id") or "").strip()
     if not loop_id:
         raise ValueError("research_loop_job spec requires loop_id")
+    if str(spec.get("iteration_plan") or "").strip():
+        raise ValueError(PLAN_ITERATION_REFUSAL)
     driver = str(spec.get("driver") or "engine").strip()
     if driver not in DRIVERS:
         raise ValueError(f"research_loop_job driver must be one of {sorted(DRIVERS)}")
