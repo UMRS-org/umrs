@@ -263,6 +263,20 @@ def _init_deep_stores(app, db_pool):
     _init_research_sessions_store(app, db_pool)
     _init_companion_trust_store(app, db_pool)
     _init_usage_pool(db_pool)
+    _init_loop_plan_host(db_pool)
+
+
+def _init_loop_plan_host(db_pool) -> None:
+    """ADR-092 slice 8b: the server-hosted loop's plan-run host (the venue
+    verbs and the proposal lane). Unwired, a plan loop's iteration stops
+    by name (``plan_host_unavailable``), never runs anything else."""
+    try:
+        from umrs.api.plan_run_venue import build_loop_plan_host
+        from umrs.knowledge import plan_iteration
+
+        plan_iteration.configure(build_loop_plan_host(db_pool))
+    except Exception:  # noqa: BLE001 — boot must survive per-component failures
+        logger.warning("plan-loop host unavailable in HTTP sidecar", exc_info=True)
 
 
 def _init_companion_trust_store(app, db_pool):
@@ -760,6 +774,7 @@ def _create_app():
     from umrs.api.models import router as models_router
     from umrs.api.ops import router as ops_router
     from umrs.api.pipelines import router as pipelines_router
+    from umrs.api.plan_run_venue import router as plan_run_venue_router
     from umrs.api.provenance import router as provenance_router
     from umrs.api.rag import router as rag_router
     from umrs.api.reflective_memory import router as reflective_memory_router
@@ -892,6 +907,7 @@ def _create_app():
     app.include_router(provenance_router)
     app.include_router(research_sessions_router)
     app.include_router(traces_router)
+    app.include_router(plan_run_venue_router)  # ADR-092 slice 8
     app.include_router(usage_router)
     app.include_router(workflows_router)
     app.include_router(zmq_sessions_router)

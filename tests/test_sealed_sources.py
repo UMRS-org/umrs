@@ -7,6 +7,8 @@ sealing is a real write. Hermetic per run: unique owner names.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import os
 import uuid
 from pathlib import Path
@@ -281,3 +283,23 @@ class TestSealUnconfigured:
         _, pub2 = generate_recipient_keypair()
         os.environ["UMRS_SEAL_PUBKEY_B64"] = pub2
         recipient_keys()._pub = pub2
+
+
+@pytest.mark.parametrize("name", ["site", "SITE", "Site"])
+def test_push_refuses_the_reserved_site_name(name):
+    """ADR-092 slice 9: ``site`` names the venue's own models (slice 8b);
+    refused before anything is sealed or stored (no database needed)."""
+    from fastapi import FastAPI
+
+    from umrs.api import user_sources
+
+    app = FastAPI()
+    app.include_router(user_sources.router)
+    app.dependency_overrides[user_sources.get_caller_scope] = lambda: SimpleNamespace(
+        user_id="alice", project_id="p", is_admin=False
+    )
+    with TestClient(app) as client:
+        response = client.post("/umrs/user-sources/sealed", json=_push_body(name=name))
+    assert response.status_code == 400
+    assert "reserved" in response.text
+    assert response.headers["x-platform-error-code"] == "usersources.bad_request"

@@ -153,7 +153,9 @@ class FrontendVenueConfig:
         web_policy: str,
         web_allow_domains: tuple[str, ...] = (),
         project: str = "",
+        worker_command: tuple[str, ...] = (),
     ) -> ProvisionConfig:
+        extra = {"worker_command": tuple(worker_command)} if worker_command else {}
         return ProvisionConfig(
             session_id=session_id,
             owner=owner,
@@ -180,6 +182,7 @@ class FrontendVenueConfig:
             umrs_host=self.umrs_host,
             rail_upstream=self.rail_upstream,
             rail_port=self.rail_port,
+            **extra,
         )
 
 

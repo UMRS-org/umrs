@@ -30,9 +30,11 @@ owner as the principal, so queue/snapshot semantics never fork.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
+import re
 from typing import Any
 from urllib.parse import unquote
 
@@ -43,10 +45,13 @@ from pydantic import BaseModel, Field
 from umrs.venues.frontend_service import FrontendVenueService, VenueError
 
 from ._rail_identity import (
+    RAIL_ATTESTATION_HEADER,
     RailAuthError,
     RailPrincipal,
+    attest,
     bearer_token,
     resolve_rail_principal,
+    revoke_attestation,
 )
 from .companion_sessions import (
     SessionSnapshotBody,
@@ -91,6 +96,14 @@ def get_venue_service(request: Request) -> FrontendVenueService:
     cached = getattr(request.app.state, "companion_venue_service", None)
     if cached is not None:
         return cached
+    service = build_venue_service(getattr(request.app.state, "umrs_db_pool", None))
+    request.app.state.companion_venue_service = service
+    return service
+
+
+def build_venue_service(pool: Any) -> FrontendVenueService:
+    """The venue service over ``pool`` (the routes' and, slice 8b, the plan
+    loop's: one construction, never a second configuration)."""
     from umrs.venues.frontend_config import FrontendVenueConfig
     from umrs.venues.frontend_podman import FrontendPodmanProvisioner
     from umrs.venues.venue_sessions import VenueSessionStore
@@ -99,9 +112,8 @@ def get_venue_service(request: Request) -> FrontendVenueService:
     from .secret_broker import get_broker
 
     config = FrontendVenueConfig.from_env()
-    pool = getattr(request.app.state, "umrs_db_pool", None)
     broker = get_broker()
-    service = FrontendVenueService(
+    return FrontendVenueService(
         config=config,
         broker=broker,
         store=VenueSessionStore(pool),
@@ -111,8 +123,6 @@ def get_venue_service(request: Request) -> FrontendVenueService:
         site_name=_site_name(),
         quota_check=_quota_check(pool),
     )
-    request.app.state.companion_venue_service = service
-    return service
 
 
 def _typed(exc: VenueError) -> None:
@@ -435,8 +445,13 @@ _RAIL_GW_DROP_HEADERS = frozenset(
         "x-verified-hmac",
         "x-verified-project-memberships",
         "x-api-key",
+        RAIL_ATTESTATION_HEADER,
     }
 )
+# ADR-092 slice 8: a plan-run worker reaches the traces family for its own
+# run only, and only the record verbs (the run, its attempts, its records,
+# finishing an attempt); never another run, never start, resume or cancel.
+_PLAN_RUN_TAILS = re.compile(r"^(|/attempts|/records|/attempts/[A-Za-z0-9_.:-]+/finish)$")
 
 
 def _lease_project(principal: RailPrincipal) -> str:
@@ -604,6 +619,61 @@ def _run_rail_gw_hook(
         logger.warning("rail gw hook failed", exc_info=True)
 
 
+def _own_plan_run_path(request: Request, principal: RailPrincipal, path: str) -> None:
+    """ADR-092 slice 8: the traces family is a plan-run worker's own run's
+    record verbs, nothing else. The run is the one the session's job was
+    started for (the record UMRS wrote), never one the sandbox names."""
+    run_id, _job_id = get_venue_service(request).plan_run_binding(principal.session_id)
+    prefix = f"traces/plan-runs/{run_id}"
+    if not run_id or not path.startswith(prefix) or not _PLAN_RUN_TAILS.match(
+        path[len(prefix) :]
+    ):
+        raise_typed(
+            PlatformError.companionvenue(
+                "forbidden",
+                "rail gw: /umrs/traces is reachable from a sandbox only for the record of "
+                "the plan run its session hosts (ADR-092 slice 8)",
+            )
+        )
+
+
+def _rail_family_scope(
+    request: Request, principal: RailPrincipal, family: str, path: str
+) -> bool:
+    """Refuse what the sandbox may not reach; True = attest the call (slice 8)."""
+    if family == "traces":
+        _own_plan_run_path(request, principal, path)
+        return True
+    _refuse_rail_family(family, request.method)
+    return False
+
+
+async def _dispatch(
+    request: Request, path: str, headers: dict[str, str], attest_session: str
+) -> Any:
+    """The in-process re-dispatch; an attestation lives only for this call."""
+    handle = attest(request.app.state, attest_session) if attest_session else ""
+    if handle:
+        headers[RAIL_ATTESTATION_HEADER] = handle
+    body = await request.body()
+    transport = httpx.ASGITransport(app=request.app)
+    try:
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://rail.internal"
+        ) as client:
+            return await client.request(
+                request.method,
+                f"/umrs/{path}",
+                params=request.query_params,
+                content=body,
+                headers=headers,
+                timeout=httpx.Timeout(120.0),
+            )
+    finally:
+        if handle:
+            revoke_attestation(request.app.state, handle)
+
+
 @router.api_route("/{session_id}/rail/gw/{path:path}", methods=list(RAIL_GW_METHODS))
 async def rail_gateway(
     session_id: str,
@@ -616,24 +686,14 @@ async def rail_gateway(
     """
     path = _rail_path(path)
     family = path.split("/", 1)[0]
-    _refuse_rail_family(family, request.method)
+    attested = _rail_family_scope(request, principal, family, path)
     headers = _forwardable_headers(request)
     headers.update(
         mint_rail_identity(principal.owner, rail_project_for(principal, request))
     )
-    body = await request.body()
-    transport = httpx.ASGITransport(app=request.app)
-    async with httpx.AsyncClient(
-        transport=transport, base_url="http://rail.internal"
-    ) as client:
-        upstream = await client.request(
-            request.method,
-            f"/umrs/{path}",
-            params=request.query_params,
-            content=body,
-            headers=headers,
-            timeout=httpx.Timeout(120.0),
-        )
+    upstream = await _dispatch(
+        request, path, headers, principal.session_id if attested else ""
+    )
     logger.info(
         "rail_gw sid=%s owner=%s %s /umrs/%s -> %s",
         session_id,
@@ -643,7 +703,7 @@ async def rail_gateway(
         upstream.status_code,
     )
     _run_rail_gw_hook(request, principal, path, upstream)
-    if request.method == "POST" and upstream.status_code < 300:
+    if request.method == "POST" and upstream.status_code < 300 and not attested:
         stamp_rail_origin(
             get_venue_service(request).job_store, session_id, family, upstream
         )
@@ -711,3 +771,121 @@ async def rail_get_approval(
     if record is None or record.get("session_id") != session_id:
         raise_typed(PlatformError.companionvenue("not_found", "approval not found"))
     return {"session_id": session_id, "approval": record}
+
+
+# ── plan gates (ADR-092 slice 8) ───────────────────────────────────────────
+#
+# A gate a server-hosted plan run raises goes to the UMRS durable approvals
+# inbox (ADR-066, ``companion_approval_inbox``): the worker raises the
+# intent and polls it; the run's owner answers it from any client through
+# the inbox's own decide route. The rail has no decide verb: a worker never
+# answers its own gate.
+
+PLAN_GATE_KIND = "plan_gate"
+PLAN_GATE_LOOP_PREFIX = "plan-run:"
+_MAX_GATE_TEXT = 2000
+
+
+class RailPlanGateBody(BaseModel):
+    gate: str = Field(min_length=1, max_length=200)
+    trigger_class: str = Field(default="", max_length=64)
+    prompt: str = ""
+
+
+def _bound_run_job(request: Request, principal: RailPrincipal) -> tuple[str, Any]:
+    """``(run_id, job)`` of the plan run this session hosts; 403 otherwise."""
+    service = get_venue_service(request)
+    run_id, job_id = service.plan_run_binding(principal.session_id)
+    if not run_id or not job_id or service.job_store is None:
+        raise_typed(
+            PlatformError.companionvenue(
+                "forbidden", "plan gates: this session hosts no plan run (ADR-092 slice 8)"
+            )
+        )
+    try:
+        return run_id, service.job_store.get_job(job_id)
+    except Exception as exc:  # noqa: BLE001 — a missing record is named
+        raise_typed(
+            PlatformError.companionvenue("not_found", f"plan run record {job_id} not found"),
+            cause=exc,
+        )
+
+
+def plan_gate_approval_id(job_id: str, attempt_id: str, gate: str) -> str:
+    """One intent per (run record, attempt, gate): a retried request finds it."""
+    digest = hashlib.sha256(f"{job_id}|{attempt_id}|{gate}".encode()).hexdigest()
+    return f"pgate-{digest[:20]}"
+
+
+def _inbox() -> Any:
+    from umrs.knowledge import tool_approvals
+
+    return tool_approvals
+
+
+def _gate_view(record: dict[str, Any]) -> dict[str, Any]:
+    view = {
+        key: record.get(key)
+        for key in ("loop_id", "status", "decision", "decided_by", "decided_at")
+    }
+    view["approval_id"] = record.get("id") or record.get("approval_id")
+    return view
+
+
+@router.post("/{session_id}/rail/plan-gates", response_model=dict[str, Any])
+async def rail_request_plan_gate(
+    session_id: str,
+    body: RailPlanGateBody,
+    request: Request,
+    principal: RailPrincipal = Depends(rail_principal),
+) -> dict[str, Any]:
+    """The worker raises a plan gate as an ADR-066 inbox intent for the owner.
+    # auth: lease-token
+    """
+    run_id, job = _bound_run_job(request, principal)
+    attempt_id = str(getattr(job, "active_attempt_id", "") or "")
+    if not attempt_id:
+        raise_typed(
+            PlatformError.companionvenue(
+                "conflict", f"plan gates: run {run_id} has no active attempt"
+            )
+        )
+    action = {
+        "kind": PLAN_GATE_KIND,
+        "gate": body.gate,
+        "class": body.trigger_class,
+        "prompt": body.prompt[:_MAX_GATE_TEXT],
+        "run_id": run_id,
+        "untrusted": True,
+    }
+    record = _inbox().request_approval(
+        f"{PLAN_GATE_LOOP_PREFIX}{run_id}",
+        0,
+        action,
+        approval_id=plan_gate_approval_id(job.job_id, attempt_id, body.gate),
+        user_id=principal.owner,
+        job_id=job.job_id,
+        attempt_id=attempt_id,
+    )
+    return {"session_id": session_id, "run_id": run_id, "approval": _gate_view(record)}
+
+
+@router.get("/{session_id}/rail/plan-gates/{approval_id}", response_model=dict[str, Any])
+async def rail_get_plan_gate(
+    session_id: str,
+    approval_id: str,
+    request: Request,
+    principal: RailPrincipal = Depends(rail_principal),
+) -> dict[str, Any]:
+    """The worker polls its gate's decision (its own run's gates only; 404 else).
+    # auth: lease-token
+    """
+    run_id, job = _bound_run_job(request, principal)
+    record = _inbox().get(approval_id)
+    if (
+        record is None
+        or record.get("job_id") != job.job_id
+        or record.get("loop_id") != f"{PLAN_GATE_LOOP_PREFIX}{run_id}"
+    ):
+        raise_typed(PlatformError.companionvenue("not_found", "plan gate not found"))
+    return {"session_id": session_id, "run_id": run_id, "approval": _gate_view(record)}
