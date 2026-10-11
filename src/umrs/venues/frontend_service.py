@@ -212,6 +212,66 @@ class FrontendVenueService:
         policy = self._validated_policy(web_policy)
         default_name = _validated_default(refs, default_source)
         self._require_startable(owner, session_id)
+        return self._launch(
+            owner=owner,
+            session_id=session_id,
+            refs=refs,
+            default_name=default_name,
+            policy=policy,
+            web_allow_domains=web_allow_domains,
+            project=project,
+        )
+
+    def start_plan_run(
+        self,
+        *,
+        owner: str,
+        session_id: str,
+        run_id: str,
+        run_job_id: str,
+        source_refs: list[str],
+        default_source: str = "",
+        web_policy: str = "",
+        web_allow_domains: list[str] | None = None,
+        project: str = "",
+    ) -> dict[str, Any]:
+        """ADR-092 slice 8: a worker session that hosts one team plan run.
+
+        The same path as a chat session's (ADR-046 A2: sandbox, lease token,
+        sealed sources, egress sidecar, the ADR-062 gate at start, the
+        ADR-051 spawn budget), except that there is no mirrored chat snapshot
+        to require: the worker's command runs the run headless
+        (``r4 venue worker --plan-run <id>``) and reads its definition from
+        the run's durable record through the rail.
+        """
+        self._require_configured()
+        refs = _validated_refs(source_refs)
+        policy = self._validated_policy(web_policy)
+        default_name = _validated_default(refs, default_source)
+        self._require_not_running(owner, session_id)
+        return self._launch(
+            owner=owner,
+            session_id=session_id,
+            refs=refs,
+            default_name=default_name,
+            policy=policy,
+            web_allow_domains=web_allow_domains,
+            project=project,
+            plan_run=(run_id, run_job_id),
+        )
+
+    def _launch(
+        self,
+        *,
+        owner: str,
+        session_id: str,
+        refs: list[str],
+        default_name: str,
+        policy: str,
+        web_allow_domains: list[str] | None,
+        project: str,
+        plan_run: tuple[str, str] | None = None,
+    ) -> dict[str, Any]:
         names, ids, default_id = self._resolve_default(owner, refs, default_name)
         self._enforce_data_class_gate(owner, project, names)
         subnet = self._reserve_subnet()
@@ -228,6 +288,8 @@ class FrontendVenueService:
             site=self.site_name,
             subnet=subnet,
         )
+        if plan_run:
+            spec["plan_run_id"], spec["plan_run_job_id"] = plan_run
         job_id = self._submit_job(owner, session_id, spec)
         self.store.upsert_provisioning(
             session_id=session_id,
@@ -269,6 +331,9 @@ class FrontendVenueService:
                 "not_found",
                 "session snapshot not mirrored for this owner (save it first)",
             )
+        self._require_not_running(owner, session_id)
+
+    def _require_not_running(self, owner: str, session_id: str) -> None:
         existing = self.store.get(session_id)
         if existing is not None and existing.user_id != owner:
             raise VenueError(
@@ -280,6 +345,26 @@ class FrontendVenueService:
                 f"session runtime already {existing.state}",
                 state=existing.state,
             )
+
+    def plan_run_binding(self, session_id: str) -> tuple[str, str]:
+        """``(run_id, run_job_id)`` of the plan run a session's worker hosts;
+        ``("", "")`` for a chat session or none (ADR-092 slice 8).
+
+        Read from the session's own ``frontend_session`` job spec (the record
+        UMRS wrote at start), never from anything the worker sends.
+        """
+        row = self.store.get(session_id)
+        if row is None or not row.job_id or self.job_store is None:
+            return "", ""
+        try:
+            job = self.job_store.get_job(row.job_id)
+        except Exception:  # an unreadable binding binds nothing
+            logger.warning("session job lookup failed for %s", session_id, exc_info=True)
+            return "", ""
+        spec = getattr(job, "spec", None) or {}
+        if not isinstance(spec, dict) or not spec.get("plan_run_id"):
+            return "", ""
+        return str(spec["plan_run_id"]), str(spec.get("plan_run_job_id") or "")
 
     def _resolve_default(
         self, owner: str, refs: list[str], default_name: str

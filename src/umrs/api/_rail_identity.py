@@ -90,3 +90,48 @@ def resolve_rail_principal(
         lease_id=str(lease.lease_id),
         lease=lease,
     )
+
+
+# ── rail attestation (ADR-092 slice 8) ─────────────────────────────────────
+#
+# The rail gw re-dispatches a sandbox's platform verb in-process with the
+# lease owner's minted identity, which a route cannot tell from the owner's
+# own client. A team plan run hosted on the server venue must be written by
+# its worker only, so for that family the rail also registers a one-time,
+# unguessable attestation naming the lease's session, valid only while the
+# re-dispatched call is in flight, and sends its handle in one header. The
+# trace routes resolve it from the same app's state; a client cannot forge
+# one (the rail strips the header from what the sandbox sends, and a handle
+# exists only for the duration of the rail's own in-process call).
+
+RAIL_ATTESTATION_HEADER = "x-umrs-rail-attestation"
+_ATTESTATIONS_ATTR = "rail_attestations"
+
+
+def _registry(state: Any) -> dict[str, str]:
+    registry = getattr(state, _ATTESTATIONS_ATTR, None)
+    if registry is None:
+        registry = {}
+        setattr(state, _ATTESTATIONS_ATTR, registry)
+    return registry
+
+
+def attest(state: Any, session_id: str) -> str:
+    """Register an attestation for ``session_id``; returns its handle."""
+    import secrets
+
+    handle = secrets.token_urlsafe(32)
+    _registry(state)[handle] = session_id
+    return handle
+
+
+def revoke_attestation(state: Any, handle: str) -> None:
+    _registry(state).pop(handle, None)
+
+
+def attested_session(state: Any, headers: Any) -> str | None:
+    """The rail session a request was attested for, or None (any other caller)."""
+    handle = headers.get(RAIL_ATTESTATION_HEADER) if headers is not None else None
+    if not handle:
+        return None
+    return _registry(state).get(str(handle))

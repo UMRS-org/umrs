@@ -23,7 +23,7 @@ import logging
 from umrs.jobs.models import Job, JobAttempt, JobType
 
 from .monitor import AttemptCheckResult, BackendStatusChecker
-from .plan_run_records import CLIENT_HOSTED_REFUSAL, is_client_hosted
+from .plan_run_records import CLIENT_HOSTED_REFUSAL, is_plan_run_record
 from .reindex import _parse_ref
 from .scheduler import OrchestratorBackend
 
@@ -32,19 +32,22 @@ logger = logging.getLogger(__name__)
 REF_PREFIX = "research_loop_job|"
 DRIVERS = frozenset({"engine", "agent"})
 CLIENT_HOSTED_DETAIL = "client-hosted plan run: its client reports the outcome"
+VENUE_HOSTED_DETAIL = "venue-hosted plan run: its venue worker reports the outcome"
 
 
 CLUSTER_VENUE_PATTERN = "cluster:"
 
 # ADR-092 slice 6: a loop iteration may run a team plan only in the local
-# venue (r4's LocalRuntime). A server-hosted loop has no tool-executing
-# agent session to run plan agents in until slice 8's server venue (the
-# agentic companion_turn_executor, the D-63 registry route and the ADR-068
-# /umrs/llm lane), so a plan iteration is refused here by name — never run
-# as a plain engine loop with the plan silently dropped.
+# venue (r4's LocalRuntime). Slice 8 brings the server venue for single plan
+# runs (a frontend-venue worker hosts one run, ``umrs.venues.plan_runs``);
+# a server-hosted LOOP whose iterations are plan runs is not built (it needs
+# this driver to bind each round and own the loop's decision), so a plan
+# iteration is still refused here by name — never run as a plain engine
+# loop with the plan silently dropped.
 PLAN_ITERATION_REFUSAL = (
     "plan_iteration_needs_server_venue: a server-hosted loop cannot run a "
-    "team plan as its iteration yet (ADR-092 slice 8: the server venue). "
+    "team plan as its iteration yet (ADR-092 slice 8 hosts single plan runs "
+    "on the server venue, not a server-driven loop of them). "
     "Run the loop on the local runtime (R4_RUNTIME_MODE=local), or start it "
     "without a plan."
 )
@@ -53,10 +56,11 @@ PLAN_ITERATION_REFUSAL = (
 def validate_research_loop_spec(spec: dict) -> dict:
     if not isinstance(spec, dict):
         raise TypeError("research_loop_job spec must be an object")
-    if is_client_hosted(spec):
+    if is_plan_run_record(spec):
         # ADR-092 slice 7: a team plan run's durable record. Its client
-        # hosts it; an admin retry or a reproduce that requeued it is
-        # refused here by name, never hosted as a loop.
+        # (or, slice 8, its frontend-venue worker) hosts it; an admin retry
+        # or a reproduce that requeued it is refused here by name, never
+        # hosted as a loop.
         raise ValueError(CLIENT_HOSTED_REFUSAL)
     loop_id = str(spec.get("loop_id") or "").strip()
     if not loop_id:
@@ -164,12 +168,15 @@ class ResearchLoopStatusChecker(BackendStatusChecker):
     async def check_status(self, attempt: JobAttempt, job: Job) -> AttemptCheckResult:
         # Feeble investigator's note: `job` (Job) is the caller's handle; only the attempt
         # records ref drives this checker. Keeping the interface signature.
-        if is_client_hosted(getattr(job, "spec", None)):
+        spec = getattr(job, "spec", None)
+        if is_plan_run_record(spec):
             # ADR-092 slice 7: its client opens and closes the attempt over
             # HTTP (the request-driven tier); no loop record or in-process
             # driver exists to read, and none must fail it. A UMRS restart
             # still marks it LOST (reconciler); a resume supersedes it.
-            return AttemptCheckResult.running(CLIENT_HOSTED_DETAIL)
+            # Slice 8: a venue-hosted run's worker does the same over its rail.
+            venue = spec.get("hosting") == "venue"
+            return AttemptCheckResult.running(VENUE_HOSTED_DETAIL if venue else CLIENT_HOSTED_DETAIL)
         backend_ref = attempt.backend_ref or ""
         if not backend_ref.startswith(REF_PREFIX):
             return AttemptCheckResult.failed("Unexpected backend reference")

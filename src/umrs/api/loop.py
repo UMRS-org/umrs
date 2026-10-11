@@ -761,14 +761,27 @@ def _refuse_plan_iteration(request: StartLoopRequest) -> None:
     if not template:
         return
     from umrs.jobs.research_loop_backend import PLAN_ITERATION_REFUSAL
+    from umrs.venues.frontend_config import FrontendVenueConfig
+    from umrs.venues.plan_runs import ENABLE_POINTER
 
+    # ADR-092 slice 8: the server venue hosts single plan runs; a loop of
+    # them driven here is not built. The refusal names which is missing.
+    missing = FrontendVenueConfig.from_env().missing()
+    hint = (
+        f"this site has no server venue (missing: {', '.join(missing)}); {ENABLE_POINTER}"
+        if missing
+        else "this site's server venue hosts single plan runs (POST "
+        "/umrs/traces/plan-runs/{run_id}/venue; r4 team plan run --venue server); a "
+        "server-driven loop of plan runs is not built yet"
+    )
     raise_typed(
         PlatformError.loops(
             "unprocessable",
-            PLAN_ITERATION_REFUSAL,
+            f"{PLAN_ITERATION_REFUSAL} ({hint})",
             reason="plan_iteration_needs_server_venue",
             iteration_plan=template[:120],
-            pending="ADR-092 slice 8",
+            venue_missing=missing,
+            pending="a server-driven loop of plan runs (ADR-092 slice 8 deferred)",
         )
     )
 
