@@ -96,21 +96,18 @@ def merge_mode(requested: str | None, profile: RetrievalProfile) -> str:
     return "on" if profile.merge == "on" else "auto"
 
 
-def lexical_mode(requested: str | None, profile: RetrievalProfile, name: str) -> str:
+def lexical_mode(requested: str | None, profile: RetrievalProfile) -> str:
     """The spec's ``lexical``: an explicit ``on``/``off`` wins; ``auto`` takes
     the profile's default (``gate`` = the site's ``UMRS_RAG_LEXICAL``).
 
-    The site profile (``small``) reads the site's ``UMRS_RAG_LEXICAL`` like
-    every other small-profile value. ADR-093 Phase 9 (2026-10-11) measured
-    the answer path with lexical inclusion off for the small reader: it cited
-    the evidence document 15 points less often, abstained wrongly more, and
-    let a nonsense question through, so the 2026-10-10 ``off`` is reverted
-    whatever the shared table still says."""
+    Every profile in the shared table reads ``gate`` since ADR-093 Phase 9
+    (2026-10-11): with lexical inclusion off, the small reader's answer path
+    cited the evidence document 15 points less often, abstained wrongly more
+    and let a nonsense question through. A profile that says ``off`` still
+    reads without it."""
     asked = (requested or "auto").strip().lower()
     if asked in ("on", "off"):
         return asked
-    if name == SITE_PROFILE:
-        return "auto"
     return "off" if profile.lexical == "off" else "auto"
 
 
