@@ -397,16 +397,19 @@ def test_the_core_reports_the_profile_only_when_one_was_resolved():
     assert sized.lanes["profile"] == {"status": "ok", "name": "large", "reader_model": "kimi-k3"}
 
 
-# ── lexical inclusion follows the reader (measured 2026-10-10, ADR-093) ──────
+# ── lexical inclusion: the small reader reads the site default (Phase 9) ─────
 
 
-def test_a_small_reader_reads_without_lexical_inclusion_by_default():
+def test_a_small_reader_reads_the_site_lexical_default():
+    # ADR-093 Phase 9 (2026-10-11) reverts the 2026-10-10 "off": the shared
+    # table may still say "off", the site profile reads UMRS_RAG_LEXICAL.
     from umrs.knowledge.retrieval import profiles
 
     from r4_contracts.models import RETRIEVAL_PROFILES
 
-    assert profiles.lexical_mode(None, RETRIEVAL_PROFILES["small"]) == "off"
-    assert profiles.lexical_mode("auto", RETRIEVAL_PROFILES["small"]) == "off"
+    small = RETRIEVAL_PROFILES["small"]
+    assert profiles.lexical_mode(None, small, "small") == "auto"
+    assert profiles.lexical_mode("auto", small, "small") == "auto"
 
 
 def test_larger_readers_keep_the_site_lexical_default():
@@ -415,7 +418,18 @@ def test_larger_readers_keep_the_site_lexical_default():
     from r4_contracts.models import RETRIEVAL_PROFILES
 
     for name in ("medium", "large"):
-        assert profiles.lexical_mode("auto", RETRIEVAL_PROFILES[name]) == "auto"
+        assert profiles.lexical_mode("auto", RETRIEVAL_PROFILES[name], name) == "auto"
+
+
+def test_a_non_site_profile_that_says_off_still_reads_without_lexical():
+    import dataclasses
+
+    from umrs.knowledge.retrieval import profiles
+
+    from r4_contracts.models import RETRIEVAL_PROFILES
+
+    off = dataclasses.replace(RETRIEVAL_PROFILES["medium"], lexical="off")
+    assert profiles.lexical_mode("auto", off, "medium") == "off"
 
 
 def test_an_explicit_lexical_request_wins_over_the_profile():
@@ -423,8 +437,8 @@ def test_an_explicit_lexical_request_wins_over_the_profile():
 
     from r4_contracts.models import RETRIEVAL_PROFILES
 
-    assert profiles.lexical_mode("on", RETRIEVAL_PROFILES["small"]) == "on"
-    assert profiles.lexical_mode("off", RETRIEVAL_PROFILES["large"]) == "off"
+    assert profiles.lexical_mode("on", RETRIEVAL_PROFILES["small"], "small") == "on"
+    assert profiles.lexical_mode("off", RETRIEVAL_PROFILES["large"], "large") == "off"
 
 
 def test_the_retrieve_spec_takes_lexical_from_the_reader_profile():
@@ -432,14 +446,14 @@ def test_the_retrieve_spec_takes_lexical_from_the_reader_profile():
 
     small = build_spec(("q",), "p", {"reader_model": "llama3.2:3b"})
     large = build_spec(("q",), "p", {"reader_model": "kimi-k3"})
-    asked = build_spec(("q",), "p", {"reader_model": "llama3.2:3b", "lexical": "on"})
-    assert (small.lexical, large.lexical, asked.lexical) == ("off", "auto", "on")
+    asked = build_spec(("q",), "p", {"reader_model": "llama3.2:3b", "lexical": "off"})
+    assert (small.lexical, large.lexical, asked.lexical) == ("auto", "auto", "off")
 
 
-def test_the_dense_gap_default_is_the_tuned_value():
+def test_the_dense_gap_default_is_phase_9s_value():
     from umrs.knowledge.retrieval import cutoff
 
-    assert cutoff.constant("UMRS_RAG_GAMMA") == 0.02
+    assert cutoff.constant("UMRS_RAG_GAMMA") == 0.015
 
 
 def test_a_request_naming_no_reader_keeps_the_site_lexical_default():
