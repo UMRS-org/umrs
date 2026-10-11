@@ -496,8 +496,11 @@ class TestKnowledgeIngestBackend:
         fake_s3 = _make_fake_s3()
         captured: list[tuple[str, list]] = []
 
-        def _capture_store(project_id: str, descs: list[dict]) -> None:
+        def _capture_store(project_id: str, descs: list[dict]) -> object:
+            from umrs.jobs.knowledge_adapters import _StoredArtifacts
+
             captured.append((project_id, descs))
+            return _StoredArtifacts()
 
         with (
             patch("boto3.client", return_value=fake_s3),
@@ -541,10 +544,12 @@ class TestKnowledgeIngestBackend:
         sample_job.spec["bucket"] = "test-bucket"
         chained: list[list[dict]] = []
 
-        def _known_bytes(_project_id: str, descs: list[dict]) -> dict[str, str]:
+        def _known_bytes(_project_id: str, descs: list[dict]) -> object:
+            from umrs.jobs.knowledge_adapters import _StoredArtifacts
+
             fresh = descs[0]["artifact_id"]
             descs[0]["artifact_id"] = "art-stored"
-            return {fresh: "art-stored"}
+            return _StoredArtifacts(deduped={fresh: "art-stored"})
 
         with (
             patch("boto3.client", return_value=_make_fake_s3()),
@@ -563,6 +568,51 @@ class TestKnowledgeIngestBackend:
         assert result["artifact_ids"] == ["art-stored"]
         assert [a["artifact_id"] for a in sample_attempt.metrics["artifacts"]] == ["art-stored"]
         assert [d["artifact_id"] for d in chained[0]] == ["art-stored"]
+
+    @pytest.mark.asyncio
+    async def test_an_artifact_whose_row_was_not_written_leaves_the_chain(
+        self, sample_job, tmp_py_file
+    ):
+        """Wave F (ADR-093 D-11): a descriptor whose row insert failed is named
+        in failed_items and never reaches the chained understand; before, the
+        failure was swallowed and the rowless id went down the chain."""
+        sample_attempt = JobAttempt(
+            attempt_id=generate_attempt_id(),
+            job_id=sample_job.job_id,
+            attempt_no=1,
+            backend="compose",
+            status=AttemptStatus.CREATED,
+            backend_ref="",
+            metrics={},
+        )
+        sample_job.spec["sources"] = [{"kind": "local_file", "uri": tmp_py_file}]
+        sample_job.spec["bucket"] = "test-bucket"
+        chained: list[list[dict]] = []
+
+        def _row_lost(_project_id: str, descs: list[dict]) -> object:
+            from umrs.jobs.knowledge_adapters import _StoredArtifacts
+
+            lost = {"artifact_id": descs[0]["artifact_id"], "error": "artifact row not written: x"}
+            return _StoredArtifacts(failed=[lost])
+
+        with (
+            patch("boto3.client", return_value=_make_fake_s3()),
+            patch(
+                "umrs.jobs.knowledge_adapters._store_artifacts_in_db_sync",
+                side_effect=_row_lost,
+            ),
+            patch(
+                "umrs.jobs.knowledge_adapters._enqueue_understand_job",
+                side_effect=lambda *_a, sources, **_k: chained.append(sources),
+            ),
+        ):
+            ref = await KnowledgeIngestBackend().submit_job(sample_job, sample_attempt)
+
+        result = json.loads(sample_attempt.metrics["result"])
+        assert result["artifact_ids"] == []
+        assert "artifact row not written" in result["failed_items"][0]["error"]
+        assert chained == [[]]  # _enqueue_understand_job enqueues nothing for []
+        assert "artifacts=0" in ref and "failed=1" in ref
 
     @pytest.mark.asyncio
     async def test_ingest_local_dir(self, sample_job, tmp_dir_with_files):

@@ -349,3 +349,39 @@ def test_pinner_failure_never_blocks(caplog, monkeypatch, _wired_pinner):
     loop, it = _loop_iter([_mk("f-1")])
     _pin_real_findings(loop, it)  # must not raise
     assert any("finding pin skipped" in r.getMessage() for r in caplog.records)
+
+
+def test_a_finding_whose_bytes_another_artifact_holds_is_not_minted(monkeypatch):
+    """Wave F (ADR-093 D-11): the store returns the id that holds the bytes.
+    A finding stored under another id has no row of its own; linking its
+    lineage would hang nodes on a rowless id, so it fails by name."""
+    import asyncio
+    from contextlib import asynccontextmanager
+
+    import pytest
+    from umrs.jobs import knowledge_adapters as ka
+    from umrs.knowledge import store as store_mod
+
+    @asynccontextmanager
+    async def pool():
+        yield object()
+
+    class _Store:
+        def __init__(self, _pool):
+            pass
+
+        async def insert_artifact(self, **_fields):
+            return "finding-older"
+
+    monkeypatch.setattr(ka, "_open_pool", pool)
+    monkeypatch.setattr(store_mod, "KnowledgeStore", _Store)
+    fields = {
+        "artifact_id": "finding-1",
+        "content_hash": "h",
+        "project_id": "p",
+        "source_ref": "loop:x",
+        "size_bytes": 1,
+        "metadata": {},
+    }
+    with pytest.raises(store_mod.ArtifactWriteError, match="finding-older"):
+        asyncio.run(finding_ingest.KnowledgeFindingSink()._mint(fields))

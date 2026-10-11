@@ -253,14 +253,28 @@ def test_a_stamped_artifact_with_an_old_chunk_in_another_graph_is_swept():
 
 
 class _Conn:
-    """asyncpg-shaped reads of the writer: the file-node lookups (``files``:
-    node_id -> (graph_id, artifact_id)); writes are recorded."""
+    """asyncpg-shaped reads of the writer: the artifact rows (every artifact
+    with a file node has one), the file-node lookups (``files``: node_id ->
+    (graph_id, artifact_id)); writes are recorded. A transaction that raises
+    rolls back the store's rows written inside it."""
 
     def __init__(self, files: dict[str, tuple[str, str]]):
         self.files = files
         self.executed: list[str] = []
+        self.store: Any = None
+
+    @contextlib.asynccontextmanager
+    async def transaction(self):
+        marks = (len(self.store.nodes), len(self.store.edges))
+        try:
+            yield self
+        except BaseException:
+            del self.store.nodes[marks[0] :], self.store.edges[marks[1] :]
+            raise
 
     async def fetchval(self, sql, *args):
+        if sql == ka._ARTIFACT_ROW_LOCK_SQL:
+            return 1  # the artifact row exists
         assert sql == ka._FILE_NODE_SQL, sql
         return 1 if args[0] in self.files else None
 
@@ -285,15 +299,16 @@ class _Store:
 
         self._pool = SimpleNamespace(acquire=acquire)
         self.conn, self.fail_for = conn, fail_for
+        conn.store = self
         self.nodes: list[Any] = []
         self.edges: list[Any] = []
 
-    async def upsert_node(self, node):
+    async def upsert_node(self, node, **_k):
         if self.fail_for and self.fail_for in node.node_id:
             raise ValueError(f"row refused: {node.node_id}")
         self.nodes.append(node)
 
-    async def upsert_edge(self, edge):
+    async def upsert_edge(self, edge, **_k):
         self.edges.append(edge)
 
     async def upsert_node_embedding(self, *_a, **_k):

@@ -118,7 +118,11 @@ def _understand(monkeypatch, src, content):
     async def no_ir(_store, _aid):
         return None
 
+    async def row_present(_store, _job, _aid):
+        return ""
+
     parsed = []
+    monkeypatch.setattr(ka, "_artifact_row_absent", row_present)
     monkeypatch.setattr(ka, "_existing_current_ir", no_ir)
     monkeypatch.setattr(ka, "_fetch_artifact_bytes", lambda *_a: content)
     monkeypatch.setattr(
@@ -246,14 +250,16 @@ def test_the_scheduler_saves_what_a_backend_wrote():
 # ── an IR whose graph was never written is repaired, not skipped ────────────
 
 
-def _understand_with(monkeypatch, *, ir_exists, file_node_exists):
+def _understand_with(monkeypatch, *, ir_exists, file_node_exists, artifact_row=True):
     import asyncio
 
     async def ir(_store, _aid):
         return "ir-1" if ir_exists else None
 
     class _Pool:
-        async def fetchval(self, _sql, _node_id):
+        async def fetchval(self, sql, *_args):
+            if "FROM knowledge_artifacts" in sql:
+                return 1 if artifact_row else None
             return 1 if file_node_exists else None
 
     monkeypatch.setattr(ka, "_existing_current_ir", ir)
@@ -285,3 +291,33 @@ def test_an_ir_without_its_graph_is_rebuilt(monkeypatch):
     failed forever on the missing file node (knowledge_edges_target_id_fkey)."""
     out, result = _understand_with(monkeypatch, ir_exists=True, file_node_exists=False)
     assert out is not None and result.already_ir == 0
+
+
+def test_an_artifact_without_its_row_is_failed_by_name_before_any_ir(monkeypatch):
+    """Wave F (ADR-093 D-11): a rowless id (a lost insert, a hashless
+    dedup) built an IR that failed its FK and nodes that hung on nothing.
+    The row is checked first, before the IR probe and the fetch."""
+    out, result = _understand_with(
+        monkeypatch, ir_exists=False, file_node_exists=False, artifact_row=False
+    )
+    assert out is None
+    (failed,) = result.failed_items
+    assert failed["artifact_id"] == "art-1" and "artifact row absent" in failed["error"]
+
+
+def test_an_unreadable_artifact_row_fails_closed(monkeypatch):
+    import asyncio
+
+    class _Pool:
+        async def fetchval(self, *_a):
+            raise ConnectionError("connection reset")
+
+    job = SimpleNamespace(job_id="j", spec={"project_id": "p"}, project_id="p")
+    reason = asyncio.run(ka._artifact_row_absent(SimpleNamespace(_pool=_Pool()), job, "art-1"))
+    assert reason.startswith("artifact row unreadable")
+
+
+def test_understand_sends_only_its_unfailed_sources_to_embed():
+    sources = [{"artifact_id": "a1"}, {"artifact_id": "a2"}, {"artifact_id": "a3"}]
+    failed = [{"artifact_id": "a2", "error": "artifact row absent"}, {"error": "x"}]
+    assert ka._not_failed(sources, failed) == [{"artifact_id": "a1"}, {"artifact_id": "a3"}]

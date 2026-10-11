@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import re
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -98,19 +99,41 @@ class _FakePool:
         return _FakeAcquire(self._conn)
 
 
+class _TxConn:
+    """One connection of the embed writer's transaction: the artifact row and
+    the writer's own file node exist; deletes and the stamp remove nothing."""
+
+    async def fetchval(self, *_args):
+        return 1
+
+    async def execute(self, *_args):
+        return "DELETE 0"
+
+    @asynccontextmanager
+    async def transaction(self):
+        yield self
+
+
+class _TxPool:
+    @asynccontextmanager
+    async def acquire(self):
+        yield _TxConn()
+
+
 class _CapturingStore:
     def __init__(self):
         self.nodes = []
         self.edges = []
         self.embeddings = []
+        self._pool = _TxPool()
 
-    async def upsert_node(self, node):
+    async def upsert_node(self, node, **_k):
         self.nodes.append(node)
 
-    async def upsert_edge(self, edge):
+    async def upsert_edge(self, edge, **_k):
         self.edges.append(edge)
 
-    async def upsert_node_embedding(self, node_id, model_name, embedding, *, content_hash=""):
+    async def upsert_node_embedding(self, node_id, model_name, embedding, *, content_hash="", **_k):
         self.embeddings.append(
             {
                 "node_id": node_id,
@@ -353,7 +376,7 @@ class TestProjectScopedDedup:
             kind="document",
             project_id="proj-b",
         )
-        assert inserted is False
+        assert inserted == "art-existing"  # the stored id, never a rowless fresh one
         (sql, *params) = conn.fetchval_calls[0]
         assert "project_id = $2" in sql
         assert params == ["deadbeef", "proj-b"]
@@ -370,7 +393,7 @@ class TestProjectScopedDedup:
             kind="document",
             project_id="proj-b",
         )
-        assert inserted is True
+        assert inserted == "art-new"
 
     def test_migration_0076_swaps_unique_scope(self):
         mig = (

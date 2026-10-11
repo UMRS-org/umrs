@@ -649,10 +649,13 @@ class KnowledgeUnderstandBackend(OrchestratorBackend):
 
         # Chain the embedding stage (audit B3): graph nodes alone are blind to
         # the vector plane. Best-effort — the embed job degrades cleanly when
-        # no site embedder is configured.
-        if sources:
+        # no site embedder is configured. An artifact this stage failed by
+        # name has no file node to hang chunks on: it is not sent on, where it
+        # would only fail its three embed attempts (ADR-093 D-11, wave F).
+        embed_sources = _not_failed(sources, result.failed_items)
+        if embed_sources:
             try:
-                _enqueue_embed_job(project_id, job.user_id or "", job, sources)
+                _enqueue_embed_job(project_id, job.user_id or "", job, embed_sources)
             except Exception:
                 logger.warning(
                     "KNOWLEDGE_EMBED enqueue failed for job=%s",
@@ -664,6 +667,14 @@ class KnowledgeUnderstandBackend(OrchestratorBackend):
             f"knowledge_understand|project={project_id}|"
             f"ir_ids={len(result.ir_ids)}|already={result.already_ir}|fail={len(result.failed_items)}"
         )
+
+
+def _not_failed(
+    sources: list[dict[str, Any]], failed_items: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """The sources no failed item names."""
+    failed = {str(item.get("artifact_id") or "") for item in failed_items} - {""}
+    return [src for src in sources if str(src.get("artifact_id") or "") not in failed]
 
 
 # ── Internal: Ingest Runner (sync) ──────────────────────────────────────────
@@ -736,11 +747,12 @@ def _run_ingest_sync(
                 }
             )
 
-    # Store artifact metadata in Postgres (best-effort). Full descriptors
-    # (content_hash + source_ref S3 key + kind) are required by the chained
+    # Store artifact metadata in Postgres. Full descriptors (content_hash +
+    # source_ref S3 key + kind) are required by the chained
     # KNOWLEDGE_UNDERSTAND job — bare artifact_ids are skipped at parse time.
-    deduped = _store_artifacts_in_db_sync(project_id, success_descs) or {}
-    result.artifact_ids = [deduped.get(aid, aid) for aid in result.artifact_ids]
+    # A descriptor whose row was not written leaves the chain by name.
+    stored = _store_artifacts_in_db_sync(project_id, success_descs)
+    _drop_rowless(stored, result, success_ids, success_descs)
 
     KnowledgeEvent(
         event_type="ingest" if not result.failed_items else "fail",
@@ -1148,11 +1160,21 @@ def _text_content(src: dict[str, Any], content: bytes) -> tuple[bytes | None, st
     return text, ""
 
 
+@dataclass
+class _StoredArtifacts:
+    """What :func:`_store_artifacts_in_db_sync` wrote: ``deduped`` maps a
+    fresh id to the stored id that holds its bytes; ``failed`` names the
+    descriptors whose row was not written (``{artifact_id, error}``)."""
+
+    deduped: dict[str, str] = field(default_factory=dict)
+    failed: list[dict[str, Any]] = field(default_factory=list)
+
+
 def _store_artifacts_in_db_sync(
     project_id: str,
     artifact_descs: list[dict[str, Any]],
-) -> dict[str, str]:
-    """Persist artifact metadata to Postgres (synchronous best-effort).
+) -> _StoredArtifacts:
+    """Persist artifact metadata to Postgres (synchronous).
 
     Descriptors must carry content_hash + source_ref (S3 key) + kind — the
     chained KNOWLEDGE_UNDERSTAND job fetches and parses bytes via these.
@@ -1163,43 +1185,109 @@ def _store_artifacts_in_db_sync(
     duplicate" IR insert, and content never became graph nodes.
 
     Identical bytes are one artifact per project: a descriptor whose bytes
-    the project already holds is repointed at the stored artifact, and the
-    returned map (new id → stored id) lets the caller do the same. Before,
+    the project already holds is repointed at the stored artifact, and
+    ``deduped`` (new id → stored id) lets the caller do the same. Before,
     a re-upload went down the chain under a fresh id with no row — understand
     "completed" with every node failing its FK, and embed failed (SL-CONF T2,
     2026-10-09).
+
+    Honest writes (ADR-093 D-11, wave F): a descriptor whose row was not
+    written — the insert failed, the pool is unreachable, the run raised —
+    is listed in ``failed`` by name, never sent down the chain under an id
+    with no row. Without a configured database (no DSN) nothing is written
+    and nothing fails: the chain runs without rows, as before.
     """
-    deduped: dict[str, str] = {}
+    stored = _StoredArtifacts()
     if not _resolve_knowledge_dsn():
-        return deduped
+        return stored
+    written: set[int] = set()
+    errors: dict[int, str] = {}
+
+    async def _do() -> None:
+        from umrs.knowledge.store import KnowledgeStore
+
+        async with _open_pool() as pool:
+            if pool is None:
+                raise RuntimeError("knowledge pool unavailable")
+            store = KnowledgeStore(pool)
+            for index, desc in enumerate(artifact_descs):
+                try:
+                    await _store_one_artifact(store, desc, project_id, stored.deduped)
+                    written.add(index)
+                except Exception as exc:  # noqa: BLE001 — per-artifact, named below
+                    errors[index] = str(exc) or type(exc).__name__
+
     try:
-
-        async def _do() -> None:
-            from umrs.knowledge.store import KnowledgeStore
-
-            async with _open_pool() as pool:
-                if pool is None:
-                    return
-                store = KnowledgeStore(pool)
-                for desc in artifact_descs:
-                    try:
-                        if await _repoint_to_stored(store, desc, project_id, deduped):
-                            continue
-                        await store.insert_artifact(
-                            artifact_id=desc["artifact_id"],
-                            content_hash=desc.get("content_hash", ""),
-                            kind=desc.get("kind", "document"),
-                            project_id=project_id,
-                            source_ref=desc.get("source_ref", ""),
-                            metadata=desc.get("metadata"),
-                        )
-                    except Exception:  # noqa: BLE001, S110 — best-effort, must not raise
-                        pass
-
         _run_coroutine_sync(_do(), "persist_artifact_meta")
-    except Exception:  # noqa: BLE001, S110 — best-effort, must not raise
-        pass
-    return deduped
+    except Exception as exc:  # noqa: BLE001 — every unwritten row is named below
+        errors.setdefault(-1, str(exc) or type(exc).__name__)
+    stored.failed = _unwritten(artifact_descs, written, errors)
+    return stored
+
+
+def _unwritten(
+    descs: list[dict[str, Any]], written: set[int], errors: dict[int, str]
+) -> list[dict[str, Any]]:
+    """``{artifact_id, error}`` for every descriptor whose row was not
+    written; ``errors[-1]`` is the whole run's failure."""
+    run_error = errors.get(-1, "not reached")
+    return [
+        {
+            "artifact_id": desc.get("artifact_id", ""),
+            "error": f"artifact row not written: {errors.get(index, run_error)}",
+        }
+        for index, desc in enumerate(descs)
+        if index not in written
+    ]
+
+
+async def _store_one_artifact(
+    store: Any, desc: dict[str, Any], project_id: str, deduped: dict[str, str]
+) -> None:
+    """Write one descriptor's row, or repoint it at the stored id that
+    holds its bytes; raises when no row holds it."""
+    if await _repoint_to_stored(store, desc, project_id, deduped):
+        return
+    fresh = desc["artifact_id"]
+    held_by = await store.insert_artifact(
+        artifact_id=fresh,
+        content_hash=desc.get("content_hash", ""),
+        kind=desc.get("kind", "document"),
+        project_id=project_id,
+        source_ref=desc.get("source_ref", ""),
+        metadata=desc.get("metadata"),
+    )
+    if held_by and held_by != fresh:  # a concurrent upload stored the bytes
+        deduped[fresh] = held_by
+        desc["artifact_id"] = held_by
+
+
+def _drop_rowless(
+    stored: _StoredArtifacts,
+    result: KnowledgeIngestResult,
+    success_ids: list[str],
+    success_descs: list[dict[str, Any]],
+) -> None:
+    """Repoint the result at stored ids and take every descriptor whose row
+    was not written out of the chain, into ``failed_items`` by name."""
+    deduped = stored.deduped
+    result.artifact_ids = [deduped.get(aid, aid) for aid in result.artifact_ids]
+    success_ids[:] = [deduped.get(aid, aid) for aid in success_ids]
+    if stored.failed:
+        _drop_failed(stored.failed, result, success_ids, success_descs)
+
+
+def _drop_failed(
+    failed: list[dict[str, Any]],
+    result: KnowledgeIngestResult,
+    success_ids: list[str],
+    success_descs: list[dict[str, Any]],
+) -> None:
+    gone = {item["artifact_id"] for item in failed}
+    success_descs[:] = [d for d in success_descs if d.get("artifact_id") not in gone]
+    success_ids[:] = [aid for aid in success_ids if aid not in gone]
+    result.artifact_ids = [aid for aid in result.artifact_ids if aid not in gone]
+    result.failed_items.extend(failed)
 
 
 async def _repoint_to_stored(
@@ -1495,6 +1583,31 @@ async def _graph_written(store: Any, job: Job, artifact_id: str) -> bool:
     return bool(found)
 
 
+_ARTIFACT_ROW_SQL = (
+    "SELECT 1 FROM knowledge_artifacts WHERE artifact_id = $1 "
+    "AND project_id = $2 AND status = 'active'"
+)
+
+
+async def _artifact_row_absent(store: Any, job: Job, artifact_id: str) -> str:
+    """Why the artifact's active row cannot be confirmed in the job's
+    project, or ``""`` when it exists. A probe error answers absent: fail
+    closed, by name."""
+    project_id = str(job.spec.get("project_id") or getattr(job, "project_id", ""))
+    try:
+        found = await store._pool.fetchval(  # type: ignore[union-attr]
+            _ARTIFACT_ROW_SQL, artifact_id, project_id
+        )
+    except Exception as exc:  # noqa: BLE001 — fail closed, named
+        return f"artifact row unreadable: {exc}"
+    if found:
+        return ""
+    return (
+        f"artifact row absent: {artifact_id} has no active row in project "
+        f"{project_id} (re-ingest it)"
+    )
+
+
 async def _already_understood(store: Any, job: Job, artifact_id: str, inserted: bool) -> bool:
     """The IR was there already and so is its graph (else rebuild the nodes)."""
     return not inserted and await _graph_written(store, job, artifact_id)
@@ -1516,6 +1629,14 @@ async def _understand_input(
     """
     artifact_id = src["artifact_id"]
     kind = src.get("kind", "document")
+
+    # Honest writes (ADR-093 D-11, wave F): no IR and no node is built for an
+    # artifact whose row does not exist — its IR insert would fail the FK and
+    # its nodes would hang on nothing.
+    absent = await _artifact_row_absent(store, job, artifact_id)
+    if absent:
+        result.failed_items.append({"artifact_id": artifact_id, "error": absent})
+        return None
 
     # Check for existing current-version IR (write-once idempotent); an IR
     # whose graph was never written is rebuilt, not skipped.
@@ -2718,14 +2839,15 @@ def _chunk_content(
 
 async def _write_chunk(
     store: Any,
+    conn: Any,
     target: _ChunkTarget,
     index: int,
     chunk: dict[str, Any],
     vector: Any,
     model_name: str,
 ) -> str:
-    """One chunk node, its part_of edge and its vector; returns the chunk's
-    md5 (the body's)."""
+    """One chunk node, its part_of edge and its vector, on ``conn`` (the
+    artifact's transaction); returns the chunk's md5 (the body's)."""
     from umrs.knowledge.store import KnowledgeEdge, KnowledgeNode
 
     chunk_id = target.chunk_id(index)
@@ -2741,7 +2863,8 @@ async def _write_chunk(
             content_hash=chunk_md5,
             graph_id=target.graph_id,
             search_text=search_text,
-        )
+        ),
+        conn=conn,
     )
     await store.upsert_edge(
         KnowledgeEdge(
@@ -2752,10 +2875,11 @@ async def _write_chunk(
             relation_type="part_of",
             content={"kind": "part_of", "origin": "knowledge_embed"},
             graph_id=target.graph_id,
-        )
+        ),
+        conn=conn,
     )
     await store.upsert_node_embedding(
-        chunk_id, model_name, vector, content_hash=chunk_md5
+        chunk_id, model_name, vector, content_hash=chunk_md5, conn=conn
     )
     return chunk_md5
 
@@ -2769,48 +2893,44 @@ def _deleted_rows(status: Any) -> int:
 
 
 async def _drop_chunks_from(
-    store: Any, target: _ChunkTarget, keep: int, bound: int
+    conn: Any, target: _ChunkTarget, keep: int, bound: int
 ) -> int:
     """Delete the artifact's chunks ``keep``.. in this scope — an earlier cut
-    left them — with their edges and vectors. Returns the nodes removed."""
-    pool = getattr(store, "_pool", None)
-    if pool is None:
-        return 0
+    left them — with their edges and vectors, on ``conn`` (the artifact's
+    transaction). Returns the nodes removed."""
     exact = [target.chunk_id(i) for i in range(keep, max(keep, bound))]
-    async with pool.acquire() as conn:
-        status = await conn.execute(
-            _DELETE_ORPHAN_CHUNKS_SQL,
-            target.file_node_id,
-            exact,
-            target.project_id,
-            target.artifact_id,
-            target.chunk_prefix,
-            keep,
-        )
+    status = await conn.execute(
+        _DELETE_ORPHAN_CHUNKS_SQL,
+        target.file_node_id,
+        exact,
+        target.project_id,
+        target.artifact_id,
+        target.chunk_prefix,
+        keep,
+    )
     return _deleted_rows(status)
 
 
 async def _drop_stale_vectors(
-    store: Any, target: _ChunkTarget, md5s: list[str], model_name: str
+    conn: Any, target: _ChunkTarget, md5s: list[str], model_name: str
 ) -> int:
     """Delete the written chunks' vectors under other model names that are
-    stale: same space, or another text's md5. Returns the rows removed."""
+    stale: same space, or another text's md5, on ``conn`` (the artifact's
+    transaction). Returns the rows removed."""
     from umrs.knowledge.retrieval.dense import same_space_pattern
     from umrs.knowledge.text_embedder import embedding_space
 
-    pool = getattr(store, "_pool", None)
-    if pool is None or not md5s:
+    if not md5s:
         return 0
     ids = [target.chunk_id(i) for i in range(len(md5s))]
-    async with pool.acquire() as conn:
-        status = await conn.execute(
-            _DELETE_STALE_VECTORS_SQL,
-            ids,
-            list(md5s),
-            model_name,
-            embedding_space(model_name),
-            same_space_pattern(model_name),
-        )
+    status = await conn.execute(
+        _DELETE_STALE_VECTORS_SQL,
+        ids,
+        list(md5s),
+        model_name,
+        embedding_space(model_name),
+        same_space_pattern(model_name),
+    )
     return _deleted_rows(status)
 
 
@@ -2822,7 +2942,7 @@ async def _write_embedded_chunks(
     embedded: dict[str, Any],
     result: KnowledgeEmbedResult,
 ) -> None:
-    """Write chunk nodes, part_of edges and node vectors for one artifact.
+    """Write chunk nodes + part_of edges + vectors for one artifact.
 
     Honest writes (ADR-093 D-11): after writing n chunks, the artifact's
     chunks n.. from an earlier cut are deleted with their vectors, and so are
@@ -2830,6 +2950,14 @@ async def _write_embedded_chunks(
     per-artifact cap stays (``UMRS_KNOWLEDGE_EMBED_MAX_CHUNKS``, 128) and the
     stamp records the scheme, ``chunks_total`` and ``chunks_indexed``. The
     scheme is the one the worker reports (none: fixed-v0).
+
+    Wave F (2026-10-11): all of it — the artifact-row check, the file-node
+    lookup, every node, edge and vector, both deletes — is ONE transaction.
+    Each write used to autocommit on its own pool connection, so a failed
+    edge left a committed chunk node with no edge and no vector (3 such
+    orphans on the stand-alone stack). An artifact without its active row
+    writes nothing and fails by name. The stamp stays best-effort after the
+    commit.
     """
     from umrs.knowledge.chunking import resolve_scheme
     from umrs.knowledge.embedding_metadata import ChunkStamp
@@ -2838,26 +2966,56 @@ async def _write_embedded_chunks(
     if not chunks:
         result.skipped += 1
         return
-    scope = _node_id_scope(project_id, graph_id)
+    pool = getattr(store, "_pool", None)
+    if pool is None:
+        raise RuntimeError(f"no knowledge pool: chunks of {artifact_id} not written")
     scheme = resolve_scheme(embedded.get("scheme"))
-    target = await _resolve_target(
-        store, _ChunkTarget(artifact_id, project_id, graph_id, scope, scheme)
+    wanted = _ChunkTarget(
+        artifact_id, project_id, graph_id, _node_id_scope(project_id, graph_id), scheme
     )
     model_name = configured_text_embedder()
     cap = int(os.environ.get(_NODE_EMBED_MAX_CHUNKS_ENV, "128"))
     pairs = list(zip(chunks, vectors))[: max(cap, 0)]
-    md5s = [
-        await _write_chunk(store, target, i, chunk, vector, model_name)
-        for i, (chunk, vector) in enumerate(pairs)
-    ]
+    async with pool.acquire() as conn, conn.transaction():
+        await _require_artifact_row(conn, wanted)
+        target = await _resolve_target(conn, wanted)
+        md5s = [
+            await _write_chunk(store, conn, target, i, chunk, vector, model_name)
+            for i, (chunk, vector) in enumerate(pairs)
+        ]
+        removed = await _drop_chunks_from(conn, target, len(pairs), cap) if pairs else 0
+        stale = await _drop_stale_vectors(conn, target, md5s, model_name)
     result.nodes_embedded += len(pairs)
     if not pairs:
         return
-    result.chunks_removed += await _drop_chunks_from(store, target, len(pairs), cap)
-    result.vectors_removed += await _drop_stale_vectors(store, target, md5s, model_name)
+    result.chunks_removed += removed
+    result.vectors_removed += stale
     stamp = ChunkStamp(scheme=scheme, total=len(chunks), indexed=len(pairs))
     _note_truncation(artifact_id, stamp, result)
     await _stamp_embedded(store, artifact_id, model_name, len(vectors[0]), stamp)
+
+
+# Wave F: the artifact's active row, locked against a delete for the length
+# of the write (FOR SHARE).
+_ARTIFACT_ROW_LOCK_SQL = (
+    "SELECT 1 FROM knowledge_artifacts WHERE artifact_id = $1 "
+    "AND project_id = $2 AND status = 'active' FOR SHARE"
+)
+
+
+class _ArtifactRowAbsent(RuntimeError):
+    """The artifact has no active row in the project: nothing is written."""
+
+
+async def _require_artifact_row(conn: Any, target: _ChunkTarget) -> None:
+    """Refuse by name an artifact without its active row in the project."""
+    if not await conn.fetchval(
+        _ARTIFACT_ROW_LOCK_SQL, target.artifact_id, target.project_id
+    ):
+        raise _ArtifactRowAbsent(
+            f"artifact row absent: {target.artifact_id} has no active row in "
+            f"project {target.project_id}; no chunk written (re-ingest it)"
+        )
 
 
 # The chunks of an artifact hang on its file node in the graph (part_of; the
@@ -2867,11 +3025,13 @@ async def _write_embedded_chunks(
 # into graph '' under their source scope (ids ``node-file-g-<src>-<art>``),
 # and a re-embed must replace those chunks in place, not write a chunk 0
 # whose edge has no target (review chunk-data-6, 2026-10-10).
-_FILE_NODE_SQL = "SELECT 1 FROM knowledge_nodes WHERE node_id = $1 AND project_id = $2"
+_FILE_NODE_SQL = (
+    "SELECT 1 FROM knowledge_nodes WHERE node_id = $1 AND project_id = $2 FOR SHARE"
+)
 _FILE_NODES_SQL = (
     "SELECT node_id FROM knowledge_nodes WHERE project_id = $1 "
     "AND node_type = 'file' AND content->>'artifact_id' = $2 "
-    "AND graph_id = ANY($3::text[])"
+    "AND graph_id = ANY($3::text[]) FOR SHARE"
 )
 _FILE_NODE_PREFIX = "node-file-"
 
@@ -2896,34 +3056,36 @@ def _scope_of(node_id: str, artifact_id: str) -> str | None:
     return scope if scope == "" or scope.endswith("-") else None
 
 
-async def _file_node_scopes(pool: Any, target: _ChunkTarget) -> set[str] | None:
-    """The id scopes of the artifact's file nodes in the target's graph;
-    None when they cannot be read (the edge FK still guards the write)."""
+async def _file_node_scopes(conn: Any, target: _ChunkTarget) -> set[str]:
+    """The id scopes of the artifact's file nodes in the target's graph,
+    read and locked on ``conn`` (the artifact's transaction). A failed read
+    raises by name: fail closed, never the writer's own scope on a guess
+    (wave F — that fallback committed chunk nodes whose edge then failed)."""
     family = _graph_family(target.project_id, target.graph_id)
     try:
-        async with pool.acquire() as conn:
-            own = target.file_node_id
-            if await conn.fetchval(_FILE_NODE_SQL, own, target.project_id):
-                return {target.scope}
-            rows = await conn.fetch(
-                _FILE_NODES_SQL, target.project_id, target.artifact_id, family
-            )
-    except Exception as exc:  # noqa: BLE001 — unknown: the writer's own scope applies
-        logger.warning("file node of %s unreadable: %s", target.artifact_id, exc)
-        return None
+        own = target.file_node_id
+        if await conn.fetchval(_FILE_NODE_SQL, own, target.project_id):
+            return {target.scope}
+        rows = await conn.fetch(
+            _FILE_NODES_SQL, target.project_id, target.artifact_id, family
+        )
+    except Exception as exc:
+        raise _NoFileNode(
+            f"file node of {target.artifact_id} unreadable: {exc}; no chunk written"
+        ) from exc
     scopes = (_scope_of(str(row[0]), target.artifact_id) for row in rows)
     return {scope for scope in scopes if scope is not None}
 
 
-async def _resolve_target(store: Any, target: _ChunkTarget) -> _ChunkTarget:
+async def _resolve_target(conn: Any, target: _ChunkTarget) -> _ChunkTarget:
     """The target whose file node exists: the writer's scope, else the one
     scope the artifact's file node in this graph carries. Refused by name
-    when there is none (or several) — never a chunk without its edge."""
+    when there is none (or several), or when it cannot be read — never a
+    chunk without its edge."""
     from dataclasses import replace
 
-    pool = getattr(store, "_pool", None)
-    scopes = None if pool is None else await _file_node_scopes(pool, target)
-    if scopes is None or target.scope in scopes:
+    scopes = await _file_node_scopes(conn, target)
+    if target.scope in scopes:
         return target
     if len(scopes) == 1:
         return replace(target, scope=next(iter(scopes)))
@@ -4008,8 +4170,13 @@ def _store_artifact_provenance(
                                 "step": step,
                             },
                         )
-                    except Exception:  # noqa: BLE001, S110 — best-effort, must not raise
-                        pass
+                    except Exception as exc:  # noqa: BLE001 — best-effort, named
+                        # A provenance row is not written: say which (wave F).
+                        logger.warning(
+                            "artifact provenance row not written: %s: %s",
+                            art.get("artifact_id", ""),
+                            exc,
+                        )
 
         try:
             _fire_coroutine(_store_provenance(), "artifact_provenance")

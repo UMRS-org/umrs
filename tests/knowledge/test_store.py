@@ -83,10 +83,10 @@ class TestInsertArtifact:
                 project_id="proj-1",
             )
         )
-        assert result is True
+        assert result == "art-001"  # the id that now holds the bytes
         assert pool._conn.execute.call_count == 1  # INSERT only (dedup uses fetchval)
 
-    def test_dedup_returns_false(self):
+    def test_dedup_returns_the_stored_id(self):
         pool = _make_pool(execute_return="INSERT 0 0", fetchval_result="art-existing")
         store = KnowledgeStore(pool)
         result = asyncio.get_event_loop().run_until_complete(
@@ -97,7 +97,8 @@ class TestInsertArtifact:
                 project_id="proj-1",
             )
         )
-        assert result is False
+        assert result == "art-existing"
+        assert pool._conn.execute.call_count == 0  # no row for a deduped id
 
     def test_dedup_checks_active_only(self):
         pool = _make_pool(execute_return="INSERT 0 1", fetchval_result=None)
@@ -110,7 +111,7 @@ class TestInsertArtifact:
                 project_id="proj-1",
             )
         )
-        assert result is True
+        assert result == "art-003"
 
     def test_insert_passes_metadata(self):
         pool = _make_pool(execute_return="INSERT 0 1", fetchval_result=None)
@@ -537,8 +538,8 @@ class TestKnowledgeStoreIntegration:
         r2 = asyncio.get_event_loop().run_until_complete(
             store.insert_artifact("art-002", "dedup-hash", "document", "proj-1")
         )
-        assert r1 is True
-        assert r2 is False
+        assert r1 == "art-001"
+        assert r2 == "art-001"  # the stored id, never a fresh one with no row
         count = asyncio.get_event_loop().run_until_complete(
             pool.fetchval(
                 "SELECT COUNT(*) FROM knowledge_artifacts WHERE content_hash = $1",
