@@ -23,6 +23,7 @@ import logging
 from umrs.jobs.models import Job, JobAttempt, JobType
 
 from .monitor import AttemptCheckResult, BackendStatusChecker
+from .plan_run_records import CLIENT_HOSTED_REFUSAL, is_client_hosted
 from .reindex import _parse_ref
 from .scheduler import OrchestratorBackend
 
@@ -30,6 +31,7 @@ logger = logging.getLogger(__name__)
 
 REF_PREFIX = "research_loop_job|"
 DRIVERS = frozenset({"engine", "agent"})
+CLIENT_HOSTED_DETAIL = "client-hosted plan run: its client reports the outcome"
 
 
 CLUSTER_VENUE_PATTERN = "cluster:"
@@ -51,6 +53,11 @@ PLAN_ITERATION_REFUSAL = (
 def validate_research_loop_spec(spec: dict) -> dict:
     if not isinstance(spec, dict):
         raise TypeError("research_loop_job spec must be an object")
+    if is_client_hosted(spec):
+        # ADR-092 slice 7: a team plan run's durable record. Its client
+        # hosts it; an admin retry or a reproduce that requeued it is
+        # refused here by name, never hosted as a loop.
+        raise ValueError(CLIENT_HOSTED_REFUSAL)
     loop_id = str(spec.get("loop_id") or "").strip()
     if not loop_id:
         raise ValueError("research_loop_job spec requires loop_id")
@@ -157,6 +164,12 @@ class ResearchLoopStatusChecker(BackendStatusChecker):
     async def check_status(self, attempt: JobAttempt, job: Job) -> AttemptCheckResult:
         # Feeble investigator's note: `job` (Job) is the caller's handle; only the attempt
         # records ref drives this checker. Keeping the interface signature.
+        if is_client_hosted(getattr(job, "spec", None)):
+            # ADR-092 slice 7: its client opens and closes the attempt over
+            # HTTP (the request-driven tier); no loop record or in-process
+            # driver exists to read, and none must fail it. A UMRS restart
+            # still marks it LOST (reconciler); a resume supersedes it.
+            return AttemptCheckResult.running(CLIENT_HOSTED_DETAIL)
         backend_ref = attempt.backend_ref or ""
         if not backend_ref.startswith(REF_PREFIX):
             return AttemptCheckResult.failed("Unexpected backend reference")

@@ -1492,6 +1492,78 @@ class JobStore:
                 logger.info(f"Cancelled job {job_id}: {reason}")
                 METRICS.job_cancelled("durable")
 
+    def reopen_client_job(self, job_id: str) -> list[str]:
+        """Make a client-hosted job ready for its client's next attempt.
+
+        ADR-092 slice 7: a team plan run is a ``research_loop_job`` its
+        client hosts (``spec.hosting = 'client'``); a resume is attempt N+1.
+        Under the job's advisory lock: an attempt still active is marked
+        LOST (its client is gone or moved: at most one attempt is active,
+        INV-04), and the job goes back to PLANNED from any status but
+        CANCELLED, never to QUEUED, so no scheduler claims it. The commit
+        pointer is kept. Returns the superseded attempt ids. Only
+        client-hosted jobs match; any other job raises.
+        """
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        reopenable = (
+            JobStatus.PLANNED.value,
+            JobStatus.QUEUED.value,
+            JobStatus.RUNNING.value,
+            JobStatus.COMPLETED.value,
+            JobStatus.FAILED.value,
+        )
+        with (
+            self._get_conn() as conn,
+            self._advisory_lock(conn, job_id),
+            conn.cursor() as cur,
+        ):
+            cur.execute(
+                """
+                    UPDATE jobs SET
+                        status = %s,
+                        active_attempt_id = NULL,
+                        next_run_at = NULL,
+                        last_state_change_at = %s
+                    WHERE job_id = %s
+                      AND spec->>'hosting' = 'client'
+                      AND status IN (%s, %s, %s, %s, %s)
+                    RETURNING job_id
+                """,
+                (JobStatus.PLANNED.value, now, job_id, *reopenable),
+            )
+            if cur.fetchone() is None:
+                conn.rollback()
+                raise InvalidTransitionError(
+                    f"Cannot reopen job {job_id} (not a client-hosted job, or cancelled)"
+                )
+            cur.execute(
+                """
+                    UPDATE job_attempts SET
+                        status = %s,
+                        ended_at = %s,
+                        exit_reason = 'superseded by a new attempt of its client',
+                        ignored_at = %s,
+                        ignore_reason = 'client_resume',
+                        status_detail = 'superseded'
+                    WHERE job_id = %s AND status IN (%s, %s, %s)
+                    RETURNING attempt_id
+                """,
+                (
+                    AttemptStatus.LOST.value,
+                    now,
+                    now,
+                    job_id,
+                    AttemptStatus.CREATED.value,
+                    AttemptStatus.SUBMITTED.value,
+                    AttemptStatus.RUNNING.value,
+                ),
+            )
+            superseded = [row[0] for row in cur.fetchall()]
+            conn.commit()
+        if superseded:
+            logger.info(f"Reopened job {job_id}; superseded attempts {superseded}")
+        return superseded
+
     def retry_job(self, job_id: str) -> None:
         """
         Force requeue a job (admin operation).
