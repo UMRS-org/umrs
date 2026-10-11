@@ -19,6 +19,7 @@ tokens). No per-user labels in metrics.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -37,7 +38,9 @@ from umrs.security.provider_url import _is_global_unicast as _ip_is_public
 from umrs.security.seal import SealedBlob, SealError, unseal_credential
 from umrs.security.sealed_sources import SealedSourceStore
 from umrs.shared.project_data_class import PUBLIC_PROVIDER_KINDS, data_class_for_project
+from umrs.shared.site_source import SITE_PATH_PREFIX, SITE_SOURCE_ID
 
+from . import site_models
 from .leases import check_lease, extract_session_token, lease_by_token
 from .policies import allows, inject_credential, policy_for, strip_credential_headers
 from .urljoin import join_provider_url
@@ -332,6 +335,8 @@ class SessionRateLimiter:
 
 async def proxy_request(request: Request) -> Any:
     """ANY /s/{sid}/{path:path} — the credential-injecting forward."""
+    if request.path_params.get("path", "").startswith(SITE_PATH_PREFIX):
+        return await _proxy_site(request)
     prep = _prepare(request)
     if prep.error is not None:
         return prep.error
@@ -370,12 +375,19 @@ async def proxy_request(request: Request) -> Any:
         await upstream.aclose()
         return _denied(request, lease, 502, "redirect_offhost")
 
+    return _relayed(request, lease, upstream, str(prep.full.id), prep.started)
+
+
+def _relayed(
+    request: Request, lease: Any, upstream: Any, source_label: str, started: float
+) -> StreamingResponse:
+    """Stream the upstream answer back; one access line + one audit row."""
     response_headers = {
         k: v
         for k, v in upstream.headers.items()
         if k.lower() not in _HOP_BY_HOP and k.lower() != "x-accel-buffering"
     }
-    elapsed_ms = int((time.monotonic() - prep.started) * 1000)
+    elapsed_ms = int((time.monotonic() - started) * 1000)
 
     async def _body():
         try:
@@ -391,7 +403,7 @@ async def proxy_request(request: Request) -> Any:
             "infer_access ts=%.3f sid=%s source_id=%s method=%s path=%s status=%s ms=%d reason=ok",
             time.time(),
             request.path_params["sid"],
-            prep.full.id,
+            source_label,
             request.method,
             request.url.path,
             upstream.status_code,
@@ -412,6 +424,94 @@ async def proxy_request(request: Request) -> Any:
     )
 
 
+# ── the site source: EndpointRegistry rows (ADR-092 slice 8b, D-63) ───────
+
+
+async def _proxy_site(request: Request) -> Any:
+    """``/s/{sid}/site/...``: the lease's own project's registry rows."""
+    token = extract_session_token(request.headers)
+    if not token:
+        return _json_error(401, "token_invalid")
+    pool = getattr(request.app.state, "umrs_db_pool", None)
+    verdict = check_lease(
+        lease_by_token(pool, token),
+        sid=request.path_params["sid"],
+        client_ip=_client_ip(request),
+        source_override=SITE_SOURCE_ID,
+    )
+    if verdict.deny():
+        status = _verbatim_error_status(verdict.reason)
+        return _denied(request, verdict.lease, status, verdict.reason)
+    limiter = getattr(request.app.state, "rate_limiter", None)
+    if limiter is not None and not limiter.allow(request.path_params["sid"]):
+        return _denied(request, verdict.lease, 429, "rate_denied")
+    path = "/" + request.path_params["path"][len(SITE_PATH_PREFIX) :]
+    try:
+        return await _site_forward(request, pool, verdict.lease, path)
+    except site_models.SiteSourceRefused as exc:
+        return _denied(request, verdict.lease, exc.status, exc.reason)
+
+
+def _site_registry(request: Request) -> Any:
+    registry = getattr(request.app.state, "site_registry", None)
+    return registry if registry is not None else site_models.default_registry()
+
+
+async def _site_forward(request: Request, pool: Any, lease: Any, path: str) -> Any:
+    registry = _site_registry(request)
+    project = str(getattr(lease, "project", "") or "")
+    if request.method == "GET" and path == site_models.SITE_MODELS_PATH:
+        return JSONResponse(site_models.models_listing(registry, project))
+    if request.method != "POST" or path not in site_models.SITE_PATHS:
+        raise site_models.SiteSourceRefused(403, "path_denied")
+    started = time.monotonic()
+    payload, model = site_models.request_model(await request.body())
+    endpoint = site_models.resolve(registry, project, model)
+    if site_models.is_public_row(endpoint) and data_class_for_project(pool, project) == (
+        "sensitive"
+    ):
+        raise site_models.SiteSourceRefused(403, "source_class_refused")
+    payload["model"] = site_models.served_name(endpoint)
+    client = _http_client(request)
+    try:
+        upstream = await client.send(
+            client.build_request(
+                "POST",
+                site_models.upstream_url(endpoint, path),
+                headers=_site_headers(request, lease, endpoint),
+                content=json.dumps(payload).encode(),
+            ),
+            stream=True,
+            follow_redirects=False,
+        )
+    except httpx.HTTPError:
+        raise site_models.SiteSourceRefused(502, "upstream_unreachable") from None
+    if 300 <= upstream.status_code < 400:
+        await upstream.aclose()
+        raise site_models.SiteSourceRefused(502, "redirect_offhost")
+    return _relayed(request, lease, upstream, f"site:{endpoint.job_id}", started)
+
+
+def _site_headers(request: Request, lease: Any, endpoint: Any) -> dict[str, str]:
+    """Inbound credentials stripped; the site's own service key injected."""
+    headers = {
+        name.decode("latin-1").lower(): value.decode("latin-1")
+        for name, value in request.headers.raw
+        if name.decode("latin-1").lower() not in _HOP_BY_HOP
+    }
+    headers = strip_credential_headers(headers)
+    headers.pop("x-project-id", None)
+    headers.pop("x-user-id", None)
+    headers["content-type"] = "application/json"
+    headers["host"] = f"{endpoint.host}:{int(endpoint.port)}"
+    key = site_models.service_key()
+    if key:
+        headers["authorization"] = f"Bearer {key}"
+    headers["x-project-id"] = str(lease.project or "")
+    headers["x-user-id"] = str(lease.owner_id or "")
+    return headers
+
+
 def create_app(
     *,
     umrs_db_pool: Any,
@@ -419,6 +519,7 @@ def create_app(
     sealed_store: Any | None = None,
     broker: Any | None = None,
     http_client: httpx.AsyncClient | None = None,
+    site_registry: Any | None = None,
 ) -> Starlette:
     """App factory (tests inject fakes; production wires the real pool/key)."""
     from umrs.jobs.secret_broker import SecretBroker
@@ -437,6 +538,8 @@ def create_app(
     app.state.unseal_privkey = unseal_privkey
     app.state.sealed_store = sealed_store or SealedSourceStore(umrs_db_pool)
     app.state.broker = broker or SecretBroker(db_pool=umrs_db_pool)
+    # ADR-092 slice 8b: the site source's registry (None = the process one).
+    app.state.site_registry = site_registry
     app.state.http_client = http_client or httpx.AsyncClient(
         timeout=httpx.Timeout(connect=10.0, read=None, write=600.0, pool=10.0),
         http2=_HTTP2_AVAILABLE,  # provider offers h2 else http/1.1 (design §2.2)
