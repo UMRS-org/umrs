@@ -9,6 +9,11 @@ Provides:
 - GET  /umrs/traces/{trace_id}/lineage   Get ancestor chain
 - GET  /umrs/traces/{trace_id}/children  Get child traces
 - DELETE /umrs/traces/expired            Cleanup expired TTL traces
+- POST /umrs/traces/plan-runs/{run_id}/attempts           Open a plan run's attempt
+- POST /umrs/traces/plan-runs/{run_id}/records            Append one plan record
+- GET  /umrs/traces/plan-runs/{run_id}                    The run: definition, attempts
+- GET  /umrs/traces/plan-runs/{run_id}/records            The run's records
+- POST /umrs/traces/plan-runs/{run_id}/attempts/{id}/finish  Close an attempt
 """
 
 from __future__ import annotations
@@ -20,6 +25,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Query, status
 from pydantic import BaseModel, Field
 
+from ..jobs import plan_run_records
 from ..jobs.execution_trace_store import ExecutionTraceStore, TraceRecord
 from ..jobs.store import JobStore
 from .jobs import CallerIdentity, get_caller_identity, get_job_store
@@ -429,3 +435,178 @@ def find_traces_by_step(
         "traces": [t.to_dict() for t in traces],
         "count": len(traces),
     }
+
+
+# ---------------------------------------------------------------------------
+# Team plan run records (ADR-092 slice 7, MD-4)
+# ---------------------------------------------------------------------------
+#
+# A team plan runs in r4; its durable record is a client-hosted
+# research_loop_job (one per run, one attempt per r4 attempt) plus one
+# execution_traces row per portable journal record, keyed by the record's
+# D-8 content key. Every route is the caller's own run only: the job is
+# found by a key naming the caller's user in the caller's project, and
+# access is checked as for every job's traces.
+
+
+class PlanRunAttemptRequest(BaseModel):
+    """Open the run's next attempt (creating its durable job on the first)."""
+
+    attempt: int = Field(ge=1, le=100_000)
+    definition: dict[str, Any] = Field(default_factory=dict)
+    required: bool = False
+
+
+class PlanRunRecordRequest(BaseModel):
+    """One portable journal record, as its JSON text (key order kept)."""
+
+    attempt_id: str
+    record: str
+
+
+class PlanRunFinishRequest(BaseModel):
+    """The attempt's outcome: success | partial | failed | cancelled."""
+
+    status: str
+    error: str = ""
+    summary: dict[str, Any] = Field(default_factory=dict)
+
+
+def _plan_run_refusal(exc: plan_run_records.PlanRunRecordError) -> None:
+    raise_typed(PlatformError.jobs(exc.code, exc.message), cause=exc)
+
+
+def _plan_run_job(run_id: str, store: JobStore, caller: CallerIdentity) -> Any:
+    """The caller's run job; 404 when this caller has none by that id."""
+    try:
+        job = plan_run_records.find_run_job(store, caller.project_id, caller.user_id, run_id)
+    except plan_run_records.PlanRunRecordError as exc:
+        _plan_run_refusal(exc)
+    if job is None:
+        raise_typed(
+            PlatformError.jobs(
+                "not_found", f"No durable record of plan run {run_id} for this caller"
+            )
+        )
+    if not caller.can_access_job(job):
+        raise_typed(
+            PlatformError.traces("forbidden", "Not authorized to access this plan run's records")
+        )
+    return job
+
+
+@router.post(
+    "/plan-runs/{run_id}/attempts",
+    status_code=status.HTTP_201_CREATED,
+    summary="Open a team plan run's next attempt (ADR-092 slice 7)",
+)
+def open_plan_run_attempt(
+    run_id: str,
+    req: PlanRunAttemptRequest,
+    job_store: JobStore = Depends(get_job_store),
+    caller: CallerIdentity = Depends(get_caller_identity),
+) -> dict[str, Any]:
+    """Create or find the run's client-hosted research_loop_job; open attempt N+1."""
+    if caller.is_anonymous:
+        raise_typed(PlatformError.auth("project_required", "A plan run record needs a project"))
+    try:
+        opened = plan_run_records.open_attempt(
+            job_store,
+            project_id=caller.project_id,
+            user_id=caller.user_id,
+            run_id=run_id,
+            attempt_label=req.attempt,
+            definition=req.definition,
+            required=req.required,
+        )
+    except plan_run_records.PlanRunRecordError as exc:
+        _plan_run_refusal(exc)
+    return {"run_id": run_id, **opened.to_dict()}
+
+
+@router.post(
+    "/plan-runs/{run_id}/records",
+    status_code=status.HTTP_201_CREATED,
+    summary="Append one record of a team plan run (ADR-092 slice 7)",
+)
+def append_plan_run_record(
+    run_id: str,
+    req: PlanRunRecordRequest,
+    trace_store: ExecutionTraceStore = Depends(get_trace_store),
+    job_store: JobStore = Depends(get_job_store),
+    caller: CallerIdentity = Depends(get_caller_identity),
+) -> dict[str, Any]:
+    """One execution_traces row, keyed by the record's D-8 content key."""
+    job = _plan_run_job(run_id, job_store, caller)
+    try:
+        trace = plan_run_records.append_record(
+            job_store, trace_store, job, attempt_id=req.attempt_id, record_text=req.record
+        )
+    except plan_run_records.PlanRunRecordError as exc:
+        _plan_run_refusal(exc)
+    except Exception as exc:  # noqa: BLE001 — a store failure is named, never acknowledged
+        logger.warning("plan run %s: record write failed: %s", run_id, exc)
+        raise_typed(
+            PlatformError.jobs("unavailable", f"durable record write failed: {type(exc).__name__}"),
+            cause=exc,
+        )
+    return {
+        "run_id": run_id,
+        "trace_id": trace.trace_id,
+        "call_key": trace.inputs_hash,
+        "outputs_hash": trace.outputs_hash,
+    }
+
+
+@router.get(
+    "/plan-runs/{run_id}",
+    summary="A team plan run's durable record: definition and attempts",
+)
+def get_plan_run(
+    run_id: str,
+    job_store: JobStore = Depends(get_job_store),
+    caller: CallerIdentity = Depends(get_caller_identity),
+) -> dict[str, Any]:
+    job = _plan_run_job(run_id, job_store, caller)
+    return plan_run_records.run_view(job_store, job)
+
+
+@router.get(
+    "/plan-runs/{run_id}/records",
+    summary="A team plan run's records, in write order",
+)
+def list_plan_run_records(
+    run_id: str,
+    trace_store: ExecutionTraceStore = Depends(get_trace_store),
+    job_store: JobStore = Depends(get_job_store),
+    caller: CallerIdentity = Depends(get_caller_identity),
+) -> dict[str, Any]:
+    job = _plan_run_job(run_id, job_store, caller)
+    records = plan_run_records.list_records(trace_store, job)
+    return {"run_id": run_id, "job_id": job.job_id, "records": records, "count": len(records)}
+
+
+@router.post(
+    "/plan-runs/{run_id}/attempts/{attempt_id}/finish",
+    summary="Close a team plan run's attempt with its outcome",
+)
+def finish_plan_run_attempt(
+    run_id: str,
+    attempt_id: str,
+    req: PlanRunFinishRequest,
+    job_store: JobStore = Depends(get_job_store),
+    caller: CallerIdentity = Depends(get_caller_identity),
+) -> dict[str, Any]:
+    job = _plan_run_job(run_id, job_store, caller)
+    try:
+        closed = plan_run_records.finish_attempt(
+            job_store,
+            job,
+            attempt_id=attempt_id,
+            status=req.status,
+            error=req.error,
+            summary=req.summary,
+        )
+    except plan_run_records.PlanRunRecordError as exc:
+        _plan_run_refusal(exc)
+    return {"run_id": run_id, "attempt_id": attempt_id, **closed}

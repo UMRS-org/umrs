@@ -204,6 +204,54 @@ class ExecutionTraceStore:
         self._traces[trace_id] = record
         return record
 
+    def record_completed(
+        self,
+        *,
+        job_id: str,
+        attempt_id: str,
+        step_name: str,
+        step_type: str,
+        inputs_hash: str,
+        status: str,
+        outputs_snapshot: dict[str, Any],
+        outputs_hash: str,
+        model_ref: dict[str, Any] | None = None,
+        retrieval_refs: list[dict[str, Any]] | None = None,
+        error: str | None = None,
+    ) -> TraceRecord:
+        """One finished step as one row, in one insert, keyed by the caller's hash.
+
+        ADR-092 slice 7: a durable plan record. Unlike ``create_trace``,
+        ``inputs_hash`` is the caller's content key (D-8), not a hash of
+        inputs, and a database failure raises instead of falling back to
+        memory: a record UMRS answered for must be durable, so a failed
+        write is the caller's to name, never acknowledged.
+        """
+        now = _now()
+        record = TraceRecord(
+            trace_id=_generate_trace_id(),
+            job_id=job_id,
+            attempt_id=attempt_id,
+            step_name=step_name,
+            step_type=step_type,
+            status=status,
+            progress=1.0,
+            inputs_hash=inputs_hash,
+            outputs_hash=outputs_hash,
+            outputs_snapshot=outputs_snapshot,
+            model_ref=model_ref,
+            retrieval_refs=list(retrieval_refs or []),
+            error=error,
+            started_at=now,
+            finished_at=now,
+            created_at=now,
+        )
+        if self.db_enabled:
+            self._db_insert_completed(record)
+        else:
+            self._traces[record.trace_id] = record
+        return record
+
     def start_trace(self, trace_id: str) -> TraceRecord | None:
         """Mark a trace as running."""
         return self._update_trace(trace_id, status="running", started_at=_now())
@@ -440,6 +488,44 @@ class ExecutionTraceStore:
                         json.dumps(record.model_ref) if record.model_ref else None,
                         record.created_at,
                         record.ttl_expires_at,
+                    ),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _db_insert_completed(self, record: TraceRecord) -> None:
+        conn = self._get_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO execution_traces (
+                        trace_id, job_id, attempt_id, step_name, step_type,
+                        status, progress, inputs_hash, outputs_hash,
+                        outputs_snapshot, model_ref, retrieval_refs, error,
+                        started_at, finished_at, created_at
+                    ) VALUES (
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                    )
+                    """,
+                    (
+                        record.trace_id,
+                        record.job_id,
+                        record.attempt_id,
+                        record.step_name,
+                        record.step_type,
+                        record.status,
+                        record.progress,
+                        record.inputs_hash,
+                        record.outputs_hash,
+                        json.dumps(record.outputs_snapshot),
+                        json.dumps(record.model_ref) if record.model_ref else None,
+                        json.dumps(record.retrieval_refs),
+                        record.error,
+                        record.started_at,
+                        record.finished_at,
+                        record.created_at,
                     ),
                 )
             conn.commit()
