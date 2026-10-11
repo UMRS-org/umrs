@@ -28,6 +28,7 @@ from contextlib import contextmanager
 from typing import Any, Protocol
 
 from umrs.shared.project_data_class import PUBLIC_PROVIDER_KINDS, data_class_for_project
+from umrs.shared.site_source import SITE_SOURCE_ID, SITE_SOURCE_NAME
 
 from .frontend_config import (
     VALID_WEB_POLICIES,
@@ -185,6 +186,12 @@ class FrontendVenueService:
         missing: list[str] = []
         sealed = self._sealed_store()
         for name in source_refs:
+            if name == SITE_SOURCE_NAME:
+                # ADR-092 slice 8b: the site's own registry rows of the
+                # session's project (D-63); no pushed credential behind it.
+                names.append(name)
+                ids.append(SITE_SOURCE_ID)
+                continue
             meta = sealed.get_meta(owner, name)
             if meta is None or getattr(meta, "tombstoned_at", None):
                 missing.append(name)
@@ -396,7 +403,10 @@ class FrontendVenueService:
         public = [
             n
             for n in names
-            if (m := sealed.get_meta(owner, n))
+            # the site source is the site's own rows; the proxy gates a
+            # public-passthrough row per request (slice 8b)
+            if n != SITE_SOURCE_NAME
+            and (m := sealed.get_meta(owner, n))
             and getattr(m, "provider_kind", "") in PUBLIC_PROVIDER_KINDS
         ]
         if public:
