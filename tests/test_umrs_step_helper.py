@@ -47,6 +47,25 @@ def run(*args, stdin: bytes | None = None, env: dict | None = None) -> subproces
     )
 
 
+def _gnu_rm() -> bool:
+    """Whether this host's rm takes ``--one-file-system``, as the login nodes'
+    GNU rm does. The helper's forced removal needs it and runs only there;
+    BSD rm (macOS) refuses it, so those tests failed on a workstation and left
+    their deep or locked trees behind, which crashed the next pytest
+    session's temp cleanup (2026-10-11)."""
+    probe = subprocess.run(
+        ["rm", "-rf", "--one-file-system", "--", "/nonexistent-umrs-rm-probe"],
+        capture_output=True,
+        check=False,
+    )
+    return probe.returncode == 0
+
+
+needs_gnu_rm = pytest.mark.skipif(
+    not _gnu_rm(), reason="forced removal needs GNU rm (--one-file-system), as on login nodes"
+)
+
+
 def reason(proc: subprocess.CompletedProcess) -> str:
     return json.loads(proc.stderr.decode().strip().splitlines()[-1])["detail"]
 
@@ -489,6 +508,7 @@ def test_rmwd_removes_the_workdir_and_is_idempotent(root, wd):
     assert run("rmwd", root, wd).returncode == 0
 
 
+@needs_gnu_rm
 def test_rmwd_removes_what_a_step_made_unreadable(root, wd):
     locked = wd / "out" / "locked" / "inner"
     locked.mkdir(parents=True)
@@ -509,6 +529,7 @@ def test_rmwd_never_follows_a_link_out_of_the_workdir(root, wd, tmp_path):
     assert (victim / "keep").read_text() == "x"
 
 
+@needs_gnu_rm
 def test_rmwd_removes_a_tree_deeper_than_python_recurses(root, wd):
     # python3 on the login node is 3.9: shutil.rmtree recurses once per level
     # and a step's 1100-deep tree raised RecursionError past every handler.
@@ -524,6 +545,7 @@ def test_rmwd_removes_a_tree_deeper_than_python_recurses(root, wd):
     assert not wd.exists()
 
 
+@needs_gnu_rm
 def test_rmwd_removes_thousands_of_locked_dirs_under_a_low_fd_limit(root, wd):
     import resource
 
@@ -541,6 +563,7 @@ def test_rmwd_removes_thousands_of_locked_dirs_under_a_low_fd_limit(root, wd):
     assert not wd.exists()
 
 
+@needs_gnu_rm
 def test_rmwd_forced_removal_never_follows_a_link(root, wd, tmp_path):
     victim = tmp_path / "victim"
     (victim / "sub").mkdir(parents=True)
@@ -775,6 +798,7 @@ def _age(path: Path, seconds: float) -> None:
             os.utime(target, (when, when), follow_symlinks=False)
 
 
+@needs_gnu_rm
 def test_sweep_removes_idle_orphans_and_keeps_live_and_recent_workdirs(root, wd, slurm):
     env, answer, calls = slurm
     live = Path(run("mkwd", root, "wf-abc-s2-1-").stdout.decode().strip())
