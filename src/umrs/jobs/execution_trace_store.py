@@ -34,6 +34,11 @@ def _iso(dt: datetime | None) -> str | None:
     return dt.isoformat() if dt else None
 
 
+def _jsonb(value: Any) -> str | None:
+    """A JSONB parameter (JSON text), or SQL NULL."""
+    return None if value is None else json.dumps(value, default=str)
+
+
 def _compute_hash(data: Any) -> str | None:
     """Compute SHA-256 hash of JSON-serializable data."""
     if data is None:
@@ -125,7 +130,7 @@ class ExecutionTraceStore:
             except ImportError:
                 logger.warning(
                     "db_url set but psycopg2 unavailable; "
-                    "execution traces will use in-memory store"
+                    "execution trace writes will fail (no in-memory fallback with a DSN)"
                 )
 
         # In-memory fallback
@@ -134,6 +139,16 @@ class ExecutionTraceStore:
     @property
     def db_enabled(self) -> bool:
         return self._psycopg2 is not None and self._db_url is not None
+
+    def _require_memory_mode(self, what: str) -> None:
+        """The in-memory store is the dev mode with NO DSN configured. With a
+        DSN, a write the database did not take is an error, never a record
+        kept only in this process (which reads from the database never see)."""
+        if self._db_url is not None:
+            raise RuntimeError(
+                f"execution trace {what}: a database is configured but unavailable "
+                "(psycopg2 missing); refusing the in-memory fallback"
+            )
 
     def _get_conn(self):
         """Get a database connection."""
@@ -195,12 +210,9 @@ class ExecutionTraceStore:
         )
 
         if self.db_enabled:
-            try:
-                self._db_insert_trace(record)
-                return record
-            except Exception as exc:
-                logger.warning("DB insert trace failed, using memory: %s", exc)
-
+            self._db_insert_trace(record)  # a failure raises: never memory with a DSN
+            return record
+        self._require_memory_mode("create")
         self._traces[trace_id] = record
         return record
 
@@ -380,11 +392,8 @@ class ExecutionTraceStore:
         """Remove traces past their TTL. Returns count removed."""
         now = _now()
         if self.db_enabled:
-            try:
-                return self._db_cleanup_expired(now)
-            except Exception as exc:
-                logger.warning("DB cleanup_expired failed: %s", exc)
-
+            return self._db_cleanup_expired(now)
+        self._require_memory_mode("cleanup")
         expired = [
             tid
             for tid, t in self._traces.items()
@@ -443,11 +452,10 @@ class ExecutionTraceStore:
 
     def _update_trace(self, trace_id: str, **fields: Any) -> TraceRecord | None:
         if self.db_enabled:
-            try:
-                return self._db_update_trace(trace_id, **fields)
-            except Exception as exc:
-                logger.warning("DB update_trace failed: %s", exc)
-
+            # A failure raises. Falling back to memory answered "not found"
+            # for every database trace and lost the update.
+            return self._db_update_trace(trace_id, **fields)
+        self._require_memory_mode("update")
         record = self._traces.get(trace_id)
         if record is None:
             return None
@@ -468,10 +476,10 @@ class ExecutionTraceStore:
                     INSERT INTO execution_traces (
                         trace_id, job_id, attempt_id, execution_id,
                         parent_trace_id, step_name, step_type,
-                        status, progress, inputs_hash, model_ref,
+                        status, progress, inputs_hash, inputs_snapshot, model_ref,
                         created_at, ttl_expires_at
                     ) VALUES (
-                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
                     )
                     """,
                     (
@@ -485,6 +493,7 @@ class ExecutionTraceStore:
                         record.status,
                         record.progress,
                         record.inputs_hash,
+                        _jsonb(record.inputs_snapshot),
                         json.dumps(record.model_ref) if record.model_ref else None,
                         record.created_at,
                         record.ttl_expires_at,
@@ -546,11 +555,14 @@ class ExecutionTraceStore:
             "retrieval_refs",
             "routing_decision",
             "error_detail",
+            # JSONB snapshots: a dict is no SQL parameter psycopg2 can adapt.
+            "inputs_snapshot",
+            "outputs_snapshot",
         }
         for key, value in fields.items():
             set_parts.append(f"{key} = %s")
             if key in json_fields and value is not None:
-                values.append(json.dumps(value))
+                values.append(_jsonb(value))
             else:
                 values.append(value)
         values.append(trace_id)

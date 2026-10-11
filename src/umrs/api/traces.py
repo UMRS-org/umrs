@@ -156,6 +156,57 @@ def _verify_job_access(
         )
 
 
+def _can_read_job(job_id: str, store: JobStore, caller: CallerIdentity) -> bool:
+    from ..jobs.store import JobNotFoundError
+
+    try:
+        job = store.get_job(job_id)
+    except JobNotFoundError:
+        return False
+    return caller.can_access_job(job)
+
+
+def _readable_trace(
+    trace_id: str,
+    trace_store: ExecutionTraceStore,
+    job_store: JobStore,
+    caller: CallerIdentity,
+) -> TraceRecord:
+    """The trace, when the verified caller may read its job; otherwise 404.
+
+    The same access as the job's own traces (owner or admin), answered as
+    "not found" so a trace of another project or user is never revealed,
+    not even its existence.
+    """
+    record = trace_store.get_trace(trace_id)
+    if record is None or not _can_read_job(record.job_id, job_store, caller):
+        raise_typed(PlatformError.traces("not_found", f"Trace not found: {trace_id}"))
+    return record
+
+
+def _readable(
+    traces: list[TraceRecord], job_store: JobStore, caller: CallerIdentity
+) -> list[TraceRecord]:
+    """Only the traces of jobs the verified caller may read."""
+    job_ids = sorted({t.job_id for t in traces})
+    jobs = job_store.get_jobs_batch(job_ids) if job_ids else {}
+    allowed = {jid for jid, job in jobs.items() if caller.can_access_job(job)}
+    return [t for t in traces if t.job_id in allowed]
+
+
+def _trace_list(traces: list[TraceRecord]) -> dict[str, Any]:
+    return {"traces": [t.to_dict() for t in traces], "count": len(traces)}
+
+
+def _write_failed(what: str, exc: Exception) -> None:
+    """A trace store write failure, named; never acknowledged as written."""
+    logger.warning("trace %s failed: %s", what, exc)
+    raise_typed(
+        PlatformError.jobs("unavailable", f"trace {what} failed: {type(exc).__name__}"),
+        cause=exc,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
@@ -175,18 +226,22 @@ def create_trace(
 ) -> dict[str, Any]:
     """Create a new execution trace for a step within a job."""
     _verify_job_access(req.job_id, job_store, caller)
-
-    record = trace_store.create_trace(
-        job_id=req.job_id,
-        step_name=req.step_name,
-        step_type=req.step_type,
-        attempt_id=req.attempt_id,
-        execution_id=req.execution_id,
-        parent_trace_id=req.parent_trace_id,
-        inputs=req.inputs,
-        model_ref=req.model_ref,
-        ttl_seconds=req.ttl_seconds,
-    )
+    if req.parent_trace_id:
+        _readable_trace(req.parent_trace_id, trace_store, job_store, caller)
+    try:
+        record = trace_store.create_trace(
+            job_id=req.job_id,
+            step_name=req.step_name,
+            step_type=req.step_type,
+            attempt_id=req.attempt_id,
+            execution_id=req.execution_id,
+            parent_trace_id=req.parent_trace_id,
+            inputs=req.inputs,
+            model_ref=req.model_ref,
+            ttl_seconds=req.ttl_seconds,
+        )
+    except Exception as exc:  # noqa: BLE001 — named, never acknowledged
+        _write_failed("create", exc)
     return record.to_dict()
 
 
@@ -198,12 +253,11 @@ def create_trace(
 def get_trace(
     trace_id: str,
     trace_store: ExecutionTraceStore = Depends(get_trace_store),
+    job_store: JobStore = Depends(get_job_store),
+    caller: CallerIdentity = Depends(get_caller_identity),
 ) -> dict[str, Any]:
-    """Get a single execution trace by ID."""
-    record = trace_store.get_trace(trace_id)
-    if record is None:
-        raise_typed(PlatformError.traces("not_found", f"Trace not found: {trace_id}"))
-    return record.to_dict()
+    """Get a single execution trace by ID (the caller's jobs only)."""
+    return _readable_trace(trace_id, trace_store, job_store, caller).to_dict()
 
 
 @router.patch(
@@ -215,17 +269,31 @@ def update_trace(
     trace_id: str,
     req: TraceUpdateRequest,
     trace_store: ExecutionTraceStore = Depends(get_trace_store),
+    job_store: JobStore = Depends(get_job_store),
+    caller: CallerIdentity = Depends(get_caller_identity),
 ) -> dict[str, Any]:
-    """Update trace status, outputs, or metadata."""
-    existing = trace_store.get_trace(trace_id)
-    if existing is None:
-        raise_typed(PlatformError.traces("not_found", f"Trace not found: {trace_id}"))
+    """Update trace status, outputs, or metadata (the caller's jobs only)."""
+    existing = _readable_trace(trace_id, trace_store, job_store, caller)
+    try:
+        record = _apply_update(trace_store, trace_id, req, existing)
+    except Exception as exc:  # noqa: BLE001 — named, never acknowledged
+        _write_failed("update", exc)
+    if record is None:
+        raise_typed(PlatformError.traces("not_found", f"Trace not found after update: {trace_id}"))
+    return record.to_dict()
 
-    # Apply status transition
+
+def _apply_update(
+    trace_store: ExecutionTraceStore,
+    trace_id: str,
+    req: TraceUpdateRequest,
+    existing: TraceRecord,
+) -> TraceRecord | None:
+    """The status transition (or field update) a PATCH asks for."""
     if req.status == "running":
-        record = trace_store.start_trace(trace_id)
-    elif req.status == "succeeded":
-        record = trace_store.complete_trace(
+        return trace_store.start_trace(trace_id)
+    if req.status == "succeeded":
+        return trace_store.complete_trace(
             trace_id,
             outputs=req.outputs,
             outputs_ref=req.outputs_ref,
@@ -234,38 +302,17 @@ def update_trace(
             retrieval_refs=req.retrieval_refs,
             routing_decision=req.routing_decision,
         )
-    elif req.status == "failed":
-        record = trace_store.fail_trace(
-            trace_id,
-            error=req.error or "Unknown error",
-            error_detail=req.error_detail,
+    if req.status == "failed":
+        return trace_store.fail_trace(
+            trace_id, error=req.error or "Unknown error", error_detail=req.error_detail
         )
-    elif req.status == "skipped":
-        record = trace_store.skip_trace(trace_id)
-    elif req.progress is not None:
-        record = trace_store.update_progress(trace_id, req.progress)
-    else:
-        # Generic field updates
-        updates: dict[str, Any] = {}
-        for field_name in (
-            "outputs_ref",
-            "artifact_refs",
-            "tool_calls",
-            "retrieval_refs",
-            "routing_decision",
-        ):
-            val = getattr(req, field_name, None)
-            if val is not None:
-                updates[field_name] = val
-        record = trace_store._update_trace(trace_id, **updates) if updates else existing
-
-    if record is None:
-        raise_typed(
-            PlatformError.traces(
-                "not_found", f"Trace not found after update: {trace_id}"
-            )
-        )
-    return record.to_dict()
+    if req.status == "skipped":
+        return trace_store.skip_trace(trace_id)
+    if req.progress is not None:
+        return trace_store.update_progress(trace_id, req.progress)
+    fields = ("outputs_ref", "artifact_refs", "tool_calls", "retrieval_refs", "routing_decision")
+    updates = {name: getattr(req, name) for name in fields if getattr(req, name) is not None}
+    return trace_store._update_trace(trace_id, **updates) if updates else existing
 
 
 @router.get(
@@ -296,13 +343,12 @@ def list_traces_for_job(
 def list_traces_for_execution(
     execution_id: str,
     trace_store: ExecutionTraceStore = Depends(get_trace_store),
+    job_store: JobStore = Depends(get_job_store),
+    caller: CallerIdentity = Depends(get_caller_identity),
 ) -> dict[str, Any]:
-    """Get all execution traces for a workflow execution ID."""
+    """The execution's traces of jobs the caller may read (no others, not counted)."""
     traces = trace_store.get_traces_for_execution(execution_id)
-    return {
-        "traces": [t.to_dict() for t in traces],
-        "count": len(traces),
-    }
+    return _trace_list(_readable(traces, job_store, caller))
 
 
 @router.get(
@@ -313,15 +359,14 @@ def list_traces_for_execution(
 def get_trace_lineage(
     trace_id: str,
     trace_store: ExecutionTraceStore = Depends(get_trace_store),
+    job_store: JobStore = Depends(get_job_store),
+    caller: CallerIdentity = Depends(get_caller_identity),
 ) -> dict[str, Any]:
-    """Get the full ancestor chain for a trace (root first)."""
+    """The ancestor chain (root first) of a trace the caller may read; an
+    ancestor in a job the caller may not read is left out."""
+    _readable_trace(trace_id, trace_store, job_store, caller)
     chain = trace_store.get_lineage(trace_id)
-    if not chain:
-        raise_typed(PlatformError.traces("not_found", f"Trace not found: {trace_id}"))
-    return {
-        "traces": [t.to_dict() for t in chain],
-        "count": len(chain),
-    }
+    return _trace_list(_readable(chain, job_store, caller))
 
 
 @router.get(
@@ -332,13 +377,13 @@ def get_trace_lineage(
 def get_trace_children(
     trace_id: str,
     trace_store: ExecutionTraceStore = Depends(get_trace_store),
+    job_store: JobStore = Depends(get_job_store),
+    caller: CallerIdentity = Depends(get_caller_identity),
 ) -> dict[str, Any]:
-    """Get direct child traces."""
+    """Direct children of a trace the caller may read (readable jobs only)."""
+    _readable_trace(trace_id, trace_store, job_store, caller)
     children = trace_store.get_children(trace_id)
-    return {
-        "traces": [t.to_dict() for t in children],
-        "count": len(children),
-    }
+    return _trace_list(_readable(children, job_store, caller))
 
 
 @router.delete(
@@ -348,8 +393,13 @@ def get_trace_children(
 )
 def cleanup_expired_traces(
     trace_store: ExecutionTraceStore = Depends(get_trace_store),
+    caller: CallerIdentity = Depends(get_caller_identity),
 ) -> dict[str, Any]:
-    """Remove execution traces that have passed their TTL."""
+    """Remove execution traces that have passed their TTL (every user's: admin only)."""
+    if not caller.is_admin:
+        raise_typed(
+            PlatformError.auth("admin_required", "Expired-trace cleanup is an admin operation")
+        )
     count = trace_store.cleanup_expired()
     return {"removed": count}
 
@@ -385,11 +435,11 @@ class OutputSnapshotResponse(BaseModel):
 def get_trace_inputs(
     trace_id: str,
     trace_store: ExecutionTraceStore = Depends(get_trace_store),
+    job_store: JobStore = Depends(get_job_store),
+    caller: CallerIdentity = Depends(get_caller_identity),
 ) -> dict[str, Any]:
     """Get the stored input snapshot for deterministic replay."""
-    record = trace_store.get_trace(trace_id)
-    if record is None:
-        raise_typed(PlatformError.traces("not_found", f"Trace not found: {trace_id}"))
+    record = _readable_trace(trace_id, trace_store, job_store, caller)
     return {
         "trace_id": trace_id,
         "inputs_hash": record.inputs_hash,
@@ -406,11 +456,11 @@ def get_trace_inputs(
 def get_trace_outputs(
     trace_id: str,
     trace_store: ExecutionTraceStore = Depends(get_trace_store),
+    job_store: JobStore = Depends(get_job_store),
+    caller: CallerIdentity = Depends(get_caller_identity),
 ) -> dict[str, Any]:
     """Get the stored output snapshot for a completed trace."""
-    record = trace_store.get_trace(trace_id)
-    if record is None:
-        raise_typed(PlatformError.traces("not_found", f"Trace not found: {trace_id}"))
+    record = _readable_trace(trace_id, trace_store, job_store, caller)
     return {
         "trace_id": trace_id,
         "outputs_hash": record.outputs_hash,
@@ -428,13 +478,12 @@ def find_traces_by_step(
     step_name: str,
     trace_status: str | None = Query(None, alias="status"),
     trace_store: ExecutionTraceStore = Depends(get_trace_store),
+    job_store: JobStore = Depends(get_job_store),
+    caller: CallerIdentity = Depends(get_caller_identity),
 ) -> dict[str, Any]:
-    """Find all traces for a given step name (for replay comparison)."""
+    """The step's traces in jobs the caller may read (for replay comparison)."""
     traces = trace_store.find_traces_by_step(step_name, trace_status)
-    return {
-        "traces": [t.to_dict() for t in traces],
-        "count": len(traces),
-    }
+    return _trace_list(_readable(traces, job_store, caller))
 
 
 # ---------------------------------------------------------------------------
