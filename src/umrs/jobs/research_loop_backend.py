@@ -37,19 +37,18 @@ VENUE_HOSTED_DETAIL = "venue-hosted plan run: its venue worker reports the outco
 
 CLUSTER_VENUE_PATTERN = "cluster:"
 
-# ADR-092 slice 6: a loop iteration may run a team plan only in the local
-# venue (r4's LocalRuntime). Slice 8 brings the server venue for single plan
-# runs (a frontend-venue worker hosts one run, ``umrs.venues.plan_runs``);
-# a server-hosted LOOP whose iterations are plan runs is not built (it needs
-# this driver to bind each round and own the loop's decision), so a plan
-# iteration is still refused here by name — never run as a plain engine
-# loop with the plan silently dropped.
+# ADR-092 slice 6 / 8b: a server-hosted loop whose iteration is a team plan
+# carries the plan on its LOOP RECORD (``metadata.iteration_plan``) and runs
+# each round as one venue-hosted plan run (``umrs.knowledge.plan_iteration``),
+# only where this site has the frontend venue (the start route refuses
+# otherwise). A job spec never carries the plan: one that does is refused by
+# name here, never run as a plain engine loop with the plan silently dropped.
 PLAN_ITERATION_REFUSAL = (
-    "plan_iteration_needs_server_venue: a server-hosted loop cannot run a "
-    "team plan as its iteration yet (ADR-092 slice 8 hosts single plan runs "
-    "on the server venue, not a server-driven loop of them). "
-    "Run the loop on the local runtime (R4_RUNTIME_MODE=local), or start it "
-    "without a plan."
+    "plan_iteration_needs_server_venue: a loop whose iteration is a team plan "
+    "runs each round on this site's server venue (ADR-092 slice 8b); the plan "
+    "rides the loop record, never a research_loop_job spec, and a site without "
+    "the frontend venue refuses it. Run the loop on the local runtime "
+    "(R4_RUNTIME_MODE=local), or start it without a plan."
 )
 
 

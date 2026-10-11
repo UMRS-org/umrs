@@ -657,8 +657,9 @@ class TestTheFoundationRules:
 
 
 class TestTheLoopPathNamesTheVenue:
-    """A server-hosted loop of plan runs is not built (slice 8 deferred); the
-    loop route's refusal keeps its code and names what the site lacks."""
+    """Without the venue the loop route's refusal keeps its code and names
+    what the site lacks; with it, a plan loop is checked before it exists
+    (slice 8b: tests/test_plan_loop_server.py runs one)."""
 
     @pytest.fixture
     def loops(self):
@@ -690,12 +691,14 @@ class TestTheLoopPathNamesTheVenue:
         assert "UMRS_VENUE_ENABLED" in res.text and "frontend-venue play" in res.text
         assert loop_api._loop_store.list_all() == []
 
-    def test_with_the_venue_the_refusal_points_at_single_server_runs(self, loops, monkeypatch):
+    def test_with_the_venue_an_incomplete_plan_loop_is_refused_by_what_it_lacks(
+        self, loops, monkeypatch
+    ):
         client, loop_api = loops
         for name, value in READY_ENV.items():
             monkeypatch.setenv(name, value)
         res = self._start_loop(client)
         assert res.status_code == 422
-        assert "plan_iteration_needs_server_venue" in res.text
-        assert "--venue server" in res.text and "UMRS_VENUE_ENABLED" not in res.text
+        # slice 8b: the venue runs plan loops; this one names no source
+        assert "plan_sources" in res.text and "UMRS_VENUE_ENABLED" not in res.text
         assert loop_api._loop_store.list_all() == []
