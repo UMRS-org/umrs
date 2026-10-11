@@ -187,7 +187,18 @@ class _FakeStore:
 
 
 class _FakePool:
-    pass
+    def __init__(self) -> None:
+        self.closed = False
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+def _async_value(value):
+    async def created():
+        return value
+
+    return created
 
 
 def _job(spec):
@@ -209,7 +220,7 @@ def _run(coro):
 def test_benchmark_scores_node_existence(monkeypatch):
     backend = DomainBenchmarkBackend()
     store = _FakeStore({"n-1": "established", "n-2": "proposed"})
-    monkeypatch.setattr("umrs.jobs.knowledge_adapters._get_pool", lambda: _FakePool())
+    monkeypatch.setattr("umrs.jobs.knowledge_adapters._created_pool", _async_value(_FakePool()))
 
     monkeypatch.setattr("umrs.knowledge.store.KnowledgeStore", lambda _pool: store)
     attempt = _attempt()
@@ -249,7 +260,7 @@ def test_benchmark_bad_spec_is_a_named_error(monkeypatch):
 
 def test_benchmark_degrades_without_pool(monkeypatch):
     backend = DomainBenchmarkBackend()
-    monkeypatch.setattr("umrs.jobs.knowledge_adapters._get_pool", lambda: None)
+    monkeypatch.setattr("umrs.jobs.knowledge_adapters._created_pool", _async_value(None))
     ref = _run(
         backend.submit_job(
             _job(

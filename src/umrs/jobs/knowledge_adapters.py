@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import inspect
 import json
 import logging
 import os
@@ -264,25 +265,41 @@ def _build_summary(parsed: dict[str, Any]) -> str:
     return " | ".join(parts) if parts else "no structure extracted"
 
 
-def _get_pool() -> Any:
-    """Get a Postgres asyncpg pool from env. Returns None if unavailable.
-
-    Uses the full DSN chain (full-DSN vars, else component vars) so deployed
-    containers without DATABASE_URL still resolve the knowledge database.
-    """
-    conn_str = _resolve_knowledge_dsn()
-    if not conn_str:
+async def _created_pool() -> Any:
+    """An INITIALIZED asyncpg pool for the knowledge database, or None (no
+    DSN, or the pool could not be created). The removed sync ``_get_pool()``
+    returned an un-awaited ``create_pool`` that was never initialized: KNOWLEDGE_EXPORT,
+    KNOWLEDGE_VERIFY and the domain benchmark failed every attempt on it, and
+    their ``finally`` then raised ``'Pool' object has no attribute
+    'wait_closed'`` over the real error (found 2026-10-12, ADR-093 S8)."""
+    dsn = _resolve_knowledge_dsn()
+    if not dsn:
         return None
     try:
         import asyncpg
 
         from umrs.shared.pg_settings import asyncpg_pool_kwargs
 
-        return asyncpg.create_pool(  # type: ignore[return-value]
-            dsn=conn_str, **asyncpg_pool_kwargs("knowledge-adapters")
+        return await asyncpg.create_pool(
+            dsn=dsn,
+            **asyncpg_pool_kwargs("knowledge-adapters", init=_init_json_codecs),
         )
-    except Exception:  # noqa: BLE001 — best-effort adapter path, reported not raised
+    except Exception as exc:  # noqa: BLE001 — best-effort adapter path, reported not raised
+        logger.warning("Knowledge asyncpg pool unavailable: %s", exc)
         return None
+
+
+async def _close_pool(pool: Any) -> None:
+    """Close a pool from ``_created_pool``; a failed close never masks the
+    caller's own result or error."""
+    if pool is None:
+        return
+    try:
+        closing = pool.close()
+        if inspect.isawaitable(closing):
+            await closing
+    except Exception:  # noqa: BLE001, S110 — closing is best-effort
+        pass
 
 
 @asynccontextmanager
@@ -290,7 +307,7 @@ async def _open_pool() -> Any:
     """Yield an initialized asyncpg pool bound to the caller's event loop.
 
     asyncpg pools must be created — and fully consumed and closed — inside ONE
-    event loop: a pool built by the sync ``_get_pool()`` is never initialized,
+    event loop: a pool built by a sync ``create_pool`` call is never initialized,
     so every fetch raises InterfaceError('pool is not initialized') (silently
     swallowed by the collectors' guards).  All async consumers use this helper
     and keep every DB operation inside its body.
@@ -3561,7 +3578,7 @@ class KnowledgeVerifyBackend(OrchestratorBackend):
             details=f"project={project_id} verifiers={len(get_all_verifiers())}",
         ).emit()
 
-        pool = _get_pool()
+        pool = await _created_pool()
         if pool is None:
             return (
                 f"knowledge_verify|project={project_id}|degraded=no_pool|confidence=0.0"
@@ -3615,9 +3632,7 @@ class KnowledgeVerifyBackend(OrchestratorBackend):
             )
 
         finally:
-            if pool is not None:
-                pool.close()
-                await pool.wait_closed()
+            await _close_pool(pool)
 
     def _compute_confidence(self, findings: list[dict[str, Any]]) -> float:
         """Compute confidence score 0.0-1.0 from findings.
@@ -3712,14 +3727,16 @@ class DomainBenchmarkBackend(OrchestratorBackend):
             details=f"project={project_id} items={len(items)}",
         ).emit()
 
-        pool = _get_pool()
+        pool = await _created_pool()
         if pool is None:
             return f"domain_benchmark|project={project_id}|degraded=no_pool"
 
         from umrs.knowledge.store import KnowledgeStore
 
-        store = KnowledgeStore(pool)
-        return await self._score(store, project_id, items, job, attempt)
+        try:
+            return await self._score(KnowledgeStore(pool), project_id, items, job, attempt)
+        finally:
+            await _close_pool(pool)
 
     async def _score(
         self,
@@ -3977,7 +3994,7 @@ class KnowledgeExportBackend(OrchestratorBackend, _ExportIntegrityMixin):
             details=f"project={project_id} export",
         ).emit()
 
-        pool = _get_pool()
+        pool = await _created_pool()
         degraded_reason = ""
 
         if pool is None:
@@ -4016,9 +4033,7 @@ class KnowledgeExportBackend(OrchestratorBackend, _ExportIntegrityMixin):
             )
 
         finally:
-            if pool is not None:
-                pool.close()
-                await pool.wait_closed()
+            await _close_pool(pool)
 
 
 class KnowledgeExportStatusChecker(BackendStatusChecker):

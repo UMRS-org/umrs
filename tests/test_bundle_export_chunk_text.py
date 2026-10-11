@@ -349,7 +349,10 @@ async def _run_export_job(tmp_path, monkeypatch, user: str):
     nodes, search_texts, refs = _corpus()
     pool = _ExportPool(search_texts, refs, ("alice", "sensitive"))
     artifacts = [_artifact("art-a", _REF_A, _DOC_A), _artifact("art-b", _REF_B, _DOC_B)]
-    monkeypatch.setattr(ka, "_get_pool", lambda: pool)
+    async def created():
+        return pool
+
+    monkeypatch.setattr(ka, "_created_pool", created)
     monkeypatch.setattr(ka, "_lazy_artifact_reader", lambda: {_REF_A: _DOC_A.encode()}.get)
     monkeypatch.setattr(
         ka.KnowledgeExportBackend, "_publish_archive", staticmethod(lambda *_a: None)

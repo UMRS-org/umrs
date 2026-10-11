@@ -13,6 +13,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from unittest.mock import AsyncMock
+
 import pytest
 
 # ── Minimal mocks ─────────────────────────────────────────────────────────────
@@ -172,10 +174,10 @@ class TestAutoIngestIntegration:
         def fake_insert_artifact(**kw: Any) -> None:
             recorded_meta.append(kw.get("metadata", {}))
 
-        def fake_get_pool() -> Any:
+        async def fake_created_pool() -> Any:
             return None
 
-        monkeypatch.setattr("umrs.jobs.knowledge_adapters._get_pool", fake_get_pool)
+        monkeypatch.setattr("umrs.jobs.knowledge_adapters._created_pool", fake_created_pool)
         monkeypatch.setattr("umrs.jobs.service.get_job_service", lambda: None)
 
         from umrs.jobs.knowledge_adapters import (
@@ -256,7 +258,7 @@ class TestAutoIngestIntegration:
             "umrs.knowledge.artifact_storage.ArtifactStorage.put_artifact",
             lambda *_a, **_k: fake_put_artifact(*_a, **_k),
         )
-        monkeypatch.setattr("umrs.jobs.knowledge_adapters._get_pool", lambda: None)
+        monkeypatch.setattr("umrs.jobs.knowledge_adapters._created_pool", AsyncMock(return_value=None))
         monkeypatch.setattr("umrs.jobs.service.get_job_service", lambda: None)
 
         from umrs.jobs.knowledge_adapters import (
@@ -303,7 +305,7 @@ class TestAutoIngestIntegration:
 
     def test_failure_graceful(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Failure path must not raise even when knowledge store is unavailable."""
-        monkeypatch.setattr("umrs.jobs.knowledge_adapters._get_pool", lambda: None)
+        monkeypatch.setattr("umrs.jobs.knowledge_adapters._created_pool", AsyncMock(return_value=None))
         monkeypatch.setattr("umrs.jobs.service.get_job_service", lambda: None)
 
         from umrs.jobs.knowledge_adapters import (

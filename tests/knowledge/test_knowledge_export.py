@@ -484,7 +484,7 @@ class TestKnowledgeExportBackend:
         store_mock.list_catalog = AsyncMock(return_value=([], 0))
 
         with (
-            patch("umrs.jobs.knowledge_adapters._get_pool", return_value=fake_pool),
+            patch("umrs.jobs.knowledge_adapters._created_pool", AsyncMock(return_value=fake_pool)),
             patch("umrs.knowledge.store.KnowledgeStore", return_value=store_mock),
         ):
             backend = KnowledgeExportBackend()
@@ -496,7 +496,7 @@ class TestKnowledgeExportBackend:
     @pytest.mark.asyncio
     async def test_degraded_when_no_pool(self, export_job: Job, export_attempt: JobAttempt) -> None:
         """Backend should degrade gracefully when pool is None."""
-        with patch("umrs.jobs.knowledge_adapters._get_pool", return_value=None):
+        with patch("umrs.jobs.knowledge_adapters._created_pool", AsyncMock(return_value=None)):
             backend = KnowledgeExportBackend()
             ref = await backend.submit_job(export_job, export_attempt)
 

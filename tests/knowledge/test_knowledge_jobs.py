@@ -817,7 +817,6 @@ class TestKnowledgeUnderstandBackend:
         mock_pool.wait_closed = MagicMock(return_value=asyncio.sleep(0))
 
         with (
-            patch("umrs.jobs.knowledge_adapters._get_pool", return_value=mock_pool),
             patch(
                 "umrs.jobs.knowledge_adapters._build_s3_client",
                 return_value=(None, "umrs-data"),
