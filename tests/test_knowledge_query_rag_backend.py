@@ -149,6 +149,7 @@ def test_hits_carry_the_lane_score_venue_and_chunk(monkeypatch):
         "corpus_venue": "central-pg",
         "artifact_id": "art-1",
         "chunk_index": 0,
+        "clipped": False,  # wave F: the full chunk text up to the server cap
     }
 
 

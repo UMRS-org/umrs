@@ -42,7 +42,7 @@ from typing import Any
 import httpx
 from fastapi import APIRouter, Depends, Query, Request
 
-from umrs.knowledge.access_scope import visibility_predicate
+from umrs.knowledge.access_scope import artifact_alive_predicate, visibility_predicate
 from umrs.knowledge.graph_registry import (
     GraphRegistryStore,
     KnowledgeGraphMeta,
@@ -204,11 +204,18 @@ def _like_contains(token: str) -> str:
     return f"%{escaped}%"
 
 
+#: ADR-093 D-11 (wave F): chunk nodes are the corpus lanes' (lexical,
+#: dense), never the graph lane's — the LIKE haystack returned orphan chunks
+#: whose artifact row was gone, as duplicates of the corpus hits.
+_NOT_A_CHUNK_SQL = "(content->>'kind') IS DISTINCT FROM 'chunk'"
+
+
 def _graph_lane_sql(gate: str, n_tokens: int) -> str:
     """Count matched tokens per node once, then rank by that count.
 
     The haystack is lowered once per row (MATERIALIZED), so each token costs
     one LIKE; the gate's parameters stay first, then the token patterns.
+    Chunk nodes are not in it (:data:`_NOT_A_CHUNK_SQL`).
     """
     any_text = " + ".join(["(s.body LIKE %s)::int"] * n_tokens)
     in_label = " + ".join(["(s.lab LIKE %s)::int"] * n_tokens)
@@ -216,7 +223,7 @@ def _graph_lane_sql(gate: str, n_tokens: int) -> str:
         "WITH s AS MATERIALIZED ("
         "SELECT node_id, project_id, label, node_type, content, graph_id, "
         f"lower(coalesce(label, '')) AS lab, {_NODE_TEXT_SQL} AS body "
-        f"FROM knowledge_nodes WHERE {gate}), "
+        f"FROM knowledge_nodes WHERE {gate} AND {_NOT_A_CHUNK_SQL}), "
         "m AS (SELECT node_id, project_id, label, node_type, content, graph_id, "
         f"{any_text} AS hits, {in_label} AS label_hits FROM s) "
         "SELECT node_id, project_id, label, node_type, content, graph_id, hits "
@@ -284,9 +291,10 @@ class _GraphSearchBackend:
     def _hit(self, n_tokens: int, row: tuple) -> dict[str, Any]:
         node_id, project_id, label, node_type, content, graph_id, hits = row
         meta = self._by_id.get(graph_id) or self._default_by_project.get(project_id)
+        text, clipped = _bounded(str(content) if content else "")
         return {
             "title": label or node_id,
-            "content": str(content)[:200] if content else "",
+            "content": text,
             "score": round(int(hits) / max(1, n_tokens), 6),
             "source_id": node_id,
             "source_type": "knowledge_graph_node",
@@ -297,6 +305,7 @@ class _GraphSearchBackend:
                 "project_id": project_id,
                 "matched_tokens": int(hits),
                 "query_tokens": n_tokens,
+                "clipped": clipped,
             },
         }
 
@@ -470,16 +479,17 @@ class _EmbeddingsSearchBackend:
 
     def _gate(self, project_id: str | None) -> tuple[str, tuple[Any, ...]]:
         """ADR-050 tier gate on the owning node, owned by graph or by project."""
+        alive = f" AND {artifact_alive_predicate('n')}"  # wave F: no orphan chunk
         if self._graph_scope is None:
             exclude, params = _exclusion_sql(self.exclude_graph_ids, project_id)
             gate = visibility_predicate("n", include_ambient=self._include_ambient)
-            return gate + exclude, (project_id, *params)
+            return gate + alive + exclude, (project_id, *params)
         gate = visibility_predicate(
             "n",
             owned_sql=self._graph_scope.owned_sql("n"),
             include_ambient=self._include_ambient,
         )
-        return gate, self._graph_scope.params()
+        return gate + alive, self._graph_scope.params()
 
     def search_embeddings(
         self,
@@ -653,6 +663,28 @@ def _embeddings_backend_for(
     )
 
 
+#: ADR-093 D-11 (wave F): the server cap on one K3 hit's text. The lexical
+#: and graph lanes clipped a hit to 240/200 characters with no flag, so the
+#: caller's per-hit evidence budget (r4 C23b) could not reach the text of a
+#: hit only those lanes found. A hit now carries the full matched text up to
+#: this cap, and ``metadata.clipped`` says whether the cap cut it.
+HIT_TEXT_MAX_ENV = "UMRS_K3_HIT_TEXT_MAX"
+HIT_TEXT_MAX_DEFAULT = 4000
+
+
+def _hit_text_max() -> int:
+    try:
+        return max(1, int(os.environ.get(HIT_TEXT_MAX_ENV, HIT_TEXT_MAX_DEFAULT)))
+    except ValueError:
+        return HIT_TEXT_MAX_DEFAULT
+
+
+def _bounded(text: str) -> tuple[str, bool]:
+    """``(text up to the server cap, whether the cap cut it)``."""
+    cap = _hit_text_max()
+    return text[:cap], len(text) > cap
+
+
 def _first_text_field(content_text: str) -> str | None:
     """First non-empty text-ish value of a JSONB payload, or None."""
     try:
@@ -663,13 +695,19 @@ def _first_text_field(content_text: str) -> str | None:
 
 
 def _first_text_value(parsed: Any) -> str | None:
-    """First non-empty text-ish value of a parsed payload, or None."""
+    """First non-empty text-ish value of a parsed payload (240 chars), or None."""
+    value = _first_text_raw(parsed)
+    return value[:240] if value else None
+
+
+def _first_text_raw(parsed: Any) -> str | None:
+    """First non-empty text-ish value of a parsed payload, whole, or None."""
     if not isinstance(parsed, dict):
         return None
     for key in ("text", "preview", "chunk", "excerpt", "summary"):
         value = parsed.get(key)
         if isinstance(value, str) and value.strip():
-            return value.strip()[:240]
+            return value.strip()
     return None
 
 
@@ -734,9 +772,10 @@ def _lexical_hit(candidate: Any, lane_name: str) -> dict[str, Any]:
     content = candidate.content if isinstance(candidate.content, dict) else {}
     artifact_id = candidate.artifact_id or str(content.get("artifact_id") or "")
     title = f"chunk {candidate.chunk_index} of {artifact_id}" if artifact_id else ""
+    text, clipped = _bounded(candidate.text or _first_text_raw(content) or "")
     return {
         "title": title or candidate.node_id,
-        "content": (candidate.text or "")[:240] or _first_text_value(content) or "",
+        "content": text,
         "score": float(candidate.lane_scores.get(lane_name, 0.0)),
         "source_id": candidate.node_id,
         "source_type": "knowledge_corpus_node",
@@ -745,6 +784,7 @@ def _lexical_hit(candidate: Any, lane_name: str) -> dict[str, Any]:
             "corpus_venue": "central-pg",
             "artifact_id": artifact_id,
             "chunk_index": candidate.chunk_index,
+            "clipped": clipped,
         },
     }
 
