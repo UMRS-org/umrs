@@ -155,6 +155,11 @@ async def test_no_node_edge_or_vector_under_a_deduplicated_bundle_id(tmp_path: P
     assert store.edges == ["e-B"]  # e-A and e-BA touch art-A's nodes
     assert store._pool.vectors == ["node-chunk-art-B-0"]
     assert result.deduped_artifacts == {"art-A": "art-stored"}
+
+
+@pytest.mark.asyncio
+async def test_the_import_result_names_what_it_skipped(tmp_path: Path) -> None:
+    result = await _import(tmp_path, _Store(held={"hA": "art-stored"}))
     # ir-A, 3 nodes, e-A, e-BA, 1 vector
     assert result.rows_skipped_deduped == 7
     assert result.to_dict()["deduped_artifacts"] == {"art-A": "art-stored"}
