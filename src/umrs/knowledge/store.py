@@ -775,7 +775,7 @@ class KnowledgeStore:
                           metadata, created_at, updated_at
                    FROM knowledge_artifacts
                    WHERE {where}
-                   ORDER BY created_at DESC
+                   ORDER BY created_at DESC, artifact_id
                    LIMIT ${param_idx} OFFSET ${param_idx + 1}""",
                 *params,
                 page_size,
