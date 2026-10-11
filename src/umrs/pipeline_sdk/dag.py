@@ -19,7 +19,6 @@ Usage::
 from __future__ import annotations
 
 import logging
-import uuid
 from collections import deque
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -342,22 +341,22 @@ def _start_step_trace(
     """Create + start a step trace when tracing is configured; else ''."""
     if not trace_store:
         return ""
-    trace_id = str(uuid.uuid4())
     # Look up parent trace IDs for DAG lineage
     parent_trace_id = None
     if parents:
         first_parent = next(iter(parents))
         parent_trace_id = shared_metadata.get(f"_trace_id_{first_parent}")
-    trace_store.create_trace(
-        trace_id=trace_id,
+    # The store mints the id (it never took one: passing ``trace_id=`` raised
+    # TypeError and no pipeline step was ever traced, found 2026-10-12).
+    record = trace_store.create_trace(
         job_id=job_id,
         execution_id=execution_id,
         step_name=spec_name,
         step_type="pipeline_step",
         parent_trace_id=parent_trace_id,
     )
-    trace_store.start_trace(trace_id)
-    return trace_id
+    trace_store.start_trace(record.trace_id)
+    return record.trace_id
 
 
 def _run_step_with_retry(
@@ -403,7 +402,9 @@ def _run_step_with_retry(
                 raise last_exc from None
 
     if trace_store and trace_id:
-        trace_store.complete_trace(trace_id, outputs_ref=result.to_dict())
+        # The step's outputs are the snapshot (JSON); ``outputs_ref`` is a
+        # text reference column and never held a dict.
+        trace_store.complete_trace(trace_id, outputs=result.to_dict())
         shared_metadata[f"_trace_id_{spec.name}"] = trace_id
     return result
 
