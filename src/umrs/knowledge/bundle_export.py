@@ -88,6 +88,17 @@ class BundleIntegrityError(RuntimeError):
     """Raised when integrity requirements for an export cannot be met."""
 
 
+def _iso(value: Any) -> str | None:
+    """A row timestamp as ISO text: a ``datetime`` (timestamptz columns) or the
+    text some knowledge tables store (``knowledge_artifacts.created_at`` is
+    TEXT on the stand-alone schema; every export of it failed with
+    ``'str' object has no attribute 'isoformat'``, 2026-10-12)."""
+    if not value:
+        return None
+    isoformat = getattr(value, "isoformat", None)
+    return isoformat() if callable(isoformat) else str(value)
+
+
 class ChunkTextRefused(PermissionError):
     """A chunk-text export the project's data class does not allow (MD-5)."""
 
@@ -573,9 +584,9 @@ class KnowledgeExportEngine:
             "metadata": artifact.metadata,
         }
         if artifact.created_at:
-            row["created_at"] = artifact.created_at.isoformat()
+            row["created_at"] = _iso(artifact.created_at)
         if artifact.updated_at:
-            row["updated_at"] = artifact.updated_at.isoformat()
+            row["updated_at"] = _iso(artifact.updated_at)
         return row
 
     def _dump_raw(
@@ -639,7 +650,7 @@ class KnowledgeExportEngine:
             "content": ir.content,
             "content_hash": ir.content_hash,
             "status": ir.status,
-            "created_at": ir.created_at.isoformat() if ir.created_at else None,
+            "created_at": _iso(ir.created_at),
         }
 
     def _serialize_node(self, node: Any) -> dict[str, Any]:
@@ -653,9 +664,9 @@ class KnowledgeExportEngine:
             "source_ir": node.source_ir,
         }
         if node.created_at:
-            row["created_at"] = node.created_at.isoformat()
+            row["created_at"] = _iso(node.created_at)
         if node.updated_at:
-            row["updated_at"] = node.updated_at.isoformat()
+            row["updated_at"] = _iso(node.updated_at)
         return row
 
     def _serialize_edge(self, edge: Any) -> dict[str, Any]:
@@ -668,7 +679,7 @@ class KnowledgeExportEngine:
             "content": edge.content,
         }
         if edge.created_at:
-            row["created_at"] = edge.created_at.isoformat()
+            row["created_at"] = _iso(edge.created_at)
         return row
 
     async def _dump_core_tables(
@@ -1185,9 +1196,7 @@ class KnowledgeExportEngine:
                             "vector": list(row["vector"]) if row["vector"] else [],
                             "metadata": row["metadata"] or {},
                             "document_id": row["document_id"],
-                            "created_at": row["created_at"].isoformat()
-                            if row["created_at"]
-                            else None,
+                            "created_at": _iso(row["created_at"]),
                         }
                     )
                 return result, total
@@ -1215,9 +1224,7 @@ class KnowledgeExportEngine:
                         "name": r["name"],
                         "project_id": r["project_id"],
                         "metadata": r["metadata"] or {},
-                        "created_at": r["created_at"].isoformat()
-                        if r["created_at"]
-                        else None,
+                        "created_at": _iso(r["created_at"]),
                     }
                     for r in rows
                 ]
