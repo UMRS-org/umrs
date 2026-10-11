@@ -420,6 +420,31 @@ def _fetch_artifact_bytes(s3_client: Any, bucket: str, source_ref: str) -> bytes
         return None
 
 
+# Object-store answers that mean the object is gone, not that the store is
+# unreachable (ADR-093 D-11, 2026-10-11: a permanent embed failure).
+_MISSING_OBJECT_CODES = frozenset({"NoSuchKey", "NoSuchBucket", "404", "NotFound"})
+
+
+def _object_gone(s3_client: Any, bucket: str, source_ref: str) -> bool:
+    """After a failed fetch: whether the object is gone for good (an empty
+    reference, or the store answers that the key does not exist). Any other
+    answer — unreachable, denied, a probe that raises otherwise — is
+    transient, so the artifact is retried."""
+    if s3_client is None:
+        return False
+    if not source_ref:
+        return True
+    if source_ref.startswith("s3://"):
+        bucket, _, source_ref = source_ref[len("s3://") :].partition("/")
+    try:
+        s3_client.head_object(Bucket=bucket, Key=source_ref)
+    except Exception as exc:  # noqa: BLE001 — classified, never raised
+        response = getattr(exc, "response", None)
+        error = response.get("Error", {}) if isinstance(response, dict) else {}
+        return str(error.get("Code", "")) in _MISSING_OBJECT_CODES
+    return False
+
+
 # ── Backend Protocol ─────────────────────────────────────────────────────────
 
 from .monitor import AttemptCheckResult, BackendStatusChecker
@@ -2653,10 +2678,13 @@ def _artifact_text(
     if not artifact_id:
         result.failed_items.append({"artifact_id": "", "error": "missing artifact_id"})
         return None
-    content = _fetch_artifact_bytes(s3_client, bucket, src.get("source_ref", ""))
+    source_ref = src.get("source_ref", "")
+    content = _fetch_artifact_bytes(s3_client, bucket, source_ref)
     if content is None:
+        missing = _object_gone(s3_client, bucket, source_ref)
+        error = "artifact object is gone" if missing else "artifact content unavailable"
         result.failed_items.append(
-            {"artifact_id": artifact_id, "error": "artifact content unavailable"}
+            {"artifact_id": artifact_id, "error": error, "permanent": missing}
         )
         return None
     from umrs.knowledge.retrieval.hydrate import decode_chunked
@@ -2674,6 +2702,7 @@ def _artifact_text(
                     if other in _NON_TEXT_KINDS
                     else other
                 ),
+                "permanent": True,
             }
         )
         return None
@@ -3037,7 +3066,13 @@ _FILE_NODE_PREFIX = "node-file-"
 
 
 class _NoFileNode(RuntimeError):
-    """No single file node of the artifact in the graph to hang chunks on."""
+    """No single file node of the artifact in the graph to hang chunks on.
+    ``permanent`` when the lookup succeeded and found none or several (a
+    re-ingest, not a retry, repairs it); a failed read is transient."""
+
+    def __init__(self, message: str, *, permanent: bool = False) -> None:
+        super().__init__(message)
+        self.permanent = permanent
 
 
 def _graph_family(project_id: str, graph_id: str) -> list[str]:
@@ -3093,7 +3128,8 @@ async def _resolve_target(conn: Any, target: _ChunkTarget) -> _ChunkTarget:
     raise _NoFileNode(
         f"no single file node of {target.artifact_id} in {where} "
         f"({len(scopes)} found): its chunks would have no part_of target — "
-        "re-ingest the artifact"
+        "re-ingest the artifact",
+        permanent=True,
     )
 
 
@@ -3128,6 +3164,31 @@ async def _stamp_embedded(
         )
     except Exception as exc:  # noqa: BLE001 — metadata stamp is best-effort beside the vectors
         logger.warning("embedding stamp failed for %s: %s", artifact_id, exc)
+
+
+async def _record_permanent_failures(
+    pool: Any, result: KnowledgeEmbedResult, chunk_embedder: Any
+) -> None:
+    """Record the artifacts this run failed for good under the site's model
+    and scheme, so the next KNOWLEDGE_REINDEX pass passes them over (ADR-093
+    D-11, 2026-10-11) — best-effort: the job result names them either way."""
+    from umrs.knowledge.chunking import FIXED_V0
+    from umrs.knowledge.embedding_metadata import record_embed_failures
+
+    failures = [
+        (str(item.get("artifact_id") or ""), str(item.get("error") or ""))
+        for item in result.failed_items
+        if item.get("permanent")
+    ]
+    if not failures:
+        return
+    scheme = str(getattr(chunk_embedder, "scheme", "") or FIXED_V0)
+    try:
+        await record_embed_failures(
+            pool, failures, model=configured_text_embedder(), scheme=scheme
+        )
+    except Exception as exc:  # noqa: BLE001 — the record is best-effort beside the result
+        logger.warning("embed failure record not written: %s", exc)
 
 
 def _chunk_embedder_for_site() -> tuple[Any | None, str]:
@@ -3300,7 +3361,13 @@ async def _write_isolated(
         )
     except Exception as exc:  # noqa: BLE001 — per-artifact isolation, named
         logger.error("embed write failed for %s: %s", artifact_id, exc)
-        result.failed_items.append({"artifact_id": artifact_id, "error": str(exc)})
+        result.failed_items.append(
+            {
+                "artifact_id": artifact_id,
+                "error": str(exc),
+                "permanent": bool(getattr(exc, "permanent", False)),
+            }
+        )
 
 
 class KnowledgeEmbedBackend(OrchestratorBackend):
@@ -3376,6 +3443,7 @@ class KnowledgeEmbedBackend(OrchestratorBackend):
                 (s3_client, s3_bucket),
                 result,
             )
+            await _record_permanent_failures(pool, result, chunk_embedder)
 
         _write_result(attempt, result)
         return (

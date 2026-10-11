@@ -411,7 +411,9 @@ def test_reindex_never_maintains_an_index_on_the_untyped_node_vectors(monkeypatc
     ref, submitted = _submit(monkeypatch, cur, {**SPEC, "project_id": "p1"})
     assert "swept=1|reembed_jobs=1" in ref and "scheme=sent-v1" in ref
     held = (list(reindex.HELD_BY.job_types), list(reindex.HELD_BY.statuses))
-    sweep = (MODEL, "fixed-v0", "sent-v1", "fixed-v0", "sent-v1", "p1", "p1", *held, 50)
+    # ... then the permanent-failure skip: this model and scheme (2026-10-11)
+    sweep = (MODEL, "fixed-v0", "sent-v1", "fixed-v0", "sent-v1", "p1", "p1", *held)
+    sweep += (MODEL, "sent-v1", 50)
     assert cur.statements[0][0].startswith("SELECT pg_try_advisory_xact_lock")
     assert cur.statements[1][1] == sweep
     assert submitted[0].spec["graph_id"] == default_graph_id("p1")
