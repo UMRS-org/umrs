@@ -37,7 +37,7 @@ from . import bundle_raw, canonical_identity
 from .bundle_export import tables_pinned, verify_bundle_integrity
 from .bundle_reader import chunk_search_text
 from .retrieval.hydrate import artifact_slice
-from .store import KnowledgeEdge, KnowledgeNode, _has_search_text
+from .store import ArtifactWriteError, KnowledgeEdge, KnowledgeNode, _has_search_text
 
 logger = logging.getLogger(__name__)
 
@@ -135,6 +135,13 @@ class KnowledgeImportResult:
     # either (review chunk-data-13, 2026-10-10).
     nodes_skipped_identical: int = 0
     nodes_skipped_other_project: int = 0
+    # ADR-093 D-11 (wave F): bundle artifacts with no row of their own here
+    # -> the stored id that holds their bytes ("" when none: the row was
+    # refused, or another project holds the id). Their IRs, nodes, edges and
+    # node vectors are not restored (they would be orphans the lanes read);
+    # re-embed the stored artifact instead.
+    deduped_artifacts: dict[str, str] = field(default_factory=dict)
+    rows_skipped_deduped: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -176,6 +183,8 @@ class KnowledgeImportResult:
             "search_text_backfill": self.search_text_backfill,
             "nodes_skipped_identical": self.nodes_skipped_identical,
             "nodes_skipped_other_project": self.nodes_skipped_other_project,
+            "deduped_artifacts": dict(self.deduped_artifacts),
+            "rows_skipped_deduped": self.rows_skipped_deduped,
         }
 
 
@@ -579,6 +588,69 @@ async def _search_text_column(store: Any) -> bool:
         return False
 
 
+class _Unwritten:
+    """Bundle artifacts with no row of their own in the target, and the rows
+    derived from them that the restore therefore skips (ADR-093 D-11, wave F).
+
+    A byte-deduplicated artifact used to keep its IR, file and chunk nodes,
+    part_of edges and trusted vectors under the bundle's id — orphans with
+    vectors and search_text that the dense and lexical lanes would read.
+    """
+
+    def __init__(self) -> None:
+        self.stored: dict[str, str] = {}
+        self.irs: set[str] = set()
+        self.nodes: set[str] = set()
+        self.rows = 0
+
+    def artifact(self, artifact_id: str, stored: str) -> None:
+        if artifact_id:
+            self.stored[artifact_id] = stored
+
+    def skips_ir(self, row: dict[str, Any]) -> bool:
+        if str(row.get("artifact_id") or "") not in self.stored:
+            return False
+        self.irs.add(str(row.get("ir_id") or ""))
+        self.rows += 1
+        return True
+
+    def skips_node(self, row: dict[str, Any]) -> bool:
+        content = row.get("content") if isinstance(row.get("content"), dict) else {}
+        owned = str(content.get("artifact_id") or "") in self.stored
+        if not (owned or str(row.get("source_ir") or "") in self.irs):
+            return False
+        self.nodes.add(str(row.get("node_id") or ""))
+        self.rows += 1
+        return True
+
+    def skips_edge(self, row: dict[str, Any]) -> bool:
+        ends = {str(row.get("source_id") or ""), str(row.get("target_id") or "")}
+        if ends.isdisjoint(self.nodes):
+            return False
+        self.rows += 1
+        return True
+
+    def skips_vector(self, row: dict[str, Any]) -> bool:
+        if str(row.get("node_id") or "") not in self.nodes:
+            return False
+        self.rows += 1
+        return True
+
+    def report(self, result: KnowledgeImportResult, project_id: str) -> None:
+        result.deduped_artifacts = dict(self.stored)
+        result.rows_skipped_deduped = self.rows
+        if self.stored:
+            logger.warning(
+                "%d bundle artifact(s) have no row of their own in %s (their bytes "
+                "are stored under another id, or the row was refused); %d derived "
+                "row(s) not restored — re-embed the stored artifacts: %s",
+                len(self.stored),
+                project_id,
+                self.rows,
+                self.stored,
+            )
+
+
 class KnowledgeImportEngine:
     """Restore engine (mirror of ``KnowledgeExportEngine``)."""
 
@@ -607,6 +679,7 @@ class KnowledgeImportEngine:
         self._catalog_store = catalog_store
         self._collision_degraded: int = 0
         self._degraded_seen: set[str] = set()
+        self._unwritten = _Unwritten()
 
     async def import_project(
         self,
@@ -632,6 +705,7 @@ class KnowledgeImportEngine:
         t0 = time.monotonic()
         bundle_path = Path(bundle_dir)
         result = KnowledgeImportResult()
+        self._unwritten = _Unwritten()
 
         manifest = _checked_manifest(bundle_path)
         result.upgraded_from = _upgrade_backfill(manifest)
@@ -672,6 +746,7 @@ class KnowledgeImportEngine:
             result.a2l_link_count,
             result.a2l_ref_count,
         ) = await self._restore_a2l(bundle_path, target)
+        self._unwritten.report(result, target)
         self._consume_context_references(manifest, target, result)
         result.catalog_registered = self._register_catalog_row(manifest, target)
         if result.upgraded_from and write_upgrade:
@@ -795,55 +870,63 @@ class KnowledgeImportEngine:
     async def _restore_artifacts(
         self, bundle_path: Path, project_id: str
     ) -> tuple[int, int]:
-        return await self._restore_identity_table(
-            bundle_path / _TABLE_FILES["artifacts"],
-            table="knowledge_artifacts",
-            id_column="artifact_id",
-            row_id_key="artifact_id",
-            insert=lambda row: self._store.insert_artifact(
-                **_artifact_kwargs(row, project_id)
-            ),
-        )
-
-    async def _restore_identity_table(
-        self,
-        path: Path,
-        *,
-        table: str,
-        id_column: str,
-        row_id_key: str,
-        insert: Any,
-    ) -> tuple[int, int]:
-        """Restore identity-bearing rows with ADR-032 #4 collision-abort.
+        """Restore artifact rows with ADR-032 #4 collision-abort.
 
         Same identity + same content_hash → skip (idempotent rerun).
         Same identity + different content_hash → abort with deterministic diff.
+        An artifact that gets no row of its own in the target — its bytes are
+        stored under another id, its id is held by another project, or the
+        row is refused — is recorded so its rows are not restored (wave F).
         """
         restored = skipped = 0
+        path = bundle_path / _TABLE_FILES["artifacts"]
         if not path.exists():
             return restored, skipped
         for row in _iter_rows(path):
-            outcome, diff = await self._collision_decision(
-                table,
-                id_column,
-                str(row[row_id_key]),
-                str(row.get("content_hash") or ""),
-            )
-            if outcome == "skip":
-                skipped += 1
-                continue
-            if outcome == "abort":
-                raise BundleFormatError(_diff_message(diff))
-            try:
-                ok = await insert(row)
-            except (KeyError, TypeError, ValueError):
-                skipped += 1
-                continue
-            if ok:
+            if await self._restore_artifact(row, project_id):
                 restored += 1
             else:
                 skipped += 1
         return restored, skipped
+
+    async def _restore_artifact(self, row: dict[str, Any], project_id: str) -> bool:
+        """One artifact row; True when it was written under its own id."""
+        row_id = str(row.get("artifact_id") or "")
+        if await self._artifact_present(row, row_id, project_id):
+            return False
+        try:
+            stored = await self._store.insert_artifact(
+                **_artifact_kwargs(row, project_id)
+            )
+        except (KeyError, TypeError, ValueError, ArtifactWriteError) as exc:
+            logger.warning("Skipping artifact row %s: %s", row_id, exc)
+            self._unwritten.artifact(row_id, "")
+            return False
+        if stored != row_id:
+            self._unwritten.artifact(row_id, str(stored or ""))
+            return False
+        return True
+
+    async def _artifact_present(
+        self, row: dict[str, Any], row_id: str, project_id: str
+    ) -> bool:
+        """ADR-032 #4 for one artifact: abort on a differing hash; True when
+        the identical row is there already (held by another project, it gives
+        this one no row of its own)."""
+        outcome, detail = await self._collision_decision(
+            "knowledge_artifacts",
+            "artifact_id",
+            row_id,
+            str(row.get("content_hash") or ""),
+        )
+        if outcome == "abort":
+            raise BundleFormatError(_diff_message(detail))
+        if outcome != "skip":
+            return False
+        holder = str((detail or {}).get("project_id") or "")
+        if holder and holder != project_id:
+            self._unwritten.artifact(row_id, "")
+        return True
 
     async def _collision_decision(
         self, table: str, id_column: str, row_id: str, new_hash: str
@@ -901,9 +984,15 @@ class KnowledgeImportEngine:
     ) -> tuple[int, int]:
         del project_id  # IRs bind project through their artifact link
         return await _restore_jsonl_rows(
-            bundle_path / _TABLE_FILES["documents"],
-            lambda row: self._store.insert_ir(**_ir_kwargs(row)),
+            bundle_path / _TABLE_FILES["documents"], self._restore_ir
         )
+
+    async def _restore_ir(self, row: dict[str, Any]) -> bool:
+        """One IR row; an IR of an artifact with no row here is not restored
+        (its insert would fail the artifact FK)."""
+        if self._unwritten.skips_ir(row):
+            return False
+        return await self._store.insert_ir(**_ir_kwargs(row))
 
     async def _search_texts(
         self,
@@ -941,6 +1030,8 @@ class KnowledgeImportEngine:
             if outcome == "skip":
                 skips.add(detail)
                 continue
+            if self._unwritten.skips_node(row):
+                continue
             count += await self._restore_node(row, project_id, texts)
         skips.report(result)
         return count
@@ -971,7 +1062,9 @@ class KnowledgeImportEngine:
             node_type=str(row.get("node_type") or "unknown"),
             content=row.get("content") or {},
             content_hash=str(row.get("content_hash") or ""),
-            source_ir=str(row.get("source_ir") or ""),
+            # A node exported without an IR has none: '' violates
+            # knowledge_nodes_source_ir_fkey and aborted the import (wave F).
+            source_ir=str(row.get("source_ir") or "") or None,
             search_text=search_text,
         )
 
@@ -981,6 +1074,8 @@ class KnowledgeImportEngine:
         if not path.exists():
             return count
         for row in _iter_rows(path):
+            if self._unwritten.skips_edge(row):
+                continue
             try:
                 await self._store.upsert_edge(self._edge_from_row(row, project_id))
                 count += 1
@@ -1067,7 +1162,7 @@ class KnowledgeImportEngine:
         path = bundle_path / _TABLE_FILES["node_embeddings"]
         if not path.exists():
             return
-        rows = list(_iter_rows(path))
+        rows = [r for r in _iter_rows(path) if not self._unwritten.skips_vector(r)]
         from .text_embedder import configured_text_embedder
 
         dest_model = configured_text_embedder()

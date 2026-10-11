@@ -190,7 +190,7 @@ class _Store:
 
     async def insert_artifact(self, **kwargs):
         self.artifacts.append(kwargs)
-        return True
+        return kwargs["artifact_id"]
 
 
 def _bundle(root: Path, texts: dict[str, bytes]) -> Path:
