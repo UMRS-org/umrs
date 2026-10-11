@@ -138,6 +138,32 @@ def enforce_registry_write_authorization(request: Request) -> None:
     )
 
 
+def enforce_human_delete_authorization(request: Request, *, operation: str) -> None:
+    """Forbid agent-originated knowledge deletes (ADR-093 MD-16).
+
+    Deleting an artifact destroys rows no proposal can bring back, and the
+    proposal flow (0069) authorizes extensions, not removals: an agent holds
+    no approved user decision that could cover a delete. Like graph
+    lifecycle (:func:`enforce_registry_write_authorization`), it is the
+    person's act — the CLI or a direct API call — never a companion tool's.
+    """
+    if request_actor(request) != AGENT_ACTOR:
+        return
+    raise_typed(
+        PlatformError.knowledge_guard(
+            "forbidden",
+            {
+                "error": "delete_forbidden_for_agent",
+                "operation": operation,
+                "message": (
+                    "Agents may not delete knowledge. Ask the user to run "
+                    "`r4 knowledge delete <artifact_id>` themselves."
+                ),
+            },
+        ),
+    )
+
+
 def mark_proposal_executed(
     request: Request,
     proposal_id: str | None,

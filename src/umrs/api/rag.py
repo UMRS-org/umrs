@@ -806,26 +806,23 @@ async def list_documents(
         )
 
 
-#: ADR-093 MD-16 (2026-10-11): no delete verb exists yet. The service
-#: placeholder deleted nothing yet answered "deleted", and this proxy then
-#: recorded the deletion; the document stayed retrievable.
-DELETE_NOT_IMPLEMENTED = (
-    "document delete is not implemented: nothing was deleted and the document "
-    "stays retrievable (ADR-093 MD-16)"
-)
+@router.delete("/documents/{document_id}")
+async def delete_document(document_id: str, request: Request) -> dict[str, Any]:
+    """Delete a document from the project (ADR-093 MD-16, decided 2026-10-11).
 
-
-@router.delete("/documents/{document_id}", status_code=501)
-async def delete_document(document_id: str, request: Request):
-    """Delete a document from the project — not implemented (ADR-093 MD-16).
-
-    Answers 501 after the write-scope check, and records no deletion: a
-    "deleted" for a document that stays retrievable is a lie, never a
-    success (wave F). A real delete (one transaction over the artifact row,
-    its nodes, vectors, edges and findings) is the maintainer's decision.
+    The id resolves to the knowledge artifact it names — the artifact id,
+    the ``artifact-rag-<id>`` rag.upload minted, or the central upload's
+    ingest job — and the artifact delete runs on it (one transaction; see
+    ``knowledge_artifact_delete``). An id that resolves to no artifact of the
+    project is 404, and nothing is recorded: never a "deleted" for a document
+    that stays retrievable. Agents never delete.
     """
-    _require_rag_scope(request, write=True)
-    raise HTTPException(status_code=501, detail=DELETE_NOT_IMPLEMENTED)
+    from ._knowledge_mutation_guard import enforce_human_delete_authorization
+    from .knowledge_artifact_delete import delete_rag_document
+
+    user_id, project_id = _require_rag_scope(request, write=True)
+    enforce_human_delete_authorization(request, operation="rag.document_delete")
+    return await delete_rag_document(request, document_id, project_id, user_id)
 
 
 @router.get("/documents/{document_id}", response_model=DocumentInfo)

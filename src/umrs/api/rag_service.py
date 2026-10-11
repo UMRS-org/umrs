@@ -16,7 +16,7 @@ os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 import contextlib
 
 import httpx
-from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
+from fastapi import FastAPI, File, Form, Query, UploadFile
 from langchain_community.embeddings import SentenceTransformerEmbeddings
 from langchain_core.callbacks import CallbackManagerForRetrieverRun
 from langchain_core.documents import Document
@@ -2157,25 +2157,55 @@ def rag_stats(
     return stats
 
 
-@app.delete("/rag/documents/{document_id}", status_code=501)
+@app.delete("/rag/documents/{document_id}")
 def rag_delete_document(
     document_id: str,
     project_id: str = Query(..., description="Project ID for access control"),
-) -> dict[str, str]:
-    """Delete a document — not implemented (ADR-093 MD-16, wave F).
+) -> dict[str, Any]:
+    """Delete a document's knowledge artifact (ADR-093 MD-16, decided 2026-10-11).
 
-    This was a placeholder that deleted nothing yet answered "deleted", so a
-    deleted document stayed retrievable. It answers 501 until a delete verb
-    exists (one transaction over the artifact row, its nodes, vectors, edges
-    and findings — the maintainer's decision).
+    The id resolves to the artifact it names in the project (its own id, or
+    the ``artifact-rag-<id>`` the upload minted) and the artifact delete runs
+    in one transaction over the central knowledge tables (the ones the upload
+    mint writes). An unresolvable id is 404 and nothing is deleted. Callers
+    reach this service through the UMRS proxy, which checks the write scope
+    and resolves the central upload's job ids as well.
     """
-    raise HTTPException(
-        status_code=501,
-        detail=(
-            f"document delete is not implemented: {document_id} in {project_id} "
-            "was not deleted (ADR-093 MD-16)"
-        ),
-    )
+    from umrs.knowledge import artifact_delete as deleter
+    from umrs.shared.pg import get_default_sync_pool, pg_configured_from_env
+
+    from .knowledge_artifact_delete import object_store
+
+    if not pg_configured_from_env():
+        raise_typed(
+            PlatformError.ragservice(
+                "unavailable",
+                f"no knowledge database configured: {document_id} in {project_id} was not deleted",
+            )
+        )
+    try:
+        pool = get_default_sync_pool()
+        artifact_id = deleter.resolve_document_sync(pool, document_id, project_id)
+        if artifact_id:
+            report = deleter.delete_artifact_sync(pool, artifact_id, project_id, object_store)
+    except deleter.ArtifactNotFound:
+        artifact_id = None
+    except Exception as exc:  # noqa: BLE001 — the transaction rolled back: say so
+        raise_typed(
+            PlatformError.ragservice(
+                "failure", f"delete of {document_id} failed; nothing was deleted: {exc}"
+            ),
+            cause=exc,
+        )
+    if not artifact_id:
+        raise_typed(
+            PlatformError.ragservice(
+                "not_found",
+                f"document {document_id} resolves to no knowledge artifact in "
+                f"{project_id}; nothing was deleted",
+            )
+        )
+    return {"document_id": document_id, **report.to_dict()}
 
 
 def main() -> None:
