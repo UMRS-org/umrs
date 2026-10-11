@@ -1502,7 +1502,8 @@ class JobStore:
         INV-04), and the job goes back to PLANNED from any status but
         CANCELLED, never to QUEUED, so no scheduler claims it. The commit
         pointer is kept. Returns the superseded attempt ids. Only
-        client-hosted jobs match; any other job raises.
+        client-hosted jobs match (slice 8: and venue-hosted ones, whose
+        worker opens the attempt); any other job raises.
         """
         now = datetime.now(timezone.utc).replace(tzinfo=None)
         reopenable = (
@@ -1525,7 +1526,7 @@ class JobStore:
                         next_run_at = NULL,
                         last_state_change_at = %s
                     WHERE job_id = %s
-                      AND spec->>'hosting' = 'client'
+                      AND spec->>'hosting' IN ('client', 'venue')
                       AND status IN (%s, %s, %s, %s, %s)
                     RETURNING job_id
                 """,

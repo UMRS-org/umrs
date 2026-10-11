@@ -512,8 +512,10 @@ class TestTheKindStaysClientHosted:
         pool = SimpleNamespace(getconn=lambda: _Conn(), putconn=lambda _c: None)
         agent_quota.count_active_agent_units(pool, user_id="alice")
         sql, params = seen[0]
-        assert "spec->>'hosting'" in sql and "<>" in sql
-        assert params[-1] == "client"
+        assert "spec->>'hosting'" in sql and "<> ALL(%s)" in sql
+        # slice 8: a venue-hosted run is not a unit either (its worker's
+        # frontend_session job is)
+        assert params[-1] == ["client", "venue"]
 
 
 class _SqlCur:
@@ -567,7 +569,7 @@ class TestReopenSql:
         assert store.reopen_client_job("job-1") == ["att-old"]
         update_job = next(sql for sql in log if sql[0].startswith("UPDATE jobs"))
         sql, params = update_job
-        assert "spec->>'hosting' = 'client'" in sql
+        assert "spec->>'hosting' IN ('client', 'venue')" in sql  # slice 8: venue too
         assert params[0] == JobStatus.PLANNED.value
         assert JobStatus.CANCELLED.value not in params
         assert JobStatus.QUEUED.value in params  # taken OUT of the queue

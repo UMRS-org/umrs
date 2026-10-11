@@ -23,6 +23,12 @@ key, ``outputs_snapshot`` carries the record's JSON text verbatim and
 keys, and a replayed output must keep its key order (its readers' prompts
 render it with ``|json`` and their keys hash the rendered prompt).
 
+ADR-092 slice 8: a run hosted on the server venue is the same record with
+``hosting: venue``: its frontend-venue worker opens and closes its attempts
+through the rail, and only that worker writes it (``check_writer``: the
+rail's attestation of the run's recorded venue session); its owner reads
+it, resumes it or cancels it (``umrs.venues.plan_runs``).
+
 Foundation module: no ``umrs.api`` or ``umrs.server`` imports.
 """
 
@@ -45,7 +51,11 @@ from .store import (
 
 HOSTING_KEY = "hosting"
 HOSTING_CLIENT = "client"
+# ADR-092 slice 8: a run its frontend-venue worker hosts (the server venue).
+HOSTING_VENUE = "venue"
+PLAN_RUN_HOSTINGS = frozenset({HOSTING_CLIENT, HOSTING_VENUE})
 BACKEND = "r4_local"
+VENUE_BACKEND = "r4_venue"
 REF_PREFIX = "research_loop_job|"
 RECORD_FORMAT = "r4.plan.journal/1"
 STEP_TYPES = {"agent": "plan_agent", "gate": "plan_gate", "invalidate": "plan_invalidate"}
@@ -102,6 +112,17 @@ def is_client_hosted(spec: Any) -> bool:
     return isinstance(spec, dict) and spec.get(HOSTING_KEY) == HOSTING_CLIENT
 
 
+def is_venue_hosted(spec: Any) -> bool:
+    """True for a plan run its frontend-venue worker hosts (slice 8)."""
+    return isinstance(spec, dict) and spec.get(HOSTING_KEY) == HOSTING_VENUE
+
+
+def is_plan_run_record(spec: Any) -> bool:
+    """True for a team plan run's record, however hosted: UMRS never hosts it
+    as a loop; its client or its venue worker opens and closes its attempts."""
+    return isinstance(spec, dict) and spec.get(HOSTING_KEY) in PLAN_RUN_HOSTINGS
+
+
 def idempotency_key(user_id: str, run_id: str) -> str:
     """The run's job key within its project: one job per (user, run id)."""
     digest = hashlib.sha256(f"{user_id}\0{run_id}".encode()).hexdigest()
@@ -117,15 +138,15 @@ def check_run_id(run_id: str) -> str:
     return run_id
 
 
-def backend_ref(run_id: str, attempt_label: int) -> str:
-    return f"{REF_PREFIX}plan_run={run_id}|driver=client|attempt={int(attempt_label)}"
+def backend_ref(run_id: str, attempt_label: int, *, driver: str = "client") -> str:
+    return f"{REF_PREFIX}plan_run={run_id}|driver={driver}|attempt={int(attempt_label)}"
 
 
 def find_run_job(store: JobStore, project_id: str, user_id: str, run_id: str) -> Job | None:
     """The caller's run job, or None (never another user's: the key names the user)."""
     key = idempotency_key(user_id, check_run_id(run_id))
     job = store.get_job_by_idempotency_key(project_id, key)
-    if job is not None and not is_client_hosted(job.spec):
+    if job is not None and not is_plan_run_record(job.spec):
         raise PlanRunRecordError("conflict", f"job {job.job_id} is not a plan run record")
     return job
 
@@ -152,12 +173,16 @@ def open_attempt(
             f"plan_run_cancelled: the durable record of run {run_id} ({job.job_id}) is "
             f"{job.status.value}; start a new run",
         )
+    venue = is_venue_hosted(job.spec)
     try:
         superseded = store.reopen_client_job(job.job_id)
-        attempt_id = store.create_attempt(job.job_id, backend=BACKEND)
-        store.mark_attempt_submitted(attempt_id, backend_ref(run_id, attempt_label))
+        attempt_id = store.create_attempt(job.job_id, backend=VENUE_BACKEND if venue else BACKEND)
+        store.mark_attempt_submitted(
+            attempt_id, backend_ref(run_id, attempt_label, driver="venue" if venue else "client")
+        )
+        host = "venue-hosted" if venue else "client-hosted"
         store.mark_attempt_running(
-            attempt_id, status_detail=f"client-hosted plan run, attempt-{int(attempt_label)}"
+            attempt_id, status_detail=f"{host} plan run, attempt-{int(attempt_label)}"
         )
     except InvalidTransitionError as exc:
         raise PlanRunRecordError(
@@ -308,28 +333,38 @@ def list_records(traces: ExecutionTraceStore, job: Job) -> list[dict[str, Any]]:
 def run_view(store: JobStore, job: Job) -> dict[str, Any]:
     """The run's job: its definition and its attempts (r4's labels included)."""
     spec = job.spec or {}
-    return {
+    view = {
         "run_id": spec.get("plan_run_id"),
         "job_id": job.job_id,
         "job_type": job.job_type.value,
         "status": job.status.value,
+        "hosting": spec.get(HOSTING_KEY),
         "durable_required": bool(spec.get("durable_required")),
         "definition": spec.get("definition") or {},
         "active_attempt_id": job.active_attempt_id,
         "commit_attempt_id": job.commit_attempt_id,
         "attempts": [_attempt_row(a) for a in store.get_attempts_for_job(job.job_id)],
     }
+    if is_venue_hosted(spec):
+        view["venue_session_id"] = spec.get("venue_session_id")
+        view["caps"] = spec.get("caps") or {}
+    return view
 
 
 def _attempt_row(attempt: Any) -> dict[str, Any]:
     ref = _parse_ref(attempt.backend_ref or "")
     label = ref.get("attempt", "")
+    metrics = getattr(attempt, "metrics", None) or {}
     return {
         "attempt_id": attempt.attempt_id,
         "attempt_no": attempt.attempt_no,
         "label": int(label) if label.isdigit() else None,
         "status": attempt.status.value,
         "exit_reason": attempt.exit_reason,
+        # The outcome its writer reported at finish (slice 8: a server-hosted
+        # run's result reaches its client only through here).
+        "plan_status": metrics.get("plan_status") if isinstance(metrics, dict) else None,
+        "summary": metrics.get("summary") if isinstance(metrics, dict) else None,
     }
 
 
@@ -370,21 +405,134 @@ def _bounded_summary(summary: Any) -> dict[str, Any]:
     return summary
 
 
+# ── slice 8: the server venue ───────────────────────────────────────────────
+
+VENUE_SESSION_PREFIX = "planrun-"
+VENUE_HOSTED_WRITE_REFUSAL = (
+    "venue_hosted_run: run {run} is hosted by its server-venue worker (ADR-092 slice 8); "
+    "only that worker writes its records. Read it, resume it or cancel it through the "
+    "venue routes (r4 team plan result|resume|cancel {run})."
+)
+
+
+def venue_session_id(user_id: str, run_id: str) -> str:
+    """The frontend-venue session that hosts ``run_id`` for ``user_id``.
+
+    One per (user, run): a resume starts a fresh worker under the same id
+    (the previous one has ended), so the run's record names its worker's
+    session from its first start, immutably (ADR-002).
+    """
+    digest = hashlib.sha256(f"{user_id}\0{check_run_id(run_id)}".encode()).hexdigest()
+    return f"{VENUE_SESSION_PREFIX}{digest[:24]}"
+
+
+def venue_run_job(
+    store: JobStore,
+    *,
+    project_id: str,
+    user_id: str,
+    run_id: str,
+    definition: Any,
+    caps: dict[str, Any],
+) -> tuple[Job, bool]:
+    """The venue-hosted run's job: created on its first start, found on a resume.
+
+    A run recorded as client-hosted is refused by name (its hosting is part
+    of its immutable spec); so is a cancelled one. A first start needs the
+    run's definition; a resume uses the recorded one.
+    """
+    job = find_run_job(store, project_id, user_id, run_id)
+    if job is not None:
+        return _resumable_venue_job(job, run_id), False
+    if not isinstance(definition, dict) or not definition.get("plan"):
+        raise PlanRunRecordError(
+            "not_found",
+            f"No durable record of plan run {run_id} for this caller; start it with its "
+            "definition",
+        )
+    spec = {
+        HOSTING_KEY: HOSTING_VENUE,
+        "plan_run_id": run_id,
+        "durable_required": True,
+        "definition": _bounded_definition(definition),
+        "venue_session_id": venue_session_id(user_id, run_id),
+        "caps": dict(caps or {}),
+    }
+    try:
+        job_id = store.create_job(
+            project_id,
+            user_id,
+            JobType.RESEARCH_LOOP,
+            spec,
+            idempotency_key=idempotency_key(user_id, run_id),
+            max_attempts=1,
+            restart_policy=RestartPolicy.NEVER,
+        )
+    except DuplicateJobError as exc:  # a concurrent first start won
+        return _resumable_venue_job(store.get_job(exc.existing_job_id), run_id), False
+    return store.get_job(job_id), True
+
+
+def _resumable_venue_job(job: Job, run_id: str) -> Job:
+    if not is_venue_hosted(job.spec):
+        raise PlanRunRecordError(
+            "conflict",
+            f"hosting_mismatch: run {run_id} ({job.job_id}) is recorded as client-hosted; "
+            "its client resumes it (r4 team plan resume <run_id>). Start a new run on the "
+            "server venue.",
+        )
+    if job.status not in _REOPENABLE:
+        raise PlanRunRecordError(
+            "conflict",
+            f"plan_run_cancelled: the durable record of run {run_id} ({job.job_id}) is "
+            f"{job.status.value}; start a new run",
+        )
+    return job
+
+
+def check_writer(job: Job, venue_session: str | None) -> None:
+    """Who may write a run's records (open, append, finish).
+
+    A venue-hosted run: only its own worker, attested by the rail as the
+    run's recorded venue session (never its owner's client, never another
+    session's worker). A client-hosted run: never a venue worker.
+    """
+    spec = job.spec or {}
+    run = str(spec.get("plan_run_id") or job.job_id)
+    if is_venue_hosted(spec):
+        if not venue_session or venue_session != spec.get("venue_session_id"):
+            raise PlanRunRecordError("forbidden", VENUE_HOSTED_WRITE_REFUSAL.format(run=run))
+        return
+    if venue_session:
+        raise PlanRunRecordError(
+            "forbidden",
+            f"client_hosted_run: run {run} is hosted by its client; a venue worker never "
+            "writes its records",
+        )
+
+
 __all__ = [
     "BACKEND",
     "CLIENT_HOSTED_REFUSAL",
     "HOSTING_CLIENT",
+    "HOSTING_VENUE",
+    "PLAN_RUN_HOSTINGS",
     "OpenedAttempt",
     "PlanRunRecordError",
     "append_record",
     "backend_ref",
     "check_run_id",
+    "check_writer",
     "find_run_job",
     "finish_attempt",
     "idempotency_key",
     "is_client_hosted",
+    "is_plan_run_record",
+    "is_venue_hosted",
     "list_records",
     "open_attempt",
     "parse_record",
     "run_view",
+    "venue_run_job",
+    "venue_session_id",
 ]

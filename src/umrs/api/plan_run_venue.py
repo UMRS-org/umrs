@@ -1,0 +1,166 @@
+"""Server-venue routes of a team plan run (ADR-092 slice 8).
+
+Mounted under the traces family (``/umrs/traces/plan-runs/…``), which the
+gateway already proxies (``/gw/traces/*``), the caller's own runs only:
+
+    POST /umrs/traces/plan-runs/{run_id}/venue    start or resume it on the server venue
+    GET  /umrs/traces/plan-runs/{run_id}/venue    its record and its worker's state
+    POST /umrs/traces/plan-runs/{run_id}/cancel   stop its worker, cancel its record
+
+The logic lives in ``umrs.venues.plan_runs`` (a foundation module); these
+routes resolve the verified caller, the venue service and the project's
+ADR-067 caps, and project refusals onto typed errors. A sandbox never
+reaches them (the rail gw admits only its own run's record verbs).
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+from typing import Any
+
+from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel, Field
+
+from ..jobs import plan_run_records as prr
+from ..jobs.store import JobStore
+from ..venues import plan_runs
+from ..venues.frontend_service import VenueError
+from .jobs import CallerIdentity, get_caller_identity, get_job_store
+from .typed_errors import PlatformError, raise_typed
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/umrs/traces/plan-runs", tags=["execution-traces"])
+
+
+class PlanRunVenueStartBody(BaseModel):
+    """A first start carries the run's definition; a resume may omit it."""
+
+    definition: dict[str, Any] = Field(default_factory=dict)
+    source_refs: list[str] = Field(default_factory=list)
+    default_source: str = ""
+    web_policy: str = ""
+    web_allow_domains: list[str] = Field(default_factory=list)
+
+
+def _venue_service(request: Request) -> Any:
+    from .companion_venue import get_venue_service
+
+    return get_venue_service(request)
+
+
+def _caps(request: Request, project_id: str) -> dict[str, Any]:
+    """The project's ADR-067 caps (tests inject ``app.state.plan_run_budget_reader``).
+
+    The loop routes' reader: an unreadable row is uncapped, logged (as a loop
+    start reads it).
+    """
+    reader = getattr(request.app.state, "plan_run_budget_reader", None)
+    if reader is None:
+        from .loop import _project_budget_caps as reader
+    return plan_runs.caps_for(reader(project_id))
+
+
+def _caller_scope(caller: CallerIdentity) -> tuple[str, str]:
+    if caller.is_anonymous or not caller.user_id:
+        raise_typed(PlatformError.auth("project_required", "A plan run needs a project"))
+    return caller.user_id, caller.project_id
+
+
+def _refused(exc: Exception, verb: str) -> None:
+    if isinstance(exc, VenueError):
+        raise_typed(PlatformError.companionvenue(exc.code, exc.message, **exc.detail), cause=exc)
+    if isinstance(exc, prr.PlanRunRecordError):
+        raise_typed(PlatformError.jobs(exc.code, exc.message), cause=exc)
+    logger.exception("plan run venue %s failed", verb)
+    raise_typed(
+        PlatformError.companionvenue(
+            "unavailable", f"plan run venue {verb} failed: {type(exc).__name__}: {exc}"
+        ),
+        cause=exc,
+    )
+
+
+@router.post("/{run_id}/venue", status_code=202)
+async def start_plan_run_on_venue(
+    run_id: str,
+    body: PlanRunVenueStartBody,
+    request: Request,
+    job_store: JobStore = Depends(get_job_store),
+    caller: CallerIdentity = Depends(get_caller_identity),
+) -> dict[str, Any]:
+    """Start (or resume) a team plan run hosted by a frontend-venue worker.
+    # auth: verified
+    """
+    owner, project = _caller_scope(caller)
+    try:
+        prr.check_run_id(run_id)
+        service = _venue_service(request)
+        caps = _caps(request, project)
+        return await asyncio.to_thread(
+            plan_runs.start,
+            service,
+            job_store,
+            owner=owner,
+            project=project,
+            run_id=run_id,
+            definition=body.definition,
+            caps=caps,
+            source_refs=body.source_refs,
+            default_source=body.default_source,
+            web_policy=body.web_policy,
+            web_allow_domains=body.web_allow_domains,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001 — every refusal is named
+        _refused(exc, "start")
+
+
+@router.get("/{run_id}/venue")
+async def plan_run_venue_status(
+    run_id: str,
+    request: Request,
+    job_store: JobStore = Depends(get_job_store),
+    caller: CallerIdentity = Depends(get_caller_identity),
+) -> dict[str, Any]:
+    """A server-hosted run's record and its worker session's state.
+    # auth: verified
+    """
+    owner, project = _caller_scope(caller)
+    try:
+        return plan_runs.status(
+            _venue_service(request), job_store, owner=owner, project=project, run_id=run_id
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        _refused(exc, "status")
+
+
+@router.post("/{run_id}/cancel")
+async def cancel_plan_run_on_venue(
+    run_id: str,
+    request: Request,
+    job_store: JobStore = Depends(get_job_store),
+    caller: CallerIdentity = Depends(get_caller_identity),
+) -> dict[str, Any]:
+    """Stop a server-hosted run's worker and cancel its record.
+    # auth: verified
+    """
+    owner, project = _caller_scope(caller)
+    try:
+        return await asyncio.to_thread(
+            plan_runs.cancel,
+            _venue_service(request),
+            job_store,
+            owner=owner,
+            project=project,
+            run_id=run_id,
+            actor=owner,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        _refused(exc, "cancel")
