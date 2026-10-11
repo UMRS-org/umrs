@@ -185,25 +185,46 @@ def test_list_documents_endpoint():
     assert response.json() == []
 
 
-def test_delete_document_endpoint():
-    """Delete document by ID should work."""
+def test_delete_document_answers_501_and_records_no_deletion(monkeypatch):
+    """ADR-093 MD-16 (wave F, 2026-10-11): the service's delete was a
+    placeholder that deleted nothing yet answered "deleted", and the proxy
+    then recorded the deletion — the document stayed retrievable. Until a
+    delete verb exists, the proxy answers 501, calls nothing and records
+    nothing."""
     registry = _make_registry_with_endpoint()
     client = _create_client(registry)
+    calls: list[str] = []
 
     async def fake_delete(self, url, **kwargs):
-        assert "doc-123" in str(url)
+        calls.append(str(url))
         return _mock_rag_response({"status": "deleted"})
 
     import httpx
+    from umrs.api import governance
 
+    monkeypatch.setattr(
+        governance, "record_resource_deleted", lambda *_a, **_k: calls.append("recorded")
+    )
     with patch.object(httpx.AsyncClient, "delete", fake_delete):
         response = client.delete(
             "/umrs/rag/documents/doc-123",
             headers={"x-user-id": "user-1", "x-project-id": "test-project"},
         )
 
-    assert response.status_code == 200
-    assert response.json()["status"] == "deleted"
+    assert response.status_code == 501
+    assert "not implemented" in response.json()["detail"]
+    assert calls == []
+
+
+def test_the_rag_service_delete_answers_501():
+    from fastapi.testclient import TestClient
+    from umrs.api import rag_service
+
+    response = TestClient(rag_service.app).delete(
+        "/rag/documents/doc-123", params={"project_id": "p"}
+    )
+    assert response.status_code == 501
+    assert "doc-123" in response.json()["detail"]
 
 
 def test_get_document_endpoint():

@@ -806,45 +806,26 @@ async def list_documents(
         )
 
 
-@router.delete("/documents/{document_id}")
-async def delete_document(
-    document_id: str,
-    request: Request,
-    registry: EndpointRegistry = Depends(get_registry),
-):
-    """Delete a document from the project."""
-    _user_id, project_id = _require_rag_scope(request, write=True)
+#: ADR-093 MD-16 (2026-10-11): no delete verb exists yet. The service
+#: placeholder deleted nothing yet answered "deleted", and this proxy then
+#: recorded the deletion; the document stayed retrievable.
+DELETE_NOT_IMPLEMENTED = (
+    "document delete is not implemented: nothing was deleted and the document "
+    "stays retrievable (ADR-093 MD-16)"
+)
 
-    rag_base = _discover_rag_endpoint(registry, project_id)
-    rag_url = f"{rag_base}/rag/documents/{document_id}"
 
-    try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.delete(
-                rag_url, params={"project_id": project_id}, headers=_trace_headers()
-            )
+@router.delete("/documents/{document_id}", status_code=501)
+async def delete_document(document_id: str, request: Request):
+    """Delete a document from the project — not implemented (ADR-093 MD-16).
 
-            if response.status_code == 404:
-                raise_typed(PlatformError.rag("not_found", "Document not found"))
-
-            if response.status_code != 200:
-                raise HTTPException(
-                    status_code=response.status_code,
-                    detail=f"Failed to delete: {response.text}",
-                )
-
-            # Governance tracking (best-effort)
-            from .governance import record_resource_deleted
-
-            record_resource_deleted("rag_documents", document_id, project_id)
-
-            return {"status": "deleted", "document_id": document_id}
-
-    except httpx.RequestError as e:
-        logger.exception("Delete document failed: %s", e)
-        raise_typed(
-            PlatformError.rag("unavailable", "RAG service unavailable"), cause=e
-        )
+    Answers 501 after the write-scope check, and records no deletion: a
+    "deleted" for a document that stays retrievable is a lie, never a
+    success (wave F). A real delete (one transaction over the artifact row,
+    its nodes, vectors, edges and findings) is the maintainer's decision.
+    """
+    _require_rag_scope(request, write=True)
+    raise HTTPException(status_code=501, detail=DELETE_NOT_IMPLEMENTED)
 
 
 @router.get("/documents/{document_id}", response_model=DocumentInfo)
